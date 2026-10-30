@@ -108,7 +108,7 @@ impl Pictures {
                             Some(Arc::new(image))
                         } else {
                             let image = look(&image).unwrap_or(image);
-                            at_stock(image, job.scale).map(Arc::new)
+                            at_integer(image, job.scale).map(Arc::new)
                         }
                     })
                 } else {
@@ -125,7 +125,7 @@ impl Pictures {
                                     return Some(Arc::new(image));
                                 }
                                 let image = look(&image).unwrap_or(image);
-                                at(image, job.scale).map(Arc::new)
+                                at_integer(image, job.scale).map(Arc::new)
                             })
                             .clone()
                     })
@@ -434,9 +434,9 @@ fn at(image: Image, scale: f32) -> Option<Image> {
     resample(&image, size(image.width), size(image.height))
 }
 
-/// Integer-enlarge stock sprites without interpolating; the painter then
-/// downsamples to the snapped device rectangle. Shrinking uses the area filter.
-pub fn at_stock(image: Image, scale: f32) -> Option<Image> {
+/// Integer-enlarge pictures without interpolating; the painter downsamples
+/// them to the destination. Shrinking uses Catmull-Rom resampling.
+pub fn at_integer(image: Image, scale: f32) -> Option<Image> {
     if scale <= 1. {
         return at(image, scale);
     }
@@ -729,9 +729,9 @@ mod tests {
     }
 
     #[test]
-    fn stock_upscaling_preserves_source_pixels() {
+    fn picture_upscaling_preserves_source_pixels() {
         let source = Image::rgba(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
-        let scaled = source.and_then(|image| at_stock(image, 1.5));
+        let scaled = source.and_then(|image| at_integer(image, 1.5));
         assert_eq!(
             scaled.map(|image| image.rgba.to_vec()),
             Some(vec![

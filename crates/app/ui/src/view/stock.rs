@@ -333,7 +333,7 @@ fn field_words(
                 })
                 .collect();
             if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels)
-                .and_then(|image| crate::pictures::at_stock(image, device as f32))
+                .and_then(|image| crate::pictures::at_integer(image, device as f32))
             {
                 layers.push(super::image(&Arc::new(image), width, height).at(
                     x,
