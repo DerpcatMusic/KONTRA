@@ -11,6 +11,7 @@ use kontra_engine::{EffectRequest, Engine, Prepared, ir};
 
 use crate::persist::Capture;
 pub(crate) use files::DiskFiles;
+pub use files::user_saves;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
@@ -251,6 +252,8 @@ pub struct Rack {
     /// Counts installs, so a capture of a replaced engine is not taken for
     /// its successor's.
     generation: u64,
+    /// Where scripts' array saves go ([`files`]); none writes nothing.
+    saves: Option<PathBuf>,
 }
 
 impl Rack {
@@ -278,6 +281,7 @@ impl Rack {
             rate,
             store,
             parts: (0..MAX_PARTS).map(|_| None).collect(),
+            saves: None,
             pending: std::collections::VecDeque::new(),
             generation: 0,
         };
@@ -397,6 +401,12 @@ impl Rack {
         let source = instrument.source_path.clone();
         let slots = instrument.scripts.iter().map(|s| s.slot).collect();
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+        let saves = self.saves.clone();
+        for s in loaded.plan.scripts.iter_mut().filter(|s| s.files.is_some()) {
+            s.files = Some(Arc::new(DiskFiles {
+                saves: saves.clone(),
+            }));
+        }
         let slot_types: Vec<_> = (slot_types.iter().copied())
             .filter(|&(at, slot, ty)| loaded.plan.load_type(at, slot, ty))
             .collect();
@@ -622,6 +632,12 @@ impl Rack {
             value,
             keys: UiModifiers::default(),
         });
+    }
+
+    /// Puts scripts' array saves under `root` (the plugin's is
+    /// [`user_saves`]); a later load of a saved path reads it first.
+    pub fn set_saves(&mut self, root: PathBuf) {
+        self.saves = Some(root);
     }
 
     /// Frees what the audio thread let go of and resends refused commands.
