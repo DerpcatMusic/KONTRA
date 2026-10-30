@@ -386,6 +386,13 @@ impl Ledger {
         })
     }
 
+    /// Marks every live note released: a pending end of one then starts no
+    /// release zones and runs no release callback.
+    pub(crate) fn release_all(&mut self) {
+        let notes = self.entries.iter_mut().filter_map(|e| e.note.as_mut());
+        notes.for_each(|n| n.released = true);
+    }
+
     /// Every live note with its reference.
     pub(crate) fn live(&self) -> impl Iterator<Item = (NoteRef, &Note)> {
         self.entries.iter().enumerate().filter_map(|(index, e)| {

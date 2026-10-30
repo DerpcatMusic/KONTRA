@@ -21,7 +21,25 @@ struct Playing {
     held: Held,
     /// Which load it is ([`Command::Install`]).
     generation: u64,
+    /// The engines this one replaced, fading out under it: an install never
+    /// stops a sound dead, effect tails included.
+    outgoing: [Option<Fading>; FADING],
 }
+
+/// An engine an install replaced: its whole output, effects included,
+/// ramps to silence over [`FADE`], then it is freed off audio.
+struct Fading {
+    engine: Box<Engine>,
+    /// Frames of the ramp still to play.
+    left: u32,
+}
+
+/// Replaced engines fading at once per part; past that the most faded goes.
+const FADING: usize = 2;
+/// How long a replaced engine fades, in seconds.
+const FADE: f64 = 0.02;
+/// Engines one command may retire: the part's and its fading ones.
+const RETIRES: usize = 1 + FADING;
 
 /// The audio side: renders every part into its output pair.
 pub struct RackAudio {
@@ -30,6 +48,10 @@ pub struct RackAudio {
     parts: Vec<Option<Playing>>,
     outputs: Vec<Box<[[f32; 2]]>>,
     scratch: Box<[[f32; 2]]>,
+    /// What an outgoing engine renders, before it is added in.
+    tail: Box<[[f32; 2]]>,
+    /// [`FADE`] in frames.
+    fade: u32,
     events: Vec<Timed<Event>>,
     master: f32,
     tempo: Option<f32>,
@@ -64,6 +86,8 @@ impl RackAudio {
                 .map(|_| vec![[0.0; 2]; block].into_boxed_slice())
                 .collect(),
             scratch: vec![[0.0; 2]; block].into_boxed_slice(),
+            tail: vec![[0.0; 2]; block].into_boxed_slice(),
+            fade: (FADE * f64::from(rate)).max(1.0) as u32,
             events: Vec::with_capacity(4096),
             master: 1.0,
             tempo: None,
@@ -192,6 +216,24 @@ impl RackAudio {
                 continue;
             };
             p.engine.process(scratch, &self.events);
+            for slot in &mut p.outgoing {
+                let Some(f) = slot else { continue };
+                if let Some(tail) = self.tail.get_mut(..frames) {
+                    f.engine.process(tail, &[]);
+                    for (s, t) in scratch.iter_mut().zip(tail.iter()) {
+                        let g = f.left as f32 / self.fade as f32;
+                        f.left = f.left.saturating_sub(1);
+                        (s[0], s[1]) = (s[0] + t[0] * g, s[1] + t[1] * g);
+                    }
+                }
+                if f.left == 0
+                    && let Some(f) = slot.take()
+                    && let Err(engine) = self.channels.retired.send(f.engine)
+                {
+                    // No room this block: it stays, silent, until there is.
+                    *slot = Some(Fading { engine, left: 0 });
+                }
+            }
             let (requests, generation) = (&self.channels.requests, p.generation);
             let mut lost = 0;
             p.engine.drain_requests(|r| {
@@ -255,7 +297,7 @@ impl RackAudio {
     fn apply_commands(&mut self) {
         // An install retires the engine it replaces; with no room to retire
         // it, the command waits for the next block rather than free here.
-        while !self.channels.retired.is_full()
+        while self.channels.retired.room() >= RETIRES
             && !self.channels.captured.is_full()
             && !self.channels.units.is_full()
             && !self.channels.typed.is_full()
@@ -277,14 +319,38 @@ impl RackAudio {
                         if let Some(bpm) = self.tempo {
                             engine.set_tempo(bpm);
                         }
-                        let old = slot.replace(Playing {
+                        let (mut outgoing, mut gone) = ([None, None], None);
+                        if let Some(mut old) = slot.take() {
+                            old.engine.reset();
+                            // Every replaced engine fades; with no room, the
+                            // most faded goes now.
+                            let [a, b] = old.outgoing;
+                            let left = self.fade;
+                            let mut all = [
+                                Some(Fading {
+                                    engine: old.engine,
+                                    left,
+                                }),
+                                a,
+                                b,
+                            ];
+                            all.sort_by_key(|f| {
+                                std::cmp::Reverse(f.as_ref().map_or(0, |f| f.left))
+                            });
+                            let [a, b, c] = all;
+                            (outgoing, gone) = ([a, b], c);
+                        }
+                        *slot = Some(Playing {
                             engine,
                             mix,
                             release: None,
                             held: Held::new(Hold::default()),
                             generation,
+                            outgoing,
                         });
-                        self.retire(old);
+                        if let Some(gone) = gone {
+                            self.retire_engine(gone.engine);
+                        }
                     } else {
                         self.retire(Some(Playing {
                             engine,
@@ -292,6 +358,7 @@ impl RackAudio {
                             release: None,
                             held: Held::new(Hold::default()),
                             generation,
+                            outgoing: [None, None],
                         }));
                     }
                 }
@@ -338,7 +405,7 @@ impl RackAudio {
                     {
                         p.engine.file_done(&mut reply);
                     }
-                    if let Err(reply) = self.channels.filed.send(reply) {
+                    if let Err(reply) = self.channels.filed.send((part, generation, reply)) {
                         // Checked for room first; if it ever fails, it frees here.
                         self.dropped += 1;
                         drop(reply);
@@ -460,9 +527,16 @@ impl RackAudio {
     }
 
     fn retire(&mut self, old: Option<Playing>) {
-        if let Some(p) = old
-            && let Err(engine) = self.channels.retired.send(p.engine)
-        {
+        if let Some(p) = old {
+            self.retire_engine(p.engine);
+            for f in p.outgoing.into_iter().flatten() {
+                self.retire_engine(f.engine);
+            }
+        }
+    }
+
+    fn retire_engine(&mut self, engine: Box<Engine>) {
+        if let Err(engine) = self.channels.retired.send(engine) {
             // Checked for room before the command was taken, so this does
             // not happen; if it ever does, the engine is freed here.
             self.dropped += 1;

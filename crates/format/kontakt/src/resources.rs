@@ -12,7 +12,7 @@ use ni_file::nis::LibraryKey;
 use ni_file::nkr::Archive;
 
 /// No resource a script loads is larger.
-const LIMIT: u64 = 32 << 20;
+pub const LIMIT: u64 = 32 << 20;
 /// The member table starts at this marker within the first 4 MiB of a `.nicnt`.
 const MARKER: &[u8] = b"/\\ NI FC MTD  /\\";
 /// The library root is at most this far above an instrument.

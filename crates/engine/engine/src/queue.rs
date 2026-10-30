@@ -105,6 +105,11 @@ impl EventQueue {
         true
     }
 
+    /// Keeps only the work `keep` admits, in its order.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&Work) -> bool) {
+        self.heap.retain(|Reverse(e)| keep(&e.work));
+    }
+
     /// The earliest work due at or before `now`.
     pub(crate) fn pop_due(&mut self, now: SampleTime) -> Option<Work> {
         if self.heap.peek()?.0.at > now {

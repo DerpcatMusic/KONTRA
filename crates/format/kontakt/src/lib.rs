@@ -33,6 +33,8 @@ mod wavetable;
 
 pub use container::chunks;
 pub use readouts::readouts;
+/// No resource a script loads, or array file it names, is larger (bytes).
+pub use resources::LIMIT as RESOURCE_LIMIT;
 pub use resources::Resources;
 pub use reverb::{reverb, reverb_laws, reverb_networks};
 pub use script_knobs::script_knobs;

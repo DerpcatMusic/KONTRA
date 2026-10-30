@@ -5,6 +5,7 @@ use kontra_plan::{Recall, Saved};
 use kontra_vm::Text;
 
 use crate::Engine;
+use crate::queue::{EventQueue, Work};
 use crate::script::{Kind, Running};
 
 impl Engine {
@@ -20,7 +21,7 @@ impl Engine {
     /// recalled values. Returns the values recalled before, to free off the
     /// audio thread. Allocates nothing.
     pub fn recall(&mut self, saved: Box<[Saved]>) -> Box<[Saved]> {
-        self.steal_where(self.fade_frames(), |_| true);
+        self.reset();
         for (slot, values) in (0u8..).zip(saved.iter()) {
             self.write_saved(slot, &values.ints, &values.texts);
         }
@@ -28,6 +29,26 @@ impl Engine {
         let slots = (0u8..).take(self.recalled.len());
         slots.for_each(|slot| self.persistence_changed(slot));
         old
+    }
+
+    /// Resets the engine as a snapshot load does (KSP manual: "Loading a
+    /// snapshot always resets Kontakt's audio engine"): every voice fades
+    /// out, every note counts as released (its pending end starts nothing)
+    /// and every callback waiting to go on ends. Allocates nothing.
+    pub fn reset(&mut self) {
+        self.steal_where(self.fade_frames(), |_| true);
+        self.notes.release_all();
+        let mut queue = std::mem::replace(&mut self.queue, EventQueue::new(0));
+        queue.retain(|work| match *work {
+            Work::Resume(slot, co, _) => {
+                if let Some(vm) = self.vm_mut(slot) {
+                    vm.cancel(co);
+                }
+                false
+            }
+            _ => true,
+        });
+        self.queue = queue;
     }
 
     /// `read_persistent_var`: the saved values of the running slot in

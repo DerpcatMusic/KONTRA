@@ -43,6 +43,12 @@ impl<T> Ring<T> {
     pub fn is_full(&self) -> bool {
         self.0.is_full()
     }
+
+    /// How many sends would succeed now.
+    #[must_use]
+    pub fn room(&self) -> usize {
+        self.0.capacity() - self.0.len()
+    }
 }
 
 /// Parts a rack holds at most; publications carry one entry each.
