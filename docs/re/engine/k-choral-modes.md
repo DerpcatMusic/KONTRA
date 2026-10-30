@@ -120,10 +120,20 @@ Measured on 8.13.1 through the emulator:
 
 Not measured, and therefore not implemented:
 
-- The swing's law. `k-modfx-classic.md` gives amount `d = a²·0.99 + 0.01` and pitch ratio
-  `2^(d·0.025)`, which at amount 1 is ±1.75%, i.e. about ±0.5 ms on a 30 ms delay. The measurement is
-  four times that, so either the ratio is applied differently or the amount enters elsewhere. The
-  documented law is **not** sufficient on its own.
+- The swing's law is **measured to be quadratic in amount**. Impulse train, rate 0.5, delay 0.5,
+  mode 0, the voice whose base is 0.011 s (28.65 ms, 1375 frames at amount 0):
+
+  | amount | echo range (frames) | swing | swing / base |
+  | --- | --- | --- | --- |
+  | 0.00 | 1375..1375 | 0 | 0 |
+  | 0.25 | 1375..1387 | 12 | 0.87% |
+  | 0.50 | 1378..1430 | 52 | 3.8% |
+  | 0.75 | 1383..1492 | 109 | 7.9% |
+  | 1.00 | 1389..1594 | 205 | 14.9% |
+
+  The ratios track `a²` (0.0625, 0.25, 0.5625, 1.0) closely, so the peak-to-peak swing is about
+  `0.15 · a² · base`. The documented pitch-ratio law (`2^(d·0.025)`, 1.75% at amount 1) is roughly
+  eight times too small, so it is **not** the swing law and must not be used as one.
 - The LFO's shape and its per-voice phase.
 - The six loop-filter constants after the pans, and whether the 0.99 seven in mode 3 are the one-pole
   coefficients they look like.
