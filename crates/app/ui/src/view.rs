@@ -12,6 +12,7 @@ use mui::prelude::*;
 
 use crate::Pictures;
 use crate::meter::Shown;
+use crate::pictures::Band;
 
 mod plan;
 mod stock;
@@ -108,17 +109,40 @@ fn drawn_page(
         .and_then(|a| Some((a, image_asset(tree, a)?)))
     {
         let b = &p.background;
+        let tall = meta.size.map_or(0., |s| s.height);
         let skin = (b.frame, b.origin_y, b.offset_y.max(0));
-        for (n, y) in wallpaper(skin, meta.size.map_or(0., |s| s.height), meta.frames) {
-            let Some(img) = pictures.frame(a, path, meta, n, device) else {
+        for (n, y) in wallpaper(skin, tall, meta.frames) {
+            // The page shows the rows from where the strip is cut down to its
+            // own foot, and only those are read: the strip is thousands of
+            // rows tall, and the whole of it is more than the renderer can
+            // hold at a device scale above one.
+            let Some(width) = meta.size.map(|s| s.width).filter(|_| tall > 0.) else {
+                // No sidecar: the picture's own pixels are its size.
+                let Some(img) = pictures.frame(a, path, meta, n, device) else {
+                    continue;
+                };
+                let size = model::Size {
+                    width: f64::from(img.width),
+                    height: f64::from(img.height),
+                };
+                layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
                 continue;
             };
-            // Its own size, whatever pixels it decoded at.
-            let size = meta.size.unwrap_or(model::Size {
-                width: f64::from(img.width),
-                height: f64::from(img.height),
-            });
-            layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
+            let top = (-y).max(0.);
+            let height = h.min(tall - top).max(0.);
+            if top >= tall || height <= 0. {
+                continue;
+            }
+            let band = Band {
+                x: 0,
+                y: top as u32,
+                width: width.ceil() as u32,
+                height: height.ceil() as u32,
+            };
+            let Some(img) = pictures.frame_band(a, path, meta, n, device, Some(band)) else {
+                continue;
+            };
+            layers.push(image(&img, width * scale, height * scale).at(0., (y + top) * scale));
         }
     }
     for item in plan.widgets {

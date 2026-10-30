@@ -255,6 +255,12 @@ impl Snapshot {
         // What the picture workers decoded since the last frame.
         for face in app.parts.iter_mut().filter_map(|p| p.face.as_mut()) {
             face.pictures.poll();
+            // Past the renderer's atlas a picture is drawn at no size at all:
+            // the page loses it, so the log says which size did it.
+            let side = face.pictures.tallest();
+            if side > kontra_ui::pictures::ATLAS {
+                crate::session::picture_too_large(side, kontra_ui::pictures::ATLAS);
+            }
         }
         *shown = self
             .parts

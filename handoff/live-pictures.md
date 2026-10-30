@@ -1,86 +1,85 @@
-# Electric Mint's live page: the pictures, the labels, and what was actually wrong
+# Electric Mint's missing photograph: a wallpaper taller than the renderer's atlas
 
 Written 2026-10-30 on `fix/live-pictures` (from `feat/integration` `01a9f08`).
-Everything below is measured on this machine, headless. No GUI was opened.
+Everything here is measured on this machine, headless. No GUI was opened.
 
-## 1. What was reproduced
+Instrument: `Electric Mint (Melody).nki` (the one the user's page shows: `Vibrato | Bend |
+Chord | Spacious EDM | 1 Mint Pop | Bb2 | Open | Fret Pos | Mint Pop A–D | Muted |
+Flageolet | Tremolo | Patterns | Guitar Settings`). `Electric Mint.nki` is the other one and
+reads `Impact`; both were measured.
 
-| route | instrument | pictures read |
+## 1. What differs between the harness and the live plugin
+
+| | harness (`tools/ui-shots`, `view::page` at 1 device pixel) | live plugin |
 | --- | --- | --- |
-| the harness (`tools/ui-shots`' path: `Instrument` → `Live::new` → `Library::open`) | `Electric Mint.nki` | **113 / 114** |
-| the plugin's own face (`Snapshot::fill` → `editor::face` → `Pictures`) | `Electric Mint.nki` | **113 / 114** |
-| the harness | `Electric Mint (Melody).nki` | **128 / 129** |
-| the plugin's own face | `Electric Mint (Melody).nki` | **128 / 129** |
+| window | none, vello **CPU** | Vulkan, **`scale_override=Some(2.0)`, `device_scale=2`** |
+| wallpaper asked for | 633 × 7952 (`bg-images.png`, whole strip) | 1266 × **15904** (the same strip, `at_integer` doubling it) |
+| vello image atlas | none (CPU) | `MAX_ATLAS_SIZE = 8192` a side |
 
-The one asset neither route reads is `Resources/pictures/button_standard.png`, which the
-library does not hold at all (logged reason: `the library has no file at that path`).
+`~/.local/state/MUI/session-1603049-…log` records the live window: `logical_size=(1180, 780)
+scale_override=Some(2.0)`, `physical_size=(2360, 1560) device_scale=2`,
+`max_texture_dimension_2d: 16384`.
 
-Drawn headless through `kontra_ui::app::view` — the part view the user actually sees — the
-page is complete, photograph and title included:
-`/tmp/opencode/livepics-shots/Electric_Mint-0-app.png`.
+vello 0.10 places every picture in an **image atlas of at most 8192 a side**
+(`vello_encoding-0.10.0/src/image_cache.rs`, `const MAX_ATLAS_SIZE: i32 = 8192`;
+`resolve_pending_images` in `resolve.rs` sets the draw's image position to `None` and the
+encoder writes zero dimensions when an image cannot be allocated). A 15904-row picture is
+therefore drawn at **no size at all**, silently — the page loses the photograph and shows its
+background colour.
 
-So at this commit the plugin's own picture path is **not** dropping pictures for either
-instrument, and `Part::path` is `Some` on every load path (`Rack::load`, `load_saved`,
-`recall`). What the live page did was not reproducible from the code, the instrument or the
-library.
+At one device pixel the strip is 7952 rows: under 8192, so it draws — which is why the
+harness (and the harness's `--app` render) always had the photograph. Nothing about the
+library, the tree, the assets or the device was wrong: the page simply asked the renderer
+for something it cannot hold.
 
-## 2. The live page is the *other* instrument (`Bend`, `All…`)
+## 2. What was fixed
 
-The two labels reported as broken are exactly and only the **Melody** instrument's:
+* `crates/app/ui/src/view.rs`: the wallpaper is drawn as the **band the page shows** — rows
+  `offset .. offset + page height` — instead of the whole strip. That is 633 × 500 for this
+  instrument instead of 633 × 7952, so it fits at any device scale, and the decoded bytes for
+  a page fall from 20.3 MB to 1.4 MB.
+* `crates/app/ui-pictures`: `Pictures::frame_band` (a `Band` in the picture's own pixels,
+  cropped before the resize and before the atlas), plus a general clamp: a picture that would
+  be larger than the atlas at the asked scale is decoded at the largest scale that fits
+  (`fit`). A `Band` is part of the frame cache key.
+* `Pictures::tallest()` reports the largest side held (what the renderer was handed), and the
+  editor logs `picture_too_large` to its session log if it ever exceeds the atlas again.
 
-* `Electric Mint.nki` `$kif3y` = `"Impact"`, `$kvref` = `"PitchW."` (the `0-ElMint.ksp` dump
-  the report quotes is this instrument).
-* `Electric Mint (Melody).nki` `$kif3y` = **`"Bend"`**, `$kvref` = `"PitchW."`, and
-  `$0k002` is a bend-mode menu whose first item is `"All             = Bend all notes"`,
-  which the page draws truncated as **`All…`** (the same ellipsis the reference page uses
-  for `Med…`).
+Measured, same instrument, the editor's own face, device scale 2:
 
-The harness render of that instrument shows both strings, with the wallpaper:
-`/tmp/opencode/livepics-shots/Electric_Mint_(Melody)-0.png`. There is no label defect: the
-label text is the script's `set_text`, and the scripts of the two instruments differ.
+| | tallest picture handed over | photograph |
+| --- | --- | --- |
+| before | 15904 | not drawn by the GPU (over the 8192 atlas) |
+| after | 1266 | drawn |
 
-## 3. What *is* wrong, and what was fixed
+At one device pixel nothing changed: both instruments' harness renders are **pixel-identical**
+before and after (0 differing bytes in the page shot and in the `--app` shot).
 
-Any picture failure was silent and indistinguishable from "the page has no pictures":
-`face()` chained `path.as_deref()?`, `library.lock().ok()?` and `Library::open(..).read(..)`,
-and `Pictures` caches a failed read for the life of the face. A part whose file is not
-inside its library — a preset kept elsewhere, a library that moved, no path at all — drew a
-page of stock rectangles and said nothing, in any log.
+## 3. What was also added (and still applies)
 
-Fixed in one place: `kontra_host::ui::Loader` is now the only thing that turns a tree asset
-path into bytes. It opens the library of the first of (the part's file, the instrument the
-part was read from) that has resources, and reports every failure with a reason —
-`NoPath`, `NoLibrary` (nothing at the library root: the file is outside its library),
-`NoFile`. The plugin writes those to its session log.
+The library is now found from the part's file **or** the instrument it was read from
+(`kontra_host::ui::Loader`, `Library::open_any`), and every picture failure is written to
+`~/.cache/kontra/logs/session-<pid>-<stamp>-1.jsonl` with its reason (`NoPath`, `NoLibrary`,
+`NoFile`), the asset and the instrument — the log v3 did not have before. A part whose file
+sits outside its library drew **0/114** pictures and now draws **113/114**.
 
-Measured before/after, same test, part loaded from a file path outside any library
-(`Rack::load_ir` with the real instrument's IR and a path in `/tmp`):
+## 4. Tests
 
-* before: **0 / 114** pictures
-* after: **113 / 114**
-
-That is the user-visible failure reproduced, and the page it repairs is the "flat page,
-stock shapes" one.
-
-## 4. The session log
-
-`~/.cache/kontra/logs/session-<pid>-<stamp>-1.jsonl`, one JSON object per line, written and
-flushed as it happens; `KONTRA_LOG_DIR` moves it, `KONTRA_LOG=0` turns it off; a file stops
-at 4 MiB (`log_full`) and the newest 16 sessions are kept. v2 wrote this path; v3 (this
-tree) wrote nothing, so the log had to be added. Sample from a live run:
-
-```json
-{"level":"info","event":"session_started","log":".../session-1731672-...jsonl","build":"Version 3.0.0-dev · 01a9f0803","pid":"1731672"}
-{"level":"error","event":"picture_missing","reason":"the library has no file at that path","asset":"Resources/pictures/button_standard.png","instrument":"/tmp/kontra-nowhere/Electric Mint.nki","count":"1"}
-```
-
-The first failure of a face is logged, then one line per 64 with the running count.
+* `plugin`: `the_pages_pictures_fit_the_renderers_atlas` — draws the Melody page at 1 and 2
+  device pixels and asserts no picture handed to the renderer exceeds `ATLAS`. Fails before
+  the fix (`a 15904 pixel picture at 2 device pixels cannot be drawn`), passes after
+  (633 / 1266).
+* `plugin`: `the_editor_face_reads_the_pictures_the_harness_does` — 113/114 and 128/129 for
+  the two instruments, the same counts the harness route reads.
+* `plugin`: `a_part_outside_its_library_draws_the_pictures_of_the_instrument_it_came_from` —
+  113/114 through the fallback, 0/114 without it.
+* `kontra-ui-pictures`: `a_band_is_the_rows_it_asks_for`,
+  `a_picture_too_tall_for_the_atlas_is_read_at_a_scale_it_holds`.
+* `kontra-host` `tests/pictures.rs`: the loader's reasons and the fallback.
 
 ## 5. Open
 
-* Why the live VST3 showed no picture at all is still not established. The candidates the
-  code allows are a part whose path is not inside its library (now repaired when the
-  instrument's own source resolves, and always logged) and a build that predates this
-  picture path. The next occurrence names the instrument path and the reason.
 * `Pictures` still remembers a failed read for the life of the face: a library that appears
-  later needs the part reloaded. The log now says so, which it could not before.
+  later needs the part reloaded. The log now says so.
+* The main instrument (`Electric Mint.nki`) had the same defect and is fixed by the same
+  change; only the Melody instrument was measured for the counts above.
