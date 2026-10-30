@@ -345,7 +345,8 @@ fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
     let mut sounds = |key: u8| {
         let before = last.voices;
         *last = block(params, dsp, &[(0, on(key))], last);
-        let mut sounded = last.voices > before;
+        // A one-shot may start and end inside this block: its audio counts.
+        let mut sounded = last.voices > before || last.channel_peaks.iter().any(|&p| p >= 1e-4);
         for _ in 0..at(0.1) / BLOCK {
             *last = block(params, dsp, &[], last);
             sounded |= last.voices > before;
@@ -563,32 +564,43 @@ fn perform(path: PathBuf) -> Report {
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
     }]);
+    let state = saved.write();
+    // Loaded and aligned, the wheel and expression full, as a player starts.
+    let start = || {
+        let (params, mut dsp) = activate(&state);
+        params.align.set_value(true);
+        Tick.run(&params);
+        let mut last = block(
+            &params,
+            &mut dsp,
+            &[(0, cc(1, 127)), (0, cc(11, 127))],
+            &Played::default(),
+        );
+        for _ in 0..at(0.5) / BLOCK {
+            last = block(&params, &mut dsp, &[], &last);
+        }
+        Tick.run(&params);
+        (params, dsp, last)
+    };
     let started = std::time::Instant::now();
-    let (params, mut dsp) = activate(&saved.write());
+    let (params, mut dsp, mut last) = start();
     let load_s = started.elapsed().as_secs_f64();
     eprintln!("{name}: loaded in {load_s:.1} s");
-    params.align.set_value(true);
-    Tick.run(&params);
+    let by = octave_shift(&params, &mut dsp, &mut last);
+    // Probes in another octave may have moved a keyswitch or a script's
+    // state: the performance plays on the program as loaded.
+    let (params, mut dsp, mut last) = if by == 0 {
+        (params, dsp, last)
+    } else {
+        start()
+    };
     let mut failed = Vec::new();
     let mut fail = |what: String| failed.push(format!("{name}: {what}"));
-    // The wheel and expression full, as a player starts.
-    let mut last = Played::default();
-    last = block(
-        &params,
-        &mut dsp,
-        &[(0, cc(1, 127)), (0, cc(11, 127))],
-        &last,
-    );
-    for _ in 0..at(0.5) / BLOCK {
-        last = block(&params, &mut dsp, &[], &last);
-    }
-    Tick.run(&params);
     let latency_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
     let (limited, pool) = limited(&params);
     let mut onsets = Vec::new();
     let mut segments = Vec::new();
     let mut blocks = 0usize;
-    let by = octave_shift(&params, &mut dsp, &mut last);
     for (segment, events) in performance(by) {
         let (stolen, refused) = (last.stolen, last.refused);
         let end = events.iter().map(|e| e.0).max().unwrap_or(0) + 1;
@@ -630,7 +642,11 @@ fn perform(path: PathBuf) -> Report {
                 break;
             }
         }
-        _ = ring_out(&params, &mut dsp, &mut last);
+        if !ring_out(&params, &mut dsp, &mut last) {
+            fail(format!(
+                "{segment}: the effects still sound 5 s after its voices ended"
+            ));
+        }
         if starts.is_empty() {
             continue;
         }
