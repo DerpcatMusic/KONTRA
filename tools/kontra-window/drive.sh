@@ -133,6 +133,30 @@ sys.exit(0 if changed >= 80 and mean < 3 else 1)' "$PICTURE_FILTER_BEFORE" "$out
     if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
     exit $fail
 fi
+# Compare the installed value-field skin with its pre-change capture.
+if [[ ${VALUE_FIELD_ONLY:-0} == 1 ]]; then
+    if [[ -n ${VALUE_FIELD_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+box = (460, 118, 594, 159)
+a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
+pixels = list(ImageChops.difference(a, b).getdata())
+changed = sum(max(p) > 5 for p in pixels)
+mean = sum(map(sum, pixels)) / (3 * len(pixels)) if pixels else float("inf")
+sys.exit(0 if changed >= 30 and mean < 8 else 1)' "$VALUE_FIELD_BEFORE" "$out/0-open.png"; then
+            pass "installed value field artwork is visible"
+        else miss "installed value field artwork is visible"; fi
+    fi
+    ticks_field() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_field); sleep "$span"; t1=$(ticks_field)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # Afflatus' keyswitch page uses add_text_line for its note-name list.
 if [[ ${MULTILINE_ONLY:-0} == 1 ]]; then
     at "${MULTILINE_TAB:-1652,260}"; xdotool click 1; sleep 3; at 1900,1270; shot 1-keyswitches
