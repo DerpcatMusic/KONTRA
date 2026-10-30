@@ -197,8 +197,10 @@ fn drawn_page(
                 .and_then(|asset| pictures.outline_font(a, &asset.path)),
             Some(&model::Font::Stock(23))
                 if matches!(tree.source, model::Source::Ksp { .. })
+                    && matches!(wd.kind, Kind::Label)
                     && style.is_some_and(|s| s.align == model::Align::Center)
-                    && words.contains("  ") =>
+                    && words.contains("  ")
+                    && !words.contains('\n') =>
             {
                 pictures.outline_font(model::AssetRef(usize::MAX - 10), "@stock/raldo")
             }

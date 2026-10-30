@@ -162,11 +162,12 @@ if [[ ${NATIVE_LABEL_ONLY:-0} == 1 ]]; then
     if [[ -n ${NATIVE_LABEL_BEFORE:-} ]]; then
         if python3 -I -c 'import sys; from PIL import Image, ImageChops
 box = (710, 158, 840, 171)
-a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
+a, b, expected = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:4])
 pixels = list(ImageChops.difference(a, b).getdata())
 changed = sum(max(p) > 5 for p in pixels)
-mean = sum(map(sum, pixels)) / (3 * len(pixels)) if pixels else float("inf")
-sys.exit(0 if changed >= 20 and mean < 30 else 1)' "$NATIVE_LABEL_BEFORE" "$out/0-open.png"; then
+error = list(ImageChops.difference(expected, b).getdata())
+mean = sum(map(sum, error)) / (3 * len(error)) if error else float("inf")
+sys.exit(0 if changed >= 20 and mean < 2 else 1)' "$NATIVE_LABEL_BEFORE" "$out/0-open.png" "${NATIVE_LABEL_EXPECTED:?set NATIVE_LABEL_EXPECTED}"; then
             pass "installed stock label face is visible"
         else miss "installed stock label face is visible"; fi
     fi

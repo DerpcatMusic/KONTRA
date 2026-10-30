@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn root() -> Option<PathBuf> {
-    Some(dirs::cache_dir()?.join("kontra/stock-art-v7"))
+    Some(dirs::cache_dir()?.join("kontra/stock-art-v8"))
 }
 
 fn index(root: &Path, path: &Path) -> Option<PathBuf> {
@@ -72,13 +72,17 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 8]) -> Option<Cached> {
         }
         Image::rgba(w, h, data)
     };
+    let outline = super::outline::read(&dir.join("outline.ttf"));
+    if dir.join("outline-expected").is_file() && outline.is_none() {
+        return None;
+    }
     Some(Cached::Images(Box::new(Art {
         main: [image(0)?, image(1)?, image(2)?, image(3)?],
         font13: image(4),
         button: image(5),
         font12: image(6),
         field: image(7),
-        outline: super::outline::read(&dir.join("outline.ttf")),
+        outline,
     })))
 }
 
@@ -120,7 +124,9 @@ fn save_at(root: &Path, path: &Path, hash: &str, images: &Art) {
     if let Some(font) = &images.outline {
         let target = dir.join("outline.ttf");
         let temporary = dir.join(format!("outline.{}.tmp", std::process::id()));
-        if std::fs::write(&temporary, font).is_err() || std::fs::rename(temporary, target).is_err()
+        if std::fs::write(&temporary, font).is_err()
+            || std::fs::rename(temporary, target).is_err()
+            || std::fs::write(dir.join("outline-expected"), b"1").is_err()
         {
             return;
         }
@@ -171,6 +177,9 @@ mod tests {
             cached.field.as_ref().map(|field| &*field.rgba),
             Some(&[1, 2, 3, 255][..])
         );
+        // A damaged cached face is not a hit; the next scan repairs it.
+        std::fs::write(root.join("a".repeat(64)).join("outline-expected"), b"1").unwrap();
+        assert!(super::load_at(&root, &exe, &[(1, 1); 8]).is_none());
         let fallback = dir.path().join("fallback.exe");
         std::fs::write(&fallback, b"no font13").unwrap();
         let without_font = super::Art {
