@@ -13,7 +13,10 @@ impl Engine {
         };
         let plan = self.plan.clone();
         let key = usize::from(n.key);
-        if attack && let Some(r) = self.behaviour.rls_reset.get_mut(key) {
+        // Kontakt's system script restarts the key's release-trigger counter
+        // with every ordinary note; a script that plays its releases does not.
+        let restarts = attack && self.plan.release_zones == ReleaseZones::AtRelease;
+        if restarts && let Some(r) = self.behaviour.rls_reset.get_mut(key) {
             *r = self.now.0;
         }
         let since = self.behaviour.rls_reset.get(key).map_or(n.at.0, |&r| r);
