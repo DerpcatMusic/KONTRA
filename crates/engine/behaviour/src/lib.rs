@@ -4,6 +4,15 @@
 use kontra_ir::Join;
 use kontra_plan::{Atom, Control, Plan, RoundRobin, RrCounter, Zone};
 
+/// What a zone's start does to its round-robin counter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// An attack: the counter steps once after the note-on.
+    Advance,
+    /// A release trigger: it re-reads the attack's draw.
+    Reuse,
+}
+
 /// Slots that may hold a loaded effect type at once.
 pub const LOADED: usize = 256;
 
@@ -118,7 +127,7 @@ impl Behaviour {
     }
 
     /// Whether `zone`'s start conditions hold for this note.
-    pub fn starts(&mut self, zone: &Zone, channel: u8, key: u8, draw: RrDraw, step: bool) -> bool {
+    pub fn starts(&mut self, zone: &Zone, channel: u8, key: u8, draw: RrDraw, step: Step) -> bool {
         let mut result = true;
         for (join, atom) in &zone.start {
             let value = match atom {
@@ -206,21 +215,21 @@ impl Behaviour {
         }
     }
 
-    /// Whether `zone` plays on this draw. With `step`, marks its counter to step
-    /// after the note-on; release triggers pass false to re-read the attack's draw.
+    /// Whether `zone` plays on this draw. [`Step::Advance`] marks its counter to
+    /// step after the note-on; release triggers re-read the attack's draw.
     fn round_robin_plays(
         &mut self,
         rr: &RoundRobin,
         group: u32,
         key: u8,
         draw: RrDraw,
-        step: bool,
+        step: Step,
     ) -> bool {
         let length = rr.length.max(1);
         let Some(counter) = self.counter(rr, group, key) else {
             return true;
         };
-        let advance = step;
+        let advance = step == Step::Advance;
         counter.used |= advance;
         let step = if rr.random {
             let mut step = (draw.random % u32::from(length)) as u8;

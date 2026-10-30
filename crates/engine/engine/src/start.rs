@@ -1,4 +1,6 @@
 //! Start voices for the zones selected by a note.
+use kontra_behaviour::Step;
+
 use crate::*;
 
 impl Engine {
@@ -16,6 +18,7 @@ impl Engine {
         if attack && let Some(r) = self.behaviour.rls_reset.get_mut(key) {
             *r = self.now.0;
         }
+        let step = if attack { Step::Advance } else { Step::Reuse };
         let since = self.behaviour.rls_reset.get(key).map_or(n.at.0, |&r| r);
         let held_seconds = self.now.0.saturating_sub(since) as f32 / self.rate as f32;
         for (index, zone) in plan.zones.iter().enumerate() {
@@ -35,7 +38,7 @@ impl Engine {
             if !selected
                 || !self
                     .behaviour
-                    .starts(zone, n.host.channel, n.key, n.draw, attack)
+                    .starts(zone, n.host.channel, n.key, n.draw, step)
             {
                 continue;
             }
