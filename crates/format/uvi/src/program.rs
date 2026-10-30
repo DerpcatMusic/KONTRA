@@ -501,6 +501,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 loops: Vec::new(),
                 reverse: flag(player, "Reverse"),
                 slot,
+                id: 0,
             };
             provenance::record(
                 "uvi.zone_gain_pan_tune.v1",

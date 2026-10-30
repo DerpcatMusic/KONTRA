@@ -619,6 +619,9 @@ pub struct Zone {
     /// The zone's place among the zones of its group that share its keys; a
     /// note that names a slot starts only the zones in it.
     pub slot: u16,
+    /// The format's own number for the zone, which scripts address it by
+    /// (zone events, waveform displays); 0 where a format's scripts name none.
+    pub id: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
