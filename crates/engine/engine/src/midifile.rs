@@ -77,7 +77,13 @@ pub struct Event {
 /// A parsed file plus the cursor scripts walk.
 #[derive(Clone, Debug, Default)]
 pub struct MidiFile {
+    /// Every event the file holds, in the order they were read or inserted.
+    /// An event's id is its index here, so inserting one never renumbers the
+    /// ids a script already holds.
     events: Vec<Event>,
+    /// Those ids in tick order, which is what the cursor walks.
+    order: Vec<usize>,
+    /// The place in `order` of the event the script reads.
     cursor: usize,
     /// Highest tick reached, which is what `mf_get_length` reports.
     length: u32,
@@ -140,9 +146,15 @@ impl MidiFile {
         // mf_insert_file pairs each Note Off into its Note On (with a length
         // parameter) and discards the Note Off, so a script never sees 0x8n.
         events.retain(|e| e.status & 0xf0 != 0x80);
-        events.sort_by_key(|e| (e.tick, e.status));
+        // Tick order, and the file's own order within a tick: the sort is
+        // stable and the ids arrive in read order. Sorting by status as well
+        // would move a controller a script stored before a note-on.
+        let mut order: Vec<usize> = (0..events.len()).collect();
+        let by_tick = |&id: &usize| events.get(id).map_or(0, |e| e.tick);
+        order.sort_by_key(by_tick);
         Some(Self {
             events,
+            order,
             cursor: 0,
             length,
             tracks,
@@ -170,7 +182,8 @@ impl MidiFile {
     /// from 1 as scripts do (`by_track($t + 1)`), or -1 when the track has no
     /// events.
     pub fn by_track(&self, n: i32) -> i32 {
-        let Some(want) = u16::try_from(n - 1).ok() else {
+        // `n - 1` panics at `i32::MIN`, and this runs on the audio thread.
+        let Some(want) = n.checked_sub(1).and_then(|m| u16::try_from(m).ok()) else {
             return -1;
         };
         self.events
@@ -214,43 +227,79 @@ impl MidiFile {
 
     /// Tick of the event under the cursor, or the file's end when past it.
     pub fn pos(&self) -> u32 {
-        self.events.get(self.cursor).map_or(self.length, |e| e.tick)
+        self.under_cursor().map_or(self.length, |e| e.tick)
     }
 
-    /// Next active event at or after the cursor.
+    /// The event the cursor reads.
+    fn under_cursor(&self) -> Option<&Event> {
+        let id = *self.order.get(self.cursor)?;
+        self.events.get(id)
+    }
+
+    /// The event the cursor reads, to change.
+    fn under_cursor_mut(&mut self) -> Option<&mut Event> {
+        let id = *self.order.get(self.cursor)?;
+        self.events.get_mut(id)
+    }
+
+    /// Next active event at or after place `from` in the tick order; past the
+    /// end when none.
     fn next_active(&self, from: usize) -> usize {
-        let from = from.min(self.events.len());
-        self.events
+        let from = from.min(self.order.len());
+        let rest = self.order.get(from..).unwrap_or_default();
+        rest.iter()
+            .position(|&id| self.events.get(id).is_some_and(|e| e.active))
+            .map_or(self.order.len(), |offset| from + offset)
+    }
+
+    /// Last active event at or before `from`, or 0 when none: the backward
+    /// steps skip a removed event as the forward ones do.
+    fn prev_active(&self, from: usize) -> usize {
+        let end = from.saturating_add(1).min(self.order.len());
+        self.order
+            .get(..end)
+            .unwrap_or_default()
             .iter()
-            .skip(from)
-            .position(|e| e.active)
-            .map_or(self.events.len(), |offset| from + offset)
+            .rposition(|&id| self.events.get(id).is_some_and(|e| e.active))
+            .unwrap_or(0)
     }
 
-    /// `mf_insert_event`: activates an event; returns its id (its index).
-    pub fn insert(&mut self, tick: u32, status: u8, d1: u8, d2: u8) -> usize {
-        let at = self.events.partition_point(|e| e.tick < tick);
-        self.events.insert(
-            at,
-            Event {
-                tick,
-                status,
-                d1,
-                d2,
-                track: 0,
-                len: 0,
-                active: true,
-            },
-        );
+    /// `mf_insert_event`: adds an event, on `track`, and returns its id. Its
+    /// id is new, so the ids a script already holds still name their events;
+    /// only the cursor, a place in the tick order, moves when the new event
+    /// lands at or before it.
+    pub fn insert(&mut self, track: u16, tick: u32, status: u8, d1: u8, d2: u8) -> usize {
+        let id = self.events.len();
+        self.events.push(Event {
+            tick,
+            status,
+            d1,
+            d2,
+            track,
+            len: 0,
+            active: true,
+        });
+        let events = &self.events;
+        let at = self
+            .order
+            .partition_point(|&i| events.get(i).is_some_and(|e| e.tick < tick));
+        self.order.insert(at, id);
+        if at <= self.cursor {
+            self.cursor += 1;
+        }
         self.length = self.length.max(tick);
-        at
+        id
     }
 
-    /// `mf_remove_event`: deactivates the event with that id.
+    /// `mf_remove_event`: deactivates the event with that id; the cursor
+    /// moves on when it was reading it.
     pub fn remove(&mut self, id: usize) -> bool {
         match self.events.get_mut(id) {
             Some(e) if e.active => {
                 e.active = false;
+                if self.order.get(self.cursor) == Some(&id) {
+                    self.cursor = self.next_active(self.cursor);
+                }
                 true
             }
             _ => false,
@@ -259,38 +308,41 @@ impl MidiFile {
 
     /// `mf_set_byte_one` / `mf_set_byte_two` act on the event under the cursor.
     pub fn set_byte_one(&mut self, value: u8) {
-        if let Some(e) = self.events.get_mut(self.cursor) {
+        if let Some(e) = self.under_cursor_mut() {
             e.d1 = value;
         }
     }
 
     pub fn set_byte_two(&mut self, value: u8) {
-        if let Some(e) = self.events.get_mut(self.cursor) {
+        if let Some(e) = self.under_cursor_mut() {
             e.d2 = value;
         }
     }
 
     pub fn set_command(&mut self, value: u8) {
-        if let Some(e) = self.events.get_mut(self.cursor) {
+        if let Some(e) = self.under_cursor_mut() {
             e.status = value;
         }
     }
 
     pub fn command(&self) -> u8 {
-        self.events.get(self.cursor).map_or(0, |e| e.status)
+        self.under_cursor().map_or(0, |e| e.status)
     }
 
     pub fn byte_one(&self) -> u8 {
-        self.events.get(self.cursor).map_or(0, |e| e.d1)
+        self.under_cursor().map_or(0, |e| e.d1)
     }
 
     pub fn byte_two(&self) -> u8 {
-        self.events.get(self.cursor).map_or(0, |e| e.d2)
+        self.under_cursor().map_or(0, |e| e.d2)
     }
 
-    /// Index of the first event at or after `tick`.
+    /// Place in the tick order of the first event at or after `tick`.
     fn seek(&self, tick: u32) -> usize {
-        self.next_active(self.events.partition_point(|e| e.tick < tick))
+        let at = self
+            .order
+            .partition_point(|&id| self.events.get(id).is_some_and(|e| e.tick < tick));
+        self.next_active(at)
     }
 
     pub fn next_at(&mut self, tick: u32) {
@@ -299,15 +351,15 @@ impl MidiFile {
 
     pub fn prev_at(&mut self, tick: u32) {
         let first = self.seek(tick);
-        self.cursor = first.saturating_sub(1);
+        self.cursor = self.prev_active(first.saturating_sub(1));
     }
 
     pub fn first(&mut self) {
-        self.cursor = 0;
+        self.cursor = self.next_active(0);
     }
 
     pub fn last(&mut self) {
-        self.cursor = self.events.len().saturating_sub(1);
+        self.cursor = self.prev_active(self.order.len().saturating_sub(1));
     }
 
     pub fn advance(&mut self) {
@@ -315,7 +367,7 @@ impl MidiFile {
     }
 
     pub fn retreat(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        self.cursor = self.prev_active(self.cursor.saturating_sub(1));
     }
 
     pub fn set_pos(&mut self, tick: u32) {
@@ -323,7 +375,7 @@ impl MidiFile {
     }
 
     pub fn reset(&mut self) {
-        self.cursor = 0;
+        self.cursor = self.next_active(0);
     }
 }
 
@@ -353,7 +405,12 @@ fn read_track(bytes: &[u8], track: usize, out: &mut Vec<Event>, length: &mut u32
         let mut status = byte;
         if status == 0xff || status == 0xf0 || status == 0xf7 {
             at += 1;
-            if status != 0xf7 && at < bytes.len() {
+            // SMF 1.0: meta and sysex events cancel running status.
+            running = None;
+            // Only a meta event carries a type byte: a sysex is `F0 <len>
+            // <data>`, so a byte skipped here would be the length's own first
+            // byte, and the length would be read from the data.
+            if status == 0xff && at < bytes.len() {
                 at += 1; // meta type
             }
             let len = var_len(bytes, &mut at) as usize;
@@ -435,6 +492,130 @@ mod tests {
         assert_eq!(f.by_track(1), 0);
         assert_eq!(f.by_track(2), -1);
         assert_eq!(f.by_track(0), -1);
+        // `n - 1` would overflow here, on the audio thread.
+        assert_eq!(f.by_track(i32::MIN), -1);
+    }
+
+    /// 960 ticks/quarter, one track: a controller, then a note, both at 0.
+    fn same_tick() -> Vec<u8> {
+        let track: Vec<u8> = vec![
+            0x00, 0xB0, 0x07, 0x64, // +0  controller 7 = 100
+            0x00, 0x90, 0x3c, 0x46, // +0  note on 60 vel 70
+            0x60, 0xFF, 0x2F, 0x00, // end of track
+        ];
+        let mut file = b"MThd".to_vec();
+        file.extend_from_slice(&6u32.to_be_bytes());
+        file.extend_from_slice(&0u16.to_be_bytes());
+        file.extend_from_slice(&1u16.to_be_bytes());
+        file.extend_from_slice(&960u16.to_be_bytes());
+        file.extend_from_slice(b"MTrk");
+        file.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        file.extend_from_slice(&track);
+        file
+    }
+
+    #[test]
+    fn events_at_one_tick_keep_the_files_order() {
+        let mut f = MidiFile::parse(&same_tick()).expect("parses");
+        f.first();
+        assert_eq!(f.command(), 0xB0, "the controller was moved after the note");
+        f.advance();
+        assert_eq!(f.command(), 0x90);
+    }
+
+    /// A sysex event (a GM reset, as files carry) then a note: `F0 <len>
+    /// <data>`, with its length a variable-length quantity like `0x81 0x00`.
+    #[test]
+    fn a_multi_byte_sysex_length_is_read_as_one_length() {
+        let data = [0x7e, 0x7f, 0x09, 0x01, 0xf7];
+        let mut track: Vec<u8> = vec![
+            0x00, 0xf0, 0x81, 0x00, // +0  sysex, length 128 (two bytes)
+        ];
+        track.extend_from_slice(&data);
+        track.extend_from_slice(&[0u8; 123]); // …to the length it declared
+        track.extend_from_slice(&[0x60, 0x90, 0x3c, 0x46]); // note on 60, 96 ticks on
+        track.extend_from_slice(&[0x60, 0xff, 0x2f, 0x00]);
+        let mut file = b"MThd".to_vec();
+        file.extend_from_slice(&6u32.to_be_bytes());
+        file.extend_from_slice(&0u16.to_be_bytes());
+        file.extend_from_slice(&1u16.to_be_bytes());
+        file.extend_from_slice(&960u16.to_be_bytes());
+        file.extend_from_slice(b"MTrk");
+        file.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        file.extend_from_slice(&track);
+        let f = MidiFile::parse(&file).expect("parses");
+        assert_eq!(
+            (
+                f.events.len(),
+                f.event_par(0, PAR_POS),
+                f.event_par(0, PAR_ID)
+            ),
+            (1, 96, 0),
+            "the note after the sysex is at tick 96: {} events",
+            f.events.len()
+        );
+    }
+
+    /// The SMF spec cancels running status after a meta or sysex event, so a
+    /// data byte after one starts nothing.
+    #[test]
+    fn a_meta_event_cancels_running_status() {
+        let track: Vec<u8> = vec![
+            0x00, 0x90, 0x3c, 0x46, // note on 60 (running status 0x90)
+            0x00, 0xff, 0x01, 0x02, 0x41, 0x42, // text meta: "AB"
+            0x00, 0x40, 0x46, // a bare data byte: no status to run
+        ];
+        let mut file = b"MThd".to_vec();
+        file.extend_from_slice(&6u32.to_be_bytes());
+        file.extend_from_slice(&0u16.to_be_bytes());
+        file.extend_from_slice(&1u16.to_be_bytes());
+        file.extend_from_slice(&960u16.to_be_bytes());
+        file.extend_from_slice(b"MTrk");
+        file.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        file.extend_from_slice(&track);
+        let f = MidiFile::parse(&file).expect("parses");
+        assert_eq!(f.events.len(), 1, "the data byte invented an event");
+    }
+
+    #[test]
+    fn an_insert_keeps_the_ids_and_the_cursor_the_script_holds() {
+        let mut f = MidiFile::parse(&sample()).expect("parses");
+        // Two notes: id 0 at tick 0, id 1 at 1920. The script walks to the
+        // second and holds its id.
+        f.next_at(1920);
+        assert_eq!((f.pos(), f.byte_one()), (1920, 0x40));
+        let id = f.insert(0, 0, 0x90, 72, 100);
+        assert_eq!(id, 2, "the new event takes a new id");
+        assert_eq!(f.event_par(0, PAR_POS), 0);
+        assert_eq!(f.event_par(1, PAR_POS), 1920, "id 1 still names its note");
+        assert_eq!(f.event_par(2, PAR_POS), 0);
+        assert_eq!(
+            (f.pos(), f.byte_one()),
+            (1920, 0x40),
+            "the cursor moved onto the inserted event"
+        );
+        // Inserting after the cursor leaves it alone.
+        let id = f.insert(0, 4000, 0x90, 40, 100);
+        assert_eq!(id, 3);
+        assert_eq!((f.pos(), f.byte_one()), (1920, 0x40));
+    }
+
+    #[test]
+    fn backward_and_reset_navigation_skip_a_removed_event() {
+        let mut f = MidiFile::parse(&sample()).expect("parses");
+        assert!(f.remove(0));
+        f.first();
+        assert_eq!(f.pos(), 1920, "first() landed on the removed event");
+        f.reset();
+        assert_eq!(f.pos(), 1920, "reset() landed on the removed event");
+        f.last();
+        assert_eq!(f.pos(), 1920);
+        f.prev_at(5000);
+        assert_eq!(f.pos(), 1920, "prev_at() landed on the removed event");
+        // Removing the event under the cursor moves the cursor off it.
+        f.first();
+        assert!(f.remove(1));
+        assert_eq!(f.command(), 0, "the cursor still reads the removed event");
     }
 
     #[test]

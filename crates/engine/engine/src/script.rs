@@ -667,7 +667,15 @@ impl HostApi for Engine {
             }
             // MIDI files a script inserts and walks. Positions are ticks: the
             // scripts compare `mf_get_pos()` against tick offsets.
-            Action::MfInsertFile => {
+            //
+            // Reading and parsing a file is disk I/O plus allocation, so it
+            // happens only while the engine is built, off the audio thread,
+            // where `on init` runs (`LoadArrayStr`, above, is gated the same
+            // way). A note or control callback gets the failure answer a file
+            // that will not insert gets, and the call is counted, not silently
+            // read: `mf_insert_file` has no asynchronous form to wait on
+            // (`on async_complete` would be invented).
+            Action::MfInsertFile if self.building => {
                 let path = call.texts.first().map_or("", Text::as_str);
                 let parsed = std::fs::read(path)
                     .ok()
@@ -680,6 +688,10 @@ impl HostApi for Engine {
                     }
                     None => HostValue::Int(-1),
                 }
+            }
+            Action::MfInsertFile => {
+                self.count_unhandled(Action::MfInsertFile);
+                HostValue::Int(-1)
             }
             Action::MfGetId => HostValue::Int(self.midi_current as i32),
             Action::MfReset => {
@@ -795,12 +807,21 @@ impl HostApi for Engine {
                 if self.midi_buffer <= 0 {
                     HostValue::Int(-1)
                 } else {
+                    // `mf_insert_event(track, pos, command, byte1, byte2)`:
+                    // the event keeps the track it names, so
+                    // `$EVENT_PAR_TRACK_NR` and `by_track` find it. Tracks
+                    // number from 0 here; a negative one is the file's first.
                     let (track, pos, command, byte1, byte2) =
                         (int(0), int(1), int(2), int(3), int(4));
-                    let _ = track;
+                    let track = u16::try_from(track).unwrap_or(0);
                     if let Some(f) = self.midi.get_mut(self.midi_current) {
-                        let id =
-                            f.insert(pos.max(0) as u32, command as u8, byte1 as u8, byte2 as u8);
+                        let id = f.insert(
+                            track,
+                            pos.max(0) as u32,
+                            command as u8,
+                            byte1 as u8,
+                            byte2 as u8,
+                        );
                         self.midi_buffer -= 1;
                         HostValue::Int(id as i32)
                     } else {

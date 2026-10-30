@@ -34,8 +34,6 @@ impl BusState {
                 rate,
                 racks::Responses(&[], &[]),
                 &b.mods,
-                // The plan's bus routes carry no inversion flag.
-                &[],
                 &b.blends,
             ),
             pan: b.pan,

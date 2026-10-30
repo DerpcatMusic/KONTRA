@@ -582,10 +582,21 @@ impl Engine {
 }
 
 /// A route's source read as its `invert` flag sets it
-/// (`$MOD_TARGET_INVERT_SOURCE`): mirrored around the middle of its domain.
+/// (`$MOD_TARGET_INVERT_SOURCE`): the source mirrored over the middle of its
+/// domain, with its magnitude kept and its direction reversed.
+///
 /// A bipolar source ([`ir::Source::Lfo`], [`ir::Source::PitchBend`]) is negated
-/// raw, which is `1 − unit` since [`Engine::unit`] reads it as `(x + 1)/2`;
-/// every other source is already 0..=1 and reads `1 − x`.
+/// raw, and [`Engine::unit`] normalises it to `(x + 1)/2` *after* this, so `-x`
+/// reads `1 − (x + 1)/2`: the same mirror on 0..=1 that every other source,
+/// already 0..=1, gets as `1 − x`. The order (source, then invert, then the
+/// law and the depth) is the one `docs/architecture-v3/gold/modulation.md` §6.2
+/// records for a route.
+///
+/// Not a measured Kontakt law: `docs/re/ksp/SYMBOLS.tsv` lists
+/// `$MOD_TARGET_INVERT_SOURCE` as a symbolic identity with no native value or
+/// behaviour read from the binary, so neither branch has an address or a probe
+/// behind it — no probe in `tools/kontakt-oracle/probes` sets it. The branches
+/// are pinned by the tests below; a capture would settle them.
 pub(crate) fn inverted(invert: bool, source: ir::Source, raw: f32) -> f32 {
     if !invert {
         return raw;
@@ -605,4 +616,35 @@ fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
         (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
             .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Engine::unit` reads a bipolar source as `(x + 1)/2` after the invert,
+    /// so negating the raw value mirrors the normalised one about 0.5.
+    #[test]
+    fn an_inverted_route_mirrors_bipolar_and_unipolar_sources() {
+        let unit = |x: f32| (x + 1.0) * 0.5;
+        // Pitch bend a quarter of the way up, and an LFO below centre.
+        for raw in [0.25f32, -0.5] {
+            let mirrored = inverted(true, ir::Source::PitchBend, raw);
+            assert_eq!(mirrored, -raw, "bipolar raw {raw}");
+            assert_eq!(
+                unit(mirrored),
+                1.0 - unit(raw),
+                "bipolar unit {raw} is not the mirror"
+            );
+        }
+        assert_eq!(inverted(true, ir::Source::Lfo(0), 0.5), -0.5);
+        // Already 0..=1: the mirror is the complement.
+        assert_eq!(inverted(true, ir::Source::Controller(11), 0.25), 0.75);
+        assert_eq!(inverted(true, ir::Source::Script(1), 0.0), 1.0);
+        let eight = 0.8f32;
+        assert_eq!(inverted(true, ir::Source::Constant, eight), 1.0 - eight);
+        // Without the flag the source reads as it is.
+        assert_eq!(inverted(false, ir::Source::PitchBend, 0.25), 0.25);
+        assert_eq!(inverted(false, ir::Source::Controller(11), 0.25), 0.25);
+    }
 }
