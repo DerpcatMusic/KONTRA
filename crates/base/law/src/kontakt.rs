@@ -38,10 +38,16 @@ pub const FILTER_NOTE_HZ: Law = Law::PowIndex {
 
 /// Cubic sustain and state-variable filter resonance mappings; see
 /// `docs/re/engine/k-mod-envelopes.md` and `filt-sv.md`.
-pub const UNIT_CUBIC: Law = Law::IntegerPower { exponent: 3 };
+pub const UNIT_CUBIC: Law = Law::IntegerPower {
+    exponent: 3,
+    bipolar: false,
+};
 
 /// Fifth-power state-variable filter gain mapping; see `filt-sv.md`.
-pub const UNIT_FIFTH: Law = Law::IntegerPower { exponent: 5 };
+pub const UNIT_FIFTH: Law = Law::IntegerPower {
+    exponent: 5,
+    bipolar: false,
+};
 
 /// Replika Modern low-cut curve; measured by the native oracle, see
 /// `docs/re/engine/k-replika-binding.md`. Zero is bypassed by the translator.

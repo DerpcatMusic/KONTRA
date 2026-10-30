@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use crate::FormulaId;
+use crate::real::Real;
 
 /// Curve from a control position to a parameter value.
 ///
 /// [`Law::eval`] clamps `x` to `0..=1`. It never allocates or panics, because it runs on
-/// the audio thread. [`Law::eval_unclamped`] accepts source-specific units.
+/// the audio thread. [`Law::eval_unclamped`] accepts source-specific units. The `_f64`
+/// forms evaluate the same law in f64, for the engine's parameter round trips.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Law {
     /// Straight line from `lo` to `hi`.
@@ -38,8 +40,9 @@ pub enum Law {
     Db { lo: f32, hi: f32 },
     /// `lo + (hi − lo) · x^exponent`: a power taper (a reverb damping knob: `x^¼`).
     Power { lo: f32, hi: f32, exponent: f32 },
-    /// An integer power of the normalized input, preserving `powi` rounding.
-    IntegerPower { exponent: i32 },
+    /// An integer power of the input, preserving `powi` rounding; `bipolar` raises `2x − 1`
+    /// instead.
+    IntegerPower { exponent: i32, bipolar: bool },
     /// A quarter-sine crossfade raised to `power`.
     Sine { power: f32 },
     /// Evenly spaced values over `0..=1`, linearly interpolated.
@@ -86,35 +89,92 @@ impl Law {
     /// Out-of-domain inputs can extrapolate or produce non-finite values depending on the shape.
     #[must_use]
     pub fn eval_unclamped(&self, x: f32) -> f32 {
+        self.at(x)
+    }
+
+    /// [`Law::eval`] in f64.
+    #[must_use]
+    pub fn eval_f64(&self, x: f64) -> f64 {
+        self.at(x.clamp(0.0, 1.0))
+    }
+
+    /// [`Law::eval_unclamped`] in f64.
+    #[must_use]
+    pub fn eval_unclamped_f64(&self, x: f64) -> f64 {
+        self.at(x)
+    }
+
+    /// The input this law maps to `y`, in closed form; `None` for shapes without one.
+    #[must_use]
+    pub fn inverse_f64(&self, y: f64) -> Option<f64> {
         match self {
-            Self::Linear { lo, hi } => lo * (1.0 - x) + hi * x,
-            Self::Exp { lo, hi } => lo.powf(1.0 - x) * hi.powf(x),
+            Self::Linear { lo, hi } => {
+                let lo = f64::from(*lo);
+                Some((y - lo) / (f64::from(*hi) - lo))
+            }
             Self::ExpAffine {
                 base,
                 offset,
                 factor,
                 shift,
                 scale,
-            } => scale * (base.powf((x + offset) * factor) + shift),
+            } => Some(
+                (y / f64::from(*scale) - f64::from(*shift)).ln()
+                    / f64::from(*base).ln()
+                    / f64::from(*factor)
+                    - f64::from(*offset),
+            ),
+            Self::IntegerPower { exponent, bipolar } => {
+                let root = match exponent {
+                    1 => y,
+                    2 => y.sqrt(),
+                    3 => y.cbrt(),
+                    _ => return None,
+                };
+                Some(if *bipolar { (root + 1.0) / 2.0 } else { root })
+            }
+            Self::Formula(id) => id.inverse(y),
+            _ => None,
+        }
+    }
+
+    fn at<T: Real>(&self, x: T) -> T {
+        let of = T::of;
+        let one = of(1.0);
+        match self {
+            Self::Linear { lo, hi } => of(*lo) * (one - x) + of(*hi) * x,
+            Self::Exp { lo, hi } => of(*lo).powf(one - x) * of(*hi).powf(x),
+            Self::ExpAffine {
+                base,
+                offset,
+                factor,
+                shift,
+                scale,
+            } => of(*scale) * (of(*base).powf((x + of(*offset)) * of(*factor)) + of(*shift)),
             Self::Exp2Index {
                 origin,
                 divisor,
                 offset,
                 scale,
-            } => scale * ((x - origin) / divisor + offset).exp2(),
+            } => of(*scale) * ((x - of(*origin)) / of(*divisor) + of(*offset)).exp2(),
             Self::PowIndex {
                 base,
                 origin,
                 divisor,
                 scale,
-            } => scale * base.powf((x - origin) / divisor),
-            Self::Db { lo, hi } => 10f32.powf((lo * (1.0 - x) + hi * x) / 20.0),
-            Self::Power { lo, hi, exponent } => lo + (hi - lo) * x.powf(*exponent),
-            Self::IntegerPower { exponent } => x.powi(*exponent),
-            Self::Sine { power } => (std::f32::consts::FRAC_PI_2 * x).sin().powf(*power),
+            } => of(*scale) * of(*base).powf((x - of(*origin)) / of(*divisor)),
+            Self::Db { lo, hi } => of(10.0).powf((of(*lo) * (one - x) + of(*hi) * x) / of(20.0)),
+            Self::Power { lo, hi, exponent } => {
+                of(*lo) + (of(*hi) - of(*lo)) * x.powf(of(*exponent))
+            }
+            Self::IntegerPower { exponent, bipolar } => {
+                let x = if *bipolar { of(2.0) * x - one } else { x };
+                x.powi(*exponent)
+            }
+            Self::Sine { power } => (T::FRAC_PI_2 * x).sin().powf(of(*power)),
             Self::Table(values) => table_at(values, x),
             Self::Breakpoints(points) => breakpoints_at(points, x),
-            Self::Formula(id) => id.eval(x),
+            Self::Formula(id) => id.at(x),
         }
     }
 }
@@ -132,52 +192,56 @@ pub struct ModuleLaw<P, T> {
     pub flags: u32,
 }
 
-fn table_at(values: &[f32], x: f32) -> f32 {
+fn table_at<T: Real>(values: &[f32], x: T) -> T {
     match values {
-        [] => 0.0,
-        [only] => *only,
+        [] => T::of(0.0),
+        [only] => T::of(*only),
         _ => {
-            let pos = x * (values.len() - 1) as f32;
-            let i = (pos as usize).min(values.len() - 2);
-            let frac = pos - i as f32;
+            let pos = x * T::of_count(values.len() - 1);
+            let i = pos.to_index().min(values.len() - 2);
+            let frac = pos - T::of_count(i);
             let (Some(&a), Some(&b)) = (values.get(i), values.get(i + 1)) else {
-                return 0.0;
+                return T::of(0.0);
             };
             // Written as a weighted sum so both endpoints come out exact.
-            a * (1.0 - frac) + b * frac
+            T::of(a) * (T::of(1.0) - frac) + T::of(b) * frac
         }
     }
 }
 
-fn breakpoints_at(points: &[(f32, f32, f32)], x: f32) -> f32 {
+fn breakpoints_at<T: Real>(points: &[(f32, f32, f32)], x: T) -> T {
     let (Some(first), Some(last)) = (points.first(), points.last()) else {
-        return 0.0;
+        return T::of(0.0);
     };
-    if x <= first.0 {
-        return first.1;
+    if x <= T::of(first.0) {
+        return T::of(first.1);
     }
-    if x >= last.0 {
-        return last.1;
+    if x >= T::of(last.0) {
+        return T::of(last.1);
     }
     for pair in points.windows(2) {
         let [a, b] = pair else { continue };
-        if x <= b.0 {
+        if x <= T::of(b.0) {
             // A zero-width segment (invalid input) snaps to its end point.
-            let span = b.0 - a.0;
-            let t = if span > 0.0 { (x - a.0) / span } else { 1.0 };
-            let s = curve_shape(t, a.2);
-            return a.1 * (1.0 - s) + b.1 * s;
+            let span = T::of(b.0) - T::of(a.0);
+            let t = if span > T::of(0.0) {
+                (x - T::of(a.0)) / span
+            } else {
+                T::of(1.0)
+            };
+            let s = curve_shape(t, T::of(a.2));
+            return T::of(a.1) * (T::of(1.0) - s) + T::of(b.1) * s;
         }
     }
-    last.1
+    T::of(last.1)
 }
 
-fn curve_shape(t: f32, curve: f32) -> f32 {
-    let curve = curve.clamp(-CURVE_LIMIT, CURVE_LIMIT);
-    if curve.abs() < CURVE_EPSILON {
+fn curve_shape<T: Real>(t: T, curve: T) -> T {
+    let curve = curve.clamp(T::of(-CURVE_LIMIT), T::of(CURVE_LIMIT));
+    if curve.abs() < T::of(CURVE_EPSILON) {
         t
     } else {
-        ((curve * t).exp() - 1.0) / (curve.exp() - 1.0)
+        ((curve * t).exp() - T::of(1.0)) / (curve.exp() - T::of(1.0))
     }
 }
 

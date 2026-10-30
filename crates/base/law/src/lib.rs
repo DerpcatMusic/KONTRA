@@ -4,12 +4,14 @@
 //! sample loop. Law files are TOML (see `README.md`), embedded with [`laws!`].
 
 pub mod kontakt;
+pub mod units;
 pub mod uvi;
 
 mod file;
 mod formula;
 mod law;
 mod network;
+mod real;
 mod trace;
 
 pub use file::{LawError, LawSource, LawSpec, parse};

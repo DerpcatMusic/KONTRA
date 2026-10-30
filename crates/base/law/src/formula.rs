@@ -1,5 +1,7 @@
 //! Closed forms that no point list reproduces exactly.
 
+use crate::real::Real;
+
 /// Names a closed form. Add a variant, its arm in [`FormulaId::eval`] and a test when a law
 /// needs one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,15 +20,27 @@ impl FormulaId {
     /// Evaluates the closed form at `x` in its own source units.
     #[must_use]
     pub fn eval(self, x: f32) -> f32 {
+        self.at(x)
+    }
+
+    pub(crate) fn at<T: Real>(self, x: T) -> T {
         match self {
-            Self::AttackShape => attack_shape(x),
-            Self::FlexShape => flex_ratio(x).ln(),
+            Self::AttackShape => T::of(attack_shape(x.to_f64())),
+            Self::FlexShape => T::of(flex_ratio(x.to_f32()).ln()),
+        }
+    }
+
+    /// The input this closed form maps to `y`, where an inverse is known.
+    pub(crate) fn inverse(self, y: f64) -> Option<f64> {
+        match self {
+            Self::AttackShape => Some(attack_curve(y)),
+            Self::FlexShape => None,
         }
     }
 }
 
-fn attack_shape(curve: f32) -> f32 {
-    let c = f64::from(curve.clamp(-1.0, 1.0));
+fn attack_shape(curve: f64) -> f32 {
+    let c = curve.clamp(-1.0, 1.0);
     let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
     let k = if c > 0.0 {
         (b / (1.0 + b)).ln()
@@ -34,6 +48,16 @@ fn attack_shape(curve: f32) -> f32 {
         ((1.0 + b) / b).ln()
     };
     k as f32
+}
+
+/// The bipolar knob whose [`attack_shape`] is `shape`.
+fn attack_curve(shape: f64) -> f64 {
+    if shape == 0.0 {
+        return 0.0;
+    }
+    let b = 1.0 / shape.abs().exp_m1();
+    let c = (1.0 - (b.ln() + 20_000f64.ln()) / 500_000f64.ln()).clamp(0.0, 1.0);
+    -shape.signum() * c
 }
 
 fn flex_ratio(c: f32) -> f32 {
