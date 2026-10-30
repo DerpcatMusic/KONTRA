@@ -634,3 +634,11 @@ fn kontakt_label_tabs_are_blank_advances() {
         widget.text
     );
 }
+
+#[test]
+fn a_meter_lights_as_kontakt_maps_its_peak() {
+    // Linear in dB over nine octaves: 0 dB full, -27 dB half, -54 dB dark.
+    let at = [1., 2_f64.powf(-4.5), 2_f64.powi(-9), 2.];
+    assert_eq!(at.map(super::lit), [1., 0.5, 0., 1.]);
+    assert_eq!(super::lit(0.5), 0.89);
+}
