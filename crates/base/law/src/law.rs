@@ -14,6 +14,8 @@ pub enum Law {
     Db { lo: f32, hi: f32 },
     /// `lo + (hi − lo) · x^exponent`: a power taper (a reverb damping knob: `x^¼`).
     Power { lo: f32, hi: f32, exponent: f32 },
+    /// A quarter-sine crossfade raised to `power`.
+    Sine { power: f32 },
     /// Evenly spaced values over `0..=1`, linearly interpolated.
     Table(Arc<[f32]>),
     /// `(x, y, curve)` points with `x` strictly increasing. `curve` bends the segment that
@@ -60,6 +62,7 @@ impl Law {
             Self::Exp { lo, hi } => lo.powf(1.0 - x) * hi.powf(x),
             Self::Db { lo, hi } => 10f32.powf((lo * (1.0 - x) + hi * x) / 20.0),
             Self::Power { lo, hi, exponent } => lo + (hi - lo) * x.powf(*exponent),
+            Self::Sine { power } => (std::f32::consts::FRAC_PI_2 * x).sin().powf(*power),
             Self::Table(values) => table_at(values, x),
             Self::Breakpoints(points) => breakpoints_at(points, x),
             Self::Formula(id) => match *id {},
