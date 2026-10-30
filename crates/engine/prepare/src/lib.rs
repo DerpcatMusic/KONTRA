@@ -482,7 +482,7 @@ fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
 }
 
 fn gain(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
+    ir::units::DB_GAIN.eval_unclamped(db)
 }
 
 fn broken(feature: &str, detail: String) -> ir::Diagnostic {

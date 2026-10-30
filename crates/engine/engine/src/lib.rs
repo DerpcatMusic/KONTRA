@@ -345,7 +345,7 @@ impl Engine {
             ui,
             ids: callbacks::Ids::START,
             instrument: Level {
-                gain: 10f32.powf(out.volume_db / 20.0),
+                gain: ir::units::DB_GAIN.eval_unclamped(out.volume_db),
                 pan: out.pan,
                 tune: 0.0,
             },

@@ -85,7 +85,12 @@ impl Engine {
         };
         let v = f32::from(value);
         if cc == c.volume {
-            self.instrument.gain = 10f32.powf(c.top_db / 20.0) * (v / 127.0).powi(c.power);
+            let (exponent, top) = (c.power, crate::ir::units::DB_GAIN.eval_unclamped(c.top_db));
+            let taper = crate::ir::Law::IntegerPower {
+                exponent,
+                bipolar: false,
+            };
+            self.instrument.gain = top * taper.eval_unclamped(v / 127.0);
         }
         if Some(cc) == c.expression {
             self.expression = v / 127.0;

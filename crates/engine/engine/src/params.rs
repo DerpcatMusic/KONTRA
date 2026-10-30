@@ -6,7 +6,10 @@ use kontra_ir as ir;
 
 use crate::plan::{Group, addressed, source};
 use crate::{Engine, EnginePar, Level};
-use kontra_plan::par_laws::{attack_shape, attack_x, stage_ms, stage_x};
+use kontra_plan::par_laws::{
+    CUBE, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S, attack_shape, attack_x, cube_root,
+    setting, stage_setting,
+};
 use kontra_plan::route_depth::{depth, set_signed, signed};
 
 /// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
@@ -16,11 +19,8 @@ const UNITY_EFFECT_GAIN: f64 = 396_851.0;
 /// Volume is cubic in the setting, 0 dB at this value, +12 dB at 1_000_000.
 const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
 
-/// An LFO's fade-in runs 0..=10 s on the stage law (measured,
-/// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
 /// Bus n is `BUS_OFFSET + n` (measured, probes/output_channel.lua).
 pub(crate) const BUS_OFFSET: i32 = 1024;
-const LFO_FADE_TOP_MS: f64 = 10_000.0;
 
 /// Which of a [`Level`]'s settings a parameter is.
 #[derive(Clone, Copy)]
@@ -33,7 +33,7 @@ enum LevelPar {
 impl LevelPar {
     fn set(self, level: &mut Level, raw: f64) {
         match self {
-            Self::Volume => level.gain = (raw / UNITY_VOLUME).powi(3) as f32,
+            Self::Volume => level.gain = CUBE.eval_unclamped_f64(raw / UNITY_VOLUME) as f32,
             Self::Pan => level.pan = ((raw - 500_000.0) / 500_000.0) as f32,
             // ±36 semitones.
             Self::Tune => level.tune = (raw - 500_000.0) * 7.2e-5,
@@ -42,7 +42,7 @@ impl LevelPar {
 
     fn get(self, level: &Level) -> f64 {
         match self {
-            Self::Volume => UNITY_VOLUME * f64::from(level.gain.max(0.0)).cbrt(),
+            Self::Volume => UNITY_VOLUME * cube_root(level.gain),
             Self::Pan => f64::from(level.pan) * 500_000.0 + 500_000.0,
             Self::Tune => level.tune / 7.2e-5 + 500_000.0,
         }
@@ -65,14 +65,14 @@ enum EffectPar {
 impl EffectPar {
     /// Sets it from the raw value; false when the slot has no such control.
     fn set(self, e: &mut ir::Effect, raw: f64) -> bool {
-        let gain = (raw / UNITY_EFFECT_GAIN).powi(3) as f32;
+        let gain = CUBE.eval_unclamped_f64(raw / UNITY_EFFECT_GAIN) as f32;
         match (self, &mut e.kind) {
             (Self::Bypass, _) => e.bypass = raw != 0.0,
             (Self::Output, _) => e.output = gain,
             (Self::Dry, _) => e.dry = gain,
             // The volume law: Chorus saves 0.24994 for the init write 396821.
             (Self::Send(n), ir::EffectKind::Sends(levels)) => match levels.get_mut(n) {
-                Some(level) => *level = (raw / UNITY_VOLUME).powi(3) as f32,
+                Some(level) => *level = CUBE.eval_unclamped_f64(raw / UNITY_VOLUME) as f32,
                 None => return false,
             },
             (Self::Gain, ir::EffectKind::Gain(g)) => *g = gain,
@@ -85,13 +85,13 @@ impl EffectPar {
     }
 
     fn get(self, e: &ir::Effect) -> Option<f64> {
-        let gain = |g: f32| UNITY_EFFECT_GAIN * f64::from(g.max(0.0)).cbrt();
+        let gain = |g: f32| UNITY_EFFECT_GAIN * cube_root(g);
         Some(match (self, e.kind) {
             (Self::Bypass, _) => f64::from(u8::from(e.bypass)),
             (Self::Output, _) => gain(e.output),
             (Self::Dry, _) => gain(e.dry),
             (Self::Send(n), ir::EffectKind::Sends(levels)) => {
-                UNITY_VOLUME * f64::from(levels.get(n)?.max(0.0)).cbrt()
+                UNITY_VOLUME * cube_root(*levels.get(n)?)
             }
             (Self::Gain, ir::EffectKind::Gain(g)) => gain(g),
             (Self::Width, ir::EffectKind::Stereo { width, .. }) => f64::from(width) * 1e6,
@@ -244,7 +244,7 @@ impl Engine {
         match action {
             kontra_vm::Action::GroupVolume if value <= -200_000 => level.gain = 0.0,
             kontra_vm::Action::GroupVolume => {
-                level.gain = 10f32.powf(value as f32 / 20_000.0);
+                level.gain = ir::units::MILLIBEL_GAIN.eval_unclamped(value as f32);
             }
             kontra_vm::Action::GroupPan => level.pan = (value as f32 / 1000.0).clamp(-1.0, 1.0),
             kontra_vm::Action::GroupTune => level.tune = f64::from(value) / 100_000.0,
@@ -331,7 +331,7 @@ impl Engine {
         let g = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get(g))?;
-        if let (Some((i, top)), Some(e)) = (stage_point(par), routed_envelope(g, slot)) {
+        if let (Some((i, stage)), Some(e)) = (stage_point(par), routed_envelope(g, slot)) {
             // Measured (probes/flex_stage_writes.lua): an envelope without
             // stages (a flex) reads 0.
             if !e.stages {
@@ -339,9 +339,9 @@ impl Engine {
             }
             let p = e.points.get(i)?;
             let x = match par {
-                EnginePar::Sustain => f64::from(p.level).cbrt(),
+                EnginePar::Sustain => setting(&CUBE, f64::from(p.level)),
                 EnginePar::AttackCurve => attack_x(p.curve),
-                _ => stage_x(top, f64::from(p.ms)),
+                _ => stage_setting(&stage, f64::from(p.ms)),
             };
             return Some((x * 1e6).round() as i32);
         }
@@ -354,14 +354,14 @@ impl Engine {
                 return Some(i32::from(m.bypass));
             }
             EnginePar::ReleaseTrigger => return Some(i32::from(g.release_trigger)),
-            EnginePar::RouteIntensity => f64::from(signed(&route()?.kind)?.abs()).sqrt(),
-            EnginePar::RouteDepth => (f64::from(signed(&route()?.kind)?).cbrt() + 1.0) / 2.0,
-            EnginePar::LfoFade => stage_x(LFO_FADE_TOP_MS, f64::from(g.lfo(slot)?.fade_ms)),
-            EnginePar::Attack => stage_x(15_000.0, ms(e.attack)),
-            EnginePar::Hold => stage_x(15_000.0, ms(e.hold)),
-            EnginePar::Decay => stage_x(25_000.0, ms(e.decay)),
-            EnginePar::Release => stage_x(25_000.0, ms(e.release)),
-            EnginePar::Sustain => f64::from(e.sustain).cbrt(),
+            EnginePar::RouteIntensity => setting(&SQUARE, f64::from(signed(&route()?.kind)?.abs())),
+            EnginePar::RouteDepth => setting(&SIGNED_CUBE, f64::from(signed(&route()?.kind)?)),
+            EnginePar::LfoFade => stage_setting(&STAGE_10S, f64::from(g.lfo(slot)?.fade_ms)),
+            EnginePar::Attack => stage_setting(&STAGE_15S, ms(e.attack)),
+            EnginePar::Hold => stage_setting(&STAGE_15S, ms(e.hold)),
+            EnginePar::Decay => stage_setting(&STAGE_25S, ms(e.decay)),
+            EnginePar::Release => stage_setting(&STAGE_25S, ms(e.release)),
+            EnginePar::Sustain => setting(&CUBE, f64::from(e.sustain)),
             EnginePar::AttackCurve => attack_x(e.attack_shape),
             _ => return None,
         };
@@ -436,13 +436,13 @@ impl Engine {
             // and the route keeps its sign; the bipolar one writes (2x − 1)³.
             EnginePar::RouteIntensity => g.mod_mut(slot, generic).is_some_and(|m| {
                 let sign = signed(&m.kind).unwrap_or(1.0).signum();
-                set_signed(&mut m.kind, sign * (x * x) as f32)
+                set_signed(&mut m.kind, sign * SQUARE.eval_f64(x) as f32)
             }),
             EnginePar::RouteDepth => g
                 .mod_mut(slot, generic)
-                .is_some_and(|m| set_signed(&mut m.kind, (2.0 * x - 1.0).powi(3) as f32)),
+                .is_some_and(|m| set_signed(&mut m.kind, SIGNED_CUBE.eval_f64(x) as f32)),
             EnginePar::LfoFade => g.lfo_mut(slot).is_some_and(|l| {
-                l.fade_ms = stage_ms(LFO_FADE_TOP_MS, x) as f32;
+                l.fade_ms = STAGE_10S.eval_f64(x) as f32;
                 true
             }),
             _ => return self.set_envelope(par, x, group, slot),
@@ -502,7 +502,7 @@ impl Engine {
             return false;
         };
         let routed = routed_envelope(g, slot).map(|e| e.stages);
-        if let (Some((i, top)), Some(stages)) = (stage_point(par), routed) {
+        if let (Some((i, stage)), Some(stages)) = (stage_point(par), routed) {
             // Measured (probes/flex_stage_writes.lua): an envelope without
             // stages (a flex) keeps its points; the write is answered.
             if !stages {
@@ -515,9 +515,9 @@ impl Engine {
                 return false;
             };
             match par {
-                EnginePar::Sustain => p.level = x.powi(3) as f32,
+                EnginePar::Sustain => p.level = CUBE.eval_f64(x) as f32,
                 EnginePar::AttackCurve => p.curve = attack_shape(x),
-                _ => p.ms = stage_ms(top, x) as f32,
+                _ => p.ms = stage.eval_f64(x) as f32,
             }
             return true;
         }
@@ -528,11 +528,11 @@ impl Engine {
         let frames = |ms: f64| (ms * f64::from(rate) / 1000.0).round() as u32;
         let e = &mut g.envelope;
         match par {
-            EnginePar::Attack => e.attack = frames(stage_ms(15_000.0, x)),
-            EnginePar::Hold => e.hold = frames(stage_ms(15_000.0, x)),
-            EnginePar::Decay => e.decay = frames(stage_ms(25_000.0, x)),
-            EnginePar::Release => e.release = frames(stage_ms(25_000.0, x)),
-            EnginePar::Sustain => e.sustain = x.powi(3) as f32,
+            EnginePar::Attack => e.attack = frames(STAGE_15S.eval_f64(x)),
+            EnginePar::Hold => e.hold = frames(STAGE_15S.eval_f64(x)),
+            EnginePar::Decay => e.decay = frames(STAGE_25S.eval_f64(x)),
+            EnginePar::Release => e.release = frames(STAGE_25S.eval_f64(x)),
+            EnginePar::Sustain => e.sustain = CUBE.eval_f64(x) as f32,
             EnginePar::AttackCurve => e.attack_shape = attack_shape(x),
             _ => return false,
         }
@@ -567,14 +567,14 @@ impl Engine {
     }
 }
 
-/// The point of an AHDSR's breakpoints a stage parameter sets, and the top
-/// of its time law in ms.
-fn stage_point(par: EnginePar) -> Option<(usize, f64)> {
+/// The point of an AHDSR's breakpoints a stage parameter sets, and its
+/// time law.
+fn stage_point(par: EnginePar) -> Option<(usize, ir::Law)> {
     Some(match par {
-        EnginePar::Attack | EnginePar::AttackCurve => (0, 15_000.0),
-        EnginePar::Hold => (1, 15_000.0),
-        EnginePar::Decay | EnginePar::Sustain => (2, 25_000.0),
-        EnginePar::Release => (3, 25_000.0),
+        EnginePar::Attack | EnginePar::AttackCurve => (0, STAGE_15S),
+        EnginePar::Hold => (1, STAGE_15S),
+        EnginePar::Decay | EnginePar::Sustain => (2, STAGE_25S),
+        EnginePar::Release => (3, STAGE_25S),
         _ => return None,
     })
 }
