@@ -25,7 +25,7 @@ pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
-pub use kontra_law::{FormulaId, units};
+pub use kontra_law::{FormulaId, common};
 pub use link::{CcLink, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
 pub use output::{Balance, Output, OutputControllers};

@@ -7,6 +7,7 @@
 //! matches them under kemu, kontra-dsp-filter tests/cascade.rs).
 
 use kontra_ir as ir;
+use kontra_law::kontakt::VERSATILE_NOTE_HZ;
 
 use crate::script_knobs::SlotKnob;
 
@@ -24,18 +25,10 @@ pub(crate) const DEFAULT: Knobs = [
 /// The setter's `6.283` (`0x401921cac083126f`) where 2π belongs.
 const NATIVE_TAU: f64 = f64::from_bits(0x4019_21ca_c083_126f);
 
-/// Native pitch-to-frequency mapping used by the cutoff setter (0x14095db50).
-const NOTE_HZ: ir::Law = ir::Law::Exp2Index {
-    origin: 69.0,
-    divisor: 12.0,
-    offset: 0.0,
-    scale: 440.0,
-};
-
 /// Stage 0's corner for cutoff `x`, as Hz on an exact 2π.
 fn hz(x: f32) -> f32 {
     let note = x.clamp(0.0, 1.0) * 111.0 + 20.0;
-    NOTE_HZ.eval_unclamped(note) * (NATIVE_TAU / std::f64::consts::TAU) as f32
+    VERSATILE_NOTE_HZ.eval_unclamped(note) * (NATIVE_TAU / std::f64::consts::TAU) as f32
 }
 
 /// Octaves a shift knob `x` raises the next stage by.

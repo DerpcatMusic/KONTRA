@@ -4,6 +4,7 @@
 use std::ops::RangeInclusive;
 
 use kontra_ir as ir;
+use kontra_law::common::DB_GAIN;
 
 /// The amplitude envelope a region gets without `ampeg_*`: attack, hold and
 /// decay 0, sustain 100 %, release 1 ms.
@@ -176,7 +177,7 @@ pub fn voice_filter(shape: Filter, hz: f64, k: f64) -> ir::Filter {
 /// Damping k = 1/Q for `resonance` in dB, with Q = 10^(dB/20) and at least
 /// 0.707 (sfzformat.com: resonance is dB above flat, default 0).
 pub fn damping(resonance_db: f64) -> f64 {
-    1.0 / 10f64.powf(resonance_db / 20.0).max(0.707)
+    1.0 / DB_GAIN.eval_unclamped_f64(resonance_db).max(0.707)
 }
 
 /// A key or velocity range with its crossfades. `xfin_lo*` fades in up to

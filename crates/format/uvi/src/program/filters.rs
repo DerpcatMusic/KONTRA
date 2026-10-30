@@ -20,6 +20,7 @@
 //! pairs (0x141e77630, read by the setup 0x1412ae600 at `10 × trim`).
 
 use kontra_ir as ir;
+use kontra_law::common::DB_GAIN;
 use roxmltree::Node;
 
 use super::{Library, Translator, flag, modulation, num};
@@ -167,7 +168,7 @@ pub(super) fn keygroup(kg: Node) -> Vec<Option<ir::Effect>> {
                 fat: num(node, "Fat", 1.0).unwrap_or(1.0).clamp(0.0, 1.0) as f32,
             });
             filter.damping = [2.0 * (1.0 - q); 3];
-            filter.gain = 10f32.powf(drive / 20.0);
+            filter.gain = DB_GAIN.eval_unclamped(drive);
         }
         if node.has_tag_name("MS20") {
             let q = num(node, "Q", 0.0).unwrap_or(0.0).clamp(0.0, 1.0) as f32;

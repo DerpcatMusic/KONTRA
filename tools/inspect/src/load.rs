@@ -262,7 +262,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
 }
 
 /// The curve as retained in the IR; no translator provenance is inferred.
-fn law(curve: &Law) -> Value {
+pub(crate) fn law(curve: &Law) -> Value {
     match curve {
         Law::Linear { lo, hi } => json!({"kind":"linear", "lo":lo, "hi":hi}),
         Law::Exp { lo, hi } => json!({"kind":"exp", "lo":lo, "hi":hi}),

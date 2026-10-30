@@ -5,14 +5,7 @@
 //! times `w = f32::from_bits(0x40c90e56)` over the rate.
 
 use kontra_ir as ir;
-
-/// Native pitch-index table used by the Skreamer coefficient law (0x140aaf220).
-const PITCH_INDEX: ir::Law = ir::Law::Exp2Index {
-    origin: 0.0,
-    divisor: 60.0,
-    offset: -20.0,
-    scale: 1.0,
-};
+use kontra_law::kontakt::PITCH_INDEX;
 
 /// The table entry for index `i`.
 fn table(i: f32) -> f32 {
