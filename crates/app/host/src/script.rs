@@ -1,61 +1,8 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
-use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, LookPars, ScriptPlan, Text};
+use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, LookPars, ScriptPlan, Text, ir};
 use kontra_ksp::ControlKind;
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
-
-/// The engine parameters the engine answers, by KSP name.
-const ENGINE_PARS: &[(&str, EnginePar)] = {
-    use EnginePar as P;
-    use kontra_engine::ir::ReverbPar as R;
-    &[
-        ("$ENGINE_PAR_ATTACK", P::Attack),
-        ("$ENGINE_PAR_HOLD", P::Hold),
-        ("$ENGINE_PAR_DECAY", P::Decay),
-        ("$ENGINE_PAR_SUSTAIN", P::Sustain),
-        ("$ENGINE_PAR_RELEASE", P::Release),
-        ("$ENGINE_PAR_ATK_CURVE", P::AttackCurve),
-        ("$ENGINE_PAR_MOD_TARGET_INTENSITY", P::RouteIntensity),
-        ("$ENGINE_PAR_MOD_TARGET_MP_INTENSITY", P::RouteDepth),
-        ("$ENGINE_PAR_INTMOD_INTENSITY", P::RouteDepth),
-        ("$ENGINE_PAR_INTMOD_BYPASS", P::ModBypass),
-        ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
-        ("$ENGINE_PAR_RELEASE_TRIGGER", P::ReleaseTrigger),
-        ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),
-        ("$ENGINE_PAR_EFFECT_BYPASS", P::EffectBypass),
-        ("$ENGINE_PAR_EFFECT_SUBTYPE", P::EffectSubtype),
-        ("$ENGINE_PAR_EFFECT_TYPE", P::EffectType),
-        ("$ENGINE_PAR_SEND_EFFECT_TYPE", P::EffectType),
-        ("$ENGINE_PAR_SEND_EFFECT_BYPASS", P::EffectBypass),
-        ("$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN", P::EffectOutput),
-        ("$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN", P::EffectOutput),
-        ("$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL", P::EffectDry),
-        ("$ENGINE_PAR_SENDLEVEL_0", P::SendLevel(0)),
-        ("$ENGINE_PAR_SENDLEVEL_1", P::SendLevel(1)),
-        ("$ENGINE_PAR_SENDLEVEL_2", P::SendLevel(2)),
-        ("$ENGINE_PAR_SENDLEVEL_3", P::SendLevel(3)),
-        ("$ENGINE_PAR_SENDLEVEL_4", P::SendLevel(4)),
-        ("$ENGINE_PAR_SENDLEVEL_5", P::SendLevel(5)),
-        ("$ENGINE_PAR_SENDLEVEL_6", P::SendLevel(6)),
-        ("$ENGINE_PAR_SENDLEVEL_7", P::SendLevel(7)),
-        // RV2_MOD is not carried.
-        ("$ENGINE_PAR_RV2_TYPE", P::ReverbNetwork),
-        ("$ENGINE_PAR_RV2_TIME", P::Reverb(R::Seconds)),
-        ("$ENGINE_PAR_RV2_SIZE", P::Reverb(R::Size)),
-        ("$ENGINE_PAR_RV2_DAMPING", P::Reverb(R::Damping)),
-        ("$ENGINE_PAR_RV2_DIFF", P::Reverb(R::Diffusion)),
-        ("$ENGINE_PAR_RV2_PREDELAY", P::Reverb(R::Predelay)),
-        ("$ENGINE_PAR_RV2_HIGHCUT", P::Reverb(R::HighCut)),
-        ("$ENGINE_PAR_RV2_LOWSHELF", P::Reverb(R::LowShelf)),
-        ("$ENGINE_PAR_RV2_STEREO", P::Reverb(R::Stereo)),
-        ("$ENGINE_PAR_GN_GAIN", P::GainerGain),
-        ("$ENGINE_PAR_STEREO", P::StereoWidth),
-        ("$ENGINE_PAR_STEREO_PAN", P::StereoPan),
-        ("$ENGINE_PAR_VOLUME", P::Volume),
-        ("$ENGINE_PAR_PAN", P::Pan),
-        ("$ENGINE_PAR_TUNE", P::Tune),
-    ]
-};
 
 /// Whether the engine or the UI tree understands catalog name `name`
 /// (every other one is an opaque symbol nothing acts on), for coverage
@@ -64,29 +11,32 @@ const ENGINE_PARS: &[(&str, EnginePar)] = {
 pub fn understood(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     upper == CONTROL_VALUE
-        || engine_par(name).is_some()
-        || knob(&kontra_format_kontakt::script_knobs(), name).is_some()
+        || engine_par(&kontra_format_kontakt::engine_pars(), name).is_some()
         || crate::ui::mapped(&upper)
         || LOOK.contains(&upper.as_str())
         || ["$CONTROL_PAR_NUM_ITEMS", "$CONTROL_PAR_SELECTED_ITEM_IDX"].contains(&upper.as_str())
 }
 
-/// The knob named `name`, as an index into `knobs`.
-fn knob(
-    knobs: &[(&str, kontra_engine::ir::KnobTarget, kontra_engine::ir::Law)],
+/// What `name` drives, and its text law: a knob row is
+/// [`EnginePar::Knob`] by its place among the table's knob rows.
+fn engine_par<'a>(
+    pars: &'a [ir::ScriptPar],
     name: &str,
-) -> Option<EnginePar> {
-    let n = knobs
-        .iter()
-        .position(|(k, ..)| k.eq_ignore_ascii_case(name))?;
-    u16::try_from(n).ok().map(EnginePar::Knob)
-}
-
-fn engine_par(name: &str) -> Option<EnginePar> {
-    let found = ENGINE_PARS
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case(name));
-    found.map(|&(_, p)| p)
+) -> Option<(EnginePar, Option<&'a ir::Readout>)> {
+    let mut knobs = 0u16;
+    for p in pars {
+        let par = match &p.drives {
+            ir::Drives::Engine(par) => *par,
+            ir::Drives::Knob(..) => {
+                knobs = knobs.checked_add(1)?;
+                EnginePar::Knob(knobs - 1)
+            }
+        };
+        if p.name.eq_ignore_ascii_case(name) {
+            return Some((par, p.readout.as_ref()));
+        }
+    }
+    None
 }
 
 const CONTROL_VALUE: &str = "$CONTROL_PAR_VALUE";
@@ -123,8 +73,12 @@ fn arrays(script: &Script) -> Vec<(u32, bool, Box<str>)> {
 pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> ScriptPlan {
     let entry = |kind| script.callback(kind, None);
     let restore = script.restore(saved);
-    let knobs = kontra_format_kontakt::script_knobs();
-    let readouts = kontra_format_kontakt::readouts();
+    let pars = kontra_format_kontakt::engine_pars();
+    let found: Vec<_> = script
+        .symbols
+        .iter()
+        .map(|n| engine_par(&pars, n))
+        .collect();
     ScriptPlan {
         program: script.program.clone(),
         callbacks: Callbacks {
@@ -156,25 +110,21 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         controls: controls(script),
         engine_pars: EnginePars {
             first: SYMBOL_BASE,
-            by_id: script
-                .symbols
+            by_id: found.iter().map(|f| f.map(|(par, _)| par)).collect(),
+            readouts: found
                 .iter()
-                .map(|n| engine_par(n).or_else(|| knob(&knobs, n)))
-                .collect(),
-            readouts: script
-                .symbols
-                .iter()
-                .map(|n| {
-                    readouts
-                        .iter()
-                        .find(|(k, _)| *k == n.as_ref())
-                        .map(|(_, r)| r.clone())
-                })
+                .map(|f| f.and_then(|(_, r)| r.cloned()))
                 .collect(),
         },
         reverb_laws: kontra_format_kontakt::reverb_laws(),
         reverb_networks: kontra_format_kontakt::reverb_networks().into(),
-        knobs: knobs.iter().map(|(_, t, law)| (*t, law.clone())).collect(),
+        knobs: pars
+            .iter()
+            .filter_map(|p| match &p.drives {
+                ir::Drives::Knob(target, law) => Some((*target, law.clone())),
+                ir::Drives::Engine(_) => None,
+            })
+            .collect(),
         data: data
             .iter()
             .filter_map(|(name, bytes)| data_array(script, name, bytes))

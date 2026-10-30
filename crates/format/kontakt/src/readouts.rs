@@ -10,9 +10,11 @@ use crate::script_knobs::{
 };
 
 /// The readouts of `$ENGINE_PAR_*` names, by name.
+// The chorus depth and JMP amp knobs read 0.0..100.0 too, but KONTRA
+// carries neither module, so they have no row (scratch/laneB/disp).
 // ponytail: the cutoff law is the one filter measured (ANALOG's); measure
 // each filter kind when a library shows another.
-pub fn readouts() -> Vec<(&'static str, ir::Readout)> {
+pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     use ir::Form::{Decimal, Padded, Pan, Ratio, Whole, Wide};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
@@ -24,13 +26,8 @@ pub fn readouts() -> Vec<(&'static str, ir::Readout)> {
         "$ENGINE_PAR_DL_FEEDBACK",
         "$ENGINE_PAR_DL_PAN",
         "$ENGINE_PAR_RV_SIZE",
-        "$ENGINE_PAR_CH_DEPTH",
         "$ENGINE_PAR_PH_DEPTH",
         "$ENGINE_PAR_PH_FEEDBACK",
-        "$ENGINE_PAR_JMP_BASS",
-        "$ENGINE_PAR_JMP_MID",
-        "$ENGINE_PAR_JMP_PREAMP",
-        "$ENGINE_PAR_JMP_TREBLE",
     ];
     let none = [None; 2];
     let mut rows: Vec<_> = percent

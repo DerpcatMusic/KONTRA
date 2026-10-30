@@ -674,7 +674,7 @@ impl HostApi for Engine {
                 let loaded = (swap && !set)
                     .then(|| self.load_type(int(1), subtype, int(2), int(3), int(4)))
                     .flatten();
-                if !set && loaded.is_none() {
+                if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
                 }
                 HostValue::Int(match loaded {

@@ -4,50 +4,7 @@
 
 use kontra_ir as ir;
 
-/// What an engine parameter changes. Values arrive in 0..=1_000_000.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EnginePar {
-    Attack,
-    Hold,
-    Decay,
-    Sustain,
-    Release,
-    AttackCurve,
-    /// A route's intensity knob: depth = x², the route keeps its sign.
-    RouteIntensity,
-    /// A route's signed depth, bipolar around 500_000: depth = (2x − 1)³.
-    RouteDepth,
-    /// A modulator's bypass.
-    ModBypass,
-    /// An LFO's fade-in time.
-    LfoFade,
-    /// An insert's or send effect's bypass, output level and dry level.
-    EffectBypass,
-    EffectOutput,
-    EffectDry,
-    /// A send-levels slot's level to send slot n.
-    SendLevel(u8),
-    Reverb(ir::ReverbPar),
-    /// The reverb's network: n is entry n of the script plan's networks.
-    ReverbNetwork,
-    GainerGain,
-    StereoWidth,
-    StereoPan,
-    /// The shape a filter slot switches to ([`ir::SlotShape::id`]).
-    EffectSubtype,
-    /// The effect a slot holds; not carried yet, answered asynchronously.
-    EffectType,
-    Volume,
-    Pan,
-    Tune,
-    /// Read only: the group plays on release.
-    ReleaseTrigger,
-    /// The bus a group plays into: bus n is `1024 + n` (plan bus n + 1),
-    /// −1 the main bus. On a bus (generic `1024 + n`), its own output.
-    OutputChannel,
-    /// Entry n of the script plan's knobs: a 0..=1 knob through its law.
-    Knob(u16),
-}
+pub use ir::EnginePar;
 
 /// A script's parameter ids: id `first + n` is `by_id[n]`.
 #[derive(Clone, Debug, Default)]

@@ -4,7 +4,7 @@
 
 use kontra_ir as ir;
 
-use crate::plan::addressed;
+use crate::plan::{Group, Holder, addressed};
 use crate::{Engine, EnginePar, Level};
 use kontra_plan::par_laws::{
     CUBE, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S, attack_shape, attack_x, cube_root,
@@ -129,6 +129,33 @@ impl Engine {
         self.script()?.engine_pars.get(id)
     }
 
+    /// Group `group`, if the instrument has it.
+    pub(crate) fn group_mut(&mut self, group: i32) -> Option<&mut Group> {
+        self.groups.get_mut(usize::try_from(group).ok()?)
+    }
+
+    /// Whether `par` at this address names nothing here: a group, bus,
+    /// slot, LFO, route or modulator the instrument lacks. Such a read is
+    /// 0, its text "" and a set there is dropped.
+    pub(crate) fn absent(&mut self, par: i32, group: i32, slot: i32, generic: i32) -> bool {
+        use Holder as H;
+        let found = self.engine_par(par).zip(self.script());
+        match found.map(|(p, s)| (p, s.holder(p))) {
+            Some(_) if usize::try_from(group).is_ok_and(|g| g >= self.groups.len()) => true,
+            Some((_, H::Slot)) => !matches!(self.slot_mut(group, slot, generic), Some(Some(_))),
+            Some((_, H::SlotKind)) => self.slot_mut(group, slot, generic).is_none(),
+            Some((_, h @ (H::Lfo | H::Route | H::Mod))) => self
+                .group_mut(group)
+                .is_none_or(|g| g.lacks(h, slot, generic)),
+            Some((_, H::Level)) => {
+                group < 0 && generic >= BUS_OFFSET && self.bus_mut(group, generic).is_none()
+            }
+            // A group knob may address the instrument (-1); nothing else does.
+            Some((p, H::Group)) => group < 0 && !matches!(p, EnginePar::Knob(_)),
+            None => false,
+        }
+    }
+
     /// A group's insert slot (generic -1), the instrument insert's (group
     /// -1, generic `$NI_INSERT_BUS` = 1) or a bus's. Send and main racks are
     /// not carried yet.
@@ -234,11 +261,7 @@ impl Engine {
 
     /// [`Action::GroupVolume`], `GroupPan` or `GroupTune` in their units.
     pub(crate) fn set_group_level(&mut self, action: kontra_vm::Action, group: i32, value: i32) {
-        let Some(level) = usize::try_from(group)
-            .ok()
-            .and_then(|g| self.groups.get_mut(g))
-            .map(|g| &mut g.level)
-        else {
+        let Some(level) = self.group_mut(group).map(|g| &mut g.level) else {
             return;
         };
         match action {
@@ -260,11 +283,7 @@ impl Engine {
         };
         let raw = f64::from(value.clamp(0, 1_000_000));
         if let Some(b) = self.bus_mut(group, generic) {
-            let mut level = Level {
-                gain: b.gain,
-                pan: b.pan,
-                tune: 0.0,
-            };
+            let mut level = Level::panned(b.gain, b.pan);
             which.set(&mut level, raw);
             (b.gain, b.pan) = (level.gain, level.pan);
             return !matches!(which, LevelPar::Tune);
@@ -299,6 +318,9 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> Option<i32> {
+        if self.absent(par, group, slot, generic) {
+            return Some(0);
+        }
         let par = self.engine_par(par)?;
         if par == EnginePar::OutputChannel {
             return self.output_channel(group, generic);
@@ -314,23 +336,14 @@ impl Engine {
             return Some(which.get(&e)?.round().clamp(0.0, 1e6) as i32);
         }
         if let Some(which) = level_par(par) {
-            if let Some(b) = self.bus_mut(group, generic) {
-                if matches!(which, LevelPar::Tune) {
-                    return None;
-                }
-                let level = Level {
-                    gain: b.gain,
-                    pan: b.pan,
-                    tune: 0.0,
-                };
-                return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
-            }
-            let level = *self.level_mut(group, generic)?;
+            let level = match self.bus_mut(group, generic) {
+                Some(_) if matches!(which, LevelPar::Tune) => return None,
+                Some(b) => Level::panned(b.gain, b.pan),
+                None => *self.level_mut(group, generic)?,
+            };
             return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
         }
-        let g = usize::try_from(group)
-            .ok()
-            .and_then(|g| self.groups.get(g))?;
+        let g = self.groups.get(usize::try_from(group).ok()?)?;
         if let (Some((i, stage)), Some(e)) = (stage_point(par), routed_envelope(g, slot)) {
             // Measured (probes/flex_stage_writes.lua): an envelope without
             // stages (a flex) reads 0.
@@ -400,6 +413,9 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> bool {
+        if self.absent(par, group, slot, generic) {
+            return false;
+        }
         let Some(par) = self.engine_par(par) else {
             return false;
         };
@@ -417,10 +433,7 @@ impl Engine {
             return true;
         }
         let x = f64::from(value.clamp(0, 1_000_000)) / 1e6;
-        let Some(g) = usize::try_from(group)
-            .ok()
-            .and_then(|g| self.groups.get_mut(g))
-        else {
+        let Some(g) = self.group_mut(group) else {
             return false;
         };
         let set = match par {
@@ -495,10 +508,7 @@ impl Engine {
     /// (docs/re/engine/k-mod-envelopes.md, reader 0x140cffb40).
     fn set_envelope(&mut self, par: EnginePar, x: f64, group: i32, slot: i32) -> bool {
         let rate = self.rate;
-        let Some(g) = usize::try_from(group)
-            .ok()
-            .and_then(|g| self.groups.get_mut(g))
-        else {
+        let Some(g) = self.group_mut(group) else {
             return false;
         };
         let routed = routed_envelope(g, slot).map(|e| e.stages);

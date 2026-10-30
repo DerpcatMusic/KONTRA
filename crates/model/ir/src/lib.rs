@@ -9,6 +9,7 @@ use std::sync::Arc;
 mod bus;
 mod drive;
 mod effects;
+mod engine_par;
 mod link;
 mod mods;
 mod output;
@@ -25,6 +26,7 @@ pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
+pub use engine_par::{Drives, EnginePar, ScriptPar};
 pub use kontra_law::{FormulaId, common};
 pub use link::{CcLink, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
