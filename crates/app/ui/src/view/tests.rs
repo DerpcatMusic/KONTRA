@@ -646,3 +646,132 @@ fn kontakt_label_tabs_are_blank_advances() {
         widget.text
     );
 }
+
+/// Electric Mint's Sound Preset plate: `dropdown_topright.png`, 32×21 with
+/// `Fixed Left 7` and `Fixed Right 18`, on a Menu the script sizes 171 wide
+/// at (446, 32). Kontakt draws one plate across that control with the arrow
+/// in the right 18 px, so every piece of the picture is painted inside the
+/// control's own rect and the three pieces together are the whole of it.
+#[test]
+fn a_menu_plate_is_drawn_across_its_control_and_never_outside_it() {
+    use kontra_ui_model::{Margins, MenuItem};
+
+    // 32×21 of flat colour, the six frames a real `dropdown_topright.png`
+    // stacks down its height: only the geometry is under test.
+    let rgba: Vec<u8> = [0x30u8, 0x30, 0x30, 0xff]
+        .iter()
+        .copied()
+        .cycle()
+        .take(32 * 21 * 6 * 4)
+        .collect();
+    let plate = png(32, 21 * 6, &rgba);
+    let mut tree = Interface {
+        pages: vec![Page {
+            size: Size {
+                width: 633.,
+                height: 500.,
+            },
+            ..Page::default()
+        }],
+        ..Interface::default()
+    };
+    tree.assets.push(Asset {
+        path: "Resources/pictures/dropdown_topright.png".into(),
+        kind: AssetKind::Image(ImageMeta {
+            frames: 6,
+            size: Some(Size {
+                width: 32.,
+                height: 21.,
+            }),
+            // The sidecar's `Horizontal Resizable` (this library's ships
+            // `yesm`; the loader reads a flag that starts with yes as yes).
+            stretch: [true, false],
+            margins: Margins {
+                left: 7,
+                right: 18,
+                ..Margins::default()
+            },
+            ..ImageMeta::default()
+        }),
+    });
+    let mut menu = Widget::new(
+        "$vig33",
+        PageRef(0),
+        Rect::new(446, 32, 171, 21),
+        Kind::Menu {
+            items: vec![MenuItem {
+                text: "Spacious EDM".into(),
+                value: 1,
+                visible: true,
+            }],
+        },
+    );
+    menu.images.push(ImageUse::new(AssetRef(0), Role::Strip));
+    tree.widgets.push(menu);
+    // The control keeps the script's width along an axis its picture
+    // stretches, and takes the picture's own size along the other (layout).
+    crate::layout::resolve(&mut tree, 0..1);
+    assert_eq!(
+        tree.page_rect(kontra_ui_model::WidgetRef(0)),
+        Rect::new(446, 32, 171, 21),
+        "the menu keeps the script's 171 px"
+    );
+
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(move |p| {
+        (p == "Resources/pictures/dropdown_topright.png").then(|| plate.clone())
+    }));
+    for _ in 0..200 {
+        pictures.poll();
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+        assert!(
+            ui.frame(
+                el,
+                Some(ViewSize::new(633., 500.)),
+                Input::default(),
+                1. / 60.
+            )
+            .is_ok()
+        );
+        if pictures.pending() == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let scene = ui.scene().expect("a scene");
+    // The rects the page painted at the menu: the plate's nine-slice pieces.
+    let mut pieces = Vec::new();
+    for p in &scene.paint {
+        let Some(r) = p.rect else { continue };
+        let b = r.bounds();
+        let (x0, y0) = (b.x0 + p.offset.x, b.y0 + p.offset.y);
+        let (x1, y1) = (b.x1 + p.offset.x, b.y1 + p.offset.y);
+        if x1 - x0 > 171.5 || y1 - y0 > 21.5 {
+            continue;
+        }
+        if x1 > 445.5 && x0 < 617.5 && y1 > 31.5 && y0 < 53.5 {
+            pieces.push((x0, y0, x1, y1));
+        }
+    }
+    assert!(!pieces.is_empty(), "nothing painted at the menu");
+    for &(x0, y0, x1, y1) in &pieces {
+        assert!(
+            x0 >= 445.5 && x1 <= 617.5 && y0 >= 31.5 && y1 <= 53.5,
+            "a piece at ({x0}, {y0})..({x1}, {y1}) stands outside the menu's own rect"
+        );
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for &(a, b, c, d) in &pieces {
+        x0 = x0.min(a);
+        y0 = y0.min(b);
+        x1 = x1.max(c);
+        y1 = y1.max(d);
+    }
+    // One plate across the control, not its 32 px left cap.
+    assert_eq!((x0, y0, x1, y1), (446., 32., 617., 53.));
+    // And its right cap is the arrow's 18 px: 446 + 171 - 18.
+    assert!(
+        pieces.iter().any(|p| (p.0 - 599.).abs() < 0.01),
+        "no right cap at 599: {pieces:?}"
+    );
+}
