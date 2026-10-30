@@ -16,6 +16,13 @@ pub struct Timed<T> {
     pub body: T,
 }
 
+/// How an asynchronous command ended: `$NI_ASYNC_EXIT_STATUS` 1 or 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Exit {
+    Done,
+    Failed,
+}
+
 /// What the queue holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Work {
@@ -36,6 +43,7 @@ pub(crate) enum Work {
     Async {
         slot: u8,
         id: i32,
+        exit: Exit,
     },
 }
 
