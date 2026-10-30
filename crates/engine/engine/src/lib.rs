@@ -465,7 +465,7 @@ impl Engine {
                 signal,
                 generation,
             } => return self.listen(slot, signal, generation),
-            Work::Async { slot, id, success } => return self.async_complete(slot, id, success),
+            Work::Async { slot, id, exit } => return self.async_complete(slot, id, exit),
         };
         match event {
             Event::NoteOn {

@@ -9,7 +9,7 @@ use kontra_time::SampleTime;
 use kontra_vm::{HostValue, Step, Vm};
 
 use crate::ledger::{NoteRef, Releases};
-use crate::queue::Work;
+use crate::queue::{Exit, Work};
 use crate::script::{Kind, Running, ScriptPlan, micros_to_frames};
 use crate::{Engine, Trigger};
 
@@ -122,10 +122,10 @@ impl Engine {
 
     /// Starts an asynchronous command for the running slot: its `on
     /// async_complete` runs when the queue reaches it, its exit status
-    /// `success`. Returns its id.
-    pub(crate) fn start_async(&mut self, success: bool) -> i32 {
+    /// `exit`. Returns its id.
+    pub(crate) fn start_async(&mut self, exit: Exit) -> i32 {
         let (slot, id) = (self.running.slot, self.next_async_id());
-        if !self.queue.push(self.now, Work::Async { slot, id, success }) {
+        if !self.queue.push(self.now, Work::Async { slot, id, exit }) {
             self.stats.events_refused += 1;
         }
         id
@@ -140,8 +140,8 @@ impl Engine {
         id
     }
 
-    pub(crate) fn async_complete(&mut self, slot: u8, id: i32, success: bool) {
-        self.ids.async_success = success;
+    pub(crate) fn async_complete(&mut self, slot: u8, id: i32, exit: Exit) {
+        self.ids.async_exit = exit;
         self.ids.async_done = id;
         for r in self.ids.running.iter_mut().filter(|r| **r == id) {
             *r = 0;
@@ -360,8 +360,8 @@ pub(crate) struct Ids {
     /// The last asynchronous command started, and `$NI_ASYNC_ID`: the last finished.
     pub(crate) async_last: i32,
     pub(crate) async_done: i32,
-    /// `$NI_ASYNC_EXIT_STATUS`: whether the last finished command succeeded.
-    pub(crate) async_success: bool,
+    /// How the last finished command ended (`$NI_ASYNC_EXIT_STATUS`).
+    pub(crate) async_exit: Exit,
     /// Commands started and not finished (0 a free cell), which
     /// `wait_async` waits on.
     // ponytail: past 32 at once, a command is not waited on.
@@ -373,7 +373,7 @@ impl Ids {
         callbacks: 0,
         async_last: 0,
         async_done: 0,
-        async_success: true,
+        async_exit: Exit::Done,
         running: [0; 32],
     };
 }
