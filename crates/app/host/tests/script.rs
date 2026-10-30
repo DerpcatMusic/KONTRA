@@ -3195,6 +3195,7 @@ fn a_reset_ends_the_callbacks_waiting_to_go_on() {
     assert_eq!(e.last_message(), before, "the loop went on after the reset");
 }
 
+<<<<<<< HEAD
 /// A known parameter on a target the instrument lacks: the set is dropped,
 /// the read is 0, the text is "" and the script runs on, every call
 /// answered (Kontakt 8.13.1, its getter's miss path and an oracle probe).
@@ -3214,4 +3215,39 @@ fn a_parameter_on_a_missing_target_reads_zero_and_shows_nothing() {
     level(&mut e, &[on(60)]);
     assert_eq!(e.last_message(), "0||on");
     assert_eq!(e.unhandled_actions(), []);
+||||||| parent of 1b282201f3 (feat(engine): load_array/save_array mode 0 and save_array mode 1 complete with failure)
+=======
+/// KSP manual (`load_array`, `save_array`): mode 0 opens a file dialog and
+/// the callback goes on. KONTRA shows none yet, so it is a dialog cancelled
+/// at once: an async id, the array as it was, `on async_complete` with 0.
+#[test]
+fn a_file_dialog_array_is_cancelled_and_completes_with_failure() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare %preset[2] := (7, 8)
+            declare $load
+            declare $save
+            declare $done
+        end on
+        on note
+            $load := load_array(%preset, 0)
+            $save := save_array(%preset, 0)
+        end on
+        on async_complete
+            $done := $done * 10 + $NI_ASYNC_EXIT_STATUS
+            message($load & \" \" & $save & \" \" & $NI_ASYNC_ID & \" \" & $done & \" \" & %preset[0] & %preset[1])
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "1 2 2 0 78");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
+>>>>>>> 1b282201f3 (feat(engine): load_array/save_array mode 0 and save_array mode 1 complete with failure)
 }
