@@ -6,5 +6,6 @@
 pub mod group_masks;
 pub mod ledger;
 pub mod queue;
+pub mod running;
 
 pub use ledger::NoteRef;

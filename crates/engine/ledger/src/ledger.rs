@@ -120,13 +120,7 @@ pub struct Note {
 }
 
 impl Note {
-    pub fn new(
-        host: HostNote,
-        velocity: f64,
-        tune: f64,
-        at: SampleTime,
-        draw: RrDraw,
-    ) -> Self {
+    pub fn new(host: HostNote, velocity: f64, tune: f64, at: SampleTime, draw: RrDraw) -> Self {
         let velocity = velocity.clamp(0.0, 1.0);
         Self {
             host,

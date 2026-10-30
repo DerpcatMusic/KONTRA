@@ -12,55 +12,12 @@ use std::sync::Arc;
 
 use kontra_ir as ir;
 
-pub(crate) use kontra_effects::summed::{Stage, run, sections, stages};
+pub(crate) use kontra_effects::summed::{Stage, run, sections};
 
-use crate::racks::Rack;
 use crate::{Engine, MAX_SPAN, group_racks};
 
-pub(crate) struct Chain {
-    bus: usize,
-    sections: Vec<ir::EffectKind>,
-    filters: Box<[Stage]>,
-    /// A group's own chain, never shared: its rack runs the slots its
-    /// voices leave to the sum (group_racks.rs).
-    group: Option<(usize, Rack)>,
-    pub(crate) mix: Box<[[f32; 2]]>,
-    pub(crate) live: bool,
-}
-
-impl Chain {
-    /// The group whose own chain this is, if any.
-    fn owner(&self) -> Option<usize> {
-        self.group.as_ref().map(|(g, _)| *g)
-    }
-
-    fn new(
-        bus: usize,
-        sections: Vec<ir::EffectKind>,
-        group: Option<(usize, Rack)>,
-        rate: u32,
-    ) -> Self {
-        Self {
-            bus,
-            filters: stages(&sections, rate),
-            sections,
-            group,
-            mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
-            live: false,
-        }
-    }
-}
-
-/// Chain `c`, or its twin on `bus` when a script moved the group there.
-fn on_bus(chains: &[Chain], c: usize, bus: usize) -> Option<usize> {
-    let chain = chains.get(c)?;
-    if chain.bus == bus {
-        return Some(c);
-    }
-    chains
-        .iter()
-        .position(|t| t.bus == bus && t.sections == chain.sections && t.owner() == chain.owner())
-}
+use crate::racks::Rack;
+pub(crate) use kontra_racks::chain::{Chain, on_bus};
 
 impl Engine {
     /// One chain per distinct (sections, bus) the zones' groups carry, less
@@ -195,7 +152,8 @@ impl Engine {
             if !slot.voice.is_active()
                 && let Some(trace) = &mut self.trace
             {
-                trace.voice(
+                crate::trace::voice(
+                    trace,
                     self.now.0 + len as u64,
                     _index,
                     slot,
