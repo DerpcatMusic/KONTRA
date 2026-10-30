@@ -1614,10 +1614,13 @@ fn a_timed_note_played_on_release_sounds_no_second_release() {
         end on",
     );
     level(&mut e, &[on(60)]);
-    let at_key_up = level(&mut e, &[off(60)]);
-    assert!((at_key_up - 0.25).abs() < 1e-3, "{at_key_up}");
-    let after_its_time = level(&mut e, &[]);
-    assert!((after_its_time - 0.25).abs() < 1e-3, "{after_its_time}");
+    // 100 ms from key-up, past the timed note's 50 ms end: one release
+    // sample throughout, once the held zone's short release has passed.
+    let mut out = vec![[0.0; 2]; 4800];
+    e.process(&mut out, &[off(60)]);
+    for (frame, [left, _]) in out.iter().enumerate().skip(128) {
+        assert!((left - 0.25).abs() < 1e-3, "{left} at frame {frame}");
+    }
 }
 
 /// Level of the reverb tail 0.25 s after a 2 s note, through a reverb in the
