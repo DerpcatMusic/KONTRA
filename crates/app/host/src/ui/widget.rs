@@ -108,7 +108,8 @@ pub(super) fn widget(
                 ratio: f64::from(param(2).unwrap_or(1)),
                 ..display()
             },
-            arrows: p.int("$CONTROL_PAR_SHOW_ARROWS") != Some(0),
+            // Off until the script sets it (Kontakt 8.13, measured).
+            arrows: p.int("$CONTROL_PAR_SHOW_ARROWS").is_some_and(|on| on != 0),
         },
         ControlKind::Table => {
             // declare ui_table %t[columns](width, height, range); negative is bipolar.

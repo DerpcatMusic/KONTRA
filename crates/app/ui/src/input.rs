@@ -150,6 +150,30 @@ fn notch(kind: &Kind, range: model::Range) -> f64 {
     }
 }
 
+/// How far a press on a value edit's arrows steps it: one shown unit, up in
+/// the upper half of its right 14 px, down in the lower (Kontakt 8.13,
+/// measured; one callback a step, none on release).
+// ponytail: one step a press; Kontakt repeats a held arrow (0.4 s, then
+// 0.15 s a step), which needs a frame clock the input pass doesn't have.
+fn arrow(ui: &Ui, id: &str, w: &model::Widget, scale: f64) -> Option<f64> {
+    let Kind::ValueEdit {
+        arrows: true,
+        display,
+        ..
+    } = &w.kind
+    else {
+        return None;
+    };
+    let size = ui.scene()?.surface(id)?.frame.size;
+    let at = ui.local(id)?;
+    let unit = if display.ratio == 0. {
+        1.
+    } else {
+        display.ratio
+    };
+    (at.x >= size.width - 14. * scale).then_some(if at.y < size.height / 2. { unit } else { -unit })
+}
+
 /// This frame's edits to the controls of `page` drawn at `scale`, and the
 /// open menu's or typed entry's popup, to float over the page.
 pub fn read(
@@ -203,7 +227,11 @@ pub fn read(
             let (vertical, points) = travel(w, tree.page_rect(n), span, scale);
             let along = |d: Vec2| if vertical { -d.y } else { d.x };
             let reset = r.press_mods.ctrl || r.press_mods.cmd;
-            if r.pressed {
+            let arrow = r.pressed.then(|| arrow(ui, &id, w, scale)).flatten();
+            if let Some(unit) = arrow {
+                set(snap(range, now + unit));
+            }
+            if r.pressed && arrow.is_none() {
                 g.press = Some((n.0, now));
                 if reset {
                     set(snap(range, range.default));
@@ -234,7 +262,10 @@ pub fn read(
             if step != 0. {
                 set(snap(range, now + step * notch(&w.kind, range)));
             }
-            if matches!(w.kind, Kind::ValueEdit { .. }) && ui.double_click(id.as_str()) {
+            if matches!(w.kind, Kind::ValueEdit { .. })
+                && arrow.is_none()
+                && ui.double_click(id.as_str())
+            {
                 let shown = match &w.kind {
                     Kind::ValueEdit { display, .. } if display.ratio != 0. => now / display.ratio,
                     _ => now,
