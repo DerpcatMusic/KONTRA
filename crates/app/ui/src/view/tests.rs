@@ -257,6 +257,104 @@ fn a_skin_offset_runs_through_the_wallpaper_across_its_frames() {
     assert_eq!(wallpaper((0, 68, 0), 569., 1), [(0, -68.)]);
 }
 
+/// A 20-point-wide, 14-row wallpaper: the first six rows green, the rest
+/// red, so the row a shot changes colour at names the wallpaper row it
+/// shows. The page over it is `height` source points tall.
+fn walled(height: f64) -> (Interface, Vec<u8>) {
+    let strip: Vec<u8> = (0..20 * 14)
+        .flat_map(|i| {
+            if i < 20 * 6 {
+                [0, 255, 0, 255]
+            } else {
+                [255, 0, 0, 255]
+            }
+        })
+        .collect();
+    let mut tree = Interface::default();
+    let mut page = Page {
+        size: Size { width: 20., height },
+        ..Page::default()
+    };
+    page.background.color = Some(Rgba::rgb(0x808080));
+    page.background.image = Some(AssetRef(0));
+    tree.pages.push(page);
+    tree.assets.push(Asset {
+        path: "wall.png".into(),
+        kind: AssetKind::Image(ImageMeta {
+            frames: 1,
+            size: Some(Size {
+                width: 20.,
+                height: 14.,
+            }),
+            ..ImageMeta::default()
+        }),
+    });
+    (tree, png(20, 14, &strip))
+}
+
+/// `tree`'s page drawn over `wall` at `scale`, into a `w`×`h` frame.
+fn shot(tree: &Interface, wall: Vec<u8>, scale: f64, w: u16, h: u16) -> Vec<[u8; 4]> {
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(move |p| (p == "wall.png").then(|| wall.clone())));
+    for _ in 0..2000 {
+        let (el, _) = page(&mut ui, 0, tree, PageRef(0), &mut pictures, (scale, &[]));
+        assert!(
+            ui.frame(
+                el,
+                Some(ViewSize::new(f64::from(w), f64::from(h))),
+                Input::default(),
+                1. / 60.
+            )
+            .is_ok()
+        );
+        pictures.poll();
+        if pictures.pending() == 0 {
+            let (el, _) = page(&mut ui, 0, tree, PageRef(0), &mut pictures, (scale, &[]));
+            return paint(&mut ui, el, w, h);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!("the wallpaper never arrived");
+}
+
+/// The page's wallpaper is cut from the strip in the strip's own rows, so
+/// the same wallpaper row is the page's top at every zoom. The page the
+/// band covers is a source-pixel height; mixing the scaled page height into
+/// the crop halves the wallpaper at a fit below one.
+#[test]
+fn the_wallpaper_band_shows_the_same_rows_at_every_scale() {
+    let (tree, wall) = walled(10.);
+    let mut edges = Vec::new();
+    let scales: [f64; 5] = [0.5, 0.75, 1., 1.5, 2.];
+    for scale in scales {
+        let (w, h) = ((20. * scale).round() as u16, (10. * scale).round() as u16);
+        let px = shot(&tree, wall.clone(), scale, w, h);
+        let row = |y: u16| &px[usize::from(y) * usize::from(w)..][..usize::from(w)];
+        for y in 0..h {
+            assert!(
+                row(y).iter().all(|p| p[..3] != [128, 128, 128]),
+                "the page colour shows through at scale {scale}, row {y}: {:?}",
+                row(y)[0]
+            );
+        }
+        // The green-to-red edge is wallpaper row 6: it is the page's row
+        // 6 * scale whatever the zoom.
+        let edge = (0..h)
+            .find(|&y| {
+                let p = row(y)[usize::from(w) / 2];
+                p[0] > p[1]
+            })
+            .unwrap_or_else(|| panic!("no wallpaper edge at scale {scale}"));
+        edges.push(f64::from(edge) / scale);
+    }
+    for (scale, row) in scales.into_iter().zip(&edges) {
+        assert!(
+            (row - 6.).abs() < 1.,
+            "the wallpaper row under the page's edge at scale {scale} is {row}, not 6"
+        );
+    }
+}
+
 /// An attached level meter lights from the bottom with the part's peak; a
 /// frame at the same level rebuilds nothing, so a silent part draws no new
 /// frames.

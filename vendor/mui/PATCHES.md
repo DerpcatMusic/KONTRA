@@ -60,3 +60,29 @@ the scale in force. Witnesses: `host::tests::a_zoom_change_moves_the_pointer_wit
 and `kontra-native-host`'s `tests::a_press_after_a_scale_change_lands_where_the_pointer_is`;
 both fail on the unpatched driver, landing the press at the old scene
 position.
+
+# Queued pointer edges move with the scene too
+
+The patch above re-derives `self.pointer` when `advance` recomputes the zoom,
+but the edges already sitting in `Driver::pending` had copied their position
+out of the old scene space at event time. A press that arrives between a
+fit-to-window resize and the next frame was therefore dispatched -- in that
+same frame, against the new rects -- at its old scene position: the identical
+miss, one frame later than the one `repose` fixes.
+
+`advance` now rescales every queued pointer position by `old_zoom / new_zoom`
+when the zoom changes (`Driver::reproject`), before any of them is dispatched.
+The ratio is exact: a queued edge's recorded position is its window point over
+the old zoom, and the new space wants that same point over the new zoom.
+Presses still carry the position they were enqueued with, so a move queued
+after them does not retroactively move them; only the space changes.
+`Pending::Cancel` is remapped with the rest. Wheel deltas are not positions
+and are left as enqueued. Painting and layout are unchanged.
+
+Witness: `host::tests::a_queued_press_is_reprojected_when_the_zoom_changes` --
+pointer at window point (100, 60), zoom 2, press queued at scene (50, 30),
+window resized to half so the zoom becomes 1. Unpatched, the frame that runs
+the press builds with the pointer still at (50, 30); patched, at (100, 60),
+the point it was pressed on. The existing
+`a_zoom_change_moves_the_pointer_with_the_scene` still covers the pointer
+itself.
