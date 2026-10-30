@@ -289,6 +289,19 @@ impl HostApi for Engine {
             Action::EngineUptime => {
                 HostValue::Int((self.now.0 * 1000 / u64::from(self.rate)) as i32)
             }
+            // `$KSP_TIMER` is microseconds since load on the **CPU clock**,
+            // which `reset_ksp_timer` zeroes (KSP manual: "based on the CPU
+            // clock and thus runs at a constant rate, regardless of whether or
+            // not Kontakt is being used in real time", so it is not
+            // `$ENGINE_UPTIME`'s sample clock — reading the render clock here
+            // was a v2 defect, KSP_AUDIT KSP-32). Kontakt's is 32-bit signed
+            // and "will reach its limit after 2147483648 microseconds", so the
+            // value wraps at 2^32 like its own does.
+            Action::KspTimer => HostValue::Int(self.ksp_timer.elapsed().as_micros() as u32 as i32),
+            Action::ResetKspTimer => {
+                self.ksp_timer = std::time::Instant::now();
+                HostValue::Nothing
+            }
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),
             Action::GroupVolume | Action::GroupPan | Action::GroupTune => {

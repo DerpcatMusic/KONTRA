@@ -133,6 +133,9 @@ pub struct Engine {
     trace: Option<trace::Trace>,
     now: SampleTime,
     rate: u32,
+    /// When the script timer (`$KSP_TIMER`) was last zeroed: the CPU clock,
+    /// not the render clock (see the `KspTimer` action's comment).
+    ksp_timer: std::time::Instant,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
     tempo: f32,
     transport: transport::Transport,
@@ -305,6 +308,7 @@ impl Engine {
             trace: _trace_capacity.map(trace::Trace::new),
             now: SampleTime(0),
             rate: rate.max(1),
+            ksp_timer: std::time::Instant::now(),
             tempo: 120.0,
             transport: transport::Transport::new(plan.scripts.len()),
             script_mods: ledger::script_ramps(&plan),

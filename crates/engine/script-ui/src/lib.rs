@@ -60,6 +60,10 @@ pub struct KeyRange {
 /// A control's text parameters, by parameter id.
 type Texts = Vec<(i32, Text)>;
 
+/// A control's string array parameters, by parameter id and array index
+/// (`set_control_par_str_arr`).
+type TextArrays = Vec<(i32, i32, Text)>;
+
 /// The script's page as it set it: size, wallpaper, colour, title.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Page {
@@ -135,6 +139,9 @@ pub struct Store {
     selected: Box<[Box<[u16]>]>,
     /// Per script slot, by control: the text parameters it set.
     texts: Box<[Box<[Texts]>]>,
+    /// Per script slot, by control: the string array parameters it set, by
+    /// (parameter id, index), in the order set.
+    text_arrays: Box<[Box<[TextArrays]>]>,
     keys: Box<[Key]>,
     /// `set_key_pressed_support`: on, the keyboard shows only the keys
     /// scripts press; off (the default), it shows the keys played.
@@ -187,6 +194,10 @@ impl Store {
                 .collect(),
             selected: controls.clone().map(|n| vec![0; n].into()).collect(),
             texts: controls
+                .clone()
+                .map(|n| vec![Vec::new(); n].into())
+                .collect(),
+            text_arrays: controls
                 .clone()
                 .map(|n| vec![Vec::new(); n].into())
                 .collect(),
@@ -275,6 +286,26 @@ impl Store {
             .get(usize::from(slot))
             .and_then(|t| t.get(n))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The string array parameters control `n` of script `slot` set, by
+    /// (parameter id, index), in the order set.
+    #[must_use]
+    pub fn text_arrays(&self, slot: u8, n: usize) -> &[(i32, i32, Text)] {
+        self.text_arrays
+            .get(usize::from(slot))
+            .and_then(|t| t.get(n))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Element `index` of string array parameter `par` of control `n` of
+    /// script `slot`: what `get_control_par_str_arr` reads (empty when the
+    /// script never set it).
+    #[must_use]
+    pub fn text_array(&self, slot: u8, n: usize, par: i32, index: i32) -> Text {
+        (self.text_arrays(slot, n).iter())
+            .find(|(p, i, _)| *p == par && *i == index)
+            .map_or(Text::EMPTY, |&(.., t)| t)
     }
 
     /// The user clicked cell `cell` (0 but in a table) of control `n` of
@@ -366,6 +397,36 @@ impl Store {
             }
             None => {
                 texts.push((par, text));
+                true
+            }
+        };
+        if changed {
+            self.touch(slot, n);
+        }
+    }
+
+    /// Sets element `index` of string array parameter `par` of control `n`.
+    /// An id with no control record (or a Lua page, whose controls are its
+    /// widgets) stores nothing, as `set_control_par` does.
+    fn set_text_array(&mut self, slot: u8, n: Option<usize>, (par, index): (i32, i32), text: Text) {
+        let Some(n) = n else {
+            return;
+        };
+        let Some(arrays) = self
+            .text_arrays
+            .get_mut(usize::from(slot))
+            .and_then(|a| a.get_mut(n))
+        else {
+            return;
+        };
+        let changed = match arrays.iter_mut().find(|(p, i, _)| *p == par && *i == index) {
+            Some(entry) => {
+                let changed = entry.2.as_str() != text.as_str();
+                entry.2 = text;
+                changed
+            }
+            None => {
+                arrays.push((par, index, text));
                 true
             }
         };
@@ -527,6 +588,22 @@ impl Store {
                     .and_then(|n| self.texts(slot, n).iter().find(|(p, _)| *p == par))
                     .map_or(Text::EMPTY, |&(_, t)| t);
                 out(found)
+            }
+            // One element of a control's string array parameter. The KSP
+            // manual documents the command and its two ui_xy uses — a cursor's
+            // own picture (`$CONTROL_PAR_CURSOR_PICTURE`: "each cursor can
+            // have its own image set using set_control_par_str_arr()") and a
+            // cursor's automation name; the NKS2 SDK adds the strings a
+            // Komplete Kontrol browser shows for a stepped control
+            // (`$CONTROL_PAR_NKS_STR_VALUES`). The element is kept on the
+            // control record whatever the parameter means to a host, so
+            // `get_control_par_str_arr` reads it back.
+            Action::SetControlParStrArr => {
+                self.set_text_array(slot, n, (int(1), int(2)), text);
+                HostValue::Nothing
+            }
+            Action::GetControlParStrArr => {
+                out(n.map_or(Text::EMPTY, |n| self.text_array(slot, n, int(1), int(2))))
             }
             Action::SetKeyColor
             | Action::SetKeyType

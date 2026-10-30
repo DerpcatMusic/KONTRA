@@ -557,6 +557,97 @@ fn a_script_draws_a_table_step_by_step() {
     assert_eq!(e.last_message(), "42 42 0");
 }
 
+/// `set_control_par_str_arr` writes one element of a control's string array
+/// parameter and `get_control_par_str_arr` reads it back: a ui_xy's
+/// per-cursor picture and automation name (KSP manual,
+/// `$CONTROL_PAR_CURSOR_PICTURE`), and the strings a Komplete Kontrol
+/// browser shows for a stepped control (`$CONTROL_PAR_NKS_STR_VALUES`, which
+/// Session Guitarist - Electric Mint sets to "16th"/"8th" on its swing and
+/// feel knobs). Elements of another parameter, and indexes never written,
+/// read back empty.
+#[test]
+fn a_string_array_parameter_reads_back_element_by_element() {
+    let source = "on init
+            declare ui_xy ?pad[4]
+            declare ui_knob $k (0, 4, 1)
+            declare $pad_id
+            declare $k_id
+            declare @at_init
+            $pad_id := get_ui_id(?pad)
+            $k_id := get_ui_id($k)
+            set_control_par_str_arr($pad_id, $CONTROL_PAR_CURSOR_PICTURE, \"cursor_a\", 0)
+            set_control_par_str_arr($pad_id, $CONTROL_PAR_CURSOR_PICTURE, \"cursor_b\", 2)
+            set_control_par_str_arr($pad_id, $CONTROL_PAR_AUTOMATION_NAME, \"Cutoff\", 1)
+            set_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, \"16th\", 0)
+            set_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, \"8th\", 1)
+            @at_init := get_control_par_str_arr($pad_id, $CONTROL_PAR_CURSOR_PICTURE, 2)
+        end on
+        on note
+            message(\"[\" & @at_init & \"][\" ...
+                & get_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, 0) & \"][\" ...
+                & get_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, 1) & \"][\" ...
+                & get_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, 2) & \"][\" ...
+                & get_control_par_str_arr($k_id, $CONTROL_PAR_CURSOR_PICTURE, 0) & \"][\" ...
+                & get_control_par_str_arr($pad_id, $CONTROL_PAR_AUTOMATION_NAME, 1) & \"]\")
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "[cursor_b][16th][8th][][][Cutoff]");
+}
+
+/// `$KSP_TIMER` counts CPU-clock microseconds since load, which
+/// `reset_ksp_timer` zeroes; `$ENGINE_UPTIME` counts the render clock.
+/// After a sleep with no audio rendered the timer has moved while the uptime
+/// has not (KSP manual: the timer is "based on the CPU clock and thus runs at
+/// a constant rate, regardless of whether or not Kontakt is being used in
+/// real time", so the sample clock is the wrong source — KSP_AUDIT KSP-32).
+#[test]
+fn the_ksp_timer_counts_cpu_microseconds_and_resets() {
+    let source = "on init
+            declare $t0
+            declare $t1
+            declare $t2
+            reset_ksp_timer
+            $t0 := $KSP_TIMER
+        end on
+        on note
+            $t1 := $KSP_TIMER
+            reset_ksp_timer
+            $t2 := $KSP_TIMER
+            message($t0 & \" \" & $t1 & \" \" & $t2 & \" \" & $ENGINE_UPTIME)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // 20 ms of CPU time and no audio at all: only the CPU clock moved.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // A second of render time, which takes far less CPU time than that.
+    for _ in 0..12 {
+        level(&mut e, &[]);
+    }
+    level(&mut e, &[on(60)]);
+    let read: Vec<i64> = e
+        .last_message()
+        .split(' ')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    let [t0, t1, t2, uptime] = read[..] else {
+        panic!("expected four numbers, got {read:?}");
+    };
+    // Reset and read are adjacent instructions in `on init`.
+    assert!((0..5_000).contains(&t0), "t0 = {t0}");
+    // The 20 ms sleep, and not the second of audio ($ENGINE_UPTIME).
+    assert!((20_000..1_000_000).contains(&t1), "t1 = {t1}");
+    assert!(uptime >= 1_000, "uptime = {uptime}");
+    assert!((0..5_000).contains(&t2), "t2 = {t2}");
+}
+
 /// An output menu lists the engine's outputs by Kontakt's names.
 #[test]
 fn output_channels_have_kontakts_names() {
