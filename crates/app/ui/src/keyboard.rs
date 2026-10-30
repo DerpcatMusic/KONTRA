@@ -23,6 +23,8 @@ pub struct Keys {
     /// The keys the focused part's script coloured, drawn in that colour
     /// (Kontakt's keyboard); with any, they stand in for the switches.
     pub script: Vec<(u8, Color)>,
+    /// The keys the focused part's script named, shown under the pointer.
+    pub names: Vec<(u8, String)>,
 }
 
 const BLACK: [bool; 12] = [
@@ -110,6 +112,11 @@ pub fn keyboard(
             .w(0.)
         })
         .collect();
+    // The key under the pointer, by note and by the script's name for it.
+    let tip = under.map(|n| match keys.names.iter().find(|k| k.0 == n) {
+        Some((_, name)) => format!("{} · {name}", note_name(n)),
+        None => note_name(n),
+    });
     let keys = keys.clone();
     let face = canvas(move |s| {
         let rect = |x: f64, y: f64, w: f64, h: f64| {
@@ -195,6 +202,10 @@ pub fn keyboard(
         .tracks_pointer()
         .named("Keyboard")
         .id(id.to_owned());
+    let el = match tip {
+        Some(tip) => el.tip(tip),
+        None => el,
+    };
     Response {
         el,
         changed: events,

@@ -500,6 +500,7 @@ impl Live {
         };
         build(&mut bld, face, slot, engine, &decls)?;
         bld.ui.keybed = keybed::keybed(engine.keys());
+        bld.ui.key_names = keybed::names(engine.keys());
         Ok(Self {
             tree: bld.ui,
             keys,
@@ -525,10 +526,11 @@ impl Live {
             self.page = page;
             page
         });
-        let keybed = keybed::keybed(engine.keys());
-        let keys = keybed != self.tree.keybed;
+        let (keybed, names) = (keybed::keybed(engine.keys()), keybed::names(engine.keys()));
+        let keys = keybed != self.tree.keybed || names != self.tree.key_names;
         if keys {
             self.tree.keybed = keybed;
+            self.tree.key_names = names;
         }
         let mut changed = Vec::new();
         for (n, (&key, seen)) in self.keys.iter().zip(&mut self.seen).enumerate() {
@@ -608,7 +610,7 @@ impl Live {
 #[derive(Debug, Default, PartialEq)]
 pub struct Changes {
     pub page: bool,
-    /// The keyboard's script colours.
+    /// The keyboard's script colours or key names.
     pub keys: bool,
     pub widgets: Vec<ui::WidgetRef>,
 }

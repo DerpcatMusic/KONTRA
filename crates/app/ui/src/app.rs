@@ -695,6 +695,10 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             })
             .unwrap_or_default(),
         script,
+        names: focused
+            .and_then(|p| p.face.as_ref())
+            .map(|f| f.tree.key_names.clone())
+            .unwrap_or_default(),
     };
     let height = TEXT * 6.;
     let mut pitch = v.pitch;

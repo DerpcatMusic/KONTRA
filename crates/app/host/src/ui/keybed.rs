@@ -48,6 +48,15 @@ pub(crate) fn keybed(keys: &[Key]) -> Vec<(u8, Rgba)> {
         .collect()
 }
 
+/// The keys the script named (`set_key_name`), by note.
+pub(crate) fn names(keys: &[Key]) -> Vec<(u8, String)> {
+    (0u8..)
+        .zip(keys)
+        .filter(|(_, key)| !key.name.as_str().is_empty())
+        .map(|(note, key)| (note, key.name.as_str().to_owned()))
+        .collect()
+}
+
 fn color(note: u8, value: i32) -> Option<Rgba> {
     let black_key = matches!(note % 12, 1 | 3 | 6 | 8 | 10);
     if value == BLACK {
