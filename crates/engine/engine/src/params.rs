@@ -7,8 +7,8 @@ use kontra_ir as ir;
 use crate::plan::{Group, addressed, source};
 use crate::{Engine, EnginePar, Level};
 use kontra_plan::par_laws::{
-    CUBE, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S, attack_shape, attack_x, setting,
-    stage_setting,
+    CUBE, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S, attack_shape, attack_x, cube_root,
+    setting, stage_setting,
 };
 use kontra_plan::route_depth::{depth, set_signed, signed};
 
@@ -577,11 +577,6 @@ fn stage_point(par: EnginePar) -> Option<(usize, ir::Law)> {
         EnginePar::Release => (3, STAGE_25S),
         _ => return None,
     })
-}
-
-/// The cubic setting (over its unity point) of a level; negative reads as 0.
-fn cube_root(level: f32) -> f64 {
-    CUBE.inverse_f64(f64::from(level.max(0.0))).unwrap_or(0.0)
 }
 
 /// The index of the breakpoints modulator `slot` of `g` routes from.

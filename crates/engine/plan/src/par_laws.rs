@@ -64,6 +64,11 @@ pub fn setting(law: &Law, y: f64) -> f64 {
     law.inverse_f64(y).unwrap_or(0.0)
 }
 
+/// The cubic setting (over its unity point) of a level; negative reads as 0.
+pub fn cube_root(level: f32) -> f64 {
+    setting(&CUBE, f64::from(level.max(0.0)))
+}
+
 /// The 0..=1 setting of a stage `ms` long on a stage law.
 pub fn stage_setting(law: &Law, ms: f64) -> f64 {
     setting(law, ms).clamp(0.0, 1.0)
