@@ -9,7 +9,11 @@
 #   - a plugin build with no CLAP entry (a host would not see it);
 #   - Electric Mint asking for more script calls than the agreed ceiling;
 #   - a render that does not complete, drops sample frames, or clips;
-#   - a UI whose controls are not where they are drawn (layer 1 and 2).
+#   - a UI whose controls are not where they are drawn (layer 1 and 2);
+#   - a page that does not LOOK like Kontakt's (layer 3). A geometry check cannot
+#     see a picture that resolved to nothing -- it still has a rect -- which is
+#     how a missing graphic shipped once. If no reference capture exists the
+#     gate fails: ALLOW_NO_PIXEL_REF=1 is a logged admission that layer 3 is off.
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -18,6 +22,8 @@ EMINT=${EMINT:-/home/dracula/Armory/VSTs/Kontakt1/Native Instruments Session Gui
 # Ceilings, not goals: they must only ever come down.
 MAX_UNHANDLED=${MAX_UNHANDLED:-55}
 MAX_INIT_UNANSWERED=${MAX_INIT_UNANSWERED:-51}
+# Percent of the page allowed to differ from Kontakt's own render.
+MAX_PIXEL_PCT=${MAX_PIXEL_PCT:-0.5}
 QUICK=${1:-}
 
 cd "$REPO"
@@ -105,6 +111,32 @@ if CARGO_TARGET_DIR="$TARGET" cargo build --release -p ui-drive >/tmp/opencode/v
     fi
 else
     row "ui-drive" "skipped (not built yet)"
+fi
+
+echo "== layer 3: the page looks like Kontakt's =="
+REF=${PIXEL_REF:-$(ls "$REPO"/tools/kontakt-reference/*-page.png 2>/dev/null | head -1)}
+if [ -n "$REF" ] && [ -f "$REF" ]; then
+    SHOTS=/tmp/opencode/verify-shots
+    rm -rf "$SHOTS"; mkdir -p "$SHOTS"
+    if CARGO_TARGET_DIR="$TARGET" cargo run --release -q -p ui-shots -- "$SHOTS" "$EMINT" >/tmp/opencode/verify-shots.log 2>&1; then
+        SHOT=$(ls "$SHOTS"/*.png 2>/dev/null | head -1)
+        if [ -n "$SHOT" ]; then
+            if OUT=$(python3 "$REPO/tools/pixel-diff.py" "$REF" "$SHOT" --scale --max-pct "$MAX_PIXEL_PCT" --out /tmp/opencode/verify-pixel 2>&1); then
+                ok "pixel diff vs Kontakt" "$(printf '%s\n' "$OUT" | grep -o 'differing.*%' | head -1)"
+            else
+                bad "pixel diff vs Kontakt" "$(printf '%s\n' "$OUT" | grep -oE '[0-9.]+% differs, ceiling [0-9.]+%' | head -1)"
+                printf '%s\n' "$OUT" | grep -E '^ +[0-9]+ px' | head -5 | sed 's/^/      /'
+            fi
+        else
+            bad "pixel diff vs Kontakt" "ui-shots produced no png"
+        fi
+    else
+        bad "pixel diff vs Kontakt" "see /tmp/opencode/verify-shots.log"
+    fi
+elif [ "${ALLOW_NO_PIXEL_REF:-0}" = "1" ]; then
+    row "pixel diff vs Kontakt" "OFF (ALLOW_NO_PIXEL_REF=1)"
+else
+    bad "pixel diff vs Kontakt" "no reference capture in tools/kontakt-reference/"
 fi
 
 echo
