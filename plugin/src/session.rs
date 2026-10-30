@@ -208,6 +208,18 @@ pub fn picture_failures(instrument: Option<PathBuf>) -> Box<dyn Fn(Missing, &str
     })
 }
 
+/// A picture too big for the renderer's atlas, said once: past that size
+/// vello draws nothing and the page loses it without a word.
+pub fn picture_too_large(side: u32, limit: u32) {
+    static SAID: AtomicUsize = AtomicUsize::new(0);
+    if SAID.swap(1, Ordering::Relaxed) == 0 {
+        error(
+            "picture_too_large",
+            &[("side", &side.to_string()), ("limit", &limit.to_string())],
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

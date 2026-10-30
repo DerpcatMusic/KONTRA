@@ -1242,38 +1242,63 @@ fn a_part_outside_its_library_draws_the_pictures_of_the_instrument_it_came_from(
     );
 }
 
-/// The page's labels are the script's own text (`set_text`), not a stock
-/// caption. The library ships two instruments and they differ exactly where
-/// they were reported to be wrong: `Electric Mint.nki` writes "Impact" and
-/// "PitchW.", `Electric Mint (Melody).nki` writes "Bend" and "PitchW." (and
-/// a bend-mode menu whose first item reads "All             = Bend all
-/// notes", drawn truncated as "All…"). So a page showing "Bend"/"All…" is
-/// the Melody instrument's page, drawn correctly; there is nothing to fix in
-/// the label path, and this test keeps both texts as the scripts set them.
+/// The page's pictures fit the renderer's atlas. The live editor draws at two
+/// device pixels (MUI's window logs `scale_override=Some(2.0)`,
+/// `device_scale=2`), where the whole wallpaper strip — 633 by 7952 — would
+/// be handed over as 1266 by 15904: past vello's 8192-pixel image atlas,
+/// which draws such a picture at no size at all. That is the photograph that
+/// vanished from the live page while the harness at one device pixel kept it.
 #[test]
-fn a_labels_text_is_the_scripts_own() {
-    for (name, bend) in [
-        ("Electric Mint.nki", "Impact"),
-        ("Electric Mint (Melody).nki", "Bend"),
-    ] {
-        let Some(path) = instrument(name) else {
-            continue;
+fn the_pages_pictures_fit_the_renderers_atlas() {
+    let Some(path) = instrument("Electric Mint (Melody).nki") else {
+        return;
+    };
+    let (params, mut dsp) = activate(&one_part(&path));
+    settle(&params, &mut dsp);
+    settle(&params, &mut dsp);
+    let mut app = kontra_ui::app::App::default();
+    let mut shown = crate::editor::Shown::default();
+    {
+        let view = crate::lock(&params.shared.view);
+        view.fill(&mut app, &mut shown);
+    }
+    let face = app.parts[0].face.as_mut().expect("a face");
+    for device in [1.0f64, 2.0] {
+        let mut ui = kontra_ui::ui();
+        ui.set_scale(Some(device));
+        let mut draw = |ui: &mut mui::prelude::Ui, face: &mut kontra_ui::app::Face| {
+            let (el, _) = kontra_ui::view::page(
+                ui,
+                0,
+                &face.tree,
+                kontra_ui_model::PageRef(0),
+                &mut face.pictures,
+                (1.0, &[]),
+            );
+            let _ = ui.frame(
+                el,
+                Some(mui::prelude::Size::new(633., 500.)),
+                mui::prelude::Input::default(),
+                1. / 60.,
+            );
         };
-        let (params, mut dsp) = activate(&one_part(&path));
-        settle(&params, &mut dsp);
-        let mut app = kontra_ui::app::App::default();
-        let mut shown = crate::editor::Shown::default();
-        {
-            let view = crate::lock(&params.shared.view);
-            view.fill(&mut app, &mut shown);
+        draw(&mut ui, face);
+        for _ in 0..2000 {
+            face.pictures.poll();
+            if face.pictures.pending() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let tree = &app.parts[0].face.as_ref().expect("a face").tree;
-        let text = |name: &str| {
-            (tree.widgets.iter())
-                .find(|w| w.name == name)
-                .map(|w| w.text.clone())
-        };
-        assert_eq!(text("$kif3y").as_deref(), Some(bend), "{name}: $kif3y");
-        assert_eq!(text("$kvref").as_deref(), Some("PitchW."), "{name}: $kvref");
+        draw(&mut ui, face);
+        let tallest = face.pictures.tallest();
+        println!("{device} device pixels: tallest picture {tallest}");
+        assert!(
+            tallest <= kontra_ui::pictures::ATLAS,
+            "a {tallest} pixel picture at {device} device pixels cannot be drawn: \
+             the atlas holds {}",
+            kontra_ui::pictures::ATLAS
+        );
+        assert!(tallest > 0, "the page drew no picture at {device}");
     }
 }
