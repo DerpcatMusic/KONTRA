@@ -208,6 +208,15 @@ impl RackAudio {
             stats.voices_stolen += s.voices_stolen;
             stats.notes_refused += s.notes_refused;
             stats.missing_frames += s.missing_frames;
+            // Taken every block, so a muted part's buses show silence.
+            if let Some(buses) = self.meters.buses.get_mut(n) {
+                for (b, peak) in buses.iter_mut().enumerate() {
+                    let [l, r] = p.engine.take_bus_peak(b);
+                    if !p.mix.silent {
+                        *peak = [peak[0].max(l), peak[1].max(r)];
+                    }
+                }
+            }
             let peak = self.meters.parts.get_mut(n);
             let out = self.outputs.get_mut(usize::from(p.mix.output));
             let (Some(peak), Some(out)) = (peak, out) else {

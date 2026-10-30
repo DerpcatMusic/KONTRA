@@ -222,13 +222,18 @@ impl Look {
                     }
                 }
                 let ink = ink(0xfe_fefe);
-                // The installed font-13 atlas is 699×13; arrow fields reserve
-                // their right edge for the arrows.
-                let font = glyphs.filter(|_| {
-                    style.is_some_and(|s| s.font == model::Font::Stock(13))
-                        && matches!(wd.kind, Kind::ValueEdit { arrows: true, .. })
-                });
+                // The installed font-13 atlas is 699×13.
+                let font =
+                    glyphs.filter(|_| style.is_some_and(|s| s.font == model::Font::Stock(13)));
                 let color = style.map_or(model::Rgba::rgb(0xfefefe), |s| s.color);
+                // The plain-text value clears the arrows' 14 px (the stock
+                // font's already sits 11 px in, as measured).
+                let arrows = matches!(wd.kind, Kind::ValueEdit { arrows: true, .. });
+                let room = if arrows && font.is_none() {
+                    w - 10. * scale
+                } else {
+                    w
+                };
                 parts.push(field_words(
                     title,
                     ink,
@@ -243,7 +248,7 @@ impl Look {
                         value,
                         ink,
                         model::Align::Right,
-                        (w, h, scale, device),
+                        (room, h, scale, device),
                         font,
                         color,
                         StockMetrics::Field,
@@ -514,6 +519,33 @@ fn arrow(ink: Color, w: f64, h: f64, s: f64) -> Vec<El> {
                 .at(x + r * s, y + r * s)
         })
         .collect()
+}
+
+/// A value edit's step arrows, ▲ over ▼, centred 9.5 px in from its right
+/// edge (Kontakt 8.13, measured).
+pub(super) fn steps(w: f64, h: f64, s: f64) -> El {
+    let ink = rgb(0xd4_d4d0);
+    // Measured on a 22 px field (▲ rows 6..9, ▼ 14..17): placed about the
+    // middle, so each arrow sits in the half its press steps (input::arrow).
+    let mid = (h / s / 2.).floor();
+    let rows = [1., 3., 5., 5.].into_iter().zip(-5..);
+    let rows: Vec<_> = rows
+        .map(|(width, dy)| (width, mid + f64::from(dy)))
+        .collect();
+    let down = rows.iter().map(|&(width, y)| (width, 2. * mid + 1. - y));
+    stack(
+        rows.iter()
+            .copied()
+            .chain(down)
+            .map(|(width, y)| {
+                block(width * s, s)
+                    .radius(0.)
+                    .fill(ink)
+                    .at(w - (9.5 + width / 2.) * s, y * s)
+            })
+            .collect::<Vec<_>>(),
+    )
+    .at(0., 0.)
 }
 
 /// A stock box: `fill` inside a one-pixel `edge`.

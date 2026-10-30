@@ -5,16 +5,18 @@
 
 use std::collections::HashMap;
 
-use kontra_engine::{ControlLook, Engine, Page};
+use kontra_engine::{ControlLook, Page};
 use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 use crate::perf_view::{View, ViewControl};
 
 mod keybed;
+mod looks;
 pub mod lua;
 mod picture;
 mod widget;
 use kontra_ui_model as ui;
+pub use looks::Looks;
 pub use picture::{Library, meta as picture_meta};
 use widget::{Decl, widget};
 
@@ -86,46 +88,6 @@ impl Face {
     }
 }
 
-/// What a [`Live`] reads of a running script: the engine itself, or a copy
-/// of those reads made on the audio thread (`crate::view::LookFrame`).
-pub trait Looks {
-    fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>>;
-    fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64>;
-    fn page(&self, slot: u8) -> Option<&Page>;
-    /// The bitmap font behind font id `id` (`get_font_id`), by picture name.
-    fn font(&self, slot: u8, id: i32) -> Option<&str>;
-    /// The keyboard's keys as the scripts left them, by note.
-    fn keys(&self) -> &[kontra_engine::Key];
-    /// Whether the keyboard shows only the keys scripts press.
-    fn pressed_support(&self) -> bool;
-}
-
-impl Looks for Engine {
-    fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>> {
-        Engine::control_look(self, slot, id)
-    }
-
-    fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64> {
-        Engine::script_cell_in(self, slot, n)
-    }
-
-    fn page(&self, slot: u8) -> Option<&Page> {
-        Engine::page(self, slot)
-    }
-
-    fn font(&self, slot: u8, id: i32) -> Option<&str> {
-        Engine::font(self, slot, id)
-    }
-
-    fn keys(&self) -> &[kontra_engine::Key] {
-        Engine::keys(self)
-    }
-
-    fn pressed_support(&self) -> bool {
-        Engine::key_pressed_support(self)
-    }
-}
-
 /// `$CONTROL_PAR_*_COLOR` properties by colour slot.
 type ColorSlot = fn(&mut ui::Colors) -> &mut Option<ui::Rgba>;
 const COLORS: [(&str, ColorSlot); 10] = [
@@ -187,6 +149,8 @@ const MAPPED: &[&str] = &[
     "grid_y",
     "table_steps_shown",
     "level_meter",
+    "level_meter_group",
+    "level_meter_generic",
 ];
 
 /// The text style of each picture state, in [`ui::Widget::state_styles`] order.
@@ -427,7 +391,7 @@ fn decl<'a>(face: &'a Face, slot: u8, engine: &'a dyn Looks, key: Key) -> Option
 struct Seen {
     generation: u32,
     value: Option<i64>,
-    /// A hash of an array control's cells (a table's steps).
+    /// A hash of an array control's cells (a table's steps) or its text.
     cells: u64,
 }
 
@@ -438,6 +402,12 @@ impl Seen {
                 .fold(0xcbf2_9ce4_8422_2325_u64, |h, c| {
                     let v = engine.script_cell_in(slot, c as usize).unwrap_or(0) as u64;
                     (h ^ v).wrapping_mul(0x100_0000_01b3)
+                }),
+            Cells::Text { base, .. } => (engine.script_text_in(slot, base as usize))
+                .unwrap_or_default()
+                .bytes()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+                    (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
                 }),
             _ => 0,
         };
@@ -597,22 +567,24 @@ impl Live {
     /// What [`Live::refresh`] reads: the UI ids of the controls it shows,
     /// and the script cells of their arrays (a table's steps).
     #[must_use]
-    pub fn reads(&self, face: &Face) -> (Vec<i32>, Vec<u32>) {
+    pub fn reads(&self, face: &Face) -> (Vec<i32>, Vec<u32>, Vec<u32>) {
         let controls = self
             .keys
             .iter()
             .filter_map(|k| Some((k.id, face.controls.get(k.control?)?)));
         let mut ids = Vec::new();
-        let mut cells = Vec::new();
+        let (mut cells, mut texts) = (Vec::new(), Vec::new());
         for (id, (_, _, c)) in controls {
             ids.push(id);
-            if let Cells::Int { base, len } | Cells::Real { base, len } = *c
-                && len > 1
-            {
-                cells.extend(base..base + len);
+            match *c {
+                Cells::Int { base, len } | Cells::Real { base, len } if len > 1 => {
+                    cells.extend(base..base + len);
+                }
+                Cells::Text { base, .. } => texts.push(base),
+                _ => {}
             }
         }
-        (ids, cells)
+        (ids, cells, texts)
     }
 }
 

@@ -24,15 +24,16 @@ const TEXT: f64 = 11.;
 
 /// `page` of `tree` at `scale` view points per source pixel, and how many
 /// widgets this frame built rather than kept. `face` scopes its ids: each
-/// face drawn in one frame (a rack part) needs its own. `level` (0..1, the
-/// part's output peak) lights its level meters.
+/// face drawn in one frame (a rack part) needs its own. `level` (the
+/// part's left and right peaks, 0..1: its output's, then each instrument
+/// bus's) lights its level meters.
 pub fn page(
     ui: &mut Ui,
     face: usize,
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    at: (f64, f64),
+    at: (f64, &[[f64; 2]]),
 ) -> (El, usize) {
     drawn_page(ui, face, tree, page, pictures, at, false)
 }
@@ -45,7 +46,7 @@ pub fn vector_page(
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    at: (f64, f64),
+    at: (f64, &[[f64; 2]]),
 ) -> (El, usize) {
     drawn_page(ui, face, tree, page, pictures, at, true)
 }
@@ -56,7 +57,7 @@ fn drawn_page(
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    (scale, level): (f64, f64),
+    (scale, level): (f64, &[[f64; 2]]),
     bare: bool,
 ) -> (El, usize) {
     // Pointer state is an input to the otherwise pure draw projection.
@@ -161,8 +162,7 @@ fn drawn_page(
         });
         let stock_glyphs = look.as_ref().and_then(|look| match look {
             stock::Look::Field { .. }
-                if style.is_some_and(|s| s.font == model::Font::Stock(13))
-                    && matches!(wd.kind, Kind::ValueEdit { arrows: true, .. }) =>
+                if style.is_some_and(|s| s.font == model::Font::Stock(13)) =>
             {
                 pictures.font(model::AssetRef(usize::MAX - 4), "@stock/font13")
             }
@@ -215,8 +215,13 @@ fn drawn_page(
         let lit = match wd.kind {
             Kind::LevelMeter {
                 orientation,
-                channel: Some(_),
-            } => Some((orientation, lit(level))),
+                channel: Some(c),
+                bus,
+            } => {
+                let from = level.get(bus.map_or(0, |b| usize::from(b) + 1));
+                let peak = from.and_then(|l| l.get(usize::from(c)));
+                Some((orientation, lit(peak.copied().unwrap_or(0.))))
+            }
             _ => None,
         };
         let deps = (
@@ -301,9 +306,20 @@ fn drawn_page(
         });
         // A control takes the pointer under its own id (crate::input), and
         // hovering it shows its help text (`set_control_help`).
+        let id = crate::input::surface(face, n.0);
+        // Its arrows show while the pointer is over it.
+        let el = if matches!(wd.kind, Kind::ValueEdit { arrows: true, .. })
+            && ui.get(id.clone()).hovered
+        {
+            stack(vec![el.at(0., 0.), stock::steps(r.width, r.height, scale)])
+                .w(r.width)
+                .h(r.height)
+        } else {
+            el
+        };
         let el = if crate::input::takes_input(wd) {
             let el = el
-                .id(crate::input::surface(face, n.0))
+                .id(id)
                 .focusable()
                 .cursor(Cursor::Hand)
                 .named(wd.name.clone());
@@ -320,14 +336,19 @@ fn drawn_page(
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
 }
 
-/// How much of a level meter a peak lights: −60 dB to 0 dB, in steps of a
-/// hundredth so a frame redraws only when the bar moves.
-// ponytail: the scale is ours (Kontakt's meter law is unmeasured), and both
-// channels show the part's peak; per-channel and per-bus peaks when a
-// library needs them apart.
+/// How much of a level meter a peak lights: `1 + log2(peak) / 9`, linear in
+/// dB from −54.2 dB (nine octaves down) to 0 dB, as Kontakt 8.13 maps it
+/// (decoded from its binary); in steps of a hundredth so a frame redraws only
+/// when the bar moves.
+// ponytail: no ballistics yet (Kontakt rises at once and falls 0.4 of the gap
+// a GUI tick; the tick period is undecoded). A group, insert or main FX
+// meter (gain reduction) reads the part's output; taps when a library needs them.
 fn lit(peak: f64) -> f64 {
-    let db = 20. * peak.max(1e-9).log10();
-    ((db + 60.) / 60.).clamp(0., 1.).mul_add(100., 0.).round() / 100.
+    (1. + peak.max(1e-9).log2() / 9.)
+        .clamp(0., 1.)
+        .mul_add(100., 0.)
+        .round()
+        / 100.
 }
 
 /// A level meter lit to `t`: its OFF colour behind, its ON colour lit,
