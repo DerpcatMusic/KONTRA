@@ -75,8 +75,9 @@ L7  ui ─────────────────▶ protocol, ui-model
 L6  host ───────────────▶ engine, stream, ksp, lua, format*, library, align?, protocol, ui-model
 L5  ksp, lua ───────────▶ vm, ir, ui-model, events
     format-* ───────────▶ format, ir, params, law          (never engine, vm, stream, dsp)
-L4  engine ─────────────▶ behaviour, plan, voice, stream, vm, dsp, ir, events, time, pool
+L4  engine ─────────────▶ behaviour, plan, effects, script-ui, voice, stream, vm, dsp, ir, events, time, pool
     behaviour ──────────▶ plan, ir
+    plan ───────────────▶ effects, script-ui, ir, vm, voice
 L3  voice ──────────────▶ dsp-core, stream (read side), simd, time
     stream ─────────────▶ ir (zone geometry only), pool, time
     vm ─────────────────▶ events, time, pool

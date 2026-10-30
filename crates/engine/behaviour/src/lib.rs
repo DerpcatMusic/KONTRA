@@ -9,7 +9,11 @@ use kontra_plan::{Atom, Control, Plan, RoundRobin, RrCounter, Zone};
 pub enum Step {
     /// An attack: the counter steps once after the note-on.
     Advance,
-    /// A release trigger: it re-reads the attack's draw.
+    /// A release trigger: it re-reads the attack's draw. A per-group counter
+    /// reads its current count less one, so a note on the same group between
+    /// the attack and the release moves it.
+    // ponytail: the group count is not kept per note; store it in `RrDraw`
+    // if a library's release samples must follow interleaved notes.
     Reuse,
 }
 
