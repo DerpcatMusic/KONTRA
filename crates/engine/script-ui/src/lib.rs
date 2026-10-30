@@ -134,11 +134,14 @@ pub struct Store {
     generations: Box<[Box<[u32]>]>,
     /// `get_font_id`'s pictures by script slot, in the order first asked.
     fonts: Vec<(u8, Text)>,
-    /// The last click on a control: script slot, control and which of
-    /// `[shift, alt, control]` were held.
+    /// The last click on a control: script slot, control, which of
+    /// `[shift, alt, control]` were held, and the cell of a table clicked.
     // ponytail: only the last click is kept, so another control reads its
     // keys as 0; per control if a library reads keys of an earlier click.
-    click: Option<(u8, usize, [bool; 3])>,
+    click: Option<(u8, usize, [bool; 3], u32)>,
+    /// That click's cell, until the control write it came with takes it: a
+    /// later write from elsewhere (MIDI learn, a host) sets the first cell.
+    pending: Option<(u8, usize, u32)>,
 }
 
 /// One control as the script left it: what the host builds its widget from.
@@ -178,6 +181,7 @@ impl Store {
             generations: controls.map(|n| vec![0; n].into()).collect(),
             fonts: Vec::with_capacity(64),
             click: None,
+            pending: None,
         }
     }
 
@@ -257,10 +261,31 @@ impl Store {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// The user clicked control `n` of script `slot` holding `keys`
-    /// (`[shift, alt, control]`).
-    pub fn click(&mut self, slot: u8, n: Option<usize>, keys: [bool; 3]) {
-        self.click = n.map(|n| (slot, n, keys));
+    /// The user clicked cell `cell` (0 but in a table) of control `n` of
+    /// script `slot` holding `keys` (`[shift, alt, control]`).
+    pub fn click(&mut self, slot: u8, n: Option<usize>, keys: [bool; 3], cell: u32) {
+        self.click = n.map(|n| (slot, n, keys, cell));
+        self.pending = n.map(|n| (slot, n, cell));
+    }
+
+    /// `$NI_CONTROL_PAR_IDX`: the cell of script `slot`'s last click (the
+    /// table whose `on ui_control` reads it).
+    #[must_use]
+    pub fn last_cell(&self, slot: u8) -> u32 {
+        self.click
+            .filter(|c| c.0 == slot)
+            .map_or(0, |(.., cell)| cell)
+    }
+
+    /// Takes the cell just clicked in control `n` of script `slot` for its
+    /// write (0 for a write with no click), if inside its `len` cells (a
+    /// table's; 0 is one).
+    pub fn take_cell(&mut self, slot: u8, n: Option<usize>, len: u32) -> Option<u32> {
+        let clicked = self
+            .pending
+            .take()
+            .filter(|&(s, c, _)| s == slot && Some(c) == n);
+        Some(clicked.map_or(0, |(.., cell)| cell)).filter(|&cell| cell < len.max(1))
     }
 
     /// `$CONTROL_PAR_KEY_SHIFT`, `_ALT` or `_CONTROL` (`key` 0, 1 or 2) of
@@ -268,8 +293,8 @@ impl Store {
     /// manual), else 0.
     #[must_use]
     pub fn click_key(&self, slot: u8, n: Option<usize>, key: usize) -> i32 {
-        let held = self.click.filter(|&(s, c, _)| s == slot && Some(c) == n);
-        i32::from(held.and_then(|(.., k)| k.get(key).copied()) == Some(true))
+        let held = self.click.filter(|&(s, c, ..)| s == slot && Some(c) == n);
+        i32::from(held.and_then(|(_, _, k, _)| k.get(key).copied()) == Some(true))
     }
 
     /// How often control `n` of script `slot` changed look.

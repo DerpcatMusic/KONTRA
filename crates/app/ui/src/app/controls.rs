@@ -74,7 +74,7 @@ pub(super) fn view(
         if let Some(v) = picked.filter(|v| *v != now) {
             edits.push(Edit {
                 widget: n,
-                value: v,
+                to: crate::input::Set::Value(v),
                 keys: kontra_ui_model::UiModifiers::default(),
             });
         }

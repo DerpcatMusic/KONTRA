@@ -117,7 +117,7 @@ pub(super) fn touch(
             before = run(&[(0, on(60)), (0, cc(1, 127)), (0, cc(11, 127))], 0.4, last).0;
         }
         if let Some(r) = crate::lock(&params.shared.rack).as_mut() {
-            r.control(0, widget, to, Default::default());
+            r.control(0, widget, None, to, Default::default());
         }
         let (after, channel_peak) = run(&[], 0.08, last);
         found.touched += 1;

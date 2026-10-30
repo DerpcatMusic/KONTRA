@@ -93,18 +93,17 @@ impl Engine {
         let own = script.callbacks.ui_control.iter().find(|(i, _)| *i == id);
         let own = own.and_then(|&(_, own)| own);
         let controls = &script.controls;
-        let cell = (id.checked_sub(controls.first))
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| controls.cells.get(n).copied().flatten());
+        let n = self.control_index_in(slot, id);
+        let cell = n.and_then(|n| controls.cells.get(n).copied().flatten());
         if cell.is_none() && own.is_none() {
             return;
         }
+        let len = n.and_then(|n| controls.steps.get(n)).copied().unwrap_or(0);
         let vm = self.vms.get_mut(usize::from(slot)).and_then(Option::as_mut);
-        if let (Some(cell), Some(vm)) = (cell, vm) {
-            vm.set_cell(cell as usize, value);
+        if let (Some(cell), Some(vm), Some(at)) = (cell, vm, self.ui.take_cell(slot, n, len)) {
+            vm.set_cell((cell + at) as usize, value);
         }
         // A menu the user picks from selects that entry.
-        let n = usize::try_from(id - controls.first).ok();
         self.ui
             .select(slot, n, i32::try_from(value).unwrap_or(i32::MIN));
         for (kind, entry) in [

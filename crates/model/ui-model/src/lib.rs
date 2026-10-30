@@ -191,6 +191,9 @@ pub struct Widget {
     pub automation: Automation,
     /// How a drag changes the value; `None` for the renderer's default.
     pub drag: Option<Drag>,
+    /// The source runs the control's callback once more when the pointer
+    /// lets go, even when the value did not change (KSP `on ui_control`).
+    pub reports_release: bool,
     /// Colours the source sets on its stock drawing; unset ones are the renderer's.
     pub colors: Colors,
     /// Authored separation between table bars. Unset preserves the stock drawing.
@@ -262,6 +265,7 @@ impl Widget {
             tooltip: String::new(),
             automation: Automation::default(),
             drag: None,
+            reports_release: false,
             colors: Colors::default(),
             table_inner_edge: None,
             table_fill: None,
@@ -454,12 +458,25 @@ pub struct UviWaveViewColors {
     pub sample_name_background: Option<Rgba>,
 }
 
-/// The drag gesture of a continuous control (KSP `MOUSE_BEHAVIOUR`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The drag gesture of a continuous control: which way it moves, and how
+/// far the pointer travels to sweep the whole range. The translator sets
+/// its format's law; the renderer only follows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Drag {
     pub axis: Orientation,
-    /// Source units: KSP's magnitude, larger is faster; travel is picture-relative.
-    pub sensitivity: u32,
+    pub sweep: Sweep,
+}
+
+/// How far a drag travels to sweep a control's whole range, in view
+/// points at 100 % (the renderer scales them with the view).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sweep {
+    /// A fixed distance, whatever the control's size.
+    Points(f64),
+    /// This many times the control's own length along the axis.
+    Lengths(f64),
+    /// This far per unit of the value.
+    PerUnit(f64),
 }
 
 /// Colours of the stock drawing (KSP `*_COLOR` control parameters).

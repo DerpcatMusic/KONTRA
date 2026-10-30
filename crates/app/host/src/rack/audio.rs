@@ -246,6 +246,7 @@ impl RackAudio {
         while !self.channels.retired.is_full()
             && !self.channels.captured.is_full()
             && !self.channels.units.is_full()
+            && !self.channels.typed.is_full()
             && !self.channels.looks.is_full()
         {
             let Some(command) = self.channels.commands.recv() else {
@@ -369,14 +370,33 @@ impl RackAudio {
                     part,
                     slot,
                     id,
+                    cell,
                     value,
                     keys,
                 } => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {
-                        let control = keys.ctrl || keys.cmd;
-                        p.engine
-                            .set_click_keys(slot, id, [keys.shift, keys.alt, control]);
+                        let held = [keys.shift, keys.alt, keys.ctrl || keys.cmd];
+                        p.engine.set_click(slot, id, held, cell);
                         p.engine.set_control(slot, id, value);
+                    }
+                }
+                Command::ControlText {
+                    part,
+                    slot,
+                    id,
+                    cell,
+                    text,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part) {
+                        if let Some(vm) = p.engine.vm_mut(slot) {
+                            vm.set_text(cell as usize, *text);
+                        }
+                        p.engine.set_click(slot, id, [false; 3], 0);
+                        p.engine.set_control(slot, id, 0);
+                    }
+                    // Freed on the control side: the loop takes no command while the ring is full.
+                    if self.channels.typed.send(text).is_err() {
+                        self.dropped += 1;
                     }
                 }
                 Command::Widget {
