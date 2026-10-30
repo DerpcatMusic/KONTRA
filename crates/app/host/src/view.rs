@@ -35,15 +35,16 @@ enum Shown {
 impl View {
     /// The view of the first script slot with a face (KSP) or a page
     /// (Lua), read from `engine` as its init left it; pictures come from
-    /// the library at `path`.
+    /// the library `library` (`Library::open_any` of the part's file and the
+    /// instrument it came from).
     #[must_use]
     pub fn of(
         faces: &[Option<Face>],
         pages: &[Option<kontra_lua::Ui>],
         engine: &Engine,
-        path: Option<&Path>,
+        library: Option<Library>,
     ) -> Option<Self> {
-        let library = path.map(|p| RefCell::new(Library::open(p)));
+        let library = library.map(RefCell::new);
         let meta = |p: &str| library.as_ref()?.borrow_mut().meta(p);
         let mut view = (0..faces.len().max(pages.len())).find_map(|slot| {
             let at = u8::try_from(slot).ok()?;

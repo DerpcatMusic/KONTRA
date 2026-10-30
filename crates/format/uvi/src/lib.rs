@@ -102,6 +102,13 @@ impl Resources {
         Self(split(path).and_then(|(bank, _)| bank::Bank::open(&bank).ok()))
     }
 
+    /// Whether its bank opened at all: a program outside any bank has no
+    /// picture to read.
+    #[must_use]
+    pub fn found(&self) -> bool {
+        self.0.is_some()
+    }
+
     /// The file at a script's picture path (`../artwork/knob.png`).
     #[must_use]
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {

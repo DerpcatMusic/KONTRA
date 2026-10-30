@@ -2,7 +2,9 @@
 //! `.txt` beside it that says how the image animates and stretches. A UVI
 //! script's: a path from its folder inside the program's bank.
 
-use std::path::Path;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use kontra_format_kontakt::Resources;
 use kontra_ui_model as ui;
@@ -24,6 +26,30 @@ impl Library {
         }
     }
 
+    /// Whether it found anything to read a picture from at all: a folder or
+    /// container at or under the instrument's library root. An instrument
+    /// whose file sits outside its library has none, and then every picture
+    /// is missing.
+    #[must_use]
+    pub fn found(&self) -> bool {
+        match self {
+            Self::Kontakt(r) => r.found(),
+            Self::Uvi(r) => r.found(),
+        }
+    }
+
+    /// The library of the first of `paths` that has resources, tried in
+    /// order: a part's own file, then the instrument it was loaded from (a
+    /// preset may sit outside its library, or have moved).
+    #[must_use]
+    pub fn open_any(paths: impl IntoIterator<Item = Option<PathBuf>>) -> Option<Self> {
+        paths
+            .into_iter()
+            .flatten()
+            .map(|path| Self::open(&path))
+            .find(Library::found)
+    }
+
     /// The bytes of the file at a tree asset path.
     pub fn read(&mut self, path: &str) -> Option<Vec<u8>> {
         match self {
@@ -31,7 +57,96 @@ impl Library {
             Self::Uvi(r) => r.read(path),
         }
     }
+}
 
+/// Why a picture could not be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Missing {
+    /// The part has no instrument file: one built in memory, or a state that
+    /// lost it.
+    NoPath,
+    /// Nothing at the instrument's library root holds resources: the file is
+    /// not inside its library, the library moved, or it is not installed.
+    NoLibrary,
+    /// The library was found and holds no file at that path.
+    NoFile,
+}
+
+impl fmt::Display for Missing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NoPath => "the part has no instrument path",
+            Self::NoLibrary => "no picture library at the instrument's library root",
+            Self::NoFile => "the library has no file at that path",
+        })
+    }
+}
+
+enum Opened {
+    Unopened,
+    Absent(Missing),
+    Ready(Library),
+}
+
+/// A face's pictures, read by the worker that asks: the library of the first
+/// of its `paths` that has resources, opened once. Every failure goes to
+/// `told` with the reason and the asset path, so a page that draws no
+/// pictures says why instead of drawing stock shapes and nothing else. The
+/// reader runs off the UI thread; `told` must be safe there.
+pub struct Loader {
+    paths: Vec<PathBuf>,
+    opened: Mutex<Opened>,
+    told: Box<dyn Fn(Missing, &str) + Send + Sync>,
+}
+
+impl Loader {
+    /// A reader of `paths` (a part's file, then the instrument it came from),
+    /// telling `told` of every picture it could not read.
+    #[must_use]
+    pub fn new(
+        paths: impl IntoIterator<Item = Option<PathBuf>>,
+        told: Box<dyn Fn(Missing, &str) + Send + Sync>,
+    ) -> Self {
+        Self {
+            paths: paths.into_iter().flatten().collect(),
+            opened: Mutex::new(Opened::Unopened),
+            told,
+        }
+    }
+
+    /// The bytes of the picture at the tree asset path, or `None` (told to
+    /// `told` why).
+    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
+        let missing = {
+            let mut opened = self.opened.lock().unwrap_or_else(|e| e.into_inner());
+            if let Opened::Unopened = *opened {
+                let found = (self.paths.iter())
+                    .map(|at| Library::open(at))
+                    .find(Library::found);
+                *opened = match found {
+                    Some(library) => Opened::Ready(library),
+                    None => Opened::Absent(if self.paths.is_empty() {
+                        Missing::NoPath
+                    } else {
+                        Missing::NoLibrary
+                    }),
+                };
+            }
+            match &mut *opened {
+                Opened::Ready(library) => match library.read(path) {
+                    Some(bytes) => return Some(bytes),
+                    None => Missing::NoFile,
+                },
+                Opened::Absent(missing) => *missing,
+                Opened::Unopened => Missing::NoLibrary,
+            }
+        };
+        (self.told)(missing, path);
+        None
+    }
+}
+
+impl Library {
     /// The layout of the picture at `path`: its sidecar, and one frame's
     /// size from the image header; `None` when the library has neither.
     // ponytail: reads the whole PNG for its 24-byte header; read a prefix
