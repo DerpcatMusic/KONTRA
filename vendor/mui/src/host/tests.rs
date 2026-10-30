@@ -15,6 +15,9 @@ struct Knob {
     value: f64,
     builds: usize,
     trails: Vec<usize>,
+    /// What each tree saw of the pointer: where, and whether primary was
+    /// down. A press in flight is judged by the frame that dispatches it.
+    seen: Vec<(Option<Point>, bool)>,
     changed: bool,
     zoom: f64,
 }
@@ -25,6 +28,7 @@ impl Default for Knob {
             value: 0.5,
             builds: 0,
             trails: Vec::new(),
+            seen: Vec::new(),
             changed: false,
             zoom: 1.0,
         }
@@ -35,6 +39,10 @@ impl View for Knob {
     fn build(&mut self, ui: &mut Ui, input: &Input) -> El {
         self.builds += 1;
         self.trails.push(input.trail.len());
+        self.seen.push((
+            input.pointer.pos,
+            input.pointer.buttons.contains(Button::Primary),
+        ));
         knob(ui, "k", "K", &mut self.value, 0.0..=1.0).into()
     }
     fn changed(&mut self) -> bool {
@@ -223,6 +231,35 @@ fn a_zoom_change_moves_the_pointer_with_the_scene() {
         r.d.pointer().pos,
         Some(at(100.0, 60.0)),
         "the pointer must stay over the window point it is on"
+    );
+}
+
+#[test]
+fn a_queued_press_is_reprojected_when_the_zoom_changes() {
+    let fit = || Knob {
+        zoom: -1.0,
+        ..Knob::default()
+    };
+    // As above: scene (50, 30) at a zoom of 2.
+    let mut r = Rig::new(fit(), (400, 300), 1.0);
+    r.step();
+    r.d.pointer_moved(at(100.0, 60.0), none());
+    // The press arrives before the resize: it is queued in the scene space
+    // the zoom of 2 lays out.
+    r.d.button(Button::Primary, true, none());
+    assert_eq!(
+        inputs(&r.d).last().unwrap().pointer.pos,
+        Some(at(50.0, 30.0))
+    );
+    // Half the window: the zoom is 1, and the press must be dispatched over
+    // the same window point as the pointer, not the old scene (50, 30).
+    r.d.resized((200, 300), 1.0);
+    r.step();
+    assert_eq!(r.d.ui_scale(), 1.0);
+    assert_eq!(
+        r.s.view.seen.last(),
+        Some(&(Some(at(100.0, 60.0)), true)),
+        "a press in flight must be tested where its window point is now"
     );
 }
 
