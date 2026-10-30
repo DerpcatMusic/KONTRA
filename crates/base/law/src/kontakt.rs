@@ -67,13 +67,20 @@ mod tests {
     }
 
     #[test]
-    fn integer_powers_preserve_original_f32_rounding() {
+    fn cubic_preserves_original_f32_rounding() {
         for n in 0..=10_000 {
             let x = n as f32 / 10_000.0;
             assert_eq!(UNIT_CUBIC.eval(x), x.powi(3), "cubic at {x}");
-            assert_eq!(UNIT_FIFTH.eval(x), x.powi(5), "fifth at {x}");
         }
         assert_eq!(UNIT_CUBIC.eval(-1.0), 0.0);
+    }
+
+    #[test]
+    fn fifth_preserves_original_f32_rounding() {
+        for n in 0..=10_000 {
+            let x = n as f32 / 10_000.0;
+            assert_eq!(UNIT_FIFTH.eval(x), x.powi(5), "fifth at {x}");
+        }
         assert_eq!(UNIT_FIFTH.eval(2.0), 1.0);
     }
 }
