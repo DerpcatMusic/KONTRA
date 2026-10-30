@@ -18,7 +18,7 @@ use kontra_dsp::filter::{Formant, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 use kontra_plan::route_depth;
 
-pub use kontra_effects::processors::{curve, shaper};
+use kontra_effects::processors::{curve, shaper};
 
 use kontra_effects::summed::{VoiceEq, shape};
 

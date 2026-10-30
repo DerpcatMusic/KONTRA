@@ -29,6 +29,7 @@ impl NoteRef {
         (((self.generation & GENERATIONS) << 16) | (self.index & 0xFFFF)) as i32
     }
 
+    /// The handle an event id names; `None` for a non-note id.
     pub fn from_event_id(id: i32) -> Option<Self> {
         let id = u32::try_from(id).ok().filter(|&id| id >> 16 != 0)?;
         Some(Self {
@@ -288,10 +289,15 @@ pub struct Ledger {
     entries: Vec<Entry>,
 }
 
+/// The most notes a ledger holds: an event id keeps 16 bits of the slot.
+pub const MAX_NOTES: usize = 1 << 16;
+
 impl Ledger {
+    /// Room for `capacity` notes, at most [`MAX_NOTES`] (more would share
+    /// event ids). Not real-time.
     pub fn new(capacity: usize) -> Self {
         Self {
-            entries: (0..capacity)
+            entries: (0..capacity.min(MAX_NOTES))
                 .map(|_| Entry {
                     generation: 0,
                     note: None,
@@ -300,10 +306,12 @@ impl Ledger {
         }
     }
 
+    /// How many notes it holds at most.
     pub fn capacity(&self) -> usize {
         self.entries.len()
     }
 
+    /// Stores `note` in a free slot; `None` when every slot is taken.
     pub fn insert(&mut self, note: Note) -> Option<NoteRef> {
         let (index, entry) = self
             .entries
@@ -319,6 +327,7 @@ impl Ledger {
         })
     }
 
+    /// The note `r` names; `None` once it ended.
     pub fn get(&self, r: NoteRef) -> Option<&Note> {
         self.entries
             .get(r.index as usize)
@@ -327,6 +336,7 @@ impl Ledger {
             .as_ref()
     }
 
+    /// As [`Self::get`], to change it.
     pub fn get_mut(&mut self, r: NoteRef) -> Option<&mut Note> {
         self.entries
             .get_mut(r.index as usize)
@@ -335,6 +345,7 @@ impl Ledger {
             .as_mut()
     }
 
+    /// Ends the note `r` names and gives it back; `None` once it ended.
     pub fn remove(&mut self, r: NoteRef) -> Option<Note> {
         self.entries
             .get_mut(r.index as usize)
@@ -352,6 +363,8 @@ impl Ledger {
     }
 
     /// Fills `out` with the live notes `keep` accepts, oldest slot first.
+    /// Adds the live notes `keep` accepts to `out`, up to `out`'s capacity:
+    /// it never grows `out`, so a list with no room gets none.
     pub fn select(&self, out: &mut Vec<NoteRef>, keep: impl Fn(&Note) -> bool) {
         out.clear();
         for (index, e) in self.entries.iter().enumerate() {
@@ -398,6 +411,7 @@ impl Ledger {
         })
     }
 
+    /// How many live notes `keep` accepts.
     pub fn count(&self, keep: impl Fn(&Note) -> bool) -> usize {
         self.entries
             .iter()

@@ -7,8 +7,9 @@ use kontra_ir as ir;
 
 use crate::Engine;
 use crate::effects;
+pub(crate) use kontra_effects::processors::{Dsp, Responses, convolver, processor};
 use kontra_effects::stem;
-pub(crate) use kontra_racks::rack::{Dsp, Live, Rack, Responses, convolver, processor};
+pub(crate) use kontra_racks::rack::{Live, Rack};
 
 impl Engine {
     /// `load_ir_sample`: the library response `name` (its extension and

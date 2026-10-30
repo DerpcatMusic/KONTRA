@@ -25,15 +25,15 @@ pub struct Running {
     pub controller: u8,
     pub ignore_release: bool,
     pub ignore_controller: bool,
-    /// `$NI_CALLBACK_TYPE` of the callback, kept across waits.
+    /// The callback's type number scripts read, kept across waits.
     pub callback_type: u8,
-    /// `$NI_CALLBACK_ID`: unique per callback run, kept across waits.
+    /// Unique per callback run, kept across waits.
     pub callback_id: u32,
     /// The script slot running it.
     pub slot: u8,
-    /// `$NI_SIGNAL_TYPE` of a listener callback.
+    /// The signal a listener callback answers.
     pub signal: u8,
-    /// `$NI_UI_ID` of a UI callback; 0 otherwise.
+    /// The control id of a UI callback; 0 otherwise.
     pub ui: i32,
 }
 
@@ -55,7 +55,7 @@ impl Running {
     };
 
     pub fn new(kind: Kind, event: Option<NoteRef>) -> Self {
-        // KSP's $NI_CB_TYPE_* values (measured, probes/callback_constants.lua).
+        // The script's callback type numbers (measured, probes/callback_constants.lua).
         let callback_type = match kind {
             Kind::Init | Kind::Resumed => 5,
             Kind::Note => 1,
@@ -103,6 +103,26 @@ impl Running {
             callback_id: (context >> 40) as u32 & 0xF_FFFF,
             signal: (context >> 60) as u8,
             ..Self::IDLE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resumed_callback_keeps_its_event_or_control() {
+        let event = NoteRef::from_event_id(0x0003_0002);
+        let mut note = Running::new(Kind::Listener, event);
+        (note.callback_id, note.signal) = (0xA_BCDE, 9);
+        let mut ui = Running::new(Kind::UiControl, None);
+        (ui.ui, ui.callback_id) = (77, 1);
+        for run in [note, ui] {
+            let back = Running::resumed(run.context());
+            let fields = |r: Running| (r.event, r.ui, r.callback_type, r.callback_id, r.signal);
+            assert_eq!(fields(back), fields(run));
+            assert_eq!(back.kind, Kind::Resumed);
         }
     }
 }

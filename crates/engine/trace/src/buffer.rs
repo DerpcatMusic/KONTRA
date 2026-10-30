@@ -3,7 +3,7 @@
 use crate::{RouteBuffer, TraceEvent};
 
 pub struct Trace {
-    pub events: Vec<TraceEvent>,
+    events: Vec<TraceEvent>,
     pub dropped: u64,
     pub next_action: u64,
     pub routes: RouteBuffer,
@@ -43,6 +43,16 @@ impl Trace {
             chunk += 1;
         }
     }
+    /// The events since the last [`Self::clear`].
+    pub fn events(&self) -> &[TraceEvent] {
+        &self.events
+    }
+
+    /// Forgets the events, keeping their room.
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+
     pub fn push(&mut self, event: TraceEvent) {
         if self.events.len() < self.events.capacity() {
             self.events.push(event);

@@ -11,7 +11,8 @@ use kontra_plan::Response;
 use kontra_time::SampleTime;
 
 use kontra_behaviour::Behaviour;
-pub use kontra_effects::processors::{Dsp, Responses, convolver, processor};
+use kontra_effects::processors::processor;
+pub use kontra_effects::processors::{Dsp, Responses};
 
 pub struct Rack {
     /// The plan's slots as scripts have changed them.

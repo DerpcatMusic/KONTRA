@@ -17,7 +17,7 @@ pub const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
 pub const BUS_OFFSET: i32 = 1024;
 
 /// Which of a [`Level`]'s settings a parameter is.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LevelPar {
     Volume,
     Pan,
@@ -25,6 +25,7 @@ pub enum LevelPar {
 }
 
 impl LevelPar {
+    /// Sets it in `level` from a raw 0..=1_000_000 value.
     pub fn set(self, level: &mut Level, raw: f64) {
         match self {
             Self::Volume => level.gain = CUBE.eval_unclamped_f64(raw / UNITY_VOLUME) as f32,
@@ -34,6 +35,7 @@ impl LevelPar {
         }
     }
 
+    /// Its raw 0..=1_000_000 value in `level`.
     pub fn get(self, level: &Level) -> f64 {
         match self {
             Self::Volume => UNITY_VOLUME * cube_root(level.gain),
@@ -44,7 +46,7 @@ impl LevelPar {
 }
 
 /// What an effect parameter sets in a slot.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EffectPar {
     Bypass,
     Output,
@@ -78,6 +80,8 @@ impl EffectPar {
         true
     }
 
+    /// Its raw 0..=1_000_000 value in `e`; `None` when the slot has no such
+    /// control.
     pub fn get(self, e: &ir::Effect) -> Option<f64> {
         let gain = |g: f32| UNITY_EFFECT_GAIN * cube_root(g);
         Some(match (self, e.kind) {
@@ -95,6 +99,7 @@ impl EffectPar {
     }
 }
 
+/// The effect setting `par` addresses; `None` for any other parameter.
 pub fn effect_par(par: EnginePar) -> Option<EffectPar> {
     Some(match par {
         EnginePar::EffectBypass => EffectPar::Bypass,
@@ -108,6 +113,7 @@ pub fn effect_par(par: EnginePar) -> Option<EffectPar> {
     })
 }
 
+/// The level setting `par` addresses; `None` for any other parameter.
 pub fn level_par(par: EnginePar) -> Option<LevelPar> {
     Some(match par {
         EnginePar::Volume => LevelPar::Volume,
