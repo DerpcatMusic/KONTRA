@@ -149,9 +149,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         file.seek(SeekFrom::Start(0x7164750)).ok()?;
         let mut bytes = vec![0; 4_000_340];
         file.read_exact(&mut bytes).ok()?;
-        (format!("{:x}", Sha256::digest(&bytes))
-            == "12e16fc01063aeb2963c53b63d11f8d102f2ea743852554172ae98dec06f6ad5")
-            .then_some(bytes)
+        valid_outline(&bytes).then_some(bytes)
     })();
     let after = path.metadata().ok()?;
     if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
@@ -178,6 +176,12 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
     };
     super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
     Some(images)
+}
+
+pub(super) fn valid_outline(bytes: &[u8]) -> bool {
+    bytes.len() == 4_000_340
+        && format!("{:x}", Sha256::digest(bytes))
+            == "12e16fc01063aeb2963c53b63d11f8d102f2ea743852554172ae98dec06f6ad5"
 }
 
 fn crc32(bytes: &[u8]) -> u32 {

@@ -78,9 +78,14 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 8]) -> Option<Cached> {
         button: image(5),
         font12: image(6),
         field: image(7),
-        outline: std::fs::read(dir.join("outline.ttf"))
-            .ok()
-            .filter(|bytes| bytes.len() == 4_000_340),
+        outline: {
+            let path = dir.join("outline.ttf");
+            path.metadata()
+                .ok()
+                .filter(|m| m.len() == 4_000_340)
+                .and_then(|_| std::fs::read(path).ok())
+                .filter(|bytes| super::stock::valid_outline(bytes))
+        },
     })))
 }
 
