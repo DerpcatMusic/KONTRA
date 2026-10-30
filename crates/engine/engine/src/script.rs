@@ -612,11 +612,10 @@ impl HostApi for Engine {
                 if let Some(g) = self.groups.get_mut(int(0) as usize) {
                     g.purged = int(1) == 0;
                 }
-                HostValue::Int(self.start_async())
+                HostValue::Int(self.start_async(true))
             }
             Action::AsyncId => HostValue::Int(self.ids.async_done),
-            // ponytail: every asynchronous command here succeeds.
-            Action::AsyncExitStatus => HostValue::Int(1),
+            Action::AsyncExitStatus => HostValue::Int(i32::from(self.ids.async_success)),
             // A command still running (an effect type loading off the audio
             // thread) holds the callback; it looks again each millisecond.
             Action::WaitAsync if int(0) > 0 && self.ids.running.contains(&int(0)) => {
@@ -689,7 +688,7 @@ impl HostApi for Engine {
                 }
                 HostValue::Int(match loaded {
                     Some(answer) => answer,
-                    None if swap && self.running.kind != Kind::Init => self.start_async(),
+                    None if swap && self.running.kind != Kind::Init => self.start_async(true),
                     None => -1,
                 })
             }
@@ -719,6 +718,10 @@ impl HostApi for Engine {
                     HostValue::Nothing
                 }
             }
+            // Mode 1 reads the user's Data folder (what `save_array` wrote),
+            // which KONTRA never holds: the load misses, the array stays as it
+            // is and `on async_complete` reports failure (KSP manual).
+            Action::LoadArray if int(2) == 1 => HostValue::Int(self.start_async(false)),
             Action::LoadArray if int(2) == 2 && int(3) != 2 => {
                 if let Some(s) = self.script() {
                     s.load_number_data(int(0) as u32, int(1) as usize, call.cells);

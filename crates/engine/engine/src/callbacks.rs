@@ -121,10 +121,11 @@ impl Engine {
     }
 
     /// Starts an asynchronous command for the running slot: its `on
-    /// async_complete` runs when the queue reaches it. Returns its id.
-    pub(crate) fn start_async(&mut self) -> i32 {
+    /// async_complete` runs when the queue reaches it, its exit status
+    /// `success`. Returns its id.
+    pub(crate) fn start_async(&mut self, success: bool) -> i32 {
         let (slot, id) = (self.running.slot, self.next_async_id());
-        if !self.queue.push(self.now, Work::Async { slot, id }) {
+        if !self.queue.push(self.now, Work::Async { slot, id, success }) {
             self.stats.events_refused += 1;
         }
         id
@@ -139,7 +140,8 @@ impl Engine {
         id
     }
 
-    pub(crate) fn async_complete(&mut self, slot: u8, id: i32) {
+    pub(crate) fn async_complete(&mut self, slot: u8, id: i32, success: bool) {
+        self.ids.async_success = success;
         self.ids.async_done = id;
         for r in self.ids.running.iter_mut().filter(|r| **r == id) {
             *r = 0;
@@ -358,6 +360,8 @@ pub(crate) struct Ids {
     /// The last asynchronous command started, and `$NI_ASYNC_ID`: the last finished.
     pub(crate) async_last: i32,
     pub(crate) async_done: i32,
+    /// `$NI_ASYNC_EXIT_STATUS`: whether the last finished command succeeded.
+    pub(crate) async_success: bool,
     /// Commands started and not finished (0 a free cell), which
     /// `wait_async` waits on.
     // ponytail: past 32 at once, a command is not waited on.
@@ -369,6 +373,7 @@ impl Ids {
         callbacks: 0,
         async_last: 0,
         async_done: 0,
+        async_success: true,
         running: [0; 32],
     };
 }

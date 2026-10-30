@@ -119,7 +119,7 @@ impl Engine {
             false => holds.is_some() && holds == kind(&effect),
         };
         if same {
-            return Some(if init { -1 } else { self.start_async() });
+            return Some(if init { -1 } else { self.start_async(true) });
         }
         if init {
             *self.slot_mut(group, slot, generic)? = effect;
@@ -238,10 +238,12 @@ impl Engine {
         if let (true, Some(ty)) = (swapped.is_ok(), r.ty) {
             self.mark_loaded(r.at, r.slot, ty);
         }
+        let success = swapped.is_ok();
         let (effect, dsp) = swapped.unwrap_or_else(|dsp| (r.effect, dsp));
         let work = Work::Async {
             slot: r.script,
             id: r.id,
+            success,
         };
         if !self.queue.push(self.now, work) {
             self.stats.events_refused += 1;

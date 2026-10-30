@@ -36,6 +36,7 @@ pub(crate) enum Work {
     Async {
         slot: u8,
         id: i32,
+        success: bool,
     },
 }
 
