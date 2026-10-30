@@ -89,12 +89,13 @@ fi
 # Compare a tabbed label to its pre-change real-window capture.
 if [[ ${KSP_TABS_ONLY:-0} == 1 ]]; then
     if [[ -n ${KSP_TABS_BEFORE:-} ]]; then
-        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+        if python3 -I -c 'import sys; from PIL import Image
 box = tuple(map(int, sys.argv[3].split(",")))
 a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
-sys.exit(0 if ImageChops.difference(a, b).getbbox() else 1)' "$KSP_TABS_BEFORE" "$out/0-open.png" "${KSP_TABS_BOX:-430,190,550,380}"; then
-            pass "Kontakt tabbed label changes in the editor"
-        else miss "Kontakt tabbed label changes in the editor"; fi
+bright = lambda image: sum(min(pixel) > 65 for pixel in image.getdata())
+sys.exit(0 if bright(a) >= 8 and bright(b) <= 2 else 1)' "$KSP_TABS_BEFORE" "$out/0-open.png" "${KSP_TABS_BOX:-443,204,448,211}"; then
+            pass "Areia tab missing-glyph box disappears"
+        else miss "Areia tab missing-glyph box disappears"; fi
     fi
     ticks_tabs() { local sum=0 t; for t in /proc/"$editor"/task/*; do
         [[ $(<"$t/comm") == cpal* ]] && continue
