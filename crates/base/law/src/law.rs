@@ -10,6 +10,14 @@ pub enum Law {
     Linear { lo: f32, hi: f32 },
     /// Geometric interpolation from `lo` to `hi` (frequency-style tapers).
     Exp { lo: f32, hi: f32 },
+    /// `scale · (base^((x + offset) · factor) + shift)`, in that order.
+    ExpAffine {
+        base: f32,
+        offset: f32,
+        factor: f32,
+        shift: f32,
+        scale: f32,
+    },
     /// Linear in decibels from `lo` to `hi`, evaluated as linear gain.
     Db { lo: f32, hi: f32 },
     /// `lo + (hi − lo) · x^exponent`: a power taper (a reverb damping knob: `x^¼`).
@@ -62,6 +70,13 @@ impl Law {
         match self {
             Self::Linear { lo, hi } => lo * (1.0 - x) + hi * x,
             Self::Exp { lo, hi } => lo.powf(1.0 - x) * hi.powf(x),
+            Self::ExpAffine {
+                base,
+                offset,
+                factor,
+                shift,
+                scale,
+            } => scale * (base.powf((x + offset) * factor) + shift),
             Self::Db { lo, hi } => 10f32.powf((lo * (1.0 - x) + hi * x) / 20.0),
             Self::Power { lo, hi, exponent } => lo + (hi - lo) * x.powf(*exponent),
             Self::IntegerPower { exponent } => x.powi(*exponent),
