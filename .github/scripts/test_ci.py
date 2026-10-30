@@ -67,7 +67,7 @@ class Gates(unittest.TestCase):
         self.assertNotIn("  schedule:", release)
         self.assertIn("uses: ./.github/workflows/v3-verify.yml", release)
         self.assertIn("needs.check.outputs.released == 'false'", release)
-        self.assertIn("    needs: [verify, bundle]", release)
+        self.assertIn("    needs: [verify, bundle, macos-universal]", release)
         self.assertIn("cargo moose build --clap --vst3 -p kontra-plugin", release)
         self.assertIn("gh release create", release)
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
