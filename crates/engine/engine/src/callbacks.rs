@@ -11,7 +11,7 @@ use kontra_vm::{HostValue, Step, Vm};
 use crate::ledger::{NoteRef, Releases};
 use crate::queue::{Exit, Work};
 use crate::script::{Kind, Running, ScriptPlan, micros_to_frames};
-use crate::{Engine, Trigger};
+use crate::{Engine, ReleaseZones, Trigger};
 
 impl Engine {
     /// The plan of the slot whose callback runs.
@@ -347,13 +347,14 @@ impl Engine {
                 .notes
                 .count(|n| n.started && !n.ignored && !n.is_up() && !n.pedal_held)
                 - 1;
+            let scripted = self.plan.release_zones == ReleaseZones::WithNote;
             self.start_zones(note, true, |trigger| match trigger {
                 Trigger::Attack => true,
                 Trigger::First => held == 0,
                 Trigger::Legato => held > 0,
-                Trigger::Release => false,
+                Trigger::Release => scripted,
             });
-            if self.notes.get(note).map(|n| n.releases) == Some(Releases::AtStart) {
+            if !scripted && self.notes.get(note).map(|n| n.releases) == Some(Releases::AtStart) {
                 self.start_zones(note, false, |trigger| trigger == Trigger::Release);
             }
             self.behaviour.advance();
