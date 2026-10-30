@@ -38,3 +38,25 @@ the application's exact `mapped_accessibility_set_value_uses_authored_units`.
 earliest one winning. KONTRA's value-edit arrows repeat while held and its
 level meters fall and hold on Kontakt's GUI tick; both need a frame when no
 input arrives. No change to painting or input.
+
+# The pointer is re-derived when the scene space changes
+
+`Driver` recorded the pointer in **scene units** at event time, dividing by
+the zoom in force then. The scene space is physical pixels over the window
+scale and the zoom, so a window scale the host changes (`gui.set_scale`, a
+compositor change) or a zoom the view changes (a fit-to-window editor
+re-zooms on every resize) moves the scene under a pointer that did not move.
+The recorded position then belongs to the old space, and since baseview's
+button events carry no position of their own -- only the last move's -- the
+press that follows is tested against rects the pointer is not over. The
+error grows with distance from the origin, so controls near the corner keep
+working while a floating menu's items do not.
+
+`Driver` keeps the pointer in window points (`pointer_at`) and derives the
+scene position from it, so a zoom change re-derives it in `advance` and the
+native host re-derives it from the physical point in `Handler::resized`
+(`Driver::reposition`). Painting and layout are unchanged: both already used
+the scale in force. Witnesses: `host::tests::a_zoom_change_moves_the_pointer_with_the_scene`
+and `kontra-native-host`'s `tests::a_press_after_a_scale_change_lands_where_the_pointer_is`;
+both fail on the unpatched driver, landing the press at the old scene
+position.

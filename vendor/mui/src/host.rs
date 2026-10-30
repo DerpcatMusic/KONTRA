@@ -205,6 +205,12 @@ pub struct Driver {
     ime_area: Option<(Point, Size)>,
     focused: bool,
     pointer: PointerInput,
+    /// Where the pointer is in **window points**, the space native events
+    /// arrive in. [`Driver::pointer`]'s position is this divided by the zoom
+    /// in force: keeping the point lets a window scale or zoom change move
+    /// the pointer with the scene, instead of leaving the next press where
+    /// the pointer no longer is.
+    pointer_at: Option<Point>,
     clipboard: Box<dyn Clipboard>,
     /// Physical pixels, and physical per window point.
     size: (u32, u32),
@@ -239,6 +245,7 @@ impl Driver {
             ime_area: None,
             focused: true,
             pointer: PointerInput::default(),
+            pointer_at: None,
             clipboard,
             size,
             scale,
@@ -389,15 +396,42 @@ impl Driver {
 
     /// The pointer moved to `at`, window points.
     pub fn pointer_moved(&mut self, at: Point, mods: Mods) {
-        self.pointer.pos = Some(Point::new(at.x / self.zoom, at.y / self.zoom));
+        self.pointer_at = Some(at);
+        self.pointer.pos = Some(self.scene(at));
         self.pointer.mods = mods;
         self.push_move();
     }
 
     /// The pointer left the window.
     pub fn pointer_left(&mut self) {
+        self.pointer_at = None;
         self.pointer.pos = None;
         self.push_move();
+    }
+
+    /// The pointer has not moved, but the window's scale did: `at` window
+    /// points is where it still is. No event is queued -- nothing happened to
+    /// the pointer; the scene under it was divided differently.
+    pub fn reposition(&mut self, at: Point) {
+        self.pointer_at = Some(at);
+        self.repose();
+    }
+
+    /// `at` window points, in the scene space the zoom in force lays out.
+    fn scene(&self, at: Point) -> Point {
+        Point::new(at.x / self.zoom, at.y / self.zoom)
+    }
+
+    /// The scene space moved under the pointer -- the window's scale or the
+    /// view's zoom changed and the pointer did not move -- so the position
+    /// recorded in the old space is re-derived from the window point it was
+    /// over. Without this the next press is tested against rects the pointer
+    /// is not over: a click that lands nowhere, or on a control further from
+    /// the origin the larger the scale changed.
+    fn repose(&mut self) {
+        if let Some(at) = self.pointer_at {
+            self.pointer.pos = Some(self.scene(at));
+        }
     }
 
     /// A button went down or up.
@@ -433,6 +467,7 @@ impl Driver {
         } else {
             self.held.clear();
             self.pointer = PointerInput::default();
+            self.pointer_at = None;
             self.pending.push_back(Pending::Cancel(self.pointer));
         }
     }
@@ -446,6 +481,7 @@ impl Driver {
             profile.finish_inputs();
         }
         self.pointer = PointerInput::default();
+        self.pointer_at = None;
         s.view.cancel(&s.ui);
         s.ui.close();
     }
@@ -573,6 +609,7 @@ impl Driver {
         let zoom = s.view.zoom(logical_size(self.size, self.scale));
         if zoom.is_finite() && zoom > 0.0 && zoom != self.zoom {
             self.zoom = zoom;
+            self.repose();
             self.dirty = true;
         }
         let due = self.wake_at.is_some_and(|at| now >= at);
