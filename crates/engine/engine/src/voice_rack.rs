@@ -62,7 +62,9 @@ impl Engine {
                 Kind::Filter(_) => self
                     .voice_filter(zone, u.insert, note, age)
                     .map(|(hz, k)| Tune::Filter(hz, k)),
-                Kind::Eq(_) => self.voice_bells(zone, u.insert, note, age).map(Tune::Eq),
+                Kind::Eq(_) | Kind::Amp { .. } => {
+                    self.voice_bells(zone, u.insert, note, age).map(Tune::Eq)
+                }
                 Kind::Formant(_) | Kind::Overdrive(_) => self
                     .voice_effect(zone, u.insert, note, age)
                     .map(Tune::Effect),
