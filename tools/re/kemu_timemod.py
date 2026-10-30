@@ -19,7 +19,7 @@ import kemu  # noqa: E402
 from kemu import Emu, f32  # noqa: E402
 from unicorn.x86_const import UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_RBP, UC_X86_REG_RDI, UC_X86_REG_RSP  # noqa: E402
 
-EXE = '/mnt/Windows11/DEV_WORKSPACE/re-binaries/Kontakt8.exe'
+EXE = os.environ.get('KONTAKT_EXE', '/mnt/Windows11/DEV_WORKSPACE/re-binaries/Kontakt8.exe')
 kemu.MATH1D.setdefault('acos', math.acos)  # legacy LFO phase readback 0x140884620
 
 
