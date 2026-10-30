@@ -34,8 +34,13 @@ run_tests() {
     out=$(CARGO_TARGET_DIR="$TARGET" cargo test -p "$crate" 2>&1)
     local line
     line=$(printf '%s\n' "$out" | grep -E "^test result:" | awk '{p+=$4; f+=$6} END {print p" passed, "f" failed"}')
+    # A crate that fails to COMPILE prints no result line at all, so "no
+    # result" is a failure, not a pass -- that is how a broken test file once
+    # reported ok.
     if printf '%s\n' "$out" | grep -qE "^test result: FAILED"; then
-        bad "tests: $crate" "${line:-no result line}"
+        bad "tests: $crate" "${line:-some tests failed}"
+    elif ! printf '%s\n' "$out" | grep -qE "^test result:"; then
+        bad "tests: $crate" "did not compile or did not run"
     else
         ok "tests: $crate" "${line:-no result line}"
     fi
