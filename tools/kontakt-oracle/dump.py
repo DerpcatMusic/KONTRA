@@ -36,27 +36,44 @@ def winpath(p: Path) -> str:
 
 # Modal startup dialogs that stop the Lua script from running: (window title, key).
 # Mouse input only reaches windows inside a Wine virtual desktop, so each dialog is
-# dismissed by clicking its button at a position relative to the dialog.
-#   (title regex, max dialog width, x, y of the button relative to the dialog)
+# dismissed by clicking its button, at a position taken from the dialog's own size
+# rather than a fixed point: the Audio/MIDI dialog is 594x302 here, and the fixed
+# x=823 this used to click was outside it, so the click never landed.
+#   (title regex, max dialog width, button offsets from the bottom-right corner)
 DIALOGS = [
-    ("^Audio and MIDI Settings$", 2000, 823, 470),  # OK
-    ("^Kontakt 8$", 700, None, 125),                # "library not installed" etc.: centred OK
+    ("^Audio and MIDI Settings$", 2000, [(-45, -22), (-45, -45), (-90, -22)]),  # OK
+    ("^Kontakt 8$", 700, [(-45, -22), (-90, -22), (0, -125)]),                  # centred OK
 ]
 
 
+def window_geometry(env: dict, window: str) -> tuple[int, int]:
+    geo = subprocess.run(["xdotool", "getwindowgeometry", window], env=env,
+                         capture_output=True, text=True).stdout
+    size = next((l.split()[1] for l in geo.splitlines() if "Geometry" in l), "0x0")
+    width, _, height = size.partition("x")
+    return int(width or 0), int(height or 0)
+
+
 def dismiss_dialogs(env: dict) -> None:
-    for title, max_width, x, y in DIALOGS:
+    for title, max_width, offsets in DIALOGS:
         found = subprocess.run(["xdotool", "search", "--name", title], env=env,
                                capture_output=True, text=True).stdout.split()
         for window in found:
-            geo = subprocess.run(["xdotool", "getwindowgeometry", window], env=env,
-                                 capture_output=True, text=True).stdout
-            size = next((l.split()[1] for l in geo.splitlines() if "Geometry" in l), "0x0")
-            width = int(size.split("x")[0])
+            width, height = window_geometry(env, window)
             if width >= max_width or width == 0:
                 continue
-            subprocess.run(["xdotool", "mousemove", "--window", window, str(x if x is not None else width // 2),
-                            str(y), "click", "1"], env=env, check=False, capture_output=True)
+            for dx, dy in offsets:
+                x = width + dx if dx < 0 else width // 2 + dx
+                y = height + dy
+                subprocess.run(["xdotool", "mousemove", "--window", window,
+                                str(max(x, 1)), str(max(y, 1)), "click", "1"],
+                               env=env, check=False, capture_output=True)
+                # The dialog is gone once it no longer answers to its title.
+                gone = not subprocess.run(["xdotool", "search", "--name", title], env=env,
+                                          capture_output=True, text=True).stdout.split()
+                if gone:
+                    break
+
 
 
 def lua_str(s: str) -> str:
