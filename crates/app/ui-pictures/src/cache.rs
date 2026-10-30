@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn root() -> Option<PathBuf> {
-    Some(dirs::cache_dir()?.join("kontra/stock-art-v6"))
+    Some(dirs::cache_dir()?.join("kontra/stock-art-v7"))
 }
 
 fn index(root: &Path, path: &Path) -> Option<PathBuf> {
