@@ -101,6 +101,9 @@ pub fn run(args: &[String]) -> Result<Verdict, String> {
 }
 
 fn build(root: &std::path::Path, cargo: &[&str]) -> Result<Duration, String> {
+    let Some((program, rest)) = cargo.split_first() else {
+        return Err("no command to build with".to_string());
+    };
     let start = Instant::now();
     // build-slot shares build capacity on the maintainer's machine; elsewhere run cargo directly.
     let status = match Command::new("build-slot")
@@ -108,13 +111,12 @@ fn build(root: &std::path::Path, cargo: &[&str]) -> Result<Duration, String> {
         .current_dir(root)
         .status()
     {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Command::new(cargo[0])
-            .args(&cargo[1..])
-            .current_dir(root)
-            .status(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Command::new(program).args(rest).current_dir(root).status()
+        }
         other => other,
     }
-    .map_err(|error| format!("cannot run {}: {error}", cargo[0]))?;
+    .map_err(|error| format!("cannot run {program}: {error}"))?;
     if !status.success() {
         return Err(format!(
             "`build-slot {}` failed ({status})",

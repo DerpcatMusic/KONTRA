@@ -7,7 +7,7 @@ use crate::args;
 use crate::walk;
 use crate::workspace;
 use cargo_metadata::{Metadata, PackageId};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
@@ -190,7 +190,7 @@ impl Graph {
             .flat_map(|from| {
                 from.deps
                     .iter()
-                    .map(|&to| &self.nodes[to])
+                    .filter_map(|&to| self.nodes.get(to))
                     .filter(|to| to.workspace)
                     .map(|to| (from.name.clone(), to.name.clone()))
             })
@@ -199,23 +199,24 @@ impl Graph {
 
     /// Shortest dependency path from `start` to a node matching `is_target`, by name.
     fn path_to(&self, start: usize, is_target: impl Fn(&Node) -> bool) -> Option<Vec<String>> {
-        let mut parent: Vec<Option<usize>> = vec![None; self.nodes.len()];
-        let mut seen = vec![false; self.nodes.len()];
+        // Visited nodes and the edge each was reached by, keyed by index: a
+        // node index that the graph does not hold is simply not there.
+        let mut parent: HashMap<usize, usize> = HashMap::new();
+        let mut seen: HashSet<usize> = HashSet::new();
         let mut queue = VecDeque::from([start]);
-        seen[start] = true;
+        seen.insert(start);
         while let Some(current) = queue.pop_front() {
-            for &next in &self.nodes[current].deps {
-                if seen[next] {
+            for &next in &self.nodes.get(current)?.deps {
+                if !seen.insert(next) {
                     continue;
                 }
-                seen[next] = true;
-                parent[next] = Some(current);
-                if is_target(&self.nodes[next]) {
+                parent.insert(next, current);
+                if is_target(self.nodes.get(next)?) {
                     let mut names = Vec::new();
                     let mut at = Some(next);
                     while let Some(node) = at {
-                        names.push(self.nodes[node].name.clone());
-                        at = parent[node];
+                        names.push(self.nodes.get(node)?.name.clone());
+                        at = parent.get(&node).copied();
                     }
                     names.reverse();
                     return Some(names);
@@ -307,6 +308,26 @@ mod tests {
         assert_eq!(
             problems,
             vec!["base must not reach a GPU crate: base -> wgpu-core"]
+        );
+    }
+
+    /// The reported path is the shortest one, and a cycle does not leave the
+    /// walk going round it.
+    #[test]
+    fn the_shortest_reachable_path_is_reported_and_cycles_terminate() {
+        let graph = Graph {
+            nodes: vec![
+                node("base", "crates/base/core", true, &[1, 2]),
+                node("mid", "crates/mid", true, &[3]),
+                node("near", "crates/near", true, &[3]),
+                // A GPU crate that depends back on the root: a cycle.
+                node("wgpu-core", "", false, &[0]),
+            ],
+        };
+        let problems = violations(&dag(&[("base", &["mid", "near"])], true), &graph);
+        assert_eq!(
+            problems,
+            vec!["base must not reach a GPU crate: base -> mid -> wgpu-core"]
         );
     }
 
