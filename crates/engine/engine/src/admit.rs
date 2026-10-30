@@ -4,6 +4,7 @@
 
 use crate::ledger::{Note, NoteRef, Origin};
 use crate::{Engine, Slot, Trigger};
+use kontra_voice::FadeTarget;
 
 impl Engine {
     /// Enters `note` in the table. When it is full, the note that matters
@@ -21,7 +22,7 @@ impl Engine {
                 let sounding = self
                     .voices
                     .iter()
-                    .any(|s| s.note == Some(r) && s.voice.is_active() && !s.fading);
+                    .any(|s| s.note == Some(r) && s.voice.is_active() && !s.voice.is_ending());
                 let held = n.origin == Origin::Host && !n.is_up();
                 (sounding || held, !n.released, n.at)
             })
@@ -42,13 +43,13 @@ impl Engine {
             let fade = self.fade_frames();
             let plan = self.plan.clone();
             let group = |s: &Slot| plan.zones.get(s.zone).map(|z| z.group);
-            let playing = |s: &Slot| s.voice.is_active() && !s.fading;
+            let playing = |s: &Slot| s.voice.is_active() && !s.voice.is_ending();
             let victim = self
                 .voices
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| playing(s))
-                .min_by_key(|(_, s)| (!s.released, s.started))
+                .min_by_key(|(_, s)| (!s.voice.is_released(), s.started))
                 .map(|(i, s)| (i, s.note, group(s)));
             if let Some((v, note, of)) = victim {
                 self.steal(v, fade);
@@ -65,7 +66,7 @@ impl Engine {
                     .voices
                     .iter()
                     .enumerate()
-                    .min_by_key(|(_, s)| (!s.fading, s.started))?;
+                    .min_by_key(|(_, s)| (!s.voice.is_ending(), s.started))?;
                 self.stats.voices_cut += 1;
                 i
             }
@@ -87,8 +88,7 @@ impl Engine {
         let Some(slot) = self.voices.get_mut(index).filter(|s| s.voice.is_active()) else {
             return false;
         };
-        slot.voice.fade(fade);
-        !std::mem::replace(&mut slot.fading, true)
+        slot.voice.fade(FadeTarget::End, fade)
     }
 
     /// Calls `act` on each voice `pick` chooses.
@@ -103,6 +103,33 @@ impl Engine {
     /// Fades every playing voice `pick` chooses, ended on request, not stolen.
     pub(crate) fn fade_where(&mut self, fade: u32, pick: impl Fn(&Slot) -> bool) {
         self.each_voice(pick, |engine, index| _ = engine.fade_voice(index, fade));
+    }
+
+    /// Fades the voices of `notes` to `target`, and the attack voices they
+    /// start later; an ending fade releases them.
+    pub(crate) fn fade_notes(&mut self, notes: &[NoteRef], frames: u32, target: FadeTarget) {
+        for &note in notes {
+            let mut ends = false;
+            if let Some(n) = self.notes.get_mut(note) {
+                // A note yet to start starts with the fade and ends at its silence;
+                // a stopping fade stays, as a voice's does, unless a shorter one comes.
+                let ending = matches!(n.fade, Some((FadeTarget::End, _)));
+                n.released |= target == FadeTarget::End && n.started;
+                if !matches!(n.fade, Some((FadeTarget::End, left))
+                    if target != FadeTarget::End || frames >= left)
+                {
+                    n.fade = Some((target, frames));
+                }
+                ends = target == FadeTarget::End && !ending;
+            }
+            for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
+                slot.voice.fade(target, frames);
+            }
+            // Ending a note ends the notes played for its length, once.
+            if ends {
+                self.end_children(note);
+            }
+        }
     }
 
     /// Steals every playing voice `pick` chooses.

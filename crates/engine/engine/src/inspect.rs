@@ -87,12 +87,6 @@ impl Engine {
         self.unhandled.get(usize::from(action.id())).copied() == before
     }
 
-    /// A script variable cell, for inspection.
-    #[must_use]
-    pub fn script_cell(&self, n: usize) -> Option<i64> {
-        self.vms.first()?.as_ref()?.cell(n)
-    }
-
     /// Runtime faults of each script slot, counted since load.
     #[must_use]
     pub fn script_faults(&self) -> Vec<kontra_vm::Faults> {
@@ -157,12 +151,6 @@ pub struct EqRouteObservation {
 }
 
 impl Engine {
-    /// Allocate a bounded trace buffer off the audio thread and enable event capture.
-    #[cfg(feature = "trace")]
-    pub fn enable_trace(&mut self, capacity: usize) {
-        self.trace = Some(crate::trace::Trace::new(capacity));
-    }
-
     /// Captured events in order since the last clear.
     #[cfg(feature = "trace")]
     #[must_use]
@@ -221,7 +209,7 @@ impl Engine {
             .map(|(s, note)| VoiceObservation {
                 zone: s.zone,
                 position: s.voice.position(),
-                released: s.released,
+                released: s.voice.is_released(),
                 gain: s.voice.current_gain(),
                 missing_frames: s.voice.missing_frames(),
                 #[cfg(feature = "trace")]
@@ -235,7 +223,7 @@ impl Engine {
                 }),
                 note_released: note.is_some_and(|(_, n)| n.released),
                 pedal_held: note.is_some_and(|(_, n)| n.pedal_held),
-                fading: s.fading,
+                fading: s.voice.is_ending(),
                 #[cfg(feature = "trace")]
                 last_peak: s.voice.last_peak(),
             })
@@ -264,7 +252,10 @@ impl Engine {
             let age = crate::modulators::Age {
                 warp: slot.warp,
                 chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(
+                    slot.started,
+                    slot.voice.released_at().map(kontra_time::SampleTime),
+                )
             };
             for m in group.mods.iter().filter(|m| !m.bypass) {
                 if let kontra_ir::ModKind::EqGain {
@@ -333,7 +324,10 @@ impl Engine {
             let age = crate::modulators::Age {
                 warp: slot.warp,
                 chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(
+                    slot.started,
+                    slot.voice.released_at().map(kontra_time::SampleTime),
+                )
             };
             for m in group.mods.iter().filter(|m| !m.bypass) {
                 let input = kontra_plan::route_source(m.kind);
@@ -401,7 +395,10 @@ impl Engine {
             let age = crate::modulators::Age {
                 warp: slot.warp,
                 chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(
+                    slot.started,
+                    slot.voice.released_at().map(kontra_time::SampleTime),
+                )
             };
             for unit in &slot.rack {
                 let Some(mut target) = self.voice_effect(zone, unit.insert, note, age) else {

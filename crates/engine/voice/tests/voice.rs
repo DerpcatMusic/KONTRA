@@ -3,7 +3,7 @@ use std::sync::Arc;
 use kontra_stream::{
     BlobKey, Encoding, MemSource, PAGE_FRAMES, SampleFmt, Store, StoreConfig, StreamClient,
 };
-use kontra_voice::{Ahdsr, Loop, Region, Voice, VoiceStart};
+use kontra_voice::{Ahdsr, FadeTarget, KeyUp, Loop, Region, Voice, VoiceStart};
 
 const FMT: SampleFmt = SampleFmt {
     encoding: Encoding::F32,
@@ -44,6 +44,7 @@ fn start(region: Region, step: f64, envelope: Ahdsr) -> VoiceStart {
         gain: [[1.0, 0.0], [0.0, 1.0]],
         lag: kontra_voice::Lag::NONE,
         envelope,
+        fade: None,
     }
 }
 
@@ -476,4 +477,20 @@ fn offline_wait_reports_a_failed_page_as_missing() {
     voice.render(&client, 0, &mut out);
     assert!(voice.missing_frames() > 0);
     assert!(client.stats().read_errors > 0);
+}
+
+/// Key-up, then a steal: the voice ends, counted as ending once, and keeps
+/// the frame it began releasing (its modulators' age).
+#[test]
+fn a_released_voice_that_is_stolen_keeps_its_release_time() {
+    let mut voice = Voice::allocate();
+    voice.key_up(10, KeyUp::Release);
+    assert!(voice.is_released());
+    assert!(voice.fade(FadeTarget::End, 4));
+    assert!(
+        !voice.fade(FadeTarget::End, 2),
+        "a second fade is not a second end"
+    );
+    assert!(voice.is_ending() && !voice.is_released());
+    assert_eq!(voice.released_at(), Some(10));
 }
