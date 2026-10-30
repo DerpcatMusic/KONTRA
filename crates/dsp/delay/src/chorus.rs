@@ -41,21 +41,27 @@ pub struct Mode {
     pub filter: [f32; 6],
 }
 
+const fn voice(base_s: f32, gain: f32, pan: f32) -> Voice {
+    Voice { base_s, gain, pan }
+}
+
+/// Joins the mode tables' three per-voice columns into one voice array.
+///
+/// The destructuring patterns carry the seven-voice length, so a table entry
+/// with the wrong number of columns is a compile error rather than a panic.
 const fn mode(delays: [f32; 7], gains: [f32; 7], pans: [f32; 7], filter: [f32; 6]) -> Mode {
-    let mut voices = [Voice {
-        base_s: 0.0,
-        gain: 1.0,
-        pan: 0.0,
-    }; 7];
-    let mut i = 0;
-    while i < 7 {
-        voices[i] = Voice {
-            base_s: delays[i],
-            gain: gains[i],
-            pan: pans[i],
-        };
-        i += 1;
-    }
+    let [d0, d1, d2, d3, d4, d5, d6] = delays;
+    let [g0, g1, g2, g3, g4, g5, g6] = gains;
+    let [p0, p1, p2, p3, p4, p5, p6] = pans;
+    let voices = [
+        voice(d0, g0, p0),
+        voice(d1, g1, p1),
+        voice(d2, g2, p2),
+        voice(d3, g3, p3),
+        voice(d4, g4, p4),
+        voice(d5, g5, p5),
+        voice(d6, g6, p6),
+    ];
     Mode { voices, filter }
 }
 
@@ -216,7 +222,7 @@ mod tests {
     #[test]
     fn the_modulation_depth_is_the_kernels_law() {
         let hz = lfo_hz(0.5);
-        let measured = [3.5398, 25.4558, 91.3451, 201.6327, 357.0320];
+        let measured = [3.5398, 25.4558, 91.3451, 201.6327, 357.032];
         for (n, amount) in [0.0, 0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {
             let depth = modulation_depth(amount, hz, 48_000.0);
             assert!(
@@ -226,6 +232,6 @@ mod tests {
             );
         }
         // rate 0 is 0.25 Hz, amount 0.6.
-        assert!((modulation_depth(0.6, lfo_hz(0.0), 48_000.0) - 611.4650).abs() < 1e-3);
+        assert!((modulation_depth(0.6, lfo_hz(0.0), 48_000.0) - 611.465).abs() < 1e-3);
     }
 }
