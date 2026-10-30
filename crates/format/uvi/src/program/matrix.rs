@@ -28,6 +28,11 @@ const LOWER_KEY_FOLLOW: Law = Law::Power {
     hi: 0.0,
     exponent: 2.0,
 };
+const UPPER_KEY_FOLLOW: Law = Law::Power {
+    lo: 0.0,
+    hi: 1.0,
+    exponent: 0.5,
+};
 use roxmltree::Node;
 
 use super::{flag, index_of, modulation, num, source_node};
@@ -230,7 +235,7 @@ pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> 
             let k = if x < 60.0 {
                 LOWER_KEY_FOLLOW.eval(x / 60.0)
             } else {
-                ((x.min(120.0) - 60.0) / 60.0).sqrt()
+                UPPER_KEY_FOLLOW.eval((x.min(120.0) - 60.0) / 60.0)
             };
             (k + 1.0) / 2.0
         },
@@ -500,7 +505,7 @@ pub(super) fn children<'a, 'input>(
 
 #[cfg(test)]
 mod tests {
-    use super::{KEY_SOURCE, LOWER_KEY_FOLLOW};
+    use super::{KEY_SOURCE, LOWER_KEY_FOLLOW, UPPER_KEY_FOLLOW};
 
     #[test]
     fn key_laws_preserve_all_midi_values() {
@@ -511,6 +516,12 @@ mod tests {
                 assert_eq!(
                     LOWER_KEY_FOLLOW.eval(x / 60.0),
                     (x / 60.0).powi(2) - 1.0,
+                    "key {key}"
+                );
+            } else {
+                assert_eq!(
+                    UPPER_KEY_FOLLOW.eval((x.min(120.0) - 60.0) / 60.0),
+                    ((x.min(120.0) - 60.0) / 60.0).sqrt(),
                     "key {key}"
                 );
             }
