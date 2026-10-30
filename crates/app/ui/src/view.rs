@@ -314,9 +314,18 @@ fn drawn_page(
                 if let (Some(glyphs), Some(style)) = (&stock_glyphs, style)
                     && matches!(wd.kind, Kind::Label)
                     && !words.contains('\n')
+                    && words
+                        .chars()
+                        .all(|c| c == '?' || crate::pictures::glyph(c) != usize::from(b'?'))
                     && style.font == model::Font::Stock(12)
                 {
-                    parts.push(stock::label(&words, style, (w, h, scale, device), glyphs));
+                    parts.push(stock::label(
+                        &words,
+                        style,
+                        wd.text_y,
+                        (w, h, scale, device),
+                        glyphs,
+                    ));
                 } else {
                     parts.push(
                         words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.),

@@ -306,6 +306,7 @@ impl Look {
 pub(super) fn label(
     text: &str,
     style: &TextStyle,
+    text_y: Option<i32>,
     size: (f64, f64, f64, f64),
     glyphs: &crate::pictures::Glyphs,
 ) -> El {
@@ -316,7 +317,7 @@ pub(super) fn label(
         size,
         Some(glyphs),
         style.color,
-        StockMetrics::Button12,
+        StockMetrics::Label12(text_y),
     )
 }
 
@@ -324,6 +325,7 @@ pub(super) fn label(
 enum StockMetrics {
     Field,
     Button12,
+    Label12(Option<i32>),
 }
 
 fn field_words(
@@ -348,7 +350,7 @@ fn field_words(
         (if c == ' ' {
             match metrics {
                 StockMetrics::Field => f64::from(glyph.width),
-                StockMetrics::Button12 => 4.,
+                StockMetrics::Button12 | StockMetrics::Label12(_) => 4.,
             }
         } else {
             f64::from(glyph.width)
@@ -386,7 +388,7 @@ fn field_words(
                             StockMetrics::Field => {
                                 (u16::from(p[3]) * 255 / FIELD_ATLAS_COVERAGE).min(255) as u8
                             }
-                            StockMetrics::Button12 => p[3],
+                            StockMetrics::Button12 | StockMetrics::Label12(_) => p[3],
                         }) * u16::from(color.a))
                             / 255) as u8,
                     ]
@@ -397,11 +399,11 @@ fn field_words(
             {
                 layers.push(super::image(&Arc::new(image), width, height).at(
                     x,
-                    (h - height) / 2.
-                        - match metrics {
-                            StockMetrics::Field => s,
-                            StockMetrics::Button12 => 0.,
-                        },
+                    match metrics {
+                        StockMetrics::Field => (h - height) / 2. - s,
+                        StockMetrics::Button12 | StockMetrics::Label12(None) => (h - height) / 2.,
+                        StockMetrics::Label12(Some(y)) => f64::from(y) * s,
+                    },
                 ));
             }
             x += advance(c, glyph);
