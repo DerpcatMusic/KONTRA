@@ -84,6 +84,7 @@ impl Rack {
             script: ScriptState {
                 vars: old.script.vars,
                 loaded,
+                slots: old.script.slots,
                 ..ScriptState::default()
             },
             ..old

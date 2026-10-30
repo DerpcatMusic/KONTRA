@@ -798,5 +798,7 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
         // The plan is kept or copied, never prepared again from the file.
         let same = Arc::ptr_eq(p.plan.as_ref().unwrap(), &plan);
         assert_eq!(same, !rebuilt, "type {kind}");
+        // The next snapshot recalls as well.
+        assert!(rack.recall(0, &preset, None), "type {kind}: second recall");
     }
 }
