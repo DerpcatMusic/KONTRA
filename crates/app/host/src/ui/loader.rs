@@ -64,6 +64,10 @@ enum Opened {
     Ready(Library),
 }
 
+/// Told of a picture that could not be read: why, and the asset path that was
+/// asked for. Called off the UI thread, so it must be safe there.
+pub type FailureSink = Box<dyn Fn(Missing, &str) + Send + Sync>;
+
 /// A face's pictures, read by the worker that asks: the library of the first
 /// of its `paths` that has resources, opened once. Every failure goes to
 /// `told` with the reason and the asset path. The reader runs off the UI
@@ -71,17 +75,14 @@ enum Opened {
 pub struct Loader {
     paths: Vec<PathBuf>,
     opened: Mutex<Opened>,
-    told: Box<dyn Fn(Missing, &str) + Send + Sync>,
+    told: FailureSink,
 }
 
 impl Loader {
     /// A reader of `paths` (a part's file, then the instrument it came from),
     /// telling `told` of every picture it could not read.
     #[must_use]
-    pub fn new(
-        paths: impl IntoIterator<Item = Option<PathBuf>>,
-        told: Box<dyn Fn(Missing, &str) + Send + Sync>,
-    ) -> Self {
+    pub fn new(paths: impl IntoIterator<Item = Option<PathBuf>>, told: FailureSink) -> Self {
         Self {
             paths: paths.into_iter().flatten().collect(),
             opened: Mutex::new(Opened::Unopened),

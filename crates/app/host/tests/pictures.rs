@@ -25,9 +25,12 @@ fn instrument() -> Option<PathBuf> {
     Some(path)
 }
 
+/// Everything a face's reader was told it could not read.
+type Heard = Arc<Mutex<Vec<(Missing, String)>>>;
+
 /// A reader over `paths` that keeps what it was told.
-fn loader(paths: [Option<PathBuf>; 2]) -> (Loader, Arc<Mutex<Vec<(Missing, String)>>>) {
-    let heard = Arc::new(Mutex::new(Vec::new()));
+fn loader(paths: [Option<PathBuf>; 2]) -> (Loader, Heard) {
+    let heard = Heard::default();
     let sink = {
         let heard = Arc::clone(&heard);
         Box::new(move |missing: Missing, asset: &str| {
