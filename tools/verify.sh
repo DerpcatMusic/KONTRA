@@ -11,9 +11,12 @@
 #   - a render that does not complete, drops sample frames, or clips;
 #   - a UI whose controls are not where they are drawn (layer 1 and 2);
 #   - a page that no longer looks like the reviewed one (layer 3: a golden
-#     regression check -- NOT a Kontakt capture; there is no headless Kontakt
-#     render on this machine, so this catches a page that changes, not a page
-#     that was wrong to begin with). A geometry check cannot
+#     regression check, not a live Kontakt comparison -- it catches a page that
+#     changes, not a page that was wrong to begin with). A live comparison is
+#     now possible: tools/oracle-mcp renders and screenshots real Kontakt on a
+#     private Xvfb with DXVK + lavapipe (docs/re/kontakt-headless-gui.md), so
+#     `tools/oracle-mcp/parity.py` is the on-demand check and this gate stays
+#     offline and fast. A geometry check cannot
 #     see a picture that resolved to nothing -- it still has a rect -- which is
 #     how a missing graphic shipped once. If no reference capture exists the
 #     gate fails: ALLOW_NO_PIXEL_REF=1 is a logged admission that layer 3 is off.
