@@ -46,6 +46,17 @@ pub enum ReleaseZones {
     WithNote,
 }
 
+/// What the sustain pedal (CC 64) does besides reaching the scripts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SustainPedal {
+    /// Down, it holds released notes until it lifts.
+    #[default]
+    Holds,
+    /// Nothing: the scripts hold notes themselves.
+    ToScripts,
+}
+
 /// Which counter a round robin steps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RrCounter {
@@ -412,6 +423,8 @@ pub struct Plan {
     /// Who starts the release-trigger zones; [`ReleaseZones::AtRelease`]
     /// (the engine, at a note's release) unless a script takes them over.
     pub release_zones: ReleaseZones,
+    /// What the sustain pedal does; [`SustainPedal::Holds`] unless a script takes it over.
+    pub sustain_pedal: SustainPedal,
     /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
     /// index; `None` when unreadable.
     pub impulses: Vec<Option<Response>>,
@@ -474,6 +487,7 @@ impl Plan {
             route_pitch: ir::Exp2::Exact,
             steal_whole_groups: false,
             release_zones: ReleaseZones::AtRelease,
+            sustain_pedal: SustainPedal::Holds,
             impulses: Vec::new(),
             impulse_laws: Vec::new(),
             responses: Vec::new(),

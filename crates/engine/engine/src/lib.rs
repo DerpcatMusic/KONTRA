@@ -67,7 +67,7 @@ pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
-    RrCounter, Trigger, Zone,
+    RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
 pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
