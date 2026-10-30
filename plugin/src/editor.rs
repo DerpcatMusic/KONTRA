@@ -457,6 +457,7 @@ fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
         tree,
         pictures,
         gesture: Default::default(),
+        meters: Default::default(),
     }
 }
 

@@ -158,6 +158,8 @@ pub struct Face {
     pub tree: Interface,
     pub pictures: Pictures,
     pub gesture: crate::input::Gesture,
+    /// Its level meters as they fall and hold.
+    pub meters: crate::meter::Meters,
 }
 
 impl std::fmt::Debug for Face {

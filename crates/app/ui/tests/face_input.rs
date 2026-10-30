@@ -341,4 +341,13 @@ fn a_value_edit_arrow_steps_one_shown_unit_a_press() {
     press(down);
     press(down);
     assert_eq!(f.value(3), 40.);
+    // Held, it steps again after 0.4 s, then every 0.15 s: 1.1 s of 60 Hz
+    // frames steps at 0, 0.4, 0.55, 0.7, 0.85 and 1 s.
+    let mut held = f.pointer(up, true, Mods::default());
+    for _ in 0..65 {
+        held.extend(f.pointer(up, true, Mods::default()));
+    }
+    held.extend(f.pointer(up, false, Mods::default()));
+    assert_eq!(held.len(), 6, "{held:?}");
+    assert_eq!(f.value(3), 100.);
 }

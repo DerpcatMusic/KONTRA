@@ -42,7 +42,11 @@ pub(super) fn view(
             } else {
                 let (edits, popup) =
                     input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
-                let at = (scale, &p.level[..]);
+                let (shown, moving) = face.meters.update(&p.level, ui.time());
+                if moving {
+                    ui.repaint_in(crate::meter::TICK);
+                }
+                let at = (scale, shown);
                 let draw = if look == FaceLook::Vector {
                     view::vector_page
                 } else {
