@@ -199,6 +199,9 @@ impl RackAudio {
                     lost += 1;
                 }
             });
+            let files = &self.channels.files;
+            p.engine
+                .drain_files(|r| files.send((n, generation, r)).is_ok());
             self.dropped += lost;
             let s = p.engine.stats();
             stats.voices += u32::try_from(p.engine.active_voices()).unwrap_or(u32::MAX);
@@ -249,6 +252,7 @@ impl RackAudio {
             && !self.channels.typed.is_full()
             && !self.channels.looks.is_full()
             && !self.channels.recalled.is_full()
+            && !self.channels.filed.is_full()
         {
             let Some(command) = self.channels.commands.recv() else {
                 break;
@@ -302,17 +306,33 @@ impl RackAudio {
                 Command::Recall {
                     part,
                     generation,
-                    saved,
+                    mut saved,
                 } => {
                     if let Some(Some(p)) = self.parts.get_mut(part)
                         && p.generation == generation
                     {
-                        p.engine.recall(&saved);
+                        saved = p.engine.recall(saved);
                     }
                     if let Err(saved) = self.channels.recalled.send(saved) {
                         // Checked for room first; if it ever fails, it frees here.
                         self.dropped += 1;
                         drop(saved);
+                    }
+                }
+                Command::File {
+                    part,
+                    generation,
+                    mut reply,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part)
+                        && p.generation == generation
+                    {
+                        p.engine.file_done(&mut reply);
+                    }
+                    if let Err(reply) = self.channels.filed.send(reply) {
+                        // Checked for room first; if it ever fails, it frees here.
+                        self.dropped += 1;
+                        drop(reply);
                     }
                 }
                 Command::Remove(part) => {

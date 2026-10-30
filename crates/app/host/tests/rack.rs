@@ -742,6 +742,8 @@ fn snapshot_of(kind: u8, saved: &[&str]) -> kontra_engine::ir::Instrument {
         end on
         on persistence_changed
             $marker := $marker + 1
+            $knob := 0
+            read_persistent_var($knob)
         end on"
     );
     ir::Instrument {
@@ -801,4 +803,74 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
         // The next snapshot recalls as well.
         assert!(rack.recall(0, &preset, None), "type {kind}: second recall");
     }
+}
+
+/// KSP manual (`save_array_str`, `load_array_str`): after `on init` both run
+/// asynchronously, then `on async_complete`; the file holds the array's
+/// name and its values, and a file naming another array loads nothing.
+/// Saves go to the user's data folder, never into the library.
+#[test]
+fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("array-files");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("other.nka"), "%other\n7\n7\n7\n").unwrap();
+    let source = format!(
+        "on init
+            declare %a[3] := (1, 2, 3)
+            declare $step
+            declare $id
+            declare $result
+            make_persistent($result)
+        end on
+        on note
+            $id := save_array_str(%a, \"{0}/a.nka\")
+        end on
+        on async_complete
+            select $step
+                case 0
+                    %a[0] := 9
+                    %a[1] := 9
+                    %a[2] := 9
+                    $id := load_array_str(%a, \"{0}/a.nka\")
+                case 1
+                    $result := %a[0] * 100 + %a[1] * 10 + %a[2]
+                    $id := load_array_str(%a, \"{0}/other.nka\")
+                case 2
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS + %a[0] - 1
+            end select
+            inc($step)
+        end on",
+        dir.display()
+    );
+    let instrument = ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, None).unwrap();
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..4 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
+    let saved = saved_now(&mut rack, &mut audio);
+    let at = dirs::data_dir().unwrap().join("kontra/arrays");
+    let at = at.join(dir.strip_prefix("/").unwrap_or(&dir)).join("a.nka");
+    let written = std::fs::read_to_string(&at);
+    let _ = std::fs::remove_file(&at);
+    assert_eq!(written.unwrap(), "%a\n1\n2\n3\n");
+    assert!(
+        !dir.join("a.nka").exists(),
+        "a save never writes the library"
+    );
+    assert!(saved.contains(&"$result 1230".to_owned()), "{saved:?}");
 }

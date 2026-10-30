@@ -2211,6 +2211,7 @@ dependencies = [
 name = "kontra-host"
 version = "0.0.0"
 dependencies = [
+ "dirs",
  "kontra-align",
  "kontra-engine",
  "kontra-format",

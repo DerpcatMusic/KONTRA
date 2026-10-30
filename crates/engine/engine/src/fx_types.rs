@@ -242,11 +242,7 @@ impl Engine {
         if let (true, Some(ty)) = (swapped.is_ok(), r.ty) {
             self.mark_loaded(r.at, r.slot, ty);
         }
-        let exit = if swapped.is_ok() {
-            Exit::Done
-        } else {
-            Exit::Failed
-        };
+        let exit = Exit::from(swapped.is_ok());
         let (effect, dsp) = swapped.unwrap_or_else(|dsp| (r.effect, dsp));
         self.queue_async(r.script, r.id, exit);
         Prepared {
