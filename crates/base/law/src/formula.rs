@@ -94,6 +94,9 @@ mod tests {
         assert!(shape(0.0).abs() < 1e-6, "zero reads as linear");
         assert!(shape(0.25) > 0.0);
         assert!(shape(0.75) < 0.0);
+        // f(0.25) = 0.125 and f(0.75) = 0.875: ratios 49 and 1/49.
+        assert!((shape(0.25) - 49f32.ln()).abs() < 1e-5, "{}", shape(0.25));
+        assert!((shape(0.75) + 49f32.ln()).abs() < 1e-5, "{}", shape(0.75));
     }
 
     #[test]
@@ -101,5 +104,8 @@ mod tests {
         let shape = |c| FormulaId::AttackShape.eval(c);
         assert!((shape(-0.4) + shape(0.4)).abs() < 1e-6);
         assert!(shape(1.0) < shape(0.5) && shape(0.5) < 0.0);
+        // b = √(5·10⁵) / 2·10⁴ at 0.5 and 1 / 2·10⁴ at 1: ln(b / (1 + b)).
+        assert!((shape(0.5) + 3.377_05).abs() < 1e-4, "{}", shape(0.5));
+        assert!((shape(1.0) + 9.903_54).abs() < 1e-4, "{}", shape(1.0));
     }
 }

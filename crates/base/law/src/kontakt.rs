@@ -186,7 +186,8 @@ mod tests {
             let original = 440.0 * 2f32.powf((note - 69.0) / 12.0);
             assert_eq!(
                 FILTER_NOTE_HZ.eval_unclamped(note).to_bits(),
-                original.to_bits()
+                original.to_bits(),
+                "note {note}"
             );
         }
     }
@@ -225,7 +226,8 @@ mod tests {
             for (law, drop) in LEGACY_RESONANCE_LOSS.iter().zip([5.5f32, 11.0, 24.0]) {
                 assert_eq!(
                     law.eval(r).to_bits(),
-                    10f32.powf(-drop * r / 20.0).to_bits()
+                    10f32.powf(-drop * r / 20.0).to_bits(),
+                    "loss {drop} dB at {r}"
                 );
             }
         }
