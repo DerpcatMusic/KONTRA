@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use kontra_host::ui::Missing;
+use kontra_host::ui::{FailureSink, Missing};
 
 /// Bytes one session file may reach before it stops taking writes.
 const MAX_BYTES: u64 = 4 << 20;
@@ -220,14 +220,14 @@ fn push_escaped(out: &mut String, text: &str) {
 /// running count. A frame asks for hundreds of pictures, and one line each
 /// would bury the reason; a page that stays pictureless still says so, and
 /// how many it lost.
-pub fn picture_failures(instrument: Option<PathBuf>) -> Box<dyn Fn(Missing, &str) + Send + Sync> {
+pub fn picture_failures(instrument: Option<PathBuf>) -> FailureSink {
     /// Failures between two counted lines.
     const PICTURES_PER_LINE: usize = 64;
     let seen = AtomicUsize::new(0);
     let instrument = instrument.map_or_else(String::new, |p| p.display().to_string());
     Box::new(move |missing: Missing, asset: &str| {
         let n = seen.fetch_add(1, Ordering::Relaxed) + 1;
-        if n == 1 || n % PICTURES_PER_LINE == 0 {
+        if n == 1 || n.is_multiple_of(PICTURES_PER_LINE) {
             error(
                 "picture_missing",
                 &[
