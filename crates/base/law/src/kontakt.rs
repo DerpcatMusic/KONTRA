@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn exponential_parameter_laws_preserve_original_rounding() {
+    fn low_cut_preserves_original_rounding() {
         for n in 0..=10_000 {
             let x = n as f32 / 10_000.0;
             assert_eq!(
@@ -122,11 +122,25 @@ mod tests {
                 10.0 * 100f32.powf(x),
                 "low cut {x}"
             );
+        }
+    }
+
+    #[test]
+    fn versatile_gain_preserves_original_rounding() {
+        for n in 0..=10_000 {
+            let x = n as f32 / 10_000.0;
             assert_eq!(
                 VERSATILE_GAIN.eval(x),
                 10f32.powf((x - 0.5) * 3.0),
                 "gain {x}"
             );
+        }
+    }
+
+    #[test]
+    fn convolution_predelay_preserves_original_rounding() {
+        for n in 0..=10_000 {
+            let x = n as f32 / 10_000.0;
             assert_eq!(
                 CONVOLUTION_PREDELAY.eval(x),
                 2.0 * (151f32.powf(x) - 1.0),
