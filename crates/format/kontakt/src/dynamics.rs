@@ -4,6 +4,7 @@
 //! effects/dynamics.rs).
 
 use kontra_ir as ir;
+use kontra_law::common::DB_GAIN;
 use kontra_law::kontakt::{FEEDBACK_KNEE, FEEDBACK_THRESHOLD};
 
 /// The record's effect and, when it sets something not carried, its name.
@@ -72,7 +73,7 @@ fn feedback([input, makeup, attack, release, ratio, mix]: [f32; 6], link: bool) 
     let [input, makeup, attack, release, ratio, mix] =
         [input, makeup, attack, release, ratio, mix].map(|x| x.clamp(0.0, 1.0));
     let r = 1.0 + 19.0 * ratio;
-    let db = |x: f32| 20.0 * x.log10();
+    let db = |x: f32| DB_GAIN.inverse(x).unwrap_or(0.0);
     let threshold = FEEDBACK_THRESHOLD.eval_unclamped(r.max(2.0));
     let knee = FEEDBACK_KNEE.eval_unclamped(r);
     let drive_db = 50.0 * input - 10.0;

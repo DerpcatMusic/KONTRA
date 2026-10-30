@@ -344,13 +344,17 @@ struct Base {
 }
 
 pub(crate) fn db(linear: f32) -> f32 {
-    20.0 * linear.max(1e-6).log10()
+    kontra_law::common::DB_GAIN
+        .inverse(linear.max(1e-6))
+        .unwrap_or(0.0)
 }
 
 /// Slots in each Kontakt effect rack.
 const SLOTS: usize = 8;
 fn semitones(ratio: f32) -> f64 {
-    12.0 * f64::from(ratio.max(1e-6)).log2()
+    kontra_law::common::SEMITONE_RATIO
+        .inverse_f64(f64::from(ratio.max(1e-6)))
+        .unwrap_or(0.0)
 }
 
 fn criteria_reverse(group: u32, groups: &GroupList) -> bool {

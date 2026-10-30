@@ -62,7 +62,9 @@ pub fn sustain(percent: f64) -> f32 {
 
 /// `amplitude` is a percentage that adds to `volume` (dB).
 pub fn amplitude_db(percent: f64) -> f32 {
-    (20.0 * (percent / 100.0).max(1e-7).log10()) as f32
+    DB_GAIN
+        .inverse_f64((percent / 100.0).max(1e-7))
+        .unwrap_or(0.0) as f32
 }
 
 /// `pan` runs −100..=100 (sfzformat.com); the IR runs −1..=1.

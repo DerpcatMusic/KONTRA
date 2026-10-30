@@ -106,12 +106,20 @@ impl Law {
 
     /// The input this law maps to `y`, in closed form; `None` for shapes without one.
     #[must_use]
+    pub fn inverse(&self, y: f32) -> Option<f32> {
+        self.inverse_at(y)
+    }
+
+    /// [`Law::inverse`] in f64.
+    #[must_use]
     pub fn inverse_f64(&self, y: f64) -> Option<f64> {
+        self.inverse_at(y)
+    }
+
+    fn inverse_at<T: Real>(&self, y: T) -> Option<T> {
+        let of = T::of;
         match self {
-            Self::Linear { lo, hi } => {
-                let lo = f64::from(*lo);
-                Some((y - lo) / (f64::from(*hi) - lo))
-            }
+            Self::Linear { lo, hi } => Some((y - of(*lo)) / (of(*hi) - of(*lo))),
             Self::ExpAffine {
                 base,
                 offset,
@@ -119,11 +127,23 @@ impl Law {
                 shift,
                 scale,
             } => Some(
-                (y / f64::from(*scale) - f64::from(*shift)).ln()
-                    / f64::from(*base).ln()
-                    / f64::from(*factor)
-                    - f64::from(*offset),
+                (y / of(*scale) - of(*shift)).ln() / of(*base).ln() / of(*factor) - of(*offset),
             ),
+            Self::PowIndex {
+                base,
+                origin,
+                divisor,
+                scale,
+            } => {
+                // Exact logs for the bases in use, so `20·log10(g)` keeps its rounding.
+                let r = y / of(*scale);
+                let log = match *base {
+                    10.0 => r.log10(),
+                    2.0 => r.log2(),
+                    b => r.ln() / of(b).ln(),
+                };
+                Some(of(*divisor) * log + of(*origin))
+            }
             Self::IntegerPower { exponent, bipolar } => {
                 // An even power folds a bipolar input, so only its unipolar form inverts.
                 let root = match (exponent, bipolar) {
@@ -132,12 +152,15 @@ impl Law {
                     (3, _) => y.cbrt(),
                     _ => return None,
                 };
-                Some(if *bipolar { (root + 1.0) / 2.0 } else { root })
+                Some(if *bipolar {
+                    (root + of(1.0)) / of(2.0)
+                } else {
+                    root
+                })
             }
-            Self::Formula(id) => id.inverse(y),
+            Self::Formula(id) => id.inverse(y.to_f64()).map(T::of_f64),
             Self::Exp { .. }
             | Self::Exp2Index { .. }
-            | Self::PowIndex { .. }
             | Self::Db { .. }
             | Self::Power { .. }
             | Self::Sine { .. }
