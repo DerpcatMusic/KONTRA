@@ -83,3 +83,26 @@ objdump -d --start-address=0x14193cd70 --stop-address=0x14193dc10 "Kontakt 8.exe
 ```
 
 then read the `movl $0x…,(%rax)` / `movl $0x…,0xNN(%rax)` immediates inside each block as f32.
+
+## Effective bank, read back from the emulator
+
+The initialiser leaves some fields at the constructor's values, so the blocks above are not the whole
+story. Reading the bank pointer (`[core+0x6c8]`) after the constructor and the mode setter gives what
+the kernel actually sees (pans default to 0.0, and mode 4 is mode 3):
+
+| Mode | delays (s) | gains | pans |
+| --- | --- | --- | --- |
+| 0 | .003 .003 .007 .007 .011 .011 .013 | 1, 1, 1.42857, 1.43, 1.7242, 1.72765, 0.7423 | 0, .5, 0, .5, 0, .5, 0 |
+| 1 | .007 .007 .007 .007 .013 .013 .029 | 1 ×6, 0.7423 | 0, .5, .33333, .83333, .66666, .16666, 0 |
+| 2 | .011 ×6, .053 | 1 ×6, 0.7423 | 0, .5, .5, 0, .25, .75, 0 |
+| 3 | .007 .007 .011 .011 .013 .013 .029 | 1, 1, 1.42857, 1.42857, 1.7242, 1.7242, 0.7423 | 0, 0, 0, .25, 0, .25, 0 |
+| 4 | same as 3 | same as 3 | same as 3 |
+
+Loop-filter constants, per mode, the six floats after the pans: mode 0 `6.1 6.1 6.1 6.1 .1 .1`,
+mode 1 `4.1 4.1 4.0 4.0 4.12 4.1241`, mode 2 and 3 `6.1 ×6`.
+
+Read back with the emulator (`tools/re/choral_modes.py` uses the same core construction):
+
+```
+bank = e.read(core + 0x6c8, 'Q'); f = e.read(bank, 'f', 56)
+```
