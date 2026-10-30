@@ -117,15 +117,7 @@ pub fn keyboard(
         Some((_, name)) => format!("{} · {name}", note_name(n)),
         None => note_name(n),
     });
-    // The drawing needs no names: only the tooltip above reads them.
-    let keys = Keys {
-        names: Vec::new(),
-        held: keys.held.clone(),
-        spans: keys.spans.clone(),
-        switches: keys.switches.clone(),
-        script: keys.script.clone(),
-        ..*keys
-    };
+    let keys = keys.clone();
     let face = canvas(move |s| {
         let rect = |x: f64, y: f64, w: f64, h: f64| {
             Path::polyline(
