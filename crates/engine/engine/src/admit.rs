@@ -110,7 +110,8 @@ impl Engine {
     pub(crate) fn fade_notes(&mut self, notes: &[NoteRef], frames: u32, target: FadeTarget) {
         for &note in notes {
             if let Some(n) = self.notes.get_mut(note) {
-                n.released |= target == FadeTarget::End;
+                // A note yet to start starts with the fade and ends at its silence.
+                n.released |= target == FadeTarget::End && n.started;
                 n.fade = Some((target, frames));
             }
             for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {

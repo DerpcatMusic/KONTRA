@@ -3136,5 +3136,8 @@ fn a_fade_out_without_stop_comes_back_with_a_fade_in() {
         zones,
         "on note\n fade_out($EVENT_ID, 1000, 0)\nend on",
     );
-    assert_eq!(level(&mut e, &[on(64)]), 0.0);
+    let mut out = vec![[0.0; 2]; 48];
+    e.process(&mut out, &[on(64)]);
+    assert!(out[0][0] > 0.0, "the attack sounds, then fades");
+    assert_eq!(out[47][0], 0.0, "silent at the fade's end");
 }

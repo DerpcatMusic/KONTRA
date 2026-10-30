@@ -44,6 +44,7 @@ impl Fade {
         let frames = frames.max(2);
         let (to, stop) = match target {
             FadeTarget::End => (0.0, true),
+            FadeTarget::Hold(level) if level.is_nan() => return,
             FadeTarget::Hold(level) => (level.clamp(0.0, 1.0), false),
         };
         if self.stop && !(stop && frames < self.left) {
@@ -92,6 +93,7 @@ mod tests {
     #[test]
     fn a_fade_is_a_straight_line_to_its_end() {
         let mut fade = Fade::NONE;
+        fade.start(FadeTarget::Hold(f32::NAN), 4);
         fade.start(FadeTarget::End, 4);
         assert_eq!(run(&mut fade, 4), [0.75, 0.5, 0.25, 0.0]);
         assert!(fade.ended());
