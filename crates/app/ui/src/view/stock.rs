@@ -32,6 +32,7 @@ pub(super) enum Look {
         title: String,
         value: String,
         turn: u16,
+        frame: u8,
     },
 }
 
@@ -41,7 +42,7 @@ impl Look {
         store: &mut crate::Pictures,
         scale: f64,
     ) -> Option<[Arc<Image>; 3]> {
-        let Self::Knob { turn, .. } = self else {
+        let Self::Knob { frame, .. } = self else {
             return None;
         };
         let meta = |frames| model::ImageMeta {
@@ -49,7 +50,7 @@ impl Look {
             axis: model::Orientation::Horizontal,
             ..Default::default()
         };
-        let frame = (usize::from(*turn) * 127 + 500) / 1000;
+        let frame = usize::from(*frame);
         Some([
             store.frame(
                 model::AssetRef(usize::MAX),
@@ -116,6 +117,7 @@ impl Look {
                     _ => shown,
                 },
                 turn: (t * 1000.) as u16,
+                frame: (t * 127.).round() as u8,
             },
             _ => return None,
         })
@@ -273,7 +275,9 @@ impl Look {
                 parts.extend(arrow(ink, w, h, scale));
                 parts
             }
-            Self::Knob { title, value, turn } => {
+            Self::Knob {
+                title, value, turn, ..
+            } => {
                 if let Some(art) = artwork.filter(|_| !wd.hide.title && !wd.hide.value) {
                     bitmap_knob(title, value, scale, art, glyphs)
                 } else {
@@ -378,7 +382,7 @@ fn bitmap_knob(
     let [base, cap, light] = art;
     vec![
         super::image(base, 87. * s, 39. * s).at(0., 0.),
-        super::image(cap, 25. * s, 29. * s).at(7. * s, 7. * s),
+        super::image(cap, 25. * s, 29. * s).at(8. * s, 8. * s),
         super::image(light, 39. * s, 39. * s).at(0., 0.),
         stock_words(title, s, glyphs).at(42. * s, 2. * s),
         stock_words(value, s, glyphs).at(42. * s, 22. * s),
