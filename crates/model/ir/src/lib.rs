@@ -464,6 +464,9 @@ pub struct Mod {
     pub target: u16,
     /// Its modulator is switched off (scripts may switch it on).
     pub bypass: bool,
+    /// The route reads its source mirrored, as `$MOD_TARGET_INVERT_SOURCE`
+    /// sets: a bipolar source negated, a unipolar one at `1 − x`.
+    pub invert: bool,
     pub kind: ModKind,
 }
 

@@ -248,6 +248,7 @@ impl Group {
                 slot: 0,
                 target: 0,
                 bypass: false,
+                invert: false,
                 kind: ir::ModKind::Volume {
                     source: ir::Source::Velocity,
                     intensity: 1.0,
@@ -561,6 +562,7 @@ mod route_dependency_tests {
                 slot: 1,
                 target: 0,
                 bypass: false,
+                invert: false,
                 kind: ir::ModKind::Intensity {
                     source: ir::Source::Controller(1),
                     of: ir::Source::Lfo(0),
@@ -572,6 +574,7 @@ mod route_dependency_tests {
                 slot: 2,
                 target: 0,
                 bypass: false,
+                invert: false,
                 kind: ir::ModKind::LfoHz {
                     source: ir::Source::Controller(11),
                     lfo: 0,
