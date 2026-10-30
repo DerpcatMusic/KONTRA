@@ -367,7 +367,14 @@ fn field_words(
     let mut x = match align {
         model::Align::Left => 7. * s,
         model::Align::Center => (w - width) / 2.,
-        model::Align::Right => w - 11. * s - width,
+        model::Align::Right => {
+            let inset = if matches!(metrics, StockMetrics::Label12(_)) {
+                7.
+            } else {
+                11.
+            };
+            w - inset * s - width
+        }
     };
     let mut layers = Vec::new();
     for c in text.chars() {
