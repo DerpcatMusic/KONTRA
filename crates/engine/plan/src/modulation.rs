@@ -174,11 +174,8 @@ pub fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
             if normalize { y / sum.max(1.0) } else { y }
         }
     };
-    // The native fade (0x140b06c90) runs a state from 0.3 to 1.3 by a constant
-    // ratio and scales by `state − 0.3`: an exponential rise that ends at 1.
     let fade = if l.fade_ms > 0.0 {
-        let x = (age.held * 1000.0 / l.fade_ms).min(1.0);
-        0.3 * ((13.0f32 / 3.0).powf(x) - 1.0)
+        crate::par_laws::LFO_FADE_IN.eval_unclamped((age.held * 1000.0 / l.fade_ms).min(1.0))
     } else {
         1.0
     };

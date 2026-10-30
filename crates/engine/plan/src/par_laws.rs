@@ -1,48 +1,90 @@
 //! The laws between an engine parameter's 0..=1 setting and what it means:
-//! envelope stage times, the attack curve, and the text its knob shows.
+//! envelope stage times, the attack curve, levels, and the text a knob shows.
+//! Each is a named [`Law`]; the law evaluator does the maths.
 
-use kontra_ir as ir;
+use kontra_ir::{self as ir, FormulaId, Law};
 use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;
 
 use crate::{EnginePar, EnginePars};
 
-/// Attack and hold run 0..=15 s, decay and release 0..=25 s, exponentially
-/// with a 2 ms shift: `exp(ln 2 + (ln(top + 2) − ln 2) × x) − 2` ms.
-pub fn stage_ms(top_ms: f64, x: f64) -> f64 {
-    let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
-    ((low + (high - low) * x).exp() - 2.0).max(0.0)
+/// A stage time `2·(base^x − 1)` ms: `exp(ln 2 + (ln(top + 2) − ln 2)·x) − 2`, the
+/// shifted exponential with `base = (top + 2) / 2` (probes/mod_par_laws.lua).
+const fn stage(base: f32) -> Law {
+    Law::ExpAffine {
+        base,
+        offset: 0.0,
+        factor: 1.0,
+        shift: -1.0,
+        scale: 2.0,
+    }
 }
 
-/// The attack curve knob (raw / 500000 − 1: −1 concave ..= 1 convex) as a
-/// segment shape: the law the Kontakt translator applies to stored curves
-/// (format/kontakt/src/laws.rs, docs/re/engine/k-mod-envelopes.md).
+/// Attack and hold: 0..=15 s on the stage law.
+pub const STAGE_15S: Law = stage(7_501.0);
+/// Decay and release: 0..=25 s on the stage law.
+pub const STAGE_25S: Law = stage(12_501.0);
+/// An LFO's fade-in: 0..=10 s on the stage law (probes/mod_par_laws.lua: 500_000 saves
+/// 139.45 ms, 1_000_000 10 002 ms).
+pub const STAGE_10S: Law = stage(5_001.0);
+
+/// An LFO's fade-in over its fade time: native (0x140b06c90) runs a state from 0.3 to 1.3
+/// by a constant ratio and scales by `state − 0.3`, so `0.3·((13/3)^x − 1)` rises to 1.
+pub const LFO_FADE_IN: Law = Law::ExpAffine {
+    base: 13.0 / 3.0,
+    offset: 0.0,
+    factor: 1.0,
+    shift: -1.0,
+    scale: 0.3,
+};
+
+/// Volume, sustain and send levels: the cube of the setting over its unity point.
+pub const CUBE: Law = Law::IntegerPower {
+    exponent: 3,
+    bipolar: false,
+};
+/// A route's intensity: the setting squared (probes/mod_par_laws.lua).
+pub const SQUARE: Law = Law::IntegerPower {
+    exponent: 2,
+    bipolar: false,
+};
+/// A bipolar route's depth, `(2x − 1)³` (probes/mod_par_laws.lua).
+pub const SIGNED_CUBE: Law = Law::IntegerPower {
+    exponent: 3,
+    bipolar: true,
+};
+/// A 0..=1 setting as −1..=1.
+pub const BIPOLAR: Law = Law::Linear { lo: -1.0, hi: 1.0 };
+/// The attack curve (−1 concave ..= 1 convex) as a segment shape: the law the Kontakt
+/// translator applies to stored curves (docs/re/engine/k-mod-envelopes.md).
+pub const ATTACK_CURVE: Law = Law::Formula(FormulaId::AttackShape);
+
+/// The setting at which `law` reaches `y`.
+pub fn setting(law: &Law, y: f64) -> f64 {
+    law.inverse_f64(y).unwrap_or(0.0)
+}
+
+/// The cubic setting (over its unity point) of a level; negative reads as 0.
+pub fn cube_root(level: f32) -> f64 {
+    setting(&CUBE, f64::from(level.max(0.0)))
+}
+
+/// The 0..=1 setting of a stage `ms` long on a stage law.
+pub fn stage_setting(law: &Law, ms: f64) -> f64 {
+    setting(law, ms).clamp(0.0, 1.0)
+}
+
+/// The attack curve knob (raw / 500000 − 1) as a segment shape.
 pub fn attack_shape(x: f64) -> f32 {
-    let c = (x * 2.0 - 1.0).clamp(-1.0, 1.0);
-    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
-    let k = if c > 0.0 {
-        (b / (1.0 + b)).ln()
-    } else {
-        ((1.0 + b) / b).ln()
-    };
-    k as f32
+    ATTACK_CURVE.eval_unclamped_f64(BIPOLAR.eval_f64(x)) as f32
 }
 
 /// Inverse of [`attack_shape`], as a 0..=1 knob.
 pub fn attack_x(shape: f32) -> f64 {
-    let k = f64::from(shape);
-    if k == 0.0 {
-        return 0.5;
-    }
-    let b = 1.0 / k.abs().exp_m1();
-    let c = (1.0 - (b.ln() + 20_000f64.ln()) / 500_000f64.ln()).clamp(0.0, 1.0);
-    0.5 * (1.0 - k.signum() * c)
-}
-
-/// The inverse of [`stage_ms`]: the 0..=1 setting of a stage `ms` long.
-pub fn stage_x(top_ms: f64, ms: f64) -> f64 {
-    let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
-    (((ms + 2.0).ln() - low) / (high - low)).clamp(0.0, 1.0)
+    setting(
+        &BIPOLAR,
+        ATTACK_CURVE.inverse_f64(f64::from(shape)).unwrap_or(0.0),
+    )
 }
 
 /// Writes the text of parameter id `id` at `raw` (0..=1000000): its
@@ -81,11 +123,11 @@ pub fn display(par: EnginePar, raw: i32, out: &mut Text) -> bool {
         EnginePar::EffectOutput | EnginePar::GainerGain => Readout::Db(24.0),
         EnginePar::Sustain => Readout::Db(0.0),
         EnginePar::Tune => Readout::Tune,
-        EnginePar::Attack | EnginePar::Hold => Readout::Padded(stage_ms(15_000.0, x)),
-        EnginePar::Decay | EnginePar::Release => Readout::Padded(stage_ms(25_000.0, x)),
+        EnginePar::Attack | EnginePar::Hold => Readout::Padded(STAGE_15S.eval_f64(x)),
+        EnginePar::Decay | EnginePar::Release => Readout::Padded(STAGE_25S.eval_f64(x)),
         EnginePar::Pan => Readout::Pan,
-        EnginePar::RouteIntensity => Readout::Padded(100.0 * x * x),
-        EnginePar::RouteDepth => Readout::Signed(100.0 * (2.0 * x - 1.0).powi(3)),
+        EnginePar::RouteIntensity => Readout::Padded(100.0 * SQUARE.eval_f64(x)),
+        EnginePar::RouteDepth => Readout::Signed(100.0 * SIGNED_CUBE.eval_f64(x)),
         _ => return false,
     };
     write(readout, x, out)
@@ -95,20 +137,97 @@ pub fn display(par: EnginePar, raw: i32, out: &mut Text) -> bool {
 mod tests {
     use super::*;
 
+    const RAWS: std::ops::RangeInclusive<i32> = 0..=1_000_000;
+
+    fn old_stage_ms(top_ms: f64, x: f64) -> f64 {
+        let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
+        ((low + (high - low) * x).exp() - 2.0).max(0.0)
+    }
+
+    fn old_stage_x(top_ms: f64, ms: f64) -> f64 {
+        let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
+        (((ms + 2.0).ln() - low) / (high - low)).clamp(0.0, 1.0)
+    }
+
+    /// Every setting keeps the frames, saved ms and read-back setting the
+    /// hand-written law gave it.
     #[test]
-    fn attack_curve_round_trips() {
-        for x in [0.1, 0.3, 0.5, 0.7, 0.95] {
-            assert!((attack_x(attack_shape(x)) - x).abs() < 1e-4, "{x}");
+    fn stage_laws_keep_every_settings_frames_and_read_back() {
+        let frames = |ms: f64, rate: f64| (ms * rate / 1000.0).round() as u32;
+        for (law, top) in [
+            (STAGE_15S, 15_000.0),
+            (STAGE_25S, 25_000.0),
+            (STAGE_10S, 10_000.0),
+        ] {
+            for raw in RAWS {
+                let x = f64::from(raw) / 1e6;
+                let (old, new) = (old_stage_ms(top, x), law.eval_f64(x));
+                assert_eq!(old as f32, new as f32, "{top} ms at {raw}");
+                for rate in [44_100.0, 48_000.0, 96_000.0] {
+                    assert_eq!(frames(old, rate), frames(new, rate), "{top} ms at {raw}");
+                }
+                let back = |x: f64| (x * 1e6).round() as i32;
+                assert_eq!(
+                    back(old_stage_x(top, old)),
+                    back(stage_setting(&law, new)),
+                    "{top} ms at {raw}"
+                );
+            }
+        }
+    }
+
+    fn old_attack_shape(x: f64) -> f32 {
+        let c = (x * 2.0 - 1.0).clamp(-1.0, 1.0);
+        let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
+        let k = if c > 0.0 {
+            (b / (1.0 + b)).ln()
+        } else {
+            ((1.0 + b) / b).ln()
+        };
+        k as f32
+    }
+
+    fn old_attack_x(shape: f32) -> f64 {
+        let k = f64::from(shape);
+        if k == 0.0 {
+            return 0.5;
+        }
+        let b = 1.0 / k.abs().exp_m1();
+        let c = (1.0 - (b.ln() + 20_000f64.ln()) / 500_000f64.ln()).clamp(0.0, 1.0);
+        0.5 * (1.0 - k.signum() * c)
+    }
+
+    #[test]
+    fn attack_curve_keeps_every_settings_shape_and_read_back() {
+        for raw in RAWS {
+            let x = f64::from(raw) / 1e6;
+            let shape = attack_shape(x);
+            assert_eq!(shape.to_bits(), old_attack_shape(x).to_bits(), "{raw}");
+            assert_eq!(
+                (attack_x(shape) * 1e6).round(),
+                (old_attack_x(shape) * 1e6).round(),
+                "{raw}"
+            );
         }
     }
 
     #[test]
-    fn stage_times_follow_kontakts_shifted_exponential() {
-        assert!(stage_ms(15_000.0, 0.0).abs() < 1e-9);
-        assert!((stage_ms(15_000.0, 1.0) - 15_000.0).abs() < 1e-6);
-        assert!((stage_ms(25_000.0, 0.5) - ((2.0f64 * 25_002.0).sqrt() - 2.0)).abs() < 1e-6);
-        for x in [0.0, 0.25, 0.8, 1.0] {
-            assert!((stage_x(25_000.0, stage_ms(25_000.0, x)) - x).abs() < 1e-9);
+    fn route_displays_keep_every_settings_text() {
+        let text = |r: Readout, x: f64| {
+            let mut t = Text::EMPTY;
+            assert!(write(r, x, &mut t));
+            t.as_str().to_owned()
+        };
+        for raw in RAWS.step_by(7) {
+            let x = f64::from(raw) / 1e6;
+            assert_eq!(
+                show(EnginePar::RouteIntensity, raw),
+                text(Readout::Padded(100.0 * x * x), x)
+            );
+            assert_eq!(
+                show(EnginePar::RouteDepth, raw),
+                text(Readout::Signed(100.0 * (2.0 * x - 1.0).powi(3)), x)
+            );
         }
     }
 
