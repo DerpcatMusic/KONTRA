@@ -271,7 +271,16 @@ fn drawn_page(
             let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
             if let (Some((img, meta)), Some(a)) = (&picture, art) {
-                parts.push(sliced(img, meta, (a.width, a.height), scale).at(0., 0.));
+                // A single-frame picture on a button sits inside its one-pixel face border.
+                let inset = if matches!(tree.source, model::Source::Ksp { .. })
+                    && matches!(wd.kind, Kind::Button { .. })
+                    && meta.frames == 1
+                {
+                    scale
+                } else {
+                    0.
+                };
+                parts.push(sliced(img, meta, (a.width, a.height), scale).at(inset, inset));
             } else if stock {
                 parts.push(
                     stock::face(
