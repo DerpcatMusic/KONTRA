@@ -222,14 +222,13 @@ impl Engine {
 /// The rack `group` and `generic` address, as `effect_mut` reads them.
 pub(crate) fn rack_at(group: i32, generic: i32) -> Option<ir::RackAt> {
     Some(match (u32::try_from(group), generic) {
-        (Ok(g), -1) => ir::RackAt::Group(g),
+        (Ok(g), _) => ir::RackAt::Group(g),
         (Err(_), 0) => ir::RackAt::Sends,
         (Err(_), 1) => ir::RackAt::Inserts,
         (Err(_), 2) => ir::RackAt::Main,
         (Err(_), b) => {
             ir::RackAt::Bus(u8::try_from(b.checked_sub(crate::params::BUS_OFFSET)?).ok()?)
         }
-        _ => return None,
     })
 }
 
