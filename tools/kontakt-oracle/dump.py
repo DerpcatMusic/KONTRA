@@ -84,8 +84,14 @@ def main() -> int:
 
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", "1600x1000x24"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    env = slot.wine_env(dict(os.environ, DISPLAY=DISPLAY, WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b",
-                             WINEDEBUG="-all"))
+    env = slot.wine_env(dict(os.environ, DISPLAY=DISPLAY, WINEDEBUG=os.environ.get("ORACLE_WINEDEBUG", "-all")))
+    # Forcing wine's own d3d makes Kontakt exit silently on a headless Xvfb: it
+    # starts, touches GL, and dies with no window and a 2-line log (measured
+    # 2026-10-29, wine 11.16). ORACLE_DLL_OVERRIDES="" leaves the prefix's
+    # DXVK in place, which is what works there.
+    overrides = os.environ.get("ORACLE_DLL_OVERRIDES", "d3d11,d3d10core,dxgi,d3d9=b")
+    if overrides:
+        env["WINEDLLOVERRIDES"] = overrides
     log = open(WORK / "kontakt.log", "w")
     kontakt = subprocess.Popen(["wine", "explorer", "/desktop=oracle,1600x1000", EXE, winpath(script)],
                                env=env, stdout=log, stderr=subprocess.STDOUT,
