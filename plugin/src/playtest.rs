@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use kontra_host::state::{Saved, SavedPart};
-use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
+use moose::core::{ExactAddress, ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
 use moose::prelude::*;
 
 use super::tests::{BLOCK, KONTAKT, RATE, activate};
@@ -38,6 +38,50 @@ impl In {
             In::Midi(EventBody::NoteOn { velocity, .. }) => velocity > 0,
             In::Clap(ExactEventBody::Note { kind, .. }) => kind == ExactNoteKind::On,
             _ => false,
+        }
+    }
+
+    /// The same event `by` semitones up (a note; anything else as is).
+    fn shifted(self, by: i8) -> In {
+        let up = |note: u8| note.saturating_add_signed(by).min(127);
+        match self {
+            In::Midi(EventBody::NoteOn {
+                group,
+                channel,
+                note,
+                velocity,
+            }) => In::Midi(EventBody::NoteOn {
+                group,
+                channel,
+                note: up(note),
+                velocity,
+            }),
+            In::Midi(EventBody::NoteOff {
+                group,
+                channel,
+                note,
+                velocity,
+            }) => In::Midi(EventBody::NoteOff {
+                group,
+                channel,
+                note: up(note),
+                velocity,
+            }),
+            In::Clap(ExactEventBody::Note {
+                kind,
+                mut address,
+                velocity,
+            }) => {
+                if let ExactAddress::Value(key) = address.key {
+                    address.key = ExactAddress::Value(up(key));
+                }
+                In::Clap(ExactEventBody::Note {
+                    kind,
+                    address,
+                    velocity,
+                })
+            }
+            other => other,
         }
     }
 
@@ -253,8 +297,50 @@ fn correlated_channels_below_full_scale_do_not_clip() {
     assert!(clips(output_peaks(&[vec![1.01], vec![0.0]])));
 }
 
-/// The performance, a segment at a time: (name, [(frame, event)]).
-fn performance() -> Vec<(&'static str, Vec<(usize, In)>)> {
+/// The performance, a segment at a time: (name, [(frame, event)]), its
+/// notes `by` semitones up.
+fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
+    let segments = performance_at_c4();
+    (segments.into_iter())
+        .map(|(name, events)| {
+            (
+                name,
+                events
+                    .into_iter()
+                    .map(|(f, e)| (f, e.shifted(by)))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// The octave shift that brings the scenario's repeated key (D4) where the
+/// program plays: a bass's, a tuba's or a script's range may end below it.
+/// Measured: a short note per octave, the first that starts a voice.
+fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
+    for by in [0, -12, 12, -24, 24] {
+        let key = 62u8.saturating_add_signed(by);
+        *last = block(params, dsp, &[(0, on(key))], last);
+        let mut sounded = last.voices > 0;
+        for _ in 0..at(0.1) / BLOCK {
+            *last = block(params, dsp, &[], last);
+            sounded |= last.voices > 0;
+        }
+        *last = block(params, dsp, &[(0, off(key))], last);
+        for _ in 0..at(3.0) / BLOCK {
+            if last.voices == 0 {
+                break;
+            }
+            *last = block(params, dsp, &[], last);
+        }
+        if sounded {
+            return by;
+        }
+    }
+    0
+}
+
+fn performance_at_c4() -> Vec<(&'static str, Vec<(usize, In)>)> {
     let probe = vec![(137, on(60)), (at(0.6), off(60))];
     let mut repeats = Vec::new();
     for i in 0..16 {
@@ -472,7 +558,8 @@ fn perform(path: PathBuf) -> Report {
     let mut onsets = Vec::new();
     let mut segments = Vec::new();
     let mut blocks = 0usize;
-    for (segment, events) in performance() {
+    let by = octave_shift(&params, &mut dsp, &mut last);
+    for (segment, events) in performance(by) {
         let (stolen, refused) = (last.stolen, last.refused);
         let end = events.iter().map(|e| e.0).max().unwrap_or(0) + 1;
         let starts: Vec<usize> = events
