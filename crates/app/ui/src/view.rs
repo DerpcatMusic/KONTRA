@@ -200,7 +200,18 @@ fn drawn_page(
             {
                 pictures.outline_font(model::AssetRef(usize::MAX - 9), "@stock/pragmatica")
             }
+            Some(&model::Font::Stock(23))
+                if matches!(tree.source, model::Source::Ksp { .. }) && !words.is_empty() =>
+            {
+                pictures.outline_font(model::AssetRef(usize::MAX - 10), "@stock/raldo")
+            }
             _ => None,
+        };
+        let words = if outline.is_some() && style.is_some_and(|s| s.font == model::Font::Stock(23))
+        {
+            words.replace("  ", "   ")
+        } else {
+            words
         };
         let lit = match wd.kind {
             Kind::LevelMeter {
@@ -426,8 +437,12 @@ fn words_el(
     font: Option<&Font>,
 ) -> El {
     let native_style = style.cloned().map(|mut style| {
-        if font.is_some() && style.font == model::Font::Stock(14) {
-            style.size = Some(10.);
+        if font.is_some() {
+            match style.font {
+                model::Font::Stock(14) => style.size = Some(10.),
+                model::Font::Stock(23) => style.size = Some(12.),
+                _ => {}
+            }
         }
         style
     });

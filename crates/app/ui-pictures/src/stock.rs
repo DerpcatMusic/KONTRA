@@ -28,8 +28,8 @@ const KEYS: [(&str, usize, u32, u32, u32); 8] = [
 
 static ART: OnceLock<Option<super::cache::Art>> = OnceLock::new();
 
-pub(super) fn outline() -> Option<Vec<u8>> {
-    ART.get_or_init(load).as_ref()?.outline.clone()
+pub(super) fn outline(index: usize) -> Option<Vec<u8>> {
+    ART.get_or_init(load).as_ref()?.outline.get(index)?.clone()
 }
 
 /// Start discovery, hashing and decoding before the editor's first frame.
@@ -142,7 +142,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         let keep = carry.len().saturating_sub(overlap);
         carry.drain(..keep);
     }
-    let outline = super::outline::extract(&mut file);
+    let outline = std::array::from_fn(|i| super::outline::extract(&mut file, i));
     let after = path.metadata().ok()?;
     if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
         return None;

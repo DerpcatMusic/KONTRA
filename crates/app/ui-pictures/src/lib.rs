@@ -92,10 +92,10 @@ impl Pictures {
             let mut scale = 1.;
             for job in inbox {
                 if job.outline {
-                    let bytes = if job.path == "@stock/pragmatica" {
-                        stock::outline()
-                    } else {
-                        read(&job.path)
+                    let bytes = match job.path.as_str() {
+                        "@stock/pragmatica" => stock::outline(0),
+                        "@stock/raldo" => stock::outline(1),
+                        _ => read(&job.path),
                     };
                     let font = bytes.and_then(|bytes| Font::new(bytes).ok());
                     if outbox.send(Done::Outline(job.asset, font)).is_err() {
