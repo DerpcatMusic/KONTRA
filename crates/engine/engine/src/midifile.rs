@@ -122,7 +122,10 @@ impl MidiFile {
             let Some(len) = be_u32(chunk, 4) else {
                 break;
             };
-            let end = at.saturating_add(8).saturating_add(len as usize).min(bytes.len());
+            let end = at
+                .saturating_add(8)
+                .saturating_add(len as usize)
+                .min(bytes.len());
             let Some(body) = bytes.get(at.saturating_add(8)..end) else {
                 break;
             };
@@ -138,7 +141,13 @@ impl MidiFile {
         // parameter) and discards the Note Off, so a script never sees 0x8n.
         events.retain(|e| e.status & 0xf0 != 0x80);
         events.sort_by_key(|e| (e.tick, e.status));
-        Some(Self { events, cursor: 0, length, tracks, division })
+        Some(Self {
+            events,
+            cursor: 0,
+            length,
+            tracks,
+            division,
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -190,7 +199,10 @@ impl MidiFile {
     /// event's position would renumber the ids a script holds, so that one is
     /// refused rather than silently reordering the file.
     pub fn set_event_par(&mut self, id: i32, par: i32, value: i32) {
-        let Some(e) = usize::try_from(id).ok().and_then(|i| self.events.get_mut(i)) else {
+        let Some(e) = usize::try_from(id)
+            .ok()
+            .and_then(|i| self.events.get_mut(i))
+        else {
             return;
         };
         if par == PAR_NOTE_LENGTH {
@@ -218,7 +230,18 @@ impl MidiFile {
     /// `mf_insert_event`: activates an event; returns its id (its index).
     pub fn insert(&mut self, tick: u32, status: u8, d1: u8, d2: u8) -> usize {
         let at = self.events.partition_point(|e| e.tick < tick);
-        self.events.insert(at, Event { tick, status, d1, d2, track: 0, len: 0, active: true });
+        self.events.insert(
+            at,
+            Event {
+                tick,
+                status,
+                d1,
+                d2,
+                track: 0,
+                len: 0,
+                active: true,
+            },
+        );
         self.length = self.length.max(tick);
         at
     }
@@ -356,7 +379,15 @@ fn read_track(bytes: &[u8], track: usize, out: &mut Vec<Event>, length: &mut u32
         };
         let d2 = data.get(1).copied().unwrap_or(0);
         at += count;
-        out.push(Event { tick, status, d1, d2, track, len: 0, active: true });
+        out.push(Event {
+            tick,
+            status,
+            d1,
+            d2,
+            track,
+            len: 0,
+            active: true,
+        });
         *length = (*length).max(tick);
     }
 }
@@ -364,7 +395,6 @@ fn read_track(bytes: &[u8], track: usize, out: &mut Vec<Event>, length: &mut u32
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     /// One track, division 960: a Note On at tick 0 and its Note Off at 960.
     fn one_note() -> Vec<u8> {
@@ -441,7 +471,10 @@ mod tests {
         assert_eq!(f.division(), 960);
         assert_eq!(f.tracks(), 1);
         assert_eq!(f.length(), 1920);
-        assert_eq!((f.pos(), f.command(), f.byte_one(), f.byte_two()), (0, 0x90, 0x3c, 0x46));
+        assert_eq!(
+            (f.pos(), f.command(), f.byte_one(), f.byte_two()),
+            (0, 0x90, 0x3c, 0x46)
+        );
         f.next_at(1920);
         assert_eq!((f.pos(), f.command(), f.byte_one()), (1920, 0x90, 0x40));
     }
@@ -462,7 +495,10 @@ mod tests {
             seen.push((f.pos(), c));
             f.advance();
         }
-        assert!(seen.iter().all(|(_, c)| c & 0xf0 != 0x80), "note off survived: {seen:?}");
+        assert!(
+            seen.iter().all(|(_, c)| c & 0xf0 != 0x80),
+            "note off survived: {seen:?}"
+        );
         assert_eq!(seen.len(), 2, "{seen:?}");
     }
 

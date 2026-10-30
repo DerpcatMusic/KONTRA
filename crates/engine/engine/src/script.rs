@@ -693,15 +693,21 @@ impl HostApi for Engine {
                 HostValue::Int(self.midi_buffer)
             }
             Action::MfGetBufferSize => HostValue::Int(self.midi_buffer),
-            Action::MfGetNumTracks => {
-                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| i32::from(f.tracks())))
-            }
-            Action::MfGetLength => {
-                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| f.length() as i32))
-            }
-            Action::MfGetPos => {
-                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| f.pos() as i32))
-            }
+            Action::MfGetNumTracks => HostValue::Int(
+                self.midi
+                    .get(self.midi_current)
+                    .map_or(0, |f| i32::from(f.tracks())),
+            ),
+            Action::MfGetLength => HostValue::Int(
+                self.midi
+                    .get(self.midi_current)
+                    .map_or(0, |f| f.length() as i32),
+            ),
+            Action::MfGetPos => HostValue::Int(
+                self.midi
+                    .get(self.midi_current)
+                    .map_or(0, |f| f.pos() as i32),
+            ),
             Action::MfSetPos => {
                 let tick = int(0).max(0) as u32;
                 if let Some(f) = self.midi.get_mut(self.midi_current) {
@@ -709,15 +715,21 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
-            Action::MfGetCommand => {
-                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| i32::from(f.command())))
-            }
-            Action::MfGetByteOne => {
-                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| i32::from(f.byte_one())))
-            }
-            Action::MfGetByteTwo => {
-                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| i32::from(f.byte_two())))
-            }
+            Action::MfGetCommand => HostValue::Int(
+                self.midi
+                    .get(self.midi_current)
+                    .map_or(0, |f| i32::from(f.command())),
+            ),
+            Action::MfGetByteOne => HostValue::Int(
+                self.midi
+                    .get(self.midi_current)
+                    .map_or(0, |f| i32::from(f.byte_one())),
+            ),
+            Action::MfGetByteTwo => HostValue::Int(
+                self.midi
+                    .get(self.midi_current)
+                    .map_or(0, |f| i32::from(f.byte_two())),
+            ),
             Action::MfGetNext => {
                 if let Some(f) = self.midi.get_mut(self.midi_current) {
                     f.advance();
@@ -787,12 +799,8 @@ impl HostApi for Engine {
                         (int(0), int(1), int(2), int(3), int(4));
                     let _ = track;
                     if let Some(f) = self.midi.get_mut(self.midi_current) {
-                        let id = f.insert(
-                            pos.max(0) as u32,
-                            command as u8,
-                            byte1 as u8,
-                            byte2 as u8,
-                        );
+                        let id =
+                            f.insert(pos.max(0) as u32, command as u8, byte1 as u8, byte2 as u8);
                         self.midi_buffer -= 1;
                         HostValue::Int(id as i32)
                     } else {

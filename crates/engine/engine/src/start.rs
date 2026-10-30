@@ -121,11 +121,9 @@ impl Engine {
                             | ir::ModKind::Attack { .. }
                             | ir::ModKind::Release { .. },
                             ir::Source::HeldTime { span_ms },
-                        ) => Some(self.inverted(
-                            m.invert,
-                            s,
-                            plan::held_time(span_ms, held_seconds),
-                        )),
+                        ) => {
+                            Some(self.inverted(m.invert, s, plan::held_time(span_ms, held_seconds)))
+                        }
                         (
                             ir::ModKind::LfoPhase { .. } | ir::ModKind::LfoRate { .. },
                             ir::Source::Lfo(_),
