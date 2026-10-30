@@ -690,7 +690,7 @@ impl HostApi for Engine {
                     Some(answer) => answer,
                     // Set in place succeeded; a type that could not load failed.
                     None if swap && self.running.kind != Kind::Init => {
-                        self.start_async(if set { Exit::Done } else { Exit::Failed })
+                        self.start_async(Exit::from(set))
                     }
                     None => -1,
                 })
@@ -733,30 +733,26 @@ impl HostApi for Engine {
             }
             Action::ReadPersistentVar => {
                 let whole = |i| u32::try_from(int(i)).unwrap_or(0);
-                let (base, len) = (whole(0), whole(1));
-                let range = base..base.saturating_add(len);
-                let plan = std::sync::Arc::clone(&self.plan);
-                let script = plan.scripts.get(usize::from(self.running.slot));
-                if int(2) == 1 {
-                    let saved = script.map(|s| s.restore_texts.as_slice());
-                    for &(cell, text) in saved.unwrap_or_default() {
-                        if range.contains(&cell)
-                            && let Some(t) = call.text_cells.get_mut(cell as usize)
-                        {
-                            *t = text;
-                        }
-                    }
-                } else {
-                    let saved = script.map(|s| s.restore.as_slice());
-                    for &(cell, value) in saved.unwrap_or_default() {
-                        if range.contains(&cell)
-                            && let Some(c) = call.cells.get_mut(cell as usize)
-                        {
-                            *c = self.saved_value(self.running.slot, cell, value);
-                        }
-                    }
-                }
+                let range = whole(0)..whole(0).saturating_add(whole(1));
+                self.read_persistent(range, int(2) == 1, call.cells, call.text_cells);
                 HostValue::Nothing
+            }
+            // An array file named by path: loaded at once while the engine is
+            // built (off the audio thread, as `on init` reads it); otherwise,
+            // and every save, the control side carries it out (files.rs).
+            action @ (Action::LoadArrayStr | Action::SaveArrayStr) => {
+                let path = call.texts.first().copied().unwrap_or(Text::EMPTY);
+                let (at, kind) = ((int(0) as u32, int(1) as u32), i64::from(int(2)));
+                let save = action == Action::SaveArrayStr;
+                let slot = self.running.slot;
+                let script = self.script();
+                let request = script.map(|s| s.file_request(slot, path, at, kind, save));
+                let Some(request) = request.filter(|_| save || !self.building) else {
+                    let cells = (call.cells, call.text_cells);
+                    let loaded = script.zip(request).is_some_and(|(s, r)| s.load(&r, cells));
+                    return HostValue::Int(self.start_async(Exit::from(loaded)));
+                };
+                HostValue::Int(self.request_file(request))
             }
             Action::SetSnapshotType => {
                 self.recall = kontra_plan::Recall::of_type(i64::from(int(0)));

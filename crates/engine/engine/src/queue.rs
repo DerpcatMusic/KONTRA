@@ -23,6 +23,12 @@ pub(crate) enum Exit {
     Failed,
 }
 
+impl From<bool> for Exit {
+    fn from(done: bool) -> Self {
+        if done { Self::Done } else { Self::Failed }
+    }
+}
+
 /// What the queue holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Work {

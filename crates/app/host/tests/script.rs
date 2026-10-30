@@ -55,6 +55,26 @@ fn engine(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
 
+/// Reads array files from disk, as the host does.
+#[derive(Debug)]
+struct Disk;
+
+impl kontra_engine::files::Files for Disk {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        std::fs::read(path).ok()
+    }
+}
+
+/// [`engine`], its script reading array files from disk.
+fn engine_with_files(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let mut plan = Plan::new(zones, 16);
+    let mut planned = kontra_host::script::plan(&script, &[], &[]);
+    planned.files = Some(Arc::new(Disk));
+    plan.scripts = vec![planned];
+    Engine::new(Arc::new(plan), store.client(), RATE)
+}
+
 fn host(key: u8) -> HostNote {
     HostNote {
         port: 0,
@@ -2009,6 +2029,33 @@ fn a_purge_reports_its_id_in_async_complete() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "1 1 1 13");
+}
+
+/// KSP manual (`load_array_str`): in `on init` a file named by path loads
+/// at once; `on async_complete` reports 1, or 0 for a file that is missing.
+#[test]
+fn an_array_file_named_by_path_loads_in_init() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(dir.join("names.nka"), "!names\nfirst\nsecond\n").unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = format!(
+        "on init
+            declare !names[2]
+            declare %ok[2]
+            declare $n
+            $n := load_array_str(!names, \"{0}/names.nka\")
+            $n := load_array_str(%ok, \"{0}/missing.nka\")
+        end on
+        on async_complete
+            %ok[$NI_ASYNC_ID - 1] := $NI_ASYNC_EXIT_STATUS
+            message(!names[0] & \" \" & !names[1] & \" \" & %ok[0] & %ok[1])
+        end on",
+        dir.display()
+    );
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine_with_files(&store, zones, &source);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "first second 10");
 }
 
 /// KSP manual (`load_array`, `on async_complete`): a mode-1 load from the

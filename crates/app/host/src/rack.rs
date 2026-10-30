@@ -10,12 +10,14 @@ use std::sync::Arc;
 use kontra_engine::{EffectRequest, Engine, Prepared, ir};
 
 use crate::persist::Capture;
+pub(crate) use files::DiskFiles;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model::UiModifiers;
 
 mod audio;
+mod files;
 mod hold;
 mod recall;
 pub use audio::RackAudio;
@@ -93,6 +95,13 @@ pub enum Command {
         generation: u64,
         saved: Box<[kontra_engine::Saved]>,
     },
+    /// Answer a part's file request ([`files`]), if the part is still
+    /// that load; the box comes back.
+    File {
+        part: usize,
+        generation: u64,
+        reply: Box<kontra_engine::files::FileReply>,
+    },
     /// Copy what a part's interface reads of its script and send it back.
     Look(Box<crate::view::LookFrame>),
     /// The user moved control `id` of script `slot` to `value`, holding
@@ -140,6 +149,10 @@ pub struct Channels {
     pub recalled: Ring<Box<[kontra_engine::Saved]>>,
     /// Effect types the parts' scripts asked for: (part, its load, request).
     pub requests: Ring<(usize, u64, EffectRequest)>,
+    /// Array files the parts' scripts asked for: (part, its load, request).
+    pub files: Ring<(usize, u64, kontra_engine::files::FileRequest)>,
+    /// Answered file requests: a save's values to write, the rest to free.
+    pub filed: Ring<Box<kontra_engine::files::FileReply>>,
     /// Effect units swapped out, to free on the control side.
     pub units: Ring<Box<Option<Prepared>>>,
     /// Typed texts the audio side wrote ([`Command::ControlText`]), to free here.
@@ -251,6 +264,8 @@ impl Rack {
             // An engine queues at most 16 at once.
             requests: Ring::new(16 * MAX_PARTS),
             units: Ring::new(16 * MAX_PARTS),
+            files: Ring::new(16 * MAX_PARTS),
+            filed: Ring::new(16 * MAX_PARTS),
             looks: Ring::new(2 * MAX_PARTS),
             typed: Ring::new(16),
             meters: MeterCells::default(),
@@ -615,6 +630,7 @@ impl Rack {
         while self.channels.units.recv().is_some() {}
         while self.channels.typed.recv().is_some() {}
         while self.channels.recalled.recv().is_some() {}
+        self.files();
         // Effect types scripts loaded: built here, off the audio thread.
         while let Some((part, generation, request)) = self.channels.requests.recv() {
             let Some(Some(p)) = self.parts.get_mut(part) else {

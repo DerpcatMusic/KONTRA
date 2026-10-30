@@ -30,6 +30,7 @@ mod pgs;
 mod queue;
 mod racks;
 mod recall;
+mod script_files;
 
 mod script;
 mod start;
@@ -58,7 +59,7 @@ pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
-pub use kontra_plan::{EnginePar, EnginePars, Recall, Saved};
+pub use kontra_plan::{EnginePar, EnginePars, Recall, Saved, files};
 pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;
@@ -186,6 +187,12 @@ pub struct Engine {
     last_message: Text,
     /// What a recall of saved values does to the scripts.
     recall: Recall,
+    /// The values recalled last, by slot (`read_persistent_var` reads them).
+    recalled: Box<[Saved]>,
+    /// True while `new` runs the scripts' `init`, off the audio thread.
+    building: bool,
+    /// Array files scripts asked to load or save, for the control side.
+    files: Vec<kontra_plan::files::FileRequest>,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
     called: Box<[u32]>,
@@ -340,6 +347,9 @@ impl Engine {
             cc_values: [0; 130],
             last_message: Text::EMPTY,
             recall: Recall::Restart,
+            recalled: Box::new([]),
+            building: true,
+            files: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
             ui,
@@ -369,8 +379,10 @@ impl Engine {
             if let Some(init) = script.callbacks.init {
                 engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
-            engine.restore(slot, &script.restore, &script.restore_texts);
+            engine.write_saved(slot, &script.restore, &script.restore_texts);
+            engine.persistence_changed(slot);
         }
+        engine.building = false;
         engine.rebuild_racks();
         engine.build_chains();
         engine

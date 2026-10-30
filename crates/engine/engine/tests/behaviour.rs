@@ -2365,6 +2365,8 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         reverb_networks: vec![],
         knobs: vec![],
         foreign: None,
+        files: None,
+        arrays: Vec::new(),
         hears_own_releases: false,
         held_release_ends_children: false,
         links: vec![],
