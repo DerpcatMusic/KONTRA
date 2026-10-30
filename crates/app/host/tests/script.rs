@@ -2011,6 +2011,34 @@ fn a_purge_reports_its_id_in_async_complete() {
     assert_eq!(e.last_message(), "1 1 1 13");
 }
 
+/// KSP manual (`load_array`, `on async_complete`): a mode-1 load from the
+/// user's Data folder that finds no file leaves the array as it was,
+/// answers an async id, and `on async_complete` reports exit status 0.
+#[test]
+fn a_missing_data_folder_array_leaves_it_and_completes_with_failure() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id
+            declare %preset[2] := (7, 8)
+            $id := load_array(%preset, 1)
+        end on
+        on async_complete
+            message($NI_ASYNC_ID & \" \" & $id & \" \" & $NI_ASYNC_EXIT_STATUS & \" \" & %preset[0] & %preset[1])
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "1 1 0 78");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
+}
+
 /// `set_engine_par` as measured in Kontakt (probes/async_engine_par.ksp):
 /// −1, also for an effect type set in `on init`; outside it, an effect type
 /// change answers its async id and `on async_complete` follows.
