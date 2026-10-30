@@ -3,7 +3,8 @@
 //! not depend on decoded pictures or the window.
 
 use kontra_ui_model::{
-    self as model, ImageUse, Interface, Kind, PageRef, Role, WidgetRef, kontakt_picture_frame,
+    self as model, Active, ImageUse, Interface, Kind, PageRef, PictureState, Pointer, Role,
+    WidgetRef,
 };
 
 use super::{image_asset, knob_name, readout, stock, value};
@@ -74,7 +75,12 @@ pub(super) fn page<'a>(
                         w,
                         use_,
                         meta.frames as usize,
-                        pressed.binary_search(&index).is_ok(),
+                        if pressed.binary_search(&index).is_ok() {
+                            Pointer::Held
+                        } else {
+                            Pointer::Idle
+                        },
+                        &tree.laws.pictures,
                     ),
                     size: {
                         let size = drawn(raw, meta);
@@ -130,8 +136,15 @@ pub(super) fn page<'a>(
 }
 
 /// The frame `w` shows of a picture with `frames`: the script's
-/// `PICTURE_STATE`, else the one its value selects.
-fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool) -> usize {
+/// `PICTURE_STATE`, else the one its value selects. `laws` are the format's
+/// picture frames.
+fn frame(
+    w: &model::Widget,
+    u: &ImageUse,
+    frames: usize,
+    pointer: Pointer,
+    laws: &model::PictureFrames,
+) -> usize {
     if let Some(f) = u.frame {
         return f as usize;
     }
@@ -140,7 +153,12 @@ fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool) -> usize {
             (position(w) * frames.saturating_sub(1) as f64).round() as usize
         }
         (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
-            kontakt_picture_frame(value(w) != 0., held, false, frames)
+            let active = if value(w) != 0. {
+                Active::On
+            } else {
+                Active::Off
+            };
+            laws.frame(PictureState::new(active, pointer), frames)
         }
         _ => 0,
     }
@@ -435,6 +453,15 @@ mod tests {
     fn a_held_button_selects_its_pressed_picture_in_the_plan() {
         let mut tree = Interface {
             source: model::Source::Ksp { slot: 0 },
+            // The measured Kontakt strip this KSP control uses: off, on,
+            // off pressed, on pressed, off hover, on hover.
+            laws: model::Laws {
+                pictures: model::PictureFrames {
+                    states: [0, 2, 4, 1, 3, 5],
+                    short: [0, 1],
+                },
+                ..model::Laws::default()
+            },
             ..Default::default()
         };
         tree.pages.push(model::Page {

@@ -2179,6 +2179,7 @@ dependencies = [
  "kontra-ir",
  "kontra-law",
  "kontra-params",
+ "kontra-ui-model",
  "ni-file",
  "thiserror 2.0.21",
 ]

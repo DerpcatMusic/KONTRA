@@ -50,6 +50,9 @@ pub struct Interface {
     pub widgets: Vec<Widget>,
     /// Authored back-to-front traversal; `None` uses the source's default order.
     pub paint_order: Option<Vec<WidgetRef>>,
+    /// The presentation laws its format owns: picture frames and paint
+    /// ranks. The model applies them but defines none.
+    pub laws: Laws,
     pub assets: Vec<Asset>,
     pub styles: Vec<TextStyle>,
     /// The instrument's icon in the host's rack header (KSP `$INST_ICON_ID`).
@@ -607,6 +610,203 @@ impl Kind {
     pub fn is_container(&self) -> bool {
         matches!(self, Self::Panel)
     }
+
+    /// This kind without its parameters, for presentation laws that rank kinds.
+    #[must_use]
+    pub fn tag(&self) -> KindTag {
+        match self {
+            Self::Panel => KindTag::Panel,
+            Self::Knob { .. } => KindTag::Knob,
+            Self::Slider { .. } => KindTag::Slider,
+            Self::Button { .. } => KindTag::Button,
+            Self::Switch => KindTag::Switch,
+            Self::Menu { .. } => KindTag::Menu,
+            Self::Label => KindTag::Label,
+            Self::ValueEdit { .. } => KindTag::ValueEdit,
+            Self::Table { .. } => KindTag::Table,
+            Self::Xy { .. } => KindTag::Xy,
+            Self::Waveform => KindTag::Waveform,
+            Self::Wavetable { .. } => KindTag::Wavetable,
+            Self::LevelMeter { .. } => KindTag::LevelMeter,
+            Self::FileSelector { .. } => KindTag::FileSelector,
+            Self::TextEdit => KindTag::TextEdit,
+            Self::Image => KindTag::Image,
+            Self::MouseArea => KindTag::MouseArea,
+        }
+    }
+}
+
+/// A [`Kind`] without its parameters, for laws that rank kinds.
+///
+/// The model defines this vocabulary; a format supplies the order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum KindTag {
+    Panel,
+    Knob,
+    Slider,
+    Button,
+    Switch,
+    Menu,
+    Label,
+    ValueEdit,
+    Table,
+    Xy,
+    Waveform,
+    Wavetable,
+    LevelMeter,
+    FileSelector,
+    TextEdit,
+    Image,
+    MouseArea,
+}
+
+/// Whether a control's value is off or on, for picture selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Active {
+    #[default]
+    Off,
+    On,
+}
+
+/// What the pointer is doing over a control, for picture selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Pointer {
+    #[default]
+    Idle,
+    /// Pressed down on it.
+    Held,
+    /// Over it without pressing.
+    Hovered,
+}
+
+/// One of the states a responsive picture strip can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PictureState {
+    Off,
+    OffHeld,
+    OffHovered,
+    On,
+    OnHeld,
+    OnHovered,
+}
+
+impl PictureState {
+    /// The state of a control that is `active` under `pointer`.
+    #[must_use]
+    pub const fn new(active: Active, pointer: Pointer) -> Self {
+        match (active, pointer) {
+            (Active::Off, Pointer::Idle) => Self::Off,
+            (Active::Off, Pointer::Held) => Self::OffHeld,
+            (Active::Off, Pointer::Hovered) => Self::OffHovered,
+            (Active::On, Pointer::Idle) => Self::On,
+            (Active::On, Pointer::Held) => Self::OnHeld,
+            (Active::On, Pointer::Hovered) => Self::OnHovered,
+        }
+    }
+
+    /// Where the state sits in [`PictureFrames::states`].
+    const fn index(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::OffHeld => 1,
+            Self::OffHovered => 2,
+            Self::On => 3,
+            Self::OnHeld => 4,
+            Self::OnHovered => 5,
+        }
+    }
+
+    /// Whether the control's value is on in this state: 0 or 1.
+    const fn on(self) -> usize {
+        match self {
+            Self::Off | Self::OffHeld | Self::OffHovered => 0,
+            Self::On | Self::OnHeld | Self::OnHovered => 1,
+        }
+    }
+}
+
+/// Which frame of a picture strip each state shows.
+///
+/// The model carries this value but defines no format's; a format that has
+/// measured responsive strips supplies its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PictureFrames {
+    /// The frame each [`PictureState`] shows, in the enum's order: off,
+    /// off held, off hovered, on, on held, on hovered.
+    pub states: [usize; 6],
+    /// The off and on frames a strip shorter than six frames falls back to.
+    pub short: [usize; 2],
+}
+
+impl Default for PictureFrames {
+    /// A plain off/on pair: frame 0 when off and frame 1 when on, whatever
+    /// the pointer does.
+    fn default() -> Self {
+        Self {
+            states: [0, 0, 0, 1, 1, 1],
+            short: [0, 1],
+        }
+    }
+}
+
+impl PictureFrames {
+    /// The frame a strip of `frames` shows in `state`.
+    ///
+    /// A strip shorter than six frames uses the format's [`Self::short`]
+    /// off/on frames, clamped to the last frame it has.
+    #[must_use]
+    pub fn frame(&self, state: PictureState, frames: usize) -> usize {
+        let want = if frames >= self.states.len() {
+            self.states.get(state.index()).copied().unwrap_or(0)
+        } else {
+            self.short.get(state.on()).copied().unwrap_or(0)
+        };
+        want.min(frames.saturating_sub(1))
+    }
+}
+
+/// Back-to-front paint priority within one Z layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaintRanks {
+    /// Kinds and their ranks, lowest painted first. An unlisted kind paints
+    /// after every listed kind.
+    pub ranks: &'static [(KindTag, u8)],
+}
+
+impl Default for PaintRanks {
+    /// No order of its own: every kind ranks the same and declaration order
+    /// decides.
+    fn default() -> Self {
+        Self { ranks: &[] }
+    }
+}
+
+impl PaintRanks {
+    /// `kind`'s rank; an unlisted kind ranks last.
+    #[must_use]
+    pub fn rank(&self, kind: &Kind) -> u8 {
+        let tag = kind.tag();
+        self.ranks
+            .iter()
+            .find(|(k, _)| *k == tag)
+            .map_or(u8::MAX, |(_, rank)| *rank)
+    }
+}
+
+/// The presentation laws a format owns.
+///
+/// Shared code applies these but defines none of them, so a second format
+/// supplies its own without the model knowing its name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Laws {
+    /// Which frame of a picture strip each state shows.
+    pub pictures: PictureFrames,
+    /// How kinds rank in paint order within one Z layer.
+    pub paint: PaintRanks,
 }
 
 /// A numeric value range, in the control's own units.
@@ -910,25 +1110,6 @@ impl Default for ImageMeta {
     }
 }
 
-/// Kontakt switch/button/dropdown strips: off, on, off pressed, on pressed,
-/// off hover, on hover (NI Kontakt 4 Player Developer Guide §5.4.2).
-/// A short legacy strip retains its off/on fallback; a held pointer wins over hover.
-pub fn kontakt_picture_frame(on: bool, held: bool, hovered: bool, frames: usize) -> usize {
-    let state = usize::from(on)
-        + if frames >= 6 {
-            if held {
-                2
-            } else if hovered {
-                4
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-    state.min(frames.saturating_sub(1))
-}
-
 /// Fixed edges of a stretchable image, in pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Margins {
@@ -1053,30 +1234,6 @@ pub enum Presentation {
 
 // ---------------------------------------------------------------- queries
 
-/// Documented Kontakt back-to-front type priority within one Z layer.
-/// Image is the shared-IR representation of a picture label; panels paint no
-/// pixels and retain their position before ordinary controls.
-fn kontakt_paint_rank(kind: &Kind) -> u8 {
-    match kind {
-        Kind::Panel => 0,
-        Kind::FileSelector { .. } => 1,
-        Kind::Waveform => 2,
-        Kind::Wavetable { .. } => 3,
-        Kind::LevelMeter { .. } => 4,
-        Kind::Label | Kind::Image => 5,
-        Kind::Knob { .. } => 6,
-        Kind::Slider { .. } => 7,
-        Kind::Switch => 8,
-        Kind::Button { .. } => 9,
-        Kind::ValueEdit { .. } => 10,
-        Kind::Menu { .. } => 11,
-        Kind::Table { .. } => 12,
-        Kind::Xy { .. } => 13,
-        Kind::TextEdit => 14,
-        Kind::MouseArea => 15,
-    }
-}
-
 impl Interface {
     /// Which assets `presentation` draws, indexed like [`Self::assets`].
     /// Everything else need not be decoded, or may be released.
@@ -1148,10 +1305,11 @@ impl Interface {
         rect
     }
 
-    /// `page`'s widgets back to front. Kontakt layers order by widget type,
-    /// then declaration order (KSP Control Parameters, `$CONTROL_PAR_Z_LAYER`).
-    /// Kontakt uses global layers; native graphs order siblings and draw each
-    /// panel's contents straight after the panel.
+    /// `page`'s widgets back to front. A source with global layers orders by
+    /// widget type, then declaration order (KSP Control Parameters,
+    /// `$CONTROL_PAR_Z_LAYER`); the type order is the format's
+    /// [`Laws::paint`]. Native graphs order siblings and draw each panel's
+    /// contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
     pub fn draw_order(&self, page: PageRef) -> Vec<WidgetRef> {
         if let Some(order) = &self.paint_order {
@@ -1171,7 +1329,7 @@ impl Interface {
                 .collect();
             out.sort_by_key(|n| {
                 let w = self.widgets.get(n.0);
-                (w.map(|w| (w.z, kontakt_paint_rank(&w.kind))), n.0)
+                (w.map(|w| (w.z, self.laws.paint.rank(&w.kind))), n.0)
             });
             return out;
         }
@@ -1342,26 +1500,6 @@ impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn kontakt_picture_strip_uses_all_six_responsive_states() {
-        assert_eq!(
-            [false, true]
-                .into_iter()
-                .flat_map(|on| {
-                    [(false, false), (true, true), (false, true)]
-                        .map(|(held, hover)| kontakt_picture_frame(on, held, hover, 6))
-                })
-                .collect::<Vec<_>>(),
-            [0, 2, 4, 1, 3, 5]
-        );
-        for frames in 0..=2 {
-            assert_eq!(
-                kontakt_picture_frame(true, true, true, frames),
-                frames.saturating_sub(1)
-            );
-            assert_eq!(kontakt_picture_frame(false, false, true, frames), 0);
-        }
-    }
     use super::*;
 
     #[test]
@@ -1405,6 +1543,10 @@ mod tests {
             }),
         }
     }
+
+    /// The two measured Kontakt ranks this fixture's layer test relies on;
+    /// the full table belongs to the format that measured it.
+    const FIXTURE_RANKS: &[(KindTag, u8)] = &[(KindTag::Label, 5), (KindTag::Knob, 6)];
 
     /// Wallpaper, a panel with a background picture holding a strip knob, and a loose label.
     fn sample() -> Interface {
@@ -1451,6 +1593,12 @@ mod tests {
                 image("panel_bg.png", 1),
                 image("knob.png", 101),
             ],
+            laws: Laws {
+                paint: PaintRanks {
+                    ranks: FIXTURE_RANKS,
+                },
+                ..Laws::default()
+            },
             ..Interface::default()
         }
     }
@@ -1485,9 +1633,30 @@ mod tests {
         );
     }
 
+    /// A second format's laws: a picture strip whose frames run the other
+    /// way, and a paint order unlike the measured Kontakt one. Nothing in
+    /// the model knows this format's name.
+    fn other_format() -> Laws {
+        Laws {
+            pictures: PictureFrames {
+                states: [5, 4, 3, 2, 1, 0],
+                short: [1, 0],
+            },
+            paint: PaintRanks {
+                ranks: &[
+                    (KindTag::Label, 0),
+                    (KindTag::Slider, 1),
+                    (KindTag::LevelMeter, 2),
+                    (KindTag::Menu, 3),
+                ],
+            },
+        }
+    }
+
     #[test]
-    fn kontakt_layers_use_native_type_priority_before_declaration_order() {
+    fn a_second_formats_laws_draw_in_that_formats_order() {
         let mut ui = sample();
+        ui.laws = other_format();
         ui.widgets = vec![
             Widget::new(
                 "menu",
@@ -1527,15 +1696,15 @@ mod tests {
                 },
             ),
         ];
-        // NI's documented top-to-bottom priority is Menu, Slider, Label, Meter.
-        // The two labels retain their declaration-order tie break.
+        // Labels first (in declaration order), then slider, meter, menu; the
+        // measured Kontakt table would draw the menu last instead.
         assert_eq!(
             ui.draw_order(PageRef(0)),
             [
-                WidgetRef(4),
                 WidgetRef(2),
                 WidgetRef(3),
                 WidgetRef(1),
+                WidgetRef(4),
                 WidgetRef(0)
             ]
         );
@@ -1550,6 +1719,8 @@ mod tests {
                 WidgetRef(4)
             ]
         );
+        // A performance view uses the same global-layer path and the same
+        // supplied law.
         ui.source = Source::PerformanceView;
         assert_eq!(
             ui.draw_order(PageRef(0)),
@@ -1560,6 +1731,20 @@ mod tests {
                 WidgetRef(0),
                 WidgetRef(4)
             ]
+        );
+        // The strip law is this format's, not the model's: on and idle is
+        // frame 2 here, where a plain off/on pair would show frame 1.
+        assert_eq!(
+            ui.laws
+                .pictures
+                .frame(PictureState::new(Active::On, Pointer::Idle), 6),
+            2
+        );
+        assert_eq!(
+            Laws::default()
+                .pictures
+                .frame(PictureState::new(Active::On, Pointer::Idle), 6),
+            1
         );
     }
 
