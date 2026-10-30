@@ -183,6 +183,16 @@ fn drawn_page(
             }
             _ => None,
         });
+        let stock_glyphs = stock_glyphs.or_else(|| {
+            if matches!(tree.source, model::Source::Ksp { .. })
+                && matches!(wd.kind, Kind::Label)
+                && style.is_some_and(|s| s.font == model::Font::Stock(12))
+            {
+                pictures.font(model::AssetRef(usize::MAX - 6), "@stock/font12")
+            } else {
+                None
+            }
+        });
         let stock = item.stock;
         let words = item.words;
         let glyphs = match style.map(|s| &s.font) {
@@ -301,7 +311,16 @@ fn drawn_page(
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
             } else if !words.is_empty() {
-                parts.push(words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.));
+                if let (Some(glyphs), Some(style)) = (&stock_glyphs, style)
+                    && matches!(wd.kind, Kind::Label)
+                    && style.font == model::Font::Stock(12)
+                {
+                    parts.push(stock::label(&words, style, (w, h, scale, device), glyphs));
+                } else {
+                    parts.push(
+                        words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.),
+                    );
+                }
             }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, (w, h, scale)).at(0., 0.));

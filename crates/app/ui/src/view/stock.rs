@@ -172,8 +172,19 @@ impl Look {
                             ..Default::default()
                         };
                         parts.push(super::sliced(button, &meta, (w, h), scale));
-                    } else {
+                    } else if *on {
                         parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                    } else {
+                        parts.push(
+                            boxed(
+                                (w - 2. * scale).max(0.),
+                                (h - 2. * scale).max(0.),
+                                scale,
+                                fill,
+                                0x2d_2d2d,
+                            )
+                            .at(0., scale),
+                        );
                     }
                 }
                 // The default font darkens on a lit button; a chosen one keeps its ink.
@@ -263,7 +274,16 @@ impl Look {
             Self::Menu { caption } => {
                 let mut parts = Vec::new();
                 if bg {
-                    parts.push(boxed(w, h, scale, rgb(0x5f_5f5f).into(), 0x2d_2d2d));
+                    parts.push(
+                        boxed(
+                            (w - 2. * scale).max(0.),
+                            (h - 2. * scale).max(0.),
+                            scale,
+                            rgb(0x5f_5f5f).into(),
+                            0x2d_2d2d,
+                        )
+                        .at(0., scale),
+                    );
                 }
                 let ink = ink(0xfe_fefe);
                 parts.push(words(caption, ink, model::Align::Left, w, h, scale));
@@ -281,6 +301,23 @@ impl Look {
             }
         }
     }
+}
+
+pub(super) fn label(
+    text: &str,
+    style: &TextStyle,
+    size: (f64, f64, f64, f64),
+    glyphs: &crate::pictures::Glyphs,
+) -> El {
+    field_words(
+        text,
+        super::color(style.color),
+        style.align,
+        size,
+        Some(glyphs),
+        style.color,
+        StockMetrics::Button12,
+    )
 }
 
 #[derive(Clone, Copy)]
