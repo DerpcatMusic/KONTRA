@@ -238,7 +238,7 @@ impl Look {
                 } else {
                     w
                 };
-                let title = field_words(
+                parts.push(field_words(
                     title,
                     ink,
                     model::Align::Left,
@@ -246,20 +246,7 @@ impl Look {
                     font,
                     color,
                     StockMetrics::Field,
-                );
-                if let Some(font) = font.filter(|_| !wd.hide.value) {
-                    let value_width: f64 = value
-                        .chars()
-                        .filter_map(|c| {
-                            font.get(crate::pictures::glyph(c))
-                                .map(|g| f64::from(g.width) * scale)
-                        })
-                        .sum();
-                    let limit = (w - 12. * scale - value_width).max(0.);
-                    parts.push(stack([title]).w(limit).h(h).radius(0.).clip());
-                } else {
-                    parts.push(title);
-                }
+                ));
                 if !wd.hide.value {
                     parts.push(field_words(
                         value,
