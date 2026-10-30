@@ -9,7 +9,6 @@
 //! engine executes, not script code. Nothing allocates after [`Engine::new`].
 
 mod admit;
-mod behaviour;
 mod buses;
 mod callbacks;
 mod controls;
@@ -76,9 +75,9 @@ pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
 
-use behaviour::Behaviour;
 use buses::BusState;
 use group_masks::GroupMasks;
+use kontra_behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin, Releases};
 use queue::{EventQueue, Work};
 use script::{Kind, Running};

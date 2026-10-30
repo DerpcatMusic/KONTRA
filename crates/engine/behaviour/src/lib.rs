@@ -2,8 +2,10 @@
 //! counters. Deterministic: the same input gives the same voices, every run.
 
 use kontra_ir::Join;
+use kontra_plan::{Atom, Control, Plan, RoundRobin, RrCounter, Zone};
 
-use crate::plan::{Atom, Control, Plan, RoundRobin, RrCounter, Zone};
+/// Slots that may hold a loaded effect type at once.
+pub const LOADED: usize = 256;
 
 /// Round-robin state of one counter.
 #[derive(Clone, Copy, Default)]
@@ -19,15 +21,15 @@ struct Counter {
 /// The round-robin values one note-on read, kept so its release triggers
 /// pick the same step as its attack.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RrDraw {
+pub struct RrDraw {
     global: u32,
     key: u32,
     random: u32,
 }
 
-pub(crate) struct Behaviour {
+pub struct Behaviour {
     /// The last key pressed inside a switch range.
-    pub(crate) keyswitch: Option<u8>,
+    pub keyswitch: Option<u8>,
     /// One latch per [`Plan::switches`] range.
     switches: Vec<bool>,
     cc: [[u8; 128]; 16],
@@ -37,7 +39,7 @@ pub(crate) struct Behaviour {
     bend: [f32; 16],
     /// The channel the latest note, controller or bend came on: what routes
     /// no note owns read (the engine plays every channel).
-    pub(crate) channel: u8,
+    pub channel: u8,
     global: Counter,
     keys: [Counter; 128],
     /// (group, counter) for every group a round-robin zone names; built at prepare.
@@ -46,16 +48,16 @@ pub(crate) struct Behaviour {
     /// Per key, the sample its release-trigger counter last restarted: every
     /// attack, and `reset_rls_trig_counter` (Kontakt's system script runs it
     /// on each note-on that is not a release trigger).
-    pub(crate) rls_reset: [u64; 128],
+    pub rls_reset: [u64; 128],
     /// Per [`ir::SlotShapes::slots`] entry, the shape index it
     /// last switched to.
-    pub(crate) shapes: Vec<Option<u16>>,
+    pub shapes: Vec<Option<u16>>,
     /// Slots and the [`ir::SlotShapes::types`] entry each was last loaded with.
-    pub(crate) loaded: Vec<(kontra_ir::RackAt, u8, u16)>,
+    pub loaded: Vec<(kontra_ir::RackAt, u8, u16)>,
 }
 
 impl Behaviour {
-    pub(crate) fn new(plan: &Plan) -> Self {
+    pub fn new(plan: &Plan) -> Self {
         let mut groups: Vec<(u32, Counter)> = Vec::new();
         for zone in &plan.zones {
             let cycles = zone
@@ -83,7 +85,7 @@ impl Behaviour {
             rng: 0x9E37_79B9_7F4A_7C15,
             rls_reset: [0; 128],
             shapes: vec![None; plan.slot_shapes.slots.len()],
-            loaded: Vec::with_capacity(crate::fx_types::LOADED.max(plan.loaded.len())),
+            loaded: Vec::with_capacity(LOADED.max(plan.loaded.len())),
         };
         behaviour.loaded.extend_from_slice(&plan.loaded);
         if let Some(key) = plan.default_keyswitch {
@@ -96,12 +98,12 @@ impl Behaviour {
     /// inside the span of all switch ranges sets the ranges holding it and
     /// clears the rest, even in a gap; a key outside the span changes nothing.
     /// A note-on: its channel is the one last played, its key may switch.
-    pub(crate) fn play(&mut self, plan: &Plan, key: u8, channel: u8) {
+    pub fn play(&mut self, plan: &Plan, key: u8, channel: u8) {
         self.channel = channel;
         self.press(plan, key);
     }
 
-    pub(crate) fn press(&mut self, plan: &Plan, key: u8) {
+    pub fn press(&mut self, plan: &Plan, key: u8) {
         let lo = plan.switches.iter().map(|r| *r.start()).min();
         let hi = plan.switches.iter().map(|r| *r.end()).max();
         if lo.is_none_or(|lo| key < lo) || hi.is_none_or(|hi| key > hi) {
@@ -116,14 +118,7 @@ impl Behaviour {
     }
 
     /// Whether `zone`'s start conditions hold for this note.
-    pub(crate) fn starts(
-        &mut self,
-        zone: &Zone,
-        channel: u8,
-        key: u8,
-        draw: RrDraw,
-        step: bool,
-    ) -> bool {
+    pub fn starts(&mut self, zone: &Zone, channel: u8, key: u8, draw: RrDraw, step: bool) -> bool {
         let mut result = true;
         for (join, atom) in &zone.start {
             let value = match atom {
@@ -140,7 +135,7 @@ impl Behaviour {
         result
     }
 
-    pub(crate) fn cc(&self, channel: u8, controller: u8) -> u8 {
+    pub fn cc(&self, channel: u8, controller: u8) -> u8 {
         self.cc
             .get(usize::from(channel & 15))
             .and_then(|c| c.get(usize::from(controller & 127)))
@@ -149,26 +144,26 @@ impl Behaviour {
     }
 
     /// Whether a message has set `controller` on `channel`.
-    pub(crate) fn cc_arrived(&self, channel: u8, controller: u8) -> bool {
+    pub fn cc_arrived(&self, channel: u8, controller: u8) -> bool {
         self.cc_set
             .get(usize::from(channel & 15))
             .is_some_and(|bits| bits >> (controller & 127) & 1 == 1)
     }
 
-    pub(crate) fn bend(&self, channel: u8) -> f32 {
+    pub fn bend(&self, channel: u8) -> f32 {
         self.bend
             .get(usize::from(channel & 15))
             .copied()
             .unwrap_or(0.0)
     }
 
-    pub(crate) fn set_bend(&mut self, channel: u8, value: f32) {
+    pub fn set_bend(&mut self, channel: u8, value: f32) {
         if let Some(v) = self.bend.get_mut(usize::from(channel & 15)) {
             *v = value;
         }
     }
 
-    pub(crate) fn set_cc(&mut self, channel: u8, controller: u8, value: u8) {
+    pub fn set_cc(&mut self, channel: u8, controller: u8, value: u8) {
         if let Some(v) = self
             .cc
             .get_mut(usize::from(channel & 15))
@@ -182,7 +177,7 @@ impl Behaviour {
     }
 
     /// One draw per note-on: the counters it reads and a fresh random value.
-    pub(crate) fn draw(&mut self, key: u8) -> RrDraw {
+    pub fn draw(&mut self, key: u8) -> RrDraw {
         let random = self.random();
         RrDraw {
             global: self.global.count,
@@ -192,7 +187,7 @@ impl Behaviour {
     }
 
     /// xorshift64*: deterministic, allocation-free.
-    pub(crate) fn random(&mut self) -> u32 {
+    pub fn random(&mut self) -> u32 {
         self.rng ^= self.rng >> 12;
         self.rng ^= self.rng << 25;
         self.rng ^= self.rng >> 27;
@@ -250,7 +245,7 @@ impl Behaviour {
 
     /// Steps every counter a note-on read, once. The global counter is
     /// Kontakt's: it steps on every note-on, matched or not.
-    pub(crate) fn advance(&mut self) {
+    pub fn advance(&mut self) {
         self.global.used = true;
         let all = std::iter::once(&mut self.global)
             .chain(self.keys.iter_mut())
@@ -265,7 +260,7 @@ impl Behaviour {
     }
 
     /// The value a crossfade or range reads for a note.
-    pub(crate) fn control(&self, control: Control, channel: u8, velocity: u8, key: u8) -> u8 {
+    pub fn control(&self, control: Control, channel: u8, velocity: u8, key: u8) -> u8 {
         match control {
             Control::Velocity => velocity,
             Control::Key => key,

@@ -2025,6 +2025,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-behaviour"
+version = "0.0.0"
+dependencies = [
+ "kontra-ir",
+ "kontra-plan",
+]
+
+[[package]]
 name = "kontra-dsp"
 version = "0.0.0"
 dependencies = [
@@ -2135,6 +2143,7 @@ dependencies = [
 name = "kontra-engine"
 version = "0.0.0"
 dependencies = [
+ "kontra-behaviour",
  "kontra-dsp",
  "kontra-effects",
  "kontra-events",
