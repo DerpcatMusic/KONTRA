@@ -48,6 +48,18 @@ pub(crate) fn keybed(keys: &[Key]) -> Vec<(u8, Rgba)> {
         .collect()
 }
 
+/// With `support` on (`set_key_pressed_support`), the keys the scripts
+/// press, which the keyboard shows instead of the keys played.
+pub(crate) fn pressed(keys: &[Key], support: bool) -> Option<Vec<u8>> {
+    support.then(|| {
+        (0u8..)
+            .zip(keys)
+            .filter(|(_, k)| k.pressed)
+            .map(|(n, _)| n)
+            .collect()
+    })
+}
+
 /// The keys the script named (`set_key_name`), by note.
 pub(crate) fn names(keys: &[Key]) -> Vec<(u8, String)> {
     (0u8..)

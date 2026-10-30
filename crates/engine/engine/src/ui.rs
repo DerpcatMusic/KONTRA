@@ -13,6 +13,13 @@ impl Engine {
         self.ui.keys()
     }
 
+    /// Whether the keyboard shows only the keys scripts press
+    /// (`set_key_pressed_support`), not the keys played.
+    #[must_use]
+    pub fn key_pressed_support(&self) -> bool {
+        self.ui.pressed_support()
+    }
+
     /// The named key ranges, in the order they were set.
     #[must_use]
     pub fn key_ranges(&self) -> &[KeyRange] {

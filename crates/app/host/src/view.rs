@@ -201,6 +201,7 @@ pub struct LookFrame {
     fonts: Arc<[String]>,
     /// The keyboard's keys, by note (a fixed 128: copied in place).
     keys: Vec<Key>,
+    pressed_support: bool,
     state: Filled,
 }
 
@@ -259,6 +260,7 @@ impl LookFrame {
                 .map_while(|id| now.font(slot, id).map(str::to_owned))
                 .collect(),
             keys: now.keys().to_vec(),
+            pressed_support: now.pressed_support(),
             state: Filled::No,
         })
     }
@@ -296,6 +298,7 @@ impl LookFrame {
             fonts: Arc::from([]),
             // Room for the engine's 128 keys, though a Lua page shows none.
             keys: Vec::with_capacity(128),
+            pressed_support: false,
             state: Filled::No,
         })
     }
@@ -354,6 +357,7 @@ impl LookFrame {
         if !copy(&mut self.keys, engine.keys()) {
             whole = false;
         }
+        self.pressed_support = engine.pressed_support();
         // Only what can show: a widget whose parent shows (Augmented
         // Orchestra makes 10,145, about 100 of them shown at once).
         for &n in &self.reads {
@@ -465,6 +469,10 @@ impl Looks for LookFrame {
 
     fn keys(&self) -> &[Key] {
         &self.keys
+    }
+
+    fn pressed_support(&self) -> bool {
+        self.pressed_support
     }
 }
 
