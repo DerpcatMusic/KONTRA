@@ -195,13 +195,10 @@ fn drawn_page(
                 .assets
                 .get(a.0)
                 .and_then(|asset| pictures.outline_font(a, &asset.path)),
-            Some(&model::Font::Stock(14))
-                if matches!(tree.source, model::Source::Ksp { .. }) && !words.is_empty() =>
-            {
-                pictures.outline_font(model::AssetRef(usize::MAX - 9), "@stock/pragmatica")
-            }
             Some(&model::Font::Stock(23))
-                if matches!(tree.source, model::Source::Ksp { .. }) && !words.is_empty() =>
+                if matches!(tree.source, model::Source::Ksp { .. })
+                    && style.is_some_and(|s| s.align == model::Align::Center)
+                    && words.contains("  ") =>
             {
                 pictures.outline_font(model::AssetRef(usize::MAX - 10), "@stock/raldo")
             }
@@ -439,7 +436,6 @@ fn words_el(
     let native_style = style.cloned().map(|mut style| {
         if font.is_some() {
             match style.font {
-                model::Font::Stock(14) => style.size = Some(10.),
                 model::Font::Stock(23) => style.size = Some(12.),
                 _ => {}
             }

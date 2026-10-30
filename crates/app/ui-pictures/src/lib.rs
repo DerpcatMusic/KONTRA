@@ -93,8 +93,7 @@ impl Pictures {
             for job in inbox {
                 if job.outline {
                     let bytes = match job.path.as_str() {
-                        "@stock/pragmatica" => stock::outline(0),
-                        "@stock/raldo" => stock::outline(1),
+                        "@stock/raldo" => stock::outline(),
                         _ => read(&job.path),
                     };
                     let font = bytes.and_then(|bytes| Font::new(bytes).ok());
