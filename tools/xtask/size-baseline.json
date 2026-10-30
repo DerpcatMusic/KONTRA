@@ -1,5 +1,6 @@
 {
   "kontra-align": 403,
+  "kontra-behaviour": 270,
   "kontra-dsp": 9,
   "kontra-dsp-core": 398,
   "kontra-dsp-delay": 336,
@@ -11,7 +12,7 @@
   "kontra-dsp-reverb": 2379,
   "kontra-dsp-spatial": 1,
   "kontra-effects": 798,
-  "kontra-engine": 8000,
+  "kontra-engine": 7722,
   "kontra-events": 270,
   "kontra-format": 33,
   "kontra-format-kontakt": 6538,

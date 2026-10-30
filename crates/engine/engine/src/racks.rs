@@ -7,11 +7,11 @@ use std::sync::Arc;
 use kontra_dsp::core::Levels;
 use kontra_ir as ir;
 
-use crate::behaviour::Behaviour;
 use crate::effects;
 use crate::filters;
 use crate::ledger::{self, Ramp};
 use crate::{Engine, Response, SampleTime};
+use kontra_behaviour::Behaviour;
 pub(crate) use kontra_effects::processors::{Dsp, Responses, convolver, processor};
 use kontra_effects::stem;
 

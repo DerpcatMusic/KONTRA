@@ -4,7 +4,7 @@
 use kontra_events::{HostNote, HostPattern};
 use kontra_time::SampleTime;
 
-use crate::behaviour::RrDraw;
+use kontra_behaviour::RrDraw;
 
 /// A note handle. Stale handles (the note ended) match nothing.
 /// Generations a slot cycles through: 13 bits, so a note's event ID (the
