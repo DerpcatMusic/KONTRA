@@ -49,7 +49,17 @@ fn run() -> Result<()> {
         return Ok(());
     }
     if command == "law" {
-        print!("{}", laws::run(args.next().as_deref())?);
+        let name = args.next();
+        match name.as_deref() {
+            Some("--help" | "-h") => println!("{USAGE}"),
+            Some(a) if a.starts_with('-') => bail!("unknown option {a}\n{USAGE}"),
+            _ => {
+                if let Some(extra) = args.next() {
+                    bail!("unexpected argument {extra}\n{USAGE}");
+                }
+                print!("{}", laws::run(name.as_deref())?);
+            }
+        }
         return Ok(());
     }
     let mut path = None;
