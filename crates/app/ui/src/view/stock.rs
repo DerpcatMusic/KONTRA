@@ -13,6 +13,9 @@ use std::sync::Arc;
 const KNOB: (f64, f64) = (87., 40.);
 /// Kontakt's default ink on a light (on) button.
 const DARK: u32 = 0x18_1818;
+/// The installed font-13 atlas peaks at 191/255 coverage; restore that scale
+/// before applying the script's colour and alpha.
+const FIELD_ATLAS_COVERAGE: u16 = 191;
 
 /// What a stock control shows; the memo key of its drawing.
 #[derive(Hash)]
@@ -154,7 +157,7 @@ impl Look {
                         rgb(0x5f_5f5f).into()
                     };
                     if *on && let Some(button) = button {
-                        parts.push(boxed(w, h, scale, rgb(0xffffff).into(), 0x2d_2d2d));
+                        parts.push(block(w, h).fill(rgb(0xff_ffff)));
                         let meta = model::ImageMeta {
                             size: Some(model::Size {
                                 width: 85.,
@@ -168,15 +171,7 @@ impl Look {
                             },
                             ..Default::default()
                         };
-                        parts.push(
-                            super::sliced(
-                                button,
-                                &meta,
-                                ((w - 2. * scale).max(0.), (h - 2. * scale).max(0.)),
-                                scale,
-                            )
-                            .at(scale, scale),
-                        );
+                        parts.push(super::sliced(button, &meta, (w, h), scale));
                     } else {
                         parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
                     }
@@ -204,7 +199,11 @@ impl Look {
                         model::Align::Center,
                         (w, h, scale, device),
                         glyphs,
-                        style.map_or(model::Rgba::rgb(DARK), |s| s.color),
+                        if stock {
+                            model::Rgba::rgb(DARK)
+                        } else {
+                            style.map_or(model::Rgba::rgb(DARK), |s| s.color)
+                        },
                         metrics,
                     ));
                 } else {
@@ -215,10 +214,15 @@ impl Look {
             Self::Field { title, value } => {
                 let mut parts = Vec::new();
                 if bg {
-                    if let Some(field) = button.and_then(|image| field_skin(image, w, h, scale)) {
-                        parts.push(super::image(&field, w, h));
+                    let height = (h - 2. * scale).max(0.);
+                    if let Some(field) =
+                        button.and_then(|image| field_skin(image, w, height, scale))
+                    {
+                        parts.push(super::image(&field, w, height).at(0., scale));
                     } else {
-                        parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
+                        parts.push(
+                            boxed(w, height, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c).at(0., scale),
+                        );
                     }
                 }
                 let ink = ink(0xfe_fefe);
@@ -341,7 +345,13 @@ fn field_words(
                         color.r,
                         color.g,
                         color.b,
-                        ((u16::from(p[3]) * u16::from(color.a)) / 255) as u8,
+                        ((u16::from(match metrics {
+                            StockMetrics::Field => {
+                                (u16::from(p[3]) * 255 / FIELD_ATLAS_COVERAGE).min(255) as u8
+                            }
+                            StockMetrics::Button12 => p[3],
+                        }) * u16::from(color.a))
+                            / 255) as u8,
                     ]
                 })
                 .collect();
