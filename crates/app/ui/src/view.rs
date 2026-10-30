@@ -434,11 +434,8 @@ fn words_el(
     font: Option<&Font>,
 ) -> El {
     let native_style = style.cloned().map(|mut style| {
-        if font.is_some() {
-            match style.font {
-                model::Font::Stock(23) => style.size = Some(12.),
-                _ => {}
-            }
+        if font.is_some() && style.font == model::Font::Stock(23) {
+            style.size = Some(12.);
         }
         style
     });
