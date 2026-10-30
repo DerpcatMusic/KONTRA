@@ -363,7 +363,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     }
     let readout = caption(format!("{:.1}", p.volume)).reserve("-00.0");
     let solo_mute = solo_mute(ui, p, n, &id("sm"), out);
-    let playing = p.level > 0.;
+    let playing = p.level.iter().any(|&l| l > 0.);
     let dot = block(6, 6)
         .radius(3.)
         .fill(if playing {

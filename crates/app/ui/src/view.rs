@@ -24,15 +24,15 @@ const TEXT: f64 = 11.;
 
 /// `page` of `tree` at `scale` view points per source pixel, and how many
 /// widgets this frame built rather than kept. `face` scopes its ids: each
-/// face drawn in one frame (a rack part) needs its own. `level` (0..1, the
-/// part's output peak) lights its level meters.
+/// face drawn in one frame (a rack part) needs its own. `level` (the
+/// part's left and right output peaks, 0..1) lights its level meters.
 pub fn page(
     ui: &mut Ui,
     face: usize,
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    at: (f64, f64),
+    at: (f64, [f64; 2]),
 ) -> (El, usize) {
     drawn_page(ui, face, tree, page, pictures, at, false)
 }
@@ -45,7 +45,7 @@ pub fn vector_page(
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    at: (f64, f64),
+    at: (f64, [f64; 2]),
 ) -> (El, usize) {
     drawn_page(ui, face, tree, page, pictures, at, true)
 }
@@ -56,7 +56,7 @@ fn drawn_page(
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    (scale, level): (f64, f64),
+    (scale, level): (f64, [f64; 2]),
     bare: bool,
 ) -> (El, usize) {
     // Pointer state is an input to the otherwise pure draw projection.
@@ -193,8 +193,11 @@ fn drawn_page(
         let lit = match wd.kind {
             Kind::LevelMeter {
                 orientation,
-                channel: Some(_),
-            } => Some((orientation, lit(level))),
+                channel: Some(c),
+            } => Some((
+                orientation,
+                lit(level.get(usize::from(c)).copied().unwrap_or(0.)),
+            )),
             _ => None,
         };
         let deps = (
@@ -303,8 +306,8 @@ fn drawn_page(
 /// (decoded from its binary); in steps of a hundredth so a frame redraws only
 /// when the bar moves.
 // ponytail: no ballistics yet (Kontakt rises at once and falls 0.4 of the gap
-// a GUI tick; the tick period is undecoded), and both channels show the
-// part's peak; per-channel and per-bus peaks when a library needs them apart.
+// a GUI tick; the tick period is undecoded), and a meter reads its channel
+// of the part's output; bus and gain-reduction taps when a library needs them.
 fn lit(peak: f64) -> f64 {
     (1. + peak.max(1e-9).log2() / 9.)
         .clamp(0., 1.)
