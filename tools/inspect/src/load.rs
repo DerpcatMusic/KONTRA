@@ -301,7 +301,7 @@ fn law(curve: &Law) -> Value {
         Law::Breakpoints(points) => {
             json!({"kind":"breakpoints", "points":points.iter().map(|(x,y,curve)| json!({"x":x, "y":y, "curve":curve})).collect::<Vec<_>>() })
         }
-        Law::Formula(id) => match *id {},
+        Law::Formula(id) => json!({"kind":"formula", "id":format!("{id:?}")}),
     }
 }
 

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::FormulaId;
+
 /// Curve from a control position to a parameter value.
 ///
 /// [`Law::eval`] clamps `x` to `0..=1`. It never allocates or panics, because it runs on
@@ -45,13 +47,9 @@ pub enum Law {
     /// `(x, y, curve)` points with `x` strictly increasing. `curve` bends the segment that
     /// starts at its point; `0` is straight.
     Breakpoints(Arc<[(f32, f32, f32)]>),
-    /// A named closed form. None are registered yet, so this variant cannot be built.
+    /// A named closed form, for a curve no point list reproduces exactly.
     Formula(FormulaId),
 }
-
-/// Names a closed form. Add a variant, its arm in [`Law::eval`] and a test when a law needs one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FormulaId {}
 
 /// Curve magnitudes beyond this overflow `f32::exp`, so [`Law::eval`] clamps to it.
 const CURVE_LIMIT: f32 = 16.0;
@@ -116,7 +114,7 @@ impl Law {
             Self::Sine { power } => (std::f32::consts::FRAC_PI_2 * x).sin().powf(*power),
             Self::Table(values) => table_at(values, x),
             Self::Breakpoints(points) => breakpoints_at(points, x),
-            Self::Formula(id) => match *id {},
+            Self::Formula(id) => id.eval(x),
         }
     }
 }

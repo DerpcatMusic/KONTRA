@@ -7,12 +7,14 @@ pub mod kontakt;
 pub mod uvi;
 
 mod file;
+mod formula;
 mod law;
 mod network;
 mod trace;
 
 pub use file::{LawError, LawSource, LawSpec, parse};
-pub use law::{FormulaId, Law, ModuleLaw};
+pub use formula::FormulaId;
+pub use law::{Law, ModuleLaw};
 pub use network::{CombNetwork, HadamardNetwork, LINES as NETWORK_LINES, ReverbNetwork};
 pub use trace::{Application, LawId, collect, record};
 
