@@ -114,7 +114,9 @@ if [[ ${PICTURE_FILTER_ONLY:-0} == 1 ]]; then
         if python3 -I -c 'import sys; from PIL import Image, ImageChops
 box = tuple(map(int, sys.argv[3].split(",")))
 a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
-sys.exit(0 if ImageChops.difference(a, b).getbbox() else 1)' "$PICTURE_FILTER_BEFORE" "$out/0-open.png" "${PICTURE_FILTER_BOX:-350,100,880,440}"; then
+difference = ImageChops.difference(a, b)
+changed = sum(max(pixel) > 8 for pixel in difference.getdata())
+sys.exit(0 if changed >= 80 else 1)' "$PICTURE_FILTER_BEFORE" "$out/0-open.png" "${PICTURE_FILTER_BOX:-440,185,600,260}"; then
             pass "scaled picture changes in the editor"
         else miss "scaled picture changes in the editor"; fi
     fi
