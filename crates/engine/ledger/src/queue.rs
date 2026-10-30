@@ -18,7 +18,7 @@ pub struct Timed<T> {
 
 /// How an asynchronous command ended: `$NI_ASYNC_EXIT_STATUS` 1 or 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Exit {
+pub enum Exit {
     Done,
     Failed,
 }
@@ -31,7 +31,7 @@ impl From<bool> for Exit {
 
 /// What the queue holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Work {
+pub enum Work {
     Input(Event),
     /// A waiting callback of a script slot continues, if still that wait.
     Resume(u8, CoId, u32),
@@ -76,14 +76,14 @@ impl Ord for Entry {
     }
 }
 
-pub(crate) struct EventQueue {
+pub struct EventQueue {
     heap: BinaryHeap<Reverse<Entry>>,
     capacity: usize,
     seq: u64,
 }
 
 impl EventQueue {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             heap: BinaryHeap::with_capacity(capacity),
             capacity,
@@ -92,7 +92,7 @@ impl EventQueue {
     }
 
     /// Admits `work` at `at`; false (refused, never reordered) when full.
-    pub(crate) fn push(&mut self, at: SampleTime, work: Work) -> bool {
+    pub fn push(&mut self, at: SampleTime, work: Work) -> bool {
         if self.heap.len() >= self.capacity {
             return false;
         }
@@ -106,19 +106,19 @@ impl EventQueue {
     }
 
     /// Keeps only the work `keep` admits, in its order.
-    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&Work) -> bool) {
+    pub fn retain(&mut self, mut keep: impl FnMut(&Work) -> bool) {
         self.heap.retain(|Reverse(e)| keep(&e.work));
     }
 
     /// The earliest work due at or before `now`.
-    pub(crate) fn pop_due(&mut self, now: SampleTime) -> Option<Work> {
+    pub fn pop_due(&mut self, now: SampleTime) -> Option<Work> {
         if self.heap.peek()?.0.at > now {
             return None;
         }
         self.heap.pop().map(|Reverse(e)| e.work)
     }
 
-    pub(crate) fn next_at(&self) -> Option<SampleTime> {
+    pub fn next_at(&self) -> Option<SampleTime> {
         self.heap.peek().map(|Reverse(e)| e.at)
     }
 }

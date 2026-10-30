@@ -76,7 +76,7 @@ impl Engine {
         if slot.voice.is_active()
             && let Some(trace) = &mut self.trace
         {
-            trace.voice(self.now.0, index, slot, crate::VoiceEvent::Cut);
+            crate::trace::voice(trace, self.now.0, index, slot, crate::VoiceEvent::Cut);
         }
         slot.voice.kill();
         Some(index)
@@ -142,7 +142,7 @@ impl Engine {
         let stolen = self.fade_voice(index, fade);
         #[cfg(feature = "trace")]
         if let (true, Some(trace), Some(slot)) = (stolen, &mut self.trace, self.voices.get(index)) {
-            trace.voice(self.now.0, index, slot, crate::VoiceEvent::Steal);
+            crate::trace::voice(trace, self.now.0, index, slot, crate::VoiceEvent::Steal);
         }
         self.stats.voices_stolen += u64::from(stolen);
     }

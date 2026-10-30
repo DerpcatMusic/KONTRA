@@ -155,7 +155,7 @@ impl Engine {
     #[cfg(feature = "trace")]
     #[must_use]
     pub fn trace_events(&self) -> &[crate::TraceEvent] {
-        self.trace.as_ref().map_or(&[], |t| &t.events)
+        self.trace.as_ref().map_or(&[], |t| t.events())
     }
 
     /// Total events rejected because the bounded buffer was full.
@@ -171,7 +171,7 @@ impl Engine {
     #[cfg(feature = "trace")]
     pub fn clear_trace(&mut self) {
         if let Some(t) = &mut self.trace {
-            t.events.clear();
+            t.clear();
             t.routes.clear();
         }
     }
