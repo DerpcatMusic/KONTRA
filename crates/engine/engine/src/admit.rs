@@ -3,6 +3,7 @@
 //! that went silent leave it.
 
 use crate::ledger::{Note, NoteRef, Origin};
+use crate::queue::Work;
 use crate::{Engine, Slot, Trigger};
 use kontra_voice::FadeTarget;
 
@@ -110,9 +111,25 @@ impl Engine {
     pub(crate) fn fade_notes(&mut self, notes: &[NoteRef], frames: u32, target: FadeTarget) {
         for &note in notes {
             if let Some(n) = self.notes.get_mut(note) {
-                // A note yet to start starts with the fade and ends at its silence.
+                // A note yet to start starts with the fade and ends at its silence;
+                // a stopping fade stays, as a voice's does, unless a shorter one comes.
                 n.released |= target == FadeTarget::End && n.started;
-                n.fade = Some((target, frames));
+                if !matches!(n.fade, Some((FadeTarget::End, left))
+                    if target != FadeTarget::End || frames >= left)
+                {
+                    n.fade = Some((target, frames));
+                }
+            }
+            // Ending it ends the notes played for its length (`notes` may be the
+            // scratch list, so they are queued straight from the ledger).
+            let children = self
+                .notes
+                .live()
+                .filter(|(_, n)| n.origin == Origin::Child(note));
+            for (child, _) in children.filter(|_| target == FadeTarget::End) {
+                if !self.queue.push(self.now, Work::Release(child)) {
+                    self.stats.events_refused += 1;
+                }
             }
             for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
                 slot.voice.fade(target, frames);
