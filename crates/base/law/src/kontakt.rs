@@ -33,6 +33,35 @@ pub const UNIT_CUBIC: Law = Law::IntegerPower { exponent: 3 };
 /// Fifth-power state-variable filter gain mapping; see `filt-sv.md`.
 pub const UNIT_FIFTH: Law = Law::IntegerPower { exponent: 5 };
 
+/// Replika Modern low-cut curve; measured by the native oracle, see
+/// `docs/re/engine/k-replika-binding.md`. Zero is bypassed by the translator.
+pub const REPLIKA_LOW_CUT: Law = Law::ExpAffine {
+    base: 100.0,
+    offset: 0.0,
+    factor: 1.0,
+    shift: 0.0,
+    scale: 10.0,
+};
+
+/// Versatile filter gain; see `docs/re/engine/filt-multi-versatile.md`.
+pub const VERSATILE_GAIN: Law = Law::ExpAffine {
+    base: 10.0,
+    offset: -0.5,
+    factor: 3.0,
+    shift: 0.0,
+    scale: 1.0,
+};
+
+/// Convolution predelay's sampled exponential; oracle evidence is documented
+/// beside the translator in `format/kontakt/src/impulse.rs`.
+pub const CONVOLUTION_PREDELAY: Law = Law::ExpAffine {
+    base: 151.0,
+    offset: 0.0,
+    factor: 1.0,
+    shift: -1.0,
+    scale: 2.0,
+};
+
 /// Saved modulation-shaper points as an evaluator law.
 ///
 /// Kontakt 0x14087c7f0 scales curvature by 16 and reverses it on a falling
@@ -82,5 +111,27 @@ mod tests {
             assert_eq!(UNIT_FIFTH.eval(x), x.powi(5), "fifth at {x}");
         }
         assert_eq!(UNIT_FIFTH.eval(2.0), 1.0);
+    }
+
+    #[test]
+    fn exponential_parameter_laws_preserve_original_rounding() {
+        for n in 0..=10_000 {
+            let x = n as f32 / 10_000.0;
+            assert_eq!(
+                REPLIKA_LOW_CUT.eval(x),
+                10.0 * 100f32.powf(x),
+                "low cut {x}"
+            );
+            assert_eq!(
+                VERSATILE_GAIN.eval(x),
+                10f32.powf((x - 0.5) * 3.0),
+                "gain {x}"
+            );
+            assert_eq!(
+                CONVOLUTION_PREDELAY.eval(x),
+                2.0 * (151f32.powf(x) - 1.0),
+                "predelay {x}"
+            );
+        }
     }
 }

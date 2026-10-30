@@ -54,7 +54,7 @@ pub(crate) fn cascade(k: Knobs) -> ir::Cascade {
         hz: hz(cut),
         shifts: [sb * SHIFT_OCTAVES, sc * SHIFT_OCTAVES],
         stages: [stage(res, ta, wa), stage(rb, tb, wb), stage(rc, tc, wc)],
-        gain: 10f32.powf((gain - 0.5) * 3.0),
+        gain: kontra_law::kontakt::VERSATILE_GAIN.eval(gain),
     }
 }
 
