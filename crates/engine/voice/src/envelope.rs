@@ -124,17 +124,6 @@ impl Envelope {
         }
     }
 
-    /// Releases over `frames`, whatever the release setting, unless its
-    /// release already ends sooner: a second fade never lengthens a voice.
-    pub(crate) fn fade(&mut self, frames: u32) {
-        let frames = frames.max(1);
-        let sooner = self.stage == Stage::Release && self.segment.left <= frames;
-        if self.stage != Stage::Off && !sooner {
-            self.settings.release = frames;
-            self.start_release();
-        }
-    }
-
     fn start_release(&mut self) {
         let s = self.settings;
         self.segment = Segment::new(self.level, 0.0, s.release.max(1), s.fall_shape);
@@ -186,25 +175,6 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_fade_shortens_a_release_but_never_lengthens_one() {
-        let mut env = Envelope::new(Ahdsr::GATE);
-        env.fade(4);
-        env.fade(100);
-        let silent = (0..8).position(|_| {
-            env.next();
-            env.is_off()
-        });
-        assert_eq!(silent, Some(3), "the 4-frame fade still ends it");
-        let mut env = Envelope::new(Ahdsr::GATE);
-        env.fade(100);
-        env.fade(4);
-        assert!((0..4).any(|_| {
-            env.next();
-            env.is_off()
-        }));
-    }
 
     #[test]
     fn a_linear_attack_reaches_full_level_on_its_last_frame() {

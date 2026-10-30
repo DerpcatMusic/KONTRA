@@ -3090,3 +3090,77 @@ fn get_folder_factory_returns_prepared_path_or_empty() {
         assert_eq!(engine.stats().actions_unhandled, 0);
     }
 }
+
+/// `fade_out` without stopping leaves the voice playing silent until
+/// `fade_in` brings it back (the manual's stutter), and `fade_in` on a new
+/// note starts its voices from silence.
+#[test]
+fn a_fade_out_without_stop_comes_back_with_a_fade_in() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id := 0
+        end on
+        on note
+            select ($EVENT_NOTE)
+                case 60
+                    $id := $EVENT_ID
+                case 61
+                    ignore_event($EVENT_ID)
+                    fade_out($id, 1000, 0)
+                case 62
+                    ignore_event($EVENT_ID)
+                    fade_in($id, 1000)
+            end select
+        end on",
+    );
+    let full = level(&mut e, &[on(60)]);
+    assert!(full > 0.1, "{full}");
+    assert_eq!(level(&mut e, &[on(61)]), 0.0);
+    assert!((level(&mut e, &[on(62)]) - full).abs() < 1e-4);
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note\n fade_in($EVENT_ID, 1000000)\nend on",
+    );
+    let rising = level(&mut e, &[on(63)]);
+    assert!(rising > 0.0 && rising < full / 4.0, "{rising} of {full}");
+    // A fade out asked before the note's voices start still happens, holding
+    // or stopping.
+    for stop in [0, 1] {
+        let zones = vec![zone(&mut store, 0.5, 0)];
+        let script = format!("on note\n fade_out($EVENT_ID, 1000, {stop})\nend on");
+        let mut e = engine(&store, zones, &script);
+        let mut out = vec![[0.0; 2]; 48];
+        e.process(&mut out, &[on(64)]);
+        assert!(out[0][0] > 0.0, "the attack sounds, then fades ({stop})");
+        assert_eq!(out[47][0], 0.0, "silent at the fade's end ({stop})");
+    }
+    // A pending stopping fade stays: a later fade in does not bring it back.
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let script = "on note\n fade_out($EVENT_ID, 1000, 1)\n fade_in($EVENT_ID, 1000)\nend on";
+    let mut e = engine(&store, zones, script);
+    assert_eq!(level(&mut e, &[on(64)]), 0.0);
+}
+
+/// A stopping fade ends the note, and with it the notes played for its length.
+#[test]
+fn a_stopping_fade_ends_the_notes_played_for_its_length() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note
+            if ($EVENT_NOTE = 60)
+                play_note(72, 100, 0, -1)
+                fade_out($EVENT_ID, 1000, 1)
+            end if
+        end on",
+    );
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+}

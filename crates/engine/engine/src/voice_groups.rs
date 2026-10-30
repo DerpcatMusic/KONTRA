@@ -28,7 +28,7 @@ impl Engine {
         // A stolen voice fades over its group's time, at least 1 ms.
         let fade = (group.fade_ms.max(1.0) * self.rate as f32 / 1000.0).round() as u32;
         let voice_group = |s: &Slot| {
-            (s.voice.is_active() && !s.fading)
+            (s.voice.is_active() && !s.voice.is_ending())
                 .then(|| plan.zones.get(s.zone)?.voice_group)
                 .flatten()
         };
@@ -65,7 +65,7 @@ impl Engine {
                     ir::Steal::Highest => -key(s),
                     ir::Steal::Lowest => key(s),
                 };
-                (!(group.prefer_released && s.released), order)
+                (!(group.prefer_released && s.voice.is_released()), order)
             })
             .map(|(i, _)| i);
         if let Some(index) = victim {

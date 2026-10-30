@@ -92,6 +92,9 @@ pub(crate) struct Note {
     pub(crate) releases: Releases,
     /// Its player ended it with `note_off`: only the slots after hear it.
     pub(crate) noted_off: bool,
+    /// The last fade a script asked of it (target, frames): its attack
+    /// voices yet to start begin with it.
+    pub(crate) fade: Option<(kontra_voice::FadeTarget, u32)>,
     /// Script tuning, millicents.
     pub(crate) script_tune: i32,
     /// Script volume, millidecibels.
@@ -144,6 +147,7 @@ impl Note {
             ignored: false,
             releases: Releases::OnRelease,
             noted_off: false,
+            fade: None,
             script_tune: 0,
             script_volume: 0,
             script_pan: 0,
@@ -367,6 +371,19 @@ impl Ledger {
                 });
             }
         }
+    }
+
+    /// The first child of `parent` from slot `from` on, not yet released:
+    /// walked a slot at a time, so the walk may release and insert notes.
+    pub(crate) fn next_child(&self, parent: NoteRef, from: usize) -> Option<NoteRef> {
+        let mut entries = self.entries.get(from..)?.iter().enumerate();
+        entries.find_map(|(offset, e)| {
+            let n = e.note.as_ref()?;
+            (n.origin == Origin::Child(parent) && !n.released).then_some(NoteRef {
+                index: (from + offset) as u32,
+                generation: e.generation,
+            })
+        })
     }
 
     /// Every live note with its reference.

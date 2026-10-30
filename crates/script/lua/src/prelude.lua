@@ -721,8 +721,9 @@ function changePan(id, pan, relative, immediate)
 	host_call("ChangePan", id, math.floor(pan * 1000), relative and 1 or 0)
 end
 
+-- killVoice defaults to false (UVI's own prelude): the voice plays on silent.
 function fadeout(id, ms, kill)
-	host_call("FadeOut", id, math.floor((ms or 0) * 1000))
+	host_call("FadeOut", id, math.floor((ms or 0) * 1000), kill and 1 or 0)
 end
 
 function print(...)
