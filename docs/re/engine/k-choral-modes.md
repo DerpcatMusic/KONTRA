@@ -106,3 +106,24 @@ Read back with the emulator (`tools/re/choral_modes.py` uses the same core const
 ```
 bank = e.read(core + 0x6c8, 'Q'); f = e.read(bank, 'f', 56)
 ```
+
+## What is measured, and what is not
+
+Measured on 8.13.1 through the emulator:
+
+- **Voice delay** `base × (delay · 5 + 0.1)` s. Mode 0's first voice lands on frame 374 at delay 0.5
+  and 734 at 1.0; the formula predicts 374.4 and 734.4.
+- **Mode selection** `(int)(p · 4)` clamped to 0..=3, with 4 folding onto 3.
+- **The LFO's swing at amount 1, rate 0.5, delay 0.5, mode 0**: an impulse train every 2000 frames
+  puts the strongest echo between frames 1389 and 1594, i.e. 28.9 to 33.2 ms around a 30 ms centre,
+  a swing of roughly ±7%.
+
+Not measured, and therefore not implemented:
+
+- The swing's law. `k-modfx-classic.md` gives amount `d = a²·0.99 + 0.01` and pitch ratio
+  `2^(d·0.025)`, which at amount 1 is ±1.75%, i.e. about ±0.5 ms on a 30 ms delay. The measurement is
+  four times that, so either the ratio is applied differently or the amount enters elsewhere. The
+  documented law is **not** sufficient on its own.
+- The LFO's shape and its per-voice phase.
+- The six loop-filter constants after the pans, and whether the 0.99 seven in mode 3 are the one-pole
+  coefficients they look like.
