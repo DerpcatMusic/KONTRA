@@ -307,9 +307,20 @@ fn drawn_page(
         });
         // A control takes the pointer under its own id (crate::input), and
         // hovering it shows its help text (`set_control_help`).
+        let id = crate::input::surface(face, n.0);
+        // Its arrows show while the pointer is over it.
+        let el = if matches!(wd.kind, Kind::ValueEdit { arrows: true, .. })
+            && ui.get(id.clone()).hovered
+        {
+            stack(vec![el.at(0., 0.), stock::steps(r.width, scale)])
+                .w(r.width)
+                .h(r.height)
+        } else {
+            el
+        };
         let el = if crate::input::takes_input(wd) {
             let el = el
-                .id(crate::input::surface(face, n.0))
+                .id(id)
                 .focusable()
                 .cursor(Cursor::Hand)
                 .named(wd.name.clone());

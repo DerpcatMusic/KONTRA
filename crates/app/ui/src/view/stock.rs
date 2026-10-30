@@ -222,12 +222,9 @@ impl Look {
                     }
                 }
                 let ink = ink(0xfe_fefe);
-                // The installed font-13 atlas is 699×13; arrow fields reserve
-                // their right edge for the arrows.
-                let font = glyphs.filter(|_| {
-                    style.is_some_and(|s| s.font == model::Font::Stock(13))
-                        && matches!(wd.kind, Kind::ValueEdit { arrows: true, .. })
-                });
+                // The installed font-13 atlas is 699×13.
+                let font =
+                    glyphs.filter(|_| style.is_some_and(|s| s.font == model::Font::Stock(13)));
                 let color = style.map_or(model::Rgba::rgb(0xfefefe), |s| s.color);
                 parts.push(field_words(
                     title,
@@ -514,6 +511,26 @@ fn arrow(ink: Color, w: f64, h: f64, s: f64) -> Vec<El> {
                 .at(x + r * s, y + r * s)
         })
         .collect()
+}
+
+/// A value edit's step arrows, ▲ over ▼, centred 9.5 px in from its right
+/// edge (Kontakt 8.13, measured).
+pub(super) fn steps(w: f64, s: f64) -> El {
+    let ink = rgb(0xd4_d4d0);
+    let rows = [(1., 6.), (3., 7.), (5., 8.), (5., 9.)];
+    let down = rows.map(|(width, y)| (width, 23. - y));
+    stack(
+        rows.into_iter()
+            .chain(down)
+            .map(|(width, y)| {
+                block(width * s, s)
+                    .radius(0.)
+                    .fill(ink)
+                    .at(w - (9.5 + width / 2.) * s, y * s)
+            })
+            .collect::<Vec<_>>(),
+    )
+    .at(0., 0.)
 }
 
 /// A stock box: `fill` inside a one-pixel `edge`.
