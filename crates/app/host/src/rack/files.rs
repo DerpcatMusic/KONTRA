@@ -2,9 +2,11 @@
 //! (`load_array_str`, `save_array_str`): the engine queues the request, the
 //! rack reads or writes the file here, off the audio thread, and answers.
 //!
-//! A save never writes into a library: saved arrays go to the user's data
-//! folder under the path the script named, and a later load of that path
-//! reads the saved file first.
+//! A save never writes into a library: saved arrays go under the rack's
+//! save folder ([`Rack::set_saves`]; the plugin's is [`user_saves`]) at the
+//! path the script named, and a later load of that path reads the saved
+//! file first. A rack with no save folder (a test, a tool) writes nothing:
+//! its saves report failure.
 
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
@@ -14,14 +16,23 @@ use kontra_engine::files::{self, ArrayKind, FileReply, FileRequest};
 
 use super::{Command, Rack};
 
-/// Reads the array files a script names: what it saved, else the library's.
-#[derive(Debug)]
-pub(crate) struct DiskFiles;
+/// Reads the array files a script names: what it saved under `saves`,
+/// else the library's.
+#[derive(Debug, Default)]
+pub(crate) struct DiskFiles {
+    pub(crate) saves: Option<PathBuf>,
+}
 
 impl files::Files for DiskFiles {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
-        read(path)
+        read(self.saves.as_deref(), path)
     }
+}
+
+/// The user's own save folder for scripts' arrays, for the plugin's rack.
+#[must_use]
+pub fn user_saves() -> Option<PathBuf> {
+    Some(dirs::data_dir()?.join("kontra/arrays"))
 }
 
 /// Only `.nka` files: a script names nothing else to read or write.
@@ -31,20 +42,20 @@ fn nka(path: &str) -> Option<&Path> {
     ext.eq_ignore_ascii_case("nka").then_some(path)
 }
 
-/// Where a save of `path` goes.
-fn saved(path: &Path) -> Option<PathBuf> {
+/// Where a save of `path` goes under `saves`.
+fn saved(saves: Option<&Path>, path: &Path) -> Option<PathBuf> {
     let parts = path.components().filter_map(|c| match c {
         Component::Normal(part) => Some(part),
         _ => None,
     });
-    let mut at = dirs::data_dir()?.join("kontra/arrays");
+    let mut at = saves?.to_path_buf();
     at.extend(parts);
     Some(at)
 }
 
-fn read(path: &str) -> Option<Vec<u8>> {
+fn read(saves: Option<&Path>, path: &str) -> Option<Vec<u8>> {
     let path = nka(path)?;
-    saved(path)
+    saved(saves, path)
         .and_then(|s| bounded(&s))
         .or_else(|| bounded(path))
 }
@@ -63,10 +74,10 @@ fn bounded(path: &Path) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= LIMIT).then_some(bytes)
 }
 
-/// Writes a save's values; whether it could.
-fn write(reply: &FileReply) -> bool {
+/// Writes a save's values under `saves`; whether it could.
+fn write(saves: Option<&Path>, reply: &FileReply) -> bool {
     let r = reply.request;
-    let Some(at) = nka(r.path.as_str()).and_then(saved) else {
+    let Some(at) = nka(r.path.as_str()).and_then(|p| saved(saves, p)) else {
         return false;
     };
     let text = files::write(r.name.as_str(), r.kind, &reply.ints, &reply.texts);
@@ -88,7 +99,7 @@ impl Rack {
             let live = self.parts.get(part).and_then(Option::as_ref);
             let live = live.is_some_and(|p| p.script.generation == generation);
             if reply.request.save && reply.written.is_none() && live {
-                reply.written = Some(write(&reply));
+                reply.written = Some(write(self.saves.as_deref(), &reply));
                 self.send(Command::File {
                     part,
                     generation,
@@ -101,7 +112,7 @@ impl Rack {
             if live.is_none_or(|p| p.script.generation != generation) {
                 continue;
             }
-            let reply = Box::new(answer(request));
+            let reply = Box::new(answer(self.saves.as_deref(), request));
             self.send(Command::File {
                 part,
                 generation,
@@ -112,7 +123,7 @@ impl Rack {
 }
 
 /// A load's values, filled from the file, or a save's reserved room.
-fn answer(request: FileRequest) -> FileReply {
+fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
     let len = request.len as usize;
     let text = request.kind == ArrayKind::Text;
     let mut reply = FileReply {
@@ -127,7 +138,7 @@ fn answer(request: FileRequest) -> FileReply {
     }
     let mut ints = vec![0; if text { 0 } else { len }];
     let mut texts = vec![Text::EMPTY; if text { len } else { 0 }];
-    let bytes = read(request.path.as_str());
+    let bytes = read(saves, request.path.as_str());
     let name = request.name.as_str();
     let filled =
         bytes.and_then(|b| files::fill(&b, name, (0, len), request.kind, &mut ints, &mut texts));
