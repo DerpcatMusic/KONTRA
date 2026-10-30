@@ -313,6 +313,7 @@ fn drawn_page(
             } else if !words.is_empty() {
                 if let (Some(glyphs), Some(style)) = (&stock_glyphs, style)
                     && matches!(wd.kind, Kind::Label)
+                    && !words.contains('\n')
                     && style.font == model::Font::Stock(12)
                 {
                     parts.push(stock::label(&words, style, (w, h, scale, device), glyphs));
