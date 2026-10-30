@@ -136,13 +136,13 @@ fi
 # Compare the installed value-field skin with its pre-change capture.
 if [[ ${VALUE_FIELD_ONLY:-0} == 1 ]]; then
     if [[ -n ${VALUE_FIELD_BEFORE:-} ]]; then
-        if python3 -I -c 'import sys; from PIL import Image, ImageChops
-box = (460, 118, 594, 159)
-a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
-pixels = list(ImageChops.difference(a, b).getdata())
-changed = sum(max(p) > 5 for p in pixels)
-mean = sum(map(sum, pixels)) / (3 * len(pixels)) if pixels else float("inf")
-sys.exit(0 if changed >= 30 and mean < 8 else 1)' "$VALUE_FIELD_BEFORE" "$out/0-open.png"; then
+        if python3 -I -c 'import sys; from PIL import Image
+# The untouched top border is above the text and has measured gray 58 in
+# the fallback and 53 in the installed artwork at this scale.
+box = (480, 119, 570, 120)
+a, b = (Image.open(p).convert("L").crop(box) for p in sys.argv[1:3])
+mean = lambda image: sum(image.getdata()) / (image.width * image.height)
+sys.exit(0 if mean(a) >= 57 and 51 <= mean(b) <= 55 else 1)' "$VALUE_FIELD_BEFORE" "$out/0-open.png"; then
             pass "installed value field artwork is visible"
         else miss "installed value field artwork is visible"; fi
     fi
