@@ -600,6 +600,14 @@ fn perform(path: PathBuf) -> Report {
                 break;
             }
         }
+        // The effects' tail (a reverb) rings out before the next segment, so
+        // it never reads as that segment's onset.
+        for _ in 0..at(5.0) / BLOCK {
+            if last.audio.iter().all(|x| x.abs() < 1e-4) {
+                break;
+            }
+            last = block(&params, &mut dsp, &[], &last);
+        }
         if starts.is_empty() {
             continue;
         }
