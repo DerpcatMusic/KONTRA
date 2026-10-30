@@ -32,9 +32,9 @@ impl ArrayKind {
 }
 
 /// Fills up to `len` cells from `base` with the values of array file
-/// `bytes`; a short file fills a prefix, extra lines are ignored. Returns how
-/// many it filled; None, and nothing written, when the file names another
-/// array than `name` or a value does not parse.
+/// `bytes`; a short file fills a prefix. Returns how many it filled; None,
+/// and nothing written, when the file names another array than `name`,
+/// holds more values than the array, or a value does not parse.
 pub fn fill(
     bytes: &[u8],
     name: &str,
@@ -48,8 +48,11 @@ pub fn fill(
     if lines.next().map(str::trim) != Some(name) {
         return None;
     }
+    if lines.clone().count() > len {
+        return None;
+    }
     // Text values keep their spaces; numbers may be padded.
-    let values = lines.take(len);
+    let values = lines;
     if kind == ArrayKind::Text {
         let cells = texts.get_mut(base..).unwrap_or_default();
         let filled = cells
@@ -191,7 +194,7 @@ mod tests {
         assert_eq!(f64::from_bits(cells[0] as u64), 1.5);
         assert!(
             fill(
-                b"!t\r\n x \r\ny\nz\nextra\n",
+                b"!t\r\n x \r\ny\nz\n",
                 "!t",
                 (0, 3),
                 ArrayKind::Text,

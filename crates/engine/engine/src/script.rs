@@ -712,10 +712,13 @@ impl HostApi for Engine {
                     HostValue::Nothing
                 }
             }
-            // Mode 1 reads the user's Data folder (what `save_array` wrote),
-            // which KONTRA never holds: the load misses, the array stays as it
-            // is and `on async_complete` reports failure (KSP manual).
-            Action::LoadArray if int(2) == 1 => HostValue::Int(self.start_async(Exit::Failed)),
+            // Mode 0 asks for a file in a dialog KONTRA does not show yet,
+            // taken as cancelled; mode 1 is the user's Data folder, which
+            // KONTRA never holds. The array stays as it is and `on
+            // async_complete` reports failure (KSP manual).
+            Action::LoadArray | Action::SaveArray if int(2) <= 1 => {
+                HostValue::Int(self.start_async(Exit::Failed))
+            }
             Action::LoadArray if int(2) == 2 && int(3) != 2 => {
                 if let Some(s) = self.script() {
                     s.load_number_data(int(0) as u32, int(1) as usize, call.cells);
