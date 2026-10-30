@@ -11,6 +11,7 @@ use kontra_ui_model::{self as model, Interface, Kind, PageRef};
 use mui::prelude::*;
 
 use crate::Pictures;
+use crate::meter::Shown;
 
 mod plan;
 mod stock;
@@ -24,16 +25,16 @@ const TEXT: f64 = 11.;
 
 /// `page` of `tree` at `scale` view points per source pixel, and how many
 /// widgets this frame built rather than kept. `face` scopes its ids: each
-/// face drawn in one frame (a rack part) needs its own. `level` (the
-/// part's left and right peaks, 0..1: its output's, then each instrument
-/// bus's) lights its level meters.
+/// face drawn in one frame (a rack part) needs its own. `level` (what
+/// each meter source shows, left and right: the part's output, then each
+/// instrument bus; crate::meter) lights its level meters.
 pub fn page(
     ui: &mut Ui,
     face: usize,
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    at: (f64, &[[f64; 2]]),
+    at: (f64, &[[Shown; 2]]),
 ) -> (El, usize) {
     drawn_page(ui, face, tree, page, pictures, at, false)
 }
@@ -46,7 +47,7 @@ pub fn vector_page(
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    at: (f64, &[[f64; 2]]),
+    at: (f64, &[[Shown; 2]]),
 ) -> (El, usize) {
     drawn_page(ui, face, tree, page, pictures, at, true)
 }
@@ -57,7 +58,7 @@ fn drawn_page(
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    (scale, level): (f64, &[[f64; 2]]),
+    (scale, level): (f64, &[[Shown; 2]]),
     bare: bool,
 ) -> (El, usize) {
     // Pointer state is an input to the otherwise pure draw projection.
@@ -219,13 +220,13 @@ fn drawn_page(
                 bus,
             } => {
                 let from = level.get(bus.map_or(0, |b| usize::from(b) + 1));
-                let peak = from.and_then(|l| l.get(usize::from(c)));
-                Some((orientation, lit(peak.copied().unwrap_or(0.))))
+                let shown = from.and_then(|l| l.get(usize::from(c)));
+                Some((orientation, lit(shown.copied().unwrap_or_default())))
             }
             _ => None,
         };
         let deps = (
-            lit.map(|(o, t)| (o as u8, t.to_bits())),
+            lit.map(|(o, (t, peak, over))| (o as u8, t.to_bits(), peak.to_bits(), over)),
             [r.x, r.y, r.width, r.height, scale, device].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
             picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
@@ -289,7 +290,7 @@ fn drawn_page(
                 parts.push(words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.));
             }
             if let Some((o, t)) = lit {
-                parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
+                parts.push(meter(&wd.colors, o, t, (w, h, scale)).at(0., 0.));
             }
             let (w, h) = look.as_ref().map_or((w, h), |look| {
                 parts.extend(look.draw(
@@ -336,44 +337,50 @@ fn drawn_page(
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
 }
 
-/// How much of a level meter a peak lights: `1 + log2(peak) / 9`, linear in
-/// dB from −54.2 dB (nine octaves down) to 0 dB, as Kontakt 8.13 maps it
-/// (decoded from its binary); in steps of a hundredth so a frame redraws only
-/// when the bar moves.
-// ponytail: no ballistics yet (Kontakt rises at once and falls 0.4 of the gap
-// a GUI tick; the tick period is undecoded). A group, insert or main FX
-// meter (gain reduction) reads the part's output; taps when a library needs them.
-fn lit(peak: f64) -> f64 {
-    (1. + peak.max(1e-9).log2() / 9.)
-        .clamp(0., 1.)
-        .mul_add(100., 0.)
-        .round()
-        / 100.
+/// What a meter lights (crate::meter), in steps of a hundredth so a frame
+/// redraws only when the bar or its peak line moves.
+// ponytail: a group, insert or main FX meter (gain reduction) reads the
+// part's output; a group sum or a compressor's reduction when a library
+// needs one (Morphology's group meters).
+fn lit(s: Shown) -> (f64, f64, bool) {
+    let step = |x: f64| (x * 100.).round() / 100.;
+    (step(s.level), step(s.peak), s.over)
 }
 
-/// A level meter lit to `t`: its OFF colour behind, its ON colour lit,
-/// from the bottom when vertical, from the left otherwise.
-fn meter(c: &model::Colors, o: model::Orientation, t: f64, w: f64, h: f64) -> El {
+/// A level meter lit to `t`: its OFF colour behind, its ON colour lit (its
+/// OVERLOAD colour while that is lit), from the bottom when vertical, from
+/// the left otherwise; a one-pixel line in its PEAK colour at the held peak.
+/// A script that sets no PEAK or OVERLOAD colour shows neither.
+fn meter(
+    c: &model::Colors,
+    o: model::Orientation,
+    (t, peak, over): (f64, f64, bool),
+    (w, h, s): (f64, f64, f64),
+) -> El {
     let off = c
         .off
         .or(c.background)
         .map_or(Color::srgb(0.1, 0.1, 0.1), color);
-    let on = c.on.or(c.bar).map_or(Color::srgb(0.45, 0.8, 0.45), color);
-    let bar = match o {
-        model::Orientation::Vertical => block(w, h * t)
-            .radius(0.)
-            .fill(Fill::from(on))
-            .at(0., h * (1. - t)),
-        model::Orientation::Horizontal => {
-            block(w * t, h).radius(0.).fill(Fill::from(on)).at(0., 0.)
-        }
+    let on = (c.overload.filter(|_| over))
+        .or(c.on)
+        .or(c.bar)
+        .map_or(Color::srgb(0.45, 0.8, 0.45), color);
+    let span = |t: f64| match o {
+        model::Orientation::Vertical => (0., h * (1. - t), w, h * t),
+        model::Orientation::Horizontal => (0., 0., w * t, h),
     };
-    stack(vec![
-        block(w, h).radius(0.).fill(Fill::from(off)).at(0., 0.),
-        bar,
-    ])
-    .w(w)
-    .h(h)
+    let fill = |(x, y, w, h): (f64, f64, f64, f64), c: Color| {
+        block(w, h).radius(0.).fill(Fill::from(c)).at(x, y)
+    };
+    let mut parts = vec![fill((0., 0., w, h), off), fill(span(t), on)];
+    if let Some(ink) = c.peak.filter(|_| peak > 0.) {
+        let line = match o {
+            model::Orientation::Vertical => (0., (h * (1. - peak)).min(h - s), w, s),
+            model::Orientation::Horizontal => ((w * peak - s).max(0.), 0., s, h),
+        };
+        parts.push(fill(line, color(ink)));
+    }
+    stack(parts).w(w).h(h)
 }
 
 /// The wallpaper frames a page shows and where each one's top sits on it.

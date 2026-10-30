@@ -285,8 +285,12 @@ fn a_level_meter_lights_with_the_peak_and_idles_when_it_holds() {
     tree.widgets.push(m);
     let mut ui = crate::ui();
     let mut pictures = Pictures::new(Box::new(|_| None));
-    // −27 dB on its channel (left) lights half the bar; the right is silent.
-    let half = [2f64.powf(-4.5), 0.];
+    // Half lit on its channel (left); the right is dark.
+    let lit = |level| crate::meter::Shown {
+        level,
+        ..Default::default()
+    };
+    let half = [lit(0.5), lit(0.)];
     let (el, built) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[half]));
     assert_eq!(built, 1);
     let pix = paint(&mut ui, el, 4, 10);
@@ -300,7 +304,7 @@ fn a_level_meter_lights_with_the_peak_and_idles_when_it_holds() {
         &tree,
         PageRef(0),
         &mut pictures,
-        (1., &[[1., 0.]]),
+        (1., &[[lit(1.), lit(0.)]]),
     );
     assert_eq!(louder, 1);
 }
@@ -641,12 +645,4 @@ fn kontakt_label_tabs_are_blank_advances() {
         plan::caption(&widget, model::Source::FalconLua),
         widget.text
     );
-}
-
-#[test]
-fn a_meter_lights_as_kontakt_maps_its_peak() {
-    // Linear in dB over nine octaves: 0 dB full, -27 dB half, -54 dB dark.
-    let at = [1., 2_f64.powf(-4.5), 2_f64.powi(-9), 2.];
-    assert_eq!(at.map(super::lit), [1., 0.5, 0., 1.]);
-    assert_eq!(super::lit(0.5), 0.89);
 }

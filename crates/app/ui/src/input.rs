@@ -43,7 +43,14 @@ pub struct Gesture {
     /// The control typed into, the text so far, and whether it has been
     /// selected whole (once the field is on screen).
     entry: Option<(usize, String, bool)>,
+    /// The value edit whose arrow is held, its step, and when it steps next.
+    arrow: Option<(usize, f64, f64)>,
 }
+
+/// A held arrow steps again after this, then every [`REPEAT_STEP`]
+/// (Kontakt 8.13, measured: 12 steps in about 2 s).
+const REPEAT_DELAY: f64 = 0.4;
+const REPEAT_STEP: f64 = 0.15;
 
 /// The id of widget `n`'s surface on face `face` (a rack part): every
 /// face's ids are its own, so two open parts never share one.
@@ -153,8 +160,6 @@ fn notch(kind: &Kind, range: model::Range) -> f64 {
 /// How far a press on a value edit's arrows steps it: one shown unit, up in
 /// the upper half of its right 14 px, down in the lower (Kontakt 8.13,
 /// measured; one callback a step, none on release).
-// ponytail: one step a press; Kontakt repeats a held arrow (0.4 s, then
-// 0.15 s a step), which needs a frame clock the input pass doesn't have.
 fn arrow(ui: &Ui, id: &str, w: &model::Widget, scale: f64) -> Option<f64> {
     let Kind::ValueEdit {
         arrows: true,
@@ -228,8 +233,24 @@ pub fn read(
             let along = |d: Vec2| if vertical { -d.y } else { d.x };
             let reset = r.press_mods.ctrl || r.press_mods.cmd;
             let arrow = r.pressed.then(|| arrow(ui, &id, w, scale)).flatten();
+            let t = ui.time();
             if let Some(unit) = arrow {
                 set(snap(range, now + unit));
+                g.arrow = Some((n.0, unit, t + REPEAT_DELAY));
+            }
+            match g.arrow {
+                Some((a, unit, next)) if a == n.0 && r.held => {
+                    let next = if t >= next {
+                        set(snap(range, now + unit));
+                        t + REPEAT_STEP
+                    } else {
+                        next
+                    };
+                    g.arrow = Some((a, unit, next));
+                    ui.repaint_in(next - t);
+                }
+                Some((a, ..)) if a == n.0 => g.arrow = None,
+                _ => {}
             }
             if r.pressed && arrow.is_none() {
                 g.press = Some((n.0, now));

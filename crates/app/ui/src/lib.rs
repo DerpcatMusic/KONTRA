@@ -14,6 +14,7 @@ pub mod input;
 pub mod keyboard;
 pub mod kit;
 pub mod layout;
+pub mod meter;
 pub use kontra_ui_pictures as pictures;
 pub mod theme;
 pub mod view;
