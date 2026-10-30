@@ -10,9 +10,15 @@
 //! and type 0; `set_key_pressed` is ignored, and `get_key_triggerstate`
 //! reads 0, unless `set_key_pressed_support` is on (any nonzero mode).
 
+mod controls;
 pub mod readout;
 
+pub use controls::Controls;
+
 use kontra_vm::{Action, HostCall, HostValue, Text};
+
+/// One control's number parameters, by parameter id, in the order set.
+type Pars = Vec<(i32, i32)>;
 
 /// Keys on the keyboard a script colours and names.
 const KEYS: usize = 128;
@@ -117,6 +123,9 @@ pub struct LookPars {
 /// their script (the engine resolves a UI id to it).
 #[derive(Debug)]
 pub struct Store {
+    /// Per script slot, by control: the number parameters it set, other
+    /// than its value.
+    pars: Box<[Box<[Pars]>]>,
     /// Per script slot, by control: its menu entries.
     menus: Box<[Box<[Vec<MenuItem>]>]>,
     /// Per script slot, by control: the entry a menu last selected.
@@ -165,6 +174,10 @@ impl Store {
     /// Empty stores for scripts with these control counts.
     pub fn new(controls: impl Iterator<Item = usize> + Clone) -> Self {
         Self {
+            pars: controls
+                .clone()
+                .map(|n| vec![Vec::new(); n].into())
+                .collect(),
             menus: controls
                 .clone()
                 .map(|n| vec![Vec::new(); n].into())

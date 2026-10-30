@@ -1,79 +1,35 @@
-//! The control store: what a script reads back with `get_control_par`.
-//!
-//! A KSP control *is* its variable: `$CONTROL_PAR_VALUE` reads and writes the
-//! variable's cell, so `$sw := 1` and `set_control_par(id, VALUE, 1)` are the
-//! same write. While a callback runs the VM is lent to the interpreter and its
-//! cells reach the host only through the call, so value access takes them as
-//! an argument. Other parameters (hide, picture state, range) are kept per
-//! control as the script sets them.
+//! The control store, as the running script addresses it: what it reads
+//! back with `get_control_par` and sets with `set_control_par`. The rules
+//! live with the store ([`kontra_script_ui::Controls`]); the engine names
+//! the script and lends its cells.
+
+use kontra_script_ui::{Controls, Store};
 
 use crate::Engine;
 
 impl Engine {
-    /// Index of the control with `id`, and its value cell if `par` is the value.
-    fn control(&self, id: i32, par: i32) -> Option<(usize, Option<usize>)> {
-        let controls = &self.script()?.controls;
-        let n = self.control_index_in(self.running.slot, id)?;
-        let cell = controls.cells.get(n)?;
-        let value = (par == controls.value_par).then_some(*cell).flatten();
-        Some((n, value.map(|c| c as usize)))
+    /// The running script's controls and the store, borrowed apart.
+    fn controls(&mut self) -> Option<(&Controls, &mut Store, u8)> {
+        let slot = self.running.slot;
+        let script = self.plan.scripts.get(usize::from(slot))?;
+        Some((&script.controls, &mut self.ui, slot))
     }
 
-    /// What saved `value` restores in `cell` of script `slot`. A menu saves
-    /// the index of its selected entry and restores that entry's value
-    /// (Kontakt 8.13 oracle, `probes/menu_save_restore.lua`: 30 of 10/20/30
-    /// saves "2" and reads back 30).
+    /// What saved `value` restores in `cell` of script `slot`.
     pub(crate) fn saved_value(&mut self, slot: u8, cell: u32, value: i64) -> i64 {
-        let controls = self
-            .plan
-            .scripts
-            .get(usize::from(slot))
-            .map(|s| &s.controls);
-        let n = controls.and_then(|c| c.of_cell(cell));
-        let index = usize::try_from(value).ok();
-        n.zip(index)
-            .and_then(|(n, index)| self.ui.pick(slot, n, index))
-            .map_or(value, i64::from)
+        match self.plan.scripts.get(usize::from(slot)) {
+            Some(s) => self.ui.saved_value(&s.controls, slot, cell, value),
+            None => value,
+        }
     }
 
     /// Index of the control with UI id `id` in script `slot`.
     pub(crate) fn control_index_in(&self, slot: u8, id: i32) -> Option<usize> {
-        let controls = &self.plan.scripts.get(usize::from(slot))?.controls;
-        let n = usize::try_from(id.checked_sub(controls.first)?).ok()?;
-        (n < controls.cells.len()).then_some(n)
+        self.plan.scripts.get(usize::from(slot))?.controls.index(id)
     }
 
     pub(crate) fn control_par(&mut self, cells: &[i64], id: i32, par: i32) -> i32 {
-        let keys = self.script().map_or([i32::MIN; 3], |s| s.controls.key_pars);
-        if let Some(key) = keys.iter().position(|&k| k == par && k != i32::MIN) {
-            let n = self.control_index_in(self.running.slot, id);
-            return self.ui.click_key(self.running.slot, n, key);
-        }
-        let value = self.control_par_of(cells, id, par);
-        let menu_value =
-            self.control_par_of(cells, id, self.script().map_or(0, |s| s.controls.value_par));
-        self.menu_par(id, par, menu_value).unwrap_or(value)
-    }
-
-    fn control_par_of(&self, cells: &[i64], id: i32, par: i32) -> i32 {
-        match self.control(id, par) {
-            Some((_, Some(cell))) => cells.get(cell).map_or(0, |&v| v as i32),
-            Some((n, None)) => self
-                .control_pars
-                .get(usize::from(self.running.slot))
-                .and_then(|slot| slot.get(n))
-                .and_then(|pars| pars.iter().find(|(p, _)| *p == par))
-                .map_or(0, |&(_, v)| v),
-            None => 0,
-        }
-    }
-
-    /// The cell of step `at` of the int array control `id` when `par` is its value.
-    fn table_step(&self, id: i32, par: i32, at: i32) -> Option<usize> {
-        let (n, cell) = self.control(id, par)?;
-        let len = *self.script()?.controls.steps.get(n)?;
-        let at = u32::try_from(at).ok().filter(|&at| at < len)?;
-        Some(cell? + at as usize)
+        (self.controls()).map_or(0, |(c, ui, slot)| ui.control_par(c, slot, cells, id, par))
     }
 
     /// `set_control_par_arr`: a table's step, else index 0 as `set_control_par`.
@@ -85,58 +41,32 @@ impl Engine {
         value: i32,
         at: i32,
     ) {
-        match self.table_step(id, par, at) {
-            Some(c) => {
-                if let Some(v) = cells.get_mut(c) {
-                    *v = i64::from(value);
-                }
-            }
-            None if at == 0 => self.set_control_par(cells, id, par, value),
-            None => {}
+        if let Some((c, ui, slot)) = self.controls() {
+            ui.set_control_par_at(c, slot, cells, (id, par, value, at));
         }
     }
 
     /// `get_control_par_arr`: a table's step, else the parameter itself.
     pub(crate) fn control_par_at(&mut self, cells: &[i64], id: i32, par: i32, at: i32) -> i32 {
-        match self.table_step(id, par, at) {
-            Some(c) => cells.get(c).map_or(0, |&v| v as i32),
-            None => self.control_par(cells, id, par),
+        (self.controls()).map_or(0, |(c, ui, slot)| {
+            ui.control_par_at(c, slot, cells, (id, par, at))
+        })
+    }
+
+    pub(crate) fn set_control_par(&mut self, cells: &mut [i64], id: i32, par: i32, value: i32) {
+        if let Some((c, ui, slot)) = self.controls() {
+            ui.set_control_par(c, slot, cells, id, par, value);
         }
     }
 
-    // ponytail: a parameter first set after init allocates its slot on the
-    // audio thread; preallocate per control if a script does that per note.
-    pub(crate) fn set_control_par(&mut self, cells: &mut [i64], id: i32, par: i32, value: i32) {
-        // A menu's value selects by index: its variable takes that entry's
-        // value, 0 past the end (Kontakt 8.13 oracle, 2026-10-29).
-        let items = self.menu(self.running.slot, id);
-        let menu = par == self.script().map_or(-1, |s| s.controls.value_par) && !items.is_empty();
-        let entry = usize::try_from(value).ok().and_then(|n| items.get(n));
-        let picked = entry.map_or(0, |i| i.value);
-        let value = if menu { picked } else { value };
-        match self.control(id, par) {
-            Some((_, Some(cell))) => {
-                if let Some(c) = cells.get_mut(cell) {
-                    *c = i64::from(value);
-                }
-            }
-            Some((n, None)) => {
-                let slot = usize::from(self.running.slot);
-                let Some(pars) = self.control_pars.get_mut(slot).and_then(|s| s.get_mut(n)) else {
-                    return;
-                };
-                let changed = match pars.iter_mut().find(|(p, _)| *p == par) {
-                    Some(slot) => std::mem::replace(&mut slot.1, value) != value,
-                    None => {
-                        pars.push((par, value));
-                        true
-                    }
-                };
-                if changed {
-                    self.touch(n);
-                }
-            }
-            None => {}
+    /// Answers the menu, control-text, look and keyboard actions; `None` for others.
+    pub(crate) fn ui_call(
+        &mut self,
+        call: &mut kontra_vm::HostCall<'_>,
+    ) -> Option<kontra_vm::HostValue> {
+        match self.controls() {
+            Some((c, ui, slot)) => ui.ui_call(c, slot, call),
+            None => self.ui.call(self.running.slot, None, None, call),
         }
     }
 }
