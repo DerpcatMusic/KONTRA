@@ -17,7 +17,7 @@ pub mod lua;
 mod picture;
 mod widget;
 use kontra_ui_model as ui;
-pub use loader::{Loader, Missing, found, open_any};
+pub use loader::{FailureSink, Loader, Missing, found, open_any};
 pub use looks::Looks;
 pub use picture::{Library, meta as picture_meta};
 use widget::{Decl, widget};
