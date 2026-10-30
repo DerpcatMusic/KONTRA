@@ -278,8 +278,7 @@ impl Engine {
         let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
         let notes = Ledger::new(plan.notes);
         let capacity = notes.capacity();
-        // `$NUM_GROUPS` counts every group, those without zones too (ANALOG
-        // STRINGS: 483 in Kontakt; its zones reach group 139).
+        // `$NUM_GROUPS` counts every group, those without zones too (measured).
         let groups = plan
             .zones
             .iter()
@@ -602,11 +601,7 @@ impl Engine {
             }
             slot.released = true;
         }
-        if self
-            .notes
-            .get(note)
-            .is_some_and(|n| n.releases == Releases::OnRelease)
-        {
+        if self.notes.get(note).map(|n| n.releases) == Some(Releases::OnRelease) {
             self.start_zones(note, false, |trigger| trigger == Trigger::Release);
         }
         self.end_children(note);

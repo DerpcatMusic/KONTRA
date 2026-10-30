@@ -49,15 +49,13 @@ pub(crate) enum Origin {
     Script,
 }
 
-/// What a note's release sounds. A note a release callback plays is that
-/// release's own sound, so its end sounds nothing more.
+/// What a note's release sounds: its release-trigger zones once released, or,
+/// for a note a release callback plays (that release's own sound), with its
+/// start when it plays the whole sample and never when it is timed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Releases {
-    /// Its release-trigger zones, when it is released.
     OnRelease,
-    /// Played for the whole sample: they start with it (it has nothing else).
     AtStart,
-    /// Played for a set time: none.
     Never,
 }
 
