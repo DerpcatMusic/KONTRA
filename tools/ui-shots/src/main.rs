@@ -81,7 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
             let mut ui = kontra_ui::ui();
             let frame = |ui: &mut Ui, pictures: &mut Pictures, live: &Live| {
-                let (el, built) = view::page(ui, 0, &live.tree, PageRef(0), pictures, (1., 0.));
+                let (el, built) =
+                    view::page(ui, 0, &live.tree, PageRef(0), pictures, (1., [0.; 2]));
                 ui.frame(
                     el,
                     Some(Size::new(f64::from(w), f64::from(h))),
@@ -379,7 +380,7 @@ fn shot(
     }));
     let mut ui = kontra_ui::ui();
     let frame = |ui: &mut Ui, pictures: &mut Pictures| {
-        let (el, _) = view::page(ui, 0, tree, PageRef(0), pictures, (1., 0.));
+        let (el, _) = view::page(ui, 0, tree, PageRef(0), pictures, (1., [0.; 2]));
         ui.frame(
             el,
             Some(Size::new(f64::from(w), f64::from(h))),

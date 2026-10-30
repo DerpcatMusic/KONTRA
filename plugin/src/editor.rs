@@ -44,7 +44,7 @@ struct PartView {
     mix: Mix,
     solo: bool,
     mute: bool,
-    level: f32,
+    level: [f32; 2],
 }
 
 /// The rack as the editor last saw it.
@@ -79,7 +79,7 @@ impl Snapshot {
             self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
         }
         let meters = rack.meters();
-        let level = |slot: usize| meters.parts.get(slot).map_or(0.0, |[l, r]| l.max(*r));
+        let level = |slot: usize| meters.parts.get(slot).copied().unwrap_or_default();
         let old = std::mem::take(&mut self.parts);
         self.parts = (rack.parts().iter().enumerate())
             .filter_map(|(slot, p)| {
@@ -135,7 +135,7 @@ impl Snapshot {
     fn shown(&self) -> impl PartialEq + use<> {
         let parts: Vec<_> = (self.parts.iter())
             .map(|p| {
-                let mix = (p.mix, p.solo, p.mute, p.level.to_bits());
+                let mix = (p.mix, p.solo, p.mute, p.level.map(f32::to_bits));
                 (
                     p.slot,
                     p.generation,
@@ -220,7 +220,7 @@ impl Snapshot {
                 output: p.mix.output + 1,
                 volume: f64::from(linear_to_db(p.mix.gain)),
                 pan: f64::from(p.mix.pan),
-                level: f64::from(p.level),
+                level: p.level.map(f64::from),
                 solo: p.solo,
                 mute: p.mute,
                 keys: (0, 127),

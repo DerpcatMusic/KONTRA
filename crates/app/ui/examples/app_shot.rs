@@ -190,7 +190,7 @@ fn parts() -> Vec<Part> {
                 .collect(),
             open: true,
             tab: PartTab::Articulations,
-            level: 0.3,
+            level: [0.3; 2],
             ..Part::default()
         },
         Part {
