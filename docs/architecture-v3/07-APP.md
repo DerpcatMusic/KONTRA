@@ -15,6 +15,17 @@ audio thread talks to the rest of the process through three channels.
 | UI | editor view state | reads publications, sends commands |
 | library (1) | catalog | scanning, artwork |
 
+The audio thread is the `Engine`'s **owner while it renders**, not its only possible
+caller: a host that stops rendering (transport stopped, FX suspended) would
+otherwise never apply a control edit, because the whole edit chain is a tick.
+`RackAudio` parks its state in a **one-slot ring** (`Loan`); the host's callback
+takes it to render, and after `IDLE` (100 ms, or twice the host's last block) the
+control tick takes it to run the queued commands. One borrower at a time, `recv`
+and `send` are a couple of atomics on a preallocated queue — the audio path takes
+no lock, allocates nothing and never waits. The cost is one silent block if the
+host resumes while the control tick holds the side; it renders silence and counts
+`missed` rather than blocking.
+
 ## 2. The three channels
 
 ```rust
