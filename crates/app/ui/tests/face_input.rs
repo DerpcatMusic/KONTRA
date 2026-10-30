@@ -299,3 +299,46 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     }
     assert!(!f.animating, "an untouched face idles");
 }
+
+#[test]
+fn a_value_edit_arrow_steps_one_shown_unit_a_press() {
+    let mut f = Face::new();
+    if let Some(w) = f.tree.widgets.get_mut(3) {
+        w.kind = Kind::ValueEdit {
+            range: Range {
+                min: 0.,
+                max: 100.,
+                default: 0.,
+                step: Some(1.),
+            },
+            display: model::Display {
+                ratio: 10.,
+                ..model::Display::default()
+            },
+            arrows: true,
+        };
+        w.value = Some(model::Value::Integer(50));
+    }
+    f.frame(Input::default());
+    let mid = f.at(&input::surface(0, 3));
+    // The field is 60x18: its arrows sit in the right 14 points.
+    let (up, down) = (
+        Point::new(mid.x + 26., mid.y - 4.),
+        Point::new(mid.x + 26., mid.y + 4.),
+    );
+    let mut press = |p| {
+        let mut out = f.pointer(p, true, Mods::default());
+        out.extend(f.pointer(p, false, Mods::default()));
+        out.extend(f.frame(Input::default()));
+        out
+    };
+    let stepped = press(up);
+    assert_eq!(
+        stepped.iter().map(|e| &e.to).collect::<Vec<_>>(),
+        [&Set::Value(60.)],
+        "one callback a step, none on release"
+    );
+    press(down);
+    press(down);
+    assert_eq!(f.value(3), 40.);
+}
