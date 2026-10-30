@@ -135,9 +135,9 @@ impl Look {
         &self,
         wd: &Widget,
         style: Option<&TextStyle>,
-        (w, h, scale): (f64, f64, f64),
+        (w, h, scale, device): (f64, f64, f64, f64),
         bare: bool,
-        artwork: Option<&[Arc<Image>; 3]>,
+        (artwork, button): (Option<&[Arc<Image>; 3]>, Option<&Arc<Image>>),
         glyphs: Option<&crate::pictures::Glyphs>,
     ) -> Vec<El> {
         let bg = bare || !wd.hide.background;
@@ -151,7 +151,33 @@ impl Look {
                     } else {
                         rgb(0x5f_5f5f).into()
                     };
-                    parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                    if *on && let Some(button) = button {
+                        parts.push(boxed(w, h, scale, rgb(0xffffff).into(), 0x2d_2d2d));
+                        let meta = model::ImageMeta {
+                            size: Some(model::Size {
+                                width: 85.,
+                                height: 16.,
+                            }),
+                            stretch: [true, false],
+                            margins: model::Margins {
+                                left: 5,
+                                right: 5,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        };
+                        parts.push(
+                            super::sliced(
+                                button,
+                                &meta,
+                                ((w - 2. * scale).max(0.), (h - 2. * scale).max(0.)),
+                                scale,
+                            )
+                            .at(scale, scale),
+                        );
+                    } else {
+                        parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                    }
                 }
                 // The default font darkens on a lit button; a chosen one keeps its ink.
                 let stock = style.is_none_or(|s| s.font == model::Font::Stock(0));
@@ -160,7 +186,28 @@ impl Look {
                 } else {
                     ink(0xfe_fefe)
                 };
-                parts.push(words(caption, ink, model::Align::Center, w, h, scale));
+                if *on
+                    && button.is_some()
+                    && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
+                {
+                    // The measured stock font advances four pixels for a space.
+                    let metrics = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
+                        StockMetrics::Button12
+                    } else {
+                        StockMetrics::Field
+                    };
+                    parts.push(field_words(
+                        caption,
+                        ink,
+                        model::Align::Center,
+                        (w, h, scale, device),
+                        glyphs,
+                        style.map_or(model::Rgba::rgb(DARK), |s| s.color),
+                        metrics,
+                    ));
+                } else {
+                    parts.push(words(caption, ink, model::Align::Center, w, h, scale));
+                }
                 parts
             }
             Self::Field { title, value } => {
@@ -180,18 +227,20 @@ impl Look {
                     title,
                     ink,
                     model::Align::Left,
-                    (w, h, scale),
+                    (w, h, scale, device),
                     font,
                     color,
+                    StockMetrics::Field,
                 ));
                 if !wd.hide.value {
                     parts.push(field_words(
                         value,
                         ink,
                         model::Align::Right,
-                        (w, h, scale),
+                        (w, h, scale, device),
                         font,
                         color,
+                        StockMetrics::Field,
                     ));
                 }
                 parts
@@ -217,13 +266,20 @@ impl Look {
     }
 }
 
+#[derive(Clone, Copy)]
+enum StockMetrics {
+    Field,
+    Button12,
+}
+
 fn field_words(
     text: &str,
     ink: Color,
     align: model::Align,
-    (w, h, s): (f64, f64, f64),
+    (w, h, s, device): (f64, f64, f64, f64),
     glyphs: Option<&crate::pictures::Glyphs>,
     color: model::Rgba,
+    metrics: StockMetrics,
 ) -> El {
     let Some(glyphs) = glyphs else {
         return words(text, ink, align, w, h, s);
@@ -234,10 +290,23 @@ fn field_words(
     {
         return words(text, ink, align, w, h, s);
     }
+    let advance = |c: char, glyph: &Image| {
+        (if c == ' ' {
+            match metrics {
+                StockMetrics::Field => f64::from(glyph.width),
+                StockMetrics::Button12 => 4.,
+            }
+        } else {
+            f64::from(glyph.width)
+        }) * s
+    };
     let width: f64 = text
         .chars()
-        .filter_map(|c| glyphs.get(crate::pictures::glyph(c)))
-        .map(|glyph| f64::from(glyph.width) * s)
+        .filter_map(|c| {
+            glyphs
+                .get(crate::pictures::glyph(c))
+                .map(|glyph| advance(c, glyph))
+        })
         .sum();
     let mut x = match align {
         model::Align::Left => 7. * s,
@@ -263,12 +332,19 @@ fn field_words(
                     ]
                 })
                 .collect();
-            if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels) {
-                layers.push(
-                    super::image(&Arc::new(image), width, height).at(x, (h - height) / 2. - s),
-                );
+            if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels)
+                .and_then(|image| crate::pictures::at_stock(image, device as f32))
+            {
+                layers.push(super::image(&Arc::new(image), width, height).at(
+                    x,
+                    (h - height) / 2.
+                        - match metrics {
+                            StockMetrics::Field => s,
+                            StockMetrics::Button12 => 0.,
+                        },
+                ));
             }
-            x += width;
+            x += advance(c, glyph);
         }
     }
     stack(layers).w(w).h(h).clip()
