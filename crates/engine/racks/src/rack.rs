@@ -140,7 +140,9 @@ impl Rack {
     /// Reads its routes' sources for the next span.
     pub fn follow(&mut self, live: &Live) {
         for n in 0..self.mods.len() {
-            let Some(m) = self.mods.get(n).copied() else { break };
+            let Some(m) = self.mods.get(n).copied() else {
+                break;
+            };
             let invert = self.inverts.get(n).copied().unwrap_or(false);
             // A mirrored route reads its source as `1 - x`, or `-x` when the
             // source is bipolar (the same reading `Engine::unit` normalises).
