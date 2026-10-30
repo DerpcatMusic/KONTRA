@@ -119,6 +119,20 @@ impl MidiFile {
         self.length
     }
 
+    /// `by_track`: the id of the first event on track `n`, numbering tracks
+    /// from 1 as scripts do (`by_track($t + 1)`), or -1 when the track has no
+    /// events.
+    pub fn by_track(&self, n: i32) -> i32 {
+        let Some(want) = u16::try_from(n - 1).ok() else {
+            return -1;
+        };
+        self.events
+            .iter()
+            .position(|e| e.track == want)
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(-1)
+    }
+
     /// `mf_get_event_par`: what `par` reads on the event `id`. Unknown
     /// parameters and unknown ids read 0, as Kontakt does for a miss.
     pub fn event_par(&self, id: i32, par: i32) -> i32 {
@@ -343,6 +357,14 @@ mod tests {
         assert_eq!(f.event_par(0, PAR_NOTE_LENGTH), 480);
         f.set_event_par(0, PAR_NOTE_LENGTH, -5);
         assert_eq!(f.event_par(0, PAR_NOTE_LENGTH), 0, "a negative length is 0");
+    }
+
+    #[test]
+    fn by_track_finds_the_first_event_on_a_one_based_track() {
+        let f = MidiFile::parse(&one_note()).expect("parses");
+        assert_eq!(f.by_track(1), 0);
+        assert_eq!(f.by_track(2), -1);
+        assert_eq!(f.by_track(0), -1);
     }
 
     #[test]
