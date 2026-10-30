@@ -275,7 +275,7 @@ impl Engine {
                     ..
                 } = m.kind
                 {
-                    let x = self.routed(zone, source, note, age);
+                    let x = self.routed(zone, source, note, age, m.invert);
                     let band_gain_db = self
                         .voice_bells(zone, insert, note, age)
                         .and_then(|bells| bells.get(usize::from(band)).map(|b| b.gain_db));
@@ -342,8 +342,11 @@ impl Engine {
                     zone: slot.zone,
                     name: m.name.clone(),
                     kind: m.kind,
-                    source: input.and_then(|s| self.source(zone, s, note, age)),
-                    routed: input.and_then(|s| self.routed(zone, s, note, age)),
+                    source: input.and_then(|s| {
+                        self.source(zone, s, note, age)
+                            .map(|x| self.inverted(m.invert, s, x))
+                    }),
+                    routed: input.and_then(|s| self.routed(zone, s, note, age, m.invert)),
                 });
             }
         }

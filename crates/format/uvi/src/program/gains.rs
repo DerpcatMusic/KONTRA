@@ -125,6 +125,7 @@ pub(super) fn own_mix(
                 slot: 0,
                 target: 0,
                 bypass: false,
+                invert: false,
                 kind: ir::ModKind::Mix {
                     source,
                     zone,

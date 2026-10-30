@@ -114,6 +114,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 slot: id,
                 target: 0,
                 bypass: false,
+                invert: false,
                 kind,
             };
             let scope = if owner.has_tag_name("SamplePlayer") {
@@ -388,6 +389,7 @@ pub(super) fn group_source(
                     slot: 0,
                     target: 0,
                     bypass: false,
+                    invert: false,
                     kind,
                 });
             }

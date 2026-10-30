@@ -191,6 +191,7 @@ pub(crate) fn timed(
             slot,
             target: u16::try_from(target).unwrap_or(u16::MAX),
             bypass: p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0),
+            invert: false,
             kind,
         });
     }

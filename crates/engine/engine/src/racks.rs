@@ -19,9 +19,11 @@ pub(crate) struct Rack {
     /// The plan's slots as scripts have changed them.
     pub(crate) slots: Box<[Option<ir::Effect>]>,
     dsp: Box<[Dsp]>,
-    /// Routes moving the slots ([`ir::Bus::mods`]), the blends they read,
-    /// and each route's amount for this span.
+    /// Routes moving the slots ([`ir::Bus::mods`]), whether each reads its
+    /// source mirrored ([`ir::Mod::invert`]), the blends they read, and each
+    /// route's amount for this span.
     mods: Box<[ir::ModKind]>,
+    inverts: Box<[bool]>,
     blends: Box<[ir::Blend]>,
     amounts: Box<[f32]>,
     /// Each slot's levels, gliding where its settings move.
@@ -125,15 +127,17 @@ impl Rack {
         rate: u32,
         impulses: &[Option<Response>],
     ) -> Self {
-        Self::routed(slots, rate, Responses(impulses, &[]), &[], &[])
+        Self::routed(slots, rate, Responses(impulses, &[]), &[], &[], &[])
     }
 
-    /// As [`Self::new`], its slots moved by `mods` reading `blends`.
+    /// As [`Self::new`], its slots moved by `mods` reading `blends`, each
+    /// route at `inverts[i]` reading its source mirrored (empty: none does).
     pub(crate) fn routed(
         slots: &[Option<ir::Effect>],
         rate: u32,
         impulses: Responses<'_>,
         mods: &[ir::ModKind],
+        inverts: &[bool],
         blends: &[ir::Blend],
     ) -> Self {
         let moved = |n: usize| {
@@ -150,6 +154,7 @@ impl Rack {
             slots: slots.into(),
             dsp,
             mods: mods.into(),
+            inverts: inverts.into(),
             blends: blends.into(),
             amounts: vec![0.0; mods.len()].into(),
             levels: vec![Levels::new(rate); slots.len()].into(),
@@ -172,12 +177,17 @@ impl Rack {
 
     /// Reads its routes' sources for the next span.
     pub(crate) fn follow(&mut self, live: &Live) {
-        for (m, amount) in self.mods.iter().zip(self.amounts.iter_mut()) {
+        for (n, (m, amount)) in self.mods.iter().zip(self.amounts.iter_mut()).enumerate() {
+            let invert = self.inverts.get(n).copied().unwrap_or(false);
             *amount = match *m {
                 ir::ModKind::EffectParam { source, depth, .. } => {
-                    live.read(source, &self.blends).unwrap_or(0.0) * depth
+                    let x = live.read(source, &self.blends).unwrap_or(0.0);
+                    super::voice_gain::inverted(invert, source, x) * depth
                 }
-                ir::ModKind::Send { source, .. } => live.read(source, &self.blends).unwrap_or(1.0),
+                ir::ModKind::Send { source, .. } => {
+                    let x = live.read(source, &self.blends).unwrap_or(1.0);
+                    super::voice_gain::inverted(invert, source, x)
+                }
                 _ => continue,
             };
         }
@@ -292,12 +302,13 @@ impl Engine {
             .chain(std::iter::once(&mut self.main))
             .chain(self.buses.iter_mut().map(|b| &mut b.rack));
         for rack in racks {
-            let (mods, blends) = (
+            let (mods, inverts, blends) = (
                 std::mem::take(&mut rack.mods),
+                std::mem::take(&mut rack.inverts),
                 std::mem::take(&mut rack.blends),
             );
             let impulses = Responses(&plan.impulses, &self.loaded);
-            *rack = Rack::routed(&rack.slots, rate, impulses, &mods, &blends);
+            *rack = Rack::routed(&rack.slots, rate, impulses, &mods, &inverts, &blends);
         }
     }
 

@@ -51,6 +51,7 @@ pub(super) fn apply(kg: Node, group: &mut ir::Group) -> Result<(), String> {
             slot: u16::MAX,
             target: 0,
             bypass: false,
+            invert: false,
             kind: ir::ModKind::Volume {
                 source: ir::Source::Shaped(shaped),
                 intensity: 1.0,

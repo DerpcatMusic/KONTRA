@@ -79,6 +79,7 @@ pub fn velocity_track(percent: f64) -> Option<ir::Mod> {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Velocity,
             intensity,

@@ -259,6 +259,7 @@ pub(crate) fn external(
                         slot: slot(n),
                         target: slot(target),
                         bypass: false,
+                        invert: false,
                         kind,
                     });
                 } else {

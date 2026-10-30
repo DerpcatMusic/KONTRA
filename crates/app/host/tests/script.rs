@@ -340,6 +340,7 @@ fn a_script_bypass_takes_a_playing_voices_filter_out() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Cutoff {
             source: ir::Source::Controller(74),
             insert: 0,
@@ -589,6 +590,7 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
         slot: 3,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Controller(110),
             intensity: 0.0,
@@ -646,6 +648,7 @@ fn route_intensities_follow_kontakts_laws() {
         slot: 3,
         target,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Controller(110),
             intensity: 0.5,
@@ -676,6 +679,59 @@ fn route_intensities_follow_kontakts_laws() {
     // Route 1 at depth 0.25 and route 0 at -0.125, with the controller at 0.
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.5 * 0.75 * 1.125).abs() < 1e-3, "{l}");
+}
+
+#[test]
+fn a_route_reads_its_source_mirrored_when_inverted() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let route = || ir::Mod {
+        name: "LFO".into(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        invert: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Controller(110),
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
+        },
+    };
+    let engine = |store: &mut Store, set_invert: bool| {
+        let mut plan = Plan::new(vec![zone(store, 0.5, 0)], 16);
+        plan.groups[0].mods = vec![route()];
+        let set = if set_invert {
+            "set_engine_par($MOD_TARGET_INVERT_SOURCE, 1, 0, 3, -1)"
+        } else {
+            ""
+        };
+        let script = kontra_ksp::compile(
+            &format!(
+                "on init
+                    {set}
+                    set_controller(110, 32)
+                    message(get_engine_par($MOD_TARGET_INVERT_SOURCE, 0, 3, -1))
+                end on"
+            ),
+            &[],
+        )
+        .unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        Engine::new(Arc::new(plan), store.client(), RATE)
+    };
+    let mut plain = engine(&mut store, false);
+    let mut inverted = engine(&mut store, true);
+    // The route reads the controller's 32/127 as is, or mirrored as 1 − 32/127.
+    assert_eq!(plain.last_message(), "0");
+    assert_eq!(inverted.last_message(), "1");
+    assert_eq!(plain.stats().actions_unhandled, 0);
+    assert_eq!(inverted.stats().actions_unhandled, 0);
+    let x = 32.0 / 127.0;
+    let l = level(&mut plain, &[on(60)]);
+    assert!((l - 0.5 * x).abs() < 1e-3, "{l}");
+    let l = level(&mut inverted, &[on(60)]);
+    assert!((l - 0.5 * (1.0 - x)).abs() < 1e-3, "{l}");
 }
 
 #[test]
@@ -712,6 +768,7 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Envelope(0),
             intensity: 1.0,
@@ -724,6 +781,7 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
         slot: 1,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Pan {
             source: ir::Source::Envelope(1),
             amount: 0.0,
@@ -772,6 +830,7 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
         slot: 3,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Pan {
             source: ir::Source::Lfo(0),
             amount: 0.0,
@@ -850,6 +909,7 @@ fn a_stepped_lfos_rate_knob_sets_a_whole_count() {
         slot: 3,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Pan {
             source: ir::Source::Lfo(0),
             amount: 0.0,
@@ -1132,6 +1192,7 @@ fn a_script_sends_a_note_its_modulation_value() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Script(1),
             intensity: 1.0,
@@ -1711,6 +1772,7 @@ fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
             slot: 1,
             target: 0,
             bypass: false,
+            invert: false,
             kind: kontra_engine::ir::ModKind::Volume {
                 source: kontra_engine::ir::Source::Script(1),
                 intensity: 1.0,
@@ -1738,6 +1800,7 @@ fn a_script_modulation_index_keeps_its_value_after_many_others() {
             slot: 1,
             target: 0,
             bypass: false,
+            invert: false,
             kind: kontra_engine::ir::ModKind::Volume {
                 source: kontra_engine::ir::Source::Script(20),
                 intensity: 1.0,
@@ -1787,6 +1850,7 @@ fn a_script_modulation_ramps_to_its_value() {
             slot: 1,
             target: 0,
             bypass: false,
+            invert: false,
             kind: kontra_engine::ir::ModKind::Volume {
                 source: kontra_engine::ir::Source::Script(1),
                 intensity: 1.0,
@@ -1827,6 +1891,7 @@ fn a_uvi_script_renders_the_same_at_any_block_size() {
                 slot: 1,
                 target: 0,
                 bypass: false,
+                invert: false,
                 kind: kontra_engine::ir::ModKind::Volume {
                     source: kontra_engine::ir::Source::Script(1),
                     intensity: 1.0,

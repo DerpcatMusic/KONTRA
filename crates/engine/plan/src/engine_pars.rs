@@ -19,6 +19,9 @@ pub enum EnginePar {
     RouteDepth,
     /// A modulator's bypass.
     ModBypass,
+    /// A route's source inversion: it reads its source mirrored
+    /// (`$MOD_TARGET_INVERT_SOURCE`).
+    ModInvertSource,
     /// An LFO's fade-in time.
     LfoFade,
     /// An insert's or send effect's bypass, output level and dry level.

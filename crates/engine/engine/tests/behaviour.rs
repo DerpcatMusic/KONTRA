@@ -597,6 +597,7 @@ fn pitch_bend_moves_sounding_voices_by_its_route() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: kontra_engine::ir::ModKind::Pitch {
             source: kontra_engine::ir::Source::PitchBend,
             semitones: 2.0,
@@ -670,6 +671,7 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
             slot: 0,
             target: 0,
             bypass: false,
+            invert: false,
             kind: ModKind::SampleStart {
                 source: Source::Constant,
                 depth,
@@ -731,6 +733,7 @@ fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Volume {
             source: Source::Shaped(0),
             intensity: 1.0,
@@ -780,6 +783,7 @@ fn a_blended_macro_moves_one_cell_of_a_sounding_voices_matrix() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Mix {
             source: Source::Shaped(0),
             zone: 0,
@@ -806,6 +810,7 @@ fn a_controller_pitch_route_moves_sounding_voices() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Pitch {
             source: Source::Controller(1),
             semitones: 12.0,
@@ -848,6 +853,7 @@ fn an_envelope_pitch_route_rises_holds_and_releases() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Pitch {
             source: Source::Envelope(0),
             semitones: 12.0,
@@ -898,6 +904,7 @@ fn a_controller_opens_a_voice_filter() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Cutoff {
             source: Source::Controller(74),
             insert: 0,
@@ -955,6 +962,7 @@ fn a_velocity_moved_eq_band_makes_a_hard_note_louder_at_its_frequency() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::EqGain {
             source: Source::Velocity,
             insert: 0,
@@ -1028,6 +1036,7 @@ fn an_lfo_moved_resonance_changes_the_response_over_time() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Resonance {
             source: Source::Lfo(0),
             insert: 0,
@@ -1083,6 +1092,7 @@ fn a_ladders_resonance_route_scales_its_resonance() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Resonance {
             source: Source::Lfo(0),
             insert: 0,
@@ -1137,6 +1147,7 @@ fn a_velocity_attack_route_shortens_soft_attacks() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Attack {
             source: ir::Source::Velocity,
             intensity: 1.0,
@@ -1173,6 +1184,7 @@ fn timed_modulation_does_not_depend_on_the_block_size() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Volume {
             source: Source::Lfo(0),
             intensity: 1.0,
@@ -1399,6 +1411,7 @@ fn a_route_moves_a_group_waveshapers_amount_per_voice() {
             slot: 0,
             target: 0,
             bypass,
+            invert: false,
             kind: ModKind::EffectParam {
                 source: Source::Velocity,
                 insert: 0,
@@ -1441,6 +1454,7 @@ fn a_route_moves_an_eq_bands_centre_per_voice() {
             slot: 0,
             target: 0,
             bypass: false,
+            invert: false,
             kind: ModKind::EffectParam {
                 source: Source::Constant,
                 insert: 0,
@@ -1493,6 +1507,7 @@ fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::EffectParam {
             source: Source::Lfo(0),
             insert: 0,
@@ -1595,6 +1610,7 @@ fn a_pitch_bend_release_route_reads_the_wheel_from_zero_to_one() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Release {
             source: ir::Source::PitchBend,
             intensity: 1.0,
@@ -1627,6 +1643,7 @@ fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Volume {
             source: Source::PitchBend,
             intensity: 1.0,
@@ -1662,6 +1679,7 @@ fn a_lagging_controller_route_glides_as_a_one_pole() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Volume {
             source: Source::Controller(11),
             intensity: 1.0,
@@ -1700,6 +1718,7 @@ fn a_lagging_pitch_route_glides_its_semitones() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ModKind::Pitch {
             source: Source::PitchBend,
             semitones: 2.0,
@@ -1756,6 +1775,7 @@ fn a_constant_start_phase_route_shifts_a_voices_lfo() {
             slot: 0,
             target: 0,
             bypass: false,
+            invert: false,
             kind,
         };
         plan.groups[0].mods = vec![route(ModKind::Volume {
@@ -1801,6 +1821,7 @@ fn an_intensity_route_scales_its_lfos_routes() {
             slot: 0,
             target: 0,
             bypass: false,
+            invert: false,
             kind,
         };
         plan.groups[0].mods = vec![
@@ -1843,6 +1864,7 @@ fn a_velocity_rate_route_speeds_a_voices_lfo() {
             slot: 0,
             target: 0,
             bypass: false,
+            invert: false,
             kind,
         };
         plan.groups[0].mods = vec![
@@ -1893,6 +1915,7 @@ fn a_live_controller_moves_an_lfos_rate_mid_note() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind,
     };
     plan.groups[0].mods = vec![
@@ -2041,6 +2064,7 @@ fn note_on_route_trace_keeps_the_controller_value_at_start() {
         slot: 3,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::SampleStart {
             source: ir::Source::Controller(1),
             depth: 1.0,
@@ -2078,6 +2102,7 @@ fn release_route_trace_uses_the_key_held_time() {
         slot: 7,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::SampleStart {
             source: ir::Source::HeldTime { span_ms: 1000 },
             depth: 1.0,
@@ -2131,6 +2156,7 @@ fn controller_route_trace_is_the_value_used_and_preserves_audio() {
             slot: 1,
             target: 0,
             bypass: false,
+            invert: false,
             kind: ir::ModKind::Volume {
                 source: ir::Source::Controller(1),
                 intensity: 1.0,
@@ -2143,6 +2169,7 @@ fn controller_route_trace_is_the_value_used_and_preserves_audio() {
             slot: 2,
             target: 0,
             bypass: false,
+            invert: false,
             kind: ir::ModKind::Pan {
                 source: ir::Source::Controller(1),
                 amount: 0.5,
@@ -2153,6 +2180,7 @@ fn controller_route_trace_is_the_value_used_and_preserves_audio() {
             slot: 3,
             target: 0,
             bypass: false,
+            invert: false,
             kind: ir::ModKind::Pitch {
                 source: ir::Source::Controller(1),
                 semitones: 12.0,
@@ -2217,6 +2245,7 @@ fn timed_lfo_route_retains_all_ccs_received_before_the_span() {
         slot: 9,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::LfoHz {
             source: ir::Source::Controller(1),
             lfo: 0,
@@ -2229,6 +2258,7 @@ fn timed_lfo_route_retains_all_ccs_received_before_the_span() {
         slot: 10,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::LfoHz {
             source: ir::Source::Controller(11),
             lfo: 0,
@@ -2269,6 +2299,7 @@ fn onset_route_trace_records_sample_and_envelope_values() {
             slot: 4,
             target: 0,
             bypass: false,
+            invert: false,
             kind: ir::ModKind::SampleStart {
                 source: ir::Source::Controller(1),
                 depth: 0.5,
@@ -2279,6 +2310,7 @@ fn onset_route_trace_records_sample_and_envelope_values() {
             slot: 5,
             target: 0,
             bypass: false,
+            invert: false,
             kind: ir::ModKind::Attack {
                 source: ir::Source::Controller(1),
                 intensity: 1.0,
@@ -2324,6 +2356,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         slot: 2,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Velocity,
             intensity: 1.0,

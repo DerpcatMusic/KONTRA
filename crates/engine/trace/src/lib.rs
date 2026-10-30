@@ -271,6 +271,7 @@ mod route_tests {
             slot: 1,
             target: 0,
             bypass: false,
+            invert: false,
             kind: kontra_ir::ModKind::Pan {
                 source: kontra_ir::Source::Controller(1),
                 amount: 1.0,

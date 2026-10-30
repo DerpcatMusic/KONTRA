@@ -122,7 +122,9 @@ impl Engine {
                 && let Some((hz, range)) = added.get_mut(usize::from(lfo))
             {
                 let input = self.source(zone, source, note, age);
-                let value = input.unwrap_or(0.0) * depth * (hi - lo);
+                let value = input.map_or(0.0, |x| self.inverted(m.invert, source, x))
+                    * depth
+                    * (hi - lo);
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, input, value, crate::RouteUnit::LfoHertz);
                 *hz += value;
