@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-/// Curve from a normalized knob position `x` in `0..=1` to a parameter value.
+/// Curve from a control position to a parameter value.
 ///
 /// [`Law::eval`] clamps `x` to `0..=1`. It never allocates or panics, because it runs on
-/// the audio thread.
+/// the audio thread. [`Law::eval_unclamped`] accepts source-specific units.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Law {
     /// Straight line from `lo` to `hi`.
@@ -16,6 +16,13 @@ pub enum Law {
         offset: f32,
         factor: f32,
         shift: f32,
+        scale: f32,
+    },
+    /// `scale · 2^((x - origin) / divisor + offset)` for source-unit input.
+    Exp2Index {
+        origin: f32,
+        divisor: f32,
+        offset: f32,
         scale: f32,
     },
     /// Linear in decibels from `lo` to `hi`, evaluated as linear gain.
@@ -66,7 +73,12 @@ impl Law {
     /// Maps a normalized position to the parameter value.
     #[must_use]
     pub fn eval(&self, x: f32) -> f32 {
-        let x = x.clamp(0.0, 1.0);
+        self.eval_unclamped(x.clamp(0.0, 1.0))
+    }
+
+    /// Maps an input without normalizing it; used when the source has its own units.
+    #[must_use]
+    pub fn eval_unclamped(&self, x: f32) -> f32 {
         match self {
             Self::Linear { lo, hi } => lo * (1.0 - x) + hi * x,
             Self::Exp { lo, hi } => lo.powf(1.0 - x) * hi.powf(x),
@@ -77,6 +89,12 @@ impl Law {
                 shift,
                 scale,
             } => scale * (base.powf((x + offset) * factor) + shift),
+            Self::Exp2Index {
+                origin,
+                divisor,
+                offset,
+                scale,
+            } => scale * ((x - origin) / divisor + offset).exp2(),
             Self::Db { lo, hi } => 10f32.powf((lo * (1.0 - x) + hi * x) / 20.0),
             Self::Power { lo, hi, exponent } => lo + (hi - lo) * x.powf(*exponent),
             Self::IntegerPower { exponent } => x.powi(*exponent),

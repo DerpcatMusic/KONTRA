@@ -24,10 +24,18 @@ pub(crate) const DEFAULT: Knobs = [
 /// The setter's `6.283` (`0x401921cac083126f`) where 2π belongs.
 const NATIVE_TAU: f64 = f64::from_bits(0x4019_21ca_c083_126f);
 
+/// Native pitch-to-frequency mapping used by the cutoff setter (0x14095db50).
+const NOTE_HZ: ir::Law = ir::Law::Exp2Index {
+    origin: 69.0,
+    divisor: 12.0,
+    offset: 0.0,
+    scale: 440.0,
+};
+
 /// Stage 0's corner for cutoff `x`, as Hz on an exact 2π.
 fn hz(x: f32) -> f32 {
     let note = x.clamp(0.0, 1.0) * 111.0 + 20.0;
-    440.0 * ((note - 69.0) / 12.0).exp2() * (NATIVE_TAU / std::f64::consts::TAU) as f32
+    NOTE_HZ.eval_unclamped(note) * (NATIVE_TAU / std::f64::consts::TAU) as f32
 }
 
 /// Octaves a shift knob `x` raises the next stage by.
@@ -107,4 +115,20 @@ pub(crate) fn knobs() -> Vec<SlotKnob> {
         ]);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NATIVE_TAU, hz};
+
+    #[test]
+    fn cutoff_preserves_the_original_note_to_hz_calculation() {
+        for n in 0..=10_000 {
+            let x = n as f32 / 10_000.0;
+            let note = x * 111.0 + 20.0;
+            let expected =
+                440.0 * ((note - 69.0) / 12.0).exp2() * (NATIVE_TAU / std::f64::consts::TAU) as f32;
+            assert_eq!(hz(x), expected, "cutoff {x}");
+        }
+    }
 }

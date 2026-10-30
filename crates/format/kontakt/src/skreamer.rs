@@ -6,9 +6,17 @@
 
 use kontra_ir as ir;
 
+/// Native pitch-index table used by the Skreamer coefficient law (0x140aaf220).
+const PITCH_INDEX: ir::Law = ir::Law::Exp2Index {
+    origin: 0.0,
+    divisor: 60.0,
+    offset: -20.0,
+    scale: 1.0,
+};
+
 /// The table entry for index `i`.
 fn table(i: f32) -> f32 {
-    (i / 60.0 - 20.0).exp2()
+    PITCH_INDEX.eval_unclamped(i)
 }
 
 /// Corners from the native coefficient, which multiplies by `w` where the
@@ -82,6 +90,14 @@ static CURVE: [f32; 256] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pitch_index_preserves_unclamped_table_calculation() {
+        for n in 0..=10_000 {
+            let index = 1_000.0 + n as f32 / 10.0;
+            assert_eq!(table(index), (index / 60.0 - 20.0).exp2(), "index {index}");
+        }
+    }
 
     #[test]
     fn the_laws_land_on_the_cores_coefficients() {
