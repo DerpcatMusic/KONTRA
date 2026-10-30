@@ -281,9 +281,9 @@ fn drawn_page(
             let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
             if let (Some((img, meta)), Some(a)) = (&picture, art) {
-                // A single-frame picture on a button sits inside its one-pixel face border.
+                // A single-frame button or switch picture sits inside its one-pixel face border.
                 let inset = if matches!(tree.source, model::Source::Ksp { .. })
-                    && matches!(wd.kind, Kind::Button { .. })
+                    && matches!(wd.kind, Kind::Button { .. } | Kind::Switch)
                     && meta.frames == 1
                 {
                     scale
