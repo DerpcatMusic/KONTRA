@@ -732,9 +732,9 @@ mod tests {
     }
 
     #[test]
-    fn stock_upscaling_preserves_source_pixels() {
+    fn picture_upscaling_preserves_source_pixels() {
         let source = Image::rgba(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
-        let scaled = source.and_then(|image| at_integer(image, 1.5));
+        let scaled = source.and_then(|image| at(image, 1.5));
         assert_eq!(
             scaled.map(|image| image.rgba.to_vec()),
             Some(vec![
