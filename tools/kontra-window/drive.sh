@@ -161,7 +161,7 @@ fi
 if [[ ${NATIVE_LABEL_ONLY:-0} == 1 ]]; then
     if [[ -n ${NATIVE_LABEL_BEFORE:-} ]]; then
         if python3 -I -c 'import sys; from PIL import Image, ImageChops
-box = (450, 203, 525, 212)
+box = (710, 158, 840, 171)
 a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
 pixels = list(ImageChops.difference(a, b).getdata())
 changed = sum(max(p) > 5 for p in pixels)
