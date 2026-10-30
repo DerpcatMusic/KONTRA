@@ -1,7 +1,7 @@
 //! The laws KSP's engine-parameter knobs go through.
 
 use kontra_ir as ir;
-use kontra_law::kontakt::BIPOLAR;
+use kontra_law::common::BIPOLAR;
 
 /// What KSP's `$ENGINE_PAR_*` knobs set (value ÷ 1e6 is the knob x), each
 /// through Kontakt's law from the knob to the physical value. Sources: the

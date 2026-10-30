@@ -421,7 +421,7 @@ impl HostApi for Engine {
             Action::BusVolume => {
                 let gain = match int(1) {
                     ..=-200_000 => 0.0,
-                    mdb => crate::ir::units::MILLIBEL_GAIN.eval_unclamped(mdb as f32),
+                    mdb => crate::ir::common::MILLIBEL_GAIN.eval_unclamped(mdb as f32),
                 };
                 if let Ok(bus) = usize::try_from(int(0)) {
                     self.set_bus_gain(bus, gain);

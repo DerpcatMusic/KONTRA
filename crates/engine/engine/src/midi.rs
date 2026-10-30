@@ -85,7 +85,7 @@ impl Engine {
         };
         let v = f32::from(value);
         if cc == c.volume {
-            let (exponent, top) = (c.power, crate::ir::units::DB_GAIN.eval_unclamped(c.top_db));
+            let (exponent, top) = (c.power, crate::ir::common::DB_GAIN.eval_unclamped(c.top_db));
             let taper = crate::ir::Law::IntegerPower {
                 exponent,
                 bipolar: false,

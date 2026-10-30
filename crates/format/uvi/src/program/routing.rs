@@ -12,6 +12,7 @@
 
 use kontra_format::Notes;
 use kontra_ir as ir;
+use kontra_law::common::DB_GAIN;
 use roxmltree::Node;
 
 use super::delay::dual_delay;
@@ -558,7 +559,7 @@ fn shelves(node: Node) -> Result<ir::Effect, String> {
     ];
     Ok(effect(
         ir::EffectKind::Eq(bands),
-        10f32.powf(mid / 20.0),
+        DB_GAIN.eval_unclamped(mid),
         0.0,
     ))
 }

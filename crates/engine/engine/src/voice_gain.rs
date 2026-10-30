@@ -559,7 +559,7 @@ impl Engine {
 // ponytail: balance pan law only; equal-power and Kontakt's raised cosine
 // when a library's measured stereo image needs them.
 fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
-    let script = ir::units::MILLIBEL_GAIN.eval_unclamped(note.script_volume as f32);
+    let script = ir::common::MILLIBEL_GAIN.eval_unclamped(note.script_volume as f32);
     let g = zone.gain * level.gain * note.expression_gain * script;
     let pan =
         (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
