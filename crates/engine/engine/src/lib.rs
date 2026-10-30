@@ -344,11 +344,7 @@ impl Engine {
             called: vec![0; kontra_vm::Action::all().len()].into(),
             ui,
             ids: callbacks::Ids::START,
-            instrument: Level {
-                gain: ir::common::DB_GAIN.eval_unclamped(out.volume_db),
-                pan: out.pan,
-                tune: 0.0,
-            },
+            instrument: Level::panned(ir::common::DB_GAIN.eval_unclamped(out.volume_db), out.pan),
             expression: 1.0,
             balance: out.balance,
             output: kontra_dsp::core::Fader::new(rate, out.volume_tau_ms, out.pan_slew_ms),

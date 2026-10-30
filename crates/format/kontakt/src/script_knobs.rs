@@ -13,7 +13,7 @@ use kontra_law::common::BIPOLAR;
 /// script writes (2x − 1). The filter's cutoff and resonance and the
 /// Compressor's attack and release depend on the slot's effect: their laws
 /// are the slot's own (`Slot`), as are the legacy Delay's.
-pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
+pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::EffectParam as E;
     use ir::KnobTarget::{Effect, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
