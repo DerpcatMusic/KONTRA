@@ -13,13 +13,14 @@ pub const CUBE: Law = Law::IntegerPower {
     bipolar: false,
 };
 
-/// A setting squared: a route's intensity (Kontakt probes/mod_par_laws.lua).
+/// A setting squared: a route's intensity. Measured only (Kontakt probes/mod_par_laws.lua).
 pub const SQUARE: Law = Law::IntegerPower {
     exponent: 2,
     bipolar: false,
 };
 
-/// A bipolar route depth `(2x − 1)³` (Kontakt probes/mod_par_laws.lua).
+/// A bipolar route depth `(2x − 1)³`. Measured only (Kontakt probes/mod_par_laws.lua); the
+/// `2x − 1` half is Kontakt 0x140958a90.
 pub const SIGNED_CUBE: Law = Law::IntegerPower {
     exponent: 3,
     bipolar: true,
@@ -46,7 +47,7 @@ const fn stage(base: f32) -> Law {
 pub const STAGE_15S: Law = stage(7_501.0);
 /// Decay and release: 0..=25 s on the stage law (Kontakt 0x1407b85e0, `C = 9.4336`).
 pub const STAGE_25S: Law = stage(12_501.0);
-/// An LFO's fade-in: 0..=10 s on the stage law (address not located; Kontakt probe
+/// An LFO's fade-in: 0..=10 s on the stage law (measured only, no ln 5001 in the binary; probe
 /// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
 pub const STAGE_10S: Law = stage(5_001.0);
 
