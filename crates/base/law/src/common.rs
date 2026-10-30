@@ -68,19 +68,24 @@ pub const SQUARE_ROOT: Law = Law::Power {
     exponent: 0.5,
 };
 
+/// Geometric from `from` to `from·ratio`, `from·ratio^x`: a stage time a source moves
+/// between a floor and the stage's own length.
+#[must_use]
+pub const fn geometric(from: f32, ratio: f32) -> Law {
+    Law::ExpAffine {
+        base: ratio,
+        offset: 0.0,
+        factor: 1.0,
+        shift: 0.0,
+        scale: from,
+    }
+}
+
 /// Semitones as a frequency ratio, `2^(st/12)`; its inverse is `12·log2(ratio)`.
 pub const SEMITONE_RATIO: Law = Law::PowIndex {
     base: 2.0,
     origin: 0.0,
     divisor: 12.0,
-    scale: 1.0,
-};
-
-/// Octaves as a frequency ratio, `2^oct`.
-pub const OCTAVE_RATIO: Law = Law::Exp2Index {
-    origin: 0.0,
-    divisor: 1.0,
-    offset: 0.0,
     scale: 1.0,
 };
 
@@ -156,11 +161,6 @@ mod tests {
                 SEMITONE_RATIO.eval_unclamped_f64(st),
                 2f64.powf(st / 12.0),
                 "{st}"
-            );
-            let oct = n as f32 / 10_000.0 - 10.0;
-            assert_eq!(
-                OCTAVE_RATIO.eval_unclamped(oct).to_bits(),
-                oct.exp2().to_bits()
             );
         }
     }

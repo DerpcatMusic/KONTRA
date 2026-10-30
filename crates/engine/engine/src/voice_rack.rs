@@ -412,11 +412,10 @@ impl Engine {
                 _ => {}
             }
         }
-        let ratio = |octaves: f32| ir::common::OCTAVE_RATIO.eval_unclamped(octaves);
-        let hz = f.hz * ratio(f.octaves * octaves);
+        let hz = f.hz * (f.octaves * octaves).exp2();
         let damping = f
             .damping
-            .map(|k| ((2.0 - (2.0 - k) * resonance) * ratio(-f.q_octaves * q)).max(MIN_DAMPING));
+            .map(|k| ((2.0 - (2.0 - k) * resonance) * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));
         Some((hz, damping))
     }
 

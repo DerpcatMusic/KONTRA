@@ -227,8 +227,7 @@ impl Engine {
                             range_hz: [lo, hi],
                         } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
                             let input = self.source(zone, source, note, Age::START);
-                            let f = ir::common::OCTAVE_RATIO
-                                .eval_unclamped(input.unwrap_or(0.0) * depth * octaves);
+                            let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
                             #[cfg(feature = "trace")]
                             self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
                             lfo.rate = match lfo.rate {
@@ -381,9 +380,7 @@ impl Engine {
             + note.tune
             + note.expression_tune
             + f64::from(note.script_tune) / 100_000.0;
-        let step = ir::common::SEMITONE_RATIO.eval_unclamped_f64(semitones)
-            * f64::from(zone.sample_rate)
-            / f64::from(self.rate);
+        let step = 2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(self.rate);
         (step, bend)
     }
 
@@ -483,14 +480,7 @@ impl Engine {
             let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
             let ms = *frames as f32 * 1000.0 / rate;
             let ms = if floor_ms > 0.0 {
-                // Geometric between the floor and the stage's own length, by `m³`.
-                let span = ir::Law::ExpAffine {
-                    base: (ms + floor_ms) / floor_ms,
-                    offset: 0.0,
-                    factor: 1.0,
-                    shift: 0.0,
-                    scale: floor_ms,
-                };
+                let span = ir::common::geometric(floor_ms, (ms + floor_ms) / floor_ms);
                 span.eval_unclamped(multiplier * multiplier * multiplier) - floor_ms
             } else {
                 ms * multiplier
