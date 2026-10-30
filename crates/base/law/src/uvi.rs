@@ -2,6 +2,17 @@
 
 use crate::{FormulaId, Law};
 
+/// The VoiceParam key source, normalized (0x14138ab10).
+pub const KEY_SOURCE: Law = Law::Linear { lo: 0.0, hi: 1.0 };
+/// KeyFollow below its centre key: `x² − 1` of key / 60 (0x14138ab10).
+pub const LOWER_KEY_FOLLOW: Law = Law::Power {
+    lo: -1.0,
+    hi: 0.0,
+    exponent: 2.0,
+};
+/// KeyFollow above its centre key: `√x` of (key − 60) / 60 (0x14138ab10).
+pub const UPPER_KEY_FOLLOW: Law = crate::common::SQUARE_ROOT;
+
 /// An envelope segment's curve attribute (−1..=1) to the IR's segment shape
 /// `2·ln((1 + c)/(1 − c))`, `c` clamped to ±0.9998 (setup 0x1410f1220).
 pub const ENVELOPE_CURVE: Law = Law::Formula(FormulaId::LogRatio);

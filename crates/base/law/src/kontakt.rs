@@ -25,7 +25,8 @@ pub const VOICE_VOLUME: Law = Law::Power {
     exponent: VOICE_VOLUME_POWER as f32,
 };
 
-/// Note-to-frequency cutoff law; see `docs/re/engine/filt-sv.md`.
+/// The SV and note-family filters' note to Hz, `440·2^((n − 69)/12)`: native indexes the
+/// [`PITCH_INDEX`] table at `5n + 1381.88` (SV setter 0x140b04ee0; `filt-sv.md`).
 pub const FILTER_NOTE_HZ: Law = Law::PowIndex {
     base: 2.0,
     origin: 69.0,
@@ -33,14 +34,32 @@ pub const FILTER_NOTE_HZ: Law = Law::PowIndex {
     scale: 440.0,
 };
 
-/// Fifth-power state-variable filter gain mapping; see `filt-sv.md`.
+/// The shared exponential table `2^(i/60 − 20)` filters and the Skreamer index by pitch
+/// (Skreamer coefficient law 0x140aaf220; SV2 input gain 0x140b05460).
+pub const PITCH_INDEX: Law = Law::Exp2Index {
+    origin: 0.0,
+    divisor: 60.0,
+    offset: -20.0,
+    scale: 1.0,
+};
+
+/// The Versatile filter's note to Hz, `440·2^((n − 69)/12)` by `exp2` (cutoff setter
+/// 0x14095db50).
+pub const VERSATILE_NOTE_HZ: Law = Law::Exp2Index {
+    origin: 69.0,
+    divisor: 12.0,
+    offset: 0.0,
+    scale: 440.0,
+};
+
+/// The SV filters' tap-gain fall `R⁵` (SV1 resonance setter 0x140b05f5c: `((R·R)·R)·(R·R)`).
 pub const UNIT_FIFTH: Law = Law::IntegerPower {
     exponent: 5,
     bipolar: false,
 };
 
-/// Replika Modern low-cut curve; measured by the native oracle, see
-/// `docs/re/engine/k-replika-binding.md`. Zero is bypassed by the translator.
+/// Replika Modern's low-cut knob to Hz, `10·100^x`. Unverified in the binary: measured by the
+/// native oracle (`docs/re/engine/k-replika-binding.md`). Zero is bypassed by the translator.
 pub const REPLIKA_LOW_CUT: Law = Law::ExpAffine {
     base: 100.0,
     offset: 0.0,
@@ -49,7 +68,8 @@ pub const REPLIKA_LOW_CUT: Law = Law::ExpAffine {
     scale: 10.0,
 };
 
-/// Versatile filter gain; see `docs/re/engine/filt-multi-versatile.md`.
+/// The Versatile filter's gain knob to `10^((g − 0.5)·3)`. Unverified in the binary: its setter
+/// is not located (`docs/re/engine/filt-multi-versatile.md`).
 pub const VERSATILE_GAIN: Law = Law::ExpAffine {
     base: 10.0,
     offset: -0.5,
@@ -58,8 +78,8 @@ pub const VERSATILE_GAIN: Law = Law::ExpAffine {
     scale: 1.0,
 };
 
-/// Convolution predelay's sampled exponential; oracle evidence is documented
-/// beside the translator in `format/kontakt/src/impulse.rs`.
+/// The convolution predelay knob to ms, `2·(151^x − 1)` (0x1407b68c0:
+/// `exp(x·ln 151 + ln 2) − 2`).
 pub const CONVOLUTION_PREDELAY: Law = Law::ExpAffine {
     base: 151.0,
     offset: 0.0,
@@ -78,8 +98,9 @@ pub const EQ_PEAK_DB: Law = Law::Linear {
     hi: 20.0 * std::f32::consts::LOG10_2 / 3.0,
 };
 
-/// The Ladder's gain knob (−1..=1) to linear gain `2^(1.993 g)`; see
-/// `docs/re/engine/filt-ladder-monark.md`.
+/// The Ladder's gain knob (−1..=1) to linear gain `2^(1.993 g)`. Native (input-gain setter
+/// 0x140b05460) indexes [`PITCH_INDEX`] at `119.5894 g + 1200`, `2^(1.99316 g)`: within
+/// 0.001 dB.
 pub const LADDER_GAIN: Law = Law::ExpAffine {
     base: 2.0,
     offset: 0.0,
@@ -88,8 +109,9 @@ pub const LADDER_GAIN: Law = Law::ExpAffine {
     scale: 1.0,
 };
 
-/// The legacy filters' resonance knob to the sharpest stage's Q gain, `e^(6.4 r)` (fitted to
-/// the measured LP4 peaks; `docs/re/engine/filt-legacy.md`).
+/// The legacy filters' resonance knob to the sharpest stage's Q gain, `e^(6.4 r)`. Fitted to
+/// the measured LP4 peaks, so unverified in the binary: native resonance is a feedback path
+/// with no closed law (`docs/re/engine/filt-legacy.md`).
 pub const LEGACY_RESONANCE_Q: Law = Law::Exp {
     lo: 1.0,
     hi: 601.845,
@@ -109,7 +131,7 @@ const LEGACY_CUTOFF_SLOPE: f32 = 0.002_572_831_7;
 
 /// The legacy setters' exp series to Hz, `span · ((e^(6.15 u) − 1) · 0.0025728 + 0.002)`
 /// with the series clamped to 1: one exponential segment, flat once the series passes 1
-/// near u = 0.97 (`docs/re/engine/filt-legacy.md`).
+/// near u = 0.97 (knob-to-warp 0x14095c9c0; 6.15 at 0x144fc43a8, 0.0025728 at 0x144f38620).
 #[must_use]
 pub fn legacy_exp_series(span_hz: f32) -> Law {
     let curve = (1.0 / LEGACY_CUTOFF_SLOPE).ln_1p();
@@ -125,7 +147,7 @@ pub fn legacy_exp_series(span_hz: f32) -> Law {
 pub static LEGACY_CUTOFF_HZ: LazyLock<Law> = LazyLock::new(|| legacy_exp_series(21_759.5));
 
 /// The legacy reverb's damping-derived position to its high cut: [`legacy_exp_series`] over
-/// `22006 · 0.988793` Hz.
+/// `22006 · 0.988793` Hz (set 0x14095b2d0).
 pub static LEGACY_REVERB_HIGH_CUT_HZ: LazyLock<Law> =
     LazyLock::new(|| legacy_exp_series(22_006.0 * 0.988_793));
 

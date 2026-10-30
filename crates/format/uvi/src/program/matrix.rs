@@ -19,7 +19,7 @@
 //! bell-shaped mapper per variant over the macro's range.
 
 use kontra_ir as ir;
-use kontra_law::Law;
+use kontra_law::uvi::{KEY_SOURCE, LOWER_KEY_FOLLOW, UPPER_KEY_FOLLOW};
 
 /// MIDI's largest key; changing it changes the normalized key source range.
 const MIDI_KEY_MAX: u8 = 127;
@@ -28,18 +28,6 @@ const KEY_FOLLOW_CENTER: u8 = 60;
 /// Native key-follow upper limit at 0x14138ab10; changing it moves saturation.
 const KEY_FOLLOW_MAX: u8 = 120;
 
-// UVI VoiceParam key and lower KeyFollow branches, 0x14138ab10.
-const KEY_SOURCE: Law = Law::Linear { lo: 0.0, hi: 1.0 };
-const LOWER_KEY_FOLLOW: Law = Law::Power {
-    lo: -1.0,
-    hi: 0.0,
-    exponent: 2.0,
-};
-const UPPER_KEY_FOLLOW: Law = Law::Power {
-    lo: 0.0,
-    hi: 1.0,
-    exponent: 0.5,
-};
 use roxmltree::Node;
 
 use super::{flag, index_of, modulation, num, source_node};

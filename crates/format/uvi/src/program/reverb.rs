@@ -16,7 +16,7 @@
 
 use kontra_format::Notes;
 use kontra_ir as ir;
-use kontra_law::common::EQUAL_POWER;
+use kontra_law::common::SQUARE_ROOT;
 use roxmltree::Node;
 
 use super::{flag, num};
@@ -44,7 +44,7 @@ pub(super) fn spark_verb(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
     };
     let mix = num(node, "Mix", 1.0)?.clamp(0.0, 1.0);
     let (wet, dry) = if num(node, "MixMode", 0.0)? == 1.0 {
-        (EQUAL_POWER.eval_f64(mix), EQUAL_POWER.eval_f64(1.0 - mix))
+        (SQUARE_ROOT.eval_f64(mix), SQUARE_ROOT.eval_f64(1.0 - mix))
     } else {
         (mix, 1.0 - mix)
     };

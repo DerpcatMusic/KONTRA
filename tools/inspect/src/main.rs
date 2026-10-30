@@ -3,6 +3,7 @@
 //!
 //! ```sh
 //! kontra-inspect load <instrument> [--json FILE]
+//! kontra-inspect law [NAME]
 //! ```
 //!
 //! `<instrument>` is a Kontakt instrument or a UVI program as
@@ -15,6 +16,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail, ensure};
 
 mod bands;
+mod laws;
 mod load;
 mod midi;
 mod oracle;
@@ -27,7 +29,7 @@ mod ui;
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;
 
-const USAGE: &str = "usage: kontra-inspect load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--fresh-state] [--oracle] [--json FILE]";
+const USAGE: &str = "usage: kontra-inspect law [NAME] | load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--fresh-state] [--oracle] [--json FILE]";
 
 fn main() -> ExitCode {
     match run() {
@@ -44,6 +46,10 @@ fn run() -> Result<()> {
     let command = args.next().context(USAGE)?;
     if matches!(command.as_str(), "--help" | "-h") {
         println!("{USAGE}");
+        return Ok(());
+    }
+    if command == "law" {
+        print!("{}", laws::run(args.next().as_deref())?);
         return Ok(());
     }
     let mut path = None;

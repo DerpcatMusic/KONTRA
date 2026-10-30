@@ -8,37 +8,10 @@ use kontra_vm::Text;
 
 use crate::{EnginePar, EnginePars};
 
-/// A stage time `2·(base^x − 1)` ms: `exp(ln 2 + (ln(top + 2) − ln 2)·x) − 2`, the
-/// shifted exponential with `base = (top + 2) / 2` (probes/mod_par_laws.lua).
-const fn stage(base: f32) -> Law {
-    Law::ExpAffine {
-        base,
-        offset: 0.0,
-        factor: 1.0,
-        shift: -1.0,
-        scale: 2.0,
-    }
-}
 
-/// Attack and hold: 0..=15 s on the stage law.
-pub const STAGE_15S: Law = stage(7_501.0);
-/// Decay and release: 0..=25 s on the stage law.
-pub const STAGE_25S: Law = stage(12_501.0);
-/// An LFO's fade-in: 0..=10 s on the stage law (probes/mod_par_laws.lua: 500_000 saves
-/// 139.45 ms, 1_000_000 10 002 ms).
-pub const STAGE_10S: Law = stage(5_001.0);
-
-/// An LFO's fade-in over its fade time: native (0x140b06c90) runs a state from 0.3 to 1.3
-/// by a constant ratio and scales by `state − 0.3`, so `0.3·((13/3)^x − 1)` rises to 1.
-pub const LFO_FADE_IN: Law = Law::ExpAffine {
-    base: 13.0 / 3.0,
-    offset: 0.0,
-    factor: 1.0,
-    shift: -1.0,
-    scale: 0.3,
+pub use kontra_ir::common::{
+    ATTACK_CURVE, BIPOLAR, CUBE, LFO_FADE_IN, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S,
 };
-
-pub use kontra_ir::common::{ATTACK_CURVE, BIPOLAR, CUBE, SIGNED_CUBE, SQUARE};
 
 /// The setting at which `law` reaches `y`.
 pub fn setting(law: &Law, y: f64) -> f64 {

@@ -7,6 +7,7 @@ pub mod common;
 pub mod kontakt;
 pub mod uvi;
 
+mod catalog;
 mod file;
 mod formula;
 mod law;
@@ -14,6 +15,7 @@ mod network;
 mod real;
 mod trace;
 
+pub use catalog::{Named, catalog};
 pub use file::{LawError, LawSource, LawSpec, parse};
 pub use formula::FormulaId;
 pub use law::{Law, ModuleLaw};

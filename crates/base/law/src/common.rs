@@ -30,8 +30,39 @@ pub const SIGNED_CUBE: Law = Law::IntegerPower {
 /// `ln(b/(1 + b))` or `ln((1 + b)/b)`).
 pub const ATTACK_CURVE: Law = Law::Formula(FormulaId::AttackShape);
 
-/// An equal-power mix: `√x` (UVI's delay and reverb `Mix` in equal-power mode).
-pub const EQUAL_POWER: Law = Law::Power {
+/// A stage time `2·(base^x − 1)` ms: `exp(ln 2 + (ln(top + 2) − ln 2)·x) − 2`, the
+/// shifted exponential with `base = (top + 2) / 2`.
+const fn stage(base: f32) -> Law {
+    Law::ExpAffine {
+        base,
+        offset: 0.0,
+        factor: 1.0,
+        shift: -1.0,
+        scale: 2.0,
+    }
+}
+
+/// Attack and hold: 0..=15 s on the stage law (Kontakt 0x1407b85a0, `C = 8.9228`).
+pub const STAGE_15S: Law = stage(7_501.0);
+/// Decay and release: 0..=25 s on the stage law (Kontakt 0x1407b85e0, `C = 9.4336`).
+pub const STAGE_25S: Law = stage(12_501.0);
+/// An LFO's fade-in: 0..=10 s on the stage law (address not located; Kontakt probe
+/// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
+pub const STAGE_10S: Law = stage(5_001.0);
+
+/// An LFO's fade-in over its fade time: Kontakt (0x140b06c90) runs a state from 0.3 to 1.3
+/// by a constant ratio and scales by `state − 0.3`, so `0.3·((13/3)^x − 1)` rises to 1.
+pub const LFO_FADE_IN: Law = Law::ExpAffine {
+    base: 13.0 / 3.0,
+    offset: 0.0,
+    factor: 1.0,
+    shift: -1.0,
+    scale: 0.3,
+};
+
+/// The square root: an equal-power mix (UVI's delay and reverb `Mix`) and UVI's upper
+/// key follow.
+pub const SQUARE_ROOT: Law = Law::Power {
     lo: 0.0,
     hi: 1.0,
     exponent: 0.5,
@@ -75,16 +106,16 @@ mod tests {
 
     /// `powf(0.5)` and `sqrt` may differ in the last bit; never by more.
     #[test]
-    fn equal_power_is_the_square_root_to_an_ulp() {
+    fn square_root_matches_sqrt_to_an_ulp() {
         for n in 0..=100_000 {
             let x = n as f32 / 100_000.0;
-            let (got, want) = (EQUAL_POWER.eval(x), x.sqrt());
+            let (got, want) = (SQUARE_ROOT.eval(x), x.sqrt());
             assert!(
                 got.to_bits().abs_diff(want.to_bits()) <= 1,
                 "{x}: {got} vs {want}"
             );
             let x = f64::from(x);
-            let (got, want) = (EQUAL_POWER.eval_f64(x), x.sqrt());
+            let (got, want) = (SQUARE_ROOT.eval_f64(x), x.sqrt());
             assert!(
                 got.to_bits().abs_diff(want.to_bits()) <= 1,
                 "{x}: {got} vs {want}"
