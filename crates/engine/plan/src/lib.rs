@@ -36,6 +36,7 @@ pub enum Trigger {
 
 /// Who starts [`Trigger::Release`] zones.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReleaseZones {
     /// The engine, when a note is released.
     #[default]
@@ -408,6 +409,8 @@ pub struct Plan {
     pub route_pitch: ir::Exp2,
     /// [`ir::Instrument::steal_whole_groups`].
     pub steal_whole_groups: bool,
+    /// Who starts the release-trigger zones; [`ReleaseZones::AtRelease`]
+    /// (the engine, at a note's release) unless a script takes them over.
     pub release_zones: ReleaseZones,
     /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
     /// index; `None` when unreadable.
