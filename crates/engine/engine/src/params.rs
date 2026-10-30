@@ -129,8 +129,8 @@ impl Engine {
         self.script()?.engine_pars.get(id)
     }
 
-    /// A group's insert slot (generic -1), the instrument insert's (group
-    /// -1, generic `$NI_INSERT_BUS` = 1) or a bus's. Send and main racks are
+    /// A group's insert slot (group >= 0: `generic` is ignored), the
+    /// instrument insert's (group -1, generic `$NI_INSERT_BUS` = 1) or a bus's. Send and main racks are
     /// not carried yet.
     pub(crate) fn effect_mut(
         &mut self,
