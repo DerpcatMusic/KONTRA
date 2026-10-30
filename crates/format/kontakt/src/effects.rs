@@ -362,6 +362,19 @@ fn slot_effect(
             }
             crate::legacy_reverb::effect(object.version, &public)
         }
+        // Hot Solo; the same id at version 0x52 is Bass Invader, a separate record.
+        0x54 if object.version == 0x10 => crate::hot_solo::Saved::read(&public).map(|saved| {
+            let impact = if params.bypass {
+                ir::Impact::Cosmetic
+            } else {
+                ir::Impact::Audible
+            };
+            let (amp, lost) = crate::hot_solo::amp(saved, at);
+            if let Some(lost) = lost {
+                notes.add(impact, &lost, at.to_owned());
+            }
+            ir::EffectKind::Amp(amp)
+        }),
         0x5a => crate::replika::saved(object.version, &public).and_then(|r| {
             let impact = if params.bypass {
                 ir::Impact::Cosmetic

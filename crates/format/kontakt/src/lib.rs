@@ -12,11 +12,14 @@ mod effects;
 mod engine_pars;
 mod external;
 mod fastlz;
+mod hot_solo;
 mod impulse;
 mod laws;
 mod legacy_reverb;
 mod links;
 pub mod presentation;
+#[cfg(test)]
+mod preset_patch;
 mod provenance;
 mod readouts;
 mod replika;

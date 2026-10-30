@@ -23,8 +23,9 @@ pub use drive::{
     SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
-    Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
-    IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
+    Amp, Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector,
+    Formant, IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient,
+    VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar};
 pub use kontra_law::{FormulaId, common};
@@ -653,6 +654,8 @@ pub enum EffectKind {
     Matrix([[f32; 2]; 2]),
     /// Bands in series; a 0 dB band is flat.
     Eq([Bell; 4]),
+    /// An amp head's tone stage, in place.
+    Amp(Amp),
     /// A state-variable filter.
     Filter(Filter),
     /// A vowel formant filter.
