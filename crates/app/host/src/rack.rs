@@ -416,7 +416,10 @@ impl Rack {
             .collect();
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
-        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
+        // A preset's own file may sit outside its library: its pictures come
+        // from the instrument it was read from.
+        let library = crate::ui::Library::open_any([path.clone(), source.clone()]);
+        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, library);
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
             source,

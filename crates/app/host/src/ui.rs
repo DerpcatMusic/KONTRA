@@ -17,7 +17,7 @@ mod picture;
 mod widget;
 use kontra_ui_model as ui;
 pub use looks::Looks;
-pub use picture::{Library, meta as picture_meta};
+pub use picture::{Library, Loader, Missing, meta as picture_meta};
 use widget::{Decl, widget};
 
 use crate::script::LOOK;

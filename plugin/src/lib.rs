@@ -16,6 +16,7 @@ mod look;
 #[cfg(test)]
 mod playtest;
 mod readout;
+mod session;
 #[cfg(test)]
 mod tests;
 
@@ -230,6 +231,9 @@ impl BackgroundTask for Tick {
     const SERIALIZED: bool = true;
 
     fn run(self, p: &KontraParams) {
+        // The session log exists from the first tick, with its path, whether
+        // or not anything goes wrong.
+        session::start();
         let mut guard = lock(&p.shared.rack);
         let Some(rack) = guard.as_mut() else {
             return;
