@@ -76,7 +76,9 @@ impl Law {
         self.eval_unclamped(x.clamp(0.0, 1.0))
     }
 
-    /// Maps an input without normalizing it; used when the source has its own units.
+    /// Maps an input without clamping; callers must supply the law's intended source units.
+    ///
+    /// Out-of-domain inputs can extrapolate or produce non-finite values depending on the shape.
     #[must_use]
     pub fn eval_unclamped(&self, x: f32) -> f32 {
         match self {
@@ -233,6 +235,18 @@ mod tests {
         let points = Law::Breakpoints(Arc::from([(0.0, 0.1, 2.0), (1.0, 0.9, 0.0)]));
         assert_eq!(points.eval(0.0), 0.1);
         assert_eq!(points.eval(1.0), 0.9);
+    }
+
+    #[test]
+    fn source_unit_evaluation_does_not_change_normalized_clamping() {
+        let law = Law::Exp2Index {
+            origin: 0.0,
+            divisor: 60.0,
+            offset: -20.0,
+            scale: 1.0,
+        };
+        assert_eq!(law.eval(60.0), law.eval_unclamped(1.0));
+        assert_eq!(law.eval_unclamped(60.0), (1.0f32 - 20.0).exp2());
     }
 
     #[test]
