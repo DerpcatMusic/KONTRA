@@ -398,3 +398,33 @@ fn script_key_colours_reach_the_keybed() {
     );
     assert_eq!(ui.key_pressed, Some(vec![40]));
 }
+
+/// What the user libraries' scripts show beyond controls: a waveform
+/// display's zone and play cursor (Areia Pads), a text line added to a
+/// label (ANALOG STRINGS), a custom id read back (Conflux) and the status
+/// `message` (Areia, Dolce, CHORUS).
+#[test]
+fn waveform_text_lines_custom_ids_and_messages_reach_the_tree() {
+    let ui = tree(
+        "on init
+            make_perfview
+            declare ui_waveform $wave (5, 4)
+            attach_zone($wave, 7, $UI_WAVEFORM_USE_TABLE)
+            set_ui_wf_property($wave, $UI_WF_PROP_PLAY_CURSOR, 0, 250000)
+            declare ui_label $list (1, 4)
+            set_text($list, \"1 Cutoff\")
+            set_control_par_str(get_ui_id($list), $CONTROL_PAR_TEXTLINE, \"2 Drive\")
+            declare ui_menu $fx
+            set_control_par(get_ui_id($fx), $CONTROL_PAR_CUSTOM_ID, 12)
+            declare ui_label $echo (1, 1)
+            set_text($echo, get_control_par(get_ui_id($fx), $CONTROL_PAR_CUSTOM_ID))
+            message(\"Loading done\")
+        end on",
+    );
+    let wave = widget(&ui, "$wave").waveform.as_ref().unwrap();
+    assert_eq!((wave.zone, wave.cursor_us), (7, 250_000));
+    assert_ne!(wave.flags, 0);
+    assert_eq!(widget(&ui, "$list").text, "1 Cutoff\n2 Drive");
+    assert_eq!(widget(&ui, "$echo").text, "12");
+    assert_eq!(ui.message, "Loading done");
+}

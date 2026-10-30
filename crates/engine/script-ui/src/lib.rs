@@ -117,6 +117,16 @@ pub struct LookPars {
     pub meter_generic: i32,
     pub picture: i32,
     pub picture_state: i32,
+    /// The text parameter that adds a line to a label (`add_text_line`).
+    pub textline: i32,
+    /// `attach_zone`'s zone and flags, and the play cursor
+    /// `set_ui_wf_property` sets, in microseconds.
+    pub wf_zone: i32,
+    pub wf_flags: i32,
+    pub wf_cursor: i32,
+    /// The `set_ui_wf_property` properties for the cursor and the flags.
+    pub wf_prop_cursor: i32,
+    pub wf_prop_flags: i32,
     /// The UI ids that address the instrument's wallpaper and icon.
     pub wallpaper: i32,
     pub icon: i32,
@@ -514,6 +524,12 @@ impl Store {
             Action::GetMenuItemValue => HostValue::Int(item(self).map_or(0, |i| i.value)),
             Action::GetMenuItemVisibility => {
                 HostValue::Int(item(self).map_or(0, |i| i32::from(i.visible)))
+            }
+            // A text line is `add_text_line` by another name.
+            Action::SetControlParStr if look.is_some_and(|l| int(1) == l.textline) => {
+                let text_par = look.map_or(0, |l| l.text);
+                self.set_text_par(slot, n, text_par, text, true);
+                HostValue::Nothing
             }
             // ponytail: a text parameter first set after init allocates its
             // slot on the audio thread, as `set_control_par` does.

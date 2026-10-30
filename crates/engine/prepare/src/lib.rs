@@ -397,6 +397,7 @@ fn zone(
     let mut out = Zone::new(region, root, rate);
     out.start_mod = z.start_mod;
     out.slot = z.slot;
+    out.id = z.id;
     out.keys = z.keys.clone();
     out.velocities = z.velocities.clone();
     for (control, range, (fade_in, fade_out)) in [
@@ -521,6 +522,7 @@ mod tests {
             loops: vec![],
             reverse: false,
             slot: 0,
+            id: 0,
         }
     }
 

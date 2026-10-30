@@ -14,10 +14,12 @@ mod keybed;
 mod looks;
 pub mod lua;
 mod picture;
+mod waves;
 mod widget;
 use kontra_ui_model as ui;
 pub use looks::Looks;
 pub use picture::{Library, meta as picture_meta};
+pub use waves::Waves;
 use widget::{Decl, widget};
 
 use crate::script::LOOK;
@@ -151,6 +153,8 @@ const MAPPED: &[&str] = &[
     "level_meter",
     "level_meter_group",
     "level_meter_generic",
+    "wf_flags",
+    "wf_cursor",
 ];
 
 /// The text style of each picture state, in [`ui::Widget::state_styles`] order.
@@ -478,6 +482,7 @@ impl Live {
         bld.ui.keybed = keybed::keybed(engine.keys());
         bld.ui.key_names = keybed::names(engine.keys());
         bld.ui.key_pressed = keybed::pressed(engine.keys(), engine.pressed_support());
+        bld.ui.message = engine.message().to_owned();
         Ok(Self {
             tree: bld.ui,
             keys,
@@ -505,7 +510,12 @@ impl Live {
         });
         let (keybed, names) = (keybed::keybed(engine.keys()), keybed::names(engine.keys()));
         let pressed = keybed::pressed(engine.keys(), engine.pressed_support());
-        let keys = keybed != self.tree.keybed
+        let message = engine.message() != self.tree.message;
+        if message {
+            self.tree.message = engine.message().to_owned();
+        }
+        let keys = message
+            || keybed != self.tree.keybed
             || names != self.tree.key_names
             || pressed != self.tree.key_pressed;
         if keys {
