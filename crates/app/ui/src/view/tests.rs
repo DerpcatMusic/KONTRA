@@ -620,3 +620,17 @@ fn multiline_labels_draw_each_line_and_keep_empty_rows() {
     assert_eq!(ink(39, 52), 0, "empty line");
     assert!(ink(52, 65) > 5, "third line");
 }
+
+#[test]
+fn kontakt_label_tabs_are_blank_advances() {
+    let mut widget = Widget::new("$label", PageRef(0), Rect::default(), Kind::Label);
+    widget.text = "\t\t\t   Marcato Short".into();
+    assert_eq!(
+        plan::caption(&widget, model::Source::Ksp { slot: 0 }),
+        "         Marcato Short"
+    );
+    assert_eq!(
+        plan::caption(&widget, model::Source::FalconLua),
+        widget.text
+    );
+}

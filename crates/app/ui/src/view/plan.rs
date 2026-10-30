@@ -188,6 +188,8 @@ pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
         return String::new();
     }
     match &w.kind {
+        // Kontakt's label tabs advance without drawing a missing-glyph box.
+        Kind::Label if matches!(source, model::Source::Ksp { .. }) => w.text.replace('\t', "  "),
         Kind::Label | Kind::Button { .. } | Kind::Switch | Kind::TextEdit => w.text.clone(),
         Kind::Menu { items } => {
             let at = match w.value {
