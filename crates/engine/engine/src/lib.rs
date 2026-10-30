@@ -19,7 +19,7 @@ mod impulse_knobs;
 mod inspect;
 mod knobs;
 mod midi;
-mod midifile;
+pub mod midifile;
 mod modulators;
 mod par_display;
 mod params;

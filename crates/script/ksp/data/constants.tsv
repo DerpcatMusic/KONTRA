@@ -152,6 +152,15 @@ $EVENT_PAR_MIDI_CHANNEL	11
 $EVENT_PAR_MOD_VALUE_ID	30
 $EVENT_PAR_REL_VELOCITY	27
 $EVENT_PAR_CUSTOM	28
+# The four `mf_set_event_par`/`mf_get_event_par` parameters. Kontakt's manual
+# names them without values and its name table is indexed at run time, so these
+# ids are KONTRA's own: distinct, unused by any other constant, and only ever
+# compared against themselves. Any script that hardcodes a numeric literal
+# instead of the name would see a different number than Kontakt's.
+$EVENT_PAR_POS	200
+$EVENT_PAR_NOTE_LENGTH	201
+$EVENT_PAR_ID	202
+$EVENT_PAR_TRACK_NR	203
 $NI_CB_TYPE_INIT	5
 $NI_CB_TYPE_NOTE	1
 $NI_CB_TYPE_RELEASE	2

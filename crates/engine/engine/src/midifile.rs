@@ -9,6 +9,37 @@
 //! clock but are not addressable, which matches how a script walks a file:
 //! it asks for the command, byte one and byte two.
 
+/// The `mf_get_event_par`/`mf_set_event_par` parameters. These must match
+/// `$EVENT_PAR_*` in `crates/script/ksp/data/constants.tsv`; the host test
+/// `mf_event_pars_match_the_script_constants` keeps the two in step.
+pub const PAR_POS: i32 = 200;
+pub const PAR_NOTE_LENGTH: i32 = 201;
+pub const PAR_ID: i32 = 202;
+pub const PAR_TRACK_NR: i32 = 203;
+
+/// `mf_insert_file` pairs each Note Off into the Note On that started it: the
+/// Note On keeps the ticks up to the off in [`Event::len`], and the Note Off is
+/// dropped so a script never sees `0x8n`. A Note On with velocity 0 ends a note
+/// as well. Events arrive in tick order within one track.
+fn pair_notes(events: &mut [Event]) {
+    let mut open: Vec<(u8, u8, usize)> = Vec::new();
+    for i in 0..events.len() {
+        let status = events[i].status & 0xf0;
+        let channel = events[i].status & 0x0f;
+        let key = events[i].d1;
+        let ends = status == 0x80 || (status == 0x90 && events[i].d2 == 0);
+        if ends {
+            if let Some(at) = open.iter().rposition(|&(c, k, _)| c == channel && k == key) {
+                let (_, _, on) = open.remove(at);
+                let len = events[i].tick.saturating_sub(events[on].tick);
+                events[on].len = len;
+            }
+        } else if status == 0x90 {
+            open.push((channel, key, i));
+        }
+    }
+}
+
 /// One addressable event, at an absolute tick position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Event {
@@ -16,6 +47,11 @@ pub struct Event {
     pub status: u8,
     pub d1: u8,
     pub d2: u8,
+    /// The track it was read from, which `$EVENT_PAR_TRACK_NR` reports.
+    pub track: u16,
+    /// Ticks from this Note On to the Note Off that ends it, which is
+    /// `$EVENT_PAR_NOTE_LENGTH`. Zero for anything that is not a note.
+    pub len: u32,
     /// `mf_insert_event` activates, `mf_remove_event` deactivates; the cursor
     /// skips inactive events, as Kontakt does.
     pub active: bool,
@@ -54,7 +90,9 @@ impl MidiFile {
             let len = u32::from_be_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]])
                 as usize;
             let end = at.saturating_add(8).saturating_add(len).min(bytes.len());
+            let from = events.len();
             read_track(&bytes[at + 8..end], track, &mut events, &mut length);
+            pair_notes(&mut events[from..]);
             at = end;
             track += 1;
         }
@@ -81,6 +119,35 @@ impl MidiFile {
         self.length
     }
 
+    /// `mf_get_event_par`: what `par` reads on the event `id`. Unknown
+    /// parameters and unknown ids read 0, as Kontakt does for a miss.
+    pub fn event_par(&self, id: i32, par: i32) -> i32 {
+        let Some(e) = usize::try_from(id).ok().and_then(|i| self.events.get(i)) else {
+            return 0;
+        };
+        match par {
+            PAR_POS => e.tick as i32,
+            PAR_NOTE_LENGTH => e.len as i32,
+            PAR_ID => id,
+            PAR_TRACK_NR => i32::from(e.track),
+            _ => 0,
+        }
+    }
+
+    /// `mf_set_event_par`. Only a note's length can be written: moving an
+    /// event's position would renumber the ids a script holds, so that one is
+    /// refused rather than silently reordering the file.
+    pub fn set_event_par(&mut self, id: i32, par: i32, value: i32) {
+        let Some(e) = usize::try_from(id).ok().and_then(|i| self.events.get_mut(i)) else {
+            return;
+        };
+        if par == PAR_NOTE_LENGTH {
+            let len = u32::try_from(value.max(0)).unwrap_or(u32::MAX);
+            e.len = len;
+            self.length = self.length.max(e.tick.saturating_add(len));
+        }
+    }
+
     /// Tick of the event under the cursor, or the file's end when past it.
     pub fn pos(&self) -> u32 {
         self.events.get(self.cursor).map_or(self.length, |e| e.tick)
@@ -98,7 +165,7 @@ impl MidiFile {
     /// `mf_insert_event`: activates an event; returns its id (its index).
     pub fn insert(&mut self, tick: u32, status: u8, d1: u8, d2: u8) -> usize {
         let at = self.events.partition_point(|e| e.tick < tick);
-        self.events.insert(at, Event { tick, status, d1, d2, active: true });
+        self.events.insert(at, Event { tick, status, d1, d2, track: 0, len: 0, active: true });
         self.length = self.length.max(tick);
         at
     }
@@ -198,7 +265,7 @@ fn var_len(bytes: &[u8], at: &mut usize) -> u32 {
 }
 
 fn read_track(bytes: &[u8], track: usize, out: &mut Vec<Event>, length: &mut u32) {
-    let _ = track;
+    let track = u16::try_from(track).unwrap_or(u16::MAX);
     let mut at = 0usize;
     let mut tick = 0u32;
     let mut running: Option<u8> = None;
@@ -235,7 +302,7 @@ fn read_track(bytes: &[u8], track: usize, out: &mut Vec<Event>, length: &mut u32
         let d1 = bytes[at];
         let d2 = if count > 1 { bytes[at + 1] } else { 0 };
         at += count;
-        out.push(Event { tick, status, d1, d2, active: true });
+        out.push(Event { tick, status, d1, d2, track, len: 0, active: true });
         *length = (*length).max(tick);
     }
 }
@@ -243,6 +310,49 @@ fn read_track(bytes: &[u8], track: usize, out: &mut Vec<Event>, length: &mut u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// One track, division 960: a Note On at tick 0 and its Note Off at 960.
+    fn one_note() -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"MThd");
+        v.extend_from_slice(&6u32.to_be_bytes());
+        v.extend_from_slice(&[0, 0, 0, 1, 0x03, 0xC0]);
+        v.extend_from_slice(b"MTrk");
+        v.extend_from_slice(&13u32.to_be_bytes());
+        v.extend_from_slice(&[0x00, 0x90, 60, 100]);
+        v.extend_from_slice(&[0x87, 0x40, 0x80, 60, 0]);
+        v.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+        v
+    }
+
+    #[test]
+    fn a_note_off_becomes_the_note_ons_length() {
+        let f = MidiFile::parse(&one_note()).expect("parses");
+        assert_eq!(f.events.len(), 1, "the Note Off is dropped");
+        assert_eq!(f.event_par(0, PAR_POS), 0);
+        assert_eq!(f.event_par(0, PAR_NOTE_LENGTH), 960);
+        assert_eq!(f.event_par(0, PAR_ID), 0);
+        assert_eq!(f.event_par(0, PAR_TRACK_NR), 0);
+    }
+
+    #[test]
+    fn setting_a_note_length_changes_what_it_reads() {
+        let mut f = MidiFile::parse(&one_note()).expect("parses");
+        f.set_event_par(0, PAR_NOTE_LENGTH, 480);
+        assert_eq!(f.event_par(0, PAR_NOTE_LENGTH), 480);
+        f.set_event_par(0, PAR_NOTE_LENGTH, -5);
+        assert_eq!(f.event_par(0, PAR_NOTE_LENGTH), 0, "a negative length is 0");
+    }
+
+    #[test]
+    fn a_position_write_is_refused_and_a_miss_reads_zero() {
+        let mut f = MidiFile::parse(&one_note()).expect("parses");
+        f.set_event_par(0, PAR_POS, 500);
+        assert_eq!(f.event_par(0, PAR_POS), 0, "positions are not rewritten");
+        assert_eq!(f.event_par(99, PAR_NOTE_LENGTH), 0);
+        assert_eq!(f.event_par(0, 12345), 0);
+    }
 
     /// 960 ticks/quarter, one track: note on at 0, note off at 960, note on at 1920.
     fn sample() -> Vec<u8> {
