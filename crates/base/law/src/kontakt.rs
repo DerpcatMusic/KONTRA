@@ -26,6 +26,13 @@ pub const VOICE_VOLUME: Law = Law::Power {
 /// Maps normalized input to a bipolar value (0x14071a840 on 0..=1).
 pub const BIPOLAR: Law = Law::Linear { lo: -1.0, hi: 1.0 };
 
+/// Cubic sustain and state-variable filter resonance mappings; see
+/// `docs/re/engine/k-mod-envelopes.md` and `filt-sv.md`.
+pub const UNIT_CUBIC: Law = Law::IntegerPower { exponent: 3 };
+
+/// Fifth-power state-variable filter gain mapping; see `filt-sv.md`.
+pub const UNIT_FIFTH: Law = Law::IntegerPower { exponent: 5 };
+
 /// Saved modulation-shaper points as an evaluator law.
 ///
 /// Kontakt 0x14087c7f0 scales curvature by 16 and reverses it on a falling
@@ -57,5 +64,16 @@ mod tests {
         for (x, expected) in [(0.0, -1.0), (0.5, 0.0), (1.0, 1.0)] {
             assert_eq!(BIPOLAR.eval(x), expected, "input {x}");
         }
+    }
+
+    #[test]
+    fn integer_powers_preserve_original_f32_rounding() {
+        for n in 0..=10_000 {
+            let x = n as f32 / 10_000.0;
+            assert_eq!(UNIT_CUBIC.eval(x), x.powi(3), "cubic at {x}");
+            assert_eq!(UNIT_FIFTH.eval(x), x.powi(5), "fifth at {x}");
+        }
+        assert_eq!(UNIT_CUBIC.eval(-1.0), 0.0);
+        assert_eq!(UNIT_FIFTH.eval(2.0), 1.0);
     }
 }

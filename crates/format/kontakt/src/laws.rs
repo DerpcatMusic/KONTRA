@@ -2,6 +2,7 @@
 //! names the evidence it rests on; the IR and engine never see the vendor.
 
 use kontra_ir as ir;
+use kontra_law::kontakt::{UNIT_CUBIC, UNIT_FIFTH};
 use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeFlex, Lfo};
 
 /// Kontakt's decay and release: the kernel runs its state from 1.075 down to
@@ -16,7 +17,7 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         attack: seconds(e.attack_ms),
         hold: seconds(e.hold_ms),
         decay: seconds(e.decay_ms),
-        sustain: e.sustain.clamp(0.0, 1.0).powi(3),
+        sustain: UNIT_CUBIC.eval(e.sustain),
         release: seconds(e.release_ms),
         attack_shape: attack_shape(e.attack_curve),
         fall_shape: FALL,
@@ -498,9 +499,9 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
         return;
     }
     let big = if f.stages == 3 {
-        1.0 - (1.0 - 0.9 * r).powi(3)
+        1.0 - UNIT_CUBIC.eval(1.0 - 0.9 * r)
     } else {
-        1.0 - (1.0 - r).powi(3)
+        1.0 - UNIT_CUBIC.eval(1.0 - r)
     };
     f.damping = [2.0 * (1.0 - big); 3];
     if f.stages == 2 {
@@ -510,7 +511,7 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
         *k = k.max(MIN_DAMPING);
     }
     let fall = match (f.stages, f.pass) {
-        (1, _) => 0.5 * big.powi(5),
+        (1, _) => 0.5 * UNIT_FIFTH.eval(big),
         (2, ir::Pass::Band) => 0.9334 * big,
         (2, ir::Pass::Notch) => 0.88 * big,
         (2, _) => 0.77 * big,
