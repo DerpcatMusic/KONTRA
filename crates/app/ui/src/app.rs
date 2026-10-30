@@ -103,8 +103,8 @@ pub struct Part {
     pub volume: f64,
     pub pan: f64,
     pub tune: f64,
-    /// Its level from 0 to 1, for the mixer's meter.
-    pub level: f64,
+    /// Its left and right peaks from 0 to 1, for the meters.
+    pub level: [f64; 2],
     pub solo: bool,
     pub mute: bool,
     /// Velocity it plays at: 0 as played, or a fixed one.

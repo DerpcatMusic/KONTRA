@@ -129,7 +129,7 @@ impl Face {
             &self.tree,
             PageRef(0),
             &mut self.pictures,
-            (1., 0.),
+            (1., [0.; 2]),
         );
         let el = match popup {
             Some(menu) => mui::prelude::stack([page, menu]),
