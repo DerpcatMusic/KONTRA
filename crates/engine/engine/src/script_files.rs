@@ -32,23 +32,21 @@ impl Engine {
 
     /// Takes the control side's answer: a load's values land in their
     /// cells; a save's room fills with the array's values (no allocation:
-    /// the room is reserved). Then the request's `on async_complete` follows.
+    /// the room is reserved) for the control side to write. Then, once the
+    /// load landed or the save was written, `on async_complete` follows.
     pub fn file_done(&mut self, reply: &mut FileReply) {
         let r = reply.request;
         let Some(vm) = self.vm_mut(r.slot) else {
             return self.queue_async(r.slot, r.id, Exit::Failed);
         };
         let cells = r.base as usize..(r.base + r.len) as usize;
-        let exit = match (&reply.loaded, r.save) {
-            (_, true) if r.kind == ArrayKind::Text => {
-                (reply.texts).extend(cells.filter_map(|c| vm.text(c).copied()));
-                Exit::Done
+        let exit = match (&reply.loaded, r.save, reply.written) {
+            (_, true, Some(written)) => Exit::from(written),
+            (_, true, None) if r.kind == ArrayKind::Text => {
+                return (reply.texts).extend(cells.filter_map(|c| vm.text(c).copied()));
             }
-            (_, true) => {
-                reply.ints.extend(cells.filter_map(|c| vm.cell(c)));
-                Exit::Done
-            }
-            (Some((ints, texts)), false) => {
+            (_, true, None) => return reply.ints.extend(cells.filter_map(|c| vm.cell(c))),
+            (Some((ints, texts)), false, _) => {
                 cells
                     .clone()
                     .zip(ints)
@@ -56,7 +54,7 @@ impl Engine {
                 cells.zip(texts).for_each(|(c, &t)| vm.set_text(c, t));
                 Exit::Done
             }
-            (None, false) => Exit::Failed,
+            (None, false, _) => Exit::Failed,
         };
         self.queue_async(r.slot, r.id, exit);
     }

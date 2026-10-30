@@ -104,13 +104,15 @@ pub struct FileRequest {
 
 /// The control side's answer to a [`FileRequest`]: a load's values (None
 /// when the file could not be read), or, for a save, room the engine fills
-/// with the array's values.
+/// with the array's values and then, written, the outcome.
 #[derive(Debug)]
 pub struct FileReply {
     pub request: FileRequest,
     pub loaded: Option<(Vec<i64>, Vec<Text>)>,
     pub ints: Vec<i64>,
     pub texts: Vec<Text>,
+    /// A save's values once the control side wrote them: whether it could.
+    pub written: Option<bool>,
 }
 
 impl crate::ScriptPlan {

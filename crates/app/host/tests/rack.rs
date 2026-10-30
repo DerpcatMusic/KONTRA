@@ -808,13 +808,28 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
 /// KSP manual (`save_array_str`, `load_array_str`): after `on init` both run
 /// asynchronously, then `on async_complete`; the file holds the array's
 /// name and its values, and a file naming another array loads nothing.
-/// Saves go to the user's data folder, never into the library.
+/// Saves go to the user's data folder, never into the library; a save that
+/// cannot be written reports 0. Only regular files no larger than a
+/// script resource are read.
 #[test]
 fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     use kontra_engine::ir;
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("array-files");
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("dir.nka")).unwrap();
     std::fs::write(dir.join("other.nka"), "%other\n7\n7\n7\n").unwrap();
+    // Valid values, then (sparse) padding past the ceiling.
+    std::fs::write(dir.join("huge.nka"), "%a\n4\n5\n6\n").unwrap();
+    let huge = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("huge.nka"));
+    (huge.unwrap())
+        .set_len(kontra_format_kontakt::RESOURCE_LIMIT + 1)
+        .unwrap();
+    let saves = dirs::data_dir().unwrap().join("kontra/arrays");
+    let mine = saves.join(dir.strip_prefix("/").unwrap_or(&dir));
+    std::fs::create_dir_all(&mine).unwrap();
+    // A file where a save needs a folder: that save cannot be written.
+    std::fs::write(mine.join("blocked.nka"), "").unwrap();
     let source = format!(
         "on init
             declare %a[3] := (1, 2, 3)
@@ -829,15 +844,25 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
         on async_complete
             select $step
                 case 0
+                    $result := $NI_ASYNC_EXIT_STATUS
                     %a[0] := 9
                     %a[1] := 9
                     %a[2] := 9
                     $id := load_array_str(%a, \"{0}/a.nka\")
                 case 1
-                    $result := %a[0] * 100 + %a[1] * 10 + %a[2]
+                    $result := $result * 1000 + %a[0] * 100 + %a[1] * 10 + %a[2]
                     $id := load_array_str(%a, \"{0}/other.nka\")
                 case 2
                     $result := $result * 10 + $NI_ASYNC_EXIT_STATUS + %a[0] - 1
+                    $id := save_array_str(%a, \"{0}/blocked.nka/a.nka\")
+                case 3
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS
+                    $id := load_array_str(%a, \"{0}/huge.nka\")
+                case 4
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS + %a[0] - 1
+                    $id := load_array_str(%a, \"{0}/dir.nka\")
+                case 5
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS
             end select
             inc($step)
         end on",
@@ -858,19 +883,47 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     let (mut rack, mut audio) = rack();
     rack.load_ir(0, instrument, None).unwrap();
     audio.process(BLOCK, &[(0, note(0))]);
-    for _ in 0..4 {
+    for _ in 0..16 {
         rack.tick();
         audio.process(BLOCK, &[]);
     }
     let saved = saved_now(&mut rack, &mut audio);
-    let at = dirs::data_dir().unwrap().join("kontra/arrays");
-    let at = at.join(dir.strip_prefix("/").unwrap_or(&dir)).join("a.nka");
-    let written = std::fs::read_to_string(&at);
-    let _ = std::fs::remove_file(&at);
+    let written = std::fs::read_to_string(mine.join("a.nka"));
+    // Leave the data folder as it was: the files, then every folder this
+    // test made that is now empty.
+    let _ = std::fs::remove_file(mine.join("a.nka"));
+    let _ = std::fs::remove_file(mine.join("blocked.nka"));
+    let mut empty = Some(mine.as_path());
+    while let Some(d) = empty.filter(|d| d.starts_with(&saves)) {
+        empty = std::fs::remove_dir(d).ok().and(d.parent());
+    }
     assert_eq!(written.unwrap(), "%a\n1\n2\n3\n");
     assert!(
         !dir.join("a.nka").exists(),
         "a save never writes the library"
     );
-    assert!(saved.contains(&"$result 1230".to_owned()), "{saved:?}");
+    // Saved 1; loaded back 123; wrong name 0; unwritable 0; huge 0; dir 0.
+    assert!(saved.contains(&"$result 11230000".to_owned()), "{saved:?}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// An install fades out the engine it replaces instead of cutting its
+/// sound dead, a second install before that fade ends keeps it fading, and
+/// the faded engines are freed off audio.
+#[test]
+fn an_install_fades_out_the_engine_it_replaces() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.25);
+    rack.install(0, a, part("a"));
+    let [before, _] = play(&mut audio, &[(0, note(0))]);
+    let silent = engine(rack.store_mut(), 0.0);
+    rack.install(0, silent, part("b"));
+    let again = engine(rack.store_mut(), 0.0);
+    rack.install(0, again, part("c"));
+    audio.process(BLOCK, &[]);
+    let fading = level(&audio, 0);
+    assert!(fading > 0.0 && fading < before, "{before} → {fading}");
+    let [after, _] = play(&mut audio, &[]);
+    assert!(after.abs() < 1e-6, "{after}");
+    rack.tick();
 }

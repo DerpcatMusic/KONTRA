@@ -4,11 +4,11 @@
 
 use kontra_ir as ir;
 
-use crate::plan::{Group, addressed, source};
+use crate::plan::addressed;
 use crate::{Engine, EnginePar, Level};
 use kontra_plan::par_laws::{
     CUBE, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S, attack_shape, attack_x, cube_root,
-    setting, stage_setting,
+    routed_envelope, routed_index, setting, stage_point, stage_setting,
 };
 use kontra_plan::route_depth::{depth, set_signed, signed};
 
@@ -565,29 +565,4 @@ impl Engine {
         }
         self.hits = hits;
     }
-}
-
-/// The point of an AHDSR's breakpoints a stage parameter sets, and its
-/// time law.
-fn stage_point(par: EnginePar) -> Option<(usize, ir::Law)> {
-    Some(match par {
-        EnginePar::Attack | EnginePar::AttackCurve => (0, STAGE_15S),
-        EnginePar::Hold => (1, STAGE_15S),
-        EnginePar::Decay | EnginePar::Sustain => (2, STAGE_25S),
-        EnginePar::Release => (3, STAGE_25S),
-        _ => return None,
-    })
-}
-
-/// The index of the breakpoints modulator `slot` of `g` routes from.
-fn routed_index(g: &Group, slot: i32) -> Option<usize> {
-    g.mods.iter().find_map(|m| match source(&m.kind) {
-        Some(ir::Source::Envelope(n)) if i32::from(m.slot) == slot => Some(usize::from(n)),
-        _ => None,
-    })
-}
-
-/// The breakpoints modulator `slot` of `g` routes from.
-fn routed_envelope(g: &Group, slot: i32) -> Option<&ir::Breakpoints> {
-    g.envelopes.get(routed_index(g, slot)?)
 }

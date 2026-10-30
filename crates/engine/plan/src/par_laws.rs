@@ -6,7 +6,7 @@ use kontra_ir::{self as ir, Law};
 use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;
 
-use crate::{EnginePar, EnginePars};
+use crate::{EnginePar, EnginePars, Group, source};
 
 pub use kontra_ir::common::{
     ATTACK_CURVE, BIPOLAR, CUBE, LFO_FADE_IN, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S,
@@ -84,6 +84,34 @@ pub fn display(par: EnginePar, raw: i32, out: &mut Text) -> bool {
         _ => return false,
     };
     write(readout, x, out)
+}
+
+/// The point of an AHDSR's breakpoints a stage parameter sets, and its
+/// time law.
+#[must_use]
+pub fn stage_point(par: EnginePar) -> Option<(usize, ir::Law)> {
+    Some(match par {
+        EnginePar::Attack | EnginePar::AttackCurve => (0, STAGE_15S),
+        EnginePar::Hold => (1, STAGE_15S),
+        EnginePar::Decay | EnginePar::Sustain => (2, STAGE_25S),
+        EnginePar::Release => (3, STAGE_25S),
+        _ => return None,
+    })
+}
+
+/// The index of the breakpoints modulator `slot` of `g` routes from.
+#[must_use]
+pub fn routed_index(g: &Group, slot: i32) -> Option<usize> {
+    g.mods.iter().find_map(|m| match source(&m.kind) {
+        Some(ir::Source::Envelope(n)) if i32::from(m.slot) == slot => Some(usize::from(n)),
+        _ => None,
+    })
+}
+
+/// The breakpoints modulator `slot` of `g` routes from.
+#[must_use]
+pub fn routed_envelope(g: &Group, slot: i32) -> Option<&ir::Breakpoints> {
+    g.envelopes.get(routed_index(g, slot)?)
 }
 
 #[cfg(test)]

@@ -68,6 +68,39 @@ pub fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
     }
 }
 
+/// `a` to `b` by `t`, for the controls a route moves.
+#[must_use]
+pub fn lerp(a: ir::EffectKind, b: ir::EffectKind, t: f32) -> ir::EffectKind {
+    let mix = |x: f32, y: f32| x + (y - x) * t;
+    match (a, b) {
+        (ir::EffectKind::Shaper(mut s), ir::EffectKind::Shaper(e)) => {
+            let mut to = e.curve;
+            if std::mem::discriminant(&s.curve) == std::mem::discriminant(&to) {
+                let x = s.curve.amount_mut();
+                *x = mix(*x, *to.amount_mut());
+            }
+            ir::EffectKind::Shaper(s)
+        }
+        (ir::EffectKind::Crush(mut c), ir::EffectKind::Crush(e)) => {
+            (c.rate, c.bits) = (mix(c.rate, e.rate), mix(c.bits, e.bits));
+            ir::EffectKind::Crush(c)
+        }
+        (a, _) => a,
+    }
+}
+
+/// Whether a route moves insert `n`'s controls.
+#[must_use]
+pub fn moved(mods: &[ir::Mod], n: usize) -> bool {
+    mods.iter().any(|m| match m.kind {
+        ir::ModKind::Cutoff { insert, .. }
+        | ir::ModKind::Resonance { insert, .. }
+        | ir::ModKind::EqGain { insert, .. }
+        | ir::ModKind::EffectParam { insert, .. } => usize::from(insert) == n,
+        _ => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{set_signed, signed};
