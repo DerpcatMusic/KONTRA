@@ -162,8 +162,7 @@ fn drawn_page(
         });
         let stock_glyphs = look.as_ref().and_then(|look| match look {
             stock::Look::Field { .. }
-                if style.is_some_and(|s| s.font == model::Font::Stock(13))
-                    && matches!(wd.kind, Kind::ValueEdit { arrows: true, .. }) =>
+                if style.is_some_and(|s| s.font == model::Font::Stock(13)) =>
             {
                 pictures.font(model::AssetRef(usize::MAX - 4), "@stock/font13")
             }
@@ -312,7 +311,7 @@ fn drawn_page(
         let el = if matches!(wd.kind, Kind::ValueEdit { arrows: true, .. })
             && ui.get(id.clone()).hovered
         {
-            stack(vec![el.at(0., 0.), stock::steps(r.width, scale)])
+            stack(vec![el.at(0., 0.), stock::steps(r.width, r.height, scale)])
                 .w(r.width)
                 .h(r.height)
         } else {

@@ -52,8 +52,8 @@ impl Engine {
     /// it has none), and starts again from silence.
     pub fn take_bus_peak(&mut self, n: usize) -> [f32; 2] {
         // Plan bus 0 is the main bus; instrument bus n is plan bus n + 1.
-        self.buses
-            .get_mut(n + 1)
+        n.checked_add(1)
+            .and_then(|n| self.buses.get_mut(n))
             .map_or([0.0; 2], |b| std::mem::take(&mut b.peak))
     }
 
