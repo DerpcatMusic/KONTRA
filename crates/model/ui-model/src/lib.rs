@@ -61,6 +61,9 @@ pub struct Interface {
     /// The keys the source colours on the keyboard, by note, with the
     /// colour each draws (KSP `set_key_color`).
     pub keybed: Vec<(u8, Rgba)>,
+    /// The keys the source names, by note (KSP `set_key_name`): shown when
+    /// the pointer is over them.
+    pub key_names: Vec<(u8, String)>,
     pub unsupported: Vec<Unsupported>,
 }
 
