@@ -7,12 +7,22 @@
 //! Measured laws (emulator, 2026-10-30):
 //! - a voice's delay is `base × (delay · 5 + 0.1)` seconds. Checked against the
 //!   first tap at delay 0.5 (374 frames predicted 374) and 1.0 (734 vs 734).
+//! - the LFO is a triangle, and its rate is `0.25 + 7.4 · rate³` Hz
+//!   ([`lfo_hz`], seven rates checked exactly).
+//! - its per-voice phase offset is the mode table's `pan` field
+//!   ([`Voice::pan`]), read as the offset in `voice+(-0x158)`.
+//! - `amount` sets the modulation depth in samples as
+//!   `(fs / hz) · ½ · (2^(0.025 · m) − 1)`, `m = 0.99 · amount² + 0.01`
+//!   ([`modulation_depth`]); measured 3.54 / 25.46 / 91.35 / 201.63 / 357.03
+//!   samples at amount 0 / .25 / .5 / .75 / 1, rate 0.5, 48 kHz.
 //!
-//! Not yet established, and deliberately not invented here: how `amount`
-//! scales the LFO's swing, the LFO's shape and its per-voice phase, and what
-//! the six loop-filter constants after the pans mean. Those are needed before
-//! this can claim to match the native vectors `tools/re/kemu_timemod.py choral`
-//! renders, so [`Chorus::process`] is not wired into the engine yet.
+//! Not yet read, so [`Chorus::process`] stays unimplemented: the per-voice
+//! smoothing and filter networks behind `voice+(-0x1f8)`, `+(-0x200)` and
+//! `+(-0x1e0)` (whose source field is not identified), the pan rotation
+//! matrices at `core+0x8a0`, the per-frame use of the seven-tap mix at
+//! `core+0x7c0`, and the global tone filter at `core+0x1c20`. Those are needed
+//! before this can claim to match the native vectors `tools/re/kemu_timemod.py
+//! choral` renders.
 
 /// One voice of a mode's bank.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,6 +104,50 @@ pub fn voice_delay_s(base_s: f32, delay: f32) -> f32 {
     base_s * (delay * 5.0 + 0.1)
 }
 
+/// The LFO rate in Hz: `0.25 + 7.4 · rate³`.
+///
+/// Measured from `voice+(-0x220)` after prepare, 48 kHz: rate 0, 0.05, 0.1,
+/// 0.25, 0.5, 0.75 and 1 give 0.25, 0.250925, 0.2574, 0.365625, 1.175,
+/// 3.371875 and 7.65 Hz, which is the cubic exactly (7.4 · 0.05³ = 0.000925).
+#[must_use]
+pub fn lfo_hz(rate: f32) -> f32 {
+    0.25 + 7.4 * rate * rate * rate
+}
+
+/// The LFO's waveform at `phase` in 0..1: a triangle, `4φ − 1` on the rising
+/// half and `3 − 4φ` on the falling half.
+///
+/// Measured at 48 kHz, rate 0.5, amount 0.6: the value at frame `n` is
+/// `4 · n · (hz / fs) − 1` to the last bit up to the peak at frame 20429
+/// (`hz / fs` = 2.4479e-5, half a period), then the mirror.
+#[must_use]
+pub fn lfo_triangle(phase: f32) -> f32 {
+    let p = phase.rem_euclid(1.0);
+    if p < 0.5 {
+        4.0 * p - 1.0
+    } else {
+        3.0 - 4.0 * p
+    }
+}
+
+/// The peak-to-peak modulation in samples at `amount`, for an LFO at `hz` and
+/// `fs`: `(fs / hz) · ½ · (2^(0.025 · m) − 1)`, `m = 0.99 · amount² + 0.01`.
+///
+/// Read out of the kernel: `0x14193a2f0` (amount setter) stores
+/// `m = 0.99 · amount² + 0.01` at `voice+(-0x218)` and
+/// `1 / (2^(0.025 m) − 0.9999)` at `voice+0x58`, and `0x14193dc00` stores
+/// `(fs / hz) · ½ · (2^(0.025 m) − 1)` at `voice+(-0x210)`, which `0x14193be50`
+/// adds to the base delay. Measured: 3.5398, 25.4558, 91.3451, 201.6327 and
+/// 357.0320 samples at amount 0, 0.25, 0.5, 0.75, 1 (rate 0.5, 48 kHz), and
+/// 611.4650 at amount 0.6, rate 0 (0.25 Hz).
+#[must_use]
+pub fn modulation_depth(amount: f32, hz: f32, fs: f32) -> f32 {
+    // The setter squares in f32 and does the rest in f64.
+    let m = 0.99 * f64::from(amount * amount) + 0.01;
+    let p = 2.0f64.powf(0.025 * m);
+    ((f64::from(fs) / f64::from(hz)) * 0.5 * (p - 1.0)) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +176,56 @@ mod tests {
             assert_eq!(m.voices.len(), 7, "mode {n}");
             assert!(m.voices.iter().any(|v| v.pan == 0.0), "mode {n}");
         }
+    }
+
+    /// The seven rates read back from `voice+(-0x220)` after prepare.
+    #[test]
+    fn the_lfo_rate_is_cubic_in_the_rate_knob() {
+        let measured = [
+            (0.0, 0.25),
+            (0.05, 0.250925),
+            (0.1, 0.2574),
+            (0.25, 0.365625),
+            (0.5, 1.175),
+            (0.75, 3.371875),
+            (1.0, 7.65),
+        ];
+        for (rate, hz) in measured {
+            assert!(
+                (lfo_hz(rate) - hz).abs() < 1e-6,
+                "rate {rate}: {} vs {hz}",
+                lfo_hz(rate)
+            );
+        }
+    }
+
+    /// The triangle: -1 at phase 0, +1 at the half period, and the value the
+    /// kernel produced on the rising half (frame 2000 at rate 0.5 is -0.804167).
+    #[test]
+    fn the_lfo_is_a_triangle() {
+        assert_eq!(lfo_triangle(0.0), -1.0);
+        assert!((lfo_triangle(0.5) - 1.0).abs() < 1e-6);
+        assert!(lfo_triangle(0.25).abs() < 1e-6);
+        assert!((lfo_triangle(0.75) + 0.0).abs() < 1e-6);
+        let phase = 2000.0 * lfo_hz(0.5) / 48_000.0;
+        assert!((lfo_triangle(phase) - -0.8041667).abs() < 1e-6);
+        assert_eq!(lfo_triangle(1.0), -1.0);
+    }
+
+    /// The five depths read out of `voice+(-0x210)` at rate 0.5, 48 kHz.
+    #[test]
+    fn the_modulation_depth_is_the_kernels_law() {
+        let hz = lfo_hz(0.5);
+        let measured = [3.5398, 25.4558, 91.3451, 201.6327, 357.0320];
+        for (n, amount) in [0.0, 0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {
+            let depth = modulation_depth(amount, hz, 48_000.0);
+            assert!(
+                (depth - measured[n]).abs() < 1e-3,
+                "amount {amount}: {depth} vs {}",
+                measured[n]
+            );
+        }
+        // rate 0 is 0.25 Hz, amount 0.6.
+        assert!((modulation_depth(0.6, lfo_hz(0.0), 48_000.0) - 611.4650).abs() < 1e-3);
     }
 }
