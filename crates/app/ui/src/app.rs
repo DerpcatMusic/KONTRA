@@ -676,7 +676,10 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .collect();
     let shown = Keys {
         range,
-        held: v.playing.into_iter().collect(),
+        held: match focused.and_then(|p| p.face.as_ref()?.tree.key_pressed.as_ref()) {
+            Some(pressed) => pressed.clone(),
+            None => v.playing.into_iter().collect(),
+        },
         spans: app
             .parts
             .iter()
