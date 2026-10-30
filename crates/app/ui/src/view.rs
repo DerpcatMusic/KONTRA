@@ -183,6 +183,16 @@ fn drawn_page(
             }
             _ => None,
         });
+        let stock_glyphs = stock_glyphs.or_else(|| {
+            if matches!(tree.source, model::Source::Ksp { .. })
+                && matches!(wd.kind, Kind::Label)
+                && style.is_some_and(|s| s.font == model::Font::Stock(12))
+            {
+                pictures.font(model::AssetRef(usize::MAX - 6), "@stock/font12")
+            } else {
+                None
+            }
+        });
         let stock = item.stock;
         let words = item.words;
         let glyphs = match style.map(|s| &s.font) {
@@ -271,9 +281,9 @@ fn drawn_page(
             let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
             if let (Some((img, meta)), Some(a)) = (&picture, art) {
-                // A single-frame picture on a button sits inside its one-pixel face border.
+                // A single-frame button or switch picture sits inside its one-pixel face border.
                 let inset = if matches!(tree.source, model::Source::Ksp { .. })
-                    && matches!(wd.kind, Kind::Button { .. })
+                    && matches!(wd.kind, Kind::Button { .. } | Kind::Switch)
                     && meta.frames == 1
                 {
                     scale
@@ -301,7 +311,27 @@ fn drawn_page(
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
             } else if !words.is_empty() {
-                parts.push(words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.));
+                if let (Some(glyphs), Some(style)) = (&stock_glyphs, style)
+                    && matches!(wd.kind, Kind::Label)
+                    && !words.contains('\n')
+                    && words
+                        .chars()
+                        .all(|c| c == '?' || crate::pictures::glyph(c) != usize::from(b'?'))
+                    && style.font == model::Font::Stock(12)
+                    && plan::label_fits(&words, glyphs, w, scale)
+                {
+                    parts.push(stock::label(
+                        &words,
+                        style,
+                        wd.text_y,
+                        (w, h, scale, device),
+                        glyphs,
+                    ));
+                } else {
+                    parts.push(
+                        words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.),
+                    );
+                }
             }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, (w, h, scale)).at(0., 0.));
