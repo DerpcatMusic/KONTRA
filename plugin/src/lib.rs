@@ -97,6 +97,10 @@ pub struct Shared {
     restoring: AtomicBool,
     /// The latency to report, in frames; the audio thread reads it.
     latency: AtomicU32,
+    /// Blocks counted as missed when `block_missed` last logged them: the
+    /// count is cumulative, so a tick that logs only when it moves does not
+    /// repeat the same line.
+    missed_logged: AtomicU64,
     /// Moves when the host loads a state: the editor reads its view again.
     restored: AtomicU32,
     /// The "Add folder" dialog; dropping it closes an open one.
@@ -322,12 +326,17 @@ impl BackgroundTask for Tick {
             );
         }
         // A block the host asked for that found the audio side taken here:
-        // it came out silent. It should be the first block of a resume.
-        if ticked.missed > 0 {
+        // it came out silent. It should be the first block of a resume. The
+        // count is cumulative, so only a move is logged.
+        let missed = ticked.missed;
+        let logged = p.shared.missed_logged.load(Ordering::Relaxed);
+        if missed > logged {
+            p.shared.missed_logged.store(missed, Ordering::Relaxed);
             session::info(
                 "block_missed",
                 &[
-                    ("blocks", &ticked.missed.to_string()),
+                    ("blocks", &(missed - logged).to_string()),
+                    ("total", &missed.to_string()),
                     ("rendered", &ticked.blocks.to_string()),
                 ],
             );
@@ -393,6 +402,8 @@ impl PluginLogic for Kontra {
             return;
         };
         let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
+        // A new rack counts its missed blocks from zero.
+        p.shared.missed_logged.store(0, Ordering::Relaxed);
         if let Some(saves) = kontra_host::rack::user_saves() {
             rack.set_saves(saves);
         }
@@ -415,6 +426,14 @@ impl PluginLogic for Kontra {
         cx: &mut ProcessContext,
     ) -> ProcessStatus {
         let frames = b.num_samples();
+        // The audio side for this block, taken before the control tick is
+        // spawned: a tick that ran between the spawn and the take would find
+        // the side free, carry its commands out itself, and leave this block
+        // silent. This side never waits for it: a block it could not have is
+        // silence (`RackAudio::missed`), which comes out of a resume, where
+        // silence is what was playing anyway.
+        let max_block = s.audio.as_ref().map_or(0, RackAudio::max_block);
+        let mut side = s.audio.as_mut().and_then(RackAudio::take_block);
         if s.until_tick <= frames {
             if let Some(tasks) = cx.tasks::<Tick>() {
                 tasks.spawn_coalescing(Tick);
@@ -423,20 +442,15 @@ impl PluginLogic for Kontra {
         } else {
             s.until_tick -= frames;
         }
-        let Some(audio) = s.audio.as_mut() else {
+        if max_block == 0 {
+            // No rack yet (a rate change in flight): silent, but the tick runs.
             for ch in 0..b.num_output_channels() {
                 b.output(ch).fill(0.0);
             }
             return ProcessStatus::Normal;
-        };
+        }
         s.latency = p.shared.latency.load(Ordering::Relaxed);
         s.input.clear();
-        let max_block = audio.max_block();
-        // The audio side for this block. The control tick takes it while the
-        // host renders nothing, and this side never waits for it: a block it
-        // could not have is silence (`RackAudio::missed`), which comes out
-        // of a resume, where silence is what was playing anyway.
-        let mut side = audio.take();
         // VST3 hosts give the tempo only here; CLAP may also send events.
         if let Some(side) = side.as_mut() {
             side.set_tempo(cx.transport.tempo as f32);

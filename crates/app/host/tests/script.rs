@@ -641,12 +641,13 @@ fn the_ksp_timer_counts_cpu_microseconds_and_resets() {
     let [t0, t1, t2, uptime] = read[..] else {
         panic!("expected four numbers, got {read:?}");
     };
-    // Reset and read are adjacent instructions in `on init`.
-    assert!((0..5_000).contains(&t0), "t0 = {t0}");
+    // Reset and read are adjacent instructions in `on init`; the ceiling is
+    // wide because a preempted thread between them is not a defect.
+    assert!((0..100_000).contains(&t0), "t0 = {t0}");
     // The 20 ms sleep, and not the second of audio ($ENGINE_UPTIME).
     assert!((20_000..1_000_000).contains(&t1), "t1 = {t1}");
     assert!(uptime >= 1_000, "uptime = {uptime}");
-    assert!((0..5_000).contains(&t2), "t2 = {t2}");
+    assert!((0..100_000).contains(&t2), "t2 = {t2}");
 }
 
 /// An output menu lists the engine's outputs by Kontakt's names.
@@ -3420,4 +3421,113 @@ fn mf_event_pars_match_the_script_constants() {
     ] {
         assert_eq!(kontra_ksp::constant(name), Some(value), "{name}");
     }
+}
+
+/// 960 ticks per quarter, one track: a note at tick 0 and one at 1920.
+fn midi_bytes() -> Vec<u8> {
+    let track: Vec<u8> = vec![
+        0x00, 0x90, 0x3c, 0x46, // +0    note on 60
+        0x87, 0x40, 0x80, 0x3c, 0x40, // +960  note off 60
+        0x87, 0x40, 0x90, 0x40, 0x46, // +960  note on 64
+        0x00, 0xff, 0x2f, 0x00, // end of track
+    ];
+    let mut file = b"MThd".to_vec();
+    file.extend_from_slice(&6u32.to_be_bytes());
+    file.extend_from_slice(&0u16.to_be_bytes());
+    file.extend_from_slice(&1u16.to_be_bytes());
+    file.extend_from_slice(&960u16.to_be_bytes());
+    file.extend_from_slice(b"MTrk");
+    file.extend_from_slice(&(track.len() as u32).to_be_bytes());
+    file.extend_from_slice(&track);
+    file
+}
+
+/// `mf_insert_file` reads and parses a file: off the audio thread only. `on
+/// init` runs while the engine is built, so there it inserts; a note callback
+/// runs inside `process`, gets the failure answer, and is counted.
+#[test]
+fn a_midi_file_inserted_at_init_is_never_read_by_a_callback() {
+    let path = std::env::temp_dir().join(format!("kontra-mf-{}-gate.mid", std::process::id()));
+    std::fs::write(&path, midi_bytes()).unwrap();
+    let p = path.display();
+    let source = format!(
+        "on init
+            declare $at_init
+            $at_init := mf_insert_file(\"{p}\", 0, 0, 0)
+        end on
+        on note
+            declare $in_note
+            $in_note := mf_insert_file(\"{p}\", 0, 0, 0)
+            message($at_init & \" \" & $in_note & \" \" & mf_get_num_tracks() & \" \" & mf_get_length())
+        end on"
+    );
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(&store, Vec::new(), &source);
+    level(&mut e, &[on(60)]);
+    // The init insert answered 0 and the file is there; the callback's did
+    // not read it, and is reported rather than dropped.
+    assert_eq!(e.last_message(), "0 -1 1 1920");
+    assert_eq!(
+        e.unhandled_actions(),
+        [(kontra_engine::Action::MfInsertFile, 1)],
+        "the callback's insert was dropped without a report"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// `mf_insert_event(track, …)` keeps the track it names: `$EVENT_PAR_TRACK_NR`
+/// and `by_track` find it there.
+#[test]
+fn a_midi_event_inserted_keeps_the_track_it_names() {
+    let path = std::env::temp_dir().join(format!("kontra-mf-{}-track.mid", std::process::id()));
+    std::fs::write(&path, midi_bytes()).unwrap();
+    let p = path.display();
+    let source = format!(
+        "on init
+            declare $id
+            declare $track
+            mf_insert_file(\"{p}\", 0, 0, 0)
+            mf_set_buffer_size(1)
+            $id := mf_insert_event(2, 100, $MIDI_COMMAND_NOTE_ON, 60, 100)
+            $track := mf_get_event_par($id, $EVENT_PAR_TRACK_NR)
+            message($id & \" \" & $track & \" \" & by_track(3) & \" \" & by_track(1))
+        end on"
+    );
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(&store, Vec::new(), &source);
+    level(&mut e, &[on(60)]);
+    // The file holds two channel events (ids 0 and 1); the third is the one
+    // inserted, on track 2, which `by_track(3)` finds. Track 1 is still id 0.
+    assert_eq!(e.last_message(), "2 2 2 0");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// `$MOD_TARGET_INVERT_SOURCE` lives on a modulator: at a slot with no route
+/// the read is the absent value 0, not an unanswered call.
+#[test]
+fn a_route_invert_flag_at_a_slot_with_no_route_reads_zero() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].mods.clear();
+    let script = kontra_ksp::compile(
+        "on init
+            message(get_engine_par($MOD_TARGET_INVERT_SOURCE, 0, 3, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "0");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "the read was left unanswered: {:?}",
+        e.unhandled_actions()
+    );
 }

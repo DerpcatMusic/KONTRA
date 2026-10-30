@@ -170,11 +170,10 @@ fn a_full_command_ring_keeps_the_edit_and_carries_it_out() {
         f64::from(picked.value),
         UiModifiers::default(),
     );
-    // The ticks the plugin runs with no host rendering: the first empties the
-    // ring of what was in it, the next sends what was kept and runs it.
-    for _ in 0..2 {
-        rack.tick();
-    }
+    // One tick, the way the plugin runs it with no host rendering: it drains
+    // the ring, then must send the kept edit again in its next pass rather
+    // than leave it pending for a tick that may never come.
+    rack.tick();
 
     let (value, text) = shows(&rack, menu, edit);
     assert_eq!(

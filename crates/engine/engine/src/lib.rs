@@ -104,6 +104,9 @@ pub struct Stats {
     pub actions_unhandled: u64,
     /// Script `message` calls.
     pub messages: u64,
+    /// `set_control_par_str_arr` elements a full pool refused (see
+    /// `kontra_script_ui`): they are not kept, so this says so.
+    pub text_arrays_full: u32,
 }
 
 struct Slot {
@@ -392,7 +395,10 @@ impl Engine {
 
     #[must_use]
     pub fn stats(&self) -> Stats {
-        self.stats
+        Stats {
+            text_arrays_full: self.ui.text_arrays_full(),
+            ..self.stats
+        }
     }
 
     /// Host notes that ended during the last [`Engine::process`] (CLAP note end).
