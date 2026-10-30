@@ -805,6 +805,25 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
     }
 }
 
+/// A folder of this test process alone, removed when dropped (also when
+/// an assertion fails).
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let dir = tmp.join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// KSP manual (`save_array_str`, `load_array_str`): after `on init` both run
 /// asynchronously, then `on async_complete`; the file holds the array's
 /// name and its values, and a file naming another array loads nothing.
@@ -814,8 +833,8 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
 #[test]
 fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     use kontra_engine::ir;
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("array-files");
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch = Scratch::new("array-files");
+    let dir = scratch.0.clone();
     std::fs::create_dir_all(dir.join("dir.nka")).unwrap();
     std::fs::write(dir.join("other.nka"), "%other\n7\n7\n7\n").unwrap();
     // Valid values, then (sparse) padding past the ceiling.
@@ -898,7 +917,6 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     );
     // Saved 1; loaded back 123; wrong name 0; unwritable 0; huge 0; dir 0.
     assert!(saved.contains(&"$result 11230000".to_owned()), "{saved:?}");
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// An install fades out the engine it replaces instead of cutting its
@@ -927,8 +945,8 @@ fn an_install_fades_out_the_engine_it_replaces() {
 #[test]
 fn a_rack_without_a_save_folder_writes_nothing() {
     use kontra_engine::ir;
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-saves");
-    let at = dir.join("a.nka");
+    let scratch = Scratch::new("no-saves");
+    let at = scratch.0.join("a.nka");
     let source = format!(
         "on init
             declare %a[1] := (4)
