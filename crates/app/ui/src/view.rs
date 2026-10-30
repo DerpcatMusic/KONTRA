@@ -482,8 +482,8 @@ fn value(w: &model::Widget) -> f64 {
 }
 
 /// `w`'s value as its source shows it: the script's label, else the value
-/// over the display ratio with its unit.
-pub(crate) fn readout(w: &model::Widget, source: model::Source) -> String {
+/// over the display ratio with its unit, under the format's readout law.
+pub(crate) fn readout(w: &model::Widget, laws: &model::Laws) -> String {
     if w.hide.value {
         return String::new();
     }
@@ -496,7 +496,7 @@ pub(crate) fn readout(w: &model::Widget, source: model::Source) -> String {
             crate::keyboard::note_name(value(w).clamp(0., 127.) as u8)
         }
         Kind::Knob { display, .. } | Kind::ValueEdit { display, .. } => {
-            display.format_value(value(w), true, source)
+            display.format_value(value(w), true, &laws.formatting)
         }
         _ => String::new(),
     }

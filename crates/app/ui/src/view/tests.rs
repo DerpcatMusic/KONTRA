@@ -342,7 +342,10 @@ fn an_unpictured_script_control_draws_its_stock_field() {
     edit.text = "Transpose".into();
     edit.value = Some(model::Value::Integer(0));
     tree.widgets.push(edit);
-    assert_eq!(caption(&tree.widgets[0], tree.source), "Transpose 0");
+    assert_eq!(
+        caption(&tree.widgets[0], tree.source, &tree.laws),
+        "Transpose 0"
+    );
     let mut ui = crate::ui();
     let mut pictures = Pictures::new(Box::new(|_| None));
     let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
@@ -396,7 +399,7 @@ fn a_note_names_value_edit_reads_its_note() {
         },
     );
     w.value = Some(model::Value::Integer(12));
-    assert_eq!(readout(&w, model::Source::Ksp { slot: 0 }), "C-1");
+    assert_eq!(readout(&w, &model::Laws::default()), "C-1");
 }
 
 #[test]
@@ -638,11 +641,15 @@ fn kontakt_label_tabs_are_blank_advances() {
     let mut widget = Widget::new("$label", PageRef(0), Rect::default(), Kind::Label);
     widget.text = "\t\t\t   Marcato Short".into();
     assert_eq!(
-        plan::caption(&widget, model::Source::Ksp { slot: 0 }),
+        plan::caption(
+            &widget,
+            model::Source::Ksp { slot: 0 },
+            &model::Laws::default()
+        ),
         "         Marcato Short"
     );
     assert_eq!(
-        plan::caption(&widget, model::Source::FalconLua),
+        plan::caption(&widget, model::Source::FalconLua, &model::Laws::default()),
         widget.text
     );
 }

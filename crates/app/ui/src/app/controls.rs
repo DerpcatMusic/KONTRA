@@ -41,7 +41,7 @@ pub(super) fn view(
                 let r = knob(
                     ui,
                     id,
-                    (&name, &readout(w, tree.source)),
+                    (&name, &readout(w, &tree.laws)),
                     &mut v,
                     lo..=hi,
                     range.default,
