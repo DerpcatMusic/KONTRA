@@ -2032,7 +2032,11 @@ fn a_missing_data_folder_array_leaves_it_and_completes_with_failure() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "1 1 0 78");
-    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
 }
 
 /// `set_engine_par` as measured in Kontakt (probes/async_engine_par.ksp):
