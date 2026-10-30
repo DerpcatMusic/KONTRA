@@ -314,23 +314,30 @@ fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
         .collect()
 }
 
-/// Plays silence until no voice is left and the effects' tail (a reverb) is
-/// quiet, so it never reads as the next segment's onset; at most 5 s.
+/// Plays silence until no voice is left and the effects' tail (a reverb, a
+/// delay's next repeat) has stayed quiet for 0.1 s, so it never reads as the
+/// next segment's onset; at most 5 s.
 fn ring_out(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) {
+    let mut quiet = 0;
     for _ in 0..at(5.0) / BLOCK {
-        if last.voices == 0 && last.audio.iter().all(|x| x.abs() < 1e-4) {
+        quiet = if last.voices == 0 && last.audio.iter().all(|x| x.abs() < 1e-4) {
+            quiet + BLOCK
+        } else {
+            0
+        };
+        if quiet >= at(0.1) {
             return;
         }
         *last = block(params, dsp, &[], last);
     }
 }
 
-/// The octave shift that brings the scenario's repeated key (D4) where the
-/// program plays: a bass's, a tuba's or a script's range may end below it.
-/// Measured: a short note per octave, the first that starts a voice.
+/// The octave shift that brings the scenario's probe and repeated keys (C4,
+/// D4) where the program plays: a bass's, a tuba's or a script's range may
+/// end below them. Measured: a short note on each, per octave, the first
+/// octave where both start a voice.
 fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
-    for by in [0, -12, 12, -24, 24] {
-        let key = 62u8.saturating_add_signed(by);
+    let mut sounds = |key: u8| {
         *last = block(params, dsp, &[(0, on(key))], last);
         let mut sounded = last.voices > 0;
         for _ in 0..at(0.1) / BLOCK {
@@ -339,11 +346,16 @@ fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
         }
         *last = block(params, dsp, &[(0, off(key))], last);
         ring_out(params, dsp, last);
-        if sounded {
-            return by;
-        }
-    }
-    0
+        sounded
+    };
+    [0, -12, 12, -24, 24]
+        .into_iter()
+        .find(|&by| {
+            [60u8, 62]
+                .iter()
+                .all(|k| sounds(k.saturating_add_signed(by)))
+        })
+        .unwrap_or(0)
 }
 
 fn performance_at_c4() -> Vec<(&'static str, Vec<(usize, In)>)> {
