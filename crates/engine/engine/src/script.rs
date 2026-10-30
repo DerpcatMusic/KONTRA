@@ -746,6 +746,11 @@ impl HostApi for Engine {
             // Editing half of the MIDI object (KSP Reference Manual 18.7–18.11):
             // mf_insert_event activates an inactive event and spends one buffer
             // slot; the byte setters edit the event under the cursor.
+            Action::ByTrack => HostValue::Int(
+                self.midi
+                    .get(self.midi_current)
+                    .map_or(-1, |f| f.by_track(int(0))),
+            ),
             Action::MfGetEventPar => {
                 let (id, par) = (int(0), int(1));
                 HostValue::Int(
