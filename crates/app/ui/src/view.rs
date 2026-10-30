@@ -318,6 +318,7 @@ fn drawn_page(
                         .chars()
                         .all(|c| c == '?' || crate::pictures::glyph(c) != usize::from(b'?'))
                     && style.font == model::Font::Stock(12)
+                    && stock::label_fits(&words, glyphs, w, scale)
                 {
                     parts.push(stock::label(
                         &words,
