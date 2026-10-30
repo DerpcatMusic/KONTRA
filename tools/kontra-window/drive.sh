@@ -182,6 +182,30 @@ sys.exit(0 if changed >= 20 and mean < 2 else 1)' "$NATIVE_LABEL_BEFORE" "$out/0
     if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
     exit $fail
 fi
+# Compare Pacific's stock field and mic-button text to a known baseline.
+if [[ ${PACIFIC_STOCK_ONLY:-0} == 1 ]]; then
+    if [[ -n ${PACIFIC_STOCK_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+old, new, expected = (Image.open(p).convert("RGB") for p in sys.argv[1:4])
+def check(box, minimum):
+    delta = list(ImageChops.difference(old.crop(box), new.crop(box)).getdata())
+    error = list(ImageChops.difference(expected.crop(box), new.crop(box)).getdata())
+    return sum(max(p) > 8 for p in delta) >= minimum and sum(map(sum, error)) / (3 * len(error)) < 2
+sys.exit(0 if check((460, 118, 594, 159), 30) and check((214, 118, 260, 139), 5) else 1)' "$PACIFIC_STOCK_BEFORE" "$out/0-open.png" "${PACIFIC_STOCK_EXPECTED:?set PACIFIC_STOCK_EXPECTED to the verified capture}"; then
+            pass "Pacific stock fields and mic-button text update"
+        else miss "Pacific stock fields and mic-button text update"; fi
+    fi
+    ticks_pacific() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_pacific); sleep "$span"; t1=$(ticks_pacific)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # Afflatus' keyswitch page uses add_text_line for its note-name list.
 if [[ ${MULTILINE_ONLY:-0} == 1 ]]; then
     at "${MULTILINE_TAB:-1652,260}"; xdotool click 1; sleep 3; at 1900,1270; shot 1-keyswitches
