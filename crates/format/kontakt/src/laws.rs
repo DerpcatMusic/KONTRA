@@ -763,6 +763,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn envelope_sustain_preserves_the_saved_cubic_mapping() {
+        for sustain in [-0.1_f32, 0.0, 0.43, 1.0, 1.2] {
+            let saved = EnvelopeAhdsr {
+                attack_curve: 0.0,
+                attack_ms: 0.0,
+                decay_ms: 0.0,
+                hold_ms: 0.0,
+                release_ms: 0.0,
+                sustain,
+                unknown_flag: 0,
+                unknown_tail: Vec::new(),
+            };
+            assert_eq!(envelope(&saved).sustain, sustain.clamp(0.0, 1.0).powi(3));
+        }
+    }
+
+    #[test]
+    fn state_variable_resonance_preserves_the_stage_mappings() {
+        for r in [0.0_f32, 0.2, 0.7, 1.0] {
+            let one = filter(52, 0.5, r, 0.0).unwrap();
+            let one_resonance = 1.0 - (1.0 - r).powi(3);
+            assert_eq!(one.gain, 1.0 - 0.5 * one_resonance.powi(5));
+            let three = filter(59, 0.5, r, 0.0).unwrap();
+            let three_resonance = 1.0 - (1.0 - 0.9 * r).powi(3);
+            assert_eq!(
+                three.damping[0],
+                (2.0 * (1.0 - three_resonance)).max(MIN_DAMPING)
+            );
+            assert_eq!(
+                three.gain,
+                1.0 - (1.2125 - 0.2425 * three_resonance) * three_resonance
+            );
+        }
+    }
+
+    #[test]
     fn a_full_eq_gain_route_moves_its_band_24_db() {
         let kind = eq_gain(ir::Source::Velocity, 0, "eqGain1", 1.0);
         assert!(
