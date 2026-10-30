@@ -16,8 +16,8 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 TARGET=${CARGO_TARGET_DIR:-/tmp/opencode/kv3-target}
 EMINT=${EMINT:-/home/dracula/Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments/Electric Mint.nki}
 # Ceilings, not goals: they must only ever come down.
-MAX_UNHANDLED=${MAX_UNHANDLED:-173}
-MAX_INIT_UNANSWERED=${MAX_INIT_UNANSWERED:-75}
+MAX_UNHANDLED=${MAX_UNHANDLED:-55}
+MAX_INIT_UNANSWERED=${MAX_INIT_UNANSWERED:-51}
 QUICK=${1:-}
 
 cd "$REPO"
@@ -47,7 +47,7 @@ run_tests() {
 }
 
 echo "== layer 0/1: tests =="
-for c in kontra-engine kontra-host kontra-ui; do run_tests "$c"; done
+for c in kontra-engine kontra-host kontra-ui mui kontra-native-host; do run_tests "$c"; done
 if [ -d crates/dsp/delay ]; then run_tests kontra-dsp-delay; fi
 
 echo "== build =="
