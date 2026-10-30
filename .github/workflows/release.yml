@@ -127,8 +127,45 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  licenses:
+    needs: check
+    if: needs.check.outputs.released == 'false'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.99.0
+      - name: Licenses and MPL covered source
+        run: |
+          set -euo pipefail
+          cargo install cargo-about --version 0.9.2 --features cli --locked
+          lic="$RUNNER_TEMP/licenses"
+          python3 tools/licenses.py --output "$lic"
+          {
+            echo "KONTRA redistribution notices and license texts."
+            echo "MPL covered source: KONTRA-nightly-covered-source.zip on the same release."
+            for f in LICENSE NOTICE THIRD_PARTY.md "$lic/THIRD_PARTY_NOTICES.txt"; do
+              printf '\n===== %s =====\n' "$f"; cat "$f"
+            done
+            find "$lic" -type f ! -path "$lic/sources/*" ! -name THIRD_PARTY_NOTICES.txt | sort | while read -r f; do
+              printf '\n===== licenses/%s =====\n' "${f#"$lic"/}"; cat "$f"
+            done
+          } > LICENSES.txt
+          (cd "$lic" && zip -qr "$GITHUB_WORKSPACE/KONTRA-nightly-covered-source.zip" sources)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-legal
+          path: |
+            LICENSES.txt
+            KONTRA-nightly-covered-source.zip
+          if-no-files-found: error
+          retention-days: 1
+
   macos-universal:
-    needs: bundle
+    needs: [bundle, licenses]
     runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -140,6 +177,10 @@ jobs:
           pattern: macos-input-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-legal
+          path: legal
       - name: Compose, sign and notarize universal installer
         env:
           APPLE_APPLICATION_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_APPLICATION_CERTIFICATE_P12_BASE64 }}
@@ -159,6 +200,8 @@ jobs:
           version=$(python3 tools/version.py v3-nightly)
           python3 .github/scripts/package_macos.py --arm64 inputs/KONTRA-nightly-macos-arm64 \
             --x86-64 inputs/KONTRA-nightly-macos-x86_64 --stage universal-stage --revision "$GITHUB_SHA" --version "$version"
+          mkdir -p "universal-stage/payload/Library/Application Support/KONTRA"
+          cp legal/LICENSES.txt "universal-stage/payload/Library/Application Support/KONTRA/LICENSES.txt"
           source .github/scripts/macos_signing_keychain.sh
           bash .github/scripts/package_macos.sh universal-stage KONTRA-nightly-macos-universal.pkg
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -186,29 +229,9 @@ jobs:
         with:
           pattern: release-*
           merge-multiple: true
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          toolchain: 1.99.0
-      - name: Licenses and MPL covered source
-        env:
-          TMPDIR: ${{ runner.temp }}
+      - name: Add notices to plugin downloads
         run: |
-          set -euo pipefail
-          cargo install cargo-about --version 0.9.2 --features cli --locked
-          lic="$RUNNER_TEMP/licenses"
-          python3 tools/licenses.py --output "$lic"
-          {
-            echo "KONTRA redistribution notices and license texts."
-            echo "MPL covered source: KONTRA-nightly-covered-source.zip on the same release."
-            for f in LICENSE NOTICE THIRD_PARTY.md "$lic/THIRD_PARTY_NOTICES.txt"; do
-              printf '\n===== %s =====\n' "$f"; cat "$f"
-            done
-            find "$lic" -type f ! -path "$lic/sources/*" ! -name THIRD_PARTY_NOTICES.txt | sort | while read -r f; do
-              printf '\n===== licenses/%s =====\n' "${f#"$lic"/}"; cat "$f"
-            done
-          } > LICENSES.txt
-          for z in KONTRA-nightly-*.zip; do zip -qj "$z" LICENSES.txt; done
-          (cd "$lic" && zip -qr "$GITHUB_WORKSPACE/KONTRA-nightly-covered-source.zip" sources)
+          for z in KONTRA-nightly-linux-*.zip KONTRA-nightly-windows-*.zip; do zip -qj "$z" LICENSES.txt; done
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
