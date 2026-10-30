@@ -367,6 +367,7 @@ fn absent_reason(sample: usize, sample_count: usize, resident: &HashSet<usize>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kontra_engine::ir::FormulaId;
 
     #[test]
     fn law_shapes_preserve_parameters_and_points() {
@@ -386,6 +387,19 @@ mod tests {
                 scale: 1.0
             }),
             json!({"kind":"exp_affine", "base":10.0, "offset":-0.5, "factor":3.0, "shift":0.0, "scale":1.0})
+        );
+        assert_eq!(
+            law(&Law::PowIndex {
+                base: 2.0,
+                origin: 69.0,
+                divisor: 12.0,
+                scale: 440.0
+            }),
+            json!({"kind":"pow_index", "base":2.0, "origin":69.0, "divisor":12.0, "scale":440.0})
+        );
+        assert_eq!(
+            law(&Law::Formula(FormulaId::AttackShape)),
+            json!({"kind":"formula", "id":"AttackShape"})
         );
         assert_eq!(
             law(&Law::Exp2Index {

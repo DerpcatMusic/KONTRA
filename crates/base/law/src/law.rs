@@ -125,16 +125,24 @@ impl Law {
                     - f64::from(*offset),
             ),
             Self::IntegerPower { exponent, bipolar } => {
-                let root = match exponent {
-                    1 => y,
-                    2 => y.sqrt(),
-                    3 => y.cbrt(),
+                // An even power folds a bipolar input, so only its unipolar form inverts.
+                let root = match (exponent, bipolar) {
+                    (1, _) => y,
+                    (2, false) => y.sqrt(),
+                    (3, _) => y.cbrt(),
                     _ => return None,
                 };
                 Some(if *bipolar { (root + 1.0) / 2.0 } else { root })
             }
             Self::Formula(id) => id.inverse(y),
-            _ => None,
+            Self::Exp { .. }
+            | Self::Exp2Index { .. }
+            | Self::PowIndex { .. }
+            | Self::Db { .. }
+            | Self::Power { .. }
+            | Self::Sine { .. }
+            | Self::Table(_)
+            | Self::Breakpoints(_) => None,
         }
     }
 

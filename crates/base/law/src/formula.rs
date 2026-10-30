@@ -11,8 +11,8 @@ pub enum FormulaId {
     /// (`docs/re/engine/k-mod-envelopes.md`).
     AttackShape,
     /// A flex-envelope curve knob (0.5 linear, 0 read as linear) to a segment shape: the log of
-    /// the level ratio `(1/f − 1)²`, `f` the knob's quadratic ease-in/out clamped to
-    /// 0.001..=0.999 (Kontakt 0x140ae5a10).
+    /// the level ratio `(1/f − 1)²`, `f` the knob's quadratic ease-in/out; knobs below 0.001
+    /// read `f = 2·10⁻⁶` and above 0.999 `f ≈ 0.999998` (Kontakt 0x140ae5a10).
     FlexShape,
     /// A feedback compressor's ratio `r` to its knee factor
     /// `3.6018/r + 0.8903 − 1.4406/r^1.5` (Kontakt ratio law 0x141a91d10).
@@ -43,9 +43,15 @@ impl FormulaId {
     }
 }
 
+/// The attack base's span and floor: `b = e^((1 − |c|)·ln ATTACK_SPAN − ln ATTACK_FLOOR)`, so
+/// `b` runs from 1/20 000 at a full bend to 25 when straight
+/// (`docs/re/engine/k-mod-envelopes.md`). [`attack_curve`] inverts with the same values.
+const ATTACK_SPAN: f64 = 500_000.0;
+const ATTACK_FLOOR: f64 = 20_000.0;
+
 fn attack_shape(curve: f64) -> f32 {
     let c = curve.clamp(-1.0, 1.0);
-    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
+    let b = f64::from(((1.0 - c.abs()) * ATTACK_SPAN.ln() - ATTACK_FLOOR.ln()).exp() as f32);
     let k = if c > 0.0 {
         (b / (1.0 + b)).ln()
     } else {
@@ -60,7 +66,7 @@ fn attack_curve(shape: f64) -> f64 {
         return 0.0;
     }
     let b = 1.0 / shape.abs().exp_m1();
-    let c = (1.0 - (b.ln() + 20_000f64.ln()) / 500_000f64.ln()).clamp(0.0, 1.0);
+    let c = (1.0 - (b.ln() + ATTACK_FLOOR.ln()) / ATTACK_SPAN.ln()).clamp(0.0, 1.0);
     -shape.signum() * c
 }
 
@@ -97,6 +103,10 @@ mod tests {
         // f(0.25) = 0.125 and f(0.75) = 0.875: ratios 49 and 1/49.
         assert!((shape(0.25) - 49f32.ln()).abs() < 1e-5, "{}", shape(0.25));
         assert!((shape(0.75) + 49f32.ln()).abs() < 1e-5, "{}", shape(0.75));
+        // The end branches: ±2·ln(1/(2·10⁻⁶)) ≈ ±26.24 (f32 rounding of 1/f − 1 near 1 shifts
+        // the upper end slightly).
+        assert!((shape(0.0005) - 26.24).abs() < 0.01, "{}", shape(0.0005));
+        assert!((shape(0.9995) + 26.24).abs() < 0.2, "{}", shape(0.9995));
     }
 
     #[test]
