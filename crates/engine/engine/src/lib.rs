@@ -175,8 +175,6 @@ pub struct Engine {
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
-    /// The notes a stopping fade ends with their parent.
-    children_scratch: Vec<NoteRef>,
     /// Latest controller values on any channel, as scripts read them.
     cc_values: [u8; 130],
     last_message: Text,
@@ -336,7 +334,6 @@ impl Engine {
             stop_waits: Vec::with_capacity(16),
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
-            children_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
             last_message: Text::EMPTY,
             recall: Recall::Restart,
@@ -617,13 +614,13 @@ impl Engine {
 
     /// Ends the script notes played for the length of `note`.
     fn end_children(&mut self, note: NoteRef) {
-        let mut children = std::mem::take(&mut self.targets_scratch);
-        self.notes
-            .select(&mut children, |n| n.origin == Origin::Child(note));
-        for &child in &children {
+        // No scratch list: a full queue releases a child at once, which ends
+        // its own children through here.
+        let mut from = 0;
+        while let Some(child) = self.notes.next_child(note, from) {
+            from = child.slot() + 1;
             self.queue_end(child);
         }
-        self.targets_scratch = children;
     }
 
     fn choke(&mut self, pattern: HostPattern) {

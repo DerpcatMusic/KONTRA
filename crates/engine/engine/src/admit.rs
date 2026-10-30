@@ -109,35 +109,26 @@ impl Engine {
     /// start later; an ending fade releases them.
     pub(crate) fn fade_notes(&mut self, notes: &[NoteRef], frames: u32, target: FadeTarget) {
         for &note in notes {
+            let mut ends = false;
             if let Some(n) = self.notes.get_mut(note) {
                 // A note yet to start starts with the fade and ends at its silence;
                 // a stopping fade stays, as a voice's does, unless a shorter one comes.
+                let ending = matches!(n.fade, Some((FadeTarget::End, _)));
                 n.released |= target == FadeTarget::End && n.started;
                 if !matches!(n.fade, Some((FadeTarget::End, left))
                     if target != FadeTarget::End || frames >= left)
                 {
                     n.fade = Some((target, frames));
                 }
+                ends = target == FadeTarget::End && !ending;
             }
             for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
                 slot.voice.fade(target, frames);
             }
-        }
-        if target == FadeTarget::End {
-            // Ending a note ends the notes played for its length: one pass, into
-            // a list of its own (`notes` may be the shared scratch).
-            let mut children = std::mem::take(&mut self.children_scratch);
-            let ledger = &self.notes;
-            ledger.select(&mut children, |n| match n.origin {
-                Origin::Child(p) => ledger
-                    .get(p)
-                    .is_some_and(|p| matches!(p.fade, Some((FadeTarget::End, _)))),
-                _ => false,
-            });
-            for &child in &children {
-                self.queue_end(child);
+            // Ending a note ends the notes played for its length, once.
+            if ends {
+                self.end_children(note);
             }
-            self.children_scratch = children;
         }
     }
 

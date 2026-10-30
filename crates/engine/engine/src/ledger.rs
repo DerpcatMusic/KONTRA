@@ -373,6 +373,19 @@ impl Ledger {
         }
     }
 
+    /// The first child of `parent` from slot `from` on, not yet released:
+    /// walked a slot at a time, so the walk may release and insert notes.
+    pub(crate) fn next_child(&self, parent: NoteRef, from: usize) -> Option<NoteRef> {
+        let mut entries = self.entries.get(from..)?.iter().enumerate();
+        entries.find_map(|(offset, e)| {
+            let n = e.note.as_ref()?;
+            (n.origin == Origin::Child(parent) && !n.released).then_some(NoteRef {
+                index: (from + offset) as u32,
+                generation: e.generation,
+            })
+        })
+    }
+
     /// Every live note with its reference.
     pub(crate) fn live(&self) -> impl Iterator<Item = (NoteRef, &Note)> {
         self.entries.iter().enumerate().filter_map(|(index, e)| {
