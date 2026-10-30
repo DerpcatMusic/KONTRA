@@ -2148,7 +2148,9 @@ dependencies = [
  "kontra-effects",
  "kontra-events",
  "kontra-ir",
+ "kontra-ledger",
  "kontra-plan",
+ "kontra-racks",
  "kontra-script-ui",
  "kontra-stream",
  "kontra-time",
@@ -2279,6 +2281,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-ledger"
+version = "0.0.0"
+dependencies = [
+ "kontra-behaviour",
+ "kontra-events",
+ "kontra-ir",
+ "kontra-plan",
+ "kontra-time",
+ "kontra-vm",
+ "kontra-voice",
+]
+
+[[package]]
 name = "kontra-library"
 version = "0.0.0"
 dependencies = [
@@ -2380,6 +2395,19 @@ name = "kontra-protocol"
 version = "0.0.0"
 dependencies = [
  "crossbeam-queue",
+]
+
+[[package]]
+name = "kontra-racks"
+version = "0.0.0"
+dependencies = [
+ "kontra-behaviour",
+ "kontra-dsp",
+ "kontra-effects",
+ "kontra-ir",
+ "kontra-ledger",
+ "kontra-plan",
+ "kontra-time",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@ mod engine_pars;
 pub mod files;
 pub mod modulation;
 pub mod par_laws;
+pub mod par_values;
 mod route;
 pub mod route_depth;
 mod script;
