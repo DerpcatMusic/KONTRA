@@ -7,7 +7,7 @@
 use kontra_ui_model::{ImageMeta, Orientation};
 use mui::prelude::Image;
 use sha2::{Digest, Sha256};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -27,6 +27,11 @@ const KEYS: [(&str, usize, u32, u32, u32); 8] = [
 ];
 
 static ART: OnceLock<Option<super::cache::Art>> = OnceLock::new();
+
+/// The installed outline face, read by the picture worker.
+pub(super) fn outline() -> Option<Vec<u8>> {
+    ART.get_or_init(load).as_ref()?.outline.clone()
+}
 
 /// Start discovery, hashing and decoding before the editor's first frame.
 pub fn prewarm() {
@@ -138,6 +143,16 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         let keep = carry.len().saturating_sub(overlap);
         carry.drain(..keep);
     }
+    // Kontakt 8.13.1 embeds this outline face in its executable. Validate the
+    // complete font before accepting it; other versions keep the fallback.
+    let outline = (|| {
+        file.seek(SeekFrom::Start(0x7164750)).ok()?;
+        let mut bytes = vec![0; 4_000_340];
+        file.read_exact(&mut bytes).ok()?;
+        (format!("{:x}", Sha256::digest(&bytes))
+            == "12e16fc01063aeb2963c53b63d11f8d102f2ea743852554172ae98dec06f6ad5")
+            .then_some(bytes)
+    })();
     let after = path.metadata().ok()?;
     if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
         return None;
@@ -159,6 +174,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         button: button.and_then(decode),
         font12: font12.and_then(decode),
         field: field.and_then(decode),
+        outline,
     };
     super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
     Some(images)
