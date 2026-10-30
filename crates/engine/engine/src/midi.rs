@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{Engine, Kind, Running};
+use crate::{Engine, Kind, Running, SustainPedal};
 
 impl Engine {
     /// MIDI 1.0 channel messages: controllers feed behaviour (ranges, live
@@ -59,7 +59,7 @@ impl Engine {
         self.output_controller(controller, value);
         let mut hits = std::mem::take(&mut self.hits);
         if controller == 64 {
-            let down = value >= 64;
+            let down = value >= 64 && self.plan.sustain_pedal == SustainPedal::Holds;
             if let Some(p) = self.pedal.get_mut(usize::from(channel)) {
                 *p = down;
             }
