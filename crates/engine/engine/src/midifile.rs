@@ -8,6 +8,14 @@
 //! Only channel voice messages are kept. Meta and sysex events advance the
 //! clock but are not addressable, which matches how a script walks a file:
 //! it asks for the command, byte one and byte two.
+//!
+//! Export areas (`mf_set_export_area`, `mf_copy_export_area`,
+//! `mf_set_num_export_areas`) are deliberately not modelled. They name
+//! ranges for MIDI drag-and-drop export, which only `$CONTROL_PAR_DND_BEHAVIOUR`
+//! labels with `$CONTROL_PAR_MIDI_EXPORT_AREA_IDX` and `save_midi_file` read
+//! (KSP manual, MIDI Object Commands); KONTRA has neither, so the engine
+//! leaves those calls reported as unanswered rather than storing areas
+//! nothing would read.
 
 /// The `mf_get_event_par`/`mf_set_event_par` parameters. These must match
 /// `$EVENT_PAR_*` in `crates/script/ksp/data/constants.tsv`; the host test

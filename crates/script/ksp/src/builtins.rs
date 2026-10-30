@@ -315,6 +315,12 @@ builtins! {
         GetFolder "get_folder" [I] 0 Text;
         FsGetFilename "fs_get_filename" [I I] 0 Text;
         FsNavigate "fs_navigate" [I I] 0 Void;
+        // NKS2 navigation. The KSP manual has no entry for these three: its
+        // Kontakt 7.6 changelog only says "Support for NKS2 parameters and
+        // navigation definition through new commands and control parameters:
+        // see NKS2 SDK documentation", which this repo does not hold. The
+        // engine has no NKS2 navigation model either, so it leaves them
+        // unanswered rather than guessing at a layout nothing could read.
         SetNksNavName "set_nks_nav_name" [I I S] 0 Void;
         SetNksNavPar "set_nks_nav_par" [I I I] 0 Void;
         ResetNksNav "reset_nks_nav" [] 0 Void;
