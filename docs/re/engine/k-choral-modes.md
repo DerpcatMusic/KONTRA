@@ -192,6 +192,16 @@ Which bank field or constructor table those come from is not identified yet.
 **Feedback enters as a per-voice input gain**, `(0.999 · feedback^0.25)^(base_i/base_0)`
 (`0x14193ae70`): at feedback 0.5 and mode 1 that is 0.840056 ×4, 0.723484 ×2, 0.485757.
 
+**The stereo rotation comes from `width`, not from the bank's `pan`.** `0x14193a4a0` writes a 2×2
+rotation per voice at `core+0x8a0`, `[c s; −s c]` for even voices and its transpose for odd ones, at
+`θ = width · (π/4) · (1, 1, 5/7, 5/7, 3/7, 3/7, 0)` (the `1 − i/7` factors and the ±π/4 constants
+`0x147697a78`/`0x147697aa0`/`0x147697ac8`). Measured at width 0.4: 18° for voices 0/1, 12.857° for
+2/3, 7.71° for 4/5, identity for voice 6; at width 1: 45°, 32.14°, 19.29°.
+
+**`voices` scales the output gains** at `core+0x748` (`0x14193a3e0`): `[1, 1, g, g, h, h, 0]` with
+`g = sqrt(min(2·voices, 1))` and `h = sqrt(max(2·voices − 1, 0))` — 1 and 0.63246 at voices 0.7,
+1/0 at 0.5, 0/0 at 0.
+
 **The process, per frame** (`0x14193be50`): for each voice — LFO read and glide (`0x14193bd90`), the
 one-pole smoother, the fractional delay in samples, a **Catmull-Rom** read of the voice's ring (four
 taps at `floor`, `floor±1`, `floor+2`, weights `p0 + ½f(p1−p−1) + f²(p−1−2.5p0+2p1−½p2) +
