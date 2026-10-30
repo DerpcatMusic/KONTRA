@@ -19,6 +19,15 @@
 //! bell-shaped mapper per variant over the macro's range.
 
 use kontra_ir as ir;
+use kontra_law::Law;
+
+// UVI VoiceParam key and lower KeyFollow branches, 0x14138ab10.
+const KEY_SOURCE: Law = Law::Linear { lo: 0.0, hi: 1.0 };
+const LOWER_KEY_FOLLOW: Law = Law::Power {
+    lo: -1.0,
+    hi: 0.0,
+    exponent: 2.0,
+};
 use roxmltree::Node;
 
 use super::{flag, index_of, modulation, num, source_node};
@@ -216,10 +225,10 @@ pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> 
     }
     let source = connection.attribute("Source")?;
     let key: fn(f32) -> f32 = match source {
-        "@VoiceParam Key" => |x| x / 127.0,
+        "@VoiceParam Key" => |x| KEY_SOURCE.eval(x / 127.0),
         "@VoiceParam KeyFollow" => |x| {
             let k = if x < 60.0 {
-                (x / 60.0).powi(2) - 1.0
+                LOWER_KEY_FOLLOW.eval(x / 60.0)
             } else {
                 ((x.min(120.0) - 60.0) / 60.0).sqrt()
             };
@@ -487,4 +496,24 @@ pub(super) fn children<'a, 'input>(
         .filter(|c| c.has_tag_name("Connections"))
         .flat_map(|c| c.children())
         .filter(|c| c.has_tag_name("SignalConnection") && !flag(*c, "Bypass"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KEY_SOURCE, LOWER_KEY_FOLLOW};
+
+    #[test]
+    fn key_laws_preserve_all_midi_values() {
+        for key in 0..=127 {
+            let x = key as f32;
+            assert_eq!(KEY_SOURCE.eval(x / 127.0), x / 127.0, "key {key}");
+            if key < 60 {
+                assert_eq!(
+                    LOWER_KEY_FOLLOW.eval(x / 60.0),
+                    (x / 60.0).powi(2) - 1.0,
+                    "key {key}"
+                );
+            }
+        }
+    }
 }
