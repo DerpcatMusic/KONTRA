@@ -72,7 +72,7 @@ impl Engine {
             {
                 // HeldTime is fixed at the voice's start: see `release_counter`.
                 let intensity = intensity * self.scale(zone, source, note, age);
-                let input = self.unit(zone, source, note, age);
+                let input = self.unit(zone, source, note, age, m.invert);
                 let g = input.map_or(1.0, |x| curve.gain(intensity, x));
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, input, g, crate::RouteUnit::GainMultiplier);
@@ -89,7 +89,7 @@ impl Engine {
                 .filter(|m| !m.bypass)
                 .filter_map(|m| match m.kind {
                     ir::ModKind::Pan { source, amount } => {
-                        let input = self.routed(zone, source, note, age)?;
+                        let input = self.routed(zone, source, note, age, m.invert)?;
                         let value = input * amount;
                         #[cfg(feature = "trace")]
                         self.trace_route(zone, m, Some(input), value, crate::RouteUnit::Pan);
@@ -140,7 +140,7 @@ impl Engine {
                     .and_then(|r| r.get_mut(usize::from(side)))
             {
                 let input = self.source(zone, source, note, age);
-                let value = input.unwrap_or(1.0);
+                let value = input.map_or(1.0, |x| self.inverted(m.invert, source, x));
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, input, value, crate::RouteUnit::MixMultiplier);
                 *cell *= value;
@@ -214,7 +214,8 @@ impl Engine {
                             depth,
                         } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
                             let input = self.source(zone, source, note, Age::START);
-                            let value = input.unwrap_or(0.0) * depth;
+                            let x = input.map(|x| self.inverted(m.invert, source, x));
+                            let value = x.unwrap_or(0.0) * depth;
                             #[cfg(feature = "trace")]
                             self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
                             lfo.phase += value;
@@ -227,7 +228,8 @@ impl Engine {
                             range_hz: [lo, hi],
                         } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
                             let input = self.source(zone, source, note, Age::START);
-                            let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
+                            let x = input.map(|x| self.inverted(m.invert, source, x));
+                            let f = (x.unwrap_or(0.0) * depth * octaves).exp2();
                             #[cfg(feature = "trace")]
                             self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
                             lfo.rate = match lfo.rate {
@@ -303,13 +305,30 @@ impl Engine {
         source: ir::Source,
         note: &Note,
         age: Age,
+        invert: bool,
     ) -> Option<f32> {
-        Some(self.source(zone, source, note, age)? * self.scale(zone, source, note, age))
+        let x = self.source(zone, source, note, age)?;
+        let x = self.inverted(invert, source, x);
+        Some(x * self.scale(zone, source, note, age))
+    }
+
+    /// A route's source read as its `invert` flag sets it
+    /// (`$MOD_TARGET_INVERT_SOURCE`): see [`inverted`].
+    pub(crate) fn inverted(&self, invert: bool, source: ir::Source, raw: f32) -> f32 {
+        inverted(invert, source, raw)
     }
 
     /// `s` on 0..=1: a bipolar source read as `(x + 1)/2`.
-    pub(crate) fn unit(&self, zone: &Zone, s: ir::Source, note: &Note, age: Age) -> Option<f32> {
+    pub(crate) fn unit(
+        &self,
+        zone: &Zone,
+        s: ir::Source,
+        note: &Note,
+        age: Age,
+        invert: bool,
+    ) -> Option<f32> {
         let x = self.source(zone, s, note, age)?;
+        let x = self.inverted(invert, s, x);
         Some(match s {
             ir::Source::Lfo(_) | ir::Source::PitchBend => (x + 1.0) * 0.5,
             _ => x,
@@ -331,7 +350,7 @@ impl Engine {
                         of: o,
                         depth,
                     } if o == of => {
-                        let input = self.unit(zone, source, note, age)?;
+                        let input = self.unit(zone, source, note, age, m.invert)?;
                         let value = 1.0 - (1.0 - input) * depth;
                         #[cfg(feature = "trace")]
                         self.trace_route(
@@ -362,7 +381,7 @@ impl Engine {
                 tau_ms,
             } = m.kind
             {
-                let input = self.routed(zone, source, note, age);
+                let input = self.routed(zone, source, note, age, m.invert);
                 let st = input.unwrap_or(0.0) * semitones * depth;
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, input, st, crate::RouteUnit::Semitones);
@@ -400,7 +419,7 @@ impl Engine {
                 && let Some(x) = self.source(zone, source, note, Age::START)
                 && let Some(s) = shift.get_mut(usize::from(length))
             {
-                let value = x * depth;
+                let value = self.inverted(m.invert, source, x) * depth;
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, Some(x), value, crate::RouteUnit::LoopFraction);
                 *s += value;
@@ -425,7 +444,7 @@ impl Engine {
                         ir::Source::HeldTime { span_ms } => kontra_plan::held_time(span_ms, held),
                         source => self.source(zone, source, note, Age::START)?,
                     };
-                    let value = x * depth;
+                    let value = self.inverted(m.invert, source, x) * depth;
                     #[cfg(feature = "trace")]
                     self.trace_route(
                         zone,
@@ -468,10 +487,12 @@ impl Engine {
                 _ => continue,
             };
             let x = match source {
-                ir::Source::HeldTime { span_ms } => Some(kontra_plan::held_time(span_ms, held)),
+                ir::Source::HeldTime { span_ms } => {
+                    Some(self.inverted(m.invert, source, kontra_plan::held_time(span_ms, held)))
+                }
                 // Outside the signed families the law compiler (FUN_140873040)
                 // reads a bipolar source without `frange_bi`: 0..=1.
-                source => self.unit(zone, source, note, Age::START),
+                source => self.unit(zone, source, note, Age::START, m.invert),
             };
             let Some(x) = x else {
                 continue;
@@ -511,7 +532,11 @@ impl Engine {
                         intensity,
                         curve,
                         ..
-                    } => curve.gain(intensity, kontra_plan::held_time(ms, held)),
+                    } => {
+                        let raw = kontra_plan::held_time(ms, held);
+                        let x = self.inverted(m.invert, ir::Source::HeldTime { span_ms: ms }, raw);
+                        curve.gain(intensity, x)
+                    }
                     _ => 1.0,
                 })
                 .product()
@@ -553,6 +578,21 @@ impl Engine {
                     | ir::ModKind::Intensity { source, .. } if g.reads(source, cc))
             })
         })
+    }
+}
+
+/// A route's source read as its `invert` flag sets it
+/// (`$MOD_TARGET_INVERT_SOURCE`): mirrored around the middle of its domain.
+/// A bipolar source ([`ir::Source::Lfo`], [`ir::Source::PitchBend`]) is negated
+/// raw, which is `1 − unit` since [`Engine::unit`] reads it as `(x + 1)/2`;
+/// every other source is already 0..=1 and reads `1 − x`.
+pub(crate) fn inverted(invert: bool, source: ir::Source, raw: f32) -> f32 {
+    if !invert {
+        return raw;
+    }
+    match source {
+        ir::Source::Lfo(_) | ir::Source::PitchBend => -raw,
+        _ => 1.0 - raw,
     }
 }
 

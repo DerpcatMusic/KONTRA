@@ -386,6 +386,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 slot: 0,
                 target: 0,
                 bypass: false,
+                invert: false,
                 kind,
             });
             key
@@ -472,6 +473,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     slot: 0,
                     target: 0,
                     bypass: false,
+                    invert: false,
                     kind: ir::ModKind::Mix {
                         source,
                         zone: member,
