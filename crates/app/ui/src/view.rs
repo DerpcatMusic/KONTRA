@@ -195,7 +195,22 @@ fn drawn_page(
                 .assets
                 .get(a.0)
                 .and_then(|asset| pictures.outline_font(a, &asset.path)),
+            Some(&model::Font::Stock(23))
+                if matches!(tree.source, model::Source::Ksp { .. })
+                    && matches!(wd.kind, Kind::Label)
+                    && style.is_some_and(|s| s.align == model::Align::Center)
+                    && words.contains("  ")
+                    && !words.contains('\n') =>
+            {
+                pictures.outline_font(model::AssetRef(usize::MAX - 10), "@stock/raldo")
+            }
             _ => None,
+        };
+        let words = if outline.is_some() && style.is_some_and(|s| s.font == model::Font::Stock(23))
+        {
+            words.replace("  ", "   ")
+        } else {
+            words
         };
         let lit = match wd.kind {
             Kind::LevelMeter {
@@ -420,7 +435,13 @@ fn words_el(
     scale: f64,
     font: Option<&Font>,
 ) -> El {
-    let geometry = plan::text(words, style, w, height, scale);
+    let native_style = style.cloned().map(|mut style| {
+        if font.is_some() && style.font == model::Font::Stock(23) {
+            style.size = Some(12.);
+        }
+        style
+    });
+    let geometry = plan::text(words, native_style.as_ref(), w, height, scale);
     let size = geometry.size;
     let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
     let align = geometry.align;
