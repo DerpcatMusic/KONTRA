@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use kontra_engine::{Engine, Prepared, SampleTime, Timed};
 use kontra_stream::{Store, StoreConfig};
 use serde_json::{Value, json};
@@ -106,6 +106,11 @@ fn run_events(
     while at < stop {
         let frames = usize::try_from((stop - at).min(BLOCK as u64))?;
         let until = at + frames as u64;
+        // `frames` is capped at the block's own length, so this cannot fail;
+        // saying so is cheaper than panicking if the cap ever moves.
+        let Some(block) = audio.get_mut(..frames) else {
+            bail!("a {frames}-frame block does not fit the {BLOCK}-frame buffer");
+        };
         let mut timed = Vec::new();
         let mut cc_in_block = false;
         while let Some(e) = events.get(next).filter(|e| e.frame < until) {
@@ -121,7 +126,7 @@ fn run_events(
         }
         let before = engine.stats().missing_frames;
         let stream_before = stream.stats();
-        engine.process(&mut audio[..frames], &timed);
+        engine.process(block, &timed);
         stage_events.extend(
             engine
                 .trace_events()
@@ -146,8 +151,8 @@ fn run_events(
         for request in requests {
             engine.install(Prepared::new(request, Some(&plan), RATE));
         }
-        rendered.extend_from_slice(&audio[..frames]);
-        for frame in &audio[..frames] {
+        rendered.extend_from_slice(block);
+        for frame in block.iter() {
             for (sample, previous) in frame.iter().zip(&mut prior) {
                 peak = peak.max(sample.abs());
                 jump = jump.max((sample - *previous).abs());
