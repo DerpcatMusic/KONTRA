@@ -168,6 +168,8 @@ pub struct Callbacks {
     pub note: Option<u32>,
     pub release: Option<u32>,
     pub controller: Option<u32>,
+    /// `on poly_at`, run for each polyphonic aftertouch message.
+    pub poly_at: Option<u32>,
     pub persistence_changed: Option<u32>,
     pub listener: Option<u32>,
     pub pgs_changed: Option<u32>,

@@ -8,6 +8,7 @@ pub enum Kind {
     Note,
     Release,
     Controller,
+    PolyAt,
     Listener,
     Pgs,
     UiControl,
@@ -61,6 +62,8 @@ impl Running {
             Kind::Note => 1,
             Kind::Release => 2,
             Kind::Controller => 3,
+            // ponytail: unmeasured, the gap in the measured numbering.
+            Kind::PolyAt => 4,
             Kind::Listener => 12,
             Kind::Pgs => 8,
             Kind::UiControl => 6,
