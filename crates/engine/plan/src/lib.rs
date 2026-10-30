@@ -6,12 +6,13 @@ mod engine_pars;
 pub mod modulation;
 pub mod par_laws;
 mod route;
+pub mod route_depth;
 mod script;
 mod slots;
 
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
-pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
+pub use script::{Callbacks, CcLink, Controls, LookPars, Recall, Saved, ScriptPlan};
 
 use std::ops::RangeInclusive;
 

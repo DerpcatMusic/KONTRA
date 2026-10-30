@@ -749,6 +749,10 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
+            Action::SetSnapshotType => {
+                self.recall = kontra_plan::Recall::of_type(i64::from(int(0)));
+                HostValue::Nothing
+            }
             Action::EventStatus => {
                 let live = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 HostValue::Int(i32::from(live.is_some()))

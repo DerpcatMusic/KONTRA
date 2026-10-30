@@ -86,6 +86,7 @@ pub(crate) fn instrument(
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => out.scripts.push(ir::Script {
                 name: script.description.unwrap_or_default(),
+                slot,
                 dialect: ir::Dialect::Ksp,
                 data: data_files(&text, path, &mut resources),
                 source: text,

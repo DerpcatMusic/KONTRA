@@ -761,6 +761,9 @@ impl Bell {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Script {
     pub name: String,
+    /// Its place among the instrument's script slots, empty slots counted:
+    /// presets save their values by this place.
+    pub slot: usize,
     pub dialect: Dialect,
     pub source: String,
     /// Saved persistent values in the dialect's own form (Lua: `widget=value`).

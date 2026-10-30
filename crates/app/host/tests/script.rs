@@ -2869,6 +2869,7 @@ fn get_folder_patch_returns_prepared_directory() {
         library_path: Some("/library".into()),
         scripts: vec![ir::Script {
             name: "test".into(),
+            slot: 0,
             dialect: ir::Dialect::Ksp,
             source: source.into(),
             saved: vec![],

@@ -101,6 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(source) = std::fs::read_to_string(std::path::Path::new(&dir).join("append.ksp")) {
             ir.scripts.push(kontra_engine::ir::Script {
                 name: "append".into(),
+                slot: ir.scripts.len(),
                 dialect: kontra_engine::ir::Dialect::Ksp,
                 source,
                 saved: Vec::new(),
