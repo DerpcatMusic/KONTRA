@@ -137,3 +137,71 @@ Not measured, and therefore not implemented:
 - The LFO's shape and its per-voice phase.
 - The six loop-filter constants after the pans, and whether the 0.99 seven in mode 3 are the one-pole
   coefficients they look like.
+
+## Kernel read (2026-10-30): the LFO, its phase, and the depth
+
+Read from `0x14193be50` (process), `0x14193c7c0` (the modulation-matrix update, which is inert here:
+`core+0x3d5` is 0, so it returns before writing anything), `0x14193bd90` (the per-voice LFO read),
+`0x14193dc00`, `0x14193dd30`, `0x14193ddb0` (its setup) and the amount setter `0x14193a2f0`, then
+confirmed by tracing the emulator (`Emu` hooks at `0x14193c431`, `0x14193c4b9`).
+
+**The LFO is a triangle.** At rate 0.5, amount 0.6, mode 1, 48 kHz, the value handed to the voice
+is `4·n·(hz/fs) − 1` to the last bit (`hz/fs` = 2.4479e-5) up to the peak at frame 20429, then the
+mirror: `x = 4φ − 1` on the rising half, `x = 3 − 4φ` on the falling half.
+
+**Rate law: `hz = 0.25 + 7.4 · rate³`** (Hz). `voice+(-0x220)` after prepare, 48 kHz:
+
+| rate | 0 | 0.05 | 0.1 | 0.25 | 0.5 | 0.75 | 1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Hz | 0.25 | 0.250925 | 0.2574 | 0.365625 | 1.175 | 3.371875 | 7.65 |
+
+**Per-voice phase = the mode table's `pan` field.** `voice+(-0x158)` holds the offset the read adds
+to the phase, and it is exactly the effective bank's pan for that voice: mode 1 `0, .5, .33333,
+.83333, .66666, .16666, 0`; mode 0 `0, .5, 0, .5, 0, .5, 0`; mode 3 `0, 0, 0, .25, 0, .25, 0`. So the
+`pan` column is the LFO's phase offset, not a stereo position.
+
+**Depth law (supersedes the 0.15·a² fit below).** The amount setter stores
+`m = 0.99·amount² + 0.01` at `voice+(-0x218)` and `1/(2^(0.025m) − 0.9999)` at `voice+0x58`;
+`0x14193dc00` then stores
+
+```
+depth_samples = (fs / hz) · ½ · (2^(0.025·m) − 1)        at voice+(-0x210)
+```
+
+and the process adds `depth · s` to the base delay, where `s` is the smoothed LFO. Measured
+(`voice+(-0x210)`, 48 kHz): 3.5398 / 25.4558 / 91.3451 / 201.6327 / 357.0320 samples at amount
+0 / .25 / .5 / .75 / 1 (rate 0.5), and 611.4650 at amount .6, rate 0 (0.25 Hz). The impulse-train
+table above under-samples a 1.175 Hz triangle, which is why it read only 205 frames at amount 1
+where the depth field is 357 samples.
+
+**The six loop-filter constants are per-voice coefficients.** `voice+(-0x1d8)` is the mode table's
+filter value for that voice (mode 1: 4.1, 4.1, 4.0, 4.0, 4.12, 4.1241; 1.0 for voice 6, which the
+table does not give one) and `voice+(-0x1d0)` is `1/`it. Two more per-voice smoother coefficients
+sit at `voice+(-0x1f8)` and `voice+(-0x200)`, and a tap weight at `voice+(-0x1e0)` (which is what the
+`cmpb -0x1a0(%rsi)` branch in the process tests):
+
+| mode | `-0x1f8` | `-0x200` | `-0x1e0` |
+| --- | --- | --- | --- |
+| 0 | .2 .21 .21 .2 .4 .4 0 | .4 ×7 | 0 0 0 0 .01 .01 0 |
+| 1 | .01 .01 .01 .013 .014 .012 0 | .3 .32 .32 .3 .33 .3 .4 | 1 ×6, 0 |
+| 2 | .1 .1 .101 .101 .4 .4 0 | .2 .22 .22 .2 .2 .2 .99 | 0 ×7 |
+| 3 | 0 .2 0 0 0 0 0 | .99 ×7 | 0 0 .3 .3 .6 .6 0 |
+
+Which bank field or constructor table those come from is not identified yet.
+
+**Feedback enters as a per-voice input gain**, `(0.999 · feedback^0.25)^(base_i/base_0)`
+(`0x14193ae70`): at feedback 0.5 and mode 1 that is 0.840056 ×4, 0.723484 ×2, 0.485757.
+
+**The process, per frame** (`0x14193be50`): for each voice — LFO read and glide (`0x14193bd90`), the
+one-pole smoother, the fractional delay in samples, a **Catmull-Rom** read of the voice's ring (four
+taps at `floor`, `floor±1`, `floor+2`, weights `p0 + ½f(p1−p−1) + f²(p−1−2.5p0+2p1−½p2) +
+f³(1.5p0−1.5p1+½p2−½p−1)` with the ring running backwards in time) — then a seven-tap cyclic mix
+(`0x141939270`) over `core+0x830` with the coefficients at `core+0x7c0` and the per-voice gains at
+`core+0x748`/`core+0x780`, a global two-section tone filter (`core+0x1c20`..`0x1cd0`) and the
+dry/wet mix at `core+0x1b88`/`core+0x1b90`. The ring is written at `widx` and `widx + size`
+(double-buffered); the read pointer is `widx + 1`.
+
+Not yet read, and the reason `Chorus::process` is still unimplemented: the per-voice smoothing and
+filter networks behind `-0x1f8`/`-0x200`/`-0x1e0`, the pan rotation matrices at `core+0x8a0`, how the
+seven-tap mix at `core+0x7c0` is applied per frame, and the global tone filter's design.
+
