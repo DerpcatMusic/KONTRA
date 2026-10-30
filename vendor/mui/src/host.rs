@@ -434,6 +434,26 @@ impl Driver {
         }
     }
 
+    /// Move the edges already queued into `ratio` times their scene space:
+    /// each was captured in the space the zoom in force laid out when it
+    /// arrived, and the frame that runs them lays out the new one. A press
+    /// queued just before a fit-to-window resize would otherwise test its
+    /// old position against the new rects -- the same miss [`Driver::repose`]
+    /// fixes for the pointer, one frame of it later.
+    fn reproject(&mut self, ratio: f64) {
+        for pending in &mut self.pending {
+            let pointer = match pending {
+                Pending::Input(input) | Pending::Move(input) | Pending::Drag(input) => {
+                    &mut input.pointer
+                }
+                Pending::Cancel(pointer) => pointer,
+            };
+            if let Some(pos) = pointer.pos {
+                pointer.pos = Some(Point::new(pos.x * ratio, pos.y * ratio));
+            }
+        }
+    }
+
     /// A button went down or up.
     pub fn button(&mut self, button: Button, down: bool, mods: Mods) {
         self.input_enqueued();
@@ -608,8 +628,12 @@ impl Driver {
         }
         let zoom = s.view.zoom(logical_size(self.size, self.scale));
         if zoom.is_finite() && zoom > 0.0 && zoom != self.zoom {
+            let previous = self.zoom;
             self.zoom = zoom;
             self.repose();
+            // Edges already queued were recorded in the space `previous`
+            // laid out; this frame runs them against the new one.
+            self.reproject(previous / zoom);
             self.dirty = true;
         }
         let due = self.wake_at.is_some_and(|at| now >= at);

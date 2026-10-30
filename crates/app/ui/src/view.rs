@@ -128,8 +128,14 @@ fn drawn_page(
                 layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
                 continue;
             };
+            // The band is cut in the picture's own rows, and a page point is
+            // a picture pixel at one: the rows it shows are the page's
+            // source height, not its scaled one. `h` is in view points, so
+            // using it here would read `scale` times the rows the zoom
+            // shows -- half the wallpaper at a fit below one, and twice the
+            // decode above it (the extra rows are clipped away).
             let top = (-y).max(0.);
-            let height = h.min(tall - top).max(0.);
+            let height = p.size.height.min(tall - top).max(0.);
             if top >= tall || height <= 0. {
                 continue;
             }
