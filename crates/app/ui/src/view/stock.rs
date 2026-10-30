@@ -172,8 +172,19 @@ impl Look {
                             ..Default::default()
                         };
                         parts.push(super::sliced(button, &meta, (w, h), scale));
-                    } else {
+                    } else if *on {
                         parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                    } else {
+                        parts.push(
+                            boxed(
+                                (w - 2. * scale).max(0.),
+                                (h - 2. * scale).max(0.),
+                                scale,
+                                fill,
+                                0x2d_2d2d,
+                            )
+                            .at(0., scale),
+                        );
                     }
                 }
                 // The default font darkens on a lit button; a chosen one keeps its ink.
@@ -263,7 +274,16 @@ impl Look {
             Self::Menu { caption } => {
                 let mut parts = Vec::new();
                 if bg {
-                    parts.push(boxed(w, h, scale, rgb(0x5f_5f5f).into(), 0x2d_2d2d));
+                    parts.push(
+                        boxed(
+                            (w - 2. * scale).max(0.),
+                            (h - 2. * scale).max(0.),
+                            scale,
+                            rgb(0x5f_5f5f).into(),
+                            0x2d_2d2d,
+                        )
+                        .at(0., scale),
+                    );
                 }
                 let ink = ink(0xfe_fefe);
                 parts.push(words(caption, ink, model::Align::Left, w, h, scale));
@@ -283,10 +303,29 @@ impl Look {
     }
 }
 
+pub(super) fn label(
+    text: &str,
+    style: &TextStyle,
+    text_y: Option<i32>,
+    size: (f64, f64, f64, f64),
+    glyphs: &crate::pictures::Glyphs,
+) -> El {
+    field_words(
+        text,
+        super::color(style.color),
+        style.align,
+        size,
+        Some(glyphs),
+        style.color,
+        StockMetrics::Label12(text_y),
+    )
+}
+
 #[derive(Clone, Copy)]
 enum StockMetrics {
     Field,
     Button12,
+    Label12(Option<i32>),
 }
 
 fn field_words(
@@ -311,7 +350,7 @@ fn field_words(
         (if c == ' ' {
             match metrics {
                 StockMetrics::Field => f64::from(glyph.width),
-                StockMetrics::Button12 => 4.,
+                StockMetrics::Button12 | StockMetrics::Label12(_) => 4.,
             }
         } else {
             f64::from(glyph.width)
@@ -328,7 +367,14 @@ fn field_words(
     let mut x = match align {
         model::Align::Left => 7. * s,
         model::Align::Center => (w - width) / 2.,
-        model::Align::Right => w - 11. * s - width,
+        model::Align::Right => {
+            let inset = if matches!(metrics, StockMetrics::Label12(_)) {
+                7.
+            } else {
+                11.
+            };
+            w - inset * s - width
+        }
     };
     let mut layers = Vec::new();
     for c in text.chars() {
@@ -349,7 +395,7 @@ fn field_words(
                             StockMetrics::Field => {
                                 (u16::from(p[3]) * 255 / FIELD_ATLAS_COVERAGE).min(255) as u8
                             }
-                            StockMetrics::Button12 => p[3],
+                            StockMetrics::Button12 | StockMetrics::Label12(_) => p[3],
                         }) * u16::from(color.a))
                             / 255) as u8,
                     ]
@@ -360,11 +406,11 @@ fn field_words(
             {
                 layers.push(super::image(&Arc::new(image), width, height).at(
                     x,
-                    (h - height) / 2.
-                        - match metrics {
-                            StockMetrics::Field => s,
-                            StockMetrics::Button12 => 0.,
-                        },
+                    match metrics {
+                        StockMetrics::Field => (h - height) / 2. - s,
+                        StockMetrics::Button12 | StockMetrics::Label12(None) => (h - height) / 2.,
+                        StockMetrics::Label12(Some(y)) => f64::from(y) * s,
+                    },
                 ));
             }
             x += advance(c, glyph);
