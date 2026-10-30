@@ -905,6 +905,89 @@ fn baseview_events_reach_the_driver_in_its_terms() {
     assert_eq!(h.on_event_inner(&up), EventStatus::Captured);
 }
 
+/// A control drawn where the pointer is after a scale change, and nowhere
+/// near where the pointer was before it.
+struct Target {
+    /// The scene position of each press the control took.
+    presses: Vec<Point>,
+}
+
+impl View for Target {
+    fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
+        if ui.get("target").pressed {
+            self.presses.extend(ui.pointer().pos);
+        }
+        mui::prelude::stack([mui::prelude::block(20., 20.).at(90., 65.).id("target")])
+            .w(400.)
+            .h(300.)
+    }
+    fn changed(&mut self) -> bool {
+        false
+    }
+    fn request_resize(&mut self, _: u32, _: u32) -> bool {
+        false
+    }
+}
+
+/// A window's scale is not fixed: the host reports it when the editor opens
+/// and a compositor or a host can change it while the pointer rests. Scene
+/// rects are physical pixels over that scale, so the same window point is a
+/// different scene point after the change -- and a press carries no position
+/// of its own, only the last move's. A press that arrives with no move in
+/// between must still land on the control the pointer is over, or every
+/// click after a scale change misses by the ratio (nothing near the origin,
+/// further from it the further out the control is).
+#[test]
+fn a_press_after_a_scale_change_lands_where_the_pointer_is() {
+    let shared = Arc::new(Mutex::new(Shared {
+        ui: Ui::default(),
+        view: Target {
+            presses: Vec::new(),
+        },
+    }));
+    let mut h = Handler::new(Arc::clone(&shared), Arc::default(), (400, 300), 1.);
+    h.software_only = true;
+    h.step();
+    // The pointer rests at physical (200, 150): scene (200, 150) at scale 1.
+    h.on_event_inner(&Event::Mouse(MouseEvent::CursorMoved {
+        position: PhysicalPosition::new(200., 150.),
+        modifiers: Modifiers::default(),
+    }));
+    h.step();
+    assert_eq!(h.driver.pointer().pos, Some(Point::new(200., 150.)));
+    // The window keeps its points but is now reported at twice the scale, as
+    // a host's `set_scale` does: the scene halves under the resting pointer.
+    h.resized(WindowSize::from_physical(
+        baseview::dpi::PhysicalSize::new(400, 300),
+        2.,
+    ));
+    h.step();
+    assert_eq!(
+        h.driver.pointer().pos,
+        Some(Point::new(100., 75.)),
+        "the pointer must stay over the window point it is on"
+    );
+    // A press with no motion in between, and the frame that reads it.
+    h.on_event_inner(&Event::Mouse(MouseEvent::ButtonPressed {
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+    }));
+    h.step();
+    h.driver.redraw();
+    h.step();
+    let presses = &lock(&shared).view.presses;
+    assert_eq!(
+        presses.first().copied(),
+        Some(Point::new(100., 75.)),
+        "the press landed at the old scene position"
+    );
+    assert_eq!(
+        presses.len(),
+        1,
+        "the press missed the control drawn at (90, 65)"
+    );
+}
+
 #[test]
 fn a_redraw_request_from_the_host_thread_is_a_frame() {
     let mut h = handler((400, 300), 1.0);

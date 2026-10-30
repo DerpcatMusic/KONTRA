@@ -197,6 +197,35 @@ fn zoom_reads_the_logical_window_size() {
     assert_eq!(r.d.ui_scale(), 4.0, "400 logical wide is a zoom of 2");
 }
 
+/// A view that fits its design to the window re-zooms when the window is
+/// resized, and the scene is a different size at the new zoom. The pointer
+/// did not move, so it is still over the same window point: its scene
+/// position is re-derived, or the next press is tested against rects it is
+/// not over.
+#[test]
+fn a_zoom_change_moves_the_pointer_with_the_scene() {
+    let fit = || Knob {
+        zoom: -1.0,
+        ..Knob::default()
+    };
+    // 400 points wide fits a 200-point design at 2; the pointer rests at
+    // point (100, 60), which is scene (50, 30).
+    let mut r = Rig::new(fit(), (400, 300), 1.0);
+    r.step();
+    r.d.pointer_moved(at(100.0, 60.0), none());
+    assert_eq!(r.d.pointer().pos, Some(at(50.0, 30.0)));
+    // Half the window: the zoom is 1, and the same window point is scene
+    // (100, 60).
+    r.d.resized((200, 300), 1.0);
+    r.step();
+    assert_eq!(r.d.ui_scale(), 1.0);
+    assert_eq!(
+        r.d.pointer().pos,
+        Some(at(100.0, 60.0)),
+        "the pointer must stay over the window point it is on"
+    );
+}
+
 #[test]
 fn keyboard_modifiers_track_their_own_edges() {
     let mut r = Rig::new(Knob::default(), (400, 400), 1.0);
