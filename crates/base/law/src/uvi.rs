@@ -21,6 +21,8 @@ mod tests {
                 let expected = (std::f32::consts::FRAC_PI_2 * x).sin().powf(2.0 / curve);
                 assert_eq!(law.eval(x), expected, "curve {curve}, input {x}");
             }
+            assert_eq!(law.eval(-1.0), 0.0);
+            assert_eq!(law.eval(2.0), 1.0);
         }
     }
 }
