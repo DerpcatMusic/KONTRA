@@ -270,6 +270,7 @@ fn law(curve: &Law) -> Value {
         Law::Power { lo, hi, exponent } => {
             json!({"kind":"power", "lo":lo, "hi":hi, "exponent":exponent})
         }
+        Law::IntegerPower { exponent } => json!({"kind":"integer_power", "exponent":exponent}),
         Law::Sine { power } => json!({"kind":"sine", "power":power}),
         Law::Table(values) => json!({"kind":"table", "values":values.iter().collect::<Vec<_>>() }),
         Law::Breakpoints(points) => {
@@ -342,6 +343,10 @@ mod tests {
 
     #[test]
     fn law_shapes_preserve_parameters_and_points() {
+        assert_eq!(
+            law(&Law::IntegerPower { exponent: 3 }),
+            json!({"kind":"integer_power", "exponent":3})
+        );
         assert_eq!(
             law(&Law::Sine { power: 2.0 }),
             json!({"kind":"sine", "power":2.0})

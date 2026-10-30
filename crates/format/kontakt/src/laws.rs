@@ -2,6 +2,7 @@
 //! names the evidence it rests on; the IR and engine never see the vendor.
 
 use kontra_ir as ir;
+use kontra_law::kontakt::{UNIT_CUBIC, UNIT_FIFTH};
 use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeFlex, Lfo};
 
 /// Kontakt's decay and release: the kernel runs its state from 1.075 down to
@@ -16,7 +17,7 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         attack: seconds(e.attack_ms),
         hold: seconds(e.hold_ms),
         decay: seconds(e.decay_ms),
-        sustain: e.sustain.clamp(0.0, 1.0).powi(3),
+        sustain: UNIT_CUBIC.eval(e.sustain),
         release: seconds(e.release_ms),
         attack_shape: attack_shape(e.attack_curve),
         fall_shape: FALL,
@@ -498,9 +499,9 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
         return;
     }
     let big = if f.stages == 3 {
-        1.0 - (1.0 - 0.9 * r).powi(3)
+        1.0 - UNIT_CUBIC.eval(1.0 - 0.9 * r)
     } else {
-        1.0 - (1.0 - r).powi(3)
+        1.0 - UNIT_CUBIC.eval(1.0 - r)
     };
     f.damping = [2.0 * (1.0 - big); 3];
     if f.stages == 2 {
@@ -510,7 +511,7 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
         *k = k.max(MIN_DAMPING);
     }
     let fall = match (f.stages, f.pass) {
-        (1, _) => 0.5 * big.powi(5),
+        (1, _) => 0.5 * UNIT_FIFTH.eval(big),
         (2, ir::Pass::Band) => 0.9334 * big,
         (2, ir::Pass::Notch) => 0.88 * big,
         (2, _) => 0.77 * big,
@@ -760,6 +761,42 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelope_sustain_preserves_the_saved_cubic_mapping() {
+        for sustain in [-0.1_f32, 0.0, 0.43, 1.0, 1.2] {
+            let saved = EnvelopeAhdsr {
+                attack_curve: 0.0,
+                attack_ms: 0.0,
+                decay_ms: 0.0,
+                hold_ms: 0.0,
+                release_ms: 0.0,
+                sustain,
+                unknown_flag: 0,
+                unknown_tail: Vec::new(),
+            };
+            assert_eq!(envelope(&saved).sustain, sustain.clamp(0.0, 1.0).powi(3));
+        }
+    }
+
+    #[test]
+    fn state_variable_resonance_preserves_the_stage_mappings() {
+        for r in [0.0_f32, 0.2, 0.7, 1.0] {
+            let one = filter(52, 0.5, r, 0.0).unwrap();
+            let one_resonance = 1.0 - (1.0 - r).powi(3);
+            assert_eq!(one.gain, 1.0 - 0.5 * one_resonance.powi(5));
+            let three = filter(59, 0.5, r, 0.0).unwrap();
+            let three_resonance = 1.0 - (1.0 - 0.9 * r).powi(3);
+            assert_eq!(
+                three.damping[0],
+                (2.0 * (1.0 - three_resonance)).max(MIN_DAMPING)
+            );
+            assert_eq!(
+                three.gain,
+                1.0 - (1.2125 - 0.2425 * three_resonance) * three_resonance
+            );
+        }
+    }
 
     #[test]
     fn a_full_eq_gain_route_moves_its_band_24_db() {
