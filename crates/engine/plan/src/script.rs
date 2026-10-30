@@ -104,43 +104,7 @@ impl CcLink {
     }
 }
 
-/// The script's UI controls as the engine sees them: ids, and where values live.
-#[derive(Clone, Debug, Default)]
-pub struct Controls {
-    /// The UI id of variable 0.
-    pub first: i32,
-    /// The parameter id that means a control's value.
-    pub value_par: i32,
-    /// The parameter ids of a menu's entry count and selected entry.
-    pub num_items_par: i32,
-    pub selected_item_par: i32,
-    /// By UI id from `first` (every variable has one), the value cell of
-    /// each control whose value is a number.
-    pub cells: Vec<Option<u32>>,
-    /// By UI id, the steps of each control whose value is an int array (a
-    /// table's): `set_control_par_arr` writes them from its cell on.
-    pub steps: Vec<u32>,
-    /// (value cell, control) for every control with a value cell, sorted by
-    /// cell: a save finds each cell's control in log time instead of
-    /// scanning every control per cell (Areia: seconds on the audio thread).
-    pub by_cell: Vec<(u32, u32)>,
-    /// Where the UI-look builtins store what they set.
-    pub look: LookPars,
-    /// The parameter ids that read whether Shift, Alt and Ctrl were held at
-    /// the control's last click; `i32::MIN` when the script never names one.
-    pub key_pars: [i32; 3],
-}
-
-impl Controls {
-    /// The control whose value lives in `cell`.
-    #[must_use]
-    pub fn of_cell(&self, cell: u32) -> Option<usize> {
-        let at = self.by_cell.binary_search_by_key(&cell, |&(c, _)| c).ok()?;
-        self.by_cell.get(at).map(|&(_, n)| n as usize)
-    }
-}
-
-pub use kontra_script_ui::LookPars;
+pub use kontra_script_ui::{Controls, LookPars};
 
 /// Entry points; a missing callback lets events through unchanged.
 #[derive(Clone, Debug, Default)]
