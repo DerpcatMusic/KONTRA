@@ -17,8 +17,6 @@ use crate::{Engine, Plan, Response};
 /// Requests the engine holds until the host drains them; more answer as
 /// not loaded.
 pub(crate) const REQUESTS: usize = 16;
-/// Slots that may hold a loaded type at once.
-pub(crate) const LOADED: usize = 256;
 
 /// Slot `slot` of `at` to load with type `ty` of the plan's
 /// [`ir::SlotShapes::types`].

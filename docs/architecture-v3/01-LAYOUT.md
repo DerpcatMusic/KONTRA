@@ -33,6 +33,7 @@ crates/
 ├── engine/                       L3–L4: the audio thread
 │   ├── stream/        kontra-stream     sample store, preload law, page cache, I/O service      ~4k
 │   ├── voice/         kontra-voice      source cursor, resampling, loops, voice chain run       ~4k
+│   ├── behaviour/     kontra-behaviour  live switch, controller and round-robin state on a plan ~0.3k
 │   ├── vm/            kontra-vm         bytecode, interpreter, coroutine scheduler, HostApi     ~6k
 │   ├── engine/        kontra-engine     Engine: queue, ledger, allocator, buses, render          ~8k
 │   └── prepare/       kontra-prepare    IR → Plan off the audio thread, sample preloads          ~0.5k
