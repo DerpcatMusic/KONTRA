@@ -125,7 +125,7 @@ impl Pictures {
                                     return Some(Arc::new(image));
                                 }
                                 let image = look(&image).unwrap_or(image);
-                                at(image, job.scale).map(Arc::new)
+                                at_integer(image, job.scale).map(Arc::new)
                             })
                             .clone()
                     })
@@ -425,13 +425,10 @@ fn quarter(scale: f64) -> f32 {
     }
 }
 
-/// `image` at `scale`, using integer enlargement above 1 to keep edges crisp.
+/// `image` at `scale`, unchanged at 1.
 fn at(image: Image, scale: f32) -> Option<Image> {
     if scale == 1. {
         return Some(image);
-    }
-    if scale > 1. {
-        return at_integer(image, scale);
     }
     let size = |n: u32| ((f64::from(n) * f64::from(scale)).round() as u32).max(1);
     resample(&image, size(image.width), size(image.height))
@@ -734,7 +731,7 @@ mod tests {
     #[test]
     fn picture_upscaling_preserves_source_pixels() {
         let source = Image::rgba(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
-        let scaled = source.and_then(|image| at(image, 1.5));
+        let scaled = source.and_then(|image| at_integer(image, 1.5));
         assert_eq!(
             scaled.map(|image| image.rgba.to_vec()),
             Some(vec![
