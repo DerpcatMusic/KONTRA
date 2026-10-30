@@ -242,7 +242,13 @@ pub(super) fn text(
         line,
         top,
         inset: if matches!(widget.kind, model::Kind::Label) {
-            7. * scale
+            // Stock font 14's native label text starts five pixels in.
+            if style.is_some_and(|s| s.font == model::Font::Stock(14)) {
+                5.
+            } else {
+                7.
+            }
+            *scale
         } else {
             2. * scale
         },
