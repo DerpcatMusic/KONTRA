@@ -213,7 +213,25 @@ impl Look {
             Self::Field { title, value } => {
                 let mut parts = Vec::new();
                 if bg {
-                    parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
+                    if let Some(field) = button {
+                        let meta = model::ImageMeta {
+                            size: Some(model::Size {
+                                width: 85.,
+                                height: 16.,
+                            }),
+                            stretch: [true, true],
+                            margins: model::Margins {
+                                left: 4,
+                                right: 4,
+                                top: 3,
+                                bottom: 3,
+                            },
+                            ..Default::default()
+                        };
+                        parts.push(super::sliced(field, &meta, (w, h), scale));
+                    } else {
+                        parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
+                    }
                 }
                 let ink = ink(0xfe_fefe);
                 // The installed font-13 atlas is 699×13; arrow fields reserve
