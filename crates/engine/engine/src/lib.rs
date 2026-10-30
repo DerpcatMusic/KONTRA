@@ -23,6 +23,7 @@ mod inspect;
 mod knobs;
 mod ledger;
 mod midi;
+mod midifile;
 mod modulators;
 mod par_display;
 mod params;
@@ -188,6 +189,10 @@ pub struct Engine {
     recall: Recall,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
+    /// MIDI files scripts inserted (`mf_insert_file`), by id, and the current one.
+    midi: Vec<midifile::MidiFile>,
+    midi_current: usize,
+    midi_buffer: i32,
     called: Box<[u32]>,
     /// The instrument's level, pan and tune (a script's group -1); level and
     /// pan move [`Self::output`], after every effect.
@@ -341,6 +346,9 @@ impl Engine {
             last_message: Text::EMPTY,
             recall: Recall::Restart,
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
+            midi: Vec::new(),
+            midi_current: 0,
+            midi_buffer: 0,
             called: vec![0; kontra_vm::Action::all().len()].into(),
             ui,
             ids: callbacks::Ids::START,

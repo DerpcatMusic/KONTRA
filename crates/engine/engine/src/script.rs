@@ -766,6 +766,148 @@ impl HostApi for Engine {
                 let live = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 HostValue::Int(i32::from(live.is_some()))
             }
+            // MIDI files a script inserts and walks. Positions are ticks: the
+            // scripts compare `mf_get_pos()` against tick offsets.
+            Action::MfInsertFile => {
+                let path = call.texts.first().map_or("", Text::as_str);
+                let parsed = std::fs::read(path)
+                    .ok()
+                    .and_then(|bytes| crate::midifile::MidiFile::parse(&bytes));
+                match parsed {
+                    Some(file) => {
+                        self.midi.push(file);
+                        self.midi_current = self.midi.len() - 1;
+                        HostValue::Int(self.midi_current as i32)
+                    }
+                    None => HostValue::Int(-1),
+                }
+            }
+            Action::MfGetId => HostValue::Int(self.midi_current as i32),
+            Action::MfReset => {
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.reset();
+                }
+                HostValue::Int(0)
+            }
+            Action::MfSetBufferSize => {
+                self.midi_buffer = int(0);
+                HostValue::Int(self.midi_buffer)
+            }
+            Action::MfGetBufferSize => HostValue::Int(self.midi_buffer),
+            Action::MfGetNumTracks => {
+                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| i32::from(f.tracks())))
+            }
+            Action::MfGetLength => {
+                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| f.length() as i32))
+            }
+            Action::MfGetPos => {
+                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| f.pos() as i32))
+            }
+            Action::MfSetPos => {
+                let tick = int(0).max(0) as u32;
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.set_pos(tick);
+                }
+                HostValue::Nothing
+            }
+            Action::MfGetCommand => {
+                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| i32::from(f.command())))
+            }
+            Action::MfGetByteOne => {
+                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| i32::from(f.byte_one())))
+            }
+            Action::MfGetByteTwo => {
+                HostValue::Int(self.midi.get(self.midi_current).map_or(0, |f| i32::from(f.byte_two())))
+            }
+            Action::MfGetNext => {
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.advance();
+                }
+                HostValue::Nothing
+            }
+            Action::MfGetPrev => {
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.retreat();
+                }
+                HostValue::Nothing
+            }
+            Action::MfGetFirst => {
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.first();
+                }
+                HostValue::Nothing
+            }
+            Action::MfGetLast => {
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.last();
+                }
+                HostValue::Nothing
+            }
+            Action::MfGetNextAt => {
+                let tick = int(1).max(0) as u32;
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.next_at(tick);
+                }
+                HostValue::Nothing
+            }
+            Action::MfGetPrevAt => {
+                let tick = int(1).max(0) as u32;
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.prev_at(tick);
+                }
+                HostValue::Nothing
+            }
+            // Editing half of the MIDI object (KSP Reference Manual 18.7–18.11):
+            // mf_insert_event activates an inactive event and spends one buffer
+            // slot; the byte setters edit the event under the cursor.
+            Action::MfInsertEvent => {
+                if self.midi_buffer <= 0 {
+                    HostValue::Int(-1)
+                } else {
+                    let (track, pos, command, byte1, byte2) =
+                        (int(0), int(1), int(2), int(3), int(4));
+                    let _ = track;
+                    if let Some(f) = self.midi.get_mut(self.midi_current) {
+                        let id = f.insert(
+                            pos.max(0) as u32,
+                            command as u8,
+                            byte1 as u8,
+                            byte2 as u8,
+                        );
+                        self.midi_buffer -= 1;
+                        HostValue::Int(id as i32)
+                    } else {
+                        HostValue::Int(-1)
+                    }
+                }
+            }
+            Action::MfRemoveEvent => {
+                let id = int(0).max(0) as usize;
+                if let Some(f) = self.midi.get_mut(self.midi_current)
+                    && f.remove(id)
+                {
+                    self.midi_buffer += 1;
+                }
+                HostValue::Nothing
+            }
+            Action::MfSetByteOne => {
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.set_byte_one(int(0) as u8);
+                }
+                HostValue::Nothing
+            }
+            Action::MfSetByteTwo => {
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.set_byte_two(int(0) as u8);
+                }
+                HostValue::Nothing
+            }
+            Action::MfSetCommand => {
+                if let Some(f) = self.midi.get_mut(self.midi_current) {
+                    f.set_command(int(0) as u8);
+                }
+                HostValue::Nothing
+            }
             other => {
                 self.count_unhandled(other);
                 HostValue::Nothing
