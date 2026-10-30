@@ -182,6 +182,22 @@ sys.exit(0 if changed >= 20 and mean < 2 else 1)' "$NATIVE_LABEL_BEFORE" "$out/0
     if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
     exit $fail
 fi
+# KS Lock must switch its face and return to the original off state.
+if [[ ${PACIFIC_CONTROLS_ONLY:-0} == 1 ]]; then
+    at 980,382; xdotool click 1; sleep 2; shot 1-lock-on
+    check 0-open 1-lock-on "Pacific KS Lock changes face" 460,182,519,202
+    xdotool click 1; sleep 2; at 1900,1270; shot 2-lock-off
+    still 0-open 2-lock-off "Pacific KS Lock returns to off" 460,182,519,202
+    ticks_controls() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    span=${IDLE_S:-60}; t0=$(ticks_controls); sleep "$span"; t1=$(ticks_controls)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # Compare Pacific's stock field and mic-button text to a known baseline.
 if [[ ${PACIFIC_STOCK_ONLY:-0} == 1 ]]; then
     if [[ -n ${PACIFIC_STOCK_BEFORE:-} ]]; then
