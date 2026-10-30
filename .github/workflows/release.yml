@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: v3-release-${{ github.ref == 'refs/heads/main' && 'main' || github.run_id }}
+  group: ${{ github.ref == 'refs/heads/main' && 'v3-release' || format('v3-release-{0}', github.run_id) }}
   cancel-in-progress: false  # the running release finishes; only the newest waiting one runs next
 
 permissions:
