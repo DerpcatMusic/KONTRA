@@ -314,6 +314,17 @@ fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
         .collect()
 }
 
+/// Plays silence until no voice is left and the effects' tail (a reverb) is
+/// quiet, so it never reads as the next segment's onset; at most 5 s.
+fn ring_out(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) {
+    for _ in 0..at(5.0) / BLOCK {
+        if last.voices == 0 && last.audio.iter().all(|x| x.abs() < 1e-4) {
+            return;
+        }
+        *last = block(params, dsp, &[], last);
+    }
+}
+
 /// The octave shift that brings the scenario's repeated key (D4) where the
 /// program plays: a bass's, a tuba's or a script's range may end below it.
 /// Measured: a short note per octave, the first that starts a voice.
@@ -327,12 +338,7 @@ fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
             sounded |= last.voices > 0;
         }
         *last = block(params, dsp, &[(0, off(key))], last);
-        for _ in 0..at(3.0) / BLOCK {
-            if last.voices == 0 {
-                break;
-            }
-            *last = block(params, dsp, &[], last);
-        }
+        ring_out(params, dsp, last);
         if sounded {
             return by;
         }
@@ -600,14 +606,7 @@ fn perform(path: PathBuf) -> Report {
                 break;
             }
         }
-        // The effects' tail (a reverb) rings out before the next segment, so
-        // it never reads as that segment's onset.
-        for _ in 0..at(5.0) / BLOCK {
-            if last.audio.iter().all(|x| x.abs() < 1e-4) {
-                break;
-            }
-            last = block(&params, &mut dsp, &[], &last);
-        }
+        ring_out(&params, &mut dsp, &mut last);
         if starts.is_empty() {
             continue;
         }
