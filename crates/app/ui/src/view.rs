@@ -199,7 +199,7 @@ fn drawn_page(
         };
         let deps = (
             lit.map(|(o, t)| (o as u8, t.to_bits())),
-            [r.x, r.y, r.width, r.height, scale].map(f64::to_bits),
+            [r.x, r.y, r.width, r.height, scale, device].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
             picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
             (
