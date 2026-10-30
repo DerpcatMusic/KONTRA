@@ -3250,4 +3250,18 @@ fn a_file_dialog_array_is_cancelled_and_completes_with_failure() {
         "{:?}",
         e.unhandled_actions()
     );
+
+/// `midifile`'s parameter ids must agree with the `$EVENT_PAR_*` names the
+/// script compiler resolves, or `mf_set_event_par` would act on the wrong one.
+#[test]
+fn mf_event_pars_match_the_script_constants() {
+    use kontra_engine::midifile::{PAR_ID, PAR_NOTE_LENGTH, PAR_POS, PAR_TRACK_NR};
+    for (name, value) in [
+        ("$EVENT_PAR_POS", PAR_POS),
+        ("$EVENT_PAR_NOTE_LENGTH", PAR_NOTE_LENGTH),
+        ("$EVENT_PAR_ID", PAR_ID),
+        ("$EVENT_PAR_TRACK_NR", PAR_TRACK_NR),
+    ] {
+        assert_eq!(kontra_ksp::constant(name), Some(value), "{name}");
+    }
 }
