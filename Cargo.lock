@@ -2411,15 +2411,11 @@ dependencies = [
 name = "kontra-ui"
 version = "0.0.0"
 dependencies = [
- "dirs",
- "kontra-library",
  "kontra-protocol",
  "kontra-ui-model",
+ "kontra-ui-pictures",
  "mui",
  "png",
- "sha2",
- "tempfile",
- "zune-jpeg",
 ]
 
 [[package]]
@@ -2427,6 +2423,20 @@ name = "kontra-ui-model"
 version = "0.0.0"
 dependencies = [
  "kontra-macros",
+]
+
+[[package]]
+name = "kontra-ui-pictures"
+version = "0.0.0"
+dependencies = [
+ "dirs",
+ "kontra-library",
+ "kontra-ui-model",
+ "mui",
+ "png",
+ "sha2",
+ "tempfile",
+ "zune-jpeg",
 ]
 
 [[package]]

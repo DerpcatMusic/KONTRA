@@ -28,7 +28,7 @@ const KEYS: [(&str, usize, u32, u32, u32); 7] = [
 static ART: OnceLock<Option<super::cache::Art>> = OnceLock::new();
 
 /// Start discovery, hashing and decoding before the editor's first frame.
-pub(crate) fn prewarm() {
+pub fn prewarm() {
     static START: OnceLock<()> = OnceLock::new();
     START.get_or_init(|| {
         std::thread::spawn(|| {
