@@ -2,7 +2,7 @@
 //! envelope stage times, the attack curve, levels, and the text a knob shows.
 //! Each is a named [`Law`]; the law evaluator does the maths.
 
-use kontra_ir::{self as ir, FormulaId, Law};
+use kontra_ir::{self as ir, Law};
 use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;
 
@@ -38,26 +38,7 @@ pub const LFO_FADE_IN: Law = Law::ExpAffine {
     scale: 0.3,
 };
 
-/// Volume, sustain and send levels: the cube of the setting over its unity point.
-pub const CUBE: Law = Law::IntegerPower {
-    exponent: 3,
-    bipolar: false,
-};
-/// A route's intensity: the setting squared (probes/mod_par_laws.lua).
-pub const SQUARE: Law = Law::IntegerPower {
-    exponent: 2,
-    bipolar: false,
-};
-/// A bipolar route's depth, `(2x − 1)³` (probes/mod_par_laws.lua).
-pub const SIGNED_CUBE: Law = Law::IntegerPower {
-    exponent: 3,
-    bipolar: true,
-};
-/// A 0..=1 setting as −1..=1.
-pub const BIPOLAR: Law = Law::Linear { lo: -1.0, hi: 1.0 };
-/// The attack curve (−1 concave ..= 1 convex) as a segment shape: the law the Kontakt
-/// translator applies to stored curves (docs/re/engine/k-mod-envelopes.md).
-pub const ATTACK_CURVE: Law = Law::Formula(FormulaId::AttackShape);
+pub use kontra_ir::common::{ATTACK_CURVE, BIPOLAR, CUBE, SIGNED_CUBE, SQUARE};
 
 /// The setting at which `law` reaches `y`.
 pub fn setting(law: &Law, y: f64) -> f64 {

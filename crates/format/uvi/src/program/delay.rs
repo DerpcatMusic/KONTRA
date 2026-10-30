@@ -16,6 +16,7 @@
 
 use kontra_format::Notes;
 use kontra_ir as ir;
+use kontra_law::common::EQUAL_POWER;
 use roxmltree::Node;
 
 use super::{flag, num};
@@ -75,8 +76,8 @@ pub(super) fn dual_delay(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
             phase: 0.0,
         }),
         bypass: false,
-        output: mix.sqrt(),
-        dry: (1.0 - mix).sqrt(),
+        output: EQUAL_POWER.eval(mix),
+        dry: EQUAL_POWER.eval(1.0 - mix),
     })
 }
 

@@ -25,22 +25,12 @@ pub const VOICE_VOLUME: Law = Law::Power {
     exponent: VOICE_VOLUME_POWER as f32,
 };
 
-/// Maps normalized input to a bipolar value (0x14071a840 on 0..=1).
-pub const BIPOLAR: Law = Law::Linear { lo: -1.0, hi: 1.0 };
-
 /// Note-to-frequency cutoff law; see `docs/re/engine/filt-sv.md`.
 pub const FILTER_NOTE_HZ: Law = Law::PowIndex {
     base: 2.0,
     origin: 69.0,
     divisor: 12.0,
     scale: 440.0,
-};
-
-/// Cubic sustain and state-variable filter resonance mappings; see
-/// `docs/re/engine/k-mod-envelopes.md` and `filt-sv.md`.
-pub const UNIT_CUBIC: Law = Law::IntegerPower {
-    exponent: 3,
-    bipolar: false,
 };
 
 /// Fifth-power state-variable filter gain mapping; see `filt-sv.md`.
@@ -77,10 +67,6 @@ pub const CONVOLUTION_PREDELAY: Law = Law::ExpAffine {
     shift: -1.0,
     scale: 2.0,
 };
-
-/// The AHDSR attack-curve knob (−1..=1) to a segment shape; see
-/// `docs/re/engine/k-mod-envelopes.md`.
-pub const ATTACK_SHAPE: Law = Law::Formula(FormulaId::AttackShape);
 
 /// A flex-envelope point's curve knob to its segment shape (0x140ae5a10).
 pub const FLEX_SHAPE: Law = Law::Formula(FormulaId::FlexShape);
@@ -271,23 +257,6 @@ mod tests {
                 "{u}: {got} vs {original}"
             );
         }
-    }
-
-    /// The normalized bipolar mapping agrees with native endpoints and midpoint.
-    #[test]
-    fn bipolar_curve_maps_normalized_endpoints_and_midpoint() {
-        for (x, expected) in [(0.0, -1.0), (0.5, 0.0), (1.0, 1.0)] {
-            assert_eq!(BIPOLAR.eval(x), expected, "input {x}");
-        }
-    }
-
-    #[test]
-    fn cubic_preserves_original_f32_rounding() {
-        for n in 0..=10_000 {
-            let x = n as f32 / 10_000.0;
-            assert_eq!(UNIT_CUBIC.eval(x), x.powi(3), "cubic at {x}");
-        }
-        assert_eq!(UNIT_CUBIC.eval(-1.0), 0.0);
     }
 
     #[test]

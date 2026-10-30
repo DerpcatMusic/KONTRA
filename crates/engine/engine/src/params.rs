@@ -244,7 +244,7 @@ impl Engine {
         match action {
             kontra_vm::Action::GroupVolume if value <= -200_000 => level.gain = 0.0,
             kontra_vm::Action::GroupVolume => {
-                level.gain = ir::units::MILLIBEL_GAIN.eval_unclamped(value as f32);
+                level.gain = ir::common::MILLIBEL_GAIN.eval_unclamped(value as f32);
             }
             kontra_vm::Action::GroupPan => level.pan = (value as f32 / 1000.0).clamp(-1.0, 1.0),
             kontra_vm::Action::GroupTune => level.tune = f64::from(value) / 100_000.0,

@@ -17,6 +17,9 @@ pub enum FormulaId {
     /// A feedback compressor's ratio `r` to its knee factor
     /// `3.6018/r + 0.8903 − 1.4406/r^1.5` (Kontakt ratio law 0x141a91d10).
     FeedbackKnee,
+    /// A bipolar curve knob `c` to `2·ln((1 + c)/(1 − c))` with `c` clamped to ±0.9998,
+    /// computed in f64 (UVI envelope setup 0x1410f1220).
+    LogRatio,
 }
 
 impl FormulaId {
@@ -31,6 +34,7 @@ impl FormulaId {
             Self::AttackShape => T::of(attack_shape(x.to_f64())),
             Self::FlexShape => T::of(flex_ratio(x.to_f32()).ln()),
             Self::FeedbackKnee => T::of(feedback_knee(x.to_f32())),
+            Self::LogRatio => T::of(log_ratio(x.to_f64())),
         }
     }
 
@@ -38,7 +42,7 @@ impl FormulaId {
     pub(crate) fn inverse(self, y: f64) -> Option<f64> {
         match self {
             Self::AttackShape => Some(attack_curve(y)),
-            Self::FlexShape | Self::FeedbackKnee => None,
+            Self::FlexShape | Self::FeedbackKnee | Self::LogRatio => None,
         }
     }
 }
@@ -68,6 +72,11 @@ fn attack_curve(shape: f64) -> f64 {
     let b = 1.0 / shape.abs().exp_m1();
     let c = (1.0 - (b.ln() + ATTACK_FLOOR.ln()) / ATTACK_SPAN.ln()).clamp(0.0, 1.0);
     -shape.signum() * c
+}
+
+fn log_ratio(c: f64) -> f32 {
+    let c = c.clamp(-0.9998, 0.9998);
+    (2.0 * ((1.0 + c) / (1.0 - c)).ln()) as f32
 }
 
 fn feedback_knee(r: f32) -> f32 {

@@ -2,9 +2,10 @@
 //! names the evidence it rests on; the IR and engine never see the vendor.
 
 use kontra_ir as ir;
+use kontra_law::common::{ATTACK_CURVE, CUBE};
 use kontra_law::kontakt::{
-    ATTACK_SHAPE, EQ_PEAK_DB, FILTER_NOTE_HZ, FLEX_SHAPE, LADDER_GAIN, LEGACY_CUTOFF_HZ,
-    LEGACY_RESONANCE_LOSS, LEGACY_RESONANCE_Q, UNIT_CUBIC, UNIT_FIFTH,
+    EQ_PEAK_DB, FILTER_NOTE_HZ, FLEX_SHAPE, LADDER_GAIN, LEGACY_CUTOFF_HZ, LEGACY_RESONANCE_LOSS,
+    LEGACY_RESONANCE_Q, UNIT_FIFTH,
 };
 use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeFlex, Lfo};
 
@@ -20,9 +21,9 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         attack: seconds(e.attack_ms),
         hold: seconds(e.hold_ms),
         decay: seconds(e.decay_ms),
-        sustain: UNIT_CUBIC.eval(e.sustain),
+        sustain: CUBE.eval(e.sustain),
         release: seconds(e.release_ms),
-        attack_shape: ATTACK_SHAPE.eval_unclamped(e.attack_curve),
+        attack_shape: ATTACK_CURVE.eval_unclamped(e.attack_curve),
         fall_shape: FALL,
     }
 }
@@ -471,9 +472,9 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
         return;
     }
     let big = if f.stages == 3 {
-        1.0 - UNIT_CUBIC.eval(1.0 - 0.9 * r)
+        1.0 - CUBE.eval(1.0 - 0.9 * r)
     } else {
-        1.0 - UNIT_CUBIC.eval(1.0 - r)
+        1.0 - CUBE.eval(1.0 - r)
     };
     f.damping = [2.0 * (1.0 - big); 3];
     if f.stages == 2 {
