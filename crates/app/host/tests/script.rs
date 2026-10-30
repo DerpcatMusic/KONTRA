@@ -1643,6 +1643,54 @@ fn a_timed_note_played_on_release_sounds_no_second_release() {
     }
 }
 
+/// With release triggering left to the script, a release zone is an ordinary
+/// zone of the note the script plays into its group: it starts with that
+/// note and ends with it, and no release sounds it again.
+#[test]
+fn a_release_zone_the_script_plays_ends_with_its_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    let script = kontra_ksp::compile(
+        "on init
+            declare $played := 0
+        end on
+        on note
+            disallow_group($ALL_GROUPS)
+            allow_group(0)
+        end on
+        on release
+            if ($played = 0)
+                $played := 1
+                disallow_group($ALL_GROUPS)
+                allow_group(1)
+                play_note(60, 100, 0, 50000)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0), tail], 16);
+    plan.release_zones = kontra_engine::ReleaseZones::WithNote;
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!(
+        (level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3,
+        "only the held zone"
+    );
+    let mut out = vec![[0.0; 2]; 4800];
+    e.process(&mut out, &[off(60)]);
+    // The held zone's short release, then the release zone alone until the
+    // played note's 50 ms (2400 frames) end and its own short release.
+    for (frame, [left, _]) in out.iter().enumerate().take(2400).skip(128) {
+        assert!((left - 0.25).abs() < 1e-3, "{left} at frame {frame}");
+    }
+    assert_eq!(out[4799][0], 0.0, "it ends with its note");
+}
+
 /// Level of the reverb tail 0.25 s after a 2 s note, through a reverb in the
 /// instrument insert whose time is 0.5 s unless `script` moves it.
 fn reverb_tail(script: &str) -> f32 {
