@@ -6,19 +6,13 @@ use crate::scenario::Input;
 
 const MAX_DELTA: u64 = 0x0fff_ffff;
 
-fn vlq(mut n: u64, out: &mut Vec<u8>) {
-    let mut bytes = [0u8; 4];
-    let mut at = bytes.len();
-    at -= 1;
-    bytes[at] = (n & 0x7f) as u8;
-    n >>= 7;
-    while n != 0 {
-        at -= 1;
-        bytes[at] = ((n & 0x7f) as u8) | 0x80;
-        n >>= 7;
-    }
-    if let Some(slice) = bytes.get(at..) {
-        out.extend_from_slice(slice);
+fn vlq(n: u64, out: &mut Vec<u8>) {
+    // Seven bits per group, most significant first; every group but the last
+    // carries the continuation bit. `MAX_DELTA` caps a delta at four groups.
+    let groups = (u64::BITS - n.leading_zeros()).div_ceil(7).max(1);
+    for group in (0..groups).rev() {
+        let bits = ((n >> (group * 7)) & 0x7f) as u8;
+        out.push(if group == 0 { bits } else { bits | 0x80 });
     }
 }
 
@@ -81,6 +75,25 @@ mod tests {
         assert_eq!(midi.get(14..18), Some(&b"MTrk"[..]));
         assert!(midi.windows(3).any(|w| w == [0xb0, 1, 127]));
         assert!(midi.windows(3).any(|w| w == [0x90, 60, 100]));
+    }
+
+    /// A delta is written as the MIDI variable-length quantity: seven bits a
+    /// group, most significant first, the continuation bit on all but the last.
+    #[test]
+    fn deltas_are_encoded_as_variable_length_quantities() {
+        let cases: [(u64, &[u8]); 6] = [
+            (0, &[0x00]),
+            (0x7f, &[0x7f]),
+            (0x80, &[0x81, 0x00]),
+            (0x3fff, &[0xff, 0x7f]),
+            (0x4000, &[0x81, 0x80, 0x00]),
+            (MAX_DELTA, &[0xff, 0xff, 0xff, 0x7f]),
+        ];
+        for (delta, expected) in cases {
+            let mut out = Vec::new();
+            vlq(delta, &mut out);
+            assert_eq!(out, expected, "delta {delta}");
+        }
     }
 }
 
