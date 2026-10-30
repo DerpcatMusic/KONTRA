@@ -508,23 +508,34 @@ mod tests {
     use super::{KEY_SOURCE, LOWER_KEY_FOLLOW, UPPER_KEY_FOLLOW};
 
     #[test]
-    fn key_laws_preserve_all_midi_values() {
+    fn key_source_preserves_all_midi_values() {
         for key in 0..=127 {
             let x = key as f32;
             assert_eq!(KEY_SOURCE.eval(x / 127.0), x / 127.0, "key {key}");
-            if key < 60 {
-                assert_eq!(
-                    LOWER_KEY_FOLLOW.eval(x / 60.0),
-                    (x / 60.0).powi(2) - 1.0,
-                    "key {key}"
-                );
-            } else {
-                assert_eq!(
-                    UPPER_KEY_FOLLOW.eval((x.min(120.0) - 60.0) / 60.0),
-                    ((x.min(120.0) - 60.0) / 60.0).sqrt(),
-                    "key {key}"
-                );
-            }
+        }
+    }
+
+    #[test]
+    fn lower_key_follow_preserves_all_midi_values() {
+        for key in 0..60 {
+            let x = key as f32;
+            assert_eq!(
+                LOWER_KEY_FOLLOW.eval(x / 60.0),
+                (x / 60.0).powi(2) - 1.0,
+                "key {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn upper_key_follow_preserves_all_midi_values() {
+        for key in 60..=127 {
+            let x = key as f32;
+            assert_eq!(
+                UPPER_KEY_FOLLOW.eval((x.min(120.0) - 60.0) / 60.0),
+                ((x.min(120.0) - 60.0) / 60.0).sqrt(),
+                "key {key}"
+            );
         }
     }
 }
