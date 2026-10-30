@@ -186,10 +186,12 @@ fi
 if [[ ${PACIFIC_STOCK_ONLY:-0} == 1 ]]; then
     if [[ -n ${PACIFIC_STOCK_BEFORE:-} ]]; then
         if python3 -I -c 'import sys; from PIL import Image, ImageChops
-old, new = (Image.open(p).convert("RGB") for p in sys.argv[1:3])
-def changed(box):
-    return sum(max(p) > 8 for p in ImageChops.difference(old.crop(box), new.crop(box)).getdata())
-sys.exit(0 if changed((460, 118, 594, 159)) >= 30 and changed((214, 118, 260, 139)) >= 5 else 1)' "$PACIFIC_STOCK_BEFORE" "$out/0-open.png"; then
+old, new, expected = (Image.open(p).convert("RGB") for p in sys.argv[1:4])
+def check(box, minimum):
+    delta = list(ImageChops.difference(old.crop(box), new.crop(box)).getdata())
+    error = list(ImageChops.difference(expected.crop(box), new.crop(box)).getdata())
+    return sum(max(p) > 8 for p in delta) >= minimum and sum(map(sum, error)) / (3 * len(error)) < 2
+sys.exit(0 if check((460, 118, 594, 159), 30) and check((214, 118, 260, 139), 5) else 1)' "$PACIFIC_STOCK_BEFORE" "$out/0-open.png" "${PACIFIC_STOCK_EXPECTED:?set PACIFIC_STOCK_EXPECTED to the verified capture}"; then
             pass "Pacific stock fields and mic-button text update"
         else miss "Pacific stock fields and mic-button text update"; fi
     fi

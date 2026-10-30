@@ -13,6 +13,9 @@ use std::sync::Arc;
 const KNOB: (f64, f64) = (87., 40.);
 /// Kontakt's default ink on a light (on) button.
 const DARK: u32 = 0x18_1818;
+/// The installed font-13 atlas peaks at 191/255 coverage; restore that scale
+/// before applying the script's colour and alpha.
+const FIELD_ATLAS_COVERAGE: u16 = 191;
 
 /// What a stock control shows; the memo key of its drawing.
 #[derive(Hash)]
@@ -235,7 +238,7 @@ impl Look {
                 } else {
                     w
                 };
-                parts.push(field_words(
+                let title = field_words(
                     title,
                     ink,
                     model::Align::Left,
@@ -243,7 +246,20 @@ impl Look {
                     font,
                     color,
                     StockMetrics::Field,
-                ));
+                );
+                if let Some(font) = font.filter(|_| !wd.hide.value) {
+                    let value_width: f64 = value
+                        .chars()
+                        .filter_map(|c| {
+                            font.get(crate::pictures::glyph(c))
+                                .map(|g| f64::from(g.width) * scale)
+                        })
+                        .sum();
+                    let limit = (w - 12. * scale - value_width).max(0.);
+                    parts.push(stack([title]).w(limit).h(h).radius(0.).clip());
+                } else {
+                    parts.push(title);
+                }
                 if !wd.hide.value {
                     parts.push(field_words(
                         value,
@@ -343,7 +359,9 @@ fn field_words(
                         color.g,
                         color.b,
                         ((u16::from(match metrics {
-                            StockMetrics::Field => (u16::from(p[3]) * 255 / 191).min(255) as u8,
+                            StockMetrics::Field => {
+                                (u16::from(p[3]) * 255 / FIELD_ATLAS_COVERAGE).min(255) as u8
+                            }
                             StockMetrics::Button12 => p[3],
                         }) * u16::from(color.a))
                             / 255) as u8,

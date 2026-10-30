@@ -280,7 +280,12 @@ fn drawn_page(
                 } else {
                     0.
                 };
-                parts.push(sliced(img, meta, (a.width, a.height), scale).at(inset, inset));
+                let image = sliced(img, meta, (a.width, a.height), scale).at(inset, inset);
+                parts.push(if inset > 0. {
+                    stack([image]).w(a.width).h(a.height).radius(0.).clip()
+                } else {
+                    image
+                });
             } else if stock {
                 parts.push(
                     stock::face(
