@@ -202,7 +202,8 @@ pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
         _ => String::new(),
     };
     // Kontakt's label tabs advance without drawing a missing-glyph box.
-    if matches!(source, model::Source::Ksp { .. }) && text.contains('\t') {
+    if matches!((source, &w.kind), (model::Source::Ksp { .. }, Kind::Label)) && text.contains('\t')
+    {
         text.replace('\t', "  ")
     } else {
         text
