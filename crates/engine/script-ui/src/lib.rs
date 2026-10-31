@@ -79,13 +79,13 @@ struct TextArrayEntry {
 /// An intentional bound, not a measured one. The pool is made this large when
 /// the store is built, so a note or control callback that sets an element
 /// cannot grow it (no allocation on that path), and reading one back is a scan
-/// of fixed bound. Nothing on hand comes near it: each `set_control_par_str_arr`
-/// sets one element, and the whole corpus's coverage run records 546 of those
-/// calls over 682 instruments (`docs/re/ksp/CORPUS.md`), a few per store. The
-/// limit is reported rather than silent: every element refused past it is
+/// of fixed bound. The corpus's only users of string arrays are two scripts,
+/// whose whole coverage run records 546 `set_control_par_str_arr` calls over
+/// 682 instruments (`docs/re/ksp/CORPUS.md`), each call setting one element.
+/// The limit is reported rather than silent: every element refused past it is
 /// counted by [`Store::text_arrays_full`], which the engine carries as
 /// `Stats::text_arrays_full` (`crates/engine/engine/src/lib.rs`), so a library
-/// that reaches the bound says so.
+/// that reaches the bound says so instead of losing the string.
 const TEXT_ARRAYS: usize = 256;
 
 /// The script's page as it set it: size, wallpaper, colour, title.
