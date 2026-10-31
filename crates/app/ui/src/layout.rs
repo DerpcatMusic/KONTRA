@@ -93,9 +93,56 @@ pub fn resolve(tree: &mut Interface, changed: impl IntoIterator<Item = usize>) {
 
 #[cfg(test)]
 mod tests {
-    use kontra_ui_model::{Page, PageRef, Rect, Widget};
+    use kontra_ui_model::{
+        Asset, AssetKind, ImageMeta, ImageUse, Page, PageRef, Rect, Role, Size, Widget,
+    };
 
     use super::*;
+
+    /// A picture takes its own size on an axis it does not stretch, whatever
+    /// width the script gave the control; on an axis it stretches, the
+    /// control keeps the script's width. Electric Mint's preset menu is the
+    /// case that shows it: 171 px asked for, a 32 px picture, and the
+    /// sidecar's `Horizontal Resizable` decides whether the arrow lands at
+    /// the field's right end or under the field.
+    #[test]
+    fn a_control_keeps_its_width_only_along_an_axis_its_picture_stretches() {
+        let menu = |stretch: [bool; 2]| {
+            let mut tree = Interface {
+                pages: vec![Page::default()],
+                ..Interface::default()
+            };
+            tree.assets.push(Asset {
+                path: "Resources/pictures/dropdown_topright.png".into(),
+                kind: AssetKind::Image(ImageMeta {
+                    frames: 1,
+                    size: Some(Size {
+                        width: 32.,
+                        height: 21.,
+                    }),
+                    stretch,
+                    ..ImageMeta::default()
+                }),
+            });
+            let mut w = Widget::new(
+                "$preset",
+                PageRef(0),
+                Rect::new(446, 32, 171, 21),
+                Kind::Menu { items: Vec::new() },
+            );
+            w.images
+                .push(ImageUse::new(kontra_ui_model::AssetRef(0), Role::Strip));
+            tree.widgets.push(w);
+            resolve(&mut tree, 0..1);
+            tree.widgets.first().map(|w| (w.rect.width, w.rect.height))
+        };
+        assert_eq!(menu([true, false]), Some((171., 21.)), "stretched across");
+        assert_eq!(
+            menu([false, false]),
+            Some((32., 21.)),
+            "a picture that does not stretch takes its own width"
+        );
+    }
 
     #[test]
     fn grid_rows_stock_sizes_and_grid_places_become_pixels() {

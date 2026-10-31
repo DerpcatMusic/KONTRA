@@ -16,6 +16,7 @@ mod look;
 #[cfg(test)]
 mod playtest;
 mod readout;
+mod session;
 #[cfg(test)]
 mod tests;
 
@@ -96,10 +97,19 @@ pub struct Shared {
     restoring: AtomicBool,
     /// The latency to report, in frames; the audio thread reads it.
     latency: AtomicU32,
+    /// Blocks counted as missed when `block_missed` last logged them: the
+    /// count is cumulative, so a tick that logs only when it moves does not
+    /// repeat the same line.
+    missed_logged: AtomicU64,
     /// Moves when the host loads a state: the editor reads its view again.
     restored: AtomicU32,
     /// The "Add folder" dialog; dropping it closes an open one.
     folder: folder::Dialog,
+    /// Asks for a control tick now; the editor sets it from its context,
+    /// the only place moose hands out a spawner. Anything that asks for
+    /// work (`Shared::request`) wakes one, so an edit made while the host
+    /// renders no blocks is still carried out.
+    waker: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -123,6 +133,25 @@ impl Shared {
             self.asked.fetch_add(1, Ordering::AcqRel);
         }
         lock(&self.requests).push(r);
+        // The tick is spawned from the audio callback, which a host that
+        // renders nothing never calls: ask for one here as well. Coalesced,
+        // so a burst of requests is one tick.
+        self.wake();
+    }
+
+    /// Asks for a control tick now; a no-op until the editor has opened and
+    /// given us its spawner (the audio callback's ticks carry it until
+    /// then). Wait-free where it is set, so any thread may ask.
+    pub fn wake(&self) {
+        if let Some(wake) = self.waker.get() {
+            wake();
+        }
+    }
+
+    /// Gives [`Shared`] the way to ask for a tick; the editor sets it once,
+    /// on its first frame. The first one wins.
+    pub fn set_waker(&self, wake: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.waker.set(wake);
     }
 
     /// Whether a load asked for is not carried out yet.
@@ -230,6 +259,9 @@ impl BackgroundTask for Tick {
     const SERIALIZED: bool = true;
 
     fn run(self, p: &KontraParams) {
+        // The session log exists from the first tick, with its path, whether
+        // or not anything goes wrong.
+        session::start();
         let mut guard = lock(&p.shared.rack);
         let Some(rack) = guard.as_mut() else {
             return;
@@ -275,7 +307,40 @@ impl BackgroundTask for Tick {
         }
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
-        rack.tick();
+        let ticked = rack.tick();
+        // What this tick carried out where the host rendered nothing, and
+        // how full the rings are: the numbers that say whether an edit
+        // reached the audio side. At most a line a second each, and the
+        // first one, so a drag or a load cannot flood the log.
+        if ticked.applied > 0 {
+            session::info(
+                "control_applied",
+                &[
+                    ("commands", &ticked.applied.to_string()),
+                    ("blocks", &ticked.blocks.to_string()),
+                    ("pending", &ticked.pending.to_string()),
+                    ("ring_room", &ticked.room.0.to_string()),
+                    ("looks_room", &ticked.room.1.to_string()),
+                    ("dropped", &ticked.dropped.to_string()),
+                ],
+            );
+        }
+        // A block the host asked for that found the audio side taken here:
+        // it came out silent. It should be the first block of a resume. The
+        // count is cumulative, so only a move is logged.
+        let missed = ticked.missed;
+        let logged = p.shared.missed_logged.load(Ordering::Relaxed);
+        if missed > logged {
+            p.shared.missed_logged.store(missed, Ordering::Relaxed);
+            session::info(
+                "block_missed",
+                &[
+                    ("blocks", &(missed - logged).to_string()),
+                    ("total", &missed.to_string()),
+                    ("rendered", &ticked.blocks.to_string()),
+                ],
+            );
+        }
         // What a save while the next tick is busy writes (`capture`).
         if changed && !requests_restoring(p) {
             *p.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
@@ -337,6 +402,8 @@ impl PluginLogic for Kontra {
             return;
         };
         let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
+        // A new rack counts its missed blocks from zero.
+        p.shared.missed_logged.store(0, Ordering::Relaxed);
         if let Some(saves) = kontra_host::rack::user_saves() {
             rack.set_saves(saves);
         }
@@ -359,6 +426,14 @@ impl PluginLogic for Kontra {
         cx: &mut ProcessContext,
     ) -> ProcessStatus {
         let frames = b.num_samples();
+        // The audio side for this block, taken before the control tick is
+        // spawned: a tick that ran between the spawn and the take would find
+        // the side free, carry its commands out itself, and leave this block
+        // silent. This side never waits for it: a block it could not have is
+        // silence (`RackAudio::missed`), which comes out of a resume, where
+        // silence is what was playing anyway.
+        let max_block = s.audio.as_ref().map_or(0, RackAudio::max_block);
+        let mut side = s.audio.as_mut().and_then(RackAudio::take_block);
         if s.until_tick <= frames {
             if let Some(tasks) = cx.tasks::<Tick>() {
                 tasks.spawn_coalescing(Tick);
@@ -367,22 +442,25 @@ impl PluginLogic for Kontra {
         } else {
             s.until_tick -= frames;
         }
-        let Some(audio) = s.audio.as_mut() else {
+        if max_block == 0 {
+            // No rack yet (a rate change in flight): silent, but the tick runs.
             for ch in 0..b.num_output_channels() {
                 b.output(ch).fill(0.0);
             }
             return ProcessStatus::Normal;
-        };
+        }
         s.latency = p.shared.latency.load(Ordering::Relaxed);
         s.input.clear();
         // VST3 hosts give the tempo only here; CLAP may also send events.
-        audio.set_tempo(cx.transport.tempo as f32);
-        let t = cx.transport;
-        audio.set_transport(
-            t.playing,
-            t.position_beats,
-            (t.time_sig_num, t.time_sig_den),
-        );
+        if let Some(side) = side.as_mut() {
+            side.set_tempo(cx.transport.tempo as f32);
+            let t = cx.transport;
+            side.set_transport(
+                t.playing,
+                t.position_beats,
+                (t.time_sig_num, t.time_sig_den),
+            );
+        }
         for e in events.lossless_iter() {
             let e = match e {
                 LosslessEventRef::Typed(e) => e,
@@ -399,12 +477,14 @@ impl PluginLogic for Kontra {
                 }
             };
             if let EventBody::Transport(t) = e.body {
-                audio.set_tempo(t.tempo as f32);
-                audio.set_transport(
-                    t.playing,
-                    t.position_beats,
-                    (t.time_sig_num, t.time_sig_den),
-                );
+                if let Some(side) = side.as_mut() {
+                    side.set_tempo(t.tempo as f32);
+                    side.set_transport(
+                        t.playing,
+                        t.position_beats,
+                        (t.time_sig_num, t.time_sig_den),
+                    );
+                }
             } else if let Some(event) = input::event(e)
                 && s.input.len() < s.input.capacity()
             {
@@ -420,7 +500,7 @@ impl PluginLogic for Kontra {
         }
         // Rendered in chunks, so a long offline block never reads past what
         // the engine looked ahead for.
-        let chunk = CHUNK.min(audio.max_block()).max(1);
+        let chunk = CHUNK.min(max_block).max(1);
         for start in (0..frames).step_by(chunk) {
             let len = chunk.min(frames - start);
             let end = (start + len) as u32;
@@ -430,13 +510,18 @@ impl PluginLogic for Kontra {
                     .filter(|(at, _)| (start as u32..end).contains(at))
                     .map(|&(at, e)| (at - start as u32, e)),
             );
-            // A bounce waits for the disk; a live block never does.
-            if cx.process_mode.is_offline() {
-                audio.settle();
+            if let Some(side) = side.as_mut() {
+                // A bounce waits for the disk; a live block never does.
+                if cx.process_mode.is_offline() {
+                    side.settle();
+                }
+                side.process(len, &s.chunk);
             }
-            audio.process(len, &s.chunk);
             for ch in 0..b.num_output_channels() {
-                let pair = audio.output(ch / 2, len);
+                let silent: &[[f32; 2]] = &[];
+                let pair = side
+                    .as_ref()
+                    .map_or(silent, |side| side.output(ch / 2, len));
                 let Some(out) = b.output(ch).get_mut(start..start + len) else {
                     continue;
                 };

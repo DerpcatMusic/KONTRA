@@ -38,3 +38,51 @@ the application's exact `mapped_accessibility_set_value_uses_authored_units`.
 earliest one winning. KONTRA's value-edit arrows repeat while held and its
 level meters fall and hold on Kontakt's GUI tick; both need a frame when no
 input arrives. No change to painting or input.
+
+# The pointer is re-derived when the scene space changes
+
+`Driver` recorded the pointer in **scene units** at event time, dividing by
+the zoom in force then. The scene space is physical pixels over the window
+scale and the zoom, so a window scale the host changes (`gui.set_scale`, a
+compositor change) or a zoom the view changes (a fit-to-window editor
+re-zooms on every resize) moves the scene under a pointer that did not move.
+The recorded position then belongs to the old space, and since baseview's
+button events carry no position of their own -- only the last move's -- the
+press that follows is tested against rects the pointer is not over. The
+error grows with distance from the origin, so controls near the corner keep
+working while a floating menu's items do not.
+
+`Driver` keeps the pointer in window points (`pointer_at`) and derives the
+scene position from it, so a zoom change re-derives it in `advance` and the
+native host re-derives it from the physical point in `Handler::resized`
+(`Driver::reposition`). Painting and layout are unchanged: both already used
+the scale in force. Witnesses: `host::tests::a_zoom_change_moves_the_pointer_with_the_scene`
+and `kontra-native-host`'s `tests::a_press_after_a_scale_change_lands_where_the_pointer_is`;
+both fail on the unpatched driver, landing the press at the old scene
+position.
+
+# Queued pointer edges move with the scene too
+
+The patch above re-derives `self.pointer` when `advance` recomputes the zoom,
+but the edges already sitting in `Driver::pending` had copied their position
+out of the old scene space at event time. A press that arrives between a
+fit-to-window resize and the next frame was therefore dispatched -- in that
+same frame, against the new rects -- at its old scene position: the identical
+miss, one frame later than the one `repose` fixes.
+
+`advance` now rescales every queued pointer position by `old_zoom / new_zoom`
+when the zoom changes (`Driver::reproject`), before any of them is dispatched.
+The ratio is exact: a queued edge's recorded position is its window point over
+the old zoom, and the new space wants that same point over the new zoom.
+Presses still carry the position they were enqueued with, so a move queued
+after them does not retroactively move them; only the space changes.
+`Pending::Cancel` is remapped with the rest. Wheel deltas are not positions
+and are left as enqueued. Painting and layout are unchanged.
+
+Witness: `host::tests::a_queued_press_is_reprojected_when_the_zoom_changes` --
+pointer at window point (100, 60), zoom 2, press queued at scene (50, 30),
+window resized to half so the zoom becomes 1. Unpatched, the frame that runs
+the press builds with the pointer still at (50, 30); patched, at (100, 60),
+the point it was pressed on. The existing
+`a_zoom_change_moves_the_pointer_with_the_scene` still covers the pointer
+itself.

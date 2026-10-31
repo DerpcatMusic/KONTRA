@@ -58,6 +58,11 @@ pub struct Ramp {
 pub enum Kind {
     Filter(Svf),
     Eq(VoiceEq),
+    /// An amp's bands and its folded input·output gain.
+    Amp {
+        eq: VoiceEq,
+        gain: f32,
+    },
     Formant(Formant),
     Shaper(Shaper),
     Crush(Crush),
@@ -73,6 +78,10 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<Kind> {
             Kind::Filter(svf)
         }
         ir::EffectKind::Eq(bells) => Kind::Eq(VoiceEq::new(bells, rate)),
+        ir::EffectKind::Amp(a) => Kind::Amp {
+            eq: VoiceEq::new(a.bands, rate),
+            gain: a.gain(),
+        },
         ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(f), rate)),
         ir::EffectKind::Shaper(s) => Kind::Shaper(shaper(s, rate)),
         ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(c, rate), 1)),
@@ -171,6 +180,13 @@ pub fn process(
             match &mut u.kind {
                 Kind::Filter(f) => f.process(chunk),
                 Kind::Eq(q) => q.process(chunk),
+                Kind::Amp { eq, gain } => {
+                    eq.process(chunk);
+                    for frame in chunk.iter_mut() {
+                        frame[0] *= *gain;
+                        frame[1] *= *gain;
+                    }
+                }
                 Kind::Formant(f) => f.process(chunk),
                 Kind::Shaper(s) => drive(chunk, spare, e, |io| s.process(io)),
                 Kind::Crush(c) => drive(chunk, spare, e, |io| c.process(io)),
@@ -224,7 +240,7 @@ fn tune(kind: &mut Kind, t: Tune, rate: u32) {
             f.set_cutoff(hz, rate);
             f.set_damping(k);
         }
-        (Kind::Eq(q), Tune::Eq(bells)) => q.retune(bells, rate),
+        (Kind::Eq(q) | Kind::Amp { eq: q, .. }, Tune::Eq(bells)) => q.retune(bells, rate),
         (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(v), rate),
         (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => s.set_curve(curve(v.curve)),
         (Kind::Crush(c), Tune::Effect(ir::EffectKind::Crush(v))) => c.set(reduction(v, rate)),

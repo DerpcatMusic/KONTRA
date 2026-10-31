@@ -965,6 +965,15 @@ impl<V: View> Handler<V> {
         self.scale = size.scale_factor;
         let physical = (size.physical.width, size.physical.height);
         self.driver.resized(physical, size.scale_factor);
+        // The pointer's scene position is its window point over the scale.
+        // A scale the host changed moves the scene under a pointer that did
+        // not move, and a press carries no position of its own: re-derive it
+        // from the physical point it is on, or the next press is tested
+        // against rects the pointer is not over.
+        if let Some(at) = self.pointer_at {
+            self.driver
+                .reposition(Point::new(at.x / self.scale, at.y / self.scale));
+        }
         self.unpainted = true;
         if self.software_only && self.gpu_retry_left {
             self.gpu_retry_left = false;

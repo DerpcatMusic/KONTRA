@@ -1,4 +1,4 @@
-//! Replika (module 0x5a, saved v0x12) in its Modern mode onto [`ir::Delay`].
+//! Replika (module 0x5a, saved v0x11 and v0x12) in its Modern mode onto [`ir::Delay`].
 //! Laws measured on Kontakt 8.13.1 through the oracle (scratch rig, INIT
 //! Replika, 2026-10-29) and kemu (docs/re/engine/k-replika-binding.md):
 //! - the line is TIME ms (+2 frames); in stereo mode the left runs
@@ -15,6 +15,20 @@
 //! A synced TIME (units 5 and up) saves beats per unit and a count in TIME
 //! (docs/re/kontakt-bindings, RDL_TIME_UNIT); played as count × beats,
 //! unmeasured, so still reported.
+//!
+//! Saved versions. The reader (`0x140d02250`) reads the same fields in the same
+//! order for v0x11 (branch `0x140d0241a`) and v0x12, and v0x12 appends nine
+//! floats and one flag (k-replika.md, "Saved stream"): the mode, ten floats,
+//! the three flags, the three sync floats and their flag, four floats, the
+//! DENSE flag, then — v0x12 only — SHUFFLE, FEEL, ACCENT, PAN, WIDTH,
+//! LR_OFFSET, DUCKING_SENSE, DUCKING_RELEASE, DUCKING_AMOUNT and
+//! PINGPONG_FLIP. A v0x11 record is 77 bytes, a v0x12 one 114. The fields
+//! v0x11 does not carry keep the values the v0x12 INIT record stores
+//! (0.5/0.5/0.3 and the flip off), which are the ones a fresh object holds.
+//!
+//! Only Modern (mode 0) is modelled; Analogue, Tape, Vintage and Diffusion
+//! (1..4, the five strings in 8.13.1 at `0x14744cc8`) run different lines and
+//! are reported, not rendered.
 
 use kontra_ir as ir;
 
@@ -59,12 +73,28 @@ pub(crate) const INIT: Replika = Replika {
     offset: 0.3,
 };
 
+/// The five saved modes, in the reader's table (`0x140a847f0`, values 0..4;
+/// the strings are "Type: Modern" .. "Type: Diffusion" at `0x14744cc8`).
+pub(crate) const MODE_NAMES: [&str; 5] = [
+    "Replika Modern mode",
+    "Replika Analogue mode",
+    "Replika Tape mode",
+    "Replika Vintage mode",
+    "Replika Diffusion mode",
+];
+
 /// The record (reader layout: i32 mode, ten floats from TIME to RATE, the
 /// stereo, noise and ping-pong bytes, then floats packed after them).
+///
+/// v0x12 appends nine floats and the flip flag after the DENSE flag; v0x11
+/// (`0x140d0241a`) stops at DENSE, so a v0x11 record is 77 bytes and a v0x12
+/// one 114.
 pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
-    if version != 0x12 {
-        return None;
-    }
+    let full = match version {
+        0x12 => true,
+        0x11 => false,
+        _ => return None,
+    };
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
@@ -80,23 +110,30 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
         stereo: flag(44)?,
         pingpong: flag(46)?,
         beats: Some(f(47)?).filter(|&b| b >= 0.0),
-        pan: f(89)?,
-        width: f(93)?,
-        offset: f(97)?,
-        flip: flag(113)?,
+        // Fields 23..32 are v0x12 only. A v0x11 object keeps what the v0x12
+        // INIT record stores there: centred, half width, LR offset 0.3, no
+        // flip.
+        pan: if full { f(89)? } else { 0.5 },
+        width: if full { f(93)? } else { 0.5 },
+        offset: if full { f(97)? } else { 0.3 },
+        flip: if full { flag(113)? } else { false },
     })
 }
 
 /// What the Modern mode does that is not run, for the gap log.
 pub(crate) fn lost(r: Replika) -> impl Iterator<Item = &'static str> {
+    let mode = MODE_NAMES
+        .get(usize::try_from(r.mode).unwrap_or(usize::MAX))
+        .copied();
     [
-        (r.depth > 0.0, "Replika modulation"),
-        (r.beats.is_some(), "Replika tempo sync"),
-        (!r.stereo && !r.pingpong, "Replika mono mode"),
-        (r.pingpong && r.flip, "Replika ping-pong flip"),
+        (r.mode != 0, mode),
+        (r.depth > 0.0, Some("Replika modulation")),
+        (r.beats.is_some(), Some("Replika tempo sync")),
+        (!r.stereo && !r.pingpong, Some("Replika mono mode")),
+        (r.pingpong && r.flip, Some("Replika ping-pong flip")),
     ]
     .into_iter()
-    .filter_map(|(on, what)| on.then_some(what))
+    .filter_map(|(on, what)| on.then_some(what).flatten())
 }
 
 /// The HIGHCUT shelf's corner by knob (measured every 0.1; open at 1).
@@ -194,6 +231,11 @@ mod tests {
     /// The INIT record as Kontakt 8.13.1 saves it.
     const INIT_RECORD: &str = "000000000000fa431f85eb3e000000003333733fcdcccc3d0000803e9a99993e0000803f00000000cdcccc3d010000000080bf000000000000803f000000803f0000003f0000003f0000003f01000000000000003f0000003f0000003f0000003f9a99993e00000000000000000000000000";
 
+    /// Electric Mint's Replika, saved v0x11: 72 of its 77 bytes. The tail the
+    /// copy is missing (BBDTYPE, AMOUNT, SIZE, MODULATION, DENSE) is fields
+    /// 18..22, which this binding does not read.
+    const V11_RECORD: &str = "0400000000004040bfeedc3ed42c443f92ce5c3fcdcccc3d0000803e9a99993e0000803f00000000cdcccc3d0100000000003e0000fa430000803f0000803fb94fc63e8a3be63e01";
+
     fn bytes(hex: &str) -> Vec<u8> {
         let hex: String = hex.split_whitespace().collect();
         (0..hex.len() / 2)
@@ -235,5 +277,29 @@ mod tests {
             ([0.5, 0.5], [1.0, 0.0], 0.0)
         );
         assert_eq!(delay(Replika { mode: 2, ..INIT }), None);
+    }
+
+    /// The v0x11 branch of the reader (`0x140d0241a`) reads the same mode, ten
+    /// floats, three flags and sync floats as v0x12 and stops after DENSE.
+    #[test]
+    fn the_v11_record_reads_electric_mints_replika() {
+        let r = saved(0x11, &bytes(V11_RECORD)).expect("v0x11");
+        assert_eq!(r.mode, 4);
+        assert_eq!(r.ms, 3.0);
+        assert!((r.feedback - 0.43150899).abs() < 1e-7);
+        assert!((r.low_cut - 0.76630902).abs() < 1e-7);
+        assert!((r.high_cut - 0.86252701).abs() < 1e-7);
+        assert_eq!(r.depth, 0.0);
+        assert!(r.stereo && !r.pingpong);
+        assert_eq!(r.beats, Some(0.125));
+        // Absent from a v0x11 record: the object keeps the v0x12 INIT values.
+        assert_eq!((r.pan, r.width, r.offset, r.flip), (0.5, 0.5, 0.3, false));
+        // Mode 4 is Diffusion: a different line, so no Modern delay is claimed.
+        assert_eq!(delay(r), None);
+        assert_eq!(
+            lost(r).collect::<Vec<_>>(),
+            ["Replika Diffusion mode", "Replika tempo sync"]
+        );
+        assert_eq!(saved(0x13, &bytes(V11_RECORD)), None);
     }
 }

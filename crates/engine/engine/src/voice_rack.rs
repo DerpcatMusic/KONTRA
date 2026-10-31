@@ -62,7 +62,9 @@ impl Engine {
                 Kind::Filter(_) => self
                     .voice_filter(zone, u.insert, note, age)
                     .map(|(hz, k)| Tune::Filter(hz, k)),
-                Kind::Eq(_) => self.voice_bells(zone, u.insert, note, age).map(Tune::Eq),
+                Kind::Eq(_) | Kind::Amp { .. } => {
+                    self.voice_bells(zone, u.insert, note, age).map(Tune::Eq)
+                }
                 Kind::Formant(_) | Kind::Overdrive(_) => self
                     .voice_effect(zone, u.insert, note, age)
                     .map(Tune::Effect),
@@ -120,7 +122,7 @@ impl Engine {
                     insert: i,
                     depth,
                 } if i == insert => {
-                    let input = self.routed(zone, source, note, age);
+                    let input = self.routed(zone, source, note, age, m.invert);
                     let value = input.unwrap_or(0.0) * depth;
                     #[cfg(feature = "trace")]
                     self.trace_route(zone, m, input, value, crate::RouteUnit::CutoffDepth);
@@ -133,14 +135,14 @@ impl Engine {
                 } if i == insert => match f.ladder {
                     Some(_) => {
                         let depth = depth * self.scale(zone, source, note, age);
-                        let x = self.unit(zone, source, note, age);
+                        let x = self.unit(zone, source, note, age, m.invert);
                         let value = x.map_or(1.0, |x| ir::Curve::Signed.gain(depth, x));
                         #[cfg(feature = "trace")]
                         self.trace_route(zone, m, x, value, crate::RouteUnit::ResonanceMultiplier);
                         resonance *= value;
                     }
                     None => {
-                        let input = self.routed(zone, source, note, age);
+                        let input = self.routed(zone, source, note, age, m.invert);
                         let value = input.unwrap_or(0.0) * depth;
                         #[cfg(feature = "trace")]
                         self.trace_route(zone, m, input, value, crate::RouteUnit::ResonanceDepth);
@@ -181,10 +183,10 @@ impl Engine {
                 && i == insert
             {
                 let input = self.source(zone, source, note, age);
-                let x = input.unwrap_or(0.0);
+                let x = input.map(|x| self.inverted(m.invert, source, x));
                 let x = match source {
-                    ir::Source::Lfo(_) if unipolar => (x + 1.0) * 0.5,
-                    _ => x,
+                    ir::Source::Lfo(_) if unipolar => (x.unwrap_or(0.0) + 1.0) * 0.5,
+                    _ => x.unwrap_or(0.0),
                 };
                 let amount = x * depth * self.scale(zone, source, note, age);
                 #[cfg(feature = "trace")]
@@ -221,7 +223,7 @@ impl Engine {
             } = m.kind
                 && i == insert
             {
-                let input = self.routed(zone, source, note, age);
+                let input = self.routed(zone, source, note, age, m.invert);
                 let amount = input.unwrap_or(0.0) * depth_db;
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, input, amount, crate::RouteUnit::EqDecibels);

@@ -2179,6 +2179,7 @@ dependencies = [
  "kontra-ir",
  "kontra-law",
  "kontra-params",
+ "kontra-ui-model",
  "ni-file",
  "thiserror 2.0.21",
 ]
@@ -2213,6 +2214,7 @@ dependencies = [
  "kontra-format",
  "kontra-ir",
  "kontra-law",
+ "kontra-ui-model",
  "roxmltree",
  "thiserror 2.0.21",
  "uvi-file",
@@ -2366,15 +2368,18 @@ dependencies = [
  "clap-sys",
  "dirs",
  "kontra-align",
+ "kontra-engine",
  "kontra-host",
  "kontra-library",
  "kontra-protocol",
+ "kontra-stream",
  "kontra-ui",
  "kontra-ui-model",
  "moose",
  "moose-clap",
  "moose-test",
  "moose-vst3",
+ "mui",
  "mui-native-dialog",
  "rfd 0.17.2",
 ]
@@ -2450,7 +2455,11 @@ dependencies = [
 name = "kontra-ui"
 version = "0.0.0"
 dependencies = [
+ "kontra-engine",
+ "kontra-host",
+ "kontra-ksp",
  "kontra-protocol",
+ "kontra-stream",
  "kontra-ui-model",
  "kontra-ui-pictures",
  "mui",

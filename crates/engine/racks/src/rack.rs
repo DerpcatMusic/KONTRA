@@ -81,7 +81,9 @@ impl Rack {
         Self::routed(slots, rate, Responses(impulses, &[]), &[], &[])
     }
 
-    /// As [`Self::new`], its slots moved by `mods` reading `blends`.
+    /// As [`Self::new`], its slots moved by `mods` reading `blends`. A route's
+    /// `invert` flag is not read here: the single mirroring law lives in
+    /// `voice_gain::inverted`, where a route is read per voice.
     pub fn routed(
         slots: &[Option<ir::Effect>],
         rate: u32,
@@ -134,14 +136,20 @@ impl Rack {
 
     /// Reads its routes' sources for the next span.
     pub fn follow(&mut self, live: &Live) {
-        for (m, amount) in self.mods.iter().zip(self.amounts.iter_mut()) {
-            *amount = match *m {
+        for n in 0..self.mods.len() {
+            let Some(m) = self.mods.get(n).copied() else {
+                break;
+            };
+            let amount = match m {
                 ir::ModKind::EffectParam { source, depth, .. } => {
                     live.read(source, &self.blends).unwrap_or(0.0) * depth
                 }
                 ir::ModKind::Send { source, .. } => live.read(source, &self.blends).unwrap_or(1.0),
                 _ => continue,
             };
+            if let Some(a) = self.amounts.get_mut(n) {
+                *a = amount;
+            }
         }
     }
 

@@ -49,6 +49,7 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_MOD_TARGET_MP_INTENSITY", P::RouteDepth),
         ("$ENGINE_PAR_INTMOD_INTENSITY", P::RouteDepth),
         ("$ENGINE_PAR_INTMOD_BYPASS", P::ModBypass),
+        ("$MOD_TARGET_INVERT_SOURCE", P::ModInvertSource),
         ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
         ("$ENGINE_PAR_RELEASE_TRIGGER", P::ReleaseTrigger),
         ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),

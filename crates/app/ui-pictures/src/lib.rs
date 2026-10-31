@@ -28,19 +28,37 @@ use mui::prelude::{Font, Image};
 /// Reads a library-relative path; `None` when there is no such file.
 pub type Read = dyn Fn(&str) -> Option<Vec<u8>> + Send;
 
+/// A rectangle of a picture, in its own pixels: the part a page shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Band {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The most a picture may be on a side and still be drawn: vello's image
+/// atlas is `MAX_ATLAS_SIZE` = 8192 (`vello_encoding`'s `image_cache`), and a
+/// picture that cannot be allocated a slot is drawn at zero size — the page
+/// shows nothing, and says nothing. A wallpaper is 7952 rows tall, so at two
+/// device pixels a source pixel it is 15904 and vanished.
+pub const ATLAS: u32 = 8192;
+
 struct Job {
     asset: AssetRef,
     frame: u32,
     path: String,
     meta: ImageMeta,
     scale: f32,
+    /// The part of the picture to decode, in its own pixels; `None` for all.
+    band: Option<Band>,
     /// A picture font: decoded at its own pixels, its glyphs cut by marker.
     font: bool,
     outline: bool,
 }
 
 enum Done {
-    Image(AssetRef, u32, f32, bool, Option<Arc<Image>>),
+    Image(AssetRef, u32, Option<Band>, f32, bool, Option<Arc<Image>>),
     Outline(AssetRef, Option<Font>),
 }
 
@@ -63,8 +81,8 @@ pub fn arrived() -> bool {
 pub struct Pictures {
     jobs: mpsc::Sender<Job>,
     done: mpsc::Receiver<Done>,
-    ready: HashMap<(AssetRef, u32), Option<Arc<Image>>>,
-    last: HashMap<AssetRef, Arc<Image>>,
+    ready: HashMap<(AssetRef, u32, Option<Band>), Option<Arc<Image>>>,
+    last: HashMap<(AssetRef, Option<Band>), Arc<Image>>,
     fonts: HashMap<AssetRef, Option<Glyphs>>,
     outlines: HashMap<AssetRef, Option<Font>>,
     pending: usize,
@@ -113,7 +131,8 @@ impl Pictures {
                             Some(Arc::new(image))
                         } else {
                             let image = look(&image).unwrap_or(image);
-                            at_integer(image, job.scale).map(Arc::new)
+                            let scale = fit(&image, job.scale);
+                            at_integer(image, scale).map(Arc::new)
                         }
                     })
                 } else {
@@ -121,23 +140,27 @@ impl Pictures {
                         let mut h = std::hash::DefaultHasher::new();
                         bytes.hash(&mut h);
                         let axis = job.meta.axis == Orientation::Vertical;
-                        (job.frame, job.meta.frames, axis, job.font).hash(&mut h);
+                        (job.frame, job.meta.frames, axis, job.font, job.band).hash(&mut h);
                         decoded
                             .entry(h.finish())
                             .or_insert_with(|| {
-                                let image = decode(&bytes, job.meta, job.frame)?;
+                                let mut image = decode(&bytes, job.meta, job.frame)?;
                                 if job.font {
                                     return Some(Arc::new(image));
                                 }
+                                if let Some(band) = job.band {
+                                    image = crop(&image, band)?;
+                                }
                                 let image = look(&image).unwrap_or(image);
-                                at_integer(image, job.scale).map(Arc::new)
+                                let scale = fit(&image, job.scale);
+                                at_integer(image, scale).map(Arc::new)
                             })
                             .clone()
                     })
                 };
                 if outbox
                     .send(Done::Image(
-                        job.asset, job.frame, job.scale, job.font, image,
+                        job.asset, job.frame, job.band, job.scale, job.font, image,
                     ))
                     .is_err()
                 {
@@ -169,6 +192,22 @@ impl Pictures {
         n: usize,
         scale: f64,
     ) -> Option<Arc<Image>> {
+        self.frame_band(asset, path, meta, n, scale, None)
+    }
+
+    /// [`Pictures::frame`] of `band` of the picture, in the picture's own
+    /// pixels: the wall of a page is a strip thousands of rows tall and the
+    /// page shows a few hundred of them, which is all the renderer is asked
+    /// for. A band that lies outside the picture draws nothing.
+    pub fn frame_band(
+        &mut self,
+        asset: AssetRef,
+        path: &str,
+        meta: ImageMeta,
+        n: usize,
+        scale: f64,
+        band: Option<Band>,
+    ) -> Option<Arc<Image>> {
         let scale = quarter(scale);
         if scale != self.scale {
             // The old frames stand in (`last`) until the new ones arrive.
@@ -178,17 +217,18 @@ impl Pictures {
         let n = u32::try_from(n)
             .unwrap_or(u32::MAX)
             .min(meta.frames.saturating_sub(1));
-        match self.ready.get(&(asset, n)) {
+        match self.ready.get(&(asset, n, band)) {
             Some(Some(image)) => return Some(image.clone()),
             Some(None) => {}
             None => {
-                self.ready.insert((asset, n), None);
+                self.ready.insert((asset, n, band), None);
                 let job = Job {
                     asset,
                     frame: n,
                     path: path.to_owned(),
                     meta,
                     scale,
+                    band,
                     font: false,
                     outline: false,
                 };
@@ -197,7 +237,7 @@ impl Pictures {
                 }
             }
         }
-        self.last.get(&asset).cloned()
+        self.last.get(&(asset, band)).cloned()
     }
 
     /// Takes what the worker finished; `true` when a frame arrived and the
@@ -206,8 +246,10 @@ impl Pictures {
         let mut arrived = false;
         while let Ok(done) = self.done.try_recv() {
             self.pending = self.pending.saturating_sub(1);
-            let (asset, n, scale, font, image) = match done {
-                Done::Image(asset, n, scale, font, image) => (asset, n, scale, font, image),
+            let (asset, n, band, scale, font, image) = match done {
+                Done::Image(asset, n, band, scale, font, image) => {
+                    (asset, n, band, scale, font, image)
+                }
                 Done::Outline(asset, font) => {
                     arrived |= font.is_some();
                     self.outlines.insert(asset, font);
@@ -221,11 +263,11 @@ impl Pictures {
                 continue;
             }
             if let Some(image) = &image {
-                self.last.insert(asset, image.clone());
+                self.last.insert((asset, band), image.clone());
                 arrived = true;
             }
             if scale == self.scale {
-                self.ready.insert((asset, n), image);
+                self.ready.insert((asset, n, band), image);
             }
         }
         arrived
@@ -245,6 +287,7 @@ impl Pictures {
             path: path.to_owned(),
             meta: ImageMeta::default(),
             scale: 1.,
+            band: None,
             font: true,
             outline: false,
         };
@@ -266,6 +309,7 @@ impl Pictures {
             path: path.to_owned(),
             meta: ImageMeta::default(),
             scale: 1.,
+            band: None,
             font: false,
             outline: true,
         };
@@ -279,6 +323,22 @@ impl Pictures {
     #[must_use]
     pub fn pending(&self) -> usize {
         self.pending
+    }
+
+    /// The largest side among the frames held, in device pixels: what the
+    /// renderer was handed. Past [`ATLAS`] it draws nothing, so this is the
+    /// number to watch and to say out loud.
+    #[must_use]
+    pub fn tallest(&self) -> u32 {
+        let mut seen = std::collections::HashSet::new();
+        self.ready
+            .values()
+            .flatten()
+            .chain(self.last.values())
+            .filter(|image| seen.insert(Arc::as_ptr(image)))
+            .map(|image| image.width.max(image.height))
+            .max()
+            .unwrap_or(0)
     }
 
     /// The decoded bytes held, each shared frame once.
@@ -418,6 +478,42 @@ fn decode(bytes: &[u8], meta: ImageMeta, n: u32) -> Option<Image> {
         }
     }
     Image::rgba(fw as u32, fh as u32, out)
+}
+
+/// `band` of `image`, or `None` when none of it lies inside the picture.
+fn crop(image: &Image, band: Band) -> Option<Image> {
+    let (x, y) = (band.x.min(image.width), band.y.min(image.height));
+    let width = band.width.min(image.width.checked_sub(x)?);
+    let height = band.height.min(image.height.checked_sub(y)?);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let stride = image.width as usize * 4;
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in y..y.saturating_add(height) {
+        let start = row as usize * stride + x as usize * 4;
+        let end = start + width as usize * 4;
+        rgba.extend_from_slice(image.rgba.get(start..end)?);
+    }
+    Image::rgba(width, height, rgba)
+}
+
+/// `scale`, reduced to the largest quarter step whose picture still fits the
+/// renderer's atlas on both sides: past it the picture is drawn at no size at
+/// all, so a page loses it without a word.
+fn fit(image: &Image, scale: f32) -> f32 {
+    let side = |n: u32, scale: f32| {
+        if scale <= 1. {
+            (f64::from(n) * f64::from(scale)).round() as u32
+        } else {
+            n.saturating_mul(scale.ceil() as u32)
+        }
+    };
+    let mut scale = scale;
+    while scale > 0.25 && (side(image.width, scale) > ATLAS || side(image.height, scale) > ATLAS) {
+        scale = (scale - 0.25).max(0.25);
+    }
+    scale
 }
 
 /// `scale` up to the next quarter, between a quarter and four.
@@ -574,6 +670,73 @@ fn jpeg(bytes: &[u8]) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture with a distinct colour per row, so a band's rows are known.
+    fn rows(height: u32) -> Image {
+        let rgba: Vec<u8> = (0..height)
+            .flat_map(|y| [[y as u8, 0, 0, 255], [y as u8, 0, 0, 255]])
+            .flatten()
+            .collect();
+        Image::rgba(2, height, rgba).expect("a picture")
+    }
+
+    #[test]
+    fn a_band_is_the_rows_it_asks_for() {
+        let image = rows(10);
+        let band = super::crop(
+            &image,
+            Band {
+                x: 0,
+                y: 4,
+                width: 2,
+                height: 3,
+            },
+        )
+        .expect("rows 4 to 6 are inside");
+        assert_eq!((band.width, band.height), (2, 3));
+        assert_eq!(&band.rgba[..4], &[4, 0, 0, 255], "the band starts at row 4");
+        assert_eq!(&band.rgba[16..20], &[6, 0, 0, 255], "and ends at row 6");
+        // A band past the picture has nothing to show.
+        assert!(
+            super::crop(
+                &image,
+                Band {
+                    x: 0,
+                    y: 10,
+                    width: 2,
+                    height: 3
+                }
+            )
+            .is_none()
+        );
+        assert!(
+            super::crop(
+                &image,
+                Band {
+                    x: 2,
+                    y: 0,
+                    width: 2,
+                    height: 3
+                }
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_picture_too_tall_for_the_atlas_is_read_at_a_scale_it_holds() {
+        // A wallpaper strip: 633 by 7952, read at two device pixels.
+        let strip = rows(7952);
+        assert_eq!(super::fit(&strip, 2.), 1., "15904 does not fit 8192");
+        assert_eq!(super::fit(&strip, 1.5), 1., "at_integer doubles 1.5 too");
+        // A picture the atlas holds keeps the scale it asked for.
+        let small = rows(300);
+        assert_eq!(super::fit(&small, 2.), 2.);
+        // At the size it can hold, one upscale step fits and is kept.
+        let band = rows(4000);
+        assert_eq!(super::fit(&band, 2.), 2., "8000 fits");
+        assert_eq!(super::fit(&band, 4.), 2., "16000 does not, 8000 does");
+    }
 
     /// A picture font cut at its red markers: 256 glyphs of their own
     /// widths, the marker row dropped; characters map by Windows-1252.

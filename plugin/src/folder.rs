@@ -42,6 +42,12 @@ impl Dialog {
         self.owner.store(hwnd.unwrap_or(0), Ordering::Release);
     }
 
+    /// Whether a picker is open: its answer comes when it closes, so the
+    /// control tick has to be asked for while it is.
+    pub fn pending(&self) -> bool {
+        lock(&self.job).is_some()
+    }
+
     /// Opens the picker at `from`, unless one is open.
     pub fn ask(&self, from: Option<PathBuf>) {
         let mut job = lock(&self.job);
