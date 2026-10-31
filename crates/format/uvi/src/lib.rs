@@ -6,6 +6,7 @@
 mod bank;
 mod header;
 mod keys;
+pub mod presentation;
 mod program;
 
 use std::path::{Path, PathBuf};
@@ -100,6 +101,13 @@ impl Resources {
     #[must_use]
     pub fn open(path: &Path) -> Self {
         Self(split(path).and_then(|(bank, _)| bank::Bank::open(&bank).ok()))
+    }
+
+    /// Whether its bank opened at all: a program outside any bank has no
+    /// picture to read.
+    #[must_use]
+    pub fn found(&self) -> bool {
+        self.0.is_some()
     }
 
     /// The file at a script's picture path (`../artwork/knob.png`).

@@ -5,12 +5,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError};
 
 use kontra_host::browser::Browser;
 use kontra_host::rack::{Event, HostNote, HostPattern, Mix, Rack};
 use kontra_host::state::SavedView;
-use kontra_host::ui::Library;
+use kontra_host::ui::{Library, Loader};
 use kontra_protocol::Stats;
 use kontra_ui::app::{self, Action, App, Face, Part};
 use kontra_ui::{Pictures, layout};
@@ -31,6 +31,9 @@ struct PartView {
     /// Which load of the part this is.
     generation: u64,
     path: Option<PathBuf>,
+    /// The instrument its IR was read from: a preset's own file may sit
+    /// outside its library, and its pictures come from there.
+    source: Option<PathBuf>,
     /// Its library's interface; copied when the part loads and whenever
     /// its script changes it ([`kontra_host::view::View::revision`]).
     tree: Option<Arc<Interface>>,
@@ -112,6 +115,7 @@ impl Snapshot {
                     slot,
                     generation,
                     path: p.path.clone(),
+                    source: p.source.clone(),
                     tree,
                     revision,
                     sounds,
@@ -170,7 +174,7 @@ impl Snapshot {
 
     /// Fills `app` for a frame, keeping each part's own view state; `shown`
     /// is which load of each part the editor's faces are of.
-    fn fill(&self, app: &mut App, shown: &mut Shown) {
+    pub(crate) fn fill(&self, app: &mut App, shown: &mut Shown) {
         if shown.browser != self.libraries.0 {
             let fresh = self.libraries.1.as_ref();
             // A load or a star changes the list, not its art: the covers
@@ -223,7 +227,10 @@ impl Snapshot {
                         f
                     })
                 }
-                _ => p.tree.as_deref().map(|tree| face(tree, p.path.clone())),
+                _ => p
+                    .tree
+                    .as_deref()
+                    .map(|tree| face(tree, p.path.clone(), p.source.clone())),
             };
             Part {
                 face,
@@ -248,6 +255,12 @@ impl Snapshot {
         // What the picture workers decoded since the last frame.
         for face in app.parts.iter_mut().filter_map(|p| p.face.as_mut()) {
             face.pictures.poll();
+            // Past the renderer's atlas a picture is drawn at no size at all:
+            // the page loses it, so the log says which size did it.
+            let side = face.pictures.tallest();
+            if side > kontra_ui::pictures::ATLAS {
+                crate::session::picture_too_large(side, kontra_ui::pictures::ATLAS);
+            }
         }
         *shown = self
             .parts
@@ -272,7 +285,7 @@ impl Snapshot {
 
 /// Which change of the rack's parts and of the browser the editor shows.
 #[derive(Default)]
-struct Shown {
+pub(crate) struct Shown {
     /// By part: its load and its interface's revision.
     parts: Vec<(u64, u64)>,
     /// By part: its load and its sound's revision.
@@ -443,15 +456,17 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
     }
 }
 
-/// A library's interface for the editor, laid out, its pictures read from
-/// the library at `path` off the UI thread.
-fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
+/// A library's interface for the editor, laid out, its pictures read off the
+/// UI thread from the library at `path`, else from `source` (the instrument
+/// the part came from: a preset may sit outside its library). A picture that
+/// cannot be read is logged with its reason, so a page that draws none says
+/// why instead of drawing stock shapes in silence.
+fn face(tree: &Interface, path: Option<PathBuf>, source: Option<PathBuf>) -> Face {
     let tree = resolved(tree);
-    let library = Mutex::new(None);
-    let pictures = Pictures::new(Box::new(move |p: &str| {
-        let path = path.as_deref()?;
-        let mut library = library.lock().ok()?;
-        library.get_or_insert_with(|| Library::open(path)).read(p)
+    let told = crate::session::picture_failures(path.clone());
+    let pictures = Pictures::new(Box::new({
+        let loader = Loader::new([path, source], told);
+        move |p: &str| loader.read(p)
     }));
     Face {
         tree,

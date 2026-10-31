@@ -1064,3 +1064,241 @@ fn live_block(params: &KontraParams, dsp: &mut Dsp) {
     let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events);
     <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
 }
+
+/// The picture assets of `tree` that `read` returns, of how many there are.
+fn pictured(
+    tree: &kontra_ui_model::Interface,
+    mut read: impl FnMut(&str) -> Option<Vec<u8>>,
+) -> (usize, usize) {
+    let images =
+        (tree.assets.iter()).filter(|a| matches!(a.kind, kontra_ui_model::AssetKind::Image(_)));
+    let (mut got, mut all) = (0, 0);
+    for asset in images {
+        all += 1;
+        if read(&asset.path).is_some() {
+            got += 1;
+        }
+    }
+    (got, all)
+}
+
+/// What the page's own store reads for `tree`: the editor's path, its
+/// pictures and no others.
+fn store_pictures(
+    pictures: &mut kontra_ui::Pictures,
+    tree: &kontra_ui_model::Interface,
+) -> (usize, usize) {
+    let images: Vec<(usize, String, kontra_ui_model::ImageMeta)> = (tree.assets.iter().enumerate())
+        .filter_map(|(n, a)| match a.kind {
+            kontra_ui_model::AssetKind::Image(meta) => Some((n, a.path.clone(), meta)),
+            _ => None,
+        })
+        .collect();
+    let count = images.len();
+    for (n, path, meta) in &images {
+        pictures.frame(kontra_ui_model::AssetRef(*n), path, *meta, 0, 1.);
+    }
+    for _ in 0..2000 {
+        pictures.poll();
+        if pictures.pending() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let got = (images.iter())
+        .filter(|(n, path, meta)| {
+            pictures
+                .frame(kontra_ui_model::AssetRef(*n), path, *meta, 0, 1.)
+                .is_some()
+        })
+        .count();
+    (got, count)
+}
+
+/// The harness's route to the same page (`tools/ui-shots`): the instrument's
+/// own file, `Live::new`, and a `Library` opened from that path.
+fn harness_pictures(path: &Path) -> (usize, usize) {
+    let mut store =
+        kontra_stream::Store::new(kontra_stream::StoreConfig::DEFAULT).expect("a store");
+    let loaded =
+        kontra_host::instrument::load(path, RATE as u32, &mut store).expect("the instrument reads");
+    let engine = kontra_engine::Engine::new(
+        std::sync::Arc::new(loaded.plan),
+        store.client(),
+        RATE as u32,
+    );
+    let library = std::cell::RefCell::new(kontra_host::ui::Library::open(path));
+    let meta = |p: &str| library.borrow_mut().meta(p);
+    let mut faces = loaded.faces.clone();
+    let face = faces.iter_mut().find_map(Option::take).expect("a face");
+    let live = kontra_host::ui::Live::new(&face, 0, &engine, &meta).expect("a tree");
+    let mut library = kontra_host::ui::Library::open(path);
+    pictured(&live.tree, |p| library.read(p))
+}
+
+/// The editor's own face for part 0, once its pictures are in.
+fn editor_pictures(params: &KontraParams, mut dsp: &mut Dsp) -> (usize, usize) {
+    settle(params, &mut dsp);
+    settle(params, &mut dsp);
+    let mut app = kontra_ui::app::App::default();
+    let mut shown = crate::editor::Shown::default();
+    {
+        let view = crate::lock(&params.shared.view);
+        view.fill(&mut app, &mut shown);
+    }
+    let Some(face) = app.parts.first_mut().and_then(|p| p.face.as_mut()) else {
+        return (0, 0);
+    };
+    store_pictures(&mut face.pictures, &face.tree)
+}
+
+/// An instrument under the Kontakt libraries this machine has, if present.
+fn instrument(name: &str) -> Option<PathBuf> {
+    const LIBRARY: &str = "Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments";
+    let dirs = [
+        PathBuf::from(KONTAKT),
+        std::env::var_os("HOME")
+            .map_or_else(|| PathBuf::from("/home"), PathBuf::from)
+            .join(LIBRARY),
+    ];
+    for dir in dirs {
+        let path = dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    eprintln!("skipped: no {name}");
+    None
+}
+
+/// A state holding `path` in part 0.
+fn one_part(path: &Path) -> String {
+    Saved::new(vec![SavedPart {
+        part: 0,
+        path: path.to_owned(),
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+    }])
+    .write()
+}
+
+/// The plugin's face reads exactly the pictures the harness reads, for the
+/// same instrument: the same tree and the same library, through the editor's
+/// own store. A face that dropped the library (`face()` turning a failure
+/// into "no picture") reads none of them.
+#[test]
+fn the_editor_face_reads_the_pictures_the_harness_does() {
+    for name in ["Electric Mint.nki", "Electric Mint (Melody).nki"] {
+        let Some(path) = instrument(name) else {
+            continue;
+        };
+        let (harness, assets) = harness_pictures(&path);
+        assert!(harness > 100, "{name}: the harness read {harness}/{assets}");
+        let (params, mut dsp) = activate(&one_part(&path));
+        let (face, face_assets) = editor_pictures(&params, &mut dsp);
+        println!("{name}: harness {harness}/{assets}, editor {face}/{face_assets}");
+        assert_eq!(
+            (face, face_assets),
+            (harness, assets),
+            "{name}: the editor's face and the harness disagree"
+        );
+    }
+}
+
+/// A part whose file is not inside its library (a preset kept elsewhere, a
+/// moved library) draws its pictures from the instrument it was read from,
+/// rather than a page of stock shapes.
+#[test]
+fn a_part_outside_its_library_draws_the_pictures_of_the_instrument_it_came_from() {
+    let Some(path) = instrument("Electric Mint.nki") else {
+        return;
+    };
+    let lie = std::env::temp_dir().join("kontra-nowhere/Electric Mint.nki");
+    let (params, mut dsp) = activate("");
+    settle(&params, &mut dsp);
+    {
+        let mut guard = crate::lock(&params.shared.rack);
+        let rack = guard.as_mut().expect("a rack");
+        let ir = kontra_host::instrument::read(&path).expect("the instrument reads");
+        rack.load_ir(0, ir, Some(lie.clone()))
+            .expect("part 0 takes it");
+    }
+    let (face, assets) = editor_pictures(&params, &mut dsp);
+    println!(
+        "{}: {face}/{assets} pictures from the source library",
+        lie.display()
+    );
+    assert!(
+        face > 100,
+        "the page drew {face}/{assets} pictures: the part's source library was not used"
+    );
+}
+
+/// The page's pictures fit the renderer's atlas. The live editor draws at two
+/// device pixels (MUI's window logs `scale_override=Some(2.0)`,
+/// `device_scale=2`), where the whole wallpaper strip — 633 by 7952 — would
+/// be handed over as 1266 by 15904: past vello's 8192-pixel image atlas,
+/// which draws such a picture at no size at all. That is the photograph that
+/// vanished from the live page while the harness at one device pixel kept it.
+#[test]
+fn the_pages_pictures_fit_the_renderers_atlas() {
+    let Some(path) = instrument("Electric Mint (Melody).nki") else {
+        return;
+    };
+    let (params, mut dsp) = activate(&one_part(&path));
+    settle(&params, &mut dsp);
+    settle(&params, &mut dsp);
+    let mut app = kontra_ui::app::App::default();
+    let mut shown = crate::editor::Shown::default();
+    {
+        let view = crate::lock(&params.shared.view);
+        view.fill(&mut app, &mut shown);
+    }
+    let face = app.parts[0].face.as_mut().expect("a face");
+    for device in [1.0f64, 2.0] {
+        let mut ui = kontra_ui::ui();
+        ui.set_scale(Some(device));
+        let mut draw = |ui: &mut mui::prelude::Ui, face: &mut kontra_ui::app::Face| {
+            let (el, _) = kontra_ui::view::page(
+                ui,
+                0,
+                &face.tree,
+                kontra_ui_model::PageRef(0),
+                &mut face.pictures,
+                (1.0, &[]),
+            );
+            let _ = ui.frame(
+                el,
+                Some(mui::prelude::Size::new(633., 500.)),
+                mui::prelude::Input::default(),
+                1. / 60.,
+            );
+        };
+        draw(&mut ui, face);
+        for _ in 0..2000 {
+            face.pictures.poll();
+            if face.pictures.pending() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        draw(&mut ui, face);
+        let tallest = face.pictures.tallest();
+        println!("{device} device pixels: tallest picture {tallest}");
+        assert!(
+            tallest <= kontra_ui::pictures::ATLAS,
+            "a {tallest} pixel picture at {device} device pixels cannot be drawn: \
+             the atlas holds {}",
+            kontra_ui::pictures::ATLAS
+        );
+        assert!(tallest > 0, "the page drew no picture at {device}");
+    }
+}

@@ -17,3 +17,8 @@ mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1
 [dev-dependencies]
 mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a", features = ["cpu"] }
 png = "0.18"
+# A script's page picked with the pointer, then read back from the engine.
+kontra-engine = { path = "../../engine/engine" }
+kontra-host = { path = "../host" }
+kontra-ksp = { path = "../../script/ksp" }
+kontra-stream = { path = "../../engine/stream" }

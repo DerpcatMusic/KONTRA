@@ -84,6 +84,13 @@ impl Resources {
         }
     }
 
+    /// Whether anything here holds resources: a `Resources/` folder, an
+    /// `.nkr` archive or a `.nicnt` container at or under the root.
+    #[must_use]
+    pub fn found(&self) -> bool {
+        !self.sources.is_empty()
+    }
+
     /// `Resources/<name>` (`data/x.nka`), matched without case; `None` if absent.
     pub fn read(&mut self, name: &str) -> Option<Vec<u8>> {
         let want = format!("/{}", name.to_lowercase());

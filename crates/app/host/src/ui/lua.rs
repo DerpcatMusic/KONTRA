@@ -17,6 +17,7 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
     let mut tree = ui::Interface {
         source: ui::Source::FalconLua,
         performance: page.performance,
+        laws: kontra_format_uvi::presentation::LAWS,
         ..Default::default()
     };
     let mut asset = |tree: &mut ui::Interface, path: &str, frames: u32| {
@@ -352,6 +353,27 @@ mod tests {
         assert_eq!(w.colors.bar, Some(ui::Rgba::rgb(0xdeb25d)));
         assert_eq!(w.colors.background, Some(ui::Rgba::rgb(0x474747)));
         assert_eq!(w.table_inner_edge.map(|e| e.visible), Some(false));
+    }
+
+    #[test]
+    fn a_lua_page_carries_the_uvi_presentation_laws() {
+        let page = kontra_lua::compile(
+            r#"OnOffButton{"b", pos={0,0}, size={10,10}, stripImage="../art/b.png", stripSteps=6}"#,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .ui;
+        let tree = tree(&page, &|_| None);
+        assert_eq!(tree.laws, kontra_format_uvi::presentation::LAWS);
+        let frame = |pointer| {
+            tree.laws
+                .pictures
+                .frame(ui::PictureState::new(ui::Active::On, pointer), 6)
+        };
+        assert_eq!(frame(ui::Pointer::Idle), 1, "on, unpressed");
+        assert_eq!(frame(ui::Pointer::Held), 3, "on, pressed");
+        assert_eq!(frame(ui::Pointer::Hovered), 5, "on, hovered");
     }
 
     #[test]
