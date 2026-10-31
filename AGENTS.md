@@ -25,3 +25,11 @@ the extension, not the engine.
 **Before searching, ask the graph.** `trail ask "<question>" --source`, `trail callers
 <symbol>`, `trail skeleton <file>`, `trail grep "<literal>"`. Use it before grepping or
 opening files.
+
+**One clone, or commits go missing.** This machine has held three clones of the
+repo at once (`kv3`, `kontra-src`, `kontra`) plus worktrees of each. A branch
+created in one is invisible from another, which has already swallowed a lane's
+commits until they were ferried across by hand. Before starting: `git worktree
+list` and note the common dir. Create worktrees from the clone the rest of the
+work is in, and if a lane must work elsewhere, push or fetch by path — do not
+assume a branch exists because `git branch` in your clone shows it.
