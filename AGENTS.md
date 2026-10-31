@@ -1,10 +1,10 @@
 
 ## How work is done here (standing rules)
 
-**Rust.** Every agent writing, reviewing or porting Rust loads the `rust-best-practices`
-skill first; reviews use `rust-review`, ports from C/C++/other use `rust-port`. These are
-installed under `~/.config/opencode/skills/` and `~/.agents/skills/`. `lints/clippy.toml`
-and the `[lints]` block in `lints/lints.toml` are the project's clippy configuration.
+**Rust.** Every agent writing, reviewing or porting Rust loads the `beautiful-rust` skill
+first. It is vendored in this repository at `.claude/skills/beautiful-rust/` (`v3-review`
+and `v3-task` sit beside it), so it is present in every checkout. The root `clippy.toml`
+and the `[workspace.lints]` block in `Cargo.toml` are the project's clippy configuration.
 Idiomatic is not a preference here: ownership over manual memory, `Result` over error
 codes, enums over flag ints and magic strings, and tests that prove behaviour.
 

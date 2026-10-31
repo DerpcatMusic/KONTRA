@@ -251,15 +251,18 @@ SESSION = Session()
 # --------------------------------------------------------------------------- helpers
 def preflight() -> None:
     """Things that must exist before anything can work. Fails loudly, names each gap."""
+    # First, before any prerequisite probe: this refusal must not depend on what
+    # else happens to be installed, and a test of it must reach it rather than
+    # the "missing prerequisites" error.
+    if PREFIX.resolve() == LIVE_PREFIX.resolve():
+        raise ToolError(f"refusing to use the user's live prefix {LIVE_PREFIX} "
+                        f"(REAPER runs there); set ORACLE_MCP_PREFIX to a reflinked copy")
     missing = [str(p) for p in (WINE, EXE, ICD) if not p.exists()]
     for tool in ("Xvfb", "openbox", "xdotool", "import", "magick", "xdpyinfo", "winepath"):
         if shutil.which(tool) is None:
             missing.append(tool)
     if missing:
         raise ToolError("missing prerequisites: " + ", ".join(missing))
-    if PREFIX.resolve() == LIVE_PREFIX.resolve():
-        raise ToolError(f"refusing to use the user's live prefix {LIVE_PREFIX} "
-                        f"(REAPER runs there); set ORACLE_MCP_PREFIX to a reflinked copy")
 
 
 def ensure_prefix() -> list[str]:
@@ -621,6 +624,8 @@ def write_midi(path: Path, notes: list[dict], bpm: float = 120.0) -> dict:
     """notes: [{start_s, length_s, key, velocity}] -> a type-0/1 SMF at 480 ticks per beat."""
     if not notes:
         raise ToolError("notes: an empty note list cannot be rendered")
+    if not bpm > 0:
+        raise ToolError(f"bpm must be > 0, not {bpm}")
     division = 480
     seconds_per_tick = (60.0 / bpm) / division
     events = []
@@ -640,7 +645,13 @@ def write_midi(path: Path, notes: list[dict], bpm: float = 120.0) -> dict:
         events.append((round(start / seconds_per_tick), 1, bytes([0x90 | chan, key, vel])))
         events.append((round((start + length) / seconds_per_tick), 0, bytes([0x80 | chan, key, 0])))
     events.sort(key=lambda e: (e[0], e[1]))  # note-offs before note-ons on the same tick
+    tempo = int(round(60_000_000 / bpm))
     body = bytearray()
+    # The tempo the ticks were computed from, as a file event: without `FF 51 03`
+    # a player (and midi_info here) assumes 500000 us/beat, so every note lands
+    # at seconds * (bpm / 120) and the reported duration -- which tool_render
+    # uses to trim the render -- is wrong by that factor.
+    body += b"\x00\xff\x51\x03" + tempo.to_bytes(3, "big")
     tick = 0
     for at, _, ev in events:
         delta = at - tick
@@ -728,9 +739,29 @@ def kontakt_pids() -> list[int]:
 
 # --------------------------------------------------------------------------- tools
 def tool_up(nki: str | None = None) -> dict:
-    if SESSION.wine is not None:
+    """Start the private session. Any failure on the way tears down what it started.
+
+    Without the teardown a failure between `Xvfb` and wine leaves a display and a
+    window manager running that nothing owns: `SESSION.xvfb` is set, `SESSION.wine`
+    is not, so the next `oracle_up` overwrites the PID, `tool_down` no longer knows
+    it, and `reap_stale` cannot see it because `write_state()` never ran. Five
+    such failures exhaust the display list.
+    """
+    if SESSION.wine is not None or SESSION.xvfb is not None or SESSION.openbox is not None:
         raise ToolError(f"a session is already up (display {SESSION.display}, window "
                         f"{SESSION.window}); call oracle_down first")
+    try:
+        return _tool_up(nki)
+    except BaseException:
+        log("oracle_up failed; stopping the partial session", "warn")
+        try:
+            tool_down()
+        except Exception as e:  # noqa: BLE001 - never mask the failure being raised
+            log(f"teardown after a failed oracle_up also failed: {e}", "error")
+        raise
+
+
+def _tool_up(nki: str | None = None) -> dict:
     preflight()
     notes = ensure_prefix()
     notes += ensure_settings()
@@ -744,6 +775,7 @@ def tool_up(nki: str | None = None) -> dict:
     log(f"starting Xvfb {display}")
     SESSION.xvfb = subprocess.Popen(["Xvfb", display, *XVFB_ARGS], start_new_session=True,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    write_state()  # from here on a crash can be reaped by PID
     t0 = time.monotonic()
     while time.monotonic() - t0 < 15:
         if display_up(display):
@@ -756,6 +788,7 @@ def tool_up(nki: str | None = None) -> dict:
     SESSION.openbox = subprocess.Popen(["openbox", "--sm-disable"], env=base_env(display),
                                        start_new_session=True, stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL)
+    write_state()
     t0 = time.monotonic()
     wm = False
     while time.monotonic() - t0 < 10:
@@ -1315,6 +1348,12 @@ def tool_dump_script(nki: str, probe: str = "ksp", timeout: float = 240.0) -> di
     while time.monotonic() - t0 < 15 and not display_up(display):
         time.sleep(0.3)
     if not display_up(display):
+        # The try/finally that stops this process starts after Kontakt launches;
+        # without this kill a probe display stays occupied, and there are three.
+        try:
+            os.killpg(os.getpgid(xvfb.pid), signal.SIGKILL)
+        except OSError:
+            pass
         raise ToolError(f"oracle_dump_script: Xvfb {display} did not come up")
 
     env = base_env(display)
@@ -1407,10 +1446,19 @@ def tool_mem(addr, length: int = 64, pid: int | None = None) -> dict:
         raise ToolError("oracle_mem: length must be an integer")
     if not (1 <= length <= 4096):
         raise ToolError("oracle_mem: length must be between 1 and 4096 bytes")
+    # The read target first: 'exe' is this pid's module base, and the lowest pid
+    # in the prefix is not necessarily the one the bytes come from.
+    pids = SESSION.kontakt_pids or kontakt_pids()
+    if not pids:
+        raise ToolError("oracle_mem: no Kontakt process in this session's prefix")
+    target = pid if pid is not None else max(pids)
+    if target not in pids:
+        raise ToolError(f"oracle_mem: pid {target} is not a Kontakt of this session "
+                        f"(session pids: {pids})")
     if isinstance(addr, str):
         name = addr.strip().lower()
         if name in ("exe", "kontakt.exe", "module"):
-            address = _module_base(pid if pid is not None else kontakt_pids()[0])
+            address = _module_base(target)
         else:
             try:
                 address = int(addr, 0)
@@ -1424,13 +1472,6 @@ def tool_mem(addr, length: int = 64, pid: int | None = None) -> dict:
             raise ToolError("oracle_mem: addr must be an integer or 0x... string")
     if address <= 0:
         raise ToolError("oracle_mem: addr must be > 0")
-    pids = SESSION.kontakt_pids or kontakt_pids()
-    if not pids:
-        raise ToolError("oracle_mem: no Kontakt process in this session's prefix")
-    target = pid if pid is not None else max(pids)
-    if target not in pids:
-        raise ToolError(f"oracle_mem: pid {target} is not a Kontakt of this session "
-                        f"(session pids: {pids})")
     mapping = None
     try:
         for line in Path(f"/proc/{target}/maps").read_text().splitlines():
@@ -1635,7 +1676,8 @@ def serve() -> int:
         def handler(signum, _frame, _sig=sig):
             log(f"signal {signum}: stopping the session before exit", "warn")
             try:
-                if SESSION.wine is not None or SESSION.xvfb is not None:
+                if (SESSION.wine is not None or SESSION.xvfb is not None
+                        or SESSION.openbox is not None):
                     tool_down()
             finally:
                 os._exit(0)
@@ -1681,7 +1723,7 @@ def serve() -> int:
             send({"jsonrpc": "2.0", "id": mid,
                   "error": {"code": -32603, "message": f"internal error: {e}"}})
     log("stdin closed; shutting down")
-    if SESSION.wine is not None:
+    if SESSION.wine is not None or SESSION.xvfb is not None or SESSION.openbox is not None:
         log("session still up at exit; stopping it", "warn")
         try:
             tool_down()

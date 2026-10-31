@@ -64,12 +64,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for path in &paths {
         run.instrument(path, scale, out.as_deref())?;
     }
-    run.report();
-    if run.failed.is_empty() {
-        Ok(())
-    } else {
-        std::process::exit(1);
+    match run.report() {
+        Outcome::Passed => Ok(()),
+        Outcome::CheckedNothing | Outcome::Failed => std::process::exit(1),
     }
+}
+
+/// What the run proved.
+///
+/// `CheckedNothing` is a failure of its own: a page that drew no control, or an
+/// instrument with no page at all, satisfies every per-control check it never
+/// ran. That is the "a check that cannot fail" class the gate exists to catch,
+/// so it is reported as a failure rather than as a vacuous pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Passed,
+    CheckedNothing,
+    Failed,
 }
 
 fn usage() {
@@ -307,41 +318,63 @@ impl Run {
         Ok(())
     }
 
-    fn report(&self) {
+    /// What this run proved, from its counts alone.
+    #[must_use]
+    fn outcome(&self) -> Outcome {
+        if !self.failed.is_empty() {
+            Outcome::Failed
+        } else if self.checked == 0 {
+            Outcome::CheckedNothing
+        } else {
+            Outcome::Passed
+        }
+    }
+
+    /// Prints the run's table of results and returns what it proved.
+    #[must_use]
+    fn report(&self) -> Outcome {
+        let outcome = self.outcome();
         println!();
-        if self.failed.is_empty() {
-            println!(
+        match outcome {
+            Outcome::CheckedNothing => println!(
+                "FAIL: no control was checked on {} page(s), {} skipped — a page that drew \
+                 no control cannot be shown to hit-test, so this run proves nothing",
+                self.pages, self.skipped
+            ),
+            Outcome::Passed => println!(
                 "PASS: {} controls checked on {} page(s), {} skipped; every control's centre \
                  selected itself and a press 2 points outside selected nothing. {} answered a \
                  click with an Edit (a knob or slider selects without changing, as Kontakt does). \
                  {} are painted under another control, so no click can reach them in Kontakt \
                  either; each is named in the table.",
                 self.checked, self.pages, self.skipped, self.edited, self.covered,
-            );
-            return;
+            ),
+            Outcome::Failed => {
+                println!(
+                    "FAIL: {} of {} controls checked did not hit-test where they are drawn",
+                    self.failed.len(),
+                    self.checked
+                );
+                for f in &self.failed {
+                    println!(
+                        "  {} #{} {} (source {}) drawn {}, pressed {} — {}{}",
+                        f.page,
+                        f.widget,
+                        f.name,
+                        f.source,
+                        drawn(f.rect),
+                        at(f.point),
+                        f.why,
+                        if f.selected.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" instead: {}", f.selected.join(", "))
+                        },
+                    );
+                }
+            }
         }
-        println!(
-            "FAIL: {} of {} controls checked did not hit-test where they are drawn",
-            self.failed.len(),
-            self.checked
-        );
-        for f in &self.failed {
-            println!(
-                "  {} #{} {} (source {}) drawn {}, pressed {} — {}{}",
-                f.page,
-                f.widget,
-                f.name,
-                f.source,
-                drawn(f.rect),
-                at(f.point),
-                f.why,
-                if f.selected.is_empty() {
-                    String::new()
-                } else {
-                    format!(" instead: {}", f.selected.join(", "))
-                },
-            );
-        }
+        outcome
     }
 }
 
@@ -679,4 +712,55 @@ fn clip(s: &str, n: usize) -> String {
         out.push('…');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Outcome, Run};
+
+    #[test]
+    fn a_run_that_checked_nothing_is_not_a_pass() {
+        // No instrument page, every control skipped, or a page with no drawn
+        // control: each leaves `checked` at zero, and none of them proves the
+        // hit test works. This is the case the gate must not read as "PASS".
+        let empty = Run::default();
+        assert_eq!(empty.outcome(), Outcome::CheckedNothing);
+        let all_skipped = Run {
+            pages: 2,
+            skipped: 17,
+            ..Run::default()
+        };
+        assert_eq!(all_skipped.outcome(), Outcome::CheckedNothing);
+    }
+
+    #[test]
+    fn checked_controls_with_no_failure_pass() {
+        let run = Run {
+            pages: 1,
+            checked: 39,
+            skipped: 3,
+            ..Run::default()
+        };
+        assert_eq!(run.outcome(), Outcome::Passed);
+    }
+
+    #[test]
+    fn checked_controls_with_a_failure_fail() {
+        let mut run = Run {
+            pages: 1,
+            checked: 39,
+            ..Run::default()
+        };
+        run.failed.push(super::Fail {
+            page: "page".to_owned(),
+            widget: 0,
+            source: "0".to_owned(),
+            name: "control".to_owned(),
+            rect: (0., 0., 1., 1.),
+            point: Default::default(),
+            selected: Vec::new(),
+            why: "test",
+        });
+        assert_eq!(run.outcome(), Outcome::Failed);
+    }
 }
