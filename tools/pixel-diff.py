@@ -29,11 +29,28 @@ try:
     import numpy as np
     from PIL import Image
 except ImportError as e:  # pragma: no cover - environment problem, not a defect
-    sys.exit(f"pixel-diff: needs numpy and Pillow ({e})")
+    print(f"pixel-diff: needs numpy and Pillow ({e})", file=sys.stderr)
+    sys.exit(2)
+
+
+class Unreadable(Exception):
+    """The images cannot be compared at all -- exit status 2, not "they differ" (1)."""
 
 
 def load(path, scale_to=None):
-    im = Image.open(path)
+    try:
+        im = Image.open(path)
+    except OSError as e:
+        raise Unreadable(f"cannot open {path}: {e}") from e
+    try:
+        return as_array(im, scale_to)
+    except (OSError, ValueError) as e:
+        raise Unreadable(f"cannot read {path}: {e}") from e
+
+
+def as_array(im, scale_to):
+    """`im` as an int16 RGB array, flattened over black and optionally rescaled."""
+    im.load()
     if im.mode != "RGB":
         # Flatten alpha over black: a page is drawn opaque, so a transparent
         # reference pixel means "nothing there", which reads as black in a host.
@@ -133,18 +150,23 @@ def main():
     ref_path, got_path = Path(args.ref), Path(args.got)
     for p in (ref_path, got_path):
         if not p.exists():
-            sys.exit(f"pixel-diff: no such file: {p}")
+            print(f"pixel-diff: no such file: {p}", file=sys.stderr)
+            return 2
 
-    ref = load(ref_path)
-    if args.scale:
-        got = load(got_path, scale_to=(ref.shape[1], ref.shape[0]))
-    else:
-        got = load(got_path)
-        if got.shape != ref.shape:
-            print(f"pixel-diff: sizes differ — reference {ref.shape[1]}x{ref.shape[0]}, "
-                  f"render {got.shape[1]}x{got.shape[0]}. Pass --scale to compare anyway.",
-                  file=sys.stderr)
-            sys.exit(2)
+    try:
+        ref = load(ref_path)
+        if args.scale:
+            got = load(got_path, scale_to=(ref.shape[1], ref.shape[0]))
+        else:
+            got = load(got_path)
+    except Unreadable as e:
+        print(f"pixel-diff: {e}", file=sys.stderr)
+        return 2
+    if got.shape != ref.shape:
+        print(f"pixel-diff: sizes differ — reference {ref.shape[1]}x{ref.shape[0]}, "
+              f"render {got.shape[1]}x{got.shape[0]}. Pass --scale to compare anyway.",
+              file=sys.stderr)
+        return 2
 
     delta = np.abs(ref - got).max(axis=2)
     mask = delta > args.tol

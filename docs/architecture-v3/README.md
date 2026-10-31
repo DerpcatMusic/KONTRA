@@ -42,9 +42,12 @@ sampler landscape, one-engine audit, future plan).
    carries a sample timestamp and takes effect at it. Block size never matters.
 4. **Voices start on time.** From RAM, at their sample, every voice of a note
    together. Storage problems are dropouts, never delays.
-5. **The audio thread owns the engine.** No locks, no shared mutable state.
-   Other threads talk to it through three channels only (commands in,
-   publications out, retirements out). See 07-APP.md.
+5. **The audio thread owns the engine while it renders.** No locks, no shared
+   mutable state. Other threads talk to it through three channels only (commands
+   in, publications out, retirements out), plus one exception with its own guard:
+   when the host renders nothing, the control tick borrows the audio side from
+   `RackAudio`'s one-slot ring, so a control edit does not wait for a block that
+   may never come. See 07-APP.md.
 6. **Scripts run to completion** at their event time, under one scheduler,
    whatever the language.
 7. **Downward dependencies only.** The DAG in 01-LAYOUT.md is enforced in CI.

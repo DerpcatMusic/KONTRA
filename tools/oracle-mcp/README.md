@@ -248,9 +248,10 @@ MIDI — a launch listens on Port A immediately, and `aplaymidi -p 14` reaches t
 
 ## Safety rules, enforced in code
 
-- **Displays**: only `:77` and `:94…:99`, and only a display this server started (checked
-  with `xdpyinfo`, not by looking at the lock file). `:0` is refused by name in
-  `guard_display()`, on every command path. The caller cannot pass a display.
+- **Displays**: only `:77`, `:78` and `:94…:99` (`ALLOWED_DISPLAYS`), and only a display
+  this server started (checked with `xdpyinfo`, not by looking at the lock file). `:0` is
+  refused by name in `guard_display()`, on every command path. The caller cannot pass a
+  display.
 - **Screenshots**: `import -window root` of the private display, cropped to the Kontakt
   window. Nothing else is ever captured.
 - **Killing**: only the process groups of PIDs this server started, plus each process this

@@ -10,7 +10,9 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-TARGET=${CARGO_TARGET_DIR:-/tmp/opencode/kv3-target}
+# The gate's default, so `verify.sh` PASSED means this build is the one that was
+# checked: a second target directory would install a binary no test has seen.
+TARGET=${CARGO_TARGET_DIR:-/var/tmp/tgt-int}
 CLAP="$HOME/.clap/KONTRA.clap"
 VST3="$HOME/.vst3/KONTRA.vst3/Contents/x86_64-linux/KONTRA.so"
 
@@ -39,6 +41,9 @@ if [ "${1:-}" = "--reaper" ]; then
     export XAUTHORITY=${XAUTHORITY:-/run/user/1000/xauth_FXUsrQ} DISPLAY=${DISPLAY:-:0}
     for p in $(pgrep -x reaper); do kill "$p" 2>/dev/null || true; done
     sleep 3
+    # Without this the redirect fails, REAPER never starts, and the wait below
+    # reports "did not open a window" -- hiding the real cause.
+    mkdir -p "$HOME/.cache/kontra/launch"
     setsid nohup "$HOME/ProgramFiles/REAPER/reaper" -new >"$HOME/.cache/kontra/launch/reaper.log" 2>&1 </dev/null &
     sleep 16
     ID=$(wmctrl -lG 2>/dev/null | grep -i "REAPER v" | head -1 | awk '{print $1}')

@@ -9,6 +9,7 @@ start Kontakt or touch :0.
 """
 import importlib.util
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -37,6 +38,16 @@ class Midi(unittest.TestCase):
             path = Path(tmp) / "b.mid"
             om.write_midi(path, [{"start_s": 0.0, "length_s": 1.5, "key": 60}])
             self.assertAlmostEqual(om.midi_info(path)["duration_s"], 1.5, places=3)
+
+    def test_the_file_carries_the_tempo_bpm_asks_for(self):
+        # Without an `FF 51 03` event a reader assumes 120 bpm, so at
+        # ORACLE_MCP_BPM=60 a note at 1.0 s would play at 0.5 s and the duration
+        # tool_render trims the render to would be half of what was asked for.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tempo.mid"
+            meta = om.write_midi(path, [{"start_s": 1.0, "length_s": 1.0, "key": 60}], bpm=60)
+            self.assertAlmostEqual(meta["duration_s"], 2.0, places=3)
+            self.assertAlmostEqual(om.midi_info(path)["duration_s"], 2.0, places=3)
 
     def test_bad_notes_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,13 +130,28 @@ class Safety(unittest.TestCase):
         self.assertNotIn(":0", om.ALLOWED_DISPLAYS)
 
     def test_live_prefix_is_refused(self):
+        # The message, not just the type: every other preflight failure is also a
+        # ToolError, so `assertRaises` alone passed on machines where the rig is
+        # absent even if this guard were deleted.
         saved = om.PREFIX
         try:
             om.PREFIX = om.LIVE_PREFIX
-            with self.assertRaises(om.ToolError):
+            with self.assertRaisesRegex(om.ToolError, "live prefix"):
                 om.preflight()
         finally:
             om.PREFIX = saved
+
+    def test_a_partial_session_blocks_a_second_up(self):
+        # Xvfb without wine is still "up": starting a second one would overwrite
+        # the PID and orphan the first display.
+        saved = om.SESSION
+        try:
+            om.SESSION = om.Session()
+            om.SESSION.xvfb = types.SimpleNamespace(pid=1)
+            with self.assertRaisesRegex(om.ToolError, "already up"):
+                om.tool_up()
+        finally:
+            om.SESSION = saved
 
 
 class PageVerdict(unittest.TestCase):
