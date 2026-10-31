@@ -97,10 +97,10 @@ impl Look {
         Some(match &w.kind {
             Kind::Button { .. } | Kind::Switch => Self::Button {
                 on: t >= 1.,
-                caption: super::caption(w, tree.source),
+                caption: super::caption(w, tree.source, &tree.laws),
             },
             Kind::Menu { .. } => Self::Menu {
-                caption: super::caption(w, tree.source),
+                caption: super::caption(w, tree.source, &tree.laws),
             },
             Kind::ValueEdit { .. } => Self::Field {
                 title: if w.hide.title {

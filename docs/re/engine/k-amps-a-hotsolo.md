@@ -2,7 +2,11 @@
 
 Scope: `BParFXHotSolo` (module id 0x54, stored version 0x10), effect path `Effects/HotSolo`. Part of the amp unit in [k-amps-a.md](k-amps-a.md). Bass Invader shares module id 0x54 but is version 0x52 and is a separate record.
 
-Status: **located, not modelled.** The stored fields, the DSP class and its process entry are identified. The transfer, tone and output laws are not recovered, so nothing here is a spec for DSP, and no engine code was added. HotSolo stays in `unproved()` in `crates/sampler-kontakt/src/effects/color.rs`.
+Status: **located; the tone stage is modelled from measurement** at Electric Mint's saved record —
+see [k-hotsolo.md](k-hotsolo.md) for the model, its residuals and what is still unread. The sections
+below stay as the record of what the decompile gave: the stored fields, the DSP class, its process
+entry, the recalculation triggers and the output tail. The transfer, tone and output *laws* are not
+recovered, so nothing here is a law; the engine's bands come from a measured transfer function.
 
 ## Stored record (reader 0x140d01b50, version 0x10)
 

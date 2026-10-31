@@ -333,7 +333,7 @@ pub fn processor(
             Dsp::Filter(Box::new(svf))
         }
         // Built even while bypassed: a script may enable it later.
-        Some(ir::EffectKind::Eq(_) | ir::EffectKind::Formant(_)) => {
+        Some(ir::EffectKind::Amp(_) | ir::EffectKind::Eq(_) | ir::EffectKind::Formant(_)) => {
             let live = slot.map(|e| ir::Effect { bypass: false, ..e });
             let sections = filters::sections(&[live]);
             Dsp::Eq(filters::stages(&sections, rate))

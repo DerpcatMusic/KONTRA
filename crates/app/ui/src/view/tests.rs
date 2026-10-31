@@ -257,6 +257,104 @@ fn a_skin_offset_runs_through_the_wallpaper_across_its_frames() {
     assert_eq!(wallpaper((0, 68, 0), 569., 1), [(0, -68.)]);
 }
 
+/// A 20-point-wide, 14-row wallpaper: the first six rows green, the rest
+/// red, so the row a shot changes colour at names the wallpaper row it
+/// shows. The page over it is `height` source points tall.
+fn walled(height: f64) -> (Interface, Vec<u8>) {
+    let strip: Vec<u8> = (0..20 * 14)
+        .flat_map(|i| {
+            if i < 20 * 6 {
+                [0, 255, 0, 255]
+            } else {
+                [255, 0, 0, 255]
+            }
+        })
+        .collect();
+    let mut tree = Interface::default();
+    let mut page = Page {
+        size: Size { width: 20., height },
+        ..Page::default()
+    };
+    page.background.color = Some(Rgba::rgb(0x808080));
+    page.background.image = Some(AssetRef(0));
+    tree.pages.push(page);
+    tree.assets.push(Asset {
+        path: "wall.png".into(),
+        kind: AssetKind::Image(ImageMeta {
+            frames: 1,
+            size: Some(Size {
+                width: 20.,
+                height: 14.,
+            }),
+            ..ImageMeta::default()
+        }),
+    });
+    (tree, png(20, 14, &strip))
+}
+
+/// `tree`'s page drawn over `wall` at `scale`, into a `w`×`h` frame.
+fn shot(tree: &Interface, wall: Vec<u8>, scale: f64, w: u16, h: u16) -> Vec<[u8; 4]> {
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(move |p| (p == "wall.png").then(|| wall.clone())));
+    for _ in 0..2000 {
+        let (el, _) = page(&mut ui, 0, tree, PageRef(0), &mut pictures, (scale, &[]));
+        assert!(
+            ui.frame(
+                el,
+                Some(ViewSize::new(f64::from(w), f64::from(h))),
+                Input::default(),
+                1. / 60.
+            )
+            .is_ok()
+        );
+        pictures.poll();
+        if pictures.pending() == 0 {
+            let (el, _) = page(&mut ui, 0, tree, PageRef(0), &mut pictures, (scale, &[]));
+            return paint(&mut ui, el, w, h);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!("the wallpaper never arrived");
+}
+
+/// The page's wallpaper is cut from the strip in the strip's own rows, so
+/// the same wallpaper row is the page's top at every zoom. The page the
+/// band covers is a source-pixel height; mixing the scaled page height into
+/// the crop halves the wallpaper at a fit below one.
+#[test]
+fn the_wallpaper_band_shows_the_same_rows_at_every_scale() {
+    let (tree, wall) = walled(10.);
+    let mut edges = Vec::new();
+    let scales: [f64; 5] = [0.5, 0.75, 1., 1.5, 2.];
+    for scale in scales {
+        let (w, h) = ((20. * scale).round() as u16, (10. * scale).round() as u16);
+        let px = shot(&tree, wall.clone(), scale, w, h);
+        let row = |y: u16| &px[usize::from(y) * usize::from(w)..][..usize::from(w)];
+        for y in 0..h {
+            assert!(
+                row(y).iter().all(|p| p[..3] != [128, 128, 128]),
+                "the page colour shows through at scale {scale}, row {y}: {:?}",
+                row(y)[0]
+            );
+        }
+        // The green-to-red edge is wallpaper row 6: it is the page's row
+        // 6 * scale whatever the zoom.
+        let edge = (0..h)
+            .find(|&y| {
+                let p = row(y)[usize::from(w) / 2];
+                p[0] > p[1]
+            })
+            .unwrap_or_else(|| panic!("no wallpaper edge at scale {scale}"));
+        edges.push(f64::from(edge) / scale);
+    }
+    for (scale, row) in scales.into_iter().zip(&edges) {
+        assert!(
+            (row - 6.).abs() < 1.,
+            "the wallpaper row under the page's edge at scale {scale} is {row}, not 6"
+        );
+    }
+}
+
 /// An attached level meter lights from the bottom with the part's peak; a
 /// frame at the same level rebuilds nothing, so a silent part draws no new
 /// frames.
@@ -342,7 +440,10 @@ fn an_unpictured_script_control_draws_its_stock_field() {
     edit.text = "Transpose".into();
     edit.value = Some(model::Value::Integer(0));
     tree.widgets.push(edit);
-    assert_eq!(caption(&tree.widgets[0], tree.source), "Transpose 0");
+    assert_eq!(
+        caption(&tree.widgets[0], tree.source, &tree.laws),
+        "Transpose 0"
+    );
     let mut ui = crate::ui();
     let mut pictures = Pictures::new(Box::new(|_| None));
     let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
@@ -396,7 +497,7 @@ fn a_note_names_value_edit_reads_its_note() {
         },
     );
     w.value = Some(model::Value::Integer(12));
-    assert_eq!(readout(&w, model::Source::Ksp { slot: 0 }), "C-1");
+    assert_eq!(readout(&w, &model::Laws::default()), "C-1");
 }
 
 #[test]
@@ -638,11 +739,144 @@ fn kontakt_label_tabs_are_blank_advances() {
     let mut widget = Widget::new("$label", PageRef(0), Rect::default(), Kind::Label);
     widget.text = "\t\t\t   Marcato Short".into();
     assert_eq!(
-        plan::caption(&widget, model::Source::Ksp { slot: 0 }),
+        plan::caption(
+            &widget,
+            model::Source::Ksp { slot: 0 },
+            &model::Laws::default()
+        ),
         "         Marcato Short"
     );
     assert_eq!(
-        plan::caption(&widget, model::Source::FalconLua),
+        plan::caption(&widget, model::Source::FalconLua, &model::Laws::default()),
         widget.text
+    );
+}
+
+/// Electric Mint's Sound Preset plate: `dropdown_topright.png`, 32×21 with
+/// `Fixed Left 7` and `Fixed Right 18`, on a Menu the script sizes 171 wide
+/// at (446, 32). Kontakt draws one plate across that control with the arrow
+/// in the right 18 px, so every piece of the picture is painted inside the
+/// control's own rect and the three pieces together are the whole of it.
+#[test]
+fn a_menu_plate_is_drawn_across_its_control_and_never_outside_it() {
+    use kontra_ui_model::{Margins, MenuItem};
+
+    // 32×21 of flat colour, the six frames a real `dropdown_topright.png`
+    // stacks down its height: only the geometry is under test.
+    let rgba: Vec<u8> = [0x30u8, 0x30, 0x30, 0xff]
+        .iter()
+        .copied()
+        .cycle()
+        .take(32 * 21 * 6 * 4)
+        .collect();
+    let plate = png(32, 21 * 6, &rgba);
+    let mut tree = Interface {
+        pages: vec![Page {
+            size: Size {
+                width: 633.,
+                height: 500.,
+            },
+            ..Page::default()
+        }],
+        ..Interface::default()
+    };
+    tree.assets.push(Asset {
+        path: "Resources/pictures/dropdown_topright.png".into(),
+        kind: AssetKind::Image(ImageMeta {
+            frames: 6,
+            size: Some(Size {
+                width: 32.,
+                height: 21.,
+            }),
+            // The sidecar's `Horizontal Resizable` (this library's ships
+            // `yesm`; the loader reads a flag that starts with yes as yes).
+            stretch: [true, false],
+            margins: Margins {
+                left: 7,
+                right: 18,
+                ..Margins::default()
+            },
+            ..ImageMeta::default()
+        }),
+    });
+    let mut menu = Widget::new(
+        "$vig33",
+        PageRef(0),
+        Rect::new(446, 32, 171, 21),
+        Kind::Menu {
+            items: vec![MenuItem {
+                text: "Spacious EDM".into(),
+                value: 1,
+                visible: true,
+            }],
+        },
+    );
+    menu.images.push(ImageUse::new(AssetRef(0), Role::Strip));
+    tree.widgets.push(menu);
+    // The control keeps the script's width along an axis its picture
+    // stretches, and takes the picture's own size along the other (layout).
+    crate::layout::resolve(&mut tree, 0..1);
+    assert_eq!(
+        tree.page_rect(kontra_ui_model::WidgetRef(0)),
+        Rect::new(446, 32, 171, 21),
+        "the menu keeps the script's 171 px"
+    );
+
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(move |p| {
+        (p == "Resources/pictures/dropdown_topright.png").then(|| plate.clone())
+    }));
+    for _ in 0..200 {
+        pictures.poll();
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+        assert!(
+            ui.frame(
+                el,
+                Some(ViewSize::new(633., 500.)),
+                Input::default(),
+                1. / 60.
+            )
+            .is_ok()
+        );
+        if pictures.pending() == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let scene = ui.scene().expect("a scene");
+    // The rects the page painted at the menu: the plate's nine-slice pieces.
+    let mut pieces = Vec::new();
+    for p in &scene.paint {
+        let Some(r) = p.rect else { continue };
+        let b = r.bounds();
+        let (x0, y0) = (b.x0 + p.offset.x, b.y0 + p.offset.y);
+        let (x1, y1) = (b.x1 + p.offset.x, b.y1 + p.offset.y);
+        if x1 - x0 > 171.5 || y1 - y0 > 21.5 {
+            continue;
+        }
+        if x1 > 445.5 && x0 < 617.5 && y1 > 31.5 && y0 < 53.5 {
+            pieces.push((x0, y0, x1, y1));
+        }
+    }
+    assert!(!pieces.is_empty(), "nothing painted at the menu");
+    for &(x0, y0, x1, y1) in &pieces {
+        assert!(
+            x0 >= 445.5 && x1 <= 617.5 && y0 >= 31.5 && y1 <= 53.5,
+            "a piece at ({x0}, {y0})..({x1}, {y1}) stands outside the menu's own rect"
+        );
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for &(a, b, c, d) in &pieces {
+        x0 = x0.min(a);
+        y0 = y0.min(b);
+        x1 = x1.max(c);
+        y1 = y1.max(d);
+    }
+    // One plate across the control, not its 32 px left cap.
+    assert_eq!((x0, y0, x1, y1), (446., 32., 617., 53.));
+    // And its right cap is the arrow's 18 px: 446 + 171 - 18.
+    assert!(
+        pieces.iter().any(|p| (p.0 - 599.).abs() < 0.01),
+        "no right cap at 599: {pieces:?}"
     );
 }

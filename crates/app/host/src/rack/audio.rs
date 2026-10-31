@@ -1,10 +1,21 @@
 //! The rack's audio side: renders every part into its output pair, from
 //! the commands the control side sends.
+//!
+//! One thread runs it at a time. The host's audio callback does, when the
+//! host renders; the control tick does when it does not. A host that is
+//! stopped, or has nothing to render, calls no `process` at all, and a
+//! control edit must not wait for one: the state rests in
+//! [`RackAudio::parked`], a one-slot ring both sides take it out of, so
+//! whichever side gets there first runs the commands and the other one
+//! does nothing. Neither waits: the ring's `recv` and `send` are a couple
+//! of atomics on a preallocated buffer, so the audio path never locks,
+//! allocates or blocks.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 
 use kontra_engine::{Engine, Play, SampleTime, Timed};
-use kontra_protocol::{Meters, Stats};
+use kontra_protocol::{Meters, Ring, Stats};
 
 use super::hold::{Held, Hold};
 use super::{Channels, Command, Event, HostPattern, Mix, OUTPUTS};
@@ -41,12 +52,13 @@ const FADE: f64 = 0.02;
 /// Engines one command may retire: the part's and its fading ones.
 const RETIRES: usize = 1 + FADING;
 
-/// The audio side: renders every part into its output pair.
-pub struct RackAudio {
+/// The audio side's state: renders every part into its output pair, and
+/// carries out the commands the control side sends. Whoever holds it (see
+/// [`RackAudio::take`]) is its only user for that pass.
+struct Audio {
     channels: Arc<Channels>,
     stream: kontra_stream::StreamClient,
     parts: Vec<Option<Playing>>,
-    outputs: Vec<Box<[[f32; 2]]>>,
     scratch: Box<[[f32; 2]]>,
     /// What an outgoing engine renders, before it is added in.
     tail: Box<[[f32; 2]]>,
@@ -64,14 +76,15 @@ pub struct RackAudio {
     /// Events from [`Command::Play`] for the next block; a fixed capacity.
     played: Vec<Event>,
     meters: Meters,
-    dropped: u64,
-    /// Time in [`RackAudio::process`] and the real time it rendered, in ns.
+    /// Commands carried out since the last [`Audio::run`] (or block).
+    applied: u64,
+    /// Time in [`Audio::process`] and the real time it rendered, in ns.
     busy_ns: u64,
     span_ns: u64,
 }
 
-impl RackAudio {
-    pub(super) fn new(
+impl Audio {
+    fn new(
         channels: Arc<Channels>,
         stream: kontra_stream::StreamClient,
         rate: u32,
@@ -82,9 +95,6 @@ impl RackAudio {
             channels,
             stream,
             parts: (0..MAX_PARTS).map(|_| None).collect(),
-            outputs: (0..OUTPUTS)
-                .map(|_| vec![[0.0; 2]; block].into_boxed_slice())
-                .collect(),
             scratch: vec![[0.0; 2]; block].into_boxed_slice(),
             tail: vec![[0.0; 2]; block].into_boxed_slice(),
             fade: (FADE * f64::from(rate)).max(1.0) as u32,
@@ -96,7 +106,7 @@ impl RackAudio {
             panic: false,
             played: Vec::with_capacity(PLAYED),
             meters: Meters::default(),
-            dropped: 0,
+            applied: 0,
             busy_ns: 0,
             span_ns: 0,
         }
@@ -104,7 +114,7 @@ impl RackAudio {
 
     /// Waits until the sample pages the parts asked for are read, so an
     /// offline bounce misses none. Offline rendering only: it blocks.
-    pub fn settle(&self) {
+    fn settle(&self) {
         // ponytail: a fixed 5 s cap; a disk slower than that drops frames.
         self.stream.settle(std::time::Duration::from_secs(5));
     }
@@ -139,29 +149,39 @@ impl RackAudio {
         }
     }
 
-    /// The largest block [`RackAudio::process`] renders at once.
-    #[must_use]
-    pub fn max_block(&self) -> usize {
-        self.scratch.len()
+    /// Carries out the commands queued for the audio side, and lets go of
+    /// what a [`Command::Play`] meant for a block that never came: nothing
+    /// renders here, so a note played now would only pile up for the first
+    /// block after the host resumes. Returns how many commands it ran.
+    fn run(&mut self) -> u64 {
+        let before = self.applied;
+        self.apply_commands();
+        self.played.clear();
+        self.applied - before
     }
 
-    /// Output pair `n` as the last [`RackAudio::process`] left it.
+    /// Output pair `n` as the last [`Audio::process`] left it.
     #[must_use]
-    pub fn output(&self, n: usize, frames: usize) -> &[[f32; 2]] {
-        self.outputs
+    fn output<'o>(
+        &self,
+        outputs: &'o [Box<[[f32; 2]]>],
+        n: usize,
+        frames: usize,
+    ) -> &'o [[f32; 2]] {
+        outputs
             .get(n)
             .and_then(|o| o.get(..frames))
             .unwrap_or_default()
     }
 
-    /// Renders `frames` (at most [`RackAudio::max_block`]) into the outputs.
+    /// Renders `frames` (at most the scratch block) into `outputs`.
     /// `input` is (frame offset in this block, event), in time order; each
     /// part gets the events on its channel.
-    pub fn process(&mut self, frames: usize, input: &[(u32, Event)]) {
+    fn process(&mut self, outputs: &mut [Box<[[f32; 2]]>], frames: usize, input: &[(u32, Event)]) {
         let start = std::time::Instant::now();
         let frames = frames.min(self.scratch.len());
         self.apply_commands();
-        for out in &mut self.outputs {
+        for out in outputs.iter_mut() {
             if let Some(o) = out.get_mut(..frames) {
                 o.fill([0.0; 2]);
             }
@@ -244,7 +264,7 @@ impl RackAudio {
             let files = &self.channels.files;
             p.engine
                 .drain_files(|r| files.send((n, generation, r)).is_ok());
-            self.dropped += lost;
+            self.channels.dropped.fetch_add(lost, Relaxed);
             let s = p.engine.stats();
             stats.voices += u32::try_from(p.engine.active_voices()).unwrap_or(u32::MAX);
             stats.voices_stolen += s.voices_stolen;
@@ -260,7 +280,7 @@ impl RackAudio {
                 }
             }
             let peak = self.meters.parts.get_mut(n);
-            let out = self.outputs.get_mut(usize::from(p.mix.output));
+            let out = outputs.get_mut(usize::from(p.mix.output));
             let (Some(peak), Some(out)) = (peak, out) else {
                 continue;
             };
@@ -278,20 +298,27 @@ impl RackAudio {
         }
         self.panic = false;
         self.played.clear();
-        for o in self.outputs.iter().filter_map(|o| o.get(..frames)) {
+        for o in outputs.iter().filter_map(|o| o.get(..frames)) {
             for s in o {
                 self.meters.master[0] = self.meters.master[0].max(s[0].abs());
                 self.meters.master[1] = self.meters.master[1].max(s[1].abs());
             }
         }
-        stats.dropped = self.dropped;
+        stats.dropped = self.channels.dropped.load(Relaxed);
         let busy = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
         self.busy_ns = self.busy_ns.saturating_add(busy);
-        self.span_ns += (frames as f64 * 1e9 / self.rate) as u64;
+        let block_ns = (frames as f64 * 1e9 / self.rate) as u64;
+        self.span_ns += block_ns;
+        self.channels.block_ns.store(block_ns, Relaxed);
         (stats.busy_ns, stats.span_ns) = (self.busy_ns, self.span_ns);
         self.channels.meters.publish(&self.meters);
         self.channels.stats.publish(&stats);
         self.meters = Meters::default();
+        // A host that renders is a host whose commands this side carries out:
+        // the control tick reads this to know whether it has to.
+        self.channels
+            .blocks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn apply_commands(&mut self) {
@@ -308,6 +335,7 @@ impl RackAudio {
             let Some(command) = self.channels.commands.recv() else {
                 break;
             };
+            self.applied += 1;
             match command {
                 Command::Install {
                     part,
@@ -375,7 +403,7 @@ impl RackAudio {
                     }
                     if let Err(unit) = self.channels.units.send(unit) {
                         // Checked for room first; if it ever fails, it frees here.
-                        self.dropped += 1;
+                        self.channels.dropped.fetch_add(1, Relaxed);
                         drop(unit);
                     }
                 }
@@ -391,7 +419,7 @@ impl RackAudio {
                     }
                     if let Err(saved) = self.channels.recalled.send(saved) {
                         // Checked for room first; if it ever fails, it frees here.
-                        self.dropped += 1;
+                        self.channels.dropped.fetch_add(1, Relaxed);
                         drop(saved);
                     }
                 }
@@ -407,7 +435,7 @@ impl RackAudio {
                     }
                     if let Err(reply) = self.channels.filed.send((part, generation, reply)) {
                         // Checked for room first; if it ever fails, it frees here.
-                        self.dropped += 1;
+                        self.channels.dropped.fetch_add(1, Relaxed);
                         drop(reply);
                     }
                 }
@@ -447,7 +475,7 @@ impl RackAudio {
                     if self.played.len() < self.played.capacity() {
                         self.played.push(event);
                     } else {
-                        self.dropped += 1;
+                        self.channels.dropped.fetch_add(1, Relaxed);
                     }
                 }
                 Command::Capture(mut c) => {
@@ -455,7 +483,7 @@ impl RackAudio {
                         c.read(&mut p.engine);
                     }
                     if let Err(c) = self.channels.captured.send(c) {
-                        self.dropped += 1;
+                        self.channels.dropped.fetch_add(1, Relaxed);
                         drop(c);
                     }
                 }
@@ -465,7 +493,7 @@ impl RackAudio {
                         _ => frame.unfilled(),
                     }
                     if let Err(frame) = self.channels.looks.send(frame) {
-                        self.dropped += 1;
+                        self.channels.dropped.fetch_add(1, Relaxed);
                         drop(frame);
                     }
                 }
@@ -509,7 +537,7 @@ impl RackAudio {
                     }
                     // Freed on the control side: the loop takes no command while the ring is full.
                     if self.channels.typed.send(text).is_err() {
-                        self.dropped += 1;
+                        self.channels.dropped.fetch_add(1, Relaxed);
                     }
                 }
                 Command::Widget {
@@ -539,8 +567,201 @@ impl RackAudio {
         if let Err(engine) = self.channels.retired.send(engine) {
             // Checked for room before the command was taken, so this does
             // not happen; if it ever does, the engine is freed here.
-            self.dropped += 1;
+            self.channels.dropped.fetch_add(1, Relaxed);
             drop(engine);
+        }
+    }
+}
+
+/// The audio side as both threads hold it: the state rests in `parked`, a
+/// one-slot ring, and a pass takes it out and puts it back.
+///
+/// The audio callback gets there first whenever the host renders; the
+/// control tick takes it when the host renders nothing, so a control edit
+/// does not wait for a block that may never come. Whichever side loses the
+/// race finds the slot empty and does nothing: neither waits.
+pub struct RackAudio {
+    channels: Arc<Channels>,
+    parked: Arc<Ring<Box<Audio>>>,
+    /// What the last render wrote, for the host to copy out. Empty on the
+    /// control side's handle: it never renders.
+    outputs: Vec<Box<[[f32; 2]]>>,
+    /// The state's largest block, kept here so it reads without taking it.
+    max_block: usize,
+}
+
+impl RackAudio {
+    /// The audio side the host renders through, and its empty output pairs.
+    pub(super) fn new(
+        channels: Arc<Channels>,
+        stream: kontra_stream::StreamClient,
+        rate: u32,
+        max_block: usize,
+    ) -> Self {
+        let block = max_block.max(1);
+        let parked = Arc::new(Ring::new(1));
+        let state = Box::new(Audio::new(Arc::clone(&channels), stream, rate, block));
+        // Cannot fail: the ring was just made.
+        let _ = parked.send(state);
+        Self {
+            channels,
+            parked,
+            outputs: (0..OUTPUTS)
+                .map(|_| vec![[0.0; 2]; block].into_boxed_slice())
+                .collect(),
+            max_block: block,
+        }
+    }
+
+    /// The control side's handle on the same state: no output pairs, since
+    /// it never renders.
+    #[must_use]
+    pub(super) fn control(&self) -> Self {
+        Self {
+            channels: Arc::clone(&self.channels),
+            parked: Arc::clone(&self.parked),
+            outputs: Vec::new(),
+            max_block: self.max_block,
+        }
+    }
+
+    /// The largest block [`RackAudio::process`] renders at once.
+    #[must_use]
+    pub fn max_block(&self) -> usize {
+        self.max_block
+    }
+
+    /// Blocks the host rendered that found the control tick holding the
+    /// audio side: they came out silent, and no command was carried out.
+    #[must_use]
+    pub fn missed(&self) -> u64 {
+        self.channels.missed.load(Relaxed)
+    }
+
+    /// Takes the audio side for one pass; `None` while the other thread has
+    /// it. The pass must be short: while it lasts the other side has nothing
+    /// to run.
+    pub fn take(&mut self) -> Option<Loan<'_>> {
+        let state = self.parked.recv()?;
+        Some(Loan {
+            owner: self,
+            state: Some(state),
+        })
+    }
+
+    /// Output pair `n` as the last [`RackAudio::process`] left it.
+    #[must_use]
+    pub fn output(&self, n: usize, frames: usize) -> &[[f32; 2]] {
+        self.outputs
+            .get(n)
+            .and_then(|o| o.get(..frames))
+            .unwrap_or_default()
+    }
+
+    /// The host's transport from the next block on, in one pass of its own:
+    /// a caller that renders the block itself holds a [`Loan`] and sets it
+    /// there instead, so the two are never apart.
+    pub fn set_transport(&mut self, playing: bool, quarters: f64, signature: (u8, u8)) {
+        if let Some(mut side) = self.take() {
+            side.set_transport(playing, quarters, signature);
+        }
+    }
+
+    /// The host's tempo from the next block on; see
+    /// [`RackAudio::set_transport`].
+    pub fn set_tempo(&mut self, bpm: f32) {
+        if let Some(mut side) = self.take() {
+            side.set_tempo(bpm);
+        }
+    }
+
+    /// Renders one block, and carries out the commands queued for it.
+    ///
+    /// A block the control tick has the state for renders nothing: the
+    /// output pairs keep what the last block left, and the count in
+    /// [`RackAudio::missed`] says so.
+    pub fn process(&mut self, frames: usize, input: &[(u32, Event)]) {
+        let Some(mut side) = self.take() else {
+            self.channels.missed.fetch_add(1, Relaxed);
+            return;
+        };
+        side.process(frames, input);
+    }
+
+    /// Waits until the sample pages the parts asked for are read, so an
+    /// offline bounce misses none. Offline rendering only: it blocks.
+    pub fn settle(&mut self) {
+        if let Some(mut side) = self.take() {
+            side.settle();
+        }
+    }
+}
+
+/// One pass over the audio side, with the state out of its ring; the state
+/// goes back when the pass ends.
+pub struct Loan<'a> {
+    owner: &'a mut RackAudio,
+    state: Option<Box<Audio>>,
+}
+
+impl Loan<'_> {
+    /// The host's transport at the start of the next block: whether it
+    /// runs, where it is in quarter notes and its time signature.
+    pub fn set_transport(&mut self, playing: bool, quarters: f64, signature: (u8, u8)) {
+        if let Some(state) = self.state.as_deref_mut() {
+            state.set_transport(playing, quarters, signature);
+        }
+    }
+
+    /// The host's tempo from the next block on, in quarter notes per minute.
+    pub fn set_tempo(&mut self, bpm: f32) {
+        if let Some(state) = self.state.as_deref_mut() {
+            state.set_tempo(bpm);
+        }
+    }
+
+    /// Waits until the sample pages the parts asked for are read.
+    pub fn settle(&mut self) {
+        if let Some(state) = self.state.as_deref_mut() {
+            state.settle();
+        }
+    }
+
+    /// Carries out the commands queued for the audio side; how many it ran.
+    pub fn run(&mut self) -> u64 {
+        self.state.as_deref_mut().map_or(0, Audio::run)
+    }
+
+    /// Renders one block of `frames` into this handle's output pairs.
+    pub fn process(&mut self, frames: usize, input: &[(u32, Event)]) {
+        let Self {
+            owner: RackAudio { outputs, .. },
+            state,
+        } = self;
+        if let Some(state) = state.as_deref_mut() {
+            state.process(outputs, frames, input);
+        }
+    }
+
+    /// Output pair `n` as the last [`Loan::process`] left it.
+    #[must_use]
+    pub fn output(&self, n: usize, frames: usize) -> &[[f32; 2]] {
+        match self.state.as_deref() {
+            Some(state) => state.output(&self.owner.outputs, n, frames),
+            None => &[],
+        }
+    }
+}
+
+impl Drop for Loan<'_> {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.take()
+            && let Err(state) = self.owner.parked.send(state)
+        {
+            // Cannot fail: the slot is empty whenever a loan is out, there
+            // being one audio side and one borrower at a time. If it ever
+            // does, the state is freed here instead.
+            drop(state);
         }
     }
 }

@@ -436,6 +436,27 @@ pub fn menu(
     columns: usize,
     current: Option<usize>,
 ) -> Response<Option<usize>> {
+    menu_sized(ui, id, items, columns, current, (0., f64::INFINITY))
+}
+
+/// [`menu`] within `bounds`: `(min_w, max_h)`, in view points. The popup is
+/// `min_w` wide (or the standard width when that is 0) and never taller than
+/// `max_h`, its rows scrolling inside that height when the list needs more.
+///
+/// A script's menu opens on its own page, so the caller knows the room the
+/// page leaves it: Electric Mint's Sound Preset menu holds 79 shown items
+/// (the whole `- - - FACTORY PRESETS - - -` list), 79 × [`CONTROL`] + gaps =
+/// 1974 points, on a 633×500 page. Sized only by its content, that list is
+/// laid out 1975 tall from the plate and all but the first ~18 rows fall off
+/// the window.
+pub fn menu_sized(
+    ui: &mut Ui,
+    id: &str,
+    items: &[&str],
+    columns: usize,
+    current: Option<usize>,
+    (min_w, max_h): (f64, f64),
+) -> Response<Option<usize>> {
     let mut picked = None;
     let mut cells: Vec<El> = items
         .iter()
@@ -445,6 +466,8 @@ pub fn menu(
             if r.changed {
                 picked = Some(n);
             }
+            // A word fills the list's width; the grid of short picks keeps
+            // its fixed cells.
             if columns == 1 {
                 r.el.justify(Justify::Start).w(Len::Pct(100.))
             } else {
@@ -457,13 +480,22 @@ pub fn menu(
         let rest = cells.split_off(columns.clamp(1, cells.len()));
         rows.push(row(std::mem::replace(&mut cells, rest)).gap(1).shrink(0));
     }
-    // Floats are sized by the space around their parent; a menu takes its
-    // own height so a long one is never squeezed.
-    let tall = rows.len() as f64 * (CONTROL + 1.);
-    let list = col(rows)
-        .gap(1)
-        .min_h(tall)
-        .when(columns == 1, |e| e.w(TEXT * 16.));
+    // The rows' own height: [`CONTROL`] each, 1 between them.
+    let tall = rows.len() as f64 * CONTROL + rows.len().saturating_sub(1) as f64;
+    // As wide as the plate the list drops from, so the two line up as one
+    // control; a caller with no plate of its own keeps the standard width.
+    let wide = if min_w > 0. { min_w } else { TEXT * 16. };
+    // A float is stretched to the box around it, so the list states its own
+    // height: the rows' own, or the room the caller leaves it, past which
+    // the rows scroll behind the frame and the rest of the list stays a
+    // wheel away instead of hanging off the page.
+    let height = tall.min(max_h);
+    // The popup itself is the scroll viewport: `popup` names the same node.
+    let list = if tall > max_h {
+        col(rows).gap(1).w(wide).h(height).scroll()
+    } else {
+        col(rows).gap(1).w(wide).h(height)
+    };
     Response {
         el: popup(id, list),
         changed: picked,
@@ -627,5 +659,112 @@ pub fn edges(top: f64, right: f64, bottom: f64, left: f64) -> mui::layout::Inset
         right,
         top,
         bottom,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One menu built on one page, framed until nothing moves: the popup eases
+    /// in from above its anchor, so its first frames are mid-slide.
+    fn drawn(ui: &mut Ui, items: &[&str], bounds: (f64, f64), page: (f64, f64)) {
+        for _ in 0..120 {
+            let list = menu_sized(ui, "preset", items, 1, Some(2), bounds).el;
+            let anchor = block(171., 21).at(446., 32.).id("preset");
+            let f = ui
+                .frame(
+                    stack([anchor, list]),
+                    Some(Size::new(page.0, page.1)),
+                    Input::default(),
+                    1. / 60.,
+                )
+                .expect("the page resolves");
+            if !f.animating {
+                return;
+            }
+        }
+        panic!("the popup never settled");
+    }
+
+    /// Electric Mint's Sound Preset menu, as `input::menu` hands it over: 79
+    /// shown items on a 633×500 page, a plate 171 wide at (446, 32), so 447
+    /// points of page are left under it. The whole list is 79 rows of
+    /// [`CONTROL`] with 1 between them, 1974 points — more than the page.
+    #[test]
+    fn a_long_menu_is_bounded_to_its_room_and_keeps_every_row() {
+        let labels: Vec<String> = (0..79).map(|n| format!("Preset {n:02}")).collect();
+        let items: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let mut ui = Ui::default();
+        drawn(&mut ui, &items, (171., 447.), (633., 500.));
+        let scene = ui.scene().expect("a scene");
+        let popup = scene.surface("preset-popup").expect("the popup").frame;
+        // As wide as the plate it drops from, as tall as the page's room: the
+        // 1974-point list no longer hangs off the bottom of the window.
+        assert_eq!((popup.size.width, popup.size.height), (171., 447.));
+        assert_eq!(
+            (popup.x, popup.y),
+            (446., 53.),
+            "the popup drops from the plate"
+        );
+        // Every item is still laid out: nothing was dropped to fit.
+        assert!(scene.surface("preset-78").is_some(), "the 79th item");
+        // The rows overflow the frame inside a scroll viewport, so the rest of
+        // the list is a wheel away rather than off the page.
+        let viewport = scene.surface("preset-popup").expect("the popup");
+        assert!(
+            viewport.content.height >= 79. * CONTROL + 78.,
+            "the popup's content {} holds the whole list",
+            viewport.content.height
+        );
+        // The wheel over it moves the list, so the rows past the frame are
+        // reachable rather than merely clipped.
+        let over = Point::new(popup.x + 20., popup.y + 20.);
+        for _ in 0..4 {
+            let list = menu_sized(&mut ui, "preset", &items, 1, Some(2), (171., 447.)).el;
+            let anchor = block(171., 21).at(446., 32.).id("preset");
+            let wheel = Input {
+                pointer: PointerInput {
+                    pos: Some(over),
+                    ..PointerInput::default()
+                },
+                wheel: Vec2::new(0., 200.),
+                ..Input::default()
+            };
+            ui.frame(
+                stack([anchor, list]),
+                Some(Size::new(633., 500.)),
+                wheel,
+                1. / 60.,
+            )
+            .expect("the page resolves");
+        }
+        assert!(
+            ui.scroll("preset-popup")[1] > 0.,
+            "the wheel scrolls the list"
+        );
+    }
+
+    /// A menu that fits keeps its own height and needs no viewport.
+    #[test]
+    fn a_short_menu_is_as_tall_as_its_rows() {
+        let mut ui = Ui::default();
+        drawn(
+            &mut ui,
+            &["One", "Two", "Three"],
+            (171., 447.),
+            (633., 500.),
+        );
+        let scene = ui.scene().expect("a scene");
+        let popup = scene.surface("preset-popup").expect("the popup").frame;
+        // 3 rows of CONTROL with 1 between them.
+        assert_eq!(popup.size.height, 3. * CONTROL + 2.);
+        assert_eq!(popup.size.width, 171.);
+        assert!(
+            scene
+                .surface("preset-popup")
+                .is_some_and(|s| s.content.height <= popup.size.height),
+            "nothing to scroll"
+        );
     }
 }

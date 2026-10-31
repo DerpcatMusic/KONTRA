@@ -329,8 +329,8 @@ pub fn read(
             _ => {}
         }
     }
-    let popup =
-        menu(ui, face, tree, g, &mut edits).or_else(|| entry(ui, face, tree, g, &mut edits));
+    let popup = menu(ui, face, tree, page, scale, g, &mut edits)
+        .or_else(|| entry(ui, face, tree, g, &mut edits));
     (edits, popup)
 }
 
@@ -397,6 +397,8 @@ fn menu(
     ui: &mut Ui,
     face: usize,
     tree: &Interface,
+    page: PageRef,
+    scale: f64,
     g: &mut Gesture,
     edits: &mut Vec<Edit>,
 ) -> Option<El> {
@@ -414,7 +416,23 @@ fn menu(
     let labels: Vec<&str> = shown.iter().map(|i| i.text.as_str()).collect();
     let now = value(w) as i32;
     let current = shown.iter().position(|i| i.value == now);
-    let menu = kit::menu(ui, &id, &labels, 1, current);
+    // The list is as wide as the plate it belongs to (Kontakt's own dropdowns
+    // fill their field) and never taller than the room the page leaves beside
+    // it, so a long list scrolls instead of hanging off the page: the menu's
+    // own rect and the page it is on, in the view points the popup is drawn in.
+    let r = tree.page_rect(WidgetRef(m));
+    let room = tree.pages.get(page.0).map_or(0., |p| {
+        let below = p.size.height - (r.y + r.height);
+        below.max(r.y).max(0.)
+    });
+    let menu = kit::menu_sized(
+        ui,
+        &id,
+        &labels,
+        1,
+        current,
+        (r.width * scale, room * scale),
+    );
     if let Some(item) = menu.changed.and_then(|k| shown.get(k)) {
         edits.push(Edit {
             widget: WidgetRef(m),
