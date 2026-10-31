@@ -5,10 +5,18 @@
 
 The four mode tables are not stored data: `MODES` at VA 0x14193cd70 in Kontakt
 8.13.1 is inside `.text`, so the bank is built by code. Rather than read that
-code, this measures what it produces: an impulse through the emulated kernel
-with the modulation held still, one run per mode, and every non-zero frame of
-the result. The taps it prints are the voice delays, their left/right signs the
-pans.
+code, this measures what it produces: an impulse through the emulated kernel at
+the lowest modulation the parameters allow, one run per mode, and every
+non-zero frame of the result. A tap is where one voice's read pointer sat
+during that run.
+
+Lowest is not still. `amount = 0` still leaves a nonzero depth (357 samples at
+rate 0.5, 48 kHz; `modulation_depth` in `crates/dsp/delay/src/chorus.rs`), and
+`rate = 0` still runs the LFO at 0.25 Hz, so every tap is a modulated position
+rather than a fixed bank delay: read a run as a spread, and compare modes to
+each other instead of counting taps as a table. The left/right values say
+nothing about the bank's `pan` field either -- `pan` is the per-voice LFO phase
+offset, and the stereo rotation comes from `width`.
 
 Needs KONTAKT_EXE pointing at a Kontakt 8.13.1 binary (the emulator is bound to
 that build's addresses) and `unicorn`.
@@ -22,8 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import kemu_timemod  # noqa: E402
 
-# amount, rate, delay, voices, width, feedback, mix -- modulation held still so
-# each voice stays at its own delay for the whole window.
+# amount, rate, delay, voices, width, feedback, mix -- the lowest modulation the
+# parameters allow. Not zero modulation: amount 0 still has depth and rate 0 is
+# a 0.25 Hz LFO, so a voice wanders around its delay instead of sitting on it.
 STILL = [0.0, 0.0, 0.5, 1.0, 1.0, 0.0, 1.0]
 
 
