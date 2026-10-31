@@ -3407,6 +3407,7 @@ fn a_file_dialog_array_is_cancelled_and_completes_with_failure() {
         "{:?}",
         e.unhandled_actions()
     );
+}
 
 /// `midifile`'s parameter ids must agree with the `$EVENT_PAR_*` names the
 /// script compiler resolves, or `mf_set_event_par` would act on the wrong one.
