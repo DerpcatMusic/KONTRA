@@ -2,18 +2,38 @@
 
 Today the plugin's `Shared` struct has 54 fields, including 7 `ArrayQueue`s,
 19 `AtomicU64`s and 9 `Mutex`es: one ad-hoc channel per feature. In v3 the
-audio thread talks to the rest of the process through three channels.
+audio thread talks to the rest of the process through three channels, plus one
+guarded hand-over of the audio side itself when the host renders nothing (§1).
 
 ## 1. Threads
 
 | Thread | Owns | Runs |
 |---|---|---|
-| audio (host) | `Engine` | `process()` only |
+| audio (host) | `Engine` while it renders; the `parked` ring's borrower | `process()` |
 | control (host main / timer) | `Rack` (parts, routing, settings), `Commands` sender | host callbacks, state save/load, automation glue |
 | loader (1) | load pipeline | format → IR → plan → hand over |
 | I/O (N) | page fills | `kontra-stream` `IoService` |
 | UI | editor view state | reads publications, sends commands |
 | library (1) | catalog | scanning, artwork |
+
+The audio thread is the `Engine`'s **owner while it renders**, not its only possible
+caller: a host that stops rendering (transport stopped, FX suspended) would
+otherwise never apply a control edit, because the whole edit chain is a tick.
+`RackAudio` parks its state in a one-slot ring (`parked`); a pass takes it out and
+puts it back, and the guard that does the putting back is `Loan`. The host's
+callback takes it to render, and after `IDLE` (100 ms, or twice the host's last
+block) the control tick takes it to run the queued commands — the one path into
+the engine that is not one of the three channels below. One borrower at a time,
+`recv` and `send` are a couple of atomics on a preallocated queue — the audio path
+takes no lock, allocates nothing and never waits. The cost is one silent block if
+the host resumes while the control tick holds the side: the block renders nothing
+rather than waiting.
+
+`RackAudio::missed` counts the blocks lost that way, but only on the path that goes
+through `RackAudio::process`. The plugin's own `process()` calls `RackAudio::take()`
+directly and fills silence when it gets `None`, without touching the counter, so
+`missed` under-reports the cost on the plugin path — a gap in the count, not in the
+silence itself.
 
 ## 2. The three channels
 

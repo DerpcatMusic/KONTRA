@@ -15,6 +15,9 @@ struct Knob {
     value: f64,
     builds: usize,
     trails: Vec<usize>,
+    /// What each tree saw of the pointer: where, and whether primary was
+    /// down. A press in flight is judged by the frame that dispatches it.
+    seen: Vec<(Option<Point>, bool)>,
     changed: bool,
     zoom: f64,
 }
@@ -25,6 +28,7 @@ impl Default for Knob {
             value: 0.5,
             builds: 0,
             trails: Vec::new(),
+            seen: Vec::new(),
             changed: false,
             zoom: 1.0,
         }
@@ -35,6 +39,10 @@ impl View for Knob {
     fn build(&mut self, ui: &mut Ui, input: &Input) -> El {
         self.builds += 1;
         self.trails.push(input.trail.len());
+        self.seen.push((
+            input.pointer.pos,
+            input.pointer.buttons.contains(Button::Primary),
+        ));
         knob(ui, "k", "K", &mut self.value, 0.0..=1.0).into()
     }
     fn changed(&mut self) -> bool {
@@ -195,6 +203,107 @@ fn zoom_reads_the_logical_window_size() {
     let mut r = Rig::new(fit(), (800, 600), 2.0);
     r.step();
     assert_eq!(r.d.ui_scale(), 4.0, "400 logical wide is a zoom of 2");
+}
+
+/// A view that fits its design to the window re-zooms when the window is
+/// resized, and the scene is a different size at the new zoom. The pointer
+/// did not move, so it is still over the same window point: its scene
+/// position is re-derived, or the next press is tested against rects it is
+/// not over.
+#[test]
+fn a_zoom_change_moves_the_pointer_with_the_scene() {
+    let fit = || Knob {
+        zoom: -1.0,
+        ..Knob::default()
+    };
+    // 400 points wide fits a 200-point design at 2; the pointer rests at
+    // point (100, 60), which is scene (50, 30).
+    let mut r = Rig::new(fit(), (400, 300), 1.0);
+    r.step();
+    r.d.pointer_moved(at(100.0, 60.0), none());
+    assert_eq!(r.d.pointer().pos, Some(at(50.0, 30.0)));
+    // Half the window: the zoom is 1, and the same window point is scene
+    // (100, 60).
+    r.d.resized((200, 300), 1.0);
+    r.step();
+    assert_eq!(r.d.ui_scale(), 1.0);
+    assert_eq!(
+        r.d.pointer().pos,
+        Some(at(100.0, 60.0)),
+        "the pointer must stay over the window point it is on"
+    );
+}
+
+#[test]
+fn a_queued_press_is_reprojected_when_the_zoom_changes() {
+    let fit = || Knob {
+        zoom: -1.0,
+        ..Knob::default()
+    };
+    // As above: scene (50, 30) at a zoom of 2.
+    let mut r = Rig::new(fit(), (400, 300), 1.0);
+    r.step();
+    r.d.pointer_moved(at(100.0, 60.0), none());
+    // The press arrives before the resize: it is queued in the scene space
+    // the zoom of 2 lays out.
+    r.d.button(Button::Primary, true, none());
+    assert_eq!(
+        inputs(&r.d).last().unwrap().pointer.pos,
+        Some(at(50.0, 30.0))
+    );
+    // Half the window: the zoom is 1, and the press must be dispatched over
+    // the same window point as the pointer, not the old scene (50, 30).
+    r.d.resized((200, 300), 1.0);
+    r.step();
+    assert_eq!(r.d.ui_scale(), 1.0);
+    assert_eq!(
+        r.s.view.seen.last(),
+        Some(&(Some(at(100.0, 60.0)), true)),
+        "a press in flight must be tested where its window point is now"
+    );
+}
+
+#[test]
+fn a_queued_press_is_reprojected_when_the_window_scale_changes() {
+    // A fixed zoom, so only the window's scale moves. The same physical point
+    // is half as many points wide at twice the scale, and the scene under it
+    // halves with them.
+    let mut r = Rig::new(Knob::default(), (400, 300), 1.0);
+    r.step();
+    r.d.pointer_moved(at(100.0, 60.0), none());
+    r.d.button(Button::Primary, true, none());
+    assert_eq!(
+        inputs(&r.d).last().unwrap().pointer.pos,
+        Some(at(100.0, 60.0))
+    );
+    // Same surface, twice the scale: 400 physical pixels are 200 points now.
+    r.d.resized((400, 300), 2.0);
+    r.step();
+    assert_eq!(r.d.ui_scale(), 2.0);
+    assert_eq!(
+        r.s.view.seen.last(),
+        Some(&(Some(at(50.0, 30.0)), true)),
+        "a press in flight must stay over the physical point it was made on"
+    );
+}
+
+#[test]
+fn a_queued_press_stays_put_when_the_surface_scaled_with_the_window() {
+    // A surface that doubles with the scale (the usual DPI move): 400 pixels
+    // were 400 points, 800 are 400 points again, so the scene is unchanged and
+    // the press must not move.
+    let mut r = Rig::new(Knob::default(), (400, 300), 1.0);
+    r.step();
+    r.d.pointer_moved(at(100.0, 60.0), none());
+    r.d.button(Button::Primary, true, none());
+    r.d.resized((800, 600), 2.0);
+    r.step();
+    assert_eq!(r.d.ui_scale(), 2.0);
+    assert_eq!(
+        r.s.view.seen.last(),
+        Some(&(Some(at(100.0, 60.0)), true)),
+        "a scale the surface followed moves nothing"
+    );
 }
 
 #[test]
@@ -612,9 +721,16 @@ fn drag_coalescing_preserves_modifier_boundaries_and_release() {
     r.step();
     r.d.pointer_moved(at(10.0, 10.0), none());
     r.d.button(Button::Primary, true, none());
-    for x in [12.0, 14.0] { r.d.pointer_moved(at(x, 10.0), none()); }
-    let shift = Mods { shift: true, ..none() };
-    for x in [16.0, 18.0] { r.d.pointer_moved(at(x, 10.0), shift); }
+    for x in [12.0, 14.0] {
+        r.d.pointer_moved(at(x, 10.0), none());
+    }
+    let shift = Mods {
+        shift: true,
+        ..none()
+    };
+    for x in [16.0, 18.0] {
+        r.d.pointer_moved(at(x, 10.0), shift);
+    }
     r.d.button(Button::Primary, false, shift);
     r.s.view.trails.clear();
     assert!(r.step());

@@ -1,0 +1,20 @@
+[package]
+name = "ui-drive"
+version = "0.0.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+description = "Drives a real instrument's page with no window: every visible control is pressed at its drawn centre, and the press must select it (docs/self-test-loop.md, layer 2)"
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-engine = { path = "../../crates/engine/engine" }
+kontra-host = { path = "../../crates/app/host" }
+kontra-lua = { path = "../../crates/script/lua" }
+kontra-stream = { path = "../../crates/engine/stream" }
+kontra-ui = { path = "../../crates/app/ui" }
+kontra-ui-model = { path = "../../crates/model/ui-model" }
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a", features = ["cpu"] }
+png = "0.18"

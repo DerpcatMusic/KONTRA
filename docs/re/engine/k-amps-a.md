@@ -2,7 +2,7 @@
 
 Scope: ACBox (0x53), Bass Invader (0x54, version 0x52), Bass Pro (0x61), Cabinet (0x24), EP Preamps (0x6C), HotSolo (0x54, version 0x10).
 
-Status: **shared-kernel refactor shipped; no model has a DSP implementation yet.** The Kontakt 8 decompile is complete (`source/kontakt8/`, 1113 buckets, READY). Workers decoded the Bass Invader, Bass Pro, HotSolo and EP Preamps cores, but none reached a verified law, so nothing below is a spec. Per-model findings: [Bass Invader](k-amps-a-bassinvader.md), [Bass Pro](k-amps-a-basspro.md), [HotSolo](k-amps-a-hotsolo.md), [EP Preamps](k-amps-a-epp.md).
+Status: **shared-kernel refactor shipped; HotSolo is carried at one measured operating point, the other three have no DSP implementation yet.** The Kontakt 8 decompile is complete (`source/kontakt8/`, 1113 buckets, READY). Workers decoded the Bass Invader, Bass Pro, HotSolo and EP Preamps cores, but none reached a verified law, so nothing below is a spec. Per-model findings: [Bass Invader](k-amps-a-bassinvader.md), [Bass Pro](k-amps-a-basspro.md), [HotSolo](k-amps-a-hotsolo.md), [EP Preamps](k-amps-a-epp.md).
 
 ## Done in this unit
 
@@ -56,10 +56,15 @@ Size, air, treble and bass (bass and treble stored -1..1), type clamped 0..=10. 
 - Manual: Drive, Bass (becomes passive high-pass cutoff in Passive EQ mode), Mid (Electric Grand only), Treble, Rate, Amount, Width, Mono, Output. Electric C mode added in 8.8.
 - Gap: all of it. Needs a probe run (`tools/kontakt-oracle/probe_fx.py scan`) to get bindings.
 
-### HotSolo (0x54, version 0x10) — missing
+### HotSolo (0x54, version 0x10) — modelled at one operating point
 - Fields (10 binding rows, version 0x10, reader `Fx8BB`): overdrive channel switch, bass, mid, treble, presence, norm pre, ovrd pre, master, depth, output, mono.
 - Manual: two preamp channels, Depth controls low-range response in the power amp.
-- Gap: two-channel preamp, tone stack, power-amp stage. Unsupported.
+- Carried as `ir::EffectKind::Amp`: the tone stage measured through Kontakt at Electric Mint's saved
+  record, which is the record every parity render compares. The parity gap it caused (3.05 dB level,
+  7.04 dB band spread) is closed: +0.02 dB level, 0.78 dB band spread. Law, measurement and residuals:
+  [k-hotsolo.md](k-hotsolo.md).
+- Gap: the five tone knobs' laws, the overdrive channel, mono and the piecewise shaper are not
+  modelled; a record that asks for them is reported with impact Audible.
 
 ## Gap table
 
@@ -70,7 +75,7 @@ Size, air, treble and bass (bass and treble stored -1..1), type clamped 0..=10. 
 | Bass Invader | none | yes (12) | yes | none | missing |
 | Bass Pro | none | yes (24) | yes | none | missing |
 | EP Preamps | none | no | yes | none | missing |
-| HotSolo | none | yes (10) | yes | none | missing |
+| HotSolo | `ir::EffectKind::Amp` at the measured point | yes (10) | yes | measured tone stage; no knob laws | partial |
 
 Shared-engine pieces that might serve the missing models (not proved for them): `color::Curve` waveshapers, `eq_family` (Solid G-EQ fit), `filter` biquads, `voice_mod` tone path. Using any of them would need evidence for each model.
 

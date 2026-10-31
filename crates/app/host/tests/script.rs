@@ -360,6 +360,7 @@ fn a_script_bypass_takes_a_playing_voices_filter_out() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Cutoff {
             source: ir::Source::Controller(74),
             insert: 0,
@@ -557,6 +558,98 @@ fn a_script_draws_a_table_step_by_step() {
     assert_eq!(e.last_message(), "42 42 0");
 }
 
+/// `set_control_par_str_arr` writes one element of a control's string array
+/// parameter and `get_control_par_str_arr` reads it back: a ui_xy's
+/// per-cursor picture and automation name (KSP manual,
+/// `$CONTROL_PAR_CURSOR_PICTURE`), and the strings a Komplete Kontrol
+/// browser shows for a stepped control (`$CONTROL_PAR_NKS_STR_VALUES`, which
+/// Session Guitarist - Electric Mint sets to "16th"/"8th" on its swing and
+/// feel knobs). Elements of another parameter, and indexes never written,
+/// read back empty.
+#[test]
+fn a_string_array_parameter_reads_back_element_by_element() {
+    let source = "on init
+            declare ui_xy ?pad[4]
+            declare ui_knob $k (0, 4, 1)
+            declare $pad_id
+            declare $k_id
+            declare @at_init
+            $pad_id := get_ui_id(?pad)
+            $k_id := get_ui_id($k)
+            set_control_par_str_arr($pad_id, $CONTROL_PAR_CURSOR_PICTURE, \"cursor_a\", 0)
+            set_control_par_str_arr($pad_id, $CONTROL_PAR_CURSOR_PICTURE, \"cursor_b\", 2)
+            set_control_par_str_arr($pad_id, $CONTROL_PAR_AUTOMATION_NAME, \"Cutoff\", 1)
+            set_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, \"16th\", 0)
+            set_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, \"8th\", 1)
+            @at_init := get_control_par_str_arr($pad_id, $CONTROL_PAR_CURSOR_PICTURE, 2)
+        end on
+        on note
+            message(\"[\" & @at_init & \"][\" ...
+                & get_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, 0) & \"][\" ...
+                & get_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, 1) & \"][\" ...
+                & get_control_par_str_arr($k_id, $CONTROL_PAR_NKS_STR_VALUES, 2) & \"][\" ...
+                & get_control_par_str_arr($k_id, $CONTROL_PAR_CURSOR_PICTURE, 0) & \"][\" ...
+                & get_control_par_str_arr($pad_id, $CONTROL_PAR_AUTOMATION_NAME, 1) & \"]\")
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "[cursor_b][16th][8th][][][Cutoff]");
+}
+
+/// `$KSP_TIMER` counts CPU-clock microseconds since load, which
+/// `reset_ksp_timer` zeroes; `$ENGINE_UPTIME` counts the render clock.
+/// After a sleep with no audio rendered the timer has moved while the uptime
+/// has not (KSP manual: the timer is "based on the CPU clock and thus runs at
+/// a constant rate, regardless of whether or not Kontakt is being used in
+/// real time", so the sample clock is the wrong source — KSP_AUDIT KSP-32).
+#[test]
+fn the_ksp_timer_counts_cpu_microseconds_and_resets() {
+    let source = "on init
+            declare $t0
+            declare $t1
+            declare $t2
+            reset_ksp_timer
+            $t0 := $KSP_TIMER
+        end on
+        on note
+            $t1 := $KSP_TIMER
+            reset_ksp_timer
+            $t2 := $KSP_TIMER
+            message($t0 & \" \" & $t1 & \" \" & $t2 & \" \" & $ENGINE_UPTIME)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // 20 ms of CPU time and no audio at all: only the CPU clock moved.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // A second of render time, which takes far less CPU time than that.
+    for _ in 0..12 {
+        level(&mut e, &[]);
+    }
+    level(&mut e, &[on(60)]);
+    let read: Vec<i64> = e
+        .last_message()
+        .split(' ')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    let [t0, t1, t2, uptime] = read[..] else {
+        panic!("expected four numbers, got {read:?}");
+    };
+    // Reset and read are adjacent instructions in `on init`; the ceiling is
+    // wide because a preempted thread between them is not a defect.
+    assert!((0..100_000).contains(&t0), "t0 = {t0}");
+    // The 20 ms sleep, and not the second of audio ($ENGINE_UPTIME).
+    assert!((20_000..1_000_000).contains(&t1), "t1 = {t1}");
+    assert!(uptime >= 1_000, "uptime = {uptime}");
+    assert!((0..100_000).contains(&t2), "t2 = {t2}");
+}
+
 /// An output menu lists the engine's outputs by Kontakt's names.
 #[test]
 fn output_channels_have_kontakts_names() {
@@ -609,6 +702,7 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
         slot: 3,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Controller(110),
             intensity: 0.0,
@@ -666,6 +760,7 @@ fn route_intensities_follow_kontakts_laws() {
         slot: 3,
         target,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Controller(110),
             intensity: 0.5,
@@ -696,6 +791,59 @@ fn route_intensities_follow_kontakts_laws() {
     // Route 1 at depth 0.25 and route 0 at -0.125, with the controller at 0.
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.5 * 0.75 * 1.125).abs() < 1e-3, "{l}");
+}
+
+#[test]
+fn a_route_reads_its_source_mirrored_when_inverted() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let route = || ir::Mod {
+        name: "LFO".into(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        invert: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Controller(110),
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
+        },
+    };
+    let engine = |store: &mut Store, set_invert: bool| {
+        let mut plan = Plan::new(vec![zone(store, 0.5, 0)], 16);
+        plan.groups[0].mods = vec![route()];
+        let set = if set_invert {
+            "set_engine_par($MOD_TARGET_INVERT_SOURCE, 1, 0, 3, -1)"
+        } else {
+            ""
+        };
+        let script = kontra_ksp::compile(
+            &format!(
+                "on init
+                    {set}
+                    set_controller(110, 32)
+                    message(get_engine_par($MOD_TARGET_INVERT_SOURCE, 0, 3, -1))
+                end on"
+            ),
+            &[],
+        )
+        .unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        Engine::new(Arc::new(plan), store.client(), RATE)
+    };
+    let mut plain = engine(&mut store, false);
+    let mut inverted = engine(&mut store, true);
+    // The route reads the controller's 32/127 as is, or mirrored as 1 − 32/127.
+    assert_eq!(plain.last_message(), "0");
+    assert_eq!(inverted.last_message(), "1");
+    assert_eq!(plain.stats().actions_unhandled, 0);
+    assert_eq!(inverted.stats().actions_unhandled, 0);
+    let x = 32.0 / 127.0;
+    let l = level(&mut plain, &[on(60)]);
+    assert!((l - 0.5 * x).abs() < 1e-3, "{l}");
+    let l = level(&mut inverted, &[on(60)]);
+    assert!((l - 0.5 * (1.0 - x)).abs() < 1e-3, "{l}");
 }
 
 #[test]
@@ -732,6 +880,7 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Envelope(0),
             intensity: 1.0,
@@ -744,6 +893,7 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
         slot: 1,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Pan {
             source: ir::Source::Envelope(1),
             amount: 0.0,
@@ -792,6 +942,7 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
         slot: 3,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Pan {
             source: ir::Source::Lfo(0),
             amount: 0.0,
@@ -870,6 +1021,7 @@ fn a_stepped_lfos_rate_knob_sets_a_whole_count() {
         slot: 3,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Pan {
             source: ir::Source::Lfo(0),
             amount: 0.0,
@@ -1152,6 +1304,7 @@ fn a_script_sends_a_note_its_modulation_value() {
         slot: 0,
         target: 0,
         bypass: false,
+        invert: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Script(1),
             intensity: 1.0,
@@ -1779,6 +1932,7 @@ fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
             slot: 1,
             target: 0,
             bypass: false,
+            invert: false,
             kind: kontra_engine::ir::ModKind::Volume {
                 source: kontra_engine::ir::Source::Script(1),
                 intensity: 1.0,
@@ -1806,6 +1960,7 @@ fn a_script_modulation_index_keeps_its_value_after_many_others() {
             slot: 1,
             target: 0,
             bypass: false,
+            invert: false,
             kind: kontra_engine::ir::ModKind::Volume {
                 source: kontra_engine::ir::Source::Script(20),
                 intensity: 1.0,
@@ -1855,6 +2010,7 @@ fn a_script_modulation_ramps_to_its_value() {
             slot: 1,
             target: 0,
             bypass: false,
+            invert: false,
             kind: kontra_engine::ir::ModKind::Volume {
                 source: kontra_engine::ir::Source::Script(1),
                 intensity: 1.0,
@@ -1895,6 +2051,7 @@ fn a_uvi_script_renders_the_same_at_any_block_size() {
                 slot: 1,
                 target: 0,
                 bypass: false,
+                invert: false,
                 kind: kontra_engine::ir::ModKind::Volume {
                     source: kontra_engine::ir::Source::Script(1),
                     intensity: 1.0,
@@ -3248,6 +3405,130 @@ fn a_file_dialog_array_is_cancelled_and_completes_with_failure() {
     assert!(
         e.unhandled_actions().is_empty(),
         "{:?}",
+        e.unhandled_actions()
+    );
+}
+
+/// `midifile`'s parameter ids must agree with the `$EVENT_PAR_*` names the
+/// script compiler resolves, or `mf_set_event_par` would act on the wrong one.
+#[test]
+fn mf_event_pars_match_the_script_constants() {
+    use kontra_engine::midifile::{PAR_ID, PAR_NOTE_LENGTH, PAR_POS, PAR_TRACK_NR};
+    for (name, value) in [
+        ("$EVENT_PAR_POS", PAR_POS),
+        ("$EVENT_PAR_NOTE_LENGTH", PAR_NOTE_LENGTH),
+        ("$EVENT_PAR_ID", PAR_ID),
+        ("$EVENT_PAR_TRACK_NR", PAR_TRACK_NR),
+    ] {
+        assert_eq!(kontra_ksp::constant(name), Some(value), "{name}");
+    }
+}
+
+/// 960 ticks per quarter, one track: a note at tick 0 and one at 1920.
+fn midi_bytes() -> Vec<u8> {
+    let track: Vec<u8> = vec![
+        0x00, 0x90, 0x3c, 0x46, // +0    note on 60
+        0x87, 0x40, 0x80, 0x3c, 0x40, // +960  note off 60
+        0x87, 0x40, 0x90, 0x40, 0x46, // +960  note on 64
+        0x00, 0xff, 0x2f, 0x00, // end of track
+    ];
+    let mut file = b"MThd".to_vec();
+    file.extend_from_slice(&6u32.to_be_bytes());
+    file.extend_from_slice(&0u16.to_be_bytes());
+    file.extend_from_slice(&1u16.to_be_bytes());
+    file.extend_from_slice(&960u16.to_be_bytes());
+    file.extend_from_slice(b"MTrk");
+    file.extend_from_slice(&(track.len() as u32).to_be_bytes());
+    file.extend_from_slice(&track);
+    file
+}
+
+/// `mf_insert_file` reads and parses a file: off the audio thread only. `on
+/// init` runs while the engine is built, so there it inserts; a note callback
+/// runs inside `process`, gets the failure answer, and is counted.
+#[test]
+fn a_midi_file_inserted_at_init_is_never_read_by_a_callback() {
+    let path = std::env::temp_dir().join(format!("kontra-mf-{}-gate.mid", std::process::id()));
+    std::fs::write(&path, midi_bytes()).unwrap();
+    let p = path.display();
+    let source = format!(
+        "on init
+            declare $at_init
+            $at_init := mf_insert_file(\"{p}\", 0, 0, 0)
+        end on
+        on note
+            declare $in_note
+            $in_note := mf_insert_file(\"{p}\", 0, 0, 0)
+            message($at_init & \" \" & $in_note & \" \" & mf_get_num_tracks() & \" \" & mf_get_length())
+        end on"
+    );
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(&store, Vec::new(), &source);
+    level(&mut e, &[on(60)]);
+    // The init insert answered 0 and the file is there; the callback's did
+    // not read it, and is reported rather than dropped.
+    assert_eq!(e.last_message(), "0 -1 1 1920");
+    assert_eq!(
+        e.unhandled_actions(),
+        [(kontra_engine::Action::MfInsertFile, 1)],
+        "the callback's insert was dropped without a report"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// `mf_insert_event(track, …)` keeps the track it names: `$EVENT_PAR_TRACK_NR`
+/// and `by_track` find it there.
+#[test]
+fn a_midi_event_inserted_keeps_the_track_it_names() {
+    let path = std::env::temp_dir().join(format!("kontra-mf-{}-track.mid", std::process::id()));
+    std::fs::write(&path, midi_bytes()).unwrap();
+    let p = path.display();
+    let source = format!(
+        "on init
+            declare $id
+            declare $track
+            mf_insert_file(\"{p}\", 0, 0, 0)
+            mf_set_buffer_size(1)
+            $id := mf_insert_event(2, 100, $MIDI_COMMAND_NOTE_ON, 60, 100)
+            $track := mf_get_event_par($id, $EVENT_PAR_TRACK_NR)
+            message($id & \" \" & $track & \" \" & by_track(3) & \" \" & by_track(1))
+        end on"
+    );
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(&store, Vec::new(), &source);
+    level(&mut e, &[on(60)]);
+    // The file holds two channel events (ids 0 and 1); the third is the one
+    // inserted, on track 2, which `by_track(3)` finds. Track 1 is still id 0.
+    assert_eq!(e.last_message(), "2 2 2 0");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// `$MOD_TARGET_INVERT_SOURCE` lives on a modulator: at a slot with no route
+/// the read is the absent value 0, not an unanswered call.
+#[test]
+fn a_route_invert_flag_at_a_slot_with_no_route_reads_zero() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].mods.clear();
+    let script = kontra_ksp::compile(
+        "on init
+            message(get_engine_par($MOD_TARGET_INVERT_SOURCE, 0, 3, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "0");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "the read was left unanswered: {:?}",
         e.unhandled_actions()
     );
 }

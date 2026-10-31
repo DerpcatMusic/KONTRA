@@ -23,8 +23,9 @@ pub use drive::{
     SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
-    Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
-    IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
+    Amp, Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector,
+    Formant, IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient,
+    VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar};
 pub use kontra_law::{FormulaId, common};
@@ -464,6 +465,9 @@ pub struct Mod {
     pub target: u16,
     /// Its modulator is switched off (scripts may switch it on).
     pub bypass: bool,
+    /// The route reads its source mirrored, as `$MOD_TARGET_INVERT_SOURCE`
+    /// sets: a bipolar source negated, a unipolar one at `1 − x`.
+    pub invert: bool,
     pub kind: ModKind,
 }
 
@@ -492,8 +496,12 @@ pub enum Source {
     Blend(u8),
     /// Always 1.
     Constant,
-    /// The value a script sent this note for "from script" modulator `id`,
-    /// −1..=1; 0 until sent.
+    /// The value a script sent this note for "from script" modulator `id`: the
+    /// KSP write (`±1000000`) divided by a million, so `−1..=1`; 0 until sent.
+    /// The route laws read it as a *level*, 0..=1: `sendScriptModulation`
+    /// sends `value · 1e6` (`crates/script/lua/src/prelude.lua`), `Curve::gain`
+    /// clamps, and an unsent 0 is silence for a volume route, not the centre of
+    /// a bipolar swing (host test `a_script_modulation_ramps_to_its_value`).
     Script(u16),
     /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
     /// key-up, so a release sample is quieter the longer its key was held.
@@ -650,6 +658,8 @@ pub enum EffectKind {
     Matrix([[f32; 2]; 2]),
     /// Bands in series; a 0 dB band is flat.
     Eq([Bell; 4]),
+    /// An amp head's tone stage, in place.
+    Amp(Amp),
     /// A state-variable filter.
     Filter(Filter),
     /// A vowel formant filter.

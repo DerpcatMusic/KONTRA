@@ -1,11 +1,19 @@
 //! The rack (07-APP.md §4): up to [`MAX_PARTS`] parts, each one loaded
 //! instrument and the engine playing it. [`Rack`] lives on the control
-//! thread and builds engines there; [`RackAudio`] lives on the audio thread
-//! and only renders. They share nothing but the protocol's rings and cells,
-//! so no lock is reachable from audio.
+//! thread and builds engines there; [`RackAudio`] renders them on the audio
+//! thread. They share the protocol's rings and cells and nothing else that
+//! is mutable, so no lock is reachable from audio.
+//!
+//! One thing does move between them: the audio side's own state. It rests in
+//! a one-slot ring, the host's audio callback takes it to render, and the
+//! control tick takes it to carry out commands when the host renders
+//! nothing — a stopped host calls no `process` at all, and a control edit
+//! must not wait for a block that never comes. One borrower at a time, and
+//! neither waits: whoever finds the slot empty does nothing.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use kontra_engine::{EffectRequest, Engine, Prepared, ir};
 
@@ -31,6 +39,38 @@ pub type Delays = Vec<(u8, Option<f32>, Option<f32>)>;
 
 /// Stereo outputs a rack renders: one pair per part at most.
 pub const OUTPUTS: usize = MAX_PARTS;
+
+/// Passes the control tick makes over the audio side when the host renders
+/// nothing. A frame that was in flight when an edit arrived reads the value
+/// from before it, so the page shows the edit on the pass after that one.
+const PASSES: usize = 2;
+
+/// What one [`Rack::tick`] did, for the session log: the counts that say
+/// whether an edit reached the audio side, and how full its rings are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ticked {
+    /// Commands carried out on the calling thread, because the host
+    /// rendered nothing.
+    pub applied: u64,
+    /// Commands the command ring refused; a later tick sends them again.
+    pub pending: usize,
+    /// Room left in the command ring, and in the interfaces' reply ring.
+    pub room: (usize, usize),
+    /// Blocks the audio side rendered since the rack was made, and blocks
+    /// the host asked for that found the control tick holding the audio
+    /// side (they came out silent).
+    pub blocks: u64,
+    pub missed: u64,
+    /// Commands the audio side refused or could not retire.
+    pub dropped: u64,
+}
+
+/// How long a host goes without rendering a block before the control tick
+/// carries the audio side's commands out itself. A stopped host may resume
+/// at any moment, and the block it starts while the control tick has the
+/// audio side is silent: a tenth of a second says it is not rendering,
+/// where a host that is (however lightly loaded) renders far more often.
+const IDLE: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// How a part sounds in the rack.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -163,6 +203,20 @@ pub struct Channels {
     pub looks: Ring<Box<crate::view::LookFrame>>,
     pub meters: MeterCells,
     pub stats: StatCells,
+    /// Blocks the audio side rendered: a host that renders is one whose
+    /// commands the audio side carries out, so the control tick knows when
+    /// to carry them out itself ([`Rack::tick`]).
+    pub blocks: std::sync::atomic::AtomicU64,
+    /// How long the last block the host asked for was, in nanoseconds: a
+    /// host with long blocks is still rendering while it is quiet between
+    /// them, so the control tick waits at least twice one before it takes
+    /// the audio side.
+    pub block_ns: std::sync::atomic::AtomicU64,
+    /// Blocks the host asked for that the control tick had the audio side
+    /// for: silence, and nothing carried out.
+    pub missed: std::sync::atomic::AtomicU64,
+    /// Commands the audio side had to refuse or could not retire.
+    pub dropped: std::sync::atomic::AtomicU64,
 }
 
 /// A loaded part as the control thread knows it.
@@ -244,6 +298,12 @@ impl Player {
 /// The control side: loads parts, sets the mix and asks the audio side.
 pub struct Rack {
     channels: Arc<Channels>,
+    /// The audio side, to carry out the commands here when the host is not
+    /// rendering: a control edit must not wait for a block that never comes.
+    audio: RackAudio,
+    /// The block count the last tick saw, and when it last moved.
+    blocks: u64,
+    last_block: std::time::Instant,
     rate: u32,
     store: Store,
     parts: Vec<Option<Part>>,
@@ -274,9 +334,16 @@ impl Rack {
             typed: Ring::new(16),
             meters: MeterCells::default(),
             stats: StatCells::default(),
+            blocks: std::sync::atomic::AtomicU64::new(0),
+            block_ns: std::sync::atomic::AtomicU64::new(0),
+            missed: std::sync::atomic::AtomicU64::new(0),
+            dropped: std::sync::atomic::AtomicU64::new(0),
         });
         let audio = RackAudio::new(Arc::clone(&channels), store.client(), rate, max_block);
         let rack = Self {
+            audio: audio.control(),
+            blocks: 0,
+            last_block: std::time::Instant::now(),
             channels,
             rate,
             store,
@@ -416,7 +483,10 @@ impl Rack {
             .collect();
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
-        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
+        // A preset's own file may sit outside its library: its pictures come
+        // from the instrument it was read from.
+        let library = crate::ui::open_any([path.clone(), source.clone()]);
+        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, library);
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
             source,
@@ -640,9 +710,145 @@ impl Rack {
         self.saves = Some(root);
     }
 
-    /// Frees what the audio thread let go of and resends refused commands.
-    /// Call it from the control thread now and then.
-    pub fn tick(&mut self) {
+    /// Carries out what the control side asked for: frees what the audio
+    /// thread let go of, resends refused commands, and refreshes the
+    /// interfaces. Call it from the control thread now and then.
+    ///
+    /// When the host renders no blocks, the audio side never runs, and its
+    /// commands would wait forever: then this takes the audio side and runs
+    /// them here, so an edit made while the host is stopped applies and
+    /// shows.
+    pub fn tick(&mut self) -> Ticked {
+        self.reap();
+        // A command the ring refused at send time goes in before anything
+        // this tick sends, so it is carried out in the same pass.
+        self.resend();
+        // The interfaces: what the audio side filled since the last tick,
+        // and the next frame for each; and a save's values.
+        self.exchange();
+        self.captures();
+        let mut applied = 0;
+        if self.idle() {
+            // The host is not rendering: carry the commands out here, and
+            // take what that fills, so an edit made now shows now rather
+            // than at a block that never comes. A command the ring refused
+            // goes in again at the start of each pass: the pass before it
+            // drained the ring, and a command left in `pending` behind one
+            // that is only now sent would otherwise wait for another tick.
+            for _ in 0..PASSES {
+                self.resend();
+                let ran = self.drive();
+                if ran == 0 {
+                    break;
+                }
+                applied += ran;
+                self.exchange();
+                self.captures();
+            }
+        }
+        Ticked {
+            applied,
+            pending: self.pending.len(),
+            room: (self.channels.commands.room(), self.channels.looks.room()),
+            blocks: self.channels.blocks.load(Ordering::Relaxed),
+            missed: self.channels.missed.load(Ordering::Relaxed),
+            dropped: self.channels.dropped.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The interfaces: takes the frames the audio side filled, then sends
+    /// each part's frame for the next one.
+    fn exchange(&mut self) {
+        while let Some(frame) = self.channels.looks.recv() {
+            if let Some(Some(p)) = self.parts.get_mut(frame.part)
+                && p.script.generation == frame.generation
+                && let Some(view) = p.view.as_mut()
+            {
+                view.refresh(&p.faces, p.path.as_deref(), frame);
+            }
+        }
+        let looks: Vec<_> = (self.parts.iter_mut().enumerate())
+            .filter_map(|(n, p)| {
+                let p = p.as_mut()?;
+                let mut frame = p.view.as_mut()?.frame.take()?;
+                (frame.part, frame.generation) = (n, p.script.generation);
+                Some(frame)
+            })
+            .collect();
+        for frame in looks {
+            self.send(Command::Look(frame));
+        }
+    }
+
+    /// A save's values: takes the captures that came back and asks for the
+    /// next, so what a save writes is at most one tick old.
+    fn captures(&mut self) {
+        while let Some(c) = self.channels.captured.recv() {
+            if let Some(Some(p)) = self.parts.get_mut(c.part)
+                && p.script.generation == c.generation
+            {
+                p.script.asked = false;
+                let mut c = c;
+                c.keep(p.script.latest.take());
+                p.script.latest = Some(c);
+            }
+        }
+        let ask: Vec<_> = (self.parts.iter_mut().enumerate())
+            .filter_map(|(n, p)| {
+                let s = &mut p.as_mut()?.script;
+                if s.asked
+                    || s.vars
+                        .iter()
+                        .all(|v| v.vars.is_empty() && v.widgets.is_empty() && !v.state)
+                {
+                    return None;
+                }
+                s.asked = true;
+                let mut c = Capture::new(n, s.generation, &s.vars);
+                c.after(s.latest.as_deref());
+                Some(c)
+            })
+            .collect();
+        for c in ask {
+            self.send(Command::Capture(c));
+        }
+    }
+
+    /// Whether the host has stopped rendering (or has not started): no block
+    /// for [`IDLE`], or none at all since this rack was made.
+    ///
+    /// A host that renders keeps the audio side's commands to itself: taking
+    /// it away would render that block silent, so this says no.
+    fn idle(&mut self) -> bool {
+        let blocks = self
+            .channels
+            .blocks
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if blocks != self.blocks {
+            self.blocks = blocks;
+            self.last_block = std::time::Instant::now();
+            return false;
+        }
+        // A host with long blocks renders nothing between them: twice one
+        // is the shortest quiet that says it stopped.
+        let period =
+            std::time::Duration::from_nanos(self.channels.block_ns.load(Ordering::Relaxed));
+        self.blocks == 0 || self.last_block.elapsed() >= IDLE.max(period.saturating_mul(2))
+    }
+
+    /// Carries out the commands the audio side would have, when the host
+    /// renders nothing; how many it ran.
+    fn drive(&mut self) -> u64 {
+        // No state to take: the audio side has it, so it is rendering.
+        let Some(mut side) = self.audio.take() else {
+            return 0;
+        };
+        side.run()
+    }
+
+    /// Frees what the audio thread let go of, and builds the effect units
+    /// scripts asked for.
+    fn reap(&mut self) {
         while self.channels.retired.recv().is_some() {}
         while self.channels.units.recv().is_some() {}
         while self.channels.typed.recv().is_some() {}
@@ -678,58 +884,10 @@ impl Rack {
                 unit,
             });
         }
-        // The interfaces catch up with what their scripts changed, and ask
-        // again: the editor shows each at most one tick late.
-        while let Some(frame) = self.channels.looks.recv() {
-            if let Some(Some(p)) = self.parts.get_mut(frame.part)
-                && p.script.generation == frame.generation
-                && let Some(view) = p.view.as_mut()
-            {
-                view.refresh(&p.faces, p.path.as_deref(), frame);
-            }
-        }
-        let looks: Vec<_> = (self.parts.iter_mut().enumerate())
-            .filter_map(|(n, p)| {
-                let p = p.as_mut()?;
-                let mut frame = p.view.as_mut()?.frame.take()?;
-                (frame.part, frame.generation) = (n, p.script.generation);
-                Some(frame)
-            })
-            .collect();
-        for frame in looks {
-            self.send(Command::Look(frame));
-        }
-        while let Some(c) = self.channels.captured.recv() {
-            if let Some(Some(p)) = self.parts.get_mut(c.part)
-                && p.script.generation == c.generation
-            {
-                p.script.asked = false;
-                let mut c = c;
-                c.keep(p.script.latest.take());
-                p.script.latest = Some(c);
-            }
-        }
-        // Ask again for every part with persistent values: what a save
-        // writes is at most one tick old.
-        let ask: Vec<_> = (self.parts.iter_mut().enumerate())
-            .filter_map(|(n, p)| {
-                let s = &mut p.as_mut()?.script;
-                if s.asked
-                    || s.vars
-                        .iter()
-                        .all(|v| v.vars.is_empty() && v.widgets.is_empty() && !v.state)
-                {
-                    return None;
-                }
-                s.asked = true;
-                let mut c = Capture::new(n, s.generation, &s.vars);
-                c.after(s.latest.as_deref());
-                Some(c)
-            })
-            .collect();
-        for c in ask {
-            self.send(Command::Capture(c));
-        }
+    }
+
+    /// Sends the commands the ring refused, oldest first, until it is full.
+    fn resend(&mut self) {
         while let Some(c) = self.pending.pop_front() {
             if let Err(c) = self.channels.commands.send(c) {
                 self.pending.push_front(c);

@@ -61,6 +61,28 @@ pub struct Limiter {
     pub release_ms: f32,
 }
 
+/// An amp head's tone stage: a pre-gain, `bands` in series and an output gain.
+/// A translator fills the bands with its format's measured response in
+/// physical units, so any format can map its own amp onto the same stage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Amp {
+    /// Gain before the bands, linear.
+    pub input: f32,
+    /// The tone bands, in series; a 0 dB band is flat.
+    pub bands: [crate::Bell; 4],
+    /// Gain after the bands, linear.
+    pub output: f32,
+}
+
+impl Amp {
+    /// `input · output`: the stage is linear, so its two gains are one gain
+    /// wherever they sit around the bands.
+    #[must_use]
+    pub fn gain(&self) -> f32 {
+        self.input * self.output
+    }
+}
+
 /// A delay length: fixed, or in quarter-note beats at the host's tempo.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DelayTime {

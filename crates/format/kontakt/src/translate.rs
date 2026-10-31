@@ -564,6 +564,7 @@ fn translate_group(
                         slot: slot(n),
                         target: target.map_or(0, slot),
                         bypass: false,
+                        invert: false,
                         kind: ir::ModKind::Envelope,
                     });
                 }

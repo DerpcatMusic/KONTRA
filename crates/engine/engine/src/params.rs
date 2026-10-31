@@ -257,6 +257,7 @@ impl Engine {
                 let m = g.mods.iter().find(|m| i32::from(m.slot) == slot)?;
                 return Some(i32::from(m.bypass));
             }
+            EnginePar::ModInvertSource => return Some(i32::from(route()?.invert)),
             EnginePar::ReleaseTrigger => return Some(i32::from(g.release_trigger)),
             EnginePar::RouteIntensity => setting(&SQUARE, f64::from(signed(&route()?.kind)?.abs())),
             EnginePar::RouteDepth => setting(&SIGNED_CUBE, f64::from(signed(&route()?.kind)?)),
@@ -336,6 +337,10 @@ impl Engine {
                 }
                 any
             }
+            EnginePar::ModInvertSource => g.mod_mut(slot, generic).is_some_and(|m| {
+                m.invert = value != 0;
+                true
+            }),
             // Measured (probes/mod_par_laws.lua): the knob's depth is x²
             // and the route keeps its sign; the bipolar one writes (2x − 1)³.
             EnginePar::RouteIntensity => g.mod_mut(slot, generic).is_some_and(|m| {

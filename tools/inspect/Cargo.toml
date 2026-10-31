@@ -7,6 +7,9 @@ license = "Apache-2.0"
 publish = false
 description = "Inspect v3 instrument loads and playback"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = "1"
 hound = "3"

@@ -135,21 +135,27 @@ fn clippy(
 pub fn clippy_problems(json: &str, changed: &[String]) -> Vec<String> {
     json.lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|value| value["reason"] == "compiler-message")
+        .filter(|value| {
+            value.get("reason").and_then(|reason| reason.as_str()) == Some("compiler-message")
+        })
         .filter_map(|value| {
-            let message = &value["message"];
-            let level = message["level"].as_str()?;
+            let message = value.get("message")?;
+            let level = message.get("level")?.as_str()?;
             if level != "warning" && level != "error" {
                 return None;
             }
-            let in_changed = message["spans"]
-                .as_array()
+            let in_changed = message
+                .get("spans")
+                .and_then(|spans| spans.as_array())
                 .into_iter()
                 .flatten()
-                .filter_map(|span| span["file_name"].as_str())
+                .filter_map(|span| span.get("file_name").and_then(|file| file.as_str()))
                 .any(|file| changed.iter().any(|path| path == file));
             if in_changed || level == "error" {
-                message["rendered"].as_str().map(str::to_string)
+                message
+                    .get("rendered")
+                    .and_then(|rendered| rendered.as_str())
+                    .map(str::to_string)
             } else {
                 None
             }

@@ -11,11 +11,13 @@ use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 use crate::perf_view::{View, ViewControl};
 
 mod keybed;
+mod loader;
 mod looks;
 pub mod lua;
 mod picture;
 mod widget;
 use kontra_ui_model as ui;
+pub use loader::{FailureSink, Loader, Missing, found, open_any};
 pub use looks::Looks;
 pub use picture::{Library, meta as picture_meta};
 use widget::{Decl, widget};
@@ -468,6 +470,7 @@ impl Live {
         let mut bld = Builder {
             ui: ui::Interface {
                 source: ui::Source::Ksp { slot },
+                laws: kontra_format_kontakt::presentation::LAWS,
                 ..Default::default()
             },
             assets: HashMap::new(),

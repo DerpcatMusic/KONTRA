@@ -19,6 +19,7 @@ mod impulse_knobs;
 mod inspect;
 mod knobs;
 mod midi;
+pub mod midifile;
 mod modulators;
 mod par_display;
 mod params;
@@ -103,6 +104,9 @@ pub struct Stats {
     pub actions_unhandled: u64,
     /// Script `message` calls.
     pub messages: u64,
+    /// `set_control_par_str_arr` elements a full pool refused (see
+    /// `kontra_script_ui`): they are not kept, so this says so.
+    pub text_arrays_full: u32,
 }
 
 struct Slot {
@@ -132,6 +136,9 @@ pub struct Engine {
     trace: Option<trace::Trace>,
     now: SampleTime,
     rate: u32,
+    /// When the script timer (`$KSP_TIMER`) was last zeroed: the CPU clock,
+    /// not the render clock (see the `KspTimer` action's comment).
+    ksp_timer: std::time::Instant,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
     tempo: f32,
     transport: transport::Transport,
@@ -187,6 +194,10 @@ pub struct Engine {
     files: Vec<kontra_plan::files::FileRequest>,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
+    /// MIDI files scripts inserted (`mf_insert_file`), by id, and the current one.
+    midi: Vec<midifile::MidiFile>,
+    midi_current: usize,
+    midi_buffer: i32,
     called: Box<[u32]>,
     /// The instrument's level, pan and tune (a script's group -1); level and
     /// pan move [`Self::output`], after every effect.
@@ -300,6 +311,7 @@ impl Engine {
             trace: _trace_capacity.map(trace::Trace::new),
             now: SampleTime(0),
             rate: rate.max(1),
+            ksp_timer: std::time::Instant::now(),
             tempo: 120.0,
             transport: transport::Transport::new(plan.scripts.len()),
             script_mods: ledger::script_ramps(&plan),
@@ -340,6 +352,9 @@ impl Engine {
             building: true,
             files: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
+            midi: Vec::new(),
+            midi_current: 0,
+            midi_buffer: 0,
             called: vec![0; kontra_vm::Action::all().len()].into(),
             ui,
             ids: callbacks::Ids::START,
@@ -380,7 +395,10 @@ impl Engine {
 
     #[must_use]
     pub fn stats(&self) -> Stats {
-        self.stats
+        Stats {
+            text_arrays_full: self.ui.text_arrays_full(),
+            ..self.stats
+        }
     }
 
     /// Host notes that ended during the last [`Engine::process`] (CLAP note end).
