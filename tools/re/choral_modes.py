@@ -6,17 +6,19 @@
 The four mode tables are not stored data: `MODES` at VA 0x14193cd70 in Kontakt
 8.13.1 is inside `.text`, so the bank is built by code. Rather than read that
 code, this measures what it produces: an impulse through the emulated kernel at
-the lowest modulation the parameters allow, one run per mode, and every
-non-zero frame of the result. A tap is where one voice's read pointer sat
-during that run.
+the lowest modulation the parameters allow, one run per mode, and every frame
+whose output is above `--threshold` (1e-4 by default; zero frames and anything
+below it are not printed). A tap is where one voice's read pointer sat during
+that run.
 
-Lowest is not still. `amount = 0` still leaves a nonzero depth (357 samples at
-rate 0.5, 48 kHz; `modulation_depth` in `crates/dsp/delay/src/chorus.rs`), and
-`rate = 0` still runs the LFO at 0.25 Hz, so every tap is a modulated position
-rather than a fixed bank delay: read a run as a spread, and compare modes to
-each other instead of counting taps as a table. The left/right values say
-nothing about the bank's `pan` field either -- `pan` is the per-voice LFO phase
-offset, and the stereo rotation comes from `width`.
+Lowest is not still. `amount = 0` still leaves a nonzero depth (3.54 samples at
+rate 0.5, 48 kHz; `modulation_depth` in `crates/dsp/delay/src/chorus.rs`, which
+reaches 357.03 samples at amount 1), and `rate = 0` still runs the LFO at
+0.25 Hz, so every tap is a modulated position rather than a fixed bank delay:
+read a run as a spread, and compare modes to each other instead of counting taps
+as a table. The left/right values say nothing about the bank's `pan` field
+either -- `pan` is the per-voice LFO phase offset, and the stereo rotation comes
+from `width`.
 
 Needs KONTAKT_EXE pointing at a Kontakt 8.13.1 binary (the emulator is bound to
 that build's addresses) and `unicorn`.
@@ -37,6 +39,10 @@ STILL = [0.0, 0.0, 0.5, 1.0, 1.0, 0.0, 1.0]
 
 
 def impulse(n: int) -> list[tuple[float, float]]:
+    """The first `n` frames of a unit impulse, at least one of them."""
+    # `[x] + [] * (n - 1)` is one frame for n <= 1, so a short or negative
+    # `--frames` would otherwise measure a run that is not the length asked for.
+    assert n >= 1, f"an impulse is at least one frame, not {n}"
     return [(1.0, 0.0)] + [(0.0, 0.0)] * (n - 1)
 
 
@@ -46,6 +52,8 @@ def main() -> int:
     ap.add_argument("--mode", type=int, action="append", choices=range(4))
     ap.add_argument("--threshold", type=float, default=1e-4)
     args = ap.parse_args()
+    if args.frames < 1:
+        ap.error(f"--frames must be at least 1, not {args.frames}")
     if not os.environ.get("KONTAKT_EXE"):
         sys.exit("set KONTAKT_EXE to a Kontakt 8.13.1 binary")
     for mode in args.mode if args.mode is not None else range(4):
@@ -55,7 +63,7 @@ def main() -> int:
             for i, (l, r) in enumerate(out)
             if abs(l) > args.threshold or abs(r) > args.threshold
         ]
-        print(f"mode {mode}: {len(taps)} non-zero frames")
+        print(f"mode {mode}: {len(taps)} frames above the threshold")
         for i, l, r in taps:
             print(f"  f{i:5d}  L {l:+.6f}  R {r:+.6f}")
     return 0

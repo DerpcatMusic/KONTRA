@@ -402,13 +402,21 @@ impl PluginLogic for Kontra {
             return;
         };
         let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
-        // A new rack counts its missed blocks from zero.
-        p.shared.missed_logged.store(0, Ordering::Relaxed);
         if let Some(saves) = kontra_host::rack::user_saves() {
             rack.set_saves(saves);
         }
         *lock(&p.shared.player) = Some(rack.player());
-        let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
+        let previous = {
+            let mut held = lock(&p.shared.rack);
+            // A new rack counts its missed blocks from zero, and the store
+            // belongs inside this lock: a tick still running the rack it
+            // replaces writes that rack's cumulative count under the same
+            // lock, so a store made outside would be overwritten by it and
+            // the new rack's misses would go unlogged until they passed the
+            // old total.
+            p.shared.missed_logged.store(0, Ordering::Relaxed);
+            held.replace(rack).map(|r| r.save())
+        };
         if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {
             let mut requests = lock(&p.shared.requests);
             if !requests.iter().any(|r| matches!(r, Request::Restore(_))) {

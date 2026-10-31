@@ -13,11 +13,14 @@
 //! keystream it came with.
 //!
 //! ```text
-//! PATCH_OUT=out.nki PATCH_VALUES=0.333,0.470,0.420,0.962,0.603,0.603,0.752,0.643 \
+//! PATCH_SRC=Electric\ Mint.nki PATCH_OUT=out.nki \
+//!   PATCH_VALUES=0.333,0.470,0.420,0.962,0.603,0.603,0.752,0.643 \
 //!   cargo test -p kontra-format-kontakt --lib patch_hot_solo -- --ignored --nocapture
 //! ```
-//! `PATCH_BYPASS=1` also sets the slot's bypass byte; `PATCH_LIST` takes one
-//! `output.nki values [bypass]` line per copy.
+//! `PATCH_SRC` is the source `.nki` (the library's own instrument), `PATCH_OUT`
+//! the copy to write. `PATCH_BYPASS=1` also sets the slot's bypass byte;
+//! `PATCH_LIST` takes one `output.nki values [bypass]` line per copy, all read
+//! from the same `PATCH_SRC`.
 
 #[cfg(test)]
 mod tests {
@@ -231,9 +234,14 @@ mod tests {
         parsed.try_into().unwrap()
     }
 
-    const ELECTRIC_MINT: &str = "/home/dracula/Armory/VSTs/Kontakt1/Native Instruments Session \
-         Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments/\
-         Electric Mint.nki";
+    /// The preset to copy: `PATCH_SRC`, the path of the source `.nki`. Kept in
+    /// the environment, as the output path and the values are, so the sweep
+    /// runs on any machine that has the library.
+    fn source() -> std::path::PathBuf {
+        std::path::PathBuf::from(
+            std::env::var_os("PATCH_SRC").expect("PATCH_SRC: path of the source .nki"),
+        )
+    }
 
     #[test]
     #[ignore = "writes a preset copy; needs the Electric Mint library"]
@@ -241,7 +249,7 @@ mod tests {
         let out = Path::new(&std::env::var("PATCH_OUT").unwrap()).to_path_buf();
         let bypass = std::env::var("PATCH_BYPASS").ok().map(|b| b == "1");
         patch(
-            Path::new(ELECTRIC_MINT),
+            &source(),
             &out,
             values(&std::env::var("PATCH_VALUES").unwrap()),
             bypass,
@@ -260,7 +268,7 @@ mod tests {
             let out = parts.next().unwrap();
             let values = values(parts.next().unwrap());
             let bypass = parts.next().map(|b| b.trim() == "1");
-            patch(Path::new(ELECTRIC_MINT), Path::new(out), values, bypass);
+            patch(&source(), Path::new(out), values, bypass);
         }
     }
 }

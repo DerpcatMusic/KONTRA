@@ -496,8 +496,12 @@ pub enum Source {
     Blend(u8),
     /// Always 1.
     Constant,
-    /// The value a script sent this note for "from script" modulator `id`,
-    /// −1..=1; 0 until sent.
+    /// The value a script sent this note for "from script" modulator `id`: the
+    /// KSP write (`±1000000`) divided by a million, so `−1..=1`; 0 until sent.
+    /// The route laws read it as a *level*, 0..=1: `sendScriptModulation`
+    /// sends `value · 1e6` (`crates/script/lua/src/prelude.lua`), `Curve::gain`
+    /// clamps, and an unsent 0 is silence for a volume route, not the centre of
+    /// a bipolar swing (host test `a_script_modulation_ramps_to_its_value`).
     Script(u16),
     /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
     /// key-up, so a release sample is quieter the longer its key was held.

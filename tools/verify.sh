@@ -101,8 +101,23 @@ if CARGO_TARGET_DIR="$TARGET" cargo build --release -p kontra-inspect >"$LOGS/ve
     LOAD=$(printf '%s\n' "$LOADOUT" | grep -o "init unanswered: \[[^]]*\]" | head -1)
     # A sum over nothing is 0, which used to read as "nothing unanswered" when
     # the load had failed, the instrument was missing, or the output changed
-    # shape. An empty sum is now distinguishable from a measured zero.
-    INIT=$(printf '%s' "$LOAD" | python3 -c 'import re,sys; n=re.findall(r", (\d+)\)", sys.stdin.read()); print(sum(int(i) for i in n) if n else "")')
+    # shape. An empty sum is now distinguishable from a measured zero -- and a
+    # present, well-formed empty list (`init unanswered: []`, which is what a
+    # load with nothing unanswered prints) IS that measured zero.
+    INIT=$(printf '%s' "$LOAD" | python3 -c '
+import re, sys
+text = sys.stdin.read().strip()
+m = re.fullmatch(r"init unanswered: \[(.*)\]", text)
+if not m:
+    print("")
+else:
+    body = m.group(1).strip()
+    if not body:
+        print(0)
+    else:
+        n = re.findall(r", (\d+)\)", body)
+        print(sum(int(i) for i in n) if n else "")
+')
     if [ "$LOADSTATUS" -ne 0 ]; then
         bad "init unanswered" "kontra-inspect load exited $LOADSTATUS; see $LOGS/verify-load.txt"
     elif [ -z "$LOAD" ] || [ -z "$INIT" ]; then

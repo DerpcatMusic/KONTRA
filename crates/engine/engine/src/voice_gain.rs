@@ -588,9 +588,14 @@ impl Engine {
 /// A bipolar source ([`ir::Source::Lfo`], [`ir::Source::PitchBend`]) is negated
 /// raw, and [`Engine::unit`] normalises it to `(x + 1)/2` *after* this, so `-x`
 /// reads `1 − (x + 1)/2`: the same mirror on 0..=1 that every other source,
-/// already 0..=1, gets as `1 − x`. The order (source, then invert, then the
-/// law and the depth) is the one `docs/architecture-v3/gold/modulation.md` §6.2
-/// records for a route.
+/// already 0..=1, gets as `1 − x`. [`ir::Source::Script`] is in that second
+/// group: a script's modulator position is a *level*, 0 silent and 1 full
+/// (`sendScriptModulation` sends `value · 1e6`,
+/// `crates/script/lua/src/prelude.lua`), and [`Engine::unit`] reads it as it
+/// arrives, so its mirror is the complement — an unsent 0 inverts to full, as
+/// Velocity 0 does. The order (source, then invert, then the law and the depth)
+/// is the one `docs/architecture-v3/gold/modulation.md` §6.2 records for a
+/// route.
 ///
 /// Not a measured Kontakt law: `docs/re/ksp/SYMBOLS.tsv` lists
 /// `$MOD_TARGET_INVERT_SOURCE` as a symbolic identity with no native value or
@@ -640,7 +645,11 @@ mod tests {
         assert_eq!(inverted(true, ir::Source::Lfo(0), 0.5), -0.5);
         // Already 0..=1: the mirror is the complement.
         assert_eq!(inverted(true, ir::Source::Controller(11), 0.25), 0.75);
+        // A script's modulator position is a level, 0 silent and 1 full, so it
+        // is in that second group: an unsent 0 mirrors to full, as Velocity 0
+        // does. (Its *field* can carry −1..=1, which `Curve::gain` clamps.)
         assert_eq!(inverted(true, ir::Source::Script(1), 0.0), 1.0);
+        assert_eq!(inverted(true, ir::Source::Script(1), 0.25), 0.75);
         let eight = 0.8f32;
         assert_eq!(inverted(true, ir::Source::Constant, eight), 1.0 - eight);
         // Without the flag the source reads as it is.

@@ -180,9 +180,9 @@ pub fn run(stages: &mut [Stage], io: &mut [[f32; 2]]) {
 mod tests {
     use super::*;
 
-    /// Hot Solo's measured response at Electric Mint's saved record, 1/3-octave,
-    /// dB against its own median (docs/re/engine/k-hotsolo.md): the band
-    /// difference between real Kontakt and an engine with no Hot Solo at all.
+    /// A measured amp response, 1/3-octave, dB against its own median
+    /// (docs/re/engine/k-hotsolo.md): the band difference between a real
+    /// render and an engine with no amp stage at all.
     const MEASURED: [(f32, f32); 26] = [
         (40.0, 0.00),
         (50.0, 3.23),
@@ -241,8 +241,8 @@ mod tests {
     }
 
     #[test]
-    fn an_amp_stage_reproduces_hot_solos_measured_response() {
-        // The bands the Kontakt translator builds (crates/format/kontakt/src/hot_solo.rs).
+    fn an_amp_stage_reproduces_a_measured_response() {
+        // The bands a format translator builds (crates/format/kontakt/src/hot_solo.rs).
         let amp = ir::Amp {
             input: 1.0,
             bands: [

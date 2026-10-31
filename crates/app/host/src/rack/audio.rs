@@ -181,11 +181,7 @@ impl Audio {
         let start = std::time::Instant::now();
         let frames = frames.min(self.scratch.len());
         self.apply_commands();
-        for out in outputs.iter_mut() {
-            if let Some(o) = out.get_mut(..frames) {
-                o.fill([0.0; 2]);
-            }
-        }
+        clear(outputs, frames);
         let mut stats = Stats::default();
         for (n, slot) in self.parts.iter_mut().enumerate() {
             let Some(p) = slot else {
@@ -690,11 +686,13 @@ impl RackAudio {
 
     /// Renders one block, and carries out the commands queued for it.
     ///
-    /// A block the control tick has the state for renders nothing: the
-    /// output pairs keep what the last block left, and the count in
-    /// [`RackAudio::missed`] says so.
+    /// A block the control tick has the state for renders nothing: the output
+    /// pairs are cleared to silence, so a caller copying
+    /// [`RackAudio::output`] gets the silent block and not the one before it,
+    /// and the count in [`RackAudio::missed`] says one was missed.
     pub fn process(&mut self, frames: usize, input: &[(u32, Event)]) {
         let Some(mut side) = self.take_block() else {
+            clear(&mut self.outputs, frames);
             return;
         };
         side.process(frames, input);
@@ -811,6 +809,16 @@ fn pan_gains(gain: f32, pan: f32) -> (f32, f32) {
     (gain * (1.0 - pan).min(1.0), gain * (1.0 + pan).min(1.0))
 }
 
+/// Silences the first `frames` of every output pair: what a render starts
+/// from, and what a block with nothing to render leaves behind.
+fn clear(outputs: &mut [Box<[[f32; 2]]>], frames: usize) {
+    for out in outputs.iter_mut() {
+        if let Some(o) = out.get_mut(..frames) {
+            o.fill([0.0; 2]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,5 +841,29 @@ mod tests {
         drop(held);
         audio.process(128, &[]);
         assert_eq!(audio.missed(), 2, "a rendered block counted as missed");
+    }
+
+    /// A missed block reads as silence, not as the block before it: the host
+    /// copies `output()` after `process()`, so stale audio would be played
+    /// again with nothing to say it was old.
+    #[test]
+    fn a_missed_block_leaves_silence_in_the_outputs() {
+        let store = Store::new(StoreConfig::DEFAULT).expect("a store");
+        let (_rack, mut audio) = Rack::new(48_000, store, 128);
+        for out in &mut audio.outputs {
+            out.fill([0.5; 2]);
+        }
+        let mut control = audio.control();
+        let held = control.take().expect("the side starts free");
+        audio.process(4, &[]);
+        assert_eq!(audio.missed(), 1);
+        let silence = [[0.0f32, 0.0]; 4];
+        assert_eq!(
+            audio.output(0, 4),
+            silence.as_slice(),
+            "the missed block repeated the one before it"
+        );
+        assert_eq!(audio.output(OUTPUTS - 1, 4), silence.as_slice());
+        drop(held);
     }
 }

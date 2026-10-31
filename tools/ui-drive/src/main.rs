@@ -4,9 +4,11 @@
 //! For every visible control the page draws, it reads the control's rect from
 //! the scene mui recorded when it drew it, presses the rect's centre through
 //! the same path the editor uses (`input::read` and `Input`/`PointerInput`),
-//! and checks the press selected that control and no other. A press two points
-//! outside the rect must select nothing, so a "selects everything" hit test
-//! cannot pass.
+//! and checks the press selected that control and no other. It then presses one
+//! point two units outside the rect (the first side of it that is on the page),
+//! which must not select or edit that control: a hit test that selects
+//! everything cannot pass. Another control may sit under that point; the check
+//! is that the press is not the target's.
 //!
 //! `cargo run --release -p ui-drive -- [--scale <f>] [--out <dir>] <instrument>...`
 //!
@@ -89,7 +91,7 @@ fn usage() {
          \n\
          Presses every visible control of an instrument's page at the centre of the rect\n\
          it was drawn in, headless, and fails when the press does not select that control\n\
-         or when a press two points outside its rect selects it anyway."
+         or when a point two units outside its rect still selects or edits it."
     );
 }
 
@@ -104,6 +106,10 @@ struct Run {
     /// Controls the page paints underneath another one: unreachable in
     /// Kontakt too, so not a hit-test failure.
     covered: usize,
+    /// Pages that checked no control at all. `checked` is a total across the
+    /// run, so one page with controls would otherwise carry a page without
+    /// any: each has to prove itself.
+    empty: Vec<String>,
     failed: Vec<Fail>,
 }
 
@@ -177,6 +183,7 @@ impl Run {
         out: Option<&Path>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.pages += 1;
+        let checked_before = self.checked;
         let mut drive = Drive::new(tree, face, scale, path)?;
         drive.settle()?;
         let (w, h) = drive.size;
@@ -315,6 +322,11 @@ impl Run {
                 )),
             );
         }
+        if self.checked == checked_before {
+            // A page with no control to check (or none drawn) proves nothing
+            // about its own hit test, whatever the other pages found.
+            self.empty.push(label.to_owned());
+        }
         Ok(())
     }
 
@@ -323,7 +335,7 @@ impl Run {
     fn outcome(&self) -> Outcome {
         if !self.failed.is_empty() {
             Outcome::Failed
-        } else if self.checked == 0 {
+        } else if self.checked == 0 || !self.empty.is_empty() {
             Outcome::CheckedNothing
         } else {
             Outcome::Passed
@@ -336,17 +348,28 @@ impl Run {
         let outcome = self.outcome();
         println!();
         match outcome {
-            Outcome::CheckedNothing => println!(
-                "FAIL: no control was checked on {} page(s), {} skipped — a page that drew \
-                 no control cannot be shown to hit-test, so this run proves nothing",
-                self.pages, self.skipped
-            ),
+            Outcome::CheckedNothing => {
+                println!(
+                    "FAIL: no control was checked on {} of {} page(s), {} skipped — a page that \
+                     drew no control cannot be shown to hit-test, so this run proves nothing",
+                    if self.empty.is_empty() {
+                        self.pages
+                    } else {
+                        self.empty.len()
+                    },
+                    self.pages,
+                    self.skipped
+                );
+                for page in &self.empty {
+                    println!("  {page}: no control checked");
+                }
+            }
             Outcome::Passed => println!(
                 "PASS: {} controls checked on {} page(s), {} skipped; every control's centre \
-                 selected itself and a press 2 points outside selected nothing. {} answered a \
-                 click with an Edit (a knob or slider selects without changing, as Kontakt does). \
-                 {} are painted under another control, so no click can reach them in Kontakt \
-                 either; each is named in the table.",
+                 selected itself and a press 2 points outside its rect did not select it. {} \
+                 answered a click with an Edit (a knob or slider selects without changing, as \
+                 Kontakt does). {} are painted under another control, so no click can reach them \
+                 in Kontakt either; each is named in the table.",
                 self.checked, self.pages, self.skipped, self.edited, self.covered,
             ),
             Outcome::Failed => {

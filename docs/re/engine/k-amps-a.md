@@ -61,7 +61,7 @@ Size, air, treble and bass (bass and treble stored -1..1), type clamped 0..=10. 
 - Manual: two preamp channels, Depth controls low-range response in the power amp.
 - Carried as `ir::EffectKind::Amp`: the tone stage measured through Kontakt at Electric Mint's saved
   record, which is the record every parity render compares. The parity gap it caused (3.05 dB level,
-  7.04 dB band spread) is closed: 0.00 dB level, 0.77 dB band spread. Law, measurement and residuals:
+  7.04 dB band spread) is closed: +0.02 dB level, 0.78 dB band spread. Law, measurement and residuals:
   [k-hotsolo.md](k-hotsolo.md).
 - Gap: the five tone knobs' laws, the overdrive channel, mono and the piecewise shaper are not
   modelled; a record that asks for them is reported with impact Audible.

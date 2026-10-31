@@ -67,10 +67,12 @@ takes about 35 s on this machine, nearly all of it loading the library. It draws
 real page into mui's offscreen scene, takes each visible input-taking widget's rect
 from what mui recorded when it drew it, presses the rect's centre through the
 same reader the editor uses (`input::read` with `Input`/`PointerInput`), and
-checks that the press selected that widget and no other. Then it presses two
-points outside the rect, which must select nothing — otherwise a hit test that
-selects everything would pass. Controls the page paints under another one are
-reported as `covered` and named: no click can reach them in Kontakt either.
+checks that the press selected that widget and no other. It then presses one
+point two units outside the rect (the first side of it that is on the page),
+which must not select or edit that widget — another control may be under that
+point, and the check is that the press is not the target's. A hit test that
+selects everything would fail there. Controls the page paints under another one
+are reported as `covered` and named: no click can reach them in Kontakt either.
 
 ```
 cargo run --release -p ui-drive -- [--scale <f>] [--out <dir>] <instrument>...

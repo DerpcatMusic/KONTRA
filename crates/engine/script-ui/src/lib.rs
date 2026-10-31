@@ -74,10 +74,18 @@ struct TextArrayEntry {
 
 /// String array elements every script and control together may hold. A
 /// control's string array is one picture per cursor, or the strings a stepped
-/// control shows (`$CONTROL_PAR_NKS_STR_VALUES`): dozens at most. The pool is
-/// made this large when the store is built, so a note or control callback that
-/// sets an element cannot grow it, and reading one back is a scan of fixed
-/// bound.
+/// control shows (`$CONTROL_PAR_NKS_STR_VALUES`): dozens at most.
+///
+/// An intentional bound, not a measured one. The pool is made this large when
+/// the store is built, so a note or control callback that sets an element
+/// cannot grow it (no allocation on that path), and reading one back is a scan
+/// of fixed bound. Nothing on hand comes near it: each `set_control_par_str_arr`
+/// sets one element, and the whole corpus's coverage run records 546 of those
+/// calls over 682 instruments (`docs/re/ksp/CORPUS.md`), a few per store. The
+/// limit is reported rather than silent: every element refused past it is
+/// counted by [`Store::text_arrays_full`], which the engine carries as
+/// `Stats::text_arrays_full` (`crates/engine/engine/src/lib.rs`), so a library
+/// that reaches the bound says so.
 const TEXT_ARRAYS: usize = 256;
 
 /// The script's page as it set it: size, wallpaper, colour, title.

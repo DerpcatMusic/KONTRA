@@ -389,8 +389,25 @@ impl Driver {
     /// The window is now `size` physical pixels at `scale` per point.
     pub fn resized(&mut self, size: (u32, u32), scale: f64) {
         self.count(Counter::Resizes, 1);
+        let before = logical_size(self.size, self.scale);
+        let rescaled = scale != self.scale && self.scale > 0.0 && scale > 0.0;
         self.size = size;
         self.scale = scale;
+        if rescaled {
+            // A scale the host changed moves the scene under the edges already
+            // queued, as it does under the pointer: their scene position is
+            // their fraction of the window over the zoom, so it moves with the
+            // window's logical size. [`Driver::repose`] re-derives the pointer
+            // the same way; this does it for the edges one dispatch behind it.
+            // The size is read here, not assumed: a scale reported with a
+            // surface that scaled with it leaves the logical size alone, and
+            // then nothing has to move.
+            let after = logical_size(self.size, self.scale);
+            let ratio = after.width / before.width;
+            if ratio.is_finite() && ratio > 0.0 {
+                self.reproject(ratio);
+            }
+        }
         self.dirty = true;
     }
 

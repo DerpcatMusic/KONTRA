@@ -62,9 +62,8 @@ pub struct Limiter {
 }
 
 /// An amp head's tone stage: a pre-gain, `bands` in series and an output gain.
-/// Kontakt's Hot Solo (module 0x54) builds one from its saved record; the bands
-/// are the format's measured response in physical units, so another format can
-/// map its own amp onto the same stage.
+/// A translator fills the bands with its format's measured response in
+/// physical units, so any format can map its own amp onto the same stage.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Amp {
     /// Gain before the bands, linear.

@@ -145,7 +145,14 @@ impl MidiFile {
         }
         // mf_insert_file pairs each Note Off into its Note On (with a length
         // parameter) and discards the Note Off, so a script never sees 0x8n.
-        events.retain(|e| e.status & 0xf0 != 0x80);
+        // A Note On at velocity 0 ends a note as well ([`pair_notes`]), so it
+        // goes with the Note Off: left in, the cursor could read it and a
+        // script would pass its velocity 0 to `play_note`, which clamps it to
+        // 1 and sounds a note the file never asked for.
+        events.retain(|e| {
+            let status = e.status & 0xf0;
+            status != 0x80 && !(status == 0x90 && e.d2 == 0)
+        });
         // Tick order, and the file's own order within a tick: the sort is
         // stable and the ids arrive in read order. Sorting by status as well
         // would move a controller a script stored before a note-on.
@@ -252,16 +259,16 @@ impl MidiFile {
             .map_or(self.order.len(), |offset| from + offset)
     }
 
-    /// Last active event at or before `from`, or 0 when none: the backward
-    /// steps skip a removed event as the forward ones do.
-    fn prev_active(&self, from: usize) -> usize {
+    /// Last active event at or before `from`, or `None` when there is none:
+    /// the backward steps skip a removed event as the forward ones do, and a
+    /// step with nothing to land on leaves the cursor where it is.
+    fn prev_active(&self, from: usize) -> Option<usize> {
         let end = from.saturating_add(1).min(self.order.len());
         self.order
             .get(..end)
             .unwrap_or_default()
             .iter()
             .rposition(|&id| self.events.get(id).is_some_and(|e| e.active))
-            .unwrap_or(0)
     }
 
     /// `mf_insert_event`: adds an event, on `track`, and returns its id. Its
@@ -351,7 +358,9 @@ impl MidiFile {
 
     pub fn prev_at(&mut self, tick: u32) {
         let first = self.seek(tick);
-        self.cursor = self.prev_active(first.saturating_sub(1));
+        if let Some(at) = self.prev_active(first.saturating_sub(1)) {
+            self.cursor = at;
+        }
     }
 
     pub fn first(&mut self) {
@@ -359,7 +368,9 @@ impl MidiFile {
     }
 
     pub fn last(&mut self) {
-        self.cursor = self.prev_active(self.order.len().saturating_sub(1));
+        if let Some(at) = self.prev_active(self.order.len().saturating_sub(1)) {
+            self.cursor = at;
+        }
     }
 
     pub fn advance(&mut self) {
@@ -367,7 +378,9 @@ impl MidiFile {
     }
 
     pub fn retreat(&mut self) {
-        self.cursor = self.prev_active(self.cursor.saturating_sub(1));
+        if let Some(at) = self.prev_active(self.cursor.saturating_sub(1)) {
+            self.cursor = at;
+        }
     }
 
     pub fn set_pos(&mut self, tick: u32) {
@@ -608,6 +621,13 @@ mod tests {
         assert_eq!(f.pos(), 1920, "first() landed on the removed event");
         f.reset();
         assert_eq!(f.pos(), 1920, "reset() landed on the removed event");
+        // Nothing active is earlier than the first active event, so a
+        // backward step leaves the cursor where it is instead of moving it
+        // onto the removed id 0.
+        f.retreat();
+        assert_eq!(f.pos(), 1920, "retreat() landed on the removed event");
+        f.prev_at(0);
+        assert_eq!(f.pos(), 1920, "prev_at(0) landed on the removed event");
         f.last();
         assert_eq!(f.pos(), 1920);
         f.prev_at(5000);
@@ -616,6 +636,48 @@ mod tests {
         f.first();
         assert!(f.remove(1));
         assert_eq!(f.command(), 0, "the cursor still reads the removed event");
+    }
+
+    /// 960 ticks/quarter, one track: note on 60, the note on at velocity 0
+    /// that ends it, then note on 64. A zero-velocity Note On is an off.
+    fn zero_velocity_off() -> Vec<u8> {
+        let track: Vec<u8> = vec![
+            0x00, 0x90, 0x3c, 0x46, // +0    note on 60 vel 70
+            0x87, 0x40, 0x90, 0x3c, 0x00, // +960  note on 60 vel 0 (an off)
+            0x87, 0x40, 0x90, 0x40, 0x46, // +960  note on 64 vel 70
+            0x00, 0xff, 0x2f, 0x00, // end of track
+        ];
+        let mut file = b"MThd".to_vec();
+        file.extend_from_slice(&6u32.to_be_bytes());
+        file.extend_from_slice(&0u16.to_be_bytes());
+        file.extend_from_slice(&1u16.to_be_bytes());
+        file.extend_from_slice(&960u16.to_be_bytes());
+        file.extend_from_slice(b"MTrk");
+        file.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        file.extend_from_slice(&track);
+        file
+    }
+
+    #[test]
+    fn insert_file_discards_a_zero_velocity_note_on() {
+        // It ends the note like a Note Off, so it is dropped with it: readable,
+        // a script would hand its velocity 0 to `play_note` and sound a note
+        // the file never asked for.
+        let mut f = MidiFile::parse(&zero_velocity_off()).expect("parses");
+        assert_eq!(f.events.len(), 2, "the velocity-0 note on survived");
+        assert_eq!(f.event_par(0, PAR_NOTE_LENGTH), 960);
+        assert_eq!(f.event_par(1, PAR_POS), 1920);
+        let mut seen = Vec::new();
+        f.first();
+        loop {
+            let c = f.command();
+            if c == 0 {
+                break;
+            }
+            seen.push((f.pos(), f.byte_one(), f.byte_two()));
+            f.advance();
+        }
+        assert_eq!(seen, vec![(0, 0x3c, 0x46), (1920, 0x40, 0x46)], "{seen:?}");
     }
 
     #[test]

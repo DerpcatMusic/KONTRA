@@ -264,6 +264,49 @@ fn a_queued_press_is_reprojected_when_the_zoom_changes() {
 }
 
 #[test]
+fn a_queued_press_is_reprojected_when_the_window_scale_changes() {
+    // A fixed zoom, so only the window's scale moves. The same physical point
+    // is half as many points wide at twice the scale, and the scene under it
+    // halves with them.
+    let mut r = Rig::new(Knob::default(), (400, 300), 1.0);
+    r.step();
+    r.d.pointer_moved(at(100.0, 60.0), none());
+    r.d.button(Button::Primary, true, none());
+    assert_eq!(
+        inputs(&r.d).last().unwrap().pointer.pos,
+        Some(at(100.0, 60.0))
+    );
+    // Same surface, twice the scale: 400 physical pixels are 200 points now.
+    r.d.resized((400, 300), 2.0);
+    r.step();
+    assert_eq!(r.d.ui_scale(), 2.0);
+    assert_eq!(
+        r.s.view.seen.last(),
+        Some(&(Some(at(50.0, 30.0)), true)),
+        "a press in flight must stay over the physical point it was made on"
+    );
+}
+
+#[test]
+fn a_queued_press_stays_put_when_the_surface_scaled_with_the_window() {
+    // A surface that doubles with the scale (the usual DPI move): 400 pixels
+    // were 400 points, 800 are 400 points again, so the scene is unchanged and
+    // the press must not move.
+    let mut r = Rig::new(Knob::default(), (400, 300), 1.0);
+    r.step();
+    r.d.pointer_moved(at(100.0, 60.0), none());
+    r.d.button(Button::Primary, true, none());
+    r.d.resized((800, 600), 2.0);
+    r.step();
+    assert_eq!(r.d.ui_scale(), 2.0);
+    assert_eq!(
+        r.s.view.seen.last(),
+        Some(&(Some(at(100.0, 60.0)), true)),
+        "a scale the surface followed moves nothing"
+    );
+}
+
+#[test]
 fn keyboard_modifiers_track_their_own_edges() {
     let mut r = Rig::new(Knob::default(), (400, 400), 1.0);
     let alt = Mods {
@@ -678,9 +721,16 @@ fn drag_coalescing_preserves_modifier_boundaries_and_release() {
     r.step();
     r.d.pointer_moved(at(10.0, 10.0), none());
     r.d.button(Button::Primary, true, none());
-    for x in [12.0, 14.0] { r.d.pointer_moved(at(x, 10.0), none()); }
-    let shift = Mods { shift: true, ..none() };
-    for x in [16.0, 18.0] { r.d.pointer_moved(at(x, 10.0), shift); }
+    for x in [12.0, 14.0] {
+        r.d.pointer_moved(at(x, 10.0), none());
+    }
+    let shift = Mods {
+        shift: true,
+        ..none()
+    };
+    for x in [16.0, 18.0] {
+        r.d.pointer_moved(at(x, 10.0), shift);
+    }
     r.d.button(Button::Primary, false, shift);
     r.s.view.trails.clear();
     assert!(r.step());

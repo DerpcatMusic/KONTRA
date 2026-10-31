@@ -100,8 +100,12 @@ pub(crate) const BANDS: [ir::Bell; 4] = [
     ir::Bell::FLAT,
 ];
 
-/// The stage's own gain at [`MEASURED`], linear (+2.17 dB): the record's
-/// prenormal and master make up more than they take away.
+/// The stage's own gain at [`MEASURED`], linear (+2.17 dB). Calibrated, not
+/// derived: the biquad fit gave ×1.672 (+4.46 dB), and the engine's own render
+/// then read 2.30 dB loud against the same Kontakt capture, so the gain here
+/// is the correction that comparison fixed (docs/re/engine/k-hotsolo.md,
+/// "Before and after"). Stated rather than derived because the bands are a
+/// measured transfer function at one operating point.
 const MEASURED_GAIN: f32 = 1.283;
 
 /// The record as the engine's amp. `lost` names what the record asks for and

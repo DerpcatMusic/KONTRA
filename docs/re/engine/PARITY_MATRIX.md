@@ -114,7 +114,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Bass Pro | missing | decomp | Knob-to-field map and apply path; kernel and tone stack not recovered. Docs: `k-amps-a-basspro.md` |
 | Cabinet | parity | vector | Kernel matches native kemu vectors (`amp/cabinet.rs`, 1e-6); knob-law coverage limited to the recorded cases |
 | EP Preamps | missing | decomp | Drive-core structure partial; no laws; no render on this install. Docs: `k-amps-a-epp.md` |
-| HotSolo | modelled at one operating point | measured | `ir::EffectKind::Amp`, an EQ fitted to the native band difference at Electric Mint's record (level 0.00 dB, band spread 0.78 dB after). Tone-knob laws, the shaper and overdrive/mono are not modelled and are reported. Docs: `k-hotsolo.md` |
+| HotSolo | modelled at one operating point | measured | `ir::EffectKind::Amp`, an EQ fitted to the native band difference at Electric Mint's record (level +0.02 dB, band spread 0.78 dB after). Tone-knob laws, the shaper and overdrive/mono are not modelled and are reported. Docs: `k-hotsolo.md` |
 | Jump | partial | fit to one native trace (default knobs, relative RMS 0.242, `jump_default.f32le`) | Shared chain preset (`amp/jump.rs`); knobs ignored (noted). Knob laws and stage tables not read (kernel 0x140aac6f0). |
 | Reverb Delight | missing | decomp (reader 0x140ac5e50); Wine-oracle sweep partial | Tremolo and spring-reverb cores not read. MONO field unproved. Diagnosed as unproved. |
 | Super Fast 100 | missing | decomp (reader 0x140ac61a0) | No bindings; core not read. Diagnosed as unproved. |

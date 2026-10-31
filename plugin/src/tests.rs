@@ -1283,20 +1283,30 @@ fn editor_pictures(params: &KontraParams, dsp: &mut Dsp) -> (usize, usize) {
 fn instrument(name: &str) -> Option<PathBuf> {
     const LIBRARY: &str = "Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments";
     // A library outside the corpus root names its instrument's path in
-    // `KONTRA_EMINT`, the override the rack's own pick test uses.
+    // `KONTRA_EMINT`, the override the rack's own pick test uses. It names the
+    // main instrument's file, so its directory is searched for the siblings
+    // (`(Melody)` and the rest), which sit beside it.
     let named = std::env::var_os("KONTRA_EMINT").map(PathBuf::from);
+    let named_dir = named
+        .as_ref()
+        .and_then(|p| p.parent())
+        .map(Path::to_path_buf);
     let dirs = [
         PathBuf::from(KONTAKT),
         std::env::var_os("HOME")
             .map_or_else(|| PathBuf::from("/home"), PathBuf::from)
             .join(LIBRARY),
     ];
-    for path in named.into_iter().chain(dirs.iter().map(|d| d.join(name))) {
-        if path
-            .file_name()
-            .is_some_and(|f| f == std::ffi::OsStr::new(name))
-            && path.exists()
-        {
+    for path in named
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|f| f == std::ffi::OsStr::new(name))
+        })
+        .chain(named_dir.into_iter().map(|d| d.join(name)))
+        .chain(dirs.iter().map(|d| d.join(name)))
+    {
+        if path.exists() {
             return Some(path);
         }
     }
