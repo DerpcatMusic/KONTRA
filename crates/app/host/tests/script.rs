@@ -1691,6 +1691,55 @@ fn a_release_zone_the_script_plays_ends_with_its_note() {
     assert_eq!(out[4799][0], 0.0, "it ends with its note");
 }
 
+#[test]
+fn a_release_the_script_plays_reads_how_long_the_key_was_held() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    // The script plays the release itself, as a note of its own.
+    let script = kontra_ksp::compile(
+        "on note
+            disallow_group($ALL_GROUPS)
+            allow_group(0)
+        end on
+        on release
+            disallow_group($ALL_GROUPS)
+            allow_group(1)
+            play_note($EVENT_NOTE, 100, 0, 50000)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0), tail], 16);
+    plan.release_zones = kontra_engine::ReleaseZones::WithNote;
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    // The release group's level falls with the time the key was held: half
+    // after 0.5 s of a 1 s span.
+    plan.groups[1].mods = vec![ir::Mod {
+        name: "held".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::HeldTime { span_ms: 1000 },
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
+        },
+    }];
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut held = vec![[0.0; 2]; 24_000];
+    e.process(&mut held, &[on(60)]);
+    let mut out = vec![[0.0; 2]; 2000];
+    e.process(&mut out, &[off(60)]);
+    let release = out[1999][0];
+    assert!((release - 0.125).abs() < 0.01, "{release}");
+}
+
 /// Level of the reverb tail 0.25 s after a 2 s note, through a reverb in the
 /// instrument insert whose time is 0.5 s unless `script` moves it.
 fn reverb_tail(script: &str) -> f32 {

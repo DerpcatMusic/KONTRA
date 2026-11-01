@@ -142,14 +142,19 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                         detail: script.name.clone(),
                     });
                 }
-                // Kontakt plays release triggers from its own script unless a
-                // slot switches it off; the script then plays into those groups.
-                if compiled
-                    .conditions
-                    .iter()
-                    .any(|c| c == "NO_SYS_SCRIPT_RLS_TRIG")
-                {
+                // Kontakt's own script plays release triggers and holds notes
+                // under the sustain pedal unless a slot switches that part off.
+                let off = |part: &str| {
+                    compiled
+                        .conditions
+                        .iter()
+                        .any(|c| c.eq_ignore_ascii_case(part))
+                };
+                if off("NO_SYS_SCRIPT_RLS_TRIG") {
                     plan.release_zones = kontra_engine::ReleaseZones::WithNote;
+                }
+                if off("NO_SYS_SCRIPT_PEDAL") {
+                    plan.sustain_pedal = kontra_engine::SustainPedal::ToScripts;
                 }
                 plan.scripts.push(planned);
                 faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
