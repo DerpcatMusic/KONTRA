@@ -10,9 +10,15 @@
 //! and type 0; `set_key_pressed` is ignored, and `get_key_triggerstate`
 //! reads 0, unless `set_key_pressed_support` is on (any nonzero mode).
 
+mod controls;
 pub mod readout;
 
+pub use controls::Controls;
+
 use kontra_vm::{Action, HostCall, HostValue, Text};
+
+/// One control's number parameters, by parameter id, in the order set.
+type Pars = Vec<(i32, i32)>;
 
 /// Keys on the keyboard a script colours and names.
 const KEYS: usize = 128;
@@ -104,8 +110,11 @@ pub struct LookPars {
     pub grid_x: i32,
     pub grid_y: i32,
     pub steps_shown: i32,
-    /// `attach_level_meter`'s channel (0 left, 1 right).
+    /// `attach_level_meter`'s channel (0 left, 1 right), group and generic
+    /// (an instrument bus, or what else it reads).
     pub meter: i32,
+    pub meter_group: i32,
+    pub meter_generic: i32,
     pub picture: i32,
     pub picture_state: i32,
     /// The UI ids that address the instrument's wallpaper and icon.
@@ -117,6 +126,9 @@ pub struct LookPars {
 /// their script (the engine resolves a UI id to it).
 #[derive(Debug)]
 pub struct Store {
+    /// Per script slot, by control: the number parameters it set, other
+    /// than its value.
+    pars: Box<[Box<[Pars]>]>,
     /// Per script slot, by control: its menu entries.
     menus: Box<[Box<[Vec<MenuItem>]>]>,
     /// Per script slot, by control: the entry a menu last selected.
@@ -134,6 +146,28 @@ pub struct Store {
     generations: Box<[Box<[u32]>]>,
     /// `get_font_id`'s pictures by script slot, in the order first asked.
     fonts: Vec<(u8, Text)>,
+    /// The last click on a control: script slot, control, which of
+    /// `[shift, alt, control]` were held, and the cell of a table clicked.
+    // ponytail: only the last click is kept, so another control reads its
+    // keys as 0; per control if a library reads keys of an earlier click.
+    click: Option<(u8, usize, [bool; 3], u32)>,
+    /// That click's cell, until the control write it came with takes it: a
+    /// later write from elsewhere (MIDI learn, a host) sets the first cell.
+    pending: Option<(u8, usize, u32)>,
+}
+
+/// One control as the script left it: what the host builds its widget from.
+#[derive(Clone, Copy, Debug)]
+pub struct ControlLook<'a> {
+    pub value: Option<i64>,
+    /// Number parameters it set, by parameter id.
+    pub pars: &'a [(i32, i32)],
+    /// Text parameters it set, by parameter id.
+    pub texts: &'a [(i32, Text)],
+    pub menu: &'a [MenuItem],
+    /// Moves on every write to its look (not its value, which lives in a
+    /// script cell): a UI redraws the control when this or the value moved.
+    pub generation: u32,
 }
 
 /// The first font id a picture gets; ids below are Kontakt's built-in fonts.
@@ -143,6 +177,10 @@ impl Store {
     /// Empty stores for scripts with these control counts.
     pub fn new(controls: impl Iterator<Item = usize> + Clone) -> Self {
         Self {
+            pars: controls
+                .clone()
+                .map(|n| vec![Vec::new(); n].into())
+                .collect(),
             menus: controls
                 .clone()
                 .map(|n| vec![Vec::new(); n].into())
@@ -158,6 +196,8 @@ impl Store {
             pages: controls.clone().map(|_| Page::UNSET).collect(),
             generations: controls.map(|n| vec![0; n].into()).collect(),
             fonts: Vec::with_capacity(64),
+            click: None,
+            pending: None,
         }
     }
 
@@ -235,6 +275,42 @@ impl Store {
             .get(usize::from(slot))
             .and_then(|t| t.get(n))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The user clicked cell `cell` (0 but in a table) of control `n` of
+    /// script `slot` holding `keys` (`[shift, alt, control]`).
+    pub fn click(&mut self, slot: u8, n: Option<usize>, keys: [bool; 3], cell: u32) {
+        self.click = n.map(|n| (slot, n, keys, cell));
+        self.pending = n.map(|n| (slot, n, cell));
+    }
+
+    /// `$NI_CONTROL_PAR_IDX`: the cell of script `slot`'s last click (the
+    /// table whose `on ui_control` reads it).
+    #[must_use]
+    pub fn last_cell(&self, slot: u8) -> u32 {
+        self.click
+            .filter(|c| c.0 == slot)
+            .map_or(0, |(.., cell)| cell)
+    }
+
+    /// Takes the cell just clicked in control `n` of script `slot` for its
+    /// write (0 for a write with no click), if inside its `len` cells (a
+    /// table's; 0 is one).
+    pub fn take_cell(&mut self, slot: u8, n: Option<usize>, len: u32) -> Option<u32> {
+        let clicked = self
+            .pending
+            .take()
+            .filter(|&(s, c, _)| s == slot && Some(c) == n);
+        Some(clicked.map_or(0, |(.., cell)| cell)).filter(|&cell| cell < len.max(1))
+    }
+
+    /// `$CONTROL_PAR_KEY_SHIFT`, `_ALT` or `_CONTROL` (`key` 0, 1 or 2) of
+    /// control `n` of script `slot`: 1 when held at its last click (KSP
+    /// manual), else 0.
+    #[must_use]
+    pub fn click_key(&self, slot: u8, n: Option<usize>, key: usize) -> i32 {
+        let held = self.click.filter(|&(s, c, ..)| s == slot && Some(c) == n);
+        i32::from(held.and_then(|(_, _, k, _)| k.get(key).copied()) == Some(true))
     }
 
     /// How often control `n` of script `slot` changed look.

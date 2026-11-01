@@ -196,7 +196,10 @@ fn survey(path: &Path, store: &mut Store, report: &Mutex<Report>) {
             u.scripts += 1;
             u.libraries.insert(lib.clone());
         }
-        if run.as_ref().is_some_and(|(_, _, f)| f.is_some()) {
+        if run
+            .as_ref()
+            .is_some_and(|(_, _, f)| f.as_ref().is_some_and(ours))
+        {
             uses.insert("x:fault".into());
         }
         r.script_uses.insert(hash, uses);
@@ -231,6 +234,12 @@ fn stem(path: &Path) -> String {
 
 type Counts = Vec<(Action, u32)>;
 type Run = (Counts, Counts, Option<kontra_engine::Faults>);
+
+/// Whether `f` holds a fault Kontakt would not share: a division by zero
+/// answers 0 and an index out of range reads 0 there too.
+fn ours(f: &kontra_engine::Faults) -> bool {
+    f.stack_overflow + f.texts_cut + f.loop_limits + f.no_coroutine + f.bad_code > 0
+}
 
 /// `f` with its first out-of-range array named from `script`'s variables,
 /// and the ops that pushed its first zero divisor.
@@ -497,6 +506,10 @@ fn render(r: &Report) -> std::io::Result<String> {
     }
     if !r.faults.is_empty() {
         let _ = writeln!(s, "\n## Runtime faults (init + one note)\n");
+        let _ = writeln!(
+            s,
+            "A division by zero or an index out of range is the library's own: Kontakt 8.13.1 answers 0 (a store is dropped) and runs on, as KONTRA does (oracle probes 2026-10-28/29), so only the other faults count against the census.\n"
+        );
         for (name, f) in &r.faults {
             let _ = writeln!(s, "- {name}: {f}");
         }

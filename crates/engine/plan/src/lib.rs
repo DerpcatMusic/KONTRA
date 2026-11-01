@@ -3,15 +3,18 @@
 //! (13-FRESH-CORE.md §2.1): scripts are optional, not where round robin lives.
 
 mod engine_pars;
+pub mod files;
 pub mod modulation;
 pub mod par_laws;
+pub mod par_values;
 mod route;
+pub mod route_depth;
 mod script;
 mod slots;
 
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
-pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
+pub use script::{Callbacks, CcLink, Controls, Holder, LookPars, Recall, Saved, ScriptPlan};
 
 use std::ops::RangeInclusive;
 
@@ -30,6 +33,29 @@ pub enum Trigger {
     First,
     /// On note-on while another key is down.
     Legato,
+}
+
+/// Who starts [`Trigger::Release`] zones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReleaseZones {
+    /// The engine, when a note is released.
+    #[default]
+    AtRelease,
+    /// A script, by playing a note into their groups: they start and end
+    /// with that note, as other zones do.
+    WithNote,
+}
+
+/// What the sustain pedal (CC 64) does besides reaching the scripts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SustainPedal {
+    /// Down, it holds released notes until it lifts.
+    #[default]
+    Holds,
+    /// Nothing: the scripts hold notes themselves.
+    ToScripts,
 }
 
 /// Which counter a round robin steps.
@@ -121,6 +147,16 @@ impl Level {
         pan: 0.0,
         tune: 0.0,
     };
+
+    /// `gain` and `pan`, untuned.
+    #[must_use]
+    pub const fn panned(gain: f32, pan: f32) -> Self {
+        Self {
+            gain,
+            pan,
+            tune: 0.0,
+        }
+    }
 }
 
 /// What a group's voices share and a script may change while they play.
@@ -245,6 +281,28 @@ impl Group {
     /// negative target is the modulator's first route.
     pub fn mod_mut(&mut self, slot: i32, target: i32) -> Option<&mut ir::Mod> {
         self.mods.iter_mut().find(|m| addressed(m, slot, target))
+    }
+
+    /// Whether it lacks the LFO, route or modulator `holder` names at
+    /// `slot` (and, for a route, `target`). A modulator the engine does
+    /// not carry still exists: its [`ir::Routes`] keep it.
+    #[must_use]
+    pub fn lacks(&self, holder: Holder, slot: i32, target: i32) -> bool {
+        let kept = |r: &&ir::Routes| i32::from(r.slot) == slot;
+        let routed = || self.routes.iter().find(kept);
+        match holder {
+            Holder::Lfo => self.lfo(slot).is_none() && routed().is_none(),
+            Holder::Route => {
+                !self.mods.iter().any(|m| addressed(m, slot, target))
+                    && routed().is_none_or(|r| {
+                        usize::try_from(target.max(0)).is_ok_and(|t| t >= r.names.len())
+                    })
+            }
+            Holder::Mod => {
+                !self.mods.iter().any(|m| i32::from(m.slot) == slot) && routed().is_none()
+            }
+            _ => false,
+        }
     }
 
     /// The LFO of modulator `slot`.
@@ -395,6 +453,11 @@ pub struct Plan {
     pub route_pitch: ir::Exp2,
     /// [`ir::Instrument::steal_whole_groups`].
     pub steal_whole_groups: bool,
+    /// Who starts the release-trigger zones; [`ReleaseZones::AtRelease`]
+    /// (the engine, at a note's release) unless a script takes them over.
+    pub release_zones: ReleaseZones,
+    /// What the sustain pedal does; [`SustainPedal::Holds`] unless a script takes it over.
+    pub sustain_pedal: SustainPedal,
     /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
     /// index; `None` when unreadable.
     pub impulses: Vec<Option<Response>>,
@@ -456,6 +519,8 @@ impl Plan {
             output: ir::Output::UNITY,
             route_pitch: ir::Exp2::Exact,
             steal_whole_groups: false,
+            release_zones: ReleaseZones::AtRelease,
+            sustain_pedal: SustainPedal::Holds,
             impulses: Vec::new(),
             impulse_laws: Vec::new(),
             responses: Vec::new(),

@@ -336,7 +336,10 @@ impl PluginLogic for Kontra {
             s.audio = None;
             return;
         };
-        let (rack, audio) = Rack::new(rate, store, c.max_block_size);
+        let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
+        if let Some(saves) = kontra_host::rack::user_saves() {
+            rack.set_saves(saves);
+        }
         *lock(&p.shared.player) = Some(rack.player());
         let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
         if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {

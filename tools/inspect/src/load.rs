@@ -262,19 +262,48 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
 }
 
 /// The curve as retained in the IR; no translator provenance is inferred.
-fn law(curve: &Law) -> Value {
+pub(crate) fn law(curve: &Law) -> Value {
     match curve {
         Law::Linear { lo, hi } => json!({"kind":"linear", "lo":lo, "hi":hi}),
         Law::Exp { lo, hi } => json!({"kind":"exp", "lo":lo, "hi":hi}),
+        Law::ExpAffine {
+            base,
+            offset,
+            factor,
+            shift,
+            scale,
+        } => {
+            json!({"kind":"exp_affine", "base":base, "offset":offset, "factor":factor, "shift":shift, "scale":scale})
+        }
+        Law::Exp2Index {
+            origin,
+            divisor,
+            offset,
+            scale,
+        } => {
+            json!({"kind":"exp2_index", "origin":origin, "divisor":divisor, "offset":offset, "scale":scale})
+        }
+        Law::PowIndex {
+            base,
+            origin,
+            divisor,
+            scale,
+        } => {
+            json!({"kind":"pow_index", "base":base, "origin":origin, "divisor":divisor, "scale":scale})
+        }
         Law::Db { lo, hi } => json!({"kind":"db", "lo":lo, "hi":hi}),
         Law::Power { lo, hi, exponent } => {
             json!({"kind":"power", "lo":lo, "hi":hi, "exponent":exponent})
         }
+        Law::IntegerPower { exponent, bipolar } => {
+            json!({"kind":"integer_power", "exponent":exponent, "bipolar":bipolar})
+        }
+        Law::Sine { power } => json!({"kind":"sine", "power":power}),
         Law::Table(values) => json!({"kind":"table", "values":values.iter().collect::<Vec<_>>() }),
         Law::Breakpoints(points) => {
             json!({"kind":"breakpoints", "points":points.iter().map(|(x,y,curve)| json!({"x":x, "y":y, "curve":curve})).collect::<Vec<_>>() })
         }
-        Law::Formula(id) => match *id {},
+        Law::Formula(id) => json!({"kind":"formula", "id":format!("{id:?}")}),
     }
 }
 
@@ -338,9 +367,53 @@ fn absent_reason(sample: usize, sample_count: usize, resident: &HashSet<usize>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kontra_engine::ir::FormulaId;
 
     #[test]
     fn law_shapes_preserve_parameters_and_points() {
+        assert_eq!(
+            law(&Law::IntegerPower {
+                exponent: 3,
+                bipolar: false
+            }),
+            json!({"kind":"integer_power", "exponent":3, "bipolar":false})
+        );
+        assert_eq!(
+            law(&Law::ExpAffine {
+                base: 10.0,
+                offset: -0.5,
+                factor: 3.0,
+                shift: 0.0,
+                scale: 1.0
+            }),
+            json!({"kind":"exp_affine", "base":10.0, "offset":-0.5, "factor":3.0, "shift":0.0, "scale":1.0})
+        );
+        assert_eq!(
+            law(&Law::PowIndex {
+                base: 2.0,
+                origin: 69.0,
+                divisor: 12.0,
+                scale: 440.0
+            }),
+            json!({"kind":"pow_index", "base":2.0, "origin":69.0, "divisor":12.0, "scale":440.0})
+        );
+        assert_eq!(
+            law(&Law::Formula(FormulaId::AttackShape)),
+            json!({"kind":"formula", "id":"AttackShape"})
+        );
+        assert_eq!(
+            law(&Law::Exp2Index {
+                origin: 0.0,
+                divisor: 60.0,
+                offset: -20.0,
+                scale: 1.0
+            }),
+            json!({"kind":"exp2_index", "origin":0.0, "divisor":60.0, "offset":-20.0, "scale":1.0})
+        );
+        assert_eq!(
+            law(&Law::Sine { power: 2.0 }),
+            json!({"kind":"sine", "power":2.0})
+        );
         assert_eq!(
             law(&Law::Power {
                 lo: 1.0,

@@ -33,6 +33,7 @@ pub(crate) fn instrument(
     chunks: &KontaktChunks,
     monolith: Option<ni_file::file_container::NIFileContainer>,
     saved: &[Vec<String>],
+    encrypted: Option<bool>,
 ) -> Result<ir::Instrument, Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let program = chunks
@@ -43,6 +44,11 @@ pub(crate) fn instrument(
     let mut notes = Notes::default();
     let mut out = ir::Instrument {
         name: params.name.clone(),
+        source_path: std::path::absolute(path).ok(),
+        library_path: (encrypted == Some(true))
+            .then(|| std::path::absolute(path).ok())
+            .flatten()
+            .and_then(|p| crate::resources::known_root(&p)),
         voices: 256,
         output: ir::Output {
             volume_db: db(params.volume),
@@ -80,6 +86,7 @@ pub(crate) fn instrument(
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => out.scripts.push(ir::Script {
                 name: script.description.unwrap_or_default(),
+                slot,
                 dialect: ir::Dialect::Ksp,
                 data: data_files(&text, path, &mut resources),
                 source: text,
@@ -337,13 +344,17 @@ struct Base {
 }
 
 pub(crate) fn db(linear: f32) -> f32 {
-    20.0 * linear.max(1e-6).log10()
+    kontra_law::common::DB_GAIN
+        .inverse(linear.max(1e-6))
+        .unwrap_or(0.0)
 }
 
 /// Slots in each Kontakt effect rack.
 const SLOTS: usize = 8;
 fn semitones(ratio: f32) -> f64 {
-    12.0 * f64::from(ratio.max(1e-6)).log2()
+    kontra_law::common::SEMITONE_RATIO
+        .inverse_f64(f64::from(ratio.max(1e-6)))
+        .unwrap_or(0.0)
 }
 
 fn criteria_reverse(group: u32, groups: &GroupList) -> bool {

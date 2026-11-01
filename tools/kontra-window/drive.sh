@@ -68,6 +68,181 @@ check() { if differ "$1" "$2" "${4:-}"; then pass "$3"; else miss "$3"; fi; }
 still() { if differ "$1" "$2" "${4:-}"; then miss "$3"; else pass "$3"; fi; }
 
 shot 0-open
+# The Afflatus keyswitch tab has a six-frame picture. Its held frame is
+# visible before the button's release opens the keyswitch page.
+if [[ ${PRESSED_ONLY:-0} == 1 ]]; then
+    at "${MULTILINE_TAB:-1652,260}"; sleep 1; shot 1-hover
+    xdotool mousedown 1; sleep 2; shot 2-held
+    check 1-hover 2-held "Kontakt button: held picture frame" 800,110,850,155
+    xdotool mouseup 1; sleep 2; shot 3-released
+    ticks_pressed() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_pressed); sleep "$span"; t1=$(ticks_pressed)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
+# Compare a tabbed label to its pre-change real-window capture.
+if [[ ${KSP_TABS_ONLY:-0} == 1 ]]; then
+    if [[ -n ${KSP_TABS_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image
+box = tuple(map(int, sys.argv[3].split(",")))
+a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
+bright = lambda image: sum(min(pixel) > 65 for pixel in image.getdata())
+sys.exit(0 if bright(a) >= 8 and bright(b) <= 2 else 1)' "$KSP_TABS_BEFORE" "$out/0-open.png" "${KSP_TABS_BOX:-443,204,448,211}"; then
+            pass "Areia tab missing-glyph box disappears"
+        else miss "Areia tab missing-glyph box disappears"; fi
+    fi
+    ticks_tabs() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_tabs); sleep "$span"; t1=$(ticks_tabs)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
+# Compare a scaled library picture against its pre-change editor capture.
+if [[ ${PICTURE_FILTER_ONLY:-0} == 1 ]]; then
+    if [[ -n ${PICTURE_FILTER_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+box = tuple(map(int, sys.argv[3].split(",")))
+a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
+difference = ImageChops.difference(a, b)
+pixels = list(difference.getdata())
+changed = sum(max(pixel) > 8 for pixel in pixels)
+mean = sum(map(sum, pixels)) / (3 * len(pixels)) if pixels else float("inf")
+sys.exit(0 if changed >= 80 and mean < 3 else 1)' "$PICTURE_FILTER_BEFORE" "$out/0-open.png" "${PICTURE_FILTER_BOX:-440,185,600,260}"; then
+            pass "scaled picture changes in the editor"
+        else miss "scaled picture changes in the editor"; fi
+    fi
+    ticks_picture() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_picture); sleep "$span"; t1=$(ticks_picture)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
+# Compare the installed value-field skin with its pre-change capture.
+if [[ ${VALUE_FIELD_ONLY:-0} == 1 ]]; then
+    if [[ -n ${VALUE_FIELD_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image
+# The untouched top border is above the text and has measured gray 58 in
+# the fallback and 53 in the installed artwork at this scale.
+box = (480, 119, 570, 120)
+a, b = (Image.open(p).convert("L").crop(box) for p in sys.argv[1:3])
+mean = lambda image: sum(image.getdata()) / (image.width * image.height)
+sys.exit(0 if mean(a) >= 57 and 51 <= mean(b) <= 55 else 1)' "$VALUE_FIELD_BEFORE" "$out/0-open.png"; then
+            pass "installed value field artwork is visible"
+        else miss "installed value field artwork is visible"; fi
+    fi
+    ticks_field() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_field); sleep "$span"; t1=$(ticks_field)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
+# Check a native stock label against its pre-change editor capture.
+if [[ ${NATIVE_LABEL_ONLY:-0} == 1 ]]; then
+    if [[ -n ${NATIVE_LABEL_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+box = (710, 158, 840, 171)
+a, b, expected = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:4])
+pixels = list(ImageChops.difference(a, b).getdata())
+changed = sum(max(p) > 5 for p in pixels)
+error = list(ImageChops.difference(expected, b).getdata())
+mean = sum(map(sum, error)) / (3 * len(error)) if error else float("inf")
+sys.exit(0 if changed >= 20 and mean < 2 else 1)' "$NATIVE_LABEL_BEFORE" "$out/0-open.png" "${NATIVE_LABEL_EXPECTED:?set NATIVE_LABEL_EXPECTED}"; then
+            pass "installed stock label face is visible"
+        else miss "installed stock label face is visible"; fi
+    fi
+    ticks_label() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_label); sleep "$span"; t1=$(ticks_label)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
+# KS Lock must switch its face and return to the original off state.
+if [[ ${PACIFIC_CONTROLS_ONLY:-0} == 1 ]]; then
+    at 980,382; xdotool click 1; sleep 2; shot 1-lock-on
+    check 0-open 1-lock-on "Pacific KS Lock changes face" 460,182,519,202
+    xdotool click 1; sleep 2; at 1900,1270; shot 2-lock-off
+    still 0-open 2-lock-off "Pacific KS Lock returns to off" 460,182,519,202
+    ticks_controls() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    span=${IDLE_S:-60}; t0=$(ticks_controls); sleep "$span"; t1=$(ticks_controls)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
+# Compare Pacific's stock field and mic-button text to a known baseline.
+if [[ ${PACIFIC_STOCK_ONLY:-0} == 1 ]]; then
+    if [[ -n ${PACIFIC_STOCK_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+old, new, expected = (Image.open(p).convert("RGB") for p in sys.argv[1:4])
+def check(box, minimum):
+    delta = list(ImageChops.difference(old.crop(box), new.crop(box)).getdata())
+    error = list(ImageChops.difference(expected.crop(box), new.crop(box)).getdata())
+    return sum(max(p) > 8 for p in delta) >= minimum and sum(map(sum, error)) / (3 * len(error)) < 2
+sys.exit(0 if check((460, 118, 594, 159), 30) and check((214, 118, 260, 139), 5) else 1)' "$PACIFIC_STOCK_BEFORE" "$out/0-open.png" "${PACIFIC_STOCK_EXPECTED:?set PACIFIC_STOCK_EXPECTED to the verified capture}"; then
+            pass "Pacific stock fields and mic-button text update"
+        else miss "Pacific stock fields and mic-button text update"; fi
+    fi
+    ticks_pacific() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_pacific); sleep "$span"; t1=$(ticks_pacific)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
+# Afflatus' keyswitch page uses add_text_line for its note-name list.
+if [[ ${MULTILINE_ONLY:-0} == 1 ]]; then
+    at "${MULTILINE_TAB:-1652,260}"; xdotool click 1; sleep 3; at 1900,1270; shot 1-keyswitches
+    if [[ -n ${MULTILINE_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+a, b = (Image.open(p).convert("RGB").crop((805,175,845,408)) for p in sys.argv[1:])
+sys.exit(0 if ImageChops.difference(a,b).getbbox() else 1)' "$MULTILINE_BEFORE" "$out/1-keyswitches.png"; then
+            pass "Afflatus keyswitch names: multiple lines draw"
+        else miss "Afflatus keyswitch names: multiple lines draw"; fi
+    fi
+    ticks_multiline() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_multiline); sleep "$span"; t1=$(ticks_multiline)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # Open VWinds' preferences page, where the authored tables live.
 if [[ ${UVI_TABLE_ONLY:-0} == 1 ]]; then
     at "${UVI_PREFS:-1310,944}"; xdotool click 1; sleep 3; shot 1-prefs
@@ -121,6 +296,17 @@ fi
 # Pacific's unpictured knob: the top ring is lit and the bottom is shadowed.
 # STOCK_ONLY is a short, real-window check for that stock skin.
 if [[ ${STOCK_ONLY:-0} == 1 ]]; then
+    # Compare with a capture made without KONTAKT_STOCK_EXECUTABLE to prove
+    # the installed artwork reached the real editor.
+    if [[ -n ${STOCK_BASELINE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+box = tuple(map(int, sys.argv[3].split(",")))
+a = Image.open(sys.argv[1]).convert("RGB").crop(box)
+b = Image.open(sys.argv[2]).convert("RGB").crop(box)
+sys.exit(0 if ImageChops.difference(a, b).getbbox() else 1)' "$STOCK_BASELINE" "$out/0-open.png" "${STOCK_COMPARE_BOX:-180,120,400,220}"; then
+            pass "installed Kontakt stock artwork"
+        else miss "installed Kontakt stock artwork"; fi
+    fi
     if python3 -I -c 'import sys; from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 top, bottom = im.getpixel((235, 150))[0], im.getpixel((235, 181))[0]

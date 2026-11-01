@@ -1,4 +1,6 @@
 //! Start voices for the zones selected by a note.
+use kontra_behaviour::Step;
+
 use crate::*;
 
 impl Engine {
@@ -13,9 +15,13 @@ impl Engine {
         };
         let plan = self.plan.clone();
         let key = usize::from(n.key);
-        if attack && let Some(r) = self.behaviour.rls_reset.get_mut(key) {
+        // Kontakt's system script restarts the key's release-trigger counter
+        // with every ordinary note; a script that plays its releases does not.
+        let restarts = attack && self.plan.release_zones == ReleaseZones::AtRelease;
+        if restarts && let Some(r) = self.behaviour.rls_reset.get_mut(key) {
             *r = self.now.0;
         }
+        let step = if attack { Step::Advance } else { Step::Reuse };
         let since = self.behaviour.rls_reset.get(key).map_or(n.at.0, |&r| r);
         let held_seconds = self.now.0.saturating_sub(since) as f32 / self.rate as f32;
         for (index, zone) in plan.zones.iter().enumerate() {
@@ -35,7 +41,7 @@ impl Engine {
             if !selected
                 || !self
                     .behaviour
-                    .starts(zone, n.host.channel, n.key, n.draw, attack)
+                    .starts(zone, n.host.channel, n.key, n.draw, step)
             {
                 continue;
             }
@@ -45,7 +51,7 @@ impl Engine {
                 self.limit_voice_group(vg);
             }
             let factor = if zone.trigger == Trigger::Release {
-                10f32.powf(-zone.release_decay_db * held_seconds / 20.0)
+                crate::ir::common::DB_GAIN.eval_unclamped(-zone.release_decay_db * held_seconds)
                     * self.release_counter(zone, held_seconds)
             } else {
                 1.0
@@ -82,6 +88,7 @@ impl Engine {
                 gain,
                 lag,
                 envelope: self.envelope(zone, &n, held_seconds),
+                fade: n.fade.filter(|_| attack),
             };
             let now = self.now;
             let Some(i) = self.free_slot() else {
@@ -156,9 +163,6 @@ impl Engine {
             slot.note = Some(note);
             slot.zone = index;
             slot.started = now;
-            slot.released = false;
-            slot.released_at = None;
-            slot.fading = false;
             slot.factor = factor;
             slot.bend = [bend.semitones; 2];
             slot.pan = [pan; 2];

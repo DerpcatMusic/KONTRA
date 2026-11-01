@@ -207,6 +207,18 @@ impl<'a> Compiler<'a> {
         let (ty, home, control) = (var.ty, var.home, var.control);
         if let Some(control) = control {
             self.control_params(d, control)?;
+            // A knob, slider or value edit starts at its minimum (Kontakt
+            // 8.13.1 oracle: (2, 4) reads 2, (-9, -3) reads -9).
+            let kind = self.controls.get(control as usize).map(|c| c.kind);
+            let ranged = matches!(
+                kind,
+                Some(ControlKind::Knob | ControlKind::Slider | ControlKind::ValueEdit)
+            );
+            if let (true, Some(min), None) = (ranged, d.params.first(), d.init.first()) {
+                let got = self.expr(min)?;
+                self.convert(got, Ty::Int, min.span)?;
+                self.store_scalar(home);
+            }
         }
         match home {
             Home::Const(_) | Home::Poly(_) => {}

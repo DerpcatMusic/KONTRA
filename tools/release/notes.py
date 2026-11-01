@@ -63,12 +63,12 @@ def pull_body(number):
 
 def render(entries):
     groups = {name: [] for name in SECTIONS}
-    internal = 0
+    internal = []
     for body, number, paths in entries:
         note, explicit_area = fields(body)
         name = explicit_area or section(paths)
         if not note or not name:
-            internal += 1
+            internal.append(f'- [#{number}]({REPO}/pull/{number})')
         else:
             note = note.rstrip()
             if note[-1] not in '.!?':
@@ -79,7 +79,8 @@ def render(entries):
         if changes:
             lines.extend([f'### {name}', '', *changes, ''])
     if internal:
-        lines.extend(['<details>', f'<summary>Internal: {internal} change{"s" if internal != 1 else ""}</summary>', '', '</details>', ''])
+        count = len(internal)
+        lines.extend(['<details>', f'<summary>Internal: {count} change{"s" if count != 1 else ""}</summary>', '', *internal, '', '</details>', ''])
     return '\n'.join(lines)
 
 

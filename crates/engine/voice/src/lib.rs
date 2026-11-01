@@ -5,6 +5,7 @@
 //! note is never late and never drifts (rule 4).
 
 mod envelope;
+mod fade;
 mod wavetable;
 mod zone;
 
@@ -17,6 +18,8 @@ pub use wavetable::{
 pub use zone::{Loop, Region};
 
 use envelope::Envelope;
+use fade::Fade;
+pub use fade::FadeTarget;
 
 /// Source frames decoded per inner chunk. Bounds per-voice memory, not pitch.
 const SCRATCH: usize = 512;
@@ -67,6 +70,30 @@ pub struct VoiceStart {
     /// A slower gain on top of `gain`: the routes that lag.
     pub lag: Lag,
     pub envelope: Ahdsr,
+    /// A fade its event asked for before it started; one up to a gain starts
+    /// it from silence.
+    pub fade: Option<(FadeTarget, u32)>,
+}
+
+/// What a voice does when its key goes up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyUp {
+    /// Its envelope releases.
+    Release,
+    /// It plays on to its end (a one-shot).
+    PlayOn,
+}
+
+/// Where a voice is between its start and its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Life {
+    /// Its key is down.
+    Held,
+    /// Its key is up; the engine frame its envelope began releasing (a
+    /// one-shot's never does).
+    Released(Option<u64>),
+    /// Fading out to its end: no longer counted as playing.
+    Ending(Option<u64>),
 }
 
 pub struct Voice {
@@ -81,6 +108,8 @@ pub struct Voice {
     lagged: f32,
     lag: Lag,
     env: Envelope,
+    fade: Fade,
+    life: Life,
     scratch: Box<[[f32; 2]]>,
     /// The frames a loop crossfade blends in.
     partner: Box<[[f32; 2]]>,
@@ -111,6 +140,8 @@ impl Voice {
             lagged: 1.0,
             lag: Lag::NONE,
             env: Envelope::new(Ahdsr::GATE),
+            fade: Fade::NONE,
+            life: Life::Held,
             scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             raw: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
@@ -137,6 +168,14 @@ impl Voice {
         self.lagged = start.lag.gain;
         self.lag = start.lag;
         self.env = Envelope::new(start.envelope);
+        self.fade = match start.fade {
+            Some((FadeTarget::Hold(level), _)) if level > 0.0 => Fade::SILENT,
+            _ => Fade::NONE,
+        };
+        self.life = Life::Held;
+        if let Some((target, frames)) = start.fade {
+            self.fade(target, frames);
+        }
         self.released = None;
         self.missing = 0;
         #[cfg(feature = "trace")]
@@ -151,9 +190,49 @@ impl Voice {
         self.env.release();
     }
 
-    /// Fades out over `frames` (a stolen or choked voice): no click, no tail.
-    pub fn fade(&mut self, frames: u32) {
-        self.env.fade(frames);
+    /// Its key went up at engine frame `now`.
+    pub fn key_up(&mut self, now: u64, key_up: KeyUp) {
+        let at = (key_up == KeyUp::Release).then(|| {
+            self.release();
+            now
+        });
+        self.life = match self.life {
+            Life::Ending(_) => Life::Ending(at),
+            _ => Life::Released(at),
+        };
+    }
+
+    /// Fades over `frames` to `target`; ending (a stolen or choked voice)
+    /// is click-free, and a fade already ending it ends at the sooner.
+    /// `true` when this fade first sets it ending.
+    pub fn fade(&mut self, target: FadeTarget, frames: u32) -> bool {
+        self.fade.start(target, frames);
+        let first = target == FadeTarget::End && !self.is_ending();
+        if target == FadeTarget::End {
+            self.life = Life::Ending(self.released_at());
+        }
+        first
+    }
+
+    /// Its key is up (an ending voice's may still be down).
+    #[must_use]
+    pub fn is_released(&self) -> bool {
+        matches!(self.life, Life::Released(_))
+    }
+
+    /// Fading to its end: it no longer counts as playing.
+    #[must_use]
+    pub fn is_ending(&self) -> bool {
+        matches!(self.life, Life::Ending(_))
+    }
+
+    /// The engine frame its envelope began releasing.
+    #[must_use]
+    pub fn released_at(&self) -> Option<u64> {
+        match self.life {
+            Life::Held => None,
+            Life::Released(at) | Life::Ending(at) => at,
+        }
     }
 
     /// Stops at once, without a release.
@@ -191,7 +270,7 @@ impl Voice {
     /// Current gain matrix including its envelope and lag, before sample and effects.
     #[must_use]
     pub fn current_gain(&self) -> Gain {
-        let level = self.lagged * self.env.level();
+        let level = self.lagged * self.env.level() * self.fade.level();
         self.gain.map(|row| row.map(|gain| gain * level))
     }
 
@@ -321,7 +400,7 @@ impl Voice {
             insert(raw);
             for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
                 self.lagged += (self.lag.gain - self.lagged) * self.lag.coef;
-                let level = self.env.next() * self.lagged;
+                let level = self.env.next() * self.fade.next() * self.lagged;
                 for (g, target) in self
                     .gain
                     .as_flattened_mut()
@@ -340,7 +419,7 @@ impl Voice {
                 }
                 frame[0] += left;
                 frame[1] += right;
-                if self.env.is_off() {
+                if self.env.is_off() || self.fade.ended() {
                     alive = false;
                     break;
                 }

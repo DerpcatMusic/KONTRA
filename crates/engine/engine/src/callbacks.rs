@@ -7,11 +7,12 @@ use std::sync::Arc;
 
 use kontra_time::SampleTime;
 use kontra_vm::{HostValue, Step, Vm};
+use kontra_voice::FadeTarget;
 
-use crate::ledger::NoteRef;
-use crate::queue::Work;
+use crate::ledger::{NoteRef, Releases};
+use crate::queue::{Exit, Work};
 use crate::script::{Kind, Running, ScriptPlan, micros_to_frames};
-use crate::{Engine, Trigger};
+use crate::{Engine, ReleaseZones, Trigger};
 
 impl Engine {
     /// The plan of the slot whose callback runs.
@@ -63,10 +64,10 @@ impl Engine {
     }
 
     /// The editor moved widget `n` of script `slot`'s own (Lua) page to `value`.
-    pub fn set_widget(&mut self, slot: u8, n: u32, value: f64) {
+    pub fn set_widget(&mut self, slot: u8, n: u32, value: f64, cell: Option<u32>) {
         let entry = (self.plan.scripts.get(usize::from(slot))).and_then(|s| s.callbacks.widget);
         if let (Some(entry), Some(vm)) = (entry, self.vm_mut(slot)) {
-            vm.stage_widget(n, value);
+            vm.stage_widget(n, value, cell);
             let mut running = Running::new(Kind::UiControl, None);
             running.ui = i32::try_from(n).unwrap_or(i32::MAX);
             self.run_callback(slot, entry, running);
@@ -93,18 +94,17 @@ impl Engine {
         let own = script.callbacks.ui_control.iter().find(|(i, _)| *i == id);
         let own = own.and_then(|&(_, own)| own);
         let controls = &script.controls;
-        let cell = (id.checked_sub(controls.first))
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| controls.cells.get(n).copied().flatten());
+        let n = self.control_index_in(slot, id);
+        let cell = n.and_then(|n| controls.cells.get(n).copied().flatten());
         if cell.is_none() && own.is_none() {
             return;
         }
+        let len = n.and_then(|n| controls.steps.get(n)).copied().unwrap_or(0);
         let vm = self.vms.get_mut(usize::from(slot)).and_then(Option::as_mut);
-        if let (Some(cell), Some(vm)) = (cell, vm) {
-            vm.set_cell(cell as usize, value);
+        if let (Some(cell), Some(vm), Some(at)) = (cell, vm, self.ui.take_cell(slot, n, len)) {
+            vm.set_cell((cell + at) as usize, value);
         }
         // A menu the user picks from selects that entry.
-        let n = usize::try_from(id - controls.first).ok();
         self.ui
             .select(slot, n, i32::try_from(value).unwrap_or(i32::MIN));
         for (kind, entry) in [
@@ -122,13 +122,27 @@ impl Engine {
     }
 
     /// Starts an asynchronous command for the running slot: its `on
-    /// async_complete` runs when the queue reaches it. Returns its id.
-    pub(crate) fn start_async(&mut self) -> i32 {
+    /// async_complete` runs when the queue reaches it, its exit status
+    /// `exit`. Returns its id.
+    pub(crate) fn start_async(&mut self, exit: Exit) -> i32 {
         let (slot, id) = (self.running.slot, self.next_async_id());
-        if !self.queue.push(self.now, Work::Async { slot, id }) {
-            self.stats.events_refused += 1;
-        }
+        self.queue_async(slot, id, exit);
         id
+    }
+
+    /// Queues the completion of command `id`. A full queue drops it, and the
+    /// command no longer counts as running, so no `wait_async` waits on it.
+    pub(crate) fn queue_async(&mut self, slot: u8, id: i32, exit: Exit) {
+        if !self.queue.push(self.now, Work::Async { slot, id, exit }) {
+            self.stats.events_refused += 1;
+            self.finish_async(id);
+        }
+    }
+
+    fn finish_async(&mut self, id: i32) {
+        for r in self.ids.running.iter_mut().filter(|r| **r == id) {
+            *r = 0;
+        }
     }
 
     pub(crate) fn next_async_id(&mut self) -> i32 {
@@ -140,11 +154,10 @@ impl Engine {
         id
     }
 
-    pub(crate) fn async_complete(&mut self, slot: u8, id: i32) {
+    pub(crate) fn async_complete(&mut self, slot: u8, id: i32, exit: Exit) {
+        self.ids.async_exit = exit;
         self.ids.async_done = id;
-        for r in self.ids.running.iter_mut().filter(|r| **r == id) {
-            *r = 0;
-        }
+        self.finish_async(id);
         let plan = Arc::clone(&self.plan);
         let entry = plan
             .scripts
@@ -292,17 +305,17 @@ impl Engine {
         true
     }
 
-    /// Runs the release callbacks of the slots that see `note`'s release,
-    /// from the slot that played it (after it, unless it
-    /// [hears its own](crate::ScriptPlan::hears_own_releases)); the slot that ignored it, if
-    /// one did (which stops it reaching the slots after).
+    /// Runs the release callbacks of the slots after `note`'s player (from
+    /// it when it [hears its own](crate::ScriptPlan::hears_own_releases) and
+    /// did not `note_off` it); the slot that ignored it, if one did.
     pub(crate) fn release_callbacks(&mut self, note: NoteRef) -> Option<u8> {
         let plan = Arc::clone(&self.plan);
         let first = self.notes.get(note).map_or(0, |n| {
             let player = n.first.checked_sub(1);
-            let hears = player
-                .and_then(|p| plan.scripts.get(usize::from(p)))
-                .is_none_or(|s| s.hears_own_releases);
+            let hears = !n.noted_off
+                && player
+                    .and_then(|p| plan.scripts.get(usize::from(p)))
+                    .is_none_or(|s| s.hears_own_releases);
             usize::from(if hears { player.unwrap_or(0) } else { n.first })
         });
         for (slot, script) in (0u8..).zip(&plan.scripts).skip(first) {
@@ -335,12 +348,21 @@ impl Engine {
                 .notes
                 .count(|n| n.started && !n.ignored && !n.is_up() && !n.pedal_held)
                 - 1;
+            let scripted = self.plan.release_zones == ReleaseZones::WithNote;
             self.start_zones(note, true, |trigger| match trigger {
                 Trigger::Attack => true,
                 Trigger::First => held == 0,
                 Trigger::Legato => held > 0,
-                Trigger::Release => false,
+                Trigger::Release => scripted,
             });
+            let Some(n) = self.notes.get_mut(note) else {
+                continue;
+            };
+            // A stopping fade asked before it started ends it: no release follows.
+            n.released |= n.fade.is_some_and(|(target, _)| target == FadeTarget::End);
+            if !scripted && n.releases == Releases::AtStart {
+                self.start_zones(note, false, |trigger| trigger == Trigger::Release);
+            }
             self.behaviour.advance();
         }
         pending.clear();
@@ -356,6 +378,8 @@ pub(crate) struct Ids {
     /// The last asynchronous command started, and `$NI_ASYNC_ID`: the last finished.
     pub(crate) async_last: i32,
     pub(crate) async_done: i32,
+    /// How the last finished command ended (`$NI_ASYNC_EXIT_STATUS`).
+    pub(crate) async_exit: Exit,
     /// Commands started and not finished (0 a free cell), which
     /// `wait_async` waits on.
     // ponytail: past 32 at once, a command is not waited on.
@@ -367,6 +391,7 @@ impl Ids {
         callbacks: 0,
         async_last: 0,
         async_done: 0,
+        async_exit: Exit::Done,
         running: [0; 32],
     };
 }

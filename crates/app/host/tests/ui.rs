@@ -298,16 +298,59 @@ fn an_attached_level_meter_shows_its_channel() {
             declare ui_level_meter $idle
             attach_level_meter(get_ui_id($left), -1, -1, 0, -1)
             attach_level_meter(get_ui_id($right), -1, -1, 1, -1)
+            declare ui_level_meter $bus
+            declare ui_level_meter $group
+            attach_level_meter(get_ui_id($bus), -1, -1, 0, 2)
+            attach_level_meter(get_ui_id($group), 0, -1, 1, 2)
         end on",
     );
-    let channel = |name| match widget(&ui, name).kind {
-        ui::Kind::LevelMeter { channel, .. } => channel,
+    let meter = |name| match widget(&ui, name).kind {
+        ui::Kind::LevelMeter { channel, bus, .. } => (channel, bus),
         _ => panic!("{name} is no level meter"),
     };
     assert_eq!(
-        [channel("$left"), channel("$right"), channel("$idle")],
-        [Some(0), Some(1), None]
+        ["$left", "$right", "$idle", "$bus", "$group"].map(meter),
+        [
+            (Some(0), None),
+            (Some(1), None),
+            (None, None),
+            (Some(0), Some(2)),
+            // A group's FX chain is no instrument bus: the output, for now.
+            (Some(1), None),
+        ]
     );
+}
+
+/// A text edit shows the text its variable holds, as `on init` left it and
+/// as a later callback writes it.
+#[test]
+fn a_text_edit_shows_what_the_script_wrote() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let script = kontra_ksp::compile(
+        "on init
+            make_perfview
+            declare ui_text_edit @name
+            @name := \"Cello\"
+            declare ui_switch $s
+            message(get_ui_id($s))
+        end on
+        on ui_control ($s)
+            @name := \"Viola\"
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![], 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let face = Face::of(&script, &[]);
+    let mut live = Live::new(&face, 0, &engine, &|_| None).unwrap();
+    assert_eq!(widget(&live.tree, "@name").text, "Cello");
+    let s: i32 = engine.last_message().parse().unwrap();
+    engine.set_control(0, s, 1);
+    engine.process(&mut vec![[0f32; 2]; 512], &[]);
+    live.refresh(&face, 0, &engine, &|_| None);
+    assert_eq!(widget(&live.tree, "@name").text, "Viola");
 }
 
 /// A switch fires on mouse down, a button on mouse up (KSP manual, `ui_switch`
@@ -322,4 +365,36 @@ fn a_switch_fires_on_press_and_a_button_on_release() {
     );
     assert!(widget(&ui, "$s").activate_on_press);
     assert!(!widget(&ui, "$b").activate_on_press);
+}
+
+/// `set_key_color` reaches the keyboard in Kontakt 8's measured colours
+/// (CHORUS, Dolce, Areia, Afflatus colour their keyswitch ranges).
+#[test]
+fn script_key_colours_reach_the_keybed() {
+    let ui = tree(
+        "on init
+            make_perfview
+            set_key_color(36, $KEY_COLOR_RED)
+            set_key_color(37, $KEY_COLOR_RED)
+            set_key_color(38, $KEY_COLOR_NONE)
+            set_key_name(36, \"Legato\")
+        end on",
+    );
+    assert_eq!(
+        ui.keybed,
+        [(36, ui::Rgba::rgb(0xDA918F)), (37, ui::Rgba::rgb(0x782F2D))]
+    );
+    assert_eq!(ui.key_names, [(36, "Legato".to_owned())]);
+    assert_eq!(
+        ui.key_pressed, None,
+        "Kontakt shows the keys played by default"
+    );
+    let ui = tree(
+        "on init
+            make_perfview
+            set_key_pressed_support(1)
+            set_key_pressed(40, 1)
+        end on",
+    );
+    assert_eq!(ui.key_pressed, Some(vec![40]));
 }

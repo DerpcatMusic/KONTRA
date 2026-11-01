@@ -18,6 +18,8 @@
 //! lister the host passes (`kontra_format_uvi::programs`), and what a scan
 //! reads once is kept in a [`Cache`] keyed by file size and time.
 
+pub mod kontakt;
+
 mod cache;
 mod folder;
 mod name;

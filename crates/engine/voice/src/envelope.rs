@@ -124,14 +124,6 @@ impl Envelope {
         }
     }
 
-    /// Releases over `frames`, whatever the release setting.
-    pub(crate) fn fade(&mut self, frames: u32) {
-        if self.stage != Stage::Off {
-            self.settings.release = frames.max(1);
-            self.start_release();
-        }
-    }
-
     fn start_release(&mut self) {
         let s = self.settings;
         self.segment = Segment::new(self.level, 0.0, s.release.max(1), s.fall_shape);

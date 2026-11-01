@@ -297,7 +297,7 @@ mod tests {
 
         let mut m = compiled.machine();
         let moved = |m: &mut Box<dyn kontra_vm::Machine>, n: u32, v: f64| {
-            m.stage_widget(n, v);
+            m.stage_widget(n, v, None);
             let co = m.start(Callbacks::WIDGET, 0).expect("start");
             assert_eq!(m.run(co, &mut Quiet), Step::Done);
             assert_eq!(m.faults().bad_code, 0);
@@ -319,6 +319,8 @@ mod tests {
             local t = Table{"curve", 3, 0.25, -1, 1, false, sliderColour="deb25d", drawInnerEdge=false, fillStyle="solid"}
             t:setValue(2, -0.75)
             local b = Button{"change"}
+            local label = Label{"result", text="none"}
+            t.changed = function(self, index) label.text = tostring(index) .. ":" .. tostring(self:getValue(index)) end
             b.changed = function() t:setValue(3, 0.5) end
         "#, &[], &[]).unwrap();
         let t = &compiled.ui.widgets[0];
@@ -330,11 +332,19 @@ mod tests {
         let mut cells = [0.; 3];
         assert!(machine.widget_cells(0, &mut cells));
         assert_eq!(cells, [0.25, -0.75, 0.25]);
-        machine.stage_widget(1, 1.);
+        machine.stage_widget(1, 1., None);
         let co = machine.start(Callbacks::WIDGET, 0).expect("start");
         assert_eq!(machine.run(co, &mut Quiet), Step::Done);
         assert!(machine.widget_cells(0, &mut cells));
         assert_eq!(cells, [0.25, -0.75, 0.5]);
+        machine.stage_widget(0, 0.875, Some(1));
+        let co = machine.start(Callbacks::WIDGET, 0).expect("start");
+        assert_eq!(machine.run(co, &mut Quiet), Step::Done);
+        assert!(machine.widget_cells(0, &mut cells));
+        assert_eq!(cells, [0.25, 0.875, 0.5]);
+        let mut text = Text::EMPTY;
+        assert!(machine.widget_text(2, &mut text));
+        assert_eq!(text.as_str(), "2:0.875");
     }
 
     #[test]

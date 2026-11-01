@@ -7,6 +7,7 @@
 //! matches them under kemu, kontra-dsp-filter tests/cascade.rs).
 
 use kontra_ir as ir;
+use kontra_law::kontakt::VERSATILE_NOTE_HZ;
 
 use crate::script_knobs::SlotKnob;
 
@@ -27,7 +28,7 @@ const NATIVE_TAU: f64 = f64::from_bits(0x4019_21ca_c083_126f);
 /// Stage 0's corner for cutoff `x`, as Hz on an exact 2π.
 fn hz(x: f32) -> f32 {
     let note = x.clamp(0.0, 1.0) * 111.0 + 20.0;
-    440.0 * ((note - 69.0) / 12.0).exp2() * (NATIVE_TAU / std::f64::consts::TAU) as f32
+    VERSATILE_NOTE_HZ.eval_unclamped(note) * (NATIVE_TAU / std::f64::consts::TAU) as f32
 }
 
 /// Octaves a shift knob `x` raises the next stage by.
@@ -54,7 +55,7 @@ pub(crate) fn cascade(k: Knobs) -> ir::Cascade {
         hz: hz(cut),
         shifts: [sb * SHIFT_OCTAVES, sc * SHIFT_OCTAVES],
         stages: [stage(res, ta, wa), stage(rb, tb, wb), stage(rc, tc, wc)],
-        gain: 10f32.powf((gain - 0.5) * 3.0),
+        gain: kontra_law::kontakt::VERSATILE_GAIN.eval(gain),
     }
 }
 
@@ -107,4 +108,20 @@ pub(crate) fn knobs() -> Vec<SlotKnob> {
         ]);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NATIVE_TAU, hz};
+
+    #[test]
+    fn cutoff_preserves_the_original_note_to_hz_calculation() {
+        for n in 0..=10_000 {
+            let x = n as f32 / 10_000.0;
+            let note = x * 111.0 + 20.0;
+            let expected =
+                440.0 * ((note - 69.0) / 12.0).exp2() * (NATIVE_TAU / std::f64::consts::TAU) as f32;
+            assert_eq!(hz(x), expected, "cutoff {x}");
+        }
+    }
 }

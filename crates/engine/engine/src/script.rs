@@ -5,117 +5,14 @@
 use kontra_events::HostNote;
 use kontra_time::SampleTime;
 use kontra_vm::{Action, HostApi, HostCall, HostValue, Text, event};
+use kontra_voice::FadeTarget;
 
-use crate::ledger::{Note, NoteRef, Origin};
-use crate::queue::Work;
+use crate::ledger::{Note, NoteRef, Origin, Releases};
+use crate::queue::{Exit, Work};
 use crate::{Engine, EnginePar};
 
+pub(crate) use kontra_ledger::running::{Kind, Running};
 pub use kontra_plan::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind {
-    Init,
-    Note,
-    Release,
-    Controller,
-    Listener,
-    Pgs,
-    UiControl,
-    UiControls,
-    AsyncComplete,
-    /// After a wait: what the callback was no longer matters.
-    Resumed,
-}
-
-/// The callback being run and what it decided about its event.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Running {
-    pub(crate) kind: Kind,
-    pub(crate) event: Option<NoteRef>,
-    pub(crate) controller: u8,
-    pub(crate) ignore_release: bool,
-    pub(crate) ignore_controller: bool,
-    /// `$NI_CALLBACK_TYPE` of the callback, kept across waits.
-    pub(crate) callback_type: u8,
-    /// `$NI_CALLBACK_ID`: unique per callback run, kept across waits.
-    pub(crate) callback_id: u32,
-    /// The script slot running it.
-    pub(crate) slot: u8,
-    /// `$NI_SIGNAL_TYPE` of a listener callback.
-    pub(crate) signal: u8,
-    /// `$NI_UI_ID` of a UI callback; 0 otherwise.
-    pub(crate) ui: i32,
-}
-
-/// Marks a UI id in the low bits of a coroutine context; event ids never set it.
-const UI_BIT: u32 = 1 << 31;
-
-impl Running {
-    pub(crate) const IDLE: Self = Self {
-        kind: Kind::Resumed,
-        event: None,
-        controller: 0,
-        ignore_release: false,
-        ignore_controller: false,
-        callback_type: 0,
-        callback_id: 0,
-        slot: 0,
-        signal: 0,
-        ui: 0,
-    };
-
-    pub(crate) fn new(kind: Kind, event: Option<NoteRef>) -> Self {
-        // KSP's $NI_CB_TYPE_* values (measured, probes/callback_constants.lua).
-        let callback_type = match kind {
-            Kind::Init | Kind::Resumed => 5,
-            Kind::Note => 1,
-            Kind::Release => 2,
-            Kind::Controller => 3,
-            Kind::Listener => 12,
-            Kind::Pgs => 8,
-            Kind::UiControl => 6,
-            Kind::UiControls => 15,
-            Kind::AsyncComplete => 13,
-        };
-        Self {
-            kind,
-            event,
-            callback_type,
-            ..Self::IDLE
-        }
-    }
-
-    /// The coroutine context, so a resumed callback still knows its event
-    /// or UI id (low 32 bits, a UI id with the top bit set), callback type
-    /// (8), callback id (20) and listener signal (4).
-    pub(crate) fn context(&self) -> u64 {
-        let low = match self.event {
-            Some(n) => n.event_id() as u32,
-            None => self.ui as u32 | UI_BIT,
-        };
-        u64::from(low)
-            | u64::from(self.callback_type) << 32
-            | u64::from(self.callback_id & 0xF_FFFF) << 40
-            | u64::from(self.signal & 0xF) << 60
-    }
-
-    pub(crate) fn resumed(context: u64) -> Self {
-        let low = context as u32;
-        Self {
-            ui: if low & UI_BIT != 0 {
-                (low & !UI_BIT) as i32
-            } else {
-                0
-            },
-            kind: Kind::Resumed,
-            event: NoteRef::from_event_id(context as u32 as i32),
-            callback_type: (context >> 32) as u8,
-            callback_id: (context >> 40) as u32 & 0xF_FFFF,
-            signal: (context >> 60) as u8,
-            ..Self::IDLE
-        }
-    }
-}
 
 /// KSP's `$NI_NOT_FOUND`, what the `get_*_idx` lookups answer for a miss
 /// (measured on the oracle: `probes/ni_not_found.lua`).
@@ -182,10 +79,16 @@ impl Engine {
         // sample; a positive duration is a note-off after that long.
         // Once the starting note is released (its release callback), -1 has
         // nothing left to wait for and the sample plays out.
-        let ending = self.running.kind == Kind::Release
+        // A release callback stays one across its waits.
+        let ending = self.running.callback_type == Running::new(Kind::Release, None).callback_type
             || parent
                 .and_then(|p| self.notes.get(p))
                 .is_some_and(|n| n.released);
+        note.releases = match (ending, duration > 0) {
+            (false, _) => Releases::OnRelease,
+            (true, false) => Releases::AtStart,
+            (true, true) => Releases::Never,
+        };
         note.origin = match (duration, parent) {
             (-1, Some(p)) if !ending => Origin::Child(p),
             _ => Origin::Script,
@@ -238,26 +141,12 @@ impl Engine {
     fn script_note_off(&mut self, id: i32) {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
-        for &note in &hits {
-            self.queue_end(note);
-        }
-        self.targets_scratch = hits;
-    }
-
-    fn fade_out(&mut self, id: i32, micros: i32) {
-        let frames = micros_to_frames(i64::from(micros), self.rate).max(1) as u32;
-        let mut hits = std::mem::take(&mut self.targets_scratch);
-        self.targets(id, &mut hits);
+        let player = self.running.slot + 1;
         for &note in &hits {
             if let Some(n) = self.notes.get_mut(note) {
-                // ponytail: a fade always ends the voices (KSP stop_voice = 1);
-                // fade_out without stopping, and fade_in, wait for the gain ramp API.
-                n.released = true;
+                n.noted_off |= n.first == player;
             }
-            for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
-                slot.voice.fade(frames);
-                slot.fading = true;
-            }
+            self.queue_end(note);
         }
         self.targets_scratch = hits;
     }
@@ -385,8 +274,7 @@ impl HostApi for Engine {
                 HostValue::Int(current.map_or(0, |n| i32::from(n.velocity_byte)))
             }
             Action::CcNum => HostValue::Int(i32::from(self.running.controller)),
-            // 1 for the controller that changed (KSP manual): the one this
-            // controller callback runs for (Pacific's pedal-up release).
+            // 1 for the controller this controller callback runs for.
             Action::CcTouched => flag(
                 self.running.kind == Kind::Controller
                     && int(0) == i32::from(self.running.controller),
@@ -414,7 +302,7 @@ impl HostApi for Engine {
             Action::BusVolume => {
                 let gain = match int(1) {
                     ..=-200_000 => 0.0,
-                    mdb => 10f32.powf(mdb as f32 / 20_000.0),
+                    mdb => crate::ir::common::MILLIBEL_GAIN.eval_unclamped(mdb as f32),
                 };
                 if let Ok(bus) = usize::try_from(int(0)) {
                     self.set_bus_gain(bus, gain);
@@ -439,8 +327,17 @@ impl HostApi for Engine {
                 self.script_note_off(int(0));
                 HostValue::Nothing
             }
-            Action::FadeOut => {
-                self.fade_out(int(0), int(1));
+            Action::FadeOut | Action::FadeIn => {
+                let target = match call.action {
+                    Action::FadeIn => FadeTarget::Hold(1.0),
+                    _ if int(2) != 0 => FadeTarget::End,
+                    _ => FadeTarget::Hold(0.0),
+                };
+                let frames = micros_to_frames(i64::from(int(1)), self.rate) as u32;
+                let mut hits = std::mem::take(&mut self.targets_scratch);
+                self.targets(int(0), &mut hits);
+                self.fade_notes(&hits, frames, target);
+                self.targets_scratch = hits;
                 HostValue::Nothing
             }
             Action::ChangeTune | Action::ChangeVol | Action::ChangePan => {
@@ -461,16 +358,13 @@ impl HostApi for Engine {
                 });
                 HostValue::Nothing
             }
-            Action::ChangeNote => {
-                self.set_event_par(int(0), event::NOTE, int(1));
-                HostValue::Nothing
-            }
-            Action::ChangeVelo => {
-                self.set_event_par(int(0), event::VELOCITY, int(1));
-                HostValue::Nothing
-            }
-            Action::SetEventPar => {
-                self.set_event_par(int(0), int(1), int(2));
+            Action::ChangeNote | Action::ChangeVelo | Action::SetEventPar => {
+                let (par, value) = match call.action {
+                    Action::ChangeNote => (event::NOTE, int(1)),
+                    Action::ChangeVelo => (event::VELOCITY, int(1)),
+                    _ => (int(1), int(2)),
+                };
+                self.set_event_par(int(0), par, value);
                 HostValue::Nothing
             }
             Action::GetEventPar => HostValue::Int(self.event_par(int(0), int(1))),
@@ -563,6 +457,7 @@ impl HostApi for Engine {
             }
             Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
             Action::UiIdVar => HostValue::Int(self.running.ui),
+            Action::ControlParIdx => HostValue::Int(self.ui.last_cell(self.running.slot) as i32),
             Action::ResetRlsTrigCounter => self.reset_rls_trig_counter(int(0)),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
             Action::EventParAt => HostValue::Int(
@@ -580,6 +475,16 @@ impl HostApi for Engine {
                 };
                 HostValue::Int(found.map_or(missing, |g| g as i32))
             }
+            Action::GetFolder => match self.script().and_then(|s| s.folder(int(0))) {
+                Some(folder) => {
+                    *call.text_out = folder;
+                    HostValue::Text
+                }
+                None => {
+                    self.count_unhandled(Action::GetFolder);
+                    HostValue::Nothing
+                }
+            },
             Action::GroupName => {
                 let name = usize::try_from(int(0))
                     .ok()
@@ -594,11 +499,10 @@ impl HostApi for Engine {
                 if let Some(g) = self.groups.get_mut(int(0) as usize) {
                     g.purged = int(1) == 0;
                 }
-                HostValue::Int(self.start_async())
+                HostValue::Int(self.start_async(Exit::Done))
             }
             Action::AsyncId => HostValue::Int(self.ids.async_done),
-            // ponytail: every asynchronous command here succeeds.
-            Action::AsyncExitStatus => HostValue::Int(1),
+            Action::AsyncExitStatus => HostValue::Int(i32::from(self.ids.async_exit == Exit::Done)),
             // A command still running (an effect type loading off the audio
             // thread) holds the callback; it looks again each millisecond.
             Action::WaitAsync if int(0) > 0 && self.ids.running.contains(&int(0)) => {
@@ -666,12 +570,15 @@ impl HostApi for Engine {
                 let loaded = (swap && !set)
                     .then(|| self.load_type(int(1), subtype, int(2), int(3), int(4)))
                     .flatten();
-                if !set && loaded.is_none() {
+                if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
                 }
                 HostValue::Int(match loaded {
                     Some(answer) => answer,
-                    None if swap && self.running.kind != Kind::Init => self.start_async(),
+                    // Set in place succeeded; a type that could not load failed.
+                    None if swap && self.running.kind != Kind::Init => {
+                        self.start_async(Exit::from(set))
+                    }
                     None => -1,
                 })
             }
@@ -690,45 +597,55 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             // Mode 2 is the library's data folder, read at once (the next line
-            // sees it). ponytail: text arrays and the user-file modes wait for a
-            // text-cell host API and file dialogs.
+            // sees it). User-file modes and async text loads remain unsupported.
+            Action::LoadArray if int(2) == 2 && int(3) == 2 && self.running.kind == Kind::Init => {
+                if self.script().is_some_and(|s| {
+                    s.load_text_data(int(0) as u32, int(1) as usize, call.text_cells)
+                }) {
+                    HostValue::Int(0)
+                } else {
+                    self.count_unhandled(Action::LoadArray);
+                    HostValue::Nothing
+                }
+            }
+            // Mode 0 asks for a file in a dialog KONTRA does not show yet,
+            // taken as cancelled; mode 1 is the user's Data folder, which
+            // KONTRA never holds. The array stays as it is and `on
+            // async_complete` reports failure (KSP manual).
+            Action::LoadArray | Action::SaveArray if int(2) <= 1 => {
+                HostValue::Int(self.start_async(Exit::Failed))
+            }
             Action::LoadArray if int(2) == 2 && int(3) != 2 => {
-                let (base, len) = (int(0) as u32, int(1) as usize);
-                let data = self.script().map(|s| s.data.as_slice());
-                if let Some((_, values)) = data.unwrap_or_default().iter().find(|(b, _)| *b == base)
-                {
-                    let cells = call.cells.get_mut(base as usize..).unwrap_or_default();
-                    for (cell, value) in cells.iter_mut().zip(values).take(len) {
-                        *cell = *value;
-                    }
+                if let Some(s) = self.script() {
+                    s.load_number_data(int(0) as u32, int(1) as usize, call.cells);
                 }
                 HostValue::Int(0)
             }
             Action::ReadPersistentVar => {
                 let whole = |i| u32::try_from(int(i)).unwrap_or(0);
-                let (base, len) = (whole(0), whole(1));
-                let range = base..base.saturating_add(len);
-                let plan = std::sync::Arc::clone(&self.plan);
-                let script = plan.scripts.get(usize::from(self.running.slot));
-                if int(2) == 1 {
-                    let saved = script.map(|s| s.restore_texts.as_slice());
-                    for &(cell, text) in saved.unwrap_or_default() {
-                        if range.contains(&cell)
-                            && let Some(t) = call.text_cells.get_mut(cell as usize)
-                        {
-                            *t = text;
-                        }
-                    }
-                } else {
-                    let saved = script.map(|s| s.restore.as_slice());
-                    for &(cell, value) in saved.unwrap_or_default() {
-                        if range.contains(&cell)
-                            && let Some(c) = call.cells.get_mut(cell as usize)
-                        {
-                            *c = self.saved_value(self.running.slot, cell, value);
-                        }
-                    }
-                }
+                let range = whole(0)..whole(0).saturating_add(whole(1));
+                self.read_persistent(range, int(2) == 1, call.cells, call.text_cells);
+                HostValue::Nothing
+            }
+            // An array file named by path: loaded at once while the engine is
+            // built (off the audio thread, as `on init` reads it); otherwise,
+            // and every save, the control side carries it out (files.rs).
+            action @ (Action::LoadArrayStr | Action::SaveArrayStr) => {
+                let path = call.texts.first().copied().unwrap_or(Text::EMPTY);
+                let (at, kind) = ((int(0) as u32, int(1) as u32), i64::from(int(2)));
+                let save = action == Action::SaveArrayStr;
+                let slot = self.running.slot;
+                let script = self.script();
+                let request = script.map(|s| s.file_request(slot, path, at, kind, save));
+                let Some(request) = request.filter(|_| save || !self.building) else {
+                    let cells = (call.cells, call.text_cells);
+                    let loaded = script.zip(request).is_some_and(|(s, r)| s.load(&r, cells));
+                    return HostValue::Int(self.start_async(Exit::from(loaded)));
+                };
+                HostValue::Int(self.request_file(request))
+            }
+            Action::SetSnapshotType => {
+                self.recall = kontra_plan::Recall::of_type(i64::from(int(0)));
                 HostValue::Nothing
             }
             Action::EventStatus => {

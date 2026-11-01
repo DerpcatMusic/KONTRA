@@ -40,8 +40,18 @@ class NotesTest(unittest.TestCase):
         self.assertIn('### Libraries & loading\n\n- Find your sounds faster. ([#1234](https://github.com/DerpcatMusic/KONTRA/pull/1234))', result)
         self.assertIn('### Interface\n\n- See the knobs clearly. ([#1235](https://github.com/DerpcatMusic/KONTRA/pull/1235))', result)
         self.assertIn('<summary>Internal: 3 changes</summary>', result)
+        internal = result.split('<details>', 1)[1].split('</details>', 1)[0]
+        for number in ('1236', '1237', '1238'):
+            self.assertIn(f'- [#{number}](https://github.com/DerpcatMusic/KONTRA/pull/{number})', internal)
+        self.assertNotIn('#1234', internal)
         self.assertNotIn('P8.4', result)
         self.assertNotIn('Hidden work', result)
+
+    def test_one_internal_link_and_no_empty_section(self):
+        result = render([('Release note: none', '42', ['tools/example.py'])])
+        self.assertIn('<summary>Internal: 1 change</summary>', result)
+        self.assertIn('- [#42](https://github.com/DerpcatMusic/KONTRA/pull/42)', result)
+        self.assertNotIn('<details>', render([]))
 
     def test_only_published_release_at_head_skips_build(self):
         pages = [[{'tag_name': 'v3.old', 'draft': False}],

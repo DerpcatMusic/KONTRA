@@ -637,6 +637,7 @@ impl<L: Library> Translator<'_, '_, L> {
             );
             self.out.scripts.push(ir::Script {
                 name: processor.attribute("Name").unwrap_or_default().into(),
+                slot: self.out.scripts.len(),
                 dialect: ir::Dialect::Lua,
                 source,
                 saved,

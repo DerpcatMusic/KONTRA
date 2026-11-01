@@ -76,9 +76,7 @@ impl Engine {
         {
             return n;
         }
-        let lfo = usize::try_from(group)
-            .ok()
-            .and_then(|g| self.groups.get_mut(g)?.lfo_mut(slot));
+        let lfo = self.group_mut(group).and_then(|g| g.lfo_mut(slot));
         match lfo.map(|l| l.rate) {
             Some(ir::Rate::Steps { .. }) => next,
             _ => n,
@@ -197,10 +195,7 @@ impl Engine {
             | ir::KnobTarget::LfoSteps
             | ir::KnobTarget::LfoWidth
             | ir::KnobTarget::LfoWeight(_) => {
-                let lfo = self
-                    .groups
-                    .get_mut(usize::try_from(group).ok()?)?
-                    .lfo_mut(slot)?;
+                let lfo = self.group_mut(group)?.lfo_mut(slot)?;
                 match (target, &mut lfo.rate, &mut lfo.wave) {
                     (ir::KnobTarget::LfoRate, ir::Rate::Hz(hz), _) => Some(hz),
                     (ir::KnobTarget::LfoSteps, ir::Rate::Steps { count, .. }, _) => Some(count),
@@ -222,14 +217,13 @@ impl Engine {
 /// The rack `group` and `generic` address, as `effect_mut` reads them.
 pub(crate) fn rack_at(group: i32, generic: i32) -> Option<ir::RackAt> {
     Some(match (u32::try_from(group), generic) {
-        (Ok(g), -1) => ir::RackAt::Group(g),
+        (Ok(g), _) => ir::RackAt::Group(g),
         (Err(_), 0) => ir::RackAt::Sends,
         (Err(_), 1) => ir::RackAt::Inserts,
         (Err(_), 2) => ir::RackAt::Main,
         (Err(_), b) => {
             ir::RackAt::Bus(u8::try_from(b.checked_sub(crate::params::BUS_OFFSET)?).ok()?)
         }
-        _ => return None,
     })
 }
 

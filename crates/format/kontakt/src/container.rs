@@ -22,18 +22,21 @@ const MAX_PRESET: usize = 128 << 20;
 /// # Errors
 /// When the file is not a Kontakt container this reader understands.
 pub fn chunks(path: &Path) -> Result<KontaktChunks, Error> {
-    opened(path).map(|(chunks, _)| chunks)
+    opened(path).map(|(chunks, _, _)| chunks)
 }
 
 /// [`chunks`], and the file's own monolith table when it is one: the file
 /// opens once for both.
-pub(crate) fn opened(path: &Path) -> Result<(KontaktChunks, Option<NIFileContainer>), Error> {
+pub(crate) fn opened(
+    path: &Path,
+) -> Result<(KontaktChunks, Option<NIFileContainer>, Option<bool>), Error> {
     let mut file = std::fs::File::open(path).map_err(|e| Error::new(path, "open", e))?;
     let mut monolith = None;
-    let bytes = payload(&mut file, path, 0, &mut monolith)?;
+    let mut encrypted = None;
+    let bytes = payload(&mut file, path, 0, &mut monolith, &mut encrypted)?;
     let chunks = KontaktChunks::read(Cursor::new(bytes))
         .map_err(|e| Error::new(path, "Kontakt chunks", e))?;
-    Ok((chunks, monolith))
+    Ok((chunks, monolith, encrypted))
 }
 
 fn payload<R: Read + Seek>(
@@ -41,6 +44,7 @@ fn payload<R: Read + Seek>(
     path: &Path,
     depth: usize,
     monolith: &mut Option<NIFileContainer>,
+    encrypted: &mut Option<bool>,
 ) -> Result<Vec<u8>, Error> {
     if depth > 3 {
         return Err(Error::new(path, "container", "nested too deep"));
@@ -62,7 +66,7 @@ fn payload<R: Read + Seek>(
                 "legacy XML instruments are not read",
             )),
         },
-        NIFile::NISoundContainer(nis) => nis_payload(nis, path, 0),
+        NIFile::NISoundContainer(nis) => nis_payload(nis, path, 0, encrypted),
         NIFile::Monolith(container) => {
             let is_preset = |name: &str| {
                 Path::new(name).extension().is_some_and(|e| {
@@ -85,13 +89,24 @@ fn payload<R: Read + Seek>(
             if depth == 0 {
                 *monolith = Some(container);
             }
-            payload(&mut Cursor::new(bytes), path, depth + 1, &mut None)
+            payload(
+                &mut Cursor::new(bytes),
+                path,
+                depth + 1,
+                &mut None,
+                encrypted,
+            )
         }
         _ => Err(Error::new(path, "container", "not an instrument")),
     }
 }
 
-fn nis_payload(container: ItemContainer, path: &Path, depth: usize) -> Result<Vec<u8>, Error> {
+fn nis_payload(
+    container: ItemContainer,
+    path: &Path,
+    depth: usize,
+    encrypted: &mut Option<bool>,
+) -> Result<Vec<u8>, Error> {
     if depth > 3 {
         return Err(Error::new(path, "NIS", "nested too deep"));
     }
@@ -102,15 +117,16 @@ fn nis_payload(container: ItemContainer, path: &Path, depth: usize) -> Result<Ve
             .subtree_item
             .item()
             .map_err(|e| Error::new(path, "NIS subtree", e))?;
-        return nis_payload(inner, path, depth + 1);
+        return nis_payload(inner, path, depth + 1, encrypted);
     }
     let NISObject::BNISoundPreset(preset) = Repository::from(container).infer_schema() else {
         return Err(Error::new(path, "NIS", "not a sound preset"));
     };
-    let key = if preset
+    let is_encrypted = preset
         .is_encrypted()
-        .map_err(|e| Error::new(path, "NIS preset", e))?
-    {
+        .map_err(|e| Error::new(path, "NIS preset", e))?;
+    *encrypted = Some(is_encrypted);
+    let key = if is_encrypted {
         Some(crate::access::library_key(path).map_err(|e| Error::new(path, "library access", e))?)
     } else {
         None

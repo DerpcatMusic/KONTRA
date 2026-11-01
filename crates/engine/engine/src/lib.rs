@@ -9,26 +9,23 @@
 //! engine executes, not script code. Nothing allocates after [`Engine::new`].
 
 mod admit;
-mod behaviour;
 mod buses;
 mod callbacks;
 mod controls;
 
 mod filters;
 mod fx_types;
-mod group_masks;
-mod group_racks;
 mod impulse_knobs;
 mod inspect;
 mod knobs;
-mod ledger;
 mod midi;
 mod modulators;
 mod par_display;
 mod params;
 mod pgs;
-mod queue;
 mod racks;
+mod recall;
+mod script_files;
 
 mod script;
 mod start;
@@ -42,11 +39,14 @@ mod voice_rack;
 
 use std::sync::Arc;
 
+use kontra_ledger::{group_masks, ledger, queue};
+use kontra_racks::group_racks;
+
 use kontra_plan as plan;
 
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
-use kontra_voice::{Voice, VoiceStart};
+use kontra_voice::{KeyUp, Voice, VoiceStart};
 
 pub use fx_types::{EffectRequest, Prepared};
 pub use inspect::{
@@ -57,35 +57,34 @@ pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
-pub use kontra_plan::{EnginePar, EnginePars};
+pub use kontra_plan::{EnginePar, EnginePars, Recall, Saved, files};
 pub use kontra_script_ui::FIRST_FONT;
-pub use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
+pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;
 pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, Response, RoundRobin, RrCounter, Trigger,
-    Zone,
+    Atom, Bus, Control, Crossfade, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
+    RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
 pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
-pub use ui::ControlLook;
 
-use behaviour::Behaviour;
 use buses::BusState;
 use group_masks::GroupMasks;
-use ledger::{Ledger, Note, Origin};
+use kontra_behaviour::Behaviour;
+use ledger::{Ledger, Note, Origin, Releases};
 use queue::{EventQueue, Work};
 use script::{Kind, Running};
 
 use kontra_effects::MAX_SPAN;
 use kontra_effects::matrix as effects;
-/// A stolen, choked or limited voice fades over this long instead of clicking.
-const FADE_SECONDS: f64 = 0.005;
+/// A voice ended early outside a voice group fades this long, a cut that never clicks.
+const FADE_SECONDS: f64 = 0.010;
 
 /// Counters since the engine was created. Each names a refusal or a loss.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -112,12 +111,6 @@ struct Slot {
     note: Option<NoteRef>,
     zone: usize,
     started: SampleTime,
-    /// Key released.
-    released: bool,
-    /// When the envelope began its release; a one-shot's never does.
-    released_at: Option<SampleTime>,
-    /// Fading out after a steal, choke or group limit; no longer counts as playing.
-    fading: bool,
     /// Extra gain fixed at start (release-trigger decay).
     factor: f32,
     /// Its group's inserts that run on this voice alone.
@@ -133,9 +126,6 @@ struct Slot {
     #[cfg(feature = "trace")]
     pending_trace_cc: std::cell::Cell<u128>,
 }
-
-/// Per control, the parameters a script set other than its value.
-type ControlPars = Box<[Vec<(i32, i32)>]>;
 
 pub struct Engine {
     #[cfg(feature = "trace")]
@@ -187,6 +177,14 @@ pub struct Engine {
     /// Latest controller values on any channel, as scripts read them.
     cc_values: [u8; 130],
     last_message: Text,
+    /// What a recall of saved values does to the scripts.
+    recall: Recall,
+    /// The values recalled last, by slot (`read_persistent_var` reads them).
+    recalled: Box<[Saved]>,
+    /// True while `new` runs the scripts' `init`, off the audio thread.
+    building: bool,
+    /// Array files scripts asked to load or save, for the control side.
+    files: Vec<kontra_plan::files::FileRequest>,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
     called: Box<[u32]>,
@@ -205,8 +203,6 @@ pub struct Engine {
     taps: Box<[Box<[[f32; 2]]>]>,
     main: racks::Rack,
     ids: callbacks::Ids,
-    /// Per script slot, its controls' parameters other than the value.
-    control_pars: Box<[ControlPars]>,
     ui: kontra_script_ui::Store,
     /// The picture names scripts asked a font id for, by script slot, in
     /// the order asked.
@@ -265,9 +261,6 @@ impl Engine {
                 note: None,
                 zone: 0,
                 started: SampleTime(0),
-                released_at: None,
-                released: false,
-                fading: false,
                 factor: 1.0,
                 rack: Vec::new(),
                 bend: [0.0; 2],
@@ -281,8 +274,7 @@ impl Engine {
         let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
         let notes = Ledger::new(plan.notes);
         let capacity = notes.capacity();
-        // `$NUM_GROUPS` counts every group, those without zones too (ANALOG
-        // STRINGS: 483 in Kontakt; its zones reach group 139).
+        // `$NUM_GROUPS` counts every group, those without zones too (measured).
         let groups = plan
             .zones
             .iter()
@@ -302,11 +294,6 @@ impl Engine {
             })
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
-        let control_pars = plan
-            .scripts
-            .iter()
-            .map(|s| vec![Vec::new(); s.controls.cells.len()].into())
-            .collect();
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
             #[cfg(feature = "trace")]
@@ -348,16 +335,15 @@ impl Engine {
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
             last_message: Text::EMPTY,
+            recall: Recall::Restart,
+            recalled: Box::new([]),
+            building: true,
+            files: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
-            control_pars,
             ui,
             ids: callbacks::Ids::START,
-            instrument: Level {
-                gain: 10f32.powf(out.volume_db / 20.0),
-                pan: out.pan,
-                tune: 0.0,
-            },
+            instrument: Level::panned(ir::common::DB_GAIN.eval_unclamped(out.volume_db), out.pan),
             expression: 1.0,
             balance: out.balance,
             output: kontra_dsp::core::Fader::new(rate, out.volume_tau_ms, out.pan_slew_ms),
@@ -378,25 +364,10 @@ impl Engine {
             if let Some(init) = script.callbacks.init {
                 engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
-            let restore: Vec<_> = (script.restore.iter())
-                .map(|&(cell, value)| (cell, engine.saved_value(slot, cell, value)))
-                .collect();
-            if let Some(vm) = engine
-                .vms
-                .get_mut(usize::from(slot))
-                .and_then(Option::as_mut)
-            {
-                for (cell, value) in restore {
-                    vm.set_cell(cell as usize, value);
-                }
-                for &(cell, text) in &script.restore_texts {
-                    vm.set_text(cell as usize, text);
-                }
-            }
-            if let Some(changed) = script.callbacks.persistence_changed {
-                engine.run_callback(slot, changed, Running::new(Kind::Init, None));
-            }
+            engine.write_saved(slot, &script.restore, &script.restore_texts);
+            engine.persistence_changed(slot);
         }
+        engine.building = false;
         engine.rebuild_racks();
         engine.build_chains();
         engine
@@ -429,7 +400,7 @@ impl Engine {
     pub fn playing_voices(&self) -> usize {
         self.voices
             .iter()
-            .filter(|s| s.voice.is_active() && !s.fading)
+            .filter(|s| s.voice.is_active() && !s.voice.is_ending())
             .count()
     }
 
@@ -491,7 +462,7 @@ impl Engine {
                 signal,
                 generation,
             } => return self.listen(slot, signal, generation),
-            Work::Async { slot, id } => return self.async_complete(slot, id),
+            Work::Async { slot, id, exit } => return self.async_complete(slot, id, exit),
         };
         match event {
             Event::NoteOn {
@@ -512,6 +483,13 @@ impl Engine {
 
     fn note_on(&mut self, host: HostNote, velocity: f64, tune: f64) {
         self.behaviour.play(&self.plan, host.key, host.channel);
+        // A script that plays its own release notes: the key going down
+        // starts its release-trigger counter, not the notes it plays.
+        if self.plan.release_zones == ReleaseZones::WithNote
+            && let Some(r) = self.behaviour.rls_reset.get_mut(usize::from(host.key))
+        {
+            *r = self.now.0;
+        }
         let draw = self.behaviour.draw(host.key);
         let Some(note) = self.admit(Note::new(host, velocity, tune, self.now, draw)) else {
             self.stats.notes_refused += 1;
@@ -532,26 +510,17 @@ impl Engine {
         let plan = self.plan.clone();
         let in_group = |s: &Slot| {
             s.voice.is_active()
-                && !s.fading
+                && !s.voice.is_ending()
                 && plan.zones.get(s.zone).is_some_and(|z| z.group == group)
         };
         if self.voices.iter().filter(|s| in_group(s)).count() < usize::from(limit) {
             return;
         }
-        let fade = self.fade_frames();
-        if let Some((_index, oldest)) = self
-            .voices
-            .iter_mut()
-            .enumerate()
+        let oldest = (self.voices.iter().enumerate())
             .filter(|(_, s)| in_group(s))
-            .min_by_key(|(_, s)| (!s.released, s.started))
-        {
-            #[cfg(feature = "trace")]
-            if let Some(trace) = &mut self.trace {
-                trace.voice(self.now.0, _index, oldest, VoiceEvent::Steal);
-            }
-            oldest.voice.fade(fade);
-            oldest.fading = true;
+            .min_by_key(|(_, s)| (!s.voice.is_released(), s.started));
+        if let Some((index, _)) = oldest {
+            self.steal(index, self.fade_frames());
         }
     }
 
@@ -566,33 +535,22 @@ impl Engine {
                 continue;
             }
             let channel = n.host.channel;
+            // `%KEY_DOWN` reads 0 in the key's own `on release`.
+            n.key_up = true;
             if let Some(slot) = self.release_callbacks(note) {
-                if let Some(n) = self.notes.get_mut(note) {
-                    n.key_up = true;
-                }
                 // The key is up whatever the script does with its event:
                 // a `play_note(.., -1)` child still ends (KSP manual,
                 // play_note), through its own release callbacks.
-                let plan = &self.plan.scripts;
-                if plan
-                    .get(usize::from(slot))
-                    .is_some_and(|s| s.held_release_ends_children)
-                {
+                let script = self.plan.scripts.get(usize::from(slot));
+                if script.is_some_and(|s| s.held_release_ends_children) {
                     self.end_children(note);
                 }
                 continue;
             }
-            if self
-                .pedal
-                .get(usize::from(channel))
-                .copied()
-                .unwrap_or(false)
-            {
-                // The key is up (%KEY_DOWN reads 0, KSP manual): only its
-                // sound is held.
+            if self.pedal.get(usize::from(channel)) == Some(&true) {
+                // The key is up (KSP manual): only its sound is held.
                 if let Some(n) = self.notes.get_mut(note) {
                     n.pedal_held = true;
-                    n.key_up = true;
                 }
             } else {
                 self.release(note);
@@ -638,43 +596,40 @@ impl Engine {
         for slot in self
             .voices
             .iter_mut()
-            .filter(|s| s.note == Some(note) && !s.released)
+            .filter(|s| s.note == Some(note) && !s.voice.is_released())
         {
-            // A one-shot plays to its end marker whatever the key does.
-            if !self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot) {
-                slot.voice.release();
-                slot.released_at = Some(self.now);
-            }
-            slot.released = true;
+            let one_shot = self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot);
+            let key_up = if one_shot {
+                KeyUp::PlayOn
+            } else {
+                KeyUp::Release
+            };
+            slot.voice.key_up(self.now.0, key_up);
         }
-        self.start_zones(note, false, |trigger| trigger == Trigger::Release);
+        if self.plan.release_zones == ReleaseZones::AtRelease
+            && self.notes.get(note).map(|n| n.releases) == Some(Releases::OnRelease)
+        {
+            self.start_zones(note, false, |trigger| trigger == Trigger::Release);
+        }
         self.end_children(note);
     }
 
     /// Ends the script notes played for the length of `note`.
     fn end_children(&mut self, note: NoteRef) {
-        let mut children = std::mem::take(&mut self.targets_scratch);
-        self.notes
-            .select(&mut children, |n| n.origin == Origin::Child(note));
-        for &child in &children {
+        // No scratch list: a full queue releases a child at once, which ends
+        // its own children through here.
+        let mut from = 0;
+        while let Some(child) = self.notes.next_child(note, from) {
+            from = child.slot() + 1;
             self.queue_end(child);
         }
-        self.targets_scratch = children;
     }
 
     fn choke(&mut self, pattern: HostPattern) {
         let fade = self.fade_frames();
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.matching(pattern, &mut hits);
-        for &note in &hits {
-            if let Some(n) = self.notes.get_mut(note) {
-                n.released = true;
-            }
-            for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
-                slot.voice.fade(fade);
-                slot.fading = true;
-            }
-        }
+        self.fade_notes(&hits, fade, kontra_voice::FadeTarget::End);
         self.hits = hits;
     }
 
@@ -731,7 +686,7 @@ impl Engine {
             let age = modulators::Age {
                 warp: slot.warp,
                 chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
             };
             #[cfg(feature = "trace")]
             if let (Some(trace), Some(cc)) = (&self.trace, trace_cc) {

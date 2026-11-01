@@ -1,8 +1,8 @@
 {
-  "allow-attributes": 111,
-  "cfg-test-in-fn": 93,
-  "impl-default": 93,
-  "mutex-in-realtime": 30,
-  "path-attributes": 141,
-  "processor-matches": 885
+  "allow-attributes": 0,
+  "cfg-test-in-fn": 0,
+  "impl-default": 3,
+  "mutex-in-realtime": 0,
+  "path-attributes": 1,
+  "processor-matches": 0
 }

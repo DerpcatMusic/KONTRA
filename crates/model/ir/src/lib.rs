@@ -9,6 +9,7 @@ use std::sync::Arc;
 mod bus;
 mod drive;
 mod effects;
+mod engine_par;
 mod link;
 mod mods;
 mod output;
@@ -25,6 +26,8 @@ pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
+pub use engine_par::{Drives, EnginePar, ScriptPar};
+pub use kontra_law::{FormulaId, common};
 pub use link::{CcLink, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
 pub use output::{Balance, Output, OutputControllers};
@@ -38,6 +41,10 @@ pub use wavetable::{FormShaper, Side, Warp, WarpShape, Wavetable};
 #[derive(Clone, Debug)]
 pub struct Instrument {
     pub name: String,
+    /// Source file, when this instrument was loaded from a path.
+    pub source_path: Option<std::path::PathBuf>,
+    /// Library root discovered when loading, when known.
+    pub library_path: Option<std::path::PathBuf>,
     pub samples: Vec<Sample>,
     pub groups: Vec<Group>,
     /// Output buses; group `bus` indexes here. Empty means one main bus.
@@ -77,6 +84,8 @@ impl Instrument {
     /// Nothing yet.
     pub const DEFAULT: Self = Self {
         name: String::new(),
+        source_path: None,
+        library_path: None,
         samples: Vec::new(),
         groups: Vec::new(),
         buses: Vec::new(),
@@ -114,13 +123,23 @@ pub struct Impulse {
     pub mix: Option<[[f32; 2]; 2]>,
 }
 
-/// Scales a response so its louder channel's energy (sum of squares) is
-/// `energy`, by at most `max_gain`; one at or under `floor` is left alone.
+/// Scales a response's channel energy toward `energy`, by at most `max_gain`;
+/// energy at or under `floor` is left alone.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Normalize {
     pub energy: f32,
     pub max_gain: f32,
     pub floor: f32,
+    pub channels: EnergyChannels,
+    /// Apply after converting the response to the host rate.
+    pub after_resample: bool,
+}
+
+/// How stereo channel energies are combined when normalizing an impulse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EnergyChannels {
+    Loudest,
+    Mean,
 }
 
 /// One sample: where its file's bytes are. The codec is read from the file's
@@ -745,6 +764,9 @@ impl Bell {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Script {
     pub name: String,
+    /// Its place among the instrument's script slots, empty slots counted:
+    /// presets save their values by this place.
+    pub slot: usize,
     pub dialect: Dialect,
     pub source: String,
     /// Saved persistent values in the dialect's own form (Lua: `widget=value`).

@@ -20,6 +20,11 @@ pub struct Keys {
     pub spans: Vec<(u8, u8, Color)>,
     /// The focused part's keyswitches, each in its articulation's colour.
     pub switches: Vec<(u8, Color)>,
+    /// The keys the focused part's script coloured, drawn in that colour
+    /// (Kontakt's keyboard); with any, they stand in for the switches.
+    pub script: Vec<(u8, Color)>,
+    /// The keys the focused part's script named, shown under the pointer.
+    pub names: Vec<(u8, String)>,
 }
 
 const BLACK: [bool; 12] = [
@@ -107,6 +112,11 @@ pub fn keyboard(
             .w(0.)
         })
         .collect();
+    // The key under the pointer, by note and by the script's name for it.
+    let tip = under.map(|n| match keys.names.iter().find(|k| k.0 == n) {
+        Some((_, name)) => format!("{} · {name}", note_name(n)),
+        None => note_name(n),
+    });
     let keys = keys.clone();
     let face = canvas(move |s| {
         let rect = |x: f64, y: f64, w: f64, h: f64| {
@@ -120,6 +130,7 @@ pub fn keyboard(
         // A keyswitch takes its articulation's colour; a key a part plays
         // is tinted lightly, the first part listed winning.
         let switch = |n: u8| keys.switches.iter().find(|s| s.0 == n).map(|s| s.1);
+        let script = |n: u8| keys.script.iter().find(|s| s.0 == n).map(|s| s.1);
         let tint = |n: u8| {
             keys.spans
                 .iter()
@@ -159,6 +170,7 @@ pub fn keyboard(
             let grey = Color::oklch(0.64, 0., 0.);
             let face = match (held(n), switch(n), tint(n)) {
                 (true, ..) => accent(),
+                _ if let Some(c) = script(n) => c,
                 (_, Some(c), _) => c.with_lightness(0.9).scale_chroma(0.5),
                 (.., Some(c)) => c.with_lightness(0.68).scale_chroma(0.25),
                 _ => grey,
@@ -169,6 +181,7 @@ pub fn keyboard(
             let grey = Color::oklch(0.2, 0., 0.);
             let face = match (held(n), switch(n), tint(n)) {
                 (true, ..) => Color::oklch(0.6, 0., 0.),
+                _ if let Some(c) = script(n) => c,
                 (_, Some(c), _) => c.with_lightness(0.32).scale_chroma(0.7),
                 (.., Some(c)) => c.with_lightness(0.22).scale_chroma(0.25),
                 _ => grey,
@@ -189,6 +202,10 @@ pub fn keyboard(
         .tracks_pointer()
         .named("Keyboard")
         .id(id.to_owned());
+    let el = match tip {
+        Some(tip) => el.tip(tip),
+        None => el,
+    };
     Response {
         el,
         changed: events,

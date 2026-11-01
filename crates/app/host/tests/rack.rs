@@ -59,6 +59,8 @@ fn plan_of(store: &mut Store, level: f32) -> Plan {
 fn part(name: &str) -> Part {
     Part {
         path: None,
+        source: None,
+        recall: kontra_engine::Recall::Restart,
         name: name.into(),
         diagnostics: vec![],
         faces: vec![],
@@ -699,6 +701,7 @@ fn a_lua_state_restored_after_a_wait_saves_as_restored() {
     let instrument = |saved: Vec<String>| ir::Instrument {
         scripts: vec![ir::Script {
             name: "state".into(),
+            slot: 0,
             dialect: ir::Dialect::Lua,
             source: source.into(),
             saved,
@@ -721,4 +724,264 @@ fn a_lua_state_restored_after_a_wait_saves_as_restored() {
     }
     rack.tick();
     assert_eq!(state(&rack), Some(saved[0].clone()));
+}
+
+/// An instrument read from "a.nki" whose one script keeps `$knob` and
+/// counts, in `$marker`, init (5) and each persistence-changed (+1); its
+/// snapshot type is `kind`, its saved values `saved`.
+fn snapshot_of(kind: u8, saved: &[&str]) -> kontra_engine::ir::Instrument {
+    use kontra_engine::ir;
+    let source = format!(
+        "on init
+            set_snapshot_type({kind})
+            declare ui_knob $knob (0, 127, 1)
+            make_persistent($knob)
+            declare $marker
+            make_persistent($marker)
+            $marker := 5
+        end on
+        on persistence_changed
+            $marker := $marker + 1
+            $knob := 0
+            read_persistent_var($knob)
+        end on"
+    );
+    ir::Instrument {
+        source_path: Some("a.nki".into()),
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: saved.iter().map(|&s| s.to_owned()).collect(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    }
+}
+
+/// Part 0's saved script values, as of a capture taken now.
+fn saved_now(rack: &mut Rack, audio: &mut RackAudio) -> Vec<String> {
+    rack.tick();
+    audio.process(BLOCK, &[]);
+    rack.tick();
+    rack.saved_scripts(0).concat()
+}
+
+/// KSP manual, `set_snapshot_type`: type 1 recalls without `on init` (the
+/// running script keeps its state), type 0 runs `on init` again; both run
+/// `on persistence_changed` after the values land. Neither reads or
+/// prepares the instrument again.
+#[test]
+fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
+    for (kind, marker, rebuilt) in [(1, "$marker 7", false), (0, "$marker 6", true)] {
+        let (mut rack, mut audio) = rack();
+        rack.load_ir(0, snapshot_of(kind, &[]), Some("a.nki".into()))
+            .unwrap();
+        audio.process(BLOCK, &[]);
+        let p = rack.parts()[0].as_ref().unwrap();
+        let (generation, plan) = (p.script.generation(), p.plan.clone().unwrap());
+        let preset = kontra_host::instrument::Preset {
+            name: "b".into(),
+            base: "a.nki".into(),
+            saved: vec![vec!["$knob 42".into()]],
+        };
+        assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
+        let saved = saved_now(&mut rack, &mut audio);
+        let p = rack.parts()[0].as_ref().unwrap();
+        assert!(
+            saved.contains(&"$knob 42".to_owned()),
+            "type {kind}: {saved:?}"
+        );
+        assert!(saved.contains(&marker.to_owned()), "type {kind}: {saved:?}");
+        assert_eq!(p.path.as_deref(), Some(std::path::Path::new("b.nksn")));
+        assert_eq!(p.script.generation() != generation, rebuilt, "type {kind}");
+        // The plan is kept or copied, never prepared again from the file.
+        let same = Arc::ptr_eq(p.plan.as_ref().unwrap(), &plan);
+        assert_eq!(same, !rebuilt, "type {kind}");
+        // The next snapshot recalls as well.
+        assert!(rack.recall(0, &preset, None), "type {kind}: second recall");
+    }
+}
+
+/// A folder of this test process alone, removed when dropped (also when
+/// an assertion fails).
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let dir = tmp.join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// KSP manual (`save_array_str`, `load_array_str`): after `on init` both run
+/// asynchronously, then `on async_complete`; the file holds the array's
+/// name and its values, and a file naming another array loads nothing.
+/// Saves go to the rack's save folder, never into the library; a save that
+/// cannot be written reports 0. Only regular files no larger than a
+/// script resource are read.
+#[test]
+fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
+    use kontra_engine::ir;
+    let scratch = Scratch::new("array-files");
+    let dir = scratch.0.clone();
+    std::fs::create_dir_all(dir.join("dir.nka")).unwrap();
+    std::fs::write(dir.join("other.nka"), "%other\n7\n7\n7\n").unwrap();
+    // Valid values, then (sparse) padding past the ceiling.
+    std::fs::write(dir.join("huge.nka"), "%a\n4\n5\n6\n").unwrap();
+    let huge = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("huge.nka"));
+    (huge.unwrap())
+        .set_len(kontra_format_kontakt::RESOURCE_LIMIT + 1)
+        .unwrap();
+    let saves = dir.join("saves");
+    let mine = saves.join(dir.strip_prefix("/").unwrap_or(&dir));
+    std::fs::create_dir_all(&mine).unwrap();
+    // A file where a save needs a folder: that save cannot be written.
+    std::fs::write(mine.join("blocked.nka"), "").unwrap();
+    let source = format!(
+        "on init
+            declare %a[3] := (1, 2, 3)
+            declare $step
+            declare $id
+            declare $result
+            make_persistent($result)
+        end on
+        on note
+            $id := save_array_str(%a, \"{0}/a.nka\")
+        end on
+        on async_complete
+            select $step
+                case 0
+                    $result := $NI_ASYNC_EXIT_STATUS
+                    %a[0] := 9
+                    %a[1] := 9
+                    %a[2] := 9
+                    $id := load_array_str(%a, \"{0}/a.nka\")
+                case 1
+                    $result := $result * 1000 + %a[0] * 100 + %a[1] * 10 + %a[2]
+                    $id := load_array_str(%a, \"{0}/other.nka\")
+                case 2
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS + %a[0] - 1
+                    $id := save_array_str(%a, \"{0}/blocked.nka/a.nka\")
+                case 3
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS
+                    $id := load_array_str(%a, \"{0}/huge.nka\")
+                case 4
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS + %a[0] - 1
+                    $id := load_array_str(%a, \"{0}/dir.nka\")
+                case 5
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS
+            end select
+            inc($step)
+        end on",
+        dir.display()
+    );
+    let instrument = ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let (mut rack, mut audio) = rack();
+    rack.set_saves(saves.clone());
+    rack.load_ir(0, instrument, None).unwrap();
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..16 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
+    let saved = saved_now(&mut rack, &mut audio);
+    let written = std::fs::read_to_string(mine.join("a.nka"));
+    assert_eq!(written.unwrap(), "%a\n1\n2\n3\n");
+    assert!(
+        !dir.join("a.nka").exists(),
+        "a save never writes the library"
+    );
+    // Saved 1; loaded back 123; wrong name 0; unwritable 0; huge 0; dir 0.
+    assert!(saved.contains(&"$result 11230000".to_owned()), "{saved:?}");
+}
+
+/// An install fades out the engine it replaces instead of cutting its
+/// sound dead, a second install before that fade ends keeps it fading, and
+/// the faded engines are freed off audio.
+#[test]
+fn an_install_fades_out_the_engine_it_replaces() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.25);
+    rack.install(0, a, part("a"));
+    let [before, _] = play(&mut audio, &[(0, note(0))]);
+    let silent = engine(rack.store_mut(), 0.0);
+    rack.install(0, silent, part("b"));
+    let again = engine(rack.store_mut(), 0.0);
+    rack.install(0, again, part("c"));
+    audio.process(BLOCK, &[]);
+    let fading = level(&audio, 0);
+    assert!(fading > 0.0 && fading < before, "{before} → {fading}");
+    let [after, _] = play(&mut audio, &[]);
+    assert!(after.abs() < 1e-6, "{after}");
+    rack.tick();
+}
+
+/// A rack with no save folder (a test, a tool) writes nothing: a script's
+/// save reports 0 and no file appears anywhere.
+#[test]
+fn a_rack_without_a_save_folder_writes_nothing() {
+    use kontra_engine::ir;
+    let scratch = Scratch::new("no-saves");
+    let at = scratch.0.join("a.nka");
+    let source = format!(
+        "on init
+            declare %a[1] := (4)
+            declare $id
+            declare $status := 9
+            make_persistent($status)
+        end on
+        on note
+            $id := save_array_str(%a, \"{}\")
+        end on
+        on async_complete
+            $status := $NI_ASYNC_EXIT_STATUS
+        end on",
+        at.display()
+    );
+    let instrument = ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, None).unwrap();
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..4 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
+    let saved = saved_now(&mut rack, &mut audio);
+    assert!(saved.contains(&"$status 0".to_owned()), "{saved:?}");
+    assert!(!at.exists(), "nothing written next to the path");
 }

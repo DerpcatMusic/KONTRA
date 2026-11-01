@@ -142,7 +142,7 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
         damping_hz: f32::INFINITY,
         // Off at 0: the echo keeps 30 Hz there (−0.9 dB at 10 Hz).
         low_cut_hz: if r.low_cut > 0.0 {
-            10.0 * 100f32.powf(r.low_cut.min(1.0))
+            kontra_law::kontakt::REPLIKA_LOW_CUT.eval(r.low_cut)
         } else {
             0.0
         },

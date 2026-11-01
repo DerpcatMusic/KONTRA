@@ -77,12 +77,17 @@ impl Browser {
         }
     }
 
-    /// Takes a finished scan; true when the catalog changed.
+    /// Takes a finished scan; true when the catalog changed. A scan that
+    /// found what was already listed moves nothing, so an idle editor
+    /// draws no frame for it.
     pub fn poll(&mut self) -> bool {
         let Some(catalog) = self.scan.as_ref().and_then(|(_, r)| r.try_recv().ok()) else {
             return false;
         };
         self.scan = None;
+        if catalog == self.catalog {
+            return false;
+        }
         self.catalog = catalog;
         self.generation += 1;
         true
@@ -215,5 +220,21 @@ mod tests {
         assert_eq!(roots.len(), 1, "a removed folder stays removed");
         assert_eq!(roots[0].path, Path::new("/nowhere/UVI"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A scan that finds what is already listed changes nothing the editor
+    /// shows (the plugin's idle-tick test raced the first scan).
+    #[test]
+    fn a_scan_that_finds_nothing_new_moves_no_generation() {
+        let mut b = Browser::open(None, None);
+        let before = b.generation;
+        for _ in 0..5000 {
+            if !b.poll() && !b.scanning() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!b.scanning(), "the scan finished");
+        assert_eq!(b.generation, before);
     }
 }

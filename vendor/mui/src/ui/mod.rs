@@ -211,6 +211,8 @@ pub struct Ui {
     /// still reports the knot it grabbed.
     tagged: Option<(String, String)>,
     time: f64,
+    /// When the caller asked to be drawn again ([`Ui::repaint_in`]).
+    wake: Option<f64>,
     /// The last frame resolved: see [`Ui::inert`].
     resolved: bool,
     /// Where along a held scrollbar's thumb the pointer took it, so the
@@ -332,6 +334,7 @@ impl Ui {
             hover: None,
             tagged: None,
             time: 0.0,
+            wake: None,
             resolved: false,
             board: None,
             bar_grab: 0.0,
@@ -1254,7 +1257,9 @@ impl Ui {
             // nested spans and text that previously had no font/glyph paint.
             // Memo trees/closures still reuse. Selective paint admission would
             // require dependency stamps in the locked scene-copy API.
-            self.scene.as_deref().filter(|_| !self.scene_environment_changed),
+            self.scene
+                .as_deref()
+                .filter(|_| !self.scene_environment_changed),
         );
         let scene = match scene {
             Ok(scene) => scene,
@@ -1264,7 +1269,10 @@ impl Ui {
                 // Fresh trees have no matching committed paint yet: retry
                 // their closures rather than labelling that paint reusable.
                 for (path, id) in memos {
-                    if memo::node_at(&mut spec.root, path).payload().extras().memo
+                    if memo::node_at(&mut spec.root, path)
+                        .payload()
+                        .extras()
+                        .memo
                         .is_some_and(|m| !m.reused)
                     {
                         self.hot.insert(*id);

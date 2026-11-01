@@ -433,6 +433,8 @@ fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
                 part: 0,
                 widget,
                 value: to as f64,
+                cell: None,
+                keys: Default::default(),
             },
         }));
     settle(&params, &mut dsp);
@@ -898,6 +900,8 @@ fn uvi_knob_moves_the_sound_and_survives_reload(program: &str, knob: &str, to: f
                 part: 0,
                 widget,
                 value: to,
+                cell: None,
+                keys: Default::default(),
             },
         }));
     settle(&params, &mut dsp);
