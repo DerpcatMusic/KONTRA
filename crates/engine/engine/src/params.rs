@@ -47,7 +47,7 @@ impl Engine {
         }
     }
 
-    /// A group's insert slot (generic -1), the instrument insert's (group
+    /// A group's insert slot (generic is ignored), the instrument insert's (group
     /// -1, generic `$NI_INSERT_BUS` = 1) or a bus's. Send and main racks are
     /// not carried yet.
     pub(crate) fn effect_mut(
@@ -67,7 +67,8 @@ impl Engine {
         generic: i32,
     ) -> Option<&mut Option<ir::Effect>> {
         let rack = match (usize::try_from(group), generic) {
-            (Ok(g), -1) => &mut self.groups.get_mut(g)?.inserts[..],
+            // A group's slot: `<generic>` is for instrument effects only (KSP manual).
+            (Ok(g), _) => &mut self.groups.get_mut(g)?.inserts[..],
             // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
             (Err(_), 1) => &mut self.rack.slots[..],
             (Err(_), 0) => {
