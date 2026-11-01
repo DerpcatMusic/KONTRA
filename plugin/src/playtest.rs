@@ -317,7 +317,12 @@ fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
 /// Plays silence until no voice is left and the effects' tail (a reverb, a
 /// delay's next repeat) has stayed quiet in both channels for 0.1 s, so it
 /// never reads as the next segment's onset; at most 5 s. Whether it got there.
-fn ring_out(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> bool {
+fn ring_out(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    last: &mut Played,
+    mut collect: impl FnMut(&Played),
+) -> bool {
     let mut quiet = 0;
     for b in 0..at(5.0) / BLOCK {
         quiet = if last.voices == 0 && last.channel_peaks.iter().all(|&p| p < 1e-4) {
@@ -332,6 +337,7 @@ fn ring_out(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> bool {
             Tick.run(params);
         }
         *last = block(params, dsp, &[], last);
+        collect(last);
     }
     false
 }
@@ -353,7 +359,7 @@ fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
         }
         Tick.run(params);
         *last = block(params, dsp, &[(0, off(key))], last);
-        ring_out(params, dsp, last).then_some(sounded)
+        ring_out(params, dsp, last, |_| {}).then_some(sounded)
     };
     for by in [0, -12, 12, -24, 24] {
         let mut all = true;
@@ -587,15 +593,11 @@ fn perform(path: PathBuf) -> Report {
     let load_s = started.elapsed().as_secs_f64();
     eprintln!("{name}: loaded in {load_s:.1} s");
     let by = octave_shift(&params, &mut dsp, &mut last);
-    // Probes in another octave may have moved a keyswitch or a script's
-    // state: the performance plays on the program as loaded.
-    let (params, mut dsp, mut last) = if by == 0 {
-        (params, dsp, last)
-    } else {
-        drop(dsp);
-        drop(params);
-        start()
-    };
+    // Any probe can advance script or round-robin state, including C4.
+    // Retire that instance before activating the untouched performance.
+    drop(dsp);
+    drop(params);
+    let (params, mut dsp, mut last) = start();
     let mut failed = Vec::new();
     let mut fail = |what: String| failed.push(format!("{name}: {what}"));
     let latency_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
@@ -644,7 +646,15 @@ fn perform(path: PathBuf) -> Report {
                 break;
             }
         }
-        if !ring_out(&params, &mut dsp, &mut last) {
+        let quiet = ring_out(&params, &mut dsp, &mut last, |tail| {
+            peaks.push(tail.audio.iter().fold(0.0f32, |p, x| p.max(x.abs())));
+            for (peak, value) in channel_peaks.iter_mut().zip(tail.channel_peaks) {
+                *peak = peak.max(value);
+            }
+            audio.extend_from_slice(&tail.audio);
+            peak_voices = peak_voices.max(tail.voices);
+        });
+        if !quiet {
             fail(format!(
                 "{segment}: the effects still sound 5 s after its voices ended"
             ));
@@ -741,6 +751,9 @@ fn perform(path: PathBuf) -> Report {
             hf_db: hf,
             channel_db,
         });
+        if !quiet {
+            break;
+        }
     }
     if let [first, .., again] = onsets[..]
         && (first - again).abs() > 10.0
