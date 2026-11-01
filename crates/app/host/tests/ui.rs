@@ -398,3 +398,17 @@ fn script_key_colours_reach_the_keybed() {
     );
     assert_eq!(ui.key_pressed, Some(vec![40]));
 }
+
+/// A switch fires on mouse down, a button on mouse up (KSP manual, `ui_switch`
+/// and `ui_button` remarks).
+#[test]
+fn a_switch_fires_on_press_and_a_button_on_release() {
+    let ui = tree(
+        "on init
+            declare ui_switch $s
+            declare ui_button $b
+        end on",
+    );
+    assert!(widget(&ui, "$s").activate_on_press);
+    assert!(!widget(&ui, "$b").activate_on_press);
+}
