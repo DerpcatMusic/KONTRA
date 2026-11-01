@@ -1,11 +1,10 @@
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is required' }
-foreach ($Name in @('KONTRA.clap', 'KONTRA.vst3', 'kontakto-standalone.exe', 'LICENSES.txt')) {
+foreach ($Name in @('KONTRA.clap', 'KONTRA.vst3')) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $Name))) { throw "Missing package file: $Name" }
 }
 $Common = Join-Path $env:LOCALAPPDATA 'Programs\Common'
-$App = Join-Path $env:LOCALAPPDATA 'Programs\KONTRA'
-foreach ($Directory in @((Join-Path $Common 'CLAP'), (Join-Path $Common 'VST3'), $App)) {
+foreach ($Directory in @((Join-Path $Common 'CLAP'), (Join-Path $Common 'VST3'))) {
     New-Item -ItemType Directory -Path $Directory -Force | Out-Null
 }
 $Target = Join-Path $Common 'VST3\KONTRA.vst3'
@@ -20,8 +19,6 @@ try {
         throw
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'KONTRA.clap') -Destination (Join-Path $Common 'CLAP\KONTRA.clap') -Force
-    foreach ($Name in @('kontakto-standalone.exe', 'LICENSES.txt')) {
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $Name) -Destination (Join-Path $App $Name) -Force
-    }
+
 } finally { Remove-Item -LiteralPath $Temp -Recurse -Force }
-Write-Output "Installed KONTRA. Rescan plugins in your DAW; the standalone app is in $App."
+Write-Output "Installed KONTRA. Rescan plugins in your DAW."

@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::sync::Arc;
 
-use kontra_engine::{ControlLook, Engine, FIRST_FONT, MenuItem, Page, Text, WidgetLook};
+use kontra_engine::{ControlLook, Engine, FIRST_FONT, Key, MenuItem, Page, Text, WidgetLook};
 use kontra_ui_model as model;
 
 use crate::ui::lua::Page as _;
@@ -29,7 +29,7 @@ pub struct View {
 /// A KSP script's tree and what keeps it current, or a Lua script's tree.
 enum Shown {
     Ksp(Box<Live>),
-    Lua(model::Interface),
+    Lua(Box<model::Interface>),
 }
 
 impl View {
@@ -71,7 +71,7 @@ impl View {
                 crate::ui::lua::apply(&mut tree, w, look, words.then(|| text.as_str()));
             }
             let frame = LookFrame::lua(at, &tree);
-            Some(Self::new(at, Shown::Lua(tree), frame))
+            Some(Self::new(at, Shown::Lua(Box::new(tree)), frame))
         })?;
         view.library = library.map(RefCell::into_inner);
         Some(view)
@@ -189,6 +189,8 @@ pub struct LookFrame {
     slot: u8,
     looks: Box<[Look]>,
     cells: Box<[(u32, Option<i64>)]>,
+    /// Text cells (`@` controls), copied in place.
+    strings: Box<[(u32, Text)]>,
     page: Option<Page>,
     /// A Lua page's widgets by number, as read this trip; the ones read
     /// (sorted), and the labels' texts.
@@ -199,6 +201,9 @@ pub struct LookFrame {
     /// The script's bitmap fonts from [`FIRST_FONT`] on; `on init` names
     /// them all, so they are copied once.
     fonts: Arc<[String]>,
+    /// The keyboard's keys, by note (a fixed 128: copied in place).
+    keys: Vec<Key>,
+    pressed_support: bool,
     state: Filled,
 }
 
@@ -221,7 +226,9 @@ const MIN_ROOM: usize = 4;
 impl LookFrame {
     /// A frame for `live`'s reads, with [`ROOM`] times what `now` holds.
     fn new(slot: u8, live: &Live, face: &Face, now: &dyn Looks) -> Box<Self> {
-        let (mut ids, mut cells) = live.reads(face);
+        let (mut ids, mut cells, mut strings) = live.reads(face);
+        strings.sort_unstable();
+        strings.dedup();
         ids.sort_unstable();
         ids.dedup();
         cells.sort_unstable();
@@ -248,6 +255,7 @@ impl LookFrame {
             slot,
             looks,
             cells: cells.into_iter().map(|c| (c, None)).collect(),
+            strings: strings.into_iter().map(|c| (c, Text::EMPTY)).collect(),
             page: None,
             widgets: Box::default(),
             reads: Vec::new(),
@@ -256,6 +264,8 @@ impl LookFrame {
             fonts: (FIRST_FONT..)
                 .map_while(|id| now.font(slot, id).map(str::to_owned))
                 .collect(),
+            keys: now.keys().to_vec(),
+            pressed_support: now.pressed_support(),
             state: Filled::No,
         })
     }
@@ -271,6 +281,7 @@ impl LookFrame {
             slot,
             looks: Box::default(),
             cells: Box::default(),
+            strings: Box::default(),
             page: None,
             widgets: vec![None; tree.widgets.len()].into(),
             reads: readable(tree),
@@ -291,6 +302,9 @@ impl LookFrame {
                 })
                 .collect(),
             fonts: Arc::from([]),
+            // Room for the engine's 128 keys, though a Lua page shows none.
+            keys: Vec::with_capacity(128),
+            pressed_support: false,
             state: Filled::No,
         })
     }
@@ -344,7 +358,19 @@ impl LookFrame {
         for (cell, value) in &mut *self.cells {
             *value = engine.script_cell_in(self.slot, *cell as usize);
         }
+        for (cell, text) in &mut *self.strings {
+            let vm = engine.vm(self.slot);
+            *text = vm
+                .and_then(|vm| vm.text(*cell as usize))
+                .copied()
+                .unwrap_or(Text::EMPTY);
+        }
         self.page = engine.page(self.slot).copied();
+        // Same length every trip, so this never allocates.
+        if !copy(&mut self.keys, engine.keys()) {
+            whole = false;
+        }
+        self.pressed_support = engine.pressed_support();
         // Only what can show: a widget whose parent shows (Augmented
         // Orchestra makes 10,145, about 100 of them shown at once).
         for &n in &self.reads {
@@ -384,11 +410,13 @@ impl LookFrame {
         Box::new(Self {
             looks,
             cells: self.cells.clone(),
+            strings: self.strings.clone(),
             widgets: self.widgets.clone(),
             reads: self.reads.clone(),
             arrays: self.arrays.clone(),
             texts: self.texts.clone(),
             fonts: Arc::clone(&self.fonts),
+            keys: self.keys.clone(),
             state: Filled::No,
             ..*self
         })
@@ -444,6 +472,12 @@ impl Looks for LookFrame {
         self.cells.get(at)?.1
     }
 
+    fn script_text_in(&self, slot: u8, n: usize) -> Option<&str> {
+        let n = u32::try_from(n).ok().filter(|_| slot == self.slot)?;
+        let at = self.strings.binary_search_by_key(&n, |c| c.0).ok()?;
+        Some(self.strings.get(at)?.1.as_str())
+    }
+
     fn page(&self, slot: u8) -> Option<&Page> {
         self.page.as_ref().filter(|_| slot == self.slot)
     }
@@ -451,6 +485,14 @@ impl Looks for LookFrame {
     fn font(&self, slot: u8, id: i32) -> Option<&str> {
         let n = usize::try_from(id.checked_sub(FIRST_FONT)?).ok()?;
         (self.fonts.get(n).filter(|_| slot == self.slot)).map(String::as_str)
+    }
+
+    fn keys(&self) -> &[Key] {
+        &self.keys
+    }
+
+    fn pressed_support(&self) -> bool {
+        self.pressed_support
     }
 }
 

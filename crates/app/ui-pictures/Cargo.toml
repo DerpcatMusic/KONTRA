@@ -1,0 +1,21 @@
+[package]
+name = "kontra-ui-pictures"
+version = "0.0.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+dirs = "5"
+kontra-library = { version = "0.0.0", path = "../library" }
+kontra-ui-model = { path = "../../model/ui-model" }
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
+png = "0.18"
+sha2 = "0.10.9"
+zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
             let mut ui = kontra_ui::ui();
             let frame = |ui: &mut Ui, pictures: &mut Pictures, live: &Live| {
-                let (el, built) = view::page(ui, 0, &live.tree, PageRef(0), pictures, (1., 0.));
+                let (el, built) = view::page(ui, 0, &live.tree, PageRef(0), pictures, (1., &[]));
                 ui.frame(
                     el,
                     Some(Size::new(f64::from(w), f64::from(h))),
@@ -248,6 +248,7 @@ fn in_rack(
                 tree,
                 pictures,
                 gesture: kontra_ui::input::Gesture::default(),
+                meters: Default::default(),
             }),
             open: true,
             tab: PartTab::Interface,
@@ -343,7 +344,7 @@ fn lua_page(
     let knob = (knobs.iter()).find(|k| wanted.as_deref().is_none_or(|w| k.1 == w));
     let mut moved = String::from("null");
     if let Some((n, knob, top)) = knob {
-        engine.set_widget(slot, *n as u32, *top);
+        engine.set_widget(slot, *n as u32, *top, None);
         settle(engine, &mut tree);
         let now = tree.widgets.get(*n).and_then(|w| w.value.clone());
         moved = format!("{{\"knob\":{knob:?},\"to\":{top},\"now\":{now:?}}}");
@@ -379,7 +380,7 @@ fn shot(
     }));
     let mut ui = kontra_ui::ui();
     let frame = |ui: &mut Ui, pictures: &mut Pictures| {
-        let (el, _) = view::page(ui, 0, tree, PageRef(0), pictures, (1., 0.));
+        let (el, _) = view::page(ui, 0, tree, PageRef(0), pictures, (1., &[]));
         ui.frame(
             el,
             Some(Size::new(f64::from(w), f64::from(h))),

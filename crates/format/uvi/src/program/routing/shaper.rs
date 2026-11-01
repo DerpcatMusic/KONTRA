@@ -25,6 +25,8 @@ use std::f32::consts::FRAC_PI_2;
 
 use kontra_format::Notes;
 use kontra_ir as ir;
+use kontra_law::common::DB_GAIN;
+use kontra_law::uvi::{CLIPPER_ASYMMETRY, WAVESHAPER_DRIVE};
 use roxmltree::Node;
 
 use super::{Params, num};
@@ -33,7 +35,7 @@ use super::{Params, num};
 pub(super) fn wave_shaper(p: Params, notes: &mut Notes) -> Result<Option<ir::Effect>, String> {
     let gain = |name| Ok::<_, String>(gain_of(p.num(name, 0.0)?));
     let input = gain("InputGain")?;
-    let d = (8.0 * p.num("Amount", 0.0)?.clamp(0.0, 1.0) as f32).exp2();
+    let d = WAVESHAPER_DRIVE.eval(p.num("Amount", 0.0)? as f32);
     let mode = p.num("Mode", 0.0)?;
     let (curve, scale) = match mode as u8 {
         _ if mode.fract() != 0.0 => return unsupported(notes, mode),
@@ -72,7 +74,7 @@ pub(super) fn diode_clipper(node: Node) -> Result<ir::Effect, String> {
         coupling_hz: num(node, "HighPass", 1.0)? as f32,
         saturation: 5.5462e-6,
         slope: 22.075_055,
-        asymmetry: 10f32.powf(num(node, "Asymmetry", 0.0)? as f32),
+        asymmetry: CLIPPER_ASYMMETRY.eval_unclamped(num(node, "Asymmetry", 0.0)? as f32),
         dc_hz: 1.0,
     };
     Ok(ir::Effect {
@@ -85,7 +87,7 @@ pub(super) fn diode_clipper(node: Node) -> Result<ir::Effect, String> {
 
 /// Linear gain of `dB`.
 fn gain_of(db: f64) -> f32 {
-    10f32.powf(db as f32 / 20.0)
+    DB_GAIN.eval_unclamped(db as f32)
 }
 
 fn unsupported(notes: &mut Notes, mode: f64) -> Result<Option<ir::Effect>, String> {

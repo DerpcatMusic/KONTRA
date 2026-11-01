@@ -10,12 +10,17 @@ use std::sync::Arc;
 use kontra_engine::{EffectRequest, Engine, Prepared, ir};
 
 use crate::persist::Capture;
+pub(crate) use files::DiskFiles;
+pub use files::user_saves;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
+use kontra_ui_model::UiModifiers;
 
 mod audio;
+mod files;
 mod hold;
+mod recall;
 pub use audio::RackAudio;
 pub use hold::{HOLD_STEPS, Hold};
 
@@ -84,14 +89,41 @@ pub enum Command {
     Hold(usize, Hold),
     /// Read a part's persistent script cells and send them back.
     Capture(Box<Capture>),
+    /// Recall saved values (by script slot) into `part`'s running scripts,
+    /// if the part is still that load; the box comes back to be freed.
+    Recall {
+        part: usize,
+        generation: u64,
+        saved: Box<[kontra_engine::Saved]>,
+    },
+    /// Answer a part's file request ([`files`]), if the part is still
+    /// that load; the box comes back.
+    File {
+        part: usize,
+        generation: u64,
+        reply: Box<kontra_engine::files::FileReply>,
+    },
     /// Copy what a part's interface reads of its script and send it back.
     Look(Box<crate::view::LookFrame>),
-    /// The user moved control `id` of script `slot` to `value`.
+    /// The user moved control `id` of script `slot` to `value`, holding
+    /// `keys` at the click.
     Control {
         part: usize,
         slot: u8,
         id: i32,
+        /// The cell of a table set, 0 for any other control.
+        cell: u32,
         value: i64,
+        keys: UiModifiers,
+    },
+    /// The user typed `text` into text edit `id` of `part`'s script `slot`,
+    /// whose variable's text lives in `cell`.
+    ControlText {
+        part: usize,
+        slot: u8,
+        id: i32,
+        cell: u32,
+        text: Box<kontra_engine::Text>,
     },
     /// The user moved widget `n` of script `slot`'s own page to `value`.
     Widget {
@@ -99,6 +131,7 @@ pub enum Command {
         slot: u8,
         n: u32,
         value: f64,
+        cell: Option<u32>,
     },
     /// The user edited a group's sound (the Sound tab).
     Sound {
@@ -114,10 +147,19 @@ pub struct Channels {
     pub commands: Ring<Command>,
     pub retired: Ring<Box<Engine>>,
     pub captured: Ring<Box<Capture>>,
+    /// Saved values recalled into a part, to free on the control side.
+    pub recalled: Ring<Box<[kontra_engine::Saved]>>,
     /// Effect types the parts' scripts asked for: (part, its load, request).
     pub requests: Ring<(usize, u64, EffectRequest)>,
+    /// Array files the parts' scripts asked for: (part, its load, request).
+    pub files: Ring<(usize, u64, kontra_engine::files::FileRequest)>,
+    /// Answered file requests, by part and load: a save's values to write,
+    /// the rest to free.
+    pub filed: Ring<(usize, u64, Box<kontra_engine::files::FileReply>)>,
     /// Effect units swapped out, to free on the control side.
     pub units: Ring<Box<Option<Prepared>>>,
+    /// Typed texts the audio side wrote ([`Command::ControlText`]), to free here.
+    pub typed: Ring<Box<kontra_engine::Text>>,
     /// Interface reads filled on the audio side ([`Command::Look`]).
     pub looks: Ring<Box<crate::view::LookFrame>>,
     pub meters: MeterCells,
@@ -128,6 +170,11 @@ pub struct Channels {
 pub struct Part {
     /// The instrument file, or None for one built in memory.
     pub path: Option<PathBuf>,
+    /// The instrument file its IR was read from (a snapshot's base
+    /// instrument): a preset of the same source recalls into this part.
+    pub source: Option<PathBuf>,
+    /// What a recall does to its scripts, as they asked in `on init`.
+    pub recall: kontra_engine::Recall,
     pub name: String,
     pub diagnostics: Vec<ir::Diagnostic>,
     /// By script slot, what its UI tree is built from.
@@ -160,6 +207,8 @@ pub struct ScriptState {
     pub vars: Vec<crate::persist::Vars>,
     /// By instrument script, the saved values it loaded with.
     pub loaded: Vec<Vec<String>>,
+    /// By instrument script, its script slot ([`ir::Script::slot`]).
+    pub slots: Vec<usize>,
     generation: u64,
     latest: Option<Box<Capture>>,
     asked: bool,
@@ -204,6 +253,8 @@ pub struct Rack {
     /// Counts installs, so a capture of a replaced engine is not taken for
     /// its successor's.
     generation: u64,
+    /// Where scripts' array saves go ([`files`]); none writes nothing.
+    saves: Option<PathBuf>,
 }
 
 impl Rack {
@@ -214,10 +265,14 @@ impl Rack {
             commands: Ring::new(256),
             retired: Ring::new(64),
             captured: Ring::new(2 * MAX_PARTS),
+            recalled: Ring::new(2 * MAX_PARTS),
             // An engine queues at most 16 at once.
             requests: Ring::new(16 * MAX_PARTS),
             units: Ring::new(16 * MAX_PARTS),
+            files: Ring::new(16 * MAX_PARTS),
+            filed: Ring::new(16 * MAX_PARTS),
             looks: Ring::new(2 * MAX_PARTS),
+            typed: Ring::new(16),
             meters: MeterCells::default(),
             stats: StatCells::default(),
         });
@@ -227,6 +282,7 @@ impl Rack {
             rate,
             store,
             parts: (0..MAX_PARTS).map(|_| None).collect(),
+            saves: None,
             pending: std::collections::VecDeque::new(),
             generation: 0,
         };
@@ -271,6 +327,13 @@ impl Rack {
     /// When the file is not an instrument this can read, or `part` is past
     /// the rack.
     pub fn load(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        // A preset of the instrument the part plays recalls into it,
+        // without reading the instrument.
+        if let Some(preset) = crate::instrument::preset(path)
+            && self.recall(part, &preset, Some(path))
+        {
+            return Ok(());
+        }
         self.load_ir(part, crate::instrument::read(path)?, Some(path.to_owned()))
     }
 
@@ -336,7 +399,15 @@ impl Rack {
             return Err(format!("part {part} is past the rack's {MAX_PARTS}").into());
         }
         let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
+        let source = instrument.source_path.clone();
+        let slots = instrument.scripts.iter().map(|s| s.slot).collect();
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+        let saves = self.saves.clone();
+        for s in loaded.plan.scripts.iter_mut().filter(|s| s.files.is_some()) {
+            s.files = Some(Arc::new(DiskFiles {
+                saves: saves.clone(),
+            }));
+        }
         let slot_types: Vec<_> = (slot_types.iter().copied())
             .filter(|&(at, slot, ty)| loaded.plan.load_type(at, slot, ty))
             .collect();
@@ -349,6 +420,8 @@ impl Rack {
         let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
+            source,
+            recall: engine.recall_law(),
             view,
             sounds,
             slot_types,
@@ -365,6 +438,7 @@ impl Rack {
             script: ScriptState {
                 vars: loaded.persist,
                 loaded: saved,
+                slots,
                 ..ScriptState::default()
             },
         };
@@ -428,7 +502,14 @@ impl Rack {
 
     /// The user moved `widget` of `part`'s interface to `value`: the
     /// control's script gets it and runs its callback at the next block.
-    pub fn control(&mut self, part: usize, widget: usize, value: f64) {
+    pub fn control(
+        &mut self,
+        part: usize,
+        widget: usize,
+        cell: Option<u32>,
+        value: f64,
+        keys: UiModifiers,
+    ) {
         let Some(Some(p)) = self.parts.get(part) else {
             return;
         };
@@ -441,10 +522,45 @@ impl Rack {
                 slot,
                 n,
                 value,
+                cell,
             });
         } else if let Some((slot, id, value)) = view.control(widget, value) {
-            self.set_control(part, slot, id, value);
+            self.send(Command::Control {
+                part,
+                slot,
+                id,
+                cell: cell.unwrap_or(0),
+                value,
+                keys,
+            });
         }
+    }
+
+    /// The user typed `text` into text edit `widget` of `part`'s interface:
+    /// its variable reads it, then its callbacks run.
+    pub fn control_text(&mut self, part: usize, widget: usize, text: &str) {
+        let Some(Some(p)) = self.parts.get(part) else {
+            return;
+        };
+        let Some(view) = p.view.as_ref() else {
+            return;
+        };
+        let Some((slot, id, _)) = view.control(widget, 0.) else {
+            return;
+        };
+        let name = view.tree().widgets.get(widget).map(|w| w.name.as_str());
+        let face = p.faces.get(usize::from(slot)).and_then(Option::as_ref);
+        let Some(cell) = face.zip(name).and_then(|(f, name)| f.text_cell(name)) else {
+            return;
+        };
+        let text = Box::new(kontra_engine::Text::from_str_cut(text).0);
+        self.send(Command::ControlText {
+            part,
+            slot,
+            id,
+            cell,
+            text,
+        });
     }
 
     /// The user set `param` of `part`'s group `group` (every group when
@@ -510,8 +626,16 @@ impl Rack {
             part,
             slot,
             id,
+            cell: 0,
             value,
+            keys: UiModifiers::default(),
         });
+    }
+
+    /// Puts scripts' array saves under `root` (the plugin's is
+    /// [`user_saves`]); a later load of a saved path reads it first.
+    pub fn set_saves(&mut self, root: PathBuf) {
+        self.saves = Some(root);
     }
 
     /// Frees what the audio thread let go of and resends refused commands.
@@ -519,6 +643,9 @@ impl Rack {
     pub fn tick(&mut self) {
         while self.channels.retired.recv().is_some() {}
         while self.channels.units.recv().is_some() {}
+        while self.channels.typed.recv().is_some() {}
+        while self.channels.recalled.recv().is_some() {}
+        self.files();
         // Effect types scripts loaded: built here, off the audio thread.
         while let Some((part, generation, request)) = self.channels.requests.recv() {
             let Some(Some(p)) = self.parts.get_mut(part) else {

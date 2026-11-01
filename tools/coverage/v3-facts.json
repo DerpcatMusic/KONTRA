@@ -1,0 +1,1543 @@
+{
+  "sources": {
+    "ksp": "2026-10-29 census; 682 instruments, 52 scripts; init and one note; source revision not recorded",
+    "laws": "2026-10-29 lane H audit; verified branches only, incomplete coverage; source revision varies by row",
+    "corpus": "2026-10-29 kontra-inspect load census, source revision 6075a76643e51b2b5dc6e8d78c4a1f8040cf3002; 332/1342 completed"
+  },
+  "rows": [
+    {
+      "id": "ksp/get_engine_par_disp",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "get_engine_par_disp",
+      "status": "partial",
+      "note": "2026-10-29 census: partial in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/set_engine_par",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "set_engine_par",
+      "status": "partial",
+      "note": "2026-10-29 census: partial in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/load_ir_sample",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "load_ir_sample",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/save_array",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "save_array",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/get_engine_par",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "get_engine_par",
+      "status": "partial",
+      "note": "2026-10-29 census: partial in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/get_folder",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "get_folder",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/set_snapshot_type",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "set_snapshot_type",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/fade_in",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "fade_in",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/%GROUPS_SELECTED",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "%GROUPS_SELECTED",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/load_array",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "load_array",
+      "status": "partial",
+      "note": "2026-10-29 census: partial in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/fs_get_filename",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "fs_get_filename",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/fs_navigate",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "fs_navigate",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/load_array_str",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "load_array_str",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/save_array_str",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "save_array_str",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/load_performance_view",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "load_performance_view",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/set_control_par_str_arr",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "set_control_par_str_arr",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/will_never_terminate",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "will_never_terminate",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/get_zone_par",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "get_zone_par",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/set_zone_par",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "set_zone_par",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/set_voice_limit",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "set_voice_limit",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/find_zone",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "find_zone",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/load_native_ui",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "load_native_ui",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/attach_zone",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "attach_zone",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/expose_controls",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "expose_controls",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/set_ui_wf_property",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "set_ui_wf_property",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/set_nks_nav_name",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "set_nks_nav_name",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/set_nks_nav_par",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "set_nks_nav_par",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/reset_nks_nav",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "reset_nks_nav",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/$POLY_AT_NUM",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "$POLY_AT_NUM",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/$KSP_TIMER",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "$KSP_TIMER",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/$NI_CONTROL_PAR_IDX",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "$NI_CONTROL_PAR_IDX",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/%POLY_AT",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "%POLY_AT",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/get_event_par_arr",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "get_event_par_arr",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/get_event_ids",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "get_event_ids",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/reset_ksp_timer",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "reset_ksp_timer",
+      "status": "partial",
+      "note": "2026-10-29 census: missing in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/PolyAt",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "PolyAt",
+      "status": "partial",
+      "note": "2026-10-29 census: never runs in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/UiUpdate",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "UiUpdate",
+      "status": "partial",
+      "note": "2026-10-29 census: never runs in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "ksp/get_engine_par_disp_ext",
+      "product": "Kontakt",
+      "area": "Script (KSP)",
+      "name": "get_engine_par_disp_ext",
+      "status": "partial",
+      "note": "2026-10-29 census: partial in tested scripts; 52 scripts, initialization and one note. Results may have changed.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "law/u04",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Multiplicative connection gain 1-r+r*x / 1+r*x",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141429a80"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u07",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Additive connections/ratio and macro blend",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141429650"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u11",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "OnePole cutoff and mode",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1412b40d0",
+          "0x1412b4710",
+          "0x14136aa50"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u18",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Sample pitch and key/velocity mapping",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u19",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Mixer gain and CC7/CC10/CC11 mapping",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140f106e5",
+          "0x140f108c6",
+          "0x141352420"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u21",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "ThreeBandShelves/EQ",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141643350",
+          "0x141649120",
+          "0x141649510"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u32",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Stereo balance",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141352420"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u34",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "dB-to-amplitude converter",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141350b50"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u09",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Freq modulation exponential 20–20k range",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14258b220"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u14",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "LFO wave, phase, retrigger, frequency and polarity",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14163c3a0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u20",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "SampledReverb/convolver IR gain, normalization and decay",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141533c58",
+          "0x141533c84",
+          "0x1415346e0"
+        ],
+        "pull_requests": [
+          "1197"
+        ]
+      }
+    },
+    {
+      "id": "law/u33",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "MIDI velocity source",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14138ab10",
+          "0x141e2014c"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u05",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "DAHDSR/AHD segment shape/scale",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1410f1220",
+          "0x141350b70",
+          "0x141351050"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u25",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Maximizer gain/dynamics",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141665620"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u06",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Xpander HP4 coefficient/taps",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140842c84",
+          "0x140842cac",
+          "0x1412c7f40",
+          "0x1412cbc30"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u12",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Xpander filter remaining modes, Q, drive and fat",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140842a10",
+          "0x1412bef10"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u24",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "SparkVerb room/decay/modulation/mix",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14167b8c0",
+          "0x14167d1a0",
+          "0x14167f190"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u17",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Step envelope timing/interpolation",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141153460"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u15",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "MultiLFO wave mixing/normalization",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1411464f5",
+          "0x14114a5d0",
+          "0x14114a7a0"
+        ],
+        "pull_requests": [
+          "1180"
+        ]
+      }
+    },
+    {
+      "id": "law/u23",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "DualDelay time/feedback/rotation/mix/filter",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141237c50",
+          "0x141237f20",
+          "0x14165c960"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u16",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "LFO depth, delay, rise, and rate modulation",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1410f8ca0",
+          "0x1410f9b11"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u26",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "WaveShaper drive/curves/filter/mix",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141271fd0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u13",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "MS20 morph, Q, drive and trim interpolation",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1412ae600",
+          "0x141e77630"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u27",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "DiodeClipper circuit/gain/filter",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x141258040",
+          "0x1412584e0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u28",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Flanger time/LFO/feedback/mix",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1412eeec0",
+          "0x1412ef6d0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u29",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Phasor allpass, LFO, feedback and mix",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14166c120",
+          "0x14166e2a0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u08",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Mapper interpolation and bounds",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1411390c0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u22",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "DigitalEq band gain, bandwidth, shelves and GainScale",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1412840f0",
+          "0x14128b838"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u30",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Bipolar mapper-output centering in multiplicative destinations",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u10",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Resonance modulation factor",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140fffcb0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u01",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Key to normalized 0..1",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14138ab10"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u02",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "KeyFollow curve",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14138ab10"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u31",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "KeyFollow / LinearKeyFollow mapped multiplicative factor",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1411390c0",
+          "0x14138a5c0",
+          "0x14138aae4",
+          "0x141429a80"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u03",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "LinearKeyFollow",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14138ab10"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/u35",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "Key/velocity zone crossfade ramps and saved FadeCurve",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140f28cba",
+          "0x140f28cf6"
+        ],
+        "pull_requests": [
+          "1164"
+        ]
+      }
+    },
+    {
+      "id": "law/u36",
+      "product": "UVI",
+      "area": "Laws and audio",
+      "name": "MultiLFO normalization peak search",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x14114a7a0"
+        ],
+        "pull_requests": [
+          "1180",
+          "1184"
+        ]
+      }
+    },
+    {
+      "id": "law/k01",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "AHDSR amplitude and sustain",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k02",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Flex envelope",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140ae5a10"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k03",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Volume modulation source / velocity",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k04",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Route lag smoothing",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k05",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "AHDSR time modulation",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140873040"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k06",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Pitch modulation",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k07",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "LFO rate/wave/sync",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k08",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Legacy 1/2/3-band EQ",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k09",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Solid G-EQ",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k10",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Legacy filter family",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k11",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "SV filter family",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k12",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Ladder/AR/Daft filter family",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k13",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Phaser/Vowel clocked filters",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k14",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Convolution / Auto Gain",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x1419b2bc0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k15",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Legacy Delay",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k16",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Chorus",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": [
+          "1191"
+        ]
+      }
+    },
+    {
+      "id": "law/k17",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Flanger",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k18",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Phaser effect",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k19",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Legacy Reverb",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140963de0"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k20",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Reverb Room/Hall",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k21",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Replika Modern",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k22",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Compressor",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k23",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Feedback Compressor",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k24",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Transient Master",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k25",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Limiter",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k26",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Saturation",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k27",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Distortion",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k28",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Lo-Fi",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k29",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Skreamer",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [
+          "0x140aaf220"
+        ],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k30",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Stereo faders, pan and send laws",
+      "status": "partial",
+      "note": "2026-10-29 audit: Not fully verified; see the audit record for scope.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k31",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Kontakt breakpoint modulation shaper",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": []
+      }
+    },
+    {
+      "id": "law/k32",
+      "product": "Kontakt",
+      "area": "Laws and audio",
+      "name": "Kontakt legacy EQ gain modulation span",
+      "status": "partial",
+      "note": "2026-10-29 audit: Selected branch verified; other behavior may remain unverified.",
+      "proof": "proved",
+      "src": "tools/coverage/v3-facts.json",
+      "evidence": {
+        "binary_addresses": [],
+        "pull_requests": [
+          "1168"
+        ]
+      }
+    },
+    {
+      "id": "corpus/106",
+      "product": "Kontakt",
+      "area": "Load diagnostics",
+      "name": "script init fault: out_of_range",
+      "status": "partial",
+      "note": "Unknown impact; observed in 78 programs. Snapshot inspected 332 of 1,342 discovered programs; absence is not evidence of support.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "corpus/107",
+      "product": "Kontakt",
+      "area": "Load diagnostics",
+      "name": "UI asset not resolved: Image",
+      "status": "partial",
+      "note": "Unknown impact; observed in 28 programs. Snapshot inspected 332 of 1,342 discovered programs; absence is not evidence of support.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "corpus/108",
+      "product": "Kontakt",
+      "area": "Load diagnostics",
+      "name": "impulse response size",
+      "status": "partial",
+      "note": "Audible impact; observed in 1 programs. Snapshot inspected 332 of 1,342 discovered programs; absence is not evidence of support.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "corpus/109",
+      "product": "Kontakt",
+      "area": "Load diagnostics",
+      "name": "bypassed effect Jump",
+      "status": "partial",
+      "note": "Cosmetic impact; observed in 1 programs. Snapshot inspected 332 of 1,342 discovered programs; absence is not evidence of support.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "corpus/110",
+      "product": "Kontakt",
+      "area": "Load diagnostics",
+      "name": "script init unanswered: GetEngineParDisp",
+      "status": "partial",
+      "note": "Unknown impact; observed in 1 programs. Snapshot inspected 332 of 1,342 discovered programs; absence is not evidence of support.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "corpus/111",
+      "product": "Kontakt",
+      "area": "Load diagnostics",
+      "name": "script init unanswered: GetFolder",
+      "status": "partial",
+      "note": "Unknown impact; observed in 1 programs. Snapshot inspected 332 of 1,342 discovered programs; absence is not evidence of support.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "corpus/112",
+      "product": "Kontakt",
+      "area": "Load diagnostics",
+      "name": "script init unanswered: LoadArrayStr",
+      "status": "partial",
+      "note": "Unknown impact; observed in 1 programs. Snapshot inspected 332 of 1,342 discovered programs; absence is not evidence of support.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    },
+    {
+      "id": "corpus/113",
+      "product": "Kontakt",
+      "area": "Load diagnostics",
+      "name": "script init unanswered: SetSnapshotType",
+      "status": "partial",
+      "note": "Unknown impact; observed in 1 programs. Snapshot inspected 332 of 1,342 discovered programs; absence is not evidence of support.",
+      "proof": "unproven",
+      "src": "tools/coverage/v3-facts.json"
+    }
+  ]
+}

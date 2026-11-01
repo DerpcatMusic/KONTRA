@@ -1,4 +1,7 @@
 //! Event data for opt-in engine inspection.
+
+mod buffer;
+pub use buffer::Trace;
 use kontra_vm::Action;
 use kontra_voice::Gain;
 

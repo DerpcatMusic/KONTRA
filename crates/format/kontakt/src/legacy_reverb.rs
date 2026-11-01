@@ -25,6 +25,7 @@
 //! bilinear Butterworth, −3 dB at the corner.
 
 use kontra_ir as ir;
+use kontra_law::kontakt::LEGACY_REVERB_HIGH_CUT_HZ;
 
 static COMBS: ir::CombNetwork = ir::CombNetwork {
     combs_ms: [
@@ -59,7 +60,6 @@ pub(crate) fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
     let [size, colour, stereo, damping] = knobs.map(|x| x.clamp(0.0, 1.0));
     let feedback = 0.3 * size + 0.65;
     let x = 0.75 * (1.0 - damping) + 0.25;
-    let corner = ((6.15 * x).exp() - 1.0) * 0.002_572_831_7;
     ir::Reverb {
         // 60 dB over the loops a mean comb runs at that feedback.
         seconds: 3.0 * COMBS.mean_s() / -feedback.log10(),
@@ -68,7 +68,7 @@ pub(crate) fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
         damping: 0.35 * (1.0 - colour),
         diffusion: 0.5,
         predelay_ms: predelay_ms.clamp(0.0, 180.0),
-        high_cut_hz: (corner.clamp(0.0, 1.0) + 0.002) * 22_006.0 * 0.988_793,
+        high_cut_hz: LEGACY_REVERB_HIGH_CUT_HZ.eval(x),
         low_shelf_db: 0.0,
         stereo,
         modulation_ms: 0.0,

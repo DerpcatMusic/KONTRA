@@ -17,45 +17,56 @@ impl Script {
     /// than declared repeat their last value.
     #[must_use]
     pub fn restore(&self, saved: &[String]) -> Restore {
-        let bare = |name: &str| {
-            name.trim_start_matches(['$', '%', '~', '?', '@', '!'])
-                .to_ascii_lowercase()
-        };
-        let mut out = Restore::default();
-        for entry in saved {
-            let Some((name, payload)) = entry.split_once(' ') else {
-                out.skipped.push(entry.clone());
-                continue;
-            };
-            let key = bare(name);
-            let Some(var) = self.variables.iter().find(|v| bare(&v.name) == key) else {
-                out.skipped.push(name.to_owned());
-                continue;
-            };
-            let real = |t: &str| t.parse::<f64>().ok().map(|v| v.to_bits() as i64);
-            let int = |t: &str| t.parse::<i32>().ok().map(i64::from);
-            let ok = match var.cells {
-                Cells::Int { base, len } => fill(&mut out.ints, base, len, payload, int),
-                Cells::Real { base, len } => fill(&mut out.ints, base, len, payload, real),
-                Cells::Text { base, len } => {
-                    let lines: Vec<&str> = if len == 1 {
-                        vec![payload]
-                    } else {
-                        payload.split('\n').collect()
-                    };
-                    for (n, line) in (0..len).zip(lines) {
-                        out.texts.push((base + n, line.to_owned()));
-                    }
-                    true
-                }
-                _ => false,
-            };
-            if !ok {
-                out.skipped.push(name.to_owned());
-            }
-        }
-        out
+        restore(saved, |key| {
+            let var = self.variables.iter().find(|v| bare(&v.name) == key)?;
+            Some(var.cells)
+        })
     }
+}
+
+/// What `saved` writes into the variables `cells` finds by bare lowercase
+/// name (no type sigil), as [`Script::restore`] does.
+#[must_use]
+pub fn restore(saved: &[String], cells: impl Fn(&str) -> Option<Cells>) -> Restore {
+    let mut out = Restore::default();
+    for entry in saved {
+        let Some((name, payload)) = entry.split_once(' ') else {
+            out.skipped.push(entry.clone());
+            continue;
+        };
+        let Some(var) = cells(&bare(name)) else {
+            out.skipped.push(name.to_owned());
+            continue;
+        };
+        let real = |t: &str| t.parse::<f64>().ok().map(|v| v.to_bits() as i64);
+        let int = |t: &str| t.parse::<i32>().ok().map(i64::from);
+        let ok = match var {
+            Cells::Int { base, len } => fill(&mut out.ints, base, len, payload, int),
+            Cells::Real { base, len } => fill(&mut out.ints, base, len, payload, real),
+            Cells::Text { base, len } => {
+                let lines: Vec<&str> = if len == 1 {
+                    vec![payload]
+                } else {
+                    payload.split('\n').collect()
+                };
+                for (n, line) in (0..len).zip(lines) {
+                    out.texts.push((base + n, line.to_owned()));
+                }
+                true
+            }
+            _ => false,
+        };
+        if !ok {
+            out.skipped.push(name.to_owned());
+        }
+    }
+    out
+}
+
+/// A variable's name without its type sigil, lowercase.
+fn bare(name: &str) -> String {
+    name.trim_start_matches(['$', '%', '~', '?', '@', '!'])
+        .to_ascii_lowercase()
 }
 
 fn fill(

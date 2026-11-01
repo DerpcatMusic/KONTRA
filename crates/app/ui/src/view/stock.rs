@@ -6,12 +6,16 @@
 
 use kontra_ui_model::{self as model, Interface, Kind, Source, TextStyle, Widget};
 use mui::prelude::*;
+use std::sync::Arc;
 
 /// A stock knob's own size: the knob, its title and value boxes. Kontakt
 /// draws it so whatever width and height the script sets.
 const KNOB: (f64, f64) = (87., 40.);
 /// Kontakt's default ink on a light (on) button.
 const DARK: u32 = 0x18_1818;
+/// The installed font-13 atlas peaks at 191/255 coverage; restore that scale
+/// before applying the script's colour and alpha.
+const FIELD_ATLAS_COVERAGE: u16 = 191;
 
 /// What a stock control shows; the memo key of its drawing.
 #[derive(Hash)]
@@ -31,10 +35,49 @@ pub(super) enum Look {
         title: String,
         value: String,
         turn: u16,
+        frame: u8,
     },
 }
 
 impl Look {
+    pub(super) fn pictures(
+        &self,
+        store: &mut crate::Pictures,
+        scale: f64,
+    ) -> Option<[Arc<Image>; 3]> {
+        let Self::Knob { frame, .. } = self else {
+            return None;
+        };
+        let meta = |frames| model::ImageMeta {
+            frames,
+            axis: model::Orientation::Horizontal,
+            ..Default::default()
+        };
+        let frame = usize::from(*frame);
+        Some([
+            store.frame(
+                model::AssetRef(usize::MAX),
+                "@stock/base",
+                meta(1),
+                0,
+                scale,
+            )?,
+            store.frame(
+                model::AssetRef(usize::MAX - 1),
+                "@stock/cap",
+                meta(128),
+                frame,
+                scale,
+            )?,
+            store.frame(
+                model::AssetRef(usize::MAX - 2),
+                "@stock/light",
+                meta(128),
+                frame,
+                scale,
+            )?,
+        ])
+    }
     /// The stock look of `w` at `t` (0..1 of its range), when Kontakt
     /// draws one: a script button, switch, menu, value edit or knob whose
     /// picture is unset or absent from the library. `shown` is its value
@@ -77,6 +120,7 @@ impl Look {
                     _ => shown,
                 },
                 turn: (t * 1000.) as u16,
+                frame: (t * 127.).round() as u8,
             },
             _ => return None,
         })
@@ -96,8 +140,10 @@ impl Look {
         &self,
         wd: &Widget,
         style: Option<&TextStyle>,
-        (w, h, scale): (f64, f64, f64),
+        (w, h, scale, device): (f64, f64, f64, f64),
         bare: bool,
+        (artwork, button): (Option<&[Arc<Image>; 3]>, Option<&Arc<Image>>),
+        glyphs: Option<&crate::pictures::Glyphs>,
     ) -> Vec<El> {
         let bg = bare || !wd.hide.background;
         let ink = |default: u32| style.map_or(rgb(default), |s| super::color(s.color));
@@ -110,7 +156,36 @@ impl Look {
                     } else {
                         rgb(0x5f_5f5f).into()
                     };
-                    parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                    if *on && let Some(button) = button {
+                        parts.push(block(w, h).fill(rgb(0xff_ffff)));
+                        let meta = model::ImageMeta {
+                            size: Some(model::Size {
+                                width: 85.,
+                                height: 16.,
+                            }),
+                            stretch: [true, false],
+                            margins: model::Margins {
+                                left: 5,
+                                right: 5,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        };
+                        parts.push(super::sliced(button, &meta, (w, h), scale));
+                    } else if *on {
+                        parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                    } else {
+                        parts.push(
+                            boxed(
+                                (w - 2. * scale).max(0.),
+                                (h - 2. * scale).max(0.),
+                                scale,
+                                fill,
+                                0x2d_2d2d,
+                            )
+                            .at(0., scale),
+                        );
+                    }
                 }
                 // The default font darkens on a lit button; a chosen one keeps its ink.
                 let stock = style.is_none_or(|s| s.font == model::Font::Stock(0));
@@ -119,34 +194,301 @@ impl Look {
                 } else {
                     ink(0xfe_fefe)
                 };
-                parts.push(words(caption, ink, model::Align::Center, w, h, scale));
+                if *on
+                    && button.is_some()
+                    && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
+                {
+                    // The measured stock font advances four pixels for a space.
+                    let metrics = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
+                        StockMetrics::Button12
+                    } else {
+                        StockMetrics::Field
+                    };
+                    parts.push(field_words(
+                        caption,
+                        ink,
+                        model::Align::Center,
+                        (w, h, scale, device),
+                        glyphs,
+                        if stock {
+                            model::Rgba::rgb(DARK)
+                        } else {
+                            style.map_or(model::Rgba::rgb(DARK), |s| s.color)
+                        },
+                        metrics,
+                    ));
+                } else {
+                    parts.push(words(caption, ink, model::Align::Center, w, h, scale));
+                }
                 parts
             }
             Self::Field { title, value } => {
                 let mut parts = Vec::new();
                 if bg {
-                    parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
+                    let height = (h - 2. * scale).max(0.);
+                    if let Some(field) =
+                        button.and_then(|image| field_skin(image, w, height, scale))
+                    {
+                        parts.push(super::image(&field, w, height).at(0., scale));
+                    } else {
+                        parts.push(
+                            boxed(w, height, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c).at(0., scale),
+                        );
+                    }
                 }
                 let ink = ink(0xfe_fefe);
-                parts.push(words(title, ink, model::Align::Left, w, h, scale));
+                // The installed font-13 atlas is 699×13.
+                let font =
+                    glyphs.filter(|_| style.is_some_and(|s| s.font == model::Font::Stock(13)));
+                let color = style.map_or(model::Rgba::rgb(0xfefefe), |s| s.color);
+                // The plain-text value clears the arrows' 14 px (the stock
+                // font's already sits 11 px in, as measured).
+                let arrows = matches!(wd.kind, Kind::ValueEdit { arrows: true, .. });
+                let room = if arrows && font.is_none() {
+                    w - 10. * scale
+                } else {
+                    w
+                };
+                parts.push(field_words(
+                    title,
+                    ink,
+                    model::Align::Left,
+                    (w, h, scale, device),
+                    font,
+                    color,
+                    StockMetrics::Field,
+                ));
                 if !wd.hide.value {
-                    parts.push(words(value, ink, model::Align::Right, w, h, scale));
+                    parts.push(field_words(
+                        value,
+                        ink,
+                        model::Align::Right,
+                        (room, h, scale, device),
+                        font,
+                        color,
+                        StockMetrics::Field,
+                    ));
                 }
                 parts
             }
             Self::Menu { caption } => {
                 let mut parts = Vec::new();
                 if bg {
-                    parts.push(boxed(w, h, scale, rgb(0x5f_5f5f).into(), 0x2d_2d2d));
+                    parts.push(
+                        boxed(
+                            (w - 2. * scale).max(0.),
+                            (h - 2. * scale).max(0.),
+                            scale,
+                            rgb(0x5f_5f5f).into(),
+                            0x2d_2d2d,
+                        )
+                        .at(0., scale),
+                    );
                 }
                 let ink = ink(0xfe_fefe);
                 parts.push(words(caption, ink, model::Align::Left, w, h, scale));
                 parts.extend(arrow(ink, w, h, scale));
                 parts
             }
-            Self::Knob { title, value, turn } => knob(wd, title, value, *turn, scale, bare),
+            Self::Knob {
+                title, value, turn, ..
+            } => {
+                if let Some(art) = artwork.filter(|_| !wd.hide.title && !wd.hide.value) {
+                    bitmap_knob(title, value, scale, art, glyphs)
+                } else {
+                    knob(wd, title, value, *turn, scale, bare)
+                }
+            }
         }
     }
+}
+
+pub(super) fn label(
+    text: &str,
+    style: &TextStyle,
+    text_y: Option<i32>,
+    size: (f64, f64, f64, f64),
+    glyphs: &crate::pictures::Glyphs,
+) -> El {
+    field_words(
+        text,
+        super::color(style.color),
+        style.align,
+        size,
+        Some(glyphs),
+        style.color,
+        StockMetrics::Label12(text_y),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum StockMetrics {
+    Field,
+    Button12,
+    Label12(Option<i32>),
+}
+
+fn field_words(
+    text: &str,
+    ink: Color,
+    align: model::Align,
+    (w, h, s, device): (f64, f64, f64, f64),
+    glyphs: Option<&crate::pictures::Glyphs>,
+    color: model::Rgba,
+    metrics: StockMetrics,
+) -> El {
+    let Some(glyphs) = glyphs else {
+        return words(text, ink, align, w, h, s);
+    };
+    if text
+        .chars()
+        .any(|c| c != '?' && crate::pictures::glyph(c) == usize::from(b'?'))
+    {
+        return words(text, ink, align, w, h, s);
+    }
+    let advance = |c: char, glyph: &Image| {
+        (if c == ' ' {
+            match metrics {
+                StockMetrics::Field => f64::from(glyph.width),
+                StockMetrics::Button12 | StockMetrics::Label12(_) => 4.,
+            }
+        } else {
+            f64::from(glyph.width)
+        }) * s
+    };
+    let width: f64 = text
+        .chars()
+        .filter_map(|c| {
+            glyphs
+                .get(crate::pictures::glyph(c))
+                .map(|glyph| advance(c, glyph))
+        })
+        .sum();
+    let mut x = match align {
+        model::Align::Left => 7. * s,
+        model::Align::Center => (w - width) / 2.,
+        model::Align::Right => {
+            let inset = if matches!(metrics, StockMetrics::Label12(_)) {
+                7.
+            } else {
+                11.
+            };
+            w - inset * s - width
+        }
+    };
+    let mut layers = Vec::new();
+    for c in text.chars() {
+        if let Some(glyph) = glyphs.get(crate::pictures::glyph(c)) {
+            let width = f64::from(glyph.width) * s;
+            let height = f64::from(glyph.height) * s;
+            let pixels: Vec<u8> = glyph
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| {
+                    [
+                        color.r,
+                        color.g,
+                        color.b,
+                        ((u16::from(match metrics {
+                            StockMetrics::Field => {
+                                (u16::from(p[3]) * 255 / FIELD_ATLAS_COVERAGE).min(255) as u8
+                            }
+                            StockMetrics::Button12 | StockMetrics::Label12(_) => p[3],
+                        }) * u16::from(color.a))
+                            / 255) as u8,
+                    ]
+                })
+                .collect();
+            if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels)
+                .and_then(|image| crate::pictures::at_integer(image, device as f32))
+            {
+                layers.push(super::image(&Arc::new(image), width, height).at(
+                    x,
+                    match metrics {
+                        StockMetrics::Field => (h - height) / 2. - s,
+                        StockMetrics::Button12 | StockMetrics::Label12(None) => (h - height) / 2.,
+                        StockMetrics::Label12(Some(y)) => f64::from(y) * s,
+                    },
+                ));
+            }
+            x += advance(c, glyph);
+        }
+    }
+    stack(layers).w(w).h(h).clip()
+}
+
+/// Resize fixed borders and the centre into one texture, avoiding filtering seams.
+fn field_skin(image: &Image, width: f64, height: f64, scale: f64) -> Option<Arc<Image>> {
+    let factor = f64::from(image.width) / 85.;
+    let w = (width / scale * factor).round() as u32;
+    let h = (height / scale * factor).round() as u32;
+    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+        return None;
+    }
+    let axis = |p: u32, src: u32, dst: u32, edge: u32| {
+        let edge = edge.min(src / 2).min(dst / 2);
+        if p < edge {
+            p
+        } else if p >= dst - edge {
+            src - (dst - p)
+        } else {
+            edge + (u64::from(p - edge) * u64::from(src - edge * 2) / u64::from(dst - edge * 2))
+                as u32
+        }
+    };
+    let (xedge, yedge) = ((4. * factor).round() as u32, (3. * factor).round() as u32);
+    let mut pixels = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..h {
+        let sy = axis(y, image.height, h, yedge);
+        for x in 0..w {
+            let sx = axis(x, image.width, w, xedge);
+            let at = (sy as usize * image.width as usize + sx as usize) * 4;
+            pixels.extend_from_slice(image.rgba.get(at..at + 4)?);
+        }
+    }
+    Image::rgba(w, h, pixels).map(Arc::new)
+}
+
+fn bitmap_knob(
+    title: &str,
+    value: &str,
+    s: f64,
+    art: &[Arc<Image>; 3],
+    glyphs: Option<&crate::pictures::Glyphs>,
+) -> Vec<El> {
+    let [base, cap, light] = art;
+    vec![
+        super::image(base, 87. * s, 39. * s).at(0., 0.),
+        super::image(cap, 25. * s, 29. * s).at(7. * s, 7. * s),
+        super::image(light, 39. * s, 39. * s).at(0., 0.),
+        stock_words(title, s, glyphs).at(42. * s, 2. * s),
+        stock_words(value, s, glyphs).at(42. * s, 22. * s),
+    ]
+}
+
+fn stock_words(text: &str, scale: f64, glyphs: Option<&crate::pictures::Glyphs>) -> El {
+    let Some(glyphs) = glyphs else {
+        return words(
+            text,
+            rgb(0xfe_fefe),
+            model::Align::Left,
+            45. * scale,
+            14. * scale,
+            scale,
+        );
+    };
+    let mut x = 0.;
+    let mut layers = Vec::new();
+    for c in text.chars() {
+        if let Some(glyph) = glyphs.get(crate::pictures::glyph(c)) {
+            let width = f64::from(glyph.width) * scale;
+            layers.push(super::image(glyph, width, f64::from(glyph.height) * scale).at(x, 0.));
+            x += width;
+        }
+    }
+    stack(layers).w(45. * scale).h(13. * scale).clip()
 }
 
 fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) -> Vec<El> {
@@ -233,6 +575,33 @@ fn arrow(ink: Color, w: f64, h: f64, s: f64) -> Vec<El> {
                 .at(x + r * s, y + r * s)
         })
         .collect()
+}
+
+/// A value edit's step arrows, ▲ over ▼, centred 9.5 px in from its right
+/// edge (Kontakt 8.13, measured).
+pub(super) fn steps(w: f64, h: f64, s: f64) -> El {
+    let ink = rgb(0xd4_d4d0);
+    // Measured on a 22 px field (▲ rows 6..9, ▼ 14..17): placed about the
+    // middle, so each arrow sits in the half its press steps (input::arrow).
+    let mid = (h / s / 2.).floor();
+    let rows = [1., 3., 5., 5.].into_iter().zip(-5..);
+    let rows: Vec<_> = rows
+        .map(|(width, dy)| (width, mid + f64::from(dy)))
+        .collect();
+    let down = rows.iter().map(|&(width, y)| (width, 2. * mid + 1. - y));
+    stack(
+        rows.iter()
+            .copied()
+            .chain(down)
+            .map(|(width, y)| {
+                block(width * s, s)
+                    .radius(0.)
+                    .fill(ink)
+                    .at(w - (9.5 + width / 2.) * s, y * s)
+            })
+            .collect::<Vec<_>>(),
+    )
+    .at(0., 0.)
 }
 
 /// A stock box: `fill` inside a one-pixel `edge`.

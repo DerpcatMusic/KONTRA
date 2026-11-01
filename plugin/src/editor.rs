@@ -44,7 +44,8 @@ struct PartView {
     mix: Mix,
     solo: bool,
     mute: bool,
-    level: f32,
+    /// Its output's peaks, then each instrument bus's.
+    level: Vec<[f32; 2]>,
 }
 
 /// The rack as the editor last saw it.
@@ -79,7 +80,11 @@ impl Snapshot {
             self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
         }
         let meters = rack.meters();
-        let level = |slot: usize| meters.parts.get(slot).map_or(0.0, |[l, r]| l.max(*r));
+        let level = |slot: usize| {
+            let out = meters.parts.get(slot).copied().unwrap_or_default();
+            let buses = meters.buses.get(slot).into_iter().flatten().copied();
+            std::iter::once(out).chain(buses).collect()
+        };
         let old = std::mem::take(&mut self.parts);
         self.parts = (rack.parts().iter().enumerate())
             .filter_map(|(slot, p)| {
@@ -135,7 +140,15 @@ impl Snapshot {
     fn shown(&self) -> impl PartialEq + use<> {
         let parts: Vec<_> = (self.parts.iter())
             .map(|p| {
-                let mix = (p.mix, p.solo, p.mute, p.level.to_bits());
+                let mix = (
+                    p.mix,
+                    p.solo,
+                    p.mute,
+                    p.level
+                        .iter()
+                        .map(|l| l.map(f32::to_bits))
+                        .collect::<Vec<_>>(),
+                );
                 (
                     p.slot,
                     p.generation,
@@ -220,7 +233,7 @@ impl Snapshot {
                 output: p.mix.output + 1,
                 volume: f64::from(linear_to_db(p.mix.gain)),
                 pan: f64::from(p.mix.pan),
-                level: f64::from(p.level),
+                level: p.level.iter().map(|l| l.map(f64::from)).collect(),
                 solo: p.solo,
                 mute: p.mute,
                 keys: (0, 127),
@@ -444,6 +457,7 @@ fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
         tree,
         pictures,
         gesture: Default::default(),
+        meters: Default::default(),
     }
 }
 
@@ -482,7 +496,14 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
         Action::Solo(_, on) => return rack.set_solo_mute(slot, on, mute),
         Action::Mute(_, on) => return rack.set_solo_mute(slot, solo, on),
         Action::Remove(_) => return rack.remove(slot),
-        Action::Control { widget, value, .. } => return rack.control(slot, widget, value),
+        Action::Control {
+            widget,
+            cell,
+            value,
+            keys,
+            ..
+        } => return rack.control(slot, widget, cell, value, keys),
+        Action::ControlText { widget, text, .. } => return rack.control_text(slot, widget, &text),
         Action::Sound {
             group,
             param,
@@ -554,6 +575,7 @@ fn part_of(action: &Action) -> Option<usize> {
         | Action::Mute(n, _)
         | Action::Remove(n)
         | Action::Control { part: n, .. }
+        | Action::ControlText { part: n, .. }
         | Action::Sound { part: n, .. } => Some(n),
         _ => None,
     }

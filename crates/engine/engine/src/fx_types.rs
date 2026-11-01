@@ -9,7 +9,7 @@
 
 use kontra_ir as ir;
 
-use crate::queue::Work;
+use crate::queue::Exit;
 use crate::racks::{self, Dsp, Rack, Responses};
 use crate::script::Kind;
 use crate::{Engine, Plan, Response};
@@ -17,8 +17,6 @@ use crate::{Engine, Plan, Response};
 /// Requests the engine holds until the host drains them; more answer as
 /// not loaded.
 pub(crate) const REQUESTS: usize = 16;
-/// Slots that may hold a loaded type at once.
-pub(crate) const LOADED: usize = 256;
 
 /// Slot `slot` of `at` to load with type `ty` of the plan's
 /// [`ir::SlotShapes::types`].
@@ -119,7 +117,11 @@ impl Engine {
             false => holds.is_some() && holds == kind(&effect),
         };
         if same {
-            return Some(if init { -1 } else { self.start_async() });
+            return Some(if init {
+                -1
+            } else {
+                self.start_async(Exit::Done)
+            });
         }
         if init {
             *self.slot_mut(group, slot, generic)? = effect;
@@ -238,14 +240,9 @@ impl Engine {
         if let (true, Some(ty)) = (swapped.is_ok(), r.ty) {
             self.mark_loaded(r.at, r.slot, ty);
         }
+        let exit = Exit::from(swapped.is_ok());
         let (effect, dsp) = swapped.unwrap_or_else(|dsp| (r.effect, dsp));
-        let work = Work::Async {
-            slot: r.script,
-            id: r.id,
-        };
-        if !self.queue.push(self.now, work) {
-            self.stats.events_refused += 1;
-        }
+        self.queue_async(r.script, r.id, exit);
         Prepared {
             request: EffectRequest { effect, ..r },
             dsp,

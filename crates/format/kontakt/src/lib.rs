@@ -9,6 +9,7 @@ mod delays;
 mod drive;
 mod dynamics;
 mod effects;
+mod engine_pars;
 mod external;
 mod fastlz;
 mod impulse;
@@ -24,6 +25,7 @@ mod samples;
 mod script_knobs;
 mod skreamer;
 mod snapshot;
+pub use snapshot::{Preset, preset};
 mod solid_knobs;
 mod timed;
 mod translate;
@@ -31,10 +33,11 @@ mod versatile;
 mod wavetable;
 
 pub use container::chunks;
-pub use readouts::readouts;
+pub use engine_pars::engine_pars;
+/// No resource a script loads, or array file it names, is larger (bytes).
+pub use resources::LIMIT as RESOURCE_LIMIT;
 pub use resources::Resources;
 pub use reverb::{reverb, reverb_laws, reverb_networks};
-pub use script_knobs::script_knobs;
 
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -73,6 +76,6 @@ pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
     {
         return snapshot::load(path);
     }
-    let (chunks, monolith) = container::opened(path)?;
-    translate::instrument(path, &chunks, monolith, &[])
+    let (chunks, monolith, encrypted) = container::opened(path)?;
+    translate::instrument(path, &chunks, monolith, &[], encrypted)
 }

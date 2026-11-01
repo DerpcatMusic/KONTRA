@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const KNOWN: &[&str] = &[];
-const EDIT_FILE: &str = "crates/sampler-core/src/lib.rs";
+const EDIT_FILE: &str = "crates/engine/engine/src/lib.rs";
 const EDIT_TEXT: &str = "\n// xtask timings: gate edit, restored after the run\n";
 
 /// The 09-BUILD.md §2 rows this tree can measure today.
@@ -24,15 +24,22 @@ struct Scenario {
 const SCENARIOS: &[Scenario] = &[
     Scenario {
         label: "core tests after a core edit",
-        cargo: &["cargo", "test", "-p", "sampler-core", "--lib", "--no-run"],
+        cargo: &["cargo", "test", "-p", "kontra-engine", "--lib", "--no-run"],
     },
     Scenario {
         label: "dev lib after a core edit",
-        cargo: &["cargo", "build", "--lib"],
+        cargo: &["cargo", "build", "-p", "kontra-engine", "--lib"],
     },
     Scenario {
         label: "release lib after a core edit",
-        cargo: &["cargo", "build", "--release", "--lib"],
+        cargo: &[
+            "cargo",
+            "build",
+            "--release",
+            "-p",
+            "kontra-engine",
+            "--lib",
+        ],
     },
 ];
 

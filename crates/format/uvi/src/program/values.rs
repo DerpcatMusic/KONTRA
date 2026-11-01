@@ -4,7 +4,10 @@ use roxmltree::Node;
 
 /// UVI stores linear gains (a program gain of 1.9952623 is +6 dB).
 pub(super) fn db(linear: impl Into<f64>) -> f32 {
-    (20.0 * linear.into().max(1e-6).log10()) as f32
+    let linear = linear.into().max(1e-6);
+    kontra_law::common::DB_GAIN
+        .inverse_f64(linear)
+        .unwrap_or(0.0) as f32
 }
 
 pub(super) fn num(node: Node, name: &str, default: f64) -> Result<f64, String> {

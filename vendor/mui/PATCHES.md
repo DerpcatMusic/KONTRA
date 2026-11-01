@@ -30,3 +30,11 @@ This retains targeted invalidation, semantic value clamping and event coalescing
 pointer capture and source-unit conversion remain unchanged. Witnesses:
 `semantic_actions_wake_targeted_nested_memos_without_rebuilding_siblings` and
 the application's exact `mapped_accessibility_set_value_uses_authored_units`.
+
+# Frame time and caller deadlines
+
+`Ui::time()` reads the frame clock (the sum of each frame's `dt`), and
+`Ui::repaint_in(secs)` adds a caller deadline to `Ui::repaint_after`, the
+earliest one winning. KONTRA's value-edit arrows repeat while held and its
+level meters fall and hold on Kontakt's GUI tick; both need a frame when no
+input arrives. No change to painting or input.

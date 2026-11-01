@@ -721,8 +721,9 @@ function changePan(id, pan, relative, immediate)
 	host_call("ChangePan", id, math.floor(pan * 1000), relative and 1 or 0)
 end
 
+-- killVoice defaults to false (UVI's own prelude): the voice plays on silent.
 function fadeout(id, ms, kill)
-	host_call("FadeOut", id, math.floor((ms or 0) * 1000))
+	host_call("FadeOut", id, math.floor((ms or 0) * 1000), kill and 1 or 0)
 end
 
 function print(...)
@@ -843,6 +844,13 @@ __entries = {
 	[4] = function()
 		local w, v = __ui.widgets[__widget], __widget_value
 		if w == nil or rawget(w, "setValue") == nil then
+			return
+		end
+		if w.kind == "Table" and __widget_cell ~= nil then
+			local index = __widget_cell
+			if w.integer then v = math.floor(v + 0.5) end
+			w:setValue(index, v)
+			if type(rawget(w, "changed")) == "function" then w:changed(index) end
 			return
 		end
 		if type(w.value) == "boolean" then

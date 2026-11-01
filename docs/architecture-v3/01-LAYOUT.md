@@ -33,6 +33,7 @@ crates/
 ├── engine/                       L3–L4: the audio thread
 │   ├── stream/        kontra-stream     sample store, preload law, page cache, I/O service      ~4k
 │   ├── voice/         kontra-voice      source cursor, resampling, loops, voice chain run       ~4k
+│   ├── behaviour/     kontra-behaviour  live switch, controller and round-robin state on a plan ~0.3k
 │   ├── vm/            kontra-vm         bytecode, interpreter, coroutine scheduler, HostApi     ~6k
 │   ├── engine/        kontra-engine     Engine: queue, ledger, allocator, buses, render          ~8k
 │   └── prepare/       kontra-prepare    IR → Plan off the audio thread, sample preloads          ~0.5k
@@ -74,7 +75,9 @@ L7  ui ─────────────────▶ protocol, ui-model
 L6  host ───────────────▶ engine, stream, ksp, lua, format*, library, align?, protocol, ui-model
 L5  ksp, lua ───────────▶ vm, ir, ui-model, events
     format-* ───────────▶ format, ir, params, law          (never engine, vm, stream, dsp)
-L4  engine ─────────────▶ voice, stream, vm, dsp, ir, events, time, pool
+L4  engine ─────────────▶ behaviour, plan, effects, script-ui, voice, stream, vm, dsp, ir, events, time, pool
+    behaviour ──────────▶ plan, ir
+    plan ───────────────▶ effects, script-ui, ir, vm, voice
 L3  voice ──────────────▶ dsp-core, stream (read side), simd, time
     stream ─────────────▶ ir (zone geometry only), pool, time
     vm ─────────────────▶ events, time, pool

@@ -42,7 +42,11 @@ pub(super) fn view(
             } else {
                 let (edits, popup) =
                     input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
-                let at = (scale, p.level);
+                let (shown, moving) = face.meters.update(&p.level, ui.time());
+                if moving {
+                    ui.repaint_in(crate::meter::TICK);
+                }
+                let at = (scale, shown);
                 let draw = if look == FaceLook::Vector {
                     view::vector_page
                 } else {
@@ -60,10 +64,24 @@ pub(super) fn view(
                 (edits, el)
             };
             input::apply(&mut face.tree, &edits);
-            out.extend(edits.iter().map(|e| Action::Control {
-                part: n,
-                widget: e.widget.0,
-                value: e.value,
+            out.extend(edits.into_iter().map(|e| {
+                let (widget, keys) = (e.widget.0, e.keys);
+                let control = |cell, value| Action::Control {
+                    part: n,
+                    widget,
+                    cell,
+                    value,
+                    keys,
+                };
+                match e.to {
+                    input::Set::Value(v) => control(None, v),
+                    input::Set::Cell(k, v) => control(Some(k), v),
+                    input::Set::Text(text) => Action::ControlText {
+                        part: n,
+                        widget,
+                        text,
+                    },
+                }
             }));
             el
         }

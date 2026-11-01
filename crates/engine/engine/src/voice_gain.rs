@@ -480,8 +480,8 @@ impl Engine {
             let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
             let ms = *frames as f32 * 1000.0 / rate;
             let ms = if floor_ms > 0.0 {
-                floor_ms * ((ms + floor_ms) / floor_ms).powf(multiplier * multiplier * multiplier)
-                    - floor_ms
+                let span = ir::common::geometric(floor_ms, (ms + floor_ms) / floor_ms);
+                span.eval_unclamped(multiplier * multiplier * multiplier) - floor_ms
             } else {
                 ms * multiplier
             };
@@ -559,7 +559,7 @@ impl Engine {
 // ponytail: balance pan law only; equal-power and Kontakt's raised cosine
 // when a library's measured stereo image needs them.
 fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
-    let script = 10f32.powf(note.script_volume as f32 / 20_000.0);
+    let script = ir::common::MILLIBEL_GAIN.eval_unclamped(note.script_volume as f32);
     let g = zone.gain * level.gain * note.expression_gain * script;
     let pan =
         (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)

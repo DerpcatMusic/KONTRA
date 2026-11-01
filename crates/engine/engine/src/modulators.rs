@@ -64,7 +64,7 @@ impl Engine {
             let age = Age {
                 warp: slot.warp,
                 chaos: chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
             };
             let warp = self.warp(zone, &n, age, span);
             let to = self.group_pan(zone);

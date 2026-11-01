@@ -55,6 +55,26 @@ fn engine(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
 
+/// Reads array files from disk, as the host does.
+#[derive(Debug)]
+struct Disk;
+
+impl kontra_engine::files::Files for Disk {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        std::fs::read(path).ok()
+    }
+}
+
+/// [`engine`], its script reading array files from disk.
+fn engine_with_files(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let mut plan = Plan::new(zones, 16);
+    let mut planned = kontra_host::script::plan(&script, &[], &[]);
+    planned.files = Some(Arc::new(Disk));
+    plan.scripts = vec![planned];
+    Engine::new(Arc::new(plan), store.client(), RATE)
+}
+
 fn host(key: u8) -> HostNote {
     HostNote {
         port: 0,
@@ -140,8 +160,8 @@ fn an_ignored_note_plays_its_child_until_released() {
 
 /// Una Corda: the script ignores the key's note and plays a child for its
 /// length, then ignores the key's release too (it only tracks its own ids).
-/// The key is up all the same: the child ends (play_note -1), its own
-/// release callback running. It held at full level for good before.
+/// The key is up all the same: the child ends (play_note -1). It held at
+/// full level for good before.
 #[test]
 fn a_child_ends_with_its_key_even_when_the_keys_release_is_ignored() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -1512,6 +1532,214 @@ fn an_ignored_release_still_lifts_the_key() {
     assert_eq!(e.last_message(), "down 0");
 }
 
+/// A key's `on release` sees the key up (Pacific clears its held-key list
+/// when `%KEY_DOWN` reads 0 there).
+#[test]
+fn a_release_sees_its_key_up() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on release
+            message(\"down \" & %KEY_DOWN[60])
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[off(60)]);
+    assert_eq!(e.last_message(), "down 0");
+}
+
+/// A script hears its notes end when the engine ends them (Shreddage plays
+/// its sound from a 1 µs trigger note's release), not when it `note_off`s
+/// them itself (Pacific's layers: native Kontakt plays its release once).
+#[test]
+fn a_script_hears_its_notes_end_but_not_its_own_note_offs() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id := 0
+            declare $timed := 0
+            declare $off := 0
+        end on
+        on note
+            if ($EVENT_NOTE = 60)
+                play_note(61, 100, 0, 1)
+                $id := play_note(62, 100, 0, 0)
+                note_off($id)
+            end if
+        end on
+        on release
+            if ($EVENT_NOTE = 61)
+                inc($timed)
+            end if
+            if ($EVENT_NOTE = 62)
+                inc($off)
+            end if
+            message($timed & \" \" & $off)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "1 0");
+}
+
+/// A note an `on release` plays sounds its release-trigger zones (Pacific
+/// plays its release samples from `on release`, into release groups).
+#[test]
+fn a_note_played_on_release_sounds_its_release_zones() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    let zones = vec![zone(&mut store, 0.5, 0), tail];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note
+            disallow_group(1)
+        end on
+        on release
+            ignore_event($EVENT_ID)
+            disallow_group($ALL_GROUPS)
+            allow_group(1)
+            play_note(60, 100, 0, 0)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    // The held voice rings on (its release is ignored) under the tail.
+    let l = level(&mut e, &[off(60)]);
+    assert!((l - 0.75).abs() < 1e-3, "{l}");
+}
+
+/// A timed note an `on release` plays is that release's own sound: the key's
+/// release sounds the release zones once, and the note neither starts them
+/// nor sounds them again when its time ends (Afflatus's release notes;
+/// native Kontakt plays one release sample, at key-up).
+#[test]
+fn a_timed_note_played_on_release_sounds_no_second_release() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    let zones = vec![zone(&mut store, 0.5, 0), tail];
+    let mut e = engine(
+        &store,
+        zones,
+        "on release
+            disallow_group($ALL_GROUPS)
+            allow_group(1)
+            play_note(60, 100, 0, 50000)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    // 100 ms from key-up, past the timed note's 50 ms end: one release
+    // sample throughout, once the held zone's short release has passed.
+    let mut out = vec![[0.0; 2]; 4800];
+    e.process(&mut out, &[off(60)]);
+    for (frame, [left, _]) in out.iter().enumerate().skip(128) {
+        assert!((left - 0.25).abs() < 1e-3, "{left} at frame {frame}");
+    }
+}
+
+/// With release triggering left to the script, a release zone is an ordinary
+/// zone of the note the script plays into its group: it starts with that
+/// note and ends with it, and no release sounds it again.
+#[test]
+fn a_release_zone_the_script_plays_ends_with_its_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    let script = kontra_ksp::compile(
+        "on init
+            declare $played := 0
+        end on
+        on note
+            disallow_group($ALL_GROUPS)
+            allow_group(0)
+        end on
+        on release
+            if ($played = 0)
+                $played := 1
+                disallow_group($ALL_GROUPS)
+                allow_group(1)
+                play_note(60, 100, 0, 50000)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0), tail], 16);
+    plan.release_zones = kontra_engine::ReleaseZones::WithNote;
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!(
+        (level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3,
+        "only the held zone"
+    );
+    let mut out = vec![[0.0; 2]; 4800];
+    e.process(&mut out, &[off(60)]);
+    // The held zone's short release, then the release zone alone until the
+    // played note's 50 ms (2400 frames) end and its own short release.
+    for (frame, [left, _]) in out.iter().enumerate().take(2400).skip(128) {
+        assert!((left - 0.25).abs() < 1e-3, "{left} at frame {frame}");
+    }
+    assert_eq!(out[4799][0], 0.0, "it ends with its note");
+}
+
+#[test]
+fn a_release_the_script_plays_reads_how_long_the_key_was_held() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    // The script plays the release itself, as a note of its own.
+    let script = kontra_ksp::compile(
+        "on note
+            disallow_group($ALL_GROUPS)
+            allow_group(0)
+        end on
+        on release
+            disallow_group($ALL_GROUPS)
+            allow_group(1)
+            play_note($EVENT_NOTE, 100, 0, 50000)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0), tail], 16);
+    plan.release_zones = kontra_engine::ReleaseZones::WithNote;
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    // The release group's level falls with the time the key was held: half
+    // after 0.5 s of a 1 s span.
+    plan.groups[1].mods = vec![ir::Mod {
+        name: "held".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::HeldTime { span_ms: 1000 },
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
+        },
+    }];
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut held = vec![[0.0; 2]; 24_000];
+    e.process(&mut held, &[on(60)]);
+    let mut out = vec![[0.0; 2]; 2000];
+    e.process(&mut out, &[off(60)]);
+    let release = out[1999][0];
+    assert!((release - 0.125).abs() < 0.01, "{release}");
+}
+
 /// Level of the reverb tail 0.25 s after a 2 s note, through a reverb in the
 /// instrument insert whose time is 0.5 s unless `script` moves it.
 fn reverb_tail(script: &str) -> f32 {
@@ -1898,6 +2126,61 @@ fn a_purge_reports_its_id_in_async_complete() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "1 1 1 13");
+}
+
+/// KSP manual (`load_array_str`): in `on init` a file named by path loads
+/// at once; `on async_complete` reports 1, or 0 for a file that is missing.
+#[test]
+fn an_array_file_named_by_path_loads_in_init() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(dir.join("names.nka"), "!names\nfirst\nsecond\n").unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = format!(
+        "on init
+            declare !names[2]
+            declare %ok[2]
+            declare $n
+            $n := load_array_str(!names, \"{0}/names.nka\")
+            $n := load_array_str(%ok, \"{0}/missing.nka\")
+        end on
+        on async_complete
+            %ok[$NI_ASYNC_ID - 1] := $NI_ASYNC_EXIT_STATUS
+            message(!names[0] & \" \" & !names[1] & \" \" & %ok[0] & %ok[1])
+        end on",
+        dir.display()
+    );
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine_with_files(&store, zones, &source);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "first second 10");
+}
+
+/// KSP manual (`load_array`, `on async_complete`): a mode-1 load from the
+/// user's Data folder that finds no file leaves the array as it was,
+/// answers an async id, and `on async_complete` reports exit status 0.
+#[test]
+fn a_missing_data_folder_array_leaves_it_and_completes_with_failure() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id
+            declare %preset[2] := (7, 8)
+            $id := load_array(%preset, 1)
+        end on
+        on async_complete
+            message($NI_ASYNC_ID & \" \" & $id & \" \" & $NI_ASYNC_EXIT_STATUS & \" \" & %preset[0] & %preset[1])
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "1 1 0 78");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
 }
 
 /// `set_engine_par` as measured in Kontakt (probes/async_engine_par.ksp):
@@ -2650,4 +2933,370 @@ fn parameter_texts_read_as_kontakt_shows_them() {
         level(&mut e, &[on(60)]);
         assert_eq!(e.last_message(), want, "{name}");
     }
+}
+
+/// A fresh knob, slider or value edit holds its minimum, as Kontakt 8.13.1
+/// read it back in on init (oracle 2026-10-29, scratch/laneB/vedit). CHORUS's
+/// legato velocity split divided by its (2, 4) value edit, 0 before.
+#[test]
+fn a_new_ranged_control_starts_at_its_minimum() {
+    let source = "on init
+            declare ui_value_edit $ve(2, 4, 1)
+            declare ui_value_edit $vn(-9, -3, 1)
+            declare ui_knob $kn(5, 9, 1)
+            declare ui_slider $sl(3, 7)
+            declare @t
+            @t := $ve & \";\" & $vn & \";\" & $kn & \";\" & $sl & \";\" & 100 / $ve
+        end on
+        on note
+            message(@t)
+        end on";
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(&store, Vec::new(), source);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "2;-9;5;3;50");
+}
+
+/// Text typed into a text edit lands in its variable before its callback
+/// runs, as `Rack::control_text` sends it.
+#[test]
+fn a_text_edit_callback_reads_the_typed_text() {
+    let source = "on init
+            declare ui_text_edit @name
+            message(get_ui_id(@name))
+        end on
+        on ui_control(@name)
+            message(@name)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let cell = kontra_host::ui::Face::of(&script, &[])
+        .text_cell("@name")
+        .unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    let id: i32 = e.last_message().parse().unwrap();
+    let typed = kontra_engine::Text::from_str_cut("Hi").0;
+    e.vm_mut(0).unwrap().set_text(cell as usize, typed);
+    e.set_control(0, id, 0);
+    assert_eq!(e.last_message(), "Hi");
+}
+
+/// A click on a table's cell writes that cell, and its callback reads which
+/// one as `$NI_CONTROL_PAR_IDX` (KSP manual, ui_table).
+#[test]
+fn a_table_click_sets_its_cell_and_names_it() {
+    let source = "on init
+            declare ui_table %t[4](2, 2, 100)
+            message(get_ui_id(%t))
+        end on
+        on ui_control(%t)
+            message($NI_CONTROL_PAR_IDX & \",\" & %t[2] & %t[0])
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_click(0, id, [false; 3], 2);
+    e.set_control(0, id, 70);
+    assert_eq!(e.last_message(), "2,700");
+    // A write with no click of its own (MIDI learn) sets the first cell.
+    e.set_control(0, id, 30);
+    assert_eq!(e.last_message(), "2,7030");
+}
+
+/// A click's modifier keys read back as `$CONTROL_PAR_KEY_SHIFT/ALT/CONTROL`
+/// in the control's callback, and a plain click clears them (KSP manual).
+#[test]
+fn a_switch_callback_reads_the_keys_held_at_the_click() {
+    let source = "on init
+            declare ui_switch $s
+            message(get_ui_id($s))
+        end on
+        on ui_control($s)
+            declare $id
+            $id := get_ui_id($s)
+            message(get_control_par($id, $CONTROL_PAR_KEY_SHIFT) & get_control_par($id, $CONTROL_PAR_KEY_ALT) & get_control_par($id, $CONTROL_PAR_KEY_CONTROL))
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_click(0, id, [false, false, true], 0);
+    e.set_control(0, id, 1);
+    assert_eq!(e.last_message(), "001");
+    e.set_click(0, id, [true, true, false], 0);
+    e.set_control(0, id, 0);
+    assert_eq!(e.last_message(), "110");
+    e.set_click(0, id, [false; 3], 0);
+    e.set_control(0, id, 1);
+    assert_eq!(e.last_message(), "000");
+}
+
+#[test]
+fn load_array_mode_two_restores_text_from_library_data() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "on init\n declare !names[3]\n load_array(!names, 2)\n message(!names[0] & \":\" & !names[1])\nend on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let data = vec![("names".into(), b"!names\nfirst\nsecond\n".to_vec())];
+    let mut plan = Plan::new(vec![], 4);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &data)];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "first:second");
+    assert_eq!(e.stats().actions_unhandled, 0);
+
+    let wrong_name = vec![("names".into(), b"!other\nfirst\n".to_vec())];
+    let mut plan = Plan::new(vec![], 4);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &wrong_name)];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.stats().actions_unhandled, 1);
+}
+
+#[test]
+fn get_folder_patch_returns_prepared_directory() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "on init\n message(get_folder($GET_FOLDER_LIBRARY_DIR) & get_folder($GET_FOLDER_PATCH_DIR))\nend on";
+    let instrument = ir::Instrument {
+        source_path: Some("/library/Instruments/Test.nki".into()),
+        library_path: Some("/library".into()),
+        scripts: vec![ir::Script {
+            name: "test".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source: source.into(),
+            saved: vec![],
+            data: vec![],
+            links: vec![],
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let loaded = kontra_host::instrument::build(instrument, RATE, &mut store);
+    let e = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "/library//library/Instruments/");
+    assert_eq!(e.stats().actions_unhandled, 0);
+}
+
+/// A script's shorter `fade_out` on a voice already fading from a steal ends
+/// it sooner, and the steal still counts once.
+#[test]
+fn a_shorter_fade_out_ends_a_stolen_voice_sooner() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $first := 0
+        end on
+        on note
+            if ($EVENT_NOTE = 60)
+                $first := $EVENT_ID
+            else
+                wait(100)
+                fade_out($first, 100, 1)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(zones, 1);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    // The steal alone fades over 10 ms (480 frames); the 100 µs fade ends it
+    // within the first 64 frames, leaving the new note's 0.5.
+    let mut out = vec![[0.0; 2]; 64];
+    e.process(&mut out, &[on(61)]);
+    assert!((out[63][0] - 0.5).abs() < 1e-3, "{}", out[63][0]);
+    assert_eq!(e.stats().voices_stolen, 1);
+}
+
+#[test]
+fn get_folder_factory_returns_prepared_path_or_empty() {
+    let script = kontra_ksp::compile(
+        "on init\n message(get_folder($GET_FOLDER_FACTORY_DIR))\nend on",
+        &[],
+    )
+    .unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    for (folder, expected) in [(Some("/factory/"), "/factory/"), (None, "")] {
+        let mut plan = Plan::new(vec![], 4);
+        let mut script_plan = kontra_host::script::plan(&script, &[], &[]);
+        script_plan.factory_folder = folder.map(|f| kontra_engine::Text::from_str_cut(f).0);
+        plan.scripts.push(script_plan);
+        let engine = Engine::new(Arc::new(plan), store.client(), RATE);
+        assert_eq!(engine.last_message(), expected);
+        assert_eq!(engine.stats().actions_unhandled, 0);
+    }
+}
+
+/// `fade_out` without stopping leaves the voice playing silent until
+/// `fade_in` brings it back (the manual's stutter), and `fade_in` on a new
+/// note starts its voices from silence.
+#[test]
+fn a_fade_out_without_stop_comes_back_with_a_fade_in() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id := 0
+        end on
+        on note
+            select ($EVENT_NOTE)
+                case 60
+                    $id := $EVENT_ID
+                case 61
+                    ignore_event($EVENT_ID)
+                    fade_out($id, 1000, 0)
+                case 62
+                    ignore_event($EVENT_ID)
+                    fade_in($id, 1000)
+            end select
+        end on",
+    );
+    let full = level(&mut e, &[on(60)]);
+    assert!(full > 0.1, "{full}");
+    assert_eq!(level(&mut e, &[on(61)]), 0.0);
+    assert!((level(&mut e, &[on(62)]) - full).abs() < 1e-4);
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note\n fade_in($EVENT_ID, 1000000)\nend on",
+    );
+    let rising = level(&mut e, &[on(63)]);
+    assert!(rising > 0.0 && rising < full / 4.0, "{rising} of {full}");
+    // A fade out asked before the note's voices start still happens, holding
+    // or stopping.
+    for stop in [0, 1] {
+        let zones = vec![zone(&mut store, 0.5, 0)];
+        let script = format!("on note\n fade_out($EVENT_ID, 1000, {stop})\nend on");
+        let mut e = engine(&store, zones, &script);
+        let mut out = vec![[0.0; 2]; 48];
+        e.process(&mut out, &[on(64)]);
+        assert!(out[0][0] > 0.0, "the attack sounds, then fades ({stop})");
+        assert_eq!(out[47][0], 0.0, "silent at the fade's end ({stop})");
+    }
+    // A pending stopping fade stays: a later fade in does not bring it back.
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let script = "on note\n fade_out($EVENT_ID, 1000, 1)\n fade_in($EVENT_ID, 1000)\nend on";
+    let mut e = engine(&store, zones, script);
+    assert_eq!(level(&mut e, &[on(64)]), 0.0);
+}
+
+/// A stopping fade ends the note, and with it the notes played for its length.
+#[test]
+fn a_stopping_fade_ends_the_notes_played_for_its_length() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note
+            if ($EVENT_NOTE = 60)
+                play_note(72, 100, 0, -1)
+                fade_out($EVENT_ID, 1000, 1)
+            end if
+        end on",
+    );
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+}
+
+/// KSP manual (`set_snapshot_type`): "Loading a snapshot always resets
+/// Kontakt's audio engine". A reset fades every voice and ends every
+/// callback waiting to go on, so nothing of the old preset plays on.
+#[test]
+fn a_reset_ends_the_callbacks_waiting_to_go_on() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $n
+        end on
+        on note
+            while (1 = 1)
+                wait(10000)
+                inc($n)
+                message($n)
+            end while
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    let before = e.last_message().to_owned();
+    assert_ne!(before, "", "the callback waits and goes on");
+    e.reset();
+    assert_eq!(level(&mut e, &[]), 0.0, "its voice faded out");
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), before, "the loop went on after the reset");
+}
+
+/// A known parameter on a target the instrument lacks: the set is dropped,
+/// the read is 0, the text is "" and the script runs on, every call
+/// answered (Kontakt 8.13.1, its getter's miss path and an oracle probe).
+#[test]
+fn a_parameter_on_a_missing_target_reads_zero_and_shows_nothing() {
+    let source = "on init
+            declare @t
+            set_engine_par($ENGINE_PAR_CUTOFF, 300000, 9999, 0, -1)
+            @t := get_engine_par($ENGINE_PAR_CUTOFF, 9999, 0, -1) & \"|\"
+            @t := @t & get_engine_par_disp($ENGINE_PAR_CUTOFF, 9999, 0, -1) & \"|on\"
+        end on
+        on note
+            message(@t)
+        end on";
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(&store, Vec::new(), source);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "0||on");
+    assert_eq!(e.unhandled_actions(), []);
+}
+
+/// KSP manual (`load_array`, `save_array`): mode 0 opens a file dialog and
+/// the callback goes on. KONTRA shows none yet, so it is a dialog cancelled
+/// at once: an async id, the array as it was, `on async_complete` with 0.
+#[test]
+fn a_file_dialog_array_is_cancelled_and_completes_with_failure() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare %preset[2] := (7, 8)
+            declare $load
+            declare $save
+            declare $done
+        end on
+        on note
+            $load := load_array(%preset, 0)
+            $save := save_array(%preset, 0)
+        end on
+        on async_complete
+            $done := $done * 100 + $NI_ASYNC_ID * 10 + $NI_ASYNC_EXIT_STATUS
+            message($load & \" \" & $save & \" \" & $NI_ASYNC_ID & \" \" & $done & \" \" & %preset[0] & %preset[1])
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    // Both completed, in order: id 1 (load) status 0, then id 2 (save)
+    // status 0.
+    assert_eq!(e.last_message(), "1 2 2 1020 78");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
 }

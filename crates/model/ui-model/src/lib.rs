@@ -58,6 +58,15 @@ pub struct Interface {
     pub icon_hidden: bool,
     /// A legacy authored NativeUI entry point, consumed by the editor frontend.
     pub native_ui: Option<NativeUi>,
+    /// The keys the source colours on the keyboard, by note, with the
+    /// colour each draws (KSP `set_key_color`).
+    pub keybed: Vec<(u8, Rgba)>,
+    /// The keys the source names, by note (KSP `set_key_name`): shown when
+    /// the pointer is over them.
+    pub key_names: Vec<(u8, String)>,
+    /// Set when the source shows only the keys it presses (KSP
+    /// `set_key_pressed_support`): those keys, in place of the keys played.
+    pub key_pressed: Option<Vec<u8>>,
     pub unsupported: Vec<Unsupported>,
 }
 
@@ -188,6 +197,9 @@ pub struct Widget {
     pub automation: Automation,
     /// How a drag changes the value; `None` for the renderer's default.
     pub drag: Option<Drag>,
+    /// The source runs the control's callback once more when the pointer
+    /// lets go, even when the value did not change (KSP `on ui_control`).
+    pub reports_release: bool,
     /// Colours the source sets on its stock drawing; unset ones are the renderer's.
     pub colors: Colors,
     /// Authored separation between table bars. Unset preserves the stock drawing.
@@ -259,6 +271,7 @@ impl Widget {
             tooltip: String::new(),
             automation: Automation::default(),
             drag: None,
+            reports_release: false,
             colors: Colors::default(),
             table_inner_edge: None,
             table_fill: None,
@@ -451,12 +464,25 @@ pub struct UviWaveViewColors {
     pub sample_name_background: Option<Rgba>,
 }
 
-/// The drag gesture of a continuous control (KSP `MOUSE_BEHAVIOUR`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The drag gesture of a continuous control: which way it moves, and how
+/// far the pointer travels to sweep the whole range. The translator sets
+/// its format's law; the renderer only follows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Drag {
     pub axis: Orientation,
-    /// Source units: KSP's magnitude, larger is faster; travel is picture-relative.
-    pub sensitivity: u32,
+    pub sweep: Sweep,
+}
+
+/// How far a drag travels to sweep a control's whole range, in view
+/// points at 100 % (the renderer scales them with the view).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sweep {
+    /// A fixed distance, whatever the control's size.
+    Points(f64),
+    /// This many times the control's own length along the axis.
+    Lengths(f64),
+    /// This far per unit of the value.
+    PerUnit(f64),
 }
 
 /// Colours of the stock drawing (KSP `*_COLOR` control parameters).
@@ -555,10 +581,12 @@ pub enum Kind {
         parallax: [i32; 2],
     },
     /// `channel`: the output channel it shows (0 left, 1 right; KSP
-    /// `attach_level_meter`); `None` shows nothing.
+    /// `attach_level_meter`); `None` shows nothing. `bus`: the instrument bus
+    /// it reads, `None` the part's output.
     LevelMeter {
         orientation: Orientation,
         channel: Option<u8>,
+        bus: Option<u8>,
     },
     /// `base_path`: the folder it opens at (KSP `BASEPATH`); `files`: what it lists;
     /// `column_width`: list column width in pixels.
@@ -1495,6 +1523,7 @@ mod tests {
                 Kind::LevelMeter {
                     orientation: Orientation::Vertical,
                     channel: None,
+                    bus: None,
                 },
             ),
         ];

@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use kontra_ir as ir;
+use kontra_law::uvi::ENVELOPE_CURVE;
 use roxmltree::Node;
 
 use super::{Library, Translator, blend, flag, index_of, matrix, num, source_node};
@@ -659,8 +660,7 @@ fn dahdsr(node: Node) -> Option<ir::Breakpoints> {
 /// ([`ahd`]); a DAHDSR's segments run the same law (process
 /// 0x1410f0570 calls setup 0x1410f1220).
 pub(super) fn curve(node: Node, name: &str) -> Option<f32> {
-    let c = num(node, name, 0.0).ok()?.clamp(-0.9998, 0.9998);
-    Some((2.0 * ((1.0 + c) / (1.0 - c)).ln()) as f32)
+    Some(ENVELOPE_CURVE.eval_unclamped_f64(num(node, name, 0.0).ok()?) as f32)
 }
 
 /// Table entries per step: a step's edge ramps over 1/16 of it.

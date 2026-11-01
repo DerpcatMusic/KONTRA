@@ -251,7 +251,7 @@ pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
     use ir::ImpulseKnob::{Cut, PredelayMs};
     use ir::KnobTarget::Impulse;
     let predelay: Vec<f32> = (0..=32)
-        .map(|i| 2.0 * (151f32.powf(i as f32 / 32.0) - 1.0))
+        .map(|i| kontra_law::kontakt::CONVOLUTION_PREDELAY.eval(i as f32 / 32.0))
         .collect();
     let hz = || ir::Law::Exp {
         lo: 20.0,

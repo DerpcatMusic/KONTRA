@@ -27,11 +27,23 @@ pub enum Readout {
     Pan,
 }
 
+/// A cubic level's knob `x` in dB over its unity point `top`, `18·log2(x) + top`: the inverse
+/// of a `2^((dB − top)/18)` law.
+fn db_readout(top: f64, x: f64) -> f64 {
+    let law = kontra_law::Law::PowIndex {
+        base: 2.0,
+        origin: top as f32,
+        divisor: 18.0,
+        scale: 1.0,
+    };
+    law.inverse_f64(x).unwrap_or(f64::NEG_INFINITY)
+}
+
 /// Writes `readout` of a knob at `x` (0..=1).
 pub fn write(readout: Readout, x: f64, out: &mut Text) -> bool {
     let pan = 2.0 * (x as f32) - 1.0;
     match readout {
-        Readout::Db(top) if x > 0.0 => out.push_fmt(format_args!("{:.1}", 18.0 * x.log2() + top)),
+        Readout::Db(top) if x > 0.0 => out.push_fmt(format_args!("{:.1}", db_readout(top, x))),
         Readout::Db(_) => out.push("-inf"),
         Readout::Padded(ms) if ms.abs() < 1.0 => out.push_fmt(format_args!("{ms:5.2}")),
         Readout::Padded(ms) if ms < 1000.0 => out.push_fmt(format_args!("{ms:5.1}")),

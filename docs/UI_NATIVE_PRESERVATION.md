@@ -78,3 +78,7 @@ scroll/focus handoff. The browser accepts duplicate favorites and has custom
 Left/Right and Shift+Enter actions; index keys or enabling framework keyboard
 handling blindly would change behavior. This focused fix does not claim that
 larger migration, an application speedup or full framework runtime parity.
+
+## Optional Kontakt stock artwork
+
+KONTRA looks for installed Kontakt executables in the usual Windows and macOS locations and, on Linux, under Wine prefixes. `KONTAKT_STOCK_EXECUTABLE` overrides discovery. Discovery, extraction and decoding run on a background worker when the editor is created. Decoded artwork is cached in the user's cache directory under the executable's SHA-256; unchanged installs reuse that cache. No artwork is bundled. Unknown or unreadable versions use the vector fallback. Restart the host after changing the override.

@@ -103,8 +103,9 @@ pub struct Part {
     pub volume: f64,
     pub pan: f64,
     pub tune: f64,
-    /// Its level from 0 to 1, for the mixer's meter.
-    pub level: f64,
+    /// Its left and right peaks from 0 to 1, for the meters: its output's,
+    /// then each instrument bus's.
+    pub level: Vec<[f64; 2]>,
     pub solo: bool,
     pub mute: bool,
     /// Velocity it plays at: 0 as played, or a fixed one.
@@ -157,6 +158,8 @@ pub struct Face {
     pub tree: Interface,
     pub pictures: Pictures,
     pub gesture: crate::input::Gesture,
+    /// Its level meters as they fall and hold.
+    pub meters: crate::meter::Meters,
 }
 
 impl std::fmt::Debug for Face {
@@ -338,11 +341,21 @@ pub enum Action {
     Velocity(usize, u8),
     Articulation(usize, usize),
     /// A library's own control set by the user: the widget of the part's
-    /// interface and its value, for the host to write into the engine.
+    /// interface, its value and the keys held at the click, for the host to
+    /// write into the engine.
     Control {
         part: usize,
         widget: usize,
+        /// The cell of a table set; `None` for any other control.
+        cell: Option<u32>,
         value: f64,
+        keys: kontra_ui_model::UiModifiers,
+    },
+    /// Text the user typed into a library's text edit.
+    ControlText {
+        part: usize,
+        widget: usize,
+        text: String,
     },
     /// A value of a part's sound, for one group or all of them.
     Sound {
@@ -656,21 +669,29 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         up.el,
         fold.el,
     ]);
+    // The focused part: the first one open, else the first.
+    let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
+    let script: Vec<_> = focused
+        .and_then(|p| p.face.as_ref())
+        .map(|f| (f.tree.keybed.iter()).map(|&(n, c)| (n, crate::view::color(c))))
+        .into_iter()
+        .flatten()
+        .collect();
     let shown = Keys {
         range,
-        held: v.playing.into_iter().collect(),
+        held: match focused.and_then(|p| p.face.as_ref()?.tree.key_pressed.as_ref()) {
+            Some(pressed) => pressed.clone(),
+            None => v.playing.into_iter().collect(),
+        },
         spans: app
             .parts
             .iter()
             .enumerate()
             .map(|(n, p)| (p.keys.0, p.keys.1, crate::theme::part_color(n)))
             .collect(),
-        // The focused part's: the first one open, else the first.
-        switches: app
-            .parts
-            .iter()
-            .find(|p| p.open)
-            .or(app.parts.first())
+        // A script that colours its keys shows its own keyswitches.
+        switches: focused
+            .filter(|_| script.is_empty())
             .map(|p| {
                 p.articulations
                     .iter()
@@ -678,6 +699,11 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                     .filter_map(|(a, (_, key))| Some(((*key)?, crate::theme::part_color(a))))
                     .collect()
             })
+            .unwrap_or_default(),
+        script,
+        names: focused
+            .and_then(|p| p.face.as_ref())
+            .map(|f| f.tree.key_names.clone())
             .unwrap_or_default(),
     };
     let height = TEXT * 6.;

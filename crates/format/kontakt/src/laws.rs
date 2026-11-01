@@ -2,6 +2,11 @@
 //! names the evidence it rests on; the IR and engine never see the vendor.
 
 use kontra_ir as ir;
+use kontra_law::common::{ATTACK_CURVE, CUBE};
+use kontra_law::kontakt::{
+    EQ_PEAK_DB, FILTER_NOTE_HZ, FLEX_SHAPE, LADDER_GAIN, LEGACY_CUTOFF_HZ, LEGACY_RESONANCE_LOSS,
+    LEGACY_RESONANCE_Q, UNIT_FIFTH,
+};
 use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeFlex, Lfo};
 
 /// Kontakt's decay and release: the kernel runs its state from 1.075 down to
@@ -16,25 +21,11 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         attack: seconds(e.attack_ms),
         hold: seconds(e.hold_ms),
         decay: seconds(e.decay_ms),
-        sustain: e.sustain.clamp(0.0, 1.0).powi(3),
+        sustain: CUBE.eval(e.sustain),
         release: seconds(e.release_ms),
-        attack_shape: attack_shape(e.attack_curve),
+        attack_shape: ATTACK_CURVE.eval_unclamped(e.attack_curve),
         fall_shape: FALL,
     }
-}
-
-/// The attack curve knob (−1 concave ..= 1 convex) as a segment shape. The
-/// engine rounds the base to f32 before taking its log
-/// (docs/re/engine/k-mod-envelopes.md).
-fn attack_shape(curve: f32) -> f32 {
-    let c = f64::from(curve.clamp(-1.0, 1.0));
-    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
-    let k = if c > 0.0 {
-        (b / (1.0 + b)).ln()
-    } else {
-        ((1.0 + b) / b).ln()
-    };
-    k as f32
 }
 
 /// A route's time constant from its saved lag: the lag is the time its gain
@@ -63,9 +54,9 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
                 | ir::Source::Script(_)
                 | ir::Source::PitchBend
         ) {
-            1
+            kontra_law::kontakt::CONTROLLER_VOLUME_POWER
         } else {
-            3
+            kontra_law::kontakt::VOICE_VOLUME_POWER
         },
     }
 }
@@ -130,7 +121,7 @@ pub(crate) fn eq_band(hz: f32, octaves: f32, db: f32) -> Option<ir::Bell> {
     if !(hz > 0.0 && octaves > 0.0) {
         return None;
     }
-    let peak = (2f32.powf(db.clamp(-18.0, 18.0) / 3.0)).log10() * 20.0;
+    let peak = EQ_PEAK_DB.eval_unclamped(db.clamp(-18.0, 18.0));
     Some(ir::Bell {
         shape: ir::Shape::Peak,
         hz: hz.min(20_000.0),
@@ -145,6 +136,8 @@ pub(crate) const AUTO_GAIN: ir::Normalize = ir::Normalize {
     energy: 0.5,
     max_gain: 2.0,
     floor: 0.001,
+    channels: ir::EnergyChannels::Loudest,
+    after_resample: false,
 };
 
 /// An AHDSR as breakpoints, for targets other than the amplitude: the same
@@ -183,7 +176,7 @@ pub(crate) fn flex(e: &EnvelopeFlex) -> ir::Breakpoints {
         .map(|p| ir::Breakpoint {
             ms: p.time_ms.max(1.0),
             level: p.level.clamp(0.0, 1.0),
-            curve: flex_ratio(p.curve).ln(),
+            curve: FLEX_SHAPE.eval_unclamped(p.curve),
         })
         .collect();
     let sustain = usize::try_from(e.sustain)
@@ -200,23 +193,6 @@ pub(crate) fn flex(e: &EnvelopeFlex) -> ir::Breakpoints {
         points,
         stages: false,
     }
-}
-
-/// The level ratio across a flex segment for curve knob `c` (0x140ae5a10):
-/// `c == 0` is linear; the ends clamp at 0.001 and 0.999.
-fn flex_ratio(c: f32) -> f32 {
-    let f = if c == 0.0 {
-        0.5
-    } else if c < 0.001 {
-        0.001 * 0.002
-    } else if c > 0.999 {
-        (4.0 - 1.998) * 0.999 - 1.0
-    } else if c <= 0.5 {
-        2.0 * c * c
-    } else {
-        (4.0 - 2.0 * c) * c - 1.0
-    };
-    (1.0 / f - 1.0).powi(2)
 }
 
 /// The amplitude envelope of a group whose volume a flex envelope shapes and
@@ -401,7 +377,7 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
         // (filt-ar-daft.md), AR `min(145u, 140)`, Pro-53 `100u + 20`.
         30..=41 => {
             note(&mut f, 115.0 * u + 20.0, 115.0, r);
-            f.gain = 2f32.powf(1.993 * gain.clamp(-1.0, 1.0));
+            f.gain = LADDER_GAIN.eval_unclamped(gain.clamp(-1.0, 1.0));
         }
         70 | 71 => note(&mut f, 125.0 * u + 20.0, 125.0, r),
         100..=108 => note(&mut f, (145.0 * u).min(140.0), 145.0, r),
@@ -447,7 +423,7 @@ pub(crate) fn eq_band_index(param: &str) -> Option<u8> {
 /// (AR, Daft, Pro-53) play as state-variable stages; measure
 /// against Kontakt to add the loss where a library needs it.
 fn note(f: &mut ir::Filter, n: f32, per_unit: f32, r: f32) {
-    f.hz = 440.0 * 2f32.powf((n.min(160.0) - 69.0) / 12.0);
+    f.hz = FILTER_NOTE_HZ.eval_unclamped(n.min(160.0));
     f.octaves = per_unit / 12.0;
     if let Some(last) = f.damping.get_mut(usize::from(f.stages).saturating_sub(1)) {
         *last = (2.0 * (1.0 - r) * (1.0 - r)).max(MIN_DAMPING);
@@ -464,8 +440,7 @@ fn note(f: &mut ir::Filter, n: f32, per_unit: f32, r: f32) {
 /// full resonance for 2 / 4 / 6 poles, which lands the measured LP4 peaks
 /// (+20.9 / +37.3 dB at .5 / .9) within 2 dB. Measure LP2 and HP to refine.
 fn legacy(f: &mut ir::Filter, u: f32, r: f32) {
-    let v = ((6.15 * u).exp_m1() * 0.002_572_831_7).clamp(0.0, 1.0);
-    f.hz = 21_759.5 * (v + 0.002);
+    f.hz = LEGACY_CUTOFF_HZ.eval(u);
     // log2(f(1) / f(0)); the law is close to exponential above the bottom.
     f.octaves = 8.97;
     let poles = 2.0 * f32::from(f.stages);
@@ -474,10 +449,11 @@ fn legacy(f: &mut ir::Filter, u: f32, r: f32) {
     }
     if let Some(sharpest) = usize::from(f.stages).checked_sub(1) {
         if let Some(k) = f.damping.get_mut(sharpest) {
-            *k = (*k / (6.4 * r).exp()).max(MIN_DAMPING);
+            *k = (*k / LEGACY_RESONANCE_Q.eval(r)).max(MIN_DAMPING);
         }
-        let drop = [5.5, 11.0, 24.0].get(sharpest).copied().unwrap_or(0.0);
-        f.gain = 10f32.powf(-drop * r / 20.0);
+        f.gain = LEGACY_RESONANCE_LOSS
+            .get(sharpest)
+            .map_or(1.0, |loss| loss.eval(r));
     }
 }
 
@@ -490,15 +466,15 @@ fn legacy(f: &mut ir::Filter, u: f32, r: f32) {
 /// states; damping stops at 0.01 instead.
 fn sv(f: &mut ir::Filter, u: f32, r: f32) {
     let note = (115.0 * u + 20.0).min(160.0);
-    f.hz = 440.0 * 2f32.powf((note - 69.0) / 12.0);
+    f.hz = FILTER_NOTE_HZ.eval_unclamped(note);
     f.octaves = 115.0 / 12.0;
     if f.stages == 0 {
         return;
     }
     let big = if f.stages == 3 {
-        1.0 - (1.0 - 0.9 * r).powi(3)
+        1.0 - CUBE.eval(1.0 - 0.9 * r)
     } else {
-        1.0 - (1.0 - r).powi(3)
+        1.0 - CUBE.eval(1.0 - r)
     };
     f.damping = [2.0 * (1.0 - big); 3];
     if f.stages == 2 {
@@ -508,7 +484,7 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
         *k = k.max(MIN_DAMPING);
     }
     let fall = match (f.stages, f.pass) {
-        (1, _) => 0.5 * big.powi(5),
+        (1, _) => 0.5 * UNIT_FIFTH.eval(big),
         (2, ir::Pass::Band) => 0.9334 * big,
         (2, ir::Pass::Notch) => 0.88 * big,
         (2, _) => 0.77 * big,
@@ -760,6 +736,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn envelope_sustain_preserves_the_saved_cubic_mapping() {
+        for sustain in [-0.1_f32, 0.0, 0.43, 1.0, 1.2] {
+            let saved = EnvelopeAhdsr {
+                attack_curve: 0.0,
+                attack_ms: 0.0,
+                decay_ms: 0.0,
+                hold_ms: 0.0,
+                release_ms: 0.0,
+                sustain,
+                unknown_flag: 0,
+                unknown_tail: Vec::new(),
+            };
+            assert_eq!(envelope(&saved).sustain, sustain.clamp(0.0, 1.0).powi(3));
+        }
+    }
+
+    #[test]
+    fn state_variable_resonance_preserves_the_stage_mappings() {
+        for r in [0.0_f32, 0.2, 0.7, 1.0] {
+            let one = filter(52, 0.5, r, 0.0).unwrap();
+            let one_resonance = 1.0 - (1.0 - r).powi(3);
+            assert_eq!(one.gain, 1.0 - 0.5 * one_resonance.powi(5));
+            let three = filter(59, 0.5, r, 0.0).unwrap();
+            let three_resonance = 1.0 - (1.0 - 0.9 * r).powi(3);
+            assert_eq!(
+                three.damping[0],
+                (2.0 * (1.0 - three_resonance)).max(MIN_DAMPING)
+            );
+            assert_eq!(
+                three.gain,
+                1.0 - (1.2125 - 0.2425 * three_resonance) * three_resonance
+            );
+        }
+    }
+
+    #[test]
     fn a_full_eq_gain_route_moves_its_band_24_db() {
         let kind = eq_gain(ir::Source::Velocity, 0, "eqGain1", 1.0);
         assert!(
@@ -915,13 +927,5 @@ mod tests {
         assert_eq!(eq_band_index("eqGain3"), Some(2));
         assert_eq!(eq_band_index("eqGain4"), None);
         assert_eq!(eq_band_index("filterQ"), None);
-    }
-
-    #[test]
-    fn the_flex_curve_knob_is_linear_at_half_and_bows_either_side() {
-        assert!(flex_ratio(0.5).ln().abs() < 1e-6);
-        assert!(flex_ratio(0.0).ln().abs() < 1e-6, "zero reads as linear");
-        assert!(flex_ratio(0.25).ln() > 0.0);
-        assert!(flex_ratio(0.75).ln() < 0.0);
     }
 }

@@ -15,6 +15,16 @@ pub(super) struct Decl<'a> {
     pub(super) look: ControlLook<'a>,
 }
 
+/// Points a knob's drag travels up to sweep its range (Kontakt 8, measured;
+/// scratch/laneJ/drag/FACTS.md).
+const KNOB_SWEEP: f64 = 350.;
+/// Points a slider without `MOUSE_BEHAVIOUR` travels to sweep its range (same).
+const SLIDER_SWEEP: f64 = 172.;
+/// The `MOUSE_BEHAVIOUR` that sweeps a slider in its picture's length (manual).
+const BEHAVIOUR_PER_LENGTH: f64 = 1000.;
+/// Points a value edit's drag travels per unit (same measurement).
+const VALUE_EDIT_PER_UNIT: f64 = 4.;
+
 pub(super) fn widget(
     bld: &mut Builder<'_>,
     slot: u8,
@@ -98,7 +108,8 @@ pub(super) fn widget(
                 ratio: f64::from(param(2).unwrap_or(1)),
                 ..display()
             },
-            arrows: p.int("$CONTROL_PAR_SHOW_ARROWS") != Some(0),
+            // Off until the script sets it (Kontakt 8.13, measured).
+            arrows: p.int("$CONTROL_PAR_SHOW_ARROWS").is_some_and(|on| on != 0),
         },
         ControlKind::Table => {
             // declare ui_table %t[columns](width, height, range); negative is bipolar.
@@ -144,6 +155,13 @@ pub(super) fn widget(
                 ui::Orientation::Horizontal
             },
             channel: p.int("level_meter").and_then(|c| u8::try_from(c).ok()),
+            // attach_level_meter(id, group, slot, channel, generic): with no
+            // group, a generic of 0..15 is that instrument bus.
+            bus: (p.int("level_meter_group") == Some(-1))
+                .then(|| p.int("level_meter_generic"))
+                .flatten()
+                .and_then(|b| u8::try_from(b).ok())
+                .filter(|&b| usize::from(b) < kontra_protocol::BUSES),
         },
         ControlKind::FileSelector => ui::Kind::FileSelector {
             base_path: p.text("$CONTROL_PAR_BASEPATH").map(Into::into),
@@ -214,14 +232,29 @@ pub(super) fn widget(
     w.activate_on_press = matches!(kind, ControlKind::Switch);
     w.value_y = p.int("$CONTROL_PAR_VALUEPOS_Y");
     w.value_text = p.text("$CONTROL_PAR_LABEL").map(Into::into);
-    w.drag = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ui::Drag {
-        axis: if m < 0 {
+    // Kontakt 8's drags, measured (scratch/laneJ/drag/FACTS.md): a knob
+    // sweeps in 350 points up, ignoring MOUSE_BEHAVIOUR; a slider in 172,
+    // or 1000 / |MOUSE_BEHAVIOUR| of its picture along the sign's axis; a
+    // value edit 4 points a unit, up. Each runs its callback again on release.
+    // ponytail: 172 measured on the stock skin only; a picture may scale it.
+    let behaviour = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").filter(|&m| m != 0);
+    let sweep = match kind {
+        ControlKind::Knob => Some(ui::Sweep::Points(KNOB_SWEEP)),
+        ControlKind::Slider => Some(behaviour.map_or(ui::Sweep::Points(SLIDER_SWEEP), |m| {
+            ui::Sweep::Lengths(BEHAVIOUR_PER_LENGTH / f64::from(m.unsigned_abs()))
+        })),
+        ControlKind::ValueEdit => Some(ui::Sweep::PerUnit(VALUE_EDIT_PER_UNIT)),
+        _ => None,
+    };
+    w.drag = sweep.map(|sweep| ui::Drag {
+        axis: if vertical || kind != ControlKind::Slider {
             ui::Orientation::Vertical
         } else {
             ui::Orientation::Horizontal
         },
-        sensitivity: m.unsigned_abs(),
+        sweep,
     });
+    w.reports_release = true;
     for (par, slot) in COLORS {
         if let Some(c) = p.int(par) {
             *slot(&mut w.colors) = Some(color(c));
@@ -246,6 +279,14 @@ pub(super) fn widget(
         },
         Into::into,
     );
+    // A text edit shows its variable once the script or the user wrote it.
+    if let Cells::Text { base, .. } = cells
+        && let Some(text) = engine
+            .script_text_in(slot, base as usize)
+            .filter(|t| !t.is_empty())
+    {
+        w.text = text.into();
+    }
     w.tooltip = p.text("$CONTROL_PAR_HELP").unwrap_or_default().into();
     w.automation = ui::Automation {
         name: p.text("$CONTROL_PAR_AUTOMATION_NAME").map(Into::into),

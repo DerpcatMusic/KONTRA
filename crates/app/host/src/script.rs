@@ -1,61 +1,8 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
-use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, LookPars, ScriptPlan, Text};
+use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, LookPars, ScriptPlan, Text, ir};
 use kontra_ksp::ControlKind;
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
-
-/// The engine parameters the engine answers, by KSP name.
-const ENGINE_PARS: &[(&str, EnginePar)] = {
-    use EnginePar as P;
-    use kontra_engine::ir::ReverbPar as R;
-    &[
-        ("$ENGINE_PAR_ATTACK", P::Attack),
-        ("$ENGINE_PAR_HOLD", P::Hold),
-        ("$ENGINE_PAR_DECAY", P::Decay),
-        ("$ENGINE_PAR_SUSTAIN", P::Sustain),
-        ("$ENGINE_PAR_RELEASE", P::Release),
-        ("$ENGINE_PAR_ATK_CURVE", P::AttackCurve),
-        ("$ENGINE_PAR_MOD_TARGET_INTENSITY", P::RouteIntensity),
-        ("$ENGINE_PAR_MOD_TARGET_MP_INTENSITY", P::RouteDepth),
-        ("$ENGINE_PAR_INTMOD_INTENSITY", P::RouteDepth),
-        ("$ENGINE_PAR_INTMOD_BYPASS", P::ModBypass),
-        ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
-        ("$ENGINE_PAR_RELEASE_TRIGGER", P::ReleaseTrigger),
-        ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),
-        ("$ENGINE_PAR_EFFECT_BYPASS", P::EffectBypass),
-        ("$ENGINE_PAR_EFFECT_SUBTYPE", P::EffectSubtype),
-        ("$ENGINE_PAR_EFFECT_TYPE", P::EffectType),
-        ("$ENGINE_PAR_SEND_EFFECT_TYPE", P::EffectType),
-        ("$ENGINE_PAR_SEND_EFFECT_BYPASS", P::EffectBypass),
-        ("$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN", P::EffectOutput),
-        ("$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN", P::EffectOutput),
-        ("$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL", P::EffectDry),
-        ("$ENGINE_PAR_SENDLEVEL_0", P::SendLevel(0)),
-        ("$ENGINE_PAR_SENDLEVEL_1", P::SendLevel(1)),
-        ("$ENGINE_PAR_SENDLEVEL_2", P::SendLevel(2)),
-        ("$ENGINE_PAR_SENDLEVEL_3", P::SendLevel(3)),
-        ("$ENGINE_PAR_SENDLEVEL_4", P::SendLevel(4)),
-        ("$ENGINE_PAR_SENDLEVEL_5", P::SendLevel(5)),
-        ("$ENGINE_PAR_SENDLEVEL_6", P::SendLevel(6)),
-        ("$ENGINE_PAR_SENDLEVEL_7", P::SendLevel(7)),
-        // RV2_MOD is not carried.
-        ("$ENGINE_PAR_RV2_TYPE", P::ReverbNetwork),
-        ("$ENGINE_PAR_RV2_TIME", P::Reverb(R::Seconds)),
-        ("$ENGINE_PAR_RV2_SIZE", P::Reverb(R::Size)),
-        ("$ENGINE_PAR_RV2_DAMPING", P::Reverb(R::Damping)),
-        ("$ENGINE_PAR_RV2_DIFF", P::Reverb(R::Diffusion)),
-        ("$ENGINE_PAR_RV2_PREDELAY", P::Reverb(R::Predelay)),
-        ("$ENGINE_PAR_RV2_HIGHCUT", P::Reverb(R::HighCut)),
-        ("$ENGINE_PAR_RV2_LOWSHELF", P::Reverb(R::LowShelf)),
-        ("$ENGINE_PAR_RV2_STEREO", P::Reverb(R::Stereo)),
-        ("$ENGINE_PAR_GN_GAIN", P::GainerGain),
-        ("$ENGINE_PAR_STEREO", P::StereoWidth),
-        ("$ENGINE_PAR_STEREO_PAN", P::StereoPan),
-        ("$ENGINE_PAR_VOLUME", P::Volume),
-        ("$ENGINE_PAR_PAN", P::Pan),
-        ("$ENGINE_PAR_TUNE", P::Tune),
-    ]
-};
 
 /// Whether the engine or the UI tree understands catalog name `name`
 /// (every other one is an opaque symbol nothing acts on), for coverage
@@ -64,29 +11,32 @@ const ENGINE_PARS: &[(&str, EnginePar)] = {
 pub fn understood(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     upper == CONTROL_VALUE
-        || engine_par(name).is_some()
-        || knob(&kontra_format_kontakt::script_knobs(), name).is_some()
+        || engine_par(&kontra_format_kontakt::engine_pars(), name).is_some()
         || crate::ui::mapped(&upper)
         || LOOK.contains(&upper.as_str())
         || ["$CONTROL_PAR_NUM_ITEMS", "$CONTROL_PAR_SELECTED_ITEM_IDX"].contains(&upper.as_str())
 }
 
-/// The knob named `name`, as an index into `knobs`.
-fn knob(
-    knobs: &[(&str, kontra_engine::ir::KnobTarget, kontra_engine::ir::Law)],
+/// What `name` drives, and its text law: a knob row is
+/// [`EnginePar::Knob`] by its place among the table's knob rows.
+fn engine_par<'a>(
+    pars: &'a [ir::ScriptPar],
     name: &str,
-) -> Option<EnginePar> {
-    let n = knobs
-        .iter()
-        .position(|(k, ..)| k.eq_ignore_ascii_case(name))?;
-    u16::try_from(n).ok().map(EnginePar::Knob)
-}
-
-fn engine_par(name: &str) -> Option<EnginePar> {
-    let found = ENGINE_PARS
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case(name));
-    found.map(|&(_, p)| p)
+) -> Option<(EnginePar, Option<&'a ir::Readout>)> {
+    let mut knobs = 0u16;
+    for p in pars {
+        let par = match &p.drives {
+            ir::Drives::Engine(par) => *par,
+            ir::Drives::Knob(..) => {
+                knobs = knobs.checked_add(1)?;
+                EnginePar::Knob(knobs - 1)
+            }
+        };
+        if p.name.eq_ignore_ascii_case(name) {
+            return Some((par, p.readout.as_ref()));
+        }
+    }
+    None
 }
 
 const CONTROL_VALUE: &str = "$CONTROL_PAR_VALUE";
@@ -104,14 +54,31 @@ pub fn runs(kind: CallbackKind) -> bool {
     )
 }
 
+/// The script's arrays, by first cell, for the array files it names.
+fn arrays(script: &Script) -> Vec<(u32, bool, Box<str>)> {
+    let array = |v: &kontra_ksp::Variable| match v.cells {
+        Cells::Int { base, .. } | Cells::Real { base, .. } => Some((base, false)),
+        Cells::Text { base, .. } => Some((base, true)),
+        _ => None,
+    };
+    (script.variables.iter())
+        .filter(|v| v.name.starts_with(['%', '?', '!']))
+        .filter_map(|v| array(v).map(|(base, text)| (base, text, v.name.clone())))
+        .collect()
+}
+
 /// The engine's view of `script` with `saved` persistent values restored and
 /// the library `data` files it loads. UI metadata stays with the caller.
 #[must_use]
 pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> ScriptPlan {
     let entry = |kind| script.callback(kind, None);
     let restore = script.restore(saved);
-    let knobs = kontra_format_kontakt::script_knobs();
-    let readouts = kontra_format_kontakt::readouts();
+    let pars = kontra_format_kontakt::engine_pars();
+    let found: Vec<_> = script
+        .symbols
+        .iter()
+        .map(|n| engine_par(&pars, n))
+        .collect();
     ScriptPlan {
         program: script.program.clone(),
         callbacks: Callbacks {
@@ -135,34 +102,39 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         },
         coroutines: COROUTINES,
         foreign: None,
+        files: None,
+        arrays: arrays(script),
         hears_own_releases: true,
         held_release_ends_children: true,
         links: Vec::new(),
         controls: controls(script),
         engine_pars: EnginePars {
             first: SYMBOL_BASE,
-            by_id: script
-                .symbols
+            by_id: found.iter().map(|f| f.map(|(par, _)| par)).collect(),
+            readouts: found
                 .iter()
-                .map(|n| engine_par(n).or_else(|| knob(&knobs, n)))
-                .collect(),
-            readouts: script
-                .symbols
-                .iter()
-                .map(|n| {
-                    readouts
-                        .iter()
-                        .find(|(k, _)| *k == n.as_ref())
-                        .map(|(_, r)| r.clone())
-                })
+                .map(|f| f.and_then(|(_, r)| r.cloned()))
                 .collect(),
         },
         reverb_laws: kontra_format_kontakt::reverb_laws(),
         reverb_networks: kontra_format_kontakt::reverb_networks().into(),
-        knobs: knobs.iter().map(|(_, t, law)| (*t, law.clone())).collect(),
+        knobs: pars
+            .iter()
+            .filter_map(|p| match &p.drives {
+                ir::Drives::Knob(target, law) => Some((*target, law.clone())),
+                ir::Drives::Engine(_) => None,
+            })
+            .collect(),
         data: data
             .iter()
             .filter_map(|(name, bytes)| data_array(script, name, bytes))
+            .collect(),
+        source_folder: None,
+        library_folder: None,
+        factory_folder: None,
+        text_data: data
+            .iter()
+            .filter_map(|(name, bytes)| text_data_array(script, name, bytes))
             .collect(),
         restore: restore.ints,
         restore_texts: restore
@@ -171,6 +143,30 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .map(|(cell, text)| (*cell, Text::from_str_cut(text).0))
             .collect(),
     }
+}
+
+/// The folder of a source file, prepared for script access.
+pub(crate) fn source_folder(path: Option<&std::path::Path>) -> Option<Text> {
+    let path = std::path::absolute(path?).ok()?;
+    folder(path.parent())
+}
+
+/// A folder with a trailing slash, when it fits a text cell.
+pub(crate) fn folder(path: Option<&std::path::Path>) -> Option<Text> {
+    let path = std::path::absolute(path?).ok()?;
+    let folder = path.to_str()?;
+    let folder = if std::path::MAIN_SEPARATOR == '\\' {
+        folder.replace('\\', "/")
+    } else {
+        folder.to_owned()
+    };
+    let path = if folder.ends_with('/') {
+        folder
+    } else {
+        format!("{folder}/")
+    };
+    let (text, cut) = Text::from_str_cut(&path);
+    (!cut).then_some(text)
 }
 
 /// `links` as the engine applies them: each on its control's UI id and
@@ -240,6 +236,28 @@ fn data_array(script: &Script, name: &str, bytes: &[u8]) -> Option<(u32, Vec<i64
     Some((base, values))
 }
 
+/// A resource NKA's string values, prepared before script execution.
+fn text_data_array(script: &Script, name: &str, bytes: &[u8]) -> Option<(u32, Vec<Text>)> {
+    let var = script.variables.iter().find(|v| {
+        v.name
+            .get(1..)
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+    })?;
+    let Cells::Text { base, len } = var.cells else {
+        return None;
+    };
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.lines();
+    if lines.next()?.trim() != &*var.name {
+        return None;
+    }
+    let values = lines
+        .take(len as usize)
+        .map(|line| Text::from_str_cut(line).0)
+        .collect();
+    Some((base, values))
+}
+
 /// Control ids, the value parameter's symbol and, by variable (a UI id
 /// counts every variable), each control's value cell.
 fn controls(script: &Script) -> Controls {
@@ -274,13 +292,19 @@ fn controls(script: &Script) -> Controls {
         cells,
         steps,
         look: look(script),
+        key_pars: [
+            "$CONTROL_PAR_KEY_SHIFT",
+            "$CONTROL_PAR_KEY_ALT",
+            "$CONTROL_PAR_KEY_CONTROL",
+        ]
+        .map(|name| symbol(script, name)),
     }
 }
 
 /// The parameters the UI-look builtins set, after the script's own symbols:
 /// a script that names one shares its id; `move_control`'s grid and the
 /// table's shown steps have no constant, so always get their own.
-pub(crate) const LOOK: [&str; 14] = [
+pub(crate) const LOOK: [&str; 16] = [
     "$CONTROL_PAR_TEXT",
     "$CONTROL_PAR_LABEL",
     "$CONTROL_PAR_HELP",
@@ -293,6 +317,8 @@ pub(crate) const LOOK: [&str; 14] = [
     "grid_y",
     "table_steps_shown",
     "level_meter",
+    "level_meter_group",
+    "level_meter_generic",
     "$CONTROL_PAR_PICTURE",
     "$CONTROL_PAR_PICTURE_STATE",
 ];
@@ -324,6 +350,8 @@ fn look(script: &Script) -> LookPars {
         grid_y: par("grid_y"),
         steps_shown: par("table_steps_shown"),
         meter: par("level_meter"),
+        meter_group: par("level_meter_group"),
+        meter_generic: par("level_meter_generic"),
         picture: par("$CONTROL_PAR_PICTURE"),
         picture_state: par("$CONTROL_PAR_PICTURE_STATE"),
         wallpaper: id("$INST_WALLPAPER_ID"),
@@ -371,9 +399,15 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         reverb_networks: Vec::new(),
         knobs: Vec::new(),
         data: Vec::new(),
+        text_data: Vec::new(),
+        source_folder: None,
+        library_folder: None,
+        factory_folder: None,
         restore: Vec::new(),
         restore_texts: Vec::new(),
         foreign: Some(std::sync::Arc::new(compiled)),
+        files: None,
+        arrays: Vec::new(),
         // A UVI script never sees the notes it plays. In UVIWorkstation's
         // built-in Lua (0x1425676a0) `releaseVoice` and a `playNote` duration
         // post a NoteOff with `postEvent`, which only appends to the
@@ -386,5 +420,24 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         // A held-back NoteOff keeps the posted note (`_onRelease` posts it).
         held_release_ends_children: false,
         links: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use std::path::Path;
+
+    #[test]
+    fn folder_handles_relative_paths_and_native_separators() {
+        let actual = super::source_folder(Some(Path::new("Test.nki"))).unwrap();
+        let expected = format!("{}/", std::env::current_dir().unwrap().display());
+        assert_eq!(actual.as_str(), expected.replace('\\', "/"));
+        #[cfg(unix)]
+        assert_eq!(
+            super::source_folder(Some(Path::new(r"/library/foo\bar/Test.nki")))
+                .unwrap()
+                .as_str(),
+            r"/library/foo\bar/"
+        );
     }
 }

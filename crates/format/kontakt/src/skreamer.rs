@@ -5,10 +5,11 @@
 //! times `w = f32::from_bits(0x40c90e56)` over the rate.
 
 use kontra_ir as ir;
+use kontra_law::kontakt::PITCH_INDEX;
 
 /// The table entry for index `i`.
 fn table(i: f32) -> f32 {
-    (i / 60.0 - 20.0).exp2()
+    PITCH_INDEX.eval_unclamped(i)
 }
 
 /// Corners from the native coefficient, which multiplies by `w` where the
@@ -84,6 +85,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pitch_index_preserves_unclamped_table_calculation() {
+        for n in 0..=10_000 {
+            let index = 1_000.0 + n as f32 / 10.0;
+            assert_eq!(table(index), (index / 60.0 - 20.0).exp2(), "index {index}");
+        }
+    }
+
+    #[test]
     fn the_laws_land_on_the_cores_coefficients() {
         let ir::EffectKind::Overdrive(o) = skreamer(0.5, 0.5, 0.5, 0.5, 0.5) else {
             panic!("an overdrive");
@@ -97,7 +106,7 @@ mod tests {
         assert!((o.drive - table(1_650.453_5) * 4.0).abs() < 1e-6);
         assert_eq!(o.level, 0.447);
         // Every point of the curve table 0x144f3a100, against v2's dump of it.
-        let bytes = include_bytes!("../../../sampler-core/src/dsp/color/tables/skreamer.f32le");
+        let bytes = include_bytes!("../../../dsp/drive/tests/fixtures/skreamer.f32le");
         for (c, b) in o.curve.iter().zip(bytes.as_chunks::<8>().0) {
             assert_eq!(*c, f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
         }

@@ -12,7 +12,7 @@ SHA = 'a' * 40
 DATE = '2026-10-16T12:00:00+00:00'
 
 def feature(**changes):
-    row = dict(id='kontakt/effect/test', product='Kontakt', area='Effects', name='Test <module>', status='partial', note='Incomplete', src='crates/sampler-kontakt/src/library.rs', proof='unproven')
+    row = dict(id='kontakt/effect/test', product='Kontakt', area='Effects', name='Test <module>', status='partial', note='Incomplete', src='tools/coverage/v3-facts.json', proof='unproven')
     row.update(changes)
     return row
 
@@ -38,21 +38,14 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Duplicate'):
             build_site.collect([feature(), feature()], SHA, DATE)
 
-    def test_source_only_skips_private_cache(self):
-        self.assertEqual(os.environ['KONTRA_COVERAGE_SOURCE_ONLY'], '1')
-        with patch.object(build_site.tracker.os.path, 'exists', side_effect=AssertionError('Private cache inspected')):
-            build_site.tracker.uvi_snapshot()
-        with patch.object(build_site.tracker.os.path, 'exists', side_effect=AssertionError('Private cache inspected')), patch.object(build_site.tracker.build, 'tsv', return_value=[{'target_id': '1'}]) as read:
-            build_site.tracker.build.target_table()
-            self.assertEqual(Path(read.call_args.args[0]).name, 'modulation-targets.tsv')
-
-    def test_changed_code_probe_downgrades_status(self):
-        row = dict(status='exact', note='', probe='example.rs::implemented')
-        with patch.object(build_site.tracker.build, 'probe_ok', return_value=False):
-            status, note = build_site.tracker.derive(row)
-            self.assertEqual(status, 'partial')
-            self.assertIn('re-verification', note)
-            self.assertEqual(build_site.tracker.proof_of(row), 'unproven')
+    def test_v3_snapshot_has_scoped_evidence_without_private_paths(self):
+        rows = build_site.tracker.all_features()
+        self.assertTrue(any(row['id'].startswith('ksp/') for row in rows))
+        self.assertTrue(any(row['id'].startswith('law/') for row in rows))
+        self.assertTrue(any(row['id'].startswith('corpus/') for row in rows))
+        self.assertTrue(all(row['status'] == 'partial' for row in rows))
+        self.assertNotIn('/data/', str(rows))
+        build_site.collect(rows, SHA, DATE)
 
 if __name__ == '__main__':
     unittest.main()

@@ -5,15 +5,18 @@
 
 use std::collections::HashMap;
 
-use kontra_engine::{ControlLook, Engine, Page};
+use kontra_engine::{ControlLook, Page};
 use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 use crate::perf_view::{View, ViewControl};
 
+mod keybed;
+mod looks;
 pub mod lua;
 mod picture;
 mod widget;
 use kontra_ui_model as ui;
+pub use looks::Looks;
 pub use picture::{Library, meta as picture_meta};
 use widget::{Decl, widget};
 
@@ -65,6 +68,15 @@ impl Face {
         Some(FIRST_UI_ID + i32::try_from(control.variable).ok()?)
     }
 
+    /// The first text cell of the control declared as `name` (`@field`).
+    #[must_use]
+    pub fn text_cell(&self, name: &str) -> Option<u32> {
+        self.controls.iter().find_map(|(_, n, cells)| match cells {
+            Cells::Text { base, .. } if n.eq_ignore_ascii_case(name) => Some(*base),
+            _ => None,
+        })
+    }
+
     /// The name of parameter id `par`: a symbol, or a look parameter the
     /// script never named (`script::look_par`).
     fn par_name(&self, par: i32) -> Option<&str> {
@@ -73,34 +85,6 @@ impl Face {
             Some(s) => Some(s),
             None => LOOK.get(n - self.symbols.len()).copied(),
         }
-    }
-}
-
-/// What a [`Live`] reads of a running script: the engine itself, or a copy
-/// of those reads made on the audio thread (`crate::view::LookFrame`).
-pub trait Looks {
-    fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>>;
-    fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64>;
-    fn page(&self, slot: u8) -> Option<&Page>;
-    /// The bitmap font behind font id `id` (`get_font_id`), by picture name.
-    fn font(&self, slot: u8, id: i32) -> Option<&str>;
-}
-
-impl Looks for Engine {
-    fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>> {
-        Engine::control_look(self, slot, id)
-    }
-
-    fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64> {
-        Engine::script_cell_in(self, slot, n)
-    }
-
-    fn page(&self, slot: u8) -> Option<&Page> {
-        Engine::page(self, slot)
-    }
-
-    fn font(&self, slot: u8, id: i32) -> Option<&str> {
-        Engine::font(self, slot, id)
     }
 }
 
@@ -165,6 +149,8 @@ const MAPPED: &[&str] = &[
     "grid_y",
     "table_steps_shown",
     "level_meter",
+    "level_meter_group",
+    "level_meter_generic",
 ];
 
 /// The text style of each picture state, in [`ui::Widget::state_styles`] order.
@@ -405,7 +391,7 @@ fn decl<'a>(face: &'a Face, slot: u8, engine: &'a dyn Looks, key: Key) -> Option
 struct Seen {
     generation: u32,
     value: Option<i64>,
-    /// A hash of an array control's cells (a table's steps).
+    /// A hash of an array control's cells (a table's steps) or its text.
     cells: u64,
 }
 
@@ -416,6 +402,12 @@ impl Seen {
                 .fold(0xcbf2_9ce4_8422_2325_u64, |h, c| {
                     let v = engine.script_cell_in(slot, c as usize).unwrap_or(0) as u64;
                     (h ^ v).wrapping_mul(0x100_0000_01b3)
+                }),
+            Cells::Text { base, .. } => (engine.script_text_in(slot, base as usize))
+                .unwrap_or_default()
+                .bytes()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+                    (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
                 }),
             _ => 0,
         };
@@ -483,6 +475,9 @@ impl Live {
             picture,
         };
         build(&mut bld, face, slot, engine, &decls)?;
+        bld.ui.keybed = keybed::keybed(engine.keys());
+        bld.ui.key_names = keybed::names(engine.keys());
+        bld.ui.key_pressed = keybed::pressed(engine.keys(), engine.pressed_support());
         Ok(Self {
             tree: bld.ui,
             keys,
@@ -508,6 +503,16 @@ impl Live {
             self.page = page;
             page
         });
+        let (keybed, names) = (keybed::keybed(engine.keys()), keybed::names(engine.keys()));
+        let pressed = keybed::pressed(engine.keys(), engine.pressed_support());
+        let keys = keybed != self.tree.keybed
+            || names != self.tree.key_names
+            || pressed != self.tree.key_pressed;
+        if keys {
+            self.tree.keybed = keybed;
+            self.tree.key_names = names;
+            self.tree.key_pressed = pressed;
+        }
         let mut changed = Vec::new();
         for (n, (&key, seen)) in self.keys.iter().zip(&mut self.seen).enumerate() {
             let Some(d) = decl(face, slot, engine, key) else {
@@ -520,7 +525,10 @@ impl Live {
             }
         }
         if changed.is_empty() && page.is_none() {
-            return Changes::default();
+            return Changes {
+                keys,
+                ..Changes::default()
+            };
         }
         let mut bld = Builder {
             ui: std::mem::take(&mut self.tree),
@@ -549,6 +557,7 @@ impl Live {
         (self.tree, self.assets, self.styles) = (bld.ui, bld.assets, bld.styles);
         Changes {
             page: page.is_some(),
+            keys,
             widgets: out,
         }
     }
@@ -558,22 +567,24 @@ impl Live {
     /// What [`Live::refresh`] reads: the UI ids of the controls it shows,
     /// and the script cells of their arrays (a table's steps).
     #[must_use]
-    pub fn reads(&self, face: &Face) -> (Vec<i32>, Vec<u32>) {
+    pub fn reads(&self, face: &Face) -> (Vec<i32>, Vec<u32>, Vec<u32>) {
         let controls = self
             .keys
             .iter()
             .filter_map(|k| Some((k.id, face.controls.get(k.control?)?)));
         let mut ids = Vec::new();
-        let mut cells = Vec::new();
+        let (mut cells, mut texts) = (Vec::new(), Vec::new());
         for (id, (_, _, c)) in controls {
             ids.push(id);
-            if let Cells::Int { base, len } | Cells::Real { base, len } = *c
-                && len > 1
-            {
-                cells.extend(base..base + len);
+            match *c {
+                Cells::Int { base, len } | Cells::Real { base, len } if len > 1 => {
+                    cells.extend(base..base + len);
+                }
+                Cells::Text { base, .. } => texts.push(base),
+                _ => {}
             }
         }
-        (ids, cells)
+        (ids, cells, texts)
     }
 }
 
@@ -582,6 +593,8 @@ impl Live {
 #[derive(Debug, Default, PartialEq)]
 pub struct Changes {
     pub page: bool,
+    /// The keyboard's script colours, key names or pressed keys.
+    pub keys: bool,
     pub widgets: Vec<ui::WidgetRef>,
 }
 
@@ -589,7 +602,7 @@ impl Changes {
     /// Nothing to repaint.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        !self.page && self.widgets.is_empty()
+        !self.page && !self.keys && self.widgets.is_empty()
     }
 }
 

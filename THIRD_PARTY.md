@@ -51,10 +51,10 @@ The NKX/NKR archive layout was implemented with
 Both are **GPL-3.0**, and no files from them are included. The
 encoded-offset constant in `vendor/ni-file/src/nkr/archive.rs` is the
 same as nkxtract's.
-The keystream in `crates/sampler-kontakt/src/access.rs` (the `library-access` feature) uses the
+The retired v2 keystream in `crates/sampler-kontakt/src/access.rs` (available at the `v2-final` tag) used the
 same algorithm and constants as nkxtract's `Nks.cs`.
 The 2026-10-02 focused comparison of `Nks.cs::FileDecryptStream` and
-`src/access.rs::Keystream::new` confirms the 64 KiB stream, LCG recurrence,
+`src/access.rs::Keystream::new` in v2 confirms the 64 KiB stream, LCG recurrence,
 AES-encrypted counter and XOR construction. The Rust code combines the
 operations per block and uses a wrapping big-endian integer counter;
 the C# reference uses separate passes and a byte-array counter.
@@ -78,7 +78,7 @@ question, not a conclusion that matching format facts require GPL.
 | vello 0.10.0 | `vendor/vello` | Apache-2.0 OR MIT | linebender/vello; patches in `vendor/vello/PATCHES.md`. |
 | ncw 0.4.0 | `vendor/ncw` | MIT OR Apache-2.0 | monomadic/ncw `75af0c0`. Test data in `vendor/ncw/tests/data` is part of that crate. |
 | Noto Sans | `assets/NotoSans.ttf` | SIL Open Font License 1.1 | Full text in `assets/OFL.txt`. |
-| BUFFR support integration | `src/support.rs`, `src/support/` | ISC | Adapted from owner-maintained BUFFR commit `fd2fdba92f3f71cee24c0c72a39aa190fc9ee414`; notice and integration scope in `src/support/LICENSE-BUFFR` and `src/support/SOURCE.md`. |
+| Retired v2 BUFFR support integration | `v2-final` tag | ISC | Adapted from owner-maintained BUFFR commit `fd2fdba92f3f71cee24c0c72a39aa190fc9ee414`; retained notice and integration scope in `licenses/BUFFR/LICENSE` and `licenses/BUFFR/SOURCE.md`. |
 | buffr-durable-file, derpcat-flight-recorder | `vendor/buffr-durable-file`, `vendor/derpcat-flight-recorder` | ISC | Same BUFFR source checkpoint; each crate retains its own license. |
 
 ### The Truce License rider
@@ -202,8 +202,8 @@ Preserve their upstream provenance and verify it for source redistribution.
 
 ## CORE-MATH binary32 logarithm
 
-The safe Rust binary32 logarithm in
-`crates/sampler-core/src/dsp/dynamics/logarithm.rs` is a direct port of Alexei
+The retired v2 safe Rust binary32 logarithm in
+`crates/sampler-core/src/dsp/dynamics/logarithm.rs` at `v2-final` was a direct port of Alexei
 Sibidanov's CORE-MATH `cr_log10f`, under the MIT permission below.
 The source is pinned to commit
 `8ea8ea35c518d06b72de4cf1d528e7a2d16f104c`:

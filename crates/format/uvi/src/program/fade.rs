@@ -6,6 +6,7 @@ use roxmltree::Node;
 
 pub(super) fn apply(kg: Node, group: &mut ir::Group) -> Result<(), String> {
     let curve = num(kg, "FadeCurve", 2.0)?.clamp(1.0, 2.0) as f32;
+    let fade = kontra_law::uvi::fade_edge(curve);
     for (source, low, high, low_fade, high_fade) in [
         (
             ir::Source::Key,
@@ -29,7 +30,7 @@ pub(super) fn apply(kg: Node, group: &mut ir::Group) -> Result<(), String> {
             if width == 0 {
                 1.0
             } else {
-                kontra_law::sine_fade(distance / f32::from(width), 2.0 / curve)
+                fade.eval(distance / f32::from(width))
             }
         };
         let table = (0..=127)
