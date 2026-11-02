@@ -344,9 +344,9 @@ at `8c64fccd0`) unless a path says otherwise. Working files are under
    `Resolver`, `scan_script` and `symbol_report`, so a status here is the status
    `ksp_symbols.py doctor` would print. 1,324 distinct names were seen.
 4. **The compile pass is the new instrument.** `compile.tsv` is
-   `kspcheck` — a 40-line binary in `/var/tmp/gaps/kspcheck` that links the
-   workspace's `kontra-ksp` crate by path and calls `kontra_ksp::compile(src,
-   &[])` on each of the 8,016 files — run as
+   `kspcheck` — a 40-line binary in `tools/census/kspcheck` that links
+   `crates/script/ksp` by path and calls `kontra_ksp::compile(src, &[])` on each
+   of the 8,016 files — run as
    `ls scripts/*/slot-*.ksp | kspcheck > compile.tsv`: 7,288 compile, 728 fail,
    in 718 instruments. **This is where the symbol table's blind spot shows:** an
    unknown *command* is invisible to the text scanner, because the scanner only
@@ -369,12 +369,13 @@ The measurement scripts are **committed**, under `tools/census/`:
 `merge_symbols.py` (3), `compile_fail.py` and `kspcheck/` (4), `ui_sample.py`
 (5), `full_check.py`, `build_tsv.py`, `table_md.py`, `where.py` and
 `instruments.py` (7). `tools/census/README.md` gives the command order, the
-three binaries they need and the runtime of each step; the scripts take their
-work directory from `CENSUS_WORK` (default `/var/tmp/gaps`) and their binaries
-from `KONTRA_INSPECT`, `KONTRA_RENDER` and `DUMP_SCRIPTS`. Nothing generated is
+binaries they need (`kontra-inspect`, `kontra-render` and the `dump_scripts`
+example from this workspace, plus `kspcheck`, built from `kspcheck/` itself) and
+the runtime of each step; the scripts take their work directory from
+`CENSUS_WORK` (default `/var/tmp/gaps`) and their binaries from
+`KONTRA_INSPECT`, `KONTRA_RENDER` and `DUMP_SCRIPTS`. Nothing generated is
 committed: `census.json`, `scripts/`, the `.tsv`s and `compile-*.json` are 4.2 GB
-of output, and steps 3, 4 (from the extracted scripts), 6 and 7 regenerate from
-each other.
+of output, which is why the document and the `.tsv` are the only records.
 
 **Steps 1, 2, 5 and 6 need the sample library on disk** — the `.nki` files are
 where the script text and the audio are — so those four are reproducible only on
