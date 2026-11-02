@@ -54,7 +54,7 @@ Kontakt:
 | case | level | band | moved | limit | verdict |
 |---|---|---|---|---|---|
 | `glory-trumpet1-multi` | −0.03 dB | 0.03 dB | 0.00 / 0.00 | 0.50 / 1.00 | matches |
-| `fredonia-grand-organ` | −15.97 dB | 24.01 dB | 0.00 / 0.00 | 0.50 / 1.00 | **finding** (unchanged) |
+| `fredonia-grand-organ` | +0.16 dB | 0.38 dB | 0.00 / 0.00 | 0.50 / 1.00 | matches |
 
 A regression gate can only be green on the day it is written if it asserts what it can actually
 assert: that today's audio is still today's audio. So a case that already disagrees with Kontakt
@@ -64,8 +64,8 @@ threshold. When a fix moves a case, the baseline is re-recorded deliberately (`-
 in the diff) and the finding count is expected to fall.
 
 The alternative — passing only when absolute agreement is inside the floor — was rejected because
-it fails on the first day for ten of twenty cases and would be switched off within a week, which is
-exactly how the hand-measured numbers this replaces came to be stale.
+it fails on the first day for nine of the fifteen rendered cases and would be switched off within
+a week, which is exactly how the hand-measured numbers this replaces came to be stale.
 
 ## Why the thresholds are what they are
 
@@ -95,7 +95,7 @@ can always be traced to the instrument rather than hidden in the runner.
 | case | key | level | band RMS | |
 |---|---:|---:|---:|---|
 | glory-trumpet1-multi | 70 | −0.03 dB | 0.03 dB | matches |
-| fredonia-grand-organ | 66 | **−15.97 dB** | **24.01 dB** | finding: KONTRA is 16 dB loud on a pipe organ |
+| fredonia-grand-organ | 66 | +0.16 dB | 0.38 dB | matches |
 | electric-mint | 68 | +1.03 dB | 0.93 dB | finding |
 | electric-mint-melody | 68 | +1.67 dB | 1.28 dB | finding |
 | haunted-strings-2 | 60 | −0.47 dB | 0.28 dB | matches |
@@ -115,9 +115,11 @@ can always be traced to the instrument rather than hidden in the runner.
 | glass-steel-zero-zone | 60 | — | — | known gap: Kontakt −9.8 dBFS, KONTRA silent |
 | scene-lotus | 60 | — | — | known gap: Kontakt −27.6 dBFS, KONTRA silent |
 
-Ten findings, five clean, five negative. The findings are the corpus paying for itself on day one:
-the largest is Fredonia, where a 3,927-zone organ with no round robin should be the most deterministic
-case in the set and is 16 dB out instead.
+Nine findings, six clean, of fifteen rendered cases. The findings are the corpus paying for itself on
+day one: the largest level gap is `spitfire-horns-a4` at −29.72 dB, whose Kontakt reference itself
+sits at 0.0035 FS — a near-silent reference and a disagreement about it, not a loud render. Fredonia's
+**−15.97 / 24.01 dB** pair is not what `cases.json` records: its committed baseline is
+**+0.16 / 0.38 dB**, inside both limits, and the table above prints what that baseline measures.
 
 **Cross-check against the hand measurement.** Rendered at key 60 (the note the old parity sweep
 used) through the same pipeline, Electric Mint reads **−0.12 dB level / 0.97 dB band**, against
@@ -230,7 +232,13 @@ about it on this branch:
   number compares two engines, not a build against itself. Every case still
   prints its absolute delta from Kontakt, which is what the corpus is for; the
   gate row says so rather than reading as a regression.
-- **`--capture`/`--record` do not work here yet.** They drive real Kontakt through
+- **`--capture` does not work here yet.** It drives real Kontakt through
   `tools/oracle-mcp` (`client.py`, one session per take), which is
-  feat/integration's and is not on this branch. Re-recording the baselines — the
-  way to turn the numbers above into this engine's own — needs that port first.
+  feat/integration's and is not on this branch, so re-capturing the reference
+  WAVs needs that port first.
+- **`--record` does work here.** It renders each case with *this* branch's
+  `kontra-render`, compares against the committed reference and rewrites
+  `baseline` in `cases.json` with what it measured (`level_db`, `band_rms_db`,
+  `align_ms`, the binary's `sha256`) — no Kontakt, no oracle session. It is the
+  way to turn the numbers above into this engine's own, and it is not a way to
+  make a failure pass: the new values appear in the diff.
