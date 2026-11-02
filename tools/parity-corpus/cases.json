@@ -1,0 +1,880 @@
+{
+  "schema": 1,
+  "library_root": {
+    "env": "KONTRA_TEST_LIBRARY",
+    "default": "$HOME/Armory/VSTs/Kontakt1",
+    "note": "Each case's `instrument` is relative to this root, so the corpus runs wherever the library is installed: set KONTRA_TEST_LIBRARY, or lay the library out under the default."
+  },
+  "note": "Stereo, 32-bit float, 48 kHz, velocity 100, 2.0 s hold + 0.5 s tail, raw and unnormalised. Each case carries two reference WAVs captured from real Kontakt in two separate sessions; the spread between them is the case's threshold (with a floor of 0.5 dB level and 1.0 dB band RMS). `baseline` is where KONTRA stood against take `a` when the case was recorded: the threshold bounds movement from it, and `finding: true` (printed every run) marks a case that still disagrees with Kontakt by more than its threshold.",
+  "gate_subset": [
+    "glory-trumpet1-multi",
+    "fredonia-grand-organ",
+    "electric-mint"
+  ],
+  "cases": [
+    {
+      "id": "glory-trumpet1-multi",
+      "name": "Glory Days - 01. Trumpet 1 Multi",
+      "library": "Glory Days - Big Band Horns",
+      "instrument": "Glory Days - Big Band Horns/Instruments/GDH - Glory Days - Big Band Horns 1.0/Multi Instruments/01. Trumpet 1/01. Trumpet 1 Multi.nki",
+      "key": 70,
+      "key_note": "70 - the median of the 52..89 run this instrument sounds on at velocity 100 (38 of its 128 covered keys sound, the top of the range being an octave-displaced layer).",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 70,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/glory-trumpet1-multi-a.wav",
+        "kontakt/glory-trumpet1-multi-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.01,
+          "band_rms_db": 0.04,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "CAPSULE, 5 script slots and 409 PGS keys: the instrument that exposed the 64-key limit, so a regression there is silent on every other case.",
+      "baseline": {
+        "level_db": -0.03,
+        "band_rms_db": 0.03,
+        "align_ms": 41.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "1d398f87fce8a81196702a6048f266cfb3639265244cacbdb61529824bfb5682"
+      }
+    },
+    {
+      "id": "fredonia-grand-organ",
+      "name": "Fredonia Grand Organ",
+      "library": "Impact Soundworks - Fredonia Grand Organ",
+      "instrument": "Impact Soundworks - Fredonia Grand Organ/Instruments/Fredonia Grand Organ.nki",
+      "key": 66,
+      "key_note": "66 - the median of the 36..96 run it sounds on (all 61 covered keys sound).",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 66,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/fredonia-grand-organ-a.wav",
+        "kontakt/fredonia-grand-organ-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.0,
+          "band_rms_db": 0.02,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "3,927 prepared zones and no round robin: the most deterministic case in the corpus, so its threshold is the floor the others are judged against.",
+      "baseline": {
+        "level_db": 0.16,
+        "band_rms_db": 0.38,
+        "align_ms": 31.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "6517979573a499204fd2df3cebcc7632b38ecb2dfc0eda67e9bc5b88fa8dbd69"
+      }
+    },
+    {
+      "id": "electric-mint",
+      "name": "Electric Mint",
+      "library": "Session Guitarist - Electric Mint",
+      "instrument": "Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments/Electric Mint.nki",
+      "key": 68,
+      "key_note": "68 - the median of the 60..76 run; Mint's lowest sounding key is 46, so 68 sits inside the guitar rather than at the edge of it.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 68,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/electric-mint-a.wav",
+        "kontakt/electric-mint-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.07,
+          "band_rms_db": 0.13,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "The instrument the whole project is measured against, and the only one with a Kontakt page reference committed beside it.",
+      "baseline": {
+        "level_db": 1.03,
+        "band_rms_db": 0.93,
+        "align_ms": 47.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "1d7d5684459948385e688fd4c6147a9d0996cafb576421990f2f4682ac4c89df"
+      }
+    },
+    {
+      "id": "electric-mint-melody",
+      "name": "Electric Mint (Melody)",
+      "library": "Session Guitarist - Electric Mint",
+      "instrument": "Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments/Electric Mint (Melody).nki",
+      "key": 68,
+      "key_note": "68 - the same 60..76 run as the main page, so the two pages are compared at the same pitch.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 68,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/electric-mint-melody-a.wav",
+        "kontakt/electric-mint-melody-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.12,
+          "band_rms_db": 0.1,
+          "take_drift_ms": 3.0
+        }
+      },
+      "why": "The second page: eight ui_xy rows that were dead while the main instrument passed, and the widest round-robin spread in the corpus (its threshold is the honest measure of that).",
+      "baseline": {
+        "level_db": 1.67,
+        "band_rms_db": 1.28,
+        "align_ms": 43.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "0d28496a3ed2a03b6f2b87e77a80bae260905ce41e9554652f46481c351f75ee"
+      }
+    },
+    {
+      "id": "haunted-strings-2",
+      "name": "Haunted Strings 2",
+      "library": "Haunted Strings 2 v2.5.1 (Insanity Samples)",
+      "instrument": "#Non NICNT/Haunted Strings 2 v2.5.1 [Insanity Samples]/1. Haunted Strings 2 - Twisted Chamber Strings - Main Articulations.nki",
+      "key": 60,
+      "key_note": "60 - the median of the 24..96 run (every covered key sounds).",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 60,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/haunted-strings-2-a.wav",
+        "kontakt/haunted-strings-2-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.0,
+          "band_rms_db": 0.06,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "Send slots plus a stored IR: the +5.9 dB dry bug lived here, from summing a send slot's stored dry on top of the dry path.",
+      "baseline": {
+        "level_db": -0.47,
+        "band_rms_db": 0.28,
+        "align_ms": 47.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "a86db3d3a5cdde0e1c1d9b196e765c2432f3012405499956647b31b6c4ac52f4"
+      }
+    },
+    {
+      "id": "cherry-electric-bass",
+      "name": "Cherry Electric Bass",
+      "library": "Cherry Electric Bass (Orange Tree Samples)",
+      "instrument": "#Non NICNT/Orange Tree Samples - Cherry Electric Bass/Cherry Electric Bass.nki",
+      "key": 72,
+      "key_note": "72 - the median of the 35..109 run; Kontakt sounds at 72 too (-7.9 dBFS), so the key is inside the instrument and not only inside KONTRA's map.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 72,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/cherry-electric-bass-a.wav",
+        "kontakt/cherry-electric-bass-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.01,
+          "band_rms_db": 0.01,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "Four script slots whose handlers exist only in Kontakt 8's private data; with that reader off the render falls 33 dB.",
+      "baseline": {
+        "level_db": -0.31,
+        "band_rms_db": 2.07,
+        "align_ms": 57.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "7084f3afa907a5d538500a298d2544b07014d0b21777a37e29f550a580289683"
+      }
+    },
+    {
+      "id": "soundiron-harpsichord",
+      "name": "Soundiron Harpsichord",
+      "library": "Soundiron - Harpsichord",
+      "instrument": "#Non NICNT/Soundiron - Harpsichord/Instruments/Harpsichord.nki",
+      "key": 67,
+      "key_note": "67 - the median of the 9..126 run (118 of 126 covered keys sound).",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 67,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/soundiron-harpsichord-a.wav",
+        "kontakt/soundiron-harpsichord-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.13,
+          "band_rms_db": 0.39,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "%NOTE_DURATION and allow-group gating in one instrument: it was 26 dB loud and totally silent until the system array compiled.",
+      "baseline": {
+        "level_db": -0.19,
+        "band_rms_db": 1.0,
+        "align_ms": 53.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "31fe03554c3d4d1ef06e0c07b8da3a403705dd617a0e2ff2bbd1f72244796c99"
+      }
+    },
+    {
+      "id": "glory-trombone1-chord",
+      "name": "Glory Days - 05. Trombone 1 Multi (4-note chord)",
+      "library": "Glory Days - Big Band Horns",
+      "instrument": "Glory Days - Big Band Horns/Instruments/GDH - Glory Days - Big Band Horns 1.0/Multi Instruments/05. Trombone 1/01. Trombone 1 Multi.nki",
+      "key": 58,
+      "key_note": "58 - the median of the 40..76 run; the chord is 58/62/65/70, all inside it.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "chord",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 58,
+            "velocity": 100
+          },
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 62,
+            "velocity": 100
+          },
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 65,
+            "velocity": 100
+          },
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 70,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/glory-trombone1-chord-a.wav",
+        "kontakt/glory-trombone1-chord-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.02,
+          "band_rms_db": 0.1,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "A four-note chord, where the level law has to sum rather than copy: on this instrument a chord sits only 0.4 dB above a single note, so a linear-sum bug reads as +12 dB.",
+      "baseline": {
+        "level_db": 0.0,
+        "band_rms_db": 0.24,
+        "align_ms": 56.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "bb9bcd3d8dc063d15754d52b77d0e0e21d3e6ddb208e473054fcfc093d9fbf44"
+      }
+    },
+    {
+      "id": "eminent-trombone",
+      "name": "The Eminent Trombone",
+      "library": "Straight Ahead Samples - The Eminent Trombone",
+      "instrument": "Straight Ahead Samples - The Eminent Trombone/Instruments/The Eminent Trombone.nki",
+      "key": 55,
+      "key_note": "55 - the median of the 40..71 run (32 of 61 covered keys sound; the rest are keyswitch or unpitched groups).",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 55,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/eminent-trombone-a.wav",
+        "kontakt/eminent-trombone-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.0,
+          "band_rms_db": 0.02,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "43,338 zones with keyswitch-driven articulation groups: the dense end of zone preparation.",
+      "baseline": {
+        "level_db": -0.12,
+        "band_rms_db": 0.1,
+        "align_ms": 49.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "9d6fb592b5447f4f5a8886452f72e822edca86a33199b05673a14060ad68bef2"
+      }
+    },
+    {
+      "id": "eeb-rick-bridge",
+      "name": "Evolution EEB Rick - Bridge Only",
+      "library": "Evolution Electric Bass - Rick",
+      "instrument": "Evolution Electric Bass - Rick/EEB Rick - Bridge Only.nki",
+      "key": 62,
+      "key_note": "62 - the median of the only run KONTRA sounds on, 59..65, of 93 covered keys. A bass that sounds on six adjacent keys is itself a finding; the key is inside it rather than at 60 by habit.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 62,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/eeb-rick-bridge-a.wav",
+        "kontakt/eeb-rick-bridge-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.01,
+          "band_rms_db": 0.02,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "32,620 zones in the bass range: it proves the corpus is not a key-60 test, and its old parity delta was -4.2 dB.",
+      "baseline": {
+        "level_db": -3.91,
+        "band_rms_db": 23.06,
+        "align_ms": 40.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "5bb52d603b282f13e5568f99ceb45698eef39880c8f0ef7d545f5b9f044ea3b3"
+      }
+    },
+    {
+      "id": "session-horns-keyswitch",
+      "name": "Session Horns Pro - Keyswitch",
+      "library": "Session Horns Pro v1.5.0",
+      "instrument": "Session Horns Pro v1.5.0/Instruments/Session Horns Pro - Keyswitch.nki",
+      "key": 60,
+      "key_note": "60 - the median of the 42..79 run, which is the playable compass; the low run (2..39) is the articulation switches and the top run (88..127) is not the instrument.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 60,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/session-horns-keyswitch-a.wav",
+        "kontakt/session-horns-keyswitch-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.04,
+        "from_spread": {
+          "level_db": 0.24,
+          "band_rms_db": 1.04,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "An articulation that needs a keyswitch before it sounds, so the note alone is not the whole input.",
+      "baseline": {
+        "level_db": 0.15,
+        "band_rms_db": 1.53,
+        "align_ms": 23.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "1fc9358e8ca448f8ac793bf10c7a0ad7dabd4bc3da8e0da05313c072ebe271d1"
+      }
+    },
+    {
+      "id": "spitfire-horns-a4",
+      "name": "Spitfire Studio Brass - Horns a4 Decorative",
+      "library": "Spitfire_Studio_Brass",
+      "instrument": "Spitfire_Studio_Brass/Instruments/_Advanced_/Extended techniques/b - Horns a4 - Decorative techniques.nki",
+      "key": 57,
+      "key_note": "57 - the median of the 37..77 run (all 41 covered keys sound).",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 57,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/spitfire-horns-a4-a.wav",
+        "kontakt/spitfire-horns-a4-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.02,
+          "band_rms_db": 0.03,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "A genuinely quiet instrument (Kontakt peaks at 0.0035, -49 dBFS): level bugs that hide above -20 dBFS are visible here.",
+      "baseline": {
+        "level_db": -29.72,
+        "band_rms_db": 15.07,
+        "align_ms": -1.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "78baed2c9f5381e107ac04c440ec78752aadea040efbd0a993aa8b9ad2c08c97"
+      }
+    },
+    {
+      "id": "studio-drummer-stadium",
+      "name": "Studio Drummer - Stadium Kit Full",
+      "library": "Studio Drummer 1.4.1 (Native Instruments)",
+      "instrument": "Studio Drummer 1.4.1 [Native Instruments]/Instruments/Stadium Kit - Full.nki",
+      "key": 54,
+      "key_note": "54 - the median of the 27..81 run: a drum slot in the middle of the map, not a pitched note.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 54,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/studio-drummer-stadium-a.wav",
+        "kontakt/studio-drummer-stadium-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.02,
+          "band_rms_db": 0.14,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "Drums: key-mapped rather than pitched, so the note's pitch is an identity and not a resampling ratio.",
+      "baseline": {
+        "level_db": 2.24,
+        "band_rms_db": 0.98,
+        "align_ms": 50.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "4ee90ac59adb04885c84a30f1a19460de320ab439f15bdd101469ad15b2d13d2"
+      }
+    },
+    {
+      "id": "vintage-organs-c3-jazz",
+      "name": "Vintage Organs - C3 Jazz",
+      "library": "Vintage Organs Library",
+      "instrument": "Vintage Organs Library/Instruments/2 - Jazz/C3 Jazz.nki",
+      "key": 66,
+      "key_note": "66 - the median of the 36..96 run (every covered key sounds).",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 66,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/vintage-organs-c3-jazz-a.wav",
+        "kontakt/vintage-organs-c3-jazz-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.52,
+        "band_rms_db": 4.3,
+        "from_spread": {
+          "level_db": 0.52,
+          "band_rms_db": 4.3,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "A second organ product, so Fredonia is not the only organ and an organ-wide law cannot pass on one instrument.",
+      "baseline": {
+        "level_db": -2.04,
+        "band_rms_db": 13.97,
+        "align_ms": 58.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "aded12cb98f2bb5f0fb262176d74275b096dab515b04cde1addb9af80b2da2f0"
+      }
+    },
+    {
+      "id": "unity-nostalgic-synth",
+      "name": "Unity - Nostalgic Synth",
+      "library": "Unity - Nostalgic Synth 1.2.1 (Ava Music Group)",
+      "instrument": "Unity - Nostalgic Synth 1.2.1 [Ava Music Group]/Instruments/UNITY - Nostalgic Synth.nki",
+      "key": 72,
+      "key_note": "72 - the median of the 36..108 run (every covered key sounds).",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 72,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "matches",
+      "references": [
+        "kontakt/unity-nostalgic-synth-a.wav",
+        "kontakt/unity-nostalgic-synth-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.0,
+          "band_rms_db": 0.0,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "The synth path: wavetable-style zones, 76 groups and 4 script slots with no sampler-specific law to lean on.",
+      "baseline": {
+        "level_db": -0.16,
+        "band_rms_db": 1.99,
+        "align_ms": 49.0,
+        "measured": "2026-11-01",
+        "kontra_sha256": "ebb1dfb846788c5a34ac3844bac683b2ad0538fd4c0a5b6d51a0c2ccca0832b1"
+      }
+    },
+    {
+      "id": "lass-aleatoric-cellos",
+      "name": "AudioBro LASS - Aleatoric Sustained Cellos",
+      "library": "AudioBro LASS Bundles",
+      "instrument": "AudioBro LASS Bundles/Instruments/Aleatoric (FX)/Aleatoric Sustained Cellos.nki",
+      "key": 60,
+      "key_note": "60 - KONTRA refuses the instrument, so the key only names the note a reference would play if decryption ever lands.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 60,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "expected-refusal",
+      "references": [],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": null,
+          "band_rms_db": null
+        }
+      },
+      "why": "Both engines refuse it (the .nicnt carries no JDX/HU key material, the presets are NI-encrypted): pins the content exclusion, and flips to a positive case only if decryption ever lands.",
+      "refusal_reason": "no .nicnt access data"
+    },
+    {
+      "id": "garritan-flute1",
+      "name": "Garritan - Flute 1",
+      "library": "Garritan - Jazz & Big Band",
+      "instrument": "Garritan - Jazz & Big Band/Instruments/01 Saxes and Woodwinds/Flutes/Flute 1.nki",
+      "key": 60,
+      "key_note": "60 - KONTRA refuses it as legacy XML; 60 is the flute's written middle register and the note Kontakt's reference plays.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 60,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "expected-refusal",
+      "references": [
+        "kontakt/garritan-flute1-a.wav",
+        "kontakt/garritan-flute1-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.0,
+          "band_rms_db": 0.06,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "KONTRA refuses it as a legacy XML preset while Kontakt loads it and it sounds (peak 0.056): the known asymmetry, pinned so it cannot be quietly forgotten.",
+      "refusal_reason": "legacy XML instruments are not read"
+    },
+    {
+      "id": "evolve-piano-glissandos-02",
+      "name": "Evolve R2 - Piano Glissandos 02",
+      "library": "Evolve R2 Library",
+      "instrument": "Evolve R2 Library/Instruments/3 Stings and Transitions/Uncaged Piano/Piano Glissandos 02.nki",
+      "key": 60,
+      "key_note": "60 - KONTRA refuses it on modulator category 3; the reference documents that Kontakt is silent here too.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 60,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "expected-refusal",
+      "references": [
+        "kontakt/evolve-piano-glissandos-02-a.wav",
+        "kontakt/evolve-piano-glissandos-02-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.0,
+          "band_rms_db": null,
+          "take_drift_ms": -100.0
+        }
+      },
+      "why": "KONTRA refuses it on modulator category 3; Kontakt loads it and is silent on this note too, so the reference documents a legitimate silence rather than a missing feature.",
+      "refusal_reason": "Unexpected internal modulator category 3"
+    },
+    {
+      "id": "glass-steel-zero-zone",
+      "name": "Spitfire Glass and Steel - Alien Distortions MW Cool Filter",
+      "library": "#Non NICNT / Spitfire Glass and Steel library",
+      "instrument": "#Non NICNT/Spitfire Glass and Steel library/Instruments/Cinematic Rhythms/Alien Distortions MW Cool Filter.nki",
+      "key": 60,
+      "key_note": "60 - KONTRA translates 0 zones, so no key can sound; 60 is the census note and the note the Kontakt reference plays.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 60,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "known-gap",
+      "references": [
+        "kontakt/glass-steel-zero-zone-a.wav",
+        "kontakt/glass-steel-zero-zone-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.01,
+          "band_rms_db": 0.26,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "One of the 243 #Non NICNT instruments with zero playable zones: silent for a structural reason, so the corpus records that KONTRA loads it and makes no sound rather than crashing.",
+      "gap": "KONTRA translates 0 zones from this .nki and renders silence; Kontakt plays it at -9.8 dBFS, so the zones are reachable some way KONTRA does not read."
+    },
+    {
+      "id": "scene-lotus",
+      "name": "Scene - Lotus",
+      "library": "Scene - Lotus (Native Instruments)",
+      "instrument": "Scene - Lotus [Native Instruments]/Instruments/Scene - Lotus.nki",
+      "key": 60,
+      "key_note": "60 - the median of the 24..84 run; KONTRA is silent on all of it and Kontakt sounds, which is the gap this case records.",
+      "velocity": 100,
+      "hold_s": 2.0,
+      "tail_s": 0.5,
+      "midi": {
+        "type": "note",
+        "notes": [
+          {
+            "start_s": 0.0,
+            "length_s": 2.0,
+            "key": 60,
+            "velocity": 100
+          }
+        ]
+      },
+      "expect": "known-gap",
+      "references": [
+        "kontakt/scene-lotus-a.wav",
+        "kontakt/scene-lotus-b.wav"
+      ],
+      "threshold": {
+        "level_db": 0.5,
+        "band_rms_db": 1.0,
+        "from_spread": {
+          "level_db": 0.01,
+          "band_rms_db": 0.2,
+          "take_drift_ms": 0.0
+        }
+      },
+      "why": "39,997,154 of the corpus's 40M script-fault events, and silent: the pathological script case, where a regression shows up as a crash or as sound that never existed.",
+      "gap": "Kontakt plays it (-27.6 dBFS) through a script that faults 39,997,154 times in KONTRA; KONTRA's render is silent."
+    }
+  ]
+}
