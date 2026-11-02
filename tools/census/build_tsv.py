@@ -203,7 +203,7 @@ FAILS = sum(1 for s in SILENT if s["path"] in {v["path"] for v in F.values()})
 add("silent at every key with zones", "symptom", len(SILENT),
     len({s["library"] for s in SILENT}),
     f"{C['totals']['keysweep_instruments']} instruments keyswept; "
-    + f"{'/'.join(str(k) for k in KEYS_ANSWERED)} of 9 keys answered on each",
+    + f"{'/'.join(str(k) for k in KEYS_ANSWERED) or '?'} of 9 keys answered on each",
     f"a symptom, not a gap: only {FAILS} of these {len(SILENT)} have a script that fails to compile. The `LoadArray` "
     "cross-tabulation in §5 is the best single explanation the numbers offer — unproven as a mechanism, and the "
     "correlation itself withdrawn until it is re-derived"

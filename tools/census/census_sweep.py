@@ -47,7 +47,10 @@ def faults_total(faults_text):
 
 def one(path):
     global done
-    wav = OUT / f"render-{SHARD}.wav"
+    # One file per instrument, not per shard: `WORKERS` threads render at once
+    # and a shared name meant two renders writing, and each other's unlink
+    # deleting, the same file.
+    wav = OUT / f"render-{SHARD}-{abs(hash(path)) % 10**9}.wav"
     rec = {"path": path, "name": Path(path).stem}
     s = time.time()
     try:

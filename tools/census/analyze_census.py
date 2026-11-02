@@ -133,7 +133,7 @@ def main():
                    "loaded_no_unanswered": clean, "loaded_no_zones": len(nz),
                    "keysweep_instruments": len(sweep), "silent_with_zones": len(silent),
                    "silent_unmeasured": len(unmeasured),
-                   "silent_with_errors": sum(1 for s in quiet if s.get("error")),
+                   "keysweep_errors": sum(1 for s in sweep if s.get("error")),
                    "ui_instruments": len(ui_unres),
                    "ui_unresolved_assets": sum(r.get("ui_unresolved", 0) for r in loaded),
                    "ui_resolved_assets": sum(r.get("ui_resolved", 0) for r in loaded)},

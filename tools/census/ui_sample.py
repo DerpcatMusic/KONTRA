@@ -5,7 +5,7 @@ unread (our gap).
 
 Usage: ui_sample.py N OUT.json
 """
-import collections, json, os, random, subprocess, sys
+import collections, hashlib, json, os, random, subprocess, sys
 
 from library import library_dir, library_of
 
@@ -23,7 +23,10 @@ CACHE = f"{WORK}/files-index"
 def index(root):
     """Lowercased relative paths of every file under root, Samples pruned."""
     os.makedirs(CACHE, exist_ok=True)
-    key = os.path.join(CACHE, str(abs(hash(root))) + ".txt")
+    # `hash()` of a str is salted per process, so the old key never matched
+    # between two runs and the index was rebuilt every time. A digest of the
+    # path is stable, and the file it names is the same index.
+    key = os.path.join(CACHE, hashlib.sha256(root.encode()).hexdigest()[:16] + ".txt")
     if os.path.exists(key):
         return open(key).read().splitlines()
     out = subprocess.run(["find", root, "-path", "*/Samples", "-prune", "-o", "-type", "f", "-print"],

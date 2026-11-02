@@ -401,7 +401,11 @@ at `8c64fccd0`) unless a path says otherwise. Working files are under
    asset path tested against a lowercased index of the library's files
    (`Samples/` pruned).
 6. **Silence** is `/var/tmp/keysweep/results.jsonl`: 704 instruments, 9 keys each
-   (36…84), `sounds_at` empty = silent at every key tried.
+   (36…84), `sounds_at` empty = silent at every key tried. A record counts as
+   silent only when all nine keys answered — a render that failed or timed out
+   leaves no peak, and this pass's 180 all have nine; the seven records that lost
+   a render are counted as errors, not as silence (`keysweep_errors` in
+   `census_summary.json`).
 7. **The table and this document's numbers** are generated:
    `build_tsv.py docs/re/gap-inventory-2026-11-01.tsv` rewrites the `.tsv` beside
    this file, `table_md.py docs/re/gap-inventory-2026-11-01.tsv` renders §2.
@@ -426,7 +430,7 @@ a machine with the same libraries installed. Steps 3, 4 and 7 need only what the
 earlier steps wrote; that was checked by re-running them against this pass's own
 artifacts on 2026-11-01: `analyze_census.py` reproduced every count in
 `census_summary.json` (its silence rows now also record `keys_answered`, and its
-totals `silent_unmeasured` and `silent_with_errors`, which this pass did not
+totals `silent_unmeasured` and `keysweep_errors`, which this pass did not
 write), `compile_fail.py` reproduced `compile_fail.json` identically from
 `compile.tsv`, and `build_tsv.py` reproduced the committed `gap-inventory.tsv`
 byte-for-byte.
