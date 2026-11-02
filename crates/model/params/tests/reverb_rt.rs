@@ -8,6 +8,10 @@ static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
 // SAFETY: all operations delegate to System with the original arguments.
+#[expect(
+    unsafe_code,
+    reason = "the isolated allocator test delegates to System"
+)]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) {
