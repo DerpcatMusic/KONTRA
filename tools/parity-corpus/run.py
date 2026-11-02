@@ -15,7 +15,8 @@ correlation, and compares level and 1/3-octave band RMS against that threshold.
                  tools/oracle-mcp, one session per take, and rewrite cases.json
 
 Exit status: 0 every case inside its threshold (or matching its recorded refusal/silence),
-1 drift, 2 the corpus cannot be read or KONTRA cannot run.
+1 drift or a case that could not be compared (unreadable WAV, a render that did not finish),
+2 the corpus cannot be read.
 
 Metric definitions are `tools/oracle/compare.py`'s, reimplemented here in the standard library so
 the gate runs on a machine with no numpy: level is the integrated RMS difference over the aligned
@@ -63,10 +64,17 @@ while _f <= 16000:
 
 
 def read_wav(path: Path):
-    """Return (channels x frames list of float lists, rate). Reads float32 and PCM16 RIFF."""
-    data = path.read_bytes()
+    """Return (channels x frames list of float lists, rate). Reads float32 and PCM16 RIFF.
+
+    Raises `ValueError`, not `SystemExit`: one unreadable WAV is a case that could not be
+    compared (a failed row, exit 1), not the corpus run ending with status 2 and no table.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        raise ValueError(f"{path}: {e}") from e
     if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
-        raise SystemExit(f"{path}: not a RIFF/WAVE file")
+        raise ValueError(f"{path}: not a RIFF/WAVE file")
     pos, fmt, payload = 12, None, None
     while pos + 8 <= len(data):
         cid = data[pos:pos + 4]
@@ -79,11 +87,11 @@ def read_wav(path: Path):
             break
         pos += 8 + size + (size & 1)
     if fmt is None or payload is None:
-        raise SystemExit(f"{path}: no fmt/data chunk")
+        raise ValueError(f"{path}: no fmt/data chunk")
     tag, channels, rate, _, _, bits = fmt
     if tag == 3 or (tag == 0xFFFE and bits == 32):
         if bits != 32:
-            raise SystemExit(f"{path}: {bits}-bit float is not expected here")
+            raise ValueError(f"{path}: {bits}-bit float is not expected here")
         a = array.array("f")
         a.frombytes(payload[: len(payload) // 4 * 4])
         if sys.byteorder != "little":
@@ -96,9 +104,9 @@ def read_wav(path: Path):
             a.byteswap()
         flat = [v / 32768.0 for v in a]
     else:
-        raise SystemExit(f"{path}: unsupported WAV format tag {tag} / {bits} bits")
+        raise ValueError(f"{path}: unsupported WAV format tag {tag} / {bits} bits")
     if rate != RATE:
-        raise SystemExit(f"{path}: {rate} Hz, the corpus is {RATE} Hz")
+        raise ValueError(f"{path}: {rate} Hz, the corpus is {RATE} Hz")
     chans = [flat[c::channels] for c in range(channels)]
     return chans, rate
 
@@ -198,12 +206,10 @@ def align_lag_ms(ref_mono, kern_mono, span_ms=10):
 
 
 def shift(chans, samples):
-    """Align one side by whole samples; a positive shift drops that many leading samples."""
-    if samples == 0:
+    """Drop `samples` (>= 0) leading samples from every channel."""
+    if samples <= 0:
         return chans
-    if samples > 0:
-        return [c[samples:] for c in chans]
-    return [c[:samples] for c in chans]
+    return [c[samples:] for c in chans]
 
 
 # ------------------------------------------------------------------- spectrum
@@ -291,10 +297,24 @@ def band_levels(mono, n_fft=4096):
     return out
 
 
+def align_pair(ref_chans, kern_chans):
+    """The two captures with the found lag applied, plus the lag and its correlation.
+
+    `lag_ms` is positive when the reference starts later. Applying it means dropping the
+    leading samples of whichever side starts later: the reference for a positive lag, KONTRA
+    for a negative one. A negative lag used to drop the reference's *tail* instead, which
+    moved neither signal -- any case where KONTRA started later stayed misaligned by the
+    lag, and `compare` then reported the level of two different windows.
+    """
+    lag_ms, env_r, onset_lag = align_lag_ms(mean_channels(ref_chans), mean_channels(kern_chans))
+    samples = int(lag_ms) * RATE // 1000
+    return (shift(ref_chans, max(samples, 0)), shift(kern_chans, max(-samples, 0)),
+            lag_ms, env_r, onset_lag)
+
+
 def compare(ref_chans, kern_chans):
     """Level (Kontakt - KONTRA) and band RMS after aligning; the lag found is reported."""
-    lag_ms, env_r, onset_lag = align_lag_ms(mean_channels(ref_chans), mean_channels(kern_chans))
-    ref = shift(ref_chans, lag_ms * RATE // 1000)
+    ref, kern_chans, lag_ms, env_r, onset_lag = align_pair(ref_chans, kern_chans)
     n = min(min(len(c) for c in ref), min(len(c) for c in kern_chans))
     ref = [c[:n] for c in ref]
     kern = [c[:n] for c in kern_chans]
@@ -375,12 +395,20 @@ def render_bin() -> Path:
     return target / "kontra-render"
 
 
+#: Seconds one render may take. A constant so a test can prove the timeout is a failed row
+#: rather than the traceback that ended a whole corpus run.
+RENDER_TIMEOUT = 900
+
+
 def kontra_render(case, midi_path: Path, out_wav: Path, root: Path):
     """Run KONTRA on the case's own MIDI. Returns (returncode, summary-or-None, stderr)."""
-    p = subprocess.run([str(render_bin()), "--instrument", str(instrument_path(case, root)),
-                        "--out", str(out_wav), "--midi", str(midi_path), "--tail",
-                        str(case.get("tail_s", 0.5)), "--quiet"],
-                       capture_output=True, text=True, timeout=900)
+    try:
+        p = subprocess.run([str(render_bin()), "--instrument", str(instrument_path(case, root)),
+                            "--out", str(out_wav), "--midi", str(midi_path), "--tail",
+                            str(case.get("tail_s", 0.5)), "--quiet"],
+                           capture_output=True, text=True, timeout=RENDER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return 124, None, f"kontra-render did not finish within {RENDER_TIMEOUT:g} s"
     summary = None
     if p.returncode == 0:
         try:
@@ -473,9 +501,15 @@ def run_case(case, workdir: Path, root: Path):
         row.update(ok=False, status="reference missing",
                    detail=f"{ref_path} is not there: re-capture with --case {case['id']}")
         return row
-    ref_chans, _ = read_wav(ref_path)
-    kern_chans, _ = read_wav(out_wav)
-    metrics = compare(ref_chans, kern_chans)
+    try:
+        ref_chans, _ = read_wav(ref_path)
+        kern_chans, _ = read_wav(out_wav)
+        metrics = compare(ref_chans, kern_chans)
+    except (ValueError, subprocess.TimeoutExpired) as e:
+        # One case that cannot be measured is a failed row, not the end of the corpus: exit 2
+        # and no table is how a single odd WAV used to abort every case after it.
+        row.update(ok=False, status="could not compare", detail=str(e)[-160:])
+        return row
     row["metrics"] = metrics
 
     if case.get("expect") == "known-gap":
@@ -565,8 +599,12 @@ def record(args, doc):
         if rc != 0:
             print(f"{case['id']}: KONTRA does not render it ({err.splitlines()[-1:]}) - no baseline")
             continue
-        ref_chans, _ = read_wav(REFS / Path(refs[0]).name)
-        kern_chans, _ = read_wav(out_wav)
+        try:
+            ref_chans, _ = read_wav(REFS / Path(refs[0]).name)
+            kern_chans, _ = read_wav(out_wav)
+        except ValueError as e:
+            print(f"{case['id']}: {e} - no baseline")
+            continue
         m = compare(ref_chans, kern_chans)
         case["baseline"] = {
             "level_db": m["level_db"],
@@ -661,8 +699,11 @@ def capture(args, doc):
 
         # Thresholds and the alignment offset come from the two takes and a KONTRA render.
         if all(o.get("wav") for o in outcomes):
-            a, _ = read_wav(REFS / f"{case['id']}-a.wav")
-            b, _ = read_wav(REFS / f"{case['id']}-b.wav")
+            try:
+                a, _ = read_wav(REFS / f"{case['id']}-a.wav")
+                b, _ = read_wav(REFS / f"{case['id']}-b.wav")
+            except ValueError as e:
+                raise SystemExit(f"{case['id']}: a captured take is unreadable: {e}") from e
             spread = compare(a, b)
             case["threshold"] = {
                 "level_db": round(max(0.5, abs(spread["level_db"])), 2),
@@ -674,7 +715,10 @@ def capture(args, doc):
             out_wav = workdir / f"{case['id']}-kontra.wav"
             rc, summary, err = kontra_render(case, midi_path, out_wav, root)
             if rc == 0 and out_wav.exists():
-                kern, _ = read_wav(out_wav)
+                try:
+                    kern, _ = read_wav(out_wav)
+                except ValueError as e:
+                    raise SystemExit(f"{case['id']}: the KONTRA render is unreadable: {e}") from e
                 m = compare(a, kern)
                 # The baseline is recorded with the reference: a capture without the delta it
                 # implies would leave the case unable to say whether anything moved.
