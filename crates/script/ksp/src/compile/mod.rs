@@ -75,6 +75,11 @@ struct Var {
     /// Element type.
     ty: Ty,
     home: Home,
+    /// A scalar's constant initialiser, when it was declared with one. The
+    /// declaration evaluates it once, so it is what the name holds when
+    /// [`Compiler::fold`] sees a read of it — and it is what makes a declared
+    /// name fold *instead of* being read as a catalog symbol.
+    init: Option<Value>,
     control: Option<u32>,
     persistence: Persistence,
 }
@@ -605,6 +610,36 @@ impl<'a> Compiler<'a> {
                 let got = self.expr(value)?;
                 self.convert(got, Ty::Int, value.span)?;
                 self.host(Action::SetController, 2, 0, Returns::Nothing);
+                return Ok(());
+            }
+            // `$EVENT_VELOCITY` is the one system variable a script may write,
+            // and what a write means is written down in the manual's
+            // `change_velo()` entry: "Once the velocity of a particular note
+            // event is changed, it becomes the new $EVENT_VELOCITY" — the
+            // variable is the running event's velocity, not a snapshot of the
+            // incoming message. So the write is `change_velo($EVENT_ID, v)`:
+            // the event's velocity, and every later read of the variable,
+            // become v. The corpus's users clamp the variable itself
+            // (`if ($EVENT_VELOCITY > 127) $EVENT_VELOCITY := 127 end if`, Snare
+            // 1 Off and 21 more) and then read it back, which is the same thing
+            // from the other side.
+            //
+            // That is also `change_velo()`'s own window: "only allowed in the
+            // on note callback and only works before the first wait() statement.
+            // If the voice is already running, only the value of the variable
+            // changes." Past the first `wait()` the engine leaves the running
+            // voice's velocity alone, as the manual says, but it does not keep a
+            // script-side copy, so a read after that point still sees the
+            // event's velocity rather than the number that was written.
+            // Recording that copy would need storage the front end does not
+            // have; all 22 of the corpus's writers do it in `on note`
+            // (measured: one generator, 22 instruments), which is the window the
+            // manual defines.
+            if let (Some(Builtin::EventVelocity), None) = (Builtin::from_name(name), index) {
+                self.host(Action::EventId, 0, 0, Returns::Int);
+                let got = self.expr(value)?;
+                self.convert(got, Ty::Int, value.span)?;
+                self.host(Action::ChangeVelo, 2, 0, Returns::Nothing);
                 return Ok(());
             }
             if Builtin::from_name(name).is_some() || self.named_constant(name).is_some() {

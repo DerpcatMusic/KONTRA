@@ -184,7 +184,12 @@ builtins! {
         SetNrpn "set_nrpn" [I I] 0 Void;
         ResetRlsTrigCounter "reset_rls_trig_counter" [I] 0 Void;
         WillNeverTerminate "will_never_terminate" [I] 0 Void;
-        RedirectOutput "redirect_output" [I I] 0 Void;
+        // KSP manual, `redirect_output()`: `redirect_output(<event-id>,
+        // <output-type>, <index>)`. `<index>` is documented as having no effect
+        // for `$OUTPUT_TYPE_DEFAULT`, and the manual's own example always
+        // passes it, so it is optional here and a call with two arguments
+        // routes to output 0.
+        RedirectOutput "redirect_output" [I I I] 1 Void;
         // Time.
         WaitTicks "wait_ticks" [I] 0 Void;
         WaitAsync "wait_async" [I] 0 Void;
@@ -306,6 +311,25 @@ builtins! {
         SetUiWidthPx "set_ui_width_px" [I] 0 Void;
         SetScriptTitle "set_script_title" [S] 0 Void;
         MakePerfview "make_perfview" [] 0 Void;
+        // `hide_inst_icon` is not in the KSP reference (checked in the 7.10 and
+        // 8.0 manuals: both document the instrument icon only as
+        // `set_control_par($INST_ICON_ID, $CONTROL_PAR_HIDE, ...)`), but
+        // Kontakt accepts it and 188 corpus instruments call it — every
+        // VSTBuzz Power Move patch, and for all 188 it was the only reason
+        // their slot failed to compile (measured by compiling them). What it
+        // hides is the icon in Kontakt's own instrument header; KONTRA's page
+        // draws no instrument header and no instrument icon, so there is
+        // nothing to hide and a no-op is the faithful binding: the command
+        // compiles and asks the host, and the host does nothing (see the arm
+        // in the engine's script host).
+        HideInstIcon "hide_inst_icon" [] 0 Void;
+        // `dont_use_machine_mode(<zone-id>)` is the Zone Commands entry the
+        // manual documents as "can only be used in the \"on note\" callback";
+        // it switches Kontakt's own machine mode off for the zone the note
+        // came from, and our plan has no machine mode for a zone to enter, so
+        // the call is answered and does nothing (see the engine's script host).
+        // 25 corpus slots fail to compile on the name alone.
+        DontUseMachineMode "dont_use_machine_mode" [I] 0 Void;
         ExposeControls "expose_controls" [] 0 Void;
         SetSnapshotType "set_snapshot_type" [I] 0 Void;
         ShowLibraryTab "show_library_tab" [] 0 Void;
@@ -399,6 +423,7 @@ builtins! {
         GroupsAffected "%GROUPS_AFFECTED" [I] 0 Int;
         KeyDownOct "%KEY_DOWN_OCT" [I] 0 Int;
         EventParAt "%EVENT_PAR" [I] 0 Int;
+        NoteDuration "%NOTE_DURATION" [I] 0 Int;
     }
 }
 
@@ -412,6 +437,7 @@ impl Builtin {
             Self::KeyDownOct => 12,
             Self::GroupsSelected | Self::GroupsAffected => 4096,
             Self::EventParAt => 4,
+            Self::NoteDuration => 128,
             _ => return None,
         })
     }
