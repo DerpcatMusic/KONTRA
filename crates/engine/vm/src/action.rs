@@ -369,4 +369,13 @@ actions! {
     KeyDownOct,
     EventParAt,
     NoteDuration,
+    // Appended rather than filed with the other UI actions: an action's id is
+    // its position, and ids appear in traces and in the engine's per-action
+    // counts, so a new one goes on the end.
+    //
+    // `hide_inst_icon`: nothing to do. Kontakt's command hides the icon in its
+    // own instrument header; KONTRA's page draws no instrument header and no
+    // instrument icon, so the engine answers it and does nothing (see the arm
+    // in the engine's script host).
+    HideInstIcon,
 }

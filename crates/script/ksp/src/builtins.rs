@@ -184,7 +184,12 @@ builtins! {
         SetNrpn "set_nrpn" [I I] 0 Void;
         ResetRlsTrigCounter "reset_rls_trig_counter" [I] 0 Void;
         WillNeverTerminate "will_never_terminate" [I] 0 Void;
-        RedirectOutput "redirect_output" [I I] 0 Void;
+        // KSP manual, `redirect_output()`: `redirect_output(<event-id>,
+        // <output-type>, <index>)`. `<index>` is documented as having no effect
+        // for `$OUTPUT_TYPE_DEFAULT`, and the manual's own example always
+        // passes it, so it is optional here and a call with two arguments
+        // routes to output 0.
+        RedirectOutput "redirect_output" [I I I] 1 Void;
         // Time.
         WaitTicks "wait_ticks" [I] 0 Void;
         WaitAsync "wait_async" [I] 0 Void;
@@ -306,6 +311,19 @@ builtins! {
         SetUiWidthPx "set_ui_width_px" [I] 0 Void;
         SetScriptTitle "set_script_title" [S] 0 Void;
         MakePerfview "make_perfview" [] 0 Void;
+        // `hide_inst_icon` is not in the KSP reference (checked in the 7.10 and
+        // 8.0 manuals: both document the instrument icon only as
+        // `set_control_par($INST_ICON_ID, $CONTROL_PAR_HIDE, ...)`), but
+        // Kontakt accepts it and 188 corpus instruments call it — every
+        // VSTBuzz Power Move patch, and for all 188 it was the only reason
+        // their slot failed to compile (measured by compiling them). What it hides is the icon in Kontakt's
+        // own instrument header; KONTRA's page draws no instrument header and
+        // no instrument icon, so there is nothing to hide and a no-op is the
+        // faithful binding: the command compiles and asks the host, and the
+        // host does nothing (see the arm in the engine's script host). This is
+        // the no-op the instruments' own use makes sufficient, not a guess at
+        // an implementation.
+        HideInstIcon "hide_inst_icon" [] 0 Void;
         ExposeControls "expose_controls" [] 0 Void;
         SetSnapshotType "set_snapshot_type" [I] 0 Void;
         ShowLibraryTab "show_library_tab" [] 0 Void;

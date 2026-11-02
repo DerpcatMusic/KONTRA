@@ -61,6 +61,16 @@ class DoctorTest(unittest.TestCase):
         row = {"status": "unsupported", "tests": "untested", "class": "modern-extension", "category": "event_par"}
         self.assertEqual(ks.classify(row), ("modern-extension", "KSP-MODERN"))
 
+    def test_a_command_with_no_arguments_is_counted(self):
+        # `hide_inst_icon` is a bare word on its own line; the token loop needs a
+        # `(` to see a command, so 188 corpus instruments used to be invisible.
+        resolve = ks.Resolver(ks.load_rows())
+        hits = ks.scan_script("on init\n    hide_inst_icon\nend on\n", resolve)
+        self.assertEqual(hits["hide_inst_icon"], 1)
+        # A bare word that is not a command is not counted.
+        hits = ks.scan_script("on init\n    not_a_command\nend on\n", resolve)
+        self.assertEqual(set(hits), {"on init", "end"})
+
 
 if __name__ == "__main__":
     unittest.main()

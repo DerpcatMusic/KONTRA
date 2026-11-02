@@ -35,6 +35,10 @@ pub fn real(name: &str) -> Option<f64> {
 
 /// Whether `name` is in Kontakt's catalog of predefined names. Digit runs
 /// match `#`, so numbered families (`$ENGINE_PAR_SENDLEVEL_3`) match one entry.
+///
+/// The catalog is what the corpus *uses*, publishers' own names included
+/// (`$NUM_PRESETS`, `$NUM_KNOBS`), so it answers "can this name be read as an
+/// opaque identity" — it is not the list of names Kontakt owns.
 pub fn is_catalog(name: &str) -> bool {
     static CATALOG: OnceLock<HashSet<&'static str>> = OnceLock::new();
     let catalog = CATALOG.get_or_init(|| {

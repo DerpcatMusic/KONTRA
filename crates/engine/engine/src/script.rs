@@ -916,6 +916,13 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
+            // `hide_inst_icon`: nothing to do. Kontakt's command hides the icon
+            // in its own instrument header; KONTRA's page has no instrument
+            // header and draws no instrument icon, so this is answered rather
+            // than left unanswered — the command is implemented, its result is
+            // just nothing (KSP manual has no entry for it; the corpus's 188
+            // callers are what it is implemented for).
+            Action::HideInstIcon => HostValue::Nothing,
             other => {
                 self.count_unhandled(other);
                 HostValue::Nothing

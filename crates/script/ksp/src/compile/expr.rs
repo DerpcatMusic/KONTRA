@@ -493,8 +493,17 @@ impl<'a> Compiler<'a> {
                     texts += 1;
                 }
                 Arg::V => {
-                    let (v, control) = self.named(e)?;
-                    control.ok_or_else(|| Error::new(e.span, "not a UI control"))?;
+                    // Every declaration has a UI id, control or not (KSP
+                    // manual, get_ui_id(): "Even regular variables and
+                    // constants (those that are not UI widgets) get a UI ID
+                    // assigned"), and the arguments these commands document are
+                    // variable names, not controls: hide_part()'s first is
+                    // "<variable> ... the variable name of the widget". Kontakt
+                    // compiles `hide_part($plainvar, $HIDE_PART_BG)` — ten
+                    // corpus instruments do it — and with no widget behind the
+                    // id there is nothing for the host to hide, so the id is
+                    // passed and the engine finds no control for it.
+                    let (v, _) = self.named(e)?;
                     self.emit(Op::Int(ui_id(v)));
                     ints += 1;
                 }

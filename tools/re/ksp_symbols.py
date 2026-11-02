@@ -34,7 +34,9 @@ LEDGER = ROOT / "crates/sampler-ksp/src/parity_ledger.rs"
 BUILTINS = ROOT / "crates/sampler-ksp/src/builtins.rs"
 CORPUS = ROOT / "docs/architecture-v2/KSP_COVERAGE.md"
 SCRATCH = Path("/data/dev/workspace/scratch")
-TEST_DIRS = [ROOT / "crates/sampler-ksp/tests", ROOT / "crates/sampler-kontakt/tests"]
+# The crates that hold KSP tests: the front end's own (compiler and VM
+# conformance) and the host's (end-to-end script behaviour).
+TEST_DIRS = [ROOT / "crates/script/ksp/tests", ROOT / "crates/app/host/tests"]
 
 STATUSES = ("full", "simplified", "stub", "unsupported")
 LEDGER_STATUS = {"Implemented": "full", "Approximate": "simplified", "Stub": "stub",
@@ -463,7 +465,7 @@ def coverage_md(rows):
          "",
          "Status (KONTRA, from `crates/sampler-ksp/src/parity_ledger.rs`): **full** = Implemented; **simplified** = Approximate (documented approximation); **stub** = accepted and ignored; **unsupported** = no ledger entry or frontend binding.",
          "",
-         "Corpus weight = instruments whose scripts mention the symbol, from the last measured run in `docs/architecture-v2/KSP_COVERAGE.md` (no corpus re-run for this map). Conformance = a test under `crates/sampler-ksp/tests` or `crates/sampler-kontakt/tests` names the symbol; `untested` otherwise.",
+         "Corpus weight = instruments whose scripts mention the symbol, from the last measured run in `docs/architecture-v2/KSP_COVERAGE.md` (no corpus re-run for this map). Conformance = a test under `crates/script/ksp/tests` or `crates/app/host/tests` names the symbol; `untested` otherwise.",
          "", "## Evidence per row (compat rows)", "",
          "| source | rows | binary evidence |", "|---|---|---|"]
     for src_name in ("manual", "ledger/builtins only"):
@@ -646,6 +648,15 @@ def scan_script(text, resolve):
     hits = collections.Counter()
     for m in re.finditer(r"^[ \t]*on[ \t]+([a-z_]+)\b", text, re.M):
         hits[f"on {m[1]}"] += 1
+    # A command that takes no arguments is a bare word on its own line
+    # (`hide_inst_icon`), so the token loop below — which needs a `(` to call a
+    # command — never sees it. 188 corpus instruments are invisible to the
+    # doctor for exactly this reason.
+    for m in re.finditer(r"^[ \t]*([a-z_][a-z0-9_]*)[ \t]*$", text, re.M):
+        word = m[1]
+        row = resolve(word)
+        if row is not None and row["category"] == "command":
+            hits[word] += 1
     for m in re.finditer(r"(?<![A-Za-z0-9_])([$%!~@?]?)([A-Za-z_][A-Za-z0-9_]*)(\()?", text):
         sigil, word, call = m[1], m[2], m[3]
         if word in local:

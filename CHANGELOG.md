@@ -14,6 +14,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 - Include the current effects, persistence, multi-instrument, loop-limit and streaming fixes from the 28-PR integration.
 - Report execution-budget failures, host-service stalls, late attacks and source-readiness delays through the plugin diagnostics. Over-budget playback callbacks fail explicitly instead of replaying notes in later blocks.
 - Read Replika's saved Diffusion knobs in their stored order — SIZE at byte 64, AMOUNT at 68 — so Electric Mint's diffuser is level-neutral, and carry the Supercharger GT's static make-up (`output × 1.0716536`, Kontakt's own constant) with its unmodelled compression reported.
+- Compile the KSP the library actually ships: `hide_inst_icon` as the no-op it is on a page with no instrument header, `$EVENT_VELOCITY` as a writable variable (a write is `change_velo($EVENT_ID, v)`), `$NUM_PRESETS` as a script constant, `redirect_output` with two or three arguments, `hide_part` on a variable that is not a control, and constant initialisers that are a number function or `num_elements()` of a declared array. 728 failing script slots in 718 instruments become 478 in 470, with no rendered audio and no fingerprint changed.
 
 ## 0.3.503
 
