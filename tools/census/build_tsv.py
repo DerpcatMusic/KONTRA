@@ -13,8 +13,7 @@ install, recorded not measured) and the constant *values* `$MARK_3 = 8`,
 and compile rows and a hand-picked example for the bookkeeping, reader, sound
 and UI rows. Nothing else is hand-written.
 """
-import collections, json, re, sys
-import os
+import collections, json, os, re, sys
 
 from library import library_of
 
@@ -30,9 +29,6 @@ F = json.load(open(f"{WORK}/compile_fail.json"))
 ACT = {a["action"]: a for a in C["actions"]}
 
 # ---------------------------------------------------------------- compile causes
-COMPILE = {}
-
-
 def fam(m):
     return re.sub(r"\(at byte \d+\)", "", m).strip()
 
