@@ -9,6 +9,7 @@
 //! else; diagnostics go to stderr, or to `--diag`. Exit status is 0 when a WAV was
 //! written, 2 for a usage error, and 1 when the render failed.
 
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use kontra_host::render::{DEFAULT_RATE, Request};
@@ -42,14 +43,29 @@ enum Diagnostics {
 
 impl Diagnostics {
     /// The writer for this run; `Err` carries a message for the front end.
-    fn open(&self) -> Result<Box<dyn std::io::Write>, String> {
-        match self {
-            Self::Stderr => Ok(Box::new(std::io::stderr())),
-            Self::File(path) => std::fs::File::create(path)
-                .map(|file| Box::new(file) as Box<dyn std::io::Write>)
-                .map_err(|e| format!("{}: {e}", path.display())),
-            Self::None => Ok(Box::new(std::io::sink())),
+    ///
+    /// A rate that is not the one comparisons use is said **here**, through this
+    /// writer, because it is a line about the run: `--diag` must file it with
+    /// the run and `--quiet` must not print it, the same rule `render.rs`'s
+    /// `invalid` follows. Said from `parse`, it went to stderr before the writer
+    /// existed, so a `--quiet --rate 44100` run printed it anyway and a `--diag`
+    /// log was missing the one line that says the WAV is not comparable.
+    fn open(&self, rate: u32) -> Result<Box<dyn std::io::Write>, String> {
+        let mut sink: Box<dyn std::io::Write> = match self {
+            Self::Stderr => Box::new(std::io::stderr()),
+            Self::File(path) => Box::new(
+                std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?,
+            ),
+            Self::None => Box::new(std::io::sink()),
+        };
+        if rate != DEFAULT_RATE {
+            writeln!(
+                sink,
+                "kontra-render: warning: --rate {rate} is not the {DEFAULT_RATE} Hz comparisons use"
+            )
+            .map_err(|e| format!("diagnostics: {e}"))?;
         }
+        Ok(sink)
     }
 }
 
@@ -66,7 +82,7 @@ fn main() -> std::process::ExitCode {
         println!("{USAGE}");
         return std::process::ExitCode::SUCCESS;
     }
-    let mut sink = match parsed.diag.open() {
+    let mut sink = match parsed.diag.open(parsed.request.rate) {
         Ok(sink) => sink,
         Err(e) => {
             eprintln!("kontra-render: {e}");
@@ -99,7 +115,7 @@ usage: kontra-render --instrument <file> --out <wav> [options]
   --midi <file>         play this standard MIDI file instead of a single note
   --key <0..127>        key of the single note (default 60)
   --velocity <1..127>   velocity of the single note (default 100)
-  --hold <seconds>      how long the single note is held (default 1.5)
+  --hold <seconds>      how long the single note is held (default 1.5; must be positive)
   --wheel <0..127>      move the mod wheel to this value one second in
   --tail <seconds>      silence after the last key-up (default 2)
   --rate <hz>           output rate (default 48000; comparisons require 48000)
@@ -139,7 +155,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--midi" => request.midi = Some(PathBuf::from(value()?)),
             "--key" => request.note.key = number(value()?, "--key", 0, 127)?,
             "--velocity" => request.note.velocity = number(value()?, "--velocity", 1, 127)?,
-            "--hold" => request.note.hold_s = seconds(value()?)?,
+            "--hold" => request.note.hold_s = hold(value()?)?,
             "--tail" => request.tail_s = seconds(value()?)?,
             "--wheel" => request.wheel = Some(number(value()?, "--wheel", 0, 127)?),
             "--rate" => request.rate = rate(value()?)?,
@@ -155,12 +171,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
     }
     if !help && !given_out {
         return Err("--out is required: a render without a WAV measures nothing".into());
-    }
-    if request.rate != DEFAULT_RATE && !help {
-        eprintln!(
-            "kontra-render: warning: --rate {} is not the {DEFAULT_RATE} Hz comparisons use",
-            request.rate
-        );
     }
     if request.tail_s < 0.0 {
         return Err("--tail cannot be negative".into());
@@ -203,6 +213,22 @@ fn seconds(v: &str) -> Result<f32, String> {
     }
 }
 
+/// A positive seconds argument: `--hold` is the length of one note.
+///
+/// Zero is refused rather than accepted. A zero hold schedules the NoteOff on
+/// the same frame as the NoteOn, and `render.rs` refuses `KONTRA_HOLD=0` for the
+/// same reason ("a zero hold is a click"): the two ways to set the hold must not
+/// disagree about what is a note. `--tail` keeps `seconds`, where 0 is a real
+/// answer (stop at the last key-up).
+fn hold(v: &str) -> Result<f32, String> {
+    let s = seconds(v)?;
+    if s > 0.0 {
+        Ok(s)
+    } else {
+        Err(format!("--hold {v}: a note held for no time is a click"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +258,52 @@ mod tests {
         let mut quiet = required();
         quiet.push("--quiet".to_owned());
         assert_eq!(parse(&quiet).unwrap().diag, Diagnostics::None);
+    }
+
+    /// The non-48 kHz warning is a line about the run, so it goes through the
+    /// run's diagnostics writer: `--diag` files it and `--quiet` (a sink) drops
+    /// it. It used to be an `eprintln!` in `parse`, which printed past `--quiet`
+    /// and was missing from a `--diag` log.
+    #[test]
+    fn the_rate_warning_goes_to_the_diagnostics_writer() {
+        let dir = std::env::temp_dir();
+        let log = dir.join(format!("kontra-render-rate-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+
+        Diagnostics::File(log.clone())
+            .open(44_100)
+            .expect("the log opens");
+        let text = std::fs::read_to_string(&log).expect("the warning was written");
+        assert!(
+            text.contains("44100") && text.contains("comparisons use"),
+            "the warning did not reach the log: {text:?}"
+        );
+
+        // The rate comparisons use says nothing: no warning to file.
+        Diagnostics::File(log.clone())
+            .open(DEFAULT_RATE)
+            .expect("the log opens");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "");
+
+        // `--quiet` hands the run a sink: the line is dropped like every other.
+        Diagnostics::None.open(44_100).expect("the sink takes it");
+        let _ = std::fs::remove_file(&log);
+    }
+
+    /// `--hold 0` would put the NoteOff on the NoteOn's frame; the environment
+    /// override already refuses it, and the two ways to set the hold agree.
+    /// `--tail 0` is a real request (stop at the last key-up) and stands.
+    #[test]
+    fn a_zero_hold_is_refused_but_a_zero_tail_is_not() {
+        let mut args = required();
+        args.extend(["--hold", "0"].map(str::to_owned));
+        let err = parse(&args).unwrap_err();
+        assert!(err.contains("click"), "unexpected message: {err}");
+
+        let mut args = required();
+        args.extend(["--hold", "0.5", "--tail", "0"].map(str::to_owned));
+        let parsed = parse(&args).expect("a positive hold and a zero tail are valid");
+        assert_eq!(parsed.request.note.hold_s, 0.5);
+        assert_eq!(parsed.request.tail_s, 0.0);
     }
 }
