@@ -374,6 +374,20 @@ impl<'a> Compiler<'a> {
                 // asking the catalog first turned a declared number into an
                 // opaque symbol id. A name that is declared but holds no
                 // constant is not a constant, whatever the catalog says of it.
+                //
+                // A name that is *not* declared is not a constant either,
+                // even when the catalog holds it. `vendor_constants.txt` is a
+                // list of names the corpus uses under `$`, not a list of
+                // kinds: system variables (`$BEND_RANGE`, `$BUS_IDX`,
+                // `$CHANNEL_L`) sit beside constants in it, and folding one to
+                // a symbol id put a symbol id where an array size or a
+                // `const` initialiser belongs — `declare %a[$BEND_RANGE]`
+                // sized an array by whichever number the symbol happened to
+                // get. Reading such a name in a *value* position still answers
+                // the symbol id (`expr.rs`), which is what the corpus's reads
+                // of `$ENGINE_PAR_EFFECT_BYPASS` need; a fold is a promise
+                // that the value is known at compile time, and for a name the
+                // catalog does not value it is not.
                 if self.is_declared(name) {
                     match self.declared_value(name) {
                         Some(value) => value,
@@ -381,8 +395,6 @@ impl<'a> Compiler<'a> {
                     }
                 } else if let Some(value) = self.named_constant(name) {
                     value
-                } else if consts::is_catalog(name) && Builtin::from_name(name).is_none() {
-                    Value::Int(self.symbol(name))
                 } else {
                     return Err(not_constant());
                 }

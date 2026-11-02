@@ -6,7 +6,8 @@ unread (our gap).
 Usage: ui_sample.py N OUT.json
 """
 import collections, json, os, random, subprocess, sys
-import os
+
+from library import library_dir, library_of
 
 #: Where the survey's own files live: the census, the extracted scripts and every
 #: table written by these scripts. Override with ``CENSUS_WORK``; the default is
@@ -17,12 +18,6 @@ WORK = os.environ.get("CENSUS_WORK", "/var/tmp/gaps")
 BIN = os.environ.get("KONTRA_INSPECT", "target/release/kontra-inspect")
 RECS = [r for r in json.load(open(f"{WORK}/census.json")) if r.get("loaded")]
 CACHE = f"{WORK}/files-index"
-
-
-def library_root(path):
-    parts = path.split("/")
-    i = parts.index("VSTs")
-    return "/".join(parts[: i + 3])
 
 
 def index(root):
@@ -44,7 +39,7 @@ def main():
     pool = [r for r in RECS if r.get("ui_unresolved", 0)]
     by_lib = collections.defaultdict(list)
     for r in pool:
-        by_lib[library_root(r["path"])].append(r)
+        by_lib[library_dir(r["path"])].append(r)
     sample = []
     for lib, rs in by_lib.items():
         sample.extend(random.sample(rs, min(len(rs), max(2, n // max(1, len(by_lib))))))
@@ -61,7 +56,7 @@ def main():
             rows.append({"path": r["path"], "error": "load failed: " + p.stderr[-200:]})
             continue
         unresolved = [a["path"] for a in assets if a.get("read_status") == "not_resolved"]
-        root = library_root(r["path"])
+        root = library_dir(r["path"])
         files = index(root)
         buckets = collections.Counter()
         examples = collections.defaultdict(list)
@@ -77,7 +72,7 @@ def main():
             buckets[b] += 1
             if len(examples[b]) < 4:
                 examples[b].append(hit or ap)
-        rows.append({"path": r["path"], "library": root.rsplit("/", 1)[-1],
+        rows.append({"path": r["path"], "library": library_of(r["path"]),
                      "census_unresolved": r["ui_unresolved"],
                      "census_resolved": r["ui_resolved"],
                      "now_resolved": sum(1 for a in assets if a.get("read_status") == "resolved"),

@@ -577,6 +577,58 @@ fn a_declared_name_wins_over_the_catalog_when_folding() {
     );
 }
 
+/// A catalog name is not a constant. `vendor_constants.txt` records the `$`
+/// names the corpus uses, not what kind each one is: it holds system variables
+/// (`$BEND_RANGE`, `$BUS_IDX`, `$CHANNEL_L` — values that only exist while a
+/// callback runs) beside constants. Folding one of those to an opaque symbol id
+/// put a symbol id where an array size or a `const` initialiser belongs, which
+/// is a silently wrong constant rather than a refusal.
+///
+/// A *valued* constant still folds (`$MARK_3` is 8), and a catalog name still
+/// reads as a symbolic constant in a value position — 242 corpus scripts
+/// declare `$5mo1e := $ENGINE_PAR_EFFECT_BYPASS`, an engine parameter whose id
+/// this tree does not hold.
+#[test]
+fn a_catalog_name_that_is_not_a_constant_is_not_folded() {
+    let error = |source: &str| compile(source, &[]).unwrap_err().message;
+    for name in [
+        "$BEND_RANGE",
+        "$BUS_IDX",
+        "$CHANNEL_L",
+        "$ENGINE_PAR_EFFECT_BYPASS",
+    ] {
+        assert_eq!(
+            error(&format!("on init declare %a[{name}] end on")),
+            "expected a constant",
+            "an array sized by the value {name}"
+        );
+        assert_eq!(
+            error(&format!("on init declare const $Y := {name} end on")),
+            "expected a constant",
+            "a constant declared from the value {name}"
+        );
+    }
+    // A constant the tree holds a value for still sizes an array.
+    let r = Run::new(
+        "on init
+            declare %marks[$MARK_3]
+            declare $n
+            $n := num_elements(%marks)
+        end on",
+    );
+    assert_eq!(r.int("$n"), 8, "$MARK_3 is 8");
+    // And a catalog name in a value position still compiles: the 242 scripts
+    // that copy an engine-parameter id into a variable do exactly this.
+    let r = Run::new(
+        "on init
+            declare $param := $ENGINE_PAR_EFFECT_BYPASS
+            declare $read
+            $read := $param
+        end on",
+    );
+    assert!(r.int("$read") > 0, "the symbol id, resolved at run time");
+}
+
 /// `redirect_output(<event-id>, <output-type>, <index>)`: the manual documents
 /// three arguments and says `<index>` "has no effect" for
 /// `$OUTPUT_TYPE_DEFAULT`, so a two-argument call routes to index 0. Eleven

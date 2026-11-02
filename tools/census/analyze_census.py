@@ -17,6 +17,20 @@ WORK = os.environ.get("CENSUS_WORK", "/var/tmp/gaps")
 RECS = json.load(open(os.path.join(WORK, "census.json")))
 SWEEP = os.path.join(WORK, "keysweep-results.jsonl")
 
+#: The keys `keysweep.py` renders. A record counts as a measurement of silence
+#: only when every one of them answered: `keysweep.py` omits a key whose render
+#: failed or timed out, and "no peak" used to read as "peak 0", which turned our
+#: own failure into the instrument's silence. The probe's own `error` field says
+#: why a key is missing.
+KEYS = (36, 43, 48, 55, 60, 64, 67, 72, 84)
+
+
+def keys_answered(s):
+    """How many of the nine probed keys produced a render for this instrument."""
+    peaks = s.get("peaks") or {}
+    return sum(1 for k in KEYS if str(k) in peaks)
+
+
 
 def library_of(path):
     """The product folder: the directory above the nearest `Instruments` ancestor."""
@@ -77,7 +91,12 @@ def main():
     # ---- zero playable / silent
     nz = [r for r in loaded if (r.get("zones_ready") or 0) == 0]
     sweep = [json.loads(l) for l in open(SWEEP) if l.strip()]
-    silent = [s for s in sweep if s.get("zones_ready", 0) > 0 and not s.get("sounds_at")]
+    # An instrument is silent only when it answered every key and none of them
+    # sounded. A record that stayed quiet at key 60 and then lost renders is
+    # *unmeasured*, and is counted separately rather than as silence.
+    quiet = [s for s in sweep if s.get("zones_ready", 0) > 0 and not s.get("sounds_at")]
+    silent = [s for s in quiet if keys_answered(s) == len(KEYS)]
+    unmeasured = [s for s in quiet if keys_answered(s) < len(KEYS)]
     silent_paths = {s["path"] for s in silent}
 
     # ---- UI
@@ -113,6 +132,8 @@ def main():
         "totals": {"records": len(RECS), "loaded": len(loaded), "refused": len(refused),
                    "loaded_no_unanswered": clean, "loaded_no_zones": len(nz),
                    "keysweep_instruments": len(sweep), "silent_with_zones": len(silent),
+                   "silent_unmeasured": len(unmeasured),
+                   "silent_with_errors": sum(1 for s in quiet if s.get("error")),
                    "ui_instruments": len(ui_unres),
                    "ui_unresolved_assets": sum(r.get("ui_unresolved", 0) for r in loaded),
                    "ui_resolved_assets": sum(r.get("ui_resolved", 0) for r in loaded)},
@@ -123,7 +144,8 @@ def main():
                       "zones_total": r.get("zones_total"), "samples": r.get("samples"),
                       "scripts": r.get("scripts")} for r in nz],
         "silent": [{"path": s["path"], "name": s.get("name"), "library": library_of(s["path"]),
-                    "zones_ready": s.get("zones_ready"), "best_peak": s.get("best_peak")} for s in silent],
+                    "zones_ready": s.get("zones_ready"), "best_peak": s.get("best_peak"),
+                    "keys_answered": keys_answered(s), "error": s.get("error")} for s in silent],
         "libraries": sorted(({"library": k, **v} for k, v in libs.items()),
                             key=lambda l: -l["instruments"]),
         "ui_by_library": [{"library": k, "assets": v, "instruments": per_lib_ui_instr[k]}
@@ -142,6 +164,8 @@ def main():
     print(collections.Counter(r["library"] for r in out["no_zones"]).most_common(10))
     print("--- silent by library")
     print(collections.Counter(r["library"] for r in out["silent"]).most_common(10))
+    print(f"--- silence measurement: {len(silent)} instruments answered all {len(KEYS)} keys and never sounded; "
+          f"{len(unmeasured)} stayed quiet but answered fewer, so they are not counted as silent")
 
 
 if __name__ == "__main__":

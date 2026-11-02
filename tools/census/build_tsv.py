@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 """Emit docs/re/gap-inventory-2026-11-01.tsv from the measured files.
 
-Every count is read from $CENSUS_WORK/*.json|.tsv, produced by the commands the
-document's method section quotes. The judgement columns (`kind`, `what_it_would_take`)
-are the author's and are the only hand-written cells.
+Which cells are measured and which are the author's, exactly: `instruments`,
+`libraries` and `references` are computed from
+$CENSUS_WORK/{census_summary,symbols,compile_fail}.json and
+$CENSUS_WORK/ui_sample.json — every count in them, including the ones quoted
+inside a sentence. `kind` and `what_it_would_take` are the author's judgement,
+and the only figures left inside a `what_it_would_take` sentence that this
+script does not read are the `.nicnt` files' count of four (a fact about the
+install, recorded not measured) and the constant *values* `$MARK_3 = 8`,
+`$MARK_28 = 2^28`. `example_instruments` is a measured sample for the command
+and compile rows and a hand-picked example for the bookkeeping, reader, sound
+and UI rows. Nothing else is hand-written.
 """
 import collections, json, re, sys
 import os
+
+from library import library_of
 
 #: Where the survey's own files live: the census, the extracted scripts and every
 #: table written by these scripts. Override with ``CENSUS_WORK``; the default is
@@ -30,10 +40,9 @@ def fam(m):
 fam_instr = collections.defaultdict(lambda: {"instr": 0, "libs": collections.Counter(), "ex": []})
 fam_only = collections.Counter()
 for i, v in F.items():
-    lib = v["path"].split("/")[6] if "/Instruments/" in v["path"] else v["path"].split("/")[6]
-    if "/Instruments/" in v["path"]:
-        parts = v["path"].split("/")
-        lib = parts[parts.index("Instruments") - 1]
+    # The product folder, derived from the library root: a fixed index into the
+    # path (`split("/")[6]`) only fits one layout and raises on the rest.
+    lib = library_of(v["path"])
     fs = {fam(e) for e in v["errors"]}
     if len(fs) == 1:
         fam_only[next(iter(fs))] += 1
@@ -49,9 +58,9 @@ COMPILE_TAKES = {
         "cut into. Slices are an edit-time division of a sample that neither the plan nor the playback has; the model is "
         "the work, the function is one line"),
  "unknown command hide_inst_icon": ("command", "a no-op binding: `hide_inst_icon()` hides the instrument icon in Kontakt's "
-        "header, which KONTRA does not draw. 188 instruments, one command name, and every one of them is blocked by it alone"),
- "unknown callback _pgs_changed": ("callback", "an alias to the dispatcher that already exists (`pgs_changed` handles 2,817 "
-        "uses); whether Kontakt honours the underscore spellings is unmeasured — one line if it does"),
+        "header, which KONTRA does not draw — one command name, and every instrument in this row is blocked by it alone"),
+ "unknown callback _pgs_changed": ("callback", "an alias to the dispatcher that already exists (`pgs_changed`); whether "
+        "Kontakt honours the underscore spellings is unmeasured — one line if it does"),
  "unknown function zone_slice_start": ("function", "the zone-slice model above (`zone_slice_start` is one of its accessors)"),
  "expected a constant": ("ordering", "our front end refusing something Kontakt accepts, at a `declare` line; the message "
         "does not name the token, so each case needs one look — a parser rule, not a missing feature"),
@@ -66,9 +75,8 @@ COMPILE_TAKES = {
  "unknown function mf_get_note_length": ("function", "the MIDI-file loop model: the length of the note at index *i* — one "
         "accessor on data `mf_get_note` already reads"),
  "unknown command dont_use_machine_mode": ("command", "a no-op binding (Kontakt's own documentation says it does nothing)"),
- "unknown command set_num_user_zones": ("command", "the user-zone model (see `%NI_USER_ZONE_IDS`); 4 instruments"),
- "?": ("ordering", "unknown token in a `!` string: an undeclared text variable or a build-time name; two instruments, one "
-        "product"),
+ "unknown command set_num_user_zones": ("command", "the user-zone model (see `%NI_USER_ZONE_IDS`)"),
+ "?": ("ordering", "unknown token in a `!` string: an undeclared text variable or a build-time name"),
 }
 
 rows = []
@@ -99,8 +107,7 @@ T = {
  "LoadPerformanceView": "a private Kontakt performance view: no format, no model. Nothing to implement without the "
                         "private page format the repo does not hold",
  "MfSetExportArea": "the Machine/export-area object (slice export regions), which the plan does not have at all",
- "SetNksNavPar": "the NKS2 navigation model the engine deliberately lacks; 10.0 M calls in 26 instruments means it is a "
-                 "hot loop in those UI scripts, not a stray call",
+ "SetNksNavPar": "the NKS2 navigation model the engine deliberately lacks",
  "SetNksNavName": "as above, the name half of the same navigation model",
  "GetVoiceLimit": "the voice-limit service exists (`set_voice_limit` is bound) but the getter answers a fixed "
                   "placeholder and the counter is not per group",
@@ -115,8 +122,14 @@ T = {
  "LoadMidiFile": "a MIDI-file read into an array (and its loop model)",
 }
 for name, a in ACT.items():
-    add(name, "command", a["instruments"], a["library_count"], a["calls"],
-        T.get(name, "unclassified"), "; ".join(p.rsplit("/", 1)[-1] for p in a["examples"][:3]))
+    takes = T.get(name, "unclassified")
+    if name == "SetNksNavPar":
+        # The one place the call count is the argument, so it is read from the
+        # census rather than typed into the sentence.
+        takes += (f"; {a['calls']:,} calls in {a['instruments']} instruments say it is a hot loop in those UI "
+                  "scripts, not a stray call")
+    add(name, "command", a["instruments"], a["library_count"], a["calls"], takes,
+        "; ".join(p.rsplit("/", 1)[-1] for p in a["examples"][:3]))
 
 # ---------------------------------------------------------------- symbols (compile)
 for m, k in sorted(fam_instr.items(), key=lambda kv: -kv[1]["instr"]):
@@ -148,37 +161,82 @@ add("%NOTE_DURATION", "bookkeeping", len(d["ins"]), len(d["libs"]), d["calls"],
     "STATUS.md records the Harpsichord falling silent on this and being fixed")
 
 # ---------------------------------------------------------------- reader walls
-add("legacy XML instrument (pre-Kontakt 4)", "reader", 624, 1, "",
-    "a format to read: 624 Garritan files are the Kontakt-2-era XML preset our reader refuses. Whether Kontakt 8 itself "
+# The three numbers are the census's refusal buckets, read rather than typed:
+# `census_summary.json` groups every refused record by cause and library, so a
+# row here and a row in the document's per-library table cannot disagree.
+REF = C["refusals"]
+
+
+def refusal(cause):
+    r = REF.get(cause, {"instruments": 0, "libraries": {}})
+    return r["instruments"], len(r["libraries"])
+
+
+n, libs = refusal("legacy XML instrument (pre-Kontakt 4 format)")
+add("legacy XML instrument (pre-Kontakt 4)", "reader", n, libs, "",
+    f"a format to read: {n} Garritan files are the Kontakt-2-era XML preset our reader refuses. Whether Kontakt 8 itself "
     "opens them is unmeasured here", "Bb Clarinet 1.nki (Garritan - Jazz & Big Band)")
-add("modulator category 3", "reader", 544, 6, "",
+n, libs = refusal("modulator category 3")
+mod = REF["modulator category 3"]["libraries"]
+top = sorted(mod.items(), key=lambda kv: -kv[1])[:3]
+add("modulator category 3", "reader", n, libs, "",
     "one reader case: `ExternalMod::params` knows category 1 and 2 and rejects 3. The payload layout needs the Kontakt "
     "8.13.1 reader (`FUN_140d09620`, noted at `vendor/ni-file/src/kontakt/objects/modulation.rs`) disassembled, then the "
-    "same treatment as category 1. 517 of the 544 are one family (Heavyocity)",
+    f"same treatment as category 1. {sum(c for _, c in top)} of the {n} are three libraries — "
+    + ", ".join(f"{name} ({c})" for name, c in top)
+    + f"; the other {n - sum(c for _, c in top)} are {len(mod) - len(top)} smaller libraries with the same refusal",
     "Dramatic Techtronic 02.nki (Evolve R2); 8Dio Fire Sax")
-add("LASS `.nicnt` access data", "out of scope", 1151, 1, "",
+n, libs = refusal("library access: no .nicnt present")
+add("LASS `.nicnt` access data", "out of scope", n, libs, "",
     "not ours: the four `.nicnt` files are present but key-locked, and Kontakt refuses these instruments too without the "
     "library activated (recorded by the orchestrator; not re-verified in this pass)",
     "Aleatoric Non Vib Cellos.nki")
 
 # ---------------------------------------------------------------- sound
-add("silent at every key with zones", "symptom", len(C["silent"]),
-    len({s["library"] for s in C["silent"]}), "704 instruments keyswept",
-    "a symptom, not a gap: only 32 of these 180 have a script that fails to compile; 57 of the 61 keyswept instruments "
-    "that call `load_array` are in this set, so `LoadArray` is the best single explanation the numbers offer — the "
-    "mechanism itself is unproven",
-    "; ".join(s["library"] for s in C["silent"][:3]))
+# `analyze_census.py` only counts an instrument as silent when all nine keys
+# answered, and records how many did; say so in the row instead of leaving the
+# reader to assume nine.
+SILENT = C["silent"]
+KEYS_ANSWERED = sorted({s.get("keys_answered") for s in SILENT})
+UNMEASURED = C["totals"].get("silent_unmeasured", 0)
+FAILS = sum(1 for s in SILENT if s["path"] in {v["path"] for v in F.values()})
+add("silent at every key with zones", "symptom", len(SILENT),
+    len({s["library"] for s in SILENT}),
+    f"{C['totals']['keysweep_instruments']} instruments keyswept; "
+    + f"{'/'.join(str(k) for k in KEYS_ANSWERED)} of 9 keys answered on each",
+    f"a symptom, not a gap: only {FAILS} of these {len(SILENT)} have a script that fails to compile. The `LoadArray` "
+    "cross-tabulation in §5 is the best single explanation the numbers offer — unproven as a mechanism, and the "
+    "correlation itself withdrawn until it is re-derived"
+    + (f"; {UNMEASURED} further instruments stayed silent at key 60 but answered too few keys to be counted here"
+       if UNMEASURED else ""),
+    "; ".join(s["library"] for s in SILENT[:3]))
+GLASS = [s for s in C["no_zones"] if s["library"].startswith("Spitfire Glass")]
 add("no playable zone at all", "not ours", len(C["no_zones"]),
     len({s["library"] for s in C["no_zones"]}), "",
-    "242 of the 254 are Spitfire Glass & Steel patches whose every zone is referenced only by purged groups — saved purge "
-    "state, not a parse gap",
+    f"{len(GLASS)} of the {len(C['no_zones'])} are Spitfire Glass & Steel patches whose every zone is referenced only by "
+    "purged groups — saved purge state, not a parse gap",
     "; ".join(s["name"] for s in C["no_zones"][:3]))
 
 # ---------------------------------------------------------------- UI
+# The sample is `ui_sample.py`'s own output: how many instruments it re-loaded,
+# how many libraries that covered, how many unresolved references it saw and how
+# many of them were distinct paths. The "all absent" claim is its bucket count.
+ui_n = ui_libs = ui_refs = ui_distinct = 0
+try:
+    UI = json.load(open(f"{WORK}/ui_sample.json"))
+    ui_n = len(UI)
+    ui_libs = len({r.get("library") for r in UI})
+    ui_refs = sum(r.get("now_unresolved", 0) for r in UI)
+    ui_distinct = sum((r.get("buckets") or {}).get("absent_from_library", 0) for r in UI)
+    ui_present = sum((r.get("buckets") or {}).get("present_loose_unread", 0) for r in UI)
+except FileNotFoundError:
+    UI, ui_present = [], 0
 add("UI asset not found", "not ours", C["totals"]["ui_instruments"], len(C["ui_by_library"]),
     C["totals"]["ui_unresolved_assets"],
-    "not ours in every sampled case: 44 instruments across 23 libraries re-checked on today's build, 1,490 distinct "
-    "unresolved paths, every one absent from the library on disk; none of the 25 libraries ships a `pictures/` folder. "
+    f"not ours in every sampled case: {ui_n} instruments across {ui_libs} libraries re-checked on the build that fixed "
+    f"pictures — {ui_refs:,} unresolved references, {ui_distinct:,} distinct paths, "
+    + ("every one" if not ui_present else f"{ui_distinct - ui_present} of them")
+    + f" absent from the library on disk, and none of the {ui_libs} libraries ships a `pictures/` folder. "
     "The counts reproduce the census exactly, so the picture fix moved none of them",
     "Bicycle - Sick Range.nki (8DIO Misfit); Kalimba")
 

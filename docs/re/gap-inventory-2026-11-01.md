@@ -7,9 +7,11 @@ by a command on this machine, quoted in §6 so it can be re-run rather than
 believed.
 
 **The headline is not the ranking, it is what the ranking is made of.** 1,929
-instruments use a symbol the ledger marks unsupported or stub; 1,052 of those use
-no unsupported name other than two the engine already answers
-(`$MARK_2…28`, `%NOTE_DURATION`), and only 630 use a name it genuinely lacks.
+instruments use a symbol the ledger marks unsupported or stub; 772 of those use
+no such name other than two the engine already answers (`$MARK_2…28`,
+`%NOTE_DURATION`), 741 use a name it genuinely lacks, and 416 use both. The
+split is `symbols.json` with those two names removed from each instrument's
+unsupported set — `$MARK_1` is `KSP-FULL` in the ledger and never was in it.
 The real language gaps sit in the text scanner's blind spot — it counts only the
 tokens it can find in its own table, so a command Kontakt has and we do not is
 invisible to it. Compiling the extracted scripts instead of scanning them finds
@@ -44,12 +46,17 @@ The three walls are different in kind and should not be added together:
 - **The rest open, and "open" is not "play".** 3,694 instruments load; of those,
   254 have no playable zone at all — 242 of them Spitfire Glass & Steel patches
   whose every zone belongs to a group saved as purged (§4) — and 180 of the 704
-  instruments re-rendered across nine keys are silent at every key tried (that
-  704 is itself the subset found silent at key 60, so the true silent count
-  among all loaded instruments is at least 180). The remainder play, with wrong
-  numbers in a script (the three `*EnginePar` rows, 1,599 / 1,430 / 321
-  instruments) or with pictures that are not on the disk at all (1,571). This
-  row is therefore a statement about loading, not about sounding.
+  instruments re-rendered across nine keys are silent at every key tried. The
+  180 counts the whole loaded set, not the 704: the 704 is the subset found
+  silent at key 60, and key 60 is one of the nine, so an instrument that sounds
+  anywhere in 36…84 was never a candidate for it. The number is exact for
+  silence at these nine keys — every one of the 180 answered all nine renders —
+  and it is an upper bound for instruments silent at every key, because one of
+  them may sound at a key outside 36…84. No instrument that is silent
+  everywhere can be missing from it. The remainder play, with wrong numbers in a
+  script (the three `*EnginePar` rows, 1,599 / 1,430 / 321 instruments) or with
+  pictures that are not on the disk at all (1,571). This row is therefore a
+  statement about loading, not about sounding.
 
 ## 2. The ranked table
 
@@ -66,9 +73,14 @@ says which of the three walls a row sits behind:
 - `not ours` — the gap is in the library on disk, not in KONTRA.
 - `out of scope` — Kontakt refuses it too.
 - `symptom` — an observation, not a gap.
+- `diagnostic` — a measurement the survey does not have: no count, so no
+  ranking. Rows of this kind are kept out of the table below for that reason;
+  the one there used to be is stated in prose underneath it.
 
 `libraries` counts the product folders that contain at least one affected
 instrument. `references` is call sites for a command, occurrences for a symbol.
+For the silence row it is also the measurement's own denominator: how many keys
+answered for each instrument it counts.
 
 | gap | kind | instruments | libraries | what it would take | example |
 |---|---|---:|---:|---|---|
@@ -85,7 +97,6 @@ instrument. `references` is call sites for a command, occurrences for a symbol.
 | no playable zone at all | not ours | 254 | 7 | nothing: saved purge state (sampled) | Whistler Ensemble |
 | GetFolder | command | 243 | 2 | one folder-kind enum case | Awesome Tension Arp IN C 2 MW Sweeping Filter.nki |
 | unknown command hide_inst_icon | command | 188 | 2 | a no-op binding (one line) | AR Dataflow.nki |
-| **silence with no explanation** | diagnostic | unmeasured | — | report which zones named a file that is not there, and why a zone produced nothing | (see below) |
 | silent at every key with zones | symptom | 180 | 32 | a symptom, not a gap — see §5 | Accordions 2 Library |
 | LoadArray | command | 75 | 8 | the numeric .nka array read | Ens Basses - KS.nki |
 | AttachZone | command | 71 | 10 | a runtime zone model | Synth Loop Designer.nki |
@@ -118,6 +129,14 @@ instrument. `references` is call sites for a command, occurrences for a symbol.
 | ?home_vr_xypad is not declared | function | 1 | 1 | an ordering fix: undeclared text variable | World Strings - Guzheng.nki |
 | LoadMidiFile | command | 1 | 1 | a MIDI-file read into an array | Sonica KOTO 20.nki |
 | more values than array elements | function | 1 | 1 | an ordering fix: KSP lets the surplus be ignored | Mizwed - Improv.nki |
+
+One row is not in that table. **`silence with no explanation`** (kind
+`diagnostic`) is a report the survey cannot produce yet — which zones named a
+file that is not there, and why a zone produced nothing — so it has no
+instrument count and cannot be ranked beside the others. It was in the table
+when this file was written, with an `unmeasured` cell in an instruments-ordered
+column, which made the ranking look as if it had covered it. It is §3's "gap
+this survey found about itself": a defect in the measurement, not in the engine.
 
 Three things about that table are worth saying out loud, because the ranking
 alone would mislead:
@@ -163,9 +182,12 @@ Read down that table and the plan picks itself:
 - **Glory Days is already script-clean** — 643 of 643 load, 0 script
   failures, 0 unanswered init actions; its only residue is 2,076 UI references
   the library does not ship (pictures). Nothing to do.
-- **Vocalise 3, Power Move and Spitfire Brass** are one line each
-  (`hide_inst_icon` for Power Move, the zone-slice model for the two Heavyocity
-  libraries) from being script-clean.
+- **Vocalise 3, Power Move and Spitfire Brass** are all one *gap* from being
+  script-clean, and only one of the three is one line: Power Move fails on
+  `hide_inst_icon` alone, a no-op binding; Vocalise 3 (190) and Spitfire Brass
+  (204) fail on the zone-slice model, which §5 calls the one row here that needs
+  a *model* rather than a binding. Reading "one line each" off this table is how
+  the largest real language gap gets estimated at an afternoon.
 - **Evolve R2 + Trifecta + Kinetic Metal** are one reader case from opening 517
   of the 544 category-3 refusals (327 / 109 / 81). The other 27 are Kinetic Toys
   (19), Studio Series - Fire Saxophone (7) and Porphyra (1) — the same reader
@@ -265,19 +287,29 @@ does not name the token. Those five rows add to 81 but name 80 instruments:
 constant` rows, since it fails on both. That is 268 distinct instruments — 7 %
 of everything that loads — for a week that touches no DSP.
 
-> **Dated note, 2026-11-01 evening.** Five of this file's rows were closed after it was
-> written: `$EVENT_VELOCITY`, `$NUM_PRESETS`, `redirect_output`, `hide_part` with a
-> variable id, and the 29 `expected a constant` cases, together with `hide_inst_icon`
-> — see `docs/re/ksp-bindings-2026-11-01.md`. The compile sweep they were measured
-> with now reads **478 failing slots in 470 instruments, not 718 in 718**, and the
-> rows below are that pass's numbers, kept as written. Re-run `tools/census/` before
-> quoting any of them as current.
+> **Dated note, 2026-11-01 evening.** Six of this file's rows were closed after it
+> was written: `$EVENT_VELOCITY`, `$NUM_PRESETS`, `redirect_output`, `hide_part`
+> with a variable id, the 29 `expected a constant` cases, and `hide_inst_icon` —
+> see `docs/re/ksp-bindings-2026-11-01.md`. The compile sweep the rows below were
+> measured with read **728 failing slots in 718 instruments**; it now reads **478
+> failing slots in 470 instruments**. The rows here are the earlier pass's
+> numbers, kept as written; re-run `tools/census/` before quoting any of them as
+> current.
 
-### 2. `LoadArray` — 75 instruments, and the only proven silence
+### 2. `LoadArray` — 75 instruments, and the silence this section used to call proven
 
-57 of the 61 keyswept instruments that call `load_array` are silent at every key
-tried (93 %), against 180 silent of 704 keyswept overall. The mechanism is
-unproven — this is a correlation, not a cause.
+57 of the 61 keyswept instruments whose `load_array` was *unanswered at init*
+are silent at every key tried (93 %), against 180 silent of 704 keyswept overall.
+The mechanism is unproven — this is a correlation, not a cause — and the
+paragraph below withdraws even the correlation as evidence of our silence.
+
+**Historical, and not to be quoted as current:** the heading here read "the only
+proven silence" and the closing paragraph read "the only row with a demonstrated
+audible effect, and the user can hear the difference". Both rested on the
+Arabian Ethnic Orchestra's 83 silent instruments — a library that had never been
+licensed, so it could not have sounded whatever KONTRA did. Nothing in this tree
+has yet shown a `LoadArray` fix raising a peak; the claim is withdrawn, and the
+wording is kept here only so that the earlier reasoning is still visible.
 
 **Corrected 2026-11-01: the correlation is withdrawn until it is re-derived.**
 Its largest citation, Arabian Ethnic Orchestra, was a library whose licence had
@@ -295,14 +327,16 @@ the one row here that can be *proved* fixed by re-running the existing keysweep
 and watching a peak rise.
 
 Do it second only because it is worth 75 instruments against `hide_inst_icon`'s
-188 — but do not defer it, because it is the only row with a demonstrated
-audible effect, and the user can hear the difference.
+188 — but do not defer it, because it is the row where a fix would be *visible*:
+re-running the keysweep and watching a peak rise is a measurement no other row
+here offers, and that measurement has not been made yet.
 
 ### 3. The zone-slice model — 396 instruments, 4 libraries
 
 `num_slices_zone` (362) and `zone_slice_start` (34) are the largest real language
 gap in the corpus and they are all in loop designers: all 204 of Spitfire Studio
-Brass, all 190 of Heavyocity Vocalise 3, and the Heavyocity Damage family. Slices
+Brass, all 190 of Heavyocity Vocalise 3, and one instrument each in two
+Heavyocity Damage libraries (`Analog Hybrid Drums`, `Damage Drum Kit`). Slices
 are an edit-time division of a sample that neither the plan nor the playback has,
 so this is the one three-figure row that needs a *model* rather than a binding —
 which is exactly why it should be scoped and started rather than left to rot at
@@ -311,8 +345,9 @@ the top of a list.
 **What not to do first, and why.** `GetEnginePar` is the biggest number in the
 file (1,599 instruments, 342,005 declined calls) and it would be wrong to start
 there: nothing in the data says which parameter ids are declined, so the work
-cannot be estimated, let alone scheduled. 17 of 335 keyswept `GetEnginePar`
-instruments are silent, so it is not a silence bug either — it is a
+cannot be estimated, let alone scheduled. 25 of the 396 keyswept instruments
+whose `GetEnginePar` was unanswered at init are silent — 6 %, against 26 % of
+the 704 keyswept overall — so it is not a silence bug either; it is a
 numbers-in-the-script bug, and after the three rows above it is where the
 remaining fidelity lives. The first step is a probe, not a patch: one instrument,
 one generated script that calls `get_engine_par` for every `$ENGINE_PAR_*` id in
@@ -389,8 +424,10 @@ of output, which is why the document and the `.tsv` are the only records.
 where the script text and the audio are — so those four are reproducible only on
 a machine with the same libraries installed. Steps 3, 4 and 7 need only what the
 earlier steps wrote; that was checked by re-running them against this pass's own
-artifacts on 2026-11-01: `analyze_census.py` reproduced `census_summary.json`
-identically, `compile_fail.py` reproduced `compile_fail.json` identically from
+artifacts on 2026-11-01: `analyze_census.py` reproduced every count in
+`census_summary.json` (its silence rows now also record `keys_answered`, and its
+totals `silent_unmeasured` and `silent_with_errors`, which this pass did not
+write), `compile_fail.py` reproduced `compile_fail.json` identically from
 `compile.tsv`, and `build_tsv.py` reproduced the committed `gap-inventory.tsv`
 byte-for-byte.
 

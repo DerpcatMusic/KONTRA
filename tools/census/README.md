@@ -19,15 +19,25 @@ these files, and none of them is cheap to review.
 | `dump_scripts` | `cargo build --example dump_scripts -p kontra-format-kontakt` → `target/debug/examples/dump_scripts` |
 | `kspcheck`, the compile pass | `cargo build --release --manifest-path tools/census/kspcheck/Cargo.toml` (its own workspace, one dependency: `crates/script/ksp`) → `tools/census/kspcheck/target/release/kspcheck` |
 | python 3 | standard library only; no packages |
-| the sample library | the `.nki` files themselves. The 2026-11-01 pass read `~/Armory/VSTs/Kontakt1` (6,037 `.nki`). Nothing in this directory can stand in for them — every step except 7, 8 and 11 needs the audio files on disk |
+| the sample library | the `.nki` files themselves. The 2026-11-01 pass read `~/Armory/VSTs/Kontakt1` (6,037 `.nki`). Nothing in this directory can stand in for them — steps 1, 2, 4, 7 and 8 need the files on disk; 3, 5, 6, 9 and 10 read only what the earlier steps wrote |
 
 Every script takes its work directory from `CENSUS_WORK` (default
 `/var/tmp/gaps`) and its binaries from `KONTRA_INSPECT`, `KONTRA_RENDER` and
 `DUMP_SCRIPTS` (defaults: `target/release/kontra-inspect`,
 `target/release/kontra-render`, `target/debug/examples/dump_scripts`, i.e.
-relative to the repository root). Keep one work directory for the whole run: the
-pass itself split things across `/var/tmp/gaps` and `/var/tmp/keysweep`, and the
-step that wants that split is called out below.
+relative to the repository root).
+
+`LIBRARY_ROOT` (default `~/Armory/VSTs/Kontakt1`) is the corpus root the paths in
+`census.json` are under. It decides which folder the tables call a *library*:
+the directory above the nearest `Instruments` level below it, or — for a loose
+tree with no `Instruments` level, like `#Non NICNT/<publisher>/…` — the first
+directory under it. `library.py` holds that rule for `build_tsv.py` and
+`ui_sample.py`, so a corpus elsewhere (`/mnt/lib/…`) only needs the variable
+moved; nothing is read out of a fixed position in the path any more.
+
+Keep one work directory for the whole run: the pass itself split things across
+`/var/tmp/gaps` and `/var/tmp/keysweep`, and the step that wants that split is
+called out below.
 
 ```bash
 cd /path/to/kontra                       # the repository root
@@ -48,6 +58,13 @@ export CENSUS_WORK=/var/tmp/gaps         # 4.2 GB of space; not in the repo
    done; wait
    python3 tools/census/merge_census.py "$CENSUS_WORK/partA/shard-*.jsonl" "$CENSUS_WORK/census.json"
    ```
+
+   The merge is keyed on each record's `path`, last record wins, and a path
+   keeps the position of its first appearance. `census_sweep.py` appends to its
+   shard, so re-running a shard into the same directory leaves two records for
+   every file it swept; the merge replaces them instead of doubling the corpus,
+   and it prints how many repeats it replaced. That is what makes the documented
+   "keep one work directory" workflow safe to re-run.
 
 2. **Keysweep** — re-render the instruments that were silent at key 60 across
    nine keys (36…84), to separate "the harness picked a key this patch does not
@@ -116,11 +133,15 @@ export CENSUS_WORK=/var/tmp/gaps         # 4.2 GB of space; not in the repo
    python3 tools/census/full_check.py "$CENSUS_WORK/census.json" "$CENSUS_WORK/full.jsonl" 8
    ```
 
-9. **The table** — every count in the inventory's ranked table, read from the
-   files above; the judgement columns are the author's and are the only
-   hand-written cells. `gap-inventory.tsv` is committed beside the document, so
-   give `build_tsv.py` its path to refresh it (the default writes into
-   `$CENSUS_WORK`).
+9. **The table** — the ranked table of the inventory. Which cells are measured,
+   exactly: the `instruments`, `libraries` and `references` columns, and every
+   figure quoted inside a sentence, are computed from `census_summary.json`,
+   `compile_fail.json`, `symbols.json` and `ui_sample.json`; `kind` and
+   `what_it_would_take` are the author's judgement; `example_instruments` is a
+   measured sample for the command and compile rows and a hand-picked example
+   for the bookkeeping, reader, sound and UI rows. `gap-inventory.tsv` is
+   committed beside the document, so give `build_tsv.py` its path to refresh it
+   (the default writes into `$CENSUS_WORK`).
 
    ```bash
    python3 tools/census/build_tsv.py docs/re/gap-inventory-2026-11-01.tsv
@@ -130,7 +151,13 @@ export CENSUS_WORK=/var/tmp/gaps         # 4.2 GB of space; not in the repo
 10. **Two helpers for reading a failure.** `where.py` prints the source line for
     each error in a `compile.tsv`-shaped stream (`where.py compile.tsv
     num_slices_zone 10`), and `instruments.py` diffs two compile runs by
-    instrument (`compile-before.tsv` / `compile-after2.tsv`).
+    instrument (`compile-before.tsv` / `compile-after2.tsv`) and prints how many
+    instruments and how many slots went away.
+
+`python3 tools/census/test_census.py` checks the harness itself: the library
+root arithmetic on a corpus that is not at this machine's depth, silence with a
+missing render, a shard merged twice, and a `compile.tsv` of absolute paths. It
+needs none of the inputs above, and `tools/verify.sh` runs it.
 
 ## What a fresh checkout still cannot reproduce
 
@@ -150,7 +177,9 @@ export CENSUS_WORK=/var/tmp/gaps         # 4.2 GB of space; not in the repo
 Everything else in the document — the census totals, the per-library rows, the
 ranked table, the ordering populations — is regenerated by the commands above.
 Verified on 2026-11-01 by re-running steps 3, 5, 6 and 9 against the pass's own
-artifacts: `analyze_census.py` reproduced `census_summary.json`
-byte-identically, `compile_fail.py` reproduced `compile_fail.json` identically
-from `compile.tsv`, and `build_tsv.py` reproduced the committed
-`gap-inventory.tsv` byte-for-byte.
+artifacts: `analyze_census.py` reproduced every count in `census_summary.json`
+(the silence rows now also carry `keys_answered`, and the totals
+`silent_unmeasured` and `silent_with_errors`, which the 2026-11-01 run did not
+write), `compile_fail.py` reproduced `compile_fail.json` identically from
+`compile.tsv`, and `build_tsv.py` reproduced the committed `gap-inventory.tsv`
+byte-for-byte.

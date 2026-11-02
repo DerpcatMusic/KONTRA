@@ -272,6 +272,14 @@ if bash "$REPO/tools/test_build_slot.sh" >"$LOGS/verify-build-slot.log" 2>&1; th
 else
     bad "build-slot self-tests" "see $LOGS/verify-build-slot.log"
 fi
+# The survey harness reads the corpus and writes the gap inventory, so a path
+# assumption in it does not fail loudly -- it renames a library or silently
+# drops an instrument. Its self-test needs none of the survey's inputs.
+if python3 "$REPO/tools/census/test_census.py" >"$LOGS/verify-census-tests.log" 2>&1; then
+    ok "census harness self-tests" "$(tail -1 "$LOGS/verify-census-tests.log")"
+else
+    bad "census harness self-tests" "see $LOGS/verify-census-tests.log"
+fi
 # pixel-diff needs numpy and Pillow. Without them nothing compares pixels at all,
 # so the pixel rows below fail too; this row says which is missing rather than
 # reporting a test that could not run as one that passed.
