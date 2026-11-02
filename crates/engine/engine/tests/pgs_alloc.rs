@@ -1,5 +1,3 @@
-#![allow(unsafe_code)]
-
 use kontra_engine::{Action, Engine, Plan, Text};
 use kontra_stream::{Store, StoreConfig};
 use kontra_vm::{HostApi, HostCall, HostValue};
@@ -14,6 +12,7 @@ static ALLOCATOR: Counting = Counting;
 
 // SAFETY: all allocation operations are forwarded to the system allocator with
 // their original arguments. The thread-local counter never allocates.
+#[expect(unsafe_code, reason = "the isolated test allocator forwards to System")]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         COUNT.with(|n| n.set(n.get().map(|v| v + 1)));
@@ -110,36 +109,53 @@ fn note_controller_and_ui_callbacks_do_not_allocate_for_pgs() {
         texts,
         returns: Returns::Nothing,
     };
+    let mut texts = vec![
+        Text::from_str_cut("key").0,
+        Text::from_str_cut("text").0,
+        Text::from_str_cut("value").0,
+    ];
+    let mut code = Vec::new();
+    for i in 0..420 {
+        let name = u32::try_from(texts.len()).expect("fixture text index fits u32");
+        texts.push(Text::from_str_cut(&format!("seed{i}")).0);
+        code.extend([
+            Op::Text(name),
+            Op::Int(i % 7 + 1),
+            host(Action::PgsCreateKey, 1, 1),
+            Op::Text(name),
+            host(Action::PgsCreateStrKey, 0, 1),
+        ]);
+    }
+    code.push(Op::Exit);
+    let entry = u32::try_from(code.len()).expect("fixture callback address fits u32");
+    code.extend([
+        Op::Text(0),
+        Op::Int(2),
+        host(Action::PgsCreateKey, 1, 1),
+        Op::Text(0),
+        Op::Int(1),
+        Op::Int(17),
+        host(Action::PgsSetKeyVal, 2, 1),
+        Op::Text(1),
+        host(Action::PgsCreateStrKey, 0, 1),
+        Op::Text(1),
+        Op::Text(2),
+        host(Action::PgsSetStrKeyVal, 0, 2),
+        Op::Exit,
+    ]);
     plan.scripts.push(ScriptPlan {
         program: Program {
-            texts: vec![
-                Text::from_str_cut("key").0,
-                Text::from_str_cut("text").0,
-                Text::from_str_cut("value").0,
-            ],
-            code: vec![
-                Op::Text(0),
-                Op::Int(2),
-                host(Action::PgsCreateKey, 1, 1),
-                Op::Text(0),
-                Op::Int(1),
-                Op::Int(17),
-                host(Action::PgsSetKeyVal, 2, 1),
-                Op::Text(1),
-                host(Action::PgsCreateStrKey, 0, 1),
-                Op::Text(1),
-                Op::Text(2),
-                host(Action::PgsSetStrKeyVal, 0, 2),
-                Op::Exit,
-            ],
+            texts,
+            code,
             cells: 1,
             max_stack: 8,
             ..Program::default()
         },
         callbacks: Callbacks {
-            note: Some(0),
-            controller: Some(0),
-            ui_control: vec![(1, Some(0))],
+            init: Some(0),
+            note: Some(entry),
+            controller: Some(entry),
+            ui_control: vec![(1, Some(entry))],
             ..Callbacks::default()
         },
         coroutines: 4,
@@ -167,6 +183,9 @@ fn note_controller_and_ui_callbacks_do_not_allocate_for_pgs() {
         held_release_ends_children: false,
     });
     let mut e = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let budget = e.pgs_budget();
+    assert_eq!(budget.integer_keys, 484);
+    assert_eq!(budget.string_keys, 484);
     let note = HostNote {
         port: 0,
         channel: 0,
@@ -194,6 +213,7 @@ fn note_controller_and_ui_callbacks_do_not_allocate_for_pgs() {
     e.set_control(0, 1, 1);
     let allocations = COUNT.with(|n| n.replace(None).unwrap());
     assert_eq!(allocations, 0);
+    assert_eq!(e.pgs_budget(), budget, "callbacks retain prepared backing");
     assert_eq!(
         call(
             &mut e,
