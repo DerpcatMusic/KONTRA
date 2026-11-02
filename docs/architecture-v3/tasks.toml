@@ -1286,6 +1286,21 @@ gate = ["build-slot cargo test -p kontra-engine -p kontra-host -p kontra-ksp --a
 done = ["Integer/string keys, variable lengths, duplicates and cross-slot reads survive initialization and reset.", "Actual note/controller/UI callbacks allocate nothing within their prepared PGS budgets; exhaustion is diagnostic.", "Document admission bounds and measurement limits; MIDI storage remains open separately."]
 
 [[task]]
+id = "P6.4e"
+title = "Compile KSP escaped quotes without losing path backslashes"
+phase = 6
+lane = "script"
+size = "S"
+agent = "worker"
+deps = []
+owns = ["crates/script/ksp/src/lex.rs", "crates/script/ksp/src/compile/mod.rs", "crates/script/ksp/src/compile/expr.rs", "crates/script/ksp/tests/ksp.rs", "@plan"]
+docs = ["04-SCRIPT.md"]
+goal = "Extract the escaped-quote diagnosis from Thug-Dracula PR 1274 (reviewed at aef4fcb256a4) as the first independent contributor fix in issue 1282. A quoted help string must compile and reach the existing shared VM with literal quotes; ordinary paths and unknown backslash pairs remain verbatim. This completes only item 1 of issue 1282."
+steps = ["Add an end-to-end synthetic script reproducing the current compile failure, without redistributing library scripts.", "Keep raw borrowed token spans, recognize paired escapes during scanning, and resolve escaped quotes only during off-thread compilation.", "Intern borrowed plain literals and owned decoded literals with Cow; preserve the existing VM, scheduler and host API.", "Test Unicode, quote/backslash parity, Windows paths, repeated literals, missing delimiters and LF/CRLF errors with exact source spans. Record unmeasured semantics rather than claiming complete Kontakt parity."]
+gate = ["build-slot cargo test -p kontra-ksp --all-features", "build-slot cargo doc -p kontra-ksp --no-deps", "KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3"]
+done = ["The regression fails on the previous v3 and passes after this extraction, through the recording host.", "Unknown escape pairs remain byte-for-byte unchanged; malformed strings diagnose the opening delimiter.", "No new dependencies or runtime execution paths; contributor attribution and rollback by one PR are documented."]
+
+[[task]]
 id = "P6.5"
 title = "Gate G6: engine crates"
 phase = 6
