@@ -308,5 +308,64 @@ contains "the failure is the one that was planted" "$out" "refusing to remove"
 [ -L "$root/kontra-slot-poison" ] && ok "the refused slot was left alone" || bad "the refused slot was left alone"
 rm -f "$root/kontra-slot-poison" "$root/kontra-slot-poison.slot"
 
+# --- 12. two wrappers in one slot run one after the other -------------------
+# The defect the flag alone could not fix: two wrappers in one worktree each
+# wrote `in_use=1` with their own pid, the first to exit wrote `in_use=0`, and
+# --gc read a slot as idle while the second was still linking. With the lock
+# held for the command's life, the second waits instead of racing.
+merged_repo "$tmp/wt-serial"
+serial="$tmp/serial.log"
+: >"$serial"
+( cd "$tmp/wt-serial" && "$slot" --base main --name serial bash -c \
+    "printf 'A-start %s\n' \"\$(date +%s%N)\" >>'$serial'; sleep 2; printf 'A-end %s\n' \"\$(date +%s%N)\" >>'$serial'" ) \
+    >/dev/null 2>&1 &
+first=$!
+for _ in $(seq 100); do
+    grep -q "in_use='1'" "$root/kontra-slot-serial.slot" 2>/dev/null && break
+    sleep 0.1
+done
+( cd "$tmp/wt-serial" && "$slot" --base main --name serial bash -c \
+    "printf 'B-start %s\n' \"\$(date +%s%N)\" >>'$serial'; printf 'B-end %s\n' \"\$(date +%s%N)\" >>'$serial'" ) \
+    >"$tmp/serial-b.out" 2>&1 &
+second=$!
+wait "$first" 2>/dev/null || true
+wait "$second" 2>/dev/null || true
+contains "the second wrapper says it waited" "$(cat "$tmp/serial-b.out" 2>/dev/null)" "waiting for it"
+a_end=$(sed -n 's/^A-end //p' "$serial")
+b_start=$(sed -n 's/^B-start //p' "$serial")
+if [ -n "$a_end" ] && [ -n "$b_start" ] && [ "$b_start" -ge "$a_end" ]; then
+    ok "two wrappers in one slot do not run at the same time"
+else
+    bad "two wrappers in one slot do not run at the same time"
+    printf '       first ended: %s\n       second began: %s\n' "${a_end:-?}" "${b_start:-?}"
+    sed 's/^/       /' "$serial"
+fi
+contains "the slot is idle again after both" \
+    "$(cat "$root/kontra-slot-serial.slot" 2>/dev/null)" "in_use='0'"
+
+# --- 13. --gc asks the lock, not the flag ----------------------------------
+# The same defect seen from --gc's side: a marker that says idle is not
+# evidence. Here another process holds the slot with `flock`, exactly as a
+# second wrapper would, and the marker says `in_use='0'` (the first wrapper has
+# already cleared it). --gc must not delete the target directory underneath it.
+merged_repo "$tmp/wt-locked"
+(cd "$tmp/wt-locked" && "$slot" --base main true) 2>/dev/null
+printf "name='wt-locked'\nworktree='%s'\nbranch='lane'\nbase='main'\nin_use='0'\npid=''\nlast_used='1'\n" \
+    "$tmp/wt-locked" >"$root/kontra-slot-wt-locked.slot"
+exec 8>>"$root/kontra-slot-wt-locked.lock"
+if flock -n 8; then
+    ok "the test can hold a slot's lock"
+else
+    bad "the test can hold a slot's lock"
+fi
+attempt_in "$repo_root" "$slot" --gc
+check "--gc exits 0 while a slot lock is held" "$rc" "0"
+contains "--gc skips a locked slot even when the marker says idle" "$out" "slot lock is held"
+[ -d "$root/kontra-slot-wt-locked" ] && ok "a locked slot's directory is kept" || bad "a locked slot's directory is kept"
+exec 8>&-
+attempt_in "$repo_root" "$slot" --gc
+contains "--gc reclaims the slot once the lock is free" "$out" "remove wt-locked"
+[ -d "$root/kontra-slot-wt-locked" ] && bad "a free slot is reclaimable" || ok "a free slot is reclaimable"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

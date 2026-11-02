@@ -36,12 +36,21 @@
 #   tools/build-slot --list                            # slots: size, owner, branch, last used
 #   tools/build-slot --gc                              # reclaim dead / merged+clean idle slots
 #
-# A slot's marker also records whether a build is running in it (`in_use`, with
-# the wrapper's pid), written before the build starts and cleared when it ends.
-# --gc will not reclaim a slot whose build is running: the merge-and-clean test
+# A slot is locked while a build runs in it: the wrapper takes an `flock` on
+# $KONTRA_SLOT_ROOT/kontra-slot-<name>.lock, held from before the first marker
+# write until the process exits. --gc asks the kernel for that same lock with
+# `flock -n`, so "is a build running here" is a fact it cannot read stale, and
+# it holds the lock across its own remove: the check and the `rm -rf` cannot be
+# separated by a build starting. This matters because the merge-and-clean test
 # is a moment-in-time question, and a lane whose branch was merged while its
-# build was still linking answered it yes. Its target directory was then deleted
+# build was still linking answered it yes; its target directory was then deleted
 # underneath the build, which failed in the link step with no mention of --gc.
+#
+# The marker still records `in_use` and the wrapper's pid, for --list and for
+# --gc's rules about markers written before the lock existed. It is a record,
+# not the lock: two wrappers in one worktree used to overwrite each other's pid,
+# the first to exit wrote `in_use=0`, and --gc read the slot as idle while the
+# second was still linking. A second wrapper now waits for the lock instead.
 #
 # Exit status: the wrapped command's own status (propagated, so nothing is
 # swallowed), 75 if the free-space floor was not met (nothing was run), 2 on a
@@ -128,6 +137,7 @@ du_kb() {
 
 slot_dir()  { printf '%s/kontra-slot-%s' "$ROOT" "$1"; }
 marker_path() { printf '%s/kontra-slot-%s.slot' "$ROOT" "$1"; }
+lock_path()   { printf '%s/kontra-slot-%s.lock' "$ROOT" "$1"; }
 
 # Marker values are written single-quoted; strip one layer on read. Never
 # sourced: a marker lives on a shared /var/tmp and is data, not code.
@@ -139,6 +149,38 @@ marker_get() {
     v=${v#\'}; v=${v%\'}
     printf '%s' "$v"
 }
+
+# --- the slot's lock ---------------------------------------------------------
+# "Is a build running here" is answered by the kernel, not by a field a wrapper
+# remembered to write. The lock is held on fd 9 for as long as this process
+# holds it -- a build holds it from before its first marker write until exit,
+# and --gc takes it only with `try`, so a busy slot is skipped rather than
+# waited for.
+#
+# The file is never removed. Unlinking a lock file another process has open lets
+# that process and a fresh opener hold two different locks on two different
+# inodes -- the same race with more steps -- so an empty file beside each slot
+# is the price of the lock being real.
+lock_acquire() { # name wait|try -> 0 acquired, 1 busy (try only)
+    local name=$1 how=$2 file owner
+    command -v flock >/dev/null 2>&1 || die "flock (util-linux) is required to lock a slot"
+    file=$(lock_path "$name")
+    exec 9>>"$file" || die "cannot open the lock file $file"
+    if [ "$how" = try ]; then
+        flock -n 9 && return 0
+        exec 9>&-
+        return 1
+    fi
+    flock -n 9 && return 0
+    owner=$(marker_get "$(marker_path "$name")" pid || true)
+    printf '%s: slot %s is busy%s; waiting for it\n' \
+        "$prog" "$name" "${owner:+ (pid $owner)}" >&2
+    flock 9 && return 0
+    exec 9>&-
+    return 1
+}
+
+lock_release() { exec 9>&-; }
 
 # Rewritten on every invocation so --gc decides from what the lane actually
 # did, not from a guess. Written to a temporary and renamed: a lane that reads
@@ -337,24 +379,15 @@ remove_slot() { # name size_kb reason
     REMOVED=$(( REMOVED + 1 ))
 }
 
-# Is a build running in this slot? Returns 0 with the evidence on stdout when
-# one is, 1 when the slot is idle.
+# Does this marker name a build that is still running? Returns 0 with the
+# evidence on stdout when it does, 1 when it does not.
 #
-# "Busy" is a fact, not a guess, when the marker records it: this version writes
-# `in_use=1` and its pid before it starts the command and clears the flag after,
-# so a live pid *is* a build. Two cases still have to be inferred, and both are
-# inferred conservatively:
-#
-#   - a marker with no `in_use` field at all, written by an older build-slot
-#     running in a lane that has not restarted yet;
-#   - `in_use=1` whose pid is gone: the wrapper was killed (closed terminal,
-#     OOM) before it could clear the flag.
-#
-# In both, `last_used` within the build window is all the evidence there is, and
-# a slot that might be building is kept for the window rather than reclaimed.
-# `in_use=0` is answered from the flag alone: a finished build is not "recently
-# used", and --gc staying blind for an hour after every build would make it
-# useless exactly when the disk is full.
+# This is the *legacy* half of the answer. A marker written by this version is
+# only ever visible to --gc while the writer holds the slot's lock, and --gc
+# takes that lock first (see gc_slot); the checks here cover what the lock
+# cannot: a marker written by a build-slot that predates it, and an `in_use=1`
+# whose wrapper was killed (closed terminal, OOM) before it could clear the flag.
+# Both are inferred conservatively from `last_used` and the build window.
 build_in_progress() { # marker
     local marker=$1 in_use pid last now
     in_use=$(marker_get "$marker" in_use || true)
@@ -379,22 +412,42 @@ build_in_progress() { # marker
 }
 
 gc_slot() { # name
-    local name=$1 dir marker kb wt branch base ahead dirty busy
-    dir=$(slot_dir "$name"); marker=$(marker_path "$name")
-    kb=$(du_kb "$dir")
-
+    local name=$1 marker busy
+    marker=$(marker_path "$name")
     if [ ! -f "$marker" ]; then
         # No marker means no recorded owner: we cannot prove the directory is
         # dead, so it stays. Running a build here claims it.
         skip "$name" "no marker, owner unknown (build here once to claim it)"
-        return
+        return 0
     fi
 
-    # Before anything else: a slot that is building is not reclaimable, however
-    # merged and clean the branch it is building looks.
+    # The lock is taken before the first question -- merged? clean? -- and held
+    # through remove_slot's `rm -rf`. Without that, a lane whose branch merged a
+    # moment ago could start a build between the check and the removal, and the
+    # target directory would be deleted underneath it: the exact failure this
+    # guard exists to prevent, with the marker only reporting it afterwards.
+    if ! lock_acquire "$name" try; then
+        if busy=$(build_in_progress "$marker"); then
+            skip "$name" "$busy"
+        else
+            skip "$name" "slot lock is held (a wrapper is starting or running)"
+        fi
+        return 0
+    fi
+    gc_slot_locked "$name"
+    lock_release
+}
+
+gc_slot_locked() { # name, with the slot's lock held
+    local name=$1 dir marker kb wt branch base ahead dirty busy
+    dir=$(slot_dir "$name"); marker=$(marker_path "$name")
+    kb=$(du_kb "$dir")
+
+    # A marker that predates the lock can still name a live pid, and one whose
+    # wrapper died mid-build names a dead one; both are decided as before.
     if busy=$(build_in_progress "$marker"); then
         skip "$name" "$busy"
-        return
+        return 0
     fi
 
     wt=$(marker_get "$marker" worktree || true)
@@ -481,6 +534,13 @@ gc_slots() {
         name=${marker##*/kontra-slot-}; name=${name%.slot}
         [ -n "$name" ] || continue
         if [ ! -d "$(slot_dir "$name")" ]; then
+            # Same rule as a slot: never touch a name someone holds. A wrapper
+            # between "lock taken" and "slot directory made" would otherwise
+            # lose the marker it is about to write.
+            if ! lock_acquire "$name" try; then
+                skip "$name" "stale marker, but the slot lock is held"
+                continue
+            fi
             if [ "$DRY_RUN" -eq 1 ]; then
                 printf 'would  %-24s remove stale marker\n' "$name"
             else
@@ -488,6 +548,7 @@ gc_slots() {
                 printf 'remove %-24s remove stale marker\n' "$name"
             fi
             REMOVED=$(( REMOVED + 1 ))
+            lock_release
         fi
     done
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -569,6 +630,12 @@ if [ "$avail_kb" -lt "$min_kb" ]; then
 fi
 
 # --- marker, one log line, then the build ------------------------------------
+# Held for the rest of this process: --gc asks the kernel whether a build is
+# running here, and a second wrapper in the same slot waits for this one rather
+# than racing it. Taken before the directory or the marker is written, so the
+# slot is never visible as an unowned directory: --list reads a marker, and
+# --gc will not reclaim anything whose lock it cannot take.
+lock_acquire "$SLOT_NAME" wait
 mkdir -p -- "$dir" || die "cannot create $dir"
 branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')
 base=$(resolve_base "$wt" || true)
@@ -581,11 +648,14 @@ if [ -z "$SLOT_BASE" ] && [ -n "$recorded" ]; then base=$recorded; fi
 
 mark() { write_marker "$SLOT_NAME" "$wt" "$branch" "$base" "$1" "$$"; }
 
-# The flag is cleared on the way out of every path, because a wrapper that
-# leaves `in_use=1` behind makes its slot unreclaimable until the pid is reused:
-# normal exit, the command's own failure, and a signal. `|| true`: the build's
-# verdict must never be replaced by a failure to write the marker.
-mark_idle() { mark 0 2>/dev/null || true; }
+# Cleared on the way out of every path, because a marker that still says
+# `in_use=1` after its wrapper is gone makes --list lie and (for markers with no
+# lock) --gc hold the slot for a whole build window. Only written when this
+# process wrote the flag: a wrapper that was *waiting* for the lock must not
+# clear the flag its holder put there. `|| true`: the build's verdict must never
+# be replaced by a failure to write the marker.
+marking=0
+mark_idle() { if [ "$marking" = 1 ]; then mark 0 2>/dev/null || true; fi; }
 trap mark_idle EXIT
 trap 'mark_idle; exit 129' HUP
 trap 'mark_idle; exit 130' INT
@@ -594,6 +664,7 @@ trap 'mark_idle; exit 143' TERM
 # Before the build, not after: --gc reads this to decide whether a merged and
 # clean slot is safe to delete, and asking after the directory is already in use
 # is asking too late.
+marking=1
 mark 1 || die "cannot write marker in $ROOT"
 
 # On stderr: stdout belongs to the wrapped command, which may be emitting
