@@ -94,7 +94,11 @@ def main():
     # An instrument is silent only when it answered every key and none of them
     # sounded. A record that stayed quiet at key 60 and then lost renders is
     # *unmeasured*, and is counted separately rather than as silence.
-    quiet = [s for s in sweep if s.get("zones_ready", 0) > 0 and not s.get("sounds_at")]
+    # `zones_ready` is null when `census_sweep.py` did not match its sample line,
+    # so `s.get("zones_ready", 0)` is None -- not 0 -- for such a record and
+    # `None > 0` raises. Only a record that loaded and counted zones can be
+    # asked whether they made a sound.
+    quiet = [s for s in sweep if (s.get("zones_ready") or 0) > 0 and not s.get("sounds_at")]
     silent = [s for s in quiet if keys_answered(s) == len(KEYS)]
     unmeasured = [s for s in quiet if keys_answered(s) < len(KEYS)]
     silent_paths = {s["path"] for s in silent}

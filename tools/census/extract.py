@@ -14,17 +14,27 @@ import os
 WORK = os.environ.get("CENSUS_WORK", "/var/tmp/gaps")
 
 
-#: Built by `cargo build --example dump_scripts -p kontra-format-kontakt`.
+#: The dumper the 2026-11-01 pass used. Its example lived in
+#: `crates/sampler-kontakt`, which the 2026-11-02 sync removed, so this path names
+#: a binary this branch cannot build; point `DUMP_SCRIPTS` at a replacement.
 BIN = os.environ.get("DUMP_SCRIPTS", "target/debug/examples/dump_scripts")
+
+#: Seconds one extraction may take. A constant, not a literal, so a test can
+#: prove the timeout record has the same shape as the others.
+TIMEOUT = 300
 
 def one(args):
     i, rec, outdir = args
     d = os.path.join(outdir, str(i))
     os.makedirs(d, exist_ok=True)
     try:
-        p = subprocess.run([BIN, rec["path"], d], capture_output=True, text=True, timeout=300)
+        p = subprocess.run([BIN, rec["path"], d], capture_output=True, text=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
-        return {"i": i, "path": rec["path"], "ok": False, "err": "timeout"}
+        # Same fields as every other record: the module docstring lists `name`,
+        # `slots` and `bytes` as manifest fields, and `instruments.py` reads
+        # `r["name"]` unguarded -- one timeout used to make it raise KeyError.
+        return {"i": i, "path": rec["path"], "name": rec.get("name"), "ok": False,
+                "slots": 0, "bytes": [], "err": "timeout"}
     files = sorted(os.listdir(d)) if os.path.isdir(d) else []
     err = "" if p.returncode == 0 else (p.stderr.strip().splitlines() or ["exit %d" % p.returncode])[-1][:300]
     return {"i": i, "path": rec["path"], "name": rec.get("name"), "ok": p.returncode == 0,

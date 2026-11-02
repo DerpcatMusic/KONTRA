@@ -129,8 +129,13 @@ for name, a in ACT.items():
 
 # ---------------------------------------------------------------- symbols (compile)
 for m, k in sorted(fam_instr.items(), key=lambda kv: -kv[1]["instr"]):
-    key = next((c for c in COMPILE_TAKES if m.startswith(c[:20])), None)
-    kind, takes = COMPILE_TAKES.get(m, ("function", "unclassified"))
+    # `?` is a prefix rule -- `?home_vr_xypad is not declared` is an undeclared
+    # text variable, not a missing function -- and the exact lookup here made the
+    # `?` entry unreachable, so those rows were filed as `function` with no
+    # explanation. Every other key is the whole message (`fam` strips `(at byte
+    # N)`), so an exact match is the rule.
+    key = m if m in COMPILE_TAKES else ("?" if m.startswith("?") else None)
+    kind, takes = COMPILE_TAKES.get(key, ("function", "unclassified"))
     add(m, kind, k["instr"], len(k["libs"]),
         f"{k['instr']} instruments refuse to compile; {fam_only[m]} of them fail for this reason alone",
         takes, "; ".join(k["ex"]),
@@ -200,9 +205,9 @@ add("silent at every key with zones", "symptom", len(SILENT),
     len({s["library"] for s in SILENT}),
     f"{C['totals']['keysweep_instruments']} instruments keyswept; "
     + f"{'/'.join(str(k) for k in KEYS_ANSWERED) or '?'} of 9 keys answered on each",
-    f"a symptom, not a gap: only {FAILS} of these {len(SILENT)} have a script that fails to compile. The `LoadArray` "
-    "cross-tabulation in §5 is the best single explanation the numbers offer — unproven as a mechanism, and the "
-    "correlation itself withdrawn until it is re-derived"
+    f"a symptom, not a gap: only {FAILS} of these {len(SILENT)} have a script that fails to compile, and no cause is "
+    "proven: §5 measures both candidates (`LoadArray` and `GetEnginePar`) below the keyswept base rate and withdraws "
+    "the correlation, so the next step is a diagnosis, not a patch"
     + (f"; {UNMEASURED} further instruments stayed silent at key 60 but answered too few keys to be counted here"
        if UNMEASURED else ""),
     "; ".join(s["library"] for s in SILENT[:3]))
@@ -217,23 +222,28 @@ add("no playable zone at all", "not ours", len(C["no_zones"]),
 # The sample is `ui_sample.py`'s own output: how many instruments it re-loaded,
 # how many libraries that covered, how many unresolved references it saw and how
 # many of them were distinct paths. The "all absent" claim is its bucket count.
-ui_n = ui_libs = ui_refs = ui_distinct = 0
+ui_n = ui_libs = ui_refs = ui_distinct = ui_pics = ui_blank = 0
 try:
     UI = json.load(open(f"{WORK}/ui_sample.json"))
     ui_n = len(UI)
     ui_libs = len({r.get("library") for r in UI})
     ui_refs = sum(r.get("now_unresolved", 0) for r in UI)
     ui_distinct = sum((r.get("buckets") or {}).get("absent_from_library", 0) for r in UI)
-    ui_present = sum((r.get("buckets") or {}).get("present_loose_unread", 0) for r in UI)
+    # Both measured by `ui_sample.py`: no typed "28 of the 31".
+    ui_pics = len({r.get("library") for r in UI if r.get("library_has_pictures")})
+    ui_blank = sum(1 for r in UI if not r.get("error") and not r.get("now_unresolved")
+                   and not r.get("now_resolved"))
 except FileNotFoundError:
-    UI, ui_present = [], 0
+    UI = []
 add("UI asset not found", "not ours", C["totals"]["ui_instruments"], len(C["ui_by_library"]),
     C["totals"]["ui_unresolved_assets"],
-    f"not ours in every sampled case: {ui_n} instruments across {ui_libs} libraries re-checked on the build that fixed "
-    f"pictures — {ui_refs:,} unresolved references, {ui_distinct:,} distinct paths, "
-    + ("every one" if not ui_present else f"{ui_distinct - ui_present} of them")
-    + f" absent from the library on disk, and none of the {ui_libs} libraries ships a `pictures/` folder. "
-    "The counts reproduce the census exactly, so the picture fix moved none of them",
+    f"not ours in the sample: {ui_n} instruments across {ui_libs} libraries re-checked on this branch's build — "
+    f"{ui_refs:,} unresolved references, {ui_distinct:,} distinct paths, every one absent from the library on disk; "
+    f"{ui_libs - ui_pics} of the {ui_libs} libraries ship no `pictures/` folder at all"
+    + (f", and the {ui_pics} that do keep them one `Resources/` deeper than the scripts ask for"
+       if ui_pics else "")
+    + (f"; {ui_blank} of the {ui_n} report no UI model at all on today's build where the census counted one"
+       if ui_blank else ""),
     "Bicycle - Sick Range.nki (8DIO Misfit); Kalimba")
 
 head = ["gap", "kind", "instruments", "libraries", "references", "what_it_would_take",

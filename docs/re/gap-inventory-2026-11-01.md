@@ -29,7 +29,7 @@ compile, and the largest single cause is one missing command name.
 | of those, with at least one script | 3,674 | |
 | … whose every slot compiles | 2,956 | |
 | … with a slot that does not compile | **718** | |
-| … with no unanswered init action | 1,614 | 44 % |
+| … with no unanswered init action (of the 3,694 loaded) | 1,614 | 44 % |
 | refused by the reader | 2,343 | 39 % |
 | of the loaded: silent at every key tried (704 keyswept) | 180 | |
 | of the loaded: no playable zone at all | 254 | |
@@ -124,9 +124,9 @@ answered for each instrument it counts.
 | unknown command dont_use_machine_mode | command | 5 | 3 | a no-op binding (Kontakt's is a no-op) | Analog Hybrid Loop Designer.nki |
 | FindZone | command | 4 | 1 | a zone name index | NG Strum.nki |
 | unknown command set_num_user_zones | command | 4 | 3 | the user-zone model | FOLDS.nki |
-| ?main_controls_inst_panels_1_icon_panel_stage is not declared | function | 2 | 2 | an ordering fix: undeclared text variable | Lores.nki |
+| ?main_controls_inst_panels_1_icon_panel_stage is not declared | ordering | 2 | 2 | an ordering fix: undeclared text variable | Lores.nki |
 | GetSampleLength | command | 2 | 2 | one sample-metadata field | Analog Hybrid Kit Designer.nki |
-| ?home_vr_xypad is not declared | function | 1 | 1 | an ordering fix: undeclared text variable | World Strings - Guzheng.nki |
+| ?home_vr_xypad is not declared | ordering | 1 | 1 | an ordering fix: undeclared text variable | World Strings - Guzheng.nki |
 | LoadMidiFile | command | 1 | 1 | a MIDI-file read into an array | Sonica KOTO 20.nki |
 | more values than array elements | function | 1 | 1 | an ordering fix: KSP lets the surplus be ignored | Mizwed - Improv.nki |
 
@@ -243,16 +243,22 @@ it lands, treat any silence count here as an upper bound.
   records Kontakt playing a zero-zone Glass & Steel patch at −9.8 dBFS, so the
   open question is *which* saved purge states Kontakt restores, not whether we
   can read the file.
-- **The 1,571 instruments with unresolved UI assets are (in every sampled case)
-  the library's fault.** 44 instruments across 23 libraries were re-loaded on
-  today's build: 1,503 unresolved references, 1,490 distinct paths, **all**
-  absent from the library on disk, and **none** of the 25 sampled library
-  folders ships a `pictures/` directory at all. The census counts reproduced
-  exactly — the picture-sidecar fix of this morning moved none of them. So the
-  right response to a picture that "does not resolve" is to check the publisher's
-  install, not the reader. (Caveat: a picture inside an `.nkr` would also read as
-  absent here; the reader itself searches `.nkr`/`.nicnt`, so this only fails to
-  exonerate us if our archive index is wrong.)
+- **The 1,571 instruments with unresolved UI assets are, in the sample, the
+  library's fault.** 44 instruments across 31 libraries were re-loaded on this
+  branch's build: 1,714 unresolved references, 1,697 distinct paths, **every one
+  absent from the library on disk**. 28 of the 31 sampled library folders ship no
+  `pictures/` directory at all; the three that do (the two Muze products and the
+  `#Non NICNT` root above them) keep their pictures at
+  `Resources/Resources/pictures/…`, one `Resources/` deeper than the scripts ask
+  for, so the reference is still absent. The right response to a picture that
+  "does not resolve" is to check the publisher's install, not the reader.
+  (Caveats: a picture inside an `.nkr` would also read as absent here; the reader
+  itself searches `.nkr`/`.nicnt`, so this only fails to exonerate us if our
+  archive index is wrong. And three of the 44 — 8Dio Misfit's Bicycle and
+  Stompbox — report **no script or UI model at all** on this branch's build where
+  the census counted five scripts and 73–75 unresolved references, so their
+  census counts are not reproduced by this sample; that difference is between
+  this branch and the binary the census ran, not a property of the library.)
 - **Kontakt's private performance views (58 instruments) and native UI pages
   (9)** have no format in this repo. They are not schedulable work.
 
@@ -356,7 +362,9 @@ at `8c64fccd0`) unless a path says otherwise. Working files are under
 2. **Scripts were extracted, not re-swept.**
    `python3 extract.py census.json /var/tmp/gaps` runs the repository's own
    `examples/dump_scripts` binary (`cargo build --example dump_scripts -p
-   kontra-format-kontakt`) once per loaded instrument: 3,694 instruments,
+   kontra-format-kontakt` — the example lived in `crates/sampler-kontakt`, which
+   the 2026-11-02 sync removed, so **this step cannot be re-run on this branch**;
+   the output is kept with `$CENSUS_WORK`) once per loaded instrument: 3,694 instruments,
    **8,016 script slots, 3.8 GB of KSP**. All 3,694 succeeded; a refused
    instrument has no script text to extract, so the symbol surface of the 2,343
    refused instruments is *not* in this survey.
@@ -375,9 +383,12 @@ at `8c64fccd0`) unless a path says otherwise. Working files are under
    instruments — does not appear anywhere in `docs/re/ksp/SYMBOLS.tsv`.
 5. **The UI re-check** is `ui_sample.py 44`: 44 instruments sampled by library
    from the 1,571 with unresolved assets, each re-loaded with today's
-   `kontra-inspect` (release, built after the `picture.rs` fix), every unresolved
-   asset path tested against a lowercased index of the library's files
-   (`Samples/` pruned).
+   `kontra-inspect`, every unresolved asset path tested against a lowercased
+   index of the library's files (`Samples/` pruned) — exact path first, then the
+   library's own `Resources/` prefix, never a bare path ending (a file one
+   directory deeper is not the file the script asked for). The sample is shuffled
+   before it is cut to 44: the first draw kept the first 22 libraries in census
+   order and could not reach the other 27, which is why it was redrawn.
 6. **Silence** is `/var/tmp/keysweep/results.jsonl`: 704 instruments, 9 keys each
    (36…84), `sounds_at` empty = silent at every key tried. A record counts as
    silent only when all nine keys answered — a render that failed or timed out
@@ -432,8 +443,9 @@ byte-for-byte.
 - **The 6 files that are neither XML, modulator nor `.nicnt`** (18 "program:
   missing" in Evolve, 6 unparsed) are counted, not diagnosed.
 - **Sampling.** §3's per-library table is complete; §4's UI claim is a 44-
-  instrument sample of 23 libraries, and §5's `LoadArray` claim is a correlation
-  over 61 keyswept instruments. Both are labelled as such where they are used.
+  instrument sample drawn across 31 libraries (redrawn — the first draw kept the
+  first 22 in census order), and §5's `LoadArray` claim is a correlation over 61
+  keyswept instruments. Both are labelled as such where they are used.
 
 ## 7. What the numbers say about the project, not just the corpus
 

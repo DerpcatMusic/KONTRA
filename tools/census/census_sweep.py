@@ -104,15 +104,25 @@ def one(path):
                            capture_output=True, text=True, timeout=600)
         rec["render_exit"] = r.returncode
         if r.returncode == 0:
-            j = json.loads(r.stdout)
-            rec["peak"] = j.get("peak")
-            rec["peak_dbfs"] = j.get("peak_dbfs")
-            rec["rms_dbfs"] = j.get("rms_dbfs")
-            rec["frames"] = j.get("frames")
-            rec["render_load_s"] = j.get("load_s")
-            rec["render_zones"] = j.get("zones")
-            rec["sha256"] = j.get("sha256")
-            rec["note_key"] = j["note"]["key"]
+            # Exit 0 is not a measurement: a render that printed something other
+            # than its summary (a warning on stdout, a half-written line) used to
+            # raise out of `one`, and `ex.map` re-raised it in the shard, so one
+            # odd file ended the sweep with no record for it at all.
+            try:
+                j = json.loads(r.stdout)
+                rec["note_key"] = j["note"]["key"]
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                rec["render_refusal"] = (
+                    f"kontra-render exited 0 without a usable summary ({type(e).__name__})"
+                )
+            else:
+                rec["peak"] = j.get("peak")
+                rec["peak_dbfs"] = j.get("peak_dbfs")
+                rec["rms_dbfs"] = j.get("rms_dbfs")
+                rec["frames"] = j.get("frames")
+                rec["render_load_s"] = j.get("load_s")
+                rec["render_zones"] = j.get("zones")
+                rec["sha256"] = j.get("sha256")
         else:
             lines = [l.strip() for l in r.stderr.strip().splitlines() if l.strip()]
             rec["render_refusal"] = (lines[-1] if lines else "").replace(path, "<file>")
