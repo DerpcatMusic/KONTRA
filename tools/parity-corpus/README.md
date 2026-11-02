@@ -215,3 +215,22 @@ filter, a broadband shift is a gain stage. `--json` writes the same rows for a r
 
 A `finding (unchanged)` row never fails the build. It is the list of places where KONTRA does not
 yet match Kontakt, printed every run so it cannot be mistaken for parity.
+
+## On `v3`
+
+This directory was written on `feat/integration` and moved here whole. Two things
+about it on this branch:
+
+- **The gate runs unchanged.** `run.py` needs only the committed references and a
+  `kontra-render` binary (`cargo build --release -p kontra-host --bin
+  kontra-render`, added with this directory). `tools/verify.sh` runs the
+  three-case subset on every gate.
+- **The recorded baselines are feat/integration's engine.** Each case's `baseline`
+  is what KONTRA measured when its reference was captured, so on `v3` a `moved`
+  number compares two engines, not a build against itself. Every case still
+  prints its absolute delta from Kontakt, which is what the corpus is for; the
+  gate row says so rather than reading as a regression.
+- **`--capture`/`--record` do not work here yet.** They drive real Kontakt through
+  `tools/oracle-mcp` (`client.py`, one session per take), which is
+  feat/integration's and is not on this branch. Re-recording the baselines — the
+  way to turn the numbers above into this engine's own — needs that port first.
