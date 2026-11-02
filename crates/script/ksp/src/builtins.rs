@@ -324,11 +324,11 @@ builtins! {
         // in the engine's script host).
         HideInstIcon "hide_inst_icon" [] 0 Void;
         // `dont_use_machine_mode(<zone-id>)` is the Zone Commands entry the
-        // manual documents as "can only be used in the \"on note\" callback";
-        // it switches Kontakt's own machine mode off for the zone the note
-        // came from, and our plan has no machine mode for a zone to enter, so
-        // the call is answered and does nothing (see the engine's script host).
-        // 25 corpus slots fail to compile on the name alone.
+        // manual restricts to the `on note` callback; it switches Kontakt's own
+        // machine mode off for the zone the note came from, and our plan has no
+        // machine mode for a zone to enter, so the call is answered and does
+        // nothing (see the engine's script host). 25 corpus slots report it as
+        // their first compile error (`docs/re/ksp-bindings-2026-11-01.md` §3).
         DontUseMachineMode "dont_use_machine_mode" [I] 0 Void;
         ExposeControls "expose_controls" [] 0 Void;
         SetSnapshotType "set_snapshot_type" [I] 0 Void;
