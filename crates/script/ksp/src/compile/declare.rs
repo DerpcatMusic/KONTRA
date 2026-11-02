@@ -40,9 +40,17 @@ impl<'a> Compiler<'a> {
         if self.names.contains_key(&key) {
             return Err(Error::new(span, format!("{} is declared twice", d.name)));
         }
+        // A name Kontakt defines is refused here: a builtin (command, system
+        // variable, system array) or a predefined constant with a value. A name
+        // it does not define is the script's, even when it looks like one of
+        // Kontakt's: the manual's own `const` example declares `$NUM_PRESETS`,
+        // and corpus instruments declare `$EVENT_PAR_TOY` (16 scripts) and
+        // `$NI_VC_DEPTHS_COUNT` (2) — names under the prefixes the manual asks
+        // you to avoid — and Kontakt compiles all of them. The harvested
+        // catalog is not a definition ([`consts::is_catalog`]).
         if Builtin::from_name(d.name).is_some()
             || consts::int(d.name).is_some()
-            || consts::is_catalog(d.name)
+            || consts::real(d.name).is_some()
         {
             return Err(Error::new(span, format!("{} is a reserved name", d.name)));
         }
@@ -66,6 +74,17 @@ impl<'a> Compiler<'a> {
             Storage::Persistent => Persistence::Snapshot,
             Storage::InstrumentPersistent => Persistence::Instrument,
             _ => Persistence::None,
+        };
+        // A scalar's constant initialiser, so a later fold reads the *declared*
+        // value of the name rather than whatever the catalog says about it:
+        // `declare $NUM_PRESETS := 5` makes `$NUM_PRESETS` a number, and a
+        // `declare const $N := $NUM_PRESETS` after it folds to 5. Without this,
+        // the name falls through to [`consts::is_catalog`] and folds to an
+        // opaque symbol id — a silent wrong constant, not an error.
+        let init = match (d.storage, d.list, d.init.as_slice()) {
+            (Storage::Const, _, _) | (_, true, _) => None,
+            (_, false, [init]) => self.fold(init).ok(),
+            _ => None,
         };
         let home = match (d.storage, len, ty) {
             (Storage::Const, None, _) => {
@@ -145,6 +164,7 @@ impl<'a> Compiler<'a> {
             name: d.name.into(),
             ty,
             home,
+            init,
             control,
             persistence,
         });
@@ -190,6 +210,7 @@ impl<'a> Compiler<'a> {
             name: name.into(),
             ty,
             home,
+            init: None,
             control: Some(index),
             persistence: Persistence::None,
         });
@@ -345,13 +366,27 @@ impl<'a> Compiler<'a> {
         Ok(match &e.kind {
             ExprKind::Int(n) => Value::Int(int_literal(*n, e.span)?),
             ExprKind::Real(n) => Value::Real(*n),
-            ExprKind::Var(name, None) => match self.named_constant(name) {
-                Some(value) => value,
-                None if consts::is_catalog(name) && Builtin::from_name(name).is_none() => {
+            ExprKind::Var(name, None) => {
+                // A declared variable wins over the catalog. `$NUM_PRESETS`,
+                // `$EVENT_PAR_TOY` and `$NI_VC_DEPTHS_COUNT` are names the
+                // corpus declares *and* names the harvested catalog holds (it
+                // records what the corpus uses, not what Kontakt owns), so
+                // asking the catalog first turned a declared number into an
+                // opaque symbol id. A name that is declared but holds no
+                // constant is not a constant, whatever the catalog says of it.
+                if self.is_declared(name) {
+                    match self.declared_value(name) {
+                        Some(value) => value,
+                        None => return Err(not_constant()),
+                    }
+                } else if let Some(value) = self.named_constant(name) {
+                    value
+                } else if consts::is_catalog(name) && Builtin::from_name(name).is_none() {
                     Value::Int(self.symbol(name))
+                } else {
+                    return Err(not_constant());
                 }
-                None => return Err(not_constant()),
-            },
+            }
             ExprKind::Unary(Un::Neg, inner) => match (&inner.kind, self.fold(inner)?) {
                 (ExprKind::Int(n), _) => Value::Int(int_literal(*n, e.span)?.wrapping_neg()),
                 (_, Value::Int(n)) => Value::Int(n.wrapping_neg()),
@@ -371,6 +406,28 @@ impl<'a> Compiler<'a> {
                 fold_binary(*op, a, b).ok_or_else(not_constant)?
             }
             ExprKind::Call(name, args) => {
+                // `num_elements(%a)` is a constant whenever `%a` is: an array's
+                // size is fixed when it is declared, so the manual's rule that
+                // an array's "number of elements must be defined with a
+                // constant value, variables cannot be used for this purpose"
+                // admits it (% is an integer array, "Remarks"). Kontakt's own
+                // compiler folds it — Heavyocity, e-instruments and NI scripts
+                // size an array from `num_elements()` of an earlier one (for
+                // instance `declare %original_events[num_elements
+                // (%artificial_events)]`, Scene - Lotus).
+                if Builtin::from_name(name) == Some(Builtin::NumElements) {
+                    let [
+                        Expr {
+                            kind: ExprKind::Var(array, None),
+                            ..
+                        },
+                    ] = args.as_slice()
+                    else {
+                        return Err(not_constant());
+                    };
+                    let len = self.array_len(array).ok_or_else(not_constant)?;
+                    return Ok(Value::Int(len as i32));
+                }
                 let mut values = Vec::with_capacity(args.len());
                 for a in args {
                     values.push(self.fold(a)?);
@@ -393,6 +450,38 @@ impl<'a> Compiler<'a> {
         consts::int(name)
             .map(Value::Int)
             .or_else(|| consts::real(name).map(Value::Real))
+    }
+
+    /// The length of the array `name` names, resolved the way a read of it is
+    /// (see [`Self::num_elements`]'s rule in `builtins`): an exactly spelled
+    /// system array first, then the script's own declaration.
+    pub(super) fn array_len(&self, name: &str) -> Option<u32> {
+        if let Some(len) = Builtin::from_name(name).and_then(Builtin::array_len) {
+            return Some(len);
+        }
+        self.lookup(name, Span::default())
+            .ok()
+            .and_then(|v| self.var(v).ok()?.array().map(|(_, len)| len))
+    }
+
+    /// Whether the script itself declares `name` — the name is the script's,
+    /// whatever the catalog says about it.
+    pub(super) fn is_declared(&self, name: &str) -> bool {
+        self.names.contains_key(&name.to_ascii_lowercase())
+    }
+
+    /// The constant a declared name folds to: a `const`'s value, or a scalar's
+    /// constant initialiser. `None` when the declared name holds no compile-time
+    /// value (it is only assigned at run time), which makes a fold of it an
+    /// error rather than a catalog lookup.
+    pub(super) fn declared_value(&self, name: &str) -> Option<Value> {
+        let var = self
+            .vars
+            .get(*self.names.get(&name.to_ascii_lowercase())?)?;
+        match var.home {
+            Home::Const(value) => Some(value),
+            _ => var.init,
+        }
     }
 }
 
@@ -418,16 +507,46 @@ fn control_kind(word: &str) -> Option<ControlKind> {
     })
 }
 
+/// Folds a call of a number function on values already folded.
+///
+/// The arithmetic functions are the manual's own list ("Arithmetic Commands &
+/// Operators") and are pure: `log(10.0)` has one value, whatever the host is.
+/// Folding them is what makes a `declare const` of one legal — 24 corpus
+/// instruments (Heavyocity's FORZO/NOVO, e-instruments, NI's Scene) declare
+/// `const ~LOG10 := log(10.0)`, so Kontakt's own folder evaluates them and
+/// this one was simply short of the list.
 fn fold_call(name: &str, args: &[Value]) -> Option<Value> {
     use Value::{Int, Real};
     Some(match (Builtin::from_name(name)?, args) {
         (Builtin::ShLeft, [Int(a), Int(n)]) => Int(a.wrapping_shl(*n as u32)),
         (Builtin::ShRight, [Int(a), Int(n)]) => Int(a.wrapping_shr(*n as u32)),
         (Builtin::Abs, [Int(a)]) => Int(a.wrapping_abs()),
+        (Builtin::Abs, [Real(a)]) => Real(a.abs()),
         (Builtin::Min, [Int(a), Int(b)]) => Int(*a.min(b)),
         (Builtin::Max, [Int(a), Int(b)]) => Int(*a.max(b)),
+        (Builtin::Min, [Real(a), Real(b)]) => Real(a.min(*b)),
+        (Builtin::Max, [Real(a), Real(b)]) => Real(a.max(*b)),
         (Builtin::IntToReal | Builtin::Real, [Int(a)]) => Real(f64::from(*a)),
         (Builtin::RealToInt | Builtin::Int, [Real(a)]) => Int(*a as i32),
+        (Builtin::Sgn, [Int(a)]) => Int(a.signum()),
+        (Builtin::Signbit, [Int(a)]) => Int(i32::from(*a < 0)),
+        (Builtin::Sqrt, [Real(a)]) => Real(a.sqrt()),
+        (Builtin::Cbrt, [Real(a)]) => Real(a.cbrt()),
+        (Builtin::Exp, [Real(a)]) => Real(a.exp()),
+        (Builtin::Exp2, [Real(a)]) => Real(a.exp2()),
+        (Builtin::Log, [Real(a)]) => Real(a.ln()),
+        (Builtin::Log2, [Real(a)]) => Real(a.log2()),
+        (Builtin::Log10, [Real(a)]) => Real(a.log10()),
+        (Builtin::Sin, [Real(a)]) => Real(a.sin()),
+        (Builtin::Cos, [Real(a)]) => Real(a.cos()),
+        (Builtin::Tan, [Real(a)]) => Real(a.tan()),
+        (Builtin::Asin, [Real(a)]) => Real(a.asin()),
+        (Builtin::Acos, [Real(a)]) => Real(a.acos()),
+        (Builtin::Atan, [Real(a)]) => Real(a.atan()),
+        (Builtin::Pow, [Real(a), Real(b)]) => Real(a.powf(*b)),
+        (Builtin::Floor, [Real(a)]) => Real(a.floor()),
+        (Builtin::Ceil, [Real(a)]) => Real(a.ceil()),
+        (Builtin::Round, [Real(a)]) => Real(a.round()),
         _ => return None,
     })
 }

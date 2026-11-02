@@ -368,4 +368,22 @@ actions! {
     GroupsAffected,
     KeyDownOct,
     EventParAt,
+    // Appended rather than filed with their neighbours: an action's id is its
+    // position, and ids appear in traces and in the engine's per-action
+    // counts, so a new one goes on the end.
+    //
+    // `%NOTE_DURATION[key]`: microseconds since the newest live note on that
+    // key started (the KSP manual's time-and-transport array). A script that
+    // reads it failed to compile without it, so its `on init` never ran.
+    NoteDuration,
+    // `hide_inst_icon`: nothing to do. Kontakt's command hides the icon in its
+    // own instrument header; KONTRA's page draws no instrument header and no
+    // instrument icon, so the engine answers it and does nothing (see the arm
+    // in the engine's script host).
+    HideInstIcon,
+    // `dont_use_machine_mode(<zone-id>)`: nothing to do. The manual documents
+    // the command (Zone Commands, "on note" only) as switching Kontakt's
+    // machine mode off for the zone; the plan has no machine mode to enter, so
+    // the call is answered and does nothing.
+    DontUseMachineMode,
 }
