@@ -26,6 +26,9 @@ memory is not locked into physical RAM.
 
 ## Representative measurement
 
+Captured at `26699a1385` before the equivalent admission-limit refactor.
+Rerun the command to measure another revision.
+
 AMD Ryzen 7 7800X3D, Linux x86-64, rustc 1.99.0 (b940084d7
 2026-09-28), Cargo release profile, 48 kHz engine; command:
 

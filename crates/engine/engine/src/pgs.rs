@@ -22,12 +22,16 @@ struct IntKey {
     len: usize,
 }
 
-/// Prepared PGS limits and backing allocation, in bytes (excluding allocator overhead).
+/// Prepared PGS key/value limits and reserved backing allocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PgsBudget {
+    /// Maximum integer keys, including the reserved callback allowance.
     pub integer_keys: usize,
+    /// Maximum string keys, including the reserved callback allowance.
     pub string_keys: usize,
+    /// Maximum number of `i32` cells across all integer keys.
     pub integer_values: usize,
+    /// Reserved vector capacity in bytes, excluding allocator overhead.
     pub bytes: usize,
 }
 
@@ -48,9 +52,9 @@ impl Pgs {
             ints: Vec::new(),
             values: Vec::new(),
             texts: Vec::new(),
-            int_limit: 0,
-            text_limit: 0,
-            value_limit: 0,
+            int_limit: INIT_KEYS,
+            text_limit: INIT_KEYS,
+            value_limit: INIT_KEYS * MOST,
             queued: false,
         }
     }
@@ -76,15 +80,11 @@ impl Pgs {
         }
     }
 
-    fn create_int(&mut self, key: Text, len: usize, building: bool) -> bool {
+    fn create_int(&mut self, key: Text, len: usize) -> bool {
         if self.ints.iter().any(|entry| entry.name == key) {
             return true;
         }
-        if (building && self.ints.len() >= INIT_KEYS)
-            || (!building
-                && (self.ints.len() >= self.int_limit
-                    || self.values.len() + len > self.value_limit))
-        {
+        if self.ints.len() >= self.int_limit || self.values.len() + len > self.value_limit {
             return false;
         }
         let start = self.values.len();
@@ -97,13 +97,11 @@ impl Pgs {
         true
     }
 
-    fn create_text(&mut self, key: Text, building: bool) -> bool {
+    fn create_text(&mut self, key: Text) -> bool {
         if self.texts.iter().any(|(name, _)| *name == key) {
             return true;
         }
-        if (building && self.texts.len() >= INIT_KEYS)
-            || (!building && self.texts.len() >= self.text_limit)
-        {
+        if self.texts.len() >= self.text_limit {
             return false;
         }
         self.texts.push((key, Text::EMPTY));
@@ -132,7 +130,7 @@ impl Engine {
         Some(match call.action {
             Action::PgsCreateKey => {
                 let len = usize::try_from(int(0)).unwrap_or(0).clamp(1, MOST);
-                if !self.pgs.create_int(key, len, self.building) {
+                if !self.pgs.create_int(key, len) {
                     self.count_unhandled(call.action);
                 }
                 HostValue::Nothing
@@ -156,7 +154,7 @@ impl Engine {
                 HostValue::Int(v.unwrap_or(0))
             }
             Action::PgsCreateStrKey => {
-                if !self.pgs.create_text(key, self.building) {
+                if !self.pgs.create_text(key) {
                     self.count_unhandled(call.action);
                 }
                 HostValue::Nothing
@@ -214,18 +212,18 @@ mod tests {
         let mut pgs = Pgs::new();
         for i in 0..INIT_KEYS {
             let name = Text::from_str_cut(&format!("k{i}")).0;
-            assert!(pgs.create_int(name, 1, true));
-            assert!(pgs.create_text(name, true));
+            assert!(pgs.create_int(name, 1));
+            assert!(pgs.create_text(name));
         }
         let existing = Text::from_str_cut("k0").0;
         let extra = Text::from_str_cut("overflow").0;
-        assert!(pgs.create_int(existing, MOST, true));
-        assert!(pgs.create_text(existing, true));
+        assert!(pgs.create_int(existing, MOST));
+        assert!(pgs.create_text(existing));
         assert_eq!(pgs.values(existing).unwrap().len(), 1);
-        assert!(!pgs.create_int(extra, 1, true));
-        assert!(!pgs.create_text(extra, true));
+        assert!(!pgs.create_int(extra, 1));
+        assert!(!pgs.create_text(extra));
         pgs.prepare_runtime();
-        assert!(pgs.create_int(extra, MOST, false));
-        assert!(pgs.create_text(extra, false));
+        assert!(pgs.create_int(extra, MOST));
+        assert!(pgs.create_text(extra));
     }
 }
