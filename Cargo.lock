@@ -2262,6 +2262,7 @@ name = "kontra-ir"
 version = "0.0.0"
 dependencies = [
  "kontra-law",
+ "kontra-params",
 ]
 
 [[package]]

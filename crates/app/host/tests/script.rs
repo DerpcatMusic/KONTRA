@@ -3401,3 +3401,110 @@ fn pgs_callback_timing() {
         times[5000], times[9500], times[9900], times[9999]
     );
 }
+
+/// Each Kontakt identity reaches the intended physical field and can be read
+/// back through the same measured law. The type change exposes the prepared
+/// slot without relying on rendered audio to identify a field.
+#[test]
+fn reverb_controls_write_read_and_keep_missing_target_semantics() {
+    use kontra_engine::{Prepared, ir};
+    let cases = [
+        ("TIME", ir::ReverbPar::Seconds),
+        ("SIZE", ir::ReverbPar::Size),
+        ("DAMPING", ir::ReverbPar::Damping),
+        ("DIFF", ir::ReverbPar::Diffusion),
+        ("PREDELAY", ir::ReverbPar::Predelay),
+        ("HIGHCUT", ir::ReverbPar::HighCut),
+        ("LOWSHELF", ir::ReverbPar::LowShelf),
+        ("STEREO", ir::ReverbPar::Stereo),
+    ];
+    for (name, par) in cases {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        let original = kontra_format_kontakt::reverb(0, [0.5; 9]);
+        plan.inserts = vec![Some(ir::Effect {
+            kind: ir::EffectKind::Reverb(original),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        let source = format!(
+            "on note\n\
+            set_engine_par($ENGINE_PAR_RV2_{name}, 250000, -1, 0, $NI_INSERT_BUS)\n\
+            message(get_engine_par($ENGINE_PAR_RV2_{name}, -1, 0, $NI_INSERT_BUS))\n\
+            set_engine_par($ENGINE_PAR_RV2_TYPE, $NI_REVERB2_TYPE_HALL, -1, 0, $NI_INSERT_BUS)\n\
+            end on"
+        );
+        let script = kontra_ksp::compile(&source, &[]).unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut e, &[on(60)]);
+        let read: i32 = e.last_message().parse().unwrap();
+        assert!((read - 250_000).abs() <= 1, "{name}: {read}");
+        let mut requests = Vec::new();
+        e.drain_requests(|r| requests.push(r));
+        let [request] = requests[..] else {
+            panic!("{name}: {requests:?}")
+        };
+        let Some(ir::EffectKind::Reverb(actual)) = request.effect.map(|effect| effect.kind) else {
+            panic!("{name}: {request:?}");
+        };
+        let expected = kontra_format_kontakt::reverb_laws().get(par).eval(0.25);
+        for control in ir::ReverbPar::ALL {
+            let want = if control == par {
+                expected
+            } else {
+                original.control(control)
+            };
+            assert_eq!(actual.control(control), want, "{name} changed {control:?}");
+        }
+        e.install(Prepared::new(request, None, RATE));
+    }
+
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(
+        &store,
+        Vec::new(),
+        "on note\n\
+        set_engine_par($ENGINE_PAR_RV2_TIME, 250000, -1, 42, $NI_INSERT_BUS)\n\
+        message(get_engine_par($ENGINE_PAR_RV2_TIME, -1, 42, $NI_INSERT_BUS))\n\
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "0");
+    assert_eq!(e.unhandled_actions(), []);
+}
+
+#[test]
+fn reverb_control_on_non_reverb_remains_unhandled() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Gain(0.75),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let source = "on note\n\
+        set_engine_par($ENGINE_PAR_RV2_TIME, 250000, -1, 0, $NI_INSERT_BUS)\n\
+        message(get_engine_par($ENGINE_PAR_RV2_TIME, -1, 0, $NI_INSERT_BUS))\n\
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    let actions = e.unhandled_actions();
+    assert!(
+        actions
+            .iter()
+            .any(|(action, _)| *action == kontra_engine::Action::SetEnginePar),
+        "{actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|(action, _)| *action == kontra_engine::Action::GetEnginePar),
+        "{actions:?}"
+    );
+}

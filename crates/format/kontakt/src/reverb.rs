@@ -190,26 +190,17 @@ pub fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
         low_shelf,
         stereo,
     ] = v.map(|x| x.clamp(0.0, 1.0));
-    let [
-        seconds,
-        size_law,
-        damping_law,
-        diffusion_law,
-        predelay_law,
-        high_cut_law,
-        low_shelf_law,
-        stereo_law,
-    ] = reverb_laws();
+    let laws = reverb_laws();
     ir::Reverb {
-        seconds: seconds.eval(time),
-        size: size_law.eval(size),
+        seconds: laws.seconds.eval(time),
+        size: laws.size.eval(size),
         network: Some(ir::Network::Lines(if kind == 1 { &HALL } else { &ROOM })),
-        damping: damping_law.eval(damping),
-        diffusion: diffusion_law.eval(diffusion),
-        predelay_ms: predelay_law.eval(predelay),
-        high_cut_hz: high_cut_law.eval(high_cut),
-        low_shelf_db: low_shelf_law.eval(low_shelf),
-        stereo: stereo_law.eval(stereo),
+        damping: laws.damping.eval(damping),
+        diffusion: laws.diffusion.eval(diffusion),
+        predelay_ms: laws.predelay.eval(predelay),
+        high_cut_hz: laws.high_cut.eval(high_cut),
+        low_shelf_db: laws.low_shelf.eval(low_shelf),
+        stereo: laws.stereo.eval(stereo),
         modulation_ms: modulation * 10.0 / 44.1,
         modulation_hz: 2.0,
     }
@@ -223,37 +214,85 @@ pub fn reverb_networks() -> [ir::Network; 2] {
 }
 
 /// The reverb's controls as KSP's `$ENGINE_PAR_RV2_*` set them (value ÷ 1e6 is
-/// the knob position), in [`ir::ReverbPar::ALL`] order.
-pub fn reverb_laws() -> [ir::Law; 8] {
-    [
+/// the knob position), keyed by control identity.
+pub fn reverb_laws() -> ir::ReverbControls<ir::Law> {
+    ir::ReverbControls {
         // 0.5·e^(3.7x) s
-        ir::Law::Exp {
+        seconds: ir::Law::Exp {
             lo: 0.5,
             hi: 0.5 * 3.7f32.exp(),
         },
         // 3x + 1
-        ir::Law::Linear { lo: 1.0, hi: 4.0 },
-        ir::Law::Power {
+        size: ir::Law::Linear { lo: 1.0, hi: 4.0 },
+        damping: ir::Law::Power {
             lo: 0.0,
             hi: 1.0,
             exponent: 0.25,
         },
-        ir::Law::Linear { lo: 0.0, hi: 1.0 },
+        diffusion: ir::Law::Linear { lo: 0.0, hi: 1.0 },
         // 11025x samples at 44.1 kHz
-        ir::Law::Linear { lo: 0.0, hi: 250.0 },
+        predelay: ir::Law::Linear { lo: 0.0, hi: 250.0 },
         // 19000(1−x)+2000 Hz
-        ir::Law::Linear {
+        high_cut: ir::Law::Linear {
             lo: 21_000.0,
             hi: 2_000.0,
         },
-        ir::Law::Linear { lo: 0.0, hi: -12.0 },
-        ir::Law::Linear { lo: 0.0, hi: 1.0 },
-    ]
+        low_shelf: ir::Law::Linear { lo: 0.0, hi: -12.0 },
+        stereo: ir::Law::Linear { lo: 0.0, hi: 1.0 },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapped_controls_keep_measured_laws_and_vendor_names() {
+        use ir::{Drives, EnginePar, ReverbPar as P};
+        let cases: [(P, &str, f32, f32, f32); 8] = [
+            (
+                P::Seconds,
+                "$ENGINE_PAR_RV2_TIME",
+                0.5,
+                0.5 * 1.85_f32.exp(),
+                0.5 * 3.7_f32.exp(),
+            ),
+            (P::Size, "$ENGINE_PAR_RV2_SIZE", 1.0, 2.5, 4.0),
+            (
+                P::Damping,
+                "$ENGINE_PAR_RV2_DAMPING",
+                0.0,
+                0.5_f32.powf(0.25),
+                1.0,
+            ),
+            (P::Diffusion, "$ENGINE_PAR_RV2_DIFF", 0.0, 0.5, 1.0),
+            (P::Predelay, "$ENGINE_PAR_RV2_PREDELAY", 0.0, 125.0, 250.0),
+            (
+                P::HighCut,
+                "$ENGINE_PAR_RV2_HIGHCUT",
+                21_000.0,
+                11_500.0,
+                2_000.0,
+            ),
+            (P::LowShelf, "$ENGINE_PAR_RV2_LOWSHELF", 0.0, -6.0, -12.0),
+            (P::Stereo, "$ENGINE_PAR_RV2_STEREO", 0.0, 0.5, 1.0),
+        ];
+        let mappings = crate::engine_pars();
+        for (par, name, lo, mid, hi) in cases {
+            assert!(
+                mappings
+                    .iter()
+                    .any(|row| row.name == name
+                        && row.drives == Drives::Engine(EnginePar::Reverb(par))),
+                "{name}"
+            );
+            for (raw, want) in [(0.0, lo), (0.5, mid), (1.0, hi)] {
+                let got = reverb_laws().get(par).eval(raw);
+                assert!((got - want).abs() < 0.005, "{name} {raw}: {got} != {want}");
+            }
+        }
+        assert!(!mappings.iter().any(|row| row.name == "$ENGINE_PAR_RV2_MOD"));
+    }
 
     #[test]
     fn the_feedback_is_the_m_sequence_and_hall_lines_are_longer() {

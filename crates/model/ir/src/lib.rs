@@ -33,7 +33,8 @@ pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, W
 pub use output::{Balance, Output, OutputControllers};
 pub use readout::{Form, Readout};
 pub use reverb::{
-    CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
+    CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbControls, ReverbNetwork,
+    ReverbPar,
 };
 pub use route_names::RouteNames;
 pub use wavetable::{FormShaper, Side, Warp, WarpShape, Wavetable};

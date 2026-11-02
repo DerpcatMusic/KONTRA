@@ -27,8 +27,8 @@ pub struct ScriptPlan {
     pub restore_texts: Vec<(u32, Text)>,
     pub controls: Controls,
     pub engine_pars: EnginePars,
-    /// The translator's law for each reverb control, in `ir::ReverbPar::ALL` order.
-    pub reverb_laws: [kontra_ir::Law; 8],
+    /// The translator's law for each reverb control, keyed by its control identity.
+    pub reverb_laws: kontra_ir::ReverbControls<kontra_ir::Law>,
     /// The networks [`EnginePar::ReverbNetwork`] picks from, in order.
     pub reverb_networks: Vec<kontra_ir::Network>,
     /// What each [`EnginePar::Knob`] sets, through the translator's law.
