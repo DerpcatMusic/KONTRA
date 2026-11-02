@@ -9,7 +9,9 @@ each kind. Above that limit the create action is counted in
 
 After all slot initialization and persistence callbacks, the engine reserves
 64 additional integer keys, 64 additional string keys and 16,384 integer
-cells. These are explicit per-instrument limits, not dynamically expanding
+cells. Preparation writes every admitted callback key slot and integer cell,
+then restores the initialized lengths; an optimizer barrier keeps those writes
+observable. These are explicit per-instrument limits, not dynamically expanding
 capacities. Each successful callback creation uses this backing; duplicates do
 not consume it. A request beyond a limit leaves state unchanged and increments
 the corresponding unhandled action count. `Engine::pgs_budget()` exposes the
@@ -21,8 +23,9 @@ must inspect diagnostics when assessing compatibility.
 A lookup or creation scans at most 8,256 keys of its kind, with fixed-size key
 comparisons of at most 320 bytes. A successful integer creation additionally
 zeros at most 256 cells. The action does not perform I/O or take a lock.
-This is a bounded work statement, not a deadline guarantee. Reserved virtual
-memory is not locked into physical RAM.
+This is a bounded work statement, not a deadline guarantee. Pre-touching reduces
+initial first-touch faults; memory is not locked into physical RAM, and the OS
+can still reclaim or swap those pages later.
 
 ## Representative measurement
 

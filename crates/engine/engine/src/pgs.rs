@@ -61,12 +61,30 @@ impl Pgs {
 
     /// Called after all slots have initialized, before the engine reaches audio.
     pub(crate) fn prepare_runtime(&mut self) {
+        let (int_keys, text_keys, cells) = (self.ints.len(), self.texts.len(), self.values.len());
         self.int_limit = self.ints.len() + RUNTIME_KEYS;
         self.text_limit = self.texts.len() + RUNTIME_KEYS;
         self.value_limit = self.values.len() + RUNTIME_KEYS * MOST;
         self.ints.reserve_exact(RUNTIME_KEYS);
         self.texts.reserve_exact(RUNTIME_KEYS);
         self.values.reserve_exact(RUNTIME_KEYS * MOST);
+        // Touch every admitted callback slot off audio, then hide the empty
+        // entries. Keep the writes observable so optimization cannot remove them.
+        for _ in 0..RUNTIME_KEYS {
+            self.ints.push(IntKey {
+                name: Text::EMPTY,
+                start: 0,
+                len: 0,
+            });
+            self.texts.push((Text::EMPTY, Text::EMPTY));
+        }
+        self.values.resize(self.value_limit, 0);
+        std::hint::black_box(&mut self.ints[int_keys..]);
+        std::hint::black_box(&mut self.texts[text_keys..]);
+        std::hint::black_box(&mut self.values[cells..]);
+        self.ints.truncate(int_keys);
+        self.texts.truncate(text_keys);
+        self.values.truncate(cells);
     }
 
     pub(crate) fn budget(&self) -> PgsBudget {
