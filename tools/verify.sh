@@ -450,19 +450,25 @@ rows = json.load(open(sys.argv[1]))["cases"]
 parts, findings = [], []
 for r in rows:
     m = r.get("metrics") or {}
-    if m.get("level_db") is None or m.get("band_rms_db") is None:
-        parts.append(f"{r['id']} {r['status']}")
-    elif str(r.get("status", "")).startswith("finding"):
-        parts.append(f"{r['id']} {m['level_db']:+.2f}/{m['band_rms_db']:.2f} dB FINDING")
+    # `ok` is the runner's own verdict: False is a case that disagrees with
+    # Kontakt beyond its threshold (`DRIFT`), or could not be compared at all.
+    # Counting only the runner's "finding" status missed exactly the cases the
+    # corpus exists to show, and printed "0 findings" over two of them.
+    mark = "" if r.get("ok") else " FINDING"
+    if mark:
         findings.append(r["id"])
+    if m.get("level_db") is None or m.get("band_rms_db") is None:
+        parts.append(f"{r['id']} {r['status']}{mark}")
     else:
-        parts.append(f"{r['id']} {m['level_db']:+.2f}/{m['band_rms_db']:.2f} dB")
+        parts.append(
+            f"{r['id']} {m['level_db']:+.2f}/{m['band_rms_db']:.2f} dB{mark}"
+        )
 # A case that matches its baseline but still disagrees with Kontakt is a
 # finding, not a pass. Printing the deltas under an unqualified "ok" is how a
 # row teaches people to stop reading it -- and the whole point of the corpus is
 # that these ten numbers are the to-do list, not a footnote.
 lead = (f"{len(rows)} cases, {len(findings)} finding"
-        f"{'' if len(findings) == 1 else 's'} (disagrees with Kontakt, recorded): ")
+        f"{'' if len(findings) == 1 else 's'} (beyond its own threshold vs Kontakt): ")
 print(lead + "; ".join(parts))
 PY
 )
