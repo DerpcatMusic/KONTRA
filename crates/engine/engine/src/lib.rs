@@ -64,6 +64,7 @@ pub use kontra_time::SampleTime;
 pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
+pub use pgs::PgsBudget;
 pub use plan::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
     RrCounter, SustainPedal, Trigger, Zone,
@@ -367,6 +368,7 @@ impl Engine {
             engine.write_saved(slot, &script.restore, &script.restore_texts);
             engine.persistence_changed(slot);
         }
+        engine.pgs.prepare_runtime();
         engine.building = false;
         engine.rebuild_racks();
         engine.build_chains();

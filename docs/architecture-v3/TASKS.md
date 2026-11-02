@@ -102,6 +102,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P6.4a | kontra-engine: EventQueue + Timed<Work> + render loop at queue boundaries (draft) | engine | L | worker | P6.2, P6.3b |
 | P6.4b | kontra-engine: NoteLedger replaces held/consumed/closed tables and families-as-cohorts (draft) | engine | L | worker | P6.4a |
 | P6.4c | kontra-engine: Engine struct replaces Runtime's 109 fields; Stats derive (draft) | engine | L | worker | P6.4b |
+| P6.4d | Prepare bounded PGS storage for large instruments | engine | M | worker | – |
 | P6.5 | Gate G6: engine crates | coordinator | S | coordinator | P6.1c, P6.4c |
 
 ## Phase 7: Script and format crates
@@ -210,6 +211,7 @@ flowchart LR
     P6_4a["P6.4a"]
     P6_4b["P6.4b"]
     P6_4c["P6.4c"]
+    P6_4d["P6.4d"]
     P6_5["P6.5"]
   end
   subgraph ph7["7. Script and format crates"]
