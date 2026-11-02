@@ -258,101 +258,64 @@ it lands, treat any silence count here as an upper bound.
 
 ## 5. Do these three first
 
-Ranked by instruments, the list starts with two things that cannot be done and
-one that cannot be started. Judged by *what a week of work buys the user*, the
-order is this:
+**Rewritten 2026-11-02, because two of the three no longer stand.**
 
-### 1. `hide_inst_icon` — 188 instruments for one line
+The first version recommended, in order: `hide_inst_icon` plus five `ordering`
+rules, `LoadArray`, and the zone-slice model. Two of those are gone:
 
-It is the only gap in the file with that ratio. All 188 are loose instruments
-under `#Non NICNT` — 187 of them every VSTBuzz Power Move patch — and they fail
-to compile for exactly this name and nothing else, so a no-op binding converts
-188 dead slots into working ones and costs an afternoon including the test. (The
-per-library table shows Power Move with **160** `.nki`, not 187: the other 27 are
-in its `Extra Presets` subfolder, which the library scan does not descend into —
-a known defect in the browser's own scan, not a counting error here.) It
-buys no sound by itself — those instruments also need `GetEnginePar` to be right
-— but it removes them from this list permanently, and it is the cheapest way to
-prove the survey's central claim: that most of the "unsupported symbol" surface
-is not engine work.
+- **The bindings were done the same evening** (`docs/re/ksp-bindings-2026-11-01.md`):
+  728 failing slots in 718 instruments → **478 in 470**, 248 instruments
+  unblocked, no regressions. What is left of that family is small:
+  `dont_use_machine_mode` (25 slots), `_pgs_changed` (42),
+  `mf_get_note_length` (7), `set_num_user_zones` (4).
+- **`LoadArray` is not a silence cause, and the measurement says so.** 504
+  keyswept instruments call it; **112 are silent, 22 % — *below* the 26 % base
+  rate** of the 704 keyswept. The 57-of-61 figure this section was built on
+  counts only instruments whose `load_array` was *unanswered at init* (75, of
+  which 61 keyswept) — a narrower denominator that made a non-effect look like a
+  93 % correlation. It remains worth doing for the 75 instruments' script
+  capability; it is not the path to sound.
 
-Do the `ordering` rows in the same pass — 80 more instruments, none of them
-overlapping the 188 above, and each a one-rule change: `$EVENT_VELOCITY` must be
-writable (22 instruments clamp velocity), `$NUM_PRESETS` must not be a reserved
-name (9), `redirect_output` must take the argument counts Kontakt takes (11),
-`hide_part`/`set_control_par` must accept a ui id held in a variable (10), and
-the `expected a constant` family (29) needs one look each because the message
-does not name the token. Those five rows add to 81 but name 80 instruments:
-`Scene - Lotus.nki` is in both the `redirect_output` and the `expected a
-constant` rows, since it fails on both. That is 268 distinct instruments — 7 %
-of everything that loads — for a week that touches no DSP.
+Judged by instruments per week of work, with no audio risk:
 
-> **Dated note, 2026-11-01 evening.** Six of this file's rows were closed after it
-> was written: `$EVENT_VELOCITY`, `$NUM_PRESETS`, `redirect_output`, `hide_part`
-> with a variable id, the 29 `expected a constant` cases, and `hide_inst_icon` —
-> see `docs/re/ksp-bindings-2026-11-01.md`. The compile sweep the rows below were
-> measured with read **728 failing slots in 718 instruments**; it now reads **478
-> failing slots in 470 instruments**. The rows here are the earlier pass's
-> numbers, kept as written; re-run `tools/census/` before quoting any of them as
-> current.
+### 1. The browser hides 563 instruments — one scan rule
 
-### 2. `LoadArray` — 75 instruments, and the silence this section used to call proven
+Measured over the library root: 18 libraries hold presets at one level and more
+in a subfolder, and the scan stops descending as soon as a folder looks like a
+library. Kinetic Metal 100 visible / **111 hidden**, Evolve R2 96/**92**, Tom
+Factory 6/**66**, Voices of Rapture 4/**57**, Royal Albert Hall 1/**56**, VSTBuzz
+Power Move 160/**27** — **563 instruments the user cannot reach from the browser
+at all**, 15 % of everything that loads. The instruments are not broken; they are
+invisible. This is a rule in `crates/app/library`, no parser and no DSP, and it is
+the highest value per hour in the file — a user looking for a library that is
+half-hidden has no way to tell that from a broken instrument.
 
-57 of the 61 keyswept instruments whose `load_array` was *unanswered at init*
-are silent at every key tried (93 %), against 180 silent of 704 keyswept overall.
-The mechanism is unproven — this is a correlation, not a cause — and the
-paragraph below withdraws even the correlation as evidence of our silence.
+### 2. The zone-slice model — 396 instruments
 
-**Corrected 2026-11-01: the correlation is withdrawn until it is re-derived.**
-Its largest citation, Arabian Ethnic Orchestra, was a library whose licence had
-never been applied; it could not have sounded whatever our code did, and it has
-been deleted. A correlation built on silence is confounded by **every** library
-that cannot sound for licence or installation reasons, and we have no flag that
-distinguishes those from our own silence — see the row below, which is a defect
-in its own right. Re-derive the correlation over the 704 keyswept instruments
-with those libraries excluded before acting on it.
+`num_slices_zone` (362) and `zone_slice_start` (34), all in loop designers: all
+204 of Spitfire Studio Brass, all 190 of Heavyocity Vocalise 3, plus one
+instrument each in two Heavyocity Damage libraries. Slices are an edit-time
+division of a sample that neither the plan nor the playback has, so this is the
+largest row that needs a *model* rather than a binding.
 
-**Historical, and not to be quoted as current:** the heading here read "the only
-proven silence" and the closing paragraph read "the only row with a demonstrated
-audible effect, and the user can hear the difference". Both rested on the
-Arabian Ethnic Orchestra's 83 silent instruments — a library that had never been
-licensed, so it could not have sounded whatever KONTRA did. Nothing in this tree
-has yet shown a `LoadArray` fix raising a peak; the claim is withdrawn, and the
-wording is kept here only so that the earlier reasoning is still visible.
+### 3. Garritan's legacy XML — 624 instruments Kontakt loads and we refuse
 
-The work is small and bounded: the numeric array reader already exists for
-`load_array_str` and `array_file.rs` has tests. What is missing is the
-mode/shape matrix — today only text arrays in `on init` are answered. It is also
-the one row here that can be *proved* fixed by re-running the existing keysweep
-and watching a peak rise.
+The single largest reader gap where the two sides disagree: Kontakt reads these
+and we answer "legacy XML instruments are not read". 624 instruments in one
+library. It was listed under "out of scope" in the first version; it should not
+be — out of scope is LASS, where Kontakt refuses too. This is a format someone
+has to decide to read or to declare unsupported on purpose.
 
-Do it second only because it is worth 75 instruments against `hide_inst_icon`'s
-188 — but do not defer it, because it is the row where a fix would be *visible*:
-re-running the keysweep and watching a peak rise is a measurement no other row
-here offers, and that measurement has not been made yet.
-
-### 3. The zone-slice model — 396 instruments, 4 libraries
-
-`num_slices_zone` (362) and `zone_slice_start` (34) are the largest real language
-gap in the corpus and they are all in loop designers: all 204 of Spitfire Studio
-Brass, all 190 of Heavyocity Vocalise 3, and one instrument each in two
-Heavyocity Damage libraries (`Analog Hybrid Drums`, `Damage Drum Kit`). Slices
-are an edit-time division of a sample that neither the plan nor the playback has,
-so this is the one three-figure row that needs a *model* rather than a binding —
-which is exactly why it should be scoped and started rather than left to rot at
-the top of a list.
-
-**What not to do first, and why.** `GetEnginePar` is the biggest number in the
-file (1,599 instruments, 342,005 declined calls) and it would be wrong to start
-there: nothing in the data says which parameter ids are declined, so the work
-cannot be estimated, let alone scheduled. 25 of the 396 keyswept instruments
-whose `GetEnginePar` was unanswered at init are silent — 6 %, against 26 % of
-the 704 keyswept overall — so it is not a silence bug either; it is a
-numbers-in-the-script bug, and after the three rows above it is where the
-remaining fidelity lives. The first step is a probe, not a patch: one instrument,
-one generated script that calls `get_engine_par` for every `$ENGINE_PAR_*` id in
-every slot, run against the oracle, and the answer is a work list of N laws with
-N known.
+**What not to do first.** The **180 silent-with-zones** instruments have no
+proven cause any more: the two candidates this file offered (`LoadArray`,
+`GetEnginePar`) both measure *below* the base rate — 22 % and 6 % against 26 %.
+The next step is a diagnosis, not a patch: take the 180, group by library and by
+what their scripts do at `on note`, and find one whose silence is reproducible
+and explicable. `GetEnginePar` itself (1,599 instruments, 342,005 declined calls)
+still cannot be estimated: nothing in the data says *which* ids are declined, so
+its first step is one probe — a generated script calling `get_engine_par` for
+every `$ENGINE_PAR_*` in every slot, against the oracle — and the answer is a
+work list of N laws with N known.
 
 ## 6. Method — what was measured, how to re-run it
 
