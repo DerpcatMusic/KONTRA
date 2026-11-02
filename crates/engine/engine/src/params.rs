@@ -229,16 +229,7 @@ impl Engine {
             let physical = reverb.control(which);
             let law = self.script()?.reverb_laws.get(which);
             let physical = f64::from(physical);
-            let value = match law {
-                ir::Law::Exp { lo, hi } if *lo > 0.0 && *hi > 0.0 && lo != hi && physical > 0.0 => {
-                    (physical / f64::from(*lo)).ln() / (f64::from(*hi) / f64::from(*lo)).ln()
-                }
-                ir::Law::Power { lo, hi, exponent } if lo != hi && *exponent > 0.0 => {
-                    ((physical - f64::from(*lo)) / (f64::from(*hi) - f64::from(*lo)))
-                        .powf(1.0 / f64::from(*exponent))
-                }
-                _ => law.inverse_f64(physical)?,
-            };
+            let value = law.inverse_f64(physical)?;
             return value
                 .is_finite()
                 .then(|| (value * 1e6).round().clamp(0.0, 1e6) as i32);

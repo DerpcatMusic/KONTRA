@@ -750,6 +750,21 @@ gate = ["build-slot cargo test -p kontra-params"]
 done = ["Coverage test passes; unmapped list reviewed."]
 
 [[task]]
+id = "P4.6a"
+title = "Typed reverb control identities and shared law readback"
+phase = 4
+lane = "structure"
+size = "M"
+agent = "worker"
+deps = []
+owns = ["crates/model/params/**", "crates/model/ir/**", "crates/base/law/src/law.rs", "crates/format/kontakt/src/reverb.rs", "crates/app/host/src/script.rs", "crates/app/host/tests/script.rs", "crates/engine/engine/src/params.rs", "crates/engine/engine/tests/behaviour.rs", "crates/engine/plan/src/script.rs", "tools/xtask/dag.toml", "@plan"]
+docs = ["03-DSP.md"]
+goal = "Replace independent reverb control ordinals with one typed identity and prepared law map; leave the full P4.6 catalog open."
+steps = ["Share eight identities between IR, Kontakt law translation and runtime dispatch.", "Implement exponential and power inversion once in kontra-law for script readback.", "Preserve measured laws, missing-target behavior and allocation-free prepared lookup."]
+gate = ["build-slot cargo test -p kontra-law -p kontra-params -p kontra-format-kontakt", "build-slot cargo test -p kontra-host --test script reverb", "KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3"]
+done = ["Every reverb identity maps and round-trips through its existing law.", "Missing/incompatible targets retain their semantics; prepared lookup allocates nothing.", "The full catalog and other families remain open in P4.6 and P4.7."]
+
+[[task]]
 id = "P4.7"
 title = "Point the 5 parameter registries at the catalog; delete 4"
 phase = 4
