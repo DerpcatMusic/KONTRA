@@ -174,7 +174,7 @@ for r in rows:
 # row teaches people to stop reading it -- and the whole point of the corpus is
 # that these delta numbers are the to-do list, not a footnote.
 lead = (f"{len(rows)} cases, {len(findings)} finding"
-        f"{'' if len(findings) == 1 else 's'} (beyond its own threshold vs Kontakt): ")
+        f"{'' if len(findings) == 1 else 's'} (moved past their threshold, or not comparable): ")
 print(lead + "; ".join(parts))
 PY
 }
