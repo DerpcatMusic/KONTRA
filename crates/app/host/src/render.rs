@@ -351,7 +351,11 @@ pub fn run(req: &Request, diag: &mut dyn Write) -> Result<Summary, Box<dyn std::
     if asked_hold.is_some() && hold_override.is_none() {
         invalid(diag, "KONTRA_HOLD", "a positive number of seconds")?;
     }
-    let velocity = f64::from(velocity_override.unwrap_or(100.0)) / 127.0;
+    // The velocity every event plays at: the override, else the note the front
+    // end asked for -- not a fixed 100. The repeat and chord sweeps below use
+    // this, so `--velocity 40` with KONTRA_CHORDS set plays 40/127 rather than
+    // 100/127, which is what the summary would have reported either way.
+    let velocity = played_velocity(req.note.velocity, velocity_override);
     // KONTRA_CONTROL=name=value,...: each script control (a KSP one named
     // without its type prefix, a UVI widget or macro by its name) moves there
     // in turn and its callbacks run, as a user's edit would; its effect loads
@@ -430,7 +434,7 @@ pub fn run(req: &Request, diag: &mut dyn Write) -> Result<Summary, Box<dyn std::
     // cannot be reproduced from its own description.
     let effective = single.map(|note| effective_note(note, velocity_override, hold_override));
     if let Some(note) = effective {
-        events.extend(note_events(note, rate as f32, None, None));
+        events.extend(note_events(note, rate as f32));
     }
     // The wheel (the example's fourth positional argument) moves at 1 s.
     if let Some(value) = req.wheel {
@@ -715,13 +719,13 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// One played event, in frames from the start of the render.
 type FrameEvent = (usize, Event);
 
-/// The single note's on and off, in frames.
-///
-/// `velocity` and `hold` are the `KONTRA_VELOCITY` and `KONTRA_HOLD` overrides
-/// (velocity 1..=127, hold in seconds); `None` keeps what the front end asked
-/// for. They exist so a sweep can move velocity or length without rebuilding a
-/// command line, and a render that names neither is exactly the front end's
-/// note.
+/// The velocity every event this render writes plays at: a valid `KONTRA_VELOCITY`
+/// override, else the note the front end asked for. Velocity is 1..=127; the
+/// frame events take it as 0..=1.
+fn played_velocity(requested: u8, velocity: Option<f32>) -> f64 {
+    f64::from(velocity.map_or(requested, |v| v as u8)) / 127.0
+}
+
 /// A velocity override inside the MIDI range, or `None`. 0 is a note-off and
 /// 128 does not exist, so neither is a velocity a caller can have meant.
 fn checked_velocity(v: Option<f32>) -> Option<f32> {
@@ -761,20 +765,23 @@ fn invalid(diag: &mut dyn Write, name: &str, want: &str) -> Result<(), Box<dyn s
     Ok(())
 }
 
-fn note_events(note: Note, rate: f32, velocity: Option<f32>, hold: Option<f32>) -> [FrameEvent; 2] {
-    let velocity = velocity.unwrap_or(f32::from(note.velocity));
-    let hold = hold.unwrap_or(note.hold_s);
+/// The single note's on and off, in frames from the start of the render.
+///
+/// The note passed in is already the one that is played: [`effective_note`] has
+/// applied the `KONTRA_VELOCITY` and `KONTRA_HOLD` overrides, so a render cannot
+/// describe an input it did not use.
+fn note_events(note: Note, rate: f32) -> [FrameEvent; 2] {
     [
         (
             0,
             Event::NoteOn {
                 note: host_note(note.key, 0),
-                velocity: f64::from(velocity) / 127.0,
+                velocity: f64::from(note.velocity) / 127.0,
                 tune: 0.0,
             },
         ),
         (
-            (hold * rate) as usize,
+            (note.hold_s * rate) as usize,
             Event::NoteOff(host_pattern(note.key, 0)),
         ),
     ]
@@ -1134,18 +1141,18 @@ mod tests {
         assert!((seconds_at(&tempos, 2.0) - 1.5).abs() < 1e-9);
     }
 
-    /// `KONTRA_VELOCITY` and `KONTRA_HOLD` reach the single note, not only the
-    /// repeat and chord sweeps: a velocity the render was asked for must be the
-    /// velocity the note is played at, or a sweep measures the wrong note.
+    /// `KONTRA_VELOCITY` and `KONTRA_HOLD` reach the single note through
+    /// `effective_note`, which is the only place they are applied: the events
+    /// are built from the note that will actually be played.
     #[test]
     fn the_velocity_and_hold_overrides_reach_the_single_note() {
-        let note = Note {
+        let asked = Note {
             key: 60,
             velocity: 100,
             hold_s: 1.5,
         };
         // Nothing overridden: the front end's own note, unchanged.
-        let [on, off] = note_events(note, 48_000.0, None, None);
+        let [on, off] = note_events(effective_note(asked, None, None), 48_000.0);
         assert_eq!(on.0, 0);
         assert!(
             matches!(on.1, Event::NoteOn { velocity, .. } if (velocity - 100.0 / 127.0).abs() < 1e-9)
@@ -1153,13 +1160,23 @@ mod tests {
         assert_eq!(off.0, 72_000, "1.5 s at 48 kHz");
 
         // Both overridden: 40/127 and half a second.
-        let [on, off] = note_events(note, 48_000.0, Some(40.0), Some(0.5));
+        let [on, off] = note_events(effective_note(asked, Some(40.0), Some(0.5)), 48_000.0);
         assert!(
             matches!(on.1, Event::NoteOn { velocity, .. } if (velocity - 40.0 / 127.0).abs() < 1e-9),
             "the override did not reach the note: {:?}",
             on.1
         );
         assert_eq!(off.0, 24_000, "0.5 s at 48 kHz");
+    }
+
+    /// The repeat and chord sweeps play at the velocity the run was asked for.
+    /// They used to fall back to a hard-coded 100, so `--velocity 40` with
+    /// `KONTRA_CHORDS` set played 100/127 while the summary reported 40.
+    #[test]
+    fn the_sweeps_play_at_the_requested_velocity() {
+        assert!((played_velocity(40, None) - 40.0 / 127.0).abs() < 1e-12);
+        assert!((played_velocity(100, None) - 100.0 / 127.0).abs() < 1e-12);
+        assert!((played_velocity(40, Some(20.0)) - 20.0 / 127.0).abs() < 1e-12);
     }
 
     #[test]
