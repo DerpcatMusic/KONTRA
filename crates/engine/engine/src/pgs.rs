@@ -204,3 +204,28 @@ impl Engine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preparation_admission_limit_reports_refusals_and_keeps_duplicates() {
+        let mut pgs = Pgs::new();
+        for i in 0..INIT_KEYS {
+            let name = Text::from_str_cut(&format!("k{i}")).0;
+            assert!(pgs.create_int(name, 1, true));
+            assert!(pgs.create_text(name, true));
+        }
+        let existing = Text::from_str_cut("k0").0;
+        let extra = Text::from_str_cut("overflow").0;
+        assert!(pgs.create_int(existing, MOST, true));
+        assert!(pgs.create_text(existing, true));
+        assert_eq!(pgs.values(existing).unwrap().len(), 1);
+        assert!(!pgs.create_int(extra, 1, true));
+        assert!(!pgs.create_text(extra, true));
+        pgs.prepare_runtime();
+        assert!(pgs.create_int(extra, MOST, false));
+        assert!(pgs.create_text(extra, false));
+    }
+}
