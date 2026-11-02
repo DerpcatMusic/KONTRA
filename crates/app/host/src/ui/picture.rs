@@ -74,15 +74,78 @@ fn size(png: &[u8]) -> Option<(f64, f64)> {
     Some((be(16)?, be(20)?))
 }
 
+/// The sidecar's keys, in the order Kontakt writes them.
+const KEYS: [&str; 9] = [
+    "Has Alpha Channel",
+    "Number of Animations",
+    "Horizontal Animation",
+    "Horizontal Resizable",
+    "Vertical Resizable",
+    "Fixed Top",
+    "Fixed Bottom",
+    "Fixed Left",
+    "Fixed Right",
+];
+
+/// A picture sidecar's fields (`Number of Animations: 31`, …).
+///
+/// Kontakt reads its own sidecars loosely: a field can run straight into the
+/// next one with no line break — XPERIMENTA Harpsichord's `micsfader` carries
+/// `Number of Animations: 127Horizontal Animation:  no` — so a value ends
+/// where the next key starts, not at the end of its line. Read line by line,
+/// that strip's 127 frames came out as one, and every fader showing it drew
+/// the whole sprite sheet over the page instead of the one frame its position
+/// names: five different mic levels, five identical drawings.
+fn fields(txt: &str) -> Vec<(&'static str, &str)> {
+    let lower = txt.to_ascii_lowercase();
+    let mut at: Vec<(usize, &'static str)> = Vec::new();
+    for &key in &KEYS {
+        let needle = key.to_ascii_lowercase();
+        for (i, _) in lower.match_indices(&needle) {
+            at.push((i, key));
+        }
+    }
+    at.sort_unstable_by_key(|&(i, _)| i);
+    let mut fields = Vec::with_capacity(at.len());
+    for (n, &(start, key)) in at.iter().enumerate() {
+        let Some(colon) = lower
+            .get(start..)
+            .and_then(|s| s.find(':'))
+            .map(|c| start + c)
+        else {
+            continue;
+        };
+        let end = at.get(n + 1).map_or(txt.len(), |&(next, _)| next);
+        fields.push((key, txt.get(colon + 1..end).unwrap_or_default().trim()));
+    }
+    fields
+}
+
+/// A field's number: its leading digits. Kontakt reads `127Horizontal
+/// Animation:  no` as 127 frames, and `0` before any run of digits as none.
+fn number(value: &str) -> u32 {
+    let digits: String = value
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().unwrap_or(0)
+}
+
 /// A picture sidecar's lines (`Number of Animations: 31`, …).
 #[must_use]
 pub fn meta(txt: &str) -> ui::ImageMeta {
     let mut meta = ui::ImageMeta::default();
-    for (key, value) in txt.lines().filter_map(|l| l.split_once(':')) {
-        let value = value.trim();
-        let yes = value.eq_ignore_ascii_case("yes");
-        let n = value.parse::<u32>().unwrap_or(0);
-        match key.trim() {
+    for (key, value) in fields(txt) {
+        // A flag is yes when it starts with yes: Kontakt reads its own
+        // sidecars loosely, and one ships the typo `Horizontal Resizable:
+        // yesm` (Electric Mint's `dropdown_topright`). Read as no, that
+        // picture does not stretch, and `layout` then gives its control the
+        // picture's 32 px width instead of the 171 the script asked for --
+        // which puts the preset menu's arrow under the field beside it.
+        let yes = value.to_ascii_lowercase().starts_with("yes");
+        let n = number(value);
+        match key {
             "Has Alpha Channel" => meta.alpha = yes,
             "Number of Animations" => meta.frames = n.max(1),
             "Horizontal Animation" if yes => meta.axis = ui::Orientation::Horizontal,
@@ -119,5 +182,49 @@ mod tests {
         png.extend(62u32.to_be_bytes());
         png.extend(31u32.to_be_bytes());
         assert_eq!(super::size(&png), Some((62., 31.)));
+    }
+
+    /// Electric Mint's `dropdown_topright` sidecar says `yesm`, and Kontakt
+    /// stretches that picture: its menu keeps the script's 171 px width and
+    /// the arrow sits at the field's right end.
+    #[test]
+    fn a_sidecar_flag_with_trailing_junk_is_still_yes() {
+        let m = super::meta(
+            "Horizontal Resizable: yesm\r\nVertical Resizable: no\r\nHorizontal Animation: yesm\r\n",
+        );
+        assert_eq!(m.stretch, [true, false], "yesm stretches, no does not");
+        assert_eq!(m.axis, super::ui::Orientation::Horizontal);
+        let m = super::meta("Has Alpha Channel: yesm\nHorizontal Resizable: no\n");
+        assert_eq!((m.alpha, m.stretch), (true, [false, false]));
+    }
+
+    /// XPERIMENTA Harpsichord's `micsfader` sidecar runs its animation count
+    /// into the next key: `Number of Animations: 127Horizontal Animation:
+    /// no`. Read line by line that is not a number, so the 127-frame fader
+    /// strip became one frame, its control took the whole 111×6096 sprite as
+    /// its size, and five different mic levels drew the identical sheet.
+    /// Kontakt reads the leading digits, and `Horizontal Animation: no`
+    /// means frames stacked down — 6096/127 = 48 px each.
+    #[test]
+    fn a_sidecar_field_that_runs_into_the_next_one_keeps_its_number() {
+        let m = super::meta(
+            "Has Alpha Channel: yes \nNumber of Animations: 127Horizontal Animation:  no\nVertical Resizable: no\nHorizontal Resizable: no\nFixed Top: 0\nFixed Bottom: 0\nFixed Left: 0\nFixed Right:  0\n",
+        );
+        assert_eq!(m.frames, 127, "127 frames, not one");
+        assert_eq!(m.axis, super::ui::Orientation::Vertical);
+        assert_eq!((m.alpha, m.stretch), (true, [false, false]));
+        assert_eq!(m.margins.right, 0, "a field ends where the next key starts");
+    }
+
+    /// A field still ends at the next key, so a line that is not one of
+    /// Kontakt's (`Height: 1` after `Fixed Right: 0`) cannot be read as that
+    /// field's number.
+    #[test]
+    fn a_field_reads_its_own_number_and_not_the_next_line_s() {
+        let m = super::meta(
+            "Number of Animations: 100\nVertical Resizable: no\nFixed Right:  0\nHeight: 1\n",
+        );
+        assert_eq!((m.frames, m.margins.right), (100, 0));
+        assert_eq!(super::number("025"), 25, "a padded count keeps its value");
     }
 }
