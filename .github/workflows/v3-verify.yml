@@ -28,7 +28,7 @@ jobs:
           - layer: formats
             crates: "-p kontra-format -p kontra-format-kontakt -p kontra-format-uvi -p kontra-format-sfz -p kontra-format-native"
           - layer: app
-            crates: "-p kontra-library -p kontra-align -p kontra-ui -p kontra-host -p kontra-plugin"
+            crates: "-p kontra-library -p kontra-align -p kontra-ui -p kontra-host -p kontra-plugin -p kontra-inspect"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

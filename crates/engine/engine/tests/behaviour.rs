@@ -2362,7 +2362,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         controls: Controls::default(),
         engine_pars: EnginePars::default(),
         links: vec![],
-        reverb_laws: std::array::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
+        reverb_laws: ir::ReverbControls::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
         reverb_networks: vec![],
         knobs: vec![],
         foreign: None,
