@@ -124,8 +124,7 @@ impl Engine {
         let EnginePar::Reverb(which) = par else {
             return None;
         };
-        let n = ir::ReverbPar::ALL.iter().position(|&p| p == which)?;
-        let law = self.script()?.reverb_laws.get(n)?;
+        let law = self.script()?.reverb_laws.get(which);
         Some((which, law.eval(raw.clamp(0, 1_000_000) as f32 / 1e6)))
     }
 
@@ -144,7 +143,7 @@ impl Engine {
         };
         match self.effect_mut(group, slot, generic).map(|e| &mut e.kind) {
             Some(ir::EffectKind::Reverb(r)) => {
-                which.set(r, value);
+                r.set_control(which, value);
                 true
             }
             _ => false,
@@ -222,6 +221,18 @@ impl Engine {
         }
         if par == EnginePar::EffectSubtype {
             return self.subtype(group, slot, generic);
+        }
+        if let EnginePar::Reverb(which) = par {
+            let ir::EffectKind::Reverb(reverb) = self.effect_mut(group, slot, generic)?.kind else {
+                return None;
+            };
+            let physical = reverb.control(which);
+            let law = self.script()?.reverb_laws.get(which);
+            let physical = f64::from(physical);
+            let value = law.inverse_f64(physical)?;
+            return value
+                .is_finite()
+                .then(|| (value * 1e6).round().clamp(0.0, 1e6) as i32);
         }
         if let Some(which) = effect_par(par) {
             let e = *self.effect_mut(group, slot, generic)?;
