@@ -74,6 +74,11 @@ struct Var {
     /// Element type.
     ty: Ty,
     home: Home,
+    /// A scalar's constant initialiser, when it was declared with one. The
+    /// declaration evaluates it once, so it is what the name holds when
+    /// [`Compiler::fold`] sees a read of it — and it is what makes a declared
+    /// name fold *instead of* being read as a catalog symbol.
+    init: Option<Value>,
     control: Option<u32>,
     persistence: Persistence,
 }

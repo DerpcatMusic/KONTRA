@@ -75,6 +75,17 @@ impl<'a> Compiler<'a> {
             Storage::InstrumentPersistent => Persistence::Instrument,
             _ => Persistence::None,
         };
+        // A scalar's constant initialiser, so a later fold reads the *declared*
+        // value of the name rather than whatever the catalog says about it:
+        // `declare $NUM_PRESETS := 5` makes `$NUM_PRESETS` a number, and a
+        // `declare const $N := $NUM_PRESETS` after it folds to 5. Without this,
+        // the name falls through to [`consts::is_catalog`] and folds to an
+        // opaque symbol id — a silent wrong constant, not an error.
+        let init = match (d.storage, d.list, d.init.as_slice()) {
+            (Storage::Const, _, _) | (_, true, _) => None,
+            (_, false, [init]) => self.fold(init).ok(),
+            _ => None,
+        };
         let home = match (d.storage, len, ty) {
             (Storage::Const, None, _) => {
                 let [init] = d.init.as_slice() else {
@@ -153,6 +164,7 @@ impl<'a> Compiler<'a> {
             name: d.name.into(),
             ty,
             home,
+            init,
             control,
             persistence,
         });
@@ -198,6 +210,7 @@ impl<'a> Compiler<'a> {
             name: name.into(),
             ty,
             home,
+            init: None,
             control: Some(index),
             persistence: Persistence::None,
         });
@@ -353,13 +366,27 @@ impl<'a> Compiler<'a> {
         Ok(match &e.kind {
             ExprKind::Int(n) => Value::Int(int_literal(*n, e.span)?),
             ExprKind::Real(n) => Value::Real(*n),
-            ExprKind::Var(name, None) => match self.named_constant(name) {
-                Some(value) => value,
-                None if consts::is_catalog(name) && Builtin::from_name(name).is_none() => {
+            ExprKind::Var(name, None) => {
+                // A declared variable wins over the catalog. `$NUM_PRESETS`,
+                // `$EVENT_PAR_TOY` and `$NI_VC_DEPTHS_COUNT` are names the
+                // corpus declares *and* names the harvested catalog holds (it
+                // records what the corpus uses, not what Kontakt owns), so
+                // asking the catalog first turned a declared number into an
+                // opaque symbol id. A name that is declared but holds no
+                // constant is not a constant, whatever the catalog says of it.
+                if self.is_declared(name) {
+                    match self.declared_value(name) {
+                        Some(value) => value,
+                        None => return Err(not_constant()),
+                    }
+                } else if let Some(value) = self.named_constant(name) {
+                    value
+                } else if consts::is_catalog(name) && Builtin::from_name(name).is_none() {
                     Value::Int(self.symbol(name))
+                } else {
+                    return Err(not_constant());
                 }
-                None => return Err(not_constant()),
-            },
+            }
             ExprKind::Unary(Un::Neg, inner) => match (&inner.kind, self.fold(inner)?) {
                 (ExprKind::Int(n), _) => Value::Int(int_literal(*n, e.span)?.wrapping_neg()),
                 (_, Value::Int(n)) => Value::Int(n.wrapping_neg()),
@@ -435,6 +462,26 @@ impl<'a> Compiler<'a> {
         consts::int(name)
             .map(Value::Int)
             .or_else(|| consts::real(name).map(Value::Real))
+    }
+
+    /// Whether the script itself declares `name` — the name is the script's,
+    /// whatever the catalog says about it.
+    pub(super) fn is_declared(&self, name: &str) -> bool {
+        self.names.contains_key(&name.to_ascii_lowercase())
+    }
+
+    /// The constant a declared name folds to: a `const`'s value, or a scalar's
+    /// constant initialiser. `None` when the declared name holds no compile-time
+    /// value (it is only assigned at run time), which makes a fold of it an
+    /// error rather than a catalog lookup.
+    pub(super) fn declared_value(&self, name: &str) -> Option<Value> {
+        let var = self
+            .vars
+            .get(*self.names.get(&name.to_ascii_lowercase())?)?;
+        match var.home {
+            Home::Const(value) => Some(value),
+            _ => var.init,
+        }
     }
 }
 

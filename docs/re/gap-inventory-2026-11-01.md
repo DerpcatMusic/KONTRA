@@ -41,9 +41,15 @@ The three walls are different in kind and should not be added together:
   unimplemented modulator category. The last 24 are a missing program (18) or an
   unrecognised container (6).
 - **20 % open with a dead script slot.** 718 instruments, listed by cause in §2.
-- **The rest open and play**, with wrong numbers in a script (the three
-  `*EnginePar` rows, 1,599 / 1,430 / 321 instruments) or with pictures that are
-  not on the disk at all (1,571).
+- **The rest open, and "open" is not "play".** 3,694 instruments load; of those,
+  254 have no playable zone at all — 242 of them Spitfire Glass & Steel patches
+  whose every zone belongs to a group saved as purged (§4) — and 180 of the 704
+  instruments re-rendered across nine keys are silent at every key tried (that
+  704 is itself the subset found silent at key 60, so the true silent count
+  among all loaded instruments is at least 180). The remainder play, with wrong
+  numbers in a script (the three `*EnginePar` rows, 1,599 / 1,430 / 321
+  instruments) or with pictures that are not on the disk at all (1,571). This
+  row is therefore a statement about loading, not about sounding.
 
 ## 2. The ranked table
 
@@ -154,10 +160,20 @@ action; "script fails" is instruments whose slot does not compile.
 
 Read down that table and the plan picks itself:
 
-- **Glory Days, Vocalise 3, Power Move, Spitfire Brass** are one line each
-  (`hide_inst_icon`, slice, slice, slice) from being script-clean.
-- **Evolve R2 + Trifecta + Kinetic Metal** are one reader case from opening
-  544 more instruments.
+- **Glory Days is already script-clean** — 643 of 643 load, 0 script
+  failures, 0 unanswered init actions; its only residue is 2,076 UI references
+  the library does not ship (pictures). Nothing to do.
+- **Vocalise 3, Power Move and Spitfire Brass** are one line each
+  (`hide_inst_icon` for Power Move, the zone-slice model for the two Heavyocity
+  libraries) from being script-clean.
+- **Evolve R2 + Trifecta + Kinetic Metal** are one reader case from opening 517
+  of the 544 category-3 refusals (327 / 109 / 81). The other 27 are Kinetic Toys
+  (19), Studio Series - Fire Saxophone (7) and Porphyra (1) — the same reader
+  case, in libraries too small for §3's rows. Note that the per-library table's
+  `refused` column is the wrong number to add up here: Evolve's 345 is 327
+  modulator refusals plus 18 in the `program: missing` cause, which is a
+  different reader case.
+
 - ~~**Arabian Ethnic Orchestra** is the only library where instruments exist,
   have zones, load without complaint and make no sound — 83 of 84.~~
   **Withdrawn 2026-11-01.** Those 83 silent instruments were never evidence about
@@ -229,7 +245,10 @@ order is this:
 It is the only gap in the file with that ratio. All 188 are loose instruments
 under `#Non NICNT` — 187 of them every VSTBuzz Power Move patch — and they fail
 to compile for exactly this name and nothing else, so a no-op binding converts
-188 dead slots into working ones and costs an afternoon including the test. It
+188 dead slots into working ones and costs an afternoon including the test. (The
+per-library table shows Power Move with **160** `.nki`, not 187: the other 27 are
+in its `Extra Presets` subfolder, which the library scan does not descend into —
+a known defect in the browser's own scan, not a counting error here.) It
 buys no sound by itself — those instruments also need `GetEnginePar` to be right
 — but it removes them from this list permanently, and it is the cheapest way to
 prove the survey's central claim: that most of the "unsupported symbol" surface
@@ -241,8 +260,10 @@ writable (22 instruments clamp velocity), `$NUM_PRESETS` must not be a reserved
 name (9), `redirect_output` must take the argument counts Kontakt takes (11),
 `hide_part`/`set_control_par` must accept a ui id held in a variable (10), and
 the `expected a constant` family (29) needs one look each because the message
-does not name the token. That is 268 instruments — 7 % of everything that loads
-— for a week that touches no DSP.
+does not name the token. Those five rows add to 81 but name 80 instruments:
+`Scene - Lotus.nki` is in both the `redirect_output` and the `expected a
+constant` rows, since it fails on both. That is 268 distinct instruments — 7 %
+of everything that loads — for a week that touches no DSP.
 
 ### 2. `LoadArray` — 75 instruments, and the only proven silence
 
@@ -300,11 +321,17 @@ at `8c64fccd0`) unless a path says otherwise. Working files are under
    (6 shards, today's load sweep) is the source for every load, refusal,
    diagnostic and UI-asset count. `python3 analyze_census.py` aggregates it into
    `census_summary.json`. The pre-aggregated table in the brief and this pass
-   differ by under 0.1 % on every row — brief → this pass: `GetEnginePar`
-   1,597 → 1,599 instruments and 341,995 → 342,005 calls; `GetEngineParDisp`
-   1,428 → 1,430 and 17,075 → 17,131; UI assets 1,566 of 3,681 → 1,571 of 3,694 —
-   because the two passes disagree about which records count as loaded, not
-   about what the shards say.
+   differ by **at most 0.33 %** of each row's own count. The formula is the
+   relative change `|after − before| / after` against this pass — a ratio of
+   counts, not percentage points — and the two runs counted different corpora:
+   the brief's 3,681 loaded instruments, this pass's 3,694 of 6,037 `.nki`
+   records (13 more loaded; the brief's record total is not recorded). Row by
+   row, brief → this pass: `GetEnginePar` 1,597 → 1,599 instruments (0.13 %) and
+   341,995 → 342,005 calls (0.003 %); `GetEngineParDisp` 1,428 → 1,430 (0.14 %)
+   and 17,075 → 17,131 (0.33 %); UI assets 1,566 of 3,681 → 1,571 of 3,694
+   (0.32 % of the instrument count). The largest delta is smaller than the 13-file
+   difference between the two corpora (0.35 %), so the two passes disagree about
+   which records count as loaded, not about what the shards say.
 2. **Scripts were extracted, not re-swept.**
    `python3 extract.py census.json /var/tmp/gaps` runs the repository's own
    `examples/dump_scripts` binary (`cargo build --example dump_scripts -p
@@ -333,13 +360,30 @@ at `8c64fccd0`) unless a path says otherwise. Working files are under
 6. **Silence** is `/var/tmp/keysweep/results.jsonl`: 704 instruments, 9 keys each
    (36…84), `sounds_at` empty = silent at every key tried.
 7. **The table and this document's numbers** are generated:
-   `build_tsv.py` writes the `.tsv` beside this file, `table_md.py` renders §2.
+   `build_tsv.py docs/re/gap-inventory-2026-11-01.tsv` rewrites the `.tsv` beside
+   this file, `table_md.py docs/re/gap-inventory-2026-11-01.tsv` renders §2.
 
-The measurement scripts themselves (`extract.py`, `analyze_census.py`,
-`analyze_symbols.py`, `merge_symbols.py`, `kspcheck/`, `ui_sample.py`,
-`build_tsv.py`, `table_md.py`) live in `/var/tmp/gaps` and are deliberately not
-committed: they are throwaway harness code, and this section is their
-specification. The two records are the deliverable.
+The measurement scripts are **committed**, under `tools/census/`:
+`census_sweep.py` (step 1), `keysweep.py` (6), `merge_census.py`,
+`analyze_census.py` (3), `extract.py` (2), `analyze_symbols.py` and
+`merge_symbols.py` (3), `compile_fail.py` and `kspcheck/` (4), `ui_sample.py`
+(5), `full_check.py`, `build_tsv.py`, `table_md.py`, `where.py` and
+`instruments.py` (7). `tools/census/README.md` gives the command order, the
+three binaries they need and the runtime of each step; the scripts take their
+work directory from `CENSUS_WORK` (default `/var/tmp/gaps`) and their binaries
+from `KONTRA_INSPECT`, `KONTRA_RENDER` and `DUMP_SCRIPTS`. Nothing generated is
+committed: `census.json`, `scripts/`, the `.tsv`s and `compile-*.json` are 4.2 GB
+of output, and steps 3, 4 (from the extracted scripts), 6 and 7 regenerate from
+each other.
+
+**Steps 1, 2, 5 and 6 need the sample library on disk** — the `.nki` files are
+where the script text and the audio are — so those four are reproducible only on
+a machine with the same libraries installed. Steps 3, 4 and 7 need only what the
+earlier steps wrote; that was checked by re-running them against this pass's own
+artifacts on 2026-11-01: `analyze_census.py` reproduced `census_summary.json`
+identically, `compile_fail.py` reproduced `compile_fail.json` identically from
+`compile.tsv`, and `build_tsv.py` reproduced the committed `gap-inventory.tsv`
+byte-for-byte.
 
 ### What this survey cannot see
 

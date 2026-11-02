@@ -22,6 +22,19 @@ impl HostApi for Host {
             }
             Action::EventNote => HostValue::Int(self.note),
             Action::EventVelocity => HostValue::Int(self.velocity),
+            // A write to `$EVENT_VELOCITY` compiles to `change_velo($EVENT_ID, v)`,
+            // and the manual's rule is that the written value *becomes* the new
+            // `$EVENT_VELOCITY`: "Once the velocity of a particular note event is
+            // changed, it becomes the new $EVENT_VELOCITY". A host that recorded
+            // the call without moving the event would let a readback assertion
+            // pass whatever the write did.
+            Action::ChangeVelo => {
+                self.calls.push((b, call.ints.to_vec()));
+                if let Some(&v) = call.ints.get(1) {
+                    self.velocity = i32::try_from(v).unwrap_or(self.velocity);
+                }
+                HostValue::Nothing
+            }
             Action::EventId => HostValue::Int(1000),
             Action::PlayNote => {
                 self.calls.push((b, call.ints.to_vec()));
@@ -492,7 +505,7 @@ fn event_velocity_can_be_written() {
         [(Action::ChangeVelo, vec![1000, 127])],
         "the write is change_velo($EVENT_ID, 127)"
     );
-    assert_eq!(r.int("$h"), 200, "reading it is still $EVENT_VELOCITY");
+    assert_eq!(r.int("$h"), 127, "the write is the new $EVENT_VELOCITY");
     // Kontakt's other system variables stay read-only.
     let error = |source: &str| compile(source, &[]).unwrap_err().message;
     assert_eq!(
@@ -526,6 +539,41 @@ fn num_presets_is_a_script_constant() {
     assert_eq!(
         error("on init declare $EVENT_ID end on"),
         "$EVENT_ID is a reserved name"
+    );
+}
+
+/// A declared name wins over the catalog inside `fold`. `$NUM_PRESETS` is a
+/// name a script may declare *and* a name the harvested catalog holds (the
+/// catalog records what the corpus uses, not what Kontakt owns), so a fold that
+/// asks the catalog first turns the declared number into an opaque symbol id —
+/// a wrong constant, silently. The declared value is the one that counts.
+#[test]
+fn a_declared_name_wins_over_the_catalog_when_folding() {
+    let r = Run::new(
+        "on init
+            declare $NUM_PRESETS := 5
+            declare const $N := $NUM_PRESETS * 2
+            declare %slots[$NUM_PRESETS] := (1, 2, 3, 4, 5)
+            declare $size
+            declare $doubled
+            $size := num_elements(%slots)
+            $doubled := $N
+        end on",
+    );
+    assert_eq!(r.int("$size"), 5, "the declared size, not a symbol id");
+    assert_eq!(r.int("$doubled"), 10);
+    let error = |source: &str| compile(source, &[]).unwrap_err().message;
+    // A declared name that holds no constant is not a constant either: the
+    // catalog must not answer for it (`$EVENT_PAR_TOY` is declared by 16 corpus
+    // scripts and is a catalog name).
+    assert_eq!(
+        error("on init declare $EVENT_PAR_TOY declare %a[$EVENT_PAR_TOY] end on"),
+        "expected a constant"
+    );
+    // A system variable is still not declarable.
+    assert_eq!(
+        error("on init declare $EVENT_VELOCITY := 1 end on"),
+        "$EVENT_VELOCITY is a reserved name"
     );
 }
 

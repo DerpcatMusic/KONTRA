@@ -354,10 +354,10 @@ pub fn run(req: &Request, diag: &mut dyn Write) -> Result<Summary, Box<dyn std::
     let velocity_override = checked_velocity(asked_velocity);
     let hold_override = checked_hold(asked_hold);
     if asked_velocity.is_some() && velocity_override.is_none() {
-        invalid("KONTRA_VELOCITY", "1..=127");
+        invalid(diag, "KONTRA_VELOCITY", "1..=127")?;
     }
     if asked_hold.is_some() && hold_override.is_none() {
-        invalid("KONTRA_HOLD", "a positive number of seconds");
+        invalid(diag, "KONTRA_HOLD", "a positive number of seconds")?;
     }
     let velocity = f64::from(velocity_override.unwrap_or(100.0)) / 127.0;
     // KONTRA_CONTROL=name=value,...: each script control (a KSP one named
@@ -755,8 +755,18 @@ fn effective_note(note: Note, velocity: Option<f32>, hold: Option<f32>) -> Note 
 
 /// Says an override was ignored, and what it should have been. A silently
 /// dropped override is how a sweep renders the wrong note for an hour.
-fn invalid(name: &str, want: &str) {
-    eprintln!("{name}: ignoring an out-of-range value; it must be {want}");
+///
+/// It goes through the render's own diagnostics writer, like every other line
+/// the render says: `--diag` must file the warning with the run, and `--quiet`
+/// must not print it — otherwise the one line that says the run measured a
+/// different note than the one asked for is exactly the line missing from the
+/// file, or the line that leaks past the silence.
+fn invalid(diag: &mut dyn Write, name: &str, want: &str) -> Result<(), Box<dyn std::error::Error>> {
+    say!(
+        diag,
+        "{name}: ignoring an out-of-range value; it must be {want}"
+    );
+    Ok(())
 }
 
 fn note_events(note: Note, rate: f32, velocity: Option<f32>, hold: Option<f32>) -> [FrameEvent; 2] {
@@ -1047,6 +1057,25 @@ mod tests {
         assert_eq!(checked_hold(Some(-1.0)), None);
         assert_eq!(checked_hold(Some(f32::NAN)), None);
         assert_eq!(checked_hold(Some(0.5)), Some(0.5));
+    }
+
+    /// A refused override is a diagnostic like every other line the render says,
+    /// so it goes to the writer the run was handed: `--diag` files it with the
+    /// run, `--quiet` (a sink) drops it, and stderr is only the default. It used
+    /// to be an `eprintln!`, which is why a `--diag` log could be missing the one
+    /// line that said the run measured a different note than the one asked for.
+    #[test]
+    fn a_refused_override_goes_to_the_diagnostics_writer() {
+        let mut out = Vec::new();
+        invalid(&mut out, "KONTRA_VELOCITY", "1..=127").expect("the writer takes it");
+        assert_eq!(
+            String::from_utf8(out).expect("utf-8"),
+            "KONTRA_VELOCITY: ignoring an out-of-range value; it must be 1..=127\n"
+        );
+        // `--quiet` hands the run a sink: the line is dropped like every other.
+        let mut quiet: Box<dyn Write> = Box::new(std::io::sink());
+        invalid(&mut *quiet, "KONTRA_HOLD", "a positive number of seconds")
+            .expect("the sink takes it");
     }
 
     /// The summary describes the note that was rendered, not the one requested.
