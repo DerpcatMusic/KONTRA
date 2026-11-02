@@ -11,13 +11,33 @@ use crate::script::{Kind, Running};
 
 /// Elements a key may hold (KSP manual, PGS).
 const MOST: usize = 256;
-/// Keys of each kind, reserved up front so creating one never allocates.
-const KEYS: usize = 64;
+/// Extra keys of each kind admitted after initialization.
+const RUNTIME_KEYS: usize = 64;
+/// Preparation admission bound per key kind; overflow is reported as unhandled.
+const INIT_KEYS: usize = 8192;
+
+struct IntKey {
+    name: Text,
+    start: usize,
+    len: usize,
+}
+
+/// Prepared PGS limits and backing allocation, in bytes (excluding allocator overhead).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PgsBudget {
+    pub integer_keys: usize,
+    pub string_keys: usize,
+    pub integer_values: usize,
+    pub bytes: usize,
+}
 
 pub(crate) struct Pgs {
-    /// Key, values, and how many of them the key holds.
-    ints: Vec<(Text, [i32; MOST], usize)>,
+    ints: Vec<IntKey>,
+    values: Vec<i32>,
     texts: Vec<(Text, Text)>,
+    int_limit: usize,
+    text_limit: usize,
+    value_limit: usize,
     /// An `on pgs_changed` run waits in the queue.
     queued: bool,
 }
@@ -25,17 +45,74 @@ pub(crate) struct Pgs {
 impl Pgs {
     pub(crate) fn new() -> Self {
         Self {
-            ints: Vec::with_capacity(KEYS),
-            texts: Vec::with_capacity(KEYS),
+            ints: Vec::new(),
+            values: Vec::new(),
+            texts: Vec::new(),
+            int_limit: 0,
+            text_limit: 0,
+            value_limit: 0,
             queued: false,
         }
     }
 
+    /// Called after all slots have initialized, before the engine reaches audio.
+    pub(crate) fn prepare_runtime(&mut self) {
+        self.int_limit = self.ints.len() + RUNTIME_KEYS;
+        self.text_limit = self.texts.len() + RUNTIME_KEYS;
+        self.value_limit = self.values.len() + RUNTIME_KEYS * MOST;
+        self.ints.reserve_exact(RUNTIME_KEYS);
+        self.texts.reserve_exact(RUNTIME_KEYS);
+        self.values.reserve_exact(RUNTIME_KEYS * MOST);
+    }
+
+    pub(crate) fn budget(&self) -> PgsBudget {
+        PgsBudget {
+            integer_keys: self.int_limit,
+            string_keys: self.text_limit,
+            integer_values: self.value_limit,
+            bytes: self.ints.capacity() * std::mem::size_of::<IntKey>()
+                + self.texts.capacity() * std::mem::size_of::<(Text, Text)>()
+                + self.values.capacity() * std::mem::size_of::<i32>(),
+        }
+    }
+
+    fn create_int(&mut self, key: Text, len: usize, building: bool) -> bool {
+        if self.ints.iter().any(|entry| entry.name == key) {
+            return true;
+        }
+        if (building && self.ints.len() >= INIT_KEYS)
+            || (!building
+                && (self.ints.len() >= self.int_limit
+                    || self.values.len() + len > self.value_limit))
+        {
+            return false;
+        }
+        let start = self.values.len();
+        self.values.resize(start + len, 0);
+        self.ints.push(IntKey {
+            name: key,
+            start,
+            len,
+        });
+        true
+    }
+
+    fn create_text(&mut self, key: Text, building: bool) -> bool {
+        if self.texts.iter().any(|(name, _)| *name == key) {
+            return true;
+        }
+        if (building && self.texts.len() >= INIT_KEYS)
+            || (!building && self.texts.len() >= self.text_limit)
+        {
+            return false;
+        }
+        self.texts.push((key, Text::EMPTY));
+        true
+    }
+
     fn values(&mut self, key: Text) -> Option<&mut [i32]> {
-        self.ints
-            .iter_mut()
-            .find(|(k, ..)| *k == key)
-            .and_then(|(_, v, len)| v.get_mut(..*len))
+        let entry = self.ints.iter().find(|entry| entry.name == key)?;
+        self.values.get_mut(entry.start..entry.start + entry.len)
     }
 
     fn text(&mut self, key: Text) -> Option<&mut Text> {
@@ -47,17 +124,16 @@ impl Pgs {
 }
 
 impl Engine {
-    /// Answers a PGS action; `None` for any other. Keys past [`KEYS`] of a
-    /// kind are not created.
+    /// Answers a PGS action; `None` for any other.
     pub(crate) fn pgs_call(&mut self, call: &mut HostCall<'_>) -> Option<HostValue> {
         let key = call.texts.first().copied().unwrap_or(Text::EMPTY);
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         let flag = |b: bool| HostValue::Int(i32::from(b));
         Some(match call.action {
             Action::PgsCreateKey => {
-                if self.pgs.values(key).is_none() && self.pgs.ints.len() < KEYS {
-                    let len = usize::try_from(int(0)).unwrap_or(0).clamp(1, MOST);
-                    self.pgs.ints.push((key, [0; MOST], len));
+                let len = usize::try_from(int(0)).unwrap_or(0).clamp(1, MOST);
+                if !self.pgs.create_int(key, len, self.building) {
+                    self.count_unhandled(call.action);
                 }
                 HostValue::Nothing
             }
@@ -80,8 +156,8 @@ impl Engine {
                 HostValue::Int(v.unwrap_or(0))
             }
             Action::PgsCreateStrKey => {
-                if self.pgs.text(key).is_none() && self.pgs.texts.len() < KEYS {
-                    self.pgs.texts.push((key, Text::EMPTY));
+                if !self.pgs.create_text(key, self.building) {
+                    self.count_unhandled(call.action);
                 }
                 HostValue::Nothing
             }

@@ -5,6 +5,12 @@ use kontra_vm::{Action, HostApi, HostCall, Text};
 use crate::Engine;
 
 impl Engine {
+    /// PGS backing reserved for this instrument and its runtime limits.
+    #[must_use]
+    pub fn pgs_budget(&self) -> crate::PgsBudget {
+        self.pgs.budget()
+    }
+
     /// Groups a script purged: the host may drop their samples.
     pub fn purged(&self) -> impl Iterator<Item = usize> + '_ {
         self.groups

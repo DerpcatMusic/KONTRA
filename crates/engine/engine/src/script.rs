@@ -662,7 +662,7 @@ impl HostApi for Engine {
 
 impl Engine {
     /// Counts a call the engine does not carry.
-    fn count_unhandled(&mut self, action: Action) {
+    pub(crate) fn count_unhandled(&mut self, action: Action) {
         self.stats.actions_unhandled += 1;
         if let Some(n) = self.unhandled.get_mut(usize::from(action.id())) {
             *n += 1;

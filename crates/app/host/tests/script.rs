@@ -3300,3 +3300,99 @@ fn a_file_dialog_array_is_cancelled_and_completes_with_failure() {
         e.unhandled_actions()
     );
 }
+
+#[test]
+fn pgs_init_is_sized_for_every_key_and_shared_between_slots() {
+    use std::fmt::Write;
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut first = String::from("on init\n");
+    let mut second = String::from("on init\n declare $errors\n");
+    for i in 0..420 {
+        let len = i % 7 + 1;
+        writeln!(first, "pgs_create_key(K{i}, {len})\npgs_set_key_val(K{i}, {}, {})\npgs_create_str_key(S{i})\npgs_set_str_key_val(S{i}, \"value{i}\")", len - 1, i + 1).unwrap();
+        writeln!(second, "if (pgs_get_key_val(K{i}, {}) # {})\n inc($errors)\nend if\nif (pgs_get_str_key_val(S{i}) # \"value{i}\")\n inc($errors)\nend if", len - 1, i + 1).unwrap();
+    }
+    first.push_str("pgs_create_key(K0, 256)\npgs_create_str_key(S0)\nend on\n");
+    second.push_str("message($errors)\nend on\n");
+    let slot = |source: &str| {
+        kontra_host::script::plan(&kontra_ksp::compile(source, &[]).unwrap(), &[], &[])
+    };
+    let mut plan = Plan::new(vec![], 0);
+    plan.scripts = vec![slot(&first), slot(&second)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "0");
+    assert_eq!(e.pgs_budget().integer_keys, 484);
+    assert_eq!(e.pgs_budget().string_keys, 484);
+    assert!(e.unhandled_actions().is_empty());
+    e.reset();
+    assert_eq!(e.pgs_budget().integer_keys, 484);
+}
+
+#[test]
+fn pgs_creation_in_note_controller_and_ui_callbacks_is_shared() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(
+        &store,
+        vec![],
+        "on init
+        declare ui_knob $k (0, 100, 1)
+        message(get_ui_id($k))
+    end on
+    on note
+        pgs_create_key(NOTEKEY, 2)
+        pgs_set_key_val(NOTEKEY, 1, 42)
+    end on
+    on controller
+        pgs_create_str_key(CCTEXT)
+        pgs_set_str_key_val(CCTEXT, \"controller\")
+    end on
+    on ui_control ($k)
+        pgs_create_key(UIKEY, 1)
+        pgs_set_key_val(UIKEY, 0, pgs_get_key_val(NOTEKEY, 1))
+        message(pgs_get_key_val(UIKEY, 0) & \" \" & pgs_get_str_key_val(CCTEXT))
+    end on",
+    );
+    let id = e.last_message().parse().unwrap();
+    level(&mut e, &[on(60)]);
+    let now = e.now();
+    level(
+        &mut e,
+        &[Timed {
+            at: now,
+            body: Event::midi1(0xb0, 1, 1),
+        }],
+    );
+    e.set_control(0, id, 1);
+    assert_eq!(e.last_message(), "42 controller");
+    assert!(e.unhandled_actions().is_empty());
+}
+
+#[test]
+#[ignore = "representative timing measurement; run with --release --ignored --nocapture"]
+fn pgs_callback_timing() {
+    use std::{fmt::Write, time::Instant};
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut source =
+        String::from("on init\n declare ui_knob $k (0, 100, 1)\n message(get_ui_id($k))\n");
+    for i in 0..420 {
+        writeln!(source, "pgs_create_key(K{i}, 4)\npgs_create_str_key(S{i})").unwrap();
+    }
+    source.push_str("end on\non ui_control ($k)\n pgs_create_key(NEWKEY, 256)\n pgs_create_str_key(NEWSTRING)\n pgs_set_key_val(K419, 3, 42)\n pgs_set_str_key_val(S419, \"value\")\nend on\n");
+    let mut e = engine(&store, vec![], &source);
+    let id = e.last_message().parse().unwrap();
+    let budget = e.pgs_budget();
+    let start = Instant::now();
+    e.set_control(0, id, 1);
+    let first = start.elapsed().as_nanos();
+    let mut times = Vec::with_capacity(10_000);
+    for i in 0..10_000 {
+        let start = Instant::now();
+        e.set_control(0, id, 1 + i % 2);
+        times.push(start.elapsed().as_nanos());
+    }
+    times.sort_unstable();
+    println!(
+        "budget={budget:?}; first={first}ns p50={}ns p95={}ns p99={}ns max={}ns",
+        times[5000], times[9500], times[9900], times[9999]
+    );
+}
