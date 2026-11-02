@@ -303,14 +303,6 @@ are silent at every key tried (93 %), against 180 silent of 704 keyswept overall
 The mechanism is unproven — this is a correlation, not a cause — and the
 paragraph below withdraws even the correlation as evidence of our silence.
 
-**Historical, and not to be quoted as current:** the heading here read "the only
-proven silence" and the closing paragraph read "the only row with a demonstrated
-audible effect, and the user can hear the difference". Both rested on the
-Arabian Ethnic Orchestra's 83 silent instruments — a library that had never been
-licensed, so it could not have sounded whatever KONTRA did. Nothing in this tree
-has yet shown a `LoadArray` fix raising a peak; the claim is withdrawn, and the
-wording is kept here only so that the earlier reasoning is still visible.
-
 **Corrected 2026-11-01: the correlation is withdrawn until it is re-derived.**
 Its largest citation, Arabian Ethnic Orchestra, was a library whose licence had
 never been applied; it could not have sounded whatever our code did, and it has
@@ -319,6 +311,14 @@ that cannot sound for licence or installation reasons, and we have no flag that
 distinguishes those from our own silence — see the row below, which is a defect
 in its own right. Re-derive the correlation over the 704 keyswept instruments
 with those libraries excluded before acting on it.
+
+**Historical, and not to be quoted as current:** the heading here read "the only
+proven silence" and the closing paragraph read "the only row with a demonstrated
+audible effect, and the user can hear the difference". Both rested on the
+Arabian Ethnic Orchestra's 83 silent instruments — a library that had never been
+licensed, so it could not have sounded whatever KONTRA did. Nothing in this tree
+has yet shown a `LoadArray` fix raising a peak; the claim is withdrawn, and the
+wording is kept here only so that the earlier reasoning is still visible.
 
 The work is small and bounded: the numeric array reader already exists for
 `load_array_str` and `array_file.rs` has tests. What is missing is the
