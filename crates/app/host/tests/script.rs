@@ -3312,7 +3312,10 @@ fn pgs_init_is_sized_for_every_key_and_shared_between_slots() {
         writeln!(first, "pgs_create_key(K{i}, {len})\npgs_set_key_val(K{i}, {}, {})\npgs_create_str_key(S{i})\npgs_set_str_key_val(S{i}, \"value{i}\")", len - 1, i + 1).unwrap();
         writeln!(second, "if (pgs_get_key_val(K{i}, {}) # {})\n inc($errors)\nend if\nif (pgs_get_str_key_val(S{i}) # \"value{i}\")\n inc($errors)\nend if", len - 1, i + 1).unwrap();
     }
-    first.push_str("pgs_create_key(K0, 256)\npgs_create_str_key(S0)\nend on\n");
+    first.push_str(
+        "pgs_create_key(K0, 256)\npgs_set_key_val(K0, 1, 123)\npgs_create_str_key(S0)\nend on\n",
+    );
+    second.push_str("if (pgs_get_key_val(K0, 1) # 0)\n inc($errors)\nend if\n");
     second.push_str("message($errors)\nend on\n");
     let slot = |source: &str| {
         kontra_host::script::plan(&kontra_ksp::compile(source, &[]).unwrap(), &[], &[])
