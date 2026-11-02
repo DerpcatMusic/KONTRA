@@ -1271,6 +1271,21 @@ gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-p
 done = ["sampler-core production lines < 1k."]
 
 [[task]]
+id = "P6.4d"
+title = "Prepare bounded PGS storage for large instruments"
+phase = 6
+lane = "engine"
+size = "M"
+agent = "worker"
+deps = []
+owns = ["crates/engine/engine/src/pgs.rs", "crates/engine/engine/src/inspect.rs", "crates/engine/engine/src/lib.rs", "crates/engine/engine/src/script.rs", "crates/engine/engine/tests/pgs_alloc.rs", "crates/app/host/tests/script.rs", "docs/re/engine/PGS_STORAGE.md", "@plan"]
+docs = ["02-ENGINE.md"]
+goal = "Retain 420 PGS keys per kind (the synthetic host fixture) after initialization and admit callback creation only within preallocated storage; leave MIDI work in issue 1281 open."
+steps = ["Size integer backing from actual init lengths across script slots.", "Reserve explicit post-init key/value allowances and diagnose exhaustion.", "Verify allocation-free callback creation/editing after 420 initialized keys, and record representative memory and latency measurements."]
+gate = ["build-slot cargo test -p kontra-engine -p kontra-host -p kontra-ksp --all-features", "KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3"]
+done = ["Integer/string keys, variable lengths, duplicates and cross-slot reads survive initialization and reset.", "Actual note/controller/UI callbacks allocate nothing within their prepared PGS budgets; exhaustion is diagnostic.", "Document admission bounds and measurement limits; MIDI storage remains open separately."]
+
+[[task]]
 id = "P6.5"
 title = "Gate G6: engine crates"
 phase = 6
