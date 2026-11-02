@@ -265,6 +265,14 @@ does not name the token. Those five rows add to 81 but name 80 instruments:
 constant` rows, since it fails on both. That is 268 distinct instruments — 7 %
 of everything that loads — for a week that touches no DSP.
 
+> **Dated note, 2026-11-01 evening.** Five of this file's rows were closed after it was
+> written: `$EVENT_VELOCITY`, `$NUM_PRESETS`, `redirect_output`, `hide_part` with a
+> variable id, and the 29 `expected a constant` cases, together with `hide_inst_icon`
+> — see `docs/re/ksp-bindings-2026-11-01.md`. The compile sweep they were measured
+> with now reads **478 failing slots in 470 instruments, not 718 in 718**, and the
+> rows below are that pass's numbers, kept as written. Re-run `tools/census/` before
+> quoting any of them as current.
+
 ### 2. `LoadArray` — 75 instruments, and the only proven silence
 
 57 of the 61 keyswept instruments that call `load_array` are silent at every key
