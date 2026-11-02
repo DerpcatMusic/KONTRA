@@ -11,9 +11,13 @@ use crate::script::{Kind, Running};
 
 /// Elements a key may hold (KSP manual, PGS).
 const MOST: usize = 256;
-/// Extra keys of each kind admitted after initialization.
+/// Post-init reserve carrying forward v3 e80a9f22b9's 64-key allowance per kind.
+/// Each extra key reserves a name entry (and up to 256 integer cells), and
+/// increases the maximum linear lookup scan by one.
 const RUNTIME_KEYS: usize = 64;
-/// Preparation admission bound per key kind; overflow is reported as unhandled.
+/// Implementation admission policy, not a measured vendor limit: at 256 cells
+/// per key this caps initialized integer values at 8 MiB. Raising it increases
+/// preparation memory and the maximum callback lookup scan. Refusals are diagnosed.
 const INIT_KEYS: usize = 8192;
 
 struct IntKey {
@@ -230,8 +234,8 @@ mod tests {
         let mut pgs = Pgs::new();
         for i in 0..INIT_KEYS {
             let name = Text::from_str_cut(&format!("k{i}")).0;
-            assert!(pgs.create_int(name, 1));
-            assert!(pgs.create_text(name));
+            assert!(pgs.create_int(name, 1), "integer key {i}");
+            assert!(pgs.create_text(name), "string key {i}");
         }
         let existing = Text::from_str_cut("k0").0;
         let extra = Text::from_str_cut("overflow").0;

@@ -7,6 +7,15 @@ its original length and contents. Initialization admits at most 8,192 keys of
 each kind. Above that limit the create action is counted in
 `unhandled_actions`, rather than silently reporting support.
 
+The 8,192-key admission cap is an implementation resource policy, not a Kontakt
+capacity claim: at the maximum declared length, it admits 2,097,152 initialized
+`i32` cells (8 MiB). Key metadata, string backing, allocator slack and the runtime
+reserve are additional; `pgs_budget().bytes` reports reserved vector capacity.
+The 64 extra keys per kind carry forward the previous v3 implementation's
+64-key allowance (`e80a9f22b9`), now separately reserved after initialization.
+Increasing either policy grows memory admission and the bounded linear scans;
+no deadline measurement at the largest admitted key count is claimed.
+
 After all slot initialization and persistence callbacks, the engine reserves
 64 additional integer keys, 64 additional string keys and 16,384 integer
 cells. Preparation writes every admitted callback key slot and integer cell,
