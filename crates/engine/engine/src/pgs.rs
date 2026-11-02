@@ -79,9 +79,9 @@ impl Pgs {
             self.texts.push((Text::EMPTY, Text::EMPTY));
         }
         self.values.resize(self.value_limit, 0);
-        std::hint::black_box(&mut self.ints[int_keys..]);
-        std::hint::black_box(&mut self.texts[text_keys..]);
-        std::hint::black_box(&mut self.values[cells..]);
+        std::hint::black_box(self.ints.as_mut_slice());
+        std::hint::black_box(self.texts.as_mut_slice());
+        std::hint::black_box(self.values.as_mut_slice());
         self.ints.truncate(int_keys);
         self.texts.truncate(text_keys);
         self.values.truncate(cells);
