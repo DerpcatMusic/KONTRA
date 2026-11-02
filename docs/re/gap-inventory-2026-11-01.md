@@ -79,6 +79,7 @@ instrument. `references` is call sites for a command, occurrences for a symbol.
 | no playable zone at all | not ours | 254 | 7 | nothing: saved purge state (sampled) | Whistler Ensemble |
 | GetFolder | command | 243 | 2 | one folder-kind enum case | Awesome Tension Arp IN C 2 MW Sweeping Filter.nki |
 | unknown command hide_inst_icon | command | 188 | 2 | a no-op binding (one line) | AR Dataflow.nki |
+| **silence with no explanation** | diagnostic | unmeasured | — | report which zones named a file that is not there, and why a zone produced nothing | (see below) |
 | silent at every key with zones | symptom | 180 | 32 | a symptom, not a gap — see §5 | Accordions 2 Library |
 | LoadArray | command | 75 | 8 | the numeric .nka array read | Ens Basses - KS.nki |
 | AttachZone | command | 71 | 10 | a runtime zone model | Synth Loop Designer.nki |
@@ -148,7 +149,7 @@ action; "script fails" is instruments whose slot does not compile.
 | VSTBuzz Power Move | 160 | 160 | 0 | 0 | 0 | 0 | **160** | 0 | `hide_inst_icon`, one line |
 | Sauceware Audio Trifecta | 109 | 0 | 109 | 0 | 0 | 0 | 0 | 0 | modulator category 3 |
 | Vintage Organs Library | 100 | 100 | 0 | 0 | 0 | 100 | 0 | 0 | `GetEnginePar` / `GetEngineParDisp` |
-| Arabian Ethnic Orchestra | 84 | 84 | 0 | 0 | **83** | 37 | 1 | 6 | `LoadArray` — 83 of 84 do not sound |
+| ~~Arabian Ethnic Orchestra~~ | — | — | — | — | — | — | — | — | **void: library deleted 2026-11-01** (the user removed it; its licence was never applied, so nothing it did was evidence about KONTRA) |
 | Noon Instruments Toska | 84 | 84 | 0 | 0 | 0 | 84 | 0 | 84 | `GetEnginePar` / `GetEngineParDisp` |
 
 Read down that table and the plan picks itself:
@@ -157,8 +158,37 @@ Read down that table and the plan picks itself:
   (`hide_inst_icon`, slice, slice, slice) from being script-clean.
 - **Evolve R2 + Trifecta + Kinetic Metal** are one reader case from opening
   544 more instruments.
-- **Arabian Ethnic Orchestra** is the only library where instruments exist, have
-  zones, load without complaint and make no sound — 83 of 84.
+- ~~**Arabian Ethnic Orchestra** is the only library where instruments exist,
+  have zones, load without complaint and make no sound — 83 of 84.~~
+  **Withdrawn 2026-11-01.** Those 83 silent instruments were never evidence about
+  KONTRA: the user reports the library's licence was never applied, and the
+  library has since been deleted from the machine. Nothing it did should be used
+  to rank a gap, and this table's `LoadArray` row was ranked partly on it.
+
+### The gap this survey found about itself
+
+Measured 2026-11-01 on a library that could not sound: the render reported
+
+```
+peak 0.0000  frames 168448  zones 255  load_s 0.03
+stream: StreamStats { pages_read: 0, read_errors: 0, requests_refused: 0, bytes_read: 0 }
+```
+
+— silence, with **no error, no refused request and not one page read**. Two
+consequences, and the second is worse than the first:
+
+1. A user cannot tell "this library is not installed / not licensed" from "KONTRA
+   has a bug". The instrument that produced the line above was reported to us as
+   broken; it was a licence, and it sent a day of work in the wrong direction.
+2. **Every silence-based statistic in this file is confounded by it.** The
+   keysweep's 180 "silent with zones", the `LoadArray` correlation, and the
+   `GetEnginePar` silence check all count instruments that may simply have no
+   usable content. The survey cannot currently separate "we are silent" from
+   "there is nothing to play".
+
+The fix is a reporting one — count and name zones whose file is absent, at load
+and in the render summary — and it was in flight when the session stopped. Until
+it lands, treat any silence count here as an upper bound.
 
 ## 4. What is out of scope, and why
 
@@ -218,10 +248,16 @@ does not name the token. That is 268 instruments — 7 % of everything that load
 
 57 of the 61 keyswept instruments that call `load_array` are silent at every key
 tried (93 %), against 180 silent of 704 keyswept overall. The mechanism is
-unproven — this is a correlation, not a cause — but no other gap in the file has
-a correlation that strong, and the payoff is five of the user's products:
-Arabian Ethnic Orchestra (83 of 84 silent), Session Horns Pro, Stradivari,
-Guarneri, Session Ukulele.
+unproven — this is a correlation, not a cause.
+
+**Corrected 2026-11-01: the correlation is withdrawn until it is re-derived.**
+Its largest citation, Arabian Ethnic Orchestra, was a library whose licence had
+never been applied; it could not have sounded whatever our code did, and it has
+been deleted. A correlation built on silence is confounded by **every** library
+that cannot sound for licence or installation reasons, and we have no flag that
+distinguishes those from our own silence — see the row below, which is a defect
+in its own right. Re-derive the correlation over the 704 keyswept instruments
+with those libraries excluded before acting on it.
 
 The work is small and bounded: the numeric array reader already exists for
 `load_array_str` and `array_file.rs` has tests. What is missing is the
