@@ -16,9 +16,12 @@
 #   - Electric Mint asking for more script calls than the agreed ceiling, or a
 #     load that produced no answer at all;
 #   - a render that does not complete, drops sample frames, or clips;
-#   - a page that no longer matches the parity corpus's Kontakt references
-#     (see the corpus row: it measures this engine against references recorded
-#     from real Kontakt, and prints where it disagrees).
+#   - the parity corpus row cannot produce a summary at all, or one of its
+#     cases could not be compared. The row measures this engine against
+#     references recorded from real Kontakt and prints where it disagrees; it
+#     does not gate on the size of that disagreement (the baselines are another
+#     branch's engine's), so the header must not promise a page check it does
+#     not make.
 #
 # Rows this branch does not have, and why (ported from feat/integration, whose
 # test layout and tooling this gate was written for):
@@ -50,8 +53,6 @@ EMINT=${EMINT:-$HOME/Armory/VSTs/Kontakt1/Native Instruments Session Guitarist E
 # prints the number and the reason it is above the ceiling.
 MAX_UNHANDLED=${MAX_UNHANDLED:-55}
 MAX_INIT_UNANSWERED=${MAX_INIT_UNANSWERED:-51}
-# Percent of the page allowed to differ from Kontakt's own render.
-MAX_PIXEL_PCT=${MAX_PIXEL_PCT:-0.5}
 # A build or a GUI step that hangs is a failed row, not a hung gate: every cargo
 # and ui call below is wrapped. 30 minutes is generous for a cold release build
 # of the crates the gate names and still finite.
@@ -145,48 +146,37 @@ finish() {
     echo "VERIFY PASSED -- this branch has no tools/deploy.sh: a release is a CI job"
 }
 
-# One layer-3 row from one pixel-diff run: the label, then pixel-diff's own
-# arguments (reference, render, thresholds). Exit 1 is over the ceiling, exit 2
-# means the two could not be compared at all -- neither of which is a pass.
-pixel_row() {
-    local name=$1
-    shift
-    local out status reason
-    out=$(python3 "$REPO/tools/pixel-diff.py" "$@" 2>&1)
-    status=$?
-    if [ "$status" -eq 0 ]; then
-        ok "$name" "$(printf '%s\n' "$out" | grep -o 'differing.*%' | head -1)"
-    elif [ "$status" -eq 2 ]; then
-        # "cannot be compared" (missing, unreadable, or different-sized
-        # without --scale or --crop) is neither a threshold failure nor a pass.
-        bad "$name" "$(printf '%s\n' "$out" | head -1)"
-    else
-        reason=$(printf '%s\n' "$out" | grep -oE '[0-9.]+% differs, ceiling [0-9.]+%' | head -1)
-        bad "$name" "${reason:-pixel-diff exited $status with no summary}"
-        printf '%s\n' "$out" | grep -E '^ +[0-9]+ px' | head -5 | sed 's/^/      /'
-    fi
-}
-
-# What the panel row does, from the three facts that decide it: whether the
-# reference capture is there, whether the caller opted out of the pixel rows, and
-# whether the golden exists.
-#
-# The opt-out is asked FIRST, and that order is the fix. ALLOW_NO_PIXEL_REF=1 is
-# the documented way to run this gate on a machine without the capture, and the
-# row tested the missing file before it read the flag -- so the escape hatch did
-# not exist in the one case it was written for, and a missing reference failed a
-# gate the caller had already said to run without one. Absent *without* the
-# opt-out is still a failure: deleting the reference must not pass quietly.
-#
-# Lifted out of the row so tools/test_verify.sh can hold the order still; a
-# condition inside an `echo` cannot be tested without a render.
-panel_row_kind() { # reference_exists allow_no_reference golden_exists
-    if [ "${2:-0}" = "1" ]; then
-        if [ "${1:-0}" != "1" ]; then printf 'off-no-ref'
-        elif [ "${3:-0}" != "1" ]; then printf 'off-no-golden'
-        else printf 'compare'; fi
-    elif [ "${1:-0}" != "1" ]; then printf 'missing'
-    else printf 'compare'; fi
+# One line of parity text from the runner's JSON summary. A missing, unreadable
+# or shapeless file fails: "no measurement" must never read as a pass, and the
+# row this feeds used to print "(no summary)" and call itself ok.
+parity_row() { # json
+    python3 - "$1" 2>/dev/null <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))["cases"]
+parts, findings = [], []
+for r in rows:
+    m = r.get("metrics") or {}
+    # `ok` is the runner's own verdict: False is a case that disagrees with
+    # Kontakt beyond its threshold (`DRIFT`), or could not be compared at all.
+    # Counting only the runner's "finding" status missed exactly the cases the
+    # corpus exists to show, and printed "0 findings" over two of them.
+    mark = "" if r.get("ok") else " FINDING"
+    if mark:
+        findings.append(r["id"])
+    if m.get("level_db") is None or m.get("band_rms_db") is None:
+        parts.append(f"{r['id']} {r['status']}{mark}")
+    else:
+        parts.append(
+            f"{r['id']} {m['level_db']:+.2f}/{m['band_rms_db']:.2f} dB{mark}"
+        )
+# A case that matches its baseline but still disagrees with Kontakt is a
+# finding, not a pass. Printing the deltas under an unqualified "ok" is how a
+# row teaches people to stop reading it -- and the whole point of the corpus is
+# that these delta numbers are the to-do list, not a footnote.
+lead = (f"{len(rows)} cases, {len(findings)} finding"
+        f"{'' if len(findings) == 1 else 's'} (beyond its own threshold vs Kontakt): ")
+print(lead + "; ".join(parts))
+PY
 }
 
 run_tests() {
@@ -330,7 +320,6 @@ fi
 # (`crates/app/host/tests/parity_regressions.rs`, the XPERIMENTA Harpsichord and
 # Cherry Electric Bass findings); v3 has no such file, so the row is not here.
 # The parity corpus below is what holds audio to a file on this branch.
-PARITY=${KONTRA_TEST_LIBRARY:-${HOME}/Armory/VSTs/Kontakt1}
 
 echo "== build =="
 if CARGO_TARGET_DIR="$TARGET" timeout "$STEP_TIMEOUT" cargo build --release -p kontra-plugin >"$LOGS/verify-build.log" 2>&1; then
@@ -435,44 +424,27 @@ echo "== layer 0: the parity corpus still sounds like Kontakt =="
 #
 # The cases' recorded baselines are feat/integration's engine, so on this branch "moved" is a
 # comparison between two engines, not a regression, and the row measures rather than gates:
-# every case's delta against Kontakt is printed, and the row fails only when the corpus cannot
-# run at all (exit 2) or a case could not be compared. Re-recording the baselines needs a Kontakt
-# session (`run.py --record`).
+# every case's delta against Kontakt is printed, and the row fails when the corpus cannot run at
+# all (exit 2), a case could not be compared, or the runner wrote no usable summary -- a missing
+# summary used to print nothing and leave the row reading "ok ... (no summary)".
+# Re-recording a baseline needs no Kontakt: `run.py --record` renders with this branch's binary.
+# Only `run.py --capture` (re-capturing the reference WAVs) needs a Kontakt session.
 if CARGO_TARGET_DIR="$TARGET" cargo build --release -p kontra-host --bin kontra-render \
         >"$LOGS/verify-render.log" 2>&1; then
     parity_status=0
     KONTRA_RENDER="$TARGET/release/kontra-render" python3 "$REPO/tools/parity-corpus/run.py" \
         --subset --json "$LOGS/verify-parity.json" >"$LOGS/verify-parity.txt" 2>&1 || parity_status=$?
     if [ "$parity_status" -le 1 ]; then
-        PARITYROW=$(python3 - "$LOGS/verify-parity.json" <<'PY'
-import json, sys
-rows = json.load(open(sys.argv[1]))["cases"]
-parts, findings = [], []
-for r in rows:
-    m = r.get("metrics") or {}
-    # `ok` is the runner's own verdict: False is a case that disagrees with
-    # Kontakt beyond its threshold (`DRIFT`), or could not be compared at all.
-    # Counting only the runner's "finding" status missed exactly the cases the
-    # corpus exists to show, and printed "0 findings" over two of them.
-    mark = "" if r.get("ok") else " FINDING"
-    if mark:
-        findings.append(r["id"])
-    if m.get("level_db") is None or m.get("band_rms_db") is None:
-        parts.append(f"{r['id']} {r['status']}{mark}")
-    else:
-        parts.append(
-            f"{r['id']} {m['level_db']:+.2f}/{m['band_rms_db']:.2f} dB{mark}"
-        )
-# A case that matches its baseline but still disagrees with Kontakt is a
-# finding, not a pass. Printing the deltas under an unqualified "ok" is how a
-# row teaches people to stop reading it -- and the whole point of the corpus is
-# that these ten numbers are the to-do list, not a footnote.
-lead = (f"{len(rows)} cases, {len(findings)} finding"
-        f"{'' if len(findings) == 1 else 's'} (beyond its own threshold vs Kontakt): ")
-print(lead + "; ".join(parts))
-PY
-)
-        ok "parity corpus (3 cases, measured)" "${PARITYROW:-(no summary)}"
+        if ! PARITYROW=$(parity_row "$LOGS/verify-parity.json" 2>>"$LOGS/verify-parity.txt"); then
+            # A missing, corrupt or shapeless summary is a failed row. It used to
+            # print nothing and leave the row reading "ok ... (no summary)", which
+            # is the one way this row could vanish instead of failing.
+            bad "parity corpus (3 cases)" "no usable summary in $LOGS/verify-parity.json; see $LOGS/verify-parity.txt"
+        elif [ -z "$PARITYROW" ]; then
+            bad "parity corpus (3 cases)" "the summary in $LOGS/verify-parity.json is empty; see $LOGS/verify-parity.txt"
+        else
+            ok "parity corpus (3 cases, measured)" "$PARITYROW"
+        fi
     else
         bad "parity corpus (3 cases)" "the corpus could not run (exit $parity_status); see $LOGS/verify-parity.txt"
         grep -E '^\[(FAIL|ok )\]|^       ' "$LOGS/verify-parity.txt" | sed 's/^/      /' | head -12
