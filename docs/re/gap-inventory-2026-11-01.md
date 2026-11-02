@@ -278,19 +278,24 @@ rules, `LoadArray`, and the zone-slice model. Two of those are gone:
 
 Judged by instruments per week of work, with no audio risk:
 
-### 1. The browser hides 563 instruments — one scan rule
+### Withdrawn: "the browser hides 563 instruments"
 
-Measured over the library root: 18 libraries hold presets at one level and more
-in a subfolder, and the scan stops descending as soon as a folder looks like a
-library. Kinetic Metal 100 visible / **111 hidden**, Evolve R2 96/**92**, Tom
-Factory 6/**66**, Voices of Rapture 4/**57**, Royal Albert Hall 1/**56**, VSTBuzz
-Power Move 160/**27** — **563 instruments the user cannot reach from the browser
-at all**, 15 % of everything that loads. The instruments are not broken; they are
-invisible. This is a rule in `crates/app/library`, no parser and no DSP, and it is
-the highest value per hour in the file — a user looking for a library that is
-half-hidden has no way to tell that from a broken instrument.
+**The claim was mine and it was wrong.** The pairs behind it — Kinetic Metal
+"100 visible / 111 hidden", Power Move "160 / 27" — are not a count of what the
+catalog omits. They are a count of where presets *sit*: 100 `.nki` in
+`Instruments/` and 111 in `Instruments/ Motion Enabled/`; 160 in `Power Move/`
+and 27 in its `Extra Presets/`. The scan lists **211** and **187**, and the
+browser groups presets by folder with a collapsible row each, so a subfolder is a
+row, not a hidden instrument. Nothing was unreachable.
 
-### 2. The zone-slice model — 396 instruments
+How it happened, because it is a repeatable mistake: the numbers came from
+counting `.nki` files per directory and **inferring** from `visit()`'s early
+`return` that the scanner stopped. It does not stop listing presets — the early
+return ends the *search for more libraries*, not the enumeration inside one.
+Reading the code and predicting the behaviour is not the same as running it, and
+this file exists to make that distinction.
+
+### 1. The zone-slice model — 396 instruments
 
 `num_slices_zone` (362) and `zone_slice_start` (34), all in loop designers: all
 204 of Spitfire Studio Brass, all 190 of Heavyocity Vocalise 3, plus one
@@ -298,13 +303,23 @@ instrument each in two Heavyocity Damage libraries. Slices are an edit-time
 division of a sample that neither the plan nor the playback has, so this is the
 largest row that needs a *model* rather than a binding.
 
-### 3. Garritan's legacy XML — 624 instruments Kontakt loads and we refuse
+### 2. Garritan's legacy XML — 624 instruments Kontakt loads and we refuse
 
 The single largest reader gap where the two sides disagree: Kontakt reads these
 and we answer "legacy XML instruments are not read". 624 instruments in one
 library. It was listed under "out of scope" in the first version; it should not
 be — out of scope is LASS, where Kontakt refuses too. This is a format someone
 has to decide to read or to declare unsupported on purpose.
+
+### 3. A library inside a library — 2 products, 24 presets listed twice
+
+The defect next to the one I imagined, and much smaller: a **registered product
+inside a registered bundle**. `Action Strings 2 v1.2.0` is a `.nicnt` folder
+holding another `.nicnt` (`Action Strings 2 Library`); the inner one was never
+listed as its own library, so its presets folded into the outer entry — and the
+bundle ships two copies, so they appeared twice. Guarneri Violin has the same
+shape. Fixed on the port branch: **145 → 147 libraries, 19,496 presets before and
+after, 2 double-listed → 0**. Record: `docs/re/library-scan-2026-11-02.md`.
 
 **What not to do first.** The **180 silent-with-zones** instruments have no
 proven cause any more: the two candidates this file offered (`LoadArray`,
@@ -433,44 +448,3 @@ byte-for-byte.
   is still `f18acaab5b897588`: nothing executable changed. That is the point —
   the first three items in §5 are each smaller than most changes this tree
   already carries.
-
-## 8. Status on v3 — 2026-11-02, the port
-
-This file was written on `feat/integration`, which targeted `main`. It was ported
-to `v3` unchanged, because the measurements are the file's content; this section
-says what was done here and what of it still stands.
-
-**§5's six front-end gaps are closed on v3**, each with its citation and its
-conformance test (`docs/re/ksp-bindings-2026-11-01.md`, tests named after the
-symbol in `crates/script/ksp/tests/ksp.rs`): `hide_inst_icon`, `$EVENT_VELOCITY`
-writable, `$NUM_PRESETS` not reserved, `redirect_output` with two or three
-arguments, `hide_part`/`set_control_par` on a variable that is not a control, and
-the `expected a constant` folds (`log(10.0)`, `num_elements(%a)`, and a declared
-name folding to its own value rather than to a catalog symbol id). Two more were
-bound on the way, because an instrument in `docs/re/glory-days-2026-10-31.md`
-needs them to load at all: `dont_use_machine_mode` (a no-op, as §5 lists it) and
-`%NOTE_DURATION`.
-
-The corpus compile pass that produced §1 and §5's counts was **not** re-run on
-v3: its harness (`tools/census/kspcheck`) extracts slots from the library and
-links `kontra-ksp` by path, and the counts here are `feat/integration`'s. The
-unit tests above are the evidence on this branch; a re-run would give v3's own
-numbers and is the next step if anyone needs them.
-
-**§1's numbers do not hold on v3** and the row is smaller than it says — see
-`docs/re/library-scan-2026-11-02.md`. The browser lists presets in subfolders
-(they are folder rows and the scan walks them), so the per-library pairs in §1
-count where presets *sit*, not what the catalog omits. What the scan did get
-wrong is the neighbouring case: a registered product inside a registered bundle
-is listed as its own library now (147 libraries rather than 145 on this
-machine's root, 19,496 presets either way).
-
-**Still open, unchanged by the port**: the zone-slice model (`num_slices_zone`
-362, `zone_slice_start` 34), `_pgs_changed` (42), `mf_get_note_length` (7),
-`set_num_user_zones` (4), and Garritan's legacy XML (624). On v3 there is a
-larger one of the same family that this port found rather than fixed: v3's script
-host leaves the MIDI-file object unanswered, and Electric Mint's `on init` calls
-`mf_get_pos` in a loop — 10,221,505 unanswered init calls, 60,680,810 during a
-render, enough to overflow the engine's trace ring and make `kontra-inspect play`
-report an incomplete render. `tools/verify.sh` reports it on the
-`init unanswered` and `render completes` rows.
