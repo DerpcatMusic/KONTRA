@@ -150,7 +150,7 @@ finish() {
 # or shapeless file fails: "no measurement" must never read as a pass, and the
 # row this feeds used to print "(no summary)" and call itself ok.
 parity_row() { # json
-    python3 - "$1" 2>/dev/null <<'PY'
+    python3 - "$1" <<'PY'
 import json, sys
 rows = json.load(open(sys.argv[1]))["cases"]
 parts, findings = [], []
@@ -176,6 +176,13 @@ for r in rows:
 lead = (f"{len(rows)} cases, {len(findings)} finding"
         f"{'' if len(findings) == 1 else 's'} (moved past their threshold, or not comparable): ")
 print(lead + "; ".join(parts))
+# A case nothing measured is not drift and not a pass: the row this feeds must
+# fail. Status 3 says "the summary is here, and part of it is missing" -- the
+# caller distinguishes it from a summary it could not read at all.
+unmeasured = [r["id"] for r in rows if r.get("unmeasured")]
+if unmeasured:
+    print("unmeasured: " + ", ".join(unmeasured), file=sys.stderr)
+    sys.exit(3)
 PY
 }
 
@@ -435,13 +442,17 @@ if CARGO_TARGET_DIR="$TARGET" cargo build --release -p kontra-host --bin kontra-
     KONTRA_RENDER="$TARGET/release/kontra-render" python3 "$REPO/tools/parity-corpus/run.py" \
         --subset --json "$LOGS/verify-parity.json" >"$LOGS/verify-parity.txt" 2>&1 || parity_status=$?
     if [ "$parity_status" -le 1 ]; then
-        if ! PARITYROW=$(parity_row "$LOGS/verify-parity.json" 2>>"$LOGS/verify-parity.txt"); then
+        PARITYROW=$(parity_row "$LOGS/verify-parity.json" 2>>"$LOGS/verify-parity.txt")
+        row_status=$?
+        if [ "$row_status" -eq 3 ]; then
+            # The corpus ran, and at least one case produced no measurement. That
+            # is a failed row: "could not be compared" is not drift and not a pass.
+            bad "parity corpus (3 cases)" "a case could not be compared; see $LOGS/verify-parity.txt"
+        elif [ "$row_status" -ne 0 ] || [ -z "$PARITYROW" ]; then
             # A missing, corrupt or shapeless summary is a failed row. It used to
             # print nothing and leave the row reading "ok ... (no summary)", which
             # is the one way this row could vanish instead of failing.
             bad "parity corpus (3 cases)" "no usable summary in $LOGS/verify-parity.json; see $LOGS/verify-parity.txt"
-        elif [ -z "$PARITYROW" ]; then
-            bad "parity corpus (3 cases)" "the summary in $LOGS/verify-parity.json is empty; see $LOGS/verify-parity.txt"
         else
             ok "parity corpus (3 cases, measured)" "$PARITYROW"
         fi

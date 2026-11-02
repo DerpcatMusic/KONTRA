@@ -87,6 +87,22 @@ case $summary in
     *) printf '  FAIL %-34s got %s\n' "a readable summary is summarised" "'$summary'"; FAILED=1 ;;
 esac
 
+# A case that produced no measurement fails the row, and says which: status 3,
+# not "no summary" (the summary was read) and not 0 (it is not a pass).
+printf '%s' '{"cases":[{"id":"a","status":"matches","ok":true,"metrics":{"level_db":0.1,"band_rms_db":0.2}},{"id":"b","status":"could not compare","ok":false,"unmeasured":true}]}' >"$WORK/unmeasured-parity.json"
+if parity_row "$WORK/unmeasured-parity.json" >/dev/null 2>"$WORK/unmeasured.err"; then
+    printf '  FAIL %-34s an unmeasured case "passed"\n' "an unmeasured case fails the row"
+    FAILED=1
+else
+    status=$?
+    if [ "$status" -eq 3 ] && grep -q "unmeasured: b" "$WORK/unmeasured.err"; then
+        printf '  ok   %-34s\n' "an unmeasured case fails the row"
+    else
+        printf '  FAIL %-34s status %s\n' "an unmeasured case fails the row" "$status"
+        FAILED=1
+    fi
+fi
+
 # The parity runner is the gate's ruler for the corpus row: its alignment and
 # its per-case containment decide what that row measures, so its self-tests run
 # with the rest of the parsers. No library, no Kontakt, no binary.
@@ -102,4 +118,4 @@ if [ "$FAILED" -ne 0 ]; then
     echo "FAILED: a gate parser misreads its input"
     exit 1
 fi
-echo "PASS: 6 parser cases, 3 parity-summary cases, parity runner self-tests"
+echo "PASS: 6 parser cases, 4 parity-summary cases, parity runner self-tests"

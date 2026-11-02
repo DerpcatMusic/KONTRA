@@ -168,6 +168,7 @@ class Containment(unittest.TestCase):
         row = self.run_with(self.stub("norender", "exit 0"))
         self.assertFalse(row["ok"])
         self.assertEqual(row["status"], "could not compare")
+        self.assertTrue(row["unmeasured"], "the gate fails a row nothing measured")
 
     def test_a_render_that_never_finishes_is_a_failed_row(self):
         saved = run.RENDER_TIMEOUT
@@ -187,6 +188,7 @@ class Containment(unittest.TestCase):
         kern.write_bytes(wav([[0.0, 0.1]], rate=44100, bits=16, tag=1))
         row = self.run_with(self.stub("copy", f'cp "{kern}" "$4"'))
         self.assertFalse(row["ok"])
+        self.assertTrue(row["unmeasured"])
         self.assertEqual(row["status"], "could not compare")
         self.assertIn("44100", row["detail"])
 

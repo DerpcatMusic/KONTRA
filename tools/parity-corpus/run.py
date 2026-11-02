@@ -489,16 +489,17 @@ def run_case(case, workdir: Path, root: Path):
         return row
 
     if rc != 0:
-        row.update(ok=False, status="KONTRA failed to render", detail=(err.splitlines() or [""])[-1][-160:])
+        row.update(ok=False, unmeasured=True, status="KONTRA failed to render",
+                   detail=(err.splitlines() or [""])[-1][-160:])
         return row
 
     refs = case.get("references") or []
     if not refs:
-        row.update(ok=False, status="no reference WAV for a case that should render")
+        row.update(ok=False, unmeasured=True, status="no reference WAV for a case that should render")
         return row
     ref_path = REFS / Path(refs[0]).name
     if not ref_path.exists():
-        row.update(ok=False, status="reference missing",
+        row.update(ok=False, unmeasured=True, status="reference missing",
                    detail=f"{ref_path} is not there: re-capture with --case {case['id']}")
         return row
     try:
@@ -508,7 +509,7 @@ def run_case(case, workdir: Path, root: Path):
     except (ValueError, subprocess.TimeoutExpired) as e:
         # One case that cannot be measured is a failed row, not the end of the corpus: exit 2
         # and no table is how a single odd WAV used to abort every case after it.
-        row.update(ok=False, status="could not compare", detail=str(e)[-160:])
+        row.update(ok=False, unmeasured=True, status="could not compare", detail=str(e)[-160:])
         return row
     row["metrics"] = metrics
 
@@ -550,7 +551,7 @@ def run_case(case, workdir: Path, root: Path):
         return row
     base = case.get("baseline") or {}
     if base.get("level_db") is None or base.get("band_rms_db") is None:
-        row.update(ok=False, status="no recorded baseline (run --record)")
+        row.update(ok=False, unmeasured=True, status="no recorded baseline (run --record)")
         return row
     # The threshold bounds MOVEMENT from the recorded baseline, because that is what a regression
     # gate can assert without pretending today's agreement is better than it is. How far KONTRA
