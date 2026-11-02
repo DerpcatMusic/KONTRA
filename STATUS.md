@@ -97,6 +97,8 @@ Ruled out while chasing those rows, so nobody re-chases them: the 93.6 Hz cutoff
 
 Recorded failures, not skipped: 8Dio Fire Sax (**KONTRA refuses the file** — `Unexpected internal modulator category 3`), Chris Hein Harmonica / Taiko Creator / 8Dio organ (no sound from any key tried — likely keyswitch articulations). Soundiron Harpsichord **now renders**: it was exact silence because `%NOTE_DURATION` failed its whole script compile, and that is implemented — what remains is that it is ~26 dB loud, see `$EVENT_PAR_ALLOW_GROUP` below.
 
+**The whole library, ranked.** `docs/re/gap-inventory-2026-11-01.md` surveys all 6,037 `.nki` and ranks every gap by how many instruments it touches, per library, with the method and its blind spots. It found 718 of the 3,674 script-bearing instruments carrying a slot that will not compile (one command name, `hide_inst_icon`, accounts for 188), and that 1,052 of the 1,929 instruments whose scripts touch a symbol the ledger calls unsupported or stub use only `$MARK_2…28` or `%NOTE_DURATION` — both already answered by the engine, so that part of the ledger is bookkeeping, not parity.
+
 ## What is open, and what would close it
 
 | Gap | Why it is open | What closes it |
