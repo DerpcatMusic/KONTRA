@@ -722,14 +722,20 @@ type FrameEvent = (usize, Event);
 /// The velocity every event this render writes plays at: a valid `KONTRA_VELOCITY`
 /// override, else the note the front end asked for. Velocity is 1..=127; the
 /// frame events take it as 0..=1.
-fn played_velocity(requested: u8, velocity: Option<f32>) -> f64 {
-    f64::from(velocity.map_or(requested, |v| v as u8)) / 127.0
+#[must_use]
+fn played_velocity(requested: u8, velocity: Option<u8>) -> f64 {
+    f64::from(velocity.unwrap_or(requested)) / 127.0
 }
 
-/// A velocity override inside the MIDI range, or `None`. 0 is a note-off and
-/// 128 does not exist, so neither is a velocity a caller can have meant.
-fn checked_velocity(v: Option<f32>) -> Option<f32> {
-    v.filter(|x| (1.0..=127.0).contains(x))
+/// A velocity override inside the MIDI range, or `None`.
+///
+/// 0 is a note-off and 128 does not exist, so neither is a velocity a caller can
+/// have meant; a fractional value is refused rather than truncated, because
+/// 40.5/127 is a note nobody asked for. The range is checked once, here, and the
+/// result is a `u8`, so nothing downstream can carry an out-of-range velocity.
+fn checked_velocity(v: Option<f32>) -> Option<u8> {
+    let v = v?;
+    (v.fract() == 0.0 && (1.0..=127.0).contains(&v)).then_some(v as u8)
 }
 
 /// A hold override that is a positive, finite number of seconds, or `None`.
@@ -741,10 +747,10 @@ fn checked_hold(v: Option<f32>) -> Option<f32> {
 /// The note that will actually be played: the request with any override applied.
 /// The events and [`Summary::note`] both come from this, so a run cannot describe
 /// an input it did not use.
-fn effective_note(note: Note, velocity: Option<f32>, hold: Option<f32>) -> Note {
+fn effective_note(note: Note, velocity: Option<u8>, hold: Option<f32>) -> Note {
     Note {
         key: note.key,
-        velocity: velocity.map_or(note.velocity, |v| v as u8),
+        velocity: velocity.unwrap_or(note.velocity),
         hold_s: hold.unwrap_or(note.hold_s),
     }
 }
@@ -1051,7 +1057,12 @@ mod tests {
         assert_eq!(checked_velocity(Some(200.0)), None, "200 is not a velocity");
         assert_eq!(checked_velocity(Some(0.0)), None, "0 is a note-off");
         assert_eq!(checked_velocity(Some(-5.0)), None);
-        assert_eq!(checked_velocity(Some(40.0)), Some(40.0));
+        assert_eq!(checked_velocity(Some(40.0)), Some(40));
+        assert_eq!(
+            checked_velocity(Some(40.5)),
+            None,
+            "a fractional velocity is refused, not truncated to 40"
+        );
         assert_eq!(checked_hold(Some(0.0)), None, "a zero hold is a click");
         assert_eq!(checked_hold(Some(-1.0)), None);
         assert_eq!(checked_hold(Some(f32::NAN)), None);
@@ -1085,7 +1096,7 @@ mod tests {
             velocity: 100,
             hold_s: 1.5,
         };
-        let played = effective_note(asked, Some(40.0), Some(0.5));
+        let played = effective_note(asked, Some(40), Some(0.5));
         assert_eq!(played.velocity, 40, "the override reached the events");
         assert_eq!(played.hold_s, 0.5);
         assert_eq!(played.key, 60, "the key is not overridable");
@@ -1160,7 +1171,7 @@ mod tests {
         assert_eq!(off.0, 72_000, "1.5 s at 48 kHz");
 
         // Both overridden: 40/127 and half a second.
-        let [on, off] = note_events(effective_note(asked, Some(40.0), Some(0.5)), 48_000.0);
+        let [on, off] = note_events(effective_note(asked, Some(40), Some(0.5)), 48_000.0);
         assert!(
             matches!(on.1, Event::NoteOn { velocity, .. } if (velocity - 40.0 / 127.0).abs() < 1e-9),
             "the override did not reach the note: {:?}",
@@ -1176,7 +1187,7 @@ mod tests {
     fn the_sweeps_play_at_the_requested_velocity() {
         assert!((played_velocity(40, None) - 40.0 / 127.0).abs() < 1e-12);
         assert!((played_velocity(100, None) - 100.0 / 127.0).abs() < 1e-12);
-        assert!((played_velocity(40, Some(20.0)) - 20.0 / 127.0).abs() < 1e-12);
+        assert!((played_velocity(40, Some(20)) - 20.0 / 127.0).abs() < 1e-12);
     }
 
     #[test]
