@@ -55,6 +55,25 @@ fn performs(
         .is_some_and(|page| page.performance)
 }
 
+/// The first slot that asks for the performance view and whose page can be
+/// built; failing that, the first slot whose page can be built.
+///
+/// A slot that asks for the view but cannot build its tree must not end the
+/// search. `find(..).and_then(..)` did: the moment the first performance-
+/// requesting slot failed `at_slot`, the result was `None` and the fallback
+/// opened the first *admin* page — even when a later slot asked for the view and
+/// had a valid page, which is the page Kontakt shows.
+fn preferred<T>(
+    count: usize,
+    asks: impl Fn(usize) -> bool,
+    build: impl Fn(usize) -> Option<T>,
+) -> Option<T> {
+    (0..count)
+        .filter(|&slot| asks(slot))
+        .find_map(&build)
+        .or_else(|| (0..count).find_map(&build))
+}
+
 impl View {
     /// The script's page the editor shows, read from `engine` as its init
     /// left it; pictures come from the library at `path`.
@@ -75,12 +94,11 @@ impl View {
         let library = path.map(|p| RefCell::new(Library::open(p)));
         let meta = |p: &str| library.as_ref()?.borrow_mut().meta(p);
         let count = faces.len().max(pages.len());
-        let mut view = (0..count)
-            .find(|&slot| performs(faces, pages, engine, slot))
-            .and_then(|slot| Self::at_slot(slot, faces, pages, engine, &meta))
-            .or_else(|| {
-                (0..count).find_map(|slot| Self::at_slot(slot, faces, pages, engine, &meta))
-            })?;
+        let mut view = preferred(
+            count,
+            |slot| performs(faces, pages, engine, slot),
+            |slot| Self::at_slot(slot, faces, pages, engine, &meta),
+        )?;
         view.library = library.map(RefCell::into_inner);
         Some(view)
     }
@@ -544,6 +562,25 @@ impl Looks for LookFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A performance-requesting slot whose page cannot be built must not hide a
+    /// later one that can. Slot 0 asks and fails, slot 1 does not ask, slot 2
+    /// asks and builds: the old `find(..).and_then(..)` fell back to slot 1 (an
+    /// admin page), where Kontakt shows slot 2's performance view.
+    #[test]
+    fn a_performing_slot_that_cannot_build_does_not_end_the_search() {
+        let asks = [true, false, true];
+        assert_eq!(
+            preferred(3, |s| asks[s], |s| (s != 0).then_some(s)),
+            Some(2),
+            "the fallback opened a non-performing slot instead of trying slot 2"
+        );
+        // The first performing slot that builds still wins.
+        assert_eq!(preferred(3, |s| asks[s], Some), Some(0));
+        // And with no slot asking, the first slot that builds is the page.
+        assert_eq!(preferred(3, |_| false, |s| (s != 0).then_some(s)), Some(1));
+        assert_eq!(preferred(0, |_| true, Some), None);
+    }
 
     #[test]
     fn copied_table_cells_update_the_live_tree() {
