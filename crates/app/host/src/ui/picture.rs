@@ -108,15 +108,19 @@ fn fields(txt: &str) -> Vec<(&'static str, &str)> {
     at.sort_unstable_by_key(|&(i, _)| i);
     let mut fields = Vec::with_capacity(at.len());
     for (n, &(start, key)) in at.iter().enumerate() {
-        let Some(colon) = lower
-            .get(start..)
-            .and_then(|s| s.find(':'))
-            .map(|c| start + c)
-        else {
+        let end = at.get(n + 1).map_or(txt.len(), |&(next, _)| next);
+        // The colon must belong to *this* key. Searching the rest of the sidecar
+        // for the first one took the colon out of the value of a key that has
+        // none: `Fixed Right` followed by `Height: 9` set the right margin to 9.
+        // Kontakt writes `Key: value` either on one line or with the next key
+        // running straight into the value, so the colon is the first thing after
+        // the key and any spaces or tabs — never past a line break.
+        let after = start + key.len();
+        let rest = txt.get(after..end).unwrap_or_default();
+        let Some(value) = rest.trim_start_matches([' ', '\t']).strip_prefix(':') else {
             continue;
         };
-        let end = at.get(n + 1).map_or(txt.len(), |&(next, _)| next);
-        fields.push((key, txt.get(colon + 1..end).unwrap_or_default().trim()));
+        fields.push((key, value.trim()));
     }
     fields
 }
@@ -214,6 +218,21 @@ mod tests {
         assert_eq!(m.axis, super::ui::Orientation::Vertical);
         assert_eq!((m.alpha, m.stretch), (true, [false, false]));
         assert_eq!(m.margins.right, 0, "a field ends where the next key starts");
+    }
+
+    /// A key with no colon at all must not borrow the colon from the line
+    /// below: `Fixed Right` followed by `Height: 9` used to set the right
+    /// margin to 9, because the search for the field's colon ran past the end
+    /// of the key's own text.
+    #[test]
+    fn a_key_without_a_colon_takes_no_value_from_the_next_line() {
+        let m = super::meta("Fixed Right\nHeight: 9\nFixed Top: 3\n");
+        assert_eq!(m.margins.right, 0, "the colon belongs to `Height`");
+        assert_eq!(m.margins.top, 3, "the well-formed field still reads");
+        // A colon with only spaces before it still counts: Kontakt's writer
+        // puts the value after `Key:` and a sidecar may pad the colon.
+        let m = super::meta("Fixed Left : 7\n");
+        assert_eq!(m.margins.left, 7);
     }
 
     /// A field still ends at the next key, so a line that is not one of
