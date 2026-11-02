@@ -3316,7 +3316,7 @@ fn pgs_init_is_sized_for_every_key_and_shared_between_slots() {
         "pgs_create_key(K0, 256)\npgs_set_key_val(K0, 1, 123)\npgs_create_str_key(S0)\nend on\n",
     );
     second.push_str("if (pgs_get_key_val(K0, 1) # 0)\n inc($errors)\nend if\n");
-    second.push_str("message($errors)\nend on\n");
+    second.push_str("message($errors)\nend on\non note\n message(pgs_get_key_val(K419, 6) & \" \" & pgs_get_str_key_val(S419))\nend on\n");
     let slot = |source: &str| {
         kontra_host::script::plan(&kontra_ksp::compile(source, &[]).unwrap(), &[], &[])
     };
@@ -3329,6 +3329,8 @@ fn pgs_init_is_sized_for_every_key_and_shared_between_slots() {
     assert!(e.unhandled_actions().is_empty());
     e.reset();
     assert_eq!(e.pgs_budget().integer_keys, 484);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "420 value419");
 }
 
 #[test]
