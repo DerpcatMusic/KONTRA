@@ -206,7 +206,13 @@ class Exit(unittest.TestCase):
         stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
         out = work / "parity.json"
         saved = os.environ.get("KONTRA_RENDER")
+        saved_library = os.environ.get("KONTRA_TEST_LIBRARY")
         os.environ["KONTRA_RENDER"] = str(stub)
+        # The library root `main` checks before running anything. Left to this
+        # host's default, the test asked for a status this machine's disk
+        # decided: with no library it got 2 (a corpus problem) and called the
+        # documented 1 a failure.
+        os.environ["KONTRA_TEST_LIBRARY"] = str(work)
         try:
             # The row it prints is the point of the run, not of this test.
             with contextlib.redirect_stdout(io.StringIO()):
@@ -216,6 +222,10 @@ class Exit(unittest.TestCase):
                 del os.environ["KONTRA_RENDER"]
             else:
                 os.environ["KONTRA_RENDER"] = saved
+            if saved_library is None:
+                del os.environ["KONTRA_TEST_LIBRARY"]
+            else:
+                os.environ["KONTRA_TEST_LIBRARY"] = saved_library
         self.assertEqual(status, 1, "a failed row is drift's status, not exit 2")
         rows = json.loads(out.read_text())["cases"]
         self.assertEqual([r["id"] for r in rows], ["glory-trumpet1-multi"])
