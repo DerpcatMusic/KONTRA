@@ -165,6 +165,11 @@ marker_get() {
 # that process and a fresh opener hold two different locks on two different
 # inodes -- the same race with more steps -- so an empty file beside each slot
 # is the price of the lock being real.
+#
+# The descriptor is this wrapper's alone: the wrapped command is started with
+# fd 9 closed (see the launch at the bottom), because a descriptor inherited by
+# a daemon or a backgrounded helper would hold the lock after the wrapper exits
+# and leave the slot busy for ever.
 lock_open() { # name
     local file
     command -v flock >/dev/null 2>&1 || die "flock (util-linux) is required to lock a slot"
@@ -205,8 +210,15 @@ lock_release() { exec 9>&-; }
 # inferred: 1 (with this wrapper's pid) before the command starts, 0 when it
 # ends, however it ends. --gc asks this first, because every other question it
 # asks -- merged? clean? -- stays true while a build is linking.
-write_marker() { # name worktree branch base in_use pid
-    local name=$1 wt=$2 branch=$3 base=$4 in_use=$5 pid=$6 file tmp
+#
+# `child` is the command's own pid, recorded once it exists. The wrapper's pid
+# cannot stand in for it: a wrapper killed by SIGKILL leaves a marker whose pid
+# is dead while the command it started is still writing the target directory.
+# That case is the reason the command no longer inherits the lock's descriptor
+# (a surviving descriptor held the slot for ever); the pid is what --gc reads
+# instead.
+write_marker() { # name worktree branch base in_use pid child
+    local name=$1 wt=$2 branch=$3 base=$4 in_use=$5 pid=$6 child=$7 file tmp
     file=$(marker_path "$name")
     tmp="$file.$$"
     {
@@ -216,6 +228,7 @@ write_marker() { # name worktree branch base in_use pid
         printf "base='%s'\n" "$base"
         printf "in_use='%s'\n" "$in_use"
         printf "pid='%s'\n" "$pid"
+        printf "child='%s'\n" "$child"
         printf "last_used='%s'\n" "$(date +%s)"
     } >"$tmp"
     mv -f -- "$tmp" "$file"
@@ -404,7 +417,7 @@ remove_slot() { # name size_kb reason
 # whose wrapper was killed (closed terminal, OOM) before it could clear the flag.
 # Both are inferred conservatively from `last_used` and the build window.
 build_in_progress() { # marker
-    local marker=$1 in_use pid last now
+    local marker=$1 in_use pid child last now
     in_use=$(marker_get "$marker" in_use || true)
     if [ "$in_use" = 0 ]; then
         return 1
@@ -413,6 +426,16 @@ build_in_progress() { # marker
         pid=$(marker_get "$marker" pid || true)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             printf 'in use by pid %s' "$pid"
+            return 0
+        fi
+        # The wrapper is gone but the command it started may not be: a killed
+        # wrapper (closed terminal, OOM) leaves its command running, and with
+        # the lock's descriptor closed for the command the lock says nothing
+        # about it. The recorded pid does, and unlike the build window below it
+        # is a fact rather than a guess about the last hour.
+        child=$(marker_get "$marker" child || true)
+        if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+            printf 'in use by pid %s (the wrapper, pid %s, is gone)' "$child" "${pid:-?}"
             return 0
         fi
     fi
@@ -661,7 +684,7 @@ base=$(resolve_base "$wt" || true)
 recorded=$(marker_get "$(marker_path "$SLOT_NAME")" base || true)
 if [ -z "$SLOT_BASE" ] && [ -n "$recorded" ]; then base=$recorded; fi
 
-mark() { write_marker "$SLOT_NAME" "$wt" "$branch" "$base" "$1" "$$"; }
+mark() { write_marker "$SLOT_NAME" "$wt" "$branch" "$base" "$1" "$$" "${2:-}"; }
 
 # Cleared on the way out of every path, because a marker that still says
 # `in_use=1` after its wrapper is gone makes --list lie and (for markers with no
@@ -670,8 +693,17 @@ mark() { write_marker "$SLOT_NAME" "$wt" "$branch" "$base" "$1" "$$"; }
 # remembered in a flag: a wrapper still waiting for the lock finds someone else's
 # pid there and writes nothing. `|| true`: the build's verdict must never be
 # replaced by a failure to write the marker.
+#
+# A command that outlived this wrapper is still building, so the flag is left
+# alone for --gc to read: the wrapper's own exit says nothing about whether the
+# target directory is still being written.
 mark_idle() {
     [ "$(marker_get "$(marker_path "$SLOT_NAME")" pid || true)" = "$$" ] || return 0
+    local child
+    child=$(marker_get "$(marker_path "$SLOT_NAME")" child || true)
+    if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+        return 0
+    fi
     mark 0 2>/dev/null || true
 }
 trap mark_idle EXIT
@@ -699,6 +731,29 @@ export CARGO_TARGET_DIR="$dir"
 # the status is propagated verbatim, signals reach the child through the process
 # group as they did with exec, and a 134 comes back as 134. The EXIT trap above
 # clears the flag even when the child dies from a signal.
+#
+# fd 9 -- the slot's lock -- is closed for the command. The lock is this
+# wrapper's, held for exactly as long as the wrapper runs; a compiler daemon, a
+# test process or a helper a script left behind that inherited the descriptor
+# would hold the lock from its own table after the wrapper exited, and the slot
+# would read as busy for ever (later builds queue behind a build that is over,
+# and --gc skips it). Proof that it is closed, not merely unused, is in
+# tools/test_build_slot.sh: a wrapped command that forks a sleeper must not keep
+# the slot locked once the wrapper is gone.
+#
+# A command that outlives a killed wrapper is protected by its pid in the
+# marker instead (see write_marker and build_in_progress).
+#
+# `<&0`: bash gives an asynchronous command /dev/null as its standard input
+# unless it has an explicit redirection, and a wrapped command that asks the
+# terminal a question must still be able to.
 status=0
-"$@" || status=$?
+"$@" 9>&- <&0 &
+child=$!
+# Recorded before it can matter: --gc reads this while the wrapper is alive
+# (where the wrapper's pid answers first) and after it has been killed (where
+# this is the only evidence the build is still running). A failed write is not
+# a reason to abandon a build that has already started.
+mark 1 "$child" || true
+wait "$child" || status=$?
 exit "$status"

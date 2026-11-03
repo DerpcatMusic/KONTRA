@@ -367,5 +367,72 @@ attempt_in "$repo_root" "$slot" --gc
 contains "--gc reclaims the slot once the lock is free" "$out" "remove wt-locked"
 [ -d "$root/kontra-slot-wt-locked" ] && bad "a free slot is reclaimable" || ok "a free slot is reclaimable"
 
+# --- 14. the lock is not handed to the command or its children --------------
+# A child inherited fd 9, so a build helper that outlived the wrapper (a
+# compiler daemon, a backgrounded sleep) kept the slot's lock held from its own
+# descriptor table: every later build queued behind a build that had finished,
+# and --gc skipped the slot for ever. The command is started with the
+# descriptor closed, and the slot must be free the moment the wrapper is gone.
+merged_repo "$tmp/wt-leak"
+got=$(cd "$tmp/wt-leak" && "$slot" --base main --name leak bash -c \
+    '[ -e /proc/self/fd/9 ] && echo open || echo closed' 2>/dev/null)
+check "the command does not inherit the slot lock descriptor" "$got" "closed"
+
+rm -f "$tmp/leak-child"
+(cd "$tmp/wt-leak" && "$slot" --base main --name leak bash -c \
+    "sleep 30 & printf '%s' \$! >'$tmp/leak-child'") >/dev/null 2>&1
+leaked=$(cat "$tmp/leak-child" 2>/dev/null || true)
+if [ -n "$leaked" ] && kill -0 "$leaked" 2>/dev/null; then
+    ok "the command's forked helper outlives the wrapper"
+else
+    bad "the command's forked helper outlives the wrapper"
+fi
+# The kernel's answer, not the marker's: take the slot's own lock.
+exec 8>>"$root/kontra-slot-leak.lock"
+if flock -n 8; then
+    ok "a forked helper does not keep the slot locked after the wrapper exits"
+else
+    bad "a forked helper does not keep the slot locked after the wrapper exits"
+fi
+exec 8>&-
+attempt_in "$repo_root" "$slot" --gc
+check "--gc exits 0 over a slot whose wrapper has gone" "$rc" "0"
+contains "--gc reclaims it while the helper still runs" "$out" "remove leak"
+[ -d "$root/kontra-slot-leak" ] && bad "the leaked slot is reclaimable" || ok "the leaked slot is reclaimable"
+kill -9 "$leaked" 2>/dev/null || true
+
+# --- 15. a wrapper killed mid-build still protects its command --------------
+# The other half of closing fd 9: a wrapper killed by SIGKILL runs no trap, so
+# the lock is released while its command is still writing the target directory.
+# The marker records that command's pid, and --gc reads it -- the build window
+# is a guess about the last hour, the pid is a fact. Without it, a killed
+# wrapper's slot is reclaimable from under a build that is still linking.
+merged_repo "$tmp/wt-orphan"
+rm -f "$root/kontra-slot-wt-orphan.slot"
+( cd "$tmp/wt-orphan" && exec "$slot" --base main sleep 30 ) >/dev/null 2>&1 &
+orphan=$!
+for _ in $(seq 100); do
+    grep -q "in_use='1'" "$root/kontra-slot-wt-orphan.slot" 2>/dev/null && break
+    sleep 0.1
+done
+orphan_cmd=$(sed -n "s/^child='\(.*\)'$/\1/p" "$root/kontra-slot-wt-orphan.slot" 2>/dev/null)
+if [ -n "$orphan_cmd" ] && kill -0 "$orphan_cmd" 2>/dev/null; then
+    ok "the marker names the running command, not just the wrapper"
+else
+    bad "the marker names the running command, not just the wrapper"
+fi
+kill -9 "$orphan" 2>/dev/null || true
+wait "$orphan" 2>/dev/null || true
+attempt_in "$repo_root" "$slot" --gc
+check "--gc exits 0 after a wrapper was killed" "$rc" "0"
+contains "--gc keeps a slot whose wrapper died while its command runs" "$out" "in use by pid"
+[ -d "$root/kontra-slot-wt-orphan" ] && ok "the orphaned build's slot is kept" || bad "the orphaned build's slot is kept"
+
+# Once the command is gone as well, the same slot is reclaimable: the marker
+# still says in_use=1 with a dead pid, which is what the build window is for.
+kill -9 "$orphan_cmd" 2>/dev/null || true
+attempt_in "$repo_root" env KONTRA_SLOT_BUILD_WINDOW=0 "$slot" --gc
+contains "--gc reclaims the slot once the command is gone" "$out" "remove wt-orphan"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
