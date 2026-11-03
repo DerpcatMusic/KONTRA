@@ -156,12 +156,16 @@ rows = json.load(open(sys.argv[1]))["cases"]
 parts, findings = [], []
 for r in rows:
     m = r.get("metrics") or {}
-    # `ok` is the runner's own verdict: False is a case that disagrees with
-    # Kontakt beyond its threshold (`DRIFT`), or could not be compared at all.
-    # Counting only the runner's "finding" status missed exactly the cases the
-    # corpus exists to show, and printed "0 findings" over two of them.
-    mark = "" if r.get("ok") else " FINDING"
-    if mark:
+    # Two different verdicts are both findings, and `ok` alone missed the
+    # first: `finding` is the runner's "still disagrees with Kontakt past its
+    # threshold", and it is recorded independently of `ok`, because a case
+    # that has not moved from its own baseline is `ok: true` *and*
+    # `finding: true`. Counting `ok` printed "0 findings" over exactly the
+    # cases the corpus exists to show. `ok: false` still counts -- DRIFT and
+    # "could not compare" rows carry no `finding` at all.
+    flagged = bool(r.get("finding")) or not r.get("ok", True)
+    mark = " FINDING" if flagged else ""
+    if flagged:
         findings.append(r["id"])
     if m.get("level_db") is None or m.get("band_rms_db") is None:
         parts.append(f"{r['id']} {r['status']}{mark}")

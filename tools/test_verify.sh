@@ -80,11 +80,15 @@ if parity_row "$WORK/bad-parity.json" >/dev/null 2>&1; then
 else
     printf '  ok   %-34s\n' "a corrupt parity summary fails"
 fi
-printf '%s' '{"cases":[{"id":"a","status":"matches","ok":true,"metrics":{"level_db":0.1,"band_rms_db":0.2}},{"id":"b","status":"DRIFT","ok":false,"metrics":{"level_db":1.0,"band_rms_db":2.0}}]}' >"$WORK/good-parity.json"
+# A case that still sits where Kontakt is (`finding`) but has not moved from
+# its own baseline (`ok`) is the shape the parity row exists to count: reading
+# `ok` alone reported "0 findings" over it, and a DRIFT row (ok, no finding)
+# must still count too.
+printf '%s' '{"cases":[{"id":"a","status":"finding (unchanged)","ok":true,"finding":true,"metrics":{"level_db":0.1,"band_rms_db":0.2}},{"id":"b","status":"DRIFT","ok":false,"metrics":{"level_db":1.0,"band_rms_db":2.0}}]}' >"$WORK/good-parity.json"
 summary=$(parity_row "$WORK/good-parity.json")
 case $summary in
-    "2 cases, 1 finding"*"b +1.00/2.00 dB FINDING"*) printf '  ok   %-34s %s\n' "a readable summary is summarised" "'$summary'" ;;
-    *) printf '  FAIL %-34s got %s\n' "a readable summary is summarised" "'$summary'"; FAILED=1 ;;
+    "2 cases, 2 findings"*"a +0.10/0.20 dB FINDING"*"b +1.00/2.00 dB FINDING"*) printf '  ok   %-34s %s\n' "both kinds of finding are counted" "'$summary'" ;;
+    *) printf '  FAIL %-34s got %s\n' "both kinds of finding are counted" "'$summary'"; FAILED=1 ;;
 esac
 
 # A case that produced no measurement fails the row, and says which: status 3,
