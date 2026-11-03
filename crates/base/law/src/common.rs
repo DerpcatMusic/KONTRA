@@ -146,8 +146,16 @@ mod tests {
     }
 
     /// The inverses replace hand-written `20·log10` and `12·log2` bit for bit.
+    ///
+    /// The forward power does not: `2^(x/12)` written as a law and as
+    /// `2f64.powf(x / 12.0)` agree in debug and can differ by one bit in
+    /// release, where the compiler keeps the quotient in a wider register. That
+    /// is the arithmetic, not the law — `powf` guarantees nothing tighter to
+    /// itself, which is the same rule this file already states for `powf(0.5)`
+    /// against `sqrt` — so the power is held to one ulp and the inverses, which
+    /// are pure logarithms, stay bit-exact.
     #[test]
-    fn unit_inverses_keep_the_hand_written_rounding() {
+    fn unit_inverses_keep_the_hand_written_rounding_and_powers_stay_within_a_bit() {
         for n in 1..=200_000 {
             let g = n as f32 / 10_000.0;
             assert_eq!(
@@ -158,10 +166,10 @@ mod tests {
             assert_eq!(DB_GAIN.inverse_f64(g), Some(20.0 * g.log10()), "{g}");
             assert_eq!(SEMITONE_RATIO.inverse_f64(g), Some(12.0 * g.log2()), "{g}");
             let st = f64::from(n as f32 / 1000.0 - 100.0);
-            assert_eq!(
-                SEMITONE_RATIO.eval_unclamped_f64(st),
-                2f64.powf(st / 12.0),
-                "{st}"
+            let (got, want) = (SEMITONE_RATIO.eval_unclamped_f64(st), 2f64.powf(st / 12.0));
+            assert!(
+                got.to_bits().abs_diff(want.to_bits()) <= 1,
+                "{st}: {got} vs {want}"
             );
         }
     }

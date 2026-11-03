@@ -1,0 +1,759 @@
+#!/usr/bin/env bash
+# Run a build in a private cargo target directory, allocated and reclaimed per
+# worktree, and refuse to start when the disk cannot hold the result.
+#
+# Why this exists: every lane used to pick its own CARGO_TARGET_DIR by hand
+# (/var/tmp/tgt-<nickname>). Nothing allocated one, nothing recycled one, and
+# nothing refused to build when the disk was full. The result was 156 GB of
+# target directories -- 10 to 23 GB each, one per lane, most belonging to
+# worktrees that had already been merged and were never reused -- on a 147 GB
+# disk. One lane died at 100 % full. This wrapper makes the target directory a
+# property of the worktree instead of a name someone remembered.
+#
+# Sharing ONE target directory across worktrees is not the fix and is not
+# offered here: on this workspace it produced false passes, because worktrees
+# linked each other's rlibs and a test could pass against code the lane never
+# built. One directory per worktree is the requirement; what was missing was
+# allocation and reclamation, which is what this provides. A slot whose marker
+# names a different worktree is therefore refused, not reused.
+#
+# Directory layout. Slots live on real disk, never on /tmp (16 GB tmpfs here):
+#   $KONTRA_SLOT_ROOT/kontra-slot-<name>/      the CARGO_TARGET_DIR itself
+#   $KONTRA_SLOT_ROOT/kontra-slot-<name>.slot   the marker, a sibling file
+# The marker sits BESIDE the target directory, not inside it, for two reasons:
+# `cargo clean` empties the target directory and would take the marker with it
+# (leaving an unowned 20 GB directory), and `du` of a slot then measures only
+# what cargo wrote. Default $KONTRA_SLOT_ROOT is /var/tmp; the default slot name
+# is the basename of the worktree root, so a lane in /tmp/opencode/wt-tail gets
+# /var/tmp/kontra-slot-wt-tail.
+#
+# Legacy /var/tmp/tgt-* directories are out of scope: --list mentions their
+# total on stderr as a hint, and --gc never deletes or sizes them as slots.
+#
+# Usage:
+#   tools/build-slot cargo test -p kontra-dsp-delay   # CARGO_TARGET_DIR set for this command
+#   tools/build-slot --name foo cargo build -p kontra-ui
+#   tools/build-slot --list                            # slots: size, owner, branch, last used
+#   tools/build-slot --gc                              # reclaim dead / merged+clean idle slots
+#
+# A slot is locked while a build runs in it: the wrapper takes an `flock` on
+# $KONTRA_SLOT_ROOT/kontra-slot-<name>.lock, held from before the first marker
+# write until the process exits. --gc asks the kernel for that same lock with
+# `flock -n`, so "is a build running here" is a fact it cannot read stale, and
+# it holds the lock across its own remove: the check and the `rm -rf` cannot be
+# separated by a build starting. This matters because the merge-and-clean test
+# is a moment-in-time question, and a lane whose branch was merged while its
+# build was still linking answered it yes; its target directory was then deleted
+# underneath the build, which failed in the link step with no mention of --gc.
+#
+# The marker still records `in_use` and the wrapper's pid, for --list and for
+# --gc's rules about markers written before the lock existed. It is a record,
+# not the lock: two wrappers in one worktree used to overwrite each other's pid,
+# the first to exit wrote `in_use=0`, and --gc read the slot as idle while the
+# second was still linking. A second wrapper now waits for the lock instead.
+#
+# Exit status: the wrapped command's own status (propagated, so nothing is
+# swallowed), 75 if the free-space floor was not met (nothing was run), 2 on a
+# usage error.
+set -euo pipefail
+export LC_ALL=C
+
+prog=$(basename "$0")
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+self="$here/$(basename "$0")"
+
+# Free space a build needs on the slot's filesystem, in GB. A release build of
+# this workspace plus one lane's incremental state does not fit in less.
+MIN_FREE_GB=40
+# How long a marker that cannot say whether a build is running is presumed live.
+# Only consulted for a marker with no `in_use` field (written by a version of
+# this script that predates it) or one whose build died without clearing the
+# flag: a marker that says `in_use=0` is a fact, and recency is not asked about.
+BUILD_WINDOW=${KONTRA_SLOT_BUILD_WINDOW:-3600}
+MODE=run
+DRY_RUN=0
+SLOT_NAME=
+SLOT_BASE=${KONTRA_SLOT_BASE:-}
+ROOT=${KONTRA_SLOT_ROOT:-/var/tmp}
+
+die() { printf '%s: %s\n' "$prog" "$*" >&2; exit 2; }
+
+usage() {
+    cat <<EOF
+usage: $prog [options] -- command [args...]
+       $prog --list
+       $prog --gc [--dry-run]
+
+  --name NAME        slot name (default: basename of the git worktree root)
+  --base REF         branch this lane is measured against, for --gc
+  --min-free-gb N    refuse to build below N GB free on the slot filesystem (default 40)
+  --list             slots, size, owning worktree, branch, last used
+  --gc               remove slots whose worktree is gone, or merged and clean and
+                     not building
+  --dry-run          with --gc: say what would go, remove nothing
+
+Environment:
+  KONTRA_SLOT_ROOT   directory holding the slots (default /var/tmp)
+  KONTRA_SLOT_BASE   default --base
+  KONTRA_SLOT_BUILD_WINDOW
+                     seconds a slot whose marker cannot say whether a build is
+                     running is presumed live (default 3600)
+  KONTRA_SLOT_FREE_BYTES
+                     report this much free space instead of asking df --
+                     a test seam, so the free-space floor can be exercised on
+                     any disk
+EOF
+}
+
+# --- formatting -------------------------------------------------------------
+
+human() {
+    local b=$1
+    if   (( b >= 1073741824 )); then printf '%d.%d GB' $(( b / 1073741824 )) $(( (b % 1073741824) * 10 / 1073741824 ))
+    elif (( b >= 1048576 ));    then printf '%d.%d MB' $(( b / 1048576 ))    $(( (b % 1048576) * 10 / 1048576 ))
+    elif (( b >= 1024 ));       then printf '%d.%d KB' $(( b / 1024 ))       $(( (b % 1024) * 10 / 1024 ))
+    else                             printf '%d B' "$b"
+    fi
+}
+
+# Age of a last-used epoch, short enough for a table column.
+age() {
+    local t=${1:-0} now d
+    [ "$t" -gt 0 ] 2>/dev/null || { printf '?'; return; }
+    now=$(date +%s); d=$(( now - t )); (( d < 0 )) && d=0
+    if   (( d < 90 ));      then printf 'just now'
+    elif (( d < 5400 ));    then printf '%dm ago' $(( d / 60 ))
+    elif (( d < 172800 ));  then printf '%dh ago' $(( d / 3600 ))
+    else                         printf '%dd ago' $(( d / 86400 ))
+    fi
+}
+
+# Size of a slot in KB. A missing directory is zero, not an error.
+du_kb() {
+    local kb
+    kb=$(du -sk -- "$1" 2>/dev/null | awk 'NR == 1 { print $1 }') || kb=0
+    printf '%s' "${kb:-0}"
+}
+
+slot_dir()  { printf '%s/kontra-slot-%s' "$ROOT" "$1"; }
+marker_path() { printf '%s/kontra-slot-%s.slot' "$ROOT" "$1"; }
+lock_path()   { printf '%s/kontra-slot-%s.lock' "$ROOT" "$1"; }
+
+# Marker values are written single-quoted; strip one layer on read. Never
+# sourced: a marker lives on a shared /var/tmp and is data, not code.
+marker_get() {
+    local file=$1 key=$2 v
+    [ -r "$file" ] || return 1
+    v=$(sed -n "s/^${key}=//p" -- "$file" | tail -n 1) || true
+    [ -n "$v" ] || return 1
+    v=${v#\'}; v=${v%\'}
+    printf '%s' "$v"
+}
+
+# --- the slot's lock ---------------------------------------------------------
+# "Is a build running here" is answered by the kernel, not by a field a wrapper
+# remembered to write. The lock is held on fd 9 for as long as this process
+# holds it: a build holds it from before its first marker write until exit, and
+# --gc only ever tries it, so a busy slot is skipped rather than waited for.
+#
+# Waiting and not waiting are two operations, not one with a mode: a build waits
+# (a second invocation in the same worktree must queue, not race) and --gc does
+# not (it has other slots to look at). lock_try's non-zero is the answer "busy",
+# so no caller has to remember a flag that says whether it got the lock.
+#
+# The file is never removed. Unlinking a lock file another process has open lets
+# that process and a fresh opener hold two different locks on two different
+# inodes -- the same race with more steps -- so an empty file beside each slot
+# is the price of the lock being real.
+#
+# The descriptor is this wrapper's alone: the wrapped command is started with
+# fd 9 closed (see the launch at the bottom), because a descriptor inherited by
+# a daemon or a backgrounded helper would hold the lock after the wrapper exits
+# and leave the slot busy for ever.
+lock_open() { # name
+    local file
+    command -v flock >/dev/null 2>&1 || die "flock (util-linux) is required to lock a slot"
+    file=$(lock_path "$1")
+    exec 9>>"$file" || die "cannot open the lock file $file"
+}
+
+# Takes the lock, waiting for whoever holds it to finish.
+lock_wait() { # name
+    local owner
+    lock_open "$1"
+    flock -n 9 && return 0
+    owner=$(marker_get "$(marker_path "$1")" pid || true)
+    printf '%s: slot %s is busy%s; waiting for it\n' \
+        "$prog" "$1" "${owner:+ (pid $owner)}" >&2
+    flock 9 && return 0
+    exec 9>&-
+    return 1
+}
+
+# Takes the lock only if it is free; 1 when another process holds it.
+lock_try() { # name
+    lock_open "$1" || return 1
+    flock -n 9 && return 0
+    exec 9>&-
+    return 1
+}
+
+# Drops the lock. The only place fd 9 is closed, so "am I holding the slot" is
+# this call's absence, not a variable.
+lock_release() { exec 9>&-; }
+
+# Rewritten on every invocation so --gc decides from what the lane actually
+# did, not from a guess. Written to a temporary and renamed: a lane that reads
+# a half-written marker could conclude the wrong thing about a live slot.
+#
+# `in_use` is the answer to "is a build running here", recorded rather than
+# inferred: 1 (with this wrapper's pid) before the command starts, 0 when it
+# ends, however it ends. --gc asks this first, because every other question it
+# asks -- merged? clean? -- stays true while a build is linking.
+#
+# `child` is the command's own pid, recorded once it exists. The wrapper's pid
+# cannot stand in for it: a wrapper killed by SIGKILL leaves a marker whose pid
+# is dead while the command it started is still writing the target directory.
+# That case is the reason the command no longer inherits the lock's descriptor
+# (a surviving descriptor held the slot for ever); the pid is what --gc reads
+# instead.
+write_marker() { # name worktree branch base in_use pid child
+    local name=$1 wt=$2 branch=$3 base=$4 in_use=$5 pid=$6 child=$7 file tmp
+    file=$(marker_path "$name")
+    tmp="$file.$$"
+    {
+        printf "name='%s'\n" "$name"
+        printf "worktree='%s'\n" "$wt"
+        printf "branch='%s'\n" "$branch"
+        printf "base='%s'\n" "$base"
+        printf "in_use='%s'\n" "$in_use"
+        printf "pid='%s'\n" "$pid"
+        printf "child='%s'\n" "$child"
+        printf "last_used='%s'\n" "$(date +%s)"
+    } >"$tmp"
+    mv -f -- "$tmp" "$file"
+}
+
+# The branch a lane is measured against -- the branch work is merged INTO.
+# Order: --base, then the environment, then this workspace's integration
+# branch, then the remote HEAD, then the repository's own default branch.
+#
+# Deliberately NOT the lane's own upstream: for a pushed lane the upstream is
+# usually origin/<same branch>, and `rev-list --count origin/x..x` is 0, so a
+# lane that was never merged would look merged and its slot would be reclaimed.
+# Recording the base once matters too: a lane that later gains or loses an
+# upstream must still be judged against the branch it was measured against.
+resolve_base() { # worktree
+    local wt=$1 ref
+    if [ -n "$SLOT_BASE" ]; then printf '%s' "$SLOT_BASE"; return 0; fi
+    for ref in feat/integration origin/feat/integration; do
+        if git -C "$wt" rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1; then
+            printf '%s' "$ref"; return 0
+        fi
+    done
+    if ref=$(git -C "$wt" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) && [ -n "$ref" ]; then
+        printf '%s' "$ref"; return 0
+    fi
+    for ref in main master; do
+        if git -C "$wt" rev-parse --verify --quiet "refs/heads/$ref" >/dev/null 2>&1; then
+            printf '%s' "$ref"; return 0
+        fi
+    done
+    return 1
+}
+
+# A gc command that works from wherever this script is, so a refused lane can
+# copy one line instead of inventing an invocation.
+gc_command() {
+    if [ "$ROOT" = /var/tmp ]; then
+        printf '%s --gc' "$self"
+    else
+        printf 'KONTRA_SLOT_ROOT=%q %s --gc' "$ROOT" "$self"
+    fi
+}
+
+# Slot names become path components, so they are validated, not trusted.
+validate_name() {
+    case $1 in
+        ''|*[!A-Za-z0-9._-]*) die "slot name must match [A-Za-z0-9._-]+, got '$1'" ;;
+        .|..)                 die "slot name must not be '$1'" ;;
+    esac
+}
+
+# --- argument parsing -------------------------------------------------------
+# Options are parsed only before the command; everything after the first
+# non-option word belongs to the wrapped command, even if it looks like a flag.
+while [ $# -gt 0 ]; do
+    case $1 in
+        --list)          MODE=list; shift ;;
+        --gc)            MODE=gc; shift ;;
+        --dry-run)       DRY_RUN=1; shift ;;
+        --min-free-gb)   [ $# -ge 2 ] || die "--min-free-gb needs a number"; MIN_FREE_GB=$2; shift 2 ;;
+        --min-free-gb=*) MIN_FREE_GB=${1#*=}; shift ;;
+        --name)          [ $# -ge 2 ] || die "--name needs a value"; SLOT_NAME=$2; shift 2 ;;
+        --name=*)        SLOT_NAME=${1#*=}; shift ;;
+        --base)          [ $# -ge 2 ] || die "--base needs a value"; SLOT_BASE=$2; shift 2 ;;
+        --base=*)        SLOT_BASE=${1#*=}; shift ;;
+        -h|--help)       usage; exit 0 ;;
+        --)              shift; break ;;
+        -*)              die "unknown option $1 (put it after the command if it belongs to the command)" ;;
+        *)               break ;;
+    esac
+done
+
+case $MIN_FREE_GB in
+    ''|*[!0-9]*) die "--min-free-gb must be a whole number of GB, got '$MIN_FREE_GB'" ;;
+esac
+case ${KONTRA_SLOT_FREE_BYTES:-0} in
+    ''|*[!0-9]*) die "KONTRA_SLOT_FREE_BYTES must be a whole number of bytes, got '$KONTRA_SLOT_FREE_BYTES'" ;;
+esac
+case $BUILD_WINDOW in
+    ''|*[!0-9]*) die "KONTRA_SLOT_BUILD_WINDOW must be a whole number of seconds, got '$BUILD_WINDOW'" ;;
+esac
+[ -n "$SLOT_NAME" ] && validate_name "$SLOT_NAME"
+
+# Free kilobytes on a path's filesystem, or the figure the caller pinned.
+#
+# The pin is a test seam and is documented as one: a test cannot fill a disk, so
+# the floor could only be exercised with a number no disk meets -- which proved
+# "this always refuses" and said nothing about whether the comparison is right.
+# Pinning the figure makes "just enough" and "one byte short" mean the same
+# thing on an empty disk and on a full one. Nothing but a test sets it; the
+# refusal message still names the filesystem, greppable, so a pinned figure is
+# never mistaken for a measurement of the disk.
+free_kb() { # path
+    if [ -n "${KONTRA_SLOT_FREE_BYTES:-}" ]; then
+        printf '%s' $(( KONTRA_SLOT_FREE_BYTES / 1024 ))
+        return 0
+    fi
+    df -Pk -- "$1" | awk 'NR == 2 { print $4 }'
+}
+
+# --- --list -----------------------------------------------------------------
+list_slots() {
+    local d name marker kb bytes total_bytes=0 wt branch base last seen count=0
+    printf '%-28s %10s  %-9s  %-22s %s\n' NAME SIZE LAST_USED BRANCH WORKTREE
+    for d in "$ROOT"/kontra-slot-*; do
+        [ -d "$d" ] || continue
+        name=${d##*/kontra-slot-}
+        [ -n "$name" ] || continue
+        marker=$(marker_path "$name")
+        kb=$(du_kb "$d"); bytes=$(( kb * 1024 ))
+        total_bytes=$(( total_bytes + bytes )); count=$(( count + 1 ))
+        wt=$(marker_get "$marker" worktree || printf '')
+        branch=$(marker_get "$marker" branch || printf '?')
+        last=$(marker_get "$marker" last_used || printf '0')
+        if [ -z "$wt" ]; then
+            branch='?'; last='0'
+            seen='(no marker)'
+        elif [ -d "$wt" ]; then
+            seen="$wt"
+        else
+            seen="$wt (gone)"
+        fi
+        base=$(marker_get "$marker" base || printf '')
+        # base is what --gc will judge this slot against; shown so a stale base
+        # is visible before it decides anything.
+        printf '%-28s %10s  %-9s  %-22s %s\n' \
+            "${name:0:28}" "$(human "$bytes")" "$(age "$last")" "${branch:0:22}" \
+            "${seen}${base:+  (base ${base})}"
+    done
+    if [ "$count" -eq 0 ]; then
+        printf '%s: no slots under %s\n' "$prog" "$ROOT"
+    else
+        printf '%d slot(s), %s total, under %s\n' "$count" "$(human "$total_bytes")" "$ROOT"
+    fi
+    # Legacy hand-named directories are not slots: never listed as one, never
+    # reclaimed here. Their size is worth knowing because it is usually the
+    # real reason the disk is full, so it is printed separately, on stderr.
+    local legacy n=0 lb=0 lkb
+    for legacy in "$ROOT"/tgt-*; do
+        [ -d "$legacy" ] || continue
+        n=$(( n + 1 )); lkb=$(du_kb "$legacy"); lb=$(( lb + lkb * 1024 ))
+    done
+    if [ "$n" -gt 0 ]; then
+        printf '%s: note: %d legacy %s/tgt-* dir(s), %s -- not slots, not touched by --gc\n' \
+            "$prog" "$n" "$ROOT" "$(human "$lb")" >&2
+    fi
+}
+
+# --- --gc -------------------------------------------------------------------
+CURRENT_WT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+RECLAIMED=0
+REMOVED=0
+SKIPPED=0
+
+skip() { printf 'skip   %-24s %s\n' "$1" "$2"; SKIPPED=$(( SKIPPED + 1 )); }
+
+# Every path removed goes through this: a slot lives directly under the root,
+# is named kontra-slot-*, and is never a symlink. `rm -rf` on a path built from
+# a marker's contents must not be able to escape the root.
+remove_slot() { # name size_kb reason
+    local name=$1 kb=$2 reason=$3 dir marker
+    dir=$(slot_dir "$name"); marker=$(marker_path "$name")
+    case $dir in
+        "$ROOT"/kontra-slot-*) ;;
+        *) die "refusing to remove '$dir' (not under $ROOT)" ;;
+    esac
+    [ -L "$dir" ] && die "refusing to remove '$dir' (symlink)"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf 'would  %-24s %s  (%s)\n' "$name" "$(human $(( kb * 1024 )))" "$reason"
+    else
+        rm -rf -- "$dir"
+        rm -f -- "$marker"
+        printf 'remove %-24s %s  (%s)\n' "$name" "$(human $(( kb * 1024 )))" "$reason"
+    fi
+    RECLAIMED=$(( RECLAIMED + kb * 1024 ))
+    REMOVED=$(( REMOVED + 1 ))
+}
+
+# Does this marker name a build that is still running? Returns 0 with the
+# evidence on stdout when it does, 1 when it does not.
+#
+# This is the *legacy* half of the answer. A marker written by this version is
+# only ever visible to --gc while the writer holds the slot's lock, and --gc
+# takes that lock first (see gc_slot); the checks here cover what the lock
+# cannot: a marker written by a build-slot that predates it, and an `in_use=1`
+# whose wrapper was killed (closed terminal, OOM) before it could clear the flag.
+# Both are inferred conservatively from `last_used` and the build window.
+build_in_progress() { # marker
+    local marker=$1 in_use pid child last now
+    in_use=$(marker_get "$marker" in_use || true)
+    if [ "$in_use" = 0 ]; then
+        return 1
+    fi
+    if [ "$in_use" = 1 ]; then
+        pid=$(marker_get "$marker" pid || true)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            printf 'in use by pid %s' "$pid"
+            return 0
+        fi
+        # The wrapper is gone but the command it started may not be: a killed
+        # wrapper (closed terminal, OOM) leaves its command running, and with
+        # the lock's descriptor closed for the command the lock says nothing
+        # about it. The recorded pid does, and unlike the build window below it
+        # is a fact rather than a guess about the last hour.
+        child=$(marker_get "$marker" child || true)
+        if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+            printf 'in use by pid %s (the wrapper, pid %s, is gone)' "$child" "${pid:-?}"
+            return 0
+        fi
+    fi
+    last=$(marker_get "$marker" last_used || true)
+    [ -n "$last" ] && [ "$last" -gt 0 ] 2>/dev/null || return 1
+    now=$(date +%s)
+    if [ $(( now - last )) -lt "$BUILD_WINDOW" ]; then
+        printf 'used %ss ago, inside the %ss build window' $(( now - last )) "$BUILD_WINDOW"
+        return 0
+    fi
+    return 1
+}
+
+gc_slot() { # name
+    local name=$1 marker busy
+    marker=$(marker_path "$name")
+    if [ ! -f "$marker" ]; then
+        # No marker means no recorded owner: we cannot prove the directory is
+        # dead, so it stays. Running a build here claims it.
+        skip "$name" "no marker, owner unknown (build here once to claim it)"
+        return 0
+    fi
+
+    # The lock is taken before the first question -- merged? clean? -- and held
+    # through remove_slot's `rm -rf`. Without that, a lane whose branch merged a
+    # moment ago could start a build between the check and the removal, and the
+    # target directory would be deleted underneath it: the exact failure this
+    # guard exists to prevent, with the marker only reporting it afterwards.
+    if ! lock_try "$name"; then
+        if busy=$(build_in_progress "$marker"); then
+            skip "$name" "$busy"
+        else
+            skip "$name" "slot lock is held (a wrapper is starting or running)"
+        fi
+        return 0
+    fi
+    gc_slot_locked "$name"
+    lock_release
+}
+
+gc_slot_locked() { # name, with the slot's lock held
+    local name=$1 dir marker kb wt branch base ahead dirty busy
+    dir=$(slot_dir "$name"); marker=$(marker_path "$name")
+    kb=$(du_kb "$dir")
+
+    # A marker that predates the lock can still name a live pid, and one whose
+    # wrapper died mid-build names a dead one; both are decided as before.
+    if busy=$(build_in_progress "$marker"); then
+        skip "$name" "$busy"
+        return 0
+    fi
+
+    wt=$(marker_get "$marker" worktree || true)
+    if [ -z "$wt" ]; then
+        skip "$name" "marker has no worktree"
+        return
+    fi
+
+    # Never the worktree this gc is running from -- which is also the one a
+    # caller is most likely to still be building in.
+    if [ -n "$CURRENT_WT" ] && [ "$wt" = "$CURRENT_WT" ]; then
+        skip "$name" "current worktree"
+        return
+    fi
+    if [ "$name" = "${CURRENT_WT##*/}" ] && [ -n "$CURRENT_WT" ]; then
+        skip "$name" "current worktree (name match)"
+        return
+    fi
+
+    if [ ! -d "$wt" ]; then
+        remove_slot "$name" "$kb" "worktree gone: $wt"
+        return
+    fi
+
+    if ! branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null); then
+        skip "$name" "git cannot read $wt"
+        return
+    fi
+    if [ "$branch" = HEAD ]; then
+        # A detached worktree may be mid-bisect or mid-rebase; not ours to judge.
+        skip "$name" "detached HEAD"
+        return
+    fi
+
+    if ! dirty=$(git -C "$wt" status --porcelain 2>/dev/null); then
+        skip "$name" "git status failed in $wt"
+        return
+    fi
+    if [ -n "$dirty" ]; then
+        skip "$name" "dirty ($(printf '%s\n' "$dirty" | wc -l | tr -d ' ') path(s) in $wt)"
+        return
+    fi
+
+    base=$(marker_get "$marker" base || true)
+    if [ -z "$base" ]; then
+        skip "$name" "marker records no base branch"
+        return
+    fi
+    if [ "$branch" = "$base" ]; then
+        # The integration worktree itself: it has nothing to be merged into,
+        # and reclaiming it would throw away the shared build for no gain.
+        skip "$name" "branch is the base ($base)"
+        return
+    fi
+    if ! git -C "$wt" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
+        skip "$name" "recorded base '$base' no longer exists"
+        return
+    fi
+    if ! ahead=$(git -C "$wt" rev-list --count "$base..$branch" 2>/dev/null); then
+        skip "$name" "cannot count '$base..$branch'"
+        return
+    fi
+    if [ "$ahead" != 0 ]; then
+        skip "$name" "unmerged ($ahead commit(s) ahead of $base)"
+        return
+    fi
+
+    remove_slot "$name" "$kb" "merged into $base, clean"
+}
+
+gc_slots() {
+    local d name marker
+    [ -d "$ROOT" ] || { printf '%s: no slots under %s\n' "$prog" "$ROOT"; return; }
+    for d in "$ROOT"/kontra-slot-*; do
+        [ -d "$d" ] || continue
+        name=${d##*/kontra-slot-}
+        [ -n "$name" ] || continue
+        gc_slot "$name"
+    done
+    # A marker whose directory was removed by hand (or by a partial build) is
+    # litter too, and would otherwise sit in --list forever.
+    for marker in "$ROOT"/kontra-slot-*.slot; do
+        [ -f "$marker" ] || continue
+        name=${marker##*/kontra-slot-}; name=${name%.slot}
+        [ -n "$name" ] || continue
+        if [ ! -d "$(slot_dir "$name")" ]; then
+            # Same rule as a slot: never touch a name someone holds. A wrapper
+            # between "lock taken" and "slot directory made" would otherwise
+            # lose the marker it is about to write.
+            if ! lock_try "$name"; then
+                skip "$name" "stale marker, but the slot lock is held"
+                continue
+            fi
+            if [ "$DRY_RUN" -eq 1 ]; then
+                printf 'would  %-24s remove stale marker\n' "$name"
+            else
+                rm -f -- "$marker"
+                printf 'remove %-24s remove stale marker\n' "$name"
+            fi
+            REMOVED=$(( REMOVED + 1 ))
+            lock_release
+        fi
+    done
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf 'would reclaim %s from %d slot(s), %d skipped\n' "$(human "$RECLAIMED")" "$REMOVED" "$SKIPPED"
+    else
+        printf 'reclaimed %s (%d bytes) from %d slot(s), %d skipped\n' "$(human "$RECLAIMED")" "$RECLAIMED" "$REMOVED" "$SKIPPED"
+    fi
+}
+
+# --- dispatch ---------------------------------------------------------------
+if [ "$MODE" = list ]; then list_slots; exit 0; fi
+if [ "$MODE" = gc ];   then gc_slots;   exit 0; fi
+[ "$DRY_RUN" -eq 1 ] && die "--dry-run only means something with --gc"
+
+if [ $# -eq 0 ]; then
+    printf '%s: no command to run\n' "$prog" >&2
+    usage >&2
+    exit 2
+fi
+
+# The slot is named after the worktree, so the lane gets the same directory
+# every time without remembering a name.
+if ! wt=$(git rev-parse --show-toplevel 2>/dev/null); then
+    printf '%s: not inside a git work tree; run this from a checkout\n' "$prog" >&2
+    exit 2
+fi
+[ -n "$SLOT_NAME" ] || SLOT_NAME=${wt##*/}
+validate_name "$SLOT_NAME"
+
+dir=$(slot_dir "$SLOT_NAME")
+mkdir -p -- "$ROOT" || die "cannot create $ROOT"
+
+# One slot, one worktree. Two worktrees that happen to share a basename would
+# otherwise land in the same directory, and this workspace has already produced
+# false passes exactly that way: worktrees linking each other's rlibs means a
+# test can pass against code the lane never built. Refuse instead of guessing.
+recorded_wt=$(marker_get "$(marker_path "$SLOT_NAME")" worktree || true)
+if [ -n "$recorded_wt" ] && [ "$recorded_wt" != "$wt" ]; then
+    printf '%s: slot %s already belongs to %s, not %s\n' "$prog" "$SLOT_NAME" "$recorded_wt" "$wt" >&2
+    die "pass --name to give this worktree its own slot (a shared target dir gives false passes)"
+fi
+
+# --- refuse before building -------------------------------------------------
+# This is the point of the script. A build that starts with 8 GB free dies
+# somewhere in the middle of an LTO link at 100 %, killing the lane and
+# leaving a target directory that looks usable but is not. Failing here costs
+# a second and names the reclaim command.
+#
+# Measured on the root when the slot does not exist yet, so a refused build
+# leaves nothing behind to clean up: an empty slot directory with no marker
+# would be indistinguishable from litter.
+probe=$dir
+[ -d "$probe" ] || probe=$ROOT
+avail_kb=$(free_kb "$probe")
+[ -n "$avail_kb" ] || die "cannot read free space for $probe"
+min_kb=$(( MIN_FREE_GB * 1024 * 1024 ))
+if [ "$avail_kb" -lt "$min_kb" ]; then
+    avail_bytes=$(( avail_kb * 1024 ))
+    short_bytes=$(( min_kb * 1024 - avail_bytes ))
+    fs=$(df -Pk -- "$probe" | awk 'NR == 2 { print $6 }')
+    printf '%s: refusing to build in slot %s: %s free on %s, %s short of the %s GB floor\n' \
+        "$prog" "$SLOT_NAME" "$(human "$avail_bytes")" "$fs" "$(human "$short_bytes")" "$MIN_FREE_GB" >&2
+    printf '%s: largest slots (reclaim candidates):\n' "$prog" >&2
+    top=$(for d in "$ROOT"/kontra-slot-*; do
+              [ -d "$d" ] || continue
+              kb=$(du_kb "$d")
+              printf '%s\t%s\t%s\n' "$kb" "${d##*/kontra-slot-}" \
+                  "$(marker_get "$(marker_path "${d##*/kontra-slot-}")" worktree || printf '?')"
+          done | sort -rn -k1,1 | head -n 3)
+    if [ -z "$top" ]; then
+        printf '  (no slots under %s)\n' "$ROOT" >&2
+    else
+        while IFS=$'\t' read -r kb name owner; do
+            printf '  %-26s %10s  %s\n' "$name" "$(human $(( kb * 1024 )))" "$owner" >&2
+        done <<<"$top"
+    fi
+    printf '%s: reclaim with: %s\n' "$prog" "$(gc_command)" >&2
+    exit 75
+fi
+
+# --- marker, one log line, then the build ------------------------------------
+# Held for the rest of this process: --gc asks the kernel whether a build is
+# running here, and a second wrapper in the same slot waits for this one rather
+# than racing it. Taken before the directory or the marker is written, so the
+# slot is never visible as an unowned directory: --list reads a marker, and
+# --gc will not reclaim anything whose lock it cannot take.
+lock_wait "$SLOT_NAME" || die "cannot take the lock for slot $SLOT_NAME"
+mkdir -p -- "$dir" || die "cannot create $dir"
+branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')
+base=$(resolve_base "$wt" || true)
+# A slot keeps the base it was first measured against. Re-deriving it on every
+# invocation would let the merge target drift under a slot that has been alive
+# for days, and --gc would then judge it against a branch it was never merged
+# into. --base or KONTRA_SLOT_BASE is the deliberate way to change it.
+recorded=$(marker_get "$(marker_path "$SLOT_NAME")" base || true)
+if [ -z "$SLOT_BASE" ] && [ -n "$recorded" ]; then base=$recorded; fi
+
+mark() { write_marker "$SLOT_NAME" "$wt" "$branch" "$base" "$1" "$$" "${2:-}"; }
+
+# Cleared on the way out of every path, because a marker that still says
+# `in_use=1` after its wrapper is gone makes --list lie and (for markers with no
+# lock) --gc hold the slot for a whole build window. The marker records its
+# owner's pid, so "this is mine to clear" is read from the marker rather than
+# remembered in a flag: a wrapper still waiting for the lock finds someone else's
+# pid there and writes nothing. `|| true`: the build's verdict must never be
+# replaced by a failure to write the marker.
+#
+# A command that outlived this wrapper is still building, so the flag is left
+# alone for --gc to read: the wrapper's own exit says nothing about whether the
+# target directory is still being written.
+mark_idle() {
+    [ "$(marker_get "$(marker_path "$SLOT_NAME")" pid || true)" = "$$" ] || return 0
+    local child
+    child=$(marker_get "$(marker_path "$SLOT_NAME")" child || true)
+    if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+        return 0
+    fi
+    mark 0 2>/dev/null || true
+}
+trap mark_idle EXIT
+trap 'mark_idle; exit 129' HUP
+trap 'mark_idle; exit 130' INT
+trap 'mark_idle; exit 143' TERM
+
+# Before the build, not after: --gc reads this to decide whether a merged and
+# clean slot is safe to delete, and asking after the directory is already in use
+# is asking too late.
+mark 1 || die "cannot write marker in $ROOT"
+
+# On stderr: stdout belongs to the wrapped command, which may be emitting
+# --message-format=json or a test harness's own output.
+printf '%s: %s -> %s (free %s, floor %s GB, branch %s, base %s, pid %s)\n' \
+    "$prog" "$SLOT_NAME" "$dir" "$(human $(( avail_kb * 1024 )))" "$MIN_FREE_GB" \
+    "$branch" "${base:-none}" "$$" >&2
+
+if [ -n "${CARGO_TARGET_DIR:-}" ] && [ "$CARGO_TARGET_DIR" != "$dir" ]; then
+    printf '%s: replacing caller CARGO_TARGET_DIR=%s\n' "$prog" "$CARGO_TARGET_DIR" >&2
+fi
+
+export CARGO_TARGET_DIR="$dir"
+# Run as a child rather than `exec`, so the marker can be cleared afterwards;
+# the status is propagated verbatim, signals reach the child through the process
+# group as they did with exec, and a 134 comes back as 134. The EXIT trap above
+# clears the flag even when the child dies from a signal.
+#
+# fd 9 -- the slot's lock -- is closed for the command. The lock is this
+# wrapper's, held for exactly as long as the wrapper runs; a compiler daemon, a
+# test process or a helper a script left behind that inherited the descriptor
+# would hold the lock from its own table after the wrapper exited, and the slot
+# would read as busy for ever (later builds queue behind a build that is over,
+# and --gc skips it). Proof that it is closed, not merely unused, is in
+# tools/test_build_slot.sh: a wrapped command that forks a sleeper must not keep
+# the slot locked once the wrapper is gone.
+#
+# A command that outlives a killed wrapper is protected by its pid in the
+# marker instead (see write_marker and build_in_progress).
+#
+# `<&0`: bash gives an asynchronous command /dev/null as its standard input
+# unless it has an explicit redirection, and a wrapped command that asks the
+# terminal a question must still be able to.
+status=0
+"$@" 9>&- <&0 &
+child=$!
+# Recorded before it can matter: --gc reads this while the wrapper is alive
+# (where the wrapper's pid answers first) and after it has been killed (where
+# this is the only evidence the build is still running). A failed write is not
+# a reason to abandon a build that has already started.
+mark 1 "$child" || true
+wait "$child" || status=$?
+exit "$status"

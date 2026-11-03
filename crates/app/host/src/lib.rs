@@ -8,6 +8,7 @@ pub mod instrument;
 pub mod perf_view;
 pub mod persist;
 pub mod rack;
+pub mod render;
 pub mod script;
 pub mod sound;
 pub mod state;
