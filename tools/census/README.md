@@ -16,7 +16,7 @@ these files, and none of them is cheap to review.
 | what | how |
 |---|---|
 | the two command-line tools | `cargo build --release -p kontra-inspect -p kontra-render` → `target/release/` |
-| `dump_scripts` | **not on this branch**: the example lived in `crates/sampler-kontakt`, which the 2026-11-02 sync (`e80a9f22b`) removed. Step 3 cannot be re-run as written; the extracted `scripts/` from the 2026-11-01 pass are kept outside the repo with the rest of `$CENSUS_WORK` |
+| `dump_scripts` | **not on this branch**: the example lived in `crates/sampler-kontakt`, which the 2026-11-02 sync (`e80a9f22b`) removed. Step 4 cannot be re-run as written (step 3 does not need it); the extracted `scripts/` from the 2026-11-01 pass are kept outside the repo with the rest of `$CENSUS_WORK` |
 | `kspcheck`, the compile pass | `cargo build --release --manifest-path tools/census/kspcheck/Cargo.toml` (its own workspace, one dependency: `crates/script/ksp`) → `tools/census/kspcheck/target/release/kspcheck` |
 | python 3 | standard library only; no packages |
 | the sample library | the `.nki` files themselves. The 2026-11-01 pass read `~/Armory/VSTs/Kontakt1` (6,037 `.nki`). Nothing in this directory can stand in for them — steps 1, 2, 4, 7 and 8 need the files on disk; 3, 5, 6, 9 and 10 read only what the earlier steps wrote |
