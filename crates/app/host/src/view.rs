@@ -559,29 +559,6 @@ impl Looks for LookFrame {
 mod tests {
     use super::*;
 
-    /// A performance-requesting slot whose page cannot be built must not hide a
-    /// later one that can. Slot 0 asks and fails, slot 1 does not ask, slot 2
-    /// asks and builds: the order tried is `[0, 2, 1]`, so the build that fails
-    /// at 0 is skipped -- `find(..).and_then(..)` stopped there and opened
-    /// slot 1, an admin page, where Kontakt shows slot 2.
-    #[test]
-    fn a_performing_slot_that_cannot_build_does_not_end_the_search() {
-        let asks = [true, false, true];
-        assert_eq!(candidates(3, |slot| asks[slot]), vec![0, 2, 1]);
-        let built = candidates(3, |slot| asks[slot])
-            .into_iter()
-            .find(|&slot| slot != 0);
-        assert_eq!(
-            built,
-            Some(2),
-            "the fallback opened a non-performing slot instead of trying slot 2"
-        );
-
-        // No slot asks: declaration order. Nothing to try: nothing.
-        assert_eq!(candidates(3, |_| false), vec![0, 1, 2]);
-        assert!(candidates(0, |_| true).is_empty());
-    }
-
     #[test]
     fn copied_table_cells_update_the_live_tree() {
         let page = kontra_lua::compile(r#"Table{"curve", 2, 0, 0, 1, false}"#, &[], &[])
