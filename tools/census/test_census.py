@@ -334,6 +334,43 @@ class Build(unittest.TestCase):
         # The three refusal counts are read from the summary, not typed.
         self.assertEqual(by_gap["modulator category 3"][2:4], ["3", "2"])
 
+    def test_a_failed_ui_probe_is_not_a_library(self):
+        """A probe that could not load writes no `library`.
+
+        Counting that row made the picture-directory figure report a library
+        that was never inspected as one without `pictures/`, so the sentence
+        said two of three while only two were ever looked at.
+        """
+        work = tempfile.mkdtemp(prefix="census-ui-")
+        dump({
+            "totals": {"keysweep_instruments": 0, "ui_instruments": 3,
+                       "ui_unresolved_assets": 0, "silent_unmeasured": 0},
+            "actions": [], "silent": [], "no_zones": [],
+            "ui_by_library": [{"library": "A"}, {"library": "B"}],
+            "refusals": {"modulator category 3": {"instruments": 3,
+                                                  "libraries": {"A": 2, "B": 1}}},
+        }, os.path.join(work, "census_summary.json"))
+        dump({"instruments": []}, os.path.join(work, "symbols.json"))
+        dump({}, os.path.join(work, "compile_fail.json"))
+        dump([
+            {"path": "/mnt/lib/A/Instruments/a.nki", "library": "A",
+             "library_has_pictures": True, "now_unresolved": 1, "now_resolved": 0,
+             "buckets": {"absent_from_library": 1}},
+            {"path": "/mnt/lib/B/Instruments/b.nki", "library": "B",
+             "library_has_pictures": False, "now_unresolved": 2, "now_resolved": 0,
+             "buckets": {"absent_from_library": 2}},
+            {"path": "/mnt/lib/C/Instruments/c.nki", "error": "load timed out after 600s"},
+        ], os.path.join(work, "ui_sample.json"))
+        out = os.path.join(work, "gap.tsv")
+        env = dict(os.environ, CENSUS_WORK=work, LIBRARY_ROOT="/mnt/lib")
+        subprocess.run([sys.executable, os.path.join(HERE, "build_tsv.py"), out],
+                       env=env, check=True, capture_output=True)
+        with open(out) as f:
+            rows = [line.split("\t") for line in f.read().splitlines()[1:]]
+        sentence = {r[0]: r for r in rows}["UI asset not found"][5]
+        self.assertIn("1 of the 2 libraries ship no `pictures/` folder", sentence)
+        self.assertIn("1 probe failed to load and is not counted above", sentence)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

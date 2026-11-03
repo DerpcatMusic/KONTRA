@@ -222,17 +222,24 @@ add("no playable zone at all", "not ours", len(C["no_zones"]),
 # The sample is `ui_sample.py`'s own output: how many instruments it re-loaded,
 # how many libraries that covered, how many unresolved references it saw and how
 # many of them were distinct paths. The "all absent" claim is its bucket count.
-ui_n = ui_libs = ui_refs = ui_distinct = ui_pics = ui_blank = 0
+ui_n = ui_libs = ui_refs = ui_distinct = ui_pics = ui_blank = ui_failed = 0
 try:
     UI = json.load(open(f"{WORK}/ui_sample.json"))
+    # A probe that could not load writes an `error` and no `library` at all, so
+    # the set of libraries includes `None` for it and the subtraction below
+    # reports a library that was never inspected as one without `pictures/`.
+    # Every count is over the rows that were inspected; the failures are their
+    # own number, in the sentence.
+    probed = [r for r in UI if not r.get("error")]
     ui_n = len(UI)
-    ui_libs = len({r.get("library") for r in UI})
-    ui_refs = sum(r.get("now_unresolved", 0) for r in UI)
-    ui_distinct = sum((r.get("buckets") or {}).get("absent_from_library", 0) for r in UI)
+    ui_failed = len(UI) - len(probed)
+    ui_libs = len({r.get("library") for r in probed if r.get("library")})
+    ui_refs = sum(r.get("now_unresolved", 0) for r in probed)
+    ui_distinct = sum((r.get("buckets") or {}).get("absent_from_library", 0) for r in probed)
     # Both measured by `ui_sample.py`: no typed "28 of the 31".
-    ui_pics = len({r.get("library") for r in UI if r.get("library_has_pictures")})
-    ui_blank = sum(1 for r in UI if not r.get("error") and not r.get("now_unresolved")
-                   and not r.get("now_resolved"))
+    ui_pics = len({r.get("library") for r in probed
+                   if r.get("library") and r.get("library_has_pictures")})
+    ui_blank = sum(1 for r in probed if not r.get("now_unresolved") and not r.get("now_resolved"))
 except FileNotFoundError:
     UI = []
 add("UI asset not found", "not ours", C["totals"]["ui_instruments"], len(C["ui_by_library"]),
@@ -243,7 +250,10 @@ add("UI asset not found", "not ours", C["totals"]["ui_instruments"], len(C["ui_b
     + (f", and the {ui_pics} that do keep them one `Resources/` deeper than the scripts ask for"
        if ui_pics else "")
     + (f"; {ui_blank} of the {ui_n} report no UI model at all on today's build where the census counted one"
-       if ui_blank else ""),
+       if ui_blank else "")
+    + (f"; {ui_failed} probe{'' if ui_failed == 1 else 's'} failed to load "
+       f"and {'is' if ui_failed == 1 else 'are'} not counted above"
+       if ui_failed else ""),
     "Bicycle - Sick Range.nki (8DIO Misfit); Kalimba")
 
 head = ["gap", "kind", "instruments", "libraries", "references", "what_it_would_take",
