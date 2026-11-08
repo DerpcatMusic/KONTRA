@@ -126,6 +126,20 @@ impl AncestorVisibilityState {
         }
     }
 
+    /// The X server reports our window viewable: so are it and all its
+    /// ancestors, whatever events the tracking missed (KONTRA).
+    pub fn mark_viewable(&self) {
+        match self {
+            Self::Parented { ancestry, own_window_viewable, .. } => {
+                for a in ancestry.inner.borrow().iter() {
+                    a.mapped.set(true);
+                }
+                own_window_viewable.set(true);
+            }
+            Self::Floating { own_window_viewable, .. } => own_window_viewable.set(true),
+        }
+    }
+
     /// Returns `true` if this operation made our own window visible.
     pub fn window_mapped(&self, window_id: NonZeroU32) -> bool {
         match self {

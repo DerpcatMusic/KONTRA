@@ -125,7 +125,13 @@ impl X11Connection {
     ) -> core::result::Result<VoidCookie<'_, XCBConnection>, ConnectionError> {
         self.conn.change_window_attributes(
             window_id.get(),
-            &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_NOTIFY),
+            // STRUCTURE_NOTIFY too (KONTRA): an ancestor's own map, unmap and
+            // reparent events reach only it and its parent. Without it, a
+            // window manager moving the host's top-level into a frame and
+            // mapping it (the usual way a DAW shows its plugin window) is
+            // never seen, and the editor waits for its first frame forever.
+            &ChangeWindowAttributesAux::new()
+                .event_mask(EventMask::SUBSTRUCTURE_NOTIFY | EventMask::STRUCTURE_NOTIFY),
         )
     }
 }

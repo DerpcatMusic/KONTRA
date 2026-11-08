@@ -24,6 +24,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
+use x11rb::protocol::xproto::{ConnectionExt as _, MapState};
 use x11rb::errors::ConnectionError;
 use x11rb::protocol::randr::{ConnectionExt as _, ModeFlag, ModeInfo};
 use x11rb::protocol::xproto::{
@@ -63,6 +64,8 @@ pub(crate) struct EventLoop {
     new_size: Option<PhysicalSize<u16>>,
     new_parent_size: Option<PhysicalSize<u16>>,
     exposed: bool,
+    /// Last time a window believed hidden asked the server whether it is viewable.
+    viewable_asked_at: Instant,
 
     /// `on_frame` pacing: the refresh period of the monitor under the window (MOOSE).
     frame_interval: Duration,
@@ -137,6 +140,7 @@ impl EventLoop {
             new_size: None,
             new_parent_size: None,
             exposed: false,
+            viewable_asked_at: Instant::now(),
             frame_interval,
             refresh_rate_stale: false,
             refresh_rate_queried_at: Instant::now(),
@@ -247,7 +251,7 @@ impl EventLoop {
         }
         self.exposed = false;
 
-        if !self.window.visibility_state.own_window_is_viewable() {
+        if !self.window.visibility_state.own_window_is_viewable() && !self.server_says_viewable() {
             return;
         }
 
@@ -265,6 +269,28 @@ impl EventLoop {
         self.drain_ime();
         // Any socket error will be handled in the next poll
         let _ = self.window.connection.conn.flush();
+    }
+
+    /// KONTRA safety net: the ancestry tracking infers viewability from
+    /// events, and a missed one would keep the editor from ever drawing. While
+    /// it believes the window hidden, ask the server a few times a second.
+    fn server_says_viewable(&mut self) -> bool {
+        if self.viewable_asked_at.elapsed() < Duration::from_millis(200) {
+            return false;
+        }
+        self.viewable_asked_at = Instant::now();
+        let viewable = self
+            .window
+            .connection
+            .conn
+            .get_window_attributes(self.window.raw_id())
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|a| a.map_state == MapState::VIEWABLE);
+        if viewable {
+            self.window.visibility_state.mark_viewable();
+        }
+        viewable
     }
 
     fn handle_coalesced_resize_events(&mut self) -> Result<(), FatalError> {
