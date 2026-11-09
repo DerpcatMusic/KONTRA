@@ -1,0 +1,9 @@
+# Check a framework stack
+
+Run `python3 tools/stack-check/check.py PATH [PATH ...]` to print a JSON migration report. The command reads local Cargo manifests, lockfiles, and GitHub workflows. It exits 0 for a matching inventory, 1 for drift, and 2 for invalid input. Redirect the report to a private location because it contains local paths and repository details. The command does not modify the repositories or resolve dependencies.
+
+Pass the complete set of repositories to inspect. The product inventory is opt-in and is not committed here. Each lockfile is inventoried independently, with its SHA-256. Lockfile sources distinguish the MUI and Moose copies of `moose-baseview`. Multiple sources for one package are reported. The manifest records package ownership and one immutable revision per source family. The baseline revisions are observed public pins, not a qualified or promoted stack. Replace them with a candidate only after testing the candidate and all affected products.
+
+The report flags local framework patches, the known custom host alias, unpinned or mismatched framework declarations, unexpected resolved sources, duplicate identities, and `cargo-moose` install lines with a different or unresolved revision. Workflow inspection recognizes literal `--rev` values and simple YAML environment variables. Dynamic commands, reusable workflows, shell scripts, and cached binaries require separate review. The checker inventories lockfiles rather than a feature-specific Cargo graph. It cannot establish which packages ship, whether builds use `--locked`, whether upstream behavior exists, or whether a candidate was tested. Passing this check alone does not authorize release or promotion.
+
+Run `python3 -m unittest discover -s tools/stack-check -p 'test_*.py'` for the command tests.
