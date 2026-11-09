@@ -35,7 +35,7 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_TARGET_DIR: target
   # The MOOSE revision Cargo.toml pins; cargo-moose must match it.
-  MOOSE_REV: 44e39845d7d78d03612a8d17e9538b3481dcc9e3
+  MOOSE_REV: 79da7e1bd01e808c8f1a106a3fdfe387c7bf8850
 
 jobs:
   bundle:
