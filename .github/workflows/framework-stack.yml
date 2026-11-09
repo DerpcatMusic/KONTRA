@@ -7,9 +7,9 @@ permissions:
   contents: read
 jobs:
   framework-stack:
-    uses: Matari-Audio/MUI/.github/workflows/framework-stack.yml@ec955d29a429b48d492b3cb1d6936564ebf55eee
+    uses: Matari-Audio/MUI/.github/workflows/framework-stack.yml@4f5412f3e4a082f1382e1d2d9f07c1d7d7b48d4e
     with:
-      tools-revision: ec955d29a429b48d492b3cb1d6936564ebf55eee
+      tools-revision: 4f5412f3e4a082f1382e1d2d9f07c1d7d7b48d4e
       stack-sha256: 2434cfd35d40fe1c64156ab1bc49d6aa8a35ccd58d4f732ad0c36ec4a2b9ba8c
     secrets:
       dependency-token: ${{ secrets.RELEASE_REPOSITORIES_TOKEN }}
