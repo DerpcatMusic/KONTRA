@@ -16,6 +16,7 @@ use kontra_ui::app::{self, Action, App, Face, Part};
 use kontra_ui::{Pictures, layout};
 use kontra_ui_model::Interface;
 use moose::mui::MuiEditor;
+use moose::mui::window::{WheelAcceleration, WheelPolicy};
 use moose::prelude::*;
 
 use crate::readout::Readout;
@@ -582,6 +583,15 @@ fn part_of(action: &Action) -> Option<usize> {
 }
 
 pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
+    #[expect(
+        clippy::expect_used,
+        reason = "the shared notch scale is a positive compile-time constant"
+    )]
+    let wheel = WheelPolicy::new(
+        moose::mui::mui::host::NOTCH_LINES as f32,
+        WheelAcceleration::Fling,
+    )
+    .expect("the shared notch scale must be finite and positive");
     let p = Arc::clone(&params);
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
@@ -697,6 +707,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         response.el
     })
     .resizable((900, 600))
+    .wheel_policy(wheel)
     .on_files(move |_, _, paths, dropped| {
         let instruments: Vec<_> = paths.iter().filter(|p| is_instrument(p)).cloned().collect();
         let folders: Vec<_> = paths.iter().filter(|p| p.is_dir()).cloned().collect();
