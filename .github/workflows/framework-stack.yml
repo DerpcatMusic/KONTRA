@@ -1,0 +1,15 @@
+name: Framework source gate
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  framework-stack:
+    uses: Matari-Audio/MUI/.github/workflows/framework-stack.yml@a136b3a50ef87c415386ac8ce613898cd8a01587
+    with:
+      tools-revision: a136b3a50ef87c415386ac8ce613898cd8a01587
+      stack-sha256: 6ad9cb8670f8212b6c0ae47d36993fc1ed8bd5a0293b39ef1c82cfe4e6991338
+    secrets:
+      dependency-token: ${{ secrets.RELEASE_REPOSITORIES_TOKEN }}

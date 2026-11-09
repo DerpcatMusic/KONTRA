@@ -58,13 +58,13 @@ edition = "2024"
 
 # Versions match Cargo.lock today. Later v3 tasks depend on these with `workspace = true`.
 [workspace.dependencies]
-mui = { git = "https://github.com/Matari-Audio/MUI", rev = "0728767b7796e9a6a2fff7ab8ce5aadca1ee45dd" }
-mui-native-dialog = { git = "https://github.com/Matari-Audio/MUI", rev = "0728767b7796e9a6a2fff7ab8ce5aadca1ee45dd" }
-moose = { git = "https://github.com/Matari-Audio/moose", rev = "725411019952b25437e54ede459838c6e3f96539", default-features = false }
-moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "725411019952b25437e54ede459838c6e3f96539" }
-moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "725411019952b25437e54ede459838c6e3f96539" }
-moose-test = { git = "https://github.com/Matari-Audio/moose", rev = "725411019952b25437e54ede459838c6e3f96539" }
-moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "725411019952b25437e54ede459838c6e3f96539" }
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "7ecbec645affb8a81216854688a2e1f0cf6944e9" }
+mui-native-dialog = { git = "https://github.com/Matari-Audio/MUI", rev = "7ecbec645affb8a81216854688a2e1f0cf6944e9" }
+moose = { git = "https://github.com/Matari-Audio/moose", rev = "5dfb23df2c9eebfef229b0d2e286110637197c79", default-features = false }
+moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "5dfb23df2c9eebfef229b0d2e286110637197c79" }
+moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "5dfb23df2c9eebfef229b0d2e286110637197c79" }
+moose-test = { git = "https://github.com/Matari-Audio/moose", rev = "5dfb23df2c9eebfef229b0d2e286110637197c79" }
+moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "5dfb23df2c9eebfef229b0d2e286110637197c79" }
 thiserror = "2"
 smallvec = "1"
 serde = { version = "1", features = ["derive"] }
