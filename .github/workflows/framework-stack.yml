@@ -10,6 +10,6 @@ jobs:
     uses: Matari-Audio/MUI/.github/workflows/framework-stack.yml@a136b3a50ef87c415386ac8ce613898cd8a01587
     with:
       tools-revision: a136b3a50ef87c415386ac8ce613898cd8a01587
-      stack-sha256: 6ad9cb8670f8212b6c0ae47d36993fc1ed8bd5a0293b39ef1c82cfe4e6991338
+      stack-sha256: 173243c17ccb40104250fef8008d15dffd128e2832d31cfa657f731bfcd17fa8
     secrets:
       dependency-token: ${{ secrets.RELEASE_REPOSITORIES_TOKEN }}
