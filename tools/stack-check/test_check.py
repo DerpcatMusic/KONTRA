@@ -43,6 +43,19 @@ source = "git+https://github.com/Matari-Audio/MUI?rev={MUI}#{MUI}"
         self.assertEqual(report["resolved"][0]["package"], "mui")
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.repo.iterdir()})
 
+    def test_framework_workspace_packages_are_registered(self):
+        self.lock(f'''[[package]]
+name = "moose-au"
+version = "7.0.0"
+source = "git+https://github.com/Matari-Audio/moose?rev={MOOSE}#{MOOSE}"
+[[package]]
+name = "mui-winit"
+version = "0.4.0"
+source = "git+https://github.com/Matari-Audio/MUI?rev={MUI}#{MUI}"
+''')
+        code, report = self.run_check()
+        self.assertEqual(code, 0, report["issues"])
+
     def test_forks_sources_and_tool_revisions_fail(self):
         self.lock(f'''[[package]]
 name = "kontra-native-host"
