@@ -1,7 +1,7 @@
 // Actual exported plugin host, not substitute Rust callbacks:
-// g++ -std=c++17 -O2 vendor/moose-vst3/tests/native_midi_audio.cpp -ldl -pthread -o /tmp/native-midi-audio
+// g++ -std=c++17 -O2 tools/native-hosts/vst3-midi-audio.cpp -ldl -pthread -o /tmp/native-midi-audio
 // /tmp/native-midi-audio /absolute/libkontakto.so /absolute/authored-tone.state
-#include "../shim/vst3_shim.cpp"
+#include "vst3_shim.cpp"
 #include <dlfcn.h>
 #include <fstream>
 #include <vector>
