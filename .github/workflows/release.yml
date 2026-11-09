@@ -23,7 +23,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_TARGET_DIR: target
-  MOOSE_REV: 79da7e1bd01e808c8f1a106a3fdfe387c7bf8850
+  MOOSE_REV: d2a0da1ae0c2afdfb46ae0599e9f670d0cff99c7
 
 jobs:
   check:
