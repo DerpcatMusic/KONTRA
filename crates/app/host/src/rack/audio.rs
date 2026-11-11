@@ -517,9 +517,10 @@ impl RackAudio {
                     slot,
                     n,
                     value,
+                    cell,
                 } => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {
-                        p.engine.set_widget(slot, n, value);
+                        p.engine.set_widget(slot, n, value, cell);
                     }
                 }
             }

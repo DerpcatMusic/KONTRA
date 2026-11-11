@@ -2361,7 +2361,8 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         restore_texts: vec![],
         controls: Controls::default(),
         engine_pars: EnginePars::default(),
-        reverb_laws: std::array::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
+        links: vec![],
+        reverb_laws: ir::ReverbControls::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
         reverb_networks: vec![],
         knobs: vec![],
         foreign: None,
@@ -2369,7 +2370,6 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         arrays: Vec::new(),
         hears_own_releases: false,
         held_release_ends_children: false,
-        links: vec![],
     });
     let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 256);
     level(&mut engine, &[on(60, 1.0)]);

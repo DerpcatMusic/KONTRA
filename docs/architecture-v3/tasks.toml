@@ -750,6 +750,21 @@ gate = ["build-slot cargo test -p kontra-params"]
 done = ["Coverage test passes; unmapped list reviewed."]
 
 [[task]]
+id = "P4.6a"
+title = "Typed reverb control identities and shared law readback"
+phase = 4
+lane = "structure"
+size = "M"
+agent = "worker"
+deps = []
+owns = ["crates/model/params/**", "crates/model/ir/**", "crates/base/law/src/law.rs", "crates/format/kontakt/src/reverb.rs", "crates/app/host/src/script.rs", "crates/app/host/tests/script.rs", "crates/engine/engine/src/params.rs", "crates/engine/engine/tests/behaviour.rs", "crates/engine/plan/src/script.rs", "tools/xtask/dag.toml", "tools/inspect/src/load.rs", ".github/workflows/v3-verify.yml", "@plan"]
+docs = ["03-DSP.md"]
+goal = "Replace independent reverb control ordinals with one typed identity and prepared law map; leave the full P4.6 catalog open."
+steps = ["Share eight identities between IR, Kontakt law translation and runtime dispatch.", "Implement exponential and power inversion once in kontra-law for script readback.", "Preserve measured laws, missing-target behavior and allocation-free prepared lookup."]
+gate = ["build-slot cargo check --workspace --all-targets --all-features", "build-slot cargo test -p kontra-law -p kontra-params -p kontra-format-kontakt", "build-slot cargo test -p kontra-host --test script reverb", "KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3"]
+done = ["Every reverb identity maps and round-trips through its existing law.", "Missing/incompatible targets retain their semantics; prepared lookup allocates nothing.", "The full catalog and other families remain open in P4.6 and P4.7."]
+
+[[task]]
 id = "P4.7"
 title = "Point the 5 parameter registries at the catalog; delete 4"
 phase = 4
@@ -1254,6 +1269,36 @@ goal = "sampler-core is reduced to re-exports (or deleted); counters live in one
 steps = ["sampler-midi (MIDI1/UMP/MPE receiver adapter over Runtime and OwnedReceiver) moves into kontra-engine once Engine replaces Runtime (it owns receiver state, so not kontra-events, which sits below the engine); any plain-data wire types it still defines go to kontra-events. P4.8 left it in place.", "Move remaining Runtime state into the 10 owners.", "Stats: `RuntimeStats` is one struct today. Add `#[derive(Stats)]` to kontra-macros only if it deletes more lines than it adds across its users (08-MACROS.md rule); otherwise a plain `Copy` struct with `Default`."]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-probe"]
 done = ["sampler-core production lines < 1k."]
+
+[[task]]
+id = "P6.4d"
+title = "Prepare bounded PGS storage for large instruments"
+phase = 6
+lane = "engine"
+size = "M"
+agent = "worker"
+deps = []
+owns = ["crates/engine/engine/src/pgs.rs", "crates/engine/engine/src/inspect.rs", "crates/engine/engine/src/lib.rs", "crates/engine/engine/src/script.rs", "crates/engine/engine/tests/pgs_alloc.rs", "crates/app/host/tests/script.rs", "docs/re/engine/PGS_STORAGE.md", "@plan"]
+docs = ["02-ENGINE.md"]
+goal = "Retain 420 PGS keys per kind (the synthetic host fixture) after initialization and admit callback creation only within preallocated storage; leave MIDI work in issue 1281 open."
+steps = ["Size integer backing from actual init lengths across script slots.", "Reserve explicit post-init key/value allowances and diagnose exhaustion.", "Verify allocation-free callback creation/editing after 420 initialized keys, and record representative memory and latency measurements."]
+gate = ["build-slot cargo test -p kontra-engine -p kontra-host -p kontra-ksp --all-features", "KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3"]
+done = ["Integer/string keys, variable lengths, duplicates and cross-slot reads survive initialization and reset.", "Actual note/controller/UI callbacks allocate nothing within their prepared PGS budgets; exhaustion is diagnostic.", "Document admission bounds and measurement limits; MIDI storage remains open separately."]
+
+[[task]]
+id = "P6.4e"
+title = "Compile KSP escaped quotes without losing path backslashes"
+phase = 6
+lane = "script"
+size = "S"
+agent = "worker"
+deps = []
+owns = ["crates/script/ksp/src/lex.rs", "crates/script/ksp/src/compile/mod.rs", "crates/script/ksp/src/compile/expr.rs", "crates/script/ksp/tests/ksp.rs", "@plan"]
+docs = ["04-SCRIPT.md"]
+goal = "Extract the escaped-quote diagnosis from Thug-Dracula PR 1274 (reviewed at aef4fcb256a4) as the first independent contributor fix in issue 1282. A quoted help string must compile and reach the existing shared VM with literal quotes; ordinary paths and unknown backslash pairs remain verbatim. This completes only item 1 of issue 1282."
+steps = ["Add an end-to-end synthetic script reproducing the current compile failure, without redistributing library scripts.", "Keep raw borrowed token spans, recognize paired escapes during scanning, and resolve escaped quotes only during off-thread compilation.", "Intern borrowed plain literals and owned decoded literals with Cow; preserve the existing VM, scheduler and host API.", "Test Unicode, quote/backslash parity, Windows paths, repeated literals, missing delimiters and LF/CRLF errors with exact source spans. Record unmeasured semantics rather than claiming complete Kontakt parity."]
+gate = ["build-slot cargo test -p kontra-ksp --all-features", "build-slot cargo doc -p kontra-ksp --no-deps", "KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3"]
+done = ["The regression fails on the previous v3 and passes after this extraction, through the recording host.", "Unknown escape pairs remain byte-for-byte unchanged; malformed strings diagnose the opening delimiter.", "No new dependencies or runtime execution paths; contributor attribution and rollback by one PR are documented."]
 
 [[task]]
 id = "P6.5"

@@ -15,44 +15,34 @@ pub enum Network {
     Hadamard(HadamardNetwork),
 }
 
-use crate::Reverb;
+pub use kontra_params::{ReverbControls, ReverbPar};
 
-/// The controls a script can move while the reverb plays, in [`ReverbPar::ALL`] order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReverbPar {
-    Seconds,
-    Size,
-    Damping,
-    Diffusion,
-    Predelay,
-    HighCut,
-    LowShelf,
-    Stereo,
-}
+impl crate::Reverb {
+    /// Reads the physical value of a control.
+    pub const fn control(&self, par: ReverbPar) -> f32 {
+        match par {
+            ReverbPar::Seconds => self.seconds,
+            ReverbPar::Size => self.size,
+            ReverbPar::Damping => self.damping,
+            ReverbPar::Diffusion => self.diffusion,
+            ReverbPar::Predelay => self.predelay_ms,
+            ReverbPar::HighCut => self.high_cut_hz,
+            ReverbPar::LowShelf => self.low_shelf_db,
+            ReverbPar::Stereo => self.stereo,
+        }
+    }
 
-impl ReverbPar {
-    pub const ALL: [Self; 8] = [
-        Self::Seconds,
-        Self::Size,
-        Self::Damping,
-        Self::Diffusion,
-        Self::Predelay,
-        Self::HighCut,
-        Self::LowShelf,
-        Self::Stereo,
-    ];
-
-    /// Sets this control to the physical `value`.
-    pub fn set(self, r: &mut Reverb, value: f32) {
-        match self {
-            Self::Seconds => r.seconds = value,
-            Self::Size => r.size = value,
-            Self::Damping => r.damping = value,
-            Self::Diffusion => r.diffusion = value,
-            Self::Predelay => r.predelay_ms = value,
-            Self::HighCut => r.high_cut_hz = value,
-            Self::LowShelf => r.low_shelf_db = value,
-            Self::Stereo => r.stereo = value,
+    /// Sets a control to its physical value.
+    pub fn set_control(&mut self, par: ReverbPar, value: f32) {
+        match par {
+            ReverbPar::Seconds => self.seconds = value,
+            ReverbPar::Size => self.size = value,
+            ReverbPar::Damping => self.damping = value,
+            ReverbPar::Diffusion => self.diffusion = value,
+            ReverbPar::Predelay => self.predelay_ms = value,
+            ReverbPar::HighCut => self.high_cut_hz = value,
+            ReverbPar::LowShelf => self.low_shelf_db = value,
+            ReverbPar::Stereo => self.stereo = value,
         }
     }
 }
