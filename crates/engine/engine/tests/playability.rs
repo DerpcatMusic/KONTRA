@@ -33,7 +33,7 @@ impl Source for Gated {
         while !self.0.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(1));
         }
-        for (n, frame) in out.chunks_exact_mut(4).enumerate() {
+        for (n, frame) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             frame.copy_from_slice(&value(first + n as u64).to_le_bytes());
         }
         Ok(())
@@ -57,24 +57,28 @@ fn value(n: u64) -> f32 {
 
 /// A zone on `key` alone, at the engine's rate with its root on the key:
 /// its cursor moves one frame a frame, so it says when its note started.
-fn zone(store: &mut Store, gate: &Arc<AtomicBool>, key: u8, pan: f32, cold: bool) -> Zone {
+fn zone(
+    store: &mut Store,
+    gate: &Arc<AtomicBool>,
+    key: u8,
+    pan: f32,
+    cold: bool,
+) -> std::io::Result<Zone> {
     let file = format!("{}{key}", if cold { "cold" } else { "warm" });
     let pin = if cold { 0..0 } else { 0..FRAMES };
     if !cold {
         gate.store(true, Ordering::Release);
     }
-    let sample = store
-        .load(
-            &BlobKey {
-                file: file.into(),
-                offset: 0,
-                fmt: FMT,
-            },
-            Arc::new(Gated(Arc::clone(gate))),
-            FRAMES,
-            std::slice::from_ref(&pin),
-        )
-        .unwrap();
+    let sample = store.load(
+        &BlobKey {
+            file: file.into(),
+            offset: 0,
+            fmt: FMT,
+        },
+        Arc::new(Gated(Arc::clone(gate))),
+        FRAMES,
+        std::slice::from_ref(&pin),
+    )?;
     gate.store(false, Ordering::Release);
     let region = Region {
         mix: None,
@@ -85,11 +89,11 @@ fn zone(store: &mut Store, gate: &Arc<AtomicBool>, key: u8, pan: f32, cold: bool
         loops: vec![],
         reverse: false,
     };
-    Zone {
+    Ok(Zone {
         keys: key..=key,
         pan,
         ..Zone::new(region, key, RATE)
-    }
+    })
 }
 
 fn host(key: u8) -> HostNote {
@@ -146,7 +150,7 @@ fn play(
             .collect();
         engine.process(&mut block, &input);
         for v in engine.inspect_voices() {
-            let key = KEYS.get(v.zone).copied().unwrap_or(0);
+            let key = key(v.zone);
             let started = (events.iter())
                 .filter(|e| matches!(e.body, Event::NoteOn { note, .. } if note.key == key))
                 .any(|e| (end - e.at.0) as f64 == v.position);
@@ -163,20 +167,15 @@ fn play(
     out
 }
 
-/// The zones' keys, zone by zone: key 60 warm and cold, 48 cold keys
-/// around it, then 90 for the repeats.
-const KEYS: [u8; 51] = {
-    let mut keys = [0; 51];
-    keys[0] = 60;
-    keys[1] = 60;
-    let mut n = 2;
-    while n < 50 {
-        keys[n] = 34 + n as u8 + (n >= 26) as u8;
-        n += 1;
+/// Zone `n`'s key: 60 warm and cold, 48 cold keys around it, then 90
+/// for the repeats.
+fn key(n: usize) -> u8 {
+    match n {
+        0 | 1 => 60,
+        50.. => 90,
+        n => 34 + n as u8 + u8::from(n >= 26),
     }
-    keys[50] = 90;
-    keys
-};
+}
 
 #[test]
 fn a_cold_instrument_under_dense_input_starts_every_note_on_its_frame() {
@@ -184,17 +183,18 @@ fn a_cold_instrument_under_dense_input_starts_every_note_on_its_frame() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let _opens = Opens(Arc::clone(&gate));
     // Key 60 twice: hard left in memory, hard right on the slow disk.
-    let zones = (KEYS.iter().enumerate())
-        .map(|(n, &key)| {
+    let zones = (0..51)
+        .map(|n| {
             zone(
                 &mut store,
                 &gate,
-                key,
+                key(n),
                 if n == 0 { -1.0 } else { 1.0 },
                 n > 0,
             )
         })
-        .collect();
+        .collect::<std::io::Result<_>>()
+        .unwrap();
     let mut plan = Plan::new(zones, VOICES);
     for g in &mut plan.groups {
         g.mods.clear();
@@ -237,7 +237,7 @@ fn a_cold_instrument_under_dense_input_starts_every_note_on_its_frame() {
     for chord in 0..8u64 {
         let at = start + chord * 1_537 + chord * 37 % 511;
         for n in 0..6u64 {
-            dense.push(on(at + n * 3, KEYS[(2 + chord * 6 + n) as usize]));
+            dense.push(on(at + n * 3, key((2 + chord * 6 + n) as usize)));
         }
     }
     for n in 0..24u64 {
