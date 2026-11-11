@@ -262,6 +262,8 @@ fn a_cold_instrument_under_dense_input_starts_every_note_on_its_frame() {
     );
     assert_eq!(peak, VOICES);
     assert_eq!(stats.voices_stolen as usize, dense.len() - VOICES);
+    // Every stolen voice fades out: none is cut (a click).
+    assert_eq!(stats.voices_cut, 0);
     assert_eq!((stats.notes_refused, stats.events_refused), (0, 0));
     assert!(stats.missing_frames > missing);
 }

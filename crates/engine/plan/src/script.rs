@@ -98,7 +98,15 @@ impl ScriptPlan {
             EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
             EnginePar::LfoFade => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
-            EnginePar::ModBypass => Holder::Mod,
+            // An envelope's stages live on its modulator: a group without
+            // one is a missing target, as for its bypass.
+            EnginePar::ModBypass
+            | EnginePar::Attack
+            | EnginePar::Hold
+            | EnginePar::Decay
+            | EnginePar::Sustain
+            | EnginePar::Release
+            | EnginePar::AttackCurve => Holder::Mod,
             EnginePar::Volume | EnginePar::Pan | EnginePar::Tune | EnginePar::OutputChannel => {
                 Holder::Level
             }

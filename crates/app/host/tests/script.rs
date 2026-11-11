@@ -678,6 +678,7 @@ fn a_script_finds_a_modulator_that_carries_no_route() {
         slot: 33,
         name: "Phase_P1".into(),
         names: vec![String::new()],
+        depths: vec![0.0],
     }];
     let script = kontra_ksp::compile(
         "on init
@@ -3575,4 +3576,52 @@ fn a_callback_playing_past_the_note_table_still_starts_its_last_note() {
     );
     assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
     assert_eq!(e.stats().notes_refused, 0);
+}
+
+/// Dolce's empty START groups: an envelope stage written to a group with no
+/// envelope (`find_mod` answers 0 for a miss) is a missing target, answered.
+#[test]
+fn an_envelope_stage_on_a_group_without_one_is_a_missing_target() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let e = engine(
+        &store,
+        vec![z],
+        "on init
+            set_engine_par($ENGINE_PAR_ATTACK, 500000, 0, find_mod(0, \"ENV_AHDSR\"), -1)
+            set_engine_par($ENGINE_PAR_SUSTAIN, 1000000, 0, 0, -1)
+        end on",
+    );
+    assert_eq!(e.unhandled_actions(), vec![]);
+}
+
+/// Conflux: a route the engine does not carry (a wavetable target) keeps
+/// the depth it was saved with; a script reads it, shows it and moves it.
+#[test]
+fn a_route_not_carried_keeps_its_depth_for_the_script() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].routes = vec![ir::Routes {
+        slot: 53,
+        name: "CC1".into(),
+        names: vec!["WT_POSITION".into()],
+        depths: vec![-1.0],
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $before
+            $before := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 0, 53, -1)
+            set_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 1000000, 0, 53, -1)
+            message($before & \" \" & get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 0, 53, -1) ...
+                & \" \" & get_engine_par_disp($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 0, 53, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    let message = e.last_message();
+    assert!(message.starts_with("0 1000000 "), "{message}");
 }

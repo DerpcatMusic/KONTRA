@@ -30,6 +30,7 @@ pub(crate) fn external(
                 slot: slot(n),
                 name: p.name.clone(),
                 names: p.targets.iter().map(|t| t.name.clone()).collect(),
+                depths: p.targets.iter().map(|t| t.signed_intensity()).collect(),
             });
             // The loader reads a source only for category 1 (FUN_140d09620,
             // +0x538); an unassigned slot has nothing to modulate with.
