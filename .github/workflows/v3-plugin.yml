@@ -6,7 +6,7 @@ name: v3 plugin
 
 on:
   push:
-    branches: [main]
+    branches: [main, v3]
     paths:
       - 'plugin/**'
       - 'crates/**'
@@ -16,7 +16,7 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/v3-plugin.yml'
   pull_request:
-    branches: [main]
+    branches: [main, v3]
     paths:
       - 'plugin/**'
       - 'moose.toml'

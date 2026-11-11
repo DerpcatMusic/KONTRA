@@ -60,6 +60,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P4.4 | Move sampler-simd (+ dsp/lanes.rs) → crates/base/simd (kontra-simd) | structure | S | worker | P4.3 |
 | P4.5 | #[derive(Params)] in kontra-macros | structure | M | worker | P4.1, P4.2 |
 | P4.6 | Parameter catalog: every DSP module's params in kontra-params (draft) | structure | L | worker | P4.5 |
+| P4.6a | Typed reverb control identities and shared law readback | structure | M | worker | – |
 | P4.7 | Point the 5 parameter registries at the catalog; delete 4 (draft) | structure | L | worker | P4.6 |
 | P4.8 | kontra-events from src/sound/event.rs and the plain-data receiver wire types (draft) | structure | M | worker | P4.0, P4.2 |
 | P4.9 | kontra-ui-model from sampler-ui-ir + core widget/script_params + ControlStore (draft) | structure | M | worker | P4.0, P2.1, P4.7 |
@@ -101,6 +102,8 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P6.4a | kontra-engine: EventQueue + Timed<Work> + render loop at queue boundaries (draft) | engine | L | worker | P6.2, P6.3b |
 | P6.4b | kontra-engine: NoteLedger replaces held/consumed/closed tables and families-as-cohorts (draft) | engine | L | worker | P6.4a |
 | P6.4c | kontra-engine: Engine struct replaces Runtime's 109 fields; Stats derive (draft) | engine | L | worker | P6.4b |
+| P6.4d | Prepare bounded PGS storage for large instruments | engine | M | worker | – |
+| P6.4e | Compile KSP escaped quotes without losing path backslashes | script | S | worker | – |
 | P6.5 | Gate G6: engine crates | coordinator | S | coordinator | P6.1c, P6.4c |
 
 ## Phase 7: Script and format crates
@@ -173,6 +176,7 @@ flowchart LR
     P4_4["P4.4"]
     P4_5["P4.5"]
     P4_6["P4.6"]
+    P4_6a["P4.6a"]
     P4_7["P4.7"]
     P4_8["P4.8"]
     P4_9["P4.9"]
@@ -208,6 +212,8 @@ flowchart LR
     P6_4a["P6.4a"]
     P6_4b["P6.4b"]
     P6_4c["P6.4c"]
+    P6_4d["P6.4d"]
+    P6_4e["P6.4e"]
     P6_5["P6.5"]
   end
   subgraph ph7["7. Script and format crates"]

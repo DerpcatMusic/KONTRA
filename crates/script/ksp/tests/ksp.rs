@@ -370,3 +370,30 @@ fn areia_init_runs() {
     assert_eq!(vm.faults().bad_code, 0);
     assert_eq!(vm.faults().stack_overflow, 0);
 }
+
+#[test]
+fn escaped_quotes_compile_and_reach_the_shared_vm() {
+    let r = Run::new(
+        r#"on init
+            declare @help := "talk about \"manuals\" here"
+            declare @path := "C:\new\thing\q.wav"
+            message(@help)
+            message(@path)
+            message("π \"音\" " & "end")
+            message("plain")
+            message("plain")
+        end on"#,
+    );
+    assert_eq!(r.text("@help"), r#"talk about "manuals" here"#);
+    assert_eq!(r.text("@path"), r"C:\new\thing\q.wav");
+    assert_eq!(
+        r.host.messages,
+        [
+            r#"talk about "manuals" here"#,
+            r"C:\new\thing\q.wav",
+            "π \"音\" end",
+            "plain",
+            "plain"
+        ]
+    );
+}

@@ -1691,6 +1691,55 @@ fn a_release_zone_the_script_plays_ends_with_its_note() {
     assert_eq!(out[4799][0], 0.0, "it ends with its note");
 }
 
+#[test]
+fn a_release_the_script_plays_reads_how_long_the_key_was_held() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    // The script plays the release itself, as a note of its own.
+    let script = kontra_ksp::compile(
+        "on note
+            disallow_group($ALL_GROUPS)
+            allow_group(0)
+        end on
+        on release
+            disallow_group($ALL_GROUPS)
+            allow_group(1)
+            play_note($EVENT_NOTE, 100, 0, 50000)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0), tail], 16);
+    plan.release_zones = kontra_engine::ReleaseZones::WithNote;
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    // The release group's level falls with the time the key was held: half
+    // after 0.5 s of a 1 s span.
+    plan.groups[1].mods = vec![ir::Mod {
+        name: "held".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::HeldTime { span_ms: 1000 },
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
+        },
+    }];
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut held = vec![[0.0; 2]; 24_000];
+    e.process(&mut held, &[on(60)]);
+    let mut out = vec![[0.0; 2]; 2000];
+    e.process(&mut out, &[off(60)]);
+    let release = out[1999][0];
+    assert!((release - 0.125).abs() < 0.01, "{release}");
+}
+
 /// Level of the reverb tail 0.25 s after a 2 s note, through a reverb in the
 /// instrument insert whose time is 0.5 s unless `script` moves it.
 fn reverb_tail(script: &str) -> f32 {
@@ -3249,5 +3298,213 @@ fn a_file_dialog_array_is_cancelled_and_completes_with_failure() {
         e.unhandled_actions().is_empty(),
         "{:?}",
         e.unhandled_actions()
+    );
+}
+
+#[test]
+fn pgs_init_is_sized_for_every_key_and_shared_between_slots() {
+    use std::fmt::Write;
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut first = String::from("on init\n");
+    let mut second = String::from("on init\n declare $errors\n");
+    for i in 0..420 {
+        let len = i % 7 + 1;
+        writeln!(first, "pgs_create_key(K{i}, {len})\npgs_set_key_val(K{i}, {}, {})\npgs_create_str_key(S{i})\npgs_set_str_key_val(S{i}, \"value{i}\")", len - 1, i + 1).unwrap();
+        writeln!(second, "if (pgs_get_key_val(K{i}, {}) # {})\n inc($errors)\nend if\nif (pgs_get_str_key_val(S{i}) # \"value{i}\")\n inc($errors)\nend if", len - 1, i + 1).unwrap();
+    }
+    first.push_str(
+        "pgs_create_key(K0, 256)\npgs_set_key_val(K0, 1, 123)\npgs_create_str_key(S0)\nend on\n",
+    );
+    second.push_str("if (pgs_get_key_val(K0, 1) # 0)\n inc($errors)\nend if\n");
+    second.push_str("message($errors)\nend on\non note\n message(pgs_get_key_val(K419, 6) & \" \" & pgs_get_str_key_val(S419))\nend on\n");
+    let slot = |source: &str| {
+        kontra_host::script::plan(&kontra_ksp::compile(source, &[]).unwrap(), &[], &[])
+    };
+    let mut plan = Plan::new(vec![], 0);
+    plan.scripts = vec![slot(&first), slot(&second)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "0");
+    assert_eq!(e.pgs_budget().integer_keys, 484);
+    assert_eq!(e.pgs_budget().string_keys, 484);
+    assert!(e.unhandled_actions().is_empty());
+    e.reset();
+    assert_eq!(e.pgs_budget().integer_keys, 484);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "420 value419");
+}
+
+#[test]
+fn pgs_creation_in_note_controller_and_ui_callbacks_is_shared() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(
+        &store,
+        vec![],
+        "on init
+        declare ui_knob $k (0, 100, 1)
+        message(get_ui_id($k))
+    end on
+    on note
+        pgs_create_key(NOTEKEY, 2)
+        pgs_set_key_val(NOTEKEY, 1, 42)
+    end on
+    on controller
+        pgs_create_str_key(CCTEXT)
+        pgs_set_str_key_val(CCTEXT, \"controller\")
+    end on
+    on ui_control ($k)
+        pgs_create_key(UIKEY, 1)
+        pgs_set_key_val(UIKEY, 0, pgs_get_key_val(NOTEKEY, 1))
+        message(pgs_get_key_val(UIKEY, 0) & \" \" & pgs_get_str_key_val(CCTEXT))
+    end on",
+    );
+    let id = e.last_message().parse().unwrap();
+    level(&mut e, &[on(60)]);
+    let now = e.now();
+    level(
+        &mut e,
+        &[Timed {
+            at: now,
+            body: Event::midi1(0xb0, 1, 1),
+        }],
+    );
+    e.set_control(0, id, 1);
+    assert_eq!(e.last_message(), "42 controller");
+    assert!(e.unhandled_actions().is_empty());
+}
+
+#[test]
+#[ignore = "representative timing measurement; run with --release --ignored --nocapture"]
+fn pgs_callback_timing() {
+    use std::{fmt::Write, time::Instant};
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut source =
+        String::from("on init\n declare ui_knob $k (0, 100, 1)\n message(get_ui_id($k))\n");
+    for i in 0..420 {
+        writeln!(source, "pgs_create_key(K{i}, 4)\npgs_create_str_key(S{i})").unwrap();
+    }
+    source.push_str("end on\non ui_control ($k)\n pgs_create_key(NEWKEY, 256)\n pgs_create_str_key(NEWSTRING)\n pgs_set_key_val(K419, 3, 42)\n pgs_set_str_key_val(S419, \"value\")\nend on\n");
+    let mut e = engine(&store, vec![], &source);
+    let id = e.last_message().parse().unwrap();
+    let budget = e.pgs_budget();
+    let start = Instant::now();
+    e.set_control(0, id, 1);
+    let first = start.elapsed().as_nanos();
+    let mut times = Vec::with_capacity(10_000);
+    for i in 0..10_000 {
+        let start = Instant::now();
+        e.set_control(0, id, 1 + i % 2);
+        times.push(start.elapsed().as_nanos());
+    }
+    times.sort_unstable();
+    println!(
+        "budget={budget:?}; first={first}ns p50={}ns p95={}ns p99={}ns max={}ns",
+        times[5000], times[9500], times[9900], times[9999]
+    );
+}
+
+/// Each Kontakt identity reaches the intended physical field and can be read
+/// back through the same measured law. The type change exposes the prepared
+/// slot without relying on rendered audio to identify a field.
+#[test]
+fn reverb_controls_write_read_and_keep_missing_target_semantics() {
+    use kontra_engine::{Prepared, ir};
+    let cases = [
+        ("TIME", ir::ReverbPar::Seconds),
+        ("SIZE", ir::ReverbPar::Size),
+        ("DAMPING", ir::ReverbPar::Damping),
+        ("DIFF", ir::ReverbPar::Diffusion),
+        ("PREDELAY", ir::ReverbPar::Predelay),
+        ("HIGHCUT", ir::ReverbPar::HighCut),
+        ("LOWSHELF", ir::ReverbPar::LowShelf),
+        ("STEREO", ir::ReverbPar::Stereo),
+    ];
+    for (name, par) in cases {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        let original = kontra_format_kontakt::reverb(0, [0.5; 9]);
+        plan.inserts = vec![Some(ir::Effect {
+            kind: ir::EffectKind::Reverb(original),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        let source = format!(
+            "on note\n\
+            set_engine_par($ENGINE_PAR_RV2_{name}, 250000, -1, 0, $NI_INSERT_BUS)\n\
+            message(get_engine_par($ENGINE_PAR_RV2_{name}, -1, 0, $NI_INSERT_BUS))\n\
+            set_engine_par($ENGINE_PAR_RV2_TYPE, $NI_REVERB2_TYPE_HALL, -1, 0, $NI_INSERT_BUS)\n\
+            end on"
+        );
+        let script = kontra_ksp::compile(&source, &[]).unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut e, &[on(60)]);
+        let read: i32 = e.last_message().parse().unwrap();
+        assert!((read - 250_000).abs() <= 1, "{name}: {read}");
+        let mut requests = Vec::new();
+        e.drain_requests(|r| requests.push(r));
+        let [request] = requests[..] else {
+            panic!("{name}: {requests:?}")
+        };
+        let Some(ir::EffectKind::Reverb(actual)) = request.effect.map(|effect| effect.kind) else {
+            panic!("{name}: {request:?}");
+        };
+        let expected = kontra_format_kontakt::reverb_laws().get(par).eval(0.25);
+        for control in ir::ReverbPar::ALL {
+            let want = if control == par {
+                expected
+            } else {
+                original.control(control)
+            };
+            assert_eq!(actual.control(control), want, "{name} changed {control:?}");
+        }
+        e.install(Prepared::new(request, None, RATE));
+    }
+
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(
+        &store,
+        Vec::new(),
+        "on note\n\
+        set_engine_par($ENGINE_PAR_RV2_TIME, 250000, -1, 42, $NI_INSERT_BUS)\n\
+        message(get_engine_par($ENGINE_PAR_RV2_TIME, -1, 42, $NI_INSERT_BUS))\n\
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "0");
+    assert_eq!(e.unhandled_actions(), []);
+}
+
+#[test]
+fn reverb_control_on_non_reverb_remains_unhandled() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Gain(0.75),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let source = "on note\n\
+        set_engine_par($ENGINE_PAR_RV2_TIME, 250000, -1, 0, $NI_INSERT_BUS)\n\
+        message(get_engine_par($ENGINE_PAR_RV2_TIME, -1, 0, $NI_INSERT_BUS))\n\
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    let actions = e.unhandled_actions();
+    assert!(
+        actions
+            .iter()
+            .any(|(action, _)| *action == kontra_engine::Action::SetEnginePar),
+        "{actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|(action, _)| *action == kontra_engine::Action::GetEnginePar),
+        "{actions:?}"
     );
 }
