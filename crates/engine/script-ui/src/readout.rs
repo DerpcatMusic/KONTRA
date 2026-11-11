@@ -20,6 +20,10 @@ pub enum Readout {
     Wide(f64),
     /// A whole number (an attack curve, −100..=100).
     Whole(f64),
+    /// A whole number in five places (an LFO's phase in degrees).
+    WideWhole(f64),
+    /// Two decimals (a wavetable's modulator tune in semitones).
+    Hundredths(f64),
     /// `1:` and a ratio in four places.
     Ratio(f64),
     /// ±36 semitones.
@@ -51,6 +55,8 @@ pub fn write(readout: Readout, x: f64, out: &mut Text) -> bool {
         Readout::Signed(v) => out.push_fmt(format_args!("{v:.1}")),
         Readout::Wide(v) => out.push_fmt(format_args!("{v:5.1}")),
         Readout::Whole(v) => out.push_fmt(format_args!("{v:.0}")),
+        Readout::WideWhole(v) => out.push_fmt(format_args!("{v:5.0}")),
+        Readout::Hundredths(v) => out.push_fmt(format_args!("{v:.2}")),
         Readout::Ratio(v) => out.push_fmt(format_args!("1:{v:4.1}")),
         Readout::Tune => out.push_fmt(format_args!("{:.2}", (2.0 * x - 1.0) * 36.0)),
         Readout::Pan if f64::from(pan.abs()) < 0.0075 => out.push("Center"),

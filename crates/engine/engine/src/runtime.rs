@@ -62,6 +62,7 @@ impl Engine {
             | Action::ExposeControls
             | Action::LoadNativeUi
             | Action::SetUiWfProperty
+            | Action::AttachZone
             | Action::FsNavigate
             | Action::SetControlParStrArr
             | Action::WillNeverTerminate
@@ -77,6 +78,26 @@ impl Engine {
                     self.count_unhandled(Action::LoadPerformanceView);
                 }
                 HostValue::Nothing
+            }
+            // A zone by its name, exactly as spelled; -1 when none has it
+            // (Kontakt 8.13.1, Morphology: "warmth" finds nothing).
+            Action::FindZone => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                let found = self.plan.zone_facts.iter().find(|z| &*z.name == name);
+                HostValue::Int(found.map_or(-1, |z| i32::try_from(z.id).unwrap_or(-1)))
+            }
+            // A zone that is not there reads -1 for every parameter (measured).
+            Action::GetZonePar => {
+                let zone =
+                    (self.plan.zone_facts.iter()).find(|z| i64::from(z.id) == i64::from(int(0)));
+                match (zone, self.engine_par(int(1))) {
+                    (None, _) => HostValue::Int(-1),
+                    (Some(z), Some(crate::EnginePar::Zone(par))) => HostValue::Int(z.get(par)),
+                    (Some(_), _) => {
+                        self.count_unhandled(Action::GetZonePar);
+                        HostValue::Int(0)
+                    }
+                }
             }
             // Time Machine Pro's own voice pools: KONTRA's stretch draws on
             // the engine's voices, so the change is done at once.

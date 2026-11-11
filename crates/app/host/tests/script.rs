@@ -2275,6 +2275,7 @@ fn a_script_loads_an_effect_type_into_a_slot() {
         id,
         subtype: false,
         reads: id * 10,
+        kind: id,
         effect,
         laws: Vec::new().into(),
     };
@@ -2334,6 +2335,7 @@ fn wait_async_holds_until_the_effect_type_is_installed() {
         id,
         subtype: false,
         reads: id * 10,
+        kind: id,
         effect: None,
         laws: Vec::new().into(),
     };
@@ -2872,6 +2874,7 @@ fn a_loaded_filter_follows_its_subtype() {
         id: 7,
         subtype: false,
         reads: 0,
+        kind: 7,
         effect,
         laws: Vec::new().into(),
     }];
@@ -3654,4 +3657,125 @@ fn a_route_not_carried_keeps_its_depth_for_the_script() {
     assert_eq!(e.unhandled_actions(), vec![]);
     let message = e.last_message();
     assert!(message.starts_with("0 1000000 "), "{message}");
+}
+
+/// Morphology finds its wavetables' zones by name and reads their group;
+/// Conflux reads which effect each instrument insert slot holds. Values as
+/// Kontakt 8.13.1 answered them (find_zone is exact; a missing zone reads
+/// -1; ANALOG's Jump slot reads 31 and an empty one 0).
+#[test]
+fn a_script_finds_zones_and_reads_their_slots_types() {
+    use kontra_engine::{ZoneFacts, ir};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.zone_facts = vec![ZoneFacts {
+        id: 3494,
+        name: "Warmth".into(),
+        group: 932,
+        keys: 24..=108,
+        velocities: 1..=127,
+        root: 36,
+        start: 0,
+        end: 204_800,
+        start_range: 204_800,
+        rate: 44_100,
+    }];
+    plan.inserts = vec![
+        Some(ir::Effect {
+            kind: ir::EffectKind::Gain(1.0),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        }),
+        None,
+    ];
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 31)];
+    plan.slot_shapes.types = vec![ir::SlotType {
+        id: 0,
+        subtype: false,
+        reads: 0,
+        kind: 0,
+        effect: None,
+        laws: Vec::new().into(),
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            declare ui_waveform $wave(6, 6)
+            declare $z
+            $z := find_zone(\"Warmth\")
+            attach_zone($wave, $z, 0)
+            message($z & \" \" & find_zone(\"warmth\") ...
+                & \" \" & get_zone_par($z, $ZONE_PAR_GROUP) ...
+                & \" \" & get_zone_par($z, $ZONE_PAR_ROOT_KEY) ...
+                & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_END) ...
+                & \" \" & get_zone_par(1, $ZONE_PAR_GROUP) ...
+                & \" \" & get_engine_par($ENGINE_PAR_EFFECT_TYPE, -1, 0, 1) ...
+                & \" \" & get_engine_par($ENGINE_PAR_EFFECT_TYPE, -1, 1, 1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    assert_eq!(e.last_message(), "3494 -1 932 36 204800 -1 31 0");
+}
+
+/// The LFO and wavetable texts and switches as Kontakt 8.13.1 answered them
+/// (ANALOG's stepped LFO, Morphology's wavetable group): a stepped rate
+/// shows its count, the phase whole degrees, retrigger is a switch, and a
+/// wavetable control not carried yet still shows a value's text.
+#[test]
+fn lfo_and_wavetable_controls_read_as_kontakt_shows_them() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let g = &mut plan.groups[0];
+    g.lfos = vec![ir::Lfo {
+        wave: ir::Wave::Sine,
+        rate: ir::Rate::Steps {
+            beats: 1.0 / 6.0,
+            count: 24.0,
+        },
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: ir::Clock::Free,
+    }];
+    g.mods = vec![ir::Mod {
+        name: "LFO".into(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Pan {
+            source: ir::Source::Lfo(0),
+            amount: 0.0,
+        },
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 500000, 0, 3, -1)
+            set_engine_par($ENGINE_PAR_LFO_PHASE, 250000, 0, 3, -1)
+            @t := get_engine_par_disp($ENGINE_PAR_INTMOD_FREQUENCY, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par_disp_ext($ENGINE_PAR_INTMOD_FREQUENCY, 0, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_LFO_PHASE, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par_disp($ENGINE_PAR_LFO_PHASE, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_INTMOD_RETRIGGER, 0, 3, -1)
+            set_engine_par($ENGINE_PAR_INTMOD_RETRIGGER, 500000, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_INTMOD_RETRIGGER, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par_disp_ext($ENGINE_PAR_WT_POSITION, 375491, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par_disp_ext($ENGINE_PAR_WT_INHARMONIC, 488462, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par_disp_ext($ENGINE_PAR_WT_MOD_TUNE, 501923, 0, -1, -1)
+            message(@t)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    assert_eq!(
+        e.last_message(),
+        "32.0|4609.0|250000|   90|0|1|37.5|-2.3|0.14"
+    );
 }

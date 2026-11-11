@@ -68,7 +68,7 @@ impl Engine {
 
     /// Row `n`, or the [`ir::KnobTarget::LfoSteps`] row after it when `n`
     /// sets the rate of a stepped LFO.
-    fn row(&mut self, n: u16, group: i32, slot: i32) -> u16 {
+    pub(crate) fn row(&mut self, n: u16, group: i32, slot: i32) -> u16 {
         let next = n.saturating_add(1);
         let target = |e: &Self, k: u16| e.script()?.knobs.get(usize::from(k)).map(|r| r.0);
         if target(self, n) != Some(ir::KnobTarget::LfoRate)
@@ -194,8 +194,12 @@ impl Engine {
             ir::KnobTarget::LfoRate
             | ir::KnobTarget::LfoSteps
             | ir::KnobTarget::LfoWidth
+            | ir::KnobTarget::LfoPhase
             | ir::KnobTarget::LfoWeight(_) => {
                 let lfo = self.group_mut(group)?.lfo_mut(slot)?;
+                if target == ir::KnobTarget::LfoPhase {
+                    return Some(&mut lfo.phase);
+                }
                 match (target, &mut lfo.rate, &mut lfo.wave) {
                     (ir::KnobTarget::LfoRate, ir::Rate::Hz(hz), _) => Some(hz),
                     (ir::KnobTarget::LfoSteps, ir::Rate::Steps { count, .. }, _) => Some(count),

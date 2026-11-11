@@ -26,7 +26,7 @@ pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
-pub use engine_par::{Drives, EnginePar, ScriptPar};
+pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
 pub use kontra_law::{FormulaId, common};
 pub use link::{CcLink, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
@@ -587,6 +587,8 @@ pub enum StartRule {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Zone {
+    /// The id scripts address it by: its place in the format's zone list.
+    pub id: u32,
     /// Index into [`Instrument::samples`].
     pub sample: usize,
     pub keys: RangeInclusive<u8>,

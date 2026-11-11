@@ -309,6 +309,8 @@ pub enum KnobTarget {
     LfoSteps,
     /// A pulse or Multi LFO's pulse width.
     LfoWidth,
+    /// An LFO's start phase, in cycles.
+    LfoPhase,
     /// One of a [`crate::Wave::Multi`]'s weights, by its index there.
     LfoWeight(u8),
     /// A control whose law depends on the slot's effect: the slot's own
@@ -403,6 +405,8 @@ pub struct SlotShapes {
     pub types: Vec<SlotType>,
     /// Each filter slot's saved subtype, as a script reads it back.
     pub subtypes: Vec<(RackAt, u8, i32)>,
+    /// Each saved slot's effect type, as a script reads it back.
+    pub saved_types: Vec<(RackAt, u8, i32)>,
 }
 
 impl SlotShapes {
@@ -411,6 +415,7 @@ impl SlotShapes {
         slots: Vec::new(),
         types: Vec::new(),
         subtypes: Vec::new(),
+        saved_types: Vec::new(),
     };
 }
 
@@ -423,6 +428,9 @@ pub struct SlotType {
     pub subtype: bool,
     /// The subtype a script reads back from the loaded slot.
     pub reads: i32,
+    /// The effect type a script reads back from it: `id`, or for a
+    /// subtype the type of effect it is a subtype of.
+    pub kind: i32,
     pub effect: Option<crate::Effect>,
     pub laws: std::sync::Arc<[(SlotKnob, EffectParam, crate::Law)]>,
 }

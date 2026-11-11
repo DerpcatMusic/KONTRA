@@ -150,7 +150,9 @@ impl Build {
                 }
             })
             .min(total);
+        // No SFZ script addresses a zone by id.
         let zone = ir::Zone {
+            id: 0,
             mix: Vec::new(),
             sample,
             keys,

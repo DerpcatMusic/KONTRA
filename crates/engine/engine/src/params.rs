@@ -222,6 +222,9 @@ impl Engine {
         if par == EnginePar::EffectSubtype {
             return self.subtype(group, slot, generic);
         }
+        if par == EnginePar::EffectType {
+            return self.effect_type(group, slot, generic);
+        }
         if let EnginePar::Reverb(which) = par {
             let ir::EffectKind::Reverb(reverb) = self.effect_mut(group, slot, generic)?.kind else {
                 return None;
@@ -271,6 +274,10 @@ impl Engine {
                 r.depths.get(usize::try_from(generic.max(0)).ok()?).copied()
             })
         };
+        // A switch, read as set: 1 restarts with each voice (measured).
+        if par == EnginePar::LfoRetrigger {
+            return Some(i32::from(g.lfo(slot)?.clock == ir::Clock::Voice));
+        }
         let x = match par {
             EnginePar::ModBypass => {
                 let m = g.mods.iter().find(|m| i32::from(m.slot) == slot)?;
@@ -380,6 +387,16 @@ impl Engine {
                     None => saved.is_some(),
                 }
             }
+            // Any value from 1 up restarts it with each voice (Kontakt
+            // 8.13.1 reads 0, 1, 1, 1 after 0, 1, 500000, 1000000).
+            EnginePar::LfoRetrigger => g.lfo_mut(slot).is_some_and(|l| {
+                l.clock = if value >= 1 {
+                    ir::Clock::Voice
+                } else {
+                    ir::Clock::Free
+                };
+                true
+            }),
             EnginePar::LfoFade => g.lfo_mut(slot).is_some_and(|l| {
                 l.fade_ms = STAGE_10S.eval_f64(x) as f32;
                 true
