@@ -113,13 +113,16 @@ impl Engine {
             n.first = first;
             n.pass = first;
         }
-        let list = if usize::from(first) < self.plan.scripts.len() {
-            &mut self.forward
+        if usize::from(first) == self.plan.scripts.len() {
+            self.queue_start(r);
+        } else if self.forward.len() < self.forward.capacity() {
+            self.forward.push(r);
         } else {
-            &mut self.pending
-        };
-        if list.len() < list.capacity() {
-            list.push(r);
+            // ponytail: a full forward list refuses the note; pruning it would
+            // shift the indices an outer `forward_from` walks.
+            self.notes.remove(r);
+            self.stats.notes_refused += 1;
+            return 0;
         }
         r.event_id()
     }

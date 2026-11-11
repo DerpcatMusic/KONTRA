@@ -19,6 +19,7 @@ use moose::prelude::*;
 use super::tests::{BLOCK, KONTAKT, RATE, activate};
 use crate::{Dsp, Kontra, KontraParams, Tick};
 
+mod live;
 mod touch;
 
 const UVI: &str = "/data/main/Libraries/UVI";
@@ -529,6 +530,8 @@ struct Played {
     voices: u32,
     stolen: u64,
     refused: u64,
+    cut: u64,
+    missing: u64,
 }
 
 fn output_peaks(channels: &[Vec<f32>]) -> [f32; 2] {
@@ -544,6 +547,18 @@ fn clips(peaks: [f32; 2]) -> bool {
 }
 
 fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Played) -> Played {
+    // Offline, so a slow debug build never starves a voice of data.
+    block_in(params, dsp, events, last, ProcessMode::Offline)
+}
+
+/// [`block`] as the host's `mode` renders it.
+fn block_in(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    events: &[(usize, In)],
+    last: &Played,
+    mode: ProcessMode,
+) -> Played {
     let mut list = EventList::with_capacity(64);
     for &(offset, e) in events {
         let offset = u32::try_from(offset).unwrap_or(0);
@@ -558,9 +573,8 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Pl
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outs, BLOCK);
         let transport = TransportInfo::default();
         let mut out_events = EventList::with_capacity(16);
-        // Offline, so a slow debug build never starves a voice of data.
-        let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events)
-            .with_process_mode(ProcessMode::Offline);
+        let mut cx =
+            ProcessContext::new(&transport, RATE, BLOCK, &mut out_events).with_process_mode(mode);
         <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
     }
     let channel_peaks = output_peaks(&channels);
@@ -569,17 +583,18 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Pl
         .zip(&channels[1])
         .map(|(l, r)| l + r)
         .collect();
-    // The control tick may have taken this block's stats: keep the last.
-    match crate::lock(&params.shared.rack)
-        .as_ref()
-        .and_then(|r| r.stats())
-    {
+    // The control tick may have taken this block's stats, or be loading
+    // with the rack locked: keep the last.
+    let rack = params.shared.rack.try_lock();
+    match rack.as_ref().ok().and_then(|r| r.as_ref()?.stats()) {
         Some(s) => Played {
             audio,
             channel_peaks,
             voices: s.voices,
             stolen: s.voices_stolen,
-            refused: s.notes_refused + s.dropped,
+            refused: s.notes_refused + s.events_refused + s.dropped,
+            cut: s.voices_cut,
+            missing: s.missing_frames,
         },
         None => Played {
             audio,
@@ -603,12 +618,8 @@ fn limited(params: &KontraParams) -> (bool, usize) {
     })
 }
 
-/// Plays the performance on `path`, then touches its controls.
-fn perform(path: PathBuf) -> Report {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+/// A host's saved state with `path` loaded in part 0.
+fn state(path: PathBuf) -> String {
     let saved = Saved::new(vec![SavedPart {
         part: 0,
         path,
@@ -623,7 +634,16 @@ fn perform(path: PathBuf) -> Report {
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
     }]);
-    let state = saved.write();
+    saved.write()
+}
+
+/// Plays the performance on `path`, then touches its controls.
+fn perform(path: PathBuf) -> Report {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let state = state(path);
     // Loaded and aligned, the wheel and expression full, as a player starts.
     let start = || {
         let (params, mut dsp) = activate(&state);

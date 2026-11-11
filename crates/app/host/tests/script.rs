@@ -3546,3 +3546,33 @@ fn reverb_control_on_non_reverb_remains_unhandled() {
         "{actions:?}"
     );
 }
+
+/// A callback that plays more notes than the note table holds: the table
+/// steals the oldest of them before any starts, and the last note played
+/// still sounds (it was dropped once a full start list held the stolen ones).
+#[test]
+fn a_callback_playing_past_the_note_table_still_starts_its_last_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut filler = zone(&mut store, 0.0, 0);
+    filler.keys = 72..=72;
+    let mut last = zone(&mut store, 0.5, 0);
+    last.keys = 84..=84;
+    let mut e = engine(
+        &store,
+        vec![filler, last],
+        "on init
+            declare $i
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $i := 0
+            while ($i < 199)
+                play_note(72, $EVENT_VELOCITY, 0, -1)
+                inc($i)
+            end while
+            play_note(84, $EVENT_VELOCITY, 0, -1)
+        end on",
+    );
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(e.stats().notes_refused, 0);
+}
