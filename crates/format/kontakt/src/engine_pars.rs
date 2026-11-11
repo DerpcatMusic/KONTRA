@@ -38,6 +38,7 @@ pub fn engine_pars() -> Vec<ir::ScriptPar> {
 const FIXED: &[(&str, ir::EnginePar)] = {
     use ir::EnginePar as P;
     use ir::ReverbPar as R;
+    use ir::ZonePar as Z;
     &[
         ("$ENGINE_PAR_ATTACK", P::Attack),
         ("$ENGINE_PAR_HOLD", P::Hold),
@@ -50,6 +51,15 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_INTMOD_INTENSITY", P::RouteDepth),
         ("$ENGINE_PAR_INTMOD_BYPASS", P::ModBypass),
         ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
+        ("$ENGINE_PAR_INTMOD_RETRIGGER", P::LfoRetrigger),
+        // A wavetable's live controls are not carried yet: their text
+        // answers (readouts.rs); a set is reported. The modes have no text.
+        ("$ENGINE_PAR_WT_POSITION", P::Shown),
+        ("$ENGINE_PAR_WT_FORM", P::Shown),
+        ("$ENGINE_PAR_WT_FORM2", P::Shown),
+        ("$ENGINE_PAR_WT_MOD_AMOUNT", P::Shown),
+        ("$ENGINE_PAR_WT_INHARMONIC", P::Shown),
+        ("$ENGINE_PAR_WT_MOD_TUNE", P::Shown),
         ("$ENGINE_PAR_RELEASE_TRIGGER", P::ReleaseTrigger),
         ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),
         ("$ENGINE_PAR_EFFECT_BYPASS", P::EffectBypass),
@@ -84,6 +94,18 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_VOLUME", P::Volume),
         ("$ENGINE_PAR_PAN", P::Pan),
         ("$ENGINE_PAR_TUNE", P::Tune),
+        // get_zone_par's; the fades, volume, pan, tune and BPM are not read.
+        ("$ZONE_PAR_LOW_KEY", P::Zone(Z::LowKey)),
+        ("$ZONE_PAR_HIGH_KEY", P::Zone(Z::HighKey)),
+        ("$ZONE_PAR_LOW_VELO", P::Zone(Z::LowVelocity)),
+        ("$ZONE_PAR_HIGH_VELO", P::Zone(Z::HighVelocity)),
+        ("$ZONE_PAR_ROOT_KEY", P::Zone(Z::RootKey)),
+        ("$ZONE_PAR_GROUP", P::Zone(Z::Group)),
+        ("$ZONE_PAR_SAMPLE_START", P::Zone(Z::SampleStart)),
+        ("$ZONE_PAR_SAMPLE_END", P::Zone(Z::SampleEnd)),
+        ("$ZONE_PAR_SAMPLE_MOD_RANGE", P::Zone(Z::StartRange)),
+        ("$ZONE_PAR_SAMPLE_RATE", P::Zone(Z::SampleRate)),
+        ("$ZONE_PAR_SELECTED", P::Zone(Z::Selected)),
     ]
 };
 

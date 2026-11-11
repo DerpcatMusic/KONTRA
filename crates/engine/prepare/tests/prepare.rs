@@ -42,6 +42,7 @@ fn sample(name: &str, level_milli: u64) -> ir::Sample {
 
 fn zone(sample: usize) -> ir::Zone {
     ir::Zone {
+        id: 0,
         mix: Vec::new(),
         sample,
         keys: 0..=127,

@@ -86,7 +86,9 @@ impl ScriptPlan {
         match par {
             EnginePar::Knob(n) => match self.knobs.get(usize::from(n)).map(|k| k.0) {
                 Some(K::Effect(_) | K::Slot(_) | K::Impulse(_)) => Holder::Slot,
-                Some(K::LfoRate | K::LfoSteps | K::LfoWidth | K::LfoWeight(_)) => Holder::Lfo,
+                Some(K::LfoRate | K::LfoSteps | K::LfoWidth | K::LfoPhase | K::LfoWeight(_)) => {
+                    Holder::Lfo
+                }
                 _ => Holder::Group,
             },
             EnginePar::EffectBypass
@@ -99,7 +101,7 @@ impl ScriptPlan {
             | EnginePar::StereoWidth
             | EnginePar::StereoPan => Holder::Slot,
             EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
-            EnginePar::LfoFade => Holder::Lfo,
+            EnginePar::LfoFade | EnginePar::LfoRetrigger => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
             // An envelope's stages live on its modulator: a group without
             // one is a missing target, as for its bypass.

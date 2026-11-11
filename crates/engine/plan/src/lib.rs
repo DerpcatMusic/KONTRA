@@ -11,10 +11,12 @@ mod route;
 pub mod route_depth;
 mod script;
 mod slots;
+mod zones;
 
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
 pub use script::{Callbacks, CcLink, Controls, Holder, LookPars, Recall, Saved, ScriptPlan};
+pub use zones::{ZoneFacts, zone_name};
 
 use std::ops::RangeInclusive;
 
@@ -473,6 +475,8 @@ pub struct Plan {
     pub slot_shapes: ir::SlotShapes,
     /// Slots loaded with a [`ir::SlotShapes::types`] entry ([`Plan::load_type`]).
     pub loaded: Vec<(ir::RackAt, u8, u16)>,
+    /// Every zone as scripts find and read it (`find_zone`, `get_zone_par`).
+    pub zone_facts: Vec<ZoneFacts>,
 }
 
 impl Plan {
@@ -527,6 +531,7 @@ impl Plan {
             slot_laws: Vec::new(),
             slot_shapes: ir::SlotShapes::NONE,
             loaded: Vec::new(),
+            zone_facts: Vec::new(),
         }
     }
 }

@@ -27,4 +27,8 @@ pub enum Form {
     Ratio,
     /// `Center`, or `n L` / `n R` of the setting.
     Pan,
+    /// Two decimals (semitones).
+    Hundredths,
+    /// A whole number in five places (degrees).
+    WideWhole,
 }

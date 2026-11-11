@@ -37,6 +37,7 @@ pub fn prepare(
     let mut zones = Vec::new();
     let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
     let mut polyphony = Vec::new();
+    let mut facts = Vec::new();
     for (index, group) in instrument.groups.iter().enumerate() {
         let group_id = u32::try_from(index).unwrap_or(u32::MAX);
         if let Some(voices) = group.polyphony {
@@ -50,10 +51,24 @@ pub fn prepare(
             }
         }
         for (member, z) in group.zones.iter().enumerate() {
-            let Some(Some(sample)) = loaded.get(z.sample) else {
+            let Some(source) = instrument.samples.get(z.sample) else {
                 continue;
             };
-            let Some(source) = instrument.samples.get(z.sample) else {
+            // A script sees every saved zone, played or not (a purged group,
+            // a sample that failed to open).
+            facts.push(kontra_engine::ZoneFacts {
+                id: z.id,
+                name: kontra_engine::zone_name(&source.name).into(),
+                group: group_id,
+                keys: z.keys.clone(),
+                velocities: z.velocities.clone(),
+                root: z.root,
+                start: z.start,
+                end: z.end,
+                start_range: z.start_mod,
+                rate: source.rate,
+            });
+            let Some(Some(sample)) = loaded.get(z.sample) else {
                 continue;
             };
             let mut zone = zone(group, group_id, z, source, sample, (&switches, &client));
@@ -62,6 +77,7 @@ pub fn prepare(
         }
     }
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
+    plan.zone_facts = facts;
     plan.groups = instrument
         .groups
         .iter()
@@ -505,6 +521,7 @@ mod tests {
 
     fn at(start: u64, start_mod: u64) -> ir::Zone {
         ir::Zone {
+            id: 0,
             mix: Vec::new(),
             sample: 0,
             keys: 0..=127,

@@ -143,6 +143,7 @@ pub(crate) fn instrument(
     slots.laws.extend(racks.laws.laws);
     slots.shape_slots.extend(racks.laws.shape_slots);
     slots.subtypes.extend(racks.laws.subtypes);
+    slots.types.extend(racks.laws.types);
     out.slot_laws = slots.laws;
     if !slots.shape_slots.is_empty() {
         out.slot_shapes.shapes = crate::laws::filter_shapes();
@@ -154,7 +155,9 @@ pub(crate) fn instrument(
         });
         out.slot_shapes.slots = slots.shape_slots;
     }
-    let loads = |s: &ir::Script| s.source.contains("$ENGINE_PAR_EFFECT_");
+    let loads = |s: &ir::Script| {
+        s.source.contains("$ENGINE_PAR_EFFECT_") || s.source.contains("$ENGINE_PAR_SEND_EFFECT_")
+    };
     if out.scripts.iter().any(loads) {
         // Every Kontakt rack has 8 slots, and a script may load into an
         // empty one the file does not save.
@@ -195,6 +198,7 @@ pub(crate) fn instrument(
         out.slot_shapes.slots.extend(open);
         out.slot_shapes.types = crate::script_knobs::slot_types();
         out.slot_shapes.subtypes = std::mem::take(&mut slots.subtypes);
+        out.slot_shapes.saved_types = std::mem::take(&mut slots.types);
     }
     // A script may load any response of the library's `ir_samples` by name.
     if out
@@ -239,7 +243,8 @@ pub(crate) fn instrument(
         .ok_or_else(|| Error::new(path, "zone list", "missing"))
         .and_then(|c| ZoneList::try_from(c).map_err(decode("zone list")))?;
     let mut sample_of: HashMap<u32, Option<usize>> = HashMap::new();
-    for (zone, &group) in zones.zones().iter().zip(&zones.group_ids) {
+    // A zone's id is its place in the zone list, saved or not.
+    for (zone_id, (zone, &group)) in (0u32..).zip(zones.zones().iter().zip(&zones.group_ids)) {
         let z = zone.params().map_err(decode("zone"))?;
         if !z.sample_present || muted.get(group as usize).copied().unwrap_or(true) {
             continue;
@@ -282,9 +287,10 @@ pub(crate) fn instrument(
         let loops = loops.map_err(decode("zone loops"))?;
         let reverse =
             g.zones.first().is_some_and(|z| z.reverse) || criteria_reverse(group, &groups);
-        if let Some(translated) =
+        if let Some(mut translated) =
             translate_zone(&z, loops.as_ref(), sample, frames, reverse, &mut notes)
         {
+            translated.id = zone_id;
             kontra_law::record(|| kontra_law::Application {
                 id: kontra_law::LawId("kontakt.zone_gain_pan_tune.v1"),
                 location: format!("groups/{group}/zones/{}", g.zones.len()),
@@ -723,6 +729,7 @@ fn translate_zone(
     // The slots are in no particular order; the model wants play order.
     found.sort_by_key(|l| l.end);
     Some(ir::Zone {
+        id: 0,
         mix: Vec::new(),
         sample,
         keys: midi(lk)..=midi(hk),

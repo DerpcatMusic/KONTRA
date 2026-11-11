@@ -15,7 +15,7 @@ use crate::script_knobs::{
 // ponytail: the cutoff law is the one filter measured (ANALOG's); measure
 // each filter kind when a library shows another.
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
-    use ir::Form::{Decimal, Padded, Pan, Ratio, Whole, Wide};
+    use ir::Form::{Decimal, Hundredths, Padded, Pan, Ratio, Whole, Wide, WideWhole};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
     let curve = |points: [(f32, f32, f32); 2]| ir::Law::Breakpoints(points.into());
@@ -101,6 +101,25 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ("$ENGINE_PAR_GAIN1", lin(-18.0, 18.0), Padded, none),
         ("$ENGINE_PAR_GAIN2", lin(-18.0, 18.0), Padded, none),
         ("$ENGINE_PAR_GAIN3", lin(-18.0, 18.0), Padded, none),
+        // Morphology's wavetable group 932 and ANALOG's LFO at 0, .1, .25,
+        // .5, .75 and 1 (Kontakt 8.13.1, 2026-11-11, scratch/laneB/disp2).
+        ("$ENGINE_PAR_WT_POSITION", lin(0.0, 100.0), Decimal, none),
+        ("$ENGINE_PAR_WT_FORM", lin(0.0, 100.0), Decimal, none),
+        ("$ENGINE_PAR_WT_FORM2", lin(0.0, 100.0), Decimal, none),
+        ("$ENGINE_PAR_WT_MOD_AMOUNT", lin(0.0, 100.0), Decimal, none),
+        (
+            "$ENGINE_PAR_WT_INHARMONIC",
+            lin(-100.0, 100.0),
+            Decimal,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_WT_MOD_TUNE",
+            lin(-36.0, 36.0),
+            Hundredths,
+            none,
+        ),
+        ("$ENGINE_PAR_LFO_PHASE", lin(0.0, 360.0), WideWhole, none),
     ]);
     rows.into_iter()
         .map(|(name, law, form, ends)| (name, ir::Readout { law, form, ends }))

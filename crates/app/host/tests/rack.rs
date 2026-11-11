@@ -373,6 +373,7 @@ fn effect_loading(store: &mut Store) -> Box<Engine> {
         id,
         subtype: false,
         reads: 0,
+        kind: id,
         effect,
         laws: Vec::new().into(),
     };

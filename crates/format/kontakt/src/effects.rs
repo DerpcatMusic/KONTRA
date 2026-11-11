@@ -16,73 +16,84 @@ const RACK: u16 = 0x3a;
 const BUS: u16 = 0x45;
 
 /// Module names by chunk id (Kontakt's `BParFX*` classes).
-const MODULES: &[(u16, &str)] = &[
-    (0x10, "Delay (legacy)"),
-    (0x11, "Chorus (legacy)"),
-    (0x12, "Flanger (legacy)"),
-    (0x13, "Gainer"),
-    (0x14, "Phaser (legacy)"),
-    (0x15, "Reverb (legacy)"),
-    (0x16, "Convolution"),
-    (0x17, "Send Levels"),
-    (0x18, "Filter"),
-    (0x19, "Compressor"),
-    (0x1a, "Inverter"),
-    (0x1b, "DYX"),
-    (0x1c, "Limiter"),
-    (0x1d, "Saturation"),
-    (0x1e, "Distortion"),
-    (0x1f, "Stereo Modeller"),
-    (0x20, "Lo-Fi"),
-    (0x21, "Skreamer"),
-    (0x22, "Rotator"),
-    (0x23, "Twang"),
-    (0x24, "Cabinet"),
-    (0x42, "Tape Saturator"),
-    (0x43, "Transient Master"),
-    (0x44, "Solid G-EQ"),
-    (0x46, "Solid Bus Comp"),
-    (0x4c, "Feedback Compressor"),
-    (0x4d, "Jump"),
-    (0x52, "Van51"),
-    (0x53, "AC Box"),
-    (0x54, "Hot Solo"),
-    (0x55, "Cat"),
-    (0x56, "DStortion"),
-    (0x57, "Plate Reverb"),
-    (0x58, "Cry Wah"),
-    (0x59, "Reverb"),
-    (0x5a, "Replika"),
-    (0x5b, "Phasis"),
-    (0x5c, "Flair"),
-    (0x5d, "Choral"),
-    (0x5e, "Core Cell"),
-    (0x5f, "Hilbert Limiter"),
-    (0x60, "Supercharger"),
-    (0x61, "Bass Pro"),
-    (0x63, "Psyche Delay"),
-    (0x64, "Ring Modulator"),
-    (0x65, "Raum"),
-    (0x66, "Bite"),
-    (0x68, "Freak"),
-    (0x69, "Vibrato Chorus"),
-    (0x6a, "Wow / Flutter"),
-    (0x6b, "Twin Delay"),
-    (0x70, "Stereo Tune"),
-    (0x71, "Beat Masher"),
-    (0x72, "Gater"),
-    (0x73, "Beat Slicer"),
-    (0x74, "Reverse Grain"),
-    (0x75, "Transpose Stretch"),
-    (0x78, "Skreamer Deluxe"),
-    (0x79, "Kolor"),
+/// Each saved module: its id, name and the `$EFFECT_TYPE_*` value a
+/// script reads for it (`get_engine_par($ENGINE_PAR_EFFECT_TYPE)`), −1
+/// where no constant names it. Values by name from the KSP constants;
+/// ANALOG STRINGS' Jump, legacy Delay and an empty slot read 31, 18 and 0
+/// (Kontakt 8.13.1 oracle, scratch/laneB/disp).
+const MODULES: &[(u16, &str, i32)] = &[
+    (0x10, "Delay (legacy)", 18),
+    (0x11, "Chorus (legacy)", 16),
+    (0x12, "Flanger (legacy)", 15),
+    (0x13, "Gainer", 20),
+    (0x14, "Phaser (legacy)", 14),
+    (0x15, "Reverb (legacy)", 17),
+    (0x16, "Convolution", 19),
+    (0x17, "Send Levels", 11),
+    (0x18, "Filter", 7),
+    (0x19, "Compressor", 2),
+    (0x1a, "Inverter", 4),
+    (0x1b, "DYX", -1),
+    (0x1c, "Limiter", 3),
+    (0x1d, "Saturation", 6),
+    (0x1e, "Distortion", 10),
+    (0x1f, "Stereo Modeller", 9),
+    (0x20, "Lo-Fi", 8),
+    (0x21, "Skreamer", 21),
+    (0x22, "Rotator", 22),
+    (0x23, "Twang", 23),
+    (0x24, "Cabinet", 24),
+    (0x42, "Tape Saturator", 26),
+    (0x43, "Transient Master", 27),
+    (0x44, "Solid G-EQ", 28),
+    (0x46, "Solid Bus Comp", 29),
+    (0x4c, "Feedback Compressor", 30),
+    (0x4d, "Jump", 31),
+    (0x52, "Van51", 32),
+    (0x53, "AC Box", 33),
+    (0x54, "Hot Solo", 34),
+    (0x55, "Cat", 35),
+    (0x56, "DStortion", 36),
+    (0x57, "Plate Reverb", 38),
+    (0x58, "Cry Wah", 37),
+    (0x59, "Reverb", 39),
+    (0x5a, "Replika", 40),
+    (0x5b, "Phasis", 41),
+    (0x5c, "Flair", 42),
+    (0x5d, "Choral", 43),
+    (0x5e, "Core Cell", -1),
+    (0x5f, "Hilbert Limiter", -1),
+    (0x60, "Supercharger", 46),
+    (0x61, "Bass Pro", 47),
+    (0x63, "Psyche Delay", 49),
+    (0x64, "Ring Modulator", 50),
+    (0x65, "Raum", 51),
+    (0x66, "Bite", 52),
+    (0x68, "Freak", 54),
+    (0x69, "Vibrato Chorus", 55),
+    (0x6a, "Wow / Flutter", 56),
+    (0x6b, "Twin Delay", 57),
+    (0x70, "Stereo Tune", 61),
+    (0x71, "Beat Masher", 62),
+    (0x72, "Gater", 63),
+    (0x73, "Beat Slicer", 64),
+    (0x74, "Reverse Grain", 65),
+    (0x75, "Transpose Stretch", 66),
+    (0x78, "Skreamer Deluxe", 69),
+    (0x79, "Kolor", 70),
 ];
 
 fn name(id: u16) -> String {
     MODULES
         .iter()
-        .find(|(m, _)| *m == id)
-        .map_or_else(|| format!("unknown {id:#04x}"), |(_, n)| (*n).into())
+        .find(|(m, ..)| *m == id)
+        .map_or_else(|| format!("unknown {id:#04x}"), |(_, n, _)| (*n).into())
+}
+
+/// The effect type a script reads for saved module `id`.
+fn effect_type(id: u16) -> Option<i32> {
+    let (.., ty) = MODULES.iter().find(|(m, ..)| *m == id)?;
+    (*ty >= 0).then_some(*ty)
 }
 
 /// A rack's slots as effects. Gainer, Inverter and Stereo Modeller carry
@@ -120,6 +131,9 @@ fn rack(
                         field,
                         law,
                     }));
+                if let Some(ty) = effect.as_ref().and_then(|(_, m, _)| effect_type(*m)) {
+                    laws.types.push((*rack_at, slot, ty));
+                }
                 if let Some((_, 0x18, kind)) = &effect {
                     laws.subtypes.push((*rack_at, slot, *kind));
                     let switches = crate::laws::switches(*kind);
@@ -615,6 +629,8 @@ pub(crate) struct Slots {
     pub shape_slots: Vec<(ir::RackAt, u8)>,
     /// Filter slots and the subtype each was saved with.
     pub subtypes: Vec<(ir::RackAt, u8, i32)>,
+    /// Each saved slot's effect type, as a script reads it.
+    pub types: Vec<(ir::RackAt, u8, i32)>,
 }
 
 pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {
