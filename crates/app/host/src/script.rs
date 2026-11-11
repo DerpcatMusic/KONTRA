@@ -130,6 +130,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
                 .map(|f| f.and_then(|(_, r)| r.cloned()))
                 .collect(),
         },
+        view: crate::perf_view::find(data).map(|(name, _)| name.into()),
         reverb_laws: kontra_format_kontakt::reverb_laws(),
         reverb_networks: kontra_format_kontakt::reverb_networks().into(),
         knobs: pars
@@ -411,6 +412,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         coroutines: COROUTINES,
         controls: Controls::default(),
         engine_pars: EnginePars::default(),
+        view: None,
         // No reverb parameter ids are bound, so these are never read.
         reverb_laws: ir::ReverbControls::from_fn(|_| kontra_engine::ir::Law::Linear {
             lo: 0.0,

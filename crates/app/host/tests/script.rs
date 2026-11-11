@@ -678,6 +678,7 @@ fn a_script_finds_a_modulator_that_carries_no_route() {
         slot: 33,
         name: "Phase_P1".into(),
         names: vec![String::new()],
+        depths: vec![0.0],
     }];
     let script = kontra_ksp::compile(
         "on init
@@ -3575,4 +3576,82 @@ fn a_callback_playing_past_the_note_table_still_starts_its_last_note() {
     );
     assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
     assert_eq!(e.stats().notes_refused, 0);
+}
+
+/// Dolce's empty START groups: an envelope stage written to a group with no
+/// envelope (`find_mod` answers 0 for a miss) is a missing target, answered.
+#[test]
+fn an_envelope_stage_on_a_group_without_one_is_a_missing_target() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (a, b) = (zone(&mut store, 0.5, 0), zone(&mut store, 0.5, 0));
+    let mut e = engine(
+        &store,
+        vec![a],
+        "on init
+            set_engine_par($ENGINE_PAR_ATTACK, 500000, 0, find_mod(0, \"ENV_AHDSR\"), -1)
+            set_engine_par($ENGINE_PAR_SUSTAIN, 1000000, 0, 0, -1)
+            message(get_engine_par($ENGINE_PAR_ATTACK, 0, 0, -1) & \"|\" ...
+                & get_engine_par_disp($ENGINE_PAR_ATTACK, 0, 0, -1) & \"|\")
+        end on",
+    );
+    assert_eq!(e.unhandled_actions(), vec![]);
+    // A missing target reads 0 and shows "".
+    assert_eq!(e.last_message(), "0||");
+    // The dropped writes leave the group's envelope as it was.
+    let mut plain = engine(&store, vec![b], "on init\nend on");
+    assert_eq!(level(&mut e, &[on(60)]), level(&mut plain, &[on(60)]));
+}
+
+/// `load_performance_view` loads the view the host prepared, by its file
+/// name in any case; another name has no view to load.
+#[test]
+fn a_script_loads_only_the_performance_view_it_has() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let data = [(
+        "performance_view/Main.nckp".to_owned(),
+        br#"{"value":{"performanceView":{}}}"#.to_vec(),
+    )];
+    let run = |name: &str| {
+        let source = format!("on init\n load_performance_view(\"{name}\")\nend on");
+        let script = kontra_ksp::compile(&source, &[]).unwrap();
+        let mut plan = Plan::new(vec![], 16);
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &data)];
+        Engine::new(Arc::new(plan), store.client(), RATE).unhandled_actions()
+    };
+    assert_eq!(run("main"), vec![]);
+    assert_eq!(
+        run("Other"),
+        vec![(kontra_engine::Action::LoadPerformanceView, 1)]
+    );
+}
+
+/// Conflux: a route the engine does not carry (a wavetable target) keeps
+/// the depth it was saved with; a script reads it, shows it and moves it.
+#[test]
+fn a_route_not_carried_keeps_its_depth_for_the_script() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].routes = vec![ir::Routes {
+        slot: 53,
+        name: "CC1".into(),
+        names: vec!["WT_POSITION".into()],
+        depths: vec![-1.0],
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $before
+            $before := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 0, 53, -1)
+            set_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 1000000, 0, 53, -1)
+            message($before & \" \" & get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 0, 53, -1) ...
+                & \" \" & get_engine_par_disp($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 0, 53, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    let message = e.last_message();
+    assert!(message.starts_with("0 1000000 "), "{message}");
 }

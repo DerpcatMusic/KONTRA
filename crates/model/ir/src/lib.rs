@@ -336,6 +336,9 @@ pub struct Routes {
     /// The modulator's name, what scripts find it by.
     pub name: String,
     pub names: Vec<String>,
+    /// Each target's signed depth as saved; what a script reads and
+    /// writes on a route the engine does not carry.
+    pub depths: Vec<f32>,
 }
 
 impl Group {

@@ -61,7 +61,7 @@ impl Engine {
         let index = match self.voices.iter().position(|s| !s.voice.is_active()) {
             Some(i) => i,
             None => {
-                // Even the fade reserve is full: cut the oldest fading voice.
+                // More than the limit fading at once: cut the oldest fading voice.
                 let (i, _) = self
                     .voices
                     .iter()
