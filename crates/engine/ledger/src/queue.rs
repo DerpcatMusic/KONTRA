@@ -37,6 +37,9 @@ pub enum Work {
     Resume(u8, CoId, u32),
     /// A script note's duration is up.
     Release(NoteRef),
+    /// The note a `play_note(.., -1)` child was played for is released: its
+    /// release callbacks may hold it back.
+    ParentUp(NoteRef),
     /// Script slots run `on pgs_changed`.
     PgsChanged,
     /// A script slot's listener timer fires, if it is still that generation.

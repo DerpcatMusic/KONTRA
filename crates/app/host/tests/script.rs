@@ -110,6 +110,13 @@ fn off(key: u8) -> Timed<Event> {
     }
 }
 
+fn cc(controller: u8, value: u8) -> Timed<Event> {
+    Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, controller, value),
+    }
+}
+
 /// Left level at the end of a 4096-frame block.
 fn level(e: &mut Engine, input: &[Timed<Event>]) -> f32 {
     let mut out = vec![[0.0; 2]; 4096];
@@ -188,6 +195,37 @@ fn a_child_ends_with_its_key_even_when_the_keys_release_is_ignored() {
     assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
     assert_eq!(level(&mut e, &[off(60)]), 0.0);
     assert_eq!(e.last_message(), "released 72");
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// Una Corda's pedal: the child's own release, sent by its key's, is ignored
+/// while the pedal is down and the child rings on (native rings 3 s past the
+/// key-up); the pedal-up `note_off` ends it.
+#[test]
+fn a_child_whose_own_release_is_ignored_rings_until_its_note_off() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 72..=72;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $child
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $child := play_note($EVENT_NOTE + 12, $EVENT_VELOCITY, 0, -1)
+        end on
+        on release
+            ignore_event($EVENT_ID)
+        end on
+        on controller
+            note_off($child)
+        end on",
+    );
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "held");
+    assert_eq!(level(&mut e, &[cc(64, 0)]), 0.0);
     assert_eq!(e.active_voices(), 0);
 }
 

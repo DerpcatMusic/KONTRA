@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
+use kontra_host::rack::ir;
 use kontra_host::state::{Saved, SavedPart};
 use moose::core::{ExactAddress, ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
 use moose::prelude::*;
@@ -24,6 +25,18 @@ const UVI: &str = "/data/main/Libraries/UVI";
 
 /// The longest a release tail may ring after a segment's last note-off.
 const TAIL_S: f64 = 20.0;
+/// Below this in every sample after its note-on, a note never sounded.
+const SILENT: f32 = 1e-5;
+/// Below this in both channels, an output block is quiet.
+const QUIET: f32 = 1e-4;
+/// How long an effect tail must stay quiet before the next segment, at least.
+const QUIET_S: f64 = 0.1;
+/// The longest an effect tail may ring after the voices end.
+const RING_OUT_S: f64 = 5.0;
+/// How long an octave probe holds its note.
+const PROBE_S: f64 = 0.1;
+/// The tempo the scenario's engine runs at (no host transport).
+const TEMPO_BPM: f32 = 120.0;
 
 /// One input event, typed MIDI or a host-native (CLAP) note.
 #[derive(Clone, Copy)]
@@ -315,22 +328,24 @@ fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
 }
 
 /// Plays silence until no voice is left and the effects' tail (a reverb, a
-/// delay's next repeat) has stayed quiet in both channels for 0.1 s, so it
-/// never reads as the next segment's onset; at most 5 s. Whether it got there.
+/// delay's next repeat) has stayed quiet in both channels for `quiet_s`, so
+/// it never reads as the next segment's onset: the tail may ring for at most
+/// [`RING_OUT_S`], then must stay quiet for `quiet_s`. Whether it got there.
 fn ring_out(
     params: &KontraParams,
     dsp: &mut Dsp,
     last: &mut Played,
+    quiet_s: f64,
     mut collect: impl FnMut(&Played),
 ) -> bool {
     let mut quiet = 0;
-    for b in 0..at(5.0) / BLOCK {
-        quiet = if last.voices == 0 && last.channel_peaks.iter().all(|&p| p < 1e-4) {
+    for b in 0..(at(RING_OUT_S) + at(quiet_s)).div_ceil(BLOCK) {
+        quiet = if last.voices == 0 && last.channel_peaks.iter().all(|&p| p < QUIET) {
             quiet + BLOCK
         } else {
             0
         };
-        if quiet >= at(0.1) {
+        if quiet >= at(quiet_s) {
             return true;
         }
         if b % 10 == 0 {
@@ -342,24 +357,62 @@ fn ring_out(
     false
 }
 
+/// How long the effects stay quiet before the next segment: [`QUIET_S`],
+/// or longer than the plan's longest delay line, whose pending echo would
+/// otherwise come out inside the next segment.
+fn quiet_s(params: &KontraParams) -> f64 {
+    let rack = crate::lock(&params.shared.rack);
+    let plan = rack
+        .as_ref()
+        .and_then(|r| r.parts().first()?.as_ref()?.plan.clone());
+    let delay_ms = |effects: &[Option<ir::Effect>]| {
+        (effects.iter().flatten())
+            .filter(|e| !e.bypass)
+            .filter_map(|e| match e.kind {
+                ir::EffectKind::Delay(d) => Some(
+                    match d.time {
+                        ir::DelayTime::Ms(ms) => ms,
+                        ir::DelayTime::Beats(beats) => beats * 60_000.0 / TEMPO_BPM,
+                    } + d.depth_ms,
+                ),
+                _ => None,
+            })
+            .fold(0.0f32, f32::max)
+    };
+    let longest = plan.map_or(0.0, |p| {
+        (p.groups.iter().map(|g| delay_ms(&g.inserts)))
+            .chain(p.buses.iter().map(|b| delay_ms(&b.inserts)))
+            .chain([delay_ms(&p.inserts), delay_ms(&p.sends), delay_ms(&p.main)])
+            .fold(0.0f32, f32::max)
+    });
+    QUIET_S
+        .max(f64::from(longest) / 1000.0 + QUIET_S)
+        .min(RING_OUT_S)
+}
+
 /// The octave shift that brings the scenario's probe and repeated keys (C4,
 /// D4) where the program plays: a bass's, a tuba's or a script's range may
 /// end below them. Measured: a short note on each, per octave, the first
 /// octave where both start a voice (more voices than before the note-on).
 /// A tail that never rings out leaves the scenario where it was.
 fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
+    // The probe instance plays unaligned: a hold would delay the note past
+    // the probe's window.
+    params.align.set_value(false);
+    Tick.run(params);
+    let quiet = quiet_s(params);
     let mut sounds = |key: u8| {
         let before = last.voices;
         *last = block(params, dsp, &[(0, on(key))], last);
         // A one-shot may start and end inside this block: its audio counts.
-        let mut sounded = last.voices > before || last.channel_peaks.iter().any(|&p| p >= 1e-4);
-        for _ in 0..at(0.1) / BLOCK {
+        let mut sounded = last.voices > before || last.channel_peaks.iter().any(|&p| p >= QUIET);
+        for _ in 0..at(PROBE_S) / BLOCK {
             *last = block(params, dsp, &[], last);
             sounded |= last.voices > before;
         }
         Tick.run(params);
         *last = block(params, dsp, &[(0, off(key))], last);
-        ring_out(params, dsp, last, |_| {}).then_some(sounded)
+        ring_out(params, dsp, last, quiet, |_| {}).then_some(sounded)
     };
     for by in [0, -12, 12, -24, 24] {
         let mut all = true;
@@ -602,6 +655,7 @@ fn perform(path: PathBuf) -> Report {
     let mut fail = |what: String| failed.push(format!("{name}: {what}"));
     let latency_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
     let (limited, pool) = limited(&params);
+    let quiet_s = quiet_s(&params);
     let mut onsets = Vec::new();
     let mut segments = Vec::new();
     let mut blocks = 0usize;
@@ -646,7 +700,7 @@ fn perform(path: PathBuf) -> Report {
                 break;
             }
         }
-        let quiet = ring_out(&params, &mut dsp, &mut last, |tail| {
+        let quiet = ring_out(&params, &mut dsp, &mut last, quiet_s, |tail| {
             peaks.push(tail.audio.iter().fold(0.0f32, |p, x| p.max(x.abs())));
             for (peak, value) in channel_peaks.iter_mut().zip(tail.channel_peaks) {
                 *peak = peak.max(value);
@@ -656,7 +710,7 @@ fn perform(path: PathBuf) -> Report {
         });
         if !quiet {
             fail(format!(
-                "{segment}: the effects still sound 5 s after its voices ended"
+                "{segment}: the effects still sound {RING_OUT_S} s after its voices ended"
             ));
         }
         if starts.is_empty() {
@@ -665,14 +719,14 @@ fn perform(path: PathBuf) -> Report {
         // Every note sounds: something plays after each note-on.
         let hold = at(f64::from(latency_ms) / 1000.0 + 0.05);
         let loudest = peaks.iter().copied().fold(0.0, f32::max);
-        if loudest < 1e-4 {
+        if loudest < QUIET {
             fail(format!("{segment}: silent"));
         }
         for &s in &starts {
             let after = audio
                 .get(s..(s + hold + at(0.1)).min(audio.len()))
                 .unwrap_or(&[]);
-            if after.iter().all(|x| x.abs() < 1e-5) {
+            if after.iter().all(|x| x.abs() < SILENT) {
                 fail(format!(
                     "{segment}: the note at {:.3} s never sounded",
                     s as f64 / RATE
