@@ -7,12 +7,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kontra_engine::{EffectRequest, Engine, Prepared, ir};
+use kontra_engine::{EffectRequest, Engine, Prepared};
 
 use crate::persist::Capture;
 pub(crate) use files::DiskFiles;
 pub use files::user_saves;
-pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan};
+pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan, ir};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model::UiModifiers;
