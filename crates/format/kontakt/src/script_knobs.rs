@@ -569,10 +569,18 @@ pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
 /// high cut and low shelf 0, stereo 1, output and dry at unity (an insert's;
 /// a send slot's dry starts at 0, the engine's rule); for
 /// `$EFFECT_TYPE_SEND_LEVELS` (11) every level at unity (630000; oracle
-/// probe rvdef, 2026-10-29); for `$EFFECT_TYPE_REPLIKA` (40) [`crate::replika::INIT`].
+/// probe rvdef, 2026-10-29); for `$EFFECT_TYPE_REPLIKA` (40) [`crate::replika::INIT`];
+/// for `$EFFECT_TYPE_BUS_COMP` (29) [`BUS_COMP_INIT`].
 // ponytail: Kontakt carries the filter's cutoff and resonance into a
 // subtype it switches to (oracle: 0.3 and 0.7 stay); a loaded subtype here
 // starts at its defaults. The corpus scripts write both after loading.
+/// A new Solid Bus Comp's saved knobs (threshold, make-up, attack, release,
+/// ratio, mix): read back natively as .5, .2 (0 dB), .5, .5, .5 and 1, not
+/// bypassed, output gain 0 dB (oracle probe, Kontakt 8.13.1, 2026-11-11:
+/// scratch/laneA/burst3/bcdef/probe.lua). Conflux loads its compressors so.
+// ponytail: the link byte has no engine parameter to read back; linked.
+pub(crate) const BUS_COMP_INIT: [f32; 6] = [0.5, 0.2, 0.5, 0.5, 0.5, 1.0];
+
 pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     let unit = |kind| ir::Effect {
         kind,
@@ -614,9 +622,19 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         dry: 1.0,
         ..unit(ir::EffectKind::Delay(d))
     });
+    let bus_comp = Some(unit(ir::EffectKind::Compressor(
+        crate::laws::bus_compressor(BUS_COMP_INIT, true).0,
+    )));
     // ponytail: an empty slot's subtype readback is unmeasured; 0, as for
     // the reverb and send levels.
     vec![
+        ty(
+            29,
+            false,
+            0,
+            bus_comp,
+            bus_knobs(BUS_COMP_INIT, true).into(),
+        ),
         ty(39, false, 0, reverb, [].into()),
         ty(11, false, 0, sends, [].into()),
         ty(
@@ -921,6 +939,11 @@ mod tests {
         );
         let sends = effect(11).map(|e| e.kind);
         assert_eq!(sends, Some(ir::EffectKind::Sends([1.0; 8])));
+        // A new Solid Bus Comp: 4:1 (ratio .5), 0 dB make-up, fully wet.
+        let Some(ir::EffectKind::Compressor(c)) = effect(29).map(|e| e.kind) else {
+            panic!("no bus compressor type");
+        };
+        assert_eq!((c.ratio, c.makeup_db, c.mix), (4.0, 0.0, 1.0));
     }
 
     #[test]
