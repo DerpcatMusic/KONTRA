@@ -329,8 +329,8 @@ fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
 
 /// Plays silence until no voice is left and the effects' tail (a reverb, a
 /// delay's next repeat) has stayed quiet in both channels for `quiet_s`, so
-/// it never reads as the next segment's onset; at most [`RING_OUT_S`].
-/// Whether it got there.
+/// it never reads as the next segment's onset: the tail may ring for at most
+/// [`RING_OUT_S`], then must stay quiet for `quiet_s`. Whether it got there.
 fn ring_out(
     params: &KontraParams,
     dsp: &mut Dsp,
@@ -339,7 +339,7 @@ fn ring_out(
     mut collect: impl FnMut(&Played),
 ) -> bool {
     let mut quiet = 0;
-    for b in 0..at(RING_OUT_S) / BLOCK {
+    for b in 0..(at(RING_OUT_S) + at(quiet_s)).div_ceil(BLOCK) {
         quiet = if last.voices == 0 && last.channel_peaks.iter().all(|&p| p < QUIET) {
             quiet + BLOCK
         } else {

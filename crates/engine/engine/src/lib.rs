@@ -587,9 +587,14 @@ impl Engine {
             Some(n) if !n.released && !n.key_up => {}
             _ => return,
         }
-        if self.release_callbacks(note).is_some() {
+        if let Some(slot) = self.release_callbacks(note) {
             if let Some(n) = self.notes.get_mut(note) {
                 n.key_up = true;
+            }
+            // As for a held key-up: its own children still end (note_off).
+            let script = self.plan.scripts.get(usize::from(slot));
+            if script.is_some_and(|s| s.held_release_ends_children) {
+                self.end_children(note);
             }
         } else {
             self.release(note);
