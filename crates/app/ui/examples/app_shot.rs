@@ -295,11 +295,7 @@ fn paint(ui: &Ui, w: u16, h: u16) -> Result<Vec<u8>, Box<dyn Error>> {
     ctx.flush();
     let mut pix = vello::vello_cpu::Pixmap::new(w, h);
     ctx.render(&mut pix, &mut resources);
-    Ok(pix
-        .take_unpremultiplied()
-        .iter()
-        .flat_map(|p| [p.r, p.g, p.b, p.a])
-        .collect())
+    Ok(pix.take_rgba8(vello::peniko::ImageAlphaType::Alpha))
 }
 
 fn save(file: &Path, w: u16, h: u16, rgba: &[u8]) -> Result<(), Box<dyn Error>> {
