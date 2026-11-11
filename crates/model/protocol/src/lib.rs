@@ -77,7 +77,11 @@ pub struct Stats {
     pub voices: u32,
     /// Since the plugin started, across parts.
     pub voices_stolen: u64,
+    /// Voices cut without a fade: a steal with even the fade reserve full.
+    pub voices_cut: u64,
     pub notes_refused: u64,
+    /// Events a full engine queue refused.
+    pub events_refused: u64,
     pub missing_frames: u64,
     /// Commands the audio thread had to refuse or could not retire.
     pub dropped: u64,
@@ -130,6 +134,8 @@ pub struct StatCells {
     span_ns: AtomicU64,
     voices: AtomicU32,
     voices_stolen: AtomicU64,
+    voices_cut: AtomicU64,
+    events_refused: AtomicU64,
     notes_refused: AtomicU64,
     missing_frames: AtomicU64,
     dropped: AtomicU64,
@@ -142,6 +148,9 @@ impl StatCells {
         self.span_ns.store(s.span_ns, Ordering::Relaxed);
         self.voices.store(s.voices, Ordering::Relaxed);
         self.voices_stolen.store(s.voices_stolen, Ordering::Relaxed);
+        self.voices_cut.store(s.voices_cut, Ordering::Relaxed);
+        self.events_refused
+            .store(s.events_refused, Ordering::Relaxed);
         self.notes_refused.store(s.notes_refused, Ordering::Relaxed);
         self.missing_frames
             .store(s.missing_frames, Ordering::Relaxed);
@@ -156,6 +165,8 @@ impl StatCells {
             span_ns: self.span_ns.load(Ordering::Relaxed),
             voices: self.voices.load(Ordering::Relaxed),
             voices_stolen: self.voices_stolen.load(Ordering::Relaxed),
+            voices_cut: self.voices_cut.load(Ordering::Relaxed),
+            events_refused: self.events_refused.load(Ordering::Relaxed),
             notes_refused: self.notes_refused.load(Ordering::Relaxed),
             missing_frames: self.missing_frames.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),

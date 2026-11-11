@@ -248,7 +248,9 @@ impl RackAudio {
             let s = p.engine.stats();
             stats.voices += u32::try_from(p.engine.active_voices()).unwrap_or(u32::MAX);
             stats.voices_stolen += s.voices_stolen;
+            stats.voices_cut += s.voices_cut;
             stats.notes_refused += s.notes_refused;
+            stats.events_refused += s.events_refused;
             stats.missing_frames += s.missing_frames;
             // Taken every block, so a muted part's buses show silence.
             if let Some(buses) = self.meters.buses.get_mut(n) {
