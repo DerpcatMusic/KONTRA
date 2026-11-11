@@ -281,9 +281,13 @@ pub fn saved(loaded: &[Vec<String>], slots: &[Vars], capture: &Capture) -> Vec<V
             let Some(values) = values else {
                 continue;
             };
-            // A text array saves one line per value.
-            let joiner = if var.text { "\n" } else { " " };
-            let entry = format!("{} {}", var.name, values.join(joiner));
+            // A text array saves one line per value, each ended by a
+            // newline, as Kontakt writes it (oracle: 80 values, 80 newlines).
+            let entry = if var.text && var.len > 1 {
+                format!("{} {}\n", var.name, values.join("\n"))
+            } else {
+                format!("{} {}", var.name, values.join(" "))
+            };
             match by_name
                 .get(&bare(&var.name))
                 .and_then(|&n| entries.get_mut(n))
