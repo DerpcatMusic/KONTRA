@@ -37,7 +37,7 @@ impl<'a> Compiler<'a> {
             ExprKind::Int(n) => Ok(self.constant(Value::Int(int_literal(*n, e.span)?))),
             ExprKind::Real(n) => Ok(self.constant(Value::Real(*n))),
             ExprKind::Str(s) => {
-                let id = self.text(s);
+                let id = self.text(crate::lex::unescape(s));
                 self.emit(Op::Text(id));
                 Ok(Ty::Text)
             }
@@ -469,7 +469,7 @@ impl<'a> Compiler<'a> {
                 }
                 Arg::K => {
                     if let ExprKind::Word(word) = &e.kind {
-                        let id = self.text(word);
+                        let id = self.text(*word);
                         self.emit(Op::Text(id));
                     } else {
                         let got = self.expr(e)?;

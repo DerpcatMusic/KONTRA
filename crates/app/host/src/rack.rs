@@ -131,6 +131,7 @@ pub enum Command {
         slot: u8,
         n: u32,
         value: f64,
+        cell: Option<u32>,
     },
     /// The user edited a group's sound (the Sound tab).
     Sound {
@@ -516,15 +517,12 @@ impl Rack {
             return;
         };
         if let Some((slot, n)) = view.widget(widget) {
-            // ponytail: a Lua page's table cells are not written yet (#1179 wires them).
-            if cell.is_some() {
-                return;
-            }
             self.send(Command::Widget {
                 part,
                 slot,
                 n,
                 value,
+                cell,
             });
         } else if let Some((slot, id, value)) = view.control(widget, value) {
             self.send(Command::Control {

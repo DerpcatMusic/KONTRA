@@ -3,6 +3,7 @@
 mod declare;
 mod expr;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use kontra_vm::{Action, Cmp, Op, Program, Returns, Text};
@@ -314,7 +315,7 @@ fn prefix(name: &str) -> (Ty, bool) {
 struct Compiler<'a> {
     code: Vec<Op>,
     texts: Vec<Text>,
-    text_ids: HashMap<&'a str, u32>,
+    text_ids: HashMap<Cow<'a, str>, u32>,
     vars: Vec<Var>,
     /// Lowercase name → variable (KSP names are case-insensitive).
     names: HashMap<String, usize>,
@@ -399,12 +400,13 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn text(&mut self, s: &'a str) -> u32 {
-        if let Some(&id) = self.text_ids.get(s) {
+    fn text(&mut self, s: impl Into<Cow<'a, str>>) -> u32 {
+        let s = s.into();
+        if let Some(&id) = self.text_ids.get(s.as_ref()) {
             return id;
         }
         let id = self.texts.len() as u32;
-        self.texts.push(Text::from_str_cut(s).0);
+        self.texts.push(Text::from_str_cut(s.as_ref()).0);
         self.text_ids.insert(s, id);
         id
     }

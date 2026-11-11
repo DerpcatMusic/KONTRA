@@ -82,7 +82,7 @@ pub trait Machine: Send {
     /// The editor moved widget `n` of the front end's own interface (one it
     /// builds itself, not from controls) to `value`: the next start of its
     /// widget entry applies it.
-    fn stage_widget(&mut self, _n: u32, _value: f64) {}
+    fn stage_widget(&mut self, _n: u32, _value: f64, _cell: Option<u32>) {}
     /// Widget `n` of the front end's own interface as it stands now.
     fn widget(&self, _n: u32) -> Option<WidgetLook> {
         None
