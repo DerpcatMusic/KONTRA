@@ -299,11 +299,11 @@ fn run(ir: &ir::Instrument, slot: usize, store: &mut Store) -> Option<Run> {
     ir.scripts = vec![script];
     let samples = std::mem::take(&mut ir.samples);
     let mut kept: Vec<usize> = Vec::new();
-    // One new index per kept sample; an index past the old list stays past
-    // the new one, so a missing sample is still reported.
+    // One new index per kept sample. The kept list is never longer than the
+    // old one, so an index past the old list stays past it and a missing
+    // sample is still reported.
     let mut keep = |i: &mut usize| {
         if samples.get(*i).is_none() {
-            *i = usize::MAX;
             return;
         }
         let at = kept.iter().position(|k| k == i).unwrap_or_else(|| {

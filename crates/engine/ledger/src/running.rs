@@ -42,8 +42,8 @@ pub struct Running {
 /// Marks a UI id in the low bits of a coroutine context; event ids never set it.
 const UI_BIT: u32 = 1 << 31;
 
-/// `$NI_CB_TYPE` of `on poly_at`. ponytail: unmeasured, the gap in the
-/// measured numbering (controller 3, ui_control 6).
+/// The callback type a poly aftertouch callback reports. ponytail:
+/// unmeasured, the gap in the measured numbering (controller 3, control 6).
 const POLY_AT: u8 = 4;
 
 impl Running {
