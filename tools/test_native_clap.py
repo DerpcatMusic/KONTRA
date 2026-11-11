@@ -22,7 +22,7 @@ def main():
               export_state(cli, out, nki, "lower", channel=7,
                            mpe={"zone": "Lower", "members": 2, "bend_range": 48}, streaming="RamOnly")]
     host = out / "native-clap-audio"
-    cpp = source / "vendor/moose-clap/tests/native_midi_audio.cpp"
+    cpp = source / "tools/native-hosts/clap-midi-audio.cpp"
     subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic", "-O2",
                     "-I", str(sdk / "include"), str(cpp), "-ldl", "-pthread", "-o", str(host)], check=True)
     env = dict(os.environ, KONTRA_DISABLE_NETWORK="1", KONTRA_REPORT_DIR=str(out / "reports"))

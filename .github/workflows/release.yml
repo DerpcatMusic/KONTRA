@@ -23,7 +23,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_TARGET_DIR: target
-  MOOSE_REV: bffa4677d0b82119d38566ce7e932dc5c463d497
+  MOOSE_REV: 545fb8cec3e43bc4a257577142c0f0acd91c1b3e
 
 jobs:
   check:
@@ -94,7 +94,9 @@ jobs:
         run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
       - name: CLAP and VST3 bundles
         shell: bash
-        run: cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
+        run: |
+          cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
+          git diff --exit-code -- Cargo.lock
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'

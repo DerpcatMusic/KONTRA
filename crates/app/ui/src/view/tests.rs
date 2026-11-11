@@ -43,10 +43,10 @@ fn paint(ui: &mut Ui, el: El, w: u16, h: u16) -> Vec<[u8; 4]> {
     ctx.flush();
     let mut pix = vello::vello_cpu::Pixmap::new(w, h);
     ctx.render(&mut pix, &mut resources);
-    pix.take_unpremultiplied()
-        .iter()
-        .map(|p| [p.r, p.g, p.b, p.a])
-        .collect()
+    pix.take_rgba8(vello::peniko::ImageAlphaType::Alpha)
+        .as_chunks::<4>()
+        .0
+        .to_vec()
 }
 
 /// A 20x10 page: grey, a wallpaper 10 px tall whose top 4 rows the skin

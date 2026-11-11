@@ -26,7 +26,7 @@ class Admission(unittest.TestCase):
         self.build = dict(source_sha='a' * 40, profile='release', path=str(self.plugin),
                           sha256=audit.sha(self.plugin), cli_sha256=audit.sha(self.cli),
                           host_sha256=audit.sha(self.host),
-                          host_source_sha256=audit.sha(Path(audit.__file__).resolve().parents[1] / 'vendor/moose-clap/tests/live_performance.cpp'))
+                          host_source_sha256=audit.sha(Path(audit.__file__).resolve().parents[1] / 'tools/native-hosts/clap-live-performance.cpp'))
         self.save_build(self.build)
         flags = self.root / '.cache'
         flags.mkdir()

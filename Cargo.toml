@@ -44,30 +44,13 @@ incremental = false
 inherits = "maxperf"
 opt-level = "s"
 
-[patch."https://github.com/Matari-Audio/moose"]
-moose-mui = { path = "vendor/moose-mui" }
-# Host output port names that follow the routing; see vendor/MOOSE-PATCHES.md.
-moose-params = { path = "vendor/moose-params" }
-moose-derive = { path = "vendor/moose-derive" }
-moose-clap = { path = "vendor/moose-clap" }
-moose-vst3 = { path = "vendor/moose-vst3" }
-
-# MUI's vello with a fix for images vanishing after a partial redraw; see vendor/vello/PATCHES.md.
-[patch."https://github.com/Matari-Audio/MUI"]
-mui = { path = "vendor/mui" }
-moose-baseview = { path = "vendor/moose-baseview" }
-vello = { path = "vendor/vello" }
-mui-vello = { path = "vendor/mui-vello" }
-# moose-mui uses the distinct local kontra-native-host package. Keep upstream
-# mui-baseview available for its shared native accessibility and IME bridges.
-
 [patch.crates-io]
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 symphonia-bundle-flac = { path = "vendor/symphonia-bundle-flac" }
 
 [workspace]
-members = ["vendor/mui", "vendor/mui-vello", "tools/xtask", "tools/inspect", "tools/ui-shots", "tools/kontra-window", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview", "crates/app/align", "crates/app/host", "crates/app/library", "crates/app/ui", "crates/app/ui-pictures", "crates/base/law", "crates/base/macros", "crates/base/time", "crates/dsp/core", "crates/dsp/delay", "crates/dsp/drive", "crates/dsp/dynamics", "crates/dsp/eq", "crates/dsp/filter", "crates/dsp/modulators", "crates/dsp/registry", "crates/dsp/reverb", "crates/dsp/spatial", "crates/engine/behaviour", "crates/engine/effects", "crates/engine/engine", "crates/engine/ledger", "crates/engine/plan", "crates/engine/prepare", "crates/engine/racks", "crates/engine/script-ui", "crates/engine/stream", "crates/engine/trace", "crates/engine/vm", "crates/engine/voice", "crates/format/common", "crates/format/kontakt", "crates/format/native", "crates/format/sfz", "crates/format/uvi", "crates/model/events", "crates/model/ir", "crates/model/params", "crates/model/protocol", "crates/model/ui-model", "crates/script/ksp", "crates/script/lua", "plugin"]
-exclude = ["vendor/ni-file", "vendor/ncw", "vendor/uvi-file", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/symphonia-bundle-flac", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
+members = ["tools/xtask", "tools/inspect", "tools/ui-shots", "tools/kontra-window", "crates/app/align", "crates/app/host", "crates/app/library", "crates/app/ui", "crates/app/ui-pictures", "crates/base/law", "crates/base/macros", "crates/base/time", "crates/dsp/core", "crates/dsp/delay", "crates/dsp/drive", "crates/dsp/dynamics", "crates/dsp/eq", "crates/dsp/filter", "crates/dsp/modulators", "crates/dsp/registry", "crates/dsp/reverb", "crates/dsp/spatial", "crates/engine/behaviour", "crates/engine/effects", "crates/engine/engine", "crates/engine/ledger", "crates/engine/plan", "crates/engine/prepare", "crates/engine/racks", "crates/engine/script-ui", "crates/engine/stream", "crates/engine/trace", "crates/engine/vm", "crates/engine/voice", "crates/format/common", "crates/format/kontakt", "crates/format/native", "crates/format/sfz", "crates/format/uvi", "crates/model/events", "crates/model/ir", "crates/model/params", "crates/model/protocol", "crates/model/ui-model", "crates/script/ksp", "crates/script/lua", "plugin"]
+exclude = ["vendor/ni-file", "vendor/ncw", "vendor/uvi-file", "vendor/symphonia-format-riff", "vendor/symphonia-bundle-flac", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 
 [workspace.package]
@@ -75,6 +58,13 @@ edition = "2024"
 
 # Versions match Cargo.lock today. Later v3 tasks depend on these with `workspace = true`.
 [workspace.dependencies]
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "1d7e29cb567289ba73023b04820a6995b7dc853f" }
+mui-native-dialog = { git = "https://github.com/Matari-Audio/MUI", rev = "1d7e29cb567289ba73023b04820a6995b7dc853f" }
+moose = { git = "https://github.com/Matari-Audio/moose", rev = "545fb8cec3e43bc4a257577142c0f0acd91c1b3e", default-features = false }
+moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "545fb8cec3e43bc4a257577142c0f0acd91c1b3e" }
+moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "545fb8cec3e43bc4a257577142c0f0acd91c1b3e" }
+moose-test = { git = "https://github.com/Matari-Audio/moose", rev = "545fb8cec3e43bc4a257577142c0f0acd91c1b3e" }
+moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "545fb8cec3e43bc4a257577142c0f0acd91c1b3e" }
 thiserror = "2"
 smallvec = "1"
 serde = { version = "1", features = ["derive"] }

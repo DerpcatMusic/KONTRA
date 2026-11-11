@@ -29,7 +29,7 @@ pub const NOTO_SANS: &[u8] = include_bytes!("../../../../assets/NotoSans.ttf");
 #[must_use]
 pub fn ui() -> Ui {
     crate::pictures::stock::prewarm();
-    let ui = Ui::new(Theme {
+    let mut ui = Ui::new(Theme {
         palette: Palette {
             neutral: Pigment::new(260.0, 0.008),
             warning: Pigment::new(105.0, 0.15),
@@ -51,6 +51,9 @@ pub fn ui() -> Ui {
         },
         ..Theme::DEFAULT
     });
+    let mut limits = ui.layout_limits();
+    limits.nodes = 65_536;
+    let _ = ui.set_layout_limits(limits);
     match Font::new(NOTO_SANS) {
         Ok(font) => ui.font(font),
         Err(_) => ui,

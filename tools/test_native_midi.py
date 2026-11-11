@@ -47,7 +47,9 @@ def main():
     nki = create_fixture(cli, out)
     state = export_state(cli, out, nki)
     host = out / "native-midi-audio"
-    subprocess.run(["g++", "-std=c++17", "-O2", str(source / "vendor/moose-vst3/tests/native_midi_audio.cpp"),
+    metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=source, text=True))
+    moose_vst3 = next(Path(p["manifest_path"]).parent for p in metadata["packages"] if p["name"] == "moose-vst3")
+    subprocess.run(["g++", "-std=c++17", "-O2", "-I", str(moose_vst3 / "shim"), str(source / "tools/native-hosts/vst3-midi-audio.cpp"),
                     "-ldl", "-pthread", "-o", str(host)], check=True)
     import os
     environment = dict(os.environ, KONTRA_DISABLE_NETWORK="1", KONTRA_REPORT_DIR=str(out / "reports"))

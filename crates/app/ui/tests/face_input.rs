@@ -252,7 +252,8 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
         still.iter().map(|e| &e.to).collect::<Vec<_>>(),
         [&Set::Value(5.)]
     );
-    // That was a double click: what is typed replaces the number, Enter sets it.
+    // A second click makes a double click: typing replaces the number, Enter sets it.
+    f.click(&edit, Mods::default());
     let key = |key| Input {
         keys: vec![KeyPress {
             key,
