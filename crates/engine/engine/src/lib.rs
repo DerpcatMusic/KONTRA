@@ -93,7 +93,7 @@ const FADE_SECONDS: f64 = 0.010;
 pub struct Stats {
     /// Voices faded out because the plan's polyphony was reached.
     pub voices_stolen: u64,
-    /// Voices cut without a fade: more than the voice limit stolen within one fade.
+    /// Voices cut without a fade: more than the voice limit were fading at once.
     pub voices_cut: u64,
     /// Note-ons refused because the note table was full.
     pub notes_refused: u64,
@@ -260,10 +260,11 @@ impl Engine {
             .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into())
             .collect();
         let main = racks::Rack::new(&plan.main, rate, &[]);
-        // A steal fades its voice for FADE_SECONDS in a spare slot. A chord
-        // on a full pool steals one voice per note at once, up to the whole
-        // limit, so a spare per voice means no fade is ever cut short
-        // (a click) unless more than the limit is stolen within one fade.
+        // A voice that ends early (stolen, choked or faded by a script)
+        // fades for FADE_SECONDS in a spare slot. A chord on a full pool
+        // steals one voice per note at once, up to the whole limit, so with
+        // a spare per voice no fade is cut short (a click) unless more than
+        // the limit are fading at once (tests/playability.rs).
         let pool = 2 * plan.voices + 1;
         let voices = (0..pool)
             .map(|_| Slot {

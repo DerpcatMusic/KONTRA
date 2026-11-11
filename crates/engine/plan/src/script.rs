@@ -27,6 +27,9 @@ pub struct ScriptPlan {
     pub restore_texts: Vec<(u32, Text)>,
     pub controls: Controls,
     pub engine_pars: EnginePars,
+    /// The performance view the host prepared for it, by file stem: the
+    /// one name `load_performance_view` loads.
+    pub view: Option<Box<str>>,
     /// The translator's law for each reverb control, keyed by its control identity.
     pub reverb_laws: kontra_ir::ReverbControls<kontra_ir::Law>,
     /// The networks [`EnginePar::ReverbNetwork`] picks from, in order.

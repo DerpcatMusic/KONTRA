@@ -35,6 +35,17 @@ pub struct ViewControl {
     pub menu: Vec<(String, i32, bool)>,
 }
 
+/// The script's performance view among its library files: the first
+/// `.nckp` that reads, with its name (the file stem a script loads it by).
+#[must_use]
+pub fn find(data: &[(String, Vec<u8>)]) -> Option<(&str, View)> {
+    data.iter().find_map(|(name, bytes)| {
+        let stem = name.strip_suffix(".nckp")?;
+        let stem = stem.rsplit(['/', '\\']).next().unwrap_or(stem);
+        Some((stem, parse(bytes)?))
+    })
+}
+
 /// Reads a `.nckp`; `None` when it is not one.
 #[must_use]
 pub fn parse(bytes: &[u8]) -> Option<View> {

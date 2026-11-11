@@ -53,10 +53,7 @@ impl Face {
         Self {
             controls,
             symbols: script.symbols.clone(),
-            view: data
-                .iter()
-                .find(|(name, _)| name.ends_with(".nckp"))
-                .and_then(|(_, bytes)| crate::perf_view::parse(bytes)),
+            view: crate::perf_view::find(data).map(|(_, view)| view),
         }
     }
 

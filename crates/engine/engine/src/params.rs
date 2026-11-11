@@ -357,23 +357,24 @@ impl Engine {
             }
             // Measured (probes/mod_par_laws.lua): the knob's depth is x²
             // and the route keeps its sign; the bipolar one writes (2x − 1)³.
-            EnginePar::RouteIntensity => match g.mod_mut(slot, generic) {
-                Some(m) => {
+            // A carried kind without a depth keeps the saved one, as reads do.
+            EnginePar::RouteIntensity => {
+                g.mod_mut(slot, generic).is_some_and(|m| {
                     let sign = signed(&m.kind).unwrap_or(1.0).signum();
                     set_signed(&mut m.kind, sign * SQUARE.eval_f64(x) as f32)
-                }
-                None => uncarried(g, slot, generic).is_some_and(|d| {
+                }) || uncarried(g, slot, generic).is_some_and(|d| {
                     *d = d.signum() * SQUARE.eval_f64(x) as f32;
                     true
-                }),
-            },
-            EnginePar::RouteDepth => match g.mod_mut(slot, generic) {
-                Some(m) => set_signed(&mut m.kind, SIGNED_CUBE.eval_f64(x) as f32),
-                None => uncarried(g, slot, generic).is_some_and(|d| {
-                    *d = SIGNED_CUBE.eval_f64(x) as f32;
-                    true
-                }),
-            },
+                })
+            }
+            EnginePar::RouteDepth => {
+                g.mod_mut(slot, generic)
+                    .is_some_and(|m| set_signed(&mut m.kind, SIGNED_CUBE.eval_f64(x) as f32))
+                    || uncarried(g, slot, generic).is_some_and(|d| {
+                        *d = SIGNED_CUBE.eval_f64(x) as f32;
+                        true
+                    })
+            }
             EnginePar::LfoFade => g.lfo_mut(slot).is_some_and(|l| {
                 l.fade_ms = STAGE_10S.eval_f64(x) as f32;
                 true

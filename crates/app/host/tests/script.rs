@@ -3583,16 +3583,46 @@ fn a_callback_playing_past_the_note_table_still_starts_its_last_note() {
 #[test]
 fn an_envelope_stage_on_a_group_without_one_is_a_missing_target() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let z = zone(&mut store, 0.5, 0);
-    let e = engine(
+    let (a, b) = (zone(&mut store, 0.5, 0), zone(&mut store, 0.5, 0));
+    let mut e = engine(
         &store,
-        vec![z],
+        vec![a],
         "on init
             set_engine_par($ENGINE_PAR_ATTACK, 500000, 0, find_mod(0, \"ENV_AHDSR\"), -1)
             set_engine_par($ENGINE_PAR_SUSTAIN, 1000000, 0, 0, -1)
+            message(get_engine_par($ENGINE_PAR_ATTACK, 0, 0, -1) & \"|\" ...
+                & get_engine_par_disp($ENGINE_PAR_ATTACK, 0, 0, -1) & \"|\")
         end on",
     );
     assert_eq!(e.unhandled_actions(), vec![]);
+    // A missing target reads 0 and shows "".
+    assert_eq!(e.last_message(), "0||");
+    // The dropped writes leave the group's envelope as it was.
+    let mut plain = engine(&store, vec![b], "on init\nend on");
+    assert_eq!(level(&mut e, &[on(60)]), level(&mut plain, &[on(60)]));
+}
+
+/// `load_performance_view` loads the view the host prepared, by its file
+/// name in any case; another name has no view to load.
+#[test]
+fn a_script_loads_only_the_performance_view_it_has() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let data = [(
+        "performance_view/Main.nckp".to_owned(),
+        br#"{"value":{"performanceView":{}}}"#.to_vec(),
+    )];
+    let run = |name: &str| {
+        let source = format!("on init\n load_performance_view(\"{name}\")\nend on");
+        let script = kontra_ksp::compile(&source, &[]).unwrap();
+        let mut plan = Plan::new(vec![], 16);
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &data)];
+        Engine::new(Arc::new(plan), store.client(), RATE).unhandled_actions()
+    };
+    assert_eq!(run("main"), vec![]);
+    assert_eq!(
+        run("Other"),
+        vec![(kontra_engine::Action::LoadPerformanceView, 1)]
+    );
 }
 
 /// Conflux: a route the engine does not carry (a wavetable target) keeps
