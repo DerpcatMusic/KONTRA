@@ -291,7 +291,8 @@ impl Engine {
             };
             n.pass = slot.saturating_add(1);
             if usize::from(n.pass) == plan.scripts.len() {
-                queued = self.queue_start(note);
+                self.queue_start(note);
+                queued = true;
             }
             if let Some(entry) = script.callbacks.note {
                 self.run_callback(slot, entry, Running::new(Kind::Note, Some(note)));
@@ -302,11 +303,20 @@ impl Engine {
         }
     }
 
-    fn queue_start(&mut self, note: NoteRef) -> bool {
+    /// Queues `note` to start. Never drops it: the note table holds no more
+    /// notes than the list has room for, so a full list holds notes since
+    /// stolen or started, and pruning those makes room.
+    pub(crate) fn queue_start(&mut self, note: NoteRef) {
+        if self.pending.len() == self.pending.capacity() {
+            let notes = &self.notes;
+            self.pending
+                .retain(|&r| notes.get(r).is_some_and(|n| !n.started));
+        }
         if self.pending.len() < self.pending.capacity() {
             self.pending.push(note);
+        } else {
+            self.stats.notes_refused += 1;
         }
-        true
     }
 
     /// Runs the release callbacks of the slots after `note`'s player (from
