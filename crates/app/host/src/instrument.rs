@@ -107,6 +107,10 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
     // Discovery walks the disk, so only a KSP script triggers it, and once.
     let mut factory_folder = None;
+    // `SET_CONDITION` symbols pass on to the following slots (KSP manual,
+    // "Preprocessor & System Scripts"), and Kontakt's own script runs after
+    // the last: what is set when every slot has run is what it reads.
+    let mut conditions: Vec<String> = Vec::new();
     for (n, script) in instrument.scripts.iter().enumerate() {
         if script.dialect == ir::Dialect::Lua {
             match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
@@ -124,8 +128,10 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
             }
             continue;
         }
-        match kontra_ksp::compile(&script.source, &[]) {
+        let set: Vec<&str> = conditions.iter().map(String::as_str).collect();
+        match kontra_ksp::compile(&script.source, &set) {
             Ok(compiled) => {
+                conditions.clone_from(&compiled.conditions);
                 let mut planned = crate::script::plan(&compiled, &script.saved, &script.data);
                 planned.source_folder =
                     crate::script::source_folder(instrument.source_path.as_deref());
@@ -141,20 +147,6 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                         feature: "MIDI automation of a missing script control".into(),
                         detail: script.name.clone(),
                     });
-                }
-                // Kontakt's own script plays release triggers and holds notes
-                // under the sustain pedal unless a slot switches that part off.
-                let off = |part: &str| {
-                    compiled
-                        .conditions
-                        .iter()
-                        .any(|c| c.eq_ignore_ascii_case(part))
-                };
-                if off("NO_SYS_SCRIPT_RLS_TRIG") {
-                    plan.release_zones = kontra_engine::ReleaseZones::WithNote;
-                }
-                if off("NO_SYS_SCRIPT_PEDAL") {
-                    plan.sustain_pedal = kontra_engine::SustainPedal::ToScripts;
                 }
                 plan.scripts.push(planned);
                 faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
@@ -172,6 +164,15 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 ),
             }),
         }
+    }
+    // Kontakt's own script plays release triggers and holds notes under the
+    // sustain pedal unless the slots leave that part switched off.
+    let declares = |part: &str| conditions.iter().any(|c| c.eq_ignore_ascii_case(part));
+    if declares("NO_SYS_SCRIPT_RLS_TRIG") {
+        plan.release_zones = kontra_engine::ReleaseZones::WithNote;
+    }
+    if declares("NO_SYS_SCRIPT_PEDAL") {
+        plan.sustain_pedal = kontra_engine::SustainPedal::ToScripts;
     }
     Loaded {
         name: instrument.name,
@@ -224,6 +225,38 @@ fn factory_folder_of(candidates: Vec<std::path::PathBuf>) -> Option<kontra_engin
 
 #[cfg(test)]
 mod tests {
+    /// A slot's `SET_CONDITION` reaches the slots after it and Kontakt's own
+    /// script after the last; a later `RESET_CONDITION` takes it back.
+    #[test]
+    fn the_system_script_reads_the_conditions_every_slot_leaves() {
+        use kontra_engine::{ReleaseZones, SustainPedal};
+        let ksp = |slot: usize, source: &str| super::ir::Script {
+            name: format!("slot {slot}"),
+            slot,
+            dialect: super::ir::Dialect::Ksp,
+            source: source.into(),
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        };
+        let set = "on init\nSET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)\nend on";
+        let reset = "on init\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nend on";
+        let plan = |scripts| {
+            let mut store = kontra_stream::Store::new(kontra_stream::StoreConfig::DEFAULT).unwrap();
+            let instrument = super::ir::Instrument {
+                scripts,
+                ..super::ir::Instrument::DEFAULT
+            };
+            super::build(instrument, 48_000, &mut store).plan
+        };
+        let first = plan(vec![ksp(0, set), ksp(1, "on init\nend on")]);
+        assert_eq!(first.sustain_pedal, SustainPedal::ToScripts);
+        assert_eq!(first.release_zones, ReleaseZones::WithNote);
+        let undone = plan(vec![ksp(0, set), ksp(1, reset)]);
+        assert_eq!(undone.sustain_pedal, SustainPedal::Holds);
+        assert_eq!(undone.release_zones, ReleaseZones::WithNote);
+    }
+
     #[test]
     fn factory_folder_is_the_first_installed_executables_folder() {
         let dir = std::env::temp_dir().join(format!("kontra-factory-{}", std::process::id()));

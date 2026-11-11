@@ -458,6 +458,7 @@ impl Engine {
             Work::Input(event) => event,
             Work::Resume(slot, co, wait) => return self.resume(slot, co, wait),
             Work::Release(note) => return self.end_note(note),
+            Work::ParentUp(note) => return self.parent_up(note),
             Work::PgsChanged => return self.run_pgs_changed(),
             Work::Listen {
                 slot,
@@ -577,6 +578,29 @@ impl Engine {
         self.release(note);
     }
 
+    /// A `play_note(.., -1)` child's parent is released: its release
+    /// callbacks run, and one that ignores it keeps it playing until a
+    /// `note_off` (Una Corda's pedal holds its dry tones this way; native
+    /// rings on, and stops at the pedal-up `note_off`).
+    fn parent_up(&mut self, note: NoteRef) {
+        match self.notes.get(note) {
+            Some(n) if !n.released && !n.key_up => {}
+            _ => return,
+        }
+        if let Some(slot) = self.release_callbacks(note) {
+            if let Some(n) = self.notes.get_mut(note) {
+                n.key_up = true;
+            }
+            // As for a held key-up: its own children still end (note_off).
+            let script = self.plan.scripts.get(usize::from(slot));
+            if script.is_some_and(|s| s.held_release_ends_children) {
+                self.end_children(note);
+            }
+        } else {
+            self.release(note);
+        }
+    }
+
     /// Ends `note` at the current time, after the running callback returns.
     pub(crate) fn queue_end(&mut self, note: NoteRef) {
         if !self.queue.push(self.now, Work::Release(note)) {
@@ -623,7 +647,10 @@ impl Engine {
         let mut from = 0;
         while let Some(child) = self.notes.next_child(note, from) {
             from = child.slot() + 1;
-            self.queue_end(child);
+            if !self.queue.push(self.now, Work::ParentUp(child)) {
+                self.stats.events_refused += 1;
+                self.release(child);
+            }
         }
     }
 
