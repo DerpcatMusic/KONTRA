@@ -262,6 +262,141 @@ fn a_cold_instrument_under_dense_input_starts_every_note_on_its_frame() {
     );
     assert_eq!(peak, VOICES);
     assert_eq!(stats.voices_stolen as usize, dense.len() - VOICES);
+    // Every stolen voice fades out: none is cut (a click).
+    assert_eq!(stats.voices_cut, 0);
     assert_eq!((stats.notes_refused, stats.events_refused), (0, 0));
     assert!(stats.missing_frames > missing);
+}
+
+/// A chord as wide as the voice limit on a full pool steals every voice at
+/// once; each stolen voice fades out in a spare slot, audible to the end of
+/// its fade, never cut. Only more than the limit fading at once cuts.
+#[test]
+fn a_full_limit_chord_fades_every_stolen_voice() {
+    let gate = Arc::new(AtomicBool::new(true));
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let chord = |base: u8| (base..base + VOICES as u8).collect::<Vec<_>>();
+    // Chord one hard left, two hard right, three left again.
+    let (one, two, three) = (chord(40), chord(60), chord(80));
+    let zones = (one.iter().chain(&two).chain(&three))
+        .map(|&k| {
+            zone(
+                &mut store,
+                &gate,
+                k,
+                if (60..80).contains(&k) { 1.0 } else { -1.0 },
+                false,
+            )
+        })
+        .collect::<std::io::Result<_>>()
+        .unwrap();
+    let mut plan = Plan::new(zones, VOICES);
+    for g in &mut plan.groups {
+        g.mods.clear();
+        g.envelope.release = 2_000;
+    }
+    let plan = Arc::new(plan);
+    let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    let (at_two, at_three) = (1_000u64, 3_000u64);
+    let fade = u64::from(RATE) / 100;
+    let mut events: Vec<_> = one.iter().map(|&k| on(0, k)).collect();
+    events.extend(two.iter().map(|&k| on(at_two, k)));
+    let out = render(&mut engine, &events, 0, 2 * BLOCK as u64 + at_two);
+    let stats = engine.stats();
+    assert_eq!((stats.voices_stolen, stats.voices_cut), (VOICES as u64, 0));
+    // The first chord sounds on through its fade, then is gone.
+    let left = |n: u64| out[n as usize][0];
+    assert!(
+        (at_two..at_two + fade - 1).all(|n| left(n) != 0.0),
+        "a stolen voice went silent early"
+    );
+    assert!((at_two + fade + 1..out.len() as u64).all(|n| left(n) == 0.0));
+    assert!(out[at_two as usize..].iter().all(|f| f[1] != 0.0));
+
+    // A third full chord inside the first's fade: twice the limit would
+    // fade at once. The pool's one extra slot takes the first steal; each
+    // later one cuts the oldest fading voice.
+    let mut engine = Engine::new(plan, store.client(), RATE);
+    events.extend(three.iter().map(|&k| on(at_two + fade / 2, k)));
+    render(&mut engine, &events, 0, at_three);
+    let stats = engine.stats();
+    assert_eq!(stats.voices_stolen, 2 * VOICES as u64);
+    assert_eq!(stats.voices_cut, VOICES as u64 - 1);
+}
+
+/// Chokes and steals fade in the same spare slots: half a full chord
+/// choked while the next chord steals the other half is a full limit of
+/// fades, none cut, the choked voices audible to the end of their fade.
+/// A further full chord inside those fades is past the bound and cuts.
+#[test]
+fn chokes_and_steals_share_the_fade_slots() {
+    let gate = Arc::new(AtomicBool::new(true));
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let chord = |base: u8| (base..base + VOICES as u8).collect::<Vec<_>>();
+    let (one, two, three) = (chord(40), chord(60), chord(80));
+    let zones = (one.iter().chain(&two).chain(&three))
+        .map(|&k| zone(&mut store, &gate, k, if k < 44 { -1.0 } else { 1.0 }, false))
+        .collect::<std::io::Result<_>>()
+        .unwrap();
+    let mut plan = Plan::new(zones, VOICES);
+    for g in &mut plan.groups {
+        g.mods.clear();
+        g.envelope.release = 2_000;
+    }
+    let plan = Arc::new(plan);
+    let at = 1_000u64;
+    let fade = u64::from(RATE) / 100;
+    let choke = |key: u8| Timed {
+        at: SampleTime(at),
+        body: Event::Choke(HostPattern {
+            port: 0,
+            channel: 0,
+            key: i32::from(key),
+            id: -1,
+            clap: true,
+        }),
+    };
+    // Keys 40..44 (hard left) are choked; the rest are stolen.
+    let mut events: Vec<_> = one.iter().map(|&k| on(0, k)).collect();
+    events.extend(one.iter().take(VOICES / 2).map(|&k| choke(k)));
+    events.extend(two.iter().map(|&k| on(at, k)));
+    let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    let out = render(&mut engine, &events, 0, 2 * BLOCK as u64 + at);
+    let stats = engine.stats();
+    assert_eq!(
+        (stats.voices_stolen, stats.voices_cut),
+        (VOICES as u64 / 2, 0)
+    );
+    let left = |n: u64| out[n as usize][0];
+    assert!(
+        (at..at + fade - 1).all(|n| left(n) != 0.0),
+        "a choked voice went silent early"
+    );
+    assert!((at + fade + 1..out.len() as u64).all(|n| left(n) == 0.0));
+
+    // A third full chord inside those fades: the limit fading already, then
+    // as many again. The pool's one extra slot takes the first steal.
+    events.extend(three.iter().map(|&k| on(at + fade / 2, k)));
+    let mut engine = Engine::new(plan, store.client(), RATE);
+    render(&mut engine, &events, 0, 3 * at);
+    let stats = engine.stats();
+    assert_eq!(stats.voices_stolen, VOICES as u64 / 2 + VOICES as u64);
+    assert_eq!(stats.voices_cut, VOICES as u64 - 1);
+}
+
+/// Renders frames `from..to` in host blocks with the events in each.
+fn render(engine: &mut Engine, events: &[Timed<Event>], from: u64, to: u64) -> Vec<[f32; 2]> {
+    let mut out = Vec::new();
+    let mut block = [[0.0; 2]; BLOCK];
+    let mut at = from;
+    while at < to {
+        let end = at + BLOCK as u64;
+        let input: Vec<_> = (events.iter().copied())
+            .filter(|e| (at..end).contains(&e.at.0))
+            .collect();
+        engine.process(&mut block, &input);
+        out.extend_from_slice(&block);
+        at = end;
+    }
+    out
 }

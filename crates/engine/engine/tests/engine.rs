@@ -344,8 +344,8 @@ fn a_burst_of_512_events_in_one_block_loses_no_note() {
         (0, 0),
         "{stats:?}"
     );
-    // Only the voice limit steals; a burst past the fade reserve ends some
-    // of those fades early (voices_cut), never a note still owed a voice.
+    // Only the voice limit steals; a burst stealing more than the limit within
+    // one fade ends some fades early (voices_cut), never a note owed a voice.
     assert_eq!(stats.voices_stolen, 256 - 64, "{stats:?}");
     assert_eq!(engine.playing_voices(), 64);
 }

@@ -43,8 +43,8 @@ application or law ID was recorded.
 legato, chords and repeats with slow and fast CC1/CC11 sweeps, then 20 seconds
 past the last note-off. A file scenario is `{"events":[{"frame":0,
 "type":"note_on","key":60},{"frame":28800,"type":"note_off","key":60}]}`;
-`cc` events use `cc` and `value` fields. Frames are at 48 kHz and note-on
-velocity is 100. Reports include inputs, block-boundary EQ route/voice snapshots,
+`cc` events use `cc` and `value` fields. Frames are at 48 kHz. A note-on
+takes an optional `velocity`, 0..127; without one it is 100. Reports include inputs, block-boundary EQ route/voice snapshots,
 peak, clipped samples, maximum adjacent sample jump and the stereo second-
 difference energy in a ±5 ms window around each CC event. This energy is a
 measurement, not by itself a click verdict. The per-voice peak is the last

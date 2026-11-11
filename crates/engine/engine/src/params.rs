@@ -263,15 +263,22 @@ impl Engine {
         }
         let ms = |frames: u32| f64::from(frames) * 1000.0 / f64::from(self.rate);
         let e = &g.envelope;
-        let route = || g.mods.iter().find(|m| addressed(m, slot, generic));
+        // A carried route's depth, else the saved one of a route not carried.
+        let route = || {
+            let carried = g.mods.iter().find(|m| addressed(m, slot, generic));
+            carried.and_then(|m| signed(&m.kind)).or_else(|| {
+                let r = g.routes.iter().find(|r| i32::from(r.slot) == slot)?;
+                r.depths.get(usize::try_from(generic.max(0)).ok()?).copied()
+            })
+        };
         let x = match par {
             EnginePar::ModBypass => {
                 let m = g.mods.iter().find(|m| i32::from(m.slot) == slot)?;
                 return Some(i32::from(m.bypass));
             }
             EnginePar::ReleaseTrigger => return Some(i32::from(g.release_trigger)),
-            EnginePar::RouteIntensity => setting(&SQUARE, f64::from(signed(&route()?.kind)?.abs())),
-            EnginePar::RouteDepth => setting(&SIGNED_CUBE, f64::from(signed(&route()?.kind)?)),
+            EnginePar::RouteIntensity => setting(&SQUARE, f64::from(route()?.abs())),
+            EnginePar::RouteDepth => setting(&SIGNED_CUBE, f64::from(route()?)),
             EnginePar::LfoFade => stage_setting(&STAGE_10S, f64::from(g.lfo(slot)?.fade_ms)),
             EnginePar::Attack => stage_setting(&STAGE_15S, ms(e.attack)),
             EnginePar::Hold => stage_setting(&STAGE_15S, ms(e.hold)),
@@ -350,13 +357,29 @@ impl Engine {
             }
             // Measured (probes/mod_par_laws.lua): the knob's depth is x²
             // and the route keeps its sign; the bipolar one writes (2x − 1)³.
-            EnginePar::RouteIntensity => g.mod_mut(slot, generic).is_some_and(|m| {
-                let sign = signed(&m.kind).unwrap_or(1.0).signum();
-                set_signed(&mut m.kind, sign * SQUARE.eval_f64(x) as f32)
-            }),
-            EnginePar::RouteDepth => g
-                .mod_mut(slot, generic)
-                .is_some_and(|m| set_signed(&mut m.kind, SIGNED_CUBE.eval_f64(x) as f32)),
+            // A route not carried keeps the depth a script writes. A carried
+            // kind the engine cannot write (an amplitude envelope) keeps it
+            // too, so reads agree, but the write is reported as unhandled.
+            EnginePar::RouteIntensity => {
+                let saved = uncarried(g, slot, generic).map(|d| {
+                    *d = d.signum() * SQUARE.eval_f64(x) as f32;
+                });
+                match g.mod_mut(slot, generic) {
+                    Some(m) => {
+                        let sign = signed(&m.kind).unwrap_or(1.0).signum();
+                        set_signed(&mut m.kind, sign * SQUARE.eval_f64(x) as f32)
+                    }
+                    None => saved.is_some(),
+                }
+            }
+            EnginePar::RouteDepth => {
+                let saved =
+                    uncarried(g, slot, generic).map(|d| *d = SIGNED_CUBE.eval_f64(x) as f32);
+                match g.mod_mut(slot, generic) {
+                    Some(m) => set_signed(&mut m.kind, SIGNED_CUBE.eval_f64(x) as f32),
+                    None => saved.is_some(),
+                }
+            }
             EnginePar::LfoFade => g.lfo_mut(slot).is_some_and(|l| {
                 l.fade_ms = STAGE_10S.eval_f64(x) as f32;
                 true
@@ -478,4 +501,11 @@ impl Engine {
         }
         self.hits = hits;
     }
+}
+
+/// The saved depth of `group`'s route at `slot`, target `target`, when the
+/// engine does not carry it.
+fn uncarried(g: &mut Group, slot: i32, target: i32) -> Option<&mut f32> {
+    let r = g.routes.iter_mut().find(|r| i32::from(r.slot) == slot)?;
+    r.depths.get_mut(usize::try_from(target.max(0)).ok()?)
 }

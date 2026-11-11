@@ -64,6 +64,17 @@ impl Engine {
             | Action::FsNavigate
             | Action::SetControlParStrArr
             | Action::WillNeverTerminate => HostValue::Nothing,
+            // The host reads the script's performance view at load and
+            // declares its controls (kontra-host ui.rs); a request for
+            // that view is done. Any other name has no view to show.
+            Action::LoadPerformanceView => {
+                let asked = call.texts.first().map_or("", Text::as_str);
+                let prepared = self.script().and_then(|s| s.view.as_deref());
+                if !prepared.is_some_and(|v| v.eq_ignore_ascii_case(asked)) {
+                    self.count_unhandled(Action::LoadPerformanceView);
+                }
+                HostValue::Nothing
+            }
             // Time Machine Pro's own voice pools: KONTRA's stretch draws on
             // the engine's voices, so the change is done at once.
             Action::SetVoiceLimit => HostValue::Int(self.start_async(Exit::Done)),

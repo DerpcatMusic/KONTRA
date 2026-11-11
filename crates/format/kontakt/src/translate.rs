@@ -536,6 +536,7 @@ fn translate_group(
                 slot: slot(n),
                 name: p.name.clone(),
                 names: p.targets.iter().map(|t| t.name.clone()).collect(),
+                depths: p.targets.iter().map(|t| t.signed_intensity()).collect(),
             });
             let volume = p
                 .targets
