@@ -357,23 +357,28 @@ impl Engine {
             }
             // Measured (probes/mod_par_laws.lua): the knob's depth is x²
             // and the route keeps its sign; the bipolar one writes (2x − 1)³.
-            // A carried kind without a depth keeps the saved one, as reads do.
+            // A route not carried keeps the depth a script writes. A carried
+            // kind the engine cannot write (an amplitude envelope) keeps it
+            // too, so reads agree, but the write is reported as unhandled.
             EnginePar::RouteIntensity => {
-                g.mod_mut(slot, generic).is_some_and(|m| {
-                    let sign = signed(&m.kind).unwrap_or(1.0).signum();
-                    set_signed(&mut m.kind, sign * SQUARE.eval_f64(x) as f32)
-                }) || uncarried(g, slot, generic).is_some_and(|d| {
+                let saved = uncarried(g, slot, generic).map(|d| {
                     *d = d.signum() * SQUARE.eval_f64(x) as f32;
-                    true
-                })
+                });
+                match g.mod_mut(slot, generic) {
+                    Some(m) => {
+                        let sign = signed(&m.kind).unwrap_or(1.0).signum();
+                        set_signed(&mut m.kind, sign * SQUARE.eval_f64(x) as f32)
+                    }
+                    None => saved.is_some(),
+                }
             }
             EnginePar::RouteDepth => {
-                g.mod_mut(slot, generic)
-                    .is_some_and(|m| set_signed(&mut m.kind, SIGNED_CUBE.eval_f64(x) as f32))
-                    || uncarried(g, slot, generic).is_some_and(|d| {
-                        *d = SIGNED_CUBE.eval_f64(x) as f32;
-                        true
-                    })
+                let saved =
+                    uncarried(g, slot, generic).map(|d| *d = SIGNED_CUBE.eval_f64(x) as f32);
+                match g.mod_mut(slot, generic) {
+                    Some(m) => set_signed(&mut m.kind, SIGNED_CUBE.eval_f64(x) as f32),
+                    None => saved.is_some(),
+                }
             }
             EnginePar::LfoFade => g.lfo_mut(slot).is_some_and(|l| {
                 l.fade_ms = STAGE_10S.eval_f64(x) as f32;
