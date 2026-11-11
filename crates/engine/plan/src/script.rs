@@ -27,8 +27,8 @@ pub struct ScriptPlan {
     pub restore_texts: Vec<(u32, Text)>,
     pub controls: Controls,
     pub engine_pars: EnginePars,
-    /// The translator's law for each reverb control, in `ir::ReverbPar::ALL` order.
-    pub reverb_laws: [kontra_ir::Law; 8],
+    /// The translator's law for each reverb control, keyed by its control identity.
+    pub reverb_laws: kontra_ir::ReverbControls<kontra_ir::Law>,
     /// The networks [`EnginePar::ReverbNetwork`] picks from, in order.
     pub reverb_networks: Vec<kontra_ir::Network>,
     /// What each [`EnginePar::Knob`] sets, through the translator's law.
@@ -168,11 +168,15 @@ pub struct Callbacks {
     pub note: Option<u32>,
     pub release: Option<u32>,
     pub controller: Option<u32>,
+    /// `on poly_at`, run for each polyphonic aftertouch message.
+    pub poly_at: Option<u32>,
     pub persistence_changed: Option<u32>,
     pub listener: Option<u32>,
     pub pgs_changed: Option<u32>,
     /// `on ui_controls`, run first when any control moves.
     pub ui_controls: Option<u32>,
+    /// `on ui_update`, run after a control moved.
+    pub ui_update: Option<u32>,
     pub async_complete: Option<u32>,
     /// Every control by UI id, with its own `on ui_control` if it has one.
     pub ui_control: Vec<(i32, Option<u32>)>,

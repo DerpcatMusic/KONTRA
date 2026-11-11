@@ -114,11 +114,10 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                 fields.insert(
                     "reverb_laws".into(),
                     json!(
-                        script
-                            .reverb_laws
+                        kontra_engine::ir::ReverbPar::ALL
                             .iter()
                             .enumerate()
-                            .map(|(index, curve)| json!({"index":index, "law":law(curve)}))
+                            .map(|(index, par)| json!({"index":index, "id":par.id(), "law":law(script.reverb_laws.get(*par))}))
                             .collect::<Vec<_>>()
                     ),
                 );

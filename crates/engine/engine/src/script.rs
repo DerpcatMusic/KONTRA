@@ -113,13 +113,16 @@ impl Engine {
             n.first = first;
             n.pass = first;
         }
-        let list = if usize::from(first) < self.plan.scripts.len() {
-            &mut self.forward
+        if usize::from(first) == self.plan.scripts.len() {
+            self.queue_start(r);
+        } else if self.forward.len() < self.forward.capacity() {
+            self.forward.push(r);
         } else {
-            &mut self.pending
-        };
-        if list.len() < list.capacity() {
-            list.push(r);
+            // ponytail: a full forward list refuses the note; pruning it would
+            // shift the indices an outer `forward_from` walks.
+            self.notes.remove(r);
+            self.stats.notes_refused += 1;
+            return 0;
         }
         r.event_id()
     }
@@ -258,6 +261,9 @@ impl HostApi for Engine {
             return value;
         }
         if let Some(value) = self.ui_call(&mut call) {
+            return value;
+        }
+        if let Some(value) = self.runtime_call(&mut call) {
             return value;
         }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
@@ -662,7 +668,7 @@ impl HostApi for Engine {
 
 impl Engine {
     /// Counts a call the engine does not carry.
-    fn count_unhandled(&mut self, action: Action) {
+    pub(crate) fn count_unhandled(&mut self, action: Action) {
         self.stats.actions_unhandled += 1;
         if let Some(n) = self.unhandled.get_mut(usize::from(action.id())) {
             *n += 1;

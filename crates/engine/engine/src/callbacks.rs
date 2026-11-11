@@ -64,10 +64,10 @@ impl Engine {
     }
 
     /// The editor moved widget `n` of script `slot`'s own (Lua) page to `value`.
-    pub fn set_widget(&mut self, slot: u8, n: u32, value: f64) {
+    pub fn set_widget(&mut self, slot: u8, n: u32, value: f64, cell: Option<u32>) {
         let entry = (self.plan.scripts.get(usize::from(slot))).and_then(|s| s.callbacks.widget);
         if let (Some(entry), Some(vm)) = (entry, self.vm_mut(slot)) {
-            vm.stage_widget(n, value);
+            vm.stage_widget(n, value, cell);
             let mut running = Running::new(Kind::UiControl, None);
             running.ui = i32::try_from(n).unwrap_or(i32::MAX);
             self.run_callback(slot, entry, running);
@@ -96,7 +96,10 @@ impl Engine {
         let controls = &script.controls;
         let n = self.control_index_in(slot, id);
         let cell = n.and_then(|n| controls.cells.get(n).copied().flatten());
-        if cell.is_none() && own.is_none() {
+        // Any registered control's edit runs `on ui_controls` and `on
+        // ui_update` ("every GUI change", KSP manual), even one with no value
+        // cell (a text edit) and no callback of its own.
+        if n.is_none() && own.is_none() {
             return;
         }
         let len = n.and_then(|n| controls.steps.get(n)).copied().unwrap_or(0);
@@ -110,6 +113,7 @@ impl Engine {
         for (kind, entry) in [
             (Kind::UiControls, script.callbacks.ui_controls),
             (Kind::UiControl, own),
+            (Kind::UiUpdate, script.callbacks.ui_update),
         ] {
             if let Some(entry) = entry {
                 let running = Running {
@@ -287,7 +291,8 @@ impl Engine {
             };
             n.pass = slot.saturating_add(1);
             if usize::from(n.pass) == plan.scripts.len() {
-                queued = self.queue_start(note);
+                self.queue_start(note);
+                queued = true;
             }
             if let Some(entry) = script.callbacks.note {
                 self.run_callback(slot, entry, Running::new(Kind::Note, Some(note)));
@@ -298,11 +303,20 @@ impl Engine {
         }
     }
 
-    fn queue_start(&mut self, note: NoteRef) -> bool {
+    /// Queues `note` to start. Never drops it: the note table holds no more
+    /// notes than the list has room for, so a full list holds notes since
+    /// stolen or started, and pruning those makes room.
+    pub(crate) fn queue_start(&mut self, note: NoteRef) {
+        if self.pending.len() == self.pending.capacity() {
+            let notes = &self.notes;
+            self.pending
+                .retain(|&r| notes.get(r).is_some_and(|n| !n.started));
+        }
         if self.pending.len() < self.pending.capacity() {
             self.pending.push(note);
+        } else {
+            self.stats.notes_refused += 1;
         }
-        true
     }
 
     /// Runs the release callbacks of the slots after `note`'s player (from

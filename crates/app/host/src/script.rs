@@ -6,6 +6,21 @@ use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 /// Whether the engine or the UI tree understands catalog name `name`
 /// (every other one is an opaque symbol nothing acts on), for coverage
+/// Names the engine reads without a table: list ids, the modifier keys a
+/// click held, a text line added through a parameter, and the log kinds
+/// `disable_logging` takes (KONTRA shows no script log).
+const CARRIED: [&str; 9] = [
+    "$CONTROL_PAR_NUM_ITEMS",
+    "$CONTROL_PAR_SELECTED_ITEM_IDX",
+    "$CONTROL_PAR_KEY_SHIFT",
+    "$CONTROL_PAR_KEY_ALT",
+    "$CONTROL_PAR_KEY_CONTROL",
+    "$CONTROL_PAR_TEXTLINE",
+    "$NI_LOG_MESSAGE",
+    "$NI_LOG_WARNING",
+    "$NI_LOG_WATCHING",
+];
+
 /// reports.
 #[must_use]
 pub fn understood(name: &str) -> bool {
@@ -14,7 +29,7 @@ pub fn understood(name: &str) -> bool {
         || engine_par(&kontra_format_kontakt::engine_pars(), name).is_some()
         || crate::ui::mapped(&upper)
         || LOOK.contains(&upper.as_str())
-        || ["$CONTROL_PAR_NUM_ITEMS", "$CONTROL_PAR_SELECTED_ITEM_IDX"].contains(&upper.as_str())
+        || CARRIED.contains(&upper.as_str())
 }
 
 /// What `name` drives, and its text law: a knob row is
@@ -48,10 +63,7 @@ const COROUTINES: usize = 64;
 /// for coverage reports.
 #[must_use]
 pub fn runs(kind: CallbackKind) -> bool {
-    !matches!(
-        kind,
-        CallbackKind::PolyAt | CallbackKind::UiUpdate | CallbackKind::Rpn | CallbackKind::Nrpn
-    )
+    !matches!(kind, CallbackKind::Rpn | CallbackKind::Nrpn)
 }
 
 /// The script's arrays, by first cell, for the array files it names.
@@ -86,10 +98,12 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             note: entry(CallbackKind::Note),
             release: entry(CallbackKind::Release),
             controller: entry(CallbackKind::Controller),
+            poly_at: entry(CallbackKind::PolyAt),
             persistence_changed: entry(CallbackKind::PersistenceChanged),
             listener: entry(CallbackKind::Listener),
             pgs_changed: entry(CallbackKind::PgsChanged),
             ui_controls: entry(CallbackKind::UiControls),
+            ui_update: entry(CallbackKind::UiUpdate),
             async_complete: entry(CallbackKind::AsyncComplete),
             ui_control: (0u32..)
                 .zip(&script.controls)
@@ -354,6 +368,7 @@ fn look(script: &Script) -> LookPars {
         meter_generic: par("level_meter_generic"),
         picture: par("$CONTROL_PAR_PICTURE"),
         picture_state: par("$CONTROL_PAR_PICTURE_STATE"),
+        textline: symbol(script, "$CONTROL_PAR_TEXTLINE"),
         wallpaper: id("$INST_WALLPAPER_ID"),
         icon: id("$INST_ICON_ID"),
     }
@@ -383,10 +398,12 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             note: entry(defined.note, kontra_lua::Callbacks::NOTE),
             release: entry(defined.release, kontra_lua::Callbacks::RELEASE),
             controller: entry(defined.controller, kontra_lua::Callbacks::CONTROLLER),
+            poly_at: None,
             persistence_changed: None,
             listener: None,
             pgs_changed: None,
             ui_controls: None,
+            ui_update: None,
             async_complete: None,
             ui_control: Vec::new(),
             widget: Some(kontra_lua::Callbacks::WIDGET),
@@ -395,7 +412,10 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         controls: Controls::default(),
         engine_pars: EnginePars::default(),
         // No reverb parameter ids are bound, so these are never read.
-        reverb_laws: std::array::from_fn(|_| kontra_engine::ir::Law::Linear { lo: 0.0, hi: 1.0 }),
+        reverb_laws: ir::ReverbControls::from_fn(|_| kontra_engine::ir::Law::Linear {
+            lo: 0.0,
+            hi: 1.0,
+        }),
         reverb_networks: Vec::new(),
         knobs: Vec::new(),
         data: Vec::new(),

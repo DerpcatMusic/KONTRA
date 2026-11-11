@@ -1,5 +1,7 @@
 //! Tokens, then Kontakt's source-order condition preprocessor.
 
+use std::borrow::Cow;
+
 use crate::{Error, Span};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,6 +53,32 @@ fn word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Resolves escaped quotes while preserving all other backslash pairs verbatim.
+/// Borrowing the common unescaped case keeps plain literals allocation-free here.
+#[must_use]
+pub(crate) fn unescape(s: &str) -> Cow<'_, str> {
+    if !s.contains(r#"\""#) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => out.push('"'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    Cow::Owned(out)
+}
+
 /// Tokenizes `source`. Newlines carry no meaning; `...` continuations are skipped.
 pub fn lex(source: &str) -> Result<Vec<Token<'_>>, Error> {
     if u32::try_from(source.len()).is_err() {
@@ -81,14 +109,24 @@ pub fn lex(source: &str) -> Result<Vec<Token<'_>>, Error> {
                 continue;
             }
             b'"' => {
-                let end = s
-                    .get(i + 1..)
-                    .and_then(|r| r.iter().position(|&c| c == b'"' || c == b'\n'));
-                let Some(len) = end.filter(|&len| at(i + 1 + len) == b'"') else {
-                    return Err(Error::new(Span::new(i, i + 1), "unterminated string"));
-                };
-                i += len + 2;
-                Tok::Str(text(start + 1, i - 1))
+                let mut end = i + 1;
+                while end < s.len() {
+                    match at(end) {
+                        b'"' | b'\n' | b'\r' => break,
+                        // Pairing backslashes consistently with unescape keeps
+                        // even backslash runs from swallowing the closing quote.
+                        b'\\' if !matches!(at(end + 1), b'\n' | b'\r' | 0) => end += 2,
+                        _ => end += 1,
+                    }
+                }
+                if at(end) != b'"' {
+                    return Err(Error::new(
+                        Span::new(start, start + 1),
+                        "unterminated string",
+                    ));
+                }
+                i = end + 1;
+                Tok::Str(text(start + 1, end))
             }
             b'.' => {
                 let ops = [
@@ -286,6 +324,54 @@ mod tests {
         assert!(lex("{ open").is_err());
         assert!(lex("1FFFFFFFFh").is_err());
         assert!(lex("1 != 2").is_err());
+    }
+
+    #[test]
+    fn quoted_strings_preserve_paths_and_backslash_pairing() {
+        for raw in [
+            r#"talk about \"manuals\" here"#,
+            r"C:\new\thing\q.wav",
+            r#"π \"音\""#,
+            r"two\\",
+            "",
+        ] {
+            let source = format!("\"{raw}\" next");
+            let tokens = lex(&source).unwrap();
+            assert_eq!(tokens[0].tok, Tok::Str(raw), "source {source:?}");
+            assert_eq!(
+                tokens[0].span,
+                Span::new(0, raw.len() + 2),
+                "source {source:?}"
+            );
+            assert_eq!(tokens[1].tok, Tok::Word("next"), "source {source:?}");
+        }
+        for (raw, decoded) in [
+            (r#"a \"b\""#, r#"a "b""#),
+            (r"C:\new\thing\q.wav", r"C:\new\thing\q.wav"),
+            (r#"a \\"#, r#"a \\"#),
+            (r#"a \\\"b"#, r#"a \\"b"#),
+        ] {
+            assert_eq!(unescape(raw), decoded, "raw {raw:?}");
+        }
+        assert!(matches!(unescape("plain"), Cow::Borrowed("plain")));
+        assert!(matches!(unescape(r"C:\new"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn escaped_quotes_cannot_hide_missing_delimiters_or_newlines() {
+        for source in [
+            "\"open",
+            "\"a\\\"",
+            "\"a\\",
+            "\"a\nb\"",
+            "\"a\\\nb\"",
+            "\"a\rb\"",
+            "\"a\\\r\nb\"",
+        ] {
+            let error = lex(source).unwrap_err();
+            assert_eq!(error.message, "unterminated string", "source {source:?}");
+            assert_eq!(error.span, Span::new(0, 1), "source {source:?}");
+        }
     }
 
     #[test]

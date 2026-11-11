@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{Engine, Kind, Running};
+use crate::{Engine, Kind, Running, SustainPedal};
 
 impl Engine {
     /// MIDI 1.0 channel messages: controllers feed behaviour (ranges, live
@@ -27,6 +27,10 @@ impl Engine {
                 self.refresh_note(note, None);
             }
             self.hits = hits;
+            return;
+        }
+        if status & 0xF0 == 0xA0 {
+            self.poly_aftertouch((word >> 8) as u8 & 0x7F, word as u8 & 0x7F);
             return;
         }
         if status & 0xF0 != 0xB0 {
@@ -59,7 +63,7 @@ impl Engine {
         self.output_controller(controller, value);
         let mut hits = std::mem::take(&mut self.hits);
         if controller == 64 {
-            let down = value >= 64;
+            let down = value >= 64 && self.plan.sustain_pedal == SustainPedal::Holds;
             if let Some(p) = self.pedal.get_mut(usize::from(channel)) {
                 *p = down;
             }
@@ -97,6 +101,24 @@ impl Engine {
         }
         if cc == c.pan {
             self.instrument.pan = ((v - 63.5) / 63.5).clamp(-1.0, 1.0);
+        }
+    }
+
+    /// A key's polyphonic aftertouch: kept for `%POLY_AT`, then each
+    /// script's `on poly_at` runs with the key as `$POLY_AT_NUM`.
+    fn poly_aftertouch(&mut self, key: u8, value: u8) {
+        if let Some(v) = self.poly_at.get_mut(usize::from(key)) {
+            *v = value;
+        }
+        let plan = Arc::clone(&self.plan);
+        for (slot, script) in (0u8..).zip(&plan.scripts) {
+            if let Some(entry) = script.callbacks.poly_at {
+                let running = Running {
+                    controller: key,
+                    ..Running::new(Kind::PolyAt, None)
+                };
+                self.run_callback(slot, entry, running);
+            }
         }
     }
 }

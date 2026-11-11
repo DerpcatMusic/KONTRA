@@ -11,19 +11,33 @@
 
 use std::path::{Path, PathBuf};
 
+use kontra_host::rack::ir;
 use kontra_host::state::{Saved, SavedPart};
-use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
+use moose::core::{ExactAddress, ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
 use moose::prelude::*;
 
 use super::tests::{BLOCK, KONTAKT, RATE, activate};
 use crate::{Dsp, Kontra, KontraParams, Tick};
 
+mod live;
 mod touch;
 
 const UVI: &str = "/data/main/Libraries/UVI";
 
 /// The longest a release tail may ring after a segment's last note-off.
 const TAIL_S: f64 = 20.0;
+/// Below this in every sample after its note-on, a note never sounded.
+const SILENT: f32 = 1e-5;
+/// Below this in both channels, an output block is quiet.
+const QUIET: f32 = 1e-4;
+/// How long an effect tail must stay quiet before the next segment, at least.
+const QUIET_S: f64 = 0.1;
+/// The longest an effect tail may ring after the voices end.
+const RING_OUT_S: f64 = 5.0;
+/// How long an octave probe holds its note.
+const PROBE_S: f64 = 0.1;
+/// The tempo the scenario's engine runs at (no host transport).
+const TEMPO_BPM: f32 = 120.0;
 
 /// One input event, typed MIDI or a host-native (CLAP) note.
 #[derive(Clone, Copy)]
@@ -38,6 +52,50 @@ impl In {
             In::Midi(EventBody::NoteOn { velocity, .. }) => velocity > 0,
             In::Clap(ExactEventBody::Note { kind, .. }) => kind == ExactNoteKind::On,
             _ => false,
+        }
+    }
+
+    /// The same event `by` semitones up (a note; anything else as is).
+    fn shifted(self, by: i8) -> In {
+        let up = |note: u8| note.saturating_add_signed(by).min(127);
+        match self {
+            In::Midi(EventBody::NoteOn {
+                group,
+                channel,
+                note,
+                velocity,
+            }) => In::Midi(EventBody::NoteOn {
+                group,
+                channel,
+                note: up(note),
+                velocity,
+            }),
+            In::Midi(EventBody::NoteOff {
+                group,
+                channel,
+                note,
+                velocity,
+            }) => In::Midi(EventBody::NoteOff {
+                group,
+                channel,
+                note: up(note),
+                velocity,
+            }),
+            In::Clap(ExactEventBody::Note {
+                kind,
+                mut address,
+                velocity,
+            }) => {
+                if let ExactAddress::Value(key) = address.key {
+                    address.key = ExactAddress::Value(up(key));
+                }
+                In::Clap(ExactEventBody::Note {
+                    kind,
+                    address,
+                    velocity,
+                })
+            }
+            other => other,
         }
     }
 
@@ -253,8 +311,127 @@ fn correlated_channels_below_full_scale_do_not_clip() {
     assert!(clips(output_peaks(&[vec![1.01], vec![0.0]])));
 }
 
-/// The performance, a segment at a time: (name, [(frame, event)]).
-fn performance() -> Vec<(&'static str, Vec<(usize, In)>)> {
+/// The performance, a segment at a time: (name, [(frame, event)]), its
+/// notes `by` semitones up.
+fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
+    let segments = performance_at_c4();
+    (segments.into_iter())
+        .map(|(name, events)| {
+            (
+                name,
+                events
+                    .into_iter()
+                    .map(|(f, e)| (f, e.shifted(by)))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// Plays silence until no voice is left and the effects' tail (a reverb, a
+/// delay's next repeat) has stayed quiet in both channels for `quiet_s`, so
+/// it never reads as the next segment's onset: the tail may ring for at most
+/// [`RING_OUT_S`], then must stay quiet for `quiet_s`. Whether it got there.
+fn ring_out(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    last: &mut Played,
+    quiet_s: f64,
+    mut collect: impl FnMut(&Played),
+) -> bool {
+    let mut quiet = 0;
+    for b in 0..(at(RING_OUT_S) + at(quiet_s)).div_ceil(BLOCK) {
+        quiet = if last.voices == 0 && last.channel_peaks.iter().all(|&p| p < QUIET) {
+            quiet + BLOCK
+        } else {
+            0
+        };
+        if quiet >= at(quiet_s) {
+            return true;
+        }
+        if b % 10 == 0 {
+            Tick.run(params);
+        }
+        *last = block(params, dsp, &[], last);
+        collect(last);
+    }
+    false
+}
+
+/// How long the effects stay quiet before the next segment: [`QUIET_S`],
+/// or longer than the plan's longest delay line, whose pending echo would
+/// otherwise come out inside the next segment.
+fn quiet_s(params: &KontraParams) -> f64 {
+    let rack = crate::lock(&params.shared.rack);
+    let plan = rack
+        .as_ref()
+        .and_then(|r| r.parts().first()?.as_ref()?.plan.clone());
+    let delay_ms = |effects: &[Option<ir::Effect>]| {
+        (effects.iter().flatten())
+            .filter(|e| !e.bypass)
+            .filter_map(|e| match e.kind {
+                ir::EffectKind::Delay(d) => Some(
+                    match d.time {
+                        ir::DelayTime::Ms(ms) => ms,
+                        ir::DelayTime::Beats(beats) => beats * 60_000.0 / TEMPO_BPM,
+                    } + d.depth_ms,
+                ),
+                _ => None,
+            })
+            .fold(0.0f32, f32::max)
+    };
+    let longest = plan.map_or(0.0, |p| {
+        (p.groups.iter().map(|g| delay_ms(&g.inserts)))
+            .chain(p.buses.iter().map(|b| delay_ms(&b.inserts)))
+            .chain([delay_ms(&p.inserts), delay_ms(&p.sends), delay_ms(&p.main)])
+            .fold(0.0f32, f32::max)
+    });
+    QUIET_S
+        .max(f64::from(longest) / 1000.0 + QUIET_S)
+        .min(RING_OUT_S)
+}
+
+/// The octave shift that brings the scenario's probe and repeated keys (C4,
+/// D4) where the program plays: a bass's, a tuba's or a script's range may
+/// end below them. Measured: a short note on each, per octave, the first
+/// octave where both start a voice (more voices than before the note-on).
+/// A tail that never rings out leaves the scenario where it was.
+fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
+    // The probe instance plays unaligned: a hold would delay the note past
+    // the probe's window.
+    params.align.set_value(false);
+    Tick.run(params);
+    let quiet = quiet_s(params);
+    let mut sounds = |key: u8| {
+        let before = last.voices;
+        *last = block(params, dsp, &[(0, on(key))], last);
+        // A one-shot may start and end inside this block: its audio counts.
+        let mut sounded = last.voices > before || last.channel_peaks.iter().any(|&p| p >= QUIET);
+        for _ in 0..at(PROBE_S) / BLOCK {
+            *last = block(params, dsp, &[], last);
+            sounded |= last.voices > before;
+        }
+        Tick.run(params);
+        *last = block(params, dsp, &[(0, off(key))], last);
+        ring_out(params, dsp, last, quiet, |_| {}).then_some(sounded)
+    };
+    for by in [0, -12, 12, -24, 24] {
+        let mut all = true;
+        for key in [60u8, 62] {
+            match sounds(key.saturating_add_signed(by)) {
+                Some(true) => {}
+                Some(false) => all = false,
+                None => return 0,
+            }
+        }
+        if all {
+            return by;
+        }
+    }
+    0
+}
+
+fn performance_at_c4() -> Vec<(&'static str, Vec<(usize, In)>)> {
     let probe = vec![(137, on(60)), (at(0.6), off(60))];
     let mut repeats = Vec::new();
     for i in 0..16 {
@@ -353,6 +530,8 @@ struct Played {
     voices: u32,
     stolen: u64,
     refused: u64,
+    cut: u64,
+    missing: u64,
 }
 
 fn output_peaks(channels: &[Vec<f32>]) -> [f32; 2] {
@@ -368,6 +547,18 @@ fn clips(peaks: [f32; 2]) -> bool {
 }
 
 fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Played) -> Played {
+    // Offline, so a slow debug build never starves a voice of data.
+    block_in(params, dsp, events, last, ProcessMode::Offline)
+}
+
+/// [`block`] as the host's `mode` renders it.
+fn block_in(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    events: &[(usize, In)],
+    last: &Played,
+    mode: ProcessMode,
+) -> Played {
     let mut list = EventList::with_capacity(64);
     for &(offset, e) in events {
         let offset = u32::try_from(offset).unwrap_or(0);
@@ -382,9 +573,8 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Pl
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outs, BLOCK);
         let transport = TransportInfo::default();
         let mut out_events = EventList::with_capacity(16);
-        // Offline, so a slow debug build never starves a voice of data.
-        let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events)
-            .with_process_mode(ProcessMode::Offline);
+        let mut cx =
+            ProcessContext::new(&transport, RATE, BLOCK, &mut out_events).with_process_mode(mode);
         <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
     }
     let channel_peaks = output_peaks(&channels);
@@ -393,17 +583,18 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Pl
         .zip(&channels[1])
         .map(|(l, r)| l + r)
         .collect();
-    // The control tick may have taken this block's stats: keep the last.
-    match crate::lock(&params.shared.rack)
-        .as_ref()
-        .and_then(|r| r.stats())
-    {
+    // The control tick may have taken this block's stats, or be loading
+    // with the rack locked: keep the last.
+    let rack = params.shared.rack.try_lock();
+    match rack.as_ref().ok().and_then(|r| r.as_ref()?.stats()) {
         Some(s) => Played {
             audio,
             channel_peaks,
             voices: s.voices,
             stolen: s.voices_stolen,
-            refused: s.notes_refused + s.dropped,
+            refused: s.notes_refused + s.events_refused + s.dropped,
+            cut: s.voices_cut,
+            missing: s.missing_frames,
         },
         None => Played {
             audio,
@@ -427,12 +618,8 @@ fn limited(params: &KontraParams) -> (bool, usize) {
     })
 }
 
-/// Plays the performance on `path`, then touches its controls.
-fn perform(path: PathBuf) -> Report {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+/// A host's saved state with `path` loaded in part 0.
+fn state(path: PathBuf) -> String {
     let saved = Saved::new(vec![SavedPart {
         part: 0,
         path,
@@ -447,32 +634,52 @@ fn perform(path: PathBuf) -> Report {
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
     }]);
+    saved.write()
+}
+
+/// Plays the performance on `path`, then touches its controls.
+fn perform(path: PathBuf) -> Report {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let state = state(path);
+    // Loaded and aligned, the wheel and expression full, as a player starts.
+    let start = || {
+        let (params, mut dsp) = activate(&state);
+        params.align.set_value(true);
+        Tick.run(&params);
+        let mut last = block(
+            &params,
+            &mut dsp,
+            &[(0, cc(1, 127)), (0, cc(11, 127))],
+            &Played::default(),
+        );
+        for _ in 0..at(0.5) / BLOCK {
+            last = block(&params, &mut dsp, &[], &last);
+        }
+        Tick.run(&params);
+        (params, dsp, last)
+    };
     let started = std::time::Instant::now();
-    let (params, mut dsp) = activate(&saved.write());
+    let (params, mut dsp, mut last) = start();
     let load_s = started.elapsed().as_secs_f64();
     eprintln!("{name}: loaded in {load_s:.1} s");
-    params.align.set_value(true);
-    Tick.run(&params);
+    let by = octave_shift(&params, &mut dsp, &mut last);
+    // Any probe can advance script or round-robin state, including C4.
+    // Retire that instance before activating the untouched performance.
+    drop(dsp);
+    drop(params);
+    let (params, mut dsp, mut last) = start();
     let mut failed = Vec::new();
     let mut fail = |what: String| failed.push(format!("{name}: {what}"));
-    // The wheel and expression full, as a player starts.
-    let mut last = Played::default();
-    last = block(
-        &params,
-        &mut dsp,
-        &[(0, cc(1, 127)), (0, cc(11, 127))],
-        &last,
-    );
-    for _ in 0..at(0.5) / BLOCK {
-        last = block(&params, &mut dsp, &[], &last);
-    }
-    Tick.run(&params);
     let latency_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
     let (limited, pool) = limited(&params);
+    let quiet_s = quiet_s(&params);
     let mut onsets = Vec::new();
     let mut segments = Vec::new();
     let mut blocks = 0usize;
-    for (segment, events) in performance() {
+    for (segment, events) in performance(by) {
         let (stolen, refused) = (last.stolen, last.refused);
         let end = events.iter().map(|e| e.0).max().unwrap_or(0) + 1;
         let starts: Vec<usize> = events
@@ -513,20 +720,33 @@ fn perform(path: PathBuf) -> Report {
                 break;
             }
         }
+        let quiet = ring_out(&params, &mut dsp, &mut last, quiet_s, |tail| {
+            peaks.push(tail.audio.iter().fold(0.0f32, |p, x| p.max(x.abs())));
+            for (peak, value) in channel_peaks.iter_mut().zip(tail.channel_peaks) {
+                *peak = peak.max(value);
+            }
+            audio.extend_from_slice(&tail.audio);
+            peak_voices = peak_voices.max(tail.voices);
+        });
+        if !quiet {
+            fail(format!(
+                "{segment}: the effects still sound {RING_OUT_S} s after its voices ended"
+            ));
+        }
         if starts.is_empty() {
             continue;
         }
         // Every note sounds: something plays after each note-on.
         let hold = at(f64::from(latency_ms) / 1000.0 + 0.05);
         let loudest = peaks.iter().copied().fold(0.0, f32::max);
-        if loudest < 1e-4 {
+        if loudest < QUIET {
             fail(format!("{segment}: silent"));
         }
         for &s in &starts {
             let after = audio
                 .get(s..(s + hold + at(0.1)).min(audio.len()))
                 .unwrap_or(&[]);
-            if after.iter().all(|x| x.abs() < 1e-5) {
+            if after.iter().all(|x| x.abs() < SILENT) {
                 fail(format!(
                     "{segment}: the note at {:.3} s never sounded",
                     s as f64 / RATE
@@ -605,6 +825,9 @@ fn perform(path: PathBuf) -> Report {
             hf_db: hf,
             channel_db,
         });
+        if !quiet {
+            break;
+        }
     }
     if let [first, .., again] = onsets[..]
         && (first - again).abs() > 10.0
