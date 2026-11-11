@@ -120,6 +120,12 @@ impl Law {
         let of = T::of;
         match self {
             Self::Linear { lo, hi } => Some((y - of(*lo)) / (of(*hi) - of(*lo))),
+            Self::Exp { lo, hi } if *lo > 0.0 && *hi > 0.0 && lo != hi && y > of(0.0) => {
+                Some((y / of(*lo)).ln() / (of(*hi) / of(*lo)).ln())
+            }
+            Self::Power { lo, hi, exponent } if lo != hi && *exponent > 0.0 => {
+                Some(((y - of(*lo)) / (of(*hi) - of(*lo))).powf(of(1.0) / of(*exponent)))
+            }
             Self::ExpAffine {
                 base,
                 offset,
@@ -365,6 +371,52 @@ mod tests {
         assert_eq!(law.eval(0.0), 0.0);
         assert!((law.eval(0.0625) - 0.5).abs() < 1e-6);
         assert_eq!(law.eval(1.0), 1.0);
+    }
+
+    #[test]
+    fn exponential_and_power_tapers_round_trip_in_both_precisions() {
+        for law in [
+            Law::Exp { lo: 0.5, hi: 20.0 },
+            Law::Exp { lo: 20.0, hi: 0.5 },
+            Law::Power {
+                lo: 0.0,
+                hi: 1.0,
+                exponent: 0.25,
+            },
+            Law::Power {
+                lo: 1.0,
+                hi: -2.0,
+                exponent: 2.0,
+            },
+        ] {
+            for x in [0.0, 0.0625, 0.25, 0.5, 0.75, 1.0] {
+                let actual = law.inverse_f64(law.eval_f64(x)).expect("invertible taper");
+                assert!((actual - x).abs() < 1e-12, "{law:?}, {x}: {actual}");
+                let actual = law.inverse(law.eval(x as f32)).expect("invertible taper");
+                assert!((actual - x as f32).abs() < 1e-5, "{law:?}, {x}: {actual}");
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_exponential_and_power_tapers_have_no_inverse() {
+        for law in [
+            Law::Exp { lo: 0.0, hi: 1.0 },
+            Law::Exp { lo: 1.0, hi: 1.0 },
+            Law::Power {
+                lo: 1.0,
+                hi: 1.0,
+                exponent: 0.25,
+            },
+            Law::Power {
+                lo: 0.0,
+                hi: 1.0,
+                exponent: 0.0,
+            },
+        ] {
+            assert_eq!(law.inverse_f64(0.5), None, "{law:?}");
+        }
+        assert_eq!(Law::Exp { lo: 0.5, hi: 20.0 }.inverse_f64(0.0), None);
     }
 
     #[test]

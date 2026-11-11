@@ -196,6 +196,28 @@ fn the_pedal_holds_released_notes_until_it_lifts() {
 }
 
 #[test]
+fn a_script_owned_pedal_does_not_hold_released_notes() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(region(&mut store, "loop", 1000).unwrap(), 0.0);
+    z.region.loops = vec![kontra_voice::Loop {
+        start: 0,
+        end: 1000,
+        crossfade: 0,
+        ..Default::default()
+    }];
+    let mut p = (*plan(vec![z], 8)).clone();
+    p.sustain_pedal = kontra_engine::SustainPedal::ToScripts;
+    let mut engine = Engine::new(Arc::new(p), store.client(), RATE);
+    render(
+        &mut engine,
+        &[cc(0, 64, 127), on(1, 60), off(100, 60)],
+        4096,
+        128,
+    );
+    assert_eq!(engine.active_voices(), 0, "the script owns the pedal");
+}
+
+#[test]
 fn a_released_note_ends_and_is_reported() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut engine = Engine::new(

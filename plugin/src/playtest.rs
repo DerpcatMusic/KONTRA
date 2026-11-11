@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use kontra_host::state::{Saved, SavedPart};
-use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
+use moose::core::{ExactAddress, ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
 use moose::prelude::*;
 
 use super::tests::{BLOCK, KONTAKT, RATE, activate};
@@ -38,6 +38,50 @@ impl In {
             In::Midi(EventBody::NoteOn { velocity, .. }) => velocity > 0,
             In::Clap(ExactEventBody::Note { kind, .. }) => kind == ExactNoteKind::On,
             _ => false,
+        }
+    }
+
+    /// The same event `by` semitones up (a note; anything else as is).
+    fn shifted(self, by: i8) -> In {
+        let up = |note: u8| note.saturating_add_signed(by).min(127);
+        match self {
+            In::Midi(EventBody::NoteOn {
+                group,
+                channel,
+                note,
+                velocity,
+            }) => In::Midi(EventBody::NoteOn {
+                group,
+                channel,
+                note: up(note),
+                velocity,
+            }),
+            In::Midi(EventBody::NoteOff {
+                group,
+                channel,
+                note,
+                velocity,
+            }) => In::Midi(EventBody::NoteOff {
+                group,
+                channel,
+                note: up(note),
+                velocity,
+            }),
+            In::Clap(ExactEventBody::Note {
+                kind,
+                mut address,
+                velocity,
+            }) => {
+                if let ExactAddress::Value(key) = address.key {
+                    address.key = ExactAddress::Value(up(key));
+                }
+                In::Clap(ExactEventBody::Note {
+                    kind,
+                    address,
+                    velocity,
+                })
+            }
+            other => other,
         }
     }
 
@@ -253,8 +297,87 @@ fn correlated_channels_below_full_scale_do_not_clip() {
     assert!(clips(output_peaks(&[vec![1.01], vec![0.0]])));
 }
 
-/// The performance, a segment at a time: (name, [(frame, event)]).
-fn performance() -> Vec<(&'static str, Vec<(usize, In)>)> {
+/// The performance, a segment at a time: (name, [(frame, event)]), its
+/// notes `by` semitones up.
+fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
+    let segments = performance_at_c4();
+    (segments.into_iter())
+        .map(|(name, events)| {
+            (
+                name,
+                events
+                    .into_iter()
+                    .map(|(f, e)| (f, e.shifted(by)))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// Plays silence until no voice is left and the effects' tail (a reverb, a
+/// delay's next repeat) has stayed quiet in both channels for 0.1 s, so it
+/// never reads as the next segment's onset; at most 5 s. Whether it got there.
+fn ring_out(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    last: &mut Played,
+    mut collect: impl FnMut(&Played),
+) -> bool {
+    let mut quiet = 0;
+    for b in 0..at(5.0) / BLOCK {
+        quiet = if last.voices == 0 && last.channel_peaks.iter().all(|&p| p < 1e-4) {
+            quiet + BLOCK
+        } else {
+            0
+        };
+        if quiet >= at(0.1) {
+            return true;
+        }
+        if b % 10 == 0 {
+            Tick.run(params);
+        }
+        *last = block(params, dsp, &[], last);
+        collect(last);
+    }
+    false
+}
+
+/// The octave shift that brings the scenario's probe and repeated keys (C4,
+/// D4) where the program plays: a bass's, a tuba's or a script's range may
+/// end below them. Measured: a short note on each, per octave, the first
+/// octave where both start a voice (more voices than before the note-on).
+/// A tail that never rings out leaves the scenario where it was.
+fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
+    let mut sounds = |key: u8| {
+        let before = last.voices;
+        *last = block(params, dsp, &[(0, on(key))], last);
+        // A one-shot may start and end inside this block: its audio counts.
+        let mut sounded = last.voices > before || last.channel_peaks.iter().any(|&p| p >= 1e-4);
+        for _ in 0..at(0.1) / BLOCK {
+            *last = block(params, dsp, &[], last);
+            sounded |= last.voices > before;
+        }
+        Tick.run(params);
+        *last = block(params, dsp, &[(0, off(key))], last);
+        ring_out(params, dsp, last, |_| {}).then_some(sounded)
+    };
+    for by in [0, -12, 12, -24, 24] {
+        let mut all = true;
+        for key in [60u8, 62] {
+            match sounds(key.saturating_add_signed(by)) {
+                Some(true) => {}
+                Some(false) => all = false,
+                None => return 0,
+            }
+        }
+        if all {
+            return by;
+        }
+    }
+    0
+}
+
+fn performance_at_c4() -> Vec<(&'static str, Vec<(usize, In)>)> {
     let probe = vec![(137, on(60)), (at(0.6), off(60))];
     let mut repeats = Vec::new();
     for i in 0..16 {
@@ -447,32 +570,42 @@ fn perform(path: PathBuf) -> Report {
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
     }]);
+    let state = saved.write();
+    // Loaded and aligned, the wheel and expression full, as a player starts.
+    let start = || {
+        let (params, mut dsp) = activate(&state);
+        params.align.set_value(true);
+        Tick.run(&params);
+        let mut last = block(
+            &params,
+            &mut dsp,
+            &[(0, cc(1, 127)), (0, cc(11, 127))],
+            &Played::default(),
+        );
+        for _ in 0..at(0.5) / BLOCK {
+            last = block(&params, &mut dsp, &[], &last);
+        }
+        Tick.run(&params);
+        (params, dsp, last)
+    };
     let started = std::time::Instant::now();
-    let (params, mut dsp) = activate(&saved.write());
+    let (params, mut dsp, mut last) = start();
     let load_s = started.elapsed().as_secs_f64();
     eprintln!("{name}: loaded in {load_s:.1} s");
-    params.align.set_value(true);
-    Tick.run(&params);
+    let by = octave_shift(&params, &mut dsp, &mut last);
+    // Any probe can advance script or round-robin state, including C4.
+    // Retire that instance before activating the untouched performance.
+    drop(dsp);
+    drop(params);
+    let (params, mut dsp, mut last) = start();
     let mut failed = Vec::new();
     let mut fail = |what: String| failed.push(format!("{name}: {what}"));
-    // The wheel and expression full, as a player starts.
-    let mut last = Played::default();
-    last = block(
-        &params,
-        &mut dsp,
-        &[(0, cc(1, 127)), (0, cc(11, 127))],
-        &last,
-    );
-    for _ in 0..at(0.5) / BLOCK {
-        last = block(&params, &mut dsp, &[], &last);
-    }
-    Tick.run(&params);
     let latency_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
     let (limited, pool) = limited(&params);
     let mut onsets = Vec::new();
     let mut segments = Vec::new();
     let mut blocks = 0usize;
-    for (segment, events) in performance() {
+    for (segment, events) in performance(by) {
         let (stolen, refused) = (last.stolen, last.refused);
         let end = events.iter().map(|e| e.0).max().unwrap_or(0) + 1;
         let starts: Vec<usize> = events
@@ -512,6 +645,19 @@ fn perform(path: PathBuf) -> Report {
                 ));
                 break;
             }
+        }
+        let quiet = ring_out(&params, &mut dsp, &mut last, |tail| {
+            peaks.push(tail.audio.iter().fold(0.0f32, |p, x| p.max(x.abs())));
+            for (peak, value) in channel_peaks.iter_mut().zip(tail.channel_peaks) {
+                *peak = peak.max(value);
+            }
+            audio.extend_from_slice(&tail.audio);
+            peak_voices = peak_voices.max(tail.voices);
+        });
+        if !quiet {
+            fail(format!(
+                "{segment}: the effects still sound 5 s after its voices ended"
+            ));
         }
         if starts.is_empty() {
             continue;
@@ -605,6 +751,9 @@ fn perform(path: PathBuf) -> Report {
             hf_db: hf,
             channel_db,
         });
+        if !quiet {
+            break;
+        }
     }
     if let [first, .., again] = onsets[..]
         && (first - again).abs() > 10.0
