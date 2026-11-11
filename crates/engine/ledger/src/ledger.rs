@@ -327,6 +327,15 @@ impl Ledger {
         })
     }
 
+    /// The most recently started live note on `key`, if any.
+    pub fn newest(&self, key: u8) -> Option<&Note> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.note.as_ref())
+            .filter(|n| n.key == key)
+            .max_by_key(|n| n.at.0)
+    }
+
     /// The note `r` names; `None` once it ended.
     pub fn get(&self, r: NoteRef) -> Option<&Note> {
         self.entries

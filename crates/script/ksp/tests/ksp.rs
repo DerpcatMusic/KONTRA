@@ -9,6 +9,7 @@ struct Host {
     messages: Vec<String>,
     calls: Vec<(Action, Vec<i64>)>,
     note: i32,
+    velocity: i32,
 }
 
 impl HostApi for Host {
@@ -20,6 +21,20 @@ impl HostApi for Host {
                 HostValue::Nothing
             }
             Action::EventNote => HostValue::Int(self.note),
+            Action::EventVelocity => HostValue::Int(self.velocity),
+            // A write to `$EVENT_VELOCITY` compiles to `change_velo($EVENT_ID, v)`,
+            // and the manual's rule is that the written value *becomes* the new
+            // `$EVENT_VELOCITY`: "Once the velocity of a particular note event is
+            // changed, it becomes the new $EVENT_VELOCITY". A host that recorded
+            // the call without moving the event would let a readback assertion
+            // pass whatever the write did.
+            Action::ChangeVelo => {
+                self.calls.push((b, call.ints.to_vec()));
+                if let Some(&v) = call.ints.get(1) {
+                    self.velocity = i32::try_from(v).unwrap_or(self.velocity);
+                }
+                HostValue::Nothing
+            }
             Action::EventId => HostValue::Int(1000),
             Action::PlayNote => {
                 self.calls.push((b, call.ints.to_vec()));
@@ -95,6 +110,11 @@ impl Run {
             .unwrap()
             .as_str()
             .to_owned()
+    }
+
+    /// The catalog name a script's opaque symbol value stands for.
+    fn symbol(&self, value: i64) -> Option<&str> {
+        self.script.symbol(i32::try_from(value).ok()?)
     }
 }
 
@@ -395,5 +415,289 @@ fn escaped_quotes_compile_and_reach_the_shared_vm() {
             "plain",
             "plain"
         ]
+    );
+}
+
+// ---- Bindings the corpus needed: `docs/re/ksp-bindings-2026-11-01.md` ----
+
+/// `hide_inst_icon` is Kontakt's command for hiding the icon in its own
+/// instrument header; the KSP reference has no entry for it (checked in the
+/// 7.10 and 8.0 manuals) and KONTRA's page draws no instrument header, so the
+/// binding is a no-op that still reaches the host, and the host answers it
+/// (`Action::HideInstIcon`). 188 corpus instruments call it, 187 of them
+/// (every VSTBuzz Power Move patch) with it as their only compile error.
+#[test]
+fn hide_inst_icon_is_a_no_op_command() {
+    let r = Run::new(
+        "on init
+            declare $x := 1
+            hide_inst_icon
+        end on",
+    );
+    assert_eq!(r.host.calls, [(Action::HideInstIcon, vec![])]);
+    assert_eq!(r.int("$x"), 1, "the declaration after it still ran");
+    // It takes no arguments, as in the corpus's 188 call sites.
+    assert!(
+        compile("on init hide_inst_icon(1) end on", &[]).is_err(),
+        "hide_inst_icon takes no arguments"
+    );
+}
+
+/// `dont_use_machine_mode(<zone-id>)` is a Zone Command the manual documents
+/// for `on note`; Kontakt's machine mode is a property of the zone the note
+/// came from and the plan has none to leave, so the binding is a no-op that
+/// still reaches the host, and the host answers it
+/// (`Action::DontUseMachineMode`). 25 corpus slots call it.
+#[test]
+fn dont_use_machine_mode_is_a_no_op_command() {
+    let mut r = Run::new(
+        "on note
+            dont_use_machine_mode($EVENT_ID)
+            declare $after := 2
+        end on",
+    );
+    assert_eq!(r.callback(CallbackKind::Note, None), Step::Done);
+    assert_eq!(
+        r.host.calls,
+        [(Action::DontUseMachineMode, vec![1000])],
+        "the zone the note came from, and nothing else"
+    );
+}
+
+/// `%NOTE_DURATION[key]` is the manual's time-and-transport array: microseconds
+/// since the newest live note on that key started. A script that reads it did
+/// not compile at all without the name, so its `on init` never ran — XPERIMENTA
+/// Harpsichord's whole script failed on it and its swell route stayed at 0.
+#[test]
+fn note_duration_is_a_system_array() {
+    let r = Run::new(
+        "on init
+            declare $size := num_elements(%NOTE_DURATION)
+            declare $len
+            $len := %NOTE_DURATION[60]
+        end on",
+    );
+    assert_eq!(r.int("$size"), 128, "one entry per key");
+    assert_eq!(r.int("$len"), 0, "no note has been played yet");
+}
+
+/// `$EVENT_VELOCITY` is writable. The manual's `change_velo()` entry is what a
+/// write means: "Once the velocity of a particular note event is changed, it
+/// becomes the new $EVENT_VELOCITY" — the variable is the running event's
+/// velocity, so a write is `change_velo($EVENT_ID, v)`. 22 corpus instruments
+/// (Snare 1 Off and its siblings) clamp it and read it back.
+#[test]
+fn event_velocity_can_be_written() {
+    let mut r = Run::new(
+        "on init
+            declare $h
+        end on
+        on note
+            if ($EVENT_VELOCITY > 127)
+                $EVENT_VELOCITY := 127
+            end if
+            $h := $EVENT_VELOCITY
+        end on",
+    );
+    r.host.velocity = 200;
+    assert_eq!(r.callback(CallbackKind::Note, None), Step::Done);
+    assert_eq!(
+        r.host.calls,
+        [(Action::ChangeVelo, vec![1000, 127])],
+        "the write is change_velo($EVENT_ID, 127)"
+    );
+    assert_eq!(r.int("$h"), 127, "the write is the new $EVENT_VELOCITY");
+    // Kontakt's other system variables stay read-only.
+    let error = |source: &str| compile(source, &[]).unwrap_err().message;
+    assert_eq!(
+        error("on init $EVENT_ID := 1 end on"),
+        "$EVENT_ID is read-only"
+    );
+    assert_eq!(
+        error("on init $EVENT_NOTE := 1 end on"),
+        "$EVENT_NOTE is read-only"
+    );
+}
+
+/// `$NUM_PRESETS` is a script's own constant, not a Kontakt builtin: the
+/// manual's example for `declare const $` is exactly
+/// `declare const $NUM_PRESETS := 10` followed by an array sized from it, and
+/// six corpus instruments use that example verbatim.
+#[test]
+fn num_presets_is_a_script_constant() {
+    let r = Run::new(
+        "on init
+            declare const $NUM_PRESETS := 10
+            declare const $NUM_PARAMETERS := 5
+            declare %preset_data[$NUM_PRESETS * $NUM_PARAMETERS]
+            declare $count
+            $count := num_elements(%preset_data)
+        end on",
+    );
+    assert_eq!(r.int("$count"), 50);
+    // A name Kontakt defines is still refused.
+    let error = |source: &str| compile(source, &[]).unwrap_err().message;
+    assert_eq!(
+        error("on init declare $EVENT_ID end on"),
+        "$EVENT_ID is a reserved name"
+    );
+}
+
+/// A declared name wins over the catalog inside `fold`. `$NUM_PRESETS` is a
+/// name a script may declare *and* a name the harvested catalog holds (the
+/// catalog records what the corpus uses, not what Kontakt owns), so a fold that
+/// asks the catalog first turns the declared number into an opaque symbol id —
+/// a wrong constant, silently. The declared value is the one that counts.
+#[test]
+fn a_declared_name_wins_over_the_catalog_when_folding() {
+    let r = Run::new(
+        "on init
+            declare const $NUM_PRESETS := 5
+            declare const $N := $NUM_PRESETS * 2
+            declare %slots[$NUM_PRESETS] := (1, 2, 3, 4, 5)
+            declare $size
+            declare $doubled
+            $size := num_elements(%slots)
+            $doubled := $N
+        end on",
+    );
+    assert_eq!(r.int("$size"), 5, "the declared size, not a symbol id");
+    assert_eq!(r.int("$doubled"), 10);
+    let error = |source: &str| compile(source, &[]).unwrap_err().message;
+    // A declared name that holds no constant is not a constant either: the
+    // catalog must not answer for it (`$EVENT_PAR_TOY` is declared by 16 corpus
+    // scripts and is a catalog name).
+    assert_eq!(
+        error("on init declare $EVENT_PAR_TOY declare %a[$EVENT_PAR_TOY] end on"),
+        "expected a constant"
+    );
+    // Nor is a variable's initialiser: the script may assign it before it is
+    // read, and the manual says variables cannot size an array.
+    assert_eq!(
+        error("on init declare $m := 5 declare %a[$m] end on"),
+        "expected a constant"
+    );
+    // A system variable is still not declarable.
+    assert_eq!(
+        error("on init declare $EVENT_VELOCITY := 1 end on"),
+        "$EVENT_VELOCITY is a reserved name"
+    );
+}
+
+/// `redirect_output(<event-id>, <output-type>, <index>)`: the manual documents
+/// three arguments and says `<index>` "has no effect" for
+/// `$OUTPUT_TYPE_DEFAULT`, so a two-argument call routes to index 0. Eleven
+/// corpus instruments call it with two.
+#[test]
+fn redirect_output_takes_two_or_three_arguments() {
+    let mut r = Run::new(
+        "on note
+            redirect_output($EVENT_ID, $OUTPUT_TYPE_DEFAULT)
+            redirect_output($EVENT_ID, $OUTPUT_TYPE_BUS_OUT, 3)
+        end on",
+    );
+    assert_eq!(r.callback(CallbackKind::Note, None), Step::Done);
+    assert_eq!(r.host.calls.len(), 2);
+    assert_eq!(r.host.calls[0].0, Action::RedirectOutput);
+    assert_eq!(r.host.calls[0].1[0], 1000);
+    assert_eq!(r.symbol(r.host.calls[0].1[1]), Some("$OUTPUT_TYPE_DEFAULT"));
+    assert_eq!(r.host.calls[0].1[2], 0, "the left-out index routes to 0");
+    assert_eq!(r.host.calls[1].0, Action::RedirectOutput);
+    assert_eq!(r.host.calls[1].1[0], 1000);
+    assert_eq!(r.symbol(r.host.calls[1].1[1]), Some("$OUTPUT_TYPE_BUS_OUT"));
+    assert_eq!(r.host.calls[1].1[2], 3);
+}
+
+/// `hide_part(<variable>, <hide-mask>)`'s first argument is a variable name,
+/// not necessarily a control: the manual gives every declaration a UI id
+/// ("Even regular variables and constants ... get a UI ID assigned"), and ten
+/// corpus instruments hide the background of a plain `declare $x` variable.
+#[test]
+fn hide_part_takes_a_variable_that_is_not_a_control() {
+    let r = Run::new(
+        "on init
+            declare $plain
+            declare ui_knob $knob(0, 100, 1)
+            hide_part($plain, $HIDE_PART_BG)
+            hide_part($knob, $HIDE_PART_BG)
+        end on",
+    );
+    assert_eq!(r.host.calls.len(), 2);
+    assert_eq!(r.host.calls[0].0, Action::HidePart);
+    assert_eq!(
+        r.host.calls[0].1,
+        [i64::from(FIRST_UI_ID), 1],
+        "the plain variable's UI id and $HIDE_PART_BG"
+    );
+    assert_eq!(r.host.calls[1].1, [i64::from(FIRST_UI_ID + 1), 1]);
+    // The argument still has to be a variable, as the manual says.
+    assert!(compile("on init hide_part(3, 1) end on", &[]).is_err());
+    // `on ui_control` still needs a real control.
+    assert_eq!(
+        compile("on init declare $x end on on ui_control($x) end on", &[])
+            .unwrap_err()
+            .message,
+        "not a UI control"
+    );
+}
+
+/// A constant initialiser may be a pure number function of constants: the
+/// arithmetic functions are the manual's own list and have one value, and 24
+/// corpus instruments (Heavyocity's FORZO and NOVO, e-instruments' Session
+/// Keys, NI's Scene) declare `const ~LOG10 := log(10.0)`.
+#[test]
+fn constants_fold_number_functions() {
+    let r = Run::new(
+        "on init
+            declare const ~LOG10 := log(10.0)
+            declare const $N := int(sqrt(16.0)) + sgn(-3)
+            declare $scaled
+            declare $plus
+            $scaled := int(~LOG10 * 1000000.0)
+            $plus := $N + 1
+        end on",
+    );
+    assert_eq!(r.int("$scaled"), 2_302_585, "ln 10 to six places");
+    assert_eq!(r.int("$plus"), 4, "int(sqrt(16.0)) + sgn(-3)");
+    // A constant that is not a constant is still refused.
+    let error = |source: &str| compile(source, &[]).unwrap_err().message;
+    assert_eq!(
+        error("on init declare $x declare const $Y := $x end on"),
+        "expected a constant"
+    );
+    assert_eq!(
+        error("on init declare $x declare const $Y := random(0, 1) end on"),
+        "expected a constant"
+    );
+}
+
+/// `num_elements(%a)` is a constant when `%a` is: an array's size is fixed
+/// where it is declared, so the manual's "number of elements must be defined
+/// with a constant value" admits it. Heavyocity sizes
+/// `%cycle_copy_buffer[num_elements(%cycle_data) + 5]`, NI's Scene - Lotus
+/// `%original_events[num_elements(%artificial_events)]`, and e-instruments a
+/// `const` from `num_elements()` of four arrays.
+#[test]
+fn num_elements_folds_in_a_declaration() {
+    let r = Run::new(
+        "on init
+            declare %data[6] := (1, 2, 3, 4, 5, 6)
+            declare %copy[num_elements(%data) + 5] := (-1)
+            declare const $TOTAL := num_elements(%copy) * 2
+            declare $n
+            declare $doubled
+            $n := num_elements(%copy)
+            $doubled := $TOTAL
+        end on",
+    );
+    assert_eq!(r.ints("%copy"), [-1; 11]);
+    assert_eq!(r.int("$n"), 11);
+    assert_eq!(r.int("$doubled"), 22);
+    // A size read from a variable is still not a constant.
+    assert_eq!(
+        compile("on init declare $n declare %a[$n] end on", &[])
+            .unwrap_err()
+            .message,
+        "expected a constant"
     );
 }

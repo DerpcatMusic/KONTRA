@@ -469,6 +469,17 @@ impl HostApi for Engine {
             Action::EventParAt => HostValue::Int(
                 running.map_or(0, |r| self.event_par(r.event_id(), int(0).clamp(0, 3))),
             ),
+            // `%NOTE_DURATION[key]`: microseconds since the newest live note on
+            // that key started (the KSP manual's time-and-transport array).
+            Action::NoteDuration => HostValue::Int(
+                u8::try_from(int(0))
+                    .ok()
+                    .and_then(|key| self.notes.newest(key))
+                    .map_or(0, |n| {
+                        let frames = self.now.0.saturating_sub(n.at.0);
+                        i32::try_from(frames * 1_000_000 / u64::from(self.rate)).unwrap_or(i32::MAX)
+                    }),
+            ),
             Action::NumZones | Action::GetNumZones => HostValue::Int(self.plan.zones.len() as i32),
             // find_group answers 0 for an unknown name, get_group_idx $NI_NOT_FOUND.
             Action::FindGroup | Action::GetGroupIdx => {

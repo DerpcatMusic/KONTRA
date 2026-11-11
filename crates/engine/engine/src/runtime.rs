@@ -54,7 +54,8 @@ impl Engine {
             // What only a host, NI hardware or Kontakt's own editor shows:
             // NKS navigation, exposed controls, a native UI, waveform looks, a
             // file browser's place, automation names and the release-trigger
-            // system script's never-ending events. KONTRA has none of them.
+            // system script's never-ending events, the instrument header's icon
+            // and a zone's machine mode. KONTRA has none of them.
             Action::SetNksNavName
             | Action::SetNksNavPar
             | Action::ResetNksNav
@@ -63,7 +64,9 @@ impl Engine {
             | Action::SetUiWfProperty
             | Action::FsNavigate
             | Action::SetControlParStrArr
-            | Action::WillNeverTerminate => HostValue::Nothing,
+            | Action::WillNeverTerminate
+            | Action::HideInstIcon
+            | Action::DontUseMachineMode => HostValue::Nothing,
             // The host reads the script's performance view at load and
             // declares its controls (kontra-host ui.rs); a request for
             // that view is done. Any other name has no view to show.

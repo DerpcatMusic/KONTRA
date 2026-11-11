@@ -150,6 +150,58 @@ fn a_performance_view_gives_its_controls_type_place_and_parent() {
     );
 }
 
+/// A performance-requesting slot whose page cannot be built must not end the
+/// search for the page to show.
+///
+/// Slot 0 asks for the performance view and the model rejects its tree (its
+/// label's bitmap font is the same picture as the wallpaper, so one asset is
+/// asked for as an image and as a font); slot 1 asks for nothing; slot 2 asks
+/// and builds. `View::of` must open slot 2. The `find(..).and_then(..)` this
+/// replaced stopped at slot 0's failed construction and returned `None`, so the
+/// editor opened nothing while a valid performance view sat two slots on.
+#[test]
+fn a_performing_slot_that_cannot_build_does_not_end_the_search() {
+    let broken = "on init
+            make_perfview
+            declare ui_label $a (1, 1)
+            set_control_par(get_ui_id($a), $CONTROL_PAR_FONT_TYPE, get_font_id(\"bg\"))
+            set_control_par_str($INST_WALLPAPER_ID, $CONTROL_PAR_PICTURE, \"bg\")
+        end on";
+    let admin = "on init
+            declare ui_knob $x (0, 100, 1)
+        end on";
+    let asks = "on init
+            make_perfview
+            declare ui_knob $y (0, 100, 1)
+        end on";
+    let scripts: Vec<_> = [broken, admin, asks]
+        .iter()
+        .map(|source| kontra_ksp::compile(source, &[]).unwrap())
+        .collect();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![], 16);
+    plan.scripts = scripts
+        .iter()
+        .map(|s| kontra_host::script::plan(s, &[], &[]))
+        .collect();
+    let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let faces: Vec<Option<Face>> = scripts.iter().map(|s| Some(Face::of(s, &[]))).collect();
+
+    // The fixture's point: slot 0 is preferred *and* cannot build, so the
+    // selection has to walk past it rather than stop.
+    assert!(
+        interface(faces[0].as_ref().unwrap(), 0, &engine, &|_| None).is_err(),
+        "slot 0 must be the slot whose tree is rejected"
+    );
+
+    let view = kontra_host::view::View::of(&faces, &[None, None, None], &engine, None)
+        .expect("a performance view two slots on");
+    assert_eq!(
+        view.slot, 2,
+        "the search ended at a slot that could not build, or opened an admin page"
+    );
+}
+
 #[test]
 fn an_idle_ui_rebuilds_nothing_and_a_moved_knob_rebuilds_what_it_touched() {
     let store = Store::new(StoreConfig::DEFAULT).unwrap();

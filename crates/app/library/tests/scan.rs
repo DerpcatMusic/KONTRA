@@ -36,6 +36,7 @@ fn root(dir: &Path) -> Root {
 }
 
 const NICNT: &str = "\u{0}\u{1}<ProductHints><Product><Name>Areia</Name><Company>Audio Imperia</Company></Product></ProductHints>";
+const NICNT_INNER: &str = "\u{0}\u{1}<ProductHints><Product><Name>Bundle Library</Name><Company>Audio Imperia</Company></Product></ProductHints>";
 
 #[test]
 fn libraries_are_found_named_and_shelved() {
@@ -264,4 +265,85 @@ fn prefs_keep_stars_and_recent_newest_first() {
     );
     let old: Prefs = serde_json::from_str(r#"{"roots":[],"unknown":1}"#).unwrap();
     assert_eq!(old, Prefs::default());
+}
+
+/// A library inside a library is a library of its own. Action Strings 2
+/// v1.2.0's folder is registered (its own `.nicnt`) and holds a second
+/// registered product (`Action Strings 2 Library/Action Strings 2.nicnt`);
+/// AudioBro's LASS bundle holds three. Stopping at the outer one listed the
+/// inner ones' presets under it — one `Action Strings 2` with 448 presets
+/// where Kontakt lists two libraries — so the outer one's walk now stops at
+/// the inner one's folder, and each preset is listed under exactly one
+/// library.
+#[test]
+fn a_library_inside_a_library_is_a_library_of_its_own() {
+    let dir = tree(
+        "nested",
+        &[
+            ("Bundle 1.2.0/Bundle.nicnt", NICNT),
+            ("Bundle 1.2.0/Instruments/Outer.nki", ""),
+            (
+                "Bundle 1.2.0/Bundle Library/Bundle Library.nicnt",
+                NICNT_INNER,
+            ),
+            ("Bundle 1.2.0/Bundle Library/Instruments/Inner.nki", ""),
+            ("Bundle 1.2.0/Samples/a.wav", ""),
+        ],
+    );
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    let names: Vec<_> = catalog
+        .libraries
+        .iter()
+        .map(|l| (l.name.as_str(), l.presets.len()))
+        .collect();
+    assert_eq!(names, [("Areia", 1), ("Bundle Library", 1)]);
+    let listed: Vec<_> = catalog
+        .libraries
+        .iter()
+        .flat_map(|l| l.presets.iter())
+        .collect();
+    assert_eq!(listed.len(), 2, "each preset under exactly one library");
+    // The inner library is its own folder, not the outer one's.
+    assert_eq!(
+        catalog.libraries[1].dir,
+        dir.join("Bundle 1.2.0/Bundle Library")
+    );
+    assert!(catalog.libraries[1].registered);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Inside a library, a folder of presets is not a library: it is one of the
+/// library's own instrument folders. Evolve R2's `Instruments/4 Tonality and
+/// FX` holds presets beside a `Samples` folder, which is the *strong* test a
+/// root-level folder is recognised by; read inside the library that way it
+/// became a library called "Tonality and FX" and took 99 instruments out of
+/// Evolve R2. Only a `.nicnt` makes a folder inside a library a library.
+#[test]
+fn a_preset_folder_inside_a_library_stays_inside_it() {
+    let dir = tree(
+        "inside",
+        &[
+            ("Evolve/Evolve.nicnt", NICNT),
+            ("Evolve/Instruments/1 Rhythmic/One.nki", ""),
+            ("Evolve/Instruments/4 Tonality and FX/Two.nki", ""),
+            ("Evolve/Instruments/4 Tonality and FX/Samples/x.wav", ""),
+            ("Evolve/Samples/a.wav", ""),
+        ],
+    );
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    assert_eq!(catalog.libraries.len(), 1, "{:?}", catalog.libraries);
+    let evolve = &catalog.libraries[0];
+    let inside: Vec<_> = evolve
+        .presets
+        .iter()
+        .map(|p| p.strip_prefix(&evolve.dir).unwrap().to_str().unwrap())
+        .collect();
+    assert_eq!(
+        inside,
+        [
+            "Instruments/1 Rhythmic/One.nki",
+            "Instruments/4 Tonality and FX/Two.nki"
+        ]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

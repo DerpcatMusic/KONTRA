@@ -57,6 +57,13 @@ impl Face {
         }
     }
 
+    /// Whether the script loaded a Creator Tools performance view: it is the
+    /// script's page the way `make_perfview` asks for one.
+    #[must_use]
+    pub fn has_view(&self) -> bool {
+        self.view.is_some()
+    }
+
     /// The UI id of the control declared as `name` (`$Volume`), any case.
     #[must_use]
     pub fn control_id(&self, name: &str) -> Option<i32> {

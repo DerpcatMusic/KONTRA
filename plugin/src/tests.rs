@@ -1064,3 +1064,91 @@ fn live_block(params: &KontraParams, dsp: &mut Dsp) {
     let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events);
     <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
 }
+
+/// An instrument under this machine's Kontakt libraries, whether the test
+/// root [`KONTAKT`] is the real one or the user's own root
+/// (`$KONTRA_LIBRARY_ROOT`, else `~/Armory/VSTs/Kontakt1`); a test without it
+/// says so and passes, as CI has no libraries.
+fn armory(path: &str) -> Option<PathBuf> {
+    let own = std::env::var_os("KONTRA_LIBRARY_ROOT").map_or_else(
+        || {
+            std::env::var_os("HOME")
+                .map_or_else(|| PathBuf::from("/home"), PathBuf::from)
+                .join("Armory/VSTs/Kontakt1")
+        },
+        PathBuf::from,
+    );
+    for root in [PathBuf::from(KONTAKT), own] {
+        let path = root.join(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    eprintln!("skipped: no {path}");
+    None
+}
+
+/// A state holding `path` in part 0.
+fn one_part(path: &Path) -> String {
+    Saved::new(vec![SavedPart {
+        part: 0,
+        path: path.to_owned(),
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+    }])
+    .write()
+}
+
+/// The multi from the user's report: five C.A.P.S.U.L.E. slots. Slot 1 asks
+/// for the performance view and carries the artwork (373 widgets); slot 0 is
+/// a helper's admin page (137 widgets of which three show) and slots 2-4 are
+/// 3-4 widget overlays. The editor must open the page the script asked
+/// Kontakt to show, not the first page with a face: the latter is a black
+/// rectangle with a "LOAD" button, which is what the user saw.
+#[test]
+fn a_multis_page_is_the_performance_view_not_its_first_slot() {
+    const GLORY: &str = "Glory Days - Big Band Horns/Instruments/GDH - Glory Days - Big Band Horns 1.0/Multi Instruments/01. Trumpet 1/01. Trumpet 1 Multi.nki";
+    let Some(path) = armory(GLORY) else {
+        return;
+    };
+    let (params, mut dsp) = activate(&one_part(&path));
+    settle(&params, &mut dsp);
+    let (slot, widgets, performance, pictures) = {
+        let guard = crate::lock(&params.shared.rack);
+        let part = guard
+            .as_ref()
+            .and_then(|rack| rack.parts()[0].as_ref())
+            .expect("part 0");
+        let view = part.view.as_ref().expect("a view");
+        let tree = view.tree();
+        (
+            view.slot,
+            tree.widgets.len(),
+            tree.performance,
+            (tree.assets.iter())
+                .filter(|a| matches!(a.kind, kontra_ui_model::AssetKind::Image(_)))
+                .count(),
+        )
+    };
+    println!(
+        "Glory Days: slot {slot}, {widgets} widgets, performance {performance}, {pictures} pictures"
+    );
+    assert!(performance, "slot {slot} is not the performance view");
+    assert_eq!(
+        slot, 1,
+        "the editor opened slot {slot}: the first page with a face, not the performance view"
+    );
+    assert!(widgets > 300, "slot {slot} shows {widgets} widgets");
+    assert!(
+        pictures > 100,
+        "the page names {pictures} pictures, so it is not the instrument's page"
+    );
+}

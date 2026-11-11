@@ -149,12 +149,18 @@ pub fn scan(
     let mut libraries = Vec::new();
     let mut seen = BTreeSet::new();
     for root in roots {
-        for found in detect(root, progress, &mut issues) {
+        let founds = detect(root, progress, &mut issues);
+        // Every library found under this root, nested ones included: a library
+        // inside another is catalogued as itself, so the outer one's walk stops
+        // at it rather than listing its presets a second time
+        // ([`visit_within`]).
+        let dirs: BTreeSet<PathBuf> = founds.iter().map(|f| f.dir.clone()).collect();
+        for found in founds {
             let key = std::fs::canonicalize(&found.dir).unwrap_or_else(|_| found.dir.clone());
             if !seen.insert(key) {
                 continue;
             }
-            let library = catalog(found, progress, cache, programs, &mut issues);
+            let library = catalog(found, &dirs, progress, cache, programs, &mut issues);
             if progress.canceled() {
                 return None;
             }
@@ -281,6 +287,37 @@ fn visit(
     progress: &Progress,
     issues: &mut Vec<Issue>,
 ) {
+    visit_within(dir, depth, vendor, false, out, progress, issues);
+}
+
+/// [`visit`], `within` saying whether `dir` already sits inside a library.
+///
+/// A library is not the end of the search. A bundle one level down can be a
+/// library of its own — Action Strings 2 v1.2.0 is a `.nicnt` folder holding a
+/// second `.nicnt` library, and AudioBro's LASS bundle holds three — and
+/// stopping at the outer one made the inner ones unreachable: the browser
+/// showed `Action Strings 2` once, with both copies' presets in it, where
+/// Kontakt lists two libraries.
+///
+/// Inside a library none of that is true of its own subfolders. Below the root,
+/// a folder of presets is a library (that is how a folder added without a
+/// `.nicnt` is recognised at all); inside a library, the same rule would turn
+/// every preset folder into a library — Evolve R2's `Instruments/4 Tonality and
+/// FX` holds presets beside a `Samples` folder, so it would become a library
+/// and take its instruments out of Evolve R2. So inside a library only a
+/// `.nicnt` makes a folder a library of its own: that is the file Kontakt
+/// registers a product by, and it is what identifies Action Strings 2's inner
+/// library and LASS's three. The parent's walk prunes it ([`catalog`]), so a
+/// preset is listed under exactly one library.
+fn visit_within(
+    dir: &Path,
+    depth: usize,
+    vendor: Option<String>,
+    within: bool,
+    out: &mut Vec<Found>,
+    progress: &Progress,
+    issues: &mut Vec<Issue>,
+) {
     if progress.canceled() {
         return;
     }
@@ -288,22 +325,25 @@ fn visit(
     let l = list(dir, issues);
     // Loose banks at the root are libraries of their own, not the root's presets.
     let presets = l.presets - if depth == 0 { l.banks.len() } else { 0 };
-    let library = l.nicnt.is_some()
-        || l.instruments
-        || (presets > 0 && (l.samples || l.monolith))
-        // Below the root, a folder of presets; at the root, stray presets
-        // must not hide the libraries beside them.
-        || (depth > 0 && l.presets > 0);
+    let strong = l.nicnt.is_some() || l.instruments || (presets > 0 && (l.samples || l.monolith));
+    // Below the root, a folder of presets; at the root, stray presets must not
+    // hide the libraries beside them. Inside a library, only a `.nicnt` makes
+    // a folder a library of its own.
+    let library = if within {
+        l.nicnt.is_some()
+    } else {
+        strong || (depth > 0 && l.presets > 0)
+    };
     if library {
         progress.found.fetch_add(1, Ordering::Relaxed);
         out.push(Found {
             dir: dir.into(),
             nicnt: l.nicnt,
-            vendor,
+            // A nested library is named from its own folder, not the outer
+            // one's: it is a different publisher entry in Kontakt's list.
+            vendor: vendor.clone(),
         });
-        return;
-    }
-    if depth == 0 {
+    } else if depth == 0 {
         for bank in l.banks {
             progress.found.fetch_add(1, Ordering::Relaxed);
             out.push(Found {
@@ -317,10 +357,22 @@ fn visit(
         return;
     }
     // Below the root, the first folder that is not a library is its vendor.
-    let vendor = vendor.or_else(|| (depth > 0).then(|| clean_name(&file_name(dir)).0));
+    let vendor = if library {
+        None
+    } else {
+        vendor.or_else(|| (depth > 0).then(|| clean_name(&file_name(dir)).0))
+    };
     for folder in &l.folders {
         if !SKIP.contains(&file_name(folder).to_lowercase().as_str()) {
-            visit(folder, depth + 1, vendor.clone(), out, progress, issues);
+            visit_within(
+                folder,
+                depth + 1,
+                vendor.clone(),
+                within || library,
+                out,
+                progress,
+                issues,
+            );
         }
     }
 }
@@ -336,6 +388,7 @@ fn file_name(path: &Path) -> String {
 /// `programs`) and its banner candidates, from one walk that skips samples.
 fn catalog(
     found: Found,
+    nested: &BTreeSet<PathBuf>,
     progress: &Progress,
     cache: &mut Cache,
     programs: Programs<'_>,
@@ -353,15 +406,14 @@ fn catalog(
                 .filter(|p| p.is_file()),
         );
     } else {
-        walk(
-            &found.dir,
+        let mut state = Walk {
+            nested,
             progress,
             cache,
             programs,
             issues,
-            &mut presets,
-            &mut art,
-        );
+        };
+        walk(&found.dir, &mut state, &mut presets, &mut art);
     }
     if presets.is_empty() {
         return None;
@@ -408,25 +460,30 @@ fn catalog(
     })
 }
 
-fn walk(
-    dir: &Path,
-    progress: &Progress,
-    cache: &mut Cache,
-    programs: Programs<'_>,
-    issues: &mut Vec<Issue>,
-    presets: &mut Vec<PathBuf>,
-    art: &mut Vec<PathBuf>,
-) {
+/// What one library's walk shares: where to report, how to read a bank, and
+/// which folders are libraries of their own.
+struct Walk<'a> {
+    nested: &'a BTreeSet<PathBuf>,
+    progress: &'a Progress,
+    cache: &'a mut Cache,
+    programs: Programs<'a>,
+    issues: &'a mut Vec<Issue>,
+}
+
+/// The presets and banner candidates under `dir`, skipping sample folders and
+/// the folders of libraries nested inside it (`state.nested`): those are
+/// libraries of their own and their presets are listed under them.
+fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut Vec<PathBuf>) {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        if progress.canceled() {
+        if state.progress.canceled() {
             return;
         }
-        progress.folders.fetch_add(1, Ordering::Relaxed);
+        state.progress.folders.fetch_add(1, Ordering::Relaxed);
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) => {
-                issues.push(issue(&dir, e));
+                state.issues.push(issue(&dir, e));
                 continue;
             }
         };
@@ -440,14 +497,20 @@ fn walk(
             }
             let path = entry.path();
             if kind.is_dir() {
-                if name != "samples" {
+                if name != "samples" && !state.nested.contains(&path) {
                     stack.push(path);
                 }
                 continue;
             }
             match ext(&path).as_str() {
                 "nki" | "nkm" | "nksn" | "uvip" => presets.push(path),
-                "ufs" => bank_presets(&path, cache, programs, issues, presets),
+                "ufs" => bank_presets(
+                    &path,
+                    &mut *state.cache,
+                    state.programs,
+                    &mut *state.issues,
+                    presets,
+                ),
                 "png" | "jpg" | "jpeg" | "nicnt" | "nkr" => art.push(path),
                 _ => {}
             }
