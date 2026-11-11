@@ -123,8 +123,11 @@ impl Law {
             Self::Exp { lo, hi } if *lo > 0.0 && *hi > 0.0 && lo != hi && y > of(0.0) => {
                 Some((y / of(*lo)).ln() / (of(*hi) / of(*lo)).ln())
             }
+            // A value below `lo` has no power behind it; an even root of a
+            // negative ratio would read back as a large positive setting.
             Self::Power { lo, hi, exponent } if lo != hi && *exponent > 0.0 => {
-                Some(((y - of(*lo)) / (of(*hi) - of(*lo))).powf(of(1.0) / of(*exponent)))
+                let ratio = (y - of(*lo)) / (of(*hi) - of(*lo));
+                (ratio >= of(0.0)).then(|| ratio.powf(of(1.0) / of(*exponent)))
             }
             Self::ExpAffine {
                 base,
@@ -371,6 +374,17 @@ mod tests {
         assert_eq!(law.eval(0.0), 0.0);
         assert!((law.eval(0.0625) - 0.5).abs() < 1e-6);
         assert_eq!(law.eval(1.0), 1.0);
+    }
+
+    #[test]
+    fn a_power_taper_has_no_inverse_below_its_low_end() {
+        let law = Law::Power {
+            lo: 0.0,
+            hi: 1.0,
+            exponent: 0.25,
+        };
+        assert_eq!(law.inverse(-0.5), None);
+        assert_eq!(law.inverse_f64(-0.5), None);
     }
 
     #[test]

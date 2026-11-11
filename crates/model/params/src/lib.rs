@@ -4,13 +4,21 @@
 /// algorithm, network topology, or a format-specific conversion law.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReverbPar {
+    /// Decay time.
     Seconds,
+    /// Room size.
     Size,
+    /// High-frequency damping of the tail.
     Damping,
+    /// Echo density.
     Diffusion,
+    /// Delay before the tail starts.
     Predelay,
+    /// Low-pass on the wet signal.
     HighCut,
+    /// Low shelf on the wet signal.
     LowShelf,
+    /// Stereo width of the tail.
     Stereo,
 }
 
@@ -28,6 +36,7 @@ impl ReverbPar {
     ];
 
     /// Stable format-neutral identity; do not derive this from the enum ordinal.
+    #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
             Self::Seconds => "reverb.seconds",
@@ -46,18 +55,27 @@ impl ReverbPar {
 /// prepared laws from accidentally acquiring another control's position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReverbControls<T> {
+    /// [`ReverbPar::Seconds`].
     pub seconds: T,
+    /// [`ReverbPar::Size`].
     pub size: T,
+    /// [`ReverbPar::Damping`].
     pub damping: T,
+    /// [`ReverbPar::Diffusion`].
     pub diffusion: T,
+    /// [`ReverbPar::Predelay`].
     pub predelay: T,
+    /// [`ReverbPar::HighCut`].
     pub high_cut: T,
+    /// [`ReverbPar::LowShelf`].
     pub low_shelf: T,
+    /// [`ReverbPar::Stereo`].
     pub stereo: T,
 }
 
 impl<T> ReverbControls<T> {
     /// Construct all controls from their identities.
+    #[must_use]
     pub fn from_fn(mut f: impl FnMut(ReverbPar) -> T) -> Self {
         Self {
             seconds: f(ReverbPar::Seconds),
@@ -72,6 +90,7 @@ impl<T> ReverbControls<T> {
     }
 
     /// Access a control directly, with no allocation or string lookup.
+    #[must_use]
     pub const fn get(&self, par: ReverbPar) -> &T {
         match par {
             ReverbPar::Seconds => &self.seconds,
