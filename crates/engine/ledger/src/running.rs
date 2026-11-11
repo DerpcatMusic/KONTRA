@@ -13,6 +13,7 @@ pub enum Kind {
     Pgs,
     UiControl,
     UiControls,
+    UiUpdate,
     AsyncComplete,
     /// After a wait: what the callback was no longer matters.
     Resumed,
@@ -68,6 +69,8 @@ impl Running {
             Kind::Pgs => 8,
             Kind::UiControl => 6,
             Kind::UiControls => 15,
+            // ponytail: unmeasured, the gap between ui_control (6) and pgs (8).
+            Kind::UiUpdate => 7,
             Kind::AsyncComplete => 13,
         };
         Self {

@@ -4,6 +4,7 @@
 use kontra_vm::{Action, HostCall, HostValue, Text};
 
 use crate::Engine;
+use crate::queue::Exit;
 use crate::script::Kind;
 
 impl Engine {
@@ -62,6 +63,9 @@ impl Engine {
             | Action::FsNavigate
             | Action::SetControlParStrArr
             | Action::WillNeverTerminate => HostValue::Nothing,
+            // Time Machine Pro's own voice pools: KONTRA's stretch draws on
+            // the engine's voices, so the change is done at once.
+            Action::SetVoiceLimit => HostValue::Int(self.start_async(Exit::Done)),
             // No file is picked in a browser KONTRA does not show.
             Action::FsGetFilename => {
                 *call.text_out = Text::EMPTY;

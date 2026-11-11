@@ -175,6 +175,8 @@ pub struct Callbacks {
     pub pgs_changed: Option<u32>,
     /// `on ui_controls`, run first when any control moves.
     pub ui_controls: Option<u32>,
+    /// `on ui_update`, run after a control moved.
+    pub ui_update: Option<u32>,
     pub async_complete: Option<u32>,
     /// Every control by UI id, with its own `on ui_control` if it has one.
     pub ui_control: Vec<(i32, Option<u32>)>,

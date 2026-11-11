@@ -110,6 +110,7 @@ impl Engine {
         for (kind, entry) in [
             (Kind::UiControls, script.callbacks.ui_controls),
             (Kind::UiControl, own),
+            (Kind::UiUpdate, script.callbacks.ui_update),
         ] {
             if let Some(entry) = entry {
                 let running = Running {

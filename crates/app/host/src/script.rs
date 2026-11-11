@@ -63,10 +63,7 @@ const COROUTINES: usize = 64;
 /// for coverage reports.
 #[must_use]
 pub fn runs(kind: CallbackKind) -> bool {
-    !matches!(
-        kind,
-        CallbackKind::UiUpdate | CallbackKind::Rpn | CallbackKind::Nrpn
-    )
+    !matches!(kind, CallbackKind::Rpn | CallbackKind::Nrpn)
 }
 
 /// The script's arrays, by first cell, for the array files it names.
@@ -106,6 +103,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             listener: entry(CallbackKind::Listener),
             pgs_changed: entry(CallbackKind::PgsChanged),
             ui_controls: entry(CallbackKind::UiControls),
+            ui_update: entry(CallbackKind::UiUpdate),
             async_complete: entry(CallbackKind::AsyncComplete),
             ui_control: (0u32..)
                 .zip(&script.controls)
@@ -405,6 +403,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             listener: None,
             pgs_changed: None,
             ui_controls: None,
+            ui_update: None,
             async_complete: None,
             ui_control: Vec::new(),
             widget: Some(kontra_lua::Callbacks::WIDGET),

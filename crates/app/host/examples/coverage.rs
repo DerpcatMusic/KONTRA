@@ -291,12 +291,21 @@ fn describe(f: &kontra_engine::Faults, script: &kontra_ksp::Script) -> String {
 }
 
 /// Init, one note on and off: the actions script `slot` calls and leaves
-/// unanswered, and its faults if any. Zones are dropped so nothing loads.
+/// unanswered, and its faults if any. Zones are dropped so no zone sample
+/// loads; the responses a script may load into a convolution stay.
 fn run(ir: &ir::Instrument, slot: usize, store: &mut Store) -> Option<Run> {
     let mut ir = ir.clone();
     let script = ir.scripts.get(slot)?.clone();
     ir.scripts = vec![script];
-    ir.samples.clear();
+    let samples = std::mem::take(&mut ir.samples);
+    let mut keep = |i: &mut usize| {
+        if let Some(s) = samples.get(*i) {
+            ir.samples.push(s.clone());
+            *i = ir.samples.len() - 1;
+        }
+    };
+    ir.responses.iter_mut().for_each(|(_, i)| keep(i));
+    ir.impulses.iter_mut().for_each(|imp| keep(&mut imp.sample));
     for g in &mut ir.groups {
         g.zones.clear();
     }
