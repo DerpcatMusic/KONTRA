@@ -480,19 +480,6 @@ impl HostApi for Engine {
                         i32::try_from(frames * 1_000_000 / u64::from(self.rate)).unwrap_or(i32::MAX)
                     }),
             ),
-            // `hide_inst_icon`: nothing to do. Kontakt's command hides the icon
-            // in its own instrument header; KONTRA's page has no instrument
-            // header and draws no instrument icon, so this is answered rather
-            // than left unanswered — the command is implemented, its result is
-            // just nothing (the KSP manual has no entry for it; the corpus's
-            // 188 callers are what it is implemented for).
-            Action::HideInstIcon => HostValue::Nothing,
-            // `dont_use_machine_mode(<zone-id>)`: nothing to do. The manual
-            // (Zone Commands) documents it as switching Kontakt's own machine
-            // mode off for the zone a note came from; there is no machine mode
-            // here to leave, so the call is answered and does nothing. 25
-            // corpus slots call it.
-            Action::DontUseMachineMode => HostValue::Nothing,
             Action::NumZones | Action::GetNumZones => HostValue::Int(self.plan.zones.len() as i32),
             // find_group answers 0 for an unknown name, get_group_idx $NI_NOT_FOUND.
             Action::FindGroup | Action::GetGroupIdx => {
