@@ -117,6 +117,9 @@ pub struct LookPars {
     pub meter_generic: i32,
     pub picture: i32,
     pub picture_state: i32,
+    /// `$CONTROL_PAR_TEXTLINE`: a text set under it adds a line, as
+    /// `add_text_line` does.
+    pub textline: i32,
     /// The UI ids that address the instrument's wallpaper and icon.
     pub wallpaper: i32,
     pub icon: i32,
@@ -518,7 +521,10 @@ impl Store {
             // ponytail: a text parameter first set after init allocates its
             // slot on the audio thread, as `set_control_par` does.
             Action::SetControlParStr => {
-                self.set_text_par(slot, n, int(1), text, false);
+                match look.filter(|l| l.textline != l.text && int(1) == l.textline) {
+                    Some(l) => self.set_text_par(slot, n, l.text, text, true),
+                    None => self.set_text_par(slot, n, int(1), text, false),
+                }
                 HostValue::Nothing
             }
             Action::GetControlParStr => {

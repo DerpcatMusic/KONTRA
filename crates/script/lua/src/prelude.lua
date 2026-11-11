@@ -846,8 +846,10 @@ __entries = {
 		if w == nil or rawget(w, "setValue") == nil then
 			return
 		end
-		if w.kind == "Table" and __widget_cell ~= nil then
+		if w.kind == "Table" then
+			-- A table moves one cell; a move that names none changes nothing.
 			local index = __widget_cell
+			if index == nil then return end
 			if w.integer then v = math.floor(v + 0.5) end
 			w:setValue(index, v)
 			if type(rawget(w, "changed")) == "function" then w:changed(index) end

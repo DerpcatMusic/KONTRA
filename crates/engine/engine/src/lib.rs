@@ -25,6 +25,7 @@ mod params;
 mod pgs;
 mod racks;
 mod recall;
+mod runtime;
 mod script_files;
 
 mod script;
@@ -177,6 +178,10 @@ pub struct Engine {
     targets_scratch: Vec<NoteRef>,
     /// Latest controller values on any channel, as scripts read them.
     cc_values: [u8; 130],
+    /// Each key's last polyphonic aftertouch (`%POLY_AT`).
+    poly_at: [u8; 128],
+    /// Where `$KSP_TIMER` counts from (`reset_ksp_timer`).
+    timer_at: SampleTime,
     last_message: Text,
     /// What a recall of saved values does to the scripts.
     recall: Recall,
@@ -335,6 +340,8 @@ impl Engine {
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
+            poly_at: [0; 128],
+            timer_at: SampleTime(0),
             last_message: Text::EMPTY,
             recall: Recall::Restart,
             recalled: Box::new([]),

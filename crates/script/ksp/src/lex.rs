@@ -55,6 +55,7 @@ fn word_byte(b: u8) -> bool {
 
 /// Resolves escaped quotes while preserving all other backslash pairs verbatim.
 /// Borrowing the common unescaped case keeps plain literals allocation-free here.
+#[must_use]
 pub(crate) fn unescape(s: &str) -> Cow<'_, str> {
     if !s.contains(r#"\""#) {
         return Cow::Borrowed(s);
@@ -337,7 +338,11 @@ mod tests {
             let source = format!("\"{raw}\" next");
             let tokens = lex(&source).unwrap();
             assert_eq!(tokens[0].tok, Tok::Str(raw), "source {source:?}");
-            assert_eq!(tokens[0].span, Span::new(0, raw.len() + 2));
+            assert_eq!(
+                tokens[0].span,
+                Span::new(0, raw.len() + 2),
+                "source {source:?}"
+            );
             assert_eq!(tokens[1].tok, Tok::Word("next"), "source {source:?}");
         }
         for (raw, decoded) in [
