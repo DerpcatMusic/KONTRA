@@ -51,12 +51,11 @@ pub fn prepare(
             }
         }
         for (member, z) in group.zones.iter().enumerate() {
-            let Some(Some(sample)) = loaded.get(z.sample) else {
-                continue;
-            };
             let Some(source) = instrument.samples.get(z.sample) else {
                 continue;
             };
+            // A script sees every saved zone, played or not (a purged group,
+            // a sample that failed to open).
             facts.push(kontra_engine::ZoneFacts {
                 id: z.id,
                 name: kontra_engine::zone_name(&source.name).into(),
@@ -69,6 +68,9 @@ pub fn prepare(
                 start_range: z.start_mod,
                 rate: source.rate,
             });
+            let Some(Some(sample)) = loaded.get(z.sample) else {
+                continue;
+            };
             let mut zone = zone(group, group_id, z, source, sample, (&switches, &client));
             zone.member = u16::try_from(member).unwrap_or(u16::MAX);
             zones.push(zone);

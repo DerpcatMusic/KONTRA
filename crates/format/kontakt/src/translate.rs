@@ -155,7 +155,9 @@ pub(crate) fn instrument(
         });
         out.slot_shapes.slots = slots.shape_slots;
     }
-    let loads = |s: &ir::Script| s.source.contains("$ENGINE_PAR_EFFECT_");
+    let loads = |s: &ir::Script| {
+        s.source.contains("$ENGINE_PAR_EFFECT_") || s.source.contains("$ENGINE_PAR_SEND_EFFECT_")
+    };
     if out.scripts.iter().any(loads) {
         // Every Kontakt rack has 8 slots, and a script may load into an
         // empty one the file does not save.
