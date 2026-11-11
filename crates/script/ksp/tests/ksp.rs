@@ -552,7 +552,7 @@ fn num_presets_is_a_script_constant() {
 fn a_declared_name_wins_over_the_catalog_when_folding() {
     let r = Run::new(
         "on init
-            declare $NUM_PRESETS := 5
+            declare const $NUM_PRESETS := 5
             declare const $N := $NUM_PRESETS * 2
             declare %slots[$NUM_PRESETS] := (1, 2, 3, 4, 5)
             declare $size
@@ -569,6 +569,12 @@ fn a_declared_name_wins_over_the_catalog_when_folding() {
     // scripts and is a catalog name).
     assert_eq!(
         error("on init declare $EVENT_PAR_TOY declare %a[$EVENT_PAR_TOY] end on"),
+        "expected a constant"
+    );
+    // Nor is a variable's initialiser: the script may assign it before it is
+    // read, and the manual says variables cannot size an array.
+    assert_eq!(
+        error("on init declare $m := 5 declare %a[$m] end on"),
         "expected a constant"
     );
     // A system variable is still not declarable.

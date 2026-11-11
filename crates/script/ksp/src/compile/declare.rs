@@ -75,17 +75,6 @@ impl<'a> Compiler<'a> {
             Storage::InstrumentPersistent => Persistence::Instrument,
             _ => Persistence::None,
         };
-        // A scalar's constant initialiser, so a later fold reads the *declared*
-        // value of the name rather than whatever the catalog says about it:
-        // `declare $NUM_PRESETS := 5` makes `$NUM_PRESETS` a number, and a
-        // `declare const $N := $NUM_PRESETS` after it folds to 5. Without this,
-        // the name falls through to [`consts::is_catalog`] and folds to an
-        // opaque symbol id — a silent wrong constant, not an error.
-        let init = match (d.storage, d.list, d.init.as_slice()) {
-            (Storage::Const, _, _) | (_, true, _) => None,
-            (_, false, [init]) => self.fold(init).ok(),
-            _ => None,
-        };
         let home = match (d.storage, len, ty) {
             (Storage::Const, None, _) => {
                 let [init] = d.init.as_slice() else {
@@ -164,7 +153,6 @@ impl<'a> Compiler<'a> {
             name: d.name.into(),
             ty,
             home,
-            init,
             control,
             persistence,
         });
@@ -210,7 +198,6 @@ impl<'a> Compiler<'a> {
             name: name.into(),
             ty,
             home,
-            init: None,
             control: Some(index),
             persistence: Persistence::None,
         });
@@ -470,17 +457,17 @@ impl<'a> Compiler<'a> {
         self.names.contains_key(&name.to_ascii_lowercase())
     }
 
-    /// The constant a declared name folds to: a `const`'s value, or a scalar's
-    /// constant initialiser. `None` when the declared name holds no compile-time
-    /// value (it is only assigned at run time), which makes a fold of it an
-    /// error rather than a catalog lookup.
+    /// The constant a declared name folds to: only a `const`'s value. A
+    /// variable's initialiser is not one, since the script may assign it before
+    /// it is read (a UI range then reads the new value at run time), and the
+    /// manual says variables cannot size an array.
     pub(super) fn declared_value(&self, name: &str) -> Option<Value> {
         let var = self
             .vars
             .get(*self.names.get(&name.to_ascii_lowercase())?)?;
         match var.home {
             Home::Const(value) => Some(value),
-            _ => var.init,
+            _ => None,
         }
     }
 }
