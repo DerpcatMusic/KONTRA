@@ -117,7 +117,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                         kontra_engine::ir::ReverbPar::ALL
                             .iter()
                             .enumerate()
-                            .map(|(index, par)| json!({"index":index, "law":law(script.reverb_laws.get(*par))}))
+                            .map(|(index, par)| json!({"index":index, "id":par.id(), "law":law(script.reverb_laws.get(*par))}))
                             .collect::<Vec<_>>()
                     ),
                 );

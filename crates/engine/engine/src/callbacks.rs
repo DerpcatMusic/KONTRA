@@ -96,7 +96,10 @@ impl Engine {
         let controls = &script.controls;
         let n = self.control_index_in(slot, id);
         let cell = n.and_then(|n| controls.cells.get(n).copied().flatten());
-        if cell.is_none() && own.is_none() {
+        // Any registered control's edit runs `on ui_controls` and `on
+        // ui_update` ("every GUI change", KSP manual), even one with no value
+        // cell (a text edit) and no callback of its own.
+        if n.is_none() && own.is_none() {
             return;
         }
         let len = n.and_then(|n| controls.steps.get(n)).copied().unwrap_or(0);
@@ -110,6 +113,7 @@ impl Engine {
         for (kind, entry) in [
             (Kind::UiControls, script.callbacks.ui_controls),
             (Kind::UiControl, own),
+            (Kind::UiUpdate, script.callbacks.ui_update),
         ] {
             if let Some(entry) = entry {
                 let running = Running {
