@@ -298,14 +298,26 @@ fn run(ir: &ir::Instrument, slot: usize, store: &mut Store) -> Option<Run> {
     let script = ir.scripts.get(slot)?.clone();
     ir.scripts = vec![script];
     let samples = std::mem::take(&mut ir.samples);
+    let mut kept: Vec<usize> = Vec::new();
+    // One new index per kept sample; an index past the old list stays past
+    // the new one, so a missing sample is still reported.
     let mut keep = |i: &mut usize| {
-        if let Some(s) = samples.get(*i) {
-            ir.samples.push(s.clone());
-            *i = ir.samples.len() - 1;
+        if samples.get(*i).is_none() {
+            *i = usize::MAX;
+            return;
         }
+        let at = kept.iter().position(|k| k == i).unwrap_or_else(|| {
+            kept.push(*i);
+            kept.len() - 1
+        });
+        *i = at;
     };
     ir.responses.iter_mut().for_each(|(_, i)| keep(i));
     ir.impulses.iter_mut().for_each(|imp| keep(&mut imp.sample));
+    ir.samples = kept
+        .iter()
+        .filter_map(|&k| samples.get(k).cloned())
+        .collect();
     for g in &mut ir.groups {
         g.zones.clear();
     }

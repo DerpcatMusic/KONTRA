@@ -79,6 +79,13 @@ impl Pgs {
         self.texts.reserve_exact(RUNTIME_KEYS);
         self.int_order.reserve_exact(RUNTIME_KEYS);
         self.text_order.reserve_exact(RUNTIME_KEYS);
+        let orders = (self.int_order.len(), self.text_order.len());
+        self.int_order.resize(orders.0 + RUNTIME_KEYS, 0);
+        self.text_order.resize(orders.1 + RUNTIME_KEYS, 0);
+        std::hint::black_box(self.int_order.as_mut_slice());
+        std::hint::black_box(self.text_order.as_mut_slice());
+        self.int_order.truncate(orders.0);
+        self.text_order.truncate(orders.1);
         self.values.reserve_exact(RUNTIME_KEYS * MOST);
         // Touch every admitted callback slot off audio, then hide the empty
         // entries. Keep the writes observable so optimization cannot remove them.

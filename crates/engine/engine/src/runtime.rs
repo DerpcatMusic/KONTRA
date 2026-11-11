@@ -19,6 +19,7 @@ impl Engine {
                     .and_then(|k| self.poly_at.get(k))
                     .map_or(0, |&v| i32::from(v)),
             ),
+            // Kept across a wait (the resumed callback is still poly_at's).
             Action::PolyAtNum => {
                 let key = match self.running.kind {
                     Kind::PolyAt => self.running.controller,

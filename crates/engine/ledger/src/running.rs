@@ -42,6 +42,10 @@ pub struct Running {
 /// Marks a UI id in the low bits of a coroutine context; event ids never set it.
 const UI_BIT: u32 = 1 << 31;
 
+/// `$NI_CB_TYPE` of `on poly_at`. ponytail: unmeasured, the gap in the
+/// measured numbering (controller 3, ui_control 6).
+const POLY_AT: u8 = 4;
+
 impl Running {
     pub const IDLE: Self = Self {
         kind: Kind::Resumed,
@@ -63,8 +67,7 @@ impl Running {
             Kind::Note => 1,
             Kind::Release => 2,
             Kind::Controller => 3,
-            // ponytail: unmeasured, the gap in the measured numbering.
-            Kind::PolyAt => 4,
+            Kind::PolyAt => POLY_AT,
             Kind::Listener => 12,
             Kind::Pgs => 8,
             Kind::UiControl => 6,
@@ -83,10 +86,12 @@ impl Running {
 
     /// The coroutine context, so a resumed callback still knows its event
     /// or UI id (low 32 bits, a UI id with the top bit set), callback type
-    /// (8), callback id (20) and listener signal (4).
+    /// (8), callback id (20) and listener signal (4). A poly aftertouch
+    /// callback keeps its key in the low bits instead.
     pub fn context(&self) -> u64 {
         let low = match self.event {
             Some(n) => n.event_id() as u32,
+            None if self.callback_type == POLY_AT => u32::from(self.controller),
             None => self.ui as u32 | UI_BIT,
         };
         u64::from(low)
@@ -97,6 +102,16 @@ impl Running {
 
     pub fn resumed(context: u64) -> Self {
         let low = context as u32;
+        let callback_type = (context >> 32) as u8;
+        if callback_type == POLY_AT {
+            return Self {
+                kind: Kind::PolyAt,
+                controller: low as u8,
+                callback_type,
+                callback_id: (context >> 40) as u32 & 0xF_FFFF,
+                ..Self::IDLE
+            };
+        }
         Self {
             ui: if low & UI_BIT != 0 {
                 (low & !UI_BIT) as i32
@@ -116,6 +131,16 @@ impl Running {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resumed_poly_aftertouch_callback_keeps_its_key() {
+        let running = Running {
+            controller: 61,
+            ..Running::new(Kind::PolyAt, None)
+        };
+        let resumed = Running::resumed(running.context());
+        assert_eq!((resumed.kind, resumed.controller), (Kind::PolyAt, 61));
+    }
 
     #[test]
     fn a_resumed_callback_keeps_its_event_or_control() {
