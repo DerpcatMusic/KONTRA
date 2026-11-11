@@ -133,6 +133,8 @@ pub fn compile<'a>(
     for item in items {
         let entry = c.here();
         c.current = None;
+        c.in_init =
+            matches!(item, Item::Callback { name, .. } if name.eq_ignore_ascii_case("init"));
         c.called.clear();
         match item {
             Item::Callback {
@@ -326,6 +328,8 @@ struct Compiler<'a> {
     /// `Call` instructions waiting for their function's entry.
     fixups: Vec<(usize, usize)>,
     current: Option<usize>,
+    /// Compiling `on init` itself (not a function it calls).
+    in_init: bool,
     called: Vec<usize>,
     /// `continue` targets of the enclosing loops.
     loops: Vec<u32>,
