@@ -32,10 +32,53 @@ enum Shown {
     Lua(Box<model::Interface>),
 }
 
+/// Whether script slot `slot` asked for its page to be the instrument's
+/// performance view (`make_perfview`, a loaded Creator Tools view, or a Lua
+/// page with `performance`).
+fn performs(
+    faces: &[Option<Face>],
+    pages: &[Option<kontra_lua::Ui>],
+    engine: &Engine,
+    slot: usize,
+) -> bool {
+    let Ok(at) = u8::try_from(slot) else {
+        return false;
+    };
+    if let Some(Some(face)) = faces.get(slot) {
+        return engine.page(at).is_some_and(|page| page.performance) || face.has_view();
+    }
+    let now = (engine.vm(at))
+        .and_then(kontra_engine::Vm::own_page)
+        .and_then(|p| p.downcast::<kontra_lua::Ui>().ok());
+    now.as_deref()
+        .or_else(|| pages.get(slot)?.as_ref())
+        .is_some_and(|page| page.performance)
+}
+
+/// The slots to try, in the order the editor chooses between them: every slot
+/// that asks for the performance view, in slot order, then every slot that does
+/// not.
+///
+/// Returning the order as data is what keeps the failure out of reach. A slot
+/// that asks for the view but whose page cannot be built is skipped by the
+/// caller like any other candidate, so it cannot end the search and hand the
+/// editor an earlier admin page -- which `find(..).and_then(..)` did, because
+/// the failed construction was the end of the only preferred candidate.
+fn candidates(count: usize, asks: impl Fn(usize) -> bool) -> Vec<usize> {
+    let (preferred, rest): (Vec<usize>, Vec<usize>) = (0..count).partition(|&slot| asks(slot));
+    preferred.into_iter().chain(rest).collect()
+}
+
 impl View {
-    /// The view of the first script slot with a face (KSP) or a page
-    /// (Lua), read from `engine` as its init left it; pictures come from
-    /// the library at `path`.
+    /// The script's page the editor shows, read from `engine` as its init
+    /// left it; pictures come from the library at `path`.
+    ///
+    /// Kontakt shows the script that asked for the performance view
+    /// (`make_perfview`, or a Creator Tools view it loaded), not whichever
+    /// slot declares a control first: a multi whose first slot is a helper's
+    /// admin page would otherwise open with that page instead of the
+    /// instrument. Only when no slot asks for it does the first slot with a
+    /// face (KSP) or a page (Lua) win, in declaration order.
     #[must_use]
     pub fn of(
         faces: &[Option<Face>],
@@ -45,36 +88,52 @@ impl View {
     ) -> Option<Self> {
         let library = path.map(|p| RefCell::new(Library::open(p)));
         let meta = |p: &str| library.as_ref()?.borrow_mut().meta(p);
-        let mut view = (0..faces.len().max(pages.len())).find_map(|slot| {
-            let at = u8::try_from(slot).ok()?;
-            if let Some(Some(face)) = faces.get(slot) {
-                let live = Live::new(face, at, engine, &meta).ok()?;
-                let frame = LookFrame::new(at, &live, face, engine);
-                return Some(Self::new(at, Shown::Ksp(Box::new(live)), frame));
-            }
-            // As init left it (pictures it set there), else as it loaded.
-            let now = (engine.vm(at))
-                .and_then(kontra_engine::Vm::own_page)
-                .and_then(|p| p.downcast::<kontra_lua::Ui>().ok());
-            let page = now.as_deref().or(pages.get(slot)?.as_ref())?;
-            let mut tree = crate::ui::lua::tree(page, &meta);
-            let mut text = Text::EMPTY;
-            for (n, w) in (0u32..).zip(0..tree.widgets.len()) {
-                let Some(look) = engine.widget(at, n) else {
-                    continue;
-                };
-                let label = tree
-                    .widgets
-                    .get(w)
-                    .is_some_and(|w| w.kind == model::Kind::Label);
-                let words = label && engine.widget_text(at, n, &mut text);
-                crate::ui::lua::apply(&mut tree, w, look, words.then(|| text.as_str()));
-            }
-            let frame = LookFrame::lua(at, &tree);
-            Some(Self::new(at, Shown::Lua(Box::new(tree)), frame))
-        })?;
-        view.library = library.map(RefCell::into_inner);
+        let count = faces.len().max(pages.len());
+        let view = {
+            let mut view = candidates(count, |slot| performs(faces, pages, engine, slot))
+                .into_iter()
+                .find_map(|slot| Self::at_slot(slot, faces, pages, engine, &meta))?;
+            view.library = library.map(RefCell::into_inner);
+            view
+        };
         Some(view)
+    }
+
+    /// Script slot `slot`'s page, or `None` when it has none or the tree it
+    /// declares is malformed.
+    fn at_slot(
+        slot: usize,
+        faces: &[Option<Face>],
+        pages: &[Option<kontra_lua::Ui>],
+        engine: &Engine,
+        meta: &dyn Fn(&str) -> Option<model::ImageMeta>,
+    ) -> Option<Self> {
+        let at = u8::try_from(slot).ok()?;
+        if let Some(Some(face)) = faces.get(slot) {
+            let live = Live::new(face, at, engine, meta).ok()?;
+            let frame = LookFrame::new(at, &live, face, engine);
+            return Some(Self::new(at, Shown::Ksp(Box::new(live)), frame));
+        }
+        // As init left it (pictures it set there), else as it loaded.
+        let now = (engine.vm(at))
+            .and_then(kontra_engine::Vm::own_page)
+            .and_then(|p| p.downcast::<kontra_lua::Ui>().ok());
+        let page = now.as_deref().or(pages.get(slot)?.as_ref())?;
+        let mut tree = crate::ui::lua::tree(page, meta);
+        let mut text = Text::EMPTY;
+        for (n, w) in (0u32..).zip(0..tree.widgets.len()) {
+            let Some(look) = engine.widget(at, n) else {
+                continue;
+            };
+            let label = tree
+                .widgets
+                .get(w)
+                .is_some_and(|w| w.kind == model::Kind::Label);
+            let words = label && engine.widget_text(at, n, &mut text);
+            crate::ui::lua::apply(&mut tree, w, look, words.then(|| text.as_str()));
+        }
+        let frame = LookFrame::lua(at, &tree);
+        Some(Self::new(at, Shown::Lua(Box::new(tree)), frame))
     }
 
     fn new(slot: u8, shown: Shown, frame: Box<LookFrame>) -> Self {

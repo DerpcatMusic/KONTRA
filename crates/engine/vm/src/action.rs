@@ -368,4 +368,16 @@ actions! {
     GroupsAffected,
     KeyDownOct,
     EventParAt,
+    // Appended rather than filed with their neighbours: an action's id is its
+    // position, and ids appear in traces and in the engine's per-action
+    // counts, so a new one goes on the end.
+    //
+    // `%NOTE_DURATION[key]`: microseconds since the newest live note on that
+    // key started (the KSP manual's time-and-transport array). A script that
+    // reads it failed to compile without it, so its `on init` never ran.
+    NoteDuration,
+    // `hide_inst_icon` and `dont_use_machine_mode`: answered, nothing to do
+    // (the engine's host-only list).
+    HideInstIcon,
+    DontUseMachineMode,
 }
