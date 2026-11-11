@@ -480,7 +480,9 @@ impl<L: Library> Translator<'_, '_, L> {
                     },
                 });
             }
+            // No UVI script addresses a zone by id.
             let translated = ir::Zone {
+                id: 0,
                 mix,
                 sample: index,
                 keys: span.keys.0..=span.keys.1,

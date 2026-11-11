@@ -63,6 +63,8 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         ir::Form::Whole => Readout::Whole(v),
         ir::Form::Ratio => Readout::Ratio(v),
         ir::Form::Pan => Readout::Pan,
+        ir::Form::Hundredths => Readout::Hundredths(v),
+        ir::Form::WideWhole => Readout::WideWhole(v),
     };
     write(readout, v, out)
 }

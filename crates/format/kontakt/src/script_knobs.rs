@@ -15,7 +15,7 @@ use kontra_law::common::BIPOLAR;
 /// are the slot's own (`Slot`), as are the legacy Delay's.
 pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::EffectParam as E;
-    use ir::KnobTarget::{Effect, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot};
+    use ir::KnobTarget::{Effect, LfoPhase, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let mod_hz = ir::Law::Exp { lo: 0.05, hi: 8.0 };
     let mut rows = vec![
@@ -336,6 +336,8 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         // The saved width for x = 0, .1, .25, .5, .75, .9, 1 is 0.05, 0.14,
         // 0.275, 0.5, 0.725, 0.86, 0.95 (probes/knob_save_laws.lua).
         ("$ENGINE_PAR_INTMOD_PULSEWIDTH", LfoWidth, lin(0.05, 0.95)),
+        // Saved as set, in cycles; shown in degrees (readouts.rs).
+        ("$ENGINE_PAR_LFO_PHASE", LfoPhase, lin(0.0, 1.0)),
         // The Multi weights in the mixer's order: sine, saw, triangle, pulse, random.
         ("$ENGINE_PAR_LFO_SINE", LfoWeight(0), BIPOLAR),
         ("$ENGINE_PAR_LFO_SAW", LfoWeight(1), BIPOLAR),
@@ -597,10 +599,12 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     for (band, &[hz, octaves, db]) in bands.iter_mut().zip(&saved) {
         *band = crate::laws::eq_band(hz, octaves, db).unwrap_or(ir::Bell::FLAT);
     }
+    // A filter subtype loads a `$EFFECT_TYPE_FILTER` (7).
     let ty = |id, subtype, reads, effect, laws| ir::SlotType {
         id,
         subtype,
         reads,
+        kind: if subtype { 7 } else { id },
         effect,
         laws,
     };
