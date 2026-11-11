@@ -496,6 +496,18 @@ impl<'a> Compiler<'a> {
                         Some((base, len)) => (Ty::Int, base, len),
                         None => {
                             let (v, _) = self.named(e)?;
+                            // KSP manual (load_array): an array loaded in `on
+                            // init` is implicitly made persistent.
+                            // ponytail: loads in a function `on init` calls are
+                            // not seen; mark them when a library needs it.
+                            let loads = matches!(b, Builtin::LoadArray | Builtin::LoadArrayStr);
+                            if let Some(var) = self.vars.get_mut(v)
+                                && loads
+                                && self.in_init
+                                && var.persistence == Persistence::None
+                            {
+                                var.persistence = Persistence::Snapshot;
+                            }
                             let var = self.var(v)?;
                             let (ty, array) = (var.ty, var.array());
                             let Some((base, len)) = array.filter(|_| files || ty != Ty::Text)
