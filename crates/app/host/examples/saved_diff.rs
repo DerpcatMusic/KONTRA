@@ -41,9 +41,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(got) => {
                 differ += 1;
                 let at = want.iter().zip(got).take_while(|(a, b)| a == b).count();
-                let show = |v: &[&str]| v.iter().skip(at).take(4).copied().collect::<Vec<_>>();
-                let (k, o) = (show(&want), show(got));
-                println!("differ  {} from value {at}: kontakt {k:?} kontra {o:?}", name(entry));
+                let (k, o) = (
+                    want.get(at..).unwrap_or_default(),
+                    got.get(at..).unwrap_or_default(),
+                );
+                let (k, o) = (&k[..k.len().min(4)], &o[..o.len().min(4)]);
+                println!(
+                    "differ  {} from value {at}: kontakt {k:?} kontra {o:?}",
+                    name(entry)
+                );
             }
             None => {
                 missing += 1;
