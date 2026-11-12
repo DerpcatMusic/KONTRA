@@ -34,6 +34,32 @@ pub(crate) const ABSENT: u32 = 0;
 pub(crate) const REQUESTED: u32 = 1;
 pub(crate) const RESIDENT: u32 = 2;
 
+/// The last stored (NCW) block a reader decoded: its sample and block, how
+/// many frames it holds, and both channels' values. 4 KiB; a voice keeps
+/// one so its next window does not decode the same block again.
+pub struct BlockMemo {
+    key: Option<(u32, usize)>,
+    frames: usize,
+    values: [[i32; ncw::SAMPLES_PER_BLOCK]; 2],
+}
+
+impl BlockMemo {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            key: None,
+            frames: 0,
+            values: [[0; ncw::SAMPLES_PER_BLOCK]; 2],
+        }
+    }
+}
+
+impl Default for BlockMemo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A pinned page: packed PCM, or the codec's blocks as stored, decoded on
 /// read (`[count: u32][start: u32; count + 1][blocks]`).
 #[derive(Clone)]
@@ -126,6 +152,20 @@ impl Sample {
         self.read_mixed(client, first, out, None)
     }
 
+    /// As [`Self::read_mixed`], keeping the last stored block it decodes in
+    /// `memo`, so the next read of that block (a voice's next window) does
+    /// not decode it again.
+    pub fn read_mixed_memo(
+        &self,
+        client: &StreamClient,
+        first: u64,
+        out: &mut [[f32; 2]],
+        mix: Option<&Mix>,
+        memo: &mut BlockMemo,
+    ) -> Read {
+        self.read_with(client, first, out, mix, memo)
+    }
+
     /// As [`Self::read`], each channel reaching the outputs by its row of
     /// `mix`; `None` plays mono on both sides and two or more channels as
     /// left and right.
@@ -135,6 +175,17 @@ impl Sample {
         first: u64,
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
+    ) -> Read {
+        self.read_with(client, first, out, mix, &mut BlockMemo::new())
+    }
+
+    fn read_with(
+        &self,
+        client: &StreamClient,
+        first: u64,
+        out: &mut [[f32; 2]],
+        mix: Option<&Mix>,
+        memo: &mut BlockMemo,
     ) -> Read {
         let size = self.page_frames();
         let mut read = Read::default();
@@ -151,7 +202,7 @@ impl Sample {
                 .min(self.frames - pos)
                 .min(rest.len() as u64) as usize;
             let (chunk, tail) = rest.split_at_mut(len);
-            if !self.read_page(client, page, offset, chunk, mix) {
+            if !self.read_page(client, page, offset, chunk, mix, memo) {
                 read.missing += len as u32;
             }
             rest = tail;
@@ -167,6 +218,7 @@ impl Sample {
         offset: usize,
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
+        memo: &mut BlockMemo,
     ) -> bool {
         match self.pinned.get(page) {
             Some(Some(Page::Pcm(bytes))) => {
@@ -175,7 +227,7 @@ impl Sample {
                 return true;
             }
             Some(Some(Page::Blocks(bytes))) => {
-                return self.read_blocks(bytes, page, offset, out, mix);
+                return self.read_blocks(bytes, page, offset, out, mix, memo);
             }
             _ => {}
         }
@@ -198,7 +250,8 @@ impl Sample {
     }
 
     /// [`Self::read_page`] from a page of stored blocks: decodes each block
-    /// the read touches on the stack. Never allocates.
+    /// the read touches into `memo`, unless it holds that block already.
+    /// Never allocates.
     fn read_blocks(
         &self,
         bytes: &[u8],
@@ -206,6 +259,7 @@ impl Sample {
         offset: usize,
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
+        memo: &mut BlockMemo,
     ) -> bool {
         const BLOCK: usize = ncw::SAMPLES_PER_BLOCK;
         let Some(packing) = self.source.packing() else {
@@ -213,15 +267,29 @@ impl Sample {
             return false;
         };
         let page_first = (page as u64) << self.shift;
-        let mut values = [[0i32; BLOCK]; 2];
         let mut done = 0;
         while done < out.len() {
             let at = offset + done;
             let index = ((page_first + at as u64) / BLOCK as u64) as usize;
-            let frames = block(bytes, at / BLOCK).and_then(|group| {
-                ncw::decode_group_fixed(group, &packing.header, packing.format, index, &mut values)
+            let key = (self.id.0, index);
+            if memo.key != Some(key) {
+                memo.key = None;
+                let decoded = block(bytes, at / BLOCK).and_then(|group| {
+                    (ncw::decode_group_fixed(
+                        group,
+                        &packing.header,
+                        packing.format,
+                        index,
+                        &mut memo.values,
+                    ))
                     .ok()
-            });
+                });
+                if let Some(frames) = decoded {
+                    (memo.key, memo.frames) = (Some(key), frames);
+                }
+            }
+            let frames = memo.key.map(|_| memo.frames);
+            let values = &memo.values;
             let skip = at % BLOCK;
             let n = (BLOCK - skip).min(out.len() - done);
             let Some(chunk) = out.get_mut(done..done + n) else {
