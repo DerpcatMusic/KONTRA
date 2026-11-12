@@ -99,6 +99,9 @@ pub struct Stats {
     pub notes_refused: u64,
     /// Events refused because the queue was full.
     pub events_refused: u64,
+    /// Script resumes put off to the next frame: one frame already ran as
+    /// many as the queue holds.
+    pub resumes_deferred: u64,
     /// Source frames voices played as silence because data was late.
     pub missing_frames: u64,
     /// Script actions this engine does not implement yet (they returned 0).
@@ -443,8 +446,22 @@ impl Engine {
         let start = self.now;
         let end = start.advance(Frames(u32::try_from(out.len()).unwrap_or(u32::MAX)));
         while self.now < end {
-            while let Some(work) = self.queue.pop_due(self.now) {
-                self.dispatch(work);
+            // One frame runs at most a queue's worth of resumes: a script
+            // chain of sub-frame waits goes on next frame, never spins here.
+            let mut resumes = 0;
+            while let Some((due, work)) = self.queue.pop_due(self.now) {
+                if let Work::Resume(..) = work {
+                    resumes += 1;
+                    if resumes > self.queue.capacity() {
+                        let next = queue::Due::at(SampleTime(self.now.0 + 1));
+                        self.stats.resumes_deferred += 1;
+                        if !self.queue.push_due(next, work) {
+                            self.stats.events_refused += 1;
+                        }
+                        continue;
+                    }
+                }
+                self.dispatch(due, work);
             }
             let until = self
                 .queue
@@ -465,10 +482,10 @@ impl Engine {
         self.end_silent_notes();
     }
 
-    fn dispatch(&mut self, work: Work) {
+    fn dispatch(&mut self, due: queue::Due, work: Work) {
         let event = match work {
             Work::Input(event) => event,
-            Work::Resume(slot, co, wait, part) => return self.resume(slot, co, wait, part),
+            Work::Resume(slot, co, wait) => return self.resume(slot, co, wait, due),
             Work::Release(note) => return self.end_note(note),
             Work::ParentUp(note) => return self.parent_up(note),
             Work::PgsChanged => return self.run_pgs_changed(),
