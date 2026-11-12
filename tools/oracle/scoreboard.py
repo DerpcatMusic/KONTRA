@@ -400,10 +400,13 @@ def score(args):
                 spread = score_case(nat[:, a:z], nat2[:, a:z], case["hold"])
             own = [score_case(ours[:, a:z], j[:, a:z], case["hold"]) for j in jits.get(case["name"], [])
                    if z <= j.shape[1]]
+            before = score_case(nat[:, a:z], ours[:, a:z], case["hold"], spread)
             if own:
                 spread = widest(spread, *own)
             r = score_case(nat[:, a:z], ours[:, a:z], case["hold"], spread)
             r["jitter"] = len(own)
+            # The misses only v3's own key-up-jitter spread covers: printed apart, never hidden.
+            r["excused"] = [f for f in before.get("fails", []) if f not in r.get("fails", [])] if own else []
             r["plain"] = score_case(nat[:, a:z], ours[:, a:z], case["hold"])["ok"]
             r["spread"] = spread and {k: v for k, v in spread.items() if k in ("level", "onset", "attack", "release", "balance", "band")}
             rows.append(dict(case=case["name"], **r))
@@ -412,8 +415,12 @@ def score(args):
         ok = sum(r["ok"] for r in rows)
         print(f"{name}: {ok}/{len(rows)}{fit}")
         for r in rows:
-            if not r["ok"]:
-                print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"])))
+            line = f"silent {r['silent']}" if "silent" in r else ", ".join(r.get("fails", []))
+            if r.get("jitter"):  # a statistical row says what it is, passing or not
+                line = (f"[statistical] remaining: {line or 'none'}; "
+                        f"excused by key-up jitter: {', '.join(r['excused']) or 'none'}")
+            if not r["ok"] or r.get("jitter"):
+                print(f"  {r['case']:9} {line}")
     total = sum(r["ok"] for rows in table.values() for r in rows)
     if args.spread:
         inside = sum(r["ok"] and not r.get("plain", True) and not r.get("jitter") for rows in table.values() for r in rows)
