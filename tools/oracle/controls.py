@@ -330,6 +330,7 @@ def main():
     ap.add_argument("--src", help="KONTRA_SCRIPT_DUMP directory of this instrument")
     ap.add_argument("--inspect", help="kontra-inspect binary")
     ap.add_argument("--plan", action="store_true", help="write the script and scenario, render nothing")
+    ap.add_argument("--rescore", action="store_true", help="score OUTDIR's existing renders again")
     args = ap.parse_args()
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -352,7 +353,8 @@ def main():
         return
     binary, nki = sb.inspect_binary(args.inspect), Path(args.nki).resolve()
     (out / "oracle").mkdir(exist_ok=True)
-    play(binary, nki, out, out / "scenario.json", out / "script", "a", oracle=False)
+    if not args.rescore:
+        play(binary, nki, out, out / "scenario.json", out / "script", "a", oracle=False)
     writes, seen = writes_per_step(out / "a.json", steps)
     if seen != len(steps):
         sys.exit(f"pass A ran {seen} of {len(steps)} steps; see {out / 'a.log'}")
@@ -360,7 +362,8 @@ def main():
     (out / "probe").mkdir(exist_ok=True)
     (out / "probe" / f"{slot}.ksp").write_text(probe(writes))
     (out / "writes.json").write_text(json.dumps(writes))
-    play(binary, nki, out, out / "scenario.json", out / "probe", "b", oracle=True)
+    if not args.rescore:
+        play(binary, nki, out, out / "scenario.json", out / "probe", "b", oracle=True)
     native = sorted((out / "oracle").glob("inspect-*/native.wav"), key=lambda p: p.stat().st_mtime)
     if not native:
         sys.exit(f"no Kontakt capture; see {out / 'b.log'}")
@@ -368,6 +371,8 @@ def main():
         ks = [k for k, (sr, _, t) in enumerate(steps) if sr is r and t != "context"]
         if r["measure"] and ks and not any(writes[k] for k in ks):
             r["measure"], r["note"] = False, "sets script state only (read by other callbacks); not replayable"
+        elif r["measure"] and len(ks) >= 2 and writes[ks[0]] == writes[ks[1]]:
+            r["measure"], r["note"] = False, "min and max write the same engine values; its effect is script state"
     lag = analyse(native[-1], out / "b.wav", steps, rows)
     title = f"{Path(args.nki).stem}: panel controls, ours vs Kontakt"
     (out / "controls.json").write_text(json.dumps({"nki": args.nki, "context": context, "lag_frames": lag,
