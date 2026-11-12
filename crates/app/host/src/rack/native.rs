@@ -10,14 +10,14 @@ use std::sync::mpsc;
 
 use std::sync::Arc;
 
-use kontra_engine::{Plan, Saved};
+use kontra_engine::{Plan, Saved, ir};
 
 use super::Rack;
 use super::recall::{Started, started};
 
 /// A recall whose plan is being made.
 pub(crate) struct Native {
-    part: usize,
+    pub(super) part: usize,
     /// The part's load: another load or recall makes this one stale.
     generation: u64,
     started: mpsc::Receiver<Started>,
@@ -25,15 +25,27 @@ pub(crate) struct Native {
 }
 
 /// `plan` (a part's, of the base instrument) with the effects of the
-/// snapshot at `path`; as it is when the snapshot cannot be read (the
-/// values still land).
-fn rebuilt(plan: &Plan, path: &Path, rate: u32) -> Plan {
+/// snapshot at `path`, and what its reading and those effects report; as
+/// it is when the snapshot cannot be read (the values still land), with
+/// why.
+fn rebuilt(plan: &Plan, path: &Path, rate: u32) -> (Plan, Vec<ir::Diagnostic>) {
     let mut plan = plan.clone();
-    if let Ok(instrument) = crate::instrument::read(path) {
-        let mut diagnostics = Vec::new();
-        kontra_prepare::effects(&mut plan, &instrument, rate, &mut diagnostics);
+    match crate::instrument::read(path) {
+        Ok(instrument) => {
+            let mut diagnostics = Vec::new();
+            kontra_prepare::effects(&mut plan, &instrument, rate, &mut diagnostics);
+            diagnostics.extend(instrument.diagnostics);
+            (plan, diagnostics)
+        }
+        Err(e) => {
+            let why = ir::Diagnostic {
+                impact: ir::Impact::Audible,
+                feature: "snapshot effects unread".into(),
+                detail: e.to_string(),
+            };
+            (plan, vec![why])
+        }
     }
-    plan
 }
 
 impl Rack {
@@ -54,18 +66,13 @@ impl Rack {
         let (faces, near) = (p.faces.clone(), p.source.clone());
         // The snapshot's racks are the effects: no slots a script loaded.
         std::thread::spawn(move || {
-            let plan = rebuilt(&plan, &path, rate);
+            let (plan, diagnostics) = rebuilt(&plan, &path, rate);
             let face = (faces.as_slice(), near.as_deref().or(Some(path.as_path())));
             // None waits when the part moved on (another load or recall).
-            let _ = send.send(started(
-                plan,
-                &Default::default(),
-                saved,
-                (client, rate),
-                face,
-            ));
+            let mut started = started(plan, &Default::default(), saved, (client, rate), face);
+            started.diagnostics = diagnostics;
+            let _ = send.send(started);
         });
-        self.native.retain(|n| n.part != part);
         self.native.push(Native {
             part,
             generation: p.script.generation(),

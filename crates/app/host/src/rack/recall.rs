@@ -42,6 +42,9 @@ impl Rack {
     /// always loads; so does a preset with no values for a slot that keeps
     /// some (the base's own apply, which only a load reads).
     pub fn recall(&mut self, part: usize, preset: &Preset, path: Option<&Path>) -> bool {
+        // Every recall is newer than a snapshot's still being made: that
+        // one never lands (a load moves the part's generation instead).
+        self.native.retain(|n| n.part != part);
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return false;
         };
@@ -246,7 +249,15 @@ impl Rack {
             engine,
             slots: (slot_types, slot_responses),
             view,
+            diagnostics,
         } = started;
+        // What it reports replaces the load's report of the same.
+        let same = |d: &ir::Diagnostic, n: &ir::Diagnostic| {
+            (d.impact, &d.feature) == (n.impact, &n.feature)
+        };
+        old.diagnostics
+            .retain(|d| !diagnostics.iter().any(|n| same(d, n)));
+        old.diagnostics.extend(diagnostics);
         // Its waveform displays keep the zone samples they show.
         let waves = old.view.as_mut().map(|v| std::mem::take(&mut v.waves));
         let view = view.map(|v| v.with_waves(waves.unwrap_or_default()));
@@ -269,12 +280,13 @@ impl Rack {
     }
 }
 
-/// A restarted part: its engine, the slots its plan took and its
-/// interface on that engine.
+/// A restarted part: its engine, the slots its plan took, its interface
+/// on that engine and what the restart reports.
 pub(super) struct Started {
     engine: Box<Engine>,
     slots: crate::state::LiveSlots,
     view: Option<crate::view::View>,
+    pub(super) diagnostics: Vec<ir::Diagnostic>,
 }
 
 /// `plan` with `slots` (types, responses) put in and `saved` as its
@@ -300,5 +312,6 @@ pub(super) fn started(
         engine,
         slots,
         view,
+        diagnostics: Vec::new(),
     }
 }

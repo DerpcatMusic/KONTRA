@@ -923,6 +923,105 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
     }
 }
 
+/// A snapshot that saves effects is rebuilt off the rack and installed
+/// with them (here an instrument in the repo stands in for its file: its
+/// effects are what a recall reads), and any later recall supersedes one
+/// still being made: the part ends on the later pick.
+#[test]
+fn a_native_recall_installs_its_effects_and_a_later_recall_supersedes_it() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../tools/kontakt-reference/scenarios/cutoff_mod.nki"
+    );
+    let fixture = std::path::Path::new(fixture);
+    let preset = |knob: &str, effects| kontra_host::instrument::Preset {
+        name: "b".into(),
+        base: "a.nki".into(),
+        saved: vec![vec![format!("$knob {knob}")]],
+        effects,
+    };
+    let inserts = |rack: &Rack| {
+        let p = rack.parts()[0].as_ref().unwrap();
+        p.plan.as_ref().unwrap().inserts.iter().flatten().count()
+    };
+    // Waits up to a second of ticks for the part's generation to move.
+    let settled = |rack: &mut Rack, audio: &mut RackAudio, from: u64| {
+        for _ in 0..200 {
+            rack.tick();
+            audio.process(BLOCK, &[]);
+            if rack.parts()[0].as_ref().unwrap().script.generation() != from {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    };
+    let (mut rack, mut audio) = self::rack();
+    rack.load_ir(0, snapshot_of(1, &[]), Some("a.nki".into()))
+        .unwrap();
+    audio.process(BLOCK, &[]);
+    assert_eq!(inserts(&rack), 0);
+    let generation = rack.parts()[0].as_ref().unwrap().script.generation();
+    assert!(rack.recall(0, &preset("11", true), Some(fixture)));
+    assert!(settled(&mut rack, &mut audio, generation), "it installs");
+    assert!(inserts(&rack) > 0, "with the snapshot's effects");
+    assert!(saved_now(&mut rack, &mut audio).contains(&"$knob 11".to_owned()));
+    // A native recall, then a script-only one before it lands.
+    let (mut rack, mut audio) = self::rack();
+    rack.load_ir(0, snapshot_of(1, &[]), Some("a.nki".into()))
+        .unwrap();
+    audio.process(BLOCK, &[]);
+    let generation = rack.parts()[0].as_ref().unwrap().script.generation();
+    assert!(rack.recall(0, &preset("11", true), Some(fixture)));
+    assert!(rack.recall(
+        0,
+        &preset("42", false),
+        Some(std::path::Path::new("c.nksn"))
+    ));
+    assert!(
+        !settled(&mut rack, &mut audio, generation),
+        "the first never lands"
+    );
+    assert_eq!(inserts(&rack), 0);
+    let p = rack.parts()[0].as_ref().unwrap();
+    assert_eq!(p.path.as_deref(), Some(std::path::Path::new("c.nksn")));
+    assert!(saved_now(&mut rack, &mut audio).contains(&"$knob 42".to_owned()));
+}
+
+/// What a snapshot's effects report reaches the part they are installed
+/// in: here a snapshot whose file cannot be read lands its values and says
+/// why its effects are the base's.
+#[test]
+fn a_native_recall_reports_what_its_effects_could_not_carry() {
+    let (mut rack, mut audio) = self::rack();
+    rack.load_ir(0, snapshot_of(1, &[]), Some("a.nki".into()))
+        .unwrap();
+    audio.process(BLOCK, &[]);
+    let generation = rack.parts()[0].as_ref().unwrap().script.generation();
+    let preset = kontra_host::instrument::Preset {
+        name: "b".into(),
+        base: "a.nki".into(),
+        saved: vec![vec!["$knob 9".into()]],
+        effects: true,
+    };
+    assert!(rack.recall(0, &preset, Some(std::path::Path::new("/nowhere/b.nksn"))));
+    for _ in 0..200 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+        if rack.parts()[0].as_ref().unwrap().script.generation() != generation {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let p = rack.parts()[0].as_ref().unwrap();
+    assert_ne!(p.script.generation(), generation, "it installs");
+    let unread = p
+        .diagnostics
+        .iter()
+        .any(|d| d.feature == "snapshot effects unread");
+    assert!(unread, "{:?}", p.diagnostics);
+}
+
 /// A preset the player changed is saved as changed; picking a preset
 /// again (a recall) makes it the preset as saved.
 #[test]
