@@ -530,10 +530,22 @@ impl Rack {
             return;
         };
         p.modified = true;
-        let Some(view) = p.view.as_ref() else {
+        let Some(view) = p.view.as_mut() else {
             return;
         };
-        if let Some((slot, n)) = view.widget(widget) {
+        if let Some(set) = view.tap(widget, value) {
+            for (slot, id, value) in set {
+                let cell = 0;
+                self.send(Command::Control {
+                    part,
+                    slot,
+                    id,
+                    cell,
+                    value,
+                    keys,
+                });
+            }
+        } else if let Some((slot, n)) = view.widget(widget) {
             self.send(Command::Widget {
                 part,
                 slot,

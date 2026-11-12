@@ -29,6 +29,11 @@ pub struct Node {
     pub props: Vec<(String, Prop)>,
     pub mods: Vec<(String, Vec<Prop>)>,
     pub children: Vec<Node>,
+    /// The path of the component instance this is the root of: where
+    /// [`Page::update`] puts that instance back when it renders again.
+    pub instance: Option<String>,
+    /// The parameters that instance read, by id.
+    pub reads: Vec<String>,
 }
 
 impl Node {
@@ -77,7 +82,10 @@ impl Prop {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Control {
     pub name: String,
+    /// Its text (KSP `$CONTROL_PAR_TEXT`, the page's property 0).
     pub label: String,
+    /// Its value as shown (`$CONTROL_PAR_LABEL`, the page's property 14).
+    pub value_text: String,
     pub min: f64,
     pub max: f64,
     pub default: f64,
@@ -180,7 +188,8 @@ fn require(lua: &Lua, sources: HashMap<String, String>) -> mlua::Result<Function
 }
 
 impl Page {
-    /// The controls the page's parameters read their properties from.
+    /// The controls the page's parameters read their properties from, over
+    /// those it had.
     ///
     /// # Errors
     /// Only when the state is out of memory.
@@ -191,10 +200,11 @@ impl Page {
             message: e.to_string(),
         };
         let lua = &self.lua;
-        let all = lua.create_table().map_err(fail)?;
+        let all: Table = lua.globals().get("__controls").map_err(fail)?;
         for c in controls {
             let t = lua.create_table().map_err(fail)?;
             t.set("label", c.label.as_str()).map_err(fail)?;
+            t.set("value_text", c.value_text.as_str()).map_err(fail)?;
             t.set("min", c.min).map_err(fail)?;
             t.set("max", c.max).map_err(fail)?;
             t.set("default", c.default).map_err(fail)?;
@@ -209,7 +219,7 @@ impl Page {
             t.set("entries", entries).map_err(fail)?;
             all.set(c.name.as_str(), t).map_err(fail)?;
         }
-        lua.globals().set("__controls", all).map_err(fail)
+        Ok(())
     }
 
     /// The tree as it stands, with `params` (control name and value) read
@@ -232,6 +242,111 @@ impl Page {
         let render: Function = globals.get("__render").map_err(fail)?;
         let tree: Value = render.call(self.root.clone()).map_err(fail)?;
         Ok(node(&tree))
+    }
+
+    /// Whether a state changed since the page last rendered: an
+    /// [`Page::update`] has instances to render again.
+    #[must_use]
+    pub fn dirty(&self) -> bool {
+        self.lua.globals().get("__dirty").unwrap_or(false)
+    }
+
+    /// Runs the page's callback `n` (a gesture's) with an event at
+    /// `position` in a `frame` (width, height) large, still; what it
+    /// wrote, as (parameter id, value).
+    ///
+    /// # Errors
+    /// The page's runtime error, as Luau reports it.
+    pub fn call(
+        &mut self,
+        n: u32,
+        position: [f64; 2],
+        frame: [f64; 2],
+    ) -> Result<Vec<(String, f64)>, Diagnostic> {
+        let fail = |e: mlua::Error| Diagnostic {
+            module: "native_ui".into(),
+            line: None,
+            message: e.to_string(),
+        };
+        self.checkpoints.store(0, Ordering::Relaxed);
+        let lua = &self.lua;
+        let pair = |a: &str, b: &str, [x, y]: [f64; 2]| -> mlua::Result<Table> {
+            let t = lua.create_table()?;
+            t.set(a, x)?;
+            t.set(b, y)?;
+            Ok(t)
+        };
+        let event = lua.create_table().map_err(fail)?;
+        event
+            .set("position", pair("x", "y", position).map_err(fail)?)
+            .map_err(fail)?;
+        event
+            .set("start_position", pair("x", "y", position).map_err(fail)?)
+            .map_err(fail)?;
+        event
+            .set("delta", pair("x", "y", [0.; 2]).map_err(fail)?)
+            .map_err(fail)?;
+        event
+            .set("frame", pair("width", "height", frame).map_err(fail)?)
+            .map_err(fail)?;
+        event
+            .set("modifiers", lua.create_table().map_err(fail)?)
+            .map_err(fail)?;
+        let call: Function = lua.globals().get("__call").map_err(fail)?;
+        let writes: Table = call.call((n, event)).map_err(fail)?;
+        Ok(writes
+            .sequence_values::<Table>()
+            .flatten()
+            .filter_map(|w| Some((w.get::<String>(1).ok()?, w.get::<f64>(2).ok()?)))
+            .collect())
+    }
+
+    /// Takes `params` (control name and value) and `controls` (their
+    /// properties, which count as changed) and renders again only the
+    /// component instances that read one that changed, or whose state
+    /// changed: each instance's path and its new tree, outermost only.
+    /// Nothing changed is nothing to do. The root's path is `""`.
+    ///
+    /// # Errors
+    /// The page's runtime error, as Luau reports it.
+    pub fn update(
+        &mut self,
+        params: &[(String, f64)],
+        controls: &[Control],
+    ) -> Result<Vec<(String, Option<Node>)>, Diagnostic> {
+        let fail = |e: mlua::Error| Diagnostic {
+            module: "native_ui".into(),
+            line: None,
+            message: e.to_string(),
+        };
+        let globals = self.lua.globals();
+        let table: Table = globals.get("__params").map_err(fail)?;
+        let changed = self.lua.create_table().map_err(fail)?;
+        for (name, value) in params {
+            if table.get::<Option<f64>>(name.as_str()).map_err(fail)? != Some(*value) {
+                table.set(name.as_str(), *value).map_err(fail)?;
+                changed.set(name.as_str(), true).map_err(fail)?;
+            }
+        }
+        self.set_controls(controls)?;
+        for c in controls {
+            changed.set(c.name.as_str(), true).map_err(fail)?;
+        }
+        let dirty: bool = globals.get("__dirty").map_err(fail)?;
+        if changed.is_empty() && !dirty {
+            return Ok(Vec::new());
+        }
+        self.checkpoints.store(0, Ordering::Relaxed);
+        let update: Function = globals.get("__update").map_err(fail)?;
+        let out: Table = update.call(changed).map_err(fail)?;
+        Ok(out
+            .sequence_values::<Table>()
+            .flatten()
+            .filter_map(|r| {
+                let path = r.get::<String>("path").ok()?;
+                Some((path, node(&r.get::<Value>("tree").ok()?)))
+            })
+            .collect())
     }
 }
 
@@ -274,6 +389,11 @@ fn node(v: &Value) -> Option<Node> {
         props,
         mods,
         children,
+        instance: t.get::<Option<String>>("instance").ok().flatten(),
+        reads: t
+            .get::<Table>("reads")
+            .map(|r| r.sequence_values::<String>().flatten().collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -388,3 +508,4 @@ mod tests {
         assert_eq!((err.module.as_str(), err.line), ("main.nui", Some(2)));
     }
 }
+

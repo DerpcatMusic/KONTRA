@@ -204,6 +204,8 @@ struct Builder<'p> {
     assets: HashMap<String, ui::AssetRef>,
     styles: HashMap<(i32, i32), ui::StyleRef>,
     picture: &'p dyn Fn(&str) -> Option<ui::ImageMeta>,
+    /// Where a native_ui page's component instances were placed.
+    nui: Vec<nui::Slot>,
 }
 
 impl Builder<'_> {
@@ -444,6 +446,8 @@ pub struct Live {
     page: Option<Page>,
     assets: HashMap<String, ui::AssetRef>,
     styles: HashMap<(i32, i32), ui::StyleRef>,
+    /// The Kontakt 8 `native_ui` page shown in place of the controls.
+    native: Option<nui::Shown>,
 }
 
 /// Script `slot`'s performance view as `on init` left it. `picture` gives the
@@ -489,8 +493,9 @@ impl Live {
             assets: HashMap::new(),
             styles: HashMap::new(),
             picture,
+            nui: Vec::new(),
         };
-        build(&mut bld, face, slot, engine, &decls)?;
+        let native = build(&mut bld, face, slot, engine, &decls)?;
         bld.ui.keybed = keybed::keybed(engine.keys());
         bld.ui.key_names = keybed::names(engine.keys());
         bld.ui.key_pressed = keybed::pressed(engine.keys(), engine.pressed_support());
@@ -502,6 +507,7 @@ impl Live {
             page: engine.page(slot).copied(),
             assets: bld.assets,
             styles: bld.styles,
+            native,
         })
     }
 
@@ -546,7 +552,8 @@ impl Live {
                 changed.push((n, d));
             }
         }
-        if changed.is_empty() && page.is_none() {
+        let dirty = self.native.as_ref().is_some_and(nui::Shown::dirty);
+        if changed.is_empty() && page.is_none() && !dirty {
             return Changes {
                 keys,
                 ..Changes::default()
@@ -557,6 +564,7 @@ impl Live {
             assets: std::mem::take(&mut self.assets),
             styles: std::mem::take(&mut self.styles),
             picture,
+            nui: Vec::new(),
         };
         // The page moved (skin offset, wallpaper frame, size, title): only
         // it is rebuilt, the widgets keep their places.
@@ -567,14 +575,18 @@ impl Live {
             }
         }
         let mut out = Vec::with_capacity(changed.len());
-        for (n, d) in changed {
-            let props = props(face, &d);
-            let mut w = widget(&mut bld, slot, &d, &props, engine);
-            if let Some(old) = bld.ui.widgets.get_mut(n) {
-                w.parent = old.parent;
+        for (n, d) in &changed {
+            let props = props(face, d);
+            let mut w = widget(&mut bld, slot, d, &props, engine);
+            if let Some(old) = bld.ui.widgets.get_mut(*n) {
+                (w.parent, w.hidden) = (old.parent, w.hidden || self.native.is_some());
                 *old = w;
-                out.push(ui::WidgetRef(n));
+                out.push(ui::WidgetRef(*n));
             }
+        }
+        if let Some(native) = &mut self.native {
+            let decls: Vec<_> = changed.into_iter().map(|(_, d)| d).collect();
+            out.extend(native.refresh(&mut bld, face, &decls));
         }
         (self.tree, self.assets, self.styles) = (bld.ui, bld.assets, bld.styles);
         Changes {
@@ -586,6 +598,17 @@ impl Live {
 }
 
 impl Live {
+    /// The user pressed (`value` 1) or let go (0) of `widget`, a native_ui
+    /// page's tap area: the controls the page set, as (UI id, value);
+    /// `None` for any other widget.
+    pub fn tap(&mut self, widget: usize, value: f64) -> Option<Vec<(i32, i64)>> {
+        let w = (self.tree.widgets.get_mut(widget)).filter(|w| w.name.starts_with(nui::TAP))?;
+        // Held while pressed, as a momentary button is: its release is a
+        // change the editor reports.
+        w.initial_value = value;
+        Some(self.native.as_mut()?.tap(w, value))
+    }
+
     /// What [`Live::refresh`] reads: the UI ids of the controls it shows,
     /// and the script cells of their arrays (a table's steps).
     #[must_use]
@@ -634,7 +657,7 @@ fn build(
     slot: u8,
     engine: &dyn Looks,
     decls: &[Decl<'_>],
-) -> Result<(), ui::Error> {
+) -> Result<Option<nui::Shown>, ui::Error> {
     if let Some(page) = engine.page(slot) {
         page_of(bld, page, face.view.as_ref());
     }
@@ -672,9 +695,10 @@ fn build(
         }
         bld.ui.widgets.push(w);
     }
-    if let Some(native) = &face.native {
-        nui::face(bld, native, decls);
-    }
+    let native = face
+        .native
+        .as_ref()
+        .and_then(|n| nui::face(bld, face, n, decls));
     for skipped in face.view.iter().flat_map(|v| &v.skipped) {
         bld.unsupported(None, "performance view control", skipped.clone());
     }
@@ -691,7 +715,7 @@ fn build(
         );
     }
     bld.ui.validate()?;
-    Ok(())
+    Ok(native)
 }
 
 /// The page as init left it, over the performance view's when it loads one.
