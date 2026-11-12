@@ -239,17 +239,15 @@ impl Rack {
 
     /// `part` plays `started`, its scripts' values saved as `loaded`.
     pub(super) fn restarted(&mut self, part: usize, started: Started, loaded: Vec<Vec<String>>) {
-        let Some(old) = self.parts.get_mut(part).and_then(Option::take) else {
+        let Some(mut old) = self.parts.get_mut(part).and_then(Option::take) else {
             return;
         };
         let Started {
-            plan,
             engine,
             slots: (slot_types, slot_responses),
             view,
         } = started;
         // Its waveform displays keep the zone samples they show.
-        let mut old = old;
         let waves = old.view.as_mut().map(|v| std::mem::take(&mut v.waves));
         let view = view.map(|v| v.with_waves(waves.unwrap_or_default()));
         let info = Part {
@@ -271,10 +269,9 @@ impl Rack {
     }
 }
 
-/// A restarted part: its plan, its engine, the slots its plan took and its
+/// A restarted part: its engine, the slots its plan took and its
 /// interface on that engine.
 pub(super) struct Started {
-    plan: Arc<Plan>,
     engine: Box<Engine>,
     slots: crate::state::LiveSlots,
     view: Option<crate::view::View>,
@@ -297,11 +294,9 @@ pub(super) fn started(
     }
     let mut engine = Box::new(Engine::new(Arc::new(plan), client.clone(), rate));
     super::requests::init_tables(&mut engine, &client);
-    let plan = Arc::clone(engine.plan());
     let pages: Vec<Option<kontra_lua::Ui>> = faces.iter().map(|_| None).collect();
     let view = crate::view::View::of(faces, &pages, &engine, path);
     Started {
-        plan,
         engine,
         slots,
         view,
