@@ -94,9 +94,13 @@ impl Archive {
         }
         Ok(Some(e))
     }
-    /// Every distinct exact path, including case variants. Identical paths are last-wins.
+    /// Every distinct exact path, including case variants, in the archive's
+    /// own order (by member header offset), never the index's hash order.
+    /// Identical paths are last-wins.
     pub fn members(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.values().chain(self.case_variants.values())
+        let mut all: Vec<&Entry> = self.entries.values().chain(self.case_variants.values()).collect();
+        all.sort_by(|a, b| (a.header_offset, &a.name).cmp(&(b.header_offset, &b.name)));
+        all.into_iter()
     }
     /// Exact case first; an absent exact spelling uses the last folded directory entry.
     pub fn find(&self, name: &str) -> Option<&Entry> {
