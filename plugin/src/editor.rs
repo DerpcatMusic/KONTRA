@@ -64,6 +64,7 @@ pub struct Snapshot {
     libraries: (u64, Arc<Vec<app::Library>>),
     recent: Vec<(usize, usize)>,
     folders: Vec<String>,
+    snapshot_folder: String,
     /// [`kontra_library::Prefs::next_channel`] and `own_output`.
     new_parts: (bool, bool),
     level: f32,
@@ -85,6 +86,11 @@ impl Snapshot {
                 .map(|r| r.path.display().to_string())
                 .collect();
             self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
+            self.snapshot_folder = match browser.kontakt() {
+                Some(f) if f.is_dir() => f.display().to_string(),
+                Some(f) => format!("Not found: {}", f.display()),
+                None => "Not set: choose the User Content folder Kontakt saves snapshots in".into(),
+            };
         }
         let meters = rack.meters();
         let level = |slot: usize| {
@@ -207,6 +213,7 @@ impl Snapshot {
             app.libraries = fresh.clone();
             app.recent.clone_from(&self.recent);
             app.folders.clone_from(&self.folders);
+            app.snapshot_folder.clone_from(&self.snapshot_folder);
             (app.next_channel, app.own_output) = self.new_parts;
             shown.browser = self.libraries.0;
         }
@@ -369,6 +376,9 @@ pub(crate) fn libraries(browser: &Browser) -> Vec<app::Library> {
                 kontra_library::Format::Kontakt => app::Format::Kontakt,
                 kontra_library::Format::Uvi => app::Format::Uvi,
             },
+            recalls: (l.presets.iter().enumerate())
+                .filter_map(|(n, p)| is_preset(p).then_some(n))
+                .collect(),
             presets: (l.presets.iter())
                 .map(
                     |p| match browser.user.as_deref().filter(|u| p.starts_with(u)) {
@@ -458,13 +468,22 @@ const COVER_BYTES: u64 = 32 << 20;
 /// Carries out a browser action: a preset loads into the first free part.
 pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &mut Vec<String>) {
     match action {
-        Action::Load { library, preset } => {
+        Action::Load {
+            library,
+            preset,
+            into,
+        } => {
             let Some(path) = browser.preset(library, preset) else {
                 return;
             };
-            let loaded = match rack.free() {
-                Some(part) => rack.load(part, &path).map(|()| place(rack, browser, part)),
-                None => Err("every part is in use".into()),
+            // A preset recalls into the part named; anything else adds one.
+            let into = into
+                .filter(|_| is_preset(&path))
+                .filter(|&p| rack.parts().get(p).is_some_and(Option::is_some));
+            let loaded = match (into, rack.free()) {
+                (Some(part), _) => rack.load(part, &path),
+                (None, Some(part)) => rack.load(part, &path).map(|()| place(rack, browser, part)),
+                (None, None) => Err("every part is in use".into()),
             };
             match loaded {
                 Ok(()) => browser.loaded(&path),
@@ -737,6 +756,15 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         for action in response.changed {
             let asked = match action {
+                Action::Load {
+                    library,
+                    preset,
+                    into: Some(n),
+                } if (app.libraries.get(library))
+                    .is_some_and(|l| l.recalls.binary_search(&preset).is_ok()) =>
+                {
+                    Some(app::Loading::Part(n))
+                }
                 Action::Load { .. } => Some(app::Loading::New),
                 Action::Replace { part, .. }
                 | Action::Switch { part, .. }
@@ -755,7 +783,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             if action == Action::AddFolder {
                 // The browser's first folder, from the editor's own copy.
                 let from = app.folders.first().map(PathBuf::from);
-                p.shared.folder.ask(from);
+                p.shared.folder.ask(crate::folder::Wanted::Libraries, from);
+                continue;
+            }
+            if action == Action::ChooseSnapshotFolder {
+                p.shared.folder.ask(crate::folder::Wanted::Snapshots, None);
                 continue;
             }
             if let Some(event) = played(&action) {
@@ -764,10 +796,25 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 }
                 continue;
             }
+            // The browser names the focused part by its row: the rack's slot.
+            if let Action::Load {
+                library,
+                preset,
+                into,
+            } = action
+            {
+                let into = into.and_then(|n| slots.get(n).copied());
+                let load = Action::Load {
+                    library,
+                    preset,
+                    into,
+                };
+                p.shared.request(Request::Browse(load));
+                continue;
+            }
             if matches!(
                 action,
-                Action::Load { .. }
-                    | Action::Star(..)
+                Action::Star(..)
                     | Action::Refresh
                     | Action::RemoveFolder(_)
                     | Action::NewParts { .. }
@@ -876,6 +923,15 @@ fn played(action: &Action) -> Option<Event> {
         }
         Action::Modulation(x) => Event::midi1(0xB0, 1, (x.clamp(0.0, 1.0) * 127.0).round() as u8),
         _ => return None,
+    })
+}
+
+/// Whether `path` is a preset of an instrument rather than one: a Kontakt
+/// snapshot or the player's own preset.
+fn is_preset(path: &std::path::Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str());
+    ext.is_some_and(|e| {
+        e.eq_ignore_ascii_case("nksn") || e.eq_ignore_ascii_case(kontra_host::presets::EXTENSION)
     })
 }
 

@@ -24,7 +24,7 @@ use mui::prelude::*;
 
 use crate::Pictures;
 use crate::keyboard::{self, Keys, note_name};
-use crate::kit::{self, Icon, button, icon_button, rule, section, sheet, strip, tab, vrule};
+use crate::kit::{self, Icon, button, icon_button, rule, section, strip, tab, vrule};
 use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
 
 /// Everything the editor shows. The host fills the data; `view` is the
@@ -50,6 +50,9 @@ pub struct App {
     pub build: String,
     /// The folders the browser scans.
     pub folders: Vec<String>,
+    /// What Settings says of Kontakt's user snapshot folder: the folder,
+    /// or in one line why there is none.
+    pub snapshot_folder: String,
     /// The editor's width in points, as the host frames it: a library's
     /// view fits what the rack has of it. 0 while unknown.
     pub width: f64,
@@ -78,6 +81,9 @@ pub struct Library {
     pub format: Format,
     /// Its instruments by path inside the library: `Folder/Name`.
     pub presets: Vec<String>,
+    /// Which of `presets` (sorted) are presets of an instrument, recalled
+    /// into the focused part on a double-click: snapshots, the player's own.
+    pub recalls: Vec<usize>,
     pub starred: bool,
     /// Pictures that may be its cover, best first, as the host's cover
     /// store reads them; the first that decodes is shown.
@@ -327,9 +333,13 @@ pub enum Sheet {
 /// What the user asked for this frame, for the host to carry out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// A browser preset to play, in a new part unless it is a preset of an
+    /// instrument and `into` names the focused part (Kontakt's browser
+    /// replaces the selected slot's snapshot).
     Load {
         library: usize,
         preset: usize,
+        into: Option<usize>,
     },
     /// A browser preset dropped on a part: it plays that instead.
     Replace {
@@ -407,6 +417,8 @@ pub enum Action {
     MidiThru(bool),
     Star(usize, bool),
     AddFolder,
+    /// Choose Kontakt's user snapshot folder.
+    ChooseSnapshotFolder,
     /// New parts take the next free MIDI channel; their own output pair.
     NewParts {
         next_channel: bool,
@@ -446,7 +458,7 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     }
     let mut main = vec![main(ui, app, &mut out).grow(1).min_w(0).min_h(0)];
     if let Some(s) = app.view.sheet {
-        main.push(sheet_view(ui, app, s, &mut out).centered());
+        main.push(settings::sheet(ui, app, s, &mut out).centered());
     }
     middle.push(stack(main).grow(1).min_w(0).min_h(0));
     // v2's two tones: the frame around the work (header, browser, tab
@@ -643,32 +655,6 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .shrink(0)
 }
 
-fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
-    let (title, content) = match which {
-        Sheet::Settings => ("Settings", settings::view(ui, app, out)),
-        Sheet::SavePreset(n) | Sheet::RenamePreset(n) | Sheet::DeletePreset(n) => {
-            preset::sheet(ui, app, n, which, out)
-        }
-        Sheet::About => (
-            "About",
-            col![
-                title("KONTRA"),
-                body(app.build.clone()).id("about-build"),
-                caption(
-                    "One engine that plays Kontakt, UVI and SFZ libraries as they were written."
-                )
-                .fill(secondary()),
-            ]
-            .gap(SPACE),
-        ),
-    };
-    let r = sheet(ui, "sheet", title, content);
-    if r.changed {
-        app.view.sheet = None;
-    }
-    r.el
-}
-
 fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let v = &mut app.view;
     let down = icon_button(ui, "octave-down", Icon::Left, "Octave down", false);
@@ -691,8 +677,7 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
         .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");
-    // The focused part: the first one open, else the first.
-    let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
+    let focused = browser::focused(&app.parts).and_then(|n| app.parts.get(n));
     // Its script's last `message`, where Kontakt's status bar shows it.
     let message = (focused.and_then(|p| p.face.as_ref()))
         .map(|f| f.tree.message.as_str())

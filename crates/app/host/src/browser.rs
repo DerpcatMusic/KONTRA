@@ -221,6 +221,14 @@ impl Browser {
         }
     }
 
+    /// Reads Kontakt's user snapshots from `folder` from now on (saved
+    /// with the prefs), and lists them again.
+    pub fn set_kontakt(&mut self, folder: PathBuf) {
+        self.prefs.kontakt_snapshots = Some(folder);
+        self.changed();
+        self.user_changed();
+    }
+
     /// Recent instruments as (library, preset) in the catalog.
     #[must_use]
     pub fn recent(&self) -> Vec<(usize, usize)> {
@@ -292,6 +300,13 @@ mod tests {
         let roots = Browser::open(Some(&dir), None).prefs.roots;
         assert_eq!(roots.len(), 1, "a removed folder stays removed");
         assert_eq!(roots[0].path, Path::new("/nowhere/UVI"));
+        // Kontakt's snapshot folder, once chosen, is the one read from then on.
+        b.set_kontakt("/nowhere/User Content".into());
+        let again = Browser::open(Some(&dir), None);
+        assert_eq!(
+            again.kontakt().as_deref(),
+            Some(Path::new("/nowhere/User Content"))
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

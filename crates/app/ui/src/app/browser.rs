@@ -291,7 +291,8 @@ fn card(id: String, name: &str, count: usize, image: Option<Arc<Image>>, chosen:
 }
 
 fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    let view = &mut app.view;
+    let into = focused(&app.parts);
+    let v = &mut app.view;
     let rows: Vec<El> = app
         .recent
         .iter()
@@ -301,14 +302,8 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             let name = l.presets.get(preset)?;
             let id = format!("recent-{n}");
             let at = (library, preset);
-            let r = list_row(
-                ui,
-                id.clone(),
-                (name, &l.name),
-                None,
-                view.picked == Some(at),
-            );
-            pick(ui, &id, (&mut view.picked, &mut view.clicked), at, out);
+            let r = list_row(ui, id.clone(), (name, &l.name), None, v.picked == Some(at));
+            pick(ui, &id, (&mut v.picked, &mut v.clicked), at, into, out);
             Some(r.el)
         })
         .collect();
@@ -323,6 +318,7 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 /// The chosen library's instruments, foldered by the path inside it.
 fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let loading = app.loading.is_some();
+    let into = focused(&app.parts);
     let v = &mut app.view;
     let search = field(
         ui,
@@ -414,7 +410,7 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                 None,
                 shown,
             );
-            pick(ui, &id, (&mut v.picked, &mut v.clicked), at, out);
+            pick(ui, &id, (&mut v.picked, &mut v.clicked), at, into, out);
             rows.push(r.el.pad(kit::edges(0., 0., 0., SPACE)));
         }
     }
@@ -447,6 +443,11 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     ]
 }
 
+/// The focused part: the first one open, else the first.
+pub(super) fn focused(parts: &[super::Part]) -> Option<usize> {
+    (parts.iter().position(|p| p.open)).or_else(|| (!parts.is_empty()).then_some(0))
+}
+
 /// A preset on its way from the browser to the rack.
 pub(super) struct Carried {
     pub library: usize,
@@ -457,13 +458,15 @@ pub(super) struct Carried {
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// A preset row's pointer, as v2 read it: a click selects it, a
-/// double-click or Enter loads it into a new part, a drag carries it to
-/// the rack (onto a part to replace it, onto free space to add one).
+/// double-click or Enter loads it (a preset into the focused part `into`),
+/// a drag carries it to the rack (onto a part to replace it, onto free
+/// space to add one).
 fn pick(
     ui: &mut Ui,
     id: &str,
     (picked, clicked): (&mut Option<(usize, usize)>, &mut Option<Instant>),
     (library, preset): (usize, usize),
+    into: Option<usize>,
     out: &mut Vec<Action>,
 ) {
     let r = ui.get(id);
@@ -475,7 +478,11 @@ fn pick(
         && clicked.is_some_and(|t| t.elapsed() < DOUBLE_CLICK);
     if again || r.key_activated {
         *clicked = None;
-        out.push(Action::Load { library, preset });
+        out.push(Action::Load {
+            library,
+            preset,
+            into,
+        });
     } else if r.clicked {
         *picked = Some((library, preset));
         *clicked = Some(Instant::now());
