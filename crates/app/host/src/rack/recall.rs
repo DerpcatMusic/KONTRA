@@ -178,9 +178,7 @@ impl Rack {
     /// not modified): a script reached it, or it was saved or renamed.
     pub fn set_preset(&mut self, part: usize, path: &Path) {
         if let Some(Some(p)) = self.parts.get_mut(part) {
-            p.name = path
-                .file_stem()
-                .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+            p.name = named(path);
             p.path = Some(path.to_owned());
             p.modified = false;
         }
@@ -188,7 +186,8 @@ impl Rack {
 
     /// The user preset file `from` was renamed to `to`, or deleted (None):
     /// every part playing it follows, keeping its changed mark; a part
-    /// whose file is gone plays on as its base instrument, changed.
+    /// whose file is gone plays on as its base instrument, changed, and is
+    /// named by it.
     pub fn preset_moved(&mut self, from: &Path, to: Option<&Path>) {
         for p in self.parts.iter_mut().flatten() {
             if p.path.as_deref() != Some(from) {
@@ -197,11 +196,11 @@ impl Rack {
             match to {
                 Some(to) => {
                     p.path = Some(to.to_owned());
-                    let stem = to.file_stem().map(|s| s.to_string_lossy().into_owned());
-                    p.name = stem.unwrap_or_default();
+                    p.name = named(to);
                 }
                 None => {
                     p.path.clone_from(&p.source);
+                    p.name = p.source.as_deref().map(named).unwrap_or_default();
                     p.modified = true;
                 }
             }
@@ -315,4 +314,9 @@ pub(super) fn started(
         view,
         diagnostics: Vec::new(),
     }
+}
+
+/// A part's name when it plays the file at `path`: the file's name.
+fn named(path: &Path) -> String {
+    (path.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().into_owned())
 }
