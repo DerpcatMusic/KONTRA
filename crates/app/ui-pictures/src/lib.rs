@@ -355,6 +355,13 @@ fn decode(bytes: &[u8], meta: ImageMeta, n: u32) -> Option<Image> {
     if bytes.starts_with(&[0xff, 0xd8]) {
         return jpeg(bytes);
     }
+    if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        return webp(bytes);
+    }
+    let head = bytes.get(..bytes.len().min(256)).unwrap_or_default();
+    if head.windows(4).any(|w| w == b"<svg") {
+        return svg(bytes);
+    }
     let mut decoder =
         png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: LIMIT });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -571,9 +578,65 @@ fn jpeg(bytes: &[u8]) -> Option<Image> {
     Image::rgba(w, h, decoder.decode().ok()?)
 }
 
+/// A WebP (Kontakt 8 `native_ui` artwork), as RGBA8.
+fn webp(bytes: &[u8]) -> Option<Image> {
+    let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+    let (w, h) = decoder.dimensions();
+    let size = decoder.output_buffer_size()?;
+    if size > LIMIT {
+        return None;
+    }
+    let mut px = vec![0; size];
+    decoder.read_image(&mut px).ok()?;
+    if !decoder.has_alpha() {
+        px = px
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect();
+    }
+    Image::rgba(w, h, px)
+}
+
+/// Rasters an SVG at twice its own size, so it stays sharp drawn at up to
+/// 200 %: Kontakt 8 `native_ui` icons are vector art.
+fn svg(bytes: &[u8]) -> Option<Image> {
+    use resvg::{tiny_skia, usvg};
+    const OVERSAMPLE: f32 = 2.;
+    let tree = usvg::Tree::from_data(bytes, &usvg::Options::default()).ok()?;
+    let size = tree.size();
+    let (w, h) = (
+        (size.width() * OVERSAMPLE).ceil() as u32,
+        (size.height() * OVERSAMPLE).ceil() as u32,
+    );
+    if (w as usize) * (h as usize) * 4 > LIMIT {
+        return None;
+    }
+    let mut pixmap = tiny_skia::Pixmap::new(w.max(1), h.max(1))?;
+    let scale = tiny_skia::Transform::from_scale(OVERSAMPLE, OVERSAMPLE);
+    resvg::render(&tree, scale, &mut pixmap.as_mut());
+    let px: Vec<u8> = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect();
+    Image::rgba(pixmap.width(), pixmap.height(), px)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_svg_rasters_at_twice_its_size() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"><rect width="4" height="3" fill="#ff0000"/></svg>"##;
+        let image = decode(svg, ImageMeta::default(), 0).expect("an svg");
+        assert_eq!((image.width, image.height), (8, 6));
+    }
 
     /// A picture font cut at its red markers: 256 glyphs of their own
     /// widths, the marker row dropped; characters map by Windows-1252.

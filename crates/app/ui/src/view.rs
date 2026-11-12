@@ -14,6 +14,7 @@ use crate::Pictures;
 use crate::meter::Shown;
 
 mod plan;
+mod shape;
 mod stock;
 mod wave;
 

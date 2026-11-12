@@ -607,6 +607,23 @@ pub enum Kind {
     Image,
     /// An invisible drag-and-drop / mouse target.
     MouseArea,
+    /// A shape a Kontakt 8 `native_ui` page draws, filled with
+    /// `colors.background`.
+    Shape(Shape),
+}
+
+/// A [`Kind::Shape`]'s outline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shape {
+    /// A rectangle with rounded corners of `radius` points.
+    Rect { radius: f64 },
+    /// An arc of a ring `thickness` points wide, inside the widget's bounds,
+    /// from `start` degrees (0 at 3 o'clock, clockwise) over `sweep`.
+    Ring {
+        thickness: f64,
+        start: f64,
+        sweep: f64,
+    },
 }
 
 impl Kind {
@@ -1070,7 +1087,7 @@ fn kontakt_paint_rank(kind: &Kind) -> u8 {
         Kind::Waveform => 2,
         Kind::Wavetable { .. } => 3,
         Kind::LevelMeter { .. } => 4,
-        Kind::Label | Kind::Image => 5,
+        Kind::Label | Kind::Image | Kind::Shape(_) => 5,
         Kind::Knob { .. } => 6,
         Kind::Slider { .. } => 7,
         Kind::Switch => 8,
