@@ -13,12 +13,12 @@
 
 use std::sync::Arc;
 
-use kontra_dsp::drive::{Crush, Overdrive, Reduction, Shaper, Voicing};
+use kontra_dsp::drive::{Crush, Overdrive, Shaper};
 use kontra_dsp::filter::{Formant, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 use kontra_plan::route_depth;
 
-use kontra_effects::processors::{curve, shaper};
+use kontra_effects::processors::{curve, reduction, shaper, voicing};
 
 use kontra_effects::summed::{VoiceEq, shape};
 
@@ -90,31 +90,6 @@ fn vowels(f: ir::Formant) -> Vowels {
             ir::VowelSet::First => VowelSet::First,
             ir::VowelSet::Second => VowelSet::Second,
         },
-    }
-}
-
-fn voicing(o: ir::Overdrive) -> Voicing {
-    Voicing {
-        split_hz: o.split_hz,
-        smooth_hz: o.smooth_hz,
-        drive: o.drive,
-        mix: o.mix,
-        level: o.level,
-        curve: o.curve,
-    }
-}
-
-fn reduction(c: ir::Crush, rate: u32) -> Reduction {
-    let hold = if c.rate < 1.0 {
-        (1.0 / c.rate.max(1e-6)).min(rate as f32 / 50.0) + 1.0
-    } else {
-        1.0
-    };
-    Reduction {
-        hold,
-        bits: (c.bits < 16.0).then_some(c.bits.max(1.0)),
-        noise: c.noise,
-        noise_tone: c.noise_tone,
     }
 }
 
