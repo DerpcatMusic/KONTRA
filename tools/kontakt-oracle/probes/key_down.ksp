@@ -1,0 +1,34 @@
+{ What %KEY_DOWN shows the callbacks of a 5-note chord sent at one MIDI time (Kontakt 8.13.1).
+  Release: callbacks that see no key down = n, marker key 48 + 2n (per event 1, per time 5).
+  Note: the fewest keys down a note callback saw = m, second marker key 72 + 2m, 2 s later. }
+on init
+  declare $n
+  declare $m := 128
+  declare $k
+  declare $c
+  declare $done
+end on
+on note
+  ignore_event($EVENT_ID)
+  $c := 0
+  $k := 0
+  while ($k < 128)
+    $c := $c + %KEY_DOWN[$k]
+    inc($k)
+  end while
+  if ($c < $m)
+    $m := $c
+  end if
+end on
+on release
+  if (search(%KEY_DOWN, 1) = -1)
+    inc($n)
+  end if
+  wait(300000)
+  if ($done = 0)
+    $done := 1
+    play_note(48 + 2 * $n, 100, 0, 1000000)
+    wait(2000000)
+    play_note(72 + 2 * $m, 100, 0, 1000000)
+  end if
+end on

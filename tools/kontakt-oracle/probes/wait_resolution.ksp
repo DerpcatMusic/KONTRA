@@ -1,0 +1,40 @@
+{ How a wait shorter than a frame resolves (Kontakt 8.13.1). $ENGINE_UPTIME (ms, sample clock)
+  across 10000 x wait(1), wait(10), wait(20), wait(21); each result plays as a 1 s note at key
+  36 + ms/4, 1.5 s apart, after a 1 s reference note at key 36 (0 ms). }
+on init
+  declare $i
+  declare $t
+  declare $k
+  declare %d[4]
+end on
+on note
+  ignore_event($EVENT_ID)
+  $k := 0
+  while ($k < 4)
+    $t := $ENGINE_UPTIME
+    $i := 0
+    while ($i < 10000)
+      select ($k)
+        case 0
+          wait(1)
+        case 1
+          wait(10)
+        case 2
+          wait(20)
+        case 3
+          wait(21)
+      end select
+      inc($i)
+    end while
+    %d[$k] := $ENGINE_UPTIME - $t
+    inc($k)
+  end while
+  play_note(36, 100, 0, 1000000)
+  wait(1500000)
+  $k := 0
+  while ($k < 4)
+    play_note(36 + %d[$k] / 4, 100, 0, 1000000)
+    wait(1500000)
+    inc($k)
+  end while
+end on
