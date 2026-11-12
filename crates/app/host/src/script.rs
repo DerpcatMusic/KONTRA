@@ -301,9 +301,15 @@ fn controls(script: &Script) -> Controls {
     // The first control on a cell wins, as the scan it replaces found it.
     by_cell.sort_unstable();
     by_cell.dedup_by_key(|&mut (c, _)| c);
+    let mut menus: Vec<u32> = (script.controls.iter())
+        .filter(|c| c.kind == ControlKind::Menu)
+        .map(|c| c.variable)
+        .collect();
+    menus.sort_unstable();
     Controls {
         first: FIRST_UI_ID,
         by_cell,
+        menus,
         value_par,
         num_items_par: symbol(script, "$CONTROL_PAR_NUM_ITEMS"),
         selected_item_par: symbol(script, "$CONTROL_PAR_SELECTED_ITEM_IDX"),

@@ -97,6 +97,8 @@ pub struct Part {
     pub library: String,
     /// The preset it plays, as an index into its library's presets.
     pub preset: Option<usize>,
+    /// Changed since the preset loaded: the header marks it.
+    pub modified: bool,
     /// MIDI channel 1..=16, or 0 for every channel.
     pub channel: u8,
     /// Stereo output 1..=16, or 0 to let the host pick.

@@ -6,6 +6,18 @@ use kontra_ir as ir;
 use crate::Plan;
 
 impl Plan {
+    /// Slot `slot` of `at`'s knob model: type `ty`'s when one is loaded
+    /// there (by a script or a recalled project), else the slot's own.
+    #[must_use]
+    pub fn knob_model(&self, at: ir::RackAt, slot: u8, ty: Option<u16>) -> Option<&ir::KnobModel> {
+        match ty {
+            Some(ty) => self.slot_shapes.types.get(usize::from(ty))?.model.as_ref(),
+            None => (self.slot_models.iter())
+                .find(|m| (m.0, m.1) == (at, slot))
+                .map(|m| &m.2),
+        }
+    }
+
     /// Loads slot `slot` of `at` with type `ty` before the scripts run, as a
     /// recalled project left it. False when there is no such slot or type.
     pub fn load_type(&mut self, at: ir::RackAt, slot: u8, ty: u16) -> bool {

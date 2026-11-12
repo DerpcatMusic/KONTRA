@@ -25,6 +25,8 @@ mod params;
 mod pgs;
 mod racks;
 mod recall;
+mod refresh;
+mod reshaped;
 mod runtime;
 mod script_files;
 
@@ -192,6 +194,9 @@ pub struct Engine {
     recalled: Box<[Saved]>,
     /// True while `new` runs the scripts' `init`, off the audio thread.
     building: bool,
+    /// While `on init` runs at load, the cells `read_persistent_var`
+    /// reloaded, by slot (texts flagged): the end-of-init restore skips them.
+    reloaded: Vec<(u8, std::ops::Range<u32>, bool)>,
     /// Array files scripts asked to load or save, for the control side.
     files: Vec<kontra_plan::files::FileRequest>,
     /// Calls per action the engine does not implement yet, by action id.
@@ -217,6 +222,8 @@ pub struct Engine {
     /// the order asked.
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
+    /// What each group's routes reshape, by group.
+    reshaped: Box<[reshaped::Reshaped]>,
     /// The routes each script `#key` names.
     route_names: ir::RouteNames,
     /// Shared EQ chains, and each zone's chain.
@@ -338,6 +345,7 @@ impl Engine {
                     .iter()
                     .map(|g| g.mods.iter().map(|m| m.name.as_str())),
             ),
+            reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
@@ -354,6 +362,7 @@ impl Engine {
             recall: Recall::Restart,
             recalled: Box::new([]),
             building: true,
+            reloaded: Vec::new(),
             files: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
@@ -380,7 +389,7 @@ impl Engine {
             if let Some(init) = script.callbacks.init {
                 engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
-            engine.write_saved(slot, &script.restore, &script.restore_texts);
+            engine.restore_after_init(slot);
             engine.persistence_changed(slot);
         }
         engine.pgs.prepare_runtime();
@@ -708,72 +717,5 @@ impl Engine {
             self.refresh_note(note, None);
         }
         self.hits = hits;
-    }
-
-    /// Recomputes pitch and gain of a note's voices; with `cc`, only the gain
-    /// of voices whose zone crossfades on that controller.
-    fn refresh_note(&mut self, note: NoteRef, cc: Option<u8>) {
-        let Some(n) = self.notes.get(note).copied() else {
-            return;
-        };
-        let plan = self.plan.clone();
-        for i in 0..self.voices.len() {
-            let Some(slot) = self.voices.get(i) else {
-                continue;
-            };
-            if slot.note != Some(note) || !slot.voice.is_active() {
-                continue;
-            }
-            #[cfg(feature = "trace")]
-            let trace_cc = cc.or_else(|| {
-                (self.running.kind == Kind::Controller).then_some(self.running.controller)
-            });
-            #[cfg(feature = "trace")]
-            if self.trace.is_some()
-                && let Some(cc) = trace_cc
-            {
-                slot.pending_trace_cc
-                    .set(slot.pending_trace_cc.get() | (1u128 << cc));
-            }
-            let Some(zone) = plan.zones.get(slot.zone) else {
-                continue;
-            };
-            if cc.is_some_and(|cc| !self.follows(zone, cc)) {
-                continue;
-            }
-            let age = modulators::Age {
-                warp: slot.warp,
-                chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
-            };
-            #[cfg(feature = "trace")]
-            if let (Some(trace), Some(cc)) = (&self.trace, trace_cc) {
-                trace.routes.begin(i, slot.zone, cc);
-            }
-            let pan = [slot.pan[0], self.group_pan(zone)];
-            let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan[0]);
-            let mix = self.voice_mix(zone, &n, age);
-            let (step, bend) = self.step(zone, &n, age);
-            let law = self.plan.route_pitch;
-            let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
-            self.retune_rack(i, zone, &n, age);
-            #[cfg(feature = "trace")]
-            if let Some(trace) = &self.trace {
-                trace.routes.end();
-            }
-            if let Some(slot) = self.voices.get_mut(i) {
-                slot.pan = pan;
-                slot.voice.set_gain(gain);
-                slot.voice.set_lag(lag);
-                if let Some(mix) = mix {
-                    slot.voice.set_mix(mix);
-                }
-                if pitch {
-                    slot.bend[1] = bend.semitones;
-                    slot.voice
-                        .set_step(voice_gain::bent(law, step, bend.instant + slot.bend[0]));
-                }
-            }
-        }
     }
 }

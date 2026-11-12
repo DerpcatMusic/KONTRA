@@ -2097,6 +2097,26 @@ fn a_wait_then_spawn_chain_advances_by_its_summed_waits() {
     assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
 }
 
+/// A UVI `getTime()` is `1000 * samples / rate` (UVI's own prelude): two
+/// notes a fraction of a millisecond apart read different times. VWinds'
+/// legato skips a glide whose time equals the previous one; whole
+/// milliseconds made a rolled chord lose its last note.
+#[test]
+fn notes_under_a_millisecond_apart_read_different_times() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let script = "local last = -1
+        function onNote(e)
+            if getTime() ~= last then playNote(60, 100) end
+            last = getTime()
+        end";
+    let mut e = lua_engine(&mut store, script);
+    let later = Timed {
+        at: SampleTime(10),
+        ..on(64)
+    };
+    assert!((level(&mut e, &[on(60), later]) - 1.0).abs() < 1e-3);
+}
+
 #[test]
 fn a_uvi_script_that_fails_counts_a_fault_and_the_engine_plays_on() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -2313,6 +2333,7 @@ fn a_script_loads_an_effect_type_into_a_slot() {
         kind: id,
         effect,
         laws: Vec::new().into(),
+        model: None,
     };
     let effect = ir::Effect {
         kind: ir::EffectKind::Filter(high),
@@ -2373,6 +2394,7 @@ fn wait_async_holds_until_the_effect_type_is_installed() {
         kind: id,
         effect: None,
         laws: Vec::new().into(),
+        model: None,
     };
     plan.slot_shapes.types = vec![ty(0), ty(7)];
     let script = kontra_ksp::compile(
@@ -2958,6 +2980,7 @@ fn a_loaded_filter_follows_its_subtype() {
         kind: 7,
         effect,
         laws: Vec::new().into(),
+        model: None,
     }];
     plan.slot_shapes.slots = vec![(ir::RackAt::Inserts, 0)];
     plan.slot_shapes.shapes = vec![ir::SlotShape {
@@ -3778,6 +3801,7 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
         kind: 0,
         effect: None,
         laws: Vec::new().into(),
+        model: None,
     }];
     let script = kontra_ksp::compile(
         "on init
@@ -3962,4 +3986,174 @@ fn interacting_knobs_rebuild_the_slot_in_any_order() {
     let b = run("MAKEUP, 600000", "INPUT, 800000");
     assert_eq!(a, ("800000 600000".to_owned(), want));
     assert_eq!(b, a);
+}
+
+/// A recalled project's type loaded into an empty slot before the engine is
+/// built (Rack::load_built → Plan::load_type) starts at its model's saved
+/// knobs: scripts read and move them as in a slot that held it all along.
+#[test]
+fn a_restored_type_in_an_empty_slot_reads_and_moves_its_modelled_knobs() {
+    use kontra_engine::ir;
+    fn build(p: &[f32]) -> Option<ir::EffectKind> {
+        let (input, makeup) = (*p.first()?, *p.get(1)?);
+        Some(ir::EffectKind::Compressor(ir::Compressor {
+            threshold_db: -50.0 * input,
+            ratio: 4.0,
+            knee_db: 0.0,
+            attack_ms: 10.0,
+            release_ms: 100.0,
+            makeup_db: 50.0 * makeup - 40.0,
+            link: true,
+            mix: 1.0,
+            detector: ir::Detector::Output,
+        }))
+    }
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].inserts = vec![None];
+    let model = ir::KnobModel {
+        knobs: [ir::SlotKnob::Input, ir::SlotKnob::Makeup].into(),
+        saved: [0.4, 0.8].into(),
+        build,
+    };
+    let effect = build(&model.saved).map(|kind| ir::Effect {
+        kind,
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    });
+    plan.slot_shapes.types = vec![ir::SlotType {
+        id: 30,
+        subtype: false,
+        reads: 300,
+        kind: 30,
+        effect,
+        laws: Vec::new().into(),
+        model: Some(model),
+    }];
+    assert!(plan.load_type(ir::RackAt::Group(0), 0, 0));
+    let script = kontra_ksp::compile(
+        "on init
+            declare @was
+            @was := get_engine_par($ENGINE_PAR_FCOMP_INPUT, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_FCOMP_INPUT, 600000, 0, 0, -1)
+            message(@was & \" \" & get_engine_par($ENGINE_PAR_FCOMP_INPUT, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_FCOMP_MAKEUP, 0, 0, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "400000 600000 800000");
+    let sounds = e.group_sounds();
+    assert_eq!(sounds[0].1[0].as_ref().map(|e| e.kind), build(&[0.6, 0.8]));
+}
+
+/// A Solid G-EQ's bell switch reads any value but 0 back as 1 and shows no
+/// text; its gains show ±20 dB (Kontakt 8.13.1, probes/b2).
+#[test]
+fn a_bell_switch_reads_one_and_shows_nothing() {
+    use kontra_engine::ir;
+    fn build(p: &[f32]) -> Option<ir::EffectKind> {
+        let gain_db = 40.0 * p.first()? - 20.0;
+        let shape = if *p.get(1)? > 0.5 {
+            ir::Shape::Peak
+        } else {
+            ir::Shape::LowShelf
+        };
+        let band = ir::Bell {
+            shape,
+            hz: 100.0,
+            q: 0.7,
+            gain_db,
+        };
+        Some(ir::EffectKind::Eq([
+            band,
+            ir::Bell::FLAT,
+            ir::Bell::FLAT,
+            ir::Bell::FLAT,
+        ]))
+    }
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].inserts = vec![Some(ir::Effect {
+        kind: build(&[0.5, 0.0]).unwrap(),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let model = ir::KnobModel {
+        knobs: [ir::SlotKnob::BandGain(0), ir::SlotKnob::BandBell(0)].into(),
+        saved: [0.5, 0.0].into(),
+        build,
+    };
+    plan.slot_models = vec![(ir::RackAt::Group(0), 0, model)];
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Group(0), 0, 28)];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_SEQ_LF_BELL, 2, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_SEQ_LF_GAIN, 250000, 0, 0, -1)
+            message(get_engine_par($ENGINE_PAR_SEQ_LF_BELL, 0, 0, -1) & \"[\" & get_engine_par_disp($ENGINE_PAR_SEQ_LF_BELL, 0, 0, -1) & \"]\" & get_engine_par_disp($ENGINE_PAR_SEQ_LF_GAIN, 0, 0, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "1[]-10.0");
+    assert!(e.unhandled_actions().is_empty());
+    let sounds = e.group_sounds();
+    let eq = sounds[0].1[0].as_ref().map(|e| e.kind);
+    assert_eq!(eq, build(&[0.25, 1.0]));
+}
+
+/// The end-of-init restore skips what `read_persistent_var` already
+/// reloaded, so the script's later writes stand; the rest lands after
+/// `on init`. A menu read before its entries reads 0 and selects its saved
+/// entry as it gets it. Kontakt 8.13.1 reloading the same script and saved
+/// values (probes/b2/reload.lua): read `k70 a5,6,7 m0 p9 q0`, saved
+/// `k10 a5,0,7 m2 p1 q4`.
+#[test]
+fn a_reloaded_variable_keeps_what_init_wrote_after_reading_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let script = kontra_ksp::compile(
+        "on init
+            declare ui_knob $k (0, 100, 1)
+            declare ui_menu $m
+            declare %a[3]
+            declare $p
+            declare $q
+            declare @t
+            make_persistent($k)
+            make_persistent($m)
+            make_persistent(%a)
+            make_persistent($p)
+            make_persistent($q)
+            read_persistent_var($k)
+            read_persistent_var(%a)
+            read_persistent_var($m)
+            read_persistent_var($p)
+            @t := \"k\" & $k & \" a\" & %a[0] & \",\" & %a[1] & \",\" & %a[2] & \" m\" & $m & \" p\" & $p & \" q\" & $q
+            $k := 10
+            %a[1] := 0
+            $p := 1
+            $q := 3
+            add_menu_item($m, \"a\", 0)
+            add_menu_item($m, \"b\", 1)
+            add_menu_item($m, \"c\", 2)
+        end on
+        on persistence_changed
+            message(@t & \" | k\" & $k & \" a\" & %a[0] & \",\" & %a[1] & \",\" & %a[2] & \" m\" & $m & \" p\" & $p & \" q\" & $q)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let saved = ["$k 70", "$m 2", "%a 5 6 7", "$p 9", "$q 4"].map(String::from);
+    plan.scripts = vec![kontra_host::script::plan(&script, &saved, &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(
+        e.last_message(),
+        "k70 a5,6,7 m0 p9 q0 | k10 a5,0,7 m2 p1 q4"
+    );
 }

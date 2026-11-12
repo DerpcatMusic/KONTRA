@@ -201,10 +201,13 @@ impl Engine {
             ir::Source::Lfo(n) => {
                 let g = group()?;
                 let mut lfo = *g.lfos.get(usize::from(n))?;
+                let moving = (self.reshaped.get(zone.group as usize).into_iter())
+                    .flat_map(|r| r.moving(n))
+                    .filter_map(|i| g.mods.get(i));
                 // ponytail: phase and rate routes read their source at
                 // note-on (exact for velocity and note-on values); a live
                 // controller moving the rate needs a per-voice phase accumulator.
-                for m in g.mods.iter().filter(|m| !m.bypass) {
+                for m in moving.filter(|m| !m.bypass) {
                     match m.kind {
                         // An LFO source here would recurse.
                         ir::ModKind::LfoPhase {
@@ -320,32 +323,34 @@ impl Engine {
         if !matches!(of, ir::Source::Lfo(_) | ir::Source::Envelope(_)) {
             return 1.0;
         }
-        self.groups.get(zone.group as usize).map_or(1.0, |g| {
-            g.mods
-                .iter()
-                .filter(|m| !m.bypass)
-                .filter_map(|m| match m.kind {
-                    ir::ModKind::Intensity {
-                        source,
-                        of: o,
-                        depth,
-                    } if o == of => {
-                        let input = self.unit(zone, source, note, age)?;
-                        let value = 1.0 - (1.0 - input) * depth;
-                        #[cfg(feature = "trace")]
-                        self.trace_route(
-                            zone,
-                            m,
-                            Some(input),
-                            value,
-                            crate::RouteUnit::IntensityMultiplier,
-                        );
-                        Some(value)
-                    }
-                    _ => None,
-                })
-                .product()
-        })
+        let g = zone.group as usize;
+        let (Some(group), Some(reshaped)) = (self.groups.get(g), self.reshaped.get(g)) else {
+            return 1.0;
+        };
+        (reshaped.scaling(of))
+            .filter_map(|i| group.mods.get(i))
+            .filter(|m| !m.bypass)
+            .filter_map(|m| match m.kind {
+                ir::ModKind::Intensity {
+                    source,
+                    of: o,
+                    depth,
+                } if o == of => {
+                    let input = self.unit(zone, source, note, age)?;
+                    let value = 1.0 - (1.0 - input) * depth;
+                    #[cfg(feature = "trace")]
+                    self.trace_route(
+                        zone,
+                        m,
+                        Some(input),
+                        value,
+                        crate::RouteUnit::IntensityMultiplier,
+                    );
+                    Some(value)
+                }
+                _ => None,
+            })
+            .product()
     }
 
     /// The voice's step without its pitch routes, and those routes: the

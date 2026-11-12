@@ -73,6 +73,8 @@ fn part(name: &str) -> Part {
         view: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
+        named: Default::default(),
         sounds: Default::default(),
     }
 }
@@ -376,6 +378,7 @@ fn effect_loading(store: &mut Store) -> Box<Engine> {
         kind: id,
         effect,
         laws: Vec::new().into(),
+        model: None,
     };
     let effect = ir::Effect {
         kind: ir::EffectKind::Filter(high),
@@ -868,6 +871,29 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
     }
 }
 
+/// A preset the player changed is saved as changed; picking a preset
+/// again (a recall) makes it the preset as saved.
+#[test]
+fn a_changed_preset_saves_as_changed_until_a_preset_is_picked() {
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, snapshot_of(1, &[]), Some("a.nki".into()))
+        .unwrap();
+    audio.process(BLOCK, &[]);
+    assert!(!rack.save().parts[0].modified, "a fresh load is the preset");
+    rack.set_modified(0);
+    assert!(rack.save().parts[0].modified);
+    let preset = kontra_host::instrument::Preset {
+        name: "b".into(),
+        base: "a.nki".into(),
+        saved: vec![vec!["$knob 42".into()]],
+    };
+    assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
+    assert!(
+        !rack.save().parts[0].modified,
+        "a picked preset is unchanged"
+    );
+}
+
 /// A folder of this test process alone, removed when dropped (also when
 /// an assertion fails).
 struct Scratch(std::path::PathBuf);
@@ -1047,4 +1073,41 @@ fn a_rack_without_a_save_folder_writes_nothing() {
     let saved = saved_now(&mut rack, &mut audio);
     assert!(saved.contains(&"$status 0".to_owned()), "{saved:?}");
     assert!(!at.exists(), "nothing written next to the path");
+}
+/// KSP manual (`load_array`): an array loaded in `on init` is implicitly
+/// persistent, so it saves; a text array saves each value on a line ended
+/// by a newline, as Kontakt writes it.
+#[test]
+fn an_array_loaded_in_init_saves_one_ended_line_per_value() {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(dir.join("init_names.nka"), "!names\nfirst\nsecond\n").unwrap();
+    let source = format!(
+        "on init
+            declare !names[2]
+            declare $n
+            $n := load_array_str(!names, \"{}/init_names.nka\")
+        end on",
+        dir.display()
+    );
+    let instrument = ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, None).unwrap();
+    audio.process(BLOCK, &[]);
+    let saved = saved_now(&mut rack, &mut audio);
+    assert!(
+        saved.contains(&"!names first\nsecond\n".to_owned()),
+        "{saved:?}"
+    );
 }

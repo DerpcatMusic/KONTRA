@@ -440,6 +440,7 @@ mod tests {
             value: 1.,
             visible: true,
             enabled: true,
+            items: 0,
         };
         assert!(apply(&mut tree, 2, on, None));
         assert_eq!(shown(&tree), ui::Role::Pressed);
@@ -469,6 +470,7 @@ mod tests {
             value: 0.,
             visible: true,
             enabled: true,
+            items: 0,
         };
         assert!(!apply(&mut tree, 0, look, Some("Main")));
         assert_eq!(tree.widgets[0].text, "");
