@@ -125,6 +125,8 @@ pub enum EffectParam {
     /// A [`crate::Compressor`]'s make-up dB and wet share.
     CompressorMakeup,
     CompressorMix,
+    /// A [`crate::Compressor`]'s soft-knee width in dB.
+    CompressorKnee,
     /// A free-running [`crate::Delay`] or [`crate::Phaser`] LFO's Hz.
     ModRate,
     /// Cycles a [`crate::Delay`]'s or [`crate::Phaser`]'s right LFO runs ahead.
@@ -202,6 +204,7 @@ impl EffectParam {
             (Self::CompressorRelease, EffectKind::Compressor(c)) => &mut c.release_ms,
             (Self::CompressorMakeup, EffectKind::Compressor(c)) => &mut c.makeup_db,
             (Self::CompressorMix, EffectKind::Compressor(c)) => &mut c.mix,
+            (Self::CompressorKnee, EffectKind::Compressor(c)) => &mut c.knee_db,
             (Self::ModRate, EffectKind::Delay(crate::Delay { rate, .. }))
             | (Self::ModRate, EffectKind::Phaser(crate::Phaser { rate, .. })) => match rate {
                 crate::Rate::Hz(hz) => hz,
@@ -327,9 +330,11 @@ pub enum SlotKnob {
     Resonance,
     Attack,
     Release,
-    /// A compressor's threshold and ratio knobs.
+    /// A compressor's threshold, ratio, input drive and make-up knobs.
     Threshold,
     Ratio,
+    Input,
+    Makeup,
     /// A reverb's knobs.
     ReverbPredelay,
     ReverbSize,

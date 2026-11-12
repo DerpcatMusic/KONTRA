@@ -338,6 +338,11 @@ fn slot_effect(
                 })
         }
         0x43 | 0x4c => {
+            if let Some((saved, link)) = crate::dynamics::feedback_saved(&public)
+                .filter(|_| effect.id == 0x4c && object.version == 0x10)
+            {
+                *knobs = crate::dynamics::feedback_knobs(saved, link);
+            }
             crate::dynamics::effect(effect.id, object.version, &public).map(|(kind, lost)| {
                 if let Some(feature) = lost {
                     let impact = if params.bypass {

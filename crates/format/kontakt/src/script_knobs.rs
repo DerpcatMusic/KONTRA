@@ -245,6 +245,37 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Effect(E::CompressorMix),
             lin(0.0, 1.0),
         ),
+        // Feedback Compressor: its slot carries the laws (dynamics::feedback_knobs).
+        (
+            "$ENGINE_PAR_FCOMP_INPUT",
+            Slot(ir::SlotKnob::Input),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FCOMP_MAKEUP",
+            Slot(ir::SlotKnob::Makeup),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FCOMP_ATTACK",
+            Slot(ir::SlotKnob::Attack),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FCOMP_RELEASE",
+            Slot(ir::SlotKnob::Release),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FCOMP_RATIO",
+            Slot(ir::SlotKnob::Ratio),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FCOMP_MIX",
+            Effect(E::CompressorMix),
+            lin(0.0, 1.0),
+        ),
         (
             "$ENGINE_PAR_FORMANT_TALK",
             Effect(E::FormantTalk),

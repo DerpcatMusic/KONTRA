@@ -7,6 +7,8 @@ use kontra_ir as ir;
 use kontra_law::common::DB_GAIN;
 use kontra_law::kontakt::{FEEDBACK_KNEE, FEEDBACK_THRESHOLD};
 
+use crate::script_knobs::{SlotKnob, sampled};
+
 /// The record's effect and, when it sets something not carried, its name.
 pub(crate) fn effect(
     module: u16,
@@ -37,7 +39,8 @@ pub(crate) fn effect(
         // Input, make-up, attack, release, ratio, mix and an unbound float;
         // then high quality, link and side chain bytes.
         0x4c => {
-            let c = feedback([f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?], byte(29)?);
+            let (saved, link) = feedback_saved(public)?;
+            let c = feedback(saved, link);
             Some((
                 ir::EffectKind::Compressor(c),
                 byte(30)?.then_some("Feedback Compressor side chain"),
@@ -45,6 +48,50 @@ pub(crate) fn effect(
         }
         _ => None,
     }
+}
+
+/// A version 0x10 Feedback Compressor record's six knobs (input, make-up,
+/// attack, release, ratio, mix, each 0..=1) and its link byte.
+pub(crate) fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
+    let f = |n: usize| {
+        let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let saved = [f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?];
+    Some((saved, *public.get(29)? != 0))
+}
+
+/// The Feedback Compressor's script knobs (`$ENGINE_PAR_FCOMP_*`): each one
+/// through [`feedback`] with the other knobs at their saved values, so a
+/// knob moves every field the native setter derives from it (the input
+/// drives the threshold down and the make-up up; the ratio moves the knee).
+pub(crate) fn feedback_knobs(saved: [f32; 6], link: bool) -> Vec<SlotKnob> {
+    use ir::EffectParam as E;
+    use ir::SlotKnob::{Attack, Input, Makeup, Ratio, Release};
+    let fields = [
+        E::CompressorThreshold,
+        E::CompressorRatio,
+        E::CompressorKnee,
+        E::CompressorAttack,
+        E::CompressorRelease,
+        E::CompressorMakeup,
+    ];
+    [
+        (Input, 0),
+        (Makeup, 1),
+        (Attack, 2),
+        (Release, 3),
+        (Ratio, 4),
+    ]
+    .into_iter()
+    .flat_map(|(knob, n)| {
+        sampled(knob, &fields, &|x| {
+            let mut knobs = saved;
+            *knobs.get_mut(n)? = x;
+            Some(ir::EffectKind::Compressor(feedback(knobs, link)))
+        })
+    })
+    .collect()
 }
 
 /// Setter 0x141ac87b0: attack `2(x − ½)·120` and sustain `2(x − ½)·115` dB
@@ -94,6 +141,24 @@ fn feedback([input, makeup, attack, release, ratio, mix]: [f32; 6], link: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_feedback_knob_moves_every_field_its_setter_derives() {
+        let saved = [0.4, 0.8, 0.5, 0.5, 0.25, 1.0];
+        let knobs = feedback_knobs(saved, true);
+        let law = |knob, field| {
+            let found = knobs.iter().find(|(k, f, _)| *k == knob && *f == field);
+            found.map(|(_, _, law)| law.clone())
+        };
+        let at = |input: f32| feedback([input, 0.8, 0.5, 0.5, 0.25, 1.0], true);
+        let threshold = law(ir::SlotKnob::Input, ir::EffectParam::CompressorThreshold).unwrap();
+        let makeup = law(ir::SlotKnob::Input, ir::EffectParam::CompressorMakeup).unwrap();
+        assert!((threshold.eval(0.75) - at(0.75).threshold_db).abs() < 1e-3);
+        assert!((makeup.eval(0.75) - at(0.75).makeup_db).abs() < 1e-3);
+        // The ratio also moves the knee; the attack moves nothing else.
+        assert!(law(ir::SlotKnob::Ratio, ir::EffectParam::CompressorKnee).is_some());
+        assert!(law(ir::SlotKnob::Attack, ir::EffectParam::CompressorRelease).is_none());
+    }
 
     #[test]
     fn transient_centres_are_neutral_and_the_clip_is_an_integer() {
