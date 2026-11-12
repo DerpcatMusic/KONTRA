@@ -44,6 +44,8 @@ struct PartView {
     library: String,
     /// The preset it plays, as its library's preset index, found by path.
     preset: Option<usize>,
+    /// The player changed it since the preset loaded.
+    modified: bool,
     mix: Mix,
     solo: bool,
     mute: bool,
@@ -122,6 +124,7 @@ impl Snapshot {
                     name: p.name.clone(),
                     library,
                     preset,
+                    modified: p.modified,
                     mix: p.mix,
                     solo: p.solo,
                     mute: p.mute,
@@ -168,6 +171,7 @@ impl Snapshot {
                     p.name.clone(),
                     p.library.clone(),
                     p.preset,
+                    p.modified,
                     mix,
                 )
             })
@@ -243,6 +247,7 @@ impl Snapshot {
                 name: p.name.clone(),
                 library: p.library.clone(),
                 preset: p.preset,
+                modified: p.modified,
                 channel: p.mix.channel,
                 output: p.mix.output + 1,
                 volume: f64::from(linear_to_db(p.mix.gain)),
