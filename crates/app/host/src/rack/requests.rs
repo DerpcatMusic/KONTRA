@@ -16,6 +16,9 @@ pub struct ZoneSwap {
     pub edits: Box<[(ZoneEdit, bool)]>,
 }
 
+/// A part's (index, load) edits since the last tick, each with whether it took.
+type Batch = (usize, u64, Vec<(ZoneEdit, bool)>);
+
 /// The zone-edit channels between the rack and its audio side.
 pub struct ZoneRings {
     /// Zone edits the parts' scripts made: (part, its load, edit).
@@ -79,7 +82,7 @@ impl Rack {
     /// together after it), which becomes the part's plan.
     fn zone_edits(&mut self) {
         while self.channels.zones.done.recv().is_some() {}
-        let mut batches: Vec<(usize, u64, Vec<(ZoneEdit, bool)>)> = Vec::new();
+        let mut batches: Vec<Batch> = Vec::new();
         while let Some((part, generation, edit)) = self.channels.zones.edits.recv() {
             match batches
                 .iter_mut()
