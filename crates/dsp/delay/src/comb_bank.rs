@@ -23,16 +23,10 @@ const FLOOR: f32 = 3.0;
 /// The loop smoother's delay, samples: its centre tap (4 at twice the rate,
 /// 0x1447149a8).
 const SMOOTHER_DELAY: f32 = 2.0;
-/// The one-pole that rounds the LFO (`FUN_141960d90(+0x3c0, 4.0)`).
-///
-/// ponytail: unconfirmed by measurement. Read at three points: built at
-/// 4 Hz on the oversampled rate (0x14195f111; rate 0x14195efcf–eff9),
-/// run per sample on the triangle (0x14195fb30–fb5a), and feeding the
-/// heads as `K·lfo·(base − 3)` (0x14195fbbb, fd19–fd73); nothing else
-/// writes it but the reset `FUN_14195e9a0` (phase 0, `lfo = tri(0)`).
-/// Kontakt impulse trains (1.6 s and 1.37 s apart) swing ±0.9 at 7–16 Hz,
-/// but fit no free-running triangle even at 0.3 Hz: the slot likely sleeps
-/// and resets between impulses. Settle it with a continuous input.
+/// The one-pole that rounds the LFO (`FUN_141960d90(+0x3c0, 4.0)`), run
+/// per sample on the triangle before it moves the heads. Kontakt through a
+/// steady 500 Hz sine swings 0.185 / 0.366 / 0.747 / 0.956 of the range at
+/// Rate 100 / 90 / 75 / 50 %; this pole gives 0.184 / 0.375 / 0.741 / 0.948.
 const LFO_SMOOTH_HZ: f32 = 4.0;
 /// The one-pole on each voice's scan level (0x147699c30 = −2π·80).
 const SCAN_SMOOTH_HZ: f32 = 80.0;
