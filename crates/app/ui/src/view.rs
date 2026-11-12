@@ -125,12 +125,33 @@ fn drawn_page(
         let n = item.index;
         let r = item.rect;
         let wd = item.source;
+        let lit = match wd.kind {
+            Kind::LevelMeter {
+                orientation,
+                channel: Some(c),
+                bus,
+            } => {
+                let from = level.get(bus.map_or(0, |b| usize::from(b) + 1));
+                let shown = from.and_then(|l| l.get(usize::from(c)));
+                Some((orientation, lit(shown.copied().unwrap_or_default())))
+            }
+            _ => None,
+        };
+        // A meter with a picture strip shows the frame for its level (a UVI
+        // AudioMeter's animated VU) instead of a bar.
+        let stepped = |p: &plan::Picture| match lit {
+            Some((_, (t, ..))) if p.meta.frames > 1 => {
+                (t * f64::from(p.meta.frames - 1)).round() as usize
+            }
+            _ => p.frame,
+        };
         let picture = item.picture.as_ref().and_then(|p| {
             Some((
-                pictures.frame(p.use_.asset, p.path, p.meta, p.frame, device)?,
+                pictures.frame(p.use_.asset, p.path, p.meta, stepped(p), device)?,
                 p.meta,
             ))
         });
+        let lit = lit.filter(|_| !item.picture.as_ref().is_some_and(|p| p.meta.frames > 1));
         let art = picture
             .as_ref()
             .and_then(|_| item.picture.as_ref().map(|p| p.size));
@@ -222,18 +243,6 @@ fn drawn_page(
             words.replace("  ", "   ")
         } else {
             words
-        };
-        let lit = match wd.kind {
-            Kind::LevelMeter {
-                orientation,
-                channel: Some(c),
-                bus,
-            } => {
-                let from = level.get(bus.map_or(0, |b| usize::from(b) + 1));
-                let shown = from.and_then(|l| l.get(usize::from(c)));
-                Some((orientation, lit(shown.copied().unwrap_or_default())))
-            }
-            _ => None,
         };
         let deps = (
             lit.map(|(o, (t, peak, over))| (o as u8, t.to_bits(), peak.to_bits(), over)),

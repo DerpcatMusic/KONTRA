@@ -197,8 +197,15 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
         },
         "Label" => ui::Kind::Label,
         "Image" => ui::Kind::Image,
-        // ponytail: tables, XY pads, meters and wave views draw as empty
-        // panels; give each its kind when a library's page needs it.
+        // ponytail: a meter shows the part's output, not the program node
+        // the script names (a layer); per-node levels when one needs them.
+        "AudioMeter" => ui::Kind::LevelMeter {
+            orientation: ui::Orientation::Vertical,
+            channel: Some(0),
+            bus: None,
+        },
+        // ponytail: XY pads and wave views draw as empty panels; give each
+        // its kind when a library's page needs it.
         _ => ui::Kind::Panel,
     };
     let [x, y, width, height] = w.rect;
