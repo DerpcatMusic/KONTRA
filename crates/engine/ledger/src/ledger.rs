@@ -95,7 +95,7 @@ pub struct Note {
     pub noted_off: bool,
     /// The last fade a script asked of it (target, frames): its attack
     /// voices yet to start begin with it.
-    pub fade: Option<(kontra_voice::FadeTarget, u32)>,
+    pub fade: Option<(kontra_voice::FadeTarget, u32, kontra_voice::FadeCurve)>,
     /// Script tuning, millicents.
     pub script_tune: i32,
     /// Script volume, millidecibels.
