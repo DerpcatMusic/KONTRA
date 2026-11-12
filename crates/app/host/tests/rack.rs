@@ -73,6 +73,8 @@ fn part(name: &str) -> Part {
         view: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
+        named: Default::default(),
         sounds: Default::default(),
     }
 }
@@ -866,6 +868,29 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
         // The next snapshot recalls as well.
         assert!(rack.recall(0, &preset, None), "type {kind}: second recall");
     }
+}
+
+/// A preset the player changed is saved as changed; picking a preset
+/// again (a recall) makes it the preset as saved.
+#[test]
+fn a_changed_preset_saves_as_changed_until_a_preset_is_picked() {
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, snapshot_of(1, &[]), Some("a.nki".into()))
+        .unwrap();
+    audio.process(BLOCK, &[]);
+    assert!(!rack.save().parts[0].modified, "a fresh load is the preset");
+    rack.set_modified(0);
+    assert!(rack.save().parts[0].modified);
+    let preset = kontra_host::instrument::Preset {
+        name: "b".into(),
+        base: "a.nki".into(),
+        saved: vec![vec!["$knob 42".into()]],
+    };
+    assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
+    assert!(
+        !rack.save().parts[0].modified,
+        "a picked preset is unchanged"
+    );
 }
 
 /// A folder of this test process alone, removed when dropped (also when

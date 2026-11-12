@@ -55,6 +55,8 @@ pub struct Widget {
     pub normal: Option<String>,
     pub pressed: Option<String>,
     pub background: Option<String>,
+    /// A slider's handle, moved along its track by the value.
+    pub handle: Option<String>,
     /// A strip of value frames, and how many.
     pub strip: Option<(String, u32)>,
     /// Hex colours by field: background, text, fill.
@@ -141,6 +143,7 @@ pub(crate) fn read(lua: &Lua) -> Ui {
                 normal: text(w, "normalImage"),
                 pressed: text(w, "pressedImage"),
                 background: text(w, "backgroundImage"),
+                handle: text(w, "handleImage"),
                 strip,
                 colours: ["backgroundColour", "textColour", "fillColour"].map(|k| text(w, k)),
                 cells: w
@@ -186,6 +189,7 @@ pub(crate) struct Reads {
     text: LuaString,
     values: LuaString,
     items: LuaString,
+    revision: LuaString,
 }
 
 impl Reads {
@@ -204,6 +208,7 @@ impl Reads {
             text: key("text")?,
             values: key("values")?,
             items: key("items")?,
+            revision: key("__items_revision")?,
         })
     }
 
@@ -229,6 +234,9 @@ impl Reads {
             value: number(&w.raw_get::<Value>(&self.value).ok()?).unwrap_or(0.),
             visible: flag(&self.visible),
             enabled: flag(&self.enabled),
+            items: (w.raw_get::<Value>(&self.revision).ok().as_ref())
+                .and_then(number)
+                .map_or(0, |r| r as u32),
         })
     }
 
@@ -252,7 +260,21 @@ impl Reads {
         true
     }
 
-    /// Widget `n`'s `text` into `out`.
+    /// Menu `n`'s item `i` (from 0) into `out`; false past its last.
+    pub(crate) fn item_text(&self, n: u32, i: u32, out: &mut Text) -> bool {
+        let Some(Ok(Value::String(s))) = (self.table(n))
+            .and_then(|w| w.raw_get::<Table>(&self.items).ok())
+            .map(|items| items.raw_get::<Value>(i64::from(i) + 1))
+        else {
+            return false;
+        };
+        let Ok(s) = s.to_str() else {
+            return false;
+        };
+        *out = Text::from_str_cut(&s).0;
+        true
+    }
+
     /// Widget `n`'s text: its own, or a menu's selected item's (a script
     /// renames items, VWinds' `Name*` for the loaded preset).
     pub(crate) fn text(&self, n: u32, out: &mut Text) -> bool {

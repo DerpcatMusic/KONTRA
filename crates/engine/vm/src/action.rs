@@ -33,6 +33,11 @@ pub mod event {
     /// Before the note starts: only zones in this slot start; -1 (the
     /// default) starts any.
     pub const ZONE_SLOT: i32 = 15;
+    /// Read only: microseconds into its zone's sample its first voice plays.
+    pub const PLAY_POS: i32 = 1026;
+    /// Read only: the number of the zone its first voice plays (its format's
+    /// numbering), -1 before a voice starts.
+    pub const ZONE_ID: i32 = 1027;
 }
 
 macro_rules! actions {
@@ -380,4 +385,8 @@ actions! {
     // (the engine's host-only list).
     HideInstIcon,
     DontUseMachineMode,
+    // Milliseconds since the engine started, with the fraction
+    // (`1000 * samples / rate`): notes one frame apart read apart.
+    // `EngineUptime` is the same clock in whole milliseconds.
+    EngineMs,
 }

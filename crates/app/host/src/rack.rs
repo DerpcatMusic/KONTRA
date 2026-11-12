@@ -21,6 +21,7 @@ use kontra_ui_model::UiModifiers;
 mod audio;
 mod files;
 mod hold;
+mod named;
 mod recall;
 pub use audio::RackAudio;
 pub use hold::{HOLD_STEPS, Hold};
@@ -199,6 +200,11 @@ pub struct Part {
     /// Library responses its scripts loaded into convolutions after
     /// `on init`, as (rack, slot, name); put back after the types.
     pub slot_responses: Vec<(ir::RackAt, u8, String)>,
+    /// The player changed one of its library's controls since its preset
+    /// loaded: what plays is no longer the preset as saved.
+    pub modified: bool,
+    /// What its script named lately ([`Rack::take_named`]).
+    pub named: named::Named,
 }
 
 /// What the rack keeps to save a part's scripts.
@@ -407,6 +413,7 @@ impl Rack {
         let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
         let source = instrument.source_path.clone();
         let slots = instrument.scripts.iter().map(|s| s.slot).collect();
+        let waves = crate::ui::Waves::of(&instrument);
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
         let saves = self.saves.clone();
         for s in loaded.plan.scripts.iter_mut().filter(|s| s.files.is_some()) {
@@ -423,7 +430,8 @@ impl Rack {
             .collect();
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
-        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
+        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref())
+            .map(|view| view.with_waves(waves));
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
             source,
@@ -432,6 +440,8 @@ impl Rack {
             sounds,
             slot_types,
             slot_responses,
+            modified: false,
+            named: named::Named::default(),
             plan: Some(plan),
             delays: None,
             path,
@@ -516,9 +526,10 @@ impl Rack {
         value: f64,
         keys: UiModifiers,
     ) {
-        let Some(Some(p)) = self.parts.get(part) else {
+        let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        p.modified = true;
         let Some(view) = p.view.as_ref() else {
             return;
         };
@@ -545,9 +556,10 @@ impl Rack {
     /// The user typed `text` into text edit `widget` of `part`'s interface:
     /// its variable reads it, then its callbacks run.
     pub fn control_text(&mut self, part: usize, widget: usize, text: &str) {
-        let Some(Some(p)) = self.parts.get(part) else {
+        let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        p.modified = true;
         let Some(view) = p.view.as_ref() else {
             return;
         };
@@ -593,19 +605,6 @@ impl Rack {
                 insert,
             });
         }
-    }
-
-    /// Records `part`'s measured attack delay (auto-align), saved with it.
-    pub fn set_delays(&mut self, part: usize, delays: Delays) {
-        if let Some(Some(p)) = self.parts.get_mut(part) {
-            p.delays = Some(delays);
-        }
-    }
-
-    /// Holds each note into `part` by its `hold` from the next block on,
-    /// so it sounds in time with a later part (auto-align).
-    pub fn set_hold(&mut self, part: usize, hold: Hold) {
-        self.send(Command::Hold(part, hold));
     }
 
     pub fn set_master(&mut self, gain: f32) {
@@ -695,6 +694,7 @@ impl Rack {
                 && let Some(view) = p.view.as_mut()
             {
                 view.refresh(&p.faces, p.path.as_deref(), frame);
+                p.named.look(view.tree());
             }
         }
         let looked = match self.interfaces {

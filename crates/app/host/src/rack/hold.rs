@@ -162,3 +162,18 @@ impl Held {
         (self.keys.get(c).and_then(|c| c.get(k)).copied()).unwrap_or_else(|| self.hold.max())
     }
 }
+
+impl super::Rack {
+    /// Records `part`'s measured attack delay (auto-align), saved with it.
+    pub fn set_delays(&mut self, part: usize, delays: super::Delays) {
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.delays = Some(delays);
+        }
+    }
+
+    /// Holds each note into `part` by its `hold` from the next block on,
+    /// so it sounds in time with a later part (auto-align).
+    pub fn set_hold(&mut self, part: usize, hold: Hold) {
+        self.send(super::Command::Hold(part, hold));
+    }
+}

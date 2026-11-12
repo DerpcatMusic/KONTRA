@@ -155,10 +155,22 @@ impl Engine {
     }
 
     fn event_par(&self, id: i32, par: i32) -> i32 {
-        let Some(n) = NoteRef::from_event_id(id).and_then(|r| self.notes.get(r)) else {
+        let note = NoteRef::from_event_id(id);
+        let Some(n) = note.and_then(|r| self.notes.get(r)) else {
             return 0;
         };
+        // Only a voice carries a zone: the note's first sounding one.
+        let voice = (self.voices.iter())
+            .find(|s| s.note == note && s.voice.is_active())
+            .and_then(|s| Some((s, self.plan.zones.get(s.zone)?)));
         match par {
+            event::ZONE_ID => voice.map_or(-1, |(_, z)| z.id as i32),
+            event::PLAY_POS => voice.map_or(0, |(s, z)| {
+                // The position in the sample: a looped or reversed voice's
+                // cursor is not its elapsed frames.
+                let frame = s.voice.sample_frame(&z.region).unwrap_or(z.region.end);
+                (frame as f64 * 1e6 / f64::from(z.sample_rate.max(1))) as i32
+            }),
             0..=event::CUSTOM_LAST => n.custom.get(par as usize).copied().unwrap_or(0),
             event::VOLUME => n.script_volume,
             event::TUNE => n.script_tune,
@@ -295,6 +307,7 @@ impl HostApi for Engine {
             Action::EngineUptime => {
                 HostValue::Int((self.now.0 * 1000 / u64::from(self.rate)) as i32)
             }
+            Action::EngineMs => HostValue::Real(self.now.0 as f64 * 1000.0 / f64::from(self.rate)),
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),
             Action::GroupVolume | Action::GroupPan | Action::GroupTune => {
