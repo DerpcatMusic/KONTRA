@@ -108,6 +108,26 @@ pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
     Ok(out)
 }
 
+/// Kontakt saves a snapshot's group effects in the instrument's group
+/// order, one per group: each group of the two counts the other lacks is
+/// noted (a base group keeps its own effects, a saved one goes unused).
+pub(crate) fn unmatched(saved: usize, groups: usize, notes: &mut kontra_format::Notes) {
+    for group in groups..saved {
+        notes.add(
+            ir::Impact::Audible,
+            "snapshot group effects without a group",
+            group,
+        );
+    }
+    for group in saved..groups {
+        notes.add(
+            ir::Impact::Audible,
+            "group without snapshot group effects",
+            group,
+        );
+    }
+}
+
 /// The name of the instrument a snapshot was saved from. Factory snapshots
 /// may keep Kontakt's template name first and the base's second.
 fn binding(names: &(String, String)) -> &str {
@@ -203,6 +223,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_group_a_snapshot_and_its_instrument_do_not_share_is_noted() {
+        let noted = |saved, groups| {
+            let mut notes = kontra_format::Notes::default();
+            unmatched(saved, groups, &mut notes);
+            let found = notes.finish();
+            found
+                .iter()
+                .map(|d| format!("{}: {}", d.feature, d.detail))
+                .collect::<Vec<_>>()
+        };
+        assert!(noted(3, 3).is_empty());
+        assert_eq!(
+            noted(5, 3),
+            ["snapshot group effects without a group: 2× (first: 3)"]
+        );
+        assert_eq!(
+            noted(2, 3),
+            ["group without snapshot group effects: 1× (first: 2)"]
+        );
+    }
+
+    #[test]
     fn a_snapshots_group_effects_that_do_not_decode_are_an_error_not_none() {
         let state = |groups: Option<Vec<u8>>| Snapshot {
             groups: groups.map(|data| Chunk { id: 0x50, data }),
@@ -240,4 +282,3 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
-

@@ -122,6 +122,7 @@ pub(crate) fn instrument(
     let mut group_fx = Vec::new();
     if let Some(native) = native {
         crate::effects::replace_racks(&mut program.0.children, native.racks);
+        crate::snapshot::unmatched(native.groups.len(), groups.groups.len(), &mut notes);
         group_fx = native.groups;
     }
     for (index, group) in groups.groups.iter().enumerate() {
