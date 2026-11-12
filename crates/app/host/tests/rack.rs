@@ -1111,3 +1111,67 @@ fn an_array_loaded_in_init_saves_one_ended_line_per_value() {
         "{saved:?}"
     );
 }
+
+/// A callback's `set_zone_par` calls reach the control side as one batch,
+/// are applied together to the part's plan off the audio thread, and swap
+/// in: the held note's zone left its group and fades, the next note-on plays
+/// the zone through its new group (gain 2) at its new key.
+#[test]
+fn a_callbacks_zone_edits_apply_together_off_audio_and_swap_in() {
+    let (mut rack, mut audio) = rack();
+    let store = rack.store_mut();
+    let mut zones = plan_of(store, 0.5).zones;
+    let mut other = zones[0].clone();
+    (other.id, other.group, other.keys) = (1, 1, 100..=100);
+    zones[0].keys = 60..=60;
+    zones.push(other);
+    let mut plan = Plan::new(zones, 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.groups[1].level.gain = 2.0;
+    let script = kontra_ksp::compile(
+        "on note
+            if ($EVENT_NOTE = 60)
+                set_zone_par(0, $ZONE_PAR_GROUP, 1)
+                set_zone_par(0, $ZONE_PAR_LOW_KEY, 72)
+                set_zone_par(0, $ZONE_PAR_HIGH_KEY, 72)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let plan = Arc::new(plan);
+    let engine = Box::new(Engine::new(Arc::clone(&plan), store.client(), RATE));
+    rack.install(
+        0,
+        engine,
+        Part {
+            plan: Some(plan),
+            ..part("z")
+        },
+    );
+    let [held, _] = play(&mut audio, &[(0, note(0))]);
+    assert!((held - 0.5).abs() < 1e-3, "{held}");
+    rack.tick();
+    let p = rack.parts()[0].as_ref().unwrap();
+    let zone = &p.plan.as_ref().unwrap().zones[0];
+    assert_eq!((zone.group, zone.keys.clone()), (1, 72..=72));
+    let [gone, _] = play(&mut audio, &[]);
+    assert!(gone.abs() < 1e-4, "{gone}");
+    let at = |key| match note(0) {
+        Event::NoteOn {
+            note,
+            velocity,
+            tune,
+        } => Event::NoteOn {
+            note: HostNote { key, ..note },
+            velocity,
+            tune,
+        },
+        e => e,
+    };
+    let [moved, _] = play(&mut audio, &[(0, at(72))]);
+    assert!((moved - 1.0).abs() < 1e-3, "{moved}");
+}
