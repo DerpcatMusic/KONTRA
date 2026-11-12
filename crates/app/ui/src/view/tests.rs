@@ -359,6 +359,40 @@ fn an_unpictured_script_control_draws_its_stock_field() {
     );
 }
 
+/// A value edit narrower than its arrows still lays out: its words get no
+/// room rather than less than none (Conflux's 6.6-point fine-tune fields,
+/// whose refusal froze the whole editor on the old frame).
+#[test]
+fn a_value_edit_narrower_than_its_arrows_still_draws() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 20.,
+            height: 10.,
+        },
+        ..Page::default()
+    });
+    let mut edit = Widget::new(
+        "$fine",
+        PageRef(0),
+        Rect::new(0, 0, 6, 10),
+        Kind::ValueEdit {
+            range: Range::default(),
+            display: model::Display::default(),
+            arrows: true,
+        },
+    );
+    edit.value = Some(model::Value::Integer(0));
+    tree.widgets.push(edit);
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    paint(&mut ui, el, 20, 10);
+}
+
 /// A resizable picture keeps its fixed ends and stretches the rest
 /// (CHORUS's selected-row glow: 26 px, 12 px fixed each side, on a 260
 /// point row); a control shorter than both ends shrinks them alike.
