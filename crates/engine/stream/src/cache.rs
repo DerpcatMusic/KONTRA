@@ -6,17 +6,21 @@
 //! (silence), never as wrong audio. Bytes are relaxed atomics, which compile to
 //! plain loads, so the race is sound without `unsafe`.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 
 use crate::fmt::SampleFmt;
 
 pub(crate) struct Cache {
     slots: Box<[Slot]>,
-    /// Every slot's bytes, `slot_bytes` each. Allocated zeroed, so the pages
-    /// of slots that never fill are never made resident.
-    bytes: Box<[AtomicU8]>,
+    /// Every slot's bytes, `slot_bytes` each, little-endian eight to a word
+    /// so a read loads a word, not a byte, at a time. Allocated zeroed, so
+    /// the pages of slots that never fill are never made resident.
+    words: Box<[AtomicU64]>,
     slot_bytes: usize,
 }
+
+/// Words a read copies to the stack at a time (4 KiB).
+const CHUNK_WORDS: usize = 512;
 
 struct Slot {
     /// Odd while the I/O thread writes the slot.
@@ -36,7 +40,7 @@ const EMPTY: u64 = u64::MAX;
 
 impl Cache {
     pub(crate) fn new(slots: usize, slot_bytes: usize) -> Self {
-        let bytes = bytemuck::zeroed_slice_box(slots * slot_bytes);
+        let words = bytemuck::zeroed_slice_box(slots * slot_bytes.div_ceil(8));
         let slots = (0..slots)
             .map(|_| Slot {
                 generation: AtomicU32::new(0),
@@ -46,21 +50,21 @@ impl Cache {
             .collect();
         Self {
             slots,
-            bytes,
+            words,
             slot_bytes,
         }
     }
 
-    fn bytes(&self, slot: usize) -> &[AtomicU8] {
-        let start = slot * self.slot_bytes;
-        self.bytes
-            .get(start..start + self.slot_bytes)
+    fn words(&self, slot: usize) -> &[AtomicU64] {
+        let per = self.slot_bytes.div_ceil(8);
+        self.words
+            .get(slot * per..(slot + 1) * per)
             .unwrap_or_default()
     }
 
     /// Bytes of every slot.
     pub(crate) fn size(&self) -> usize {
-        self.bytes.len()
+        self.words.len() * 8
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -81,18 +85,29 @@ impl Cache {
         let Some(s) = self.slots.get(slot as usize) else {
             return false;
         };
-        let bytes = self.bytes(slot as usize);
+        let words = self.words(slot as usize);
         let before = s.generation.load(Ordering::Acquire);
         if before & 1 == 1 || s.owner.load(Ordering::Relaxed) != owner {
             out.fill([0.0; 2]);
             return false;
         }
-        fmt.decode(
-            |i| bytes.get(i).map_or(0, |b| b.load(Ordering::Relaxed)),
-            first,
-            out,
-            mix,
-        );
+        // The frames' bytes onto the stack a chunk of words at a time, then
+        // decoded from there.
+        let frame = fmt.bytes_per_frame().max(1);
+        let per_chunk = ((CHUNK_WORDS - 1) * 8 / frame).max(1);
+        let mut stack = [0u8; CHUNK_WORDS * 8];
+        for (k, out) in out.chunks_mut(per_chunk).enumerate() {
+            let start = (first + k * per_chunk) * frame;
+            let (w0, skip) = (start / 8, start % 8);
+            let w1 = (start + out.len() * frame).div_ceil(8);
+            let src = words.get(w0..w1.min(words.len())).unwrap_or_default();
+            let filled = src.len() * 8;
+            for (dst, word) in stack.as_chunks_mut::<8>().0.iter_mut().zip(src) {
+                *dst = word.load(Ordering::Relaxed).to_le_bytes();
+            }
+            let bytes = stack.get(skip..filled).unwrap_or_default();
+            fmt.decode(bytes, 0, out, mix);
+        }
         fence(Ordering::Acquire);
         if s.generation.load(Ordering::Relaxed) != before {
             out.fill([0.0; 2]);
@@ -111,12 +126,13 @@ impl Cache {
         s.generation.store(g.wrapping_add(1), Ordering::Relaxed);
         fence(Ordering::Release);
         s.owner.store(owner, Ordering::Relaxed);
-        for (cell, value) in self
-            .bytes(slot as usize)
-            .iter()
-            .zip(data.iter().copied().chain(std::iter::repeat(0)))
-        {
-            cell.store(value, Ordering::Relaxed);
+        let mut data = data.chunks(8);
+        for cell in self.words(slot as usize) {
+            let mut word = [0u8; 8];
+            if let Some(chunk) = data.next() {
+                word.iter_mut().zip(chunk).for_each(|(w, &b)| *w = b);
+            }
+            cell.store(u64::from_le_bytes(word), Ordering::Relaxed);
         }
         s.touched.store(true, Ordering::Relaxed);
         s.generation.store(g.wrapping_add(2), Ordering::Release);

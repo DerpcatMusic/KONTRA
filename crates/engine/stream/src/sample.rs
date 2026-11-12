@@ -170,8 +170,7 @@ impl Sample {
     ) -> bool {
         match self.pinned.get(page) {
             Some(Some(Page::Pcm(bytes))) => {
-                self.fmt
-                    .decode(|i| bytes.get(i).copied().unwrap_or(0), offset, out, mix);
+                self.fmt.decode(bytes, offset, out, mix);
                 return true;
             }
             Some(Some(Page::Blocks(bytes))) => {
