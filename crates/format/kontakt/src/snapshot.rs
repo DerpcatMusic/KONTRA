@@ -43,15 +43,21 @@ pub(crate) struct Native {
 }
 
 impl Native {
-    fn of(state: Snapshot) -> Option<Self> {
-        state.groups.as_ref()?;
-        let groups = (state.group_snapshots().unwrap_or_default().into_iter())
+    /// None for a script-only snapshot (it saves no group data).
+    ///
+    /// # Errors
+    /// When its group data does not decode: its effects are not guessed.
+    fn of(state: Snapshot) -> Result<Option<Self>, ni_file::Error> {
+        if state.groups.is_none() {
+            return Ok(None);
+        }
+        let groups = (state.group_snapshots()?.into_iter())
             .map(|(_, g)| Some(g.fx))
             .collect();
-        Some(Self {
+        Ok(Some(Self {
             racks: state.effect_children,
             groups,
-        })
+        }))
     }
 }
 
@@ -86,6 +92,7 @@ fn read(path: &Path) -> Result<(Preset, Snapshot), Error> {
 
 pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
     let (preset, state) = read(path)?;
+    let native = Native::of(state).map_err(|e| Error::new(path, "snapshot groups", e))?;
     let (base_chunks, monolith, encrypted) = container::opened(&preset.base)?;
     let mut out = translate::instrument(
         &preset.base,
@@ -93,7 +100,7 @@ pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
         monolith,
         &preset.saved,
         encrypted,
-        Native::of(state),
+        native,
     )?;
     if !preset.name.is_empty() {
         out.name = preset.name;
@@ -194,6 +201,20 @@ fn find(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_snapshots_group_effects_that_do_not_decode_are_an_error_not_none() {
+        let state = |groups: Option<Vec<u8>>| Snapshot {
+            groups: groups.map(|data| Chunk { id: 0x50, data }),
+            version: 1,
+            group_count: 2,
+            effect_children: Vec::new(),
+            persistent: Vec::new(),
+        };
+        assert!(matches!(Native::of(state(None)), Ok(None)), "script-only");
+        // It says two groups and holds none of them.
+        assert!(Native::of(state(Some(2u32.to_le_bytes().to_vec()))).is_err());
+    }
 
     #[test]
     fn a_template_name_binds_by_its_second_name() {
