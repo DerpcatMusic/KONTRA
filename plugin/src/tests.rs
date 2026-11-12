@@ -1471,18 +1471,31 @@ fn a_snapshot_recalls_its_effects_without_holding_the_rack() {
         let held = t.elapsed();
         assert!(loaded.is_ok(), "{loaded:?}");
         let (mut slowest_block, mut slowest_tick) = (Duration::ZERO, Duration::ZERO);
-        let switched = loop {
+        // Clock-free: the engines the recall puts in. A snapshot reaches
+        // the audio thread whole, once: one install, nothing landing block
+        // by block (its `on init` and values ran off the audio thread).
+        let (mut installs, mut playing, mut switched, mut after) = (0, generation, None, 0);
+        // Up to the block that applies the install, and 8 after it.
+        while after < 9 {
             let b = Instant::now();
             block(&params, &mut dsp, &[]);
             slowest_block = slowest_block.max(b.elapsed());
+            after += usize::from(switched.is_some());
             let k = Instant::now();
             Tick.run(&params);
             slowest_tick = slowest_tick.max(k.elapsed());
-            if effects(&params).1 != generation {
-                break t.elapsed();
+            let now = effects(&params).1;
+            if now != playing {
+                (installs, playing) = (installs + 1, now);
+                switched.get_or_insert(t.elapsed());
             }
             assert!(t.elapsed().as_secs() < 30, "the snapshot's plan never came");
-        };
+        }
+        assert_eq!(
+            installs, 1,
+            "the recall reaches the audio thread as one engine"
+        );
+        let switched = switched.unwrap_or_default();
         block(&params, &mut dsp, &[note(false, 60)]);
         let (after, _) = effects(&params);
         // Two slots as text, from a little before where they first differ.
@@ -1493,21 +1506,22 @@ fn a_snapshot_recalls_its_effects_without_holding_the_rack() {
                 |t: &str| -> String { t.chars().skip(at.saturating_sub(20)).take(60).collect() };
             format!("…{} -> …{}", from(&x), from(&y))
         };
+        // Every slot of two whole insert lists, added and removed ones too.
         let mut changed = Vec::new();
-        for (n, (a, b)) in before.groups.iter().zip(&after.groups).enumerate() {
-            for (s, (x, y)) in a.inserts.iter().zip(&b.inserts).enumerate() {
+        let mut slots = |at: String, a: &[Option<_>], b: &[Option<_>]| {
+            for s in 0..a.len().max(b.len()) {
+                let (x, y) = (a.get(s).cloned().flatten(), b.get(s).cloned().flatten());
                 if x != y {
-                    let purged = if a.purged { " (purged)" } else { "" };
-                    changed.push(format!("group {n}{purged} slot {s}: {}", diff(x, y)));
+                    changed.push(format!("{at} slot {s}: {}", diff(&x, &y)));
                 }
             }
+        };
+        for (n, (a, b)) in before.groups.iter().zip(&after.groups).enumerate() {
+            let purged = if a.purged { " (purged)" } else { "" };
+            slots(format!("group {n}{purged}"), &a.inserts, &b.inserts);
         }
         for (n, (a, b)) in before.buses.iter().zip(&after.buses).enumerate() {
-            for (s, (x, y)) in a.inserts.iter().zip(&b.inserts).enumerate() {
-                if x != y {
-                    changed.push(format!("bus {n} slot {s}: {}", diff(x, y)));
-                }
-            }
+            slots(format!("bus {n}"), &a.inserts, &b.inserts);
         }
         let racks = [
             ("insert", &before.inserts, &after.inserts),
@@ -1515,11 +1529,7 @@ fn a_snapshot_recalls_its_effects_without_holding_the_rack() {
             ("main", &before.main, &after.main),
         ];
         for (name, a, b) in racks {
-            for (s, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-                if x != y {
-                    changed.push(format!("instrument {name} slot {s}: {}", diff(x, y)));
-                }
-            }
+            slots(format!("instrument {name}"), a, b);
         }
         let rack_changed = racks.iter().filter(|(_, a, b)| a != b).count();
         let sounding = changed.iter().filter(|c| !c.contains("purged")).count();
