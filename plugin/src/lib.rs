@@ -264,6 +264,7 @@ impl BackgroundTask for Tick {
         let mut browser = lock(&p.shared.browser);
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
+        rack.know(browser);
         // A state the host restored in this batch is what `saved` holds: a
         // load beside it must not write the rack over it.
         let restores = requests.iter().any(|r| matches!(r, Request::Restore(_)));

@@ -60,3 +60,47 @@ fn an_analog_strings_snapshot_is_its_instrument_with_its_saved_values() {
     assert_eq!(snap.scripts.len(), base.scripts.len());
     assert_ne!(saved(&snap), saved(&base));
 }
+
+/// A snapshot kept in Kontakt's user folder (`User Content/<instrument>/`)
+/// loads as the same snapshot in its library does, its base found among
+/// the instruments the player has.
+#[test]
+fn a_user_snapshot_binds_to_its_instrument_by_name() {
+    let factory = Path::new(ANALOG);
+    let nki =
+        Path::new("/data/main/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki");
+    if !factory.exists() || !nki.exists() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("kontra-user-content-{}", std::process::id()));
+    let user = root.join("User Content/ANALOG STRINGS/9001 Punch.nksn");
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::copy(factory, &user).unwrap();
+    let known = [Path::new("/elsewhere/Piano.nki").to_owned(), nki.to_owned()];
+    let alone = kontra_format_kontakt::load(&user);
+    let found = kontra_format_kontakt::preset(&user, &known).map(|p| p.base);
+    let loaded = kontra_format_kontakt::load_known(&user, &known);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(alone.is_err(), "no base near it");
+    assert_eq!(found.unwrap(), nki);
+    // What a snapshot sets: its base, script values and effects.
+    let set = |i: &kontra_ir::Instrument| {
+        let groups: Vec<_> = i.groups.iter().map(|g| &g.inserts).collect();
+        let saved: Vec<_> = i.scripts.iter().map(|s| &s.saved).collect();
+        format!(
+            "{:?}",
+            (
+                &i.name,
+                &i.source_path,
+                saved,
+                groups,
+                &i.inserts,
+                &i.sends,
+                &i.main,
+                &i.buses
+            )
+        )
+    };
+    let original = kontra_format_kontakt::load(factory).unwrap();
+    assert_eq!(set(&loaded.unwrap()), set(&original));
+}

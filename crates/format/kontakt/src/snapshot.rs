@@ -61,17 +61,19 @@ impl Native {
     }
 }
 
-/// Reads the snapshot at `path` as a [`Preset`].
+/// Reads the snapshot at `path` as a [`Preset`]. Its base is the instrument
+/// near it, else the one of `known` (the instruments the player has) it
+/// names: Kontakt keeps user snapshots apart, a folder per instrument.
 ///
 /// # Errors
 /// When the file is not a snapshot this can read, or its base instrument
 /// is not found.
-pub fn preset(path: &Path) -> Result<Preset, Error> {
-    read(path).map(|(preset, _)| preset)
+pub fn preset(path: &Path, known: &[PathBuf]) -> Result<Preset, Error> {
+    read(path, known).map(|(preset, _)| preset)
 }
 
 /// [`preset`], with what it saves of the instrument.
-fn read(path: &Path) -> Result<(Preset, Snapshot), Error> {
+fn read(path: &Path, known: &[PathBuf]) -> Result<(Preset, Snapshot), Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let chunks = container::chunks(path)?;
     let state =
@@ -80,7 +82,7 @@ fn read(path: &Path) -> Result<(Preset, Snapshot), Error> {
     let names = (chunks.find_first(METADATA))
         .ok_or_else(|| Error::new(path, "snapshot metadata", "missing"))?;
     let names = snapshot_metadata_names(names).map_err(decode("snapshot metadata"))?;
-    let base = base(path, &names)?;
+    let base = base(path, &names, known)?;
     let preset = Preset {
         name: (path.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
         base: std::path::absolute(&base).unwrap_or(base),
@@ -90,8 +92,8 @@ fn read(path: &Path) -> Result<(Preset, Snapshot), Error> {
     Ok((preset, state))
 }
 
-pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
-    let (preset, state) = read(path)?;
+pub(crate) fn load(path: &Path, known: &[PathBuf]) -> Result<ir::Instrument, Error> {
+    let (preset, state) = read(path, known)?;
     let native = Native::of(state).map_err(|e| Error::new(path, "snapshot groups", e))?;
     let (base_chunks, monolith, encrypted) = container::opened(&preset.base)?;
     let mut out = translate::instrument(
@@ -138,15 +140,52 @@ fn binding(names: &(String, String)) -> &str {
     }
 }
 
+/// Whether `path` is an .nki named one of `wanted`, in any case.
+fn named(path: &Path, wanted: &[String]) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+        && (path.file_stem()).is_some_and(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w)))
+}
+
 /// The base instrument: an .nki named for the snapshot's binding or for its
 /// folder under `Snapshots/`, in the nearest folder (up to the library) that
-/// has one within three levels. Two candidates there is an error, not a
-/// guess; directory links are not followed.
-fn base(path: &Path, names: &(String, String)) -> Result<PathBuf, Error> {
+/// has one within three levels; else the one of `known` named for its
+/// binding or its own folder. Two candidates is an error, not a guess;
+/// directory links are not followed.
+fn base(path: &Path, names: &(String, String), known: &[PathBuf]) -> Result<PathBuf, Error> {
+    let mut wanted = vec![binding(names).to_owned()];
+    if let Some(near) = near(path, &mut wanted)? {
+        return Ok(near);
+    }
+    // A snapshot kept apart from its library (Kontakt's user snapshots,
+    // `User Content/<instrument>/`) names its instrument.
+    wanted.extend(
+        (path.parent().and_then(Path::file_name)).map(|s| s.to_string_lossy().into_owned()),
+    );
+    let mut found: Vec<&PathBuf> = known.iter().filter(|p| named(p, &wanted)).collect();
+    found.sort();
+    found.dedup();
+    match found.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(Error::new(
+            path,
+            "base instrument",
+            format!(
+                "no {:?} near it or among the libraries",
+                wanted.join(" or ")
+            ),
+        )),
+        _ => Err(Error::new(path, "base instrument", "ambiguous")),
+    }
+}
+
+/// [`base`]'s search near the snapshot, `wanted` gaining its folder under
+/// `Snapshots/`. None when nothing is found (or the folders cannot be
+/// read); an error for two candidates.
+fn near(path: &Path, wanted: &mut Vec<String>) -> Result<Option<PathBuf>, Error> {
     let under = |p: &Path, name: &str| {
         (p.parent().and_then(Path::file_name)).is_some_and(|s| s.eq_ignore_ascii_case(name))
     };
-    let mut wanted = vec![binding(names).to_owned()];
     if let Some(folder) =
         (path.ancestors().find(|p| under(p, "Snapshots"))).and_then(Path::file_name)
     {
@@ -167,21 +206,18 @@ fn base(path: &Path, names: &(String, String)) -> Result<PathBuf, Error> {
     let mut left = BUDGET;
     for folder in folders {
         let mut found = Vec::new();
-        find(folder, &wanted, 3, &mut left, &mut found)
-            .map_err(|e| Error::new(path, "base instrument", e))?;
+        if find(folder, wanted, 3, &mut left, &mut found).is_err() {
+            return Ok(None);
+        }
         found.sort();
         found.dedup();
         match found.as_slice() {
             [] => {}
-            [one] => return Ok(one.clone()),
+            [one] => return Ok(Some(one.clone())),
             _ => return Err(Error::new(path, "base instrument", "ambiguous")),
         }
     }
-    Err(Error::new(
-        path,
-        "base instrument",
-        format!("no {:?} near it", wanted.join(" or ")),
-    ))
+    Ok(None)
 }
 
 fn find(
@@ -199,13 +235,9 @@ fn find(
         let entry = entry?;
         let path = entry.path();
         let kind = entry.file_type()?;
-        let named = |p: &Path| {
-            p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"))
-                && (p.file_stem()).is_some_and(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w)))
-        };
         if kind.is_dir() {
             folders.push(path);
-        } else if kind.is_file() && named(&path) {
+        } else if kind.is_file() && named(&path, wanted) {
             found.push(path);
         }
     }
@@ -275,10 +307,33 @@ mod tests {
         std::fs::create_dir_all(&inst).unwrap();
         std::fs::write(inst.join("lib.nki"), b"").unwrap();
         let names = ("Kontakt".to_owned(), String::new());
-        assert_eq!(base(&snap, &names).unwrap(), inst.join("lib.nki"));
+        assert_eq!(base(&snap, &names, &[]).unwrap(), inst.join("lib.nki"));
         std::fs::create_dir_all(root.join("More")).unwrap();
         std::fs::write(root.join("More/Lib.nki"), b"").unwrap();
-        assert!(base(&snap, &names).is_err());
+        assert!(base(&snap, &names, &[]).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_user_snapshot_finds_its_base_among_the_known_by_name() {
+        let root =
+            std::env::temp_dir().join(format!("kontra-user-snapshot-{}", std::process::id()));
+        let snap = root.join("User Content/Strings/Mine.nksn");
+        std::fs::create_dir_all(snap.parent().unwrap()).unwrap();
+        let known = |names: &[&str]| -> Vec<PathBuf> {
+            names
+                .iter()
+                .map(|n| PathBuf::from(format!("/libs/{n}")))
+                .collect()
+        };
+        let names = ("Strings".to_owned(), String::new());
+        let found = base(&snap, &names, &known(&["Piano/Piano.nki", "S/strings.NKI"]));
+        assert_eq!(found.unwrap(), PathBuf::from("/libs/S/strings.NKI"));
+        // Its folder names it too; two of a name is not a guess.
+        let names = ("Kontakt".to_owned(), String::new());
+        assert!(base(&snap, &names, &known(&["S/Strings.nki"])).is_ok());
+        assert!(base(&snap, &names, &known(&["A/Strings.nki", "B/Strings.nki"])).is_err());
+        assert!(base(&snap, &names, &[]).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
