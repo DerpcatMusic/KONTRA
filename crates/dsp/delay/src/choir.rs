@@ -57,10 +57,10 @@ pub struct ChoirSettings {
     pub smooth_hz: Row,
     /// Each line's input filter.
     pub filter: [Section; V],
-    /// Each read back into the lines, before the circulant mix.
+    /// Each line's gain on what comes back to it.
     pub loop_gain: Row,
     /// The circulant's first row: line `i` takes
-    /// `Σₖ scatter[(k − i) mod 7]·loop_gain[k]·read_k`.
+    /// `loop_gain[i]·Σₖ scatter[(k − i) mod 7]·read_k`.
     pub scatter: Row,
     /// The reads' sign, in the loop and on the bus.
     pub sign: f32,
@@ -141,7 +141,7 @@ impl Choir {
         self.s = s;
         let rate = self.rate as u32;
         self.mix = std::array::from_fn(|i| {
-            row(|k| s.sign * at(&s.loop_gain, k) * at(&s.scatter, (k + V - i) % V))
+            row(|k| s.sign * at(&s.loop_gain, i) * at(&s.scatter, (k + V - i) % V))
         });
         self.turn = [f32::cos, f32::sin].map(|f| row(|v| at(&s.level, v) * f(at(&s.angle, v))));
         self.alpha = s
@@ -291,5 +291,54 @@ impl Choir {
         }
         self.rest = Some(rest);
         self.written = written;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_reads_back_at_its_rest_delay_and_feeds_back_through_the_circulant() {
+        let flat = Section {
+            hz: 1000.0,
+            num: [1.0, 1.0, 1.0],
+            den: [1.0, 1.0, 1.0],
+        };
+        let mut level = [0.0; V];
+        level[0] = 1.0;
+        let s = ChoirSettings {
+            // Line 1 is half as long as the others.
+            delay_s: [0.01, 0.005, 0.01, 0.01, 0.01, 0.01, 0.01],
+            swing_s: [0.0; V],
+            lfo_hz: [0.0; V],
+            start: [0.0; V],
+            bend: [0.0; V],
+            wobble_hz: [0.0; V],
+            wobble: [0.0; V],
+            smooth_hz: [f32::INFINITY; V],
+            filter: [flat; V],
+            loop_gain: [0.5; V],
+            // Line 0 takes line 1's read only.
+            scatter: [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            sign: 1.0,
+            input: 1.0,
+            level,
+            angle: [0.0; V],
+            bus: flat,
+            gain: 1.0,
+        };
+        let mut c = Choir::new(s, 48_000);
+        let mut io = vec![[0.0f32; 2]; 1200];
+        io[0] = [1.0, 0.0];
+        c.process(&mut io);
+        // Straight through; line 1's read fed back into line 0 at half
+        // (240 frames); line 0's own read (480); then both again (720).
+        let left: Vec<_> = io.iter().map(|f| f[0]).collect();
+        for (at, v) in [(0, 1.0), (240, 0.5), (480, 1.0), (720, 0.75)] {
+            assert!((left[at] - v).abs() < 1e-5, "{at}: {}", left[at]);
+        }
+        let rest: f32 = left.iter().map(|v| v.abs()).sum::<f32>() - 3.25;
+        assert!(rest.abs() < 1e-4, "{rest}");
     }
 }
