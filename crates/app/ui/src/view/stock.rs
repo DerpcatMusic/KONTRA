@@ -652,6 +652,45 @@ fn grey(l: f32) -> Fill {
     Fill::from(Color::srgb(l, l, l))
 }
 
+/// A [`Kind::Shape`] `w` by `h` view points, its measures scaled by `k`.
+fn outline(shape: model::Shape, w: f64, h: f64, k: f64) -> Path {
+    match shape {
+        model::Shape::Rect { radius } => {
+            let r = (radius * k).min(w / 2.).min(h / 2.).max(0.);
+            let p = |x, y| Point::new(x, y);
+            Path::default()
+                .move_to(p(r, 0.))
+                .line_to(p(w - r, 0.))
+                .quad_to(p(w, 0.), p(w, r))
+                .line_to(p(w, h - r))
+                .quad_to(p(w, h), p(w - r, h))
+                .line_to(p(r, h))
+                .quad_to(p(0., h), p(0., h - r))
+                .line_to(p(0., r))
+                .quad_to(p(0., 0.), p(r, 0.))
+                .close()
+        }
+        model::Shape::Ring {
+            thickness,
+            start,
+            sweep,
+        } => {
+            // Outer edge forward, inner edge back: one closed band.
+            let (cx, cy) = (w / 2., h / 2.);
+            let outer = w.min(h) / 2.;
+            let inner = (outer - thickness * k).max(0.);
+            let steps = (sweep.abs() / 4.).ceil().max(1.) as usize;
+            let at = |r: f64, i: usize| {
+                let a = (start + sweep * i as f64 / steps as f64).to_radians();
+                Point::new(cx + r * a.cos(), cy + r * a.sin())
+            };
+            let edge = (0..=steps).map(|i| at(outer, i));
+            let back = (0..=steps).rev().map(|i| at(inner, i));
+            Path::polyline(edge.chain(back), true)
+        }
+    }
+}
+
 fn rect(x: f64, y: f64, w: f64, h: f64) -> Path {
     Path::polyline(
         [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|(x, y)| Point::new(x, y)),
@@ -670,6 +709,7 @@ pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
             w.kind,
             Kind::Slider { .. } | Kind::TextEdit | Kind::Table { .. }
         )
+        || matches!(w.kind, Kind::Shape(_))
 }
 
 /// A KSP control with no picture, or one the library lacks; `false` for
@@ -705,6 +745,8 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
         _ => Vec::new(),
     };
     let background = w.colors.background;
+    // A shape's measures are in page points; the canvas is in view points.
+    let k = width / w.rect.width.max(f64::EPSILON);
     let bar = w.colors.bar;
     let edges = w.table_inner_edge.map(|edge| edge.visible).unwrap_or(false);
     let zero = match &w.kind {
@@ -782,6 +824,11 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
                         rect(n as f64 * bw + 1., h - 1. - bh, (bw - 1.).max(1.), bh),
                         grey(VALUE),
                     ));
+                }
+            }
+            Kind::Shape(shape) => {
+                if let Some(c) = background {
+                    d.push(Draw::fill(outline(shape, w, h, k), Fill::from(super::color(c))));
                 }
             }
             _ => field(&mut d, FIELD),
