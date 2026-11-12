@@ -28,6 +28,7 @@ mod samples;
 mod script_knobs;
 mod skreamer;
 mod snapshot;
+mod tape;
 pub use snapshot::{Preset, preset};
 mod solid_knobs;
 mod timed;

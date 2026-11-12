@@ -21,6 +21,13 @@ pub enum Curve {
     Tanh(f32),
     /// The drive `d`: `atan(d·x)`.
     Atan(f32),
+    /// The drive `d`: `x / √(1 + (d·x)²)` (unity on small signals, ceiling `1/d`).
+    Saturate(f32),
+    /// A measured odd curve: `points` spread evenly over inputs 0..=1, read
+    /// at `d·|x|` (held at the last point beyond 1) with linear
+    /// interpolation, scaled back by `1 / (d·slope at 0)` so small signals
+    /// pass at unity.
+    Table { drive: f32, points: &'static [f32] },
 }
 
 impl Curve {
@@ -33,13 +40,17 @@ impl Curve {
             | Self::Sine(x)
             | Self::Fold(x)
             | Self::Tanh(x)
-            | Self::Atan(x) => x,
+            | Self::Atan(x)
+            | Self::Saturate(x)
+            | Self::Table { drive: x, .. } => x,
         }
     }
 }
 
 /// An optional one-pole low-pass, a curve, then an optional one-pole
-/// low-pass and a second-order Butterworth high-pass.
+/// low-pass and a second-order Butterworth high-pass; `sections` add linear
+/// sections at the base rate around all of it and oversampled around the
+/// curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shaper {
     /// The corner of a one-pole low-pass before the curve, pole
@@ -48,6 +59,7 @@ pub struct Shaper {
     pub curve: Curve,
     pub lowpass_hz: Option<f32>,
     pub highpass_hz: Option<f32>,
+    pub sections: crate::Sections,
 }
 
 /// A sample hold, a quantizer truncating toward zero, then noise.
