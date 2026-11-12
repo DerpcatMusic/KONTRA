@@ -574,6 +574,73 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     assert_eq!(mix, Some((1, 1)));
 }
 
+/// ANALOG STRINGS' own arrows load an in-script preset and show its name
+/// (`002. Blown Fuse`, then back to `NEO 99. Oscillating Current`, its own
+/// list's order); the header follows each by name to the factory snapshot
+/// of that name, unchanged.
+#[test]
+fn the_header_follows_an_instruments_own_preset_arrows_by_name() {
+    let Some(analog) = library("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else {
+        return;
+    };
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params
+        .shared
+        .request(crate::Request::AddRoot(PathBuf::from(KONTAKT)));
+    let t = std::time::Instant::now();
+    while crate::lock(&params.shared.browser)
+        .as_ref()
+        .is_none_or(|b| b.scanning())
+    {
+        Tick.run(&params);
+        assert!(t.elapsed().as_secs() < 300, "the scan never finished");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    params.shared.request(crate::Request::Load {
+        part: Some(0),
+        path: analog,
+    });
+    let settle = |dsp: &mut Dsp| {
+        for _ in 0..60 {
+            Tick.run(&params);
+            block(&params, dsp, &[]);
+        }
+    };
+    settle(&mut dsp);
+    let part = |params: &KontraParams| {
+        let rack = crate::lock(&params.shared.rack);
+        let p = rack.as_ref().unwrap().parts()[0].as_ref().unwrap();
+        (p.path.clone().unwrap(), p.modified)
+    };
+    // Each arrow pressed once, as a click sets a button that is off.
+    for (arrow, want) in [
+        ("$header__next_preset", "Blown Fuse.nksn"),
+        ("$header__prev_preset", "Oscillating Current.nksn"),
+    ] {
+        {
+            let mut rack = crate::lock(&params.shared.rack);
+            let rack = rack.as_mut().unwrap();
+            let p = rack.parts()[0].as_ref().unwrap();
+            let tree = p.view.as_ref().unwrap().tree();
+            let at = (tree.widgets.iter()).position(|w| w.name == arrow);
+            rack.control(
+                0,
+                at.expect("ANALOG's arrow"),
+                None,
+                1.0,
+                Default::default(),
+            );
+        }
+        settle(&mut dsp);
+        let (now, modified) = part(&params);
+        println!("{arrow}: {} modified {modified}", now.display());
+        assert!(
+            now.ends_with(want) && !modified,
+            "the header did not follow: {now:?}"
+        );
+    }
+}
+
 const SHREDDAGE: &str = "Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org/Instruments/Shreddage 3.5 E-Upright.nki";
 
 /// Sets Shreddage's console control `name` to `value`, as its UI would,

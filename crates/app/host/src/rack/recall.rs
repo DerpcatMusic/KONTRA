@@ -61,6 +61,18 @@ impl Rack {
         true
     }
 
+    /// `part` plays the preset at `path` as saved there (named by its file,
+    /// not modified): a script reached it, or it was saved or renamed.
+    pub fn set_preset(&mut self, part: usize, path: &Path) {
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.name = path
+                .file_stem()
+                .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+            p.path = Some(path.to_owned());
+            p.modified = false;
+        }
+    }
+
     /// Marks `part`'s preset as changed by the player ([`Part::modified`]),
     /// as a project saved it.
     pub fn set_modified(&mut self, part: usize) {

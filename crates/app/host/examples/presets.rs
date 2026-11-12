@@ -198,10 +198,16 @@ fn own_controls(rack: &mut Rack, audio: &mut RackAudio, before: &[String]) -> St
     }
     let mut out = Vec::new();
     let mut last = before.to_vec();
+    let _seen = rack.take_named(0);
     for (widget, name, to) in found {
         rack.control(0, widget, None, to, UiModifiers::default());
         run(rack, audio, 0.5);
         let now = values(rack);
+        // `NAMED=1`: what the script showed or loaded, which the header
+        // follows by name.
+        if std::env::var_os("NAMED").is_some() {
+            eprintln!("named after {name}: {:?}", rack.take_named(0));
+        }
         if std::env::var_os("SHOW_DIFF").is_some() {
             let menus: Vec<String> = (rack
                 .parts()

@@ -21,6 +21,7 @@ use kontra_ui_model::UiModifiers;
 mod audio;
 mod files;
 mod hold;
+mod named;
 mod recall;
 pub use audio::RackAudio;
 pub use hold::{HOLD_STEPS, Hold};
@@ -202,6 +203,8 @@ pub struct Part {
     /// The player changed one of its library's controls since its preset
     /// loaded: what plays is no longer the preset as saved.
     pub modified: bool,
+    /// What its script named lately ([`Rack::take_named`]).
+    pub named: named::Named,
 }
 
 /// What the rack keeps to save a part's scripts.
@@ -436,6 +439,7 @@ impl Rack {
             slot_types,
             slot_responses,
             modified: false,
+            named: named::Named::default(),
             plan: Some(plan),
             delays: None,
             path,
@@ -688,6 +692,7 @@ impl Rack {
                 && let Some(view) = p.view.as_mut()
             {
                 view.refresh(&p.faces, p.path.as_deref(), frame);
+                p.named.look(view.tree());
             }
         }
         let looked = match self.interfaces {
