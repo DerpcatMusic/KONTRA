@@ -23,9 +23,9 @@ pub use drive::{
     Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
-    Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector,
-    ENSEMBLE_VOICES, Ensemble, EnsembleVoice, Formant, IDENTITY, ImpulseCuts, ImpulseKnob, Limiter,
-    Matrix, Notches, Phaser, Reverb, Scan, ScanShape, Transient, VowelSet,
+    Cascade, CascadeStage, Clocked, ClockedShape, CombBank, CombMode, Compressor, Delay, DelayTime,
+    Detector, ENSEMBLE_VOICES, Ensemble, EnsembleVoice, Formant, IDENTITY, ImpulseCuts,
+    ImpulseKnob, Limiter, Matrix, Notches, Phaser, Reverb, ScanShape, Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
 pub use kontra_law::{FormulaId, common};
@@ -694,6 +694,8 @@ pub enum EffectKind {
     Notches(Notches),
     /// A chorus ensemble, its input mixed in (`dry` 0).
     Ensemble(Ensemble),
+    /// A bank of tuned combs, its input mixed in (`dry` 0).
+    CombBank(CombBank),
     /// A transient shaper, in place.
     Transient(Transient),
     /// Not carried, an insert: audio passes unchanged (its output gain trims

@@ -1,12 +1,13 @@
-//! Flair (`$EFFECT_TYPE_FLAIR`, 42) onto [`ir::Ensemble`]. Measured in
-//! Kontakt 8.13.1 (scratch/lanes/shared/modfx-audio/flair.*: 58 impulse
-//! steps through the factory INIT preset; modfx-sweep: every knob's text):
-//! - up to four comb voices, the first at `1/f(Pitch + 12)` (15.28, 3.81,
-//!   0.945 ms at Pitch 24, 48, 72), the others at the [`CHORDS`] ratios;
-//! - each voice is `(u + delayed)/2`, its line fed `u = c·x + g·delayed`:
-//!   `g = sin(π·fb/2)`, `c = (1 − g)^¼` (echoes within 1 % at 40 and 80 %);
-//! - N voices at `1/√N` each (0.25, 0.176, 0.143, 0.125 at Mix 50 %);
-//! - Invert flips the echoes and the loop (alternating echoes).
+//! Flair (`$EFFECT_TYPE_FLAIR`, 42) onto [`ir::CombBank`], with the laws
+//! read from Kontakt 8.13.1's `ni::effektrig::dsp::Flair` (setParam
+//! `FUN_141961220`, lane writer `FUN_1419614e0`; addresses are `.rdata`
+//! constants). Four comb voices at the chord's intervals over
+//! `f(Pitch + 12)`, fed back at `0.999·sin(π/2·fb)` made pitch-even.
+//!
+//! ponytail: the KSP-to-lane map and the raw scaling of Pitch, Chord and
+//! Mode are unread: each knob is mapped to its lane by meaning, Pitch as
+//! semitones 0..=96, Chord and Mode as indices. Rate Unit (host sync) is
+//! unread: the rate is always free Hz.
 
 use kontra_ir as ir;
 
@@ -17,56 +18,45 @@ pub(crate) const INIT: [f32; 15] = [
     0.0, 0.0, 0.0, 0.360_584, 0.0, 0.4, 1.0, 0.0, 48.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0,
 ];
 
-/// The four voices' frequency ratios per chord, read off the 24 impulse
-/// steps (each within 2 cents of the fraction, chord 22 as measured).
-const CHORDS: [[f32; 4]; 24] = {
-    const fn r(n: f32, d: f32) -> f32 {
-        n / d
-    }
-    [
-        [1.0, r(5.0, 4.0), r(3.0, 2.0), 2.0],
-        [1.0, r(5.0, 4.0), r(3.0, 2.0), r(15.0, 8.0)],
-        [1.0, r(6.0, 5.0), r(3.0, 2.0), 2.0],
-        [1.0, r(6.0, 5.0), r(3.0, 2.0), r(9.0, 5.0)],
-        [1.0, r(9.0, 8.0), r(5.0, 4.0), r(3.0, 2.0)],
-        [1.0, r(9.0, 8.0), r(3.0, 2.0), 2.0],
-        [1.0, r(4.0, 3.0), r(3.0, 2.0), 2.0],
-        [1.0, r(11.0, 9.0), r(3.0, 2.0), 2.0],
-        [1.0, r(5.0, 4.0), r(3.0, 2.0), r(7.0, 4.0)],
-        [1.0, r(7.0, 5.0), r(28.0, 15.0), r(112.0, 45.0)],
-        [1.0, r(5.0, 4.0), 2.0, r(12.0, 5.0)],
-        [1.0, r(12.0, 11.0), r(9.0, 8.0), r(6.0, 5.0)],
-        [1.0, r(9.0, 8.0), r(81.0, 64.0), r(729.0, 512.0)],
-        [1.0, r(6.0, 5.0), r(36.0, 25.0), r(216.0, 125.0)],
-        [1.0, r(5.0, 4.0), r(25.0, 16.0), r(125.0, 64.0)],
-        [1.0, r(4.0, 3.0), r(16.0, 9.0), r(64.0, 27.0)],
-        [1.0, r(7.0, 5.0), r(49.0, 25.0), r(343.0, 125.0)],
-        [1.0, r(3.0, 2.0), r(9.0, 4.0), r(27.0, 8.0)],
-        [1.0, 2.0, 4.0, 8.0],
-        [1.0, 2.0, 3.0, 4.0],
-        [1.0, 2.0, 4.0, 6.0],
-        [1.0, 3.0, 5.0, 7.0],
-        [1.0, 1.4414, 1.5489, 1.7288],
-        [1.0, 1.0, 1.0, 1.0],
-    ]
-};
+/// Voices 1..=3's intervals per chord, voice 0 always 1 (0x14470bad4);
+/// `FUN_141960700`'s float constants (decoded in lane-scripts/flair/re/
+/// chords.py, which lists each address).
+const CHORDS: [[f32; 3]; 24] = [
+    [5.0 / 4.0, 3.0 / 2.0, 2.0],
+    [5.0 / 4.0, 3.0 / 2.0, 15.0 / 8.0],
+    [6.0 / 5.0, 3.0 / 2.0, 2.0],
+    [6.0 / 5.0, 3.0 / 2.0, 9.0 / 5.0],
+    [9.0 / 8.0, 5.0 / 4.0, 3.0 / 2.0],
+    [9.0 / 8.0, 3.0 / 2.0, 2.0],
+    [4.0 / 3.0, 3.0 / 2.0, 2.0],
+    [11.0 / 9.0, 3.0 / 2.0, 2.0],
+    [5.0 / 4.0, 3.0 / 2.0, 7.0 / 4.0],
+    [7.0 / 5.0, 28.0 / 15.0, 112.0 / 45.0],
+    [5.0 / 4.0, 2.0, 12.0 / 5.0],
+    [12.0 / 11.0, 9.0 / 8.0, 6.0 / 5.0],
+    [9.0 / 8.0, 81.0 / 64.0, 729.0 / 512.0],
+    [6.0 / 5.0, 36.0 / 25.0, 216.0 / 125.0],
+    [5.0 / 4.0, 25.0 / 16.0, 125.0 / 64.0],
+    [4.0 / 3.0, 16.0 / 9.0, 64.0 / 27.0],
+    [7.0 / 5.0, 49.0 / 25.0, 343.0 / 125.0],
+    [3.0 / 2.0, 9.0 / 4.0, 27.0 / 8.0],
+    [2.0, 4.0, 8.0],
+    [2.0, 3.0, 4.0],
+    [2.0, 4.0, 6.0],
+    [3.0, 5.0, 7.0],
+    [1.441_295_4, 1.550_425_8, 1.729_295_6],
+    [1.0006, 1.0009, 1.0012],
+];
 
-/// Detune 100 % in cents per voice (measured on the major chord).
-const DETUNE: [f32; 4] = [42.0, -38.0, -58.0, 64.0];
+/// Each voice's detune at 100 %, a frequency factor's slope (`FUN_141961f60`:
+/// +40, −40, −60, +60 cents; 0x147699b60, b58, b70, b80).
+const DETUNE: [f32; 4] = [0.023_373_9, -0.022_840_0, -0.034_063_7, 0.035_264_9];
 
-/// A Thru Zero copy's delay, ×(1 + this·Offset): +0.378 and +0.756 ms on
-/// 3.81 ms at Offset 50 and 100 %.
-const OFFSET: f32 = 0.198;
-
-/// Amount 100 % swings the delay this far either side of its rest: the
-/// widest measured over eight LFO samples (0.04× to 1.85×).
-const SWING: f32 = 0.96;
-
-/// Scan: the window's half-width in voices and its peak, from the steps at
-/// Voices 0, ⅓, ½ and 1 (0.213 on a voice, 0.039 on each neighbour, 0.148
-/// on two half way, of a lone voice's 0.25).
-const SCAN_WIDTH: f32 = 1.345;
-const SCAN_PEAK: f32 = 0.852;
+/// `f(MIDI 12 + 96p)`: 440·2^((96p − 57)/12) Hz (96 0x144e79a68, 57
+/// 0x144714a28, 440 0x1447617a0; `FUN_141961a30`).
+fn pitch_hz(p: f32) -> f32 {
+    440.0 * ((96.0 * p - 57.0) / 12.0).exp2()
+}
 
 /// The comb at knob positions `p` (see [`INIT`]).
 pub(crate) fn flair(p: [f32; 15]) -> ir::EffectKind {
@@ -88,6 +78,7 @@ pub(crate) fn flair(p: [f32; 15]) -> ir::EffectKind {
         scan_mode,
     ] = p;
     let [
+        invert,
         rate,
         feedback,
         amount,
@@ -98,115 +89,53 @@ pub(crate) fn flair(p: [f32; 15]) -> ir::EffectKind {
         mix,
         offset,
     ] = [
-        rate, feedback, amount, width, damping, voices, detune, mix, offset,
+        invert, rate, feedback, amount, width, damping, voices, detune, mix, offset,
     ]
     .map(|x| x.clamp(0.0, 1.0));
-    let (thru_zero, scan) = (mode.round() as i32 == 1, mode.round() as i32 >= 2);
-    let invert = invert > 0.0;
-    // Its text: 0.01 to 16.4 Hz, `16.4·e^(7.96(x − 1))`. ponytail: synced
-    // units are unmeasured; Hz as without.
-    let hz = 16.4 * (7.96 * (rate - 1.0)).exp();
-    let root_ms = 1000.0 / (440.0 * 2f32.powf((pitch.round().clamp(0.0, 96.0) - 57.0) / 12.0));
-    let ratios = CHORDS
-        .get(chord.round().max(0.0) as usize)
-        .copied()
-        .unwrap_or([1.0; 4]);
-    let g = (std::f32::consts::FRAC_PI_2 * feedback).sin();
-    let c = (1.0 - g).sqrt().sqrt();
-    // ponytail: two points (18.6 kHz at 50 %, 7.4 kHz at 100 %, a one-pole
-    // in the loop fitted to the echoes); between and below, this curve.
-    let damping_hz = if damping > 0.0 {
-        46_800.0 * 0.158f32.powf(damping)
-    } else {
-        f32::INFINITY
+    let pitch = (pitch / 96.0).clamp(0.0, 1.0);
+    // Mode and Scan Mode `int(3p)` clamped 0..2 (cases 0xc, 0xd).
+    let mode = match mode.round() as i32 {
+        1 => ir::CombMode::ThruZero,
+        2.. => ir::CombMode::Scan,
+        _ => ir::CombMode::Standard,
     };
-    // Voices: 1 + 3·x of them, the last fading in; Scan runs all four
-    // under its window instead.
-    let count = 1.0 + 3.0 * voices;
-    let gains: [f32; 4] = std::array::from_fn(|k| match scan {
-        true => SCAN_PEAK,
-        false => (count - k as f32).clamp(0.0, 1.0),
-    });
-    let norm = match scan {
-        true => 1.0,
-        false => 1.0 / gains.iter().map(|x| x * x).sum::<f32>().sqrt(),
-    };
-    // Width: both lines take both inputs, out as sum and difference, the
-    // right LFO half a cycle on (two copies at rest·(1 ∓ 0.56), heard in
-    // both channels). ponytail: measured at 0 and 100 % only, linear between.
-    let half = 0.5 * width;
-    let input = [[c * (1.0 - half), c * half], [c * half, c * (1.0 - half)]];
-    let side = std::f32::consts::FRAC_1_SQRT_2 * width;
-    let stage = |k: f32| {
-        [
-            [k * (1.0 - width + side), k * side],
-            [k * side, k * (1.0 - width - side)],
-        ]
-    };
-    let (sign, copies) = match (invert, thru_zero) {
-        (true, false) => (-1.0, 1.0),
-        _ => (1.0, if thru_zero { 0.5 } else { 1.0 }),
-    };
-    let voice = |k: usize, copy: bool| {
-        let (Some(&ratio), Some(&gain), Some(&cents)) =
-            (ratios.get(k), gains.get(k), DETUNE.get(k))
-        else {
-            return ir::EnsembleVoice::SILENT;
-        };
-        let rest = root_ms / ratio * 2f32.powf(-cents * detune / 1200.0);
-        let level = mix * norm * gain * copies;
-        // Thru Zero's copy rests unswept, `Offset` along; inverted, it
-        // cancels its voice.
-        let (rest, swing, polarity) = match copy {
-            true => (
-                rest * (1.0 + OFFSET * offset),
-                0.0,
-                if invert { -1.0 } else { 1.0 },
-            ),
-            false if scan => (rest, 0.0, 1.0),
-            false => (rest, SWING * amount * rest, 1.0),
-        };
-        if level == 0.0 {
-            return ir::EnsembleVoice::SILENT;
-        }
-        ir::EnsembleVoice {
-            ms: rest - swing,
-            depth_ms: 2.0 * swing,
-            hz,
-            start: 0.0,
-            phase: half,
-            damping_hz,
-            low_cut_hz: 0.0,
-            input,
-            feedback: sign * g,
-            output: stage(polarity * sign * level * (1.0 + g) / 2.0),
-            direct: stage(polarity * level * c / 2.0),
-        }
-    };
-    let lines = std::array::from_fn(|v| match (v < 4, thru_zero) {
-        (true, _) => voice(v, false),
-        (false, true) => voice(v - 4, true),
-        (false, false) => ir::EnsembleVoice::SILENT,
-    });
-    let shape = match scan_mode.round() as i32 {
+    let scan_shape = match scan_mode.round() as i32 {
         1 => ir::ScanShape::SawUp,
-        2 => ir::ScanShape::SawDown,
+        2.. => ir::ScanShape::SawDown,
         _ => ir::ScanShape::Triangle,
     };
-    // ponytail: the scan's depth (all four voices at Amount 100 %) and its
-    // phase are inferred; three shapes seen at one moment each.
-    let scan = scan.then_some(ir::Scan {
-        voices: 4,
-        width: SCAN_WIDTH,
-        position: 3.0 * voices,
-        depth: 4.0 * amount,
-        hz,
-        shape,
-    });
-    ir::EffectKind::Ensemble(ir::Ensemble {
-        voices: lines,
-        dry: 1.0 - mix,
-        scan,
+    let [a, b, c] = CHORDS
+        .get(chord.round().clamp(0.0, 23.0) as usize)
+        .copied()
+        .unwrap_or([1.0; 3]);
+    // Loop gain `0.999·sin(π/2·fb)` (0x144756360, 0x144f38a20) raised to
+    // `1/e`, `e = 2^(8·pitch − 4) = F/F(48)` (0x1447149c0, 0x1447149a8): a
+    // pass of a higher comb loses less, so all decay alike per second.
+    let gain = 0.999 * (std::f32::consts::FRAC_PI_2 * feedback).sin();
+    let feedback = gain.powf(1.0 / (8.0 * pitch - 4.0).exp2());
+    ir::EffectKind::CombBank(ir::CombBank {
+        root_hz: pitch_hz(pitch),
+        ratio: [1.0, a, b, c],
+        detune: DETUNE.map(|k| 1.0 + k * detune),
+        // Pitch 0, the most detuned voice down: the lines' length.
+        lowest_hz: pitch_hz(0.0) * (1.0 + DETUNE[2]),
+        feedback,
+        // Voices: three equal-power fades over thirds (3, 0x144f38a38).
+        voices: 3.0 * voices,
+        // Damping `0.25·p³` (0x1447148e4).
+        damping: 0.25 * damping.powi(3),
+        // Amount: the swing `p²` (`FUN_141961030`), the scan's depth `p`.
+        depth: amount * amount,
+        // Rate `440·2^(11.5p − 16.25)` Hz (0x144fc54e0/e4, case 1).
+        rate: ir::Rate::Hz(440.0 * (11.5 * rate - 16.25).exp2()),
+        // Offset: the still head `0.2·p` further back (0x144f38948).
+        offset: 0.2 * offset,
+        invert: invert >= 0.5,
+        mode,
+        scan_depth: amount,
+        scan_shape,
+        width,
+        mix,
     })
 }
 
@@ -269,30 +198,30 @@ pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 15] {
 mod tests {
     use super::*;
 
-    /// Kontakt 8.13.1 with Amount and Feedback 0, Mix 50 %, all four voices
-    /// of chord 0: the root comb at 3.82 ms (C4, Pitch 48 + 12), the major
-    /// chord's 5/4, 3/2 and 2 above it, each echo 0.125, and the input at
-    /// 0.5 + 0.5·0.5·4·0.25 = 1.0.
+    /// INIT: C4 (261.6 Hz), the major chord, Feedback 40 % at Pitch 48
+    /// `0.999·sin(0.2π)` a pass, the full swing at 0.1 Hz, Mix 50 %.
     #[test]
-    fn four_voices_play_the_measured_chord() {
-        let mut p = INIT;
-        (p[5], p[6], p[10]) = (0.0, 0.0, 1.0);
-        let ir::EffectKind::Ensemble(e) = flair(p) else {
-            panic!("an ensemble");
+    fn init_maps_to_the_binary_laws() {
+        let ir::EffectKind::CombBank(c) = flair(INIT) else {
+            panic!("a comb bank");
         };
-        let ms: Vec<f32> = e.voices.iter().take(4).map(|v| v.ms).collect();
-        let want = [3.822, 3.058, 2.548, 1.911];
-        assert!(
-            ms.iter().zip(want).all(|(a, b)| (a - b).abs() < 2e-3),
-            "{ms:?}"
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3 * b.abs().max(1.0);
+        assert!(near(c.root_hz, 261.626), "{}", c.root_hz);
+        assert_eq!(c.ratio, [1.0, 1.25, 1.5, 2.0]);
+        assert_eq!(c.detune, [1.0; 4]);
+        assert!(near(c.feedback, 0.587_198), "{}", c.feedback);
+        assert!(near(c.lowest_hz, 15.795), "{}", c.lowest_hz);
+        assert_eq!(
+            (c.voices, c.damping, c.depth, c.offset),
+            (0.0, 0.0, 1.0, 0.0)
         );
-        assert!(
-            e.voices
-                .iter()
-                .take(4)
-                .all(|v| (v.output[0][0] - 0.125).abs() < 1e-6)
+        let ir::Rate::Hz(hz) = c.rate else {
+            panic!("free rate");
+        };
+        assert!(near(hz, 0.1), "{hz}");
+        assert_eq!(
+            (c.mode, c.invert, c.mix),
+            (ir::CombMode::Standard, false, 0.5)
         );
-        let input = e.dry + e.voices.iter().map(|v| v.direct[0][0]).sum::<f32>();
-        assert!((input - 1.0).abs() < 1e-5, "{input}");
     }
 }

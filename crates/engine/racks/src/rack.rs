@@ -316,8 +316,8 @@ mod tests {
         }
     }
 
-    /// Eight swept, fed-back voices at their own LFO starts, the last four
-    /// silent (their clocks still run), direct shares and a scan.
+    /// Six swept, fed-back voices at their own LFO starts, the last two
+    /// silent (their clocks still run), and a straight-through share.
     fn ensemble() -> ir::Effect {
         let voices = std::array::from_fn(|v| {
             let g = if v < 4 { 0.3 } else { 0.0 };
@@ -325,30 +325,44 @@ mod tests {
                 ms: 3.0 + 4.0 * v as f32,
                 depth_ms: 8.0,
                 hz: 0.25 * (1.0 + v as f32 * 0.2),
-                start: v as f32 / 8.0,
-                phase: 0.25,
+                start: v as f32 / 6.0,
                 damping_hz: 5_000.0,
                 low_cut_hz: 0.0,
-                input: [[0.9, 0.1], [0.1, 0.9]],
+                input: 0.9,
                 feedback: 0.5,
                 output: [[g, -0.1 * g], [0.1 * g, g]],
-                direct: [[0.1, 0.0], [0.0, 0.1]],
             }
         });
-        // A triangle scan over the first four, so its clock must sleep in step too.
-        let scan = ir::Scan {
-            voices: 4,
-            width: 1.3,
-            position: 0.5,
-            depth: 4.0,
-            hz: 0.7,
-            shape: ir::ScanShape::Triangle,
-        };
         ir::Effect {
             kind: ir::EffectKind::Ensemble(ir::Ensemble {
                 voices,
-                dry: 0.3,
-                scan: Some(scan),
+                direct: 0.7,
+            }),
+            ..chorus()
+        }
+    }
+
+    /// A comb bank half way into its scan: swept heads, the window moving,
+    /// three voices fed back hard, wide, through zero off.
+    fn comb_bank() -> ir::Effect {
+        ir::Effect {
+            kind: ir::EffectKind::CombBank(ir::CombBank {
+                root_hz: 110.0,
+                ratio: [1.0, 1.25, 1.5, 2.0],
+                detune: [1.01, 0.99, 0.98, 1.02],
+                lowest_hz: 50.0,
+                feedback: 0.9,
+                voices: 2.0,
+                damping: 0.1,
+                depth: 0.5,
+                rate: ir::Rate::Hz(0.9),
+                offset: 0.1,
+                invert: false,
+                mode: ir::CombMode::Scan,
+                scan_depth: 0.5,
+                scan_shape: ir::ScanShape::SawUp,
+                width: 0.5,
+                mix: 0.7,
             }),
             ..chorus()
         }
@@ -379,7 +393,7 @@ mod tests {
     /// never slept.
     #[test]
     fn a_silent_slot_sleeps_and_wakes_in_step() {
-        for effect in [chorus(), notches(), ensemble()] {
+        for effect in [chorus(), notches(), ensemble(), comb_bank()] {
             sleeps_and_wakes_in_step(effect);
         }
     }
