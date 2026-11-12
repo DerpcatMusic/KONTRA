@@ -647,6 +647,10 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
             crate::replika::knobs(crate::replika::INIT).into(),
         ),
         ty(0, false, 0, None, [].into()),
+        // Subtype 0 is no shape: Kontakt 8.13.1 takes it on a filter slot,
+        // which then reads 7.0 (Una Corda's presets without a filter;
+        // probes/b4sub). ponytail: its sound is unmeasured; it passes.
+        ty(0, true, 0, None, [].into()),
         ty(7, false, 100, filter, shape_laws(100)),
         ty(24, true, 24, eq, eq_knobs(&saved).into()),
         ty(19, true, 19, versatile, crate::versatile::knobs().into()),
@@ -918,6 +922,8 @@ mod tests {
             ladder.effect.map(|e| e.kind),
             Some(ir::EffectKind::Filter(_))
         ));
+        let none = types.iter().find(|t| t.id == 0 && t.subtype).unwrap();
+        assert_eq!((none.kind, none.reads, none.effect), (7, 0, None));
     }
 
     #[test]
