@@ -70,7 +70,6 @@ impl Snapshot {
     /// whether any of it changed, so an idle editor draws no frames.
     pub fn refresh(&mut self, rack: &Rack, browser: &Browser, report: Vec<String>) -> bool {
         let before = self.shown();
-        let reported = !report.is_empty();
         let rescanned = self.libraries.0 != browser.generation;
         if rescanned {
             self.libraries = (browser.generation, Arc::new(libraries(browser)));
@@ -130,10 +129,16 @@ impl Snapshot {
             self.stats = s;
         }
         self.readout.sample(&self.stats, rack);
+        self.report(report) | (self.shown() != before)
+    }
+
+    /// Adds this tick's `report`; whether it held anything.
+    pub fn report(&mut self, report: Vec<String>) -> bool {
+        let reported = !report.is_empty();
         self.report.extend(report);
         let over = self.report.len().saturating_sub(REPORT);
         self.report.drain(..over);
-        reported || self.shown() != before
+        reported
     }
 
     /// What a frame draws of this, as it reads on screen: the CPU load in
@@ -596,6 +601,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
     let owner = Arc::clone(&params);
+    let closing = Arc::clone(&params);
     let mut app = App {
         build: crate::BUILD.into(),
         ..App::default()
@@ -608,6 +614,13 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let mut target = app::Loading::New;
     let mut buttons = None;
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
+        // Opening: one tick here brings the copy a closed editor let lapse
+        // up to date, though the host runs no audio to spawn one (a load
+        // in progress shows on its own tick).
+        if !p.shared.shown.swap(true, Ordering::AcqRel) && !p.shared.holding.load(Ordering::Acquire)
+        {
+            crate::Tick.run(&p);
+        }
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
         if restored != Some(now) {
@@ -732,6 +745,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
+    .on_close(move || closing.shared.shown.store(false, Ordering::Release))
     .into_editor()
 }
 
