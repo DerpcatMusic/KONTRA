@@ -79,7 +79,9 @@ impl Engine {
             // A group's slot: `<generic>` is for instrument effects only (KSP manual).
             (Ok(g), _) => &mut self.groups.get_mut(g)?.inserts[..],
             // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
-            (Err(_), 1) => &mut self.rack.slots[..],
+            // Kontakt takes generic -1 as the insert rack too (Una Corda's
+            // transient and stereo knobs; measured, controls.py 2026-11-12).
+            (Err(_), 1 | -1) => &mut self.rack.slots[..],
             (Err(_), 0) => {
                 let send = self.sends.get_mut(usize::try_from(slot).ok()?)?;
                 return send.slots.first_mut();
