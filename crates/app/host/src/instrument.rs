@@ -129,7 +129,11 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
             continue;
         }
         let set: Vec<&str> = conditions.iter().map(String::as_str).collect();
-        match kontra_ksp::compile(&script.source, &set) {
+        let view = crate::perf_view::find(&script.data).map(|(_, v)| v);
+        let view: Vec<&str> = (view.iter().flat_map(|v| &v.controls))
+            .map(|c| c.name.as_str())
+            .collect();
+        match kontra_ksp::compile_with_view(&script.source, &set, &view) {
             Ok(compiled) => {
                 conditions.clone_from(&compiled.conditions);
                 let mut planned = crate::script::plan(&compiled, &script.saved, &script.data);

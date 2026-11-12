@@ -701,3 +701,25 @@ fn num_elements_folds_in_a_declaration() {
         "expected a constant"
     );
 }
+
+/// A performance view's controls take UI ids in the view's order, not the
+/// order the script first names them: Conflux reaches macro `k` as
+/// `get_ui_id($Footer__Macro__1) + k`.
+#[test]
+fn view_controls_follow_one_another_in_the_views_order() {
+    let source = "on init
+        load_performance_view(\"view\")
+        declare $b_id
+        $b_id := get_ui_id($m2)
+        $b_id := get_ui_id($m1)
+    end on";
+    let script = kontra_ksp::compile_with_view(source, &[], &["$m1", "$m2"]).unwrap();
+    let index = |name: &str| {
+        script
+            .variables
+            .iter()
+            .position(|v| &*v.name == name)
+            .unwrap()
+    };
+    assert_eq!(index("$m2"), index("$m1") + 1);
+}
