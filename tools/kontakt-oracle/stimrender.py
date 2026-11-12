@@ -77,7 +77,12 @@ def stim_sine_steady():
     return 0.25 * np.sin(2 * np.pi * 500 * np.arange(4 * RATE) / RATE)
 
 
-STIMULI = {"sine_steady": stim_sine_steady, "noise_low": stim_noise_low, "limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse,
+def stim_sine_long():
+    """sine_steady for 10 s: two or more cycles of LFOs down to 0.25 Hz."""
+    return 0.25 * np.sin(2 * np.pi * 500 * np.arange(10 * RATE) / RATE)
+
+
+STIMULI = {"sine_steady": stim_sine_steady, "sine_long": stim_sine_long, "noise_low": stim_noise_low, "limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse,
            "impulse8": stim_impulse8, "sine_mid": stim_sine_mid}
 
 
