@@ -330,8 +330,9 @@ pub enum Sheet {
 /// What the user asked for this frame, for the host to carry out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// A browser preset to play in part `into` (Kontakt's browser replaces
-    /// the selected slot's snapshot), else in a new part.
+    /// A browser preset to play, in a new part unless it is a preset of an
+    /// instrument and `into` names the focused part (Kontakt's browser
+    /// replaces the selected slot's snapshot).
     Load {
         library: usize,
         preset: usize,

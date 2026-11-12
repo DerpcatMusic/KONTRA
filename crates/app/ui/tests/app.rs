@@ -445,10 +445,10 @@ fn the_browser_split_drags_and_keeps_its_share() {
     );
 }
 
-/// With a part playing, a double-clicked preset of an instrument (a
-/// snapshot) asks to play in that part, and an instrument adds one.
+/// With a part playing, a double-click names it as the part to play in;
+/// the host plays only a preset of an instrument there (the plugin test).
 #[test]
-fn a_double_clicked_preset_plays_in_the_focused_part_and_an_instrument_adds_one() {
+fn a_double_click_names_the_focused_part() {
     let mut ui = kontra_ui::ui();
     let mut app = App {
         libraries: vec![Library {
@@ -481,6 +481,6 @@ fn a_double_clicked_preset_plays_in_the_focused_part_and_an_instrument_adds_one(
     click(&mut ui, &mut app, "preset-1");
     assert_eq!(
         clicks(&mut ui, &mut app, "preset-1", 2),
-        vec![load(1, None)]
+        vec![load(1, Some(0))]
     );
 }

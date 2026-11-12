@@ -11,13 +11,15 @@ use crate::kit::{self, Icon, icon_button, knob, latch, nudge, rule, tab};
 use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, lift, part_color, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    // A preset dropped on free rack space adds a part.
-    if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>("rack") {
-        out.push(Action::Load {
-            library,
-            preset,
-            into: None,
-        });
+    // A preset dropped on free rack space, or on its foot, adds a part.
+    for at in ["rack", "rack-drop"] {
+        if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>(at) {
+            out.push(Action::Load {
+                library,
+                preset,
+                into: None,
+            });
+        }
     }
     if app.parts.is_empty() {
         return col![
@@ -558,13 +560,6 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
 fn foot(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let dragging = ui.dragging::<Carried>().is_some();
     let over = ui.get("rack-drop").drop_target && dragging;
-    if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>("rack-drop") {
-        out.push(Action::Load {
-            library,
-            preset,
-            into: None,
-        });
-    }
     if ui.get("rack-drop").activated() {
         app.view.browser_hidden = false;
         ui.focus("search");

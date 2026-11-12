@@ -749,8 +749,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         for action in response.changed {
             let asked = match action {
-                Action::Load { into: Some(n), .. } => Some(app::Loading::Part(n)),
-                Action::Load { into: None, .. } => Some(app::Loading::New),
+                Action::Load {
+                    library,
+                    preset,
+                    into: Some(n),
+                } if (app.libraries.get(library))
+                    .is_some_and(|l| l.recalls.binary_search(&preset).is_ok()) =>
+                {
+                    Some(app::Loading::Part(n))
+                }
+                Action::Load { .. } => Some(app::Loading::New),
                 Action::Replace { part, .. }
                 | Action::Switch { part, .. }
                 | Action::Step { part, .. } => Some(app::Loading::Part(part)),
