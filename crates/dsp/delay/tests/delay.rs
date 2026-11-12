@@ -257,3 +257,33 @@ fn the_polynomial_sine_matches_libm() {
         assert!(err < 1e-7, "{cycles}: {err}");
     }
 }
+
+/// What a skipped stretch of silence leaves: idling `frames` lands the LFO,
+/// the head's glide and the write point where processing silence would,
+/// so the next note plays within -120 dB of an unskipped run.
+#[test]
+fn an_idled_chorus_plays_on_in_step_with_one_that_ran() {
+    let mut s = echo();
+    (s.ms, s.depth_ms, s.lfo_hz, s.phase, s.second_head) = (12.0, 4.0, 0.7, 0.25, true);
+    s.feedback = diagonal(0.2);
+    let (mut ran, mut idled) = (ModDelay::new(s, RATE, 12.0), ModDelay::new(s, RATE, 12.0));
+    for d in [&mut ran, &mut idled] {
+        let mut io = impulse(RATE as usize);
+        d.process(&mut io);
+        // A new time while silent: the head glides there unheard.
+        d.set(Settings { ms: 7.0, ..s });
+    }
+    let quiet = 30_011;
+    let mut silence = vec![[0.0; 2]; quiet];
+    ran.process(&mut silence);
+    let tail = silence.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+    assert!(tail < 1e-7, "only silence is ever skipped: {tail}");
+    idled.idle(quiet);
+    let (mut a, mut b) = (impulse(RATE as usize / 2), impulse(RATE as usize / 2));
+    ran.process(&mut a);
+    idled.process(&mut b);
+    let worst = (a.iter().flatten().zip(b.iter().flatten()))
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    assert!(worst < 1e-6, "{worst}");
+}

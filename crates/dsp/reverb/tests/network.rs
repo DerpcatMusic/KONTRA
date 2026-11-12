@@ -99,3 +99,41 @@ fn a_live_size_change_glides_through_the_tail() {
     let low = ms_levels(&back).into_iter().fold(f32::MAX, f32::min);
     assert!(low > level - 24.0, "dips to {low} dB from {level} dB");
 }
+
+/// What a skipped stretch of silence leaves: idling lands the modulation,
+/// the glides and (above the law's rate) the resampler's phase where
+/// processing silence would, so the next note's tail matches an unskipped run.
+#[test]
+fn an_idled_network_plays_on_in_step_with_one_that_ran() {
+    for rate in [48_000, 96_000] {
+        let s = Settings {
+            seconds: 0.3,
+            modulation_ms: 3.0,
+            modulation_hz: 0.7,
+            ..settings(1.0)
+        };
+        let (mut ran, mut idled) = (Network::new(law(), s, rate), Network::new(law(), s, rate));
+        let block =
+            |n: &mut Network, io: &mut [[f32; 2]]| io.chunks_mut(64).for_each(|b| n.process(b));
+        for n in [&mut ran, &mut idled] {
+            let mut io = vec![[0.0; 2]; 3 * rate as usize];
+            io[0] = [1.0, 1.0];
+            block(n, &mut io);
+            // A new size while silent: the lines glide there unheard.
+            n.set(settings(1.5));
+        }
+        let quiet = 20_011;
+        block(&mut ran, &mut vec![[0.0; 2]; quiet]);
+        let mut scratch = vec![[0.0; 2]; quiet];
+        scratch.chunks_mut(64).for_each(|b| idled.idle(b));
+        let mut a = vec![[0.0; 2]; rate as usize / 2];
+        a[0] = [1.0, 1.0];
+        let mut b = a.clone();
+        block(&mut ran, &mut a);
+        block(&mut idled, &mut b);
+        let worst = (a.iter().flatten().zip(b.iter().flatten()))
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-6, "{rate}: {worst}");
+    }
+}

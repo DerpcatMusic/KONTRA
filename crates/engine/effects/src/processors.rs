@@ -34,11 +34,34 @@ pub trait Wet: Send {
     /// The slot's settings as scripts left them, at the host's tempo,
     /// before each block. Never allocates.
     fn set(&mut self, _kind: ir::EffectKind, _tempo: f32) {}
+    /// Frames after which silent input leaves it silent, once nothing
+    /// louder than silence went into its state for as long; `None`: it
+    /// always runs.
+    fn memory(&self) -> Option<usize> {
+        None
+    }
+    /// The loudest value the last [`Wet::process`] wrote into its state
+    /// (its lines, rings and filters), heard or not: a muted output may
+    /// hide a tail a later setting lets out.
+    fn written(&self) -> f32 {
+        0.0
+    }
+    /// `silence.len()` silent frames pass unprocessed: its clocks (an LFO,
+    /// a glide) move on as [`Wet::process`] would move them. `silence` is
+    /// scratch. Only called on processors with a [`Wet::memory`].
+    fn idle(&mut self, _silence: &mut [[f32; 2]]) {}
 }
 
 impl Wet for Convolver {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Convolver::process(self, io);
+    }
+
+    // No clocks and no feedback: its state is its last `taps` inputs (and
+    // the sums made of them), so silent input alone settles it; the slot's
+    // output gain sits after it, in the rack. `written` stays 0.
+    fn memory(&self) -> Option<usize> {
+        Some(self.taps())
     }
 }
 
@@ -125,6 +148,18 @@ impl Wet for Network {
         Network::process(self, io);
     }
 
+    fn memory(&self) -> Option<usize> {
+        Some(Network::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        Network::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        Network::idle(self, silence);
+    }
+
     fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Network::set(self, settings(r));
@@ -135,6 +170,18 @@ impl Wet for Network {
 impl Wet for ModDelay {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         ModDelay::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(ModDelay::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        ModDelay::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        ModDelay::idle(self, silence.len());
     }
 
     fn set(&mut self, kind: ir::EffectKind, tempo: f32) {

@@ -28,6 +28,14 @@ impl Levels {
         }
     }
 
+    /// [`Self::mix`] for `frames` frames of silence in and out: the levels
+    /// glide on, nothing is read.
+    pub fn idle(&mut self, dry: f32, level: f32, frames: usize) {
+        self.glide
+            .aim([1.0, 0.0, 0.0, 1.0, dry, level], self.frames);
+        self.glide.skip(frames);
+    }
+
     /// `io` through the matrix `[[ll, lr], [rl, rr]]`.
     pub fn matrix(&mut self, io: &mut [[f32; 2]], [[ll, lr], [rl, rr]]: [[f32; 2]; 2]) {
         self.glide.aim([ll, lr, rl, rr, 1.0, 1.0], self.frames);
@@ -126,6 +134,19 @@ impl<const N: usize> Glide<N> {
     /// True when it has arrived.
     fn resting(&self) -> bool {
         self.left == 0
+    }
+
+    /// `frames` frames on, as many [`Self::next`] calls would go.
+    fn skip(&mut self, frames: usize) {
+        let frames = u32::try_from(frames).unwrap_or(u32::MAX);
+        if frames >= self.left {
+            (self.now, self.left) = (self.to, 0);
+        } else {
+            self.left -= frames;
+            for (n, s) in self.now.iter_mut().zip(self.step) {
+                *n += s * frames as f32;
+            }
+        }
     }
 
     /// The values for the next frame.

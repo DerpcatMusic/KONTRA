@@ -16,6 +16,9 @@ pub struct Chain {
     pub group: Option<(usize, Rack)>,
     pub mix: Box<[[f32; 2]]>,
     pub live: bool,
+    /// Its filters still ring: they last ran and were not silent after.
+    /// Only running changes them, so a silent chain is known without a look.
+    pub ringing: bool,
 }
 
 impl Chain {
@@ -37,6 +40,7 @@ impl Chain {
             group,
             mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             live: false,
+            ringing: false,
         }
     }
 }
