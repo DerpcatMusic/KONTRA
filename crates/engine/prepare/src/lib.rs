@@ -586,7 +586,7 @@ mod tests {
             start,
             end: 1_000_000,
             start_mod,
-            loops: vec![],
+            loops: Default::default(),
             reverse: false,
             slot: 0,
         }

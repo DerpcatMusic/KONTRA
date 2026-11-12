@@ -86,7 +86,7 @@ fn zone(
         sample,
         start: 0,
         end: FRAMES,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     };
     Ok(Zone {

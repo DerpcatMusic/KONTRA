@@ -38,7 +38,7 @@ fn region(store: &mut Store, level: f32, frames: u64) -> std::io::Result<Region>
         sample,
         start: 0,
         end: frames,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     })
 }
@@ -76,7 +76,7 @@ fn sine(store: &mut Store) -> Region {
         sample,
         start: 0,
         end: frames,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     }
 }
@@ -400,7 +400,8 @@ fn a_cc_crossfade_moves_sounding_voices() {
         end: 48_000,
         crossfade: 0,
         ..Default::default()
-    }];
+    }]
+    .into();
     z.region = looped;
     let mut e = engine(&store, Plan::new(vec![z], 8));
     let quiet = level(&mut e, &[cc(1, 10), on(60, 1.0)])[0];
@@ -695,7 +696,7 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
             sample,
             start: 0,
             end: frames,
-            loops: vec![],
+            loops: Default::default(),
             reverse: false,
         },
         60,
@@ -1980,7 +1981,8 @@ fn a_controller_moves_a_bus_eq_band_while_it_plays() {
         end: 48_000,
         crossfade: 0,
         ..Default::default()
-    }];
+    }]
+    .into();
     let mut plan = Plan::new(vec![z], 8);
     plan.groups[0].bus = 1;
     let bell = ir::Bell {

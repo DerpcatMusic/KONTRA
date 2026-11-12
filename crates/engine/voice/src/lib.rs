@@ -15,7 +15,7 @@ pub use envelope::Ahdsr;
 pub use wavetable::{
     CYCLE, LEVELS, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP, Table, Warp, shape, warp,
 };
-pub use zone::{Loop, Region};
+pub use zone::{Loop, Loops, Region};
 
 use envelope::Envelope;
 use fade::Fade;

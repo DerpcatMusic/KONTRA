@@ -20,6 +20,13 @@ use kontra_vm::{Action, HostCall, HostValue, Text};
 /// One control's number parameters, by parameter id, in the order set.
 type Pars = Vec<(i32, i32)>;
 
+/// Room each control gets at load for the number and text parameters its
+/// callbacks set, so setting one on the audio thread does not allocate.
+// ponytail: a control setting more distinct parameters than this grows its
+// list on the audio thread once; size by the parameter ids if a library does.
+const PARS: usize = 32;
+const TEXTS: usize = 4;
+
 /// Keys on the keyboard a script colours and names.
 const KEYS: usize = 128;
 
@@ -193,7 +200,7 @@ impl Store {
         Self {
             pars: controls
                 .clone()
-                .map(|n| vec![Vec::new(); n].into())
+                .map(|n| (0..n).map(|_| Vec::with_capacity(PARS)).collect())
                 .collect(),
             menus: controls
                 .clone()
@@ -203,7 +210,7 @@ impl Store {
             waiting: controls.clone().map(|n| vec![u16::MAX; n].into()).collect(),
             texts: controls
                 .clone()
-                .map(|n| vec![Vec::new(); n].into())
+                .map(|n| (0..n).map(|_| Vec::with_capacity(TEXTS)).collect())
                 .collect(),
             keys: vec![Key::UNTOUCHED; KEYS].into(),
             pressed_support: false,

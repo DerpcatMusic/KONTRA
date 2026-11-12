@@ -32,7 +32,7 @@ fn ramp_region(store: &mut Store, frames: u64, pinned: u64) -> std::io::Result<R
         sample,
         start: 0,
         end: frames,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     })
 }
@@ -120,7 +120,8 @@ fn a_loop_sustains_past_the_sample_end() {
         end: 600,
         crossfade: 0,
         ..Loop::default()
-    }];
+    }]
+    .into();
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 5000);
@@ -141,7 +142,8 @@ fn a_loop_crossfade_blends_the_tail_into_the_audio_before_the_start() {
         end: 600,
         crossfade: 40,
         ..Loop::default()
-    }];
+    }]
+    .into();
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 800);
@@ -180,7 +182,8 @@ fn release_ends_the_voice() {
         end: 1000,
         crossfade: 0,
         ..Loop::default()
-    }];
+    }]
+    .into();
     let mut voice = Voice::allocate();
     voice.start(start(
         region,
@@ -200,7 +203,7 @@ fn release_ends_the_voice() {
 fn looped_output(store: &mut Store, loops: Vec<Loop>, frames: usize) -> std::io::Result<Vec<f32>> {
     let client = store.client();
     let mut region = ramp_region(store, 1000, 1000)?;
-    region.loops = loops;
+    region.loops = loops.into();
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     Ok(render(&mut voice, &client, frames))
@@ -309,7 +312,8 @@ fn an_until_release_loop_repeats_until_release_then_plays_on() {
         end: 200,
         until_release: true,
         ..Loop::default()
-    }];
+    }]
+    .into();
     let mut voice = Voice::allocate();
     voice.start(start(
         region,
@@ -383,7 +387,7 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
             sample: Arc::clone(&sample),
             start: 0,
             end: frames,
-            loops: vec![],
+            loops: Default::default(),
             reverse: false,
         };
         let mut voice = Voice::allocate();
@@ -467,7 +471,7 @@ fn offline_wait_reports_a_failed_page_as_missing() {
         sample,
         start: 0,
         end: 4096,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     };
     let mut voice = Voice::allocate();

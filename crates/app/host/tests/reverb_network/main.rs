@@ -60,7 +60,7 @@ fn render_at(
         sample,
         start: 0,
         end: frames as u64,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     };
     let mut plan = Plan::new(vec![Zone::new(region, 60, rate)], 16);

@@ -13,3 +13,4 @@ trace = []
 
 [dependencies]
 kontra-stream = { path = "../stream" }
+smallvec = { workspace = true }
