@@ -1049,3 +1049,40 @@ fn a_rack_without_a_save_folder_writes_nothing() {
     assert!(saved.contains(&"$status 0".to_owned()), "{saved:?}");
     assert!(!at.exists(), "nothing written next to the path");
 }
+/// KSP manual (`load_array`): an array loaded in `on init` is implicitly
+/// persistent, so it saves; a text array saves each value on a line ended
+/// by a newline, as Kontakt writes it.
+#[test]
+fn an_array_loaded_in_init_saves_one_ended_line_per_value() {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(dir.join("init_names.nka"), "!names\nfirst\nsecond\n").unwrap();
+    let source = format!(
+        "on init
+            declare !names[2]
+            declare $n
+            $n := load_array_str(!names, \"{}/init_names.nka\")
+        end on",
+        dir.display()
+    );
+    let instrument = ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, None).unwrap();
+    audio.process(BLOCK, &[]);
+    let saved = saved_now(&mut rack, &mut audio);
+    assert!(
+        saved.contains(&"!names first\nsecond\n".to_owned()),
+        "{saved:?}"
+    );
+}
