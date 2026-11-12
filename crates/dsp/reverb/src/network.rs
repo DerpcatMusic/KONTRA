@@ -456,6 +456,50 @@ impl Network {
         }
     }
 
+    /// Host frames after which silent input leaves only silence: the
+    /// predelay, the longest line and the allpass units, at the host rate.
+    #[must_use]
+    pub fn memory(&self) -> usize {
+        let len = |r: &Ring| r.buf.len();
+        let pre = self.pre.iter().map(len).max().unwrap_or(0);
+        let line = self.lines.iter().map(|l| len(&l.ring)).max().unwrap_or(0);
+        let units: usize = (self.units.iter().flatten())
+            .flat_map(|u| u.rings.iter().map(len))
+            .sum();
+        let factor = self.pair.as_ref().map_or(1, Pair::factor);
+        (pre + line + units) * factor
+    }
+
+    /// Lets `silence.len()` silent frames pass without reading a line: the
+    /// glides, the modulation and the write point move on as [`Self::process`]
+    /// would move them, so what plays next lines up with an unskipped run.
+    /// `silence` is scratch.
+    pub fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        silence.fill([0.0; 2]);
+        match self.pair.take() {
+            Some(mut pair) => {
+                for chunk in silence.chunks_mut(BLOCK) {
+                    pair.process(chunk, |low| self.tick(low.len()));
+                }
+                self.pair = Some(pair);
+            }
+            None => self.tick(silence.len()),
+        }
+    }
+
+    /// The clocks of [`Self::frame`] alone, `frames` on; the output stays silent.
+    fn tick(&mut self, frames: usize) {
+        for _ in 0..frames {
+            if self.controls.moving() || self.lengths.moving() {
+                self.glide();
+            }
+            self.w = self.w.wrapping_add(1);
+            let (c, s) = self.phasor;
+            let (cw, sw) = self.rot;
+            self.phasor = (c * cw - sw * s, c * sw + s * cw);
+        }
+    }
+
     fn run(&mut self, io: &mut [[f32; 2]]) {
         for frame in io {
             if self.controls.moving() || self.lengths.moving() {

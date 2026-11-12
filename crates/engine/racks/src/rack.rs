@@ -25,6 +25,8 @@ pub struct Rack {
     amounts: Box<[f32]>,
     /// Each slot's levels, gliding where its settings move.
     levels: Box<[Levels]>,
+    /// Per slot, frames its input and output have both been silent.
+    quiet: Box<[usize]>,
     rate: u32,
 }
 
@@ -106,6 +108,7 @@ impl Rack {
             blends: blends.into(),
             amounts: vec![0.0; mods.len()].into(),
             levels: vec![Levels::new(rate); slots.len()].into(),
+            quiet: vec![0; slots.len()].into(),
             rate,
         }
     }
@@ -183,7 +186,8 @@ impl Rack {
     /// Processes `io`; a send slot adds it to `taps` (one buffer per send slot).
     pub fn process(&mut self, io: &mut [[f32; 2]], taps: &mut [Box<[[f32; 2]]>], tempo: f32) {
         let slots = self.slots.iter().zip(self.dsp.iter_mut());
-        for (n, ((slot, dsp), levels)) in slots.zip(self.levels.iter_mut()).enumerate() {
+        let slots = slots.zip(self.levels.iter_mut()).zip(self.quiet.iter_mut());
+        for (n, (((slot, dsp), levels), quiet)) in slots.enumerate() {
             let Some(mut e) = slot.filter(|e| !e.bypass) else {
                 continue;
             };
@@ -212,8 +216,21 @@ impl Rack {
                     };
                     // A script or the tempo may have moved it since the last block.
                     processor.set(kind, tempo);
+                    // Silence in, and silent out for longer than it remembers:
+                    // only silence can come out, so its clocks move on alone.
+                    let still = is_silent(io);
+                    if still && processor.memory().is_some_and(|m| *quiet >= m) {
+                        processor.idle(wet);
+                        levels.idle(e.dry, e.output, io.len());
+                        continue;
+                    }
                     wet.copy_from_slice(io);
                     processor.process(wet);
+                    *quiet = if still && is_silent(wet) {
+                        quiet.saturating_add(io.len())
+                    } else {
+                        0
+                    };
                     levels.mix(io, wet, e.dry, e.output);
                     continue;
                 }
@@ -235,4 +252,12 @@ impl Rack {
     pub fn active(&self) -> bool {
         self.slots.iter().flatten().any(|e| !e.bypass)
     }
+}
+
+/// Below this a span counts as silent: -140 dBFS, so a skipped wet path
+/// stays under -120 dB after a slot's output gain.
+const SILENT: f32 = 1e-7;
+
+fn is_silent(io: &[[f32; 2]]) -> bool {
+    io.iter().flatten().all(|x| x.abs() < SILENT)
 }

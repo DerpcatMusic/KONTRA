@@ -34,11 +34,25 @@ pub trait Wet: Send {
     /// The slot's settings as scripts left them, at the host's tempo,
     /// before each block. Never allocates.
     fn set(&mut self, _kind: ir::EffectKind, _tempo: f32) {}
+    /// Frames after which silent input leaves it silent, once its output
+    /// has been silent as long; `None`: it always runs.
+    fn memory(&self) -> Option<usize> {
+        None
+    }
+    /// `silence.len()` silent frames pass unprocessed: its clocks (an LFO,
+    /// a glide) move on as [`Wet::process`] would move them. `silence` is
+    /// scratch. Only called on processors with a [`Wet::memory`].
+    fn idle(&mut self, _silence: &mut [[f32; 2]]) {}
 }
 
 impl Wet for Convolver {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Convolver::process(self, io);
+    }
+
+    // No clocks: silent input leaves nothing to move on.
+    fn memory(&self) -> Option<usize> {
+        Some(self.taps())
     }
 }
 
@@ -125,6 +139,14 @@ impl Wet for Network {
         Network::process(self, io);
     }
 
+    fn memory(&self) -> Option<usize> {
+        Some(Network::memory(self))
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        Network::idle(self, silence);
+    }
+
     fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Network::set(self, settings(r));
@@ -135,6 +157,14 @@ impl Wet for Network {
 impl Wet for ModDelay {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         ModDelay::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(ModDelay::memory(self))
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        ModDelay::idle(self, silence.len());
     }
 
     fn set(&mut self, kind: ir::EffectKind, tempo: f32) {

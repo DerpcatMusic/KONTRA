@@ -195,6 +195,26 @@ impl ModDelay {
         ((a * t + b) * t + k) * t + y0
     }
 
+    /// The ring's length, frames: how long silent input can still echo.
+    #[must_use]
+    pub fn memory(&self) -> usize {
+        self.ring.len()
+    }
+
+    /// Lets `frames` silent frames pass without reading the ring: the LFO,
+    /// the head's glide and the write point move on as [`Self::process`]
+    /// would move them.
+    pub fn idle(&mut self, frames: usize) {
+        let s = self.s;
+        let longest = self.ring.len().saturating_sub(3) as f32;
+        let target = (s.ms * 0.001 * self.rate).max(0.0).min(longest);
+        let left = (1.0 - self.glide).powi(i32::try_from(frames).unwrap_or(i32::MAX));
+        self.delay = Some(self.delay.map_or(target, |d| target + (d - target) * left));
+        self.at = (self.at + frames) % self.ring.len().max(1);
+        let step = f64::from(s.lfo_hz / self.rate);
+        self.cycle = (self.cycle + step * frames as f64).fract();
+    }
+
     /// Replaces `io` with the wet signal.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let s = self.s;

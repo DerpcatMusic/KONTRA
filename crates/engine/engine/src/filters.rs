@@ -169,7 +169,7 @@ impl Engine {
         let tempo = self.tempo;
         for chain in &mut self.chains {
             // A group rack may ring on (a reverb's tail): it always runs.
-            if !chain.live && chain.group.is_none() && chain.filters.iter().all(Stage::is_silent) {
+            if !chain.live && chain.group.is_none() && !chain.ringing {
                 continue;
             }
             chain.live = false;
@@ -177,6 +177,7 @@ impl Engine {
                 continue;
             };
             run(&mut chain.filters, mix);
+            chain.ringing = !chain.filters.iter().all(Stage::is_silent);
             if let Some((g, rack)) = &mut chain.group {
                 // A script may have changed the group's slots since.
                 if let Some(group) = self.groups.get(*g) {

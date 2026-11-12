@@ -96,6 +96,11 @@ impl Pair {
     }
 
     /// Runs `core` at the low rate on `io` (at most [`BLOCK`] frames) in place.
+    /// Host frames per low-rate frame.
+    pub(crate) fn factor(&self) -> usize {
+        self.n
+    }
+
     pub(crate) fn process(&mut self, io: &mut [[f32; 2]], core: impl FnOnce(&mut [[f32; 2]])) {
         let n = self.n;
         let hl = self.hist.len();

@@ -667,10 +667,21 @@ fn execute(
             Op::LoopCheck { exit } => {
                 c.loop_count += 1;
                 let mut stuck = false;
-                if c.loop_count >= LOOP_PROBE && c.loop_count.is_power_of_two() {
-                    let hash = state_hash(cells, texts, poly, c);
-                    stuck = !std::mem::take(&mut c.hosted) && hash == c.loop_hash;
-                    c.loop_hash = hash;
+                // The hash reads every cell: probing only once the loops have
+                // turned as often as there are cells keeps the check cheaper
+                // than the loop (a big table made each probe cost ms).
+                let probe =
+                    LOOP_PROBE.max(u32::try_from(cells.len() + poly.len()).unwrap_or(u32::MAX));
+                if c.loop_count >= probe && c.loop_count.is_power_of_two() {
+                    // A host call moved state outside the hash: not stuck, and
+                    // no hash to take; the next probe compares from scratch.
+                    c.loop_hash = if std::mem::take(&mut c.hosted) {
+                        0
+                    } else {
+                        let hash = state_hash(cells, texts, poly, c);
+                        stuck = hash == c.loop_hash;
+                        hash
+                    };
                 }
                 // The limit holds for the rest of the run (every loop exits
                 // until the next wait); a stuck loop frees only itself.
