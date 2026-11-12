@@ -50,7 +50,7 @@ pub(crate) fn effect(
 
 /// A version 0x10 Feedback Compressor record's six knobs (input, make-up,
 /// attack, release, ratio, mix, each 0..=1) and its link byte.
-pub(crate) fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
+fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
     let f = |n: usize| {
         let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
@@ -63,18 +63,19 @@ pub(crate) fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
 /// move rebuilds the compressor from all six through [`feedback`], as the
 /// native setter derives each field from all of them (the input drives the
 /// threshold down and the make-up up; the ratio moves the knee).
-pub(crate) fn feedback_model(saved: [f32; 6], link: bool) -> ir::KnobModel {
+pub(crate) fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
     use ir::SlotKnob::{Attack, Input, Makeup, Mix, Ratio, Release};
+    let (saved, link) = feedback_saved(public)?;
     let mut positions = saved.to_vec();
     positions.push(f32::from(u8::from(link)));
-    ir::KnobModel {
+    Some(ir::KnobModel {
         knobs: [Input, Makeup, Attack, Release, Ratio, Mix].into(),
         saved: positions.into(),
         build: |p| {
             let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
             Some(ir::EffectKind::Compressor(feedback(knobs, link)))
         },
-    }
+    })
 }
 
 /// The Feedback Compressor's KSP names, each a knob of [`feedback_model`].
@@ -148,8 +149,7 @@ mod tests {
             .collect();
         public.extend([1, 1, 0]);
         let (read, _) = effect(0x4c, 0x10, &public).unwrap();
-        let (saved, link) = feedback_saved(&public).unwrap();
-        let model = feedback_model(saved, link);
+        let model = feedback_model(&public).unwrap();
         assert_eq!((model.build)(&model.saved), Some(read));
     }
 
