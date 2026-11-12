@@ -137,6 +137,13 @@ pub(crate) fn timed(
                 insert,
                 depth: t.signed_intensity(),
             },
+            (param, None) if let Some(value) = crate::wavetable::target(param) => {
+                ir::ModKind::Wavetable {
+                    source,
+                    value,
+                    depth: t.signed_intensity(),
+                }
+            }
             (param, Some(insert))
                 if crate::provenance::eq_band_index(
                     param,

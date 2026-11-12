@@ -116,6 +116,13 @@ pub enum ModKind {
         length: bool,
         depth: f32,
     },
+    /// Adds `source × depth` to the voice's wavetable `value` (0..=1), live;
+    /// the sum is held within 0..=1, not wrapped.
+    Wavetable {
+        source: Source,
+        value: crate::TableValue,
+        depth: f32,
+    },
     /// Scales cell `row` (a sample channel), `side` (0 left, 1 right) of
     /// the [`Zone::mix`](crate::Zone::mix) of the group's zone `zone` (its
     /// index in [`Group::zones`](crate::Group::zones)) by the live `source`,

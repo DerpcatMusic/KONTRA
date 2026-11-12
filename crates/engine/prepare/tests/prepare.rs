@@ -21,8 +21,14 @@ fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
         return Err(io::ErrorKind::NotFound.into());
     }
     let level = sample.offset as f32 / 1000.0;
+    // "morph": a silent cycle, then one of a sine.
+    let at = |i: u64| match sample.name.as_str() {
+        "morph" if i >= 2048 => (std::f32::consts::TAU * (i - 2048) as f32 / 2048.0).sin(),
+        "morph" => 0.0,
+        _ => level,
+    };
     let bytes = (0..sample.frames)
-        .flat_map(|_| level.to_le_bytes())
+        .flat_map(|i| at(i).to_le_bytes())
         .collect();
     Ok((Arc::new(MemSource::new(FMT, bytes)), FMT))
 }
@@ -71,6 +77,10 @@ fn group(key: u8, zones: Vec<ir::Zone>) -> ir::Group {
 }
 
 fn on(key: u8) -> Timed<Event> {
+    struck(key, 1.0)
+}
+
+fn struck(key: u8, velocity: f64) -> Timed<Event> {
     Timed {
         at: SampleTime(0),
         body: Event::NoteOn {
@@ -81,7 +91,7 @@ fn on(key: u8) -> Timed<Event> {
                 id: -1,
                 clap: true,
             },
-            velocity: 1.0,
+            velocity,
             tune: 0.0,
         },
     }
@@ -276,4 +286,56 @@ fn a_moved_zones_fades_follow_its_range() {
     let (z, own) = (&plan.zones[0], &plan.zones[1]);
     assert_eq!((&z.keys, &z.crossfades), (&own.keys, &own.crossfades));
     assert_eq!(z.crossfades[0].gain(85), 1.0);
+}
+
+/// A velocity route moves each voice's own wavetable position: two held
+/// notes, struck at 1 and ¼, read the sine cycle fully and a quarter of the
+/// way from the silent one (positions 1 and ¼, a linear morph).
+#[test]
+fn a_velocity_route_moves_each_voices_table_position() {
+    let mut table = sample("morph", 0);
+    table.frames = 4096;
+    let mut z = zone(0);
+    z.end = 4096;
+    let instrument = ir::Instrument {
+        samples: vec![table],
+        groups: vec![ir::Group {
+            wavetable: Some(ir::Wavetable {
+                position: 0.0,
+                phase: 0.0,
+                warps: [ir::Warp::OFF; 2],
+            }),
+            mods: vec![ir::Mod {
+                name: "VEL -> WT POS".into(),
+                slot: 0,
+                target: 0,
+                bypass: false,
+                kind: ir::ModKind::Wavetable {
+                    source: ir::Source::Velocity,
+                    value: ir::TableValue::Position,
+                    depth: 1.0,
+                },
+            }],
+            zones: vec![z],
+            ..ir::Group::DEFAULT
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; 4800];
+    e.process(&mut out, &[struck(69, 1.0), struck(81, 0.25)]);
+    e.process(&mut out, &[]);
+    // A4 and A5 (a table plays its cycle at A4), over 4800 frames: whole cycles of both.
+    let level = |hz: f32| {
+        let (mut c, mut s) = (0.0f32, 0.0f32);
+        for (i, f) in out.iter().enumerate() {
+            let w = std::f32::consts::TAU * hz * i as f32 / RATE as f32;
+            (c, s) = (c + f[0] * w.cos(), s + f[0] * w.sin());
+        }
+        2.0 * c.hypot(s) / out.len() as f32
+    };
+    let ratio = level(880.0) / level(440.0);
+    assert!((ratio - 0.25).abs() < 0.01, "{ratio}");
 }

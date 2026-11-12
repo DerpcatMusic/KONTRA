@@ -52,6 +52,8 @@ pub enum EnginePar {
     Zone(ZonePar),
     /// Whether an LFO restarts with each voice (1) or runs free (0).
     LfoRetrigger,
+    /// A wavetable value, 0..=1 linear in the raw 0..=1e6.
+    Wavetable(crate::TableValue),
     /// A control the engine does not carry yet: only the text of a value
     /// the script passes answers (`get_engine_par_disp_ext`); a set or a
     /// read is reported as unhandled.

@@ -602,6 +602,7 @@ pub fn source(kind: &ir::ModKind) -> Option<ir::Source> {
         | K::LfoRate { source, .. }
         | K::LfoHz { source, .. }
         | K::Intensity { source, .. }
+        | K::Wavetable { source, .. }
         | K::LoopShift { source, .. } => Some(source),
         K::Envelope => None,
     }

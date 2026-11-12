@@ -56,7 +56,8 @@ pub fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         | ir::ModKind::SampleStart { depth, .. }
         | ir::ModKind::Intensity { depth, .. }
         | ir::ModKind::LfoRate { depth, .. }
-        | ir::ModKind::LfoHz { depth, .. } => Some(depth),
+        | ir::ModKind::LfoHz { depth, .. }
+        | ir::ModKind::Wavetable { depth, .. } => Some(depth),
         ir::ModKind::Pan { amount, .. } => Some(amount),
         ir::ModKind::Envelope
         | ir::ModKind::EqGain { .. }

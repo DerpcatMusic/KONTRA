@@ -259,6 +259,11 @@ impl Engine {
             return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
         }
         let g = self.groups.get(usize::try_from(group).ok()?)?;
+        if let EnginePar::Wavetable(v) = par {
+            let mut read = g.wavetable?;
+            let x = *crate::voice_gain::table_value(&mut read, v)?;
+            return Some((f64::from(x) * 1e6).round() as i32);
+        }
         if let (Some((i, stage)), Some(e)) = (stage_point(par), routed_envelope(g, slot)) {
             // Measured (probes/flex_stage_writes.lua): an envelope without
             // stages (a flex) reads 0.
@@ -425,6 +430,12 @@ impl Engine {
                 };
                 true
             }),
+            EnginePar::Wavetable(v) => g
+                .wavetable
+                .as_mut()
+                .and_then(|r| crate::voice_gain::table_value(r, v))
+                .map(|r| *r = x as f32)
+                .is_some(),
             EnginePar::LfoFade => g.lfo_mut(slot).is_some_and(|l| {
                 l.fade_ms = STAGE_10S.eval_f64(x) as f32;
                 true

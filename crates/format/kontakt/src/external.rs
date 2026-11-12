@@ -110,6 +110,15 @@ pub(crate) fn external(
                             depth: t.signed_intensity(),
                         })
                     }
+                    (Some(source), param, None)
+                        if let Some(value) = crate::wavetable::target(param) =>
+                    {
+                        Some(ir::ModKind::Wavetable {
+                            source,
+                            value,
+                            depth: t.signed_intensity(),
+                        })
+                    }
                     (Some(source), "playPos", None) => Some(ir::ModKind::SampleStart {
                         source,
                         depth: t.signed_intensity(),

@@ -95,6 +95,8 @@ pub enum RouteUnit {
     SampleStartFraction,
     LoopFraction,
     EnvelopeFrames,
+    /// A wavetable value's move, 0..=1 units.
+    TableFraction,
 }
 
 /// A route value as evaluated in a controller-triggered voice refresh.
