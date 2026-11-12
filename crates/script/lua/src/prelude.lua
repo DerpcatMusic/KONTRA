@@ -690,7 +690,7 @@ function wait(ms)
 end
 
 function getTime()
-	return host_call("EngineUptime") or 0
+	return host_call("EngineMs") or 0
 end
 
 function getTempo()

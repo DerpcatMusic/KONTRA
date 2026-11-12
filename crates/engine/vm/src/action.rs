@@ -385,4 +385,8 @@ actions! {
     // (the engine's host-only list).
     HideInstIcon,
     DontUseMachineMode,
+    // Milliseconds since the engine started, with the fraction
+    // (`1000 * samples / rate`): notes one frame apart read apart.
+    // `EngineUptime` is the same clock in whole milliseconds.
+    EngineMs,
 }

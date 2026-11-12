@@ -2077,6 +2077,26 @@ fn a_wait_then_spawn_chain_advances_by_its_summed_waits() {
     assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
 }
 
+/// A UVI `getTime()` is `1000 * samples / rate` (UVI's own prelude): two
+/// notes a fraction of a millisecond apart read different times. VWinds'
+/// legato skips a glide whose time equals the previous one; whole
+/// milliseconds made a rolled chord lose its last note.
+#[test]
+fn notes_under_a_millisecond_apart_read_different_times() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let script = "local last = -1
+        function onNote(e)
+            if getTime() ~= last then playNote(60, 100) end
+            last = getTime()
+        end";
+    let mut e = lua_engine(&mut store, script);
+    let later = Timed {
+        at: SampleTime(10),
+        ..on(64)
+    };
+    assert!((level(&mut e, &[on(60), later]) - 1.0).abs() < 1e-3);
+}
+
 #[test]
 fn a_uvi_script_that_fails_counts_a_fault_and_the_engine_plays_on() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
