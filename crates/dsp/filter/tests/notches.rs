@@ -30,7 +30,15 @@ fn settings(stages: u8) -> NotchSettings {
 /// `seconds` of a two-sine input at 48 kHz in 512-frame blocks, with the
 /// stage count moved part way through.
 fn render(seconds: usize) -> Vec<[f32; 2]> {
-    let mut n = Notches::new(settings(6), 48_000);
+    render_at(seconds, 0.7)
+}
+
+fn render_at(seconds: usize, lfo_hz: f32) -> Vec<[f32; 2]> {
+    let at = |stages| NotchSettings {
+        lfo_hz,
+        ..settings(stages)
+    };
+    let mut n = Notches::new(at(6), 48_000);
     let mut io: Vec<[f32; 2]> = (0..seconds * 48_000)
         .map(|i| {
             let t = i as f32 / 48_000.0;
@@ -41,10 +49,10 @@ fn render(seconds: usize) -> Vec<[f32; 2]> {
         .collect();
     for (k, block) in io.chunks_mut(512).enumerate() {
         if k == 40 {
-            n.set(settings(12));
+            n.set(at(12));
         }
         if k == 80 {
-            n.set(settings(4));
+            n.set(at(4));
         }
         n.process(block);
     }

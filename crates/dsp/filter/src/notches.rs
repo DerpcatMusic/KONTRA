@@ -12,6 +12,9 @@
 
 use kontra_dsp_core::Halfband;
 
+/// Ticks the LFO and the coefficients hold for.
+const CONTROL: u32 = 8;
+
 /// The most allpass stages it runs.
 pub const MAX_STAGES: usize = 12;
 
@@ -62,7 +65,7 @@ pub struct NotchSettings {
 /// One channel's coefficients at this frame's LFO: the stages' corner `g`,
 /// `h` and `k = 4R`; the loop band-pass's `gb`, `kb`, `hb` and its upper
 /// share.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Coeffs {
     g: f64,
     h: f64,
@@ -87,6 +90,9 @@ struct Core {
     stages: [[[f64; 2]; 2]; MAX_STAGES],
     band: [[f64; 2]; 2],
     low: [f64; 2],
+    /// Both channels' coefficients, held for [`CONTROL`] ticks.
+    held: [Coeffs; 2],
+    until: u32,
     /// The high-pass coefficient `G/(1 + G)`, `G = tan(π·f/rate)`.
     low_cut: f64,
     /// Of the settings alone: `expm1(warp)` and the output level.
@@ -156,8 +162,15 @@ impl Core {
         let mix = f64::from(s.mix);
         let level = self.level;
         let sign = f64::from(s.sign);
-        let lfo = [1.0, -1.0].map(|side| self.lfo(self.cycle + side * f64::from(s.phase)));
-        let c = lfo.map(|lfo| self.coeffs(lfo));
+        if self.until == 0 {
+            // At the middle of the ticks it holds for.
+            let mid = self.cycle + f64::from(CONTROL - 1) / 2.0 * f64::from(s.lfo_hz) / self.rate;
+            let lfo = [1.0, -1.0].map(|side| self.lfo(mid + side * f64::from(s.phase)));
+            self.held = lfo.map(|lfo| self.coeffs(lfo));
+            self.until = CONTROL;
+        }
+        self.until -= 1;
+        let c = self.held;
         let x = frame.map(f64::from);
         let used = self.stages.get_mut(..stages).unwrap_or_default();
         // The cascade as `A·u + B`.
@@ -220,6 +233,7 @@ impl Core {
 
     fn set(&mut self, s: NotchSettings) {
         self.s = s;
+        self.until = 0;
         let g = (std::f64::consts::PI * f64::from(s.low_cut_hz) / self.rate).tan();
         self.low_cut = g / (1.0 + g);
         self.warp_m1 = f64::from(s.warp).exp_m1();
@@ -253,6 +267,8 @@ impl Notches {
             stages: [[[0.0; 2]; 2]; MAX_STAGES],
             band: [[0.0; 2]; 2],
             low: [0.0; 2],
+            held: [Coeffs::default(); 2],
+            until: 0,
             low_cut: 0.0,
             warp_m1: 0.0,
             level: 0.0,
