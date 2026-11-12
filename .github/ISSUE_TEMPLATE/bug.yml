@@ -1,17 +1,17 @@
 name: Bug report
-description: Something plays, loads or behaves wrong
+description: Something sounds, loads, looks or behaves wrong, or KONTRA crashed
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks! Please read [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) first: do not attach commercial
-        presets, samples, `.nicnt` files, extracted scripts or library artwork.
+        Thanks! One problem per report, with a title that says what you see ("Una Corda: EQ knobs do nothing").
+        Please do not attach commercial presets, samples, `.nicnt` files, extracted scripts or library artwork.
   - type: input
     id: version
     attributes:
-      label: KONTRA version / build
-      description: From the About panel or the nightly name.
+      label: KONTRA version
+      description: From the About panel, for example 3.1.0.
     validations:
       required: true
   - type: input
@@ -25,7 +25,7 @@ body:
     id: library
     attributes:
       label: Library and instrument
-      placeholder: Spitfire Areia, Spiccato Fast
+      placeholder: Areia, 16 Violins Spiccato Fast
   - type: dropdown
     id: area
     attributes:
@@ -43,12 +43,13 @@ body:
   - type: textarea
     id: expected
     attributes:
-      label: Expected vs actual
+      label: What you expected and what happened
+      description: If you know what the original sampler does here, say so.
     validations:
       required: true
   - type: textarea
     id: diagnostics
     attributes:
-      label: Diagnostics
-      description: The load report or `kontra-probe --json` summary, reviewed for private data.
+      label: Logs or crash text
+      description: Optional. Anything the host or KONTRA printed, checked for private data.
       render: text
