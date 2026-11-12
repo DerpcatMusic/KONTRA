@@ -534,6 +534,11 @@ impl Machine for LuaMachine {
         self.reads.as_ref().is_some_and(|r| r.text(n, out))
     }
 
+    fn widget_item(&self, n: u32, i: u32, out: &mut Text) -> bool {
+        let _arena = self.arena.audio();
+        self.reads.as_ref().is_some_and(|r| r.item_text(n, i, out))
+    }
+
     fn own_page(&self) -> Option<Box<dyn std::any::Any + Send>> {
         Some(Box::new(ui::read(self.lua.as_ref()?)))
     }
@@ -728,6 +733,20 @@ mod tests {
         let co = m.start(Callbacks::INIT, 0).expect("init");
         assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
+    }
+
+    #[test]
+    fn added_and_cleared_menu_items_reach_the_editor() {
+        let source = r#"local menu = Menu{'m', {'a'}}
+            function onInit() menu:addItem('b') end"#;
+        let mut m = compile(source, &[], &[]).unwrap().machine();
+        let before = m.widget(0).map(|l| l.items);
+        let co = m.start(Callbacks::INIT, 0).expect("init");
+        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_ne!(m.widget(0).map(|l| l.items), before);
+        let mut text = Text::EMPTY;
+        assert!(m.widget_item(0, 1, &mut text) && text.as_str() == "b");
+        assert!(!m.widget_item(0, 2, &mut text));
     }
 
     #[test]
