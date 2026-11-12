@@ -3,6 +3,7 @@
 //! with its settings in DSP terms (processors); convolution responses
 //! decoded off the audio thread (response).
 
+mod ensemble;
 pub mod matrix;
 pub mod processors;
 mod response;
