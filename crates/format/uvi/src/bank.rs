@@ -156,6 +156,30 @@ impl crate::program::Library for Bank {
             .collect()
     }
 
+    /// Small data members, each checked by its size against what is left
+    /// of `TOTAL_LIMIT` before it is read; one the budget leaves out is
+    /// listed with no bytes. A member over `FILE_LIMIT` is no script's data.
+    fn data(&self) -> Vec<(String, Option<Vec<u8>>)> {
+        use crate::program::files::{FILE_LIMIT, TOTAL_LIMIT, may_be_data};
+        let mut out = Vec::new();
+        let mut left = TOTAL_LIMIT;
+        for m in &self.directory.files {
+            let size = usize::try_from(m.size).unwrap_or(usize::MAX);
+            let Some(path) = m
+                .path
+                .as_ref()
+                .filter(|p| size <= FILE_LIMIT && may_be_data(p))
+            else {
+                continue;
+            };
+            let bytes = (size <= left).then(|| self.read(m).ok()).flatten();
+            let bytes = bytes.filter(|b| b.len() <= FILE_LIMIT.min(left));
+            left -= bytes.as_ref().map_or(0, Vec::len);
+            out.push((path.clone(), bytes));
+        }
+        out
+    }
+
     fn sample(&self, program_dir: &str, reference: &str) -> Result<ir::Sample, String> {
         let index = self
             .resolve(program_dir, reference)
@@ -216,7 +240,7 @@ fn programs(directory: &Directory) -> Vec<usize> {
     found.into_iter().map(|(_, i)| i).collect()
 }
 
-fn normalize(path: &str) -> String {
+pub(crate) fn normalize(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {

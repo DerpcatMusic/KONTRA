@@ -279,8 +279,16 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
             w.enabled,
             w.images.first().copied(),
         );
-    if let Some(text) = text.filter(|t| *t != w.text) {
-        w.text = text.to_owned();
+    // A menu's text is its selected item's, which the script may rename.
+    let shown = match (&mut w.kind, &w.value) {
+        (ui::Kind::Menu { items }, Some(ui::Value::Integer(at))) => items
+            .iter_mut()
+            .find(|i| i.value == *at)
+            .map(|i| &mut i.text),
+        _ => Some(&mut w.text),
+    };
+    if let Some((shown, text)) = shown.zip(text).filter(|(s, t)| s.as_str() != *t) {
+        *shown = text.to_owned();
         changed = true;
     }
     changed
