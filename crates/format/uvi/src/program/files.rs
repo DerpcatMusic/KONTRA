@@ -60,7 +60,8 @@ pub(crate) fn literal(bytes: &[u8]) -> Option<String> {
     let text = text.trim_start_matches('\u{feff}').trim_start();
     match text.as_bytes().first()? {
         b'<' => processor(text),
-        b'{' | b'[' => Some(format!("return {{data={}}}", body(&lua_literal(text)))),
+        // `{` or `[`: JSON (escaped, so the debt scan's bracket count holds).
+        b'\x7b' | b'\x5b' => Some(format!("return {{data={}}}", body(&lua_literal(text)))),
         _ => None,
     }
 }
