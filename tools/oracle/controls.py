@@ -4,13 +4,18 @@
     tools/oracle/controls.py NKI OUTDIR [--only REGEX] [--with NAME=V,...] [--src DIR] [--inspect BIN]
 
 Lists every KSP ui control of the instrument's script 0 (its range, menu items, saved default, and
-what its `on ui_control` body writes), then moves each through min/max/default in ONE session per
-side. The mechanism is the library's own code: a copy of script 0 gains a step table in its
-`on controller` callback. CC 103·128 + CC 102 = step k sets that control and runs a copy of its
-ui_control body. Both sides load that copy: kontra-inspect and the Kontakt capture both read
-KONTRA_SCRIPT_SOURCE. After each step the same phrase plays (three single notes, low/mid/high,
-then a chord). Per row, the level, octave-band spectrum, attack, release tail, width and balance
-of the max step minus the min step are compared, ours against Kontakt's.
+what its `on ui_control` body writes), then moves each through min/max/default, ONE session per
+side. The mechanism is the library's own code, in two passes:
+  A (ours only): a copy of script 0 gains a step table in its `on controller` callback;
+    CC 103·128 + CC 102 = step k sets that control and runs a copy of its ui_control body. The
+    trace records, by name, every set_engine_par each step makes.
+  B (ours and Kontakt): the instrument as saved, plus a probe in the next free script slot that
+    replays step k's set_engine_par calls on the same CC. Library scripts are usually protected
+    (Kontakt refuses to replace their source), so this is how Kontakt sees the same moves.
+After each step the same phrase plays (three single notes, low/mid/high, then a chord). Per row,
+the level, octave-band spectrum, attack, release tail, width and balance of the max step minus the
+min step are compared, ours against Kontakt's (pass B). A control whose body sets no engine
+parameter (state read in note callbacks) is "not reachable" for Kontakt here.
 
 --with NAME=V sets those controls (through their bodies) before any row, e.g. the page's on switch,
 so a knob behind a bypassed effect can be heard. Writes OUTDIR/controls.json (all numbers),
@@ -246,6 +251,45 @@ def markdown(rows, title, context):
     return "\n".join(out) + "\n"
 
 
+def writes_per_step(report, steps):
+    """Step k's set_engine_par calls as (name, value, group, slot, generic), from pass A's trace."""
+    res = json.loads(report.read_text())["result"]
+    names, base = res["script_symbols"][0], res["symbol_base"]
+    cc102 = [e["callback_id"] for e in res["stage_events"] if e.get("type") == "callback"
+             and e.get("callback_name") == "controller" and e.get("controller") == 102
+             and e.get("script_slot") == 0]
+    step = {cb: k for k, cb in enumerate(cc102)}
+    out = [[] for _ in steps]
+    for e in res["stage_events"]:
+        if e.get("action") == "SetEnginePar" and e.get("script_slot") == 0 and e["callback_id"] in step:
+            par, *rest = e["args"]
+            name = names[par - base] if 0 <= par - base < len(names) else None
+            if name:
+                out[step[e["callback_id"]]].append((name, *rest))
+    return out, len(cc102)
+
+
+def probe(writes):
+    """A script that replays step k's engine writes on CC 103·128 + CC 102 = k."""
+    cases = "".join(f"    case {k}\n" + "".join(f"      set_engine_par({n}, {v}, {g}, {sl}, {gen})\n"
+                                                for n, v, g, sl, gen in w)
+                    for k, w in enumerate(writes) if w)
+    return ("on init\n  declare $step\nend on\non controller\n  if ($CC_NUM = 102)\n"
+            "    $step := %CC[103] * 128 + %CC[102]\n    select ($step)\n" + cases
+            + "    end select\n  end if\nend on\n")
+
+
+def play(binary, nki, out, scenario, script_dir, report, oracle):
+    env = dict(os.environ, KONTRA_SCRIPT_SOURCE=str(script_dir), KONTRA_ORACLE_DIR=str(HERE),
+               KONTRA_INSPECT_ORACLE_DIR=str(out / "oracle"), KONTRA_INSPECT_WAV=str(out / f"{report}.wav"))
+    cmd = ["nice", "-n", "19", binary, "play", str(nki), "--scenario", str(scenario),
+           "--json", str(out / f"{report}.json")] + (["--oracle"] if oracle else [])
+    run = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    (out / f"{report}.log").write_text(run.stdout + run.stderr)
+    if run.returncode:
+        sys.exit(f"render failed ({run.returncode}); see {out / f'{report}.log'}")
+
+
 def saved_values(path):
     vals = {}
     if path.exists():
@@ -297,18 +341,25 @@ def main():
           f"{len(steps) * PERIOD / 60:.1f} min per side", flush=True)
     if args.plan:
         return
-    oracle_dir = out / "oracle"
-    oracle_dir.mkdir(exist_ok=True)
-    env = dict(os.environ, KONTRA_SCRIPT_SOURCE=str(out / "script"), KONTRA_INSPECT_ORACLE_DIR=str(oracle_dir),
-               KONTRA_INSPECT_WAV=str(out / "ours.wav"), KONTRA_ORACLE_DIR=str(HERE))
-    cmd = ["nice", "-n", "19", sb.inspect_binary(args.inspect), "play", str(Path(args.nki).resolve()),
-           "--scenario", str(out / "scenario.json"), "--oracle", "--json", str(out / "play.json")]
-    run = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    (out / "play.log").write_text(run.stdout + run.stderr)
-    native = sorted(oracle_dir.glob("inspect-*/native.wav"), key=lambda p: p.stat().st_mtime)
-    if run.returncode or not native:
-        sys.exit(f"render failed ({run.returncode}); see {out / 'play.log'}")
-    lag = analyse(native[-1], out / "ours.wav", steps, rows)
+    binary, nki = sb.inspect_binary(args.inspect), Path(args.nki).resolve()
+    (out / "oracle").mkdir(exist_ok=True)
+    play(binary, nki, out, out / "scenario.json", out / "script", "a", oracle=False)
+    writes, seen = writes_per_step(out / "a.json", steps)
+    if seen != len(steps):
+        sys.exit(f"pass A ran {seen} of {len(steps)} steps; see {out / 'a.log'}")
+    slot = len(list(src_dir.glob("[0-9].ksp")))
+    (out / "probe").mkdir(exist_ok=True)
+    (out / "probe" / f"{slot}.ksp").write_text(probe(writes))
+    (out / "writes.json").write_text(json.dumps(writes))
+    play(binary, nki, out, out / "scenario.json", out / "probe", "b", oracle=True)
+    native = sorted((out / "oracle").glob("inspect-*/native.wav"), key=lambda p: p.stat().st_mtime)
+    if not native:
+        sys.exit(f"no Kontakt capture; see {out / 'b.log'}")
+    for r in rows:  # a row whose steps write no engine parameter cannot be replayed in Kontakt
+        ks = [k for k, (sr, _, t) in enumerate(steps) if sr is r and t != "context"]
+        if r["measure"] and ks and not any(writes[k] for k in ks):
+            r["measure"], r["note"] = False, "sets script state only (read by other callbacks); not replayable"
+    lag = analyse(native[-1], out / "b.wav", steps, rows)
     title = f"{Path(args.nki).stem}: panel controls, ours vs Kontakt"
     (out / "controls.json").write_text(json.dumps({"nki": args.nki, "context": context, "lag_frames": lag,
                                                    "rows": rows}, indent=1))

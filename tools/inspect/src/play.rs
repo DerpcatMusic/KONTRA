@@ -57,13 +57,37 @@ fn run_events(
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
     // KONTRA_SCRIPT_SOURCE=<dir>: script n's source is <dir>/n.ksp when that file exists
     // (the oracle capture loads the same files, so both sides run the same edited script).
+    // A file past the last script plays in the next empty slot (a probe).
     if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_SOURCE") {
-        for (n, script) in ir.scripts.iter_mut().enumerate() {
-            if let Ok(source) = std::fs::read_to_string(Path::new(&dir).join(format!("{n}.ksp"))) {
-                script.source = source;
+        for n in 0..5 {
+            let Ok(source) = std::fs::read_to_string(Path::new(&dir).join(format!("{n}.ksp")))
+            else {
+                continue;
+            };
+            match ir.scripts.get_mut(n) {
+                Some(script) => script.source = source,
+                None => ir.scripts.push(kontra_engine::ir::Script {
+                    name: format!("probe {n}"),
+                    slot: n,
+                    dialect: kontra_engine::ir::Dialect::Ksp,
+                    source,
+                    saved: Vec::new(),
+                    data: Vec::new(),
+                    links: Vec::new(),
+                }),
             }
         }
     }
+    // Each KSP script's symbol names in id order: a traced action's argument
+    // `SYMBOL_BASE + n` (an engine parameter, say) is name n of its slot.
+    let script_symbols: Vec<Vec<String>> = (ir.scripts.iter())
+        .map(|s| match s.dialect {
+            kontra_engine::ir::Dialect::Ksp => kontra_ksp::compile(&s.source, &[])
+                .map(|c| c.symbols.iter().map(|n| n.to_string()).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        })
+        .collect();
     let samples: Vec<_> = ir.samples.iter().map(|s| s.name.clone()).collect();
     let group_samples: Vec<Vec<usize>> = ir
         .groups
@@ -333,7 +357,7 @@ fn run_events(
     Ok((
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
-        "trace":trace,"stage_events":stage_events,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
+        "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
         "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
