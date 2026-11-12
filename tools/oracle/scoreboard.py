@@ -410,7 +410,8 @@ def score(args):
                 spread = widest(spread, *own)
             r = score_case(nat[:, a:z], ours[:, a:z], case["hold"], spread)
             r["jitter"] = len(own)
-            r["plain"] = score_case(nat[:, a:z], ours[:, a:z], case["hold"])["ok"]
+            plain = score_case(nat[:, a:z], ours[:, a:z], case["hold"])
+            r["plain"], r["grid"] = plain["ok"], plain.get("fails", [])
             r["spread"] = spread and {k: v for k, v in spread.items() if k in ("level", "onset", "attack", "release", "balance", "band")}
             rows.append(dict(case=case["name"], **r))
         wav.unlink()
@@ -418,8 +419,11 @@ def score(args):
         ok = sum(r["ok"] for r in rows)
         print(f"{name}: {ok}/{len(rows)}{fit}")
         for r in rows:
-            if not r["ok"]:
-                print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"])))
+            # A row scored against v3's own jitter spread also shows its score on the exact grid,
+            # so a regression in repeat handling cannot hide inside the spread.
+            grid = f" | exact grid: {', '.join(r['grid']) or 'ok'}" if r.get("jitter") else ""
+            if not r["ok"] or grid:
+                print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"]) or "ok") + grid)
     total = sum(r["ok"] for rows in table.values() for r in rows)
     if args.spread:
         inside = sum(r["ok"] and not r.get("plain", True) and not r.get("jitter") for rows in table.values() for r in rows)
