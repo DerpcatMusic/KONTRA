@@ -45,6 +45,7 @@ pub fn rack_only(kind: ir::EffectKind) -> bool {
             | ir::EffectKind::Phaser(_)
             | ir::EffectKind::Notches(_)
             | ir::EffectKind::Ensemble(_)
+            | ir::EffectKind::CombBank(_)
             | ir::EffectKind::Transient(_)
             | ir::EffectKind::Cascade(_)
             | ir::EffectKind::Clocked(_)
@@ -87,10 +88,12 @@ pub fn matrix(e: &ir::Effect) -> Gain {
         // Its bands run on summed audio (filters.rs, racks.rs).
         ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_) => IDENTITY,
         // Its wet path runs in instrument and bus racks (racks.rs); a
-        // compressor's, limiter's, notch phaser's or ensemble's output is its wet path.
+        // compressor's, limiter's, notch phaser's, ensemble's or comb
+        // bank's output is its wet path.
         ir::EffectKind::Compressor(_)
         | ir::EffectKind::Notches(_)
         | ir::EffectKind::Ensemble(_)
+        | ir::EffectKind::CombBank(_)
         | ir::EffectKind::Limiter(_)
         | ir::EffectKind::Transient(_) => [[0.0; 2]; 2],
         // Its wet path runs in instrument and bus racks (racks.rs).
