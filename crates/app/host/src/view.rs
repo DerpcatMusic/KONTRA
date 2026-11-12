@@ -103,12 +103,13 @@ impl View {
 
     /// Gives the page's waveform displays the instrument's zone samples
     /// (`attach_zone`); they draw empty until it has them.
-    pub fn set_waves(&mut self, mut waves: Waves) {
+    #[must_use]
+    pub fn with_waves(mut self, mut waves: Waves) -> Self {
         if let Shown::Ksp(live) = &mut self.shown {
             waves.fill(&mut live.tree);
-            self.revision += 1;
         }
         self.waves = waves;
+        self
     }
 
     /// Script slot `slot`'s page, or `None` when it has none or the tree it

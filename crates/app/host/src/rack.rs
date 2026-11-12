@@ -424,11 +424,8 @@ impl Rack {
             .collect();
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
-        let mut view =
-            crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
-        if let Some(view) = &mut view {
-            view.set_waves(waves);
-        }
+        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref())
+            .map(|view| view.with_waves(waves));
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
             source,
