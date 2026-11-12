@@ -222,6 +222,19 @@ impl View {
         Some((self.slot, u32::try_from(id).ok()?))
     }
 
+    /// The user pressed (`value` 1) or let go (0) of `widget`, a native_ui
+    /// page's tap area: the controls its page set, as (slot, UI id,
+    /// value); `None` for any other widget.
+    pub fn tap(&mut self, widget: usize, value: f64) -> Option<Vec<(u8, i32, i64)>> {
+        let Shown::Ksp(live) = &mut self.shown else {
+            return None;
+        };
+        let slot = self.slot;
+        let set = live.tap(widget, value)?;
+        self.revision += 1;
+        Some(set.into_iter().map(|(id, v)| (slot, id, v)).collect())
+    }
+
     /// The script control behind `widget`, as (slot, UI id), and `value`
     /// as the script's integer; None for a widget no control owns.
     #[must_use]

@@ -245,7 +245,7 @@ impl Look {
                 // font's already sits 11 px in, as measured).
                 let arrows = matches!(wd.kind, Kind::ValueEdit { arrows: true, .. });
                 let room = if arrows && font.is_none() {
-                    w - 10. * scale
+                    (w - 10. * scale).max(0.)
                 } else {
                     w
                 };

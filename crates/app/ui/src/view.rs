@@ -296,7 +296,7 @@ fn drawn_page(
             ),
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
-            wd.opacity.to_bits(),
+            (wd.opacity.to_bits(), wd.rotation.to_bits()),
         );
         let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |_| {
             built += 1;
@@ -392,7 +392,11 @@ fn drawn_page(
                 ));
                 look.size(w, h, scale)
             });
-            stack(parts).w(w).h(h).opacity(wd.opacity)
+            stack(parts)
+                .w(w)
+                .h(h)
+                .opacity(wd.opacity)
+                .rotation(wd.rotation.to_radians())
         });
         // A control takes the pointer under its own id (crate::input), and
         // hovering it shows its help text (`set_control_help`).
