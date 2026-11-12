@@ -170,7 +170,7 @@ impl View {
                 if frame.state == Filled::Whole && frame.apply(tree) {
                     self.revision += 1;
                 }
-                self.frame = Some(frame);
+                self.frame = Some(frame.kept());
                 return;
             }
         };
@@ -192,10 +192,7 @@ impl View {
                 self.revision += 1;
             }
         }
-        self.frame = Some(match frame.state {
-            Filled::Overflowed => frame.grown(),
-            Filled::No | Filled::Whole => frame,
-        });
+        self.frame = Some(frame.kept());
         self.library = library.into_inner();
     }
 
@@ -528,6 +525,15 @@ impl LookFrame {
         };
     }
 
+    /// The frame for the next trip: itself, or grown if the script outgrew
+    /// it, on a control page and a Lua page alike.
+    fn kept(self: Box<Self>) -> Box<Self> {
+        match self.state {
+            Filled::Overflowed => self.grown(),
+            Filled::No | Filled::Whole => self,
+        }
+    }
+
     /// The same reads with twice the room in every list, to ask again.
     fn grown(&self) -> Box<Self> {
         let looks = (self.looks.iter())
@@ -666,6 +672,20 @@ mod tests {
             Some(model::Value::Reals(vec![0.25, 0.75]))
         );
         assert!(!frame.apply(&mut tree));
+    }
+
+    #[test]
+    fn an_outgrown_lua_frame_comes_back_with_more_room() {
+        let page = kontra_lua::compile(r#"Menu{"m", {"a"}}"#, &[], &[])
+            .unwrap()
+            .ui;
+        let tree = crate::ui::lua::tree(&page, &|_| None);
+        let mut frame = LookFrame::lua(0, &tree);
+        let room = frame.menus[0].items.capacity();
+        frame.state = Filled::Overflowed;
+        let frame = frame.kept();
+        assert_eq!(frame.menus[0].items.capacity(), room * 2);
+        assert!(frame.state == Filled::No);
     }
 
     #[test]
