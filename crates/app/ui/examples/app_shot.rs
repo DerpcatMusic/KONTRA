@@ -95,6 +95,7 @@ fn specimen() -> App {
         name: name.into(),
         format,
         presets: presets.iter().map(|p| (*p).to_owned()).collect(),
+        recalls: Vec::new(),
         starred,
         art: Vec::new(),
     };

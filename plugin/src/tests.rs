@@ -511,6 +511,7 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
         .request(crate::Request::Browse(kontra_ui::app::Action::Load {
             library,
             preset,
+            into: None,
         }));
     Tick.run(&params);
     let name = crate::lock(&params.shared.rack).as_ref().unwrap().parts()[0]
@@ -567,11 +568,16 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     assert!(back.ends_with("Una Corda Felt.nki"), "{back:?}");
     users_own_preset(&params, library, preset);
     // With the settings on, a second part takes its own channel and output.
+    // An instrument double-clicked adds a part even with part 0 focused.
     browse(kontra_ui::app::Action::NewParts {
         next_channel: true,
         own_output: true,
     });
-    browse(kontra_ui::app::Action::Load { library, preset });
+    browse(kontra_ui::app::Action::Load {
+        library,
+        preset,
+        into: Some(0),
+    });
     let mix = crate::lock(&params.shared.rack).as_ref().unwrap().parts()[1]
         .as_ref()
         .map(|p| (p.mix.channel, p.mix.output));
@@ -710,6 +716,18 @@ fn users_own_preset(params: &KontraParams, library: usize, preset: usize) {
         preset: at,
     });
     assert_eq!(playing(), (mine.clone(), false, values.clone()));
+    // Double-clicked in the browser with part 0 focused: a preset recalls
+    // into that part, never into a new one.
+    browse(Action::Switch { part: 0, preset });
+    browse(Action::Load {
+        library,
+        preset: at,
+        into: Some(0),
+    });
+    assert_eq!(playing(), (mine.clone(), false, values.clone()));
+    let rack = crate::lock(&params.shared.rack);
+    assert!(rack.as_ref().unwrap().parts()[1].is_none(), "no new part");
+    drop(rack);
     // A project reload plays the same preset with the same values.
     params.capture();
     let state = params.saved.read().unwrap().clone();

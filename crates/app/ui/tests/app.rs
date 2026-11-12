@@ -70,6 +70,7 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
             name: "Areia".into(),
             format: Format::Kontakt,
             presets: vec!["Violins".into()],
+            recalls: Vec::new(),
             starred: false,
             art: Vec::new(),
         }],
@@ -85,7 +86,8 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
         clicks(&mut ui, &mut app, "preset-0", 2),
         vec![Action::Load {
             library: 0,
-            preset: 0
+            preset: 0,
+            into: None
         }]
     );
     app.parts.push(Part {
@@ -373,6 +375,7 @@ fn a_preset_dragged_onto_a_part_replaces_it_and_onto_free_space_adds_one() {
             name: "Areia".into(),
             format: Format::Kontakt,
             presets: vec!["Violins".into(), "Violas".into()],
+            recalls: Vec::new(),
             starred: false,
             art: Vec::new(),
         }],
@@ -398,7 +401,8 @@ fn a_preset_dragged_onto_a_part_replaces_it_and_onto_free_space_adds_one() {
     assert!(
         onto_rack.contains(&Action::Load {
             library: 0,
-            preset: 1
+            preset: 1,
+            into: None
         }),
         "{onto_rack:?}"
     );
@@ -438,5 +442,45 @@ fn the_browser_split_drags_and_keeps_its_share() {
         app.view.split <= 0.7,
         "held to v2's bound: {}",
         app.view.split
+    );
+}
+
+/// With a part playing, a double-click names it as the part to play in;
+/// the host plays only a preset of an instrument there (the plugin test).
+#[test]
+fn a_double_click_names_the_focused_part() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![Library {
+            name: "Strings".into(),
+            format: Format::Kontakt,
+            presets: vec!["Snapshots/Airy".into(), "Strings".into()],
+            recalls: vec![0],
+            starred: false,
+            art: Vec::new(),
+        }],
+        parts: vec![Part {
+            name: "Strings".into(),
+            library: "Strings".into(),
+            ..Part::default()
+        }],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "library-0");
+    let load = |preset, into| Action::Load {
+        library: 0,
+        preset,
+        into,
+    };
+    click(&mut ui, &mut app, "preset-0");
+    assert_eq!(
+        clicks(&mut ui, &mut app, "preset-0", 2),
+        vec![load(0, Some(0))]
+    );
+    click(&mut ui, &mut app, "preset-1");
+    assert_eq!(
+        clicks(&mut ui, &mut app, "preset-1", 2),
+        vec![load(1, Some(0))]
     );
 }

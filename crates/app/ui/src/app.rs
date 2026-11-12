@@ -78,6 +78,9 @@ pub struct Library {
     pub format: Format,
     /// Its instruments by path inside the library: `Folder/Name`.
     pub presets: Vec<String>,
+    /// Which of `presets` (sorted) are presets of an instrument, recalled
+    /// into the focused part on a double-click: snapshots, the player's own.
+    pub recalls: Vec<usize>,
     pub starred: bool,
     /// Pictures that may be its cover, best first, as the host's cover
     /// store reads them; the first that decodes is shown.
@@ -327,9 +330,13 @@ pub enum Sheet {
 /// What the user asked for this frame, for the host to carry out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// A browser preset to play, in a new part unless it is a preset of an
+    /// instrument and `into` names the focused part (Kontakt's browser
+    /// replaces the selected slot's snapshot).
     Load {
         library: usize,
         preset: usize,
+        into: Option<usize>,
     },
     /// A browser preset dropped on a part: it plays that instead.
     Replace {
@@ -691,8 +698,7 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
         .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");
-    // The focused part: the first one open, else the first.
-    let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
+    let focused = browser::focused(&app.parts).and_then(|n| app.parts.get(n));
     // Its script's last `message`, where Kontakt's status bar shows it.
     let message = (focused.and_then(|p| p.face.as_ref()))
         .map(|f| f.tree.message.as_str())
