@@ -342,6 +342,14 @@ impl Engine {
         if loaded.len() < loaded.capacity() {
             loaded.push((at, slot, ty));
         }
+        // Its knobs start where the new unit's are.
+        let knobs = &mut self.behaviour.knobs;
+        knobs.retain(|&(a, s, _)| (a, s) != (at, slot));
+        if let Some(model) = self.plan.knob_model(at, slot, Some(ty))
+            && knobs.len() < knobs.capacity()
+        {
+            knobs.push((at, slot, kontra_behaviour::positions(model)));
+        }
     }
 
     /// The rack and index slot `slot` of `at` addresses outside the groups.

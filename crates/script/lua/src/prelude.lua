@@ -197,15 +197,21 @@ local saved_widgets = {}
 -- What a user or host can move, by name: each live macro as the program
 -- tree makes it, then each named widget as the script does.
 __controls = {}
+-- `setValue`'s second argument for a move that runs `changed` even when the
+-- value stays (a user's edit, a restore).
+__FORCE = {}
+local function force(w)
+	return w.kind ~= "Table" and __FORCE or nil
+end
 
 -- Control `id` (0-based in `__controls`) moves to `value` and runs its
 -- `changed`, as a user's edit would; a button reads nonzero as on.
 function __control(id, value)
 	local c = __controls[id + 1]
 	if c and type(c.value) == "boolean" then
-		c:setValue(value ~= 0)
+		c:setValue(value ~= 0, __FORCE)
 	elseif c then
-		c:setValue(value)
+		c:setValue(value, force(c))
 	end
 end
 -- The UI the script builds, for the editor: every widget in the order the
@@ -225,7 +231,7 @@ function __restore()
 		-- Each `changed` runs on its own: one that fails (VWinds' `dynamics`
 		-- names a Macro 7 its Bb Clarinet lacks) leaves the rest restored.
 		if w.persistent ~= false then
-			local ok, err = pcall(w.setValue, w, restored(w.name, w.value))
+			local ok, err = pcall(w.setValue, w, restored(w.name, w.value), force(w))
 			if not ok then
 				table.insert(__restore_errors, tostring(w.name) .. ": " .. tostring(err))
 			end
@@ -288,9 +294,14 @@ widget = function(kind, name, value, ...)
 	if kind == "Table" then
 		return table_widget(w, name, fields)
 	end
+	-- A script's setValue runs `changed` only when the value changes, as
+	-- JUCE's controls under UVI do: W Strings Harmonic's linked arpeggiator
+	-- buttons set each other and recursed without end. A user's move and a
+	-- restore always run it (`__FORCE`).
 	w.setValue = function(self, v, run)
+		local was = rawget(self, "__value")
 		rawset(self, "__value", v)
-		if run ~= false then
+		if run ~= false and (run == __FORCE or v ~= was) then
 			run_changed(self)
 		end
 	end
@@ -866,6 +877,10 @@ local function event(kind)
 	}
 end
 
+-- Whether init (and the saved state's onLoad) is running: it runs while
+-- the engine is built, off the audio thread.
+local initializing = false
+
 -- Entries by the engine's callback number: init, note, release, controller.
 __entries = {
 	[0] = function()
@@ -881,13 +896,20 @@ __entries = {
 		for _, m in ipairs(macros) do
 			send_macro(m)
 		end
-		if onInit then
-			onInit()
-		end
-		-- The state the program saved (`onSave`) comes back after init.
-		local found, state = pcall(require, "__state")
-		if onLoad and found and state ~= true then
-			onLoad(state)
+		initializing = true
+		local ok, err = pcall(function()
+			if onInit then
+				onInit()
+			end
+			-- The state the program saved (`onSave`) comes back after init.
+			local found, state = pcall(require, "__state")
+			if onLoad and found and state ~= true then
+				onLoad(state)
+			end
+		end)
+		initializing = false
+		if not ok then
+			error(err, 0)
 		end
 	end,
 	[1] = function()
@@ -926,7 +948,7 @@ __entries = {
 		elseif w.kind == "Menu" or rawget(w, "integer") == true then
 			v = math.floor(v + 0.5)
 		end
-		w:setValue(v)
+		w:setValue(v, __FORCE)
 	end,
 	[3] = function()
 		onController({
@@ -1051,26 +1073,29 @@ end
 
 -- loadState(path, done): a saved script preset. Its widgets take their
 -- values and run `changed` as on a reload, then `onLoad` gets its state.
-function loadState(path, done)
-	local file = __file(bank_path(path))
-	if not (file and file.values) then
-		return
-	end
+-- Milliseconds of audio between the controls a loaded preset sets: longer
+-- than a 512-frame block at 48 kHz.
+local PRESET_PACE = 12
+
+-- Sets `file`'s values on the widgets, `pace(PRESET_PACE)` after each
+-- control with a changed, then hands its state to onLoad and calls `done`.
+local function land(file, done, pace)
 	for _, w in ipairs(__ui.widgets) do
 		local text = w.name and file.values[w.name]
+		local ok, err = true, nil
 		if text ~= nil and w.kind == "Table" and w.persistent ~= false then
 			for i, v in ipairs(cells(text)) do
 				w:setValue(i, v)
 			end
-			local ok, err = pcall(run_changed, w)
-			if not ok then
-				print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
-			end
+			ok, err = pcall(run_changed, w)
 		elseif text ~= nil and w.persistent ~= false then
-			local ok, err = pcall(w.setValue, w, parsed(text, w.value))
-			if not ok then
-				print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
-			end
+			ok, err = pcall(w.setValue, w, parsed(text, w.value), force(w))
+		end
+		if not ok then
+			print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
+		end
+		if text ~= nil and type(rawget(w, "changed")) == "function" then
+			pace(PRESET_PACE)
 		end
 	end
 	if onLoad and file.state ~= nil then
@@ -1079,6 +1104,26 @@ function loadState(path, done)
 	if type(done) == "function" then
 		done({ success = true })
 	end
+end
+
+function loadState(path, done)
+	local file = __file(bank_path(path))
+	if not (file and file.values) then
+		return
+	end
+	if initializing then
+		-- Init runs off the audio thread, and the project's saved values
+		-- and state land after it, so they win over a default preset.
+		land(file, done, function() end)
+		return
+	end
+	-- Once running, the preset lands after the call returns (our choice),
+	-- one control's callbacks every PRESET_PACE ms of audio: a preset's 26
+	-- callbacks (VWinds, up to 4 ms each) never pile into one audio block.
+	spawn(function()
+		wait(PRESET_PACE)
+		land(file, done, wait)
+	end)
 end
 
 -- ponytail: saving needs a file the user picked, and browseForFile has no

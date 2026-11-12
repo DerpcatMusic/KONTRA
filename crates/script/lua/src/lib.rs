@@ -681,7 +681,8 @@ mod tests {
     /// VWinds' preset menu (`loadState` of a `.VHFPreset`) and Augmented
     /// Orchestra's arpeggiator presets (`loadData` of a JSON `.arp`), by
     /// paths relative to the script's folder: widgets take the preset's
-    /// values and run `changed`, `onLoad` gets its state, and `done` runs.
+    /// values and run `changed` after the call returns, paced over blocks,
+    /// then `onLoad` gets its state and `done` runs.
     #[test]
     fn a_script_loads_its_banks_presets_and_data_by_relative_path() {
         let source = r#"
@@ -692,18 +693,36 @@ mod tests {
             air.changed = function(s) seen = s.value end
             local text = ''
             function onLoad(state) text = state.presetText end
+            local landed = false
+            local function studio()
+                loadState('../Script/presets/Studio 1.VHFPreset', function(t)
+                    assert(air.value == 66 and seen == 66 and text == 'Studio 1*' and t.success)
+                    assert(panel.value == false)
+                    assert(steps:getValue(1) == 0.5 and steps:getValue(2) == 1)
+                    landed = true
+                end)
+            end
+            function onNote()
+                -- Once running, nothing lands within the call: its
+                -- callbacks are paced.
+                air.value, seen, text, landed = 0, 0, '', false
+                studio()
+                assert(air.value == 0 and seen == 0 and not landed)
+            end
+            function onRelease() assert(landed) end
             function onInit()
-                local done, arp = false, nil
-                loadState('../Script/presets/Studio 1.VHFPreset', function(t) done = t.success end)
-                assert(air.value == 66 and seen == 66 and text == 'Studio 1*' and done)
-                assert(panel.value == false)
-                assert(steps:getValue(1) == 0.5 and steps:getValue(2) == 1)
+                local arp = nil
+                -- In init the preset lands within the call.
+                studio()
+                assert(landed)
+                local before = air.changed
                 -- A changed that fails still runs on the next change.
                 local fails = true
                 air.changed = function(s) if fails then fails = false error('once') end seen = s.value end
                 assert(not pcall(air.setValue, air, 1))
                 air.value = 2
                 assert(seen == 2)
+                air.changed, air.value, seen = before, 0, 0
                 loadData('./../JSON/Arp/Frames.arp', function(d) arp = d end)
                 assert(arp.steps[2] == 5)
                 loadData('missing.arp', function() error('called for a missing file') end)
@@ -731,7 +750,51 @@ mod tests {
         ];
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("init");
-        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert!(m.spawned().is_none(), "init's preset landed in the call");
+        let note = m.start(Callbacks::NOTE, 0).expect("note");
+        assert_eq!(m.run(note, &mut log), Step::Done);
+        // The preset's task, already waiting before its first control: one
+        // more wait after the only control with a changed (air).
+        let (task, _) = m.spawned().expect("the preset lands in a task");
+        let mut waits = 0;
+        while let Step::Wait(_) = m.run(task, &mut log) {
+            waits += 1;
+        }
+        assert_eq!(waits, 1, "a wait after air's changed");
+        let release = m.start(Callbacks::RELEASE, 0).expect("release");
+        assert_eq!(m.run(release, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+    }
+
+    #[test]
+    fn a_projects_saved_state_wins_over_the_default_preset_init_loads() {
+        let source = r#"
+            local text = ''
+            function onLoad(state) text = state.presetText end
+            function onInit() loadState('default.VHFPreset') end
+            function onNote() assert(text == 'Mine', text) end"#;
+        let modules = [
+            ("__dir.lua".to_string(), "return \"Script\"".to_string()),
+            (
+                "__file/script/default.vhfpreset".to_string(),
+                r#"return {values={},state={["presetText"]="Default"}}"#.to_string(),
+            ),
+            (
+                "__state.lua".to_string(),
+                r#"return {presetText="Mine"}"#.to_string(),
+            ),
+        ];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("init");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        while let Some((task, _)) = m.spawned() {
+            while let Step::Wait(_) = m.run(task, &mut log) {}
+        }
+        let note = m.start(Callbacks::NOTE, 0).expect("note");
+        assert_eq!(m.run(note, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
     }
 
@@ -747,6 +810,25 @@ mod tests {
         let mut text = Text::EMPTY;
         assert!(m.widget_item(0, 1, &mut text) && text.as_str() == "b");
         assert!(!m.widget_item(0, 2, &mut text));
+    }
+
+    #[test]
+    fn set_value_runs_changed_only_on_a_change_but_a_users_move_always() {
+        // W Strings Harmonic: linked buttons set each other.
+        let source = "n = 0
+            local a = OnOffButton('a', false)
+            local b = OnOffButton('b', false)
+            a.changed = function(s) n = n + 1; b:setValue(s.value) end
+            b.changed = function(s) a:setValue(s.value) end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function(s) assert(n == 2, n) end";
+        let compiled = compile(source, &[], &[]).unwrap();
+        let mut m = compiled.machine();
+        for (control, value) in [(0, 1.0), (0, 1.0), (2, 0.5)] {
+            let co = m.control(control, value, 0).expect("control");
+            assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        }
+        assert_eq!(m.faults().bad_code, 0);
     }
 
     #[test]

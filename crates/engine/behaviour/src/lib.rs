@@ -67,8 +67,20 @@ pub struct Behaviour {
     pub shapes: Vec<Option<u16>>,
     /// Slots and the [`ir::SlotShapes::types`] entry each was last loaded with.
     pub loaded: Vec<(kontra_ir::RackAt, u8, u16)>,
-    /// Per [`Plan::slot_models`] entry, its knobs' positions as last set.
-    pub models: Vec<Box<[f32]>>,
+    /// Each slot with a [`kontra_ir::KnobModel`] and its knobs' positions
+    /// as last set: the saved slots', then those of types a script loaded.
+    pub knobs: Vec<(kontra_ir::RackAt, u8, Positions)>,
+}
+
+/// A [`kontra_ir::KnobModel`]'s live positions.
+pub type Positions = [f32; kontra_ir::KnobModel::MAX];
+
+/// `model`'s saved positions, as live ones.
+#[must_use]
+pub fn positions(model: &kontra_ir::KnobModel) -> Positions {
+    let mut out = [0.0; kontra_ir::KnobModel::MAX];
+    out.iter_mut().zip(&model.saved).for_each(|(o, s)| *o = *s);
+    out
 }
 
 impl Behaviour {
@@ -101,8 +113,24 @@ impl Behaviour {
             rls_reset: [0; 128],
             shapes: vec![None; plan.slot_shapes.slots.len()],
             loaded: Vec::with_capacity(LOADED.max(plan.loaded.len())),
-            models: plan.slot_models.iter().map(|m| m.2.saved.clone()).collect(),
+            knobs: Vec::with_capacity(LOADED + plan.slot_models.len() + plan.loaded.len()),
         };
+        // Every modelled slot starts at its model's saved positions: the
+        // type a recalled project loaded there, else the slot's own.
+        let slots = (plan.slot_models.iter().map(|m| (m.0, m.1)))
+            .chain(plan.loaded.iter().map(|l| (l.0, l.1)));
+        for (at, slot) in slots {
+            let ty = plan
+                .loaded
+                .iter()
+                .find(|l| (l.0, l.1) == (at, slot))
+                .map(|l| l.2);
+            if !behaviour.knobs.iter().any(|k| (k.0, k.1) == (at, slot))
+                && let Some(model) = plan.knob_model(at, slot, ty)
+            {
+                behaviour.knobs.push((at, slot, positions(model)));
+            }
+        }
         behaviour.loaded.extend_from_slice(&plan.loaded);
         if let Some(key) = plan.default_keyswitch {
             behaviour.press(plan, key);
