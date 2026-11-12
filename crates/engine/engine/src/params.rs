@@ -412,8 +412,9 @@ impl Engine {
             }),
             _ => return self.set_envelope(par, x, group, slot),
         };
-        if set {
-            self.refresh_all(None);
+        // A route or LFO belongs to its group: only that group's voices read it.
+        if set && let Ok(g) = u32::try_from(group) {
+            self.refresh_voices(None, |_, zone| zone.group == g);
         }
         set
     }
@@ -520,12 +521,7 @@ impl Engine {
 
     /// Re-reads gain (and pitch, unless `cc` moved) of every sounding note.
     pub(crate) fn refresh_all(&mut self, cc: Option<u8>) {
-        let mut hits = std::mem::take(&mut self.hits);
-        self.notes.select(&mut hits, |_| true);
-        for &note in &hits {
-            self.refresh_note(note, cc);
-        }
-        self.hits = hits;
+        self.refresh_voices(cc, |_, _| true);
     }
 }
 
