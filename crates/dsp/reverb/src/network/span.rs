@@ -100,7 +100,9 @@ impl Network {
             for (u, (&s, &t)) in u.iter_mut().zip(sum.iter().zip(t)) {
                 *u = flush(self.mean * s + self.half * t);
             }
-            for chunk in u.get(..n).unwrap_or_default().chunks(8) {
+            // Past `n` every value is 0, which no peak keeps: the whole
+            // array goes as eight even lanes.
+            for chunk in u.as_chunks::<8>().0 {
                 for (p, &u) in peak.iter_mut().zip(chunk) {
                     if u.abs() > *p {
                         *p = u.abs();
