@@ -222,7 +222,8 @@ impl Rack {
             (script.restore, script.restore_texts) = (saved.ints, saved.texts);
         }
         let plan = Arc::new(plan);
-        let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
+        let mut engine = Engine::new(plan, self.store.client(), self.rate);
+        super::requests::init_tables(&mut engine, &self.store.client());
         let pages: Vec<Option<kontra_lua::Ui>> = old.faces.iter().map(|_| None).collect();
         let near = old.source.as_deref().or(old.path.as_deref());
         let view = crate::view::View::of(&old.faces, &pages, &engine, near);
@@ -230,7 +231,7 @@ impl Rack {
             recall: engine.recall_law(),
             sounds: crate::sound::Sounds::new(self.rate, engine.group_sounds()),
             view,
-            plan: Some(plan),
+            plan: Some(Arc::clone(engine.plan())),
             slot_types,
             slot_responses,
             script: ScriptState {
