@@ -101,10 +101,11 @@ impl Notches {
         self.s = s;
     }
 
-    fn retune(&mut self) {
+    /// The coefficients for the LFO at `cycle`.
+    fn retune(&mut self, cycle: f64) {
         let s = self.s;
         for (ch, ahead) in self.ch.iter_mut().zip([0.0, f64::from(s.phase)]) {
-            let lfo = (std::f64::consts::TAU * (self.cycle + ahead)).sin() as f32;
+            let lfo = (std::f64::consts::TAU * (cycle + ahead)).sin() as f32;
             let hz = s.hz * (s.octaves * lfo).exp2();
             ch.retune(hz, s.q * (s.q_octaves * lfo).exp2(), self.rate);
         }
@@ -115,17 +116,19 @@ impl Notches {
         let s = self.s;
         let n = usize::from(s.sections).clamp(1, MAX_SECTIONS);
         let wet = 0.5 * s.mix * if s.invert { -1.0 } else { 1.0 };
+        // Below 1, so the loop round the allpasses (gain 1) cannot ring up.
+        let feedback = s.feedback.clamp(-0.98, 0.98);
         let dry = 1.0 - s.mix + 0.5 * s.mix;
         let step = f64::from(s.lfo_hz / self.rate);
         let mut written = 0.0f32;
         for frame in io {
             if self.due == 0 {
-                self.retune();
+                self.retune(self.cycle);
                 self.due = TICK;
             }
             self.due -= 1;
             for (v, ch) in frame.iter_mut().zip(&mut self.ch) {
-                let y = ch.run(*v, n, s.feedback);
+                let y = ch.run(*v, n, feedback);
                 written = written.max(y.abs());
                 *v = dry * *v + wet * y;
             }
@@ -148,9 +151,18 @@ impl Notches {
         self.written
     }
 
-    /// Silent frames: the LFO moves on as [`Self::process`] would move it.
+    /// Silent frames: the LFO and the coefficient ticks move on as
+    /// [`Self::process`] would move them, so waking matches never sleeping.
     pub fn idle(&mut self, frames: usize) {
         let step = f64::from(self.s.lfo_hz / self.rate);
+        if frames > self.due {
+            // The last tick inside, as `process` would have taken it.
+            let last = self.due + (frames - 1 - self.due) / TICK * TICK;
+            self.retune((self.cycle + step * last as f64).fract());
+            self.due = TICK - (frames - last);
+        } else {
+            self.due -= frames;
+        }
         self.cycle = (self.cycle + step * frames as f64).fract();
     }
 }

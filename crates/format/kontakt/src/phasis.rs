@@ -52,10 +52,11 @@ pub(crate) fn phasis(p: [f32; 13]) -> ir::EffectKind {
         q: 0.5 * 6.48f32.powf(1.0 - 2.0 * spread),
         octaves: 4.6 * amount * (1.0 - mod_mix),
         q_octaves: polarity * 6.48f32.log2() * amount * mod_mix,
-        // Its text is 0..95 %. ponytail: one loop round the sections at that
-        // gain matches Kontakt within 0.5 dB to 25 %; at 100 % Kontakt shows a
-        // −16 dB floor with a peak at the centre this loop does not.
-        feedback: 0.95 * feedback,
+        // One loop round the sections at 0.84·x puts the centre's peak where
+        // Kontakt does (+0.6, +1.5, +7.4 dB at 25, 50, 100 %, mix 50 %; its
+        // text reads 0..95 %). ponytail: at 100 % Kontakt also sinks
+        // everything off the centre to −16 dB; this loop does not.
+        feedback: 0.84 * feedback,
         // Its text: 0.01 Hz to 26 Hz, `26·e^(8.1(x − 1))`. ponytail: synced
         // units and Ultra's faster rates are unmeasured; Hz as without.
         rate: ir::Rate::Hz(26.0 * (8.1 * (rate - 1.0)).exp()),
@@ -127,7 +128,7 @@ mod tests {
     #[test]
     fn a_new_phasis_is_kontakts_init() {
         // Kontakt 8.13.1 reads back two notches, centre 622 Hz, spread 50 %
-        // (Q ½), rate 0.19 Hz, feedback 20 %.
+        // (Q ½), rate 0.19 Hz, feedback 20 % (loop gain 0.84·x).
         let ir::EffectKind::Notches(n) = phasis(INIT) else {
             panic!("a notch phaser");
         };
@@ -135,6 +136,6 @@ mod tests {
         assert!((n.hz - 622.0).abs() < 4.0, "{}", n.hz);
         assert!((n.q - 0.5).abs() < 1e-3);
         assert!(matches!(n.rate, ir::Rate::Hz(hz) if (hz - 0.19).abs() < 0.01));
-        assert!((n.feedback - 0.2).abs() < 1e-3 && !n.invert);
+        assert!((n.feedback - 0.84 * 0.210_526).abs() < 1e-4 && !n.invert);
     }
 }
