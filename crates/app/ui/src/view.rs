@@ -340,7 +340,16 @@ fn drawn_page(
                     ));
                 } else {
                     parts.push(
-                        words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.),
+                        words_el(
+                            &words,
+                            style,
+                            wd,
+                            (w, h),
+                            scale,
+                            outline.as_ref(),
+                            tree.source,
+                        )
+                        .at(0., 0.),
                     );
                 }
             }
@@ -522,6 +531,7 @@ fn words_el(
     (width, height): (f64, f64),
     scale: f64,
     font: Option<&Font>,
+    source: model::Source,
 ) -> El {
     let native_style = style.cloned().map(|mut style| {
         if font.is_some() && style.font == model::Font::Stock(23) {
@@ -529,7 +539,7 @@ fn words_el(
         }
         style
     });
-    let geometry = plan::text(words, native_style.as_ref(), w, height, scale);
+    let geometry = plan::text(words, native_style.as_ref(), w, (height, scale), source);
     let size = geometry.size;
     let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
     let align = geometry.align;

@@ -206,7 +206,10 @@ pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
 }
 
 /// Geometry and ink of a label, in view points. Explicit line breaks keep
-/// their empty rows and use the source's measured line pitch.
+/// their empty rows and use the source's measured line pitch. A Kontakt
+/// label's words start at its top however tall it is (Areia's 18- and
+/// 22-point labels both ink from 3.3 points down in Kontakt 8); anything
+/// else's single line sits in its middle.
 pub(super) struct Text {
     pub size: f64,
     pub line: f64,
@@ -221,15 +224,17 @@ pub(super) fn text(
     words: &str,
     style: Option<&model::TextStyle>,
     widget: &model::Widget,
-    height: f64,
-    scale: f64,
+    (height, scale): (f64, f64),
+    source: model::Source,
 ) -> Text {
     let size = style.and_then(|s| s.size).map_or(super::TEXT, f64::from) * scale;
     let multiline = words.contains('\n');
     let line = size * if multiline { 13. / 11. } else { 1.25 };
     let top = widget.text_y.map_or_else(
         || {
-            if multiline {
+            let label = matches!(widget.kind, model::Kind::Label)
+                && !matches!(source, model::Source::FalconLua);
+            if multiline || label {
                 0.
             } else {
                 ((height - line) / 2.).max(0.)
@@ -286,11 +291,15 @@ pub(super) fn glyphs(
         |s| s.align,
     );
     let multiline = words.contains('\n');
-    let top = widget
-        .text_y
-        .map_or(if multiline { 0. } else { (height - line) / 2. }, |y| {
-            f64::from(y) * scale
-        });
+    // A picture font's label starts at its top, as a stock one does.
+    let top = widget.text_y.map_or(
+        if multiline || matches!(widget.kind, model::Kind::Label) {
+            0.
+        } else {
+            (height - line) / 2.
+        },
+        |y| f64::from(y) * scale,
+    );
     let advance = |c| width_of(crate::pictures::glyph(c)).map_or(0., |w| f64::from(w) * scale);
     let mut result = Vec::new();
     for (n, row) in words.split('\n').enumerate() {
@@ -430,6 +439,31 @@ pub(super) fn label_fits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kontakt_label_starts_at_its_top_and_a_lua_one_sits_in_its_middle() {
+        let label = model::Widget::new(
+            "$label",
+            PageRef(0),
+            model::Rect::new(0, 0, 50, 22),
+            model::Kind::Label,
+        );
+        let top = |source| text("Sordino", None, &label, (22., 1.), source).top;
+        assert_eq!(top(model::Source::Ksp { slot: 0 }), 0.);
+        assert!(top(model::Source::FalconLua) > 0.);
+        let mut button = label.clone();
+        button.kind = model::Kind::Button { momentary: false };
+        assert!(
+            text(
+                "Go",
+                None,
+                &button,
+                (22., 1.),
+                model::Source::Ksp { slot: 0 }
+            )
+            .top > 0.
+        );
+    }
 
     #[test]
     fn a_held_button_selects_its_pressed_picture_in_the_plan() {
