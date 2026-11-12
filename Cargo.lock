@@ -2312,6 +2312,7 @@ name = "kontra-library"
 version = "0.0.0"
 dependencies = [
  "dirs",
+ "kontra-ui-model",
  "serde",
  "serde_json",
 ]

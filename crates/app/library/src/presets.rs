@@ -14,7 +14,33 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::{SlotResponse, SlotType};
+/// One convolution a script loaded with a library response, by the name
+/// the plan gives it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlotResponse {
+    pub rack: SavedRack,
+    pub slot: u8,
+    pub name: String,
+}
+
+/// One slot a script loaded with an effect type: the rack, the slot and
+/// the type, as the plan numbers them.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlotType {
+    pub rack: SavedRack,
+    pub slot: u8,
+    pub ty: u16,
+}
+
+/// An effect rack of an instrument, as a file names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SavedRack {
+    Group(u32),
+    Inserts,
+    Sends,
+    Main,
+    Bus(u8),
+}
 
 /// The extension of a user preset file.
 pub const EXTENSION: &str = "kontra";
