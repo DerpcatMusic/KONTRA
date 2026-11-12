@@ -57,7 +57,7 @@ impl Prepared {
             (Some((_, _, r)), _) => racks::convolver(r),
             (None, Some(_)) => Dsp::None,
             // Routed, so a script's later knob writes retune it.
-            (None, None) => racks::processor(request.effect, true, rate, &Responses(&[], &[])),
+            (None, None) => racks::processor(request.effect, rate, &Responses(&[], &[])),
         };
         Self {
             request,
