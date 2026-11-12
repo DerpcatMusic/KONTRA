@@ -190,6 +190,9 @@ pub struct Rack {
     interfaces: Interfaces,
     /// Snapshot recalls whose plans are being made ([`native`]).
     native: Vec<native::Native>,
+    /// The instruments the player has, by the catalog generation they are
+    /// of: a snapshot kept apart from its library binds to one by name.
+    known: (u64, Vec<PathBuf>),
 }
 
 impl Rack {
@@ -224,6 +227,7 @@ impl Rack {
             interfaces: Interfaces::Shown,
             generation: 0,
             native: Vec::new(),
+            known: (0, Vec::new()),
         };
         (rack, audio)
     }
@@ -271,7 +275,16 @@ impl Rack {
         if let Some(done) = self.load_preset(part, path) {
             return done;
         }
-        self.load_ir(part, crate::instrument::read(path)?, Some(path.to_owned()))
+        let instrument = crate::instrument::read_saved(path, &[], &self.known.1)?;
+        self.load_ir(part, instrument, Some(path.to_owned()))
+    }
+
+    /// Takes the instruments of `browser`'s catalog as the ones a snapshot
+    /// may bind to ([`crate::instrument::preset`]), when it changed.
+    pub fn know(&mut self, browser: &crate::browser::Browser) {
+        if self.known.0 != browser.generation {
+            self.known = (browser.generation, browser.instruments());
+        }
     }
 
     /// [`Rack::load`], with each instrument script's saved values replaced
@@ -289,7 +302,7 @@ impl Rack {
         slot_types: &[(ir::RackAt, u8, u16)],
         slot_responses: &[(ir::RackAt, u8, String)],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut instrument = crate::instrument::read_saved(path, scripts)?;
+        let mut instrument = crate::instrument::read_saved(path, scripts, &self.known.1)?;
         for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
             script.saved.clone_from(saved);
         }

@@ -73,11 +73,20 @@ impl Error {
 /// When the file is not a Kontakt instrument this can read; a sample that
 /// is missing or unreadable is a diagnostic, not an error.
 pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
+    load_known(path, &[])
+}
+
+/// [`load`], a snapshot's base found among `known` (the instruments the
+/// player has) when none is near it ([`preset`]).
+///
+/// # Errors
+/// As [`load`].
+pub fn load_known(path: &Path, known: &[std::path::PathBuf]) -> Result<ir::Instrument, Error> {
     if path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
     {
-        return snapshot::load(path);
+        return snapshot::load(path, known);
     }
     let (chunks, monolith, encrypted) = container::opened(path)?;
     translate::instrument(path, &chunks, monolith, &[], encrypted, None)
