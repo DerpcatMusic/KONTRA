@@ -16,5 +16,5 @@ kontra-lua = { path = "../../crates/script/lua" }
 kontra-stream = { path = "../../crates/engine/stream" }
 kontra-ui = { path = "../../crates/app/ui" }
 kontra-ui-model = { path = "../../crates/model/ui-model" }
-mui = { workspace = true, features = ["cpu"] }
-png = "0.18"
+mui = { workspace = true }
+mui-headless = { workspace = true }

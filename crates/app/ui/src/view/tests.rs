@@ -4,7 +4,6 @@ use kontra_ui_model::{
     Asset, AssetKind, AssetRef, ImageMeta, ImageUse, Page, Range, Rect, Rgba, Role, Size, Widget,
 };
 use mui::prelude::{Input, Size as ViewSize};
-use mui::vello;
 
 use super::*;
 
@@ -30,20 +29,12 @@ fn paint(ui: &mut Ui, el: El, w: u16, h: u16) -> Vec<[u8; 4]> {
         )
         .is_ok()
     );
-    let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
-    let mut resources = vello::vello_cpu::Resources::default();
-    if let Some(scene) = ui.scene() {
-        let cpu = &mut vello::Cpu {
-            ctx: &mut ctx,
-            resources: &mut resources,
-            cache: &mut vello::Cache::default(),
-        };
-        assert!(vello::paint(cpu, scene, vello::kurbo::Affine::IDENTITY).is_ok());
-    }
-    ctx.flush();
-    let mut pix = vello::vello_cpu::Pixmap::new(w, h);
-    ctx.render(&mut pix, &mut resources);
-    pix.take_rgba8(vello::peniko::ImageAlphaType::Alpha)
+    let rgba = ui
+        .scene()
+        .map(|s| mui_headless::Raster::new(w, h).draw(s, 1.0));
+    assert!(matches!(rgba, Some(Ok(_))), "painted on the CPU");
+    rgba.and_then(Result::ok)
+        .unwrap_or_default()
         .as_chunks::<4>()
         .0
         .to_vec()
