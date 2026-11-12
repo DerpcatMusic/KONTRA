@@ -57,6 +57,7 @@ impl Engine {
             let pan = [slot.pan[0], self.group_pan(zone)];
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan[0]);
             let mix = self.voice_mix(zone, &n, age);
+            let read = self.voice_read(zone, &n, age);
             let (step, bend) = self.step(zone, &n, age);
             let law = self.plan.route_pitch;
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
@@ -71,6 +72,9 @@ impl Engine {
                 slot.voice.set_lag(lag);
                 if let Some(mix) = mix {
                     slot.voice.set_mix(mix);
+                }
+                if let Some(read) = read {
+                    slot.voice.set_read(read);
                 }
                 if pitch {
                     slot.bend[1] = bend.semitones;

@@ -43,6 +43,18 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
     }
 }
 
+/// The wavetable value a modulation target moves: Kontakt adds the routes
+/// to it in its 0..=1 units and clamps the sum every 32 frames
+/// (`fminf`/`fmaxf` at 0x140b52133..0x140b521b4, targets +0x10260/4/74).
+pub(crate) fn target(param: &str) -> Option<ir::TableValue> {
+    Some(match param {
+        "wavetablePosition" => ir::TableValue::Position,
+        "warpFactor" => ir::TableValue::Warp(0),
+        "warpFactor2" => ir::TableValue::Warp(1),
+        _ => return None,
+    })
+}
+
 /// Kontakt's phase forms, numbered as its phase routine (`0x140567aa0`)
 /// switches on them: one less than the saved form.
 fn shape(kind: u32) -> Option<WarpShape> {

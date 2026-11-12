@@ -13,6 +13,14 @@ pub struct Wavetable {
     pub warps: [Warp; 2],
 }
 
+/// A value of a [`Wavetable`] that routes and scripts move, each 0..=1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableValue {
+    Position,
+    /// The amount of warp n (0 or 1).
+    Warp(u8),
+}
+
 /// One form: a bend of the read phase, then a shaper of what it read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Warp {

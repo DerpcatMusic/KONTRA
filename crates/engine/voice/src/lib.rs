@@ -267,6 +267,15 @@ impl Voice {
         }
     }
 
+    /// Where a wavetable voice reads its table from now on; others ignore it.
+    // ponytail: steps at each control span; Kontakt ramps over 32 frames
+    // (0x102ac): ramp inside `Table::render` if a fast route steps audibly.
+    pub fn set_read(&mut self, read: Read) {
+        if let Some(table) = self.region.as_mut().and_then(|r| r.table.as_mut()) {
+            table.read = read;
+        }
+    }
+
     /// Current gain matrix including its envelope and lag, before sample and effects.
     #[must_use]
     pub fn current_gain(&self) -> Gain {

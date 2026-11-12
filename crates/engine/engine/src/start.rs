@@ -89,6 +89,11 @@ impl Engine {
             if let Some(mix) = self.voice_mix(zone, &n, onset) {
                 region.mix = Some(mix);
             }
+            if let (Some(read), Some(table)) =
+                (self.voice_read(zone, &n, onset), region.table.as_mut())
+            {
+                table.read = read;
+            }
             let pan = self.group_pan(zone);
             let (gain, lag) = self.voice_gain(zone, &n, factor, onset, pan);
             let (step, bend) = self.step(zone, &n, onset);
