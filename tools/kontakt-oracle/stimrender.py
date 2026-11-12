@@ -66,7 +66,12 @@ def stim_impulse8():
     return x
 
 
-STIMULI = {"limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse,
+def stim_noise_low():
+    """1 s white noise at -40 dBFS RMS (fixed seed): the small-signal response of a saturator."""
+    return 0.01 * np.random.default_rng(1).standard_normal(RATE)
+
+
+STIMULI = {"noise_low": stim_noise_low, "limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse,
            "impulse8": stim_impulse8, "sine_mid": stim_sine_mid}
 
 
