@@ -44,7 +44,7 @@ fn plan_of(store: &mut Store, level: f32) -> Plan {
         sample,
         start: 0,
         end: frames,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     };
     let mut zone = Zone::new(region, 60, RATE);
