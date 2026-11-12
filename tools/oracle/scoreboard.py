@@ -16,7 +16,9 @@ Wine 0-3 ms off the grid (and a capture can step once in time), so identical ove
 moved to the lag (+-40 ms) that best correlates 0.5 s of native audio with v3's, and v3 plays again.
 Note-offs jitter too (up to 15 ms): each cluster of them is moved within +-15 ms to where v3's
 release best matches Kontakt's (one render per 2.5 ms step; the fitted shifts print per library;
---no-keyup turns it off).
+a best shift at the bound counts as unfitted and prints as unfit(..); --no-keyup turns it off).
+Fast repeats are scored statistically against v3's own spread under per-note key-up jitter
+(JITTER_CASES).
 
 The scenario starts after LEAD seconds of silence: Kontakt keeps loading samples after it reports
 the instrument loaded, and a note that arrives first plays late or not at all.
@@ -31,6 +33,7 @@ import argparse
 import json
 import math
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -61,6 +64,12 @@ WIN, SEARCH, NEAR = 24000, 40, 5  # replay: window (frames), lag search and near
 # (two captures of one note agree at onset, r 0.999, and differ by 0-15 ms after key-up), and a
 # release that sums a tail with a release sample changes by dB with a 5 ms shift.
 KEYUP_MS, KEYUP_STEP, KEYUP_TAIL = 15.0, 2.5, 0.7
+# Fast repeats are scored statistically: twelve 42 ms notes overlap, and the per-note key-up jitter
+# alone swings each slot by +-3-5 dB with no consistent sign (v3 against itself with note-offs moved
+# 0-15 ms: Dolce slot sd 2.3-2.4 dB, native 2.7; Chorus 0.8-1.2, native 0.9; slots 3+ r 0.4-0.8).
+# One cluster shift cannot follow that, so these cases also allow v3's own spread over
+# JITTER_RENDERS renders with each note-off moved by its own random +-KEYUP_MS/2.
+JITTER_CASES, JITTER_RENDERS = ("repeats",), 4
 
 
 def scenario():
@@ -301,13 +310,39 @@ def keyups(binary, nki, events, nat, base):
             live = (x > -80) | (y > -80)
             if live.any():
                 err[i, j] = float(np.mean((x - y)[live] ** 2))
-    shift = {}
+    shift, shown = {}, []
     for i, cl in enumerate(clusters):
         d = float(steps[int(np.argmin(err[i]))]) if np.isfinite(err[i]).any() else 0.0
+        # A best shift at the bound is a miss (the true one may lie beyond it): leave the cluster unfitted.
+        shown.append(f"{d:+g}" if abs(d) < KEYUP_MS else f"unfit({d:+g})")
+        d = d if abs(d) < KEYUP_MS else 0.0
         shift.update({f: d for f in cl})
     out = [dict(e, frame=e["frame"] + round(shift[e["frame"]] * R / 1000)) if e["type"] == "note_off" else e
            for e in events]
-    return sorted(out, key=lambda e: e["frame"]), [shift[cl[0]] for cl in clusters]
+    return sorted(out, key=lambda e: e["frame"]), shown
+
+
+def jittered(events, case, seed):
+    """`events` with each note-off inside `case` moved by its own random +-KEYUP_MS/2."""
+    rnd, half = random.Random(seed), KEYUP_MS / 2
+    a, z = case["start"] * R, (case["start"] + case["len"]) * R
+    out = [dict(e, frame=e["frame"] + round(rnd.uniform(-half, half) * R / 1000))
+           if e["type"] == "note_off" and a <= e["frame"] < z else e for e in events]
+    return sorted(out, key=lambda e: e["frame"])
+
+
+def widest(*spreads):
+    """Per metric (and band), the largest |difference| among score_case results: the tolerance they allow."""
+    out, bands = {}, {}
+    for s in spreads:
+        if not s or "level" not in s:
+            continue
+        for k in ("level", "onset", "attack", "release", "balance"):
+            if s.get(k) is not None:
+                out[k] = max(abs(out.get(k, 0.0)), abs(s[k]))
+        for c, d in s["bands"]:
+            bands[c] = max(bands.get(c, 0.0), abs(d))
+    return dict(out, bands=list(bands.items())) if out else None
 
 
 def score(args):
@@ -329,7 +364,7 @@ def score(args):
         fit = ""
         if not args.no_keyup:
             events, shifts = keyups(binary, c["nki"], events, nat, base)
-            fit = f" (key-up fit, bound +-{KEYUP_MS:g} ms: " + " ".join(f"{d:+g}" for d in shifts) + ")"
+            fit = f" (key-up fit, bound +-{KEYUP_MS:g} ms, a fit at the bound is unfitted: " + " ".join(shifts) + ")"
         p = play(binary, c["nki"], events, wav=wav)
         if not wav.exists():
             print(f"{name}: v3 render failed: {p.stderr.strip().splitlines()[-1:]}")
@@ -337,6 +372,17 @@ def score(args):
         ours = compare.load(wav)
         nat = nat[:, base:] if base > 0 else nat
         ours = ours if base > 0 else ours[:, -base:]
+        jits = {}
+        for case in c["cases"]:
+            if case["name"] not in JITTER_CASES:
+                continue
+            for k in range(JITTER_RENDERS):
+                jw = root / f"{name}.{args.tag}.j{k}.wav"
+                play(binary, c["nki"], jittered(events, case, k), wav=jw)
+                if jw.exists():
+                    j = compare.load(jw)
+                    jw.unlink()
+                    jits.setdefault(case["name"], []).append(j if base > 0 else j[:, -base:])
         nat2 = None
         if args.spread and (Path(args.spread) / f"{name}.capture.json").exists():
             c2 = json.loads((Path(args.spread) / f"{name}.capture.json").read_text())
@@ -352,7 +398,12 @@ def score(args):
             spread = None
             if nat2 is not None and z <= nat2.shape[1]:
                 spread = score_case(nat[:, a:z], nat2[:, a:z], case["hold"])
+            own = [score_case(ours[:, a:z], j[:, a:z], case["hold"]) for j in jits.get(case["name"], [])
+                   if z <= j.shape[1]]
+            if own:
+                spread = widest(spread, *own)
             r = score_case(nat[:, a:z], ours[:, a:z], case["hold"], spread)
+            r["jitter"] = len(own)
             r["plain"] = score_case(nat[:, a:z], ours[:, a:z], case["hold"])["ok"]
             r["spread"] = spread and {k: v for k, v in spread.items() if k in ("level", "onset", "attack", "release", "balance", "band")}
             rows.append(dict(case=case["name"], **r))
@@ -365,8 +416,14 @@ def score(args):
                 print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"])))
     total = sum(r["ok"] for rows in table.values() for r in rows)
     if args.spread:
-        inside = sum(r["ok"] and not r.get("plain", True) for rows in table.values() for r in rows)
+        inside = sum(r["ok"] and not r.get("plain", True) and not r.get("jitter") for rows in table.values() for r in rows)
         print(f"inside Kontakt's own run-to-run spread (fail the fixed tolerance only): {inside}")
+    stat = [r for rows in table.values() for r in rows if r.get("jitter")]
+    if stat:
+        print(f"scored statistically ({', '.join(JITTER_CASES)}: tolerance includes v3's own spread over "
+              f"{JITTER_RENDERS} renders with per-note key-up jitter +-{KEYUP_MS / 2:g} ms): "
+              f"{sum(r['ok'] for r in stat)}/{len(stat)}, of which inside only that spread "
+              f"{sum(r['ok'] and not r.get('plain', True) for r in stat)}")
     cases = sum(len(rows) for rows in table.values())
     print(f"total: {total}/{cases} within tolerance")
     (root / f"score-{args.tag}.json").write_text(json.dumps(table, indent=1, default=float))
