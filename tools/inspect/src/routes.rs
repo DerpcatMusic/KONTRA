@@ -59,6 +59,13 @@ pub fn route(kind: ModKind) -> Value {
         } => {
             json!({"target":"eq_gain", "source":source(s), "insert":insert, "band":band, "depth_db":depth_db, "limit_db":limit_db, "span_db":span_db})
         }
+        ModKind::Wavetable {
+            source: s,
+            value,
+            depth,
+        } => {
+            json!({"target":"wavetable", "source":source(s), "value":format!("{value:?}"), "depth":depth})
+        }
         ModKind::SampleStart { source: s, depth } => {
             json!({"target":"sample_start", "source":source(s), "depth":depth})
         }
