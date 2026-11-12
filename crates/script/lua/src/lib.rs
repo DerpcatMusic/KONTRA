@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use kontra_vm::{Action, CoId, Faults, Foreign, HostApi, HostCall, HostValue, Machine, Step, Text};
 use mlua::thread::ThreadStatus;
-use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, Variadic};
+use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value};
 
 pub mod alloc;
 mod interrupt;
@@ -458,8 +458,12 @@ impl Machine for LuaMachine {
         self.runs = self.runs.wrapping_add(1);
         self.checkpoints.store(0, Ordering::Relaxed);
         let resumed = lua.scope(|scope| {
-            let call = scope.create_function_mut(|_, args: Variadic<Value>| {
-                Ok(host_call(host, context, &args))
+            // Fixed arity, so a call allocates nothing: an action and up
+            // to eight arguments, the trailing nils dropped.
+            let call = scope.create_function_mut(|_, (a, b, c, d, e, f, g, h, i): Args| {
+                let args = [a, b, c, d, e, f, g, h, i];
+                let n = args.iter().rposition(|v| !v.is_nil()).map_or(0, |n| n + 1);
+                Ok(host_call(host, context, args.get(..n).unwrap_or_default()))
             })?;
             lua.globals().set("__host", call)?;
             let result = thread.resume::<Value>(());
@@ -574,6 +578,19 @@ fn number(v: &Value) -> Option<f64> {
 }
 
 /// `__host(action, ...)`: numbers become int arguments, strings text ones.
+/// A host call's Lua arguments: the action and up to eight more.
+type Args = (
+    Value,
+    Value,
+    Value,
+    Value,
+    Value,
+    Value,
+    Value,
+    Value,
+    Value,
+);
+
 fn host_call(host: &mut dyn HostApi, context: u64, args: &[Value]) -> Value {
     let Some(action) = args
         .first()
@@ -1094,6 +1111,51 @@ mod tests {
             .map(|(_, ints)| ints.clone())
             .collect();
         assert_eq!(amounts, [vec![7, 0], vec![7, 250_000], vec![7, 0]]);
+    }
+
+    /// W Strings Harmonic's `changed` sets thousands of route amounts at
+    /// once: each reaches the host and allocates nothing.
+    #[test]
+    fn a_callbacks_route_writes_allocate_nothing() {
+        struct Routes(i64, usize);
+        impl HostApi for Routes {
+            fn call(&mut self, call: HostCall<'_>) -> HostValue {
+                if call.action == Action::RouteAmount {
+                    self.0 += call.ints.get(1).copied().unwrap_or(0);
+                    self.1 += 1;
+                }
+                HostValue::Nothing
+            }
+        }
+        let tree = "return {params={},db=0,pan=0,layers={{params={},keygroups={
+            {params={},group=0,links={1,2}}}}},
+            connections={{'@PitchBend','Pitch',2,7,1},{'@PitchBend','Pitch',2,8,1}}}";
+        let source = "local cs = Program.layers[1].keygroups[1]:getParameterConnections('Pitch')
+            local n = 1
+            function onNote(e)
+                for i = 1, n do
+                    for _, c in ipairs(cs) do c:setParameter('Ratio', 0.5) end
+                end
+                n = 500
+            end";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let mut host = Routes(0, 0);
+        let init = m.start(Callbacks::INIT, 0).expect("init");
+        assert_eq!(m.run(init, &mut host), Step::Done);
+        host = Routes(0, 0);
+        // A callback allocates the same for two writes as for a thousand.
+        let mut note = |host: &mut Routes| {
+            let _ = probe::take();
+            let co = m.start(Callbacks::NOTE, 0).expect("note");
+            assert_eq!(m.run(co, host), Step::Done);
+            probe::take().allocs
+        };
+        let two = note(&mut host);
+        assert_eq!((host.0, host.1), (2 * 500_000, 2));
+        let thousand = note(&mut host);
+        assert_eq!((host.0, host.1), (1_002 * 500_000, 1_002));
+        assert_eq!(thousand, two);
     }
 
     #[test]

@@ -378,13 +378,9 @@ local connection_definitions = {
 	{ name = "Destination", id = "Destination", default = 0, min = 0, max = 1 },
 	{ name = "Bypass", id = "Bypass", default = 0, min = 0, max = 1 },
 }
-local Connection = {}
-Connection.__index = function(c, key)
-	if key == "parameterDefinitions" then
-		return connection_definitions
-	end
-	return Connection[key]
-end
+local ROUTE_AMOUNT = Action.RouteAmount
+local Connection = { parameterDefinitions = connection_definitions }
+Connection.__index = Connection
 function Connection.getParameter(c, name)
 	local at = fields_at[name]
 	return at and c[at]
@@ -403,7 +399,8 @@ function Connection.setParameter(c, name, value)
 	if c[4] >= 0 then
 		local amount = c[6] and 0 or math.floor(c[3] * c[5] * 1e6 + 0.5)
 		if __host then
-			host_call("RouteAmount", c[4], amount)
+			-- Straight to the host: a program's walk sets thousands at once.
+			__host(ROUTE_AMOUNT, c[4], amount)
 		else
 			-- Before init only a route's last amount is kept: AO's knobs set
 			-- the same routes hundreds of times while they load.
@@ -489,6 +486,10 @@ local function element_index(e, key)
 	local fields = fields_of(e)
 	local value = fields[key]
 	if value ~= nil then
+		return value
+	end
+	value = Element[key]
+	if value then
 		return value
 	end
 	if key == "sends" then

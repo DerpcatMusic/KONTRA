@@ -415,6 +415,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ),
     ];
     rows.extend(crate::dynamics::feedback_rows());
+    rows.extend(crate::skreamer::rows());
     rows.extend(crate::impulse::script_knobs());
     rows
 }
@@ -654,6 +655,12 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         ty(15, true, 15, clocked(15), crate::clocked::knobs().into()),
     ];
     types.extend(shapes);
+    // A saved project or preset names a loaded type by its index here
+    // (`state::SlotType.ty`): new entries are appended, never inserted.
+    // Subtype 0 is no shape: Kontakt 8.13.1 takes it on a filter slot,
+    // which then reads 7.0 (Una Corda's presets without a filter;
+    // probes/b4sub). ponytail: its sound is unmeasured; it passes.
+    types.push(ty(0, true, 0, None, [].into()));
     types
 }
 
@@ -908,6 +915,29 @@ mod tests {
     }
 
     /// Una Corda switches a Versatile bus slot to the ladder (30).
+    /// Saved projects and presets name a loaded type by its index in
+    /// [`slot_types`] (Codex r4549008544): this pins every index. A new
+    /// type is appended at the end, and its line added here.
+    #[test]
+    fn the_saved_type_indices_never_move() {
+        #[rustfmt::skip]
+        const PINNED: [(i32, bool); 48] = [
+            (29, false), (39, false), (11, false), (40, false), (0, false), (7, false),
+            (24, true), (19, true), (13, true), (14, true), (15, true),
+            (100, true), (101, true), (102, true), (103, true), (104, true), (105, true),
+            (106, true), (107, true), (108, true), (70, true), (71, true),
+            (30, true), (31, true), (32, true), (33, true), (34, true), (35, true),
+            (36, true), (37, true), (38, true), (39, true), (40, true), (41, true),
+            (50, true), (51, true), (52, true), (53, true), (54, true), (55, true),
+            (56, true), (57, true), (58, true), (59, true), (60, true), (61, true),
+            (62, true),
+            // Appended entries, in order.
+            (0, true),
+        ];
+        let types: Vec<_> = slot_types().iter().map(|t| (t.id, t.subtype)).collect();
+        assert_eq!(types, PINNED);
+    }
+
     #[test]
     fn every_switchable_filter_shape_loads_as_a_subtype() {
         let types = slot_types();
@@ -917,6 +947,8 @@ mod tests {
             ladder.effect.map(|e| e.kind),
             Some(ir::EffectKind::Filter(_))
         ));
+        let none = types.iter().find(|t| t.id == 0 && t.subtype).unwrap();
+        assert_eq!((none.kind, none.reads, none.effect), (7, 0, None));
     }
 
     #[test]
