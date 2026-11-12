@@ -255,10 +255,23 @@ impl Line {
         // The two neighbours of every frame first, then the blend as a
         // vector loop.
         let (mut x0, mut x1) = ([0f32; MAX], [0f32; MAX]);
-        for (f, ((x0, x1), &i)) in x0.iter_mut().zip(&mut x1).zip(&i).take(n).enumerate() {
-            let at = w0.wrapping_add(f).wrapping_sub(i as usize);
-            *x0 = buf.get(at & mask).copied().unwrap_or(0.0);
-            *x1 = buf.get(at.wrapping_sub(1) & mask).copied().unwrap_or(0.0);
+        let held = i.get(..n).and_then(|i| i.split_first());
+        match held {
+            // A slow swing mostly holds its whole frames over a span: then
+            // both neighbours are runs of the ring.
+            Some((&first, rest)) if rest.iter().all(|&i| i == first) => {
+                let at = w0.wrapping_sub(first as usize);
+                copy_run(buf, at, x0.get_mut(..n).unwrap_or_default());
+                copy_run(buf, at.wrapping_sub(1), x1.get_mut(..n).unwrap_or_default());
+            }
+            _ => {
+                let frames = x0.iter_mut().zip(&mut x1).zip(&i).take(n).enumerate();
+                for (f, ((x0, x1), &i)) in frames {
+                    let at = w0.wrapping_add(f).wrapping_sub(i as usize);
+                    *x0 = buf.get(at & mask).copied().unwrap_or(0.0);
+                    *x1 = buf.get(at.wrapping_sub(1) & mask).copied().unwrap_or(0.0);
+                }
+            }
         }
         for (out, (((&d, &i), &x0), &x1)) in out.iter_mut().zip(d.iter().zip(&i).zip(&x0).zip(&x1))
         {
@@ -293,6 +306,20 @@ impl Line {
                 .weighted(w0.wrapping_add(f), swing * self.depth + self.base);
             self.ring.add(at.wrapping_add(f), x * self.inject);
         }
+    }
+}
+
+/// `out` from a power-of-two ring `buf` at `at`, `at + 1`, …, wrapping, as
+/// masked loads one by one.
+fn copy_run(buf: &[f32], at: usize, out: &mut [f32]) {
+    let start = at & buf.len().wrapping_sub(1);
+    let (wrapped, from) = buf.split_at(start.min(buf.len()));
+    let (head, tail) = out.split_at_mut(out.len().min(from.len()));
+    for (o, &v) in head.iter_mut().zip(from) {
+        *o = v;
+    }
+    for (o, &v) in tail.iter_mut().zip(wrapped) {
+        *o = v;
     }
 }
 
