@@ -57,23 +57,7 @@ pub struct SavedPart {
     pub modified: bool,
 }
 
-/// One convolution a script loaded with a library response, by the name
-/// the plan gives it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SlotResponse {
-    pub rack: SavedRack,
-    pub slot: u8,
-    pub name: String,
-}
-
-/// One slot a script loaded with an effect type: the rack, the slot and
-/// the type, as the plan numbers them.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SlotType {
-    pub rack: SavedRack,
-    pub slot: u8,
-    pub ty: u16,
-}
+pub use kontra_library::presets::{SavedRack, SlotResponse, SlotType};
 
 /// Effect types and responses scripts loaded after `on init`, by rack.
 pub(crate) type LiveSlots = (Vec<(RackAt, u8, u16)>, Vec<(RackAt, u8, String)>);
@@ -85,14 +69,14 @@ pub(crate) fn saved_slots(
 ) -> (Vec<SlotType>, Vec<SlotResponse>) {
     let types = (types.iter())
         .map(|&(at, slot, ty)| SlotType {
-            rack: at.into(),
+            rack: saved(at),
             slot,
             ty,
         })
         .collect();
     let responses = (responses.iter())
         .map(|(at, slot, name)| SlotResponse {
-            rack: (*at).into(),
+            rack: saved(*at),
             slot: *slot,
             name: name.clone(),
         })
@@ -103,45 +87,33 @@ pub(crate) fn saved_slots(
 /// [`saved_slots`] back as a part keeps them.
 pub(crate) fn live_slots(types: &[SlotType], responses: &[SlotResponse]) -> LiveSlots {
     let types = (types.iter())
-        .map(|t| (t.rack.into(), t.slot, t.ty))
+        .map(|t| (live(t.rack), t.slot, t.ty))
         .collect();
     let responses = (responses.iter())
-        .map(|r| (r.rack.into(), r.slot, r.name.clone()))
+        .map(|r| (live(r.rack), r.slot, r.name.clone()))
         .collect();
     (types, responses)
 }
 
-/// [`RackAt`] as a project saves it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SavedRack {
-    Group(u32),
-    Inserts,
-    Sends,
-    Main,
-    Bus(u8),
-}
-
-impl From<RackAt> for SavedRack {
-    fn from(at: RackAt) -> Self {
-        match at {
-            RackAt::Group(g) => Self::Group(g),
-            RackAt::Inserts => Self::Inserts,
-            RackAt::Sends => Self::Sends,
-            RackAt::Main => Self::Main,
-            RackAt::Bus(b) => Self::Bus(b),
-        }
+/// `at` as a file names it.
+fn saved(at: RackAt) -> SavedRack {
+    match at {
+        RackAt::Group(g) => SavedRack::Group(g),
+        RackAt::Inserts => SavedRack::Inserts,
+        RackAt::Sends => SavedRack::Sends,
+        RackAt::Main => SavedRack::Main,
+        RackAt::Bus(b) => SavedRack::Bus(b),
     }
 }
 
-impl From<SavedRack> for RackAt {
-    fn from(at: SavedRack) -> Self {
-        match at {
-            SavedRack::Group(g) => Self::Group(g),
-            SavedRack::Inserts => Self::Inserts,
-            SavedRack::Sends => Self::Sends,
-            SavedRack::Main => Self::Main,
-            SavedRack::Bus(b) => Self::Bus(b),
-        }
+/// [`saved`] back as the engine names it.
+fn live(at: SavedRack) -> RackAt {
+    match at {
+        SavedRack::Group(g) => RackAt::Group(g),
+        SavedRack::Inserts => RackAt::Inserts,
+        SavedRack::Sends => RackAt::Sends,
+        SavedRack::Main => RackAt::Main,
+        SavedRack::Bus(b) => RackAt::Bus(b),
     }
 }
 

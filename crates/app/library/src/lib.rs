@@ -19,6 +19,7 @@
 //! reads once is kept in a [`Cache`] keyed by file size and time.
 
 pub mod kontakt;
+pub mod presets;
 
 mod cache;
 mod folder;
