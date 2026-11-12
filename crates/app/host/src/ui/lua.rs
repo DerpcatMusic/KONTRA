@@ -64,7 +64,6 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
                 w.strip.as_ref().map(|(p, f)| (p.as_str(), *f)),
                 ui::Role::Strip,
             ),
-            (w.handle.as_deref().map(|p| (p, 1)), ui::Role::Handle),
             (w.image.as_deref().map(|p| (p, 1)), ui::Role::Background),
             (
                 w.background.as_deref().map(|p| (p, 1)),
@@ -72,6 +71,7 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             ),
             (w.normal.as_deref().map(|p| (p, 1)), ui::Role::Background),
             (w.pressed.as_deref().map(|p| (p, 1)), ui::Role::Pressed),
+            (w.handle.as_deref().map(|p| (p, 1)), ui::Role::Handle),
         ];
         let mut own = None;
         for (path, role) in roles {
@@ -467,7 +467,7 @@ mod tests {
     fn a_tall_slider_with_a_handle_is_vertical_and_draws_its_handle() {
         // W Strings' crossfader: `Slider{name, 0.5, 0, 1, false, true, ...}`.
         let page = kontra_lua::compile(
-            r#"Slider{"XFade", 0.5, 0, 1, false, true, bounds={0, 87, 58, 265}, handleImage="h.png"}"#,
+            r#"Slider{"XFade", 0.5, 0, 1, false, true, bounds={0, 87, 58, 265}, handleImage="h.png", backgroundImage="t.png"}"#,
             &[],
             &[],
         )
@@ -482,7 +482,9 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(w.images.first().map(|i| i.role), Some(ui::Role::Handle));
+        // Its track picture stays; the handle is drawn over it.
+        let roles: Vec<_> = w.images.iter().map(|i| i.role).collect();
+        assert_eq!(roles, [ui::Role::Background, ui::Role::Handle]);
         assert_eq!((w.rect.width, w.rect.height), (58., 265.));
     }
 }

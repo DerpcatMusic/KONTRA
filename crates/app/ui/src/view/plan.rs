@@ -30,6 +30,8 @@ pub(super) struct Widget<'a> {
     pub source: &'a model::Widget,
     pub rect: model::Rect,
     pub picture: Option<Picture<'a>>,
+    /// A slider's handle, drawn over its picture at its value.
+    pub handle: Option<Picture<'a>>,
     pub style: Option<&'a model::TextStyle>,
     pub position: f64,
     pub look: Option<stock::Look>,
@@ -64,7 +66,7 @@ pub(super) fn page<'a>(
             if !tree.visible(index) || !on_page(raw) {
                 return None;
             }
-            let picture = w.images.first().filter(|_| !bare).and_then(|use_| {
+            let picture = |use_: &ImageUse| {
                 let (path, meta) = image_asset(tree, use_.asset)?;
                 Some(Picture {
                     use_: *use_,
@@ -88,7 +90,11 @@ pub(super) fn page<'a>(
                         }
                     },
                 })
-            });
+            };
+            let (handles, faces): (Vec<&ImageUse>, Vec<&ImageUse>) =
+                w.images.iter().partition(|u| u.role == Role::Handle);
+            let handle = handles.first().filter(|_| !bare).and_then(|u| picture(u));
+            let picture = faces.first().filter(|_| !bare).and_then(|u| picture(u));
             let style = w.style.and_then(|s| tree.styles.get(s.0));
             let position = position(w);
             let look = stock::Look::of(
@@ -115,6 +121,7 @@ pub(super) fn page<'a>(
                     height: raw.height * scale,
                 },
                 picture,
+                handle,
                 style,
                 position,
                 look,

@@ -158,7 +158,13 @@ fn drawn_page(
             .and_then(|_| item.picture.as_ref().map(|p| p.size));
         let style = item.style;
         let t = item.position;
-        let handle = (item.picture.as_ref()).is_some_and(|p| p.use_.role == model::Role::Handle);
+        let handle = item.handle.as_ref().and_then(|p| {
+            Some((
+                pictures.frame(p.use_.asset, p.path, p.meta, 0, device)?,
+                p.meta,
+                p.size,
+            ))
+        });
         let look = item.look;
         let stock_art = look
             .as_ref()
@@ -250,11 +256,14 @@ fn drawn_page(
             lit.map(|(o, (t, peak, over))| (o as u8, t.to_bits(), peak.to_bits(), over)),
             [r.x, r.y, r.width, r.height, scale, device].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
-            picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
+            (
+                picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
+                handle.as_ref().map(|(i, ..)| Arc::as_ptr(i) as usize),
+            ),
             (
                 &words,
                 &look,
-                (stock || handle).then_some(t.to_bits()),
+                (stock || handle.is_some()).then_some(t.to_bits()),
                 match &wd.value {
                     Some(model::Value::Reals(v)) => {
                         Some(v.iter().map(|v| v.to_bits()).collect::<Vec<_>>())
@@ -302,15 +311,7 @@ fn drawn_page(
                 } else {
                     0.
                 };
-                // A slider's handle rides its track: bottom to top, left to right.
-                let (x, y) = match (&wd.kind, handle) {
-                    (Kind::Slider { orientation, .. }, true) => match orientation {
-                        model::Orientation::Vertical => (0., (1. - t) * (h - a.height)),
-                        model::Orientation::Horizontal => (t * (w - a.width), 0.),
-                    },
-                    _ => (inset, inset),
-                };
-                let image = sliced(img, meta, (a.width, a.height), scale).at(x, y);
+                let image = sliced(img, meta, (a.width, a.height), scale).at(inset, inset);
                 parts.push(if inset > 0. {
                     stack([image]).w(a.width).h(a.height).radius(0.).clip()
                 } else {
@@ -327,6 +328,15 @@ fn drawn_page(
                     )
                     .at(0., 0.),
                 );
+            }
+            // A slider's handle rides its track over its picture: bottom to
+            // top, left to right.
+            if let (Some((img, meta, a)), Kind::Slider { orientation, .. }) = (&handle, &wd.kind) {
+                let (x, y) = match orientation {
+                    model::Orientation::Vertical => (0., (1. - t) * (h - a.height)),
+                    model::Orientation::Horizontal => (t * (w - a.width), 0.),
+                };
+                parts.push(sliced(img, meta, (a.width, a.height), scale).at(x, y));
             }
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
