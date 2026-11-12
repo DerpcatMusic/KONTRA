@@ -148,12 +148,12 @@ impl Vm {
     }
 
     /// What may have changed its state, wrapping: unchanged, its cells,
-    /// widgets and saved state are as they were. [`Instance::changes`], or
+    /// widgets and saved state are as they were. the interpreter's change count, or
     /// [`Machine::runs`].
     #[must_use]
     pub fn runs(&self) -> u32 {
         match self {
-            Self::Code(vm) => vm.changes(),
+            Self::Code(vm) => vm.changes,
             Self::Foreign(m) => m.runs(),
         }
     }
@@ -162,7 +162,7 @@ impl Vm {
     #[must_use]
     pub fn cells(&self, range: std::ops::Range<usize>) -> Option<&[i64]> {
         match self {
-            Self::Code(vm) => vm.cells(range),
+            Self::Code(vm) => vm.cells.get(range),
             Self::Foreign(_) => None,
         }
     }
@@ -171,7 +171,7 @@ impl Vm {
     #[must_use]
     pub fn texts(&self, range: std::ops::Range<usize>) -> Option<&[Text]> {
         match self {
-            Self::Code(vm) => vm.texts(range),
+            Self::Code(vm) => vm.texts.get(range),
             Self::Foreign(_) => None,
         }
     }

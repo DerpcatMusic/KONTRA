@@ -292,25 +292,6 @@ impl Instance {
         self.texts.get(n)
     }
 
-    /// The cells in `range`, `None` when it runs past them.
-    #[must_use]
-    pub fn cells(&self, range: std::ops::Range<usize>) -> Option<&[i64]> {
-        self.cells.get(range)
-    }
-
-    /// The text cells in `range`, `None` when it runs past them.
-    #[must_use]
-    pub fn texts(&self, range: std::ops::Range<usize>) -> Option<&[Text]> {
-        self.texts.get(range)
-    }
-
-    /// How many times something may have written a cell: each run of a
-    /// callback and each write from outside, wrapping.
-    #[must_use]
-    pub fn changes(&self) -> u32 {
-        self.changes
-    }
-
     /// The context a callback was started with.
     #[must_use]
     pub fn context(&self, co: CoId) -> Option<u64> {
