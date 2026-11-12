@@ -253,17 +253,17 @@ impl Notches {
 mod tests {
     use super::*;
 
-    /// The settled level of a sine at `hz` through a still phaser.
-    fn gain(feedback: f32, hz: f32) -> f32 {
-        let s = NotchSettings {
-            stages: 2,
+    /// A still phaser of `stages` at 1 kHz.
+    fn settings(stages: u8, feedback: f32) -> NotchSettings {
+        NotchSettings {
+            stages,
             hz: 1000.0,
             octaves: 0.0,
             spread: 0.0,
             spread_swing: 0.0,
             spread_limit: 2.7,
             feedback,
-            loop_width: 1.0 / 0.125f32.tan(),
+            loop_width: 1.0 / (0.25 / f32::from(stages)).tan(),
             loop_top: 0.1,
             lfo_hz: 0.0,
             rounding: 0.0,
@@ -274,30 +274,59 @@ mod tests {
             mix: 1.0,
             low_cut_hz: 5.0,
             internal_hz: 90_000.0,
-        };
-        let mut n = Notches::new(s, 48_000);
-        let mut io: Vec<[f32; 2]> = (0..48_000)
+        }
+    }
+
+    fn sine(hz: f32, frames: usize) -> Vec<[f32; 2]> {
+        (0..frames)
             .map(|i| {
                 let x = (std::f32::consts::TAU * hz * i as f32 / 48_000.0).sin();
                 [x, x]
             })
-            .collect();
+            .collect()
+    }
+
+    /// The settled level of a sine at `hz` through a still phaser.
+    fn gain(hz: f32) -> f32 {
+        let mut n = Notches::new(settings(2, 0.0), 48_000);
+        let mut io = sine(hz, 48_000);
         n.process(&mut io);
         let tail = &io[24_000..];
         (tail.iter().map(|f| f[0] * f[0]).sum::<f32>() / tail.len() as f32 * 2.0).sqrt()
     }
 
     #[test]
-    fn two_stages_notch_either_side_of_the_corner() {
+    fn two_stages_notch_either_side_of_the_corner_and_the_loop_stays_bounded() {
         // Two allpasses at Q ½ turn 90° each at corner·(√2 ∓ 1): ½(x + AP)
         // cancels there; at the corner they turn 360° and pass.
         for hz in [414.2, 2414.2] {
-            assert!(gain(0.0, hz) < 0.03, "{hz}: {}", gain(0.0, hz));
+            assert!(gain(hz) < 0.03, "{hz}: {}", gain(hz));
         }
-        assert!(
-            (gain(0.0, 1000.0) - 1.0).abs() < 0.01,
-            "{}",
-            gain(0.0, 1000.0)
-        );
+        assert!((gain(1000.0) - 1.0).abs() < 0.01, "{}", gain(1000.0));
+        // The loop, solved per sample, at every stage count: feedback moved
+        // to its top (0.95) over the first second while the LFO sweeps the
+        // corner ±4.7 octaves and the damping across its whole range.
+        for stages in 1..=MAX_STAGES as u8 {
+            let swept = |feedback| NotchSettings {
+                octaves: 4.67,
+                spread_swing: 2.7,
+                lfo_hz: 2.3,
+                depth: 1.0,
+                ..settings(stages, feedback)
+            };
+            let mut n = Notches::new(swept(0.0), 48_000);
+            let mut io = sine(500.0, 4 * 48_000);
+            for (k, block) in io.chunks_mut(64).enumerate() {
+                n.set(swept((k as f32 / 750.0).min(1.0) * 0.95));
+                n.process(block);
+            }
+            let peak = |s: &[[f32; 2]]| s.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
+            let (early, late) = io.split_at(3 * 48_000);
+            let (early, late) = (peak(early.get(48_000..).unwrap_or_default()), peak(late));
+            assert!(
+                late.is_finite() && late < 8.0 && late <= 1.05 * early,
+                "{stages} stages: {early} then {late}"
+            );
+        }
     }
 }
