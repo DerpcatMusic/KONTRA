@@ -144,19 +144,21 @@ pub struct Notches {
     pub invert: bool,
 }
 
-/// A chorus ensemble: up to [`ENSEMBLE_VOICES`] modulated delay voices, each
-/// adding its delayed input to the sum, plus `direct` of the input itself
-/// (the dry level and the voices' undelayed share together).
+/// A chorus or flanger ensemble: up to [`ENSEMBLE_VOICES`] modulated delay
+/// voices, each adding its delayed input and its `direct` share of the
+/// input itself, plus `dry` of the input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ensemble {
     pub voices: [EnsembleVoice; ENSEMBLE_VOICES],
-    pub direct: f32,
+    pub dry: f32,
+    /// A sweep that fades the first `scan.voices` in turn; `None`: all sound.
+    pub scan: Option<Scan>,
 }
 
-pub const ENSEMBLE_VOICES: usize = 6;
+pub const ENSEMBLE_VOICES: usize = 8;
 
 /// One voice: a stereo delay line its LFO sweeps between `ms` and
-/// `ms + depth_ms`, filtered on the way in, fed back on itself.
+/// `ms + depth_ms`, filtered on the way round, fed back on itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EnsembleVoice {
     pub ms: f32,
@@ -164,14 +166,57 @@ pub struct EnsembleVoice {
     pub hz: f32,
     /// The LFO's start, cycles.
     pub start: f32,
+    /// Cycles the right line's LFO runs ahead of the left's.
+    pub phase: f32,
     /// One-pole low-pass on the line; `f32::INFINITY` for none.
     pub damping_hz: f32,
     /// One-pole high-pass on the line; 0 for none.
     pub low_cut_hz: f32,
-    pub input: f32,
+    /// The input channels into the lines.
+    pub input: Matrix,
     pub feedback: f32,
     /// The delayed signal to the output; zero for a silent voice.
     pub output: Matrix,
+    /// The undelayed input to the output.
+    pub direct: Matrix,
+}
+
+impl EnsembleVoice {
+    /// A voice that never sounds.
+    pub const SILENT: Self = Self {
+        ms: 1.0,
+        depth_ms: 0.0,
+        hz: 0.0,
+        start: 0.0,
+        phase: 0.0,
+        damping_hz: f32::INFINITY,
+        low_cut_hz: 0.0,
+        input: [[0.0; 2]; 2],
+        feedback: 0.0,
+        output: [[0.0; 2]; 2],
+        direct: [[0.0; 2]; 2],
+    };
+}
+
+/// A scan: a raised-cosine window `width` voices either side, `position`
+/// voices along a ring of `voices`, swept `depth` voices by an LFO of
+/// `shape` at `hz`. Each voice sounds at `cos²(π·d/(2·width))`, `d` its
+/// distance round the ring.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scan {
+    pub voices: u8,
+    pub width: f32,
+    pub position: f32,
+    pub depth: f32,
+    pub hz: f32,
+    pub shape: ScanShape,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanShape {
+    Triangle,
+    SawUp,
+    SawDown,
 }
 
 /// An algorithmic reverb in physical units.

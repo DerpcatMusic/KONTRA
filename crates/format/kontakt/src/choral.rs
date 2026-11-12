@@ -88,16 +88,17 @@ pub(crate) fn choral(p: [f32; 10]) -> ir::EffectKind {
     let sum: f32 = gains.iter().sum();
     let wet = mix * input * (0.2 * sum + 0.6).sqrt() / sum * 0.707;
     let sign = if invert > 0.0 { -1.0 } else { 1.0 };
-    let mut direct = 1.0 - mix;
     let voices = std::array::from_fn(|v| {
+        if v >= 6 {
+            return ir::EnsembleVoice::SILENT;
+        }
         let at = |t: [f32; 6]| t.get(v).copied().unwrap_or_default();
         // Pair k turns by ∓ Width·π/4·(1 − 2k/7), even voices left.
         let reach = 1.0 - (v / 2 * 2) as f32 / 7.0;
         let side = if v % 2 == 0 { -1.0 } else { 1.0 };
         let (s, c) = (side * width * std::f32::consts::FRAC_PI_4 * reach).sin_cos();
         let gain = wet * at(gains);
-        // The pair's cross terms cancel in the straight-through share.
-        direct += gain * input * c;
+        let turn = |k: f32| [[k * c, -k * s], [k * s, k * c]];
         // Longer voices feed back as if over the same time as voice 0.
         let fb = g.powf(at(scale) / first);
         let out = gain * sign * (1.0 + fb);
@@ -109,14 +110,21 @@ pub(crate) fn choral(p: [f32; 10]) -> ir::EffectKind {
             depth_ms: 1000.0 * (ratio - 1.0) / (2.0 * voice_hz),
             hz: voice_hz,
             start: at(starts),
+            phase: 0.0,
             damping_hz: if hp { f32::INFINITY } else { corner },
             low_cut_hz: if hp { corner } else { 0.0 },
-            input,
+            input: [[input, 0.0], [0.0, input]],
             feedback: sign * fb,
-            output: [[out * c, -out * s], [out * s, out * c]],
+            output: turn(out),
+            // Every voice also passes its input straight through.
+            direct: turn(gain * input),
         }
     });
-    ir::EffectKind::Ensemble(ir::Ensemble { voices, direct })
+    ir::EffectKind::Ensemble(ir::Ensemble {
+        voices,
+        dry: 1.0 - mix,
+        scan: None,
+    })
 }
 
 /// A Choral's knobs as a script moves them: every move rebuilds it from all.
@@ -190,6 +198,7 @@ mod tests {
         assert!((a.hz - 0.25).abs() < 1e-6 && (b.start - 0.5).abs() < 1e-6);
         assert_eq!(c.output, [[0.0; 2]; 2]);
         let share = 0.005 + 0.995 * 0.354 * 2.0 * (std::f32::consts::PI / 8.0).cos();
-        assert!((e.direct - share).abs() < 2e-3, "{}", e.direct);
+        let direct = e.dry + e.voices.iter().map(|v| v.direct[0][0]).sum::<f32>();
+        assert!((direct - share).abs() < 2e-3, "{direct}");
     }
 }

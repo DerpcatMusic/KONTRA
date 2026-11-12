@@ -316,8 +316,8 @@ mod tests {
         }
     }
 
-    /// Six swept, fed-back voices at their own LFO starts, the last two
-    /// silent (their clocks still run), and a straight-through share.
+    /// Eight swept, fed-back voices at their own LFO starts, the last four
+    /// silent (their clocks still run), direct shares and a scan.
     fn ensemble() -> ir::Effect {
         let voices = std::array::from_fn(|v| {
             let g = if v < 4 { 0.3 } else { 0.0 };
@@ -325,18 +325,30 @@ mod tests {
                 ms: 3.0 + 4.0 * v as f32,
                 depth_ms: 8.0,
                 hz: 0.25 * (1.0 + v as f32 * 0.2),
-                start: v as f32 / 6.0,
+                start: v as f32 / 8.0,
+                phase: 0.25,
                 damping_hz: 5_000.0,
                 low_cut_hz: 0.0,
-                input: 0.9,
+                input: [[0.9, 0.1], [0.1, 0.9]],
                 feedback: 0.5,
                 output: [[g, -0.1 * g], [0.1 * g, g]],
+                direct: [[0.1, 0.0], [0.0, 0.1]],
             }
         });
+        // A triangle scan over the first four, so its clock must sleep in step too.
+        let scan = ir::Scan {
+            voices: 4,
+            width: 1.3,
+            position: 0.5,
+            depth: 4.0,
+            hz: 0.7,
+            shape: ir::ScanShape::Triangle,
+        };
         ir::Effect {
             kind: ir::EffectKind::Ensemble(ir::Ensemble {
                 voices,
-                direct: 0.7,
+                dry: 0.3,
+                scan: Some(scan),
             }),
             ..chorus()
         }

@@ -419,6 +419,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     rows.extend(crate::phasis::rows());
     rows.extend(crate::impulse::script_knobs());
     rows.extend(crate::choral::rows());
+    rows.extend(crate::flair::rows());
     rows
 }
 
@@ -665,6 +666,7 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     types.push(ty(0, true, 0, None, [].into()));
     types.push(crate::phasis::slot_type());
     types.push(crate::choral::slot_type());
+    types.push(crate::flair::slot_type());
     types
 }
 
@@ -925,7 +927,7 @@ mod tests {
     #[test]
     fn the_saved_type_indices_never_move() {
         #[rustfmt::skip]
-        const PINNED: [(i32, bool); 50] = [
+        const PINNED: [(i32, bool); 51] = [
             (29, false), (39, false), (11, false), (40, false), (0, false), (7, false),
             (24, true), (19, true), (13, true), (14, true), (15, true),
             (100, true), (101, true), (102, true), (103, true), (104, true), (105, true),
@@ -937,10 +939,11 @@ mod tests {
             (62, true),
             // Appended entries, in order. The pairs are Kontakt's own
             // `$EFFECT_TYPE_*` ids, not indices: Phasis (41) is index 48,
-            // Choral (43) index 49; Flair (42) comes next, at 50.
+            // Choral (43) index 49, Flair (42) index 50.
             (0, true),
             (41, false),
             (43, false),
+            (42, false),
         ];
         let types: Vec<_> = slot_types().iter().map(|t| (t.id, t.subtype)).collect();
         assert_eq!(types, PINNED);

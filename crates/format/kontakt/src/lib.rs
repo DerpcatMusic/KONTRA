@@ -13,6 +13,7 @@ mod effects;
 mod engine_pars;
 mod external;
 mod fastlz;
+mod flair;
 mod impulse;
 mod laws;
 mod legacy_reverb;
