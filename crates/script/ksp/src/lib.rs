@@ -8,6 +8,8 @@
 mod builtins;
 mod compile;
 mod consts;
+#[cfg(test)]
+mod fused;
 mod lex;
 mod parse;
 mod persist;
@@ -20,7 +22,7 @@ use kontra_vm::Program;
 pub use persist::{Restore, restore};
 
 /// Compiles a script. `conditions` are the `SET_CONDITION` symbols already set
-/// (Kontakt's system-script switches).
+/// (Kontakt's system-script switches). Its code runs fused ([`kontra_vm::fuse`]).
 pub fn compile(source: &str, conditions: &[&str]) -> Result<Script, Error> {
     compile_with_view(source, conditions, &[])
 }
@@ -36,6 +38,17 @@ pub fn compile_with_view<'a>(
     source: &'a str,
     conditions: &[&str],
     view: &[(&'a str, &'a [i32])],
+) -> Result<Script, Error> {
+    let mut script = compile_plain(source, conditions, view)?;
+    script.program.code = kontra_vm::fuse(&script.program.code);
+    Ok(script)
+}
+
+/// [`compile_with_view`] without fusing: one plain op per step.
+fn compile_plain<'a>(
+    source: &'a str,
+    conditions: &[&str],
+    view: &[&'a str],
 ) -> Result<Script, Error> {
     let mut tokens = lex::lex(source)?;
     let mut set = conditions.iter().map(|&c| c.to_owned()).collect();
