@@ -1,6 +1,7 @@
 //! The waveshaper: an optional one-pole low-pass, a memoryless curve run
-//! at twice the rate, then an optional one-pole low-pass and a
-//! second-order Butterworth high-pass (its DC blocker). The curves are ported from v2 sampler-core
+//! at twice the rate, then an optional low-pass (one pole, or two with a
+//! resonance), a second-order Butterworth high-pass (its DC blocker), an
+//! optional shelf and a gain. The curves are ported from v2 sampler-core
 //! dsp/color/{shaping,distortion}.rs and checked against v1's measured
 //! transfer vectors (tests/drive.rs); the format translators carry their
 //! provenance and knob laws.
@@ -10,7 +11,7 @@
 //! harmonics, and at −42 dB at 2x (`Soft(1.0)`: −34 and −60 dB), for one
 //! halfband pair of 8 allpasses each way.
 
-use kontra_dsp_core::{Biquad, Halfband, flush};
+use kontra_dsp_core::{Biquad, Halfband, Side, flush, low_pass, shelf};
 
 /// A transfer curve and its amount.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -31,6 +32,9 @@ pub enum Curve {
     Tanh(f32),
     /// The drive `d`: `atan(d·x)`.
     Atan(f32),
+    /// The drive `d`: `x / √(1 + (d·x)²)`, unity gain on small signals and
+    /// a ceiling of `1/d`.
+    Saturate(f32),
 }
 
 impl Curve {
@@ -48,8 +52,15 @@ pub struct Tone {
     pub pre_lowpass_hz: Option<f32>,
     /// A one-pole low-pass (bilinear, zero at Nyquist), its corner in Hz.
     pub lowpass_hz: Option<f32>,
+    /// With a resonance, [`Tone::lowpass_hz`] is a second-order low-pass of
+    /// that `q` instead of the one-pole.
+    pub lowpass_q: Option<f32>,
     /// A second-order Butterworth high-pass, its corner in Hz.
     pub highpass_hz: Option<f32>,
+    /// A shelf after the filters: corner Hz, gain dB, the cookbook's slope.
+    pub shelf: Option<(f32, f32, f32, Side)>,
+    /// A linear gain last.
+    pub gain: f32,
 }
 
 impl Tone {
@@ -57,7 +68,10 @@ impl Tone {
     pub const NONE: Self = Self {
         pre_lowpass_hz: None,
         lowpass_hz: None,
+        lowpass_q: None,
         highpass_hz: None,
+        shelf: None,
+        gain: 1.0,
     };
 }
 
@@ -87,6 +101,7 @@ enum Prepared {
     Fold(f32),
     Tanh(f32),
     Atan(f32),
+    Saturate(f32),
 }
 
 impl Prepared {
@@ -122,6 +137,8 @@ impl Prepared {
             Curve::Fold(d) => Self::Fold(d),
             Curve::Tanh(d) => Self::Tanh(d),
             Curve::Atan(d) => Self::Atan(d),
+            Curve::Saturate(d) if d.is_nan() || d <= 0.0 => Self::Identity,
+            Curve::Saturate(d) => Self::Saturate(d * d),
             Curve::Power(d) if d.is_nan() || d <= 0.0 => Self::Identity,
             Curve::Power(d) => {
                 let d = d.min(1.0);
@@ -155,6 +172,7 @@ impl Prepared {
             Self::Fold(d) => (d * x).sin().asin(),
             Self::Tanh(d) => (d * x).tanh(),
             Self::Atan(d) => (d * x).atan(),
+            Self::Saturate(d2) => x / (1.0 + d2 * x * x).sqrt(),
             Self::Tube {
                 k,
                 negative,
@@ -215,9 +233,10 @@ pub struct Shaper {
     pre: Option<(f64, [f64; 2])>,
     curve: Prepared,
     halfband: Halfband,
-    /// The low-pass pole and per channel `[x₁, y₁]`.
-    lowpass: Option<(f64, [[f64; 2]; 2])>,
+    lowpass: Option<Biquad>,
     highpass: Option<Biquad>,
+    shelf: Option<Biquad>,
+    gain: f32,
 }
 
 impl Shaper {
@@ -227,10 +246,19 @@ impl Shaper {
     pub fn new(curve: Curve, tone: Tone, rate: u32) -> Self {
         let r = f64::from(rate.max(1));
         let warp = |hz: f32| (std::f64::consts::PI * f64::from(hz).clamp(1.0, 0.49 * r) / r).tan();
-        let lowpass = tone.lowpass_hz.filter(|hz| !hz.is_nan()).map(|hz| {
-            let g = warp(hz);
-            ((1.0 - g) / (1.0 + g), [[0.0; 2]; 2])
-        });
+        let lowpass = tone
+            .lowpass_hz
+            .filter(|hz| !hz.is_nan())
+            .map(|hz| match tone.lowpass_q {
+                Some(q) => low_pass(hz, q, rate),
+                None => {
+                    // One pole, bilinear (a zero at Nyquist).
+                    let g = warp(hz);
+                    let pole = (1.0 - g) / (1.0 + g);
+                    let b = 0.5 * (1.0 - pole);
+                    Biquad::new([b, b, 0.0, 1.0, -pole, 0.0])
+                }
+            });
         let highpass = tone.highpass_hz.filter(|hz| !hz.is_nan()).map(|hz| {
             let (k, q) = (warp(hz), std::f64::consts::SQRT_2);
             Biquad::new([
@@ -252,7 +280,33 @@ impl Shaper {
             halfband: Halfband::new(rate),
             lowpass,
             highpass,
+            shelf: tone
+                .shelf
+                .map(|(hz, db, slope, side)| shelf(hz, db, slope, side, rate)),
+            gain: tone.gain,
         }
+    }
+
+    /// Moves the curve and every filter and gain to `curve` and `tone`;
+    /// the halfband and filter states carry on (a filter that appears
+    /// starts from rest). Never allocates.
+    pub fn retune(&mut self, curve: Curve, tone: Tone, rate: u32) {
+        let new = Self::new(curve, tone, rate);
+        fn keep(old: &mut Option<Biquad>, new: Option<Biquad>) {
+            match (old.as_mut(), new) {
+                (Some(o), Some(n)) => o.retune(&n),
+                (_, n) => *old = n,
+            }
+        }
+        keep(&mut self.lowpass, new.lowpass);
+        keep(&mut self.highpass, new.highpass);
+        keep(&mut self.shelf, new.shelf);
+        self.pre = match (self.pre, new.pre) {
+            (Some((_, state)), Some((pole, _))) => Some((pole, state)),
+            (_, n) => n,
+        };
+        self.curve = new.curve;
+        self.gain = new.gain;
     }
 
     /// Moves the curve's amount; filter states carry on.
@@ -274,20 +328,16 @@ impl Shaper {
         let curve = self.curve;
         self.halfband
             .process(io, |[l, r]| [curve.apply(l), curve.apply(r)]);
-        if let Some((pole, state)) = &mut self.lowpass {
-            let b = 0.5 * (1.0 - *pole);
-            for frame in io.iter_mut() {
-                for (x, [x1, y1]) in frame.iter_mut().zip(state.iter_mut()) {
-                    let v = f64::from(*x);
-                    *y1 = b * (v + *x1) + *pole * *y1;
-                    *x1 = v;
-                    *x = *y1 as f32;
-                }
-            }
-            flush(state.as_flattened_mut());
+        for f in [&mut self.lowpass, &mut self.highpass, &mut self.shelf]
+            .into_iter()
+            .flatten()
+        {
+            f.process(io);
         }
-        if let Some(h) = &mut self.highpass {
-            h.process(io);
+        if self.gain != 1.0 {
+            for x in io.as_flattened_mut() {
+                *x *= self.gain;
+            }
         }
     }
 
@@ -297,11 +347,11 @@ impl Shaper {
         if let Some((_, s)) = &mut self.pre {
             *s = [0.0; 2];
         }
-        if let Some((_, s)) = &mut self.lowpass {
-            *s = [[0.0; 2]; 2];
-        }
-        if let Some(h) = &mut self.highpass {
-            h.reset();
+        for f in [&mut self.lowpass, &mut self.highpass, &mut self.shelf]
+            .into_iter()
+            .flatten()
+        {
+            f.reset();
         }
     }
 }

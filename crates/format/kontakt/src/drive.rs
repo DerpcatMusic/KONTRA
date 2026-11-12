@@ -1,4 +1,4 @@
-//! Saturation, Distortion, Lo-Fi and Skreamer onto the engine's waveshaper and
+//! Saturation, Distortion, Lo-Fi, Skreamer and Tape Saturator onto the engine's waveshaper and
 //! reducer: their saved records (readers 0x140d02c30, 0x140d00c60,
 //! 0x140d01f20, via v2 sampler-kontakt effects/mod.rs) and knob laws.
 //! Any rack: the engine runs them on each voice in a group rack and on the
@@ -45,6 +45,7 @@ pub(crate) fn effect(
             f(12)?,
             f(16)?,
         )),
+        0x42 => Some(crate::tape::tape(f(0)?, f(4)?, f(8)?)),
         _ => None,
     }
 }
@@ -61,7 +62,10 @@ fn saturation(shape: f32, algorithm: i32, at: &str, notes: &mut Notes) -> Option
         pre_lowpass_hz: None,
         curve: ir::DriveCurve::Soft(shape.clamp(-1.0, 1.0)),
         lowpass_hz: None,
+        lowpass_q: None,
         highpass_hz: None,
+        shelf: None,
+        gain: 1.0,
     }))
 }
 
@@ -77,7 +81,10 @@ fn distortion(mode: i32, drive: f32, damping: f32) -> Option<ir::EffectKind> {
         pre_lowpass_hz: None,
         curve,
         lowpass_hz: Some(damping_hz(damping)),
+        lowpass_q: None,
         highpass_hz: Some(DC_HZ),
+        shelf: None,
+        gain: 1.0,
     }))
 }
 

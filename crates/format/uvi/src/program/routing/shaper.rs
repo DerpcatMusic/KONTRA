@@ -55,7 +55,10 @@ pub(super) fn wave_shaper(p: Params, notes: &mut Notes) -> Result<Option<ir::Eff
         pre_lowpass_hz: Some(p.num("PreFreq", 20_000.0)? as f32),
         curve,
         lowpass_hz: None,
+        lowpass_q: None,
         highpass_hz: Some(p.num("PostFreq", 20.0)? as f32),
+        shelf: None,
+        gain: 1.0,
     };
     Ok(Some(ir::Effect {
         kind: ir::EffectKind::Shaper(shaper),

@@ -21,6 +21,8 @@ pub enum Curve {
     Tanh(f32),
     /// The drive `d`: `atan(d·x)`.
     Atan(f32),
+    /// The drive `d`: `x / √(1 + (d·x)²)` (unity on small signals, ceiling `1/d`).
+    Saturate(f32),
 }
 
 impl Curve {
@@ -33,13 +35,15 @@ impl Curve {
             | Self::Sine(x)
             | Self::Fold(x)
             | Self::Tanh(x)
-            | Self::Atan(x) => x,
+            | Self::Atan(x)
+            | Self::Saturate(x) => x,
         }
     }
 }
 
-/// An optional one-pole low-pass, a curve, then an optional one-pole
-/// low-pass and a second-order Butterworth high-pass.
+/// An optional one-pole low-pass, a curve, then an optional low-pass (one
+/// pole, or two with `lowpass_q`), a second-order Butterworth high-pass,
+/// an optional shelf and a linear gain.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shaper {
     /// The corner of a one-pole low-pass before the curve, pole
@@ -47,7 +51,14 @@ pub struct Shaper {
     pub pre_lowpass_hz: Option<f32>,
     pub curve: Curve,
     pub lowpass_hz: Option<f32>,
+    /// Makes `lowpass_hz` a second-order low-pass of this resonance.
+    pub lowpass_q: Option<f32>,
     pub highpass_hz: Option<f32>,
+    /// A low or high shelf (its `q` the cookbook's slope); a peak shape is
+    /// ignored.
+    pub shelf: Option<crate::Bell>,
+    /// Linear, last.
+    pub gain: f32,
 }
 
 /// A sample hold, a quantizer truncating toward zero, then noise.

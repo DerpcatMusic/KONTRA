@@ -88,6 +88,7 @@ fn a_flat_shaper_passes_the_band_and_its_filters_sit_3_db_down() {
                 pre_lowpass_hz: None,
                 lowpass_hz: Some(2200.0),
                 highpass_hz: None,
+                ..Tone::NONE
             },
             2200.0,
         ),
@@ -96,6 +97,7 @@ fn a_flat_shaper_passes_the_band_and_its_filters_sit_3_db_down() {
                 pre_lowpass_hz: None,
                 lowpass_hz: None,
                 highpass_hz: Some(15.0),
+                ..Tone::NONE
             },
             15.0,
         ),
@@ -142,6 +144,7 @@ fn the_shaper_is_block_size_free() {
         pre_lowpass_hz: None,
         lowpass_hz: Some(3000.0),
         highpass_hz: Some(15.0),
+        ..Tone::NONE
     };
     let mut whole = input.clone();
     Shaper::new(Curve::Tube(0.7), tone, 48_000).process(&mut whole);
@@ -214,6 +217,7 @@ fn nan_settings_stay_finite_and_reset_replays_the_noise() {
             pre_lowpass_hz: None,
             lowpass_hz: Some(f32::NAN),
             highpass_hz: Some(f32::NAN),
+            ..Tone::NONE
         },
         48_000,
     );

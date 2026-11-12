@@ -18,7 +18,7 @@ use kontra_dsp::filter::{Formant, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 use kontra_plan::route_depth;
 
-use kontra_effects::processors::{curve, reduction, shaper, voicing};
+use kontra_effects::processors::{curve, reduction, shaper, tone, voicing};
 
 use kontra_effects::summed::{VoiceEq, shape};
 
@@ -201,7 +201,9 @@ fn tune(kind: &mut Kind, t: Tune, rate: u32) {
         }
         (Kind::Eq(q), Tune::Eq(bells)) => q.retune(bells, rate),
         (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(v), rate),
-        (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => s.set_curve(curve(v.curve)),
+        (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => {
+            s.retune(curve(v.curve), tone(v), rate);
+        }
         (Kind::Crush(c), Tune::Effect(ir::EffectKind::Crush(v))) => c.set(reduction(v, rate)),
         (Kind::Overdrive(o), Tune::Effect(ir::EffectKind::Overdrive(v))) => o.set(voicing(v), rate),
         _ => {}

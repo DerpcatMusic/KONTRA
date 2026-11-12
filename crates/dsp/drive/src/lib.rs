@@ -10,5 +10,6 @@ mod shaper;
 
 pub use clipper::{Circuit, Clipper};
 pub use crush::{Crush, Reduction};
+pub use kontra_dsp_core::Side;
 pub use overdrive::{Overdrive, Voicing};
 pub use shaper::{Curve, Shaper, Tone};
