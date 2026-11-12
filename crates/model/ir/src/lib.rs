@@ -19,8 +19,8 @@ mod route_names;
 mod wavetable;
 pub use bus::{Bus, BusSend};
 pub use drive::{
-    Clipper, Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper,
-    SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
+    Clipper, Crush, Curve as DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive, RackAt,
+    Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
@@ -76,6 +76,8 @@ pub struct Instrument {
     pub responses: Vec<(String, usize)>,
     /// How [`KnobTarget::Slot`] knobs move the effects they address.
     pub slot_laws: Vec<SlotLaw>,
+    /// Slots whose knobs [`KnobModel`]s rebuild together.
+    pub slot_models: Vec<(RackAt, u8, KnobModel)>,
     /// The filter shapes a script may switch slots to.
     pub slot_shapes: SlotShapes,
     pub diagnostics: Vec<Diagnostic>,
@@ -102,6 +104,7 @@ impl Instrument {
         impulses: Vec::new(),
         responses: Vec::new(),
         slot_laws: Vec::new(),
+        slot_models: Vec::new(),
         slot_shapes: SlotShapes::NONE,
         diagnostics: Vec::new(),
     };

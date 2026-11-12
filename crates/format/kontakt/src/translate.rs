@@ -144,7 +144,9 @@ pub(crate) fn instrument(
     slots.shape_slots.extend(racks.laws.shape_slots);
     slots.subtypes.extend(racks.laws.subtypes);
     slots.types.extend(racks.laws.types);
+    slots.models.extend(racks.laws.models);
     out.slot_laws = slots.laws;
+    out.slot_models = slots.models;
     if !slots.shape_slots.is_empty() {
         out.slot_shapes.shapes = crate::laws::filter_shapes();
         kontra_law::record(|| kontra_law::Application {
