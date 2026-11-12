@@ -422,6 +422,9 @@ pub fn list_row(
     }
 }
 
+/// The most rows a menu shows at once; a longer one scrolls.
+const MENU_ROWS: f64 = 18.;
+
 /// A popup menu of `items`, `columns` to a row (one for words, more for a
 /// grid of short picks); the index of the one picked. `current` is raised.
 pub fn menu(
@@ -453,12 +456,16 @@ pub fn menu(
         rows.push(row(std::mem::replace(&mut cells, rest)).gap(1).shrink(0));
     }
     // Floats are sized by the space around their parent; a menu takes its
-    // own height so a long one is never squeezed.
+    // own height so a long one is never squeezed. A longer one (a library's
+    // hundreds of presets) scrolls within MENU_ROWS: the wheel moves it,
+    // never what lies under it.
     let tall = rows.len() as f64 * (CONTROL + 1.);
-    let list = col(rows)
-        .gap(1)
-        .min_h(tall)
-        .when(columns == 1, |e| e.w(TEXT * 16.));
+    let most = MENU_ROWS * (CONTROL + 1.);
+    let list = col(rows).gap(1).when(columns == 1, |e| e.w(TEXT * 16.));
+    let list = match tall > most {
+        true => list.scroll().h(most).id(format!("{id}-list")),
+        false => list.min_h(tall),
+    };
     Response {
         el: popup(id, list),
         changed: picked,
