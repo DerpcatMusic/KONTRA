@@ -161,13 +161,26 @@ setmetatable(ui, {
 __params, __meters, __writes = {}, {}, {}
 local Parameter = {}
 Parameter.__index = Parameter
+-- The host gives raw values (`__params`). A knob, slider or value edit
+-- reads 0..1 across its range; with an index (a table's cell, Conflux's
+-- `util.prepare_value_from_ksp`) any control reads and writes raw.
+local function span(id, index)
+	local c = __controls[id]
+	if index == nil and c and c.normalized and c.max > c.min then
+		return c.min, c.max - c.min
+	end
+end
 function Parameter:value(index)
 	current.reads[self.id] = true
-	return __params[self.id] or 0
+	local raw = __params[self.id] or 0
+	local min, width = span(self.id, index)
+	return min and (raw - min) / width or raw
 end
-function Parameter:set_value(v)
-	__params[self.id] = v
-	__writes[#__writes + 1] = { self.id, v }
+function Parameter:set_value(v, index)
+	local min, width = span(self.id, index)
+	local raw = min and min + v * width or v
+	__params[self.id] = raw
+	__writes[#__writes + 1] = { self.id, raw }
 	__dirty = true
 end
 -- The control's KSP properties, as the page's own uses read them: 0 its

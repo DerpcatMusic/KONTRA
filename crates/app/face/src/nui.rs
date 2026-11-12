@@ -83,41 +83,31 @@ fn control(face: &Face, d: &Decl<'_>) -> Control {
         min,
         max,
         default: min,
+        normalized: range && max > min,
         entries,
     }
 }
 
-/// What a page's parameter reads for a control at `v`: a knob, slider or
-/// value edit 0 to 1 across its range (the page maps it back through its
-/// own range configs), a menu or button its own value.
-fn value(d: &Decl<'_>, c: &Control, v: f64) -> f64 {
-    match d.kind {
-        ControlKind::Knob | ControlKind::Slider | ControlKind::ValueEdit if c.max > c.min => {
-            (v - c.min) / (c.max - c.min)
-        }
-        _ => v,
-    }
-}
 
 /// A page shown: its state, where its widgets start in the tree, its size
 /// and where its instances were placed.
 pub(crate) struct Shown {
     page: nui::Page,
-    /// Each control by the page's id: its UI id, range, and whether the
-    /// page reads it 0..1 across that range.
-    controls: Vec<(i32, Control, bool)>,
+    /// Each control's UI id, by the page's id.
+    controls: Vec<(i32, String)>,
     first: usize,
     size: ui::Size,
     pub(super) slots: Vec<Slot>,
 }
 
-/// The controls in `decls` as the page reads them, and their values.
+/// The controls in `decls` as the page reads them, and their raw values
+/// (the page's parameters scale them, [`Control::normalized`]).
 fn read(face: &Face, decls: &[Decl<'_>]) -> (Vec<Control>, Vec<(String, f64)>) {
     let controls: Vec<_> = decls.iter().map(|d| control(face, d)).collect();
     let values = decls
         .iter()
         .zip(&controls)
-        .filter_map(|(d, c)| Some((c.name.clone(), value(d, c, d.look.value? as f64))))
+        .filter_map(|(d, c)| Some((c.name.clone(), d.look.value? as f64)))
         .collect();
     (controls, values)
 }
@@ -144,10 +134,7 @@ pub(super) fn face(
     let controls = decls
         .iter()
         .zip(&read)
-        .map(|(d, c)| {
-            let ranged = value(d, c, 1.) != 1. || value(d, c, 0.) != 0.;
-            (d.id, c.clone(), ranged)
-        })
+        .map(|(d, c)| (d.id, c.name.clone()))
         .collect();
     let rendered = nui::load(&native.modules, &native.entry).and_then(|mut page| {
         page.set_controls(&read)?;
@@ -207,13 +194,8 @@ impl Shown {
             .unwrap_or_default();
         writes
             .into_iter()
-            .filter_map(|(id, v)| {
-                let (ui_id, c, ranged) = self.controls.iter().find(|(_, c, _)| c.name == id)?;
-                let raw = if *ranged {
-                    c.min + v * (c.max - c.min)
-                } else {
-                    v
-                };
+            .filter_map(|(id, raw)| {
+                let (ui_id, _) = self.controls.iter().find(|(_, name)| *name == id)?;
                 Some((*ui_id, raw.round() as i64))
             })
             .collect()

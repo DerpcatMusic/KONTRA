@@ -89,6 +89,10 @@ pub struct Control {
     pub min: f64,
     pub max: f64,
     pub default: f64,
+    /// Whether the page reads it 0..1 across `min..max` (a knob, slider or
+    /// value edit), not raw (a menu, a button). An index (`value(i)`,
+    /// `set_value(v, i)`) reads and writes raw either way.
+    pub normalized: bool,
     /// A menu's entries: text and value.
     pub entries: Vec<(String, f64)>,
 }
@@ -208,6 +212,7 @@ impl Page {
             t.set("min", c.min).map_err(fail)?;
             t.set("max", c.max).map_err(fail)?;
             t.set("default", c.default).map_err(fail)?;
+            t.set("normalized", c.normalized).map_err(fail)?;
             let entries = lua.create_table().map_err(fail)?;
             for (n, (text, value)) in (1..).zip(&c.entries) {
                 let e = lua.create_table().map_err(fail)?;
@@ -513,6 +518,52 @@ mod tests {
         // The binding's setter was passed, never called: the state holds.
         let text = tree.children[0].prop("text");
         assert_eq!(text, Some(&Prop::Text("a/dark".into())));
+    }
+
+    /// A ranged control reads 0..1 across its range, and raw by index (a
+    /// table's cell, as Conflux's bend strip reads it); both writes are
+    /// raw for the host.
+    #[test]
+    fn a_ranged_control_reads_0_to_1_and_raw_by_index() {
+        let mut page = page(&[(
+            "main.nui",
+            r#"local ui = require "native_ui"
+            local kontakt = require "kontakt"
+            return function()
+                local pb = kontakt.connect_parameter("PB")
+                return @ui.VStack {
+                    @ui.Text { text = pb:value() }
+                    @ui.Text { text = pb:value(0) }
+                }
+                .on_tap_gesture(
+                    start = function() pb:set_value(0.5) end,
+                    complete = function() pb:set_value(-100, 0) end)
+            end"#,
+        )]);
+        let pb = Control {
+            name: "PB".into(),
+            label: String::new(),
+            value_text: String::new(),
+            min: -100.,
+            max: 100.,
+            default: 0.,
+            normalized: true,
+            entries: Vec::new(),
+        };
+        page.set_controls(std::slice::from_ref(&pb)).unwrap();
+        let tree = page.render(&[("PB".into(), 100.)]).unwrap().unwrap();
+        let text = |i: usize| tree.children[i].prop("text").cloned();
+        assert_eq!(text(0), Some(Prop::Number(1.)));
+        assert_eq!(text(1), Some(Prop::Number(100.)));
+        let callback = |k: &str| match tree.mods[0].1[0].field(k) {
+            Some(Prop::Callback(n)) => *n,
+            _ => 0,
+        };
+        let (start, complete) = (callback("start"), callback("complete"));
+        let writes = page.call(start, [0.; 2], [1.; 2]).unwrap();
+        assert_eq!(writes, [("PB".to_owned(), 0.)]);
+        let writes = page.call(complete, [0.; 2], [1.; 2]).unwrap();
+        assert_eq!(writes, [("PB".to_owned(), -100.)]);
     }
 
     #[test]
