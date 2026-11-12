@@ -73,6 +73,7 @@ impl Engine {
             let pan = voice_gain::glide(slot.pan[0], to, GROUP_PAN_TAU_MS, MAX_SPAN as f32, rate);
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan);
             let mix = self.voice_mix(zone, &n, age);
+            let read = self.voice_read(zone, &n, age);
             let (step, bend) = self.step(zone, &n, age);
             let law = self.plan.route_pitch;
             self.retune_rack(i, zone, &n, age);
@@ -85,6 +86,9 @@ impl Engine {
                 slot.voice.set_lag(lag);
                 if let Some(mix) = mix {
                     slot.voice.set_mix(mix);
+                }
+                if let Some(read) = read {
+                    slot.voice.set_read(read);
                 }
                 let at = voice_gain::glide(
                     slot.bend[0],
