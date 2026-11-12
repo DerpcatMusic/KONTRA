@@ -26,8 +26,8 @@ const INTERNAL_MODS: u16 = 0x3b;
 const SCRIPT: u16 = 6;
 const VOICE_GROUPS: u16 = 0x32;
 
-/// `saved`: a snapshot's persistent values per script slot, in place of the
-/// instrument's own where a slot has some.
+/// `saved`: a snapshot's persistent values per script slot, over the
+/// instrument's own.
 pub(crate) fn instrument(
     path: &Path,
     chunks: &KontaktChunks,
@@ -91,8 +91,10 @@ pub(crate) fn instrument(
                 dialect: ir::Dialect::Ksp,
                 data: data_files(&text, path, &mut resources),
                 source: text,
-                saved: (saved.get(slot).filter(|s| !s.is_empty()).cloned())
-                    .unwrap_or(script.persistent),
+                saved: crate::snapshot::over(
+                    script.persistent,
+                    saved.get(slot).map_or(&[], Vec::as_slice),
+                ),
                 links: (links.iter())
                     .filter(|(s, _)| usize::from(*s) == slot)
                     .map(|&(_, l)| l)
