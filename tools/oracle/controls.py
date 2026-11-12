@@ -245,14 +245,17 @@ def markdown(rows, title, context):
            "verdict | reason |", "|---|---|---|---|---|---|---|---|"]
     for r in rows:
         kd, od = r.get("kontakt_delta"), r.get("ours_delta")
+        w = [x.replace("ENGINE_PAR_", "") for x in r["writes"]]
+        writes = "; ".join(w[:3]) + (f" (+{len(w) - 3})" if len(w) > 3 else "")
         out.append(f"| {r['name']} | {r['kind']} | {r['min']}..{r['max']} ({r['default']}) | "
-                   f"{'; '.join(r['writes'])} | {top(kd) if kd else ''} | {top(od) if od else ''} | "
+                   f"{writes} | {top(kd) if kd else ''} | {top(od) if od else ''} | "
                    f"{r['class']} | {r.get('cause') or r['reason']} |")
     return "\n".join(out) + "\n"
 
 
 def writes_per_step(report, steps):
-    """Step k's set_engine_par calls as (name, value, group, slot, generic), from pass A's trace."""
+    """Step k's engine writes from pass A's trace: set_engine_par as (name, value, group, slot,
+    generic), purge_group as ("purge_group", group, mode). An IR file load is not replayed."""
     res = json.loads(report.read_text())["result"]
     names, base = res["script_symbols"][0], res["symbol_base"]
     cc102 = [e["callback_id"] for e in res["stage_events"] if e.get("type") == "callback"
@@ -261,19 +264,25 @@ def writes_per_step(report, steps):
     step = {cb: k for k, cb in enumerate(cc102)}
     out = [[] for _ in steps]
     for e in res["stage_events"]:
-        if e.get("action") == "SetEnginePar" and e.get("script_slot") == 0 and e["callback_id"] in step:
+        if e.get("script_slot") != 0 or e.get("callback_id") not in step:
+            continue
+        if e.get("action") == "SetEnginePar":
             par, *rest = e["args"]
             name = names[par - base] if 0 <= par - base < len(names) else None
             if name:
                 out[step[e["callback_id"]]].append((name, *rest))
+        elif e.get("action") == "PurgeGroup":
+            out[step[e["callback_id"]]].append(("purge_group", *e["args"][:2]))
     return out, len(cc102)
 
 
 def probe(writes):
     """A script that replays step k's engine writes on CC 103·128 + CC 102 = k."""
-    cases = "".join(f"    case {k}\n" + "".join(f"      set_engine_par({n}, {v}, {g}, {sl}, {gen})\n"
-                                                for n, v, g, sl, gen in w)
-                    for k, w in enumerate(writes) if w)
+    def line(w):
+        if w[0] == "purge_group":
+            return f"      purge_group({w[1]}, {w[2]})\n"
+        return "      set_engine_par({}, {}, {}, {}, {})\n".format(*w)
+    cases = "".join(f"    case {k}\n" + "".join(map(line, w)) for k, w in enumerate(writes) if w)
     return ("on init\n  declare $step\nend on\non controller\n  if ($CC_NUM = 102)\n"
             "    $step := %CC[103] * 128 + %CC[102]\n    select ($step)\n" + cases
             + "    end select\n  end if\nend on\n")
