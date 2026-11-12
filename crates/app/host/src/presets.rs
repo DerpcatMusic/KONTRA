@@ -5,7 +5,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use kontra_library::presets::*;
+pub use kontra_library::presets::{
+    EXTENSION, Overwrite, SavedRack, SlotResponse, SlotType, UserPreset, VERSION, delete, folder,
+    list, ours, read,
+};
 pub use kontra_ui_model::preset_file_name as sanitized;
 
 fn cleaned(name: &str) -> io::Result<String> {

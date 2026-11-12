@@ -44,6 +44,7 @@ pub enum SavedRack {
 
 /// The extension of a user preset file.
 pub const EXTENSION: &str = "kontra";
+/// The preset file format a [`UserPreset`] is written and read as.
 pub const VERSION: u32 = 1;
 /// The most a preset file may hold; anything larger is not one.
 const LIMIT: u64 = 16 << 20;
