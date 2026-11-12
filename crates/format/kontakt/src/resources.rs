@@ -183,28 +183,32 @@ impl Resources {
 
     /// The files directly in `Resources/<folder>/` of every source, by name.
     pub(crate) fn listed(&self, folder: &str) -> Vec<String> {
+        let mut names = self.under(folder);
+        names.retain(|n| !n.contains('/'));
+        names
+    }
+
+    /// The files anywhere under `Resources/<folder>/` of every source, by
+    /// their path from it (`a/b.nui`).
+    pub(crate) fn under(&self, folder: &str) -> Vec<String> {
         let want = format!("resources/{}/", folder.to_lowercase());
-        let direct = |stored: &str| {
+        let inside = |stored: &str| {
             let stored = stored.replace(['|', '\\'], "/");
             let at = stored.to_lowercase().find(&want)? + want.len();
             let name = stored.get(at..)?;
-            (!name.is_empty() && !name.contains('/')).then(|| name.to_string())
+            (!name.is_empty()).then(|| name.to_string())
         };
         let mut names: Vec<String> = Vec::new();
         for source in &self.sources {
             let found: Vec<String> = match source {
-                Source::Loose(dir) => entries(&dir.join(folder))
-                    .iter()
-                    .filter(|p| p.is_file())
-                    .filter_map(|p| Some(p.file_name()?.to_str()?.to_string()))
-                    .collect(),
+                Source::Loose(dir) => walk(&dir.join(folder), ""),
                 Source::Nicnt(_, table, _) => table
                     .items
                     .iter()
-                    .filter_map(|i| direct(&i.filename))
+                    .filter_map(|i| inside(&i.filename))
                     .collect(),
                 Source::Nkr(_, archive, _) => {
-                    archive.members().filter_map(|e| direct(&e.name)).collect()
+                    archive.members().filter_map(|e| inside(&e.name)).collect()
                 }
             };
             for name in found {
@@ -272,6 +276,23 @@ fn find_root(path: &Path) -> Option<PathBuf> {
             })
         })
         .map(Path::to_path_buf)
+}
+
+/// The files under `dir`, by their path from it after `prefix`.
+fn walk(dir: &Path, prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in entries(dir) {
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let name = format!("{prefix}{name}");
+        if p.is_dir() {
+            out.extend(walk(&p, &format!("{name}/")));
+        } else {
+            out.push(name);
+        }
+    }
+    out
 }
 
 fn entries(dir: &Path) -> Vec<PathBuf> {

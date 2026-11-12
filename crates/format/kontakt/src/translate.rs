@@ -467,6 +467,27 @@ fn data_files(
             files.push((file, bytes));
         }
     }
+    // A Kontakt 8 `native_ui` page the script loads by a literal name: every
+    // module under `Resources/native_ui/`, kept as `native_ui/<path>`, and
+    // the entry's name as `native_ui.entry`.
+    if let Some(entry) = source
+        .split("load_native_ui(")
+        .nth(1)
+        .and_then(|call| call.split_once(')'))
+        .map(|(a, _)| a.trim().trim_matches('"').to_owned())
+        .filter(|e| !e.is_empty() && !e.contains(['"', '\\']))
+    {
+        let resources = resources.get_or_insert_with(|| Resources::open(path));
+        for module in resources.under("native_ui") {
+            if !module.ends_with(".nui") {
+                continue;
+            }
+            if let Some(bytes) = resources.read(&format!("native_ui/{module}")) {
+                files.push((format!("native_ui/{module}"), bytes));
+            }
+        }
+        files.push(("native_ui.entry".into(), entry.into_bytes()));
+    }
     files
 }
 

@@ -670,6 +670,7 @@ pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
             w.kind,
             Kind::Slider { .. } | Kind::TextEdit | Kind::Table { .. }
         )
+        || matches!(w.kind, Kind::Shape(_))
 }
 
 /// A KSP control with no picture, or one the library lacks; `false` for
@@ -704,7 +705,7 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
         }
         _ => Vec::new(),
     };
-    let background = w.colors.background;
+    let (background, page_width) = (w.colors.background, w.rect.width);
     let bar = w.colors.bar;
     let edges = w.table_inner_edge.map(|edge| edge.visible).unwrap_or(false);
     let zero = match &w.kind {
@@ -783,6 +784,9 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
                         grey(VALUE),
                     ));
                 }
+            }
+            Kind::Shape(shape) => {
+                d.extend(super::shape::fill(shape, page_width, (w, h), background))
             }
             _ => field(&mut d, FIELD),
         }
