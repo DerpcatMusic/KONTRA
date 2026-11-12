@@ -184,7 +184,7 @@ impl View {
                 if frame.state == Filled::Whole && frame.apply(tree) {
                     self.revision += 1;
                 }
-                self.frame = Some(frame);
+                self.frame = Some(frame.kept());
                 return;
             }
         };
@@ -207,10 +207,7 @@ impl View {
                 self.revision += 1;
             }
         }
-        self.frame = Some(match frame.state {
-            Filled::Overflowed => frame.grown(),
-            Filled::No | Filled::Whole => frame,
-        });
+        self.frame = Some(frame.kept());
         self.library = library.into_inner();
     }
 
@@ -254,6 +251,17 @@ struct Look {
 /// A widget number, whether its array was read, and its preallocated cells.
 type ArrayRead = (u32, bool, Box<[f64]>);
 
+/// A Lua menu's items as last copied: the widget, the revision read (none
+/// until copied, or after the room grew), whether this trip copied them,
+/// and the items in their preallocated room.
+#[derive(Clone)]
+struct MenuRead {
+    n: u32,
+    revision: Option<u32>,
+    fresh: bool,
+    items: Vec<Text>,
+}
+
 /// What a part's [`Live`] reads of its script, copied out of the engine on
 /// the audio thread ([`LookFrame::fill`]) for the control side to refresh
 /// the tree from. Its ids and cells are sorted.
@@ -272,6 +280,7 @@ pub struct LookFrame {
     reads: Vec<u32>,
     texts: Box<[(u32, bool, Text)]>,
     arrays: Box<[ArrayRead]>,
+    menus: Box<[MenuRead]>,
     /// The script's bitmap fonts from [`FIRST_FONT`] on; `on init` names
     /// them all, so they are copied once.
     fonts: Arc<[String]>,
@@ -337,6 +346,7 @@ impl LookFrame {
             reads: Vec::new(),
             texts: Box::default(),
             arrays: Box::default(),
+            menus: Box::default(),
             fonts: (FIRST_FONT..)
                 .map_while(|id| now.font(slot, id).map(str::to_owned))
                 .collect(),
@@ -379,6 +389,20 @@ impl LookFrame {
                     ))
                 })
                 .collect(),
+            menus: (tree.widgets.iter().enumerate())
+                .filter_map(|(n, w)| {
+                    let model::Kind::Menu { items } = &w.kind else {
+                        return None;
+                    };
+                    Some(MenuRead {
+                        n: u32::try_from(n).ok()?,
+                        // Built from the page as it stands: copied.
+                        revision: None,
+                        fresh: false,
+                        items: Vec::with_capacity((items.len() * ROOM).max(MIN_ROOM)),
+                    })
+                })
+                .collect(),
             fonts: Arc::from([]),
             // Room for the engine's 128 keys, though a Lua page shows none.
             keys: Vec::with_capacity(128),
@@ -393,6 +417,25 @@ impl LookFrame {
     fn apply(&mut self, tree: &mut model::Interface) -> bool {
         let mut texts = self.texts.iter().filter(|t| t.1).peekable();
         let mut changed = false;
+        // Items first: the value then picks the shown one among them.
+        for m in self.menus.iter().filter(|m| m.fresh) {
+            if let Some(model::Kind::Menu { items }) =
+                tree.widgets.get_mut(m.n as usize).map(|w| &mut w.kind)
+            {
+                let now: Vec<model::MenuItem> = (1..)
+                    .zip(&m.items)
+                    .map(|(value, text)| model::MenuItem {
+                        text: text.as_str().to_owned(),
+                        value,
+                        visible: true,
+                    })
+                    .collect();
+                if *items != now {
+                    *items = now;
+                    changed = true;
+                }
+            }
+        }
         for (n, look) in self.widgets.iter_mut().enumerate() {
             let text = texts.next_if(|t| t.0 as usize == n).map(|t| t.2.as_str());
             if let Some(look) = look.take() {
@@ -467,11 +510,48 @@ impl LookFrame {
                     .vm(self.slot)
                     .is_some_and(|vm| vm.widget_cells(*n, cells));
         }
+        // A menu's items only when the script changed them: copied into
+        // their room, or the frame grows and asks again.
+        let vm = engine.vm(self.slot);
+        for m in &mut *self.menus {
+            m.fresh = false;
+            let look = (self.reads.binary_search(&m.n).is_ok())
+                .then(|| self.widgets.get(m.n as usize).copied().flatten())
+                .flatten();
+            let (Some(look), Some(vm)) = (look, vm) else {
+                continue;
+            };
+            if m.revision == Some(look.items) {
+                continue;
+            }
+            m.items.clear();
+            let mut text = Text::EMPTY;
+            let mut fits = true;
+            while vm.widget_item(m.n, m.items.len() as u32, &mut text) {
+                if m.items.len() == m.items.capacity() {
+                    fits = false;
+                    break;
+                }
+                m.items.push(text);
+            }
+            whole &= fits;
+            m.fresh = fits;
+            m.revision = fits.then_some(look.items);
+        }
         self.state = if whole {
             Filled::Whole
         } else {
             Filled::Overflowed
         };
+    }
+
+    /// The frame for the next trip: itself, or grown if the script outgrew
+    /// it, on a control page and a Lua page alike.
+    fn kept(self: Box<Self>) -> Box<Self> {
+        match self.state {
+            Filled::Overflowed => self.grown(),
+            Filled::No | Filled::Whole => self,
+        }
     }
 
     /// The same reads with twice the room in every list, to ask again.
@@ -494,6 +574,14 @@ impl LookFrame {
             widgets: self.widgets.clone(),
             reads: self.reads.clone(),
             arrays: self.arrays.clone(),
+            menus: (self.menus.iter())
+                .map(|m| MenuRead {
+                    revision: None,
+                    fresh: false,
+                    items: Vec::with_capacity(m.items.capacity() * 2),
+                    ..*m
+                })
+                .collect(),
             texts: self.texts.clone(),
             fonts: Arc::clone(&self.fonts),
             keys: self.keys.clone(),
@@ -607,6 +695,40 @@ mod tests {
             tree.widgets[0].value,
             Some(model::Value::Reals(vec![0.25, 0.75]))
         );
+        assert!(!frame.apply(&mut tree));
+    }
+
+    #[test]
+    fn an_outgrown_lua_frame_comes_back_with_more_room() {
+        let page = kontra_lua::compile(r#"Menu{"m", {"a"}}"#, &[], &[])
+            .unwrap()
+            .ui;
+        let tree = crate::ui::lua::tree(&page, &|_| None);
+        let mut frame = LookFrame::lua(0, &tree);
+        let room = frame.menus[0].items.capacity();
+        frame.state = Filled::Overflowed;
+        let frame = frame.kept();
+        assert_eq!(frame.menus[0].items.capacity(), room * 2);
+        assert!(frame.state == Filled::No);
+    }
+
+    #[test]
+    fn copied_menu_items_replace_the_dropdown() {
+        let page = kontra_lua::compile(r#"Menu{"m", {"a"}}"#, &[], &[])
+            .unwrap()
+            .ui;
+        let mut tree = crate::ui::lua::tree(&page, &|_| None);
+        let mut frame = LookFrame::lua(0, &tree);
+        let menu = &mut frame.menus[0];
+        menu.items
+            .extend([Text::from_str_cut("a").0, Text::from_str_cut("b").0]);
+        menu.fresh = true;
+        assert!(frame.apply(&mut tree));
+        let model::Kind::Menu { items } = &tree.widgets[0].kind else {
+            panic!("a menu");
+        };
+        let texts: Vec<_> = items.iter().map(|i| (i.text.as_str(), i.value)).collect();
+        assert_eq!(texts, [("a", 1), ("b", 2)]);
         assert!(!frame.apply(&mut tree));
     }
 }

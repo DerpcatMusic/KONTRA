@@ -200,6 +200,14 @@ impl Vm {
         }
     }
 
+    /// As [`Machine::widget_item`].
+    pub fn widget_item(&self, n: u32, i: u32, out: &mut Text) -> bool {
+        match self {
+            Self::Code(_) => false,
+            Self::Foreign(m) => m.widget_item(n, i, out),
+        }
+    }
+
     #[must_use]
     pub fn text(&self, n: usize) -> Option<&Text> {
         match self {
