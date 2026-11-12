@@ -715,7 +715,12 @@ impl Engine {
         let fade = self.fade_frames();
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.matching(pattern, &mut hits);
-        self.fade_notes(&hits, fade, kontra_voice::FadeTarget::End);
+        self.fade_notes(
+            &hits,
+            fade,
+            kontra_voice::FadeTarget::End,
+            kontra_voice::FadeCurve::Linear,
+        );
         self.hits = hits;
     }
 

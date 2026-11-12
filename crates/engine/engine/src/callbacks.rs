@@ -386,7 +386,7 @@ impl Engine {
                 continue;
             };
             // A stopping fade asked before it started ends it: no release follows.
-            n.released |= n.fade.is_some_and(|(target, _)| target == FadeTarget::End);
+            n.released |= n.fade.is_some_and(|(target, ..)| target == FadeTarget::End);
             if !scripted && n.releases == Releases::AtStart {
                 self.start_zones(note, false, |trigger| trigger == Trigger::Release);
             }
