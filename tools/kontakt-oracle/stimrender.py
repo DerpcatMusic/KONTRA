@@ -71,7 +71,13 @@ def stim_noise_low():
     return 0.01 * np.random.default_rng(1).standard_normal(RATE)
 
 
-STIMULI = {"noise_low": stim_noise_low, "limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse,
+def stim_sine_steady():
+    """4 s of a 500 Hz sine at 0.25: keeps the slot awake, so a modulation effect's LFO runs freely (impulses
+    separated by silence let Kontakt sleep and reset the slot); its phase against R reads a swept delay."""
+    return 0.25 * np.sin(2 * np.pi * 500 * np.arange(4 * RATE) / RATE)
+
+
+STIMULI = {"sine_steady": stim_sine_steady, "noise_low": stim_noise_low, "limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse,
            "impulse8": stim_impulse8, "sine_mid": stim_sine_mid}
 
 
