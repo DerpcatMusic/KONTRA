@@ -35,6 +35,9 @@ pub struct ScriptPlan {
     pub reverb_laws: kontra_ir::ReverbControls<kontra_ir::Law>,
     /// The networks [`EnginePar::ReverbNetwork`] picks from, in order.
     pub reverb_networks: Vec<kontra_ir::Network>,
+    /// The rate kind each [`EnginePar::LfoUnit`] value picks, by value: a
+    /// free [`kontra_ir::Rate::Hz`] or one-count [`kontra_ir::Rate::Steps`].
+    pub lfo_units: Vec<Option<kontra_ir::Rate>>,
     /// What each [`EnginePar::Knob`] sets, through the translator's law.
     pub knobs: Vec<(kontra_ir::KnobTarget, kontra_ir::Law)>,
     /// Code in another language, run by its own machine instead of `program`.
@@ -102,7 +105,7 @@ impl ScriptPlan {
             | EnginePar::StereoWidth
             | EnginePar::StereoPan => Holder::Slot,
             EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
-            EnginePar::LfoFade | EnginePar::LfoRetrigger => Holder::Lfo,
+            EnginePar::LfoFade | EnginePar::LfoRetrigger | EnginePar::LfoUnit => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
             // An envelope's stages live on its modulator: a group without
             // one is a missing target, as for its bypass.

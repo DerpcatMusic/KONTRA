@@ -211,6 +211,9 @@ pub struct Engine {
     files: Vec<kontra_plan::files::FileRequest>,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
+    /// The engine-parameter addresses behind those calls (par, group, slot,
+    /// generic) and their counts; fixed size, the first ones seen.
+    unanswered_pars: Box<[([i32; 4], u32)]>,
     called: Box<[u32]>,
     /// The instrument's level, pan and tune (a script's group -1); level and
     /// pan move [`Self::output`], after every effect.
@@ -384,6 +387,7 @@ impl Engine {
             reloaded: Vec::new(),
             files: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
+            unanswered_pars: vec![([0; 4], 0); 64].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
             ui,
             ids: callbacks::Ids::START,
