@@ -122,8 +122,9 @@ pub enum Op {
     /// Logical not: 0 → 1, anything else → 0.
     Not,
     IntToReal,
-    /// Truncates toward zero; NaN → 0.
-    RealToInt,
+    /// Truncates toward zero, saturating at the integer range; NaN gives
+    /// the operand (the front end's measured value).
+    RealToInt(i32),
 
     Jump(u32),
     /// Pops; jumps when 0.

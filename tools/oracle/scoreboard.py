@@ -14,6 +14,9 @@ note positions and scores every case; it never starts Kontakt. Kontakt's MIDI re
 Wine 0-3 ms off the grid (and a capture can step once in time), so identical overlapping samples
 (repeats, chords) sum differently from a render on the grid: each group of simultaneous note-ons is
 moved to the lag (+-40 ms) that best correlates 0.5 s of native audio with v3's, and v3 plays again.
+Note-offs jitter too (up to 15 ms): each cluster of them is moved within +-15 ms to where v3's
+release best matches Kontakt's (one render per 2.5 ms step; the fitted shifts print per library;
+--no-keyup turns it off).
 
 The scenario starts after LEAD seconds of silence: Kontakt keeps loading samples after it reports
 the instrument loaded, and a note that arrives first plays late or not at all.
@@ -54,6 +57,10 @@ LIBRARIES = {
 }
 TOL = dict(level=1.0, band=1.0, onset_ms=5.0, attack=1.5, release=1.5, balance=1.0)
 WIN, SEARCH, NEAR = 24000, 40, 5  # replay: window (frames), lag search and near search (ms)
+# Key-up fit: Kontakt's note-off reaches it through MIDI and its block with up to 15 ms of jitter
+# (two captures of one note agree at onset, r 0.999, and differ by 0-15 ms after key-up), and a
+# release that sums a tail with a release sample changes by dB with a 5 ms shift.
+KEYUP_MS, KEYUP_STEP, KEYUP_TAIL = 15.0, 2.5, 0.7
 
 
 def scenario():
@@ -262,6 +269,47 @@ def replayed(nat, ours, events, base):
     return sorted(out, key=lambda e: e["frame"])
 
 
+def keyups(binary, nki, events, nat, base):
+    """`events` with each cluster of note-offs (less than a second apart) moved by the shift in
+    +-KEYUP_MS that best matches Kontakt's 10 ms envelope over the following KEYUP_TAIL seconds.
+    One v3 render per candidate shift; returns (events, shifts in ms)."""
+    offs = sorted({e["frame"] for e in events if e["type"] == "note_off"})
+    clusters = []
+    for f in offs:
+        if clusters and f - clusters[-1][-1] < R:
+            clusters[-1].append(f)
+        else:
+            clusters.append([f])
+    steps = np.arange(-KEYUP_MS, KEYUP_MS + 1e-9, KEYUP_STEP)
+    err = np.full((len(clusters), len(steps)), np.inf)
+    n = R // 100
+    for j, d in enumerate(steps):
+        moved = [dict(e, frame=e["frame"] + round(d * R / 1000)) if e["type"] == "note_off" else e for e in events]
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "keyup.wav"
+            play(binary, nki, moved, wav=wav)
+            if not wav.exists():
+                continue
+            ours = compare.load(wav)
+        for i, cl in enumerate(clusters):
+            a, z = cl[0], cl[-1] + round(KEYUP_TAIL * R)
+            if a + base < 0 or z + base > nat.shape[1] or z > ours.shape[1]:
+                continue
+            x, y = ((v[:, a + o:z + o] ** 2).sum(0) for v, o in ((nat, base), (ours, 0)))
+            k = len(x) // n
+            x, y = (10 * np.log10(v[: k * n].reshape(k, n).mean(1) + 1e-12) for v in (x, y))
+            live = (x > -80) | (y > -80)
+            if live.any():
+                err[i, j] = float(np.mean((x - y)[live] ** 2))
+    shift = {}
+    for i, cl in enumerate(clusters):
+        d = float(steps[int(np.argmin(err[i]))]) if np.isfinite(err[i]).any() else 0.0
+        shift.update({f: d for f in cl})
+    out = [dict(e, frame=e["frame"] + round(shift[e["frame"]] * R / 1000)) if e["type"] == "note_off" else e
+           for e in events]
+    return sorted(out, key=lambda e: e["frame"]), [shift[cl[0]] for cl in clusters]
+
+
 def score(args):
     root = Path(args.root)
     binary = inspect_binary(args.inspect)
@@ -277,7 +325,12 @@ def score(args):
         grid = compare.load(art / "v3.wav")
         base = global_lag(nat, grid)
         wav = root / f"{name}.{args.tag}.wav"
-        p = play(binary, c["nki"], replayed(nat, grid, c["events"], base), wav=wav)
+        events = replayed(nat, grid, c["events"], base)
+        fit = ""
+        if not args.no_keyup:
+            events, shifts = keyups(binary, c["nki"], events, nat, base)
+            fit = f" (key-up fit, bound +-{KEYUP_MS:g} ms: " + " ".join(f"{d:+g}" for d in shifts) + ")"
+        p = play(binary, c["nki"], events, wav=wav)
         if not wav.exists():
             print(f"{name}: v3 render failed: {p.stderr.strip().splitlines()[-1:]}")
             continue
@@ -306,7 +359,7 @@ def score(args):
         wav.unlink()
         table[name] = rows
         ok = sum(r["ok"] for r in rows)
-        print(f"{name}: {ok}/{len(rows)}")
+        print(f"{name}: {ok}/{len(rows)}{fit}")
         for r in rows:
             if not r["ok"]:
                 print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"])))
@@ -328,6 +381,7 @@ def main():
         p.add_argument("--only", nargs="*", choices=sorted(LIBRARIES))
         p.add_argument("--inspect")
         p.add_argument("--tag", default="v3")
+        p.add_argument("--no-keyup", action="store_true", help="score at the replayed note-offs, no key-up fit")
         p.add_argument("--spread", help="a second capture ROOT: tolerances widen to native-vs-native per case")
     args = ap.parse_args()
     capture(args) if args.cmd == "capture" else score(args)

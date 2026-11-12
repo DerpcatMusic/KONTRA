@@ -124,6 +124,26 @@ fn level(e: &mut Engine, input: &[Timed<Event>]) -> f32 {
     out.last().unwrap()[0]
 }
 
+/// Kontakt's `real_to_int` of a NaN is 42 (measured; `kontra_ksp`'s
+/// `NAN_INT`): Dolce's start offset hangs on it.
+#[test]
+fn a_real_zero_over_zero_converts_as_kontakt_does() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.25, 0), zone(&mut store, 0.5, 1)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $z := 0
+        end on
+        on note
+            disallow_group($ALL_GROUPS)
+            allow_group(real_to_int(int_to_real(127) * int_to_real($z) / int_to_real($z)) - 41)
+        end on",
+    );
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+}
+
 #[test]
 fn the_script_chooses_the_groups_that_play() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

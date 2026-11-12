@@ -329,9 +329,9 @@ pub(crate) fn execute(
                 let a = int(pop!());
                 push!(from_real(f64::from(a)));
             }
-            Op::RealToInt => {
+            Op::RealToInt(nan) => {
                 let a = real(pop!());
-                push!(i64::from(a as i32));
+                push!(i64::from(if a.is_nan() { nan } else { a as i32 }));
             }
             Op::Jump(to) => pc = to,
             Op::JumpIfZero(to) => {

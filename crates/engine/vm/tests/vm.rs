@@ -293,7 +293,7 @@ fn reals_compute_and_convert() {
         Op::Int(2),
         Op::IntToReal,
         Op::FMul,
-        Op::RealToInt,
+        Op::RealToInt(0),
         Op::Store(0),
         Op::Real(f64::NAN),
         Op::Real(1.0),
