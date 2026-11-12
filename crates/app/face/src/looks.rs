@@ -53,3 +53,28 @@ impl Looks for Engine {
         Engine::last_message(self)
     }
 }
+
+/// The parameters the UI-look builtins set, after the script's own symbols:
+/// a script that names one shares its id; `move_control`'s grid and the
+/// table's shown steps have no constant, so always get their own.
+pub const LOOK: [&str; 19] = [
+    "$CONTROL_PAR_TEXT",
+    "$CONTROL_PAR_LABEL",
+    "$CONTROL_PAR_HELP",
+    "$CONTROL_PAR_UNIT",
+    "$CONTROL_PAR_DEFAULT_VALUE",
+    "$CONTROL_PAR_POS_X",
+    "$CONTROL_PAR_POS_Y",
+    "$CONTROL_PAR_HIDE",
+    "grid_x",
+    "grid_y",
+    "table_steps_shown",
+    "level_meter",
+    "level_meter_group",
+    "level_meter_generic",
+    "wf_flags",
+    "wf_cursor",
+    "$CONTROL_PAR_WT_ZONE",
+    "$CONTROL_PAR_PICTURE",
+    "$CONTROL_PAR_PICTURE_STATE",
+];
