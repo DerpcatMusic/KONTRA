@@ -277,11 +277,16 @@ impl Clock {
         let phase = self.phase as f32;
         let triangle = (2.0 - 4.0 * phase).abs() - 1.0;
         self.lfo = self.lfo_pole * self.lfo + (1.0 - self.lfo_pole) * triangle;
-        let target = window(sweep(&d.s, phase));
-        for (l, t) in self.levels.iter_mut().zip(target) {
-            *l = self.scan_pole * *l + (1.0 - self.scan_pole) * t;
+        // The window moves only while scanning (`+0x5cc == 2`); elsewhere
+        // its levels hold where they were.
+        if d.s.scan > 0.0 {
+            let target = window(sweep(&d.s, phase));
+            for (l, t) in self.levels.iter_mut().zip(target) {
+                *l = self.scan_pole * *l + (1.0 - self.scan_pole) * t;
+            }
         }
-        self.phase = (self.phase + d.step).rem_euclid(1.0);
+        let next = self.phase + d.step;
+        self.phase = if next >= 1.0 { next.fract() } else { next };
         self.lfo
     }
 }
