@@ -139,12 +139,6 @@ impl Snapshot {
     }
 
     /// Adds this tick's `report`; whether it held anything.
-    /// By part, the preset the header shows as current.
-    #[cfg(test)]
-    pub(crate) fn presets(&self) -> Vec<Option<usize>> {
-        self.parts.iter().map(|p| p.preset).collect()
-    }
-
     pub fn report(&mut self, report: Vec<String>) -> bool {
         let reported = !report.is_empty();
         self.report.extend(report);
