@@ -61,7 +61,9 @@ pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
-pub use kontra_plan::{EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, zone_name};
+pub use kontra_plan::{
+    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, zone_name,
+};
 pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;

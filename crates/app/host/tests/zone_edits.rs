@@ -1,5 +1,6 @@
 //! `set_zone_par` outside the engine's construction: it queues, allocates
 //! nothing on the audio thread and lands through the plan swap.
+#![cfg(test)]
 
 use std::sync::Arc;
 

@@ -62,23 +62,19 @@ pub struct ZoneRules {
     pub one_shot: bool,
 }
 
-impl Default for ZoneRules {
-    /// A plain zone's, as [`Zone::new`] makes it.
-    fn default() -> Self {
-        Self {
-            start: Vec::new(),
-            slots: Vec::new(),
-            trigger: Trigger::Attack,
-            off_by: None,
-            voice_group: None,
-            keytrack: 1.0,
-            release_decay_db: 0.0,
-            one_shot: false,
-        }
-    }
-}
-
 impl ZoneRules {
+    /// A plain zone's, as [`Zone::new`] makes it.
+    pub const PLAIN: Self = Self {
+        start: Vec::new(),
+        slots: Vec::new(),
+        trigger: Trigger::Attack,
+        off_by: None,
+        voice_group: None,
+        keytrack: 1.0,
+        release_decay_db: 0.0,
+        one_shot: false,
+    };
+
     /// Gives `zone` these rules.
     pub fn apply(&self, zone: &mut Zone) {
         let position = self.slots.iter().take_while(|&&s| s < zone.slot).count();

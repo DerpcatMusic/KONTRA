@@ -282,7 +282,7 @@ impl Group {
             release_trigger: false,
             bus: 0,
             wavetable: None,
-            zones: ZoneRules::default(),
+            zones: ZoneRules::PLAIN,
         }
     }
 
