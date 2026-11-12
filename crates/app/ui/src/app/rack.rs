@@ -11,9 +11,15 @@ use crate::kit::{self, Icon, icon_button, knob, latch, nudge, rule, tab};
 use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, lift, part_color, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    // A preset dropped on free rack space adds a part.
-    if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>("rack") {
-        out.push(Action::Load { library, preset });
+    // A preset dropped on free rack space, or on its foot, adds a part.
+    for at in ["rack", "rack-drop"] {
+        if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>(at) {
+            out.push(Action::Load {
+                library,
+                preset,
+                into: None,
+            });
+        }
     }
     if app.parts.is_empty() {
         return col![
@@ -72,7 +78,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         strips.push(band(row, None, 0));
         strips.push(rule());
     }
-    strips.push(foot(ui, app, out));
+    strips.push(foot(ui, app));
     col(strips).scroll().min_h(0).w(Len::Pct(100.)).id("rack")
 }
 
@@ -551,12 +557,9 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
 
 /// Where presets are dropped to be added, and a button that shows the
 /// browser to find one (v2's `src/ui/rack.rs` `foot`).
-fn foot(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+fn foot(ui: &mut Ui, app: &mut App) -> El {
     let dragging = ui.dragging::<Carried>().is_some();
     let over = ui.get("rack-drop").drop_target && dragging;
-    if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>("rack-drop") {
-        out.push(Action::Load { library, preset });
-    }
     if ui.get("rack-drop").activated() {
         app.view.browser_hidden = false;
         ui.focus("search");
