@@ -413,6 +413,7 @@ impl Rack {
         let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
         let source = instrument.source_path.clone();
         let slots = instrument.scripts.iter().map(|s| s.slot).collect();
+        let waves = crate::ui::Waves::of(&instrument);
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
         let saves = self.saves.clone();
         for s in loaded.plan.scripts.iter_mut().filter(|s| s.files.is_some()) {
@@ -429,7 +430,8 @@ impl Rack {
             .collect();
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
-        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
+        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref())
+            .map(|view| view.with_waves(waves));
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
             source,

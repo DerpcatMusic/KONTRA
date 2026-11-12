@@ -673,16 +673,21 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
         .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");
+    // The focused part: the first one open, else the first.
+    let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
+    // Its script's last `message`, where Kontakt's status bar shows it.
+    let message = (focused.and_then(|p| p.face.as_ref()))
+        .map(|f| f.tree.message.as_str())
+        .filter(|m| !m.is_empty())
+        .map(|m| caption(m).fill(secondary()).lines(1).grow(1).w(0.).tip(m));
     let bar = strip(vec![
         section("Keyboard"),
         label,
-        spacer(),
+        message.unwrap_or_else(spacer),
         down.el,
         up.el,
         fold.el,
     ]);
-    // The focused part: the first one open, else the first.
-    let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
     let script: Vec<_> = focused
         .and_then(|p| p.face.as_ref())
         .map(|f| (f.tree.keybed.iter()).map(|&(n, c)| (n, crate::view::color(c))))

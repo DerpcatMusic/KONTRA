@@ -329,6 +329,13 @@ impl Voice {
         self.at(0)
     }
 
+    /// The sample frame playing now in `region` (this voice's), through its
+    /// loops and reverse.
+    #[must_use]
+    pub fn sample_frame(&self, region: &Region) -> Option<u64> {
+        region.frame_at(self.at(0).max(0.) as u64, self.released)
+    }
+
     /// Cursor position `ahead` output frames from now.
     fn at(&self, ahead: u64) -> f64 {
         self.anchor + (self.elapsed + ahead) as f64 * self.step
