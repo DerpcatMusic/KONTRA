@@ -258,13 +258,16 @@ impl BackgroundTask for Tick {
         let mut browser = lock(&p.shared.browser);
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
+        // A state the host restored in this batch is what `saved` holds: a
+        // load beside it must not write the rack over it.
+        let restores = requests.iter().any(|r| matches!(r, Request::Restore(_)));
         for r in requests {
             let loads = r.loads();
             let holds = loads || matches!(r, Request::Restore(_));
             if holds {
                 // What a host save during the load writes (`capture`); a
                 // state waiting to load is already what `saved` holds.
-                if loads && !requests_restoring(p) {
+                if loads && !restores && !requests_restoring(p) {
                     *p.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
                 }
                 p.shared.holding.store(true, Ordering::Release);

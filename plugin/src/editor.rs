@@ -614,7 +614,14 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let mut target = app::Loading::New;
     let mut buttons = None;
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
-        p.shared.shown.store(true, Ordering::Release);
+        // Opening: one tick here brings the copy a closed editor let lapse
+        // up to date, though the host runs no audio to spawn one (a load
+        // in progress shows on its own tick).
+        if !p.shared.shown.swap(true, Ordering::AcqRel)
+            && !p.shared.holding.load(Ordering::Acquire)
+        {
+            crate::Tick.run(&p);
+        }
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
         if restored != Some(now) {
