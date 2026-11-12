@@ -122,6 +122,7 @@ fn render(
     plan: &Plan,
     stream: &kontra_stream::StreamClient,
     events: &[Timed<Event>],
+    mut keep: impl FnMut(&Engine),
 ) -> (f64, bool) {
     let mut samples = [[0.0f32; 2]; BLOCK];
     let mut energy = 0.0f64;
@@ -129,6 +130,10 @@ fn render(
     for block in 0..BLOCKS {
         settled &= stream.settle(Duration::from_secs(5));
         engine.process(&mut samples, if block == 0 { events } else { &[] });
+        // Each block's trace is taken, then cleared: the buffer holds one
+        // block, so a long sweep drops nothing.
+        keep(engine);
+        engine.clear_trace();
         for sample in samples.iter().flatten() {
             energy += f64::from(*sample).powi(2);
         }
@@ -192,9 +197,15 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         },
         Timed { at, body: note },
     ];
-    let (_, mut settled) = render(&mut engine, &plan, &stream, &events);
+    let (_, mut settled) = render(&mut engine, &plan, &stream, &events, |_| {});
     engine.clear_trace();
     let mut controls = Vec::new();
+    // A move keeps at most the trace's capacity per window; the moves that
+    // passed it are named with how many events they dropped (the renders
+    // between moves are not kept, so their drops lose nothing). Only a
+    // visible control's truncation leaves the sweep incomplete: a hidden
+    // developer reset (Audio Imperia's) runs 12k-300k events in one call.
+    let mut truncated = Vec::new();
     let mut models = Vec::new();
     let mut model_errors = Vec::new();
     for slot in 0..loaded.faces.len().max(loaded.pages.len()) {
@@ -265,6 +276,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     &plan,
                     &stream,
                     &[Timed { at, body: off }, Timed { at, body: note }],
+                    |_| {},
                 );
                 settled &= ready;
                 engine.clear_trace();
@@ -281,6 +293,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 let before_unhandled = format!("{:?}", engine.unhandled_actions());
                 let before_missing = engine.stats().missing_frames;
                 engine.clear_trace();
+                let dropped_before = engine.trace_dropped();
                 if lua {
                     if let Ok(id) = u32::try_from(id) {
                         engine.set_widget(slot_id, id, value, None);
@@ -306,20 +319,26 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     .map(|v| super::trace_output::route(&v, &plan, &zone_samples))
                     .collect();
                 engine.clear_trace();
-                let (rms, ready) = render(&mut engine, &plan, &stream, &[]);
+                let dropped_control = engine.trace_dropped() - dropped_before;
+                let (rms, ready) = render(&mut engine, &plan, &stream, &[], |engine| {
+                    events.extend(
+                        (engine.trace_events().iter())
+                            .map(|e| super::trace_output::event(e, &plan, &zone_samples, RATE)),
+                    );
+                    route_events.extend(
+                        (engine.trace_route_values())
+                            .map(|v| super::trace_output::route(&v, &plan, &zone_samples)),
+                    );
+                });
                 settled &= ready;
-                events.extend(
-                    engine
-                        .trace_events()
-                        .iter()
-                        .map(|e| super::trace_output::event(e, &plan, &zone_samples, RATE)),
-                );
-                route_events.extend(
-                    engine
-                        .trace_route_values()
-                        .map(|v| super::trace_output::route(&v, &plan, &zone_samples)),
-                );
-                engine.clear_trace();
+                let dropped_render = engine.trace_dropped() - dropped_before - dropped_control;
+                if dropped_control + dropped_render > 0 {
+                    truncated.push((
+                        widget.name.clone(),
+                        widget.hidden,
+                        dropped_control + dropped_render,
+                    ));
+                }
                 let after = cells(&engine, &plan);
                 let after_sound = sound(&engine);
                 let (after_groups, after_buses) = engine.inspect_levels();
@@ -370,7 +389,8 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 }
                 moves.push(json!({"value":value,"errors":errors,"script_cells_changed":cell_diff(&before,&after), "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
-                    "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready}));
+                    "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
+                    "trace_dropped":{"control":dropped_control,"render":dropped_render}}));
             }
             controls.push(json!({"slot":slot,"widget":widget_index,"name":widget.name,"kind":format!("{:?}",widget.kind),"hidden":widget.hidden,"enabled":widget.enabled,"moves":moves}));
         }
@@ -383,7 +403,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         && stats.missing_frames == 0
         && stream_stats.read_errors == 0
         && stream_stats.requests_refused == 0
-        && engine.trace_dropped() == 0;
+        && truncated.iter().all(|(_, hidden, _)| *hidden);
     let failed = controls
         .iter()
         .flat_map(|c| {
@@ -400,7 +420,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         })
         .count();
     let summary = format!(
-        "{}: {} UI models, {} controls, {failed} moves with errors\n  missing sample frames {}; offline wait timeouts {}; dropped trace events {}; complete {complete}\n",
+        "{}: {} UI models, {} controls, {failed} moves with errors\n  missing sample frames {}; offline wait timeouts {}; dropped trace events {}; truncated moves {truncated:?}; complete {complete}\n",
         loaded.name,
         models.len(),
         controls.len(),
@@ -409,7 +429,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         engine.trace_dropped()
     );
     Ok((
-        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
+        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"trace_truncated":truncated,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
         summary,
     ))
 }
