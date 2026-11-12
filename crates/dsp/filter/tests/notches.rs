@@ -1,0 +1,74 @@
+//! Phasis's output pinned bit for bit, and its cost.
+
+use kontra_dsp_filter::{NotchSettings, Notches};
+
+/// A swept phaser as Phasis plays: six notches, the LFO moving the corner
+/// and the damping, the loop fed back.
+fn settings(stages: u8) -> NotchSettings {
+    NotchSettings {
+        stages,
+        hz: 700.0,
+        octaves: 3.5,
+        spread: 0.3,
+        spread_swing: 1.2,
+        spread_limit: 2.7,
+        feedback: 0.6,
+        loop_width: 1.6,
+        loop_top: 0.4,
+        lfo_hz: 0.7,
+        rounding: 0.3,
+        depth: 1.0,
+        warp: 0.4,
+        phase: 0.1,
+        sign: 1.0,
+        mix: 0.8,
+        low_cut_hz: 5.0,
+        internal_hz: 90_000.0,
+    }
+}
+
+/// `seconds` of a two-sine input at 48 kHz in 512-frame blocks, with the
+/// stage count moved part way through.
+fn render(seconds: usize) -> Vec<[f32; 2]> {
+    let mut n = Notches::new(settings(6), 48_000);
+    let mut io: Vec<[f32; 2]> = (0..seconds * 48_000)
+        .map(|i| {
+            let t = i as f32 / 48_000.0;
+            let l = 0.5 * (std::f32::consts::TAU * 220.0 * t).sin();
+            let r = 0.3 * (std::f32::consts::TAU * 1330.0 * t).sin();
+            [l, l + r]
+        })
+        .collect();
+    for (k, block) in io.chunks_mut(512).enumerate() {
+        if k == 40 {
+            n.set(settings(12));
+        }
+        if k == 80 {
+            n.set(settings(4));
+        }
+        n.process(block);
+    }
+    io
+}
+
+fn bits_hash(x: &[[f32; 2]]) -> u64 {
+    x.iter().flatten().fold(0xcbf2_9ce4_8422_2325, |h, v| {
+        (h ^ u64::from(v.to_bits())).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+#[test]
+fn the_reference_render_is_unchanged() {
+    assert_eq!(
+        bits_hash(&render(3)),
+        14_704_478_438_288_586_395,
+        "render changed"
+    );
+}
+
+/// `perf stat` this for the cost: 20 s, 1875 blocks of 512.
+#[test]
+#[ignore = "a benchmark"]
+fn notches_speed() {
+    std::hint::black_box(render(20));
+}

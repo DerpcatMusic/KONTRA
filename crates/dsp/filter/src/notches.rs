@@ -163,7 +163,9 @@ impl Core {
             ch.low = d + lp;
             self.written = self.written.max(u.abs() as f32);
             *y = (sum - lp) as f32;
-            for v in ch.stages.iter_mut().flatten().chain(&mut ch.band) {
+            // Only the stages in use move; the rest were flushed when they ran.
+            let moved = ch.stages.iter_mut().take(stages).flatten();
+            for v in moved.chain(&mut ch.band) {
                 if v.abs() < 1e-20 {
                     *v = 0.0;
                 }
