@@ -2102,6 +2102,51 @@ fn release_route_trace_uses_the_key_held_time() {
     assert!((source - 0.5).abs() < 0.001, "{source}");
 }
 
+/// A shaper over the release-trigger counter (Pacific and Dolce move their
+/// release samples' start this way) reads the held time like a bare route.
+#[cfg(feature = "trace")]
+#[test]
+fn shaped_release_counter_reads_the_key_held_time() {
+    use kontra_engine::TraceEvent;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.trigger = Trigger::Release;
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    plan.groups[0].shapers = vec![ir::Transfer {
+        source: ir::Source::HeldTime { span_ms: 1000 },
+        table: vec![0.2, 1.0],
+    }];
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "held".into(),
+        slot: 7,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::SampleStart {
+            source: ir::Source::Shaped(0),
+            depth: 1.0,
+        },
+    }];
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
+    let mut output = vec![[0.0; 2]; 24_000];
+    engine.process(&mut output, &[on(60, 1.0)]);
+    level(&mut engine, &[off(60)]);
+    let source = engine
+        .trace_events()
+        .iter()
+        .find_map(|event| match event {
+            TraceEvent::RouteOnset {
+                mod_slot: 7,
+                source,
+                ..
+            } => *source,
+            _ => None,
+        })
+        .expect("the shaped counter has a value at the release voice's start");
+    // Held 0.5 s of a 1 s span: counter 0.5, through 0.2..1.0 is 0.6.
+    assert!((source - 0.6).abs() < 0.01, "{source}");
+}
+
 #[cfg(feature = "trace")]
 #[test]
 fn voice_snapshot_reports_the_playing_envelope_and_pitch() {
