@@ -1,12 +1,28 @@
-//! Phasis (`$EFFECT_TYPE_PHASIS`, 41) onto [`ir::Notches`]. Measured in
-//! Kontakt 8.13.1 (scratch/lanes/shared/modfx-audio/phasis.*: impulses
-//! through the factory INIT preset; modfx-sweep: every knob's text):
-//! `NOTCHES` second-order allpasses at the centre summed with the input, one
-//! notch each; Spread is their Q, `½·6.48^(1 − 2·spread)` (0.002 octave per
-//! notch at spread 0, ¼, ½, ¾, 1); Mix blends that sum with the input;
-//! `INVERT_PHASE` inverts the allpasses (notches and peaks swap; the
-//! manual's "Invert Mod Mix" text describes this one); Amount 100 % swings
-//! the centre ±4.6 octaves.
+//! Phasis (`$EFFECT_TYPE_PHASIS`, 41) onto [`ir::Notches`], from Kontakt
+//! 8.13.1's own structure (file 0141970000.c; notes with addresses in
+//! scratch/lane-scripts/phasis-choral-STRUCTURE.md):
+//! - it runs at `fs·2^round(log₂(90000/fs))` (FUN_14197c780);
+//! - per sample (FUN_14197cfe0): the LFO's two lanes sit `±(stereo/2 −
+//!   ¼)` cycles either side of its phase; each is a triangle rounded by
+//!   `ρ = 1.995·clamp(f − 1, 0, 1)³` (FUN_14197eaf0), warped by
+//!   `expm1(0.1·u)` about its peaks, times `2^(−2.6575·clamp(log₂₀ f, 0,
+//!   1))`;
+//! - the corner (FUN_14197e6e0): note `lerp(30, 120 | −30, 190 Ultra;
+//!   centre) + (1 − |mm|)·amount²·c·56 (121 Ultra)·lfo`; the stages'
+//!   `log₂ R = 3·clamp(0.9·(2·spread − 1) + 0.9·amount²·c·mm·lfo, ±0.9)`,
+//!   `c = 1 + Ultra·((2/K)^0.7 − 1)` (FUN_14197ef70);
+//! - the loop (FUN_14197dad0, FUN_14197bc10): `u = x + fb·band(L·AP(u))`
+//!   solved without a delay, `fb = 0.95·Feedback`, the band from the
+//!   corner `÷a` to `min(·a, tan⁻¹ 0.1)`, `a = r + √(1 + r²)`,
+//!   `r = R/tan(0.25/K)` (FUN_14197ed80); out `lerp(x, ½(u + L·AP(u)),
+//!   mix)/√(mix/(1 − fb) + 1 − mix)`, then a 5 Hz high-pass;
+//! - the rate: note `lerp(−120, 20 | 111 Ultra; rate)`, `f = 440·2^((note −
+//!   69)/12)`.
+//!
+//! Unread: the resampler's kernel (FUN_141ee2160; ours is the halfband);
+//! which way the Invert Phase and Invert Mod Mix switches' ramps run (taken
+//! as `1 − 2·switch`); the loop band's top edge 0.1 has one writer found
+//! (the constructor). The tempo-synced rate is not carried (Hz as without).
 
 use kontra_ir as ir;
 
@@ -16,6 +32,11 @@ use kontra_ir as ir;
 pub(crate) const INIT: [f32; 13] = [
     0.391_294, 0.0, 0.0, 1.0, 0.499_922, 0.5, 0.5, 0.210_526, 0.0, 2.0, 0.0, 1.0, 1.0,
 ];
+
+/// `a` to `b` by `t`.
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
 
 /// The notch phaser at knob positions `p` (see [`INIT`]).
 pub(crate) fn phasis(p: [f32; 13]) -> ir::EffectKind {
@@ -36,33 +57,37 @@ pub(crate) fn phasis(p: [f32; 13]) -> ir::EffectKind {
     ] = p;
     let [rate, amount, centre, stereo, spread, feedback, mod_mix, mix] =
         [rate, amount, centre, stereo, spread, feedback, mod_mix, mix].map(|x| x.clamp(0.0, 1.0));
-    // Centre: 46 Hz·184^x measured (169, 622, 2,273 Hz at ¼, ½, ¾); with
-    // Ultra on, its text (830.6 Hz at ½, measured the same).
-    let hz = if ultra > 0.0 {
-        1.4 * (12.75 * centre).exp()
-    } else {
-        46.0 * 184f32.powf(centre)
-    };
-    // ponytail: the stereo knob's phase law is unmeasured (one channel
-    // recorded); ±¼ cycle at its ends.
-    let polarity = if invert_mod > 0.0 { -1.0 } else { 1.0 };
+    let ultra = if ultra > 0.0 { 1.0 } else { 0.0 };
+    let stages = notches.round().clamp(2.0, 12.0);
+    // The ramps of FUN_14197ef70 (0x14a1821c8..f4), Ultra off to on.
+    let reach = amount * amount * (1.0 + ultra * ((2.0 / stages).powf(0.7) - 1.0));
+    let mm = (mod_mix * (1.0 - 2.0 * invert_mod.clamp(0.0, 1.0))).clamp(-1.0, 1.0);
+    let note = lerp(lerp(30.0, -30.0, ultra), lerp(120.0, 190.0, ultra), centre);
+    let rate_note = lerp(-120.0, lerp(20.0, 111.0, ultra), rate);
+    let lfo_hz = 440.0 * ((rate_note - 69.0) / 12.0).exp2();
     ir::EffectKind::Notches(ir::Notches {
-        sections: notches.round().clamp(2.0, 12.0) as u8,
-        hz,
-        q: 0.5 * 6.48f32.powf(1.0 - 2.0 * spread),
-        octaves: 4.6 * amount * (1.0 - mod_mix),
-        q_octaves: polarity * 6.48f32.log2() * amount * mod_mix,
-        // One loop round the sections at 0.84·x puts the centre's peak where
-        // Kontakt does (+0.6, +1.5, +7.4 dB at 25, 50, 100 %, mix 50 %; its
-        // text reads 0..95 %). ponytail: at 100 % Kontakt also sinks
-        // everything off the centre to −16 dB; this loop does not.
-        feedback: 0.84 * feedback,
-        // Its text: 0.01 Hz to 26 Hz, `26·e^(8.1(x − 1))`. ponytail: synced
-        // units and Ultra's faster rates are unmeasured; Hz as without.
-        rate: ir::Rate::Hz(26.0 * (8.1 * (rate - 1.0)).exp()),
-        phase: 0.5 * (stereo - 0.5),
+        stages: stages as u8,
+        hz: 440.0 * ((note - 69.0) / 12.0).exp2(),
+        octaves: (1.0 - mm.abs()) * reach * lerp(56.0, 121.0, ultra) / 12.0,
+        spread: 3.0 * 0.9 * (2.0 * spread - 1.0),
+        spread_swing: 3.0 * 0.9 * reach * mm,
+        spread_limit: 3.0 * 0.9,
+        feedback: 0.95 * feedback,
+        loop_width: 1.0 / (0.25 / stages).tan(),
+        loop_top: 0.1,
+        rate: ir::Rate::Hz(lfo_hz),
+        rounding: 1.995 * (lfo_hz - 1.0).clamp(0.0, 1.0).powi(3),
+        // log₂₀ f as notes: 1 Hz is note −36.376, 20 Hz 51.86 notes on.
+        depth: (-2.657_542_5 * ((rate_note + 36.376_3) * 0.019_281_5).clamp(0.0, 1.0)).exp2(),
+        warp: 0.1,
+        phase: 0.5 * stereo - 0.25,
+        polarity: match invert > 0.0 {
+            true => ir::Polarity::Inverted,
+            false => ir::Polarity::Normal,
+        },
         mix,
-        invert: invert > 0.0,
+        low_cut_hz: 5.0,
+        internal_hz: 90_000.0,
     })
 }
 
@@ -128,14 +153,14 @@ mod tests {
     #[test]
     fn a_new_phasis_is_kontakts_init() {
         // Kontakt 8.13.1 reads back two notches, centre 622 Hz, spread 50 %
-        // (Q ½), rate 0.19 Hz, feedback 20 % (loop gain 0.84·x).
+        // (Q ½), rate 0.19 Hz, feedback 20 %.
         let ir::EffectKind::Notches(n) = phasis(INIT) else {
             panic!("a notch phaser");
         };
-        assert_eq!(n.sections, 2);
+        assert_eq!(n.stages, 2);
         assert!((n.hz - 622.0).abs() < 4.0, "{}", n.hz);
-        assert!((n.q - 0.5).abs() < 1e-3);
+        assert!(n.spread.abs() < 1e-3);
         assert!(matches!(n.rate, ir::Rate::Hz(hz) if (hz - 0.19).abs() < 0.01));
-        assert!((n.feedback - 0.84 * 0.210_526).abs() < 1e-4 && !n.invert);
+        assert!((n.feedback - 0.95 * 0.210_526).abs() < 1e-4);
     }
 }

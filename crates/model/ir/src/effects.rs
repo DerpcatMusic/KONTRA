@@ -124,24 +124,39 @@ pub struct Phaser {
     pub phase: f32,
 }
 
-/// A phaser of second-order allpasses: `sections` at one corner the LFO
-/// sweeps by `octaves` (and their Q by `q_octaves`), around a feedback loop,
-/// `mix` of `(input ± sections)/2` with the input.
+/// A notch phaser: `stages` second-order allpasses at one corner the LFO
+/// sweeps, inside a loop through its own band-pass, averaged with their
+/// input, mixed with the dry signal at a held level, then high-passed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Notches {
-    /// 1..=12, one notch each.
-    pub sections: u8,
+    /// 1..=12.
+    pub stages: u8,
+    /// The corner with the LFO at 0, and the LFO's swing of it, octaves.
     pub hz: f32,
-    /// Q ½ is two first-order stages at the corner; above crowds the notches.
-    pub q: f32,
     pub octaves: f32,
-    pub q_octaves: f32,
+    /// The stages' damping is `2·2^r` (their Q `1/(2·2^r)`),
+    /// `r = spread + spread_swing·lfo` held within `±spread_limit`.
+    pub spread: f32,
+    pub spread_swing: f32,
+    pub spread_limit: f32,
+    /// The loop gain; its band-pass spans the corner `÷a` to `·a`,
+    /// `a = r + √(1 + r²)`, `r = loop_width·2^r`, the top edge at most
+    /// `loop_top` as `tan(π·f/rate)` at the running rate.
     pub feedback: f32,
+    pub loop_width: f32,
+    pub loop_top: f32,
+    /// The LFO's rate, rounding (0: a triangle), depth and warp, and the
+    /// channels' phases either side of it, cycles.
     pub rate: Rate,
-    /// Cycles the right LFO runs ahead of the left.
+    pub rounding: f32,
+    pub depth: f32,
+    pub warp: f32,
     pub phase: f32,
+    pub polarity: Polarity,
     pub mix: f32,
-    pub invert: bool,
+    /// The output's high-pass, and the rate it runs nearest to by octaves.
+    pub low_cut_hz: f32,
+    pub internal_hz: f32,
 }
 
 /// A chorus ensemble: [`ENSEMBLE_VOICES`] swept delay lines whose reads
