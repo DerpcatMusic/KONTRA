@@ -129,6 +129,9 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
                 .iter()
                 .map(|f| f.and_then(|(_, r)| r.cloned()))
                 .collect(),
+            owners: (script.symbols.iter())
+                .map(|n| kontra_format_kontakt::owner(n).and_then(kontra_ksp::constant))
+                .collect(),
         },
         view: crate::perf_view::find(data).map(|(name, _)| name.into()),
         reverb_laws: kontra_format_kontakt::reverb_laws(),

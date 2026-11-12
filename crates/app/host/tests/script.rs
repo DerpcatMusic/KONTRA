@@ -3779,3 +3779,43 @@ fn lfo_and_wavetable_controls_read_as_kontakt_shows_them() {
         "32.0|4609.0|250000|   90|0|1|37.5|-2.3|0.14"
     );
 }
+
+/// A parameter of one effect type on a slot of another names nothing: the
+/// set is dropped, the read is 0 and the script runs on. The group index
+/// wins over a bus `<generic>` (Kontakt 8.13.1, ANALOG STRINGS: STEREO_PAN at
+/// group 480, slot 5, generic 1026 reads 0 and leaves bus 2 alone).
+#[test]
+fn a_parameter_of_another_effect_type_names_nothing() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Crush(ir::Crush {
+            rate: 0.1,
+            bits: 8.0,
+            noise: 0.0,
+            noise_tone: 0.8,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let lofi = kontra_ksp::constant("$EFFECT_TYPE_LOFI").unwrap();
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Group(0), 0, lofi)];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_STEREO_PAN, 123456, 0, 0, 1026)
+            message(get_engine_par($ENGINE_PAR_STEREO_PAN, 0, 0, 1026))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "0");
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
+}

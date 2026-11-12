@@ -13,6 +13,9 @@ pub struct EnginePars {
     pub by_id: Box<[Option<EnginePar>]>,
     /// What id `first + n` shows as text, when the translator gave a law.
     pub readouts: Box<[Option<ir::Readout>]>,
+    /// The effect type id `first + n` belongs to, for a parameter only one
+    /// effect type has. On a slot holding another type it names nothing.
+    pub owners: Box<[Option<i32>]>,
 }
 
 impl EnginePars {
@@ -21,6 +24,13 @@ impl EnginePars {
     pub fn get(&self, id: i32) -> Option<EnginePar> {
         let n = usize::try_from(id.checked_sub(self.first)?).ok()?;
         self.by_id.get(n).copied().flatten()
+    }
+
+    /// The only effect type that has parameter id `id`, if one does.
+    #[must_use]
+    pub fn owner(&self, id: i32) -> Option<i32> {
+        let n = usize::try_from(id.checked_sub(self.first)?).ok()?;
+        self.owners.get(n).copied().flatten()
     }
 
     /// The text law of parameter id `id`.
@@ -41,6 +51,7 @@ mod tests {
             first: 100,
             by_id: vec![None, Some(EnginePar::Attack)].into(),
             readouts: Box::default(),
+            owners: Box::default(),
         };
         assert_eq!(pars.get(101), Some(EnginePar::Attack));
         assert_eq!(pars.get(100), None);

@@ -34,6 +34,71 @@ pub fn engine_pars() -> Vec<ir::ScriptPar> {
         .collect()
 }
 
+/// The effect type (its `$EFFECT_TYPE_*` name) parameter `name` belongs
+/// to, for the families only one module has. On a slot holding another
+/// type it names nothing: Kontakt 8.13.1 drops the set and reads 0, and the
+/// script runs on (`STEREO_PAN` addressed to a Lo-Fi slot, the group index
+/// winning over a bus `<generic>`; probe bus_group_override.lua,
+/// 2026-11-12). A name not listed is left to the slot's own check.
+#[must_use]
+pub fn owner(name: &str) -> Option<&'static str> {
+    let name = name.to_ascii_uppercase();
+    let family = |pattern: &str| match pattern.strip_suffix('_') {
+        Some(_) => name.starts_with(pattern),
+        None => name == pattern,
+    };
+    OWNERS
+        .iter()
+        .find(|(pattern, _)| family(pattern))
+        .map(|&(_, ty)| ty)
+}
+
+/// Parameter families (a trailing `_` is a prefix, else the exact name)
+/// and their effect type, from the KSP manual's engine parameter sections.
+const OWNERS: &[(&str, &str)] = &[
+    ("$ENGINE_PAR_STEREO", "$EFFECT_TYPE_STEREO"),
+    ("$ENGINE_PAR_STEREO_PAN", "$EFFECT_TYPE_STEREO"),
+    ("$ENGINE_PAR_COMP_", "$EFFECT_TYPE_COMPRESSOR"),
+    ("$ENGINE_PAR_LIM_", "$EFFECT_TYPE_LIMITER"),
+    ("$ENGINE_PAR_SCOMP_", "$EFFECT_TYPE_BUS_COMP"),
+    ("$ENGINE_PAR_FCOMP_", "$EFFECT_TYPE_FB_COMP"),
+    ("$ENGINE_PAR_SEQ_", "$EFFECT_TYPE_SOLID_GEQ"),
+    ("$ENGINE_PAR_SK_", "$EFFECT_TYPE_SKREAMER"),
+    ("$ENGINE_PAR_SKDLX_", "$EFFECT_TYPE_SKREAMERDLX"),
+    ("$ENGINE_PAR_TP_", "$EFFECT_TYPE_TAPE_SAT"),
+    ("$ENGINE_PAR_IRC_", "$EFFECT_TYPE_IRC"),
+    ("$ENGINE_PAR_RV_", "$EFFECT_TYPE_REVERB"),
+    ("$ENGINE_PAR_DL_", "$EFFECT_TYPE_DELAY"),
+    ("$ENGINE_PAR_CH_", "$EFFECT_TYPE_CHORUS"),
+    ("$ENGINE_PAR_FL_", "$EFFECT_TYPE_FLANGER"),
+    ("$ENGINE_PAR_PH_", "$EFFECT_TYPE_PHASER"),
+    ("$ENGINE_PAR_RDL_", "$EFFECT_TYPE_REPLIKA"),
+    ("$ENGINE_PAR_TDL_", "$EFFECT_TYPE_TWINDELAY"),
+    ("$ENGINE_PAR_PSYDL_", "$EFFECT_TYPE_PSYCHEDELAY"),
+    ("$ENGINE_PAR_RAUM_", "$EFFECT_TYPE_RAUM"),
+    ("$ENGINE_PAR_JMP_", "$EFFECT_TYPE_JUMP"),
+    ("$ENGINE_PAR_EPP_", "$EFFECT_TYPE_EP_PREAMPS"),
+    ("$ENGINE_PAR_FREAK_", "$EFFECT_TYPE_FREAK"),
+    ("$ENGINE_PAR_FLAIR_", "$EFFECT_TYPE_FLAIR"),
+    ("$ENGINE_PAR_PHASIS_", "$EFFECT_TYPE_PHASIS"),
+    ("$ENGINE_PAR_CHORAL_", "$EFFECT_TYPE_CHORAL"),
+    ("$ENGINE_PAR_KOLOR_", "$EFFECT_TYPE_KOLOR"),
+    ("$ENGINE_PAR_DIRT_", "$EFFECT_TYPE_DIRT"),
+    ("$ENGINE_PAR_BITE_", "$EFFECT_TYPE_BITE"),
+    ("$ENGINE_PAR_BASSPRO_", "$EFFECT_TYPE_BASSPRO"),
+    ("$ENGINE_PAR_BASSINVADER_", "$EFFECT_TYPE_BASSINVADER"),
+    ("$ENGINE_PAR_SUPERGT_", "$EFFECT_TYPE_SUPERGT"),
+    ("$ENGINE_PAR_REVERBDELIGHT_", "$EFFECT_TYPE_REVERBDELIGHT"),
+    ("$ENGINE_PAR_WOWFLUTTER_", "$EFFECT_TYPE_WOWFLUTTER"),
+    ("$ENGINE_PAR_RINGMOD_", "$EFFECT_TYPE_RINGMOD"),
+    ("$ENGINE_PAR_GATER_", "$EFFECT_TYPE_GATER"),
+    ("$ENGINE_PAR_BEATSLICER_", "$EFFECT_TYPE_BEATSLICER"),
+    ("$ENGINE_PAR_BEATMASHER_", "$EFFECT_TYPE_BEATMASHER"),
+    ("$ENGINE_PAR_BIGFUZZ_", "$EFFECT_TYPE_BIGFUZZ"),
+    ("$ENGINE_PAR_FUZZ_", "$EFFECT_TYPE_FUZZ"),
+    ("$ENGINE_PAR_STEREOTUNE_", "$EFFECT_TYPE_STEREO_TUNE"),
+];
+
 /// The names with an engine parameter of their own.
 const FIXED: &[(&str, ir::EnginePar)] = {
     use ir::EnginePar as P;
