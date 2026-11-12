@@ -207,9 +207,19 @@ impl ModDelay {
     pub fn idle(&mut self, frames: usize) {
         let s = self.s;
         let longest = self.ring.len().saturating_sub(3) as f32;
-        let target = (s.ms * 0.001 * self.rate).max(0.0).min(longest);
-        let left = (1.0 - self.glide).powi(i32::try_from(frames).unwrap_or(i32::MAX));
-        self.delay = Some(self.delay.map_or(target, |d| target + (d - target) * left));
+        let per_ms = 0.001 * self.rate;
+        let target = (s.ms * per_ms).max(0.0).min(longest);
+        // The glide's own f32 steps, not its closed form: they stall a
+        // little short of the target, and a modulated head hears that.
+        let mut delay = self.delay.unwrap_or(target);
+        for _ in 0..frames {
+            let next = delay + (target - delay) * self.glide;
+            if next == delay {
+                break;
+            }
+            delay = next;
+        }
+        self.delay = Some(delay);
         self.at = (self.at + frames) % self.ring.len().max(1);
         let step = f64::from(s.lfo_hz / self.rate);
         self.cycle = (self.cycle + step * frames as f64).fract();

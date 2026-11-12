@@ -261,3 +261,85 @@ const SILENT: f32 = 1e-7;
 fn is_silent(io: &[[f32; 2]]) -> bool {
     io.iter().flatten().all(|x| x.abs() < SILENT)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Rack, ir};
+
+    const RATE: u32 = 48_000;
+    const SPAN: usize = 256;
+
+    /// A swept echo (an LFO on its head), wet only.
+    fn chorus() -> ir::Effect {
+        let diagonal = |g| [[g, 0.0], [0.0, g]];
+        ir::Effect {
+            kind: ir::EffectKind::Delay(ir::Delay {
+                time: ir::DelayTime::Ms(15.0),
+                depth_ms: 5.0,
+                second_head: true,
+                input: diagonal(1.0),
+                feedback: diagonal(0.3),
+                output: diagonal(1.0),
+                damping_hz: 8_000.0,
+                low_cut_hz: 0.0,
+                steep_low_cut: false,
+                high_shelf: None,
+                spread_ms: 1.0,
+                rate: ir::Rate::Hz(0.9),
+                phase: 0.25,
+            }),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        }
+    }
+
+    /// A burst, seconds of silence, a burst: what the rack plays, span by
+    /// span; `gate` false clears its silence count each span, so it never sleeps.
+    fn play(rack: &mut Rack, gate: bool) -> Vec<[f32; 2]> {
+        let burst = |n: usize| [((n * 7919 % 101) as f32 / 101.0) - 0.5; 2];
+        let frames = 6 * RATE as usize;
+        let mut out: Vec<[f32; 2]> = (0..frames)
+            .map(|n| match n % (3 * RATE as usize) {
+                k if k < 4_800 => burst(n),
+                _ => [0.0; 2],
+            })
+            .collect();
+        for span in out.chunks_mut(SPAN) {
+            rack.process(span, &mut [], 120.0);
+            if !gate {
+                rack.quiet.fill(0);
+            }
+        }
+        out
+    }
+
+    /// A wet slot whose input and output stay silent sleeps, its clocks
+    /// moving on, and the next note plays within -120 dB of a rack that
+    /// never slept.
+    #[test]
+    fn a_silent_slot_sleeps_and_wakes_in_step() {
+        let make = || Rack::new(&[Some(chorus())], RATE, &[]);
+        let (mut gated, mut always) = (make(), make());
+        let a = play(&mut gated, true);
+        let b = play(&mut always, false);
+        // Asleep at the end: silent for longer than its ring, not counting on.
+        let memory = match gated.dsp.first() {
+            Some(super::Dsp::Wet(p, _)) => p.memory(),
+            _ => None,
+        };
+        let quiet = gated.quiet.first().copied().unwrap_or(0);
+        assert!(
+            memory.is_some_and(|m| quiet >= m && quiet < 2 * m),
+            "{quiet} of {memory:?}"
+        );
+        let worst = (a.iter().flatten().zip(b.iter().flatten()))
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        let loudest = b.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(
+            loudest > 0.1 && worst < 1e-6 * loudest,
+            "{worst} of {loudest}"
+        );
+    }
+}

@@ -379,3 +379,76 @@ fn the_note_table_follows_the_instruments_voice_limit() {
     );
     assert_eq!(engine.playing_voices(), 300);
 }
+
+/// The cost gate, as ratios so any machine can hold it: a settled idle block
+/// (its notes and its effect's tail long gone) costs a fraction of a block
+/// with one voice, and sixteen voices cost no more than sixteen times one.
+/// Something running every block regardless of sound, or per-voice work
+/// growing with the voice count, fails it.
+#[test]
+fn idle_costs_a_fraction_of_a_voice_and_voices_add_up_linearly() {
+    use std::time::{Duration, Instant};
+    const BLOCK: usize = 512;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let diagonal = |g| [[g, 0.0], [0.0, g]];
+    let chorus = kontra_engine::ir::Effect {
+        kind: kontra_engine::ir::EffectKind::Delay(kontra_engine::ir::Delay {
+            time: kontra_engine::ir::DelayTime::Ms(15.0),
+            depth_ms: 5.0,
+            second_head: true,
+            input: diagonal(1.0),
+            feedback: diagonal(0.3),
+            output: diagonal(1.0),
+            damping_hz: 8_000.0,
+            low_cut_hz: 0.0,
+            steep_low_cut: false,
+            high_shelf: None,
+            spread_ms: 1.0,
+            rate: kontra_engine::ir::Rate::Hz(0.9),
+            phase: 0.25,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 1.0,
+    };
+    let frames = 4 * u64::from(RATE);
+    let mut plan = Plan {
+        notes: 64,
+        queue: 256,
+        ..Plan::new(
+            vec![zone(region(&mut store, "a", frames).unwrap(), 0.0)],
+            32,
+        )
+    };
+    plan.main = vec![Some(chorus)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; BLOCK];
+    // The median of `n` blocks, the first with `events` at now.
+    let mut median = |e: &mut Engine, events: &[(bool, u8)], n: usize| {
+        let at = e.now().0;
+        let events: Vec<_> = (events.iter())
+            .map(|&(down, key)| if down { on(at, key) } else { off(at, key) })
+            .collect();
+        e.process(&mut out, &events);
+        let mut times: Vec<Duration> = (0..n)
+            .map(|_| {
+                let t = Instant::now();
+                e.process(&mut out, &[]);
+                t.elapsed()
+            })
+            .collect();
+        times.sort_unstable();
+        times[n / 2]
+    };
+    let keys: Vec<u8> = (48..64).collect();
+    let one = median(&mut e, &[(true, 60)], 80);
+    // Released, then six seconds for the release and the chorus to fall silent.
+    median(&mut e, &[(false, 60)], 6 * RATE as usize / BLOCK);
+    let idle = median(&mut e, &[], 80);
+    let downs: Vec<_> = keys.iter().map(|&k| (true, k)).collect();
+    let sixteen = median(&mut e, &downs, 80);
+    assert_eq!(e.active_voices(), 16);
+    eprintln!("idle {idle:?}, one voice {one:?}, sixteen {sixteen:?}");
+    assert!(idle * 4 < one, "idle {idle:?} vs one voice {one:?}");
+    assert!(sixteen < one * 16, "sixteen {sixteen:?} vs one {one:?}");
+}
