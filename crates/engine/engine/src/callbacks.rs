@@ -10,8 +10,8 @@ use kontra_vm::{HostValue, Step, Vm};
 use kontra_voice::FadeTarget;
 
 use crate::ledger::{NoteRef, Releases};
-use crate::queue::{Exit, Work};
-use crate::script::{Kind, Running, ScriptPlan, micros_to_frames};
+use crate::queue::{Due, Exit, Work};
+use crate::script::{Kind, Running, ScriptPlan};
 use crate::{Engine, ReleaseZones, Trigger};
 
 impl Engine {
@@ -53,7 +53,7 @@ impl Engine {
                         resume: false,
                     });
                 }
-                self.step_script(slot, &mut vm, co);
+                self.step_script(slot, &mut vm, co, Due::at(self.now));
             }
             self.put_vm(slot, vm);
         }
@@ -172,8 +172,8 @@ impl Engine {
         }
     }
 
-    /// A waiting callback's time has come.
-    pub(crate) fn resume(&mut self, slot: u8, co: kontra_vm::CoId, wait: u32) {
+    /// A waiting callback's time, `due`, has come.
+    pub(crate) fn resume(&mut self, slot: u8, co: kontra_vm::CoId, wait: u32, due: Due) {
         let mark = self.forward.len();
         if let Some(mut vm) = self.take_vm(slot) {
             if vm.wait_epoch(co) != Some(wait) {
@@ -197,7 +197,7 @@ impl Engine {
                     resume: true,
                 });
             }
-            self.step_script(slot, &mut vm, co);
+            self.step_script(slot, &mut vm, co, due);
             self.put_vm(slot, vm);
         }
         self.running = Running::IDLE;
@@ -243,26 +243,37 @@ impl Engine {
         }
     }
 
-    fn step_script(&mut self, slot: u8, vm: &mut Vm, co: kontra_vm::CoId) {
+    /// Runs `co` from time `now` until it ends or waits.
+    fn step_script(&mut self, slot: u8, vm: &mut Vm, co: kontra_vm::CoId, now: Due) {
         let plan = Arc::clone(&self.plan);
         let Some(script) = plan.scripts.get(usize::from(slot)) else {
             return;
         };
         if let Step::Wait(micros) = vm.run(&script.program, co, self) {
-            self.wake(slot, vm, co, micros);
+            self.wake(slot, vm, co, micros, now);
         }
+        // A callback started beside this one waits from this one's time.
         while let Some((spawned, micros)) = vm.spawned() {
-            self.wake(slot, vm, spawned, micros);
+            self.wake(slot, vm, spawned, micros, now);
         }
     }
 
-    /// Queues `co`'s resume `micros` from now; a full queue ends it.
-    fn wake(&mut self, slot: u8, vm: &mut Vm, co: kontra_vm::CoId, micros: u64) {
-        let micros = i64::try_from(micros).unwrap_or(i64::MAX);
-        let frames = micros_to_frames(micros, self.rate).max(1);
-        let at = SampleTime(self.now.0.saturating_add(frames));
+    /// Queues `co`'s resume `micros` after `from`; a full queue ends it.
+    /// The wake time keeps its part of a frame, so a wait shorter than a
+    /// frame goes on in the same frame and 10000 × `wait(1)` take 10 ms
+    /// (oracle: `wait_resolution.ksp`). A wait always moves time on: a
+    /// positive one by its microseconds, `wait(0)` by a frame.
+    fn wake(&mut self, slot: u8, vm: &mut Vm, co: kontra_vm::CoId, micros: u64, from: Due) {
+        let frame = u128::from(Due::FRAME);
+        let at = u128::from(from.part) + u128::from(micros) * u128::from(self.rate);
+        let at = if micros == 0 { at + frame } else { at };
+        let frames = u64::try_from(at / frame).unwrap_or(u64::MAX);
+        let due = Due {
+            frame: SampleTime(from.frame.0.saturating_add(frames)),
+            part: u32::try_from(at % frame).unwrap_or(0),
+        };
         let wait = vm.wait_epoch(co).unwrap_or(0);
-        if !self.queue.push(at, Work::Resume(slot, co, wait)) {
+        if !self.queue.push_due(due, Work::Resume(slot, co, wait)) {
             self.stats.events_refused += 1;
             vm.cancel(co);
         }

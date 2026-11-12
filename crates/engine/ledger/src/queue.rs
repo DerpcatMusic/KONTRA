@@ -1,4 +1,4 @@
-//! Every future thing, ordered by (time, arrival). Fixed capacity.
+//! Every future thing, ordered by (due time, arrival). Fixed capacity.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -14,6 +14,25 @@ use crate::NoteRef;
 pub struct Timed<T> {
     pub at: SampleTime,
     pub body: T,
+}
+
+/// When queued work is due: a frame and how far into it, in millionths of
+/// a frame. A script wait shorter than a frame lands inside one, and work
+/// due in the same frame runs in this order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Due {
+    pub frame: SampleTime,
+    pub part: u32,
+}
+
+impl Due {
+    /// Millionths of a frame in one.
+    pub const FRAME: u32 = 1_000_000;
+
+    #[must_use]
+    pub fn at(frame: SampleTime) -> Self {
+        Self { frame, part: 0 }
+    }
 }
 
 /// How an asynchronous command ended: `$NI_ASYNC_EXIT_STATUS` 1 or 0.
@@ -57,7 +76,7 @@ pub enum Work {
 }
 
 struct Entry {
-    at: SampleTime,
+    at: Due,
     seq: u64,
     work: Work,
 }
@@ -94,8 +113,14 @@ impl EventQueue {
         }
     }
 
-    /// Admits `work` at `at`; false (refused, never reordered) when full.
+    /// Admits `work` at the start of frame `at`; false (refused, never
+    /// reordered) when full.
     pub fn push(&mut self, at: SampleTime, work: Work) -> bool {
+        self.push_due(Due::at(at), work)
+    }
+
+    /// Admits `work` due at `at`; false (refused, never reordered) when full.
+    pub fn push_due(&mut self, at: Due, work: Work) -> bool {
         if self.heap.len() >= self.capacity {
             return false;
         }
@@ -113,15 +138,19 @@ impl EventQueue {
         self.heap.retain(|Reverse(e)| keep(&e.work));
     }
 
-    /// The earliest work due at or before `now`.
-    pub fn pop_due(&mut self, now: SampleTime) -> Option<Work> {
-        if self.heap.peek()?.0.at > now {
+    /// The earliest work due in or before frame `now`, and when it was due.
+    pub fn pop_due(&mut self, now: SampleTime) -> Option<(Due, Work)> {
+        if self.heap.peek()?.0.at.frame > now {
             return None;
         }
-        self.heap.pop().map(|Reverse(e)| e.work)
+        self.heap.pop().map(|Reverse(e)| (e.at, e.work))
     }
 
     pub fn next_at(&self) -> Option<SampleTime> {
-        self.heap.peek().map(|Reverse(e)| e.at)
+        self.heap.peek().map(|Reverse(e)| e.at.frame)
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 }
