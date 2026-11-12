@@ -96,7 +96,6 @@ fn libraries_are_found_named_and_shelved() {
             "Instruments/2 Shorts/Spic.nki",
             "Instruments/10 Longs/Sus.nki",
             "Instruments/Legato.nki",
-            "Multis/All.nkm"
         ]
     );
     let art: Vec<_> = areia
@@ -107,7 +106,7 @@ fn libraries_are_found_named_and_shelved() {
     assert_eq!(art, ["wallpaper.png", "Areia.nicnt", "logo.png"]);
 
     let tree = areia.tree();
-    assert_eq!(tree.count, 4);
+    assert_eq!(tree.count, 3);
     let instruments = &tree.folders[0];
     assert_eq!(
         (

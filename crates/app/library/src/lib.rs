@@ -63,10 +63,10 @@ pub struct Library {
     pub format: Format,
     /// It has a `.nicnt`; otherwise it was recognised from its folders.
     pub registered: bool,
-    /// Its instruments and multis, sorted naturally by path. A UVI program
-    /// is `bank.ufs/Folder/Name.uvip`.
+    /// Its instruments and snapshots, sorted naturally by path. A UVI
+    /// program is `bank.ufs/Folder/Name.uvip`.
     pub presets: Vec<PathBuf>,
-    /// How many of `presets` are multis (`.nkm`).
+    /// How many multis (`.nkm`) it holds, not among `presets`.
     pub multis: usize,
     /// Pictures that may be its banner, best first: `wallpaper.png`, a
     /// library-browser picture, the `.nicnt`/`.nkr` (which holds pictures),
@@ -416,6 +416,10 @@ fn catalog(
         };
         walk(&found.dir, &mut state, &mut presets, &mut art);
     }
+    // A multi fills a rack, not a part: nothing plays one yet.
+    let multis = presets.len();
+    presets.retain(|p| ext(p) != "nkm");
+    let multis = multis - presets.len();
     if presets.is_empty() {
         return None;
     }
@@ -454,7 +458,7 @@ fn catalog(
             Format::Kontakt
         },
         registered: found.nicnt.is_some(),
-        multis: presets.iter().filter(|p| ext(p) == "nkm").count(),
+        multis,
         presets,
         art,
         dir: found.dir,

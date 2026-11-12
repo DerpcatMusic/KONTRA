@@ -250,9 +250,28 @@ fn find(
     Ok(())
 }
 
+/// The instrument's saved values with a snapshot's over them by variable:
+/// a snapshot has no `make_instr_persistent` ones, which keep the base's.
+pub(crate) fn over(own: Vec<String>, snapshot: &[String]) -> Vec<String> {
+    let name = |v: &str| v.split_once(' ').map_or(v, |(n, _)| n).to_owned();
+    let mine = |v: &String| !snapshot.iter().any(|s| name(s) == name(v));
+    (own.into_iter().filter(mine))
+        .chain(snapshot.iter().cloned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_snapshot_keeps_the_instruments_values_it_does_not_save() {
+        let own = ["$power 1", "$cutoff 10", "@name Init"].map(String::from);
+        let snapshot = ["$cutoff 64", "@name Big Foot"].map(String::from);
+        let values = over(own.to_vec(), &snapshot);
+        assert_eq!(values, ["$power 1", "$cutoff 64", "@name Big Foot"]);
+        assert_eq!(over(own.to_vec(), &[]), own);
+    }
 
     #[test]
     fn each_group_a_snapshot_and_its_instrument_do_not_share_is_noted() {
