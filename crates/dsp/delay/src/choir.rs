@@ -22,10 +22,22 @@ pub const CHOIR_MAX_S: f32 = 0.5;
 const FLOOR: f32 = 2.0;
 /// How long a rest delay glides to a new length.
 /// ponytail: the reference ramps its knobs and re-runs its laws; this
-/// glides the rest delays only.
+/// glides what a knob moves outside the loop (rest delays, sweep depth, bus
+/// levels and gain). The loop's own gains still step per block.
 const GLIDE_S: f32 = 0.015;
 
 type Row = [f32; V];
+
+/// What glides to its setting: the rest delays and the sweep's depth
+/// (frames), the bus rotation's cosine and sine rows times the levels, and
+/// the gain out.
+#[derive(Debug, Clone, Copy)]
+struct Live {
+    rest: Row,
+    swing: Row,
+    turn: [Row; 2],
+    gain: f32,
+}
 
 /// Voice `v` of `r`.
 fn at(r: &Row, v: usize) -> f32 {
@@ -84,13 +96,11 @@ pub struct Choir {
     len: usize,
     /// Where the next frame goes.
     at: usize,
-    /// The rest delays as they glide, frames; `None` until the first frame.
-    rest: Option<Row>,
+    /// `None` until the first frame, which starts at the settings.
+    live: Option<Live>,
     glide: f32,
     /// The loop: the circulant times the loop gains and the sign.
     mix: [Row; V],
-    /// The bus rotation's cosine and sine rows, times the levels.
-    turn: [Row; 2],
     alpha: Row,
     /// Both LFOs' steps and phases, cycles.
     step: [[f64; V]; 2],
@@ -118,10 +128,9 @@ impl Choir {
             ring: vec![[0.0; 2]; len * V].into(),
             len,
             at: 0,
-            rest: None,
+            live: None,
             glide: 1.0 - (-1.0 / (GLIDE_S * rate as f32)).exp(),
             mix: [[0.0; V]; V],
-            turn: [[0.0; V]; 2],
             alpha: [0.0; V],
             step: [[0.0; V]; 2],
             cycle: [[0.0; V]; 2],
@@ -143,7 +152,6 @@ impl Choir {
         self.mix = std::array::from_fn(|i| {
             row(|k| s.sign * at(&s.loop_gain, i) * at(&s.scatter, (k + V - i) % V))
         });
-        self.turn = [f32::cos, f32::sin].map(|f| row(|v| at(&s.level, v) * f(at(&s.angle, v))));
         self.alpha = s
             .smooth_hz
             .map(|hz| (-std::f32::consts::TAU * hz / self.rate).exp());
@@ -173,19 +181,48 @@ impl Choir {
     }
 
     /// Lets `frames` silent frames pass: the clocks and the write point
-    /// move on, the rest delays arrive.
+    /// move on, and whatever glides or rounds arrives (it sleeps for at
+    /// least [`Self::memory`] frames).
     pub fn idle(&mut self, frames: usize) {
-        self.rest = Some(self.target());
+        self.live = Some(self.aim());
         self.at = (self.at + frames) & (self.len - 1);
         for (cycle, step) in self.cycle.iter_mut().zip(&self.step) {
             for (c, s) in cycle.iter_mut().zip(step) {
                 *c = fract(*c + s * frames as f64);
             }
         }
+        self.sweep = self.shape();
     }
 
-    fn target(&self) -> Row {
-        self.s.delay_s.map(|d| d * self.rate)
+    /// Where the settings put what glides.
+    fn aim(&self) -> Live {
+        let s = &self.s;
+        Live {
+            rest: s.delay_s.map(|d| d * self.rate),
+            swing: s.swing_s.map(|d| d * self.rate),
+            turn: [f32::cos, f32::sin].map(|f| row(|v| at(&s.level, v) * f(at(&s.angle, v)))),
+            gain: s.gain,
+        }
+    }
+
+    /// Each sweep before its rounding, at the clocks' phases.
+    fn shape(&self) -> Row {
+        let s = &self.s;
+        let [p1, p2] = &self.cycle;
+        row(|v| {
+            let phase = fract(p1.get(v).copied().unwrap_or(0.0) + f64::from(at(&s.start, v)));
+            let u = 1.0 - (1.0 - 2.0 * phase).abs() as f32;
+            let bend = at(&s.bend, v);
+            let wobble = at(&s.wobble, v);
+            let cos = match wobble == 0.0 {
+                true => 0.0,
+                false => {
+                    let p = p2.get(v).copied().unwrap_or(0.0);
+                    (1.0 - 0.5 * sine(p + 0.25) as f32) * wobble
+                }
+            };
+            (1.0 - bend) * u + bend * u * u + cos
+        })
     }
 
     /// Line `v`'s channel `c`, `d` frames back from the newest frame (at
@@ -225,9 +262,10 @@ impl Choir {
     /// takes it.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let s = self.s;
-        let target = self.target();
-        let mut rest = self.rest.unwrap_or(target);
-        let swing = s.swing_s.map(|d| d * self.rate);
+        let aim = self.aim();
+        let mut live = self.live.unwrap_or(aim);
+        let glide = self.glide;
+        let toward = |now: &Row, aim: &Row| row(|v| at(now, v) + (at(aim, v) - at(now, v)) * glide);
         let longest = (self.len - 4) as f32;
         let mut written = 0.0f32;
         let dot = |a: &Row, b: &Row| a.iter().zip(b).map(|(a, b)| a * b).sum::<f32>();
@@ -243,10 +281,10 @@ impl Choir {
                 let into = into.get(ch).copied().unwrap_or_default();
                 row(|v| s.sign * at(&read, v) + at(&into, v))
             });
-            let [cos, sin] = &self.turn;
+            let [cos, sin] = &live.turn;
             let mut bus = [dot(cos, &l) - dot(sin, &r), dot(sin, &l) + dot(cos, &r)];
             self.bus.process(std::slice::from_mut(&mut bus));
-            *frame = bus.map(|b| b * s.gain);
+            *frame = bus.map(|b| b * live.gain);
             // Each line's filter, into the ring.
             let [b0, b1, b2, a1, a2] = &self.c;
             for ((x, [z1, z2]), ch) in into.iter().zip(&mut self.z).zip(0..) {
@@ -263,27 +301,21 @@ impl Choir {
             }
             self.at = (self.at + 1) & (self.len - 1);
             // Each sweep, then the reads.
-            let [p1, p2] = self.cycle;
-            let shape = row(|v| {
-                let phase = fract(p1.get(v).copied().unwrap_or(0.0) + f64::from(at(&s.start, v)));
-                let u = 1.0 - (1.0 - 2.0 * phase).abs() as f32;
-                let bend = at(&s.bend, v);
-                let wobble = at(&s.wobble, v);
-                let cos = match wobble == 0.0 {
-                    true => 0.0,
-                    false => {
-                        let p = p2.get(v).copied().unwrap_or(0.0);
-                        (1.0 - 0.5 * sine(p + 0.25) as f32) * wobble
-                    }
-                };
-                (1.0 - bend) * u + bend * u * u + cos
-            });
+            let shape = self.shape();
             self.sweep =
                 row(|v| at(&shape, v) + (at(&self.sweep, v) - at(&shape, v)) * at(&self.alpha, v));
-            rest = row(|v| at(&rest, v) + (at(&target, v) - at(&rest, v)) * self.glide);
+            live = Live {
+                rest: toward(&live.rest, &aim.rest),
+                swing: toward(&live.swing, &aim.swing),
+                turn: {
+                    let ([cos, sin], [to_cos, to_sin]) = (&live.turn, &aim.turn);
+                    [toward(cos, to_cos), toward(sin, to_sin)]
+                },
+                gain: live.gain + (aim.gain - live.gain) * glide,
+            };
             // `max` maps NaN to the floor.
             let d = row(|v| {
-                (at(&rest, v) + at(&swing, v) * at(&self.sweep, v))
+                (at(&live.rest, v) + at(&live.swing, v) * at(&self.sweep, v))
                     .max(FLOOR)
                     .min(longest)
             });
@@ -295,7 +327,7 @@ impl Choir {
                 }
             }
         }
-        self.rest = Some(rest);
+        self.live = Some(live);
         self.written = written;
     }
 }
@@ -346,5 +378,21 @@ mod tests {
         }
         let rest: f32 = left.iter().map(|v| v.abs()).sum::<f32>() - 3.25;
         assert!(rest.abs() < 1e-4, "{rest}");
+
+        // A knob glides: the gain set to nothing is still there a frame on.
+        c.idle(c.memory());
+        c.set(ChoirSettings { gain: 0.0, ..s });
+        let mut one = [[1.0f32, 0.0]];
+        c.process(&mut one);
+        assert!(one[0][0] > 0.99, "{}", one[0][0]);
+
+        // Woken, a slowly rounded sweep stands where its clock does.
+        c.set(ChoirSettings {
+            lfo_hz: [1.0; V],
+            smooth_hz: [0.01; V],
+            ..s
+        });
+        c.idle(12_000);
+        assert!((c.sweep[0] - 0.5).abs() < 1e-3, "{}", c.sweep[0]);
     }
 }
