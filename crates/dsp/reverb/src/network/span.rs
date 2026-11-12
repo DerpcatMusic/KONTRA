@@ -68,14 +68,14 @@ impl Network {
         for (line, read) in self.lines.iter_mut().zip(&mut v) {
             let swing = swing.get(usize::from(line.sin)).unwrap_or(&[0.0; MAX]);
             let x = input.get(usize::from(line.right)).unwrap_or(&[0.0; MAX]);
-            line.read(w0, n, swing, read);
-            if line.inject != 0.0 {
-                if line.reads_own_input(self.inject_offset, n) {
-                    line.read_with_input(w0, n, swing, (at, x), read);
-                } else {
-                    line.ring
-                        .add_run(at, x.get(..n).unwrap_or_default(), line.inject);
-                }
+            if line.inject == 0.0 {
+                line.read(w0, n, swing, read);
+            } else if line.reads_own_input(self.inject_offset, n) {
+                line.read_with_input(w0, n, swing, (at, x), read);
+            } else {
+                line.read(w0, n, swing, read);
+                line.ring
+                    .add_run(at, x.get(..n).unwrap_or_default(), line.inject);
             }
         }
         for (lines, reads) in self.lines.chunks_mut(4).zip(v.chunks_mut(4)) {
