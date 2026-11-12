@@ -182,3 +182,34 @@ fn a_zone_moved_into_a_wavetable_group_gets_its_table() {
     assert!(plan.zones[1].region.table.is_some());
     assert_eq!(plan.zones[1].root, 69, "a table plays its cycle at A4");
 }
+
+/// A zone `set_zone_par` moves to another group takes what the loader gives
+/// that group's own zones: start rules, trigger, choke, key tracking.
+#[test]
+fn a_zone_moved_to_another_group_takes_that_groups_rules() {
+    let mut moved = zone(0);
+    moved.id = 7;
+    let mut released = group(25, vec![zone(0)]);
+    (released.trigger, released.keytrack, released.one_shot) = (ir::Trigger::Release, 0.0, true);
+    released.off_by = Some(0);
+    let instrument = ir::Instrument {
+        samples: vec![sample("a", 500)],
+        groups: vec![group(24, vec![moved]), released],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (mut plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    assert!(plan.edit_zone(7, ir::ZonePar::Group, 1));
+    let (z, own) = (&plan.zones[0], &plan.zones[1]);
+    assert_eq!(
+        (&z.start, z.trigger, z.off_by, z.keytrack, z.one_shot),
+        (
+            &own.start,
+            own.trigger,
+            own.off_by,
+            own.keytrack,
+            own.one_shot
+        )
+    );
+    assert_eq!(z.member, u16::MAX, "no mix route of its new group names it");
+}

@@ -16,7 +16,7 @@ use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp}
 
 use kontra_engine::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
-    response,
+    ZoneRules, response,
 };
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
@@ -38,6 +38,7 @@ pub fn prepare(
     let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
     let mut polyphony = Vec::new();
     let mut facts = Vec::new();
+    let mut group_rules = Vec::with_capacity(instrument.groups.len());
     for (index, group) in instrument.groups.iter().enumerate() {
         let group_id = u32::try_from(index).unwrap_or(u32::MAX);
         if let Some(voices) = group.polyphony {
@@ -50,6 +51,7 @@ pub fn prepare(
                 switches.push(range.clone());
             }
         }
+        let rules = rules(group, &switches);
         for (member, z) in group.zones.iter().enumerate() {
             let Some(source) = instrument.samples.get(z.sample) else {
                 continue;
@@ -71,17 +73,16 @@ pub fn prepare(
             let Some(Some(sample)) = loaded.get(z.sample) else {
                 continue;
             };
-            let mut zone = zone(group, group_id, z, source, sample, (&switches, &client));
+            let mut zone = zone((group, group_id, &rules), z, source, sample, &client);
             zone.member = u16::try_from(member).unwrap_or(u16::MAX);
             zones.push(zone);
         }
+        group_rules.push(rules);
     }
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
     plan.zone_facts = facts;
-    plan.groups = instrument
-        .groups
-        .iter()
-        .map(|g| Group {
+    plan.groups = (instrument.groups.iter().zip(group_rules))
+        .map(|(g, zones)| Group {
             name: g.name.clone(),
             level: Level {
                 gain: gain(g.volume_db),
@@ -100,6 +101,7 @@ pub fn prepare(
             release_trigger: g.trigger == ir::Trigger::Release,
             bus: g.bus,
             wavetable: g.wavetable.map(read),
+            zones,
         })
         .collect();
     if !instrument.buses.is_empty() {
@@ -407,12 +409,11 @@ pub fn tables(plan: &Plan, client: &StreamClient) -> Option<Plan> {
 }
 
 fn zone(
-    group: &ir::Group,
-    group_id: u32,
+    (group, group_id, rules): (&ir::Group, u32, &ZoneRules),
     z: &ir::Zone,
     source: &ir::Sample,
     sample: &Arc<Sample>,
-    (switches, client): (&[RangeInclusive<u8>], &StreamClient),
+    client: &StreamClient,
 ) -> Zone {
     let region = Region {
         sample: Arc::clone(sample),
@@ -462,13 +463,27 @@ fn zone(
             });
         }
     }
-    out.trigger = match group.trigger {
+    out.group = group_id;
+    rules.apply(&mut out);
+    // The group's own level, pan and tune are its plan group's.
+    out.tune = z.tune;
+    out.gain = gain(z.volume_db);
+    out.pan = z.pan;
+    out
+}
+
+/// What `group` gives each of its zones; `switches` are the plan's ranges.
+fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
+    let mut slots: Vec<u16> = group.zones.iter().map(|z| z.slot).collect();
+    slots.sort_unstable();
+    slots.dedup();
+    let trigger = match group.trigger {
         ir::Trigger::Attack => Trigger::Attack,
         ir::Trigger::Release => Trigger::Release,
         ir::Trigger::First => Trigger::First,
         ir::Trigger::Legato => Trigger::Legato,
     };
-    out.start = group
+    let start = group
         .start
         .iter()
         .filter_map(|(join, rule)| {
@@ -488,32 +503,27 @@ fn zone(
                     length: *length,
                     random: *random,
                 }),
-                ir::StartRule::Cycle { random } => {
-                    let slots: std::collections::BTreeSet<u16> =
-                        group.zones.iter().map(|z| z.slot).collect();
-                    let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
-                    Atom::RoundRobin(RoundRobin {
-                        counter: RrCounter::Group,
-                        position: count(slots.range(..z.slot).count()),
-                        length: count(slots.len()),
-                        random: *random,
-                    })
-                }
+                // Each zone's position is its own (ZoneRules::apply).
+                ir::StartRule::Cycle { random } => Atom::RoundRobin(RoundRobin {
+                    counter: RrCounter::Group,
+                    position: 0,
+                    length: u8::try_from(slots.len()).unwrap_or(u8::MAX),
+                    random: *random,
+                }),
             };
             Some((*join, atom))
         })
         .collect();
-    out.group = group_id;
-    out.off_by = group.off_by.and_then(|g| u32::try_from(g).ok());
-    out.voice_group = group.voice_group.and_then(|g| u32::try_from(g).ok());
-    out.keytrack = group.keytrack;
-    // The group's own level, pan and tune are its plan group's.
-    out.tune = z.tune;
-    out.gain = gain(z.volume_db);
-    out.pan = z.pan;
-    out.release_decay_db = group.release_decay_db;
-    out.one_shot = group.one_shot;
-    out
+    ZoneRules {
+        start,
+        slots,
+        trigger,
+        off_by: group.off_by.and_then(|g| u32::try_from(g).ok()),
+        voice_group: group.voice_group.and_then(|g| u32::try_from(g).ok()),
+        keytrack: group.keytrack,
+        release_decay_db: group.release_decay_db,
+        one_shot: group.one_shot,
+    }
 }
 
 fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {

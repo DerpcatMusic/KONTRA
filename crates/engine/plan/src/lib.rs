@@ -16,7 +16,7 @@ mod zones;
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
 pub use script::{Callbacks, CcLink, Controls, Holder, LookPars, Recall, Saved, ScriptPlan};
-pub use zones::{ZoneFacts, zone_name};
+pub use zones::{ZoneFacts, ZoneRules, zone_name};
 
 use std::ops::RangeInclusive;
 
@@ -189,6 +189,8 @@ pub struct Group {
     /// Its zones play as wavetables, read so. A zone `set_zone_par` moves
     /// in gets its table built off the audio thread.
     pub wavetable: Option<kontra_voice::Read>,
+    /// What it gives each of its zones.
+    pub zones: ZoneRules,
 }
 
 /// The bus `zone`'s group plays into now.
@@ -280,6 +282,7 @@ impl Group {
             release_trigger: false,
             bus: 0,
             wavetable: None,
+            zones: ZoneRules::default(),
         }
     }
 
