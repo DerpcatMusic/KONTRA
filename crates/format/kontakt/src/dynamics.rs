@@ -94,6 +94,26 @@ pub(crate) fn feedback_knobs(saved: [f32; 6], link: bool) -> Vec<SlotKnob> {
     .collect()
 }
 
+/// The Feedback Compressor's KSP names: the slot carries the knobs' laws
+/// ([`feedback_knobs`]); the mix is the wet share as set.
+pub(crate) fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 6] {
+    use ir::KnobTarget::{Effect, Slot};
+    use ir::SlotKnob::{Attack, Input, Makeup, Ratio, Release};
+    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    [
+        ("$ENGINE_PAR_FCOMP_INPUT", Slot(Input), unit()),
+        ("$ENGINE_PAR_FCOMP_MAKEUP", Slot(Makeup), unit()),
+        ("$ENGINE_PAR_FCOMP_ATTACK", Slot(Attack), unit()),
+        ("$ENGINE_PAR_FCOMP_RELEASE", Slot(Release), unit()),
+        ("$ENGINE_PAR_FCOMP_RATIO", Slot(Ratio), unit()),
+        (
+            "$ENGINE_PAR_FCOMP_MIX",
+            Effect(ir::EffectParam::CompressorMix),
+            unit(),
+        ),
+    ]
+}
+
 /// Setter 0x141ac87b0: attack `2(x − ½)·120` and sustain `2(x − ½)·115` dB
 /// per envelope unit; gain `(x − ½)·12` dB above the centre, `·48` below.
 /// The core's follower rates and thresholds (in `kontra-dsp-dynamics`) come
