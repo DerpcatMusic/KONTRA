@@ -18,16 +18,27 @@ impl Engine {
     /// Recalls `saved` (by slot) into the scripts, keeping their state: every
     /// voice fades out, every slot's values land, then each slot's
     /// persistence-changed callback runs, `read_persistent_var` reading the
-    /// recalled values. Returns the values recalled before, to free off the
-    /// audio thread. Allocates nothing.
+    /// recalled values. Returns the values recalled before.
+    ///
+    /// It runs as a load runs its first persistence-changed callback, off
+    /// the audio thread (KSP manual: loading a snapshot stops the audio
+    /// engine): zone edits and effect loads land at once, so the callback
+    /// never waits on one, and the racks are built again after it. Not
+    /// real-time.
     pub fn recall(&mut self, saved: Box<[Saved]>) -> Box<[Saved]> {
         self.reset();
         for (slot, values) in (0u8..).zip(saved.iter()) {
             self.write_saved(slot, &values.ints, &values.texts);
         }
         let old = std::mem::replace(&mut self.recalled, saved);
+        self.building = true;
         let slots = (0u8..).take(self.recalled.len());
         slots.for_each(|slot| self.persistence_changed(slot));
+        self.building = false;
+        // What `read_persistent_var` reloaded matters to a load's init only.
+        self.reloaded.clear();
+        self.rebuild_racks();
+        self.build_chains();
         old
     }
 

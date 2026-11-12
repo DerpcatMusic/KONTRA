@@ -880,16 +880,19 @@ fn snapshot_of(kind: u8, saved: &[&str]) -> kontra_engine::ir::Instrument {
 
 /// Part 0's saved script values, as of a capture taken now.
 fn saved_now(rack: &mut Rack, audio: &mut RackAudio) -> Vec<String> {
-    rack.tick();
-    audio.process(BLOCK, &[]);
+    // A recall lends the engine and takes it back over a round of its own.
+    for _ in 0..2 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
     rack.tick();
     rack.saved_scripts(0).concat()
 }
 
 /// KSP manual, `set_snapshot_type`: type 1 recalls without `on init` (the
 /// running script keeps its state), type 0 runs `on init` again; both run
-/// `on persistence_changed` after the values land. Neither reads or
-/// prepares the instrument again.
+/// `on persistence_changed` after the values land, and both stop the part
+/// (a new generation). Neither reads or prepares the instrument again.
 #[test]
 fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
     for (kind, marker, rebuilt) in [(1, "$marker 7", false), (0, "$marker 6", true)] {
@@ -914,7 +917,7 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
         );
         assert!(saved.contains(&marker.to_owned()), "type {kind}: {saved:?}");
         assert_eq!(p.path.as_deref(), Some(std::path::Path::new("b.nksn")));
-        assert_eq!(p.script.generation() != generation, rebuilt, "type {kind}");
+        assert_ne!(p.script.generation(), generation, "type {kind}");
         // The plan is kept or copied, never prepared again from the file.
         let same = Arc::ptr_eq(p.plan.as_ref().unwrap(), &plan);
         assert_eq!(same, !rebuilt, "type {kind}");
@@ -978,11 +981,14 @@ fn a_native_recall_installs_its_effects_and_a_later_recall_supersedes_it() {
         &preset("42", false),
         Some(std::path::Path::new("c.nksn"))
     ));
-    assert!(
-        !settled(&mut rack, &mut audio, generation),
-        "the first never lands"
-    );
-    assert_eq!(inserts(&rack), 0);
+    // The script-only recall lands; the first never does.
+    assert!(settled(&mut rack, &mut audio, generation));
+    for _ in 0..50 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(inserts(&rack), 0, "the first never lands");
     let p = rack.parts()[0].as_ref().unwrap();
     assert_eq!(p.path.as_deref(), Some(std::path::Path::new("c.nksn")));
     assert!(saved_now(&mut rack, &mut audio).contains(&"$knob 42".to_owned()));

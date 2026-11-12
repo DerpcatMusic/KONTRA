@@ -67,8 +67,8 @@ pub struct Channels {
     pub commands: Ring<Command>,
     pub retired: Ring<Box<Engine>>,
     pub captured: Ring<Box<Capture>>,
-    /// Saved values recalled into a part, to free on the control side.
-    pub recalled: Ring<Box<[kontra_engine::Saved]>>,
+    /// Parts' engines lent for a recall ([`Command::Recall`]).
+    pub recalled: Ring<Box<command::Recalling>>,
     /// Effect types the parts' scripts asked for: (part, its load, request).
     pub requests: Ring<(usize, u64, EffectRequest)>,
     /// Array files the parts' scripts asked for: (part, its load, request).
@@ -604,7 +604,9 @@ impl Rack {
         while self.channels.units.recv().is_some() {}
         while self.channels.sounds.recv().is_some() {}
         while self.channels.typed.recv().is_some() {}
-        while self.channels.recalled.recv().is_some() {}
+        while let Some(recalling) = self.channels.recalled.recv() {
+            self.recalled(*recalling);
+        }
         self.files();
         // Effect types and zone edits scripts asked for, built here.
         self.native_ready();
