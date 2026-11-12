@@ -327,7 +327,7 @@ fn slot_effect(
                 .and_then(|v| v.try_into().ok())
                 .zip(byte(24))
                 .map(|(saved, link)| {
-                    *model = Some(crate::script_knobs::bus_model(saved, link));
+                    *model = Some(crate::solid_knobs::bus_model(saved, link));
                     let (c, auto) = crate::laws::bus_compressor(saved, link);
                     kontra_law::record(|| kontra_law::Application {
                         id: kontra_law::LawId("kontakt.bus_compressor.v1"),

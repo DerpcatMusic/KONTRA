@@ -228,7 +228,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Slot(ir::SlotKnob::BandBell(3)),
             on(),
         ),
-        // Solid Bus Comp: its slot's knob model (bus_model).
+        // Solid Bus Comp: its slot's knob model (solid_knobs).
         (
             "$ENGINE_PAR_SCOMP_THRESHOLD",
             Slot(ir::SlotKnob::Threshold),
@@ -502,25 +502,6 @@ pub(crate) fn compressor_knobs(mode: i32, saved: [f32; 4], link: bool) -> Vec<Sl
     out
 }
 
-/// The Solid Bus Comp's knobs: every move rebuilds the compressor from
-/// all six and the link through [`crate::laws::bus_compressor`] (the ratio
-/// switch also moves the threshold).
-pub(crate) fn bus_model(saved: [f32; 6], link: bool) -> ir::KnobModel {
-    use ir::SlotKnob::{Attack, Makeup, Mix, Ratio, Release, Threshold};
-    let mut positions = saved.to_vec();
-    positions.push(f32::from(u8::from(link)));
-    ir::KnobModel {
-        knobs: [Threshold, Makeup, Attack, Release, Ratio, Mix].into(),
-        saved: positions.into(),
-        build: |p| {
-            let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
-            Some(ir::EffectKind::Compressor(
-                crate::laws::bus_compressor(knobs, link).0,
-            ))
-        },
-    }
-}
-
 /// The 1/2/3-band EQ's saved Hz, octaves and dB for a knob `x`: 20·1000^x
 /// Hz, 1/3 + 8x/3 octaves, −18 + 36x dB, exact at x = 0, .1, .25, .5, .75,
 /// .9, 1 (probes/eq_knob_laws.lua).
@@ -652,7 +633,7 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     // the reverb and send levels.
     let mut types = vec![
         ir::SlotType {
-            model: Some(bus_model(BUS_COMP_INIT, true)),
+            model: Some(crate::solid_knobs::bus_model(BUS_COMP_INIT, true)),
             ..ty(29, false, 0, bus_comp, [].into())
         },
         ty(39, false, 0, reverb, [].into()),
@@ -825,7 +806,8 @@ mod tests {
     /// .55 and .7 compress 4:1, .9 compresses 5:1.
     #[test]
     fn the_bus_compressor_switches_step_where_kontakt_saves_them() {
-        let model = bus_model([0.3, 0.3, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 0.3], true);
+        let model =
+            crate::solid_knobs::bus_model([0.3, 0.3, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 0.3], true);
         // A KSP value through its row's step, then the model.
         let at = |k: usize, x: f32| {
             let mut p = model.saved.to_vec();

@@ -1,4 +1,4 @@
-//! The Solid G-EQ's script knobs (`$ENGINE_PAR_SEQ_*`).
+//! The Solid G-EQ's and Solid Bus Comp's script knob models (`$ENGINE_PAR_SEQ_*`, `$ENGINE_PAR_SCOMP_*`).
 
 use kontra_ir as ir;
 
@@ -40,6 +40,25 @@ pub(crate) fn solid_model(saved: [f32; 10], bells: [bool; 2]) -> ir::KnobModel {
             let bands =
                 crate::laws::solid_eq([lg, lh], lf, [mg, mh, mq], [hg, hh, hq], [fg, fh], hf);
             Some(ir::EffectKind::Eq(bands))
+        },
+    }
+}
+
+/// The Solid Bus Comp's knobs: every move rebuilds the compressor from
+/// all six and the link through [`crate::laws::bus_compressor`] (the ratio
+/// switch also moves the threshold).
+pub(crate) fn bus_model(saved: [f32; 6], link: bool) -> ir::KnobModel {
+    use ir::SlotKnob::{Attack, Makeup, Mix, Ratio, Release, Threshold};
+    let mut positions = saved.to_vec();
+    positions.push(f32::from(u8::from(link)));
+    ir::KnobModel {
+        knobs: [Threshold, Makeup, Attack, Release, Ratio, Mix].into(),
+        saved: positions.into(),
+        build: |p| {
+            let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
+            Some(ir::EffectKind::Compressor(
+                crate::laws::bus_compressor(knobs, link).0,
+            ))
         },
     }
 }
