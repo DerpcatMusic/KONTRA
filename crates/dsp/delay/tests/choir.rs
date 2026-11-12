@@ -65,11 +65,13 @@ fn bits_hash(x: &[[f32; 2]]) -> u64 {
     })
 }
 
+/// Pinned with the loop's mix gliding to a new feedback: until the change
+/// it is the stepping render bit for bit; after, −36.8 dB RMS from it.
 #[test]
 fn the_reference_render_is_unchanged() {
     assert_eq!(
         bits_hash(&render(3)),
-        16_864_327_713_616_686_334,
+        9_660_720_899_850_728_444,
         "render changed"
     );
 }

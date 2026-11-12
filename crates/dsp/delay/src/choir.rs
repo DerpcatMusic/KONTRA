@@ -22,9 +22,12 @@ pub const CHOIR_MAX_S: f32 = 0.5;
 const FLOOR: f32 = 2.0;
 /// How long a rest delay glides to a new length.
 /// ponytail: the reference ramps its knobs and re-runs its laws; this
-/// glides what a knob moves outside the loop (rest delays, sweep depth, bus
-/// levels and gain). The loop's own gains still step per block.
+/// glides what a knob moves (rest delays, sweep depth, bus levels and gain,
+/// and the loop's mix) by one exponential, not the laws.
 const GLIDE_S: f32 = 0.015;
+/// Glides of the loop's mix after which it stands at its setting: 12 time
+/// constants leave 6·10⁻⁶ of the step.
+const SETTLE: f32 = 12.0;
 
 type Row = [f32; V];
 
@@ -99,8 +102,11 @@ pub struct Choir {
     /// `None` until the first frame, which starts at the settings.
     live: Option<Live>,
     glide: f32,
-    /// The loop: the circulant times the loop gains and the sign.
+    /// The loop: the circulant times the loop gains and the sign, gliding
+    /// to its setting for `mix_left` more frames.
     mix: [Row; V],
+    mix_aim: [Row; V],
+    mix_left: u32,
     alpha: Row,
     /// Both LFOs' steps and phases, cycles.
     step: [[f64; V]; 2],
@@ -131,6 +137,8 @@ impl Choir {
             live: None,
             glide: 1.0 - (-1.0 / (GLIDE_S * rate as f32)).exp(),
             mix: [[0.0; V]; V],
+            mix_aim: [[0.0; V]; V],
+            mix_left: 0,
             alpha: [0.0; V],
             step: [[0.0; V]; 2],
             cycle: [[0.0; V]; 2],
@@ -149,9 +157,14 @@ impl Choir {
     pub fn set(&mut self, s: ChoirSettings) {
         self.s = s;
         let rate = self.rate as u32;
-        self.mix = std::array::from_fn(|i| {
+        self.mix_aim = std::array::from_fn(|i| {
             row(|k| s.sign * at(&s.loop_gain, i) * at(&s.scatter, (k + V - i) % V))
         });
+        // Before the first frame it starts at the settings; after, it glides.
+        match self.live {
+            None => (self.mix, self.mix_left) = (self.mix_aim, 0),
+            Some(_) => self.mix_left = (SETTLE * GLIDE_S * self.rate) as u32,
+        }
         self.alpha = s
             .smooth_hz
             .map(|hz| (-std::f32::consts::TAU * hz / self.rate).exp());
@@ -185,6 +198,7 @@ impl Choir {
     /// least [`Self::memory`] frames).
     pub fn idle(&mut self, frames: usize) {
         self.live = Some(self.aim());
+        (self.mix, self.mix_left) = (self.mix_aim, 0);
         self.at = (self.at + frames) & (self.len - 1);
         for (cycle, step) in self.cycle.iter_mut().zip(&self.step) {
             for (c, s) in cycle.iter_mut().zip(step) {
@@ -319,6 +333,17 @@ impl Choir {
                 toward(now, aim);
             }
             live.gain += (aim.gain - live.gain) * glide;
+            if self.mix_left > 0 {
+                self.mix_left -= 1;
+                match self.mix_left {
+                    0 => self.mix = self.mix_aim,
+                    _ => {
+                        for (now, aim) in self.mix.iter_mut().zip(&self.mix_aim) {
+                            toward(now, aim);
+                        }
+                    }
+                }
+            }
             let mut read = [[0.0f32; V]; 2];
             let [read_l, read_r] = &mut read;
             let voices = (live.rest.iter().zip(&live.swing).zip(&self.sweep))
