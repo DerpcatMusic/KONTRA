@@ -252,7 +252,7 @@ local function plain(v, path, context, reactive)
 	elseif type(v) == "table" and not v.__color then
 		local out = {}
 		for k, x in pairs(v) do
-			out[k] = plain(x, path .. "." .. tostring(k), context)
+			out[k] = plain(x, path .. "." .. tostring(k), context, reactive)
 		end
 		return out
 	end
