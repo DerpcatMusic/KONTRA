@@ -12,7 +12,6 @@ use kontra_ui::app::{
     self, Action, App, Envelope, Filter, Format, Library, Part, PartTab, Pass, Sound, Stats, Zone,
 };
 use mui::prelude::{Buttons, Input, Point, PointerInput, Size, Ui};
-use mui::vello;
 
 struct Shot {
     ui: Ui,
@@ -284,29 +283,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn paint(ui: &Ui, w: u16, h: u16) -> Result<Vec<u8>, Box<dyn Error>> {
-    let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
-    let mut resources = vello::vello_cpu::Resources::default();
     let scene = ui.scene().ok_or("no scene")?;
-    let cpu = &mut vello::Cpu {
-        ctx: &mut ctx,
-        resources: &mut resources,
-        cache: &mut vello::Cache::default(),
-    };
-    vello::paint(cpu, scene, vello::kurbo::Affine::IDENTITY).map_err(|e| format!("{e:?}"))?;
-    ctx.flush();
-    let mut pix = vello::vello_cpu::Pixmap::new(w, h);
-    ctx.render(&mut pix, &mut resources);
-    Ok(pix.take_rgba8(vello::peniko::ImageAlphaType::Alpha))
+    Ok(mui_headless::Raster::new(w, h).draw(scene, 1.0)?)
 }
 
 fn save(file: &Path, w: u16, h: u16, rgba: &[u8]) -> Result<(), Box<dyn Error>> {
-    let mut e = png::Encoder::new(
-        std::io::BufWriter::new(std::fs::File::create(file)?),
-        w.into(),
-        h.into(),
-    );
-    e.set_color(png::ColorType::Rgba);
-    e.set_depth(png::BitDepth::Eight);
-    e.write_header()?.write_image_data(rgba)?;
-    Ok(())
+    Ok(mui_headless::write_png(file, w.into(), h.into(), rgba)?)
 }
