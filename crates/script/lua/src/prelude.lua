@@ -595,6 +595,24 @@ local function decibels(gain)
 	return gain and gain > 0 and 20 * math.log10(gain) or -200
 end
 
+-- A layer's fader and an aux's or rack chain's gain are their buses'
+-- volumes.
+local function push_bus(e)
+	local off = e.params.Bypass or e.params.Mute
+	local db = off and -200 or decibels(e.params.Gain or 1)
+	host_call("BusVolume", e.bus, math.floor(db * 1000))
+end
+
+-- A keygroup's group level and pan, under its layer's mute and pan.
+local function push_group(lp, kg)
+	local kp = kg.params
+	local silent = lp.Mute or lp.Bypass or kp.Bypass or kp.Mute
+	local db = tree.db + decibels(kp.Gain or 1)
+	host_call("GroupVolume", kg.group, silent and -200000 or math.floor(db * 1000))
+	local pan = math.max(-1, math.min(1, tree.pan + (lp.Pan or 0) + (kp.Pan or 0)))
+	host_call("GroupPan", kg.group, math.floor(pan * 1000))
+end
+
 -- Pushes every group's level when a callback can reach the host.
 local function apply_levels()
 	if not __host then
@@ -602,23 +620,38 @@ local function apply_levels()
 		return
 	end
 	stale = false
-	-- A layer's fader and an aux's or rack chain's gain are their buses'
-	-- volumes.
-	each_bus(Program, function(e)
-		local off = e.params.Bypass or e.params.Mute
-		local db = off and -200 or decibels(e.params.Gain or 1)
-		host_call("BusVolume", e.bus, math.floor(db * 1000))
-	end)
+	each_bus(Program, push_bus)
 	for _, layer in ipairs(Program.layers) do
-		local lp = layer.params
 		for _, kg in ipairs(layer.keygroups) do
 			if kg.group then
-				local kp = kg.params
-				local silent = lp.Mute or lp.Bypass or kp.Bypass or kp.Mute
-				local db = tree.db + decibels(kp.Gain or 1)
-				host_call("GroupVolume", kg.group, silent and -200000 or math.floor(db * 1000))
-				local pan = math.max(-1, math.min(1, tree.pan + (lp.Pan or 0) + (kp.Pan or 0)))
-				host_call("GroupPan", kg.group, math.floor(pan * 1000))
+				push_group(layer.params, kg)
+			end
+		end
+	end
+end
+
+-- Pushes what a level change on `e` reaches: its own bus, and the groups
+-- under it (a layer's keygroups, or a keygroup itself). Everything else
+-- holds the level it was last sent.
+local function apply_level(e)
+	if stale or not __host then
+		apply_levels()
+		return
+	end
+	if e.bus then
+		push_bus(e)
+	end
+	-- Raw fields: a missing key reads as a method or an empty container.
+	local fields = fields_of(e)
+	local layer = fields.parent
+	if layer and (fields_of(layer).keygroups or EMPTY)[fields.index] == e then
+		if e.group then
+			push_group(layer.params, e)
+		end
+	else
+		for _, kg in ipairs(fields.keygroups or EMPTY) do
+			if kg.group then
+				push_group(e.params, kg)
 			end
 		end
 	end
@@ -629,7 +662,7 @@ local levels = { Gain = true, Pan = true, Mute = true, Bypass = true }
 local function set_level(self, name, value)
 	self.params[name] = value
 	if levels[name] then
-		apply_levels()
+		apply_level(self)
 	end
 end
 
