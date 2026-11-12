@@ -325,6 +325,7 @@ impl RackAudio {
         while self.channels.retired.room() >= RETIRES
             && !self.channels.captured.is_full()
             && !self.channels.units.is_full()
+            && !self.channels.sounds.is_full()
             && !self.channels.typed.is_full()
             && !self.channels.looks.is_full()
             && !self.channels.recalled.is_full()
@@ -517,10 +518,16 @@ impl RackAudio {
                     part,
                     group,
                     envelope,
-                    insert,
+                    mut insert,
                 } => {
+                    let edit = insert.take();
                     if let Some(Some(p)) = self.parts.get_mut(part) {
-                        p.engine.set_group_sound(group, envelope, insert);
+                        p.engine.set_group_sound(group, envelope, edit);
+                    }
+                    if let Err(insert) = self.channels.sounds.send(insert) {
+                        // Checked for room first; if it ever fails, it frees here.
+                        self.dropped += 1;
+                        drop(insert);
                     }
                 }
                 Command::Control {
