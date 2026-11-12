@@ -617,8 +617,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         // Opening: one tick here brings the copy a closed editor let lapse
         // up to date, though the host runs no audio to spawn one (a load
         // in progress shows on its own tick).
-        if !p.shared.shown.swap(true, Ordering::AcqRel)
-            && !p.shared.holding.load(Ordering::Acquire)
+        if !p.shared.shown.swap(true, Ordering::AcqRel) && !p.shared.holding.load(Ordering::Acquire)
         {
             crate::Tick.run(&p);
         }
