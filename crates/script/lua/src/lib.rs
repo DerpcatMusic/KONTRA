@@ -682,6 +682,7 @@ mod tests {
         let source = r#"
             local air = Knob('air', 0, 0, 100)
             local panel = OnOffButton('panel', false)
+            local steps = Table('steps', 2, 0, 0, 1)
             local seen = 0
             air.changed = function(s) seen = s.value end
             local text = ''
@@ -691,6 +692,13 @@ mod tests {
                 loadState('../Script/presets/Studio 1.VHFPreset', function(t) done = t.success end)
                 assert(air.value == 66 and seen == 66 and text == 'Studio 1*' and done)
                 assert(panel.value == false)
+                assert(steps:getValue(1) == 0.5 and steps:getValue(2) == 1)
+                -- A changed that fails still runs on the next change.
+                local fails = true
+                air.changed = function(s) if fails then fails = false error('once') end seen = s.value end
+                assert(not pcall(air.setValue, air, 1))
+                air.value = 2
+                assert(seen == 2)
                 loadData('./../JSON/Arp/Frames.arp', function(d) arp = d end)
                 assert(arp.steps[2] == 5)
                 loadData('missing.arp', function() error('called for a missing file') end)
@@ -709,7 +717,7 @@ mod tests {
             ("__dir.lua".to_string(), "return \"Script\"".to_string()),
             (
                 "__file/script/presets/studio 1.vhfpreset".to_string(),
-                r#"return {values={["air"]="66",["panel"]="0"},state={["presetText"]="Studio 1*"}}"#.to_string(),
+                r#"return {values={["air"]="66",["panel"]="0",["steps"]="0,5 1"},state={["presetText"]="Studio 1*"}}"#.to_string(),
             ),
             (
                 "__file/json/arp/frames.arp".to_string(),

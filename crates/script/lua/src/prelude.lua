@@ -80,8 +80,11 @@ local function run_changed(w)
 	local changed = rawget(w, "changed")
 	if type(changed) == "function" and not rawget(w, "__changing") then
 		rawset(w, "__changing", true)
-		changed(w)
+		local ok, err = pcall(changed, w)
 		rawset(w, "__changing", nil)
+		if not ok then
+			error(err, 0)
+		end
 	end
 end
 
@@ -136,17 +139,21 @@ local widget_meta = {
 	end,
 }
 
--- A Table widget: `size` values, each indexed from 1. A saved table is the
--- values separated by spaces, with decimal commas.
-local function table_widget(w, name, fields)
-	local size = tonumber(fields[2]) or 0
+-- A saved table's cells: values separated by spaces, with decimal commas.
+local function cells(text)
 	local values = {}
-	local text = name and __saved[name]
 	if type(text) == "string" then
 		for item in string.gmatch(text, "%S+") do
 			table.insert(values, tonumber((string.gsub(item, ",", "."))) or 0)
 		end
 	end
+	return values
+end
+
+-- A Table widget: `size` values, each indexed from 1.
+local function table_widget(w, name, fields)
+	local size = tonumber(fields[2]) or 0
+	local values = cells(name and __saved[name])
 	for i = #values + 1, size do
 		values[i] = tonumber(fields[3]) or 0
 	end
@@ -1042,7 +1049,11 @@ function loadState(path, done)
 	end
 	for _, w in ipairs(__ui.widgets) do
 		local text = w.name and file.values[w.name]
-		if text ~= nil and w.kind ~= "Table" and w.persistent ~= false then
+		if text ~= nil and w.kind == "Table" and w.persistent ~= false then
+			for i, v in ipairs(cells(text)) do
+				w:setValue(i, v)
+			end
+		elseif text ~= nil and w.persistent ~= false then
 			local ok, err = pcall(w.setValue, w, parsed(text, w.value))
 			if not ok then
 				print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
