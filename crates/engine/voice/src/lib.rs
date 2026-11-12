@@ -19,7 +19,7 @@ pub use zone::{Loop, Loops, Region};
 
 use envelope::Envelope;
 use fade::Fade;
-pub use fade::FadeTarget;
+pub use fade::{FadeCurve, FadeTarget};
 
 /// Source frames decoded per inner chunk. Bounds per-voice memory, not pitch.
 const SCRATCH: usize = 512;
@@ -72,7 +72,7 @@ pub struct VoiceStart {
     pub envelope: Ahdsr,
     /// A fade its event asked for before it started; one up to a gain starts
     /// it from silence.
-    pub fade: Option<(FadeTarget, u32)>,
+    pub fade: Option<(FadeTarget, u32, FadeCurve)>,
 }
 
 /// What a voice does when its key goes up.
@@ -169,12 +169,12 @@ impl Voice {
         self.lag = start.lag;
         self.env = Envelope::new(start.envelope);
         self.fade = match start.fade {
-            Some((FadeTarget::Hold(level), _)) if level > 0.0 => Fade::SILENT,
+            Some((FadeTarget::Hold(level), ..)) if level > 0.0 => Fade::SILENT,
             _ => Fade::NONE,
         };
         self.life = Life::Held;
-        if let Some((target, frames)) = start.fade {
-            self.fade(target, frames);
+        if let Some((target, frames, curve)) = start.fade {
+            self.fade_along(target, frames, curve);
         }
         self.released = None;
         self.missing = 0;
@@ -206,7 +206,12 @@ impl Voice {
     /// is click-free, and a fade already ending it ends at the sooner.
     /// `true` when this fade first sets it ending.
     pub fn fade(&mut self, target: FadeTarget, frames: u32) -> bool {
-        self.fade.start(target, frames);
+        self.fade_along(target, frames, FadeCurve::Linear)
+    }
+
+    /// As [`Self::fade`], along `curve`.
+    pub fn fade_along(&mut self, target: FadeTarget, frames: u32, curve: FadeCurve) -> bool {
+        self.fade.start(target, frames, curve);
         let first = target == FadeTarget::End && !self.is_ending();
         if target == FadeTarget::End {
             self.life = Life::Ending(self.released_at());
@@ -264,6 +269,15 @@ impl Voice {
     pub fn set_mix(&mut self, mix: Mix) {
         if let Some(r) = self.region.as_mut() {
             r.mix = Some(mix);
+        }
+    }
+
+    /// Where a wavetable voice reads its table from now on; others ignore it.
+    // ponytail: steps at each control span; Kontakt ramps over 32 frames
+    // (0x102ac): ramp inside `Table::render` if a fast route steps audibly.
+    pub fn set_read(&mut self, read: Read) {
+        if let Some(table) = self.region.as_mut().and_then(|r| r.table.as_mut()) {
+            table.read = read;
         }
     }
 

@@ -4,7 +4,7 @@
 
 use crate::ledger::{Note, NoteRef, Origin};
 use crate::{Engine, Slot, Trigger};
-use kontra_voice::FadeTarget;
+use kontra_voice::{FadeCurve, FadeTarget};
 
 impl Engine {
     /// Enters `note` in the table. When it is full, the note that matters
@@ -107,23 +107,29 @@ impl Engine {
 
     /// Fades the voices of `notes` to `target`, and the attack voices they
     /// start later; an ending fade releases them.
-    pub(crate) fn fade_notes(&mut self, notes: &[NoteRef], frames: u32, target: FadeTarget) {
+    pub(crate) fn fade_notes(
+        &mut self,
+        notes: &[NoteRef],
+        frames: u32,
+        target: FadeTarget,
+        curve: FadeCurve,
+    ) {
         for &note in notes {
             let mut ends = false;
             if let Some(n) = self.notes.get_mut(note) {
                 // A note yet to start starts with the fade and ends at its silence;
                 // a stopping fade stays, as a voice's does, unless a shorter one comes.
-                let ending = matches!(n.fade, Some((FadeTarget::End, _)));
+                let ending = matches!(n.fade, Some((FadeTarget::End, ..)));
                 n.released |= target == FadeTarget::End && n.started;
-                if !matches!(n.fade, Some((FadeTarget::End, left))
+                if !matches!(n.fade, Some((FadeTarget::End, left, _))
                     if target != FadeTarget::End || frames >= left)
                 {
-                    n.fade = Some((target, frames));
+                    n.fade = Some((target, frames, curve));
                 }
                 ends = target == FadeTarget::End && !ending;
             }
             for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
-                slot.voice.fade(target, frames);
+                slot.voice.fade_along(target, frames, curve);
             }
             // Ending a note ends the notes played for its length, once.
             if ends {

@@ -43,14 +43,12 @@ from the locked dependency graph and review new licenses, native components
 and vendored changes. The required `ni-file` permission and focused GPL
 reference review remain unresolved; a successful build is not clearance.
 
-## The v3 refactor
+## Where the work is planned
 
-A large restructuring happens on the `v3` branch, planned in
-[docs/architecture-v3](docs/architecture-v3/README.md). Its work is split into
-issues labelled `v3`, each with a brief, owned paths and gate commands; PRs for
-them target `v3`, not `main`. Read
-[12-WORKFLOW.md](docs/architecture-v3/12-WORKFLOW.md) before picking one up, and
-comment on the issue to claim it. Fixes for current users still go to `main`.
+The engine's design, its rules and the reasoning behind them are in
+[docs/architecture-v3](docs/architecture-v3/README.md); start with
+[VISION.md](docs/architecture-v3/VISION.md). All work lands on `main` through
+pull requests.
 
 ## Local workflow
 
@@ -66,11 +64,8 @@ Use Cargo's default `target/` directory for each worktree, or set an explicit
 with different local path-dependency sources: cached dependency metadata can
 make a successful build or test run insufficient proof of the intended source.
 
-Use Conventional Commits, for example `fix(engine): preserve release ownership` or
-`feat(diagnostics): export build identity`. The prefix helps review; it does not
-trigger an automatic version bump. Mark incompatible changes with `!` or a
-`BREAKING CHANGE:` footer and explain the user-visible migration.
-[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) describes the syntax.
+Pull request titles follow Conventional Commits; see
+[Pull requests, commits and releases](#pull-requests-commits-and-releases).
 
 For local listening and probe runs use the `fast` profile: release-like code without
 cross-crate LTO and with incremental compilation. Shipping (`release`), `ci`, `maxperf`
@@ -100,112 +95,57 @@ and any checks that could not run. A parser success,
 render or synthetic regression establishes only the behavior it actually exercises.
 Update the compatibility notes when supported behavior or a known limit changes.
 
-## Version and changelog policy
+## Pull requests, commits and releases
 
-The root `[package].version` in `Cargo.toml` is authoritative. The root package in
-`Cargo.lock`, plugin descriptors and bundle metadata must agree. Do not add a
-separate version literal or a `moose.toml` override. Published snapshots keep their
-original identity; the reviewed fix ledger starts after the shipped `0.3.0` baseline.
+Someone scrolling the commit list, the pull requests or the releases should
+understand what changed without having done the work. Three pieces of text
+carry that, and CI checks them (`tools/release/pr.py`):
 
-Follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). During `0.y.z`
-development, use a deliberate minor bump for incompatible behavior or substantial
-new capabilities and a patch bump for compatible fixes. After `1.0.0`, incompatible
-public API/behavior changes require a major bump, compatible additions a minor bump,
-and compatible fixes a patch bump. A commit does not automatically increment the
-package version. `release-fixes.json` records stable logical defect IDs, source
-checkpoints, validation and explicit maintainer acceptance. Each accepted ID advances
-the baseline patch once: ten accepted fixes after `0.3.0` produce `0.3.10`.
-Features, repeated commits, test follow-ups and pending fixes do not increase that
-count. Review and accept the shipped fix IDs, update the changelog, then prepare
-the authoritative Cargo and lockfile version:
+**The title** becomes the commit on `main` and a line in the release. Write
+`type(scope): what changed`, within 72 characters, in plain words:
 
-```sh
-python3 tools/version.py fixes --write
-python3 tools/version.py check
+```text
+fix(ui): long preset menus scroll
+feat(kontakt): snapshots load their effects
+perf(reverb): dense string patches use less CPU
 ```
 
-Stable releases use immutable `vX.Y.Z` tags on the reviewed release commit. Before
-publishing, change the unreleased heading to its UTC release date, check the exact
-version and tag, and verify packaged binaries/manifests. Never move a published
-stable tag or replace its assets with different code. Start a fresh unreleased
-changelog section for subsequent development. Changelog entries describe meaningful
-changes and known limits; do not manufacture historical release entries from every
-commit or imply complete Kontakt compatibility.
+Types: `feat` (something new), `fix`, `perf`, `refactor`, `docs`, `test`,
+`build`, `ci`, `chore`. Say what was missing or wrong and what is true now.
+Leave out how you found it: no memory addresses, decompiler names, task ids
+or lane names. Those belong in the description.
 
-## Nightly builds and source identity
+**The description** becomes the commit's body. Open with what changed and why
+in plain words, then how it was checked. Measurements, sources read and other
+detail a reviewer needs come after that.
 
-Nightlies are prereleases such as `0.3.10-nightly.20261002.g012345abcdef`. The date
-comes from the source epoch in UTC and the `g` prefix keeps a hexadecimal revision
-from becoming an invalid numeric SemVer identifier. An identical revision and epoch
-produce the same version. CI prepares it in its disposable checkout:
+**The release note** is the line `Release note: ...` in the description: one
+sentence a musician understands, or `none` for work they will not notice. With
+a note, add `Area:` (`sound`, `interface`, `libraries`, `performance` or
+`fix`), which picks its section in the release.
 
-```sh
-export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
-python3 tools/version.py nightly --write
-python3 tools/version.py check --tag "v$(python3 tools/version.py check)"
-```
+Pull requests are squash-merged, so one pull request is one commit on `main`,
+titled with the pull request's title and number and credited to its authors.
 
-The helper rewrites only the root package version and matching lockfile entry. This
-makes the build's tracked source state `modified`, which the identity reports
-truthfully. Ignore/untracked build artifacts do not mark the source modified. A
-nightly includes reviewed Added, Changed, Fixed and Known limits deltas from the
-previous published source, the complete shipped public commit messages and merged
-PR descriptions, and a comparison link. The versioned changelog is also retained
-inside `release-manifest.json`. Keep every accepted fix described in CHANGELOG.md;
-never describe a pending candidate as shipped. An unchanged-source rerun preserves
-the published notes and assets.
-Nightly packaging retains its documented bounded snapshot history; stable tags and
-assets follow the stable release policy.
+### Versions and releases
 
-`build.rs` emits `kontra-build.json` under Cargo's `OUT_DIR` and embeds the same
-identity in the binary. Both the CLI and standalone support `--version` (readable,
-including the full revision) and `--build-info` (JSON, before audio/UI startup).
-About and support exports consume the same API. Package the manifest from the
-actual plugin build immediately after that build; a standalone build can have
-additional features and therefore a different identity. Validate a manifest with:
+Versions are `MAJOR.MINOR.PATCH`. Nobody picks them by hand:
+`tools/version.py next` reads the titles merged since the last release. A
+`feat` raises MINOR; anything else raises PATCH. MAJOR is the engine
+generation and changes in `tools/version.py`.
 
-```sh
-python3 tools/version.py manifest --file path/to/kontra-build.json
-```
+The Release workflow runs once a day and on demand (Actions > Release > Run
+workflow). When something that ships has changed, it builds and tests every
+platform, signs and notarizes the macOS installer, tags the commit `vX.Y.Z`
+and publishes a release whose notes are the merged pull requests' release
+notes, each linked to its pull request and author
+(`tools/release/notes.py`). Releases stay published; the
+[releases page](https://github.com/DerpcatMusic/KONTRA/releases) is the
+changelog. Never move a published tag or replace its downloads.
 
-`SOURCE_DATE_EPOCH` fixes the UTC timestamp for reproducible build identity; without
-it, the timestamp records the build time. This does not by itself guarantee identical
-binary bytes across toolchains or machines.
-
-For release validation, retain Cargo's `--message-format=json` compiler output,
-a manifest of tracked source-file hashes (including local path dependencies),
-the toolchain/build arguments and hashes of the exact tested executables alongside
-the test results. After suspected cache contamination, rebuild in a fresh target
-directory and rerun the required gates; earlier results remain evidence of their
-observed behavior, not proof of the final source/dependency cohort.
-
-[The reproducible-builds specification](https://reproducible-builds.org/docs/source-date-epoch/)
-describes the convention. The manifest records the chosen epoch explicitly.
-
-`revision` always identifies the actual checkout. A public export can have its own
-Git history: set `KONTRA_SOURCE_REVISION` to a full upstream revision only when that
-provenance is known; it stays a separate field and does not replace `revision`.
-For a source archive without Git, `KONTRA_BUILD_REVISION` may provide its known full
-revision. It must match HEAD when Git is present. Unknown revision/status is reported
-as unknown, not inferred. Dirty status considers tracked changes only.
-
-Use the standard library and existing tools before adding dependencies. The helper
-requires Python 3.11+ and is intentionally manual; no bot makes release decisions.
-Its focused check is `python3 tools/version.py self-test`; Cargo includes
-`embedded_build_identity_matches_cargo_and_manifest` to check the manifest and plugin
-version against the package version.
-
-Mac publication requires `APPLE_APPLICATION_CERTIFICATE_P12_BASE64`,
-`APPLE_CERTIFICATE_PASSWORD`, `APPLE_DEVELOPER_ID_APPLICATION`, `APPLE_ID`,
-`APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` as Actions secrets available to
-this repository. Both hosted Mac architectures sign with Developer ID, submit a
-DMG to Apple, and require Accepted status, validated stapling and Gatekeeper
-assessment before publishing. Missing credentials or validation failures leave
-the existing release intact; there is no unsigned fallback. ZIPs retain their
-existing native products and include the notarized DMG and hash-bound receipt.
-Open the DMG in Finder so Gatekeeper can ingest its ticket before copying the
-products; direct ZIP extraction is not an offline-ticket installation path.
-See [Apple's distribution guidance](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution).
+Mac publication needs the `APPLE_*` signing secrets listed in
+`.github/workflows/release.yml`; without them the release fails and the
+previous one stays the latest. There is no unsigned fallback.
 
 ## One engine
 

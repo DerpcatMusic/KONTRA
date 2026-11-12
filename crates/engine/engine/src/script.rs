@@ -5,7 +5,7 @@
 use kontra_events::HostNote;
 use kontra_time::SampleTime;
 use kontra_vm::{Action, HostApi, HostCall, HostValue, Text, event};
-use kontra_voice::FadeTarget;
+use kontra_voice::{FadeCurve, FadeTarget};
 
 use crate::ledger::{Note, NoteRef, Origin, Releases};
 use crate::queue::{Exit, Work};
@@ -347,15 +347,25 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::FadeOut | Action::FadeIn => {
-                let target = match call.action {
-                    Action::FadeIn => FadeTarget::Hold(1.0),
-                    _ if int(2) != 0 => FadeTarget::End,
-                    _ => FadeTarget::Hold(0.0),
+                let (target, curve) = match call.action {
+                    Action::FadeIn => (FadeTarget::Hold(1.0), int(2)),
+                    _ if int(2) != 0 => (FadeTarget::End, int(3)),
+                    _ => (FadeTarget::Hold(0.0), int(3)),
+                };
+                // The optional last argument, $NI_FADE_LINEAR..LOGARITHMIC =
+                // 0..=4 (measured, ksp_constants.py); Kontakt warns on any
+                // other and fades linearly (0x1407aa490, 0x14086d699).
+                let curve = match curve {
+                    1 => FadeCurve::QuarterSine,
+                    2 => FadeCurve::HalfCosine,
+                    3 => FadeCurve::Square,
+                    4 => FadeCurve::InverseSquare,
+                    _ => FadeCurve::Linear,
                 };
                 let frames = micros_to_frames(i64::from(int(1)), self.rate) as u32;
                 let mut hits = std::mem::take(&mut self.targets_scratch);
                 self.targets(int(0), &mut hits);
-                self.fade_notes(&hits, frames, target);
+                self.fade_notes(&hits, frames, target, curve);
                 self.targets_scratch = hits;
                 HostValue::Nothing
             }
