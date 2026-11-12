@@ -440,7 +440,8 @@ impl Rack {
             .cloned()
             .collect();
         let plan = Arc::new(loaded.plan);
-        let engine = Engine::new(plan, self.store.client(), self.rate);
+        let mut engine = Engine::new(plan, self.store.client(), self.rate);
+        requests::init_tables(&mut engine, &self.store.client());
         let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref())
             .map(|view| view.with_waves(waves));
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());

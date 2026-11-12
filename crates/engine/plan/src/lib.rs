@@ -186,6 +186,9 @@ pub struct Group {
     /// The bus its voices play into, an index into [`Plan::buses`]; a
     /// script may move it while they play.
     pub bus: usize,
+    /// Its zones play as wavetables, read so. A zone `set_zone_par` moves
+    /// in gets its table built off the audio thread.
+    pub wavetable: Option<kontra_voice::Read>,
 }
 
 /// The bus `zone`'s group plays into now.
@@ -276,6 +279,7 @@ impl Group {
             routes: Vec::new(),
             release_trigger: false,
             bus: 0,
+            wavetable: None,
         }
     }
 

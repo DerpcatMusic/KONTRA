@@ -3,8 +3,9 @@
 
 use std::sync::Arc;
 
-use kontra_engine::{Prepared, ZoneEdit};
+use kontra_engine::{Engine, Prepared, ZoneEdit};
 use kontra_protocol::Ring;
+use kontra_stream::StreamClient;
 
 use super::{Command, Plan, Rack};
 
@@ -102,7 +103,9 @@ impl Rack {
             for (e, took) in &mut edits {
                 *took = plan.edit_zone(e.zone, e.par, e.value);
             }
-            let plan = Arc::new(plan);
+            // A zone moved into a wavetable group plays its table.
+            let plan =
+                Arc::new(kontra_prepare::tables(&plan, &self.store.client()).unwrap_or(plan));
             p.plan = Some(Arc::clone(&plan));
             let swap = Box::new(ZoneSwap {
                 plan,
@@ -114,5 +117,13 @@ impl Rack {
                 swap,
             });
         }
+    }
+}
+
+/// Gives the zones `on init` moved into a wavetable group their tables,
+/// before the engine plays.
+pub(super) fn init_tables(engine: &mut Engine, client: &StreamClient) {
+    if let Some(plan) = kontra_prepare::tables(engine.plan(), client) {
+        engine.swap_plan(&mut Arc::new(plan), &[]);
     }
 }

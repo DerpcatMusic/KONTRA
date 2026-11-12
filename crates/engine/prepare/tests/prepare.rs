@@ -144,3 +144,41 @@ fn a_cycling_group_plays_one_slot_per_note_in_turn() {
         assert!((out[128][0] - sum).abs() < 1e-3, "{key}: {:?}", out[128]);
     }
 }
+
+/// A zone `set_zone_par` moves into a wavetable group plays its sample as a
+/// table there, built off the audio thread; at load only that group's
+/// zones get one.
+#[test]
+fn a_zone_moved_into_a_wavetable_group_gets_its_table() {
+    let wavetable = ir::Wavetable {
+        position: 0.0,
+        phase: 0.0,
+        warps: [ir::Warp::OFF; 2],
+    };
+    let mut bank = zone(1);
+    (bank.id, bank.end) = (1, 4096);
+    let instrument = ir::Instrument {
+        samples: vec![sample("table", 500), sample("bank", 500)],
+        groups: vec![
+            ir::Group {
+                wavetable: Some(wavetable),
+                zones: vec![zone(0)],
+                ..ir::Group::DEFAULT
+            },
+            ir::Group {
+                zones: vec![bank],
+                ..ir::Group::DEFAULT
+            },
+        ],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (mut plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    let client = store.client();
+    assert!(kontra_prepare::tables(&plan, &client).is_none());
+    assert!(plan.zones[1].region.table.is_none());
+    assert!(plan.edit_zone(1, ir::ZonePar::Group, 0));
+    let plan = kontra_prepare::tables(&plan, &client).unwrap();
+    assert!(plan.zones[1].region.table.is_some());
+    assert_eq!(plan.zones[1].root, 69, "a table plays its cycle at A4");
+}

@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     }
-    let scripts: Vec<String> = ir.scripts.iter().map(|s| s.source.clone()).collect();
+    let scripts = ir.scripts.clone();
     let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
     let pages = loaded.pages.clone();
     println!(
@@ -262,6 +262,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let plan = Arc::new(loaded.plan);
     let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    if let Some(p) = kontra_prepare::tables(engine.plan(), &stream) {
+        engine.swap_plan(&mut Arc::new(p), &[]);
+    }
     println!("init: unanswered {:?}", engine.unhandled_actions());
     if std::env::var_os("KONTRA_MODS").is_some() {
         let mut seen = Vec::new();
@@ -301,7 +304,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut silent = vec![[0.0f32; 2]; 512];
     for _ in 0..RATE as usize / 4 / 512 {
         engine.process(&mut silent, &[]);
-        install_requests(&mut engine, &plan);
+        install_requests(&mut engine, &plan, &stream);
     }
     // KONTRA_CONTROL=name=value,...: each script control (a KSP one named
     // without its type prefix, a UVI widget or macro by its name) moves there
@@ -331,7 +334,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         engine.set_control(slot, id, value);
         for _ in 0..RATE as usize / 4 / 512 {
             engine.process(&mut silent, &[]);
-            install_requests(&mut engine, &plan);
+            install_requests(&mut engine, &plan, &stream);
         }
     }
     // KONTRA_WIDGET=name=value,...: a Lua script's own widget moves there,
@@ -358,7 +361,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         engine.set_widget(slot, n, value, None);
         for _ in 0..RATE as usize / 4 / 512 {
             engine.process(&mut silent, &[]);
-            install_requests(&mut engine, &plan);
+            install_requests(&mut engine, &plan, &stream);
         }
     }
     let before: std::collections::HashMap<_, _> = engine.action_calls().into_iter().collect();
@@ -537,7 +540,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let processing = std::time::Instant::now();
         engine.process(&mut block, input);
         busy += processing.elapsed();
-        install_requests(&mut engine, &plan);
+        install_requests(&mut engine, &plan, &stream);
         if n == 0 || n == 3 * RATE as usize / 512 {
             let during: Vec<_> = engine
                 .action_calls()
@@ -653,19 +656,30 @@ fn write_wav(path: &std::path::Path, frames: &[[f32; 2]]) -> std::io::Result<()>
 /// a UVI script's by its name among its controls (the last of that name, a
 /// widget before a macro), its value an `f64`; a KSP one's UI id is the first
 /// one plus its variable's index (persist.rs), its value an integer.
-fn control(plan: &Plan, scripts: &[String], name: &str, value: &str) -> Option<(u8, i32, i64)> {
+fn control(
+    plan: &Plan,
+    scripts: &[kontra_engine::ir::Script],
+    name: &str,
+    value: &str,
+) -> Option<(u8, i32, i64)> {
     plan.scripts
         .iter()
         .zip(scripts)
         .enumerate()
-        .find_map(|(n, (script, source))| {
+        .find_map(|(n, (script, ir))| {
             let slot = u8::try_from(n).ok()?;
             if let Some(foreign) = &script.foreign {
                 let id = foreign.controls().iter().rposition(|c| c == name)?;
                 let value = value.parse::<f64>().ok()?.to_bits() as i64;
                 return Some((slot, i32::try_from(id).ok()?, value));
             }
-            let compiled = kontra_ksp::compile(source, &[]).ok()?;
+            // As the host compiles it: a performance view's controls take
+            // their UI ids in the view's order.
+            let view = kontra_host::perf_view::find(&ir.data).map(|(_, v)| v);
+            let view: Vec<(&str, &[i32])> = (view.iter().flat_map(|v| &v.controls))
+                .map(|c| (c.name.as_str(), c.params.as_slice()))
+                .collect();
+            let compiled = kontra_ksp::compile_with_view(&ir.source, &[], &view).ok()?;
             let bare = |v: &str| v.trim_start_matches(['$', '%', '~', '?', '@', '!']) == name;
             let at = compiled.variables.iter().position(|v| bare(&v.name))?;
             let id = kontra_ksp::FIRST_UI_ID + i32::try_from(at).ok()?;
@@ -675,7 +689,7 @@ fn control(plan: &Plan, scripts: &[String], name: &str, value: &str) -> Option<(
 
 /// Builds and installs the effects and responses scripts asked for, between
 /// blocks, as the host's rack does off the audio thread.
-fn install_requests(engine: &mut Engine, plan: &Plan) {
+fn install_requests(engine: &mut Engine, plan: &Plan, client: &kontra_stream::StreamClient) {
     let mut asked = Vec::new();
     engine.drain_requests(|r| asked.push(r));
     for r in asked {
@@ -699,6 +713,7 @@ fn install_requests(engine: &mut Engine, plan: &Plan) {
         let done: Vec<_> = (edits.iter())
             .map(|e| (*e, plan.edit_zone(e.zone, e.par, e.value)))
             .collect();
+        let plan = kontra_prepare::tables(&plan, client).unwrap_or(plan);
         engine.swap_plan(&mut Arc::new(plan), &done);
     }
 }

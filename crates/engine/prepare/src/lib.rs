@@ -99,6 +99,7 @@ pub fn prepare(
             routes: g.routes.clone(),
             release_trigger: g.trigger == ir::Trigger::Release,
             bus: g.bus,
+            wavetable: g.wavetable.map(read),
         })
         .collect();
     if !instrument.buses.is_empty() {
@@ -374,6 +375,37 @@ fn read(w: ir::Wavetable) -> Read {
     }
 }
 
+/// A table plays its cycle at 440 Hz on A4, whatever the zone's root and
+/// the sample's rate: (root, rate).
+const TABLE_PITCH: (u8, u32) = (69, (440.0 * PERIOD) as u32);
+
+/// `plan` with a table for every zone in a wavetable group that has none
+/// (`set_zone_par` moved it there), built off the audio thread; `None` when
+/// none lacks one. A sample not in memory stays without (plays raw).
+// ponytail: a zone moved out of a wavetable group keeps its table and plays
+// as one; keep its own root and rate if a library plays it there.
+#[must_use]
+pub fn tables(plan: &Plan, client: &StreamClient) -> Option<Plan> {
+    let read = |z: &Zone| {
+        let group = plan.groups.get(z.group as usize)?;
+        group.wavetable.filter(|_| z.region.table.is_none())
+    };
+    plan.zones.iter().any(|z| read(z).is_some()).then(|| {
+        let mut out = plan.clone();
+        for (z, read) in out.zones.iter_mut().zip(plan.zones.iter().map(read)) {
+            let r = &z.region;
+            let Some(table) =
+                read.and_then(|w| levels::table(&r.sample, client, (r.start, r.end), w))
+            else {
+                continue;
+            };
+            z.region.table = Some(table);
+            (z.root, z.sample_rate) = TABLE_PITCH;
+        }
+        out
+    })
+}
+
 fn zone(
     group: &ir::Group,
     group_id: u32,
@@ -404,10 +436,8 @@ fn zone(
             levels::table(sample, client, (z.start, z.end.min(source.frames)), read(w))
         }),
     };
-    // A table plays its cycle at 440 Hz on A4, whatever the zone's root and
-    // the sample's rate.
     let (root, rate) = if region.table.is_some() {
-        (69, (440.0 * PERIOD) as u32)
+        TABLE_PITCH
     } else {
         (z.root, source.rate)
     };

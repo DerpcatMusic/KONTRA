@@ -92,7 +92,8 @@ impl Rack {
             (script.restore, script.restore_texts) = (saved.ints, saved.texts);
         }
         let plan = Arc::new(plan);
-        let engine = Engine::new(plan, self.store.client(), self.rate);
+        let mut engine = Engine::new(plan, self.store.client(), self.rate);
+        super::requests::init_tables(&mut engine, &self.store.client());
         let pages: Vec<Option<kontra_lua::Ui>> = old.faces.iter().map(|_| None).collect();
         let view = crate::view::View::of(&old.faces, &pages, &engine, old.path.as_deref());
         let info = Part {
