@@ -256,12 +256,7 @@ pub fn slider(
     let from: f64 = if lo == -hi { 0.5 } else { 0. };
     let hover = ui.state(id.clone()).hover as f32;
     let el = canvas(move |s| {
-        let rect = |x0: f64, y0: f64, x1: f64, y1: f64| {
-            Path::polyline(
-                [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| Point::new(x, y)),
-                true,
-            )
-        };
+        let rect = rect_path;
         // Along the travel: 0 at the start (left, or bottom), 1 at the end.
         let (len, mid) = if vertical {
             (s.height - 4., s.width / 2.)
@@ -628,4 +623,12 @@ pub fn edges(top: f64, right: f64, bottom: f64, left: f64) -> mui::layout::Inset
         top,
         bottom,
     }
+}
+
+/// The rectangle from `(x0, y0)` to `(x1, y1)` as a closed path.
+pub(crate) fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
+    Path::polyline(
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| Point::new(x, y)),
+        true,
+    )
 }

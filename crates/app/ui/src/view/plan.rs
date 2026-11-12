@@ -230,38 +230,43 @@ pub(super) fn text(
     let size = style.and_then(|s| s.size).map_or(super::TEXT, f64::from) * scale;
     let multiline = words.contains('\n');
     let line = size * if multiline { 13. / 11. } else { 1.25 };
-    let top = widget.text_y.map_or_else(
-        || {
-            let label = matches!(widget.kind, model::Kind::Label)
-                && !matches!(source, model::Source::FalconLua);
-            if multiline || label {
-                0.
-            } else {
-                ((height - line) / 2.).max(0.)
-            }
-        },
-        |y| f64::from(y) * scale,
-    );
+    let lua = matches!(source, model::Source::FalconLua);
+    let (align, top) = placed(words, style, widget, (height, line, scale), !lua);
+    let label = matches!(widget.kind, model::Kind::Label);
     Text {
         size,
         line,
-        top,
-        inset: if matches!(widget.kind, model::Kind::Label) {
-            7. * scale
-        } else {
-            2. * scale
-        },
-        align: style.map_or(
-            if matches!(widget.kind, model::Kind::Label) {
-                model::Align::Left
-            } else {
-                model::Align::Center
-            },
-            |s| s.align,
-        ),
+        top: top.max(0.),
+        inset: if label { 7. } else { 2. } * scale,
+        align,
         color: style.map(|s| s.color),
         multiline,
     }
+}
+
+/// How a widget's words align across it, and where their first line's top
+/// sits: a label's at its top when `label_from_top` (Kontakt), explicit
+/// lines always at the top, anything else in its middle.
+fn placed(
+    words: &str,
+    style: Option<&model::TextStyle>,
+    widget: &model::Widget,
+    (height, line, scale): (f64, f64, f64),
+    label_from_top: bool,
+) -> (model::Align, f64) {
+    let label = matches!(widget.kind, model::Kind::Label);
+    let fallback = if label {
+        model::Align::Left
+    } else {
+        model::Align::Center
+    };
+    let from_top = words.contains('\n') || (label && label_from_top);
+    let top = widget
+        .text_y
+        .map_or(if from_top { 0. } else { (height - line) / 2. }, |y| {
+            f64::from(y) * scale
+        });
+    (style.map_or(fallback, |s| s.align), top)
 }
 
 /// One bitmap glyph and its page-local destination, in view points.
@@ -282,24 +287,8 @@ pub(super) fn glyphs(
     (scale, line): (f64, f64),
     width_of: impl Fn(usize) -> Option<u32>,
 ) -> Vec<Glyph> {
-    let align = style.map_or(
-        if matches!(widget.kind, model::Kind::Label) {
-            model::Align::Left
-        } else {
-            model::Align::Center
-        },
-        |s| s.align,
-    );
-    let multiline = words.contains('\n');
-    // A picture font's label starts at its top, as a stock one does.
-    let top = widget.text_y.map_or(
-        if multiline || matches!(widget.kind, model::Kind::Label) {
-            0.
-        } else {
-            (height - line) / 2.
-        },
-        |y| f64::from(y) * scale,
-    );
+    // Picture fonts are Kontakt's: a label starts at its top.
+    let (align, top) = placed(words, style, widget, (height, line, scale), true);
     let advance = |c| width_of(crate::pictures::glyph(c)).map_or(0., |w| f64::from(w) * scale);
     let mut result = Vec::new();
     for (n, row) in words.split('\n').enumerate() {
