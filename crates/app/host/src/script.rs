@@ -322,7 +322,7 @@ fn controls(script: &Script) -> Controls {
 /// The parameters the UI-look builtins set, after the script's own symbols:
 /// a script that names one shares its id; `move_control`'s grid and the
 /// table's shown steps have no constant, so always get their own.
-pub(crate) const LOOK: [&str; 16] = [
+pub(crate) const LOOK: [&str; 19] = [
     "$CONTROL_PAR_TEXT",
     "$CONTROL_PAR_LABEL",
     "$CONTROL_PAR_HELP",
@@ -337,6 +337,9 @@ pub(crate) const LOOK: [&str; 16] = [
     "level_meter",
     "level_meter_group",
     "level_meter_generic",
+    "wf_flags",
+    "wf_cursor",
+    "$CONTROL_PAR_WT_ZONE",
     "$CONTROL_PAR_PICTURE",
     "$CONTROL_PAR_PICTURE_STATE",
 ];
@@ -373,6 +376,11 @@ fn look(script: &Script) -> LookPars {
         picture: par("$CONTROL_PAR_PICTURE"),
         picture_state: par("$CONTROL_PAR_PICTURE_STATE"),
         textline: symbol(script, "$CONTROL_PAR_TEXTLINE"),
+        wf_zone: par("$CONTROL_PAR_WT_ZONE"),
+        wf_flags: par("wf_flags"),
+        wf_cursor: par("wf_cursor"),
+        wf_prop_cursor: par("$UI_WF_PROP_PLAY_CURSOR"),
+        wf_prop_flags: par("$UI_WF_PROP_FLAGS"),
         wallpaper: id("$INST_WALLPAPER_ID"),
         icon: id("$INST_ICON_ID"),
     }
