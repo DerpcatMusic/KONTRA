@@ -32,11 +32,19 @@ pub(crate) fn may_be_data(path: &str) -> bool {
 }
 
 /// The bank's data files as script modules (`__file/<path>`), within
-/// [`TOTAL_LIMIT`]; what is left out is noted.
-pub(super) fn modules(files: &[(String, Vec<u8>)], notes: &mut Notes) -> Vec<(String, Vec<u8>)> {
+/// [`TOTAL_LIMIT`]; what is left out (here, or with no bytes by the bank's
+/// budget) is noted.
+pub(super) fn modules(
+    files: &[(String, Option<Vec<u8>>)],
+    notes: &mut Notes,
+) -> Vec<(String, Vec<u8>)> {
     let mut total = 0;
     let mut out = Vec::new();
     for (path, bytes) in files {
+        let Some(bytes) = bytes else {
+            notes.add(ir::Impact::Audible, "script preset file not carried", path);
+            continue;
+        };
         let Some(text) = literal(bytes) else { continue };
         total += text.len();
         if total > TOTAL_LIMIT {

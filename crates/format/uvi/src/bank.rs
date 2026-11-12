@@ -156,24 +156,26 @@ impl crate::program::Library for Bank {
             .collect()
     }
 
-    /// Small data members, each checked by its size before it is read,
-    /// until `TOTAL_LIMIT` bytes are read.
-    fn data(&self) -> Vec<(String, Vec<u8>)> {
+    /// Small data members, each checked by its size against what is left
+    /// of `TOTAL_LIMIT` before it is read; one the budget leaves out is
+    /// listed with no bytes. A member over `FILE_LIMIT` is no script's data.
+    fn data(&self) -> Vec<(String, Option<Vec<u8>>)> {
         use crate::program::files::{FILE_LIMIT, TOTAL_LIMIT, may_be_data};
         let mut out = Vec::new();
-        let mut total = 0;
+        let mut left = TOTAL_LIMIT;
         for m in &self.directory.files {
-            let small = usize::try_from(m.size).is_ok_and(|s| s <= FILE_LIMIT);
-            let Some(path) = m.path.as_ref().filter(|p| small && may_be_data(p)) else {
+            let size = usize::try_from(m.size).unwrap_or(usize::MAX);
+            let Some(path) = m
+                .path
+                .as_ref()
+                .filter(|p| size <= FILE_LIMIT && may_be_data(p))
+            else {
                 continue;
             };
-            if total >= TOTAL_LIMIT {
-                break;
-            }
-            if let Some(bytes) = self.read(m).ok().filter(|b| b.len() <= FILE_LIMIT) {
-                total += bytes.len();
-                out.push((path.clone(), bytes));
-            }
+            let bytes = (size <= left).then(|| self.read(m).ok()).flatten();
+            let bytes = bytes.filter(|b| b.len() <= FILE_LIMIT.min(left));
+            left -= bytes.as_ref().map_or(0, Vec::len);
+            out.push((path.clone(), bytes));
         }
         out
     }

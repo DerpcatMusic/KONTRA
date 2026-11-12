@@ -39,8 +39,9 @@ pub(crate) trait Library {
     /// Every Lua member of the bank, by its path: what `require` may load.
     fn modules(&self) -> Vec<(String, Vec<u8>)>;
     /// Members a script may read as data after it loads, by path
-    /// ([`files::may_be_data`], at most [`files::FILE_LIMIT`] each).
-    fn data(&self) -> Vec<(String, Vec<u8>)> {
+    /// ([`files::may_be_data`], at most [`files::FILE_LIMIT`] each); no
+    /// bytes for one the bank's budget left out.
+    fn data(&self) -> Vec<(String, Option<Vec<u8>>)> {
         Vec::new()
     }
 }

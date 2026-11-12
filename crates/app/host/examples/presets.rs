@@ -1,8 +1,9 @@
-//! Preset survey: for each `<preset> <other preset>` pair, what the header
-//! picker, the instrument's own preset controls and a project reload do.
+//! Preset survey: for each `<preset> <other preset>` pair, what a header
+//! pick (`Rack::load`), the instrument's own preset controls and a project
+//! reload do.
 //! `cargo run --release -p kontra-host --example presets -- <a> <b> [<a> <b>...]`
 //!
-//! Prints one line per pair: whether the header names what plays, whether
+//! Prints one line per pair: whether the part is named as its file, whether
 //! picking `b` recalled in place or loaded, how many saved values changed,
 //! each own preset control moved and how many values it changed, and
 //! whether a save and reload brings back the same values and name, and
@@ -78,7 +79,7 @@ fn survey(a: &Path, b: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let (name, _, plan) = part(&rack).ok_or("no part")?;
     // The part's name against the file's (the header itself finds the
     // preset by path: plugin test `a_preset_picked_in_the_browser…`).
-    let header = if name == stem(a) {
+    let named = if name == stem(a) {
         "named as its file"
     } else {
         "named otherwise"
@@ -92,7 +93,7 @@ fn survey(a: &Path, b: &Path) -> Result<String, Box<dyn std::error::Error>> {
         run(&mut probe, &mut probe_audio, 1.0);
         own_controls(&mut probe, &mut probe_audio, &before)
     };
-    // The header picks b.
+    // A header pick of b: what `Action::Switch` runs.
     let t = Instant::now();
     rack.load(0, b)?;
     let took = t.elapsed();
@@ -103,7 +104,7 @@ fn survey(a: &Path, b: &Path) -> Result<String, Box<dyn std::error::Error>> {
         _ => "loaded",
     };
     let after = values(&rack);
-    let header_b = if name_b == stem(b) {
+    let named_b = if name_b == stem(b) {
         "named as its file"
     } else {
         "named otherwise"
@@ -132,7 +133,7 @@ fn survey(a: &Path, b: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let fresh_vs_back = changed(&clean, &back);
     let name_back = part(&again).map(|p| p.0).unwrap_or_default();
     Ok(format!(
-        "{} | header {header} ({name:?}) | pick {} → {in_place} in {} ms, header {header_b} ({name_b:?}), {} values changed | own: {own} | reload: {} values differ, name {:?}{} | fresh load of b vs picked {fresh_vs}, vs reloaded {fresh_vs_back}",
+        "{} | part {named} ({name:?}) | pick {} → {in_place} in {} ms, part {named_b} ({name_b:?}), {} values changed | own: {own} | reload: {} values differ, name {:?}{} | fresh load of b vs picked {fresh_vs}, vs reloaded {fresh_vs_back}",
         stem(a),
         stem(b),
         took.as_millis(),
@@ -177,8 +178,12 @@ fn own_controls(rack: &mut Rack, audio: &mut RackAudio, before: &[String]) -> St
                     // The next item after the shown one, by its value.
                     Kind::Menu { items } if items.len() > 1 => {
                         let shown = items.iter().position(|i| f64::from(i.value) == now);
-                        let at = item.unwrap_or_else(|| shown.map_or(0, |p| p + 1));
-                        f64::from(items.get(at.min(items.len() - 1) % items.len())?.value)
+                        let last = items.len() - 1;
+                        let at = match item {
+                            Some(n) => n.min(last),
+                            None => shown.map_or(0, |p| (p + 1) % items.len()),
+                        };
+                        f64::from(items.get(at)?.value)
                     }
                     Kind::Button { .. } | Kind::Switch => f64::from(u8::from(now < 0.5)),
                     _ => return None,
