@@ -78,9 +78,8 @@ pub struct Library {
     pub format: Format,
     /// Its instruments by path inside the library: `Folder/Name`.
     pub presets: Vec<String>,
-    /// Which of `presets` (sorted indices) are presets of an instrument (a
-    /// snapshot, the player's own) rather than one: a double-click recalls
-    /// those into the focused part, and adds a part for the rest.
+    /// Which of `presets` (sorted) are presets of an instrument, recalled
+    /// into the focused part on a double-click: snapshots, the player's own.
     pub recalls: Vec<usize>,
     pub starred: bool,
     /// Pictures that may be its cover, best first, as the host's cover
@@ -328,17 +327,11 @@ pub enum Sheet {
     DeletePreset(usize),
 }
 
-/// The focused part: the first one open, else the first.
-fn focused(parts: &[Part]) -> Option<usize> {
-    (parts.iter().position(|p| p.open)).or_else(|| (!parts.is_empty()).then_some(0))
-}
-
 /// What the user asked for this frame, for the host to carry out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// A browser preset to play: into part `into` when named (a preset of
-    /// an instrument, double-clicked with a part focused, as Kontakt's
-    /// browser replaces the selected slot), else into a new part.
+    /// A browser preset to play in part `into` (Kontakt's browser replaces
+    /// the selected slot's snapshot), else in a new part.
     Load {
         library: usize,
         preset: usize,
@@ -704,7 +697,7 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
         .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");
-    let focused = focused(&app.parts).and_then(|n| app.parts.get(n));
+    let focused = browser::focused(&app.parts).and_then(|n| app.parts.get(n));
     // Its script's last `message`, where Kontakt's status bar shows it.
     let message = (focused.and_then(|p| p.face.as_ref()))
         .map(|f| f.tree.message.as_str())

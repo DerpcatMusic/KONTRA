@@ -291,7 +291,7 @@ fn card(id: String, name: &str, count: usize, image: Option<Arc<Image>>, chosen:
 }
 
 fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    let into = super::focused(&app.parts);
+    let into = focused(&app.parts);
     let view = &mut app.view;
     let rows: Vec<El> = app
         .recent
@@ -332,7 +332,7 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 /// The chosen library's instruments, foldered by the path inside it.
 fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let loading = app.loading.is_some();
-    let into = super::focused(&app.parts);
+    let into = focused(&app.parts);
     let v = &mut app.view;
     let search = field(
         ui,
@@ -456,6 +456,11 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .min_h(0)
             .grow(1),
     ]
+}
+
+/// The focused part: the first one open, else the first.
+pub(super) fn focused(parts: &[super::Part]) -> Option<usize> {
+    (parts.iter().position(|p| p.open)).or_else(|| (!parts.is_empty()).then_some(0))
 }
 
 /// A preset on its way from the browser to the rack.
