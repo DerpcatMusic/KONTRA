@@ -15,5 +15,5 @@ kontra-ui-pictures = { path = "../ui-pictures" }
 mui = { workspace = true }
 
 [dev-dependencies]
-mui = { workspace = true, features = ["cpu"] }
+mui-headless = { workspace = true }
 png = "0.18"

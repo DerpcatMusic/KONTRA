@@ -59,6 +59,7 @@ edition = "2024"
 # Versions match Cargo.lock today. Later v3 tasks depend on these with `workspace = true`.
 [workspace.dependencies]
 mui = { git = "https://github.com/Matari-Audio/MUI" }
+mui-headless = { git = "https://github.com/Matari-Audio/MUI" }
 mui-native-dialog = { git = "https://github.com/Matari-Audio/MUI" }
 moose = { git = "https://github.com/Matari-Audio/moose", default-features = false }
 moose-clap = { git = "https://github.com/Matari-Audio/moose" }
