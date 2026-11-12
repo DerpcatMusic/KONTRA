@@ -25,6 +25,7 @@ mod params;
 mod pgs;
 mod racks;
 mod recall;
+mod reshaped;
 mod runtime;
 mod script_files;
 
@@ -220,6 +221,8 @@ pub struct Engine {
     /// the order asked.
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
+    /// What each group's routes reshape, by group.
+    reshaped: Box<[reshaped::Reshaped]>,
     /// The routes each script `#key` names.
     route_names: ir::RouteNames,
     /// Shared EQ chains, and each zone's chain.
@@ -341,6 +344,7 @@ impl Engine {
                     .iter()
                     .map(|g| g.mods.iter().map(|m| m.name.as_str())),
             ),
+            reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),

@@ -6,7 +6,10 @@ use crate::{Cells, Script};
 /// Cell writes that restore saved values.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Restore {
+    /// By cell, so a range of them is found by binary search; a cell saved
+    /// twice keeps its writes in saved order.
     pub ints: Vec<(u32, i64)>,
+    /// By cell, as `ints`.
     pub texts: Vec<(u32, String)>,
     /// Entries naming no variable of this script, or unreadable.
     pub skipped: Vec<String>,
@@ -60,6 +63,9 @@ pub fn restore(saved: &[String], cells: impl Fn(&str) -> Option<Cells>) -> Resto
             out.skipped.push(name.to_owned());
         }
     }
+    // Stable: a cell saved twice still ends on its last value.
+    out.ints.sort_by_key(|&(cell, _)| cell);
+    out.texts.sort_by_key(|&(cell, _)| cell);
     out
 }
 
@@ -102,7 +108,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        let saved = ["$a 7", "%B 1 2", "~c 0.5", "@d hello world", "$gone 1"].map(String::from);
+        let saved = ["~c 0.5", "%B 1 2", "$a 7", "@d hello world", "$gone 1"].map(String::from);
         let r = script.restore(&saved);
         let cell = |name: &str| match script
             .variables
@@ -117,6 +123,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let b = cell("%b");
+        assert!(r.ints.is_sorted_by_key(|p| p.0), "{:?}", r.ints);
         assert!(r.ints.contains(&(cell("$a"), 7)));
         assert_eq!(
             r.ints
