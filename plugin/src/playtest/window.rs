@@ -5,9 +5,33 @@
 //! and the count of blocks is printed
 //! as `PERFWIN <program>|<segment>|<blocks>`. Without the variables nothing
 //! happens.
+//!
+//! For `tools/perf/allocs.py`, with `KONTRA_ALLOC_MARKS` set, every
+//! `process` call is bracketed by a lookup of `KX_ALLOC_ON` and then
+//! `KX_ALLOC_OFF`: its preloaded counter takes those two `getenv` names as
+//! the marks and counts the allocations between them.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::sync::OnceLock;
+
+/// Either side of one `process` call.
+pub(super) enum Mark {
+    Enter,
+    Leave,
+}
+
+/// Tells an allocation counter that `process` starts or ends, if one asked.
+pub(super) fn process_mark(mark: Mark) {
+    static ASKED: OnceLock<bool> = OnceLock::new();
+    if *ASKED.get_or_init(|| std::env::var_os("KONTRA_ALLOC_MARKS").is_some()) {
+        let name = match mark {
+            Mark::Enter => "KX_ALLOC_ON",
+            Mark::Leave => "KX_ALLOC_OFF",
+        };
+        let _ = std::env::var_os(name);
+    }
+}
 
 /// Starts counting if `segment` is the one asked for; whether it is.
 pub(super) fn open(segment: &str) -> bool {

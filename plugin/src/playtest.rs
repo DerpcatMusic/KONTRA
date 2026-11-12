@@ -601,7 +601,9 @@ fn block_in(
         let mut out_events = EventList::with_capacity(16);
         let mut cx =
             ProcessContext::new(&transport, RATE, BLOCK, &mut out_events).with_process_mode(mode);
+        window::process_mark(window::Mark::Enter);
         <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+        window::process_mark(window::Mark::Leave);
     }
     let channel_peaks = output_peaks(&channels);
     let audio = channels[0]
