@@ -225,101 +225,110 @@ impl Choir {
         })
     }
 
-    /// Line `v`'s channel `c`, `d` frames back from the newest frame (at
+    /// Line `v`, both channels, `d` frames back from the newest frame (at
     /// least [`FLOOR`]), 4-point cubic.
-    fn tap(&self, v: usize, c: usize, d: f32) -> f32 {
+    fn tap(&self, v: usize, d: f32) -> [f32; 2] {
         let whole = d as usize;
         let t = d - whole as f32;
         let mask = self.len - 1;
+        let line = self.ring.get(v * self.len..).unwrap_or_default();
         // The newest frame sits at `at − 1`: one back is it (no delay).
         let back = |b: usize| {
-            let i = v * self.len + ((self.at + self.len - b) & mask);
-            self.ring
-                .get(i)
-                .and_then(|f| f.get(c))
+            line.get((self.at + self.len - b) & mask)
                 .copied()
-                .unwrap_or(0.0)
+                .unwrap_or([0.0; 2])
         };
-        let [ym1, y0, y1, y2] = [
+        let ([m0, m1], [a0, a1], [b0, b1], [c0, c1]) = (
             back(whole - 1),
             back(whole),
             back(whole + 1),
             back(whole + 2),
-        ];
+        );
         // Catmull-Rom from y0 (t = 0) to y1 (t = 1).
-        let a = -0.5 * ym1 + 1.5 * y0 - 1.5 * y1 + 0.5 * y2;
-        let b = ym1 - 2.5 * y0 + 2.0 * y1 - 0.5 * y2;
-        let k = -0.5 * ym1 + 0.5 * y1;
-        ((a * t + b) * t + k) * t + y0
+        let cubic = |ym1: f32, y0: f32, y1: f32, y2: f32| {
+            let a = -0.5 * ym1 + 1.5 * y0 - 1.5 * y1 + 0.5 * y2;
+            let b = ym1 - 2.5 * y0 + 2.0 * y1 - 0.5 * y2;
+            let k = -0.5 * ym1 + 0.5 * y1;
+            ((a * t + b) * t + k) * t + y0
+        };
+        [cubic(m0, a0, b0, c0), cubic(m1, a1, b1, c1)]
     }
 
     /// Replaces `io` with the wet signal.
     ///
-    /// ponytail: ~0.4 µs a frame at 48 kHz (180–220 µs per 512, against
-    /// 50–145 µs for the six free-running lines it replaces): seven lines,
-    /// a 7×7 mix per channel, frame by frame in f32. Every voice field is a
-    /// row, so the voice loops can become 8-lane vectors when the CPU pass
-    /// takes it.
+    /// ponytail: frame by frame in f32, the voice loops straight over the
+    /// `[f32; 7]` rows (no lane-wide vectors yet).
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let s = self.s;
         let aim = self.aim();
         let mut live = self.live.unwrap_or(aim);
         let glide = self.glide;
-        let toward = |now: &Row, aim: &Row| row(|v| at(now, v) + (at(aim, v) - at(now, v)) * glide);
+        let toward = |now: &mut Row, aim: &Row| {
+            for (now, aim) in now.iter_mut().zip(aim) {
+                *now += (aim - *now) * glide;
+            }
+        };
         let longest = (self.len - 4) as f32;
         let mut written = 0.0f32;
         let dot = |a: &Row, b: &Row| a.iter().zip(b).map(|(a, b)| a * b).sum::<f32>();
         for frame in io.iter_mut() {
             // The lines' inputs, then the taps onto the bus.
-            let into = [0, 1].map(|ch| {
-                let read = self.read.get(ch).copied().unwrap_or_default();
-                let x = frame.get(ch).copied().unwrap_or(0.0);
-                self.mix.map(|m| dot(&m, &read) + s.input * x)
-            });
-            let [l, r] = [0, 1].map(|ch| {
-                let read = self.read.get(ch).copied().unwrap_or_default();
-                let into = into.get(ch).copied().unwrap_or_default();
-                row(|v| s.sign * at(&read, v) + at(&into, v))
-            });
+            let mut into = [[0.0f32; V]; 2];
+            let mut taps = [[0.0f32; V]; 2];
+            let per_channel = into.iter_mut().zip(&mut taps).zip(&self.read).zip(*frame);
+            for (((into, taps), read), x) in per_channel {
+                for (into, m) in into.iter_mut().zip(&self.mix) {
+                    *into = dot(m, read) + s.input * x;
+                }
+                for ((tap, &read), &into) in taps.iter_mut().zip(read).zip(&*into) {
+                    *tap = s.sign * read + into;
+                }
+            }
+            let [l, r] = &taps;
             let [cos, sin] = &live.turn;
-            let mut bus = [dot(cos, &l) - dot(sin, &r), dot(sin, &l) + dot(cos, &r)];
+            let mut bus = [dot(cos, l) - dot(sin, r), dot(sin, l) + dot(cos, r)];
             self.bus.process(std::slice::from_mut(&mut bus));
             *frame = bus.map(|b| b * live.gain);
             // Each line's filter, into the ring.
             let [b0, b1, b2, a1, a2] = &self.c;
             for ((x, [z1, z2]), ch) in into.iter().zip(&mut self.z).zip(0..) {
-                let y = row(|v| at(b0, v) * at(x, v) + at(z1, v));
-                *z1 = row(|v| flush(at(b1, v) * at(x, v) - at(a1, v) * at(&y, v) + at(z2, v)));
-                *z2 = row(|v| flush(at(b2, v) * at(x, v) - at(a2, v) * at(&y, v)));
-                for (v, y) in y.iter().enumerate() {
+                let coeffs = b0.iter().zip(b1).zip(b2).zip(a1).zip(a2);
+                let states = x.iter().zip(z1.iter_mut()).zip(z2.iter_mut());
+                let lines = self.ring.chunks_exact_mut(self.len);
+                for ((((((&b0, &b1), &b2), &a1), &a2), ((&x, z1), z2)), line) in
+                    coeffs.zip(states).zip(lines)
+                {
+                    let y = b0 * x + *z1;
+                    *z1 = flush(b1 * x - a1 * y + *z2);
+                    *z2 = flush(b2 * x - a2 * y);
                     written = written.max(y.abs());
-                    let slot = self.ring.get_mut(v * self.len + self.at);
-                    if let Some(slot) = slot.and_then(|f| f.get_mut(ch)) {
-                        *slot = *y;
+                    if let Some(slot) = line.get_mut(self.at).and_then(|f| f.get_mut(ch)) {
+                        *slot = y;
                     }
                 }
             }
             self.at = (self.at + 1) & (self.len - 1);
             // Each sweep, then the reads.
             let shape = self.shape();
-            self.sweep =
-                row(|v| at(&shape, v) + (at(&self.sweep, v) - at(&shape, v)) * at(&self.alpha, v));
-            live = Live {
-                rest: toward(&live.rest, &aim.rest),
-                swing: toward(&live.swing, &aim.swing),
-                turn: {
-                    let ([cos, sin], [to_cos, to_sin]) = (&live.turn, &aim.turn);
-                    [toward(cos, to_cos), toward(sin, to_sin)]
-                },
-                gain: live.gain + (aim.gain - live.gain) * glide,
-            };
-            // `max` maps NaN to the floor.
-            let d = row(|v| {
-                (at(&live.rest, v) + at(&live.swing, v) * at(&self.sweep, v))
-                    .max(FLOOR)
-                    .min(longest)
-            });
-            self.read = [0, 1].map(|ch| row(|v| self.tap(v, ch, at(&d, v))));
+            for ((sweep, shape), alpha) in self.sweep.iter_mut().zip(shape).zip(&self.alpha) {
+                *sweep = shape + (*sweep - shape) * alpha;
+            }
+            toward(&mut live.rest, &aim.rest);
+            toward(&mut live.swing, &aim.swing);
+            for (now, aim) in live.turn.iter_mut().zip(&aim.turn) {
+                toward(now, aim);
+            }
+            live.gain += (aim.gain - live.gain) * glide;
+            let mut read = [[0.0f32; V]; 2];
+            let [read_l, read_r] = &mut read;
+            let voices = (live.rest.iter().zip(&live.swing).zip(&self.sweep))
+                .zip(read_l.iter_mut().zip(read_r.iter_mut()));
+            for (v, (((&rest, &swing), &sweep), (l, r))) in voices.enumerate() {
+                // `max` maps NaN to the floor.
+                let d = (rest + swing * sweep).max(FLOOR).min(longest);
+                [*l, *r] = self.tap(v, d);
+            }
+            self.read = read;
             for (cycle, step) in self.cycle.iter_mut().zip(&self.step) {
                 for (c, s) in cycle.iter_mut().zip(step) {
                     let next = *c + s;
