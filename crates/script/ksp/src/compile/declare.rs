@@ -542,7 +542,11 @@ fn fold_call(name: &str, args: &[Value]) -> Option<Value> {
         (Builtin::Min, [Real(a), Real(b)]) => Real(a.min(*b)),
         (Builtin::Max, [Real(a), Real(b)]) => Real(a.max(*b)),
         (Builtin::IntToReal | Builtin::Real, [Int(a)]) => Real(f64::from(*a)),
-        (Builtin::RealToInt | Builtin::Int, [Real(a)]) => Int(*a as i32),
+        (Builtin::RealToInt | Builtin::Int, [Real(a)]) => Int(if a.is_nan() {
+            crate::builtins::NAN_INT
+        } else {
+            *a as i32
+        }),
         (Builtin::Sgn, [Int(a)]) => Int(a.signum()),
         (Builtin::Signbit, [Int(a)]) => Int(i32::from(*a < 0)),
         (Builtin::Sqrt, [Real(a)]) => Real(a.sqrt()),

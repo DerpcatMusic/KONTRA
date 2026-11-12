@@ -13,6 +13,7 @@ use crate::perf_view::{View, ViewControl};
 mod keybed;
 mod looks;
 pub mod lua;
+mod nui;
 mod picture;
 mod waves;
 mod widget;
@@ -37,6 +38,8 @@ pub struct Face {
     symbols: Vec<Box<str>>,
     /// The performance view the script loads, if any.
     view: Option<View>,
+    /// The Kontakt 8 `native_ui` page it loads, if any.
+    native: Option<nui::Native>,
 }
 
 impl Face {
@@ -56,6 +59,7 @@ impl Face {
             controls,
             symbols: script.symbols.clone(),
             view: crate::perf_view::find(data).map(|(_, view)| view),
+            native: nui::Native::of(data),
         }
     }
 
@@ -208,9 +212,13 @@ impl Builder<'_> {
         if name.is_empty() {
             return None;
         }
-        let path = picture_path(name);
+        Some(self.file_asset(picture_path(name)))
+    }
+
+    /// The image asset at library path `path`.
+    fn file_asset(&mut self, path: String) -> ui::AssetRef {
         if let Some(&a) = self.assets.get(&path) {
-            return Some(a);
+            return a;
         }
         let a = ui::AssetRef(self.ui.assets.len());
         let meta = (self.picture)(&path).unwrap_or_default();
@@ -219,7 +227,7 @@ impl Builder<'_> {
             kind: ui::AssetKind::Image(meta),
         });
         self.assets.insert(path, a);
-        Some(a)
+        a
     }
 
     /// The style of font id `font`: a factory font, or the bitmap font
@@ -663,6 +671,9 @@ fn build(
             }
         }
         bld.ui.widgets.push(w);
+    }
+    if let Some(native) = &face.native {
+        nui::face(bld, native, decls);
     }
     for skipped in face.view.iter().flat_map(|v| &v.skipped) {
         bld.unsupported(None, "performance view control", skipped.clone());
