@@ -297,16 +297,27 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         (Some(name), false) => name,
         (None, _) => "Select preset…",
     };
+    // The player's own presets: save, rename, delete, after the list.
+    let playing = current.and_then(|c| presets.get(c)).map(String::as_str);
+    let edits = super::preset::edits(playing);
+    let listed: Vec<&str> = names.iter().chain(edits).copied().collect();
     let preset = kit::dropdown(
         ui,
         menu,
         &id("preset"),
         (None, shown, "Preset"),
-        &names,
+        &listed,
         current,
     );
-    if let Some(preset) = preset.changed {
-        out.push(Action::Switch { part: n, preset });
+    let mut edit = None;
+    match preset.changed.map(|i| (i, i.checked_sub(names.len()))) {
+        Some((preset, None)) => out.push(Action::Switch { part: n, preset }),
+        Some((_, Some(e))) => {
+            edit = edits
+                .get(e)
+                .map(|e| (*e, named.unwrap_or(&p.name).to_owned()))
+        }
+        None => {}
     }
     let prev = icon_button(ui, id("prev"), Icon::Left, "Previous preset", false);
     let next = icon_button(ui, id("next"), Icon::Right, "Next preset", false);
@@ -420,6 +431,9 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
             *menu = None;
         }
         items.push(m.el);
+    }
+    if let Some((pick, name)) = edit {
+        super::preset::picked(app, n, &name, pick, out);
     }
     row(items)
         .gap(TIGHT)

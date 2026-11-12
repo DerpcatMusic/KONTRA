@@ -61,6 +61,45 @@ impl Rack {
         true
     }
 
+    /// The user preset at `path` as a [`Preset`] for `part`: its values by
+    /// the slot each of the part's scripts sits in. None for other files.
+    pub(crate) fn user_preset(&self, part: usize, path: &Path) -> Option<Preset> {
+        let user = crate::presets::read(path)?;
+        let slots = &self.parts.get(part)?.as_ref()?.script.slots;
+        let mut saved = vec![Vec::new(); slots.iter().max().map_or(0, |m| m + 1)];
+        for (slot, values) in slots.iter().zip(user.scripts) {
+            if let Some(s) = saved.get_mut(*slot) {
+                *s = values;
+            }
+        }
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+        Some(Preset {
+            name: name.unwrap_or_default(),
+            base: user.base,
+            saved,
+        })
+    }
+
+    /// Saves what `part` plays as user preset `name` of `library` under
+    /// `folder`, which it then plays; the file's path.
+    ///
+    /// # Errors
+    /// When the part plays nothing, or the file cannot be written.
+    pub fn save_preset(
+        &mut self,
+        part: usize,
+        folder: &Path,
+        library: &str,
+        name: &str,
+    ) -> std::io::Result<std::path::PathBuf> {
+        let scripts = self.saved_scripts(part);
+        let base = (self.parts.get(part).and_then(Option::as_ref)).and_then(|p| p.source.clone());
+        let base = base.ok_or_else(|| std::io::Error::other("no instrument in this part"))?;
+        let path = crate::presets::save(folder, library, name, &base, &scripts)?;
+        self.set_preset(part, &path);
+        Ok(path)
+    }
+
     /// `part` plays the preset at `path` as saved there (named by its file,
     /// not modified): a script reached it, or it was saved or renamed.
     pub fn set_preset(&mut self, part: usize, path: &Path) {

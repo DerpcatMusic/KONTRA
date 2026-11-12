@@ -562,6 +562,7 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     browse(kontra_ui::app::Action::Switch { part: 0, preset });
     let back = path(&params).unwrap();
     assert!(back.ends_with("Una Corda Felt.nki"), "{back:?}");
+    users_own_preset(&params, library, preset);
     // With the settings on, a second part takes its own channel and output.
     browse(kontra_ui::app::Action::NewParts {
         next_channel: true,
@@ -639,6 +640,83 @@ fn the_header_follows_an_instruments_own_preset_arrows_by_name() {
             "the header did not follow: {now:?}"
         );
     }
+}
+
+/// The player's own preset of the part playing `preset`: saved into the
+/// presets folder, listed under its library and named by the header,
+/// picked back with the values it saved, renamed, then deleted.
+fn users_own_preset(params: &KontraParams, library: usize, preset: usize) {
+    use kontra_ui::app::{Action, PresetEdit};
+    let folder = std::env::temp_dir().join(format!("kontra-user-presets-{}", std::process::id()));
+    crate::lock(&params.shared.browser)
+        .as_mut()
+        .unwrap()
+        .set_user(folder.clone());
+    let browse = |action| {
+        params.shared.request(crate::Request::Browse(action));
+        Tick.run(params);
+    };
+    let playing = || {
+        let rack = crate::lock(&params.shared.rack);
+        let rack = rack.as_ref().unwrap();
+        let p = rack.parts()[0].as_ref().unwrap();
+        (p.path.clone().unwrap(), p.modified, rack.saved_scripts(0))
+    };
+    let listed = |path: &std::path::Path| {
+        let b = crate::lock(&params.shared.browser);
+        let presets = &b.as_ref().unwrap().catalog.libraries[library].presets;
+        presets.iter().position(|p| p == path)
+    };
+    browse(Action::Preset {
+        part: 0,
+        edit: PresetEdit::Save("Mine".into()),
+    });
+    let (mine, modified, values) = playing();
+    assert!(
+        mine.starts_with(&folder) && mine.ends_with("Mine.kontra"),
+        "{mine:?}"
+    );
+    assert!(!modified);
+    let at = listed(&mine).expect("listed with its library");
+    let shown = format!("{:?}", *crate::lock(&params.shared.view));
+    assert!(
+        shown.contains(&format!("preset: Some({at})")),
+        "{shown:.300}"
+    );
+    // Picked again from another preset: the values it saved, exactly.
+    browse(Action::Switch { part: 0, preset });
+    browse(Action::Switch {
+        part: 0,
+        preset: at,
+    });
+    assert_eq!(playing(), (mine.clone(), false, values.clone()));
+    // A project reload plays the same preset with the same values.
+    params.capture();
+    let state = params.saved.read().unwrap().clone();
+    let (again, _again_dsp) = activate(&state);
+    Tick.run(&again);
+    let reloaded = {
+        let rack = crate::lock(&again.shared.rack);
+        let rack = rack.as_ref().unwrap();
+        let p = rack.parts()[0].as_ref().unwrap();
+        (p.path.clone().unwrap(), p.modified, rack.saved_scripts(0))
+    };
+    assert_eq!(reloaded, (mine.clone(), false, values));
+    browse(Action::Preset {
+        part: 0,
+        edit: PresetEdit::Rename("Yours".into()),
+    });
+    let (yours, ..) = playing();
+    assert!(yours.ends_with("Yours.kontra") && !mine.exists() && listed(&yours).is_some());
+    // Deleted: the part plays on, as its base instrument, changed.
+    browse(Action::Preset {
+        part: 0,
+        edit: PresetEdit::Delete,
+    });
+    let (base, modified, _) = playing();
+    assert!(base.ends_with("Una Corda Felt.nki") && modified, "{base:?}");
+    assert!(!yours.exists() && listed(&yours).is_none());
+    std::fs::remove_dir_all(folder).unwrap();
 }
 
 const SHREDDAGE: &str = "Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org/Instruments/Shreddage 3.5 E-Upright.nki";

@@ -341,7 +341,8 @@ impl Rack {
     pub fn load(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         // A preset of the instrument the part plays recalls into it,
         // without reading the instrument.
-        if let Some(preset) = crate::instrument::preset(path)
+        let preset = crate::instrument::preset(path).or_else(|| self.user_preset(part, path));
+        if let Some(preset) = preset
             && self.recall(part, &preset, Some(path))
         {
             return Ok(());

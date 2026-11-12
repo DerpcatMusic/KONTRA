@@ -21,6 +21,9 @@ pub struct Browser {
     scan: Option<(Arc<Progress>, mpsc::Receiver<Catalog>)>,
     prefs_path: Option<PathBuf>,
     cache_path: Option<PathBuf>,
+    /// The player's presets folder ([`crate::presets`]), listed after each
+    /// library's own presets.
+    pub user: Option<PathBuf>,
 }
 
 impl Browser {
@@ -43,6 +46,7 @@ impl Browser {
             scan: None,
             prefs_path,
             cache_path: cache.map(|c| c.join(FOLDER).join("library-index.json")),
+            user: None,
         };
         browser.rescan();
         browser
@@ -85,12 +89,38 @@ impl Browser {
             return false;
         };
         self.scan = None;
+        let mut catalog = catalog;
+        self.with_user(&mut catalog);
         if catalog == self.catalog {
             return false;
         }
         self.catalog = catalog;
         self.generation += 1;
         true
+    }
+
+    /// Lists the player's presets from `folder` from now on.
+    pub fn set_user(&mut self, folder: PathBuf) {
+        self.user = Some(folder);
+        self.user_changed();
+    }
+
+    /// Lists the player's presets again, after one was saved, renamed or
+    /// deleted.
+    pub fn user_changed(&mut self) {
+        let mut catalog = std::mem::take(&mut self.catalog);
+        self.with_user(&mut catalog);
+        self.catalog = catalog;
+        self.generation += 1;
+    }
+
+    /// Each library's user presets, after its own.
+    fn with_user(&self, catalog: &mut Catalog) {
+        let Some(user) = &self.user else { return };
+        for l in &mut catalog.libraries {
+            l.presets.retain(|p| !p.starts_with(user));
+            l.presets.extend(crate::presets::list(user, &l.name));
+        }
     }
 
     /// Whether a scan is running.
