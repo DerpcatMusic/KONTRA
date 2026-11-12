@@ -416,6 +416,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     ];
     rows.extend(crate::dynamics::feedback_rows());
     rows.extend(crate::skreamer::rows());
+    rows.extend(crate::phasis::rows());
     rows.extend(crate::impulse::script_knobs());
     rows
 }
@@ -661,6 +662,17 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     // which then reads 7.0 (Una Corda's presets without a filter;
     // probes/b4sub). ponytail: its sound is unmeasured; it passes.
     types.push(ty(0, true, 0, None, [].into()));
+    // Phasis (41), as Morphology Evolved, Conflux and Shreddage load it.
+    types.push(ir::SlotType {
+        model: Some(crate::phasis::model()),
+        ..ty(
+            41,
+            false,
+            0,
+            Some(unit(crate::phasis::phasis(crate::phasis::INIT))),
+            [].into(),
+        )
+    });
     types
 }
 
@@ -921,7 +933,7 @@ mod tests {
     #[test]
     fn the_saved_type_indices_never_move() {
         #[rustfmt::skip]
-        const PINNED: [(i32, bool); 48] = [
+        const PINNED: [(i32, bool); 49] = [
             (29, false), (39, false), (11, false), (40, false), (0, false), (7, false),
             (24, true), (19, true), (13, true), (14, true), (15, true),
             (100, true), (101, true), (102, true), (103, true), (104, true), (105, true),
@@ -933,6 +945,7 @@ mod tests {
             (62, true),
             // Appended entries, in order.
             (0, true),
+            (41, false),
         ];
         let types: Vec<_> = slot_types().iter().map(|t| (t.id, t.subtype)).collect();
         assert_eq!(types, PINNED);
