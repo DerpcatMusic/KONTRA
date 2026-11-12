@@ -380,4 +380,8 @@ actions! {
     // (the engine's host-only list).
     HideInstIcon,
     DontUseMachineMode,
+    // Milliseconds since the engine started, with the fraction: a UVI
+    // `getTime()` (`1000 * samples / rate` in its own prelude). Notes one
+    // frame apart read apart; `EngineUptime` stays KSP's whole milliseconds.
+    EngineMs,
 }

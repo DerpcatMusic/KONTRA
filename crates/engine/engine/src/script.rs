@@ -295,6 +295,7 @@ impl HostApi for Engine {
             Action::EngineUptime => {
                 HostValue::Int((self.now.0 * 1000 / u64::from(self.rate)) as i32)
             }
+            Action::EngineMs => HostValue::Real(self.now.0 as f64 * 1000.0 / f64::from(self.rate)),
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),
             Action::GroupVolume | Action::GroupPan | Action::GroupTune => {
