@@ -303,17 +303,17 @@ impl Capture {
         if let Cursor::Controls(mut next) = self.at {
             let fresh = |slot: u8| self.fresh.get(usize::from(slot)).copied().unwrap_or(false);
             while let Some(&(slot, cell, to)) = self.controls.get(next) {
-                if !fresh(slot) {
-                    next += 1;
-                    continue;
-                }
-                let Some(left) = budget.checked_sub(CONTROL_WEIGHT) else {
+                // Passing over an unread slot's control costs a cell too, so
+                // no block walks the whole list on an empty budget.
+                let cost = if fresh(slot) { CONTROL_WEIGHT } else { 1 };
+                let Some(left) = budget.checked_sub(cost) else {
                     self.at = Cursor::Controls(next);
                     return false;
                 };
                 *budget = left;
-                if let (Some(saved), Some(value)) =
-                    (engine.script_saved_in(slot, cell), self.values.get_mut(to))
+                if fresh(slot)
+                    && let (Some(saved), Some(value)) =
+                        (engine.script_saved_in(slot, cell), self.values.get_mut(to))
                 {
                     *value = saved;
                 }
