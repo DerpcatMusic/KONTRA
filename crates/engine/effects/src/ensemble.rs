@@ -1,140 +1,91 @@
-//! [`ir::Ensemble`] on the public [`ModDelay`]: one line per voice, summed
-//! with the input's direct share. It never allocates once built.
+//! [`ir::Ensemble`] on the public [`Choir`], plus the input's direct share.
+//! It never allocates once built.
 
-use kontra_dsp::delay::{ModDelay, Settings};
+use kontra_dsp::delay::{Choir, ChoirSettings};
 use kontra_ir as ir;
 
 use crate::processors::Wet;
 
-/// Frames per pass through the voices (a stack scratch).
-const CHUNK: usize = 64;
-
-/// The largest loop gain a voice runs at.
-pub const LOOP: f32 = 0.98;
-
 pub struct Ensemble {
-    voices: [ModDelay; ir::ENSEMBLE_VOICES],
-    /// Which voices sound (a silent voice is skipped).
-    live: [bool; ir::ENSEMBLE_VOICES],
+    choir: Choir,
     direct: f32,
 }
 
-fn settings(e: &ir::Ensemble, v: &ir::EnsembleVoice) -> Settings {
-    let swing = if v.hz > 0.0 {
-        0.5 * (e.sweep / v.hz).max(0.0)
-    } else {
-        0.0
-    };
-    let diagonal = |g: f32| [[g, 0.0], [0.0, g]];
-    let first = e.voices.first().map_or(v.ms, |f| f.ms);
-    let length = if first > 0.0 { v.ms / first } else { 1.0 };
-    let feedback = e.feedback.signum() * e.feedback.abs().powf(length);
-    let (s, c) = v.angle.sin_cos();
-    let g = v.level;
-    Settings {
-        ms: v.ms + swing,
-        depth_ms: swing,
-        second_head: false,
-        input: diagonal(e.input),
-        // Kontakt's 100 % is 0.999: a comb that charges for ~15 s. Clamped
-        // where 30 s renders stop growing (see the PR's grid).
-        feedback: diagonal(feedback.clamp(-LOOP, LOOP)),
-        output: [[g * c, -g * s], [g * s, g * c]],
-        damping_hz: match v.filter {
-            ir::LineFilter::LowPass(hz) => hz,
-            _ => f32::INFINITY,
+fn settings(e: &ir::Ensemble) -> ChoirSettings {
+    let v = e.voices;
+    let first = v.delay.first().copied().unwrap_or(0.0);
+    let rate = v.rate.map(|r| r * e.hz);
+    ChoirSettings {
+        delay_s: v.delay.map(|d| d * e.span),
+        swing_s: rate.map(|hz| if hz > 0.0 { e.sweep / hz } else { 0.0 }),
+        lfo_hz: rate,
+        start: v.start,
+        bend: v.bend,
+        wobble_hz: std::array::from_fn(|k| {
+            rate.get(k).copied().unwrap_or(0.0) * v.wobble_rate.get(k).copied().unwrap_or(0.0)
+        }),
+        wobble: v.wobble,
+        smooth_hz: v.smooth_hz,
+        filter: v.filter,
+        // A line `k` times the first's length decays alike per second.
+        loop_gain: v.delay.map(|d| match first > 0.0 {
+            true => e.feedback.powf(d / first),
+            false => 0.0,
+        }),
+        scatter: e.scatter,
+        sign: match e.polarity {
+            ir::Polarity::Normal => 1.0,
+            ir::Polarity::Inverted => -1.0,
         },
-        low_cut_hz: match v.filter {
-            ir::LineFilter::HighPass(hz) => hz,
-            _ => 0.0,
-        },
-        steep_low_cut: false,
-        high_shelf: None,
-        spread_ms: 0.0,
-        lfo_hz: v.hz,
-        phase: 0.0,
+        input: e.input,
+        level: e.levels,
+        angle: e.angles,
+        bus: e.shelf,
+        gain: e.wet,
     }
 }
 
 impl Ensemble {
-    /// Lines long enough for `max_ms`, each LFO at its voice's start. Not
-    /// real-time: allocates.
-    pub fn new(e: ir::Ensemble, rate: u32, max_ms: f32) -> Self {
-        let voices = e.voices.map(|v| {
-            let mut line = ModDelay::new(settings(&e, &v), rate, max_ms);
-            // Its LFO starts `start` cycles in: the public clock, run on.
-            if v.hz > 0.0 {
-                line.idle((v.start.rem_euclid(1.0) / v.hz * rate as f32) as usize);
-            }
-            line
-        });
-        let mut out = Self {
-            voices,
-            live: [false; ir::ENSEMBLE_VOICES],
+    /// Not real-time: allocates.
+    pub fn new(e: ir::Ensemble, rate: u32) -> Self {
+        Self {
+            choir: Choir::new(settings(&e), rate),
             direct: e.direct,
-        };
-        out.apply(e);
-        out
-    }
-
-    fn apply(&mut self, e: ir::Ensemble) {
-        for ((line, live), v) in self.voices.iter_mut().zip(&mut self.live).zip(&e.voices) {
-            line.set(settings(&e, v));
-            *live = v.level != 0.0;
         }
-        self.direct = e.direct;
     }
 }
 
 impl Wet for Ensemble {
     fn process(&mut self, io: &mut [[f32; 2]]) {
-        let mut scratch = [[0.0f32; 2]; CHUNK];
+        const CHUNK: usize = 64;
         for block in io.chunks_mut(CHUNK) {
-            let n = block.len();
-            let mut sum = [[0.0f32; 2]; CHUNK];
-            for (line, live) in self.voices.iter_mut().zip(self.live) {
-                let (Some(s), Some(acc)) = (scratch.get_mut(..n), sum.get_mut(..n)) else {
-                    continue;
-                };
-                s.copy_from_slice(block);
-                if live {
-                    line.process(s);
-                } else {
-                    // Silent voices keep their clocks in step.
-                    line.idle(n);
-                    continue;
-                }
-                for (a, y) in acc.iter_mut().zip(s.iter()) {
-                    a[0] += y[0];
-                    a[1] += y[1];
-                }
+            let mut dry = [[0.0f32; 2]; CHUNK];
+            if let Some(dry) = dry.get_mut(..block.len()) {
+                dry.copy_from_slice(block);
             }
-            for (x, y) in block.iter_mut().zip(sum.iter()) {
-                *x = [self.direct * x[0] + y[0], self.direct * x[1] + y[1]];
+            self.choir.process(block);
+            for (y, x) in block.iter_mut().zip(dry) {
+                *y = [y[0] + self.direct * x[0], y[1] + self.direct * x[1]];
             }
         }
     }
 
     fn memory(&self) -> Option<usize> {
-        self.voices.iter().map(ModDelay::memory).max()
+        Some(self.choir.memory())
     }
 
     fn written(&self) -> f32 {
-        self.voices
-            .iter()
-            .map(ModDelay::written)
-            .fold(0.0, f32::max)
+        self.choir.written()
     }
 
     fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        for line in &mut self.voices {
-            line.idle(silence.len());
-        }
+        self.choir.idle(silence.len());
     }
 
     fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Ensemble(e) = kind {
-            self.apply(e);
+            self.choir.set(settings(&e));
+            self.direct = e.direct;
         }
     }
 }
