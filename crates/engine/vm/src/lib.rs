@@ -667,14 +667,11 @@ fn execute(
             Op::LoopCheck { exit } => {
                 c.loop_count += 1;
                 let mut stuck = false;
-                // The hash reads every cell: probing only once the loops have
-                // turned as often as there are cells keeps the check cheaper
-                // than the loop (a big table made each probe cost ms).
-                let probe =
-                    LOOP_PROBE.max(u32::try_from(cells.len() + poly.len()).unwrap_or(u32::MAX));
-                if c.loop_count >= probe && c.loop_count.is_power_of_two() {
-                    // A host call moved state outside the hash: not stuck, and
-                    // no hash to take; the next probe compares from scratch.
+                // The hash reads every cell: probe once the loops turned as
+                // often as there are cells, so it never costs more than they did.
+                let cost = u32::try_from(cells.len() + poly.len()).unwrap_or(u32::MAX);
+                if c.loop_count >= LOOP_PROBE.max(cost) && c.loop_count.is_power_of_two() {
+                    // A host call moved state outside the hash: not stuck, no hash.
                     c.loop_hash = if std::mem::take(&mut c.hosted) {
                         0
                     } else {
