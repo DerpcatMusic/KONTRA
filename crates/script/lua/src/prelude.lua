@@ -1053,6 +1053,10 @@ function loadState(path, done)
 			for i, v in ipairs(cells(text)) do
 				w:setValue(i, v)
 			end
+			local ok, err = pcall(run_changed, w)
+			if not ok then
+				print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
+			end
 		elseif text ~= nil and w.persistent ~= false then
 			local ok, err = pcall(w.setValue, w, parsed(text, w.value))
 			if not ok then

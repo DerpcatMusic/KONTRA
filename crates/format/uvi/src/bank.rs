@@ -156,14 +156,26 @@ impl crate::program::Library for Bank {
             .collect()
     }
 
+    /// Small data members, each checked by its size before it is read,
+    /// until `TOTAL_LIMIT` bytes are read.
     fn data(&self) -> Vec<(String, Vec<u8>)> {
-        use crate::program::files::{FILE_LIMIT, may_be_data};
-        (self.directory.files.iter())
-            .filter_map(|m| Some((m.path.clone()?, m)))
-            .filter(|(path, _)| may_be_data(path))
-            .filter_map(|(path, m)| Some((path, self.read(m).ok()?)))
-            .filter(|(_, bytes)| bytes.len() <= FILE_LIMIT)
-            .collect()
+        use crate::program::files::{FILE_LIMIT, TOTAL_LIMIT, may_be_data};
+        let mut out = Vec::new();
+        let mut total = 0;
+        for m in &self.directory.files {
+            let small = usize::try_from(m.size).is_ok_and(|s| s <= FILE_LIMIT);
+            let Some(path) = m.path.as_ref().filter(|p| small && may_be_data(p)) else {
+                continue;
+            };
+            if total >= TOTAL_LIMIT {
+                break;
+            }
+            if let Some(bytes) = self.read(m).ok().filter(|b| b.len() <= FILE_LIMIT) {
+                total += bytes.len();
+                out.push((path.clone(), bytes));
+            }
+        }
+        out
     }
 
     fn sample(&self, program_dir: &str, reference: &str) -> Result<ir::Sample, String> {

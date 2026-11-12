@@ -76,14 +76,22 @@ fn survey(a: &Path, b: &Path) -> Result<String, Box<dyn std::error::Error>> {
             .map(|p| (p.name.clone(), p.script.generation(), p.plan.clone()))
     };
     let (name, _, plan) = part(&rack).ok_or("no part")?;
+    // The part's name against the file's (the header itself finds the
+    // preset by path: plugin test `a_preset_picked_in_the_browser…`).
     let header = if name == stem(a) {
-        "names it"
+        "named as its file"
     } else {
-        "MISSES"
+        "named otherwise"
     };
     let before = values(&rack);
     // The instrument's own preset controls: menus and buttons named so.
-    let own = own_controls(&mut rack, &mut audio, &before);
+    // Probed on a rack of its own, so the a → b pick starts from a as loaded.
+    let own = {
+        let (mut probe, mut probe_audio) = new_rack()?;
+        probe.load(0, a)?;
+        run(&mut probe, &mut probe_audio, 1.0);
+        own_controls(&mut probe, &mut probe_audio, &before)
+    };
     // The header picks b.
     let t = Instant::now();
     rack.load(0, b)?;
@@ -96,9 +104,9 @@ fn survey(a: &Path, b: &Path) -> Result<String, Box<dyn std::error::Error>> {
     };
     let after = values(&rack);
     let header_b = if name_b == stem(b) {
-        "names it"
+        "named as its file"
     } else {
-        "MISSES"
+        "named otherwise"
     };
     // Save, reload in a new rack.
     let saved = rack.save();
@@ -166,10 +174,12 @@ fn own_controls(rack: &mut Rack, audio: &mut RackAudio, before: &[String]) -> St
                 };
                 let to = match &w.kind {
                     // `MENU_ITEM=n` picks item n of every menu.
-                    Kind::Menu { items } if items.len() > 1 => match item {
-                        Some(n) => n.min(items.len() - 1) as f64,
-                        None => ((now.max(0.0) as usize + 2) % items.len()) as f64,
-                    },
+                    // The next item after the shown one, by its value.
+                    Kind::Menu { items } if items.len() > 1 => {
+                        let shown = items.iter().position(|i| f64::from(i.value) == now);
+                        let at = item.unwrap_or_else(|| shown.map_or(0, |p| p + 1));
+                        f64::from(items.get(at.min(items.len() - 1) % items.len())?.value)
+                    }
                     Kind::Button { .. } | Kind::Switch => f64::from(u8::from(now < 0.5)),
                     _ => return None,
                 };
