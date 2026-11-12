@@ -330,21 +330,31 @@ pub(crate) fn instrument(
 }
 
 /// "Accept standard controllers for Volume and Pan" (MIDI CC 7 and 10; the
-/// program's private byte 4) and the top of the CC 7 range in dB (an i32 at
-/// byte 6): Kontakt 8.13's instrument options saved and read back, program
-/// versions 0xa8..=0xb5 (400 corpus instruments: all on, top 0 dB). Earlier
-/// versions keep those defaults. Measured: CC 7 sets the fader to
-/// `top·(v/127)³` in place of the saved volume, CC 10 the balance
-/// `(v − 63.5)/63.5`; a script's `ignore_controller` stops both.
+/// program's private byte 4) and the CC 7 range in dB (an i32 at byte 6),
+/// program versions 0xa8..=0xb5; earlier versions keep on, 0 dB. Kontakt
+/// 8.13.1 runs them as generated KSP (0140870000.c, "use std. CC7 / CC10"):
+/// `$ENGINE_PAR_VOLUME = %CC[7]·k`, k by range −12/−6/0/+6/+12 dB =
+/// 3113/3937/4956/6243/7874 and any other range 4956; the volume par's gain
+/// is `(par/629960.52)³`. So the fader is `top·(v/127)³`, `top` that cube at
+/// 127 (−0.023 dB for "0 dB"); CC 10 is `(v − 63.5)/63.5`. A script's
+/// `ignore_controller` stops both.
 fn output_controllers(version: u16, private: &[u8]) -> Option<ir::OutputControllers> {
     let saved = (version >= 0xa8).then(|| {
         let top = private.get(6..10).and_then(|b| b.try_into().ok());
         (private.get(4).copied(), top.map(i32::from_le_bytes))
     });
-    let (on, top_db) = match saved {
-        Some((Some(on), Some(top))) => (on != 0, top as f32),
-        _ => (true, 0.0),
+    let (on, range) = match saved {
+        Some((Some(on), Some(range))) => (on != 0, range),
+        _ => (true, 0),
     };
+    let k = match range {
+        -12 => 3113.0,
+        -6 => 3937.0,
+        6 => 6243.0,
+        12 => 7874.0,
+        _ => 4956.0,
+    };
+    let top_db = 60.0 * (127.0 * k / 629_960.524_947_f32).log10();
     on.then_some(ir::OutputControllers {
         volume: 7,
         pan: 10,
