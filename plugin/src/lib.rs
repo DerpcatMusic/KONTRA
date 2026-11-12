@@ -308,8 +308,10 @@ impl BackgroundTask for Tick {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
             }
         }
-        if let Some(path) = p.shared.folder.picked() {
-            browser.add_root(path);
+        match p.shared.folder.picked() {
+            Some((folder::Wanted::Libraries, path)) => browser.add_root(path),
+            Some((folder::Wanted::Snapshots, path)) => browser.set_kontakt(path),
+            None => {}
         }
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);

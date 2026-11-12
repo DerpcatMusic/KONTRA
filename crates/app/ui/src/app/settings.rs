@@ -1,10 +1,11 @@
-//! Settings: the library folders, the interface's size, MIDI.
+//! The sheets, and Settings: the library folders, Kontakt's snapshot
+//! folder, the interface's size, MIDI.
 
 use mui::prelude::*;
 
-use super::{Action, App, FaceLook, SCALES};
+use super::{Action, App, FaceLook, SCALES, Sheet};
 use crate::kit::{self, Icon, button, icon_button, latch, rule, section};
-use crate::theme::{SPACE, TIGHT};
+use crate::theme::{SPACE, TIGHT, secondary};
 
 /// The settings sheet's body.
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
@@ -72,6 +73,10 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if add.changed {
         out.push(Action::AddFolder);
     }
+    let choose = button(ui, "snapshot-folder", "Choose…", false);
+    out.extend(choose.changed.then_some(Action::ChooseSnapshotFolder));
+    let path = &app.snapshot_folder;
+    let snapshots = caption(path.clone()).tip(path.clone()).lines(1).min_w(0);
     let rescan = button(ui, "rescan", "Rescan", false);
     if rescan.changed {
         out.push(Action::Refresh);
@@ -126,6 +131,8 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .gap(SPACE)
             .align(Align::Center),
         folders,
+        row![section("Kontakt snapshots"), spacer(), choose.el].align(Align::Center),
+        snapshots,
         rule(),
         section("Interface"),
         line("Size", size.el),
@@ -138,4 +145,31 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         line("New parts: own output", own.el),
     ]
     .gap(SPACE)
+}
+
+/// The open sheet: Settings, a preset dialog or About.
+pub(super) fn sheet(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
+    let (title, content) = match which {
+        Sheet::Settings => ("Settings", view(ui, app, out)),
+        Sheet::SavePreset(n) | Sheet::RenamePreset(n) | Sheet::DeletePreset(n) => {
+            super::preset::sheet(ui, app, n, which, out)
+        }
+        Sheet::About => (
+            "About",
+            col![
+                title("KONTRA"),
+                body(app.build.clone()).id("about-build"),
+                caption(
+                    "One engine that plays Kontakt, UVI and SFZ libraries as they were written."
+                )
+                .fill(secondary()),
+            ]
+            .gap(SPACE),
+        ),
+    };
+    let r = kit::sheet(ui, "sheet", title, content);
+    if r.changed {
+        app.view.sheet = None;
+    }
+    r.el
 }
