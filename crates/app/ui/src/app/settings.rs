@@ -1,8 +1,9 @@
-//! Settings: the library folders, the interface's size, MIDI.
+//! The sheets, and Settings: the library folders, Kontakt's snapshot
+//! folder, the interface's size, MIDI.
 
 use mui::prelude::*;
 
-use super::{Action, App, FaceLook, SCALES, SnapshotFolder};
+use super::{Action, App, FaceLook, SCALES, Sheet, SnapshotFolder};
 use crate::kit::{self, Icon, button, icon_button, latch, rule, section};
 use crate::theme::{SPACE, TIGHT, secondary};
 
@@ -159,4 +160,31 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         line("New parts: own output", own.el),
     ]
     .gap(SPACE)
+}
+
+/// The open sheet: Settings, a preset dialog or About.
+pub(super) fn sheet(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
+    let (title, content) = match which {
+        Sheet::Settings => ("Settings", view(ui, app, out)),
+        Sheet::SavePreset(n) | Sheet::RenamePreset(n) | Sheet::DeletePreset(n) => {
+            super::preset::sheet(ui, app, n, which, out)
+        }
+        Sheet::About => (
+            "About",
+            col![
+                title("KONTRA"),
+                body(app.build.clone()).id("about-build"),
+                caption(
+                    "One engine that plays Kontakt, UVI and SFZ libraries as they were written."
+                )
+                .fill(secondary()),
+            ]
+            .gap(SPACE),
+        ),
+    };
+    let r = kit::sheet(ui, "sheet", title, content);
+    if r.changed {
+        app.view.sheet = None;
+    }
+    r.el
 }
