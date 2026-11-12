@@ -74,6 +74,26 @@ pub(crate) fn model() -> ir::KnobModel {
     }
 }
 
+/// What `$EFFECT_TYPE_PHASIS` (41) loads, as Morphology Evolved, Conflux
+/// and Shreddage load it: [`INIT`], every knob through [`model`].
+pub(crate) fn slot_type() -> ir::SlotType {
+    let effect = ir::Effect {
+        kind: phasis(INIT),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    ir::SlotType {
+        id: 41,
+        subtype: false,
+        reads: 0,
+        kind: 41,
+        effect: Some(effect),
+        laws: [].into(),
+        model: Some(model()),
+    }
+}
+
 /// The KSP names of [`model`]'s knobs: a straight 0..1 for the continuous
 /// ones (their texts are 0..100 % straight lines, or the laws above); the
 /// stepped ones (notches 2..12, the switches, the unit) are set as raw

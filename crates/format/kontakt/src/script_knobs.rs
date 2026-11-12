@@ -662,17 +662,7 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     // which then reads 7.0 (Una Corda's presets without a filter;
     // probes/b4sub). ponytail: its sound is unmeasured; it passes.
     types.push(ty(0, true, 0, None, [].into()));
-    // Phasis (41), as Morphology Evolved, Conflux and Shreddage load it.
-    types.push(ir::SlotType {
-        model: Some(crate::phasis::model()),
-        ..ty(
-            41,
-            false,
-            0,
-            Some(unit(crate::phasis::phasis(crate::phasis::INIT))),
-            [].into(),
-        )
-    });
+    types.push(crate::phasis::slot_type());
     types
 }
 
