@@ -128,6 +128,12 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Slot(ir::SlotKnob::DelayTime),
             lin(0.0, 1.0),
         ),
+        // The unit constant, raw: the slot's law reads it in millionths.
+        (
+            "$ENGINE_PAR_RDL_TIME_UNIT",
+            Slot(ir::SlotKnob::DelayUnit),
+            lin(0.0, 1.0),
+        ),
         (
             "$ENGINE_PAR_RDL_FEEDBACK",
             Slot(ir::SlotKnob::DelayFeedback),

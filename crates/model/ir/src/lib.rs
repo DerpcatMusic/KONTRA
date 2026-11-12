@@ -23,8 +23,9 @@ pub use drive::{
     Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
-    Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
-    IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
+    Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelaySync, DelayTime,
+    Detector, Formant, IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb,
+    Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
 pub use kontra_law::{FormulaId, common};
