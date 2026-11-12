@@ -78,7 +78,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         strips.push(band(row, None, 0));
         strips.push(rule());
     }
-    strips.push(foot(ui, app, out));
+    strips.push(foot(ui, app));
     col(strips).scroll().min_h(0).w(Len::Pct(100.)).id("rack")
 }
 
@@ -557,7 +557,7 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
 
 /// Where presets are dropped to be added, and a button that shows the
 /// browser to find one (v2's `src/ui/rack.rs` `foot`).
-fn foot(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+fn foot(ui: &mut Ui, app: &mut App) -> El {
     let dragging = ui.dragging::<Carried>().is_some();
     let over = ui.get("rack-drop").drop_target && dragging;
     if ui.get("rack-drop").activated() {
