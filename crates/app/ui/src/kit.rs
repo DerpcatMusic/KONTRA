@@ -463,9 +463,45 @@ pub fn menu(
     let most = MENU_ROWS * (CONTROL + 1.);
     let list = col(rows).gap(1).when(columns == 1, |e| e.w(TEXT * 16.));
     let list = match tall > most {
-        true => list.scroll().h(most).id(format!("{id}-list")),
+        true => list.scroll().h(most),
         false => list.min_h(tall),
     };
+    // The popup is the list itself, under the popup's id.
+    let list_id = format!("{id}-popup");
+    // Up and Down move the focus a row, from the anchor into the list, and
+    // a scrolling list follows it.
+    let step = |keys: &[KeyPress]| {
+        keys.iter().fold(0_isize, |at, k| match k.key {
+            Key::Down => at + 1,
+            Key::Up => at - 1,
+            _ => at,
+        })
+    };
+    let wide = columns.max(1);
+    let mut to = (step(ui.keys(id)) != 0).then(|| current.unwrap_or(0));
+    for n in 0..items.len() {
+        let by = step(ui.keys(format!("{id}-{n}")));
+        if by != 0 {
+            let next = n.saturating_add_signed(by.saturating_mul(wide.cast_signed()));
+            to = Some(next.min(items.len().saturating_sub(1)));
+        }
+    }
+    if let Some(n) = to {
+        ui.focus(format!("{id}-{n}"));
+        let row_h = CONTROL + 1.;
+        let top = (n / wide) as f64 * row_h;
+        let at = ui.scroll(list_id.as_str())[1];
+        let y = if top < at {
+            top
+        } else if top + row_h > at + most {
+            top + row_h - most
+        } else {
+            at
+        };
+        if tall > most {
+            ui.set_scroll(list_id.as_str(), [0., y]);
+        }
+    }
     Response {
         el: popup(id, list),
         changed: picked,
@@ -536,13 +572,15 @@ pub fn dropdown(
 }
 
 /// `content` floated over everything, pinned under the element `anchor`
-/// names, easing in from just above it.
+/// names, easing in from just above it. It keeps the wheel: what it holds
+/// scrolls, and nothing under it (a knob, the rack) moves.
 pub fn popup(anchor: &str, content: El) -> El {
     content
         .fill(lift(2))
         .stroke(hairline())
         .stroke_width(1)
         .pad(TIGHT)
+        .captures_wheel()
         .float()
         .pin(
             Pin::to(anchor.to_owned())
@@ -554,7 +592,8 @@ pub fn popup(anchor: &str, content: El) -> El {
 }
 
 /// A panel opened on demand over the view: a title, a close button, then
-/// `content`. Returns whether it was closed this frame.
+/// `content`. Like a popup it keeps the wheel from what lies under it.
+/// Returns whether it was closed this frame.
 pub fn sheet(ui: &mut Ui, id: &str, title_text: &str, content: El) -> Response {
     let close = icon_button(ui, format!("{id}-close"), Icon::Close, "Close", false);
     let closed = close.changed || ui.keys(id).iter().any(|k| k.key == Key::Escape);
@@ -570,6 +609,7 @@ pub fn sheet(ui: &mut Ui, id: &str, title_text: &str, content: El) -> Response {
     .fill(lift(1))
     .stroke(hairline())
     .stroke_width(1)
+    .captures_wheel()
     .focusable()
     .appear(Appear::Slide(0., TEXT))
     .id(id.to_owned());
@@ -638,4 +678,86 @@ pub(crate) fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
         [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| Point::new(x, y)),
         true,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `under` read of a wheel turned over it for a few frames, with
+    /// an open popup on top of it or none.
+    fn wheel_under(with_popup: bool) -> Option<Vec2> {
+        let mut ui = Ui::default();
+        let mut read = None;
+        for n in 0..6 {
+            read = read.or(ui.wheel("under"));
+            let mut top = vec![block(20., 20.).id("anchor")];
+            if with_popup {
+                top.push(popup("anchor", block(200., 200.).id("inside")));
+            }
+            let el = stack![block(400., 400.).id("under"), col(top)];
+            let input = Input {
+                pointer: PointerInput {
+                    pos: Some(Point::new(200., 100.)),
+                    ..Default::default()
+                },
+                wheel: if n >= 2 {
+                    Vec2::new(0., 30.)
+                } else {
+                    Vec2::ZERO
+                },
+                ..Default::default()
+            };
+            assert!(
+                ui.frame(el, Some(Size::new(400., 400.)), input, 1. / 60.)
+                    .is_ok()
+            );
+        }
+        read
+    }
+
+    /// Down from the anchor walks a long menu past its fold, and the list
+    /// scrolls so the focused row stays in view.
+    #[test]
+    fn down_keys_walk_a_long_menu_and_keep_the_row_in_view() {
+        let names: Vec<String> = (0..100).map(|n| format!("p{n}")).collect();
+        let items: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut ui = Ui::default();
+        ui.focus("m");
+        for n in 0..40 {
+            let m = menu(&mut ui, "m", &items, 1, None);
+            let el = col![block(20., 20.).id("m"), m.el];
+            let keys = if n >= 2 {
+                vec![KeyPress {
+                    key: Key::Down,
+                    mods: Mods::default(),
+                }]
+            } else {
+                Vec::new()
+            };
+            let input = Input {
+                keys,
+                ..Default::default()
+            };
+            assert!(
+                ui.frame(el, Some(Size::new(400., 900.)), input, 1. / 60.)
+                    .is_ok()
+            );
+        }
+        let focused = ui.focus_key().map(str::to_owned).unwrap_or_default();
+        let row: usize = focused.trim_start_matches("m-").parse().unwrap_or(0);
+        assert!(row > MENU_ROWS as usize, "walked past the fold: {focused}");
+        let top = row as f64 * (CONTROL + 1.);
+        let at = ui.scroll("m-popup")[1];
+        assert!(
+            at <= top && top < at + MENU_ROWS * (CONTROL + 1.),
+            "{top} in view of {at}"
+        );
+    }
+
+    #[test]
+    fn the_wheel_over_a_popup_never_reaches_what_lies_under_it() {
+        assert!(wheel_under(false).is_some(), "without a popup it does");
+        assert_eq!(wheel_under(true), None);
+    }
 }
