@@ -2,9 +2,12 @@
 
 mod glide;
 mod halfband;
+mod section;
 
 pub use glide::{Fader, Levels};
 pub use halfband::Halfband;
+pub use kontra_law::{Section, Sections, Stage};
+pub use section::{Biquad32, bilinear};
 
 /// One stereo biquad section, transposed direct form II, f64 state so
 /// low bands stay clean at high rates.
@@ -109,23 +112,6 @@ pub fn high_pass(hz: f32, q: f32, rate: u32) -> Biquad {
         (1.0 + cos) / 2.0,
         -(1.0 + cos),
         (1.0 + cos) / 2.0,
-        1.0 + alpha,
-        -2.0 * cos,
-        1.0 - alpha,
-    ])
-}
-
-/// The cookbook second-order low-pass at `hz`, resonance `q` (½ two
-/// coincident poles, no peak).
-#[must_use]
-pub fn low_pass(hz: f32, q: f32, rate: u32) -> Biquad {
-    let rate = f64::from(rate.max(1));
-    let w = std::f64::consts::TAU * f64::from(hz).max(1.0).min(0.49 * rate) / rate;
-    let (cos, alpha) = (w.cos(), w.sin() / (2.0 * f64::from(q).max(1e-3)));
-    Biquad::new([
-        (1.0 - cos) / 2.0,
-        1.0 - cos,
-        (1.0 - cos) / 2.0,
         1.0 + alpha,
         -2.0 * cos,
         1.0 - alpha,

@@ -62,10 +62,8 @@ fn saturation(shape: f32, algorithm: i32, at: &str, notes: &mut Notes) -> Option
         pre_lowpass_hz: None,
         curve: ir::DriveCurve::Soft(shape.clamp(-1.0, 1.0)),
         lowpass_hz: None,
-        lowpass_q: None,
         highpass_hz: None,
-        shelf: None,
-        gain: 1.0,
+        sections: ir::Sections::NONE,
     }))
 }
 
@@ -81,10 +79,8 @@ fn distortion(mode: i32, drive: f32, damping: f32) -> Option<ir::EffectKind> {
         pre_lowpass_hz: None,
         curve,
         lowpass_hz: Some(damping_hz(damping)),
-        lowpass_q: None,
         highpass_hz: Some(DC_HZ),
-        shelf: None,
-        gain: 1.0,
+        sections: ir::Sections::NONE,
     }))
 }
 

@@ -13,12 +13,12 @@
 
 use std::sync::Arc;
 
-use kontra_dsp::drive::{Crush, Overdrive, Shaper};
+use kontra_dsp::drive::{Core, Crush, Outer, Overdrive};
 use kontra_dsp::filter::{Formant, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 use kontra_plan::route_depth;
 
-use kontra_effects::processors::{curve, reduction, shaper, tone, voicing};
+use kontra_effects::processors::{reduction, shaper, voicing};
 
 use kontra_effects::summed::{VoiceEq, shape};
 
@@ -41,6 +41,9 @@ const TICK: u32 = 32;
 pub struct Unit {
     pub insert: u8,
     pub kind: Kind,
+    /// A shaper's base-rate filters; its oversampled core is the kind (the
+    /// two together outgrow the other kinds).
+    pub outer: Outer,
     /// A drive unit's settings now and at the next refresh, `left` frames
     /// away; it steps between them every [`TICK`] frames.
     pub ramp: Option<Ramp>,
@@ -59,14 +62,19 @@ pub enum Kind {
     Filter(Svf),
     Eq(VoiceEq),
     Formant(Formant),
-    Shaper(Shaper),
+    Shaper(Core),
     Crush(Crush),
     Overdrive(Overdrive),
 }
 
-/// The unit for an insert, at its saved settings.
-fn unit(kind: ir::EffectKind, rate: u32) -> Option<Kind> {
-    Some(match kind {
+/// The unit for an insert, at its saved settings, and a shaper's base-rate
+/// filters.
+fn unit(kind: ir::EffectKind, rate: u32) -> Option<(Kind, Outer)> {
+    if let ir::EffectKind::Shaper(s) = kind {
+        let s = shaper(s, rate);
+        return Some((Kind::Shaper(s.core), s.outer));
+    }
+    let kind = match kind {
         ir::EffectKind::Filter(f) => {
             let mut svf = Svf::new(shape(&f));
             svf.set_cutoff(f.hz, rate);
@@ -74,11 +82,11 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<Kind> {
         }
         ir::EffectKind::Eq(bells) => Kind::Eq(VoiceEq::new(bells, rate)),
         ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(f), rate)),
-        ir::EffectKind::Shaper(s) => Kind::Shaper(shaper(s, rate)),
         ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(c, rate), 1)),
         ir::EffectKind::Overdrive(o) => Kind::Overdrive(Overdrive::new(voicing(o), rate)),
         _ => return None,
-    })
+    };
+    Some((kind, Outer::empty()))
 }
 
 fn vowels(f: ir::Formant) -> Vowels {
@@ -110,9 +118,11 @@ pub fn template(group: &kontra_plan::Group, rate: u32) -> Arc<[Unit]> {
         .filter(|&(n, _)| last_drive.is_some_and(|l| n <= l) || route_depth::moved(&group.mods, n))
         .filter_map(|(n, e)| {
             let e = e.as_ref()?;
+            let (kind, outer) = unit(e.kind, rate)?;
             Some(Unit {
                 insert: u8::try_from(n).ok()?,
-                kind: unit(e.kind, rate)?,
+                kind,
+                outer,
                 ramp: None,
             })
         })
@@ -147,7 +157,11 @@ pub fn process(
                 Kind::Filter(f) => f.process(chunk),
                 Kind::Eq(q) => q.process(chunk),
                 Kind::Formant(f) => f.process(chunk),
-                Kind::Shaper(s) => drive(chunk, spare, e, |io| s.process(io)),
+                Kind::Shaper(s) => drive(chunk, spare, e, |io| {
+                    u.outer.before(io);
+                    s.process(io);
+                    u.outer.after(io);
+                }),
                 Kind::Crush(c) => drive(chunk, spare, e, |io| c.process(io)),
                 Kind::Overdrive(o) => drive(chunk, spare, e, |io| o.process(io)),
             }
@@ -157,7 +171,7 @@ pub fn process(
                 r.at += n as u32;
                 if r.at.is_multiple_of(TICK) || r.at >= r.len {
                     let k = route_depth::lerp(r.from, r.to, (r.at as f32 / r.len as f32).min(1.0));
-                    tune(&mut u.kind, Tune::Effect(k), rate);
+                    tune(&mut u.kind, &mut u.outer, Tune::Effect(k), rate);
                 }
             }
             rest = tail;
@@ -190,10 +204,10 @@ fn drive(
 
 pub fn tune_unit(u: &mut Unit, t: Tune, ramp: Option<Ramp>, rate: u32) {
     u.ramp = ramp;
-    tune(&mut u.kind, t, rate);
+    tune(&mut u.kind, &mut u.outer, t, rate);
 }
 
-fn tune(kind: &mut Kind, t: Tune, rate: u32) {
+fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune, rate: u32) {
     match (kind, t) {
         (Kind::Filter(f), Tune::Filter(hz, k)) => {
             f.set_cutoff(hz, rate);
@@ -202,7 +216,9 @@ fn tune(kind: &mut Kind, t: Tune, rate: u32) {
         (Kind::Eq(q), Tune::Eq(bells)) => q.retune(bells, rate),
         (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(v), rate),
         (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => {
-            s.retune(curve(v.curve), tone(v), rate);
+            let new = shaper(v, rate);
+            s.retune(&new.core);
+            outer.retune(&new.outer);
         }
         (Kind::Crush(c), Tune::Effect(ir::EffectKind::Crush(v))) => c.set(reduction(v, rate)),
         (Kind::Overdrive(o), Tune::Effect(ir::EffectKind::Overdrive(v))) => o.set(voicing(v), rate),

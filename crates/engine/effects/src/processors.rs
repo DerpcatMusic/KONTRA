@@ -240,9 +240,9 @@ impl Wet for Rated<Shaper> {
         }
     }
 
-    // A memoryless curve between filters whose slowest pole (a 15 Hz
-    // high-pass) is below −120 dB after a quarter second: silent input for
-    // that long leaves it silent.
+    // A memoryless curve between filters whose slowest pole (a 12.5 Hz
+    // Butterworth high-pass) is down 120 dB after a quarter second: silent
+    // input for that long leaves it silent.
     fn memory(&self) -> Option<usize> {
         Some(self.1 as usize / 4)
     }
@@ -550,23 +550,13 @@ pub fn shaper(s: ir::Shaper, rate: u32) -> Shaper {
     Shaper::new(curve(s.curve), tone(s), rate)
 }
 
-/// The filters and gain around `s`'s curve.
+/// The filters around `s`'s curve.
 pub fn tone(s: ir::Shaper) -> drive::Tone {
-    let shelf = s.shelf.and_then(|b| {
-        let side = match b.shape {
-            ir::Shape::LowShelf => drive::Side::Low,
-            ir::Shape::HighShelf => drive::Side::High,
-            ir::Shape::Peak => return None,
-        };
-        Some((b.hz, b.gain_db, b.q, side))
-    });
     drive::Tone {
         pre_lowpass_hz: s.pre_lowpass_hz,
         lowpass_hz: s.lowpass_hz,
-        lowpass_q: s.lowpass_q,
         highpass_hz: s.highpass_hz,
-        shelf,
-        gain: s.gain,
+        sections: s.sections,
     }
 }
 
@@ -580,6 +570,7 @@ pub fn curve(c: ir::DriveCurve) -> drive::Curve {
         ir::DriveCurve::Tanh(x) => drive::Curve::Tanh(x),
         ir::DriveCurve::Atan(x) => drive::Curve::Atan(x),
         ir::DriveCurve::Saturate(x) => drive::Curve::Saturate(x),
+        ir::DriveCurve::Table { drive, points } => drive::Curve::Table { drive, points },
     }
 }
 

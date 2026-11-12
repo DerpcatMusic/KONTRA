@@ -1,42 +1,175 @@
-//! Tape Saturator (module 0x42) onto the engine's waveshaper: its saved
-//! record (gain, warmth, roll-off, quality at 0, 4, 8, 12; bindings table
-//! `fx_dynamics_dist_tape.tsv`) and the laws measured through Kontakt 8.13
-//! (oracle sweep 2026-11-12, every knob pinned per step: a 200 Hz sine ramp
-//! for the curve, white noise at −40 dBFS for the filters).
+//! Tape Saturator (module 0x42, `NI::KONTAKTFX::Tape`) onto the engine's
+//! waveshaper. Its saved record holds gain, warmth, roll-off and quality at
+//! 0, 4, 8, 12 (bindings table `fx_dynamics_dist_tape.tsv`). The structure
+//! is read from Kontakt 8.13's binary; no constant is fitted:
 //!
-//! - Curve: `x / √(1 + (d·x)²)` with `d = 0.152 · 10^(48·gain/20)`, the
-//!   knob's displayed 0..48 dB of drive with the makeup that keeps small
-//!   signals at unity, then +0.78 dB. Fit 0.17 dB RMS, 0.99 dB worst, over
-//!   545 half-cycles of gain 0, ¼, ½, ¾, 1; third harmonic within 2.5 dB.
-//! - Warmth: a low shelf at 1480 Hz, slope ½, of the displayed `6·w − 3` dB
-//!   (fit 0.11 dB RMS, 60 Hz–10 kHz).
-//! - Roll-off: a two-pole low-pass, `q` ½, at `11.6 + 12.1·r` kHz (the
-//!   display reads 12..20 kHz; fit 0.2–1.05 dB RMS, 3–19.5 kHz).
-//! - A 30 Hz Butterworth high-pass (0.17 dB RMS, 15–300 Hz).
+//! - Knobs (setter FUN_140ae1e10): gain → drive `300·10^(48·gain/20)`
+//!   (FUN_140ae1ee0); warmth → `10^((6·warmth − 3)/20)`; roll-off moves two
+//!   low-passes (FUN_140adff50).
+//! - Process (FUN_140ae1190), coefficients in FUN_140ae0200, with Quality
+//!   off at 48 kHz running twice the rate (FUN_140ae0fc0):
+//!   1. Base rate: a Butterworth high-pass designed at 25 Hz for the doubled
+//!      rate but run at the base rate, so at 12.5 Hz; a 17 Hz bump.
+//!   2. Doubled rate: a 26 kHz low-pass (Q 1.8), a first-order pre-emphasis
+//!      set at 20 kHz (its zero ~8.2 kHz, pole ~40 kHz), the same 26 kHz
+//!      low-pass again.
+//!   3. The curve: the 4097-point table at 0x144fc5510 read at `drive·|x|`
+//!      (clamped to 4096), times `1395.19/drive` (its slope at 0, so small
+//!      signals pass at unity).
+//!   4. Doubled rate: low-passes at `10·(1 + roll-off)` kHz (Q 0.7) and
+//!      `12 + 8·roll-off` kHz (Q 0.8); a 1 kHz differentiator into a 3.2 kHz
+//!      low-pass (Q 0.4), together one band-pass.
+//!   5. Base rate: a +1 dB first-order low shelf at 80 Hz; a first-order
+//!      20 Hz high-pass at −3 dB; then the output plus warmth times 27.18
+//!      times its 55 Hz one-pole low-pass: a first-order low shelf.
 //!
-//! Not copied: the native curve table (DAT_144fc5510) and its
-//! envelope-driven coefficient update; Quality's oversampling (its alias
-//! measured at −94 dB, so the switch is read and changes nothing); the
-//! 28–31 ms control ramps (a knob move retunes at the next block).
+//! Each stage is its analog prototype ([`ir::Section`]); the engine's own
+//! bilinear transform at twice its rate gives Kontakt's coefficients at
+//! 48 kHz. The pre-emphasis and the band-pass carry ratios of prewarped
+//! corners, evaluated at 96 kHz.
+//!
+//! Carried as is: the curve, as 65 of the table's points (every 64th; at
+//! most 0.01 dB from the full table). Not carried: Quality (twice the rate
+//! again, 25/4 Hz for the first high-pass) and the 30 ms control ramps;
+//! Kontakt at 96 kHz runs Tape without oversampling, the engine still at
+//! twice the rate.
 
+use ir::Stage::{In, Out, Post, Pre};
 use kontra_ir as ir;
+
+/// `num / den` in `s / (2π·hz)`.
+const fn section(hz: f32, num: [f32; 3], den: [f32; 3]) -> ir::Section {
+    ir::Section { hz, num, den }
+}
+
+/// A second-order low-pass at `hz`, `1/Q` as Kontakt stores it.
+const fn low_pass(hz: f32, inverse_q: f32) -> ir::Section {
+    section(hz, [1.0, 0.0, 0.0], [1.0, inverse_q, 1.0])
+}
+
+/// The stages no knob moves.
+static FIXED: [(ir::Stage, ir::Section); 8] = [
+    // 1/Q 0x144fcdc14.
+    (In, section(12.5, [0.0, 0.0, 1.0], [1.0, 1.414_427_2, 1.0])),
+    // Numerator term 0x144fcdc1c over two coincident poles.
+    (In, section(17.0, [1.0, 3.556_558_8, 1.0], [1.0, 2.0, 1.0])),
+    // 1/Q 0x144fcdc0c.
+    (Pre, low_pass(26_000.0, 0.555_555_6)),
+    // Zero term 0x144fcdc24 (2.981): `[1, k·(k + 2.981)] / [1, k²]`,
+    // `k = tan(π·20/96)`.
+    (
+        Pre,
+        section(20_000.0, [1.0, 2.876_247_7, 0.0], [1.0, 0.588_790_7, 0.0]),
+    ),
+    (Pre, low_pass(26_000.0, 0.555_555_6)),
+    // `(2π·3200 / 2π·1000)` prewarped, `tan(π·3.2/96) / tan(π/96)`; 1/Q
+    // 0x144fc40e0.
+    (
+        Post,
+        section(3_200.0, [0.0, 3.210_602_3, 0.0], [1.0, 2.5, 1.0]),
+    ),
+    // +1 dB: 0x144fcdc08 (0.122).
+    (Out, section(80.0, [1.122_018_5, 1.0, 0.0], [1.0, 1.0, 0.0])),
+    // −3 dB: 0x144fcdc10.
+    (Out, section(20.0, [0.0, 0.707_945_8, 0.0], [1.0, 1.0, 0.0])),
+];
+
+/// The curve's table (0x144fc5510), every 64th of its 4097 points.
+static CURVE: [f32; 65] = [
+    0.0,
+    0.045_825_79,
+    0.091_393_106,
+    0.136_465_46,
+    0.180_832_42,
+    0.224_318_39,
+    0.266_787_26,
+    0.308_142_84,
+    0.348_325_43,
+    0.387_305_4,
+    0.425_074_76,
+    0.461_638_42,
+    0.497_006,
+    0.531_185_5,
+    0.564_179_4,
+    0.595_983_5,
+    0.626_588_35,
+    0.655_982,
+    0.684_154_03,
+    0.711_098_9,
+    0.736_818_55,
+    0.761_322_8,
+    0.784_628_15,
+    0.806_754_4,
+    0.827_720_17,
+    0.847_537_6,
+    0.866_207_24,
+    0.883_714_7,
+    0.900_028_35,
+    0.915_098_55,
+    0.928_859_5,
+    0.941_232_44,
+    0.952_132_17,
+    0.961_477_9,
+    0.969_210_5,
+    0.975_412,
+    0.980_365_9,
+    0.984_323_14,
+    0.987_484_3,
+    0.990_009_5,
+    0.992_026_8,
+    0.993_638_16,
+    0.994_925_4,
+    0.995_953_7,
+    0.996_775,
+    0.997_431_2,
+    0.997_955_4,
+    0.998_374,
+    0.998_708_5,
+    0.998_975_7,
+    0.999_189_1,
+    0.999_359_67,
+    0.999_495_9,
+    0.999_604_6,
+    0.999_691_5,
+    0.999_761,
+    0.999_816_4,
+    0.999_860_7,
+    0.999_896_1,
+    0.999_924_4,
+    0.999_947,
+    0.999_965,
+    0.999_979_4,
+    0.999_991,
+    1.0,
+];
 
 /// The record's knobs, each 0..=1, as the engine's waveshaper.
 pub(crate) fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
     let [gain, warmth, rolloff] = [gain, warmth, rolloff].map(|x| x.clamp(0.0, 1.0));
+    let warmth = 10f32.powf((6.0 * warmth - 3.0) / 20.0);
     ir::EffectKind::Shaper(ir::Shaper {
         pre_lowpass_hz: None,
-        curve: ir::DriveCurve::Saturate(0.152 * 10f32.powf(48.0 * gain / 20.0)),
-        lowpass_hz: Some(11_600.0 + 12_100.0 * rolloff),
-        lowpass_q: Some(0.5),
-        highpass_hz: Some(30.0),
-        shelf: Some(ir::Bell {
-            shape: ir::Shape::LowShelf,
-            hz: 1_480.0,
-            q: 0.5,
-            gain_db: 6.0 * warmth - 3.0,
-        }),
-        gain: 10f32.powf(0.78 / 20.0),
+        // The table spans 4096 of the drive's units (0x149e6c5b0).
+        curve: ir::DriveCurve::Table {
+            drive: 300.0 * 10f32.powf(48.0 * gain / 20.0) / 4096.0,
+            points: &CURVE,
+        },
+        lowpass_hz: None,
+        highpass_hz: None,
+        sections: ir::Sections {
+            fixed: &FIXED,
+            moving: [
+                // 0x144fcdc7c, 0x144fcdc18.
+                Some((Post, low_pass(10_000.0 * (1.0 + rolloff), 1.428_571_4))),
+                // 0x144fcdc78, 0x144fcdc80, 0x144714940.
+                Some((Post, low_pass(8_000.0 * rolloff + 12_000.0, 1.25))),
+                // 0x144fcdc70 (27.18) at 55 Hz.
+                Some((
+                    Out,
+                    section(55.0, [1.0 + 27.183_832 * warmth, 1.0, 0.0], [1.0, 1.0, 0.0]),
+                )),
+            ],
+        },
     })
 }
 
@@ -76,19 +209,31 @@ pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 4] {
 mod tests {
     use super::*;
 
-    /// The measured curve: at gain ½ a 200 Hz tone at −2.4 dBFS comes out
-    /// 7.2 dB under its small-signal level (Kontakt: −5.9 vs +1.3 dB).
+    /// The constants written from prewarped ratios are those ratios.
     #[test]
-    fn half_gain_squashes_a_loud_tone_as_measured() {
-        let ir::EffectKind::Shaper(s) = tape(0.5, 0.5, 1.0) else {
+    fn the_ratios_are_the_prewarped_corners() {
+        let t = |hz: f64| (std::f64::consts::PI * hz / 96_000.0).tan();
+        let k = t(20_000.0);
+        let close = |a: f32, b: f64| (f64::from(a) - b).abs() < 1e-6;
+        let [_, _, _, (_, emphasis), _, (_, band), ..] = FIXED;
+        assert!(close(emphasis.num[1], k * (k + 2.981_071_949)));
+        assert!(close(emphasis.den[1], k * k));
+        assert!(close(band.num[1], t(3_200.0) / t(1_000.0)));
+    }
+
+    /// Small signals pass every curve setting at unity, and Kontakt's
+    /// ceiling holds: at full gain the curve tops out at `1395.19 / drive`.
+    #[test]
+    fn the_curve_is_unity_small_and_ceilinged_at_full_gain() {
+        let ir::EffectKind::Shaper(s) = tape(1.0, 0.5, 0.5) else {
             panic!("a shaper");
         };
-        let ir::DriveCurve::Saturate(d) = s.curve else {
-            panic!("saturate");
+        let ir::DriveCurve::Table { drive, points } = s.curve else {
+            panic!("a table");
         };
-        let (quiet, loud) = (0.063f32, 0.76f32);
-        let g = |x: f32| x / (1.0 + d * d * x * x).sqrt() / x;
-        let squash = 20.0 * (g(loud) / g(quiet)).log10();
-        assert!((squash + 7.2).abs() < 1.0, "{squash}");
+        let slope = (points[1] - points[0]) * 64.0;
+        let ceiling = 1.0 / (drive * slope);
+        let g = 300.0 * 10f32.powf(2.4);
+        assert!((ceiling / (1395.19 / g) - 1.0).abs() < 2e-3, "{ceiling}");
     }
 }
