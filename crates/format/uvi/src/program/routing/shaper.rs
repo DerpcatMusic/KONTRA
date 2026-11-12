@@ -56,6 +56,7 @@ pub(super) fn wave_shaper(p: Params, notes: &mut Notes) -> Result<Option<ir::Eff
         curve,
         lowpass_hz: None,
         highpass_hz: Some(p.num("PostFreq", 20.0)? as f32),
+        sections: ir::Sections::NONE,
     };
     Ok(Some(ir::Effect {
         kind: ir::EffectKind::Shaper(shaper),

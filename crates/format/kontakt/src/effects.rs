@@ -396,8 +396,10 @@ fn slot_effect(
             crate::replika::delay(r).map(ir::EffectKind::Delay)
         }),
         id => {
-            if id == 0x21 {
-                *model = crate::skreamer::model(&public);
+            match id {
+                0x21 => *model = crate::skreamer::model(&public),
+                0x42 => *model = crate::tape::model(&public),
+                _ => {}
             }
             crate::drive::effect(id, object.version, &public, at, notes)
         }
