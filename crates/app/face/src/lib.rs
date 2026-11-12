@@ -598,17 +598,6 @@ impl Live {
 }
 
 impl Live {
-    /// The user pressed (`value` 1) or let go (0) of `widget`, a native_ui
-    /// page's tap area: the controls the page set, as (UI id, value);
-    /// `None` for any other widget.
-    pub fn tap(&mut self, widget: usize, value: f64) -> Option<Vec<(i32, i64)>> {
-        let w = (self.tree.widgets.get_mut(widget)).filter(|w| w.name.starts_with(nui::TAP))?;
-        // Held while pressed, as a momentary button is: its release is a
-        // change the editor reports.
-        w.initial_value = value;
-        Some(self.native.as_mut()?.tap(w, value))
-    }
-
     /// What [`Live::refresh`] reads: the UI ids of the controls it shows,
     /// and the script cells of their arrays (a table's steps).
     #[must_use]

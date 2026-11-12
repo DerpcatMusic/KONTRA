@@ -573,4 +573,3 @@ mod tests {
         assert_eq!((err.module.as_str(), err.line), ("main.nui", Some(2)));
     }
 }
-

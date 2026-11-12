@@ -88,7 +88,6 @@ fn control(face: &Face, d: &Decl<'_>) -> Control {
     }
 }
 
-
 /// A page shown: its state, where its widgets start in the tree, its size
 /// and where its instances were placed.
 pub(crate) struct Shown {
@@ -237,3 +236,16 @@ const PAGE: ui::Size = ui::Size {
     width: 970.,
     height: 600.,
 };
+
+impl super::Live {
+    /// The user pressed (`value` 1) or let go (0) of `widget`, a native_ui
+    /// page's tap area: the controls the page set, as (UI id, value);
+    /// `None` for any other widget.
+    pub fn tap(&mut self, widget: usize, value: f64) -> Option<Vec<(i32, i64)>> {
+        let w = (self.tree.widgets.get_mut(widget)).filter(|w| w.name.starts_with(TAP))?;
+        // Held while pressed, as a momentary button is: its release is a
+        // change the editor reports.
+        w.initial_value = value;
+        Some(self.native.as_mut()?.tap(w, value))
+    }
+}
