@@ -311,21 +311,30 @@ impl Engine {
     /// millionths ([`kontra_vm::Action::RouteAmount`]).
     pub(crate) fn set_route_amount(&mut self, key: i32, micros: i32) {
         let v = micros as f32 / 1e6;
-        let mut any = false;
+        // The groups it moved: a route names one keygroup's group as a rule.
+        let (mut one, mut many) = (None, false);
         for (g, m) in self.route_names.of(key) {
             let Some(m) = self.groups.get_mut(g).and_then(|g| g.mods.get_mut(m)) else {
                 continue;
             };
-            any |= match &mut m.kind {
+            let set = match &mut m.kind {
                 ir::ModKind::Pitch { semitones, .. } => {
                     *semitones = v;
                     true
                 }
                 kind => depth(kind).map(|d| *d = v).is_some(),
             };
+            if set {
+                many |= one.is_some_and(|o| o != g);
+                one = Some(g);
+            }
         }
-        if any {
-            self.refresh_all(None);
+        match (one, many) {
+            (Some(_), true) => self.refresh_all(None),
+            (Some(g), false) => {
+                self.refresh_voices(None, |_, zone| zone.group as usize == g);
+            }
+            (None, _) => {}
         }
     }
 
