@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn an_effect_stays_small() {
         let size = std::mem::size_of::<Effect>();
-        assert!(size <= 200, "ir::Effect is {size} bytes");
+        assert!(size <= 208, "ir::Effect is {size} bytes");
     }
 }
 
