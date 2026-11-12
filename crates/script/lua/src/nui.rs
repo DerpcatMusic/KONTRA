@@ -340,7 +340,7 @@ mod tests {
                 return {
                     Theme = Theme,
                     Label = function(props)
-                        local theme = ui.use_context(Theme)()
+                        local theme = ui.use_context(Theme)().get()
                         return @ui.Text { text = props.text .. "/" .. theme }
                         .frame(width = ui.create_computed(function() return 40 end))
                         .on_tap_gesture(function() end)
@@ -354,12 +354,13 @@ mod tests {
                 local kontakt = require "kontakt"
                 return function()
                     local page = kontakt.connect_parameter("Header__Page")
+                    local theme, set_theme = ui.create_state("dark")
                     return @ui.VStack {
                         spacing = 2
                         @lib.Label { text = "a" }
                         @{ page:value() == 1 and @ui.Spacer{} }
                     }
-                    .context(key = lib.Theme, value = "dark")
+                    .context(key = lib.Theme, value = { get = theme, set = set_theme })
                 end"#,
             ),
         ]);
@@ -382,6 +383,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(tree.children.len(), 1);
+        // The binding's setter was passed, never called: the state holds.
+        let text = tree.children[0].prop("text");
+        assert_eq!(text, Some(&Prop::Text("a/dark".into())));
     }
 
     #[test]

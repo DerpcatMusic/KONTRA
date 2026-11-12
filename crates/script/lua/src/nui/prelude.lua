@@ -86,6 +86,15 @@ local states = {}
 local current = { path = "", hook = 0, context = {} }
 __dirty = false
 
+-- The functions native_ui made to be read (a state's, a computed, a
+-- context's): only these are read while drawing; any other function a
+-- page passes (a setter, a gesture's) is a callback, never called then.
+local getters = setmetatable({}, { __mode = "k" })
+local function getter(f)
+	getters[f] = true
+	return f
+end
+
 local function hook_key()
 	current.hook = current.hook + 1
 	return current.path .. "#" .. current.hook
@@ -101,9 +110,9 @@ function ui.create_state(initial)
 		states[key] = { value = initial }
 	end
 	local s = states[key]
-	return function()
+	return getter(function()
 		return s.value
-	end, function(v)
+	end), function(v)
 		if s.value ~= v then
 			s.value = v
 			__dirty = true
@@ -111,7 +120,7 @@ function ui.create_state(initial)
 	end
 end
 function ui.create_computed(f)
-	return f
+	return getter(f)
 end
 function ui.create_effect(f) end
 function ui.create_context(default)
@@ -123,14 +132,14 @@ function ui.use_context(c)
 	if v == nil then
 		v = c.default
 	end
-	return function()
+	return getter(function()
 		return v
-	end
+	end)
 end
 function ui.is_enabled()
-	return function()
+	return getter(function()
 		return true
-	end
+	end)
 end
 function ui.resign_focus() end
 setmetatable(ui, {
@@ -236,11 +245,11 @@ __callbacks = {}
 local expand
 
 -- A value a primitive draws with, its nodes expanded: a computed one
--- (a getter: no arguments) read now, a callback (gestures) numbered.
+-- (one of `getters`) read now, any other function numbered as a callback.
 local function plain(v, path, context, reactive)
 	if is_node(v) then
 		return expand(v, path, context)
-	elseif type(v) == "function" and reactive then
+	elseif type(v) == "function" and reactive and getters[v] then
 		local ok, value = pcall(v)
 		if ok and type(value) ~= "function" then
 			return plain(value, path, context)
