@@ -147,7 +147,10 @@ mod tests {
         let mut fade = Fade::NONE;
         fade.start(FadeTarget::End, 4, FadeCurve::QuarterSine);
         let out = run(&mut fade, 4);
-        for (got, want) in out.iter().zip([0.9239, 0.7071, 0.3827, 0.0]) {
+        for (got, want) in out
+            .iter()
+            .zip([0.9239, std::f32::consts::FRAC_1_SQRT_2, 0.3827, 0.0])
+        {
             assert!((got - want).abs() < 1e-4, "{out:?}");
         }
         fade = Fade::SILENT;
