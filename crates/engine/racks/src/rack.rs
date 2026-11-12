@@ -216,8 +216,8 @@ impl Rack {
                     };
                     // A script or the tempo may have moved it since the last block.
                     processor.set(kind, tempo);
-                    // Silence in, and silent out for longer than it remembers:
-                    // only silence can come out, so its clocks move on alone.
+                    // Silence in and nothing but silence stored for longer than
+                    // it remembers: its state is silent, so its clocks move on alone.
                     let still = is_silent(io);
                     if still && processor.memory().is_some_and(|m| *quiet >= m) {
                         processor.idle(wet);
@@ -226,7 +226,10 @@ impl Rack {
                     }
                     wet.copy_from_slice(io);
                     processor.process(wet);
-                    *quiet = if still && is_silent(wet) {
+                    // Its state, not only what it let out: a closed filter or
+                    // a zero output may hide a tail still ringing inside.
+                    let settled = processor.written() < SILENT;
+                    *quiet = if still && settled && is_silent(wet) {
                         quiet.saturating_add(io.len())
                     } else {
                         0
@@ -341,5 +344,129 @@ mod tests {
             loudest > 0.1 && worst < 1e-6 * loudest,
             "{worst} of {loudest}"
         );
+    }
+
+    /// A small line network (31 lines on an m-sequence, two units a side).
+    fn law() -> &'static ir::ReverbNetwork {
+        let mut sequence = [0u8; 31];
+        let mut s = 1u8;
+        for bit in &mut sequence {
+            *bit = s & 1;
+            s = (s >> 1) | ((s ^ (s >> 2)) & 1) << 4;
+        }
+        let pad = |pairs: &[(u8, f32)]| {
+            std::array::from_fn(|i| pairs.get(i).copied().unwrap_or((0, 0.0)))
+        };
+        let tap = |a: u8| {
+            std::array::from_fn(|i| (a + i as u8 * 3, if i % 2 == 0 { 0.4 } else { -0.4 }, 0.3))
+        };
+        Box::leak(Box::new(ir::ReverbNetwork {
+            growth: std::array::from_fn(|i| 20.0 + i as f32 * 3.0),
+            offset: std::array::from_fn(|i| 40.0 + i as f32 * 17.0),
+            sequence,
+            inputs: [
+                pad(&[(0, 1.0), (2, -1.0), (4, 1.0)]),
+                pad(&[(1, 1.0), (3, -1.0), (5, 1.0)]),
+            ],
+            inject_lead: 0,
+            taps: [tap(6), tap(7)],
+            units: [[29, 37, 41], [43, 47, 53], [59, 61, 67], [71, 73, 79]],
+            unit_count: 2,
+            unit_feedback: 0.9,
+            hf: [0.5, 0.95, 0.27],
+            level: [4.0, 0.5],
+            shelf_hz: 200.0,
+            rate: 44_100.0,
+            max_rate: 48_000.0,
+            glide_s: [0.05, 0.2],
+        }))
+    }
+
+    fn wet(kind: ir::EffectKind) -> ir::Effect {
+        ir::Effect {
+            kind,
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        }
+    }
+
+    /// A burst into `hidden` (a tail rings inside, none comes out), `quiet`
+    /// seconds of silence, then `open` lets the tail out: one second of what
+    /// the rack plays then. `gate` false: a rack that never sleeps.
+    fn reveal(hidden: ir::Effect, open: ir::Effect, quiet: f32, gate: bool) -> Vec<[f32; 2]> {
+        let mut rack = Rack::new(&[Some(hidden)], RATE, &[]);
+        let mut span = |rack: &mut Rack, io: &mut [[f32; 2]]| {
+            rack.process(io, &mut [], 120.0);
+            if !gate {
+                rack.quiet.fill(0);
+            }
+        };
+        let burst: Vec<[f32; 2]> = (0..4_800)
+            .map(|n| [((n * 7919 % 101) as f32 / 101.0) - 0.5; 2])
+            .collect();
+        for chunk in burst.chunks(SPAN) {
+            span(&mut rack, &mut chunk.to_vec());
+        }
+        for _ in 0..(quiet * RATE as f32) as usize / SPAN {
+            span(&mut rack, &mut [[0.0; 2]; SPAN]);
+        }
+        if let Some(slot) = rack.slots.first_mut() {
+            *slot = Some(open);
+        }
+        let mut out = vec![[0.0; 2]; RATE as usize];
+        out.chunks_mut(SPAN).for_each(|c| span(&mut rack, c));
+        out
+    }
+
+    /// What a later setting lets out of a hidden tail sounds as if the
+    /// slot never slept: sleeping asks whether its state is silent, not
+    /// whether its output was.
+    fn assert_revealed(hidden: ir::Effect, open: ir::Effect, quiet: f32) {
+        let a = reveal(hidden, open, quiet, true);
+        let b = reveal(hidden, open, quiet, false);
+        let worst = (a.iter().flatten().zip(b.iter().flatten()))
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        let loudest = b.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(
+            (1e-3..1.0).contains(&loudest) && worst < 1e-6 * loudest,
+            "{worst} of {loudest}"
+        );
+    }
+
+    #[test]
+    fn a_tail_behind_a_closed_high_cut_rings_on_when_it_opens() {
+        let reverb = |high_cut_hz| {
+            wet(ir::EffectKind::Reverb(ir::Reverb {
+                seconds: 8.0,
+                size: 1.0,
+                network: Some(ir::Network::Lines(law())),
+                damping: 0.2,
+                diffusion: 0.5,
+                predelay_ms: 0.0,
+                high_cut_hz,
+                low_shelf_db: 0.0,
+                stereo: 1.0,
+                modulation_ms: 2.0,
+                modulation_hz: 0.5,
+            }))
+        };
+        // Past the network's memory (its predelay alone is a second).
+        assert_revealed(reverb(0.0), reverb(12_000.0), 3.0);
+    }
+
+    #[test]
+    fn echoes_behind_a_closed_output_ring_on_when_it_opens() {
+        let echo = |out| {
+            let mut e = chorus();
+            if let ir::EffectKind::Delay(d) = &mut e.kind {
+                (d.time, d.depth_ms, d.spread_ms) = (ir::DelayTime::Ms(100.0), 1.0, 0.0);
+                d.second_head = false;
+                (d.feedback, d.output) = ([[0.95, 0.0], [0.0, 0.95]], [[out, 0.0], [0.0, out]]);
+            }
+            e
+        };
+        assert_revealed(echo(0.0), echo(1.0), 1.0);
     }
 }

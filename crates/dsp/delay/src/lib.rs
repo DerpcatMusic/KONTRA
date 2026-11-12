@@ -120,6 +120,8 @@ pub struct ModDelay {
     /// The steep low cut and the shelf, on the heads' sum.
     cut: Option<Biquad>,
     shelf: Option<Biquad>,
+    /// The loudest value the last [`Self::process`] wrote into the ring.
+    written: f32,
 }
 
 impl ModDelay {
@@ -144,6 +146,7 @@ impl ModDelay {
             hp: [[0.0; 2]; 2],
             cut: None,
             shelf: None,
+            written: 0.0,
         };
         d.set(s);
         d
@@ -236,6 +239,7 @@ impl ModDelay {
         let spread = [-s.spread_ms * per_ms, s.spread_ms * per_ms];
         let step = f64::from(s.lfo_hz / self.rate);
         let offsets = [0.0, f64::from(s.phase)];
+        let mut written = 0.0f32;
         for frame in io {
             delay += (target - delay) * self.glide;
             let mut y = [0.0; 2];
@@ -263,9 +267,10 @@ impl ModDelay {
             }
             let [a, b] = apply(s.input, *frame);
             let [c, d] = apply(s.feedback, y);
-            let line = [a + c, b + d];
+            let line = [a + c, b + d].map(flush);
+            written = line.iter().fold(written, |m, v| m.max(v.abs()));
             if let Some(slot) = self.ring.get_mut(self.at) {
-                *slot = line.map(flush);
+                *slot = line;
             }
             self.at += 1;
             if self.at >= self.ring.len() {
@@ -275,6 +280,22 @@ impl ModDelay {
             *frame = apply(s.output, y);
         }
         self.delay = Some(delay);
+        // The heads' filters hold state too, heard or not.
+        let held = self.lp.iter().chain(&self.hp).flatten();
+        let filters = [&self.cut, &self.shelf].into_iter().flatten();
+        let ringing = filters.into_iter().any(|f| !f.is_silent());
+        self.written = match ringing {
+            true => f32::INFINITY,
+            false => held.fold(written, |m, v| m.max(v.abs())),
+        };
+    }
+
+    /// The loudest value the last [`Self::process`] left in the ring and
+    /// the heads' filters (infinite while a filter rings): what may still
+    /// sound whether or not the output matrix lets it through now.
+    #[must_use]
+    pub fn written(&self) -> f32 {
+        self.written
     }
 }
 

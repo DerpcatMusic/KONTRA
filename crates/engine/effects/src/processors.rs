@@ -34,10 +34,17 @@ pub trait Wet: Send {
     /// The slot's settings as scripts left them, at the host's tempo,
     /// before each block. Never allocates.
     fn set(&mut self, _kind: ir::EffectKind, _tempo: f32) {}
-    /// Frames after which silent input leaves it silent, once its output
-    /// has been silent as long; `None`: it always runs.
+    /// Frames after which silent input leaves it silent, once nothing
+    /// louder than silence went into its state for as long; `None`: it
+    /// always runs.
     fn memory(&self) -> Option<usize> {
         None
+    }
+    /// The loudest value the last [`Wet::process`] wrote into its state
+    /// (its lines, rings and filters), heard or not: a muted output may
+    /// hide a tail a later setting lets out.
+    fn written(&self) -> f32 {
+        0.0
     }
     /// `silence.len()` silent frames pass unprocessed: its clocks (an LFO,
     /// a glide) move on as [`Wet::process`] would move them. `silence` is
@@ -50,7 +57,9 @@ impl Wet for Convolver {
         Convolver::process(self, io);
     }
 
-    // No clocks: silent input leaves nothing to move on.
+    // No clocks and no feedback: its state is its last `taps` inputs (and
+    // the sums made of them), so silent input alone settles it; the slot's
+    // output gain sits after it, in the rack. `written` stays 0.
     fn memory(&self) -> Option<usize> {
         Some(self.taps())
     }
@@ -143,6 +152,10 @@ impl Wet for Network {
         Some(Network::memory(self))
     }
 
+    fn written(&self) -> f32 {
+        Network::written(self)
+    }
+
     fn idle(&mut self, silence: &mut [[f32; 2]]) {
         Network::idle(self, silence);
     }
@@ -161,6 +174,10 @@ impl Wet for ModDelay {
 
     fn memory(&self) -> Option<usize> {
         Some(ModDelay::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        ModDelay::written(self)
     }
 
     fn idle(&mut self, silence: &mut [[f32; 2]]) {

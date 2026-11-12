@@ -81,7 +81,8 @@ struct Unit {
 }
 
 impl Unit {
-    fn tick(&mut self, w: usize, x: f32) -> f32 {
+    /// One frame; `written` keeps the loudest value it stored.
+    fn tick(&mut self, w: usize, x: f32, written: &mut f32) -> f32 {
         let [z0, z1, z2] = self.z;
         let y = x * self.q + z0 * self.r;
         let [m0, m1, m2, m3, m4, m5, m6, m7, m8] = self.m;
@@ -89,7 +90,9 @@ impl Unit {
         let cols = [[m0, m3, m6, b0], [m1, m4, m7, b1], [m2, m5, m8, b2]];
         let next = self.rings.iter_mut().zip(self.d).zip(cols);
         for (z, ((ring, d), [a, b, c, e])) in self.z.iter_mut().zip(next) {
-            ring.put(w, flush(a * z0 + b * z1 + c * z2 + e * x));
+            let v = flush(a * z0 + b * z1 + c * z2 + e * x);
+            *written = written.max(v.abs());
+            ring.put(w, v);
             *z = ring.at(w.wrapping_add(1), d);
         }
         y
@@ -197,6 +200,8 @@ pub struct Network {
     phasor: (f64, f64),
     rot: (f64, f64),
     w: usize,
+    /// The loudest value the last [`Self::process`] left in its state.
+    written: f32,
 }
 
 impl Network {
@@ -273,6 +278,7 @@ impl Network {
             phasor: (1.0, 0.0),
             rot: (w.cos(), w.sin()),
             w: 0,
+            written: 0.0,
         };
         for (i, line) in n.lines.iter_mut().enumerate() {
             line.sin = i % 2 == 0;
@@ -445,6 +451,7 @@ impl Network {
 
     /// Replaces `io` with the reverb (the wet path only).
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        self.written = 0.0;
         match self.pair.take() {
             Some(mut pair) => {
                 for chunk in io.chunks_mut(BLOCK) {
@@ -454,6 +461,17 @@ impl Network {
             }
             None => self.run(io),
         }
+        // The output filters hold state too, heard or not.
+        let held = self.shelf.iter().flatten().chain(&self.cuts);
+        self.written = held.fold(self.written, |m, v| m.max(v.abs()));
+    }
+
+    /// The loudest value the last [`Self::process`] wrote into its lines,
+    /// units and filters: what may still ring whether or not it is heard
+    /// (a closed high cut or a zero wet level hides it, not ends it).
+    #[must_use]
+    pub fn written(&self) -> f32 {
+        self.written
     }
 
     /// Host frames after which silent input leaves only silence: the
@@ -542,8 +560,9 @@ impl Network {
         let m = self.mean * sum;
         let at = w.wrapping_sub(self.inject_offset);
         for (line, &row) in self.lines.iter_mut().zip(&self.row) {
-            let u = m + self.half * t.get(usize::from(row) & 31).copied().unwrap_or(0.0);
-            line.ring.put(w, flush(u));
+            let u = flush(m + self.half * t.get(usize::from(row) & 31).copied().unwrap_or(0.0));
+            self.written = self.written.max(u.abs());
+            line.ring.put(w, u);
             line.ring
                 .add(at, if line.right { x[1] } else { x[0] } * line.inject);
         }
@@ -554,7 +573,7 @@ impl Network {
         });
         for (o, chain) in o.iter_mut().zip(&mut self.units) {
             for u in chain.iter_mut().take(self.unit_count) {
-                *o = u.tick(w, *o);
+                *o = u.tick(w, *o, &mut self.written);
             }
         }
         self.post(o)
