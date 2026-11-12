@@ -628,7 +628,7 @@ fn block_in(
             refused: s.notes_refused + s.events_refused + s.dropped,
             cut: s.voices_cut,
             missing: s.missing_frames,
-            slowest: if s.slowest.ns > last.slowest.ns {
+            slowest: if s.slowest.share(RATE) > last.slowest.share(RATE) {
                 s.slowest
             } else {
                 last.slowest

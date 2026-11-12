@@ -97,7 +97,10 @@ pub struct Stats {
 /// One block's time rendering, in ns, and the frames it rendered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Slowest {
+    /// The block's time rendering, in nanoseconds.
     pub ns: u64,
+    /// The frames that same block rendered: with `ns`, its share of its
+    /// deadline ([`Slowest::share`]).
     pub frames: u32,
 }
 

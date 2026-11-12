@@ -35,11 +35,13 @@ pub struct Readout {
 
 impl Readout {
     /// Takes a new look when half a second passed since the last.
+    /// Counts the slowest block of `fresh` stats, once each: every block
+    /// counts, not just the one before a look.
+    pub fn peak(&mut self, fresh: &Stats, rate: u32) {
+        self.slowest = self.slowest.max(fresh.slowest.share(f64::from(rate)));
+    }
+
     pub fn sample(&mut self, stats: &Stats, rack: &Rack) {
-        // Every block counts, not just the one before a look.
-        self.slowest = self
-            .slowest
-            .max(stats.slowest.share(f64::from(rack.rate())));
         let now = Instant::now();
         let since = self.at.map(|t| now - t);
         if since.is_some_and(|s| s < EVERY) {
@@ -134,16 +136,19 @@ mod tests {
             ns: 2_000_000,
             frames: 480,
         };
-        r.sample(
-            &Stats {
-                slowest: slow,
-                ..at(500_000_000, 1_000_000_000)
-            },
-            &rack,
-        );
+        let slow = Stats {
+            slowest: slow,
+            ..at(500_000_000, 1_000_000_000)
+        };
+        r.peak(&slow, 48_000);
         r.at = r.at.map(|t| t - EVERY);
-        r.sample(&at(500_000_000, 1_000_000_000), &rack);
+        r.sample(&slow, &rack);
         assert!((r.peak - 20.0).abs() < 1e-9, "{}", r.peak);
+        // No fresh stats since: the next span shows no peak, though the
+        // editor still holds the last stats.
+        r.at = r.at.map(|t| t - EVERY);
+        r.sample(&slow, &rack);
+        assert_eq!(r.peak, 0.0);
         assert_eq!(r.cache_mb, 128);
         if cfg!(target_os = "linux") {
             assert!(r.process_mb.is_some_and(|m| m > 0));

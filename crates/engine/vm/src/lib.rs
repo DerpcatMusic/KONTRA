@@ -243,16 +243,16 @@ impl Instance {
     }
 
     pub fn set_cell(&mut self, n: usize, value: i64) {
-        self.changes = self.changes.wrapping_add(1);
         if let Some(c) = self.cells.get_mut(n) {
             *c = value;
+            self.changes = self.changes.wrapping_add(1);
         }
     }
 
     pub fn set_text(&mut self, n: usize, value: Text) {
-        self.changes = self.changes.wrapping_add(1);
         if let Some(t) = self.texts.get_mut(n) {
             *t = value;
+            self.changes = self.changes.wrapping_add(1);
         }
     }
 
@@ -360,13 +360,13 @@ impl Instance {
 
     /// Runs a callback until it ends or waits.
     pub fn run(&mut self, program: &Program, co: CoId, host: &mut dyn HostApi) -> Step {
-        self.changes = self.changes.wrapping_add(1);
         let Self {
             cells,
             texts,
             coroutines,
             polys,
             faults,
+            changes,
             ..
         } = self;
         let Some(c) = coroutines
@@ -375,6 +375,7 @@ impl Instance {
         else {
             return Step::Done;
         };
+        *changes = changes.wrapping_add(1);
         let poly = polys
             .get_mut(c.poly)
             .map_or(&mut [][..], |p| &mut p.cells[..]);

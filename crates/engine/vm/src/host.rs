@@ -7,11 +7,17 @@ use crate::{Instance, Returns};
 /// One host call: the action, its arguments and the instance cells (for
 /// actions that take arrays by reference as `base, len` pairs).
 pub struct HostCall<'a> {
+    /// What the script asked for.
     pub action: Action,
     /// Opaque context the engine gave the callback ([`Instance::start`]), e.g. its event.
     pub context: u64,
+    /// The number arguments in order: an integer as it is, a real as its
+    /// `f64` bits, an array as its first cell and length.
     pub ints: &'a [i64],
+    /// The text arguments in order.
     pub texts: &'a [Text],
+    /// The script's number variables. An action writes only the cells its
+    /// arguments name (an array it fills, a control's value it sets).
     pub cells: &'a mut [i64],
     /// The script's text variables (a saved text read back mid-init).
     pub text_cells: &'a mut [Text],

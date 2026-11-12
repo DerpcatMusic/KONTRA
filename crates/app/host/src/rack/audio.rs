@@ -71,6 +71,9 @@ pub struct RackAudio {
     span_ns: u64,
     /// By part, the capture being read, a budget of cells a block.
     capturing: Box<[Option<Box<Capture>>]>,
+    /// The part whose capture is served first this block: it turns, so a
+    /// busy part never keeps the budget from the others.
+    capture_turn: usize,
     /// This block's time in the script callbacks a control or widget move
     /// ran: script work, as a note's callbacks, not the commands' own.
     ui_scripts_ns: u64,
@@ -106,6 +109,7 @@ impl RackAudio {
             busy_ns: 0,
             span_ns: 0,
             capturing: (0..MAX_PARTS).map(|_| None).collect(),
+            capture_turn: 0,
             ui_scripts_ns: 0,
         }
     }
@@ -558,7 +562,12 @@ impl RackAudio {
     /// as does one whose part was replaced or removed, unfinished.
     fn read_captures(&mut self, frames: usize) {
         let mut budget = frames.saturating_mul(CAPTURE_CELLS);
-        for (n, slot) in self.capturing.iter_mut().enumerate() {
+        let (first, parts) = (self.capture_turn, self.capturing.len());
+        self.capture_turn = (first + 1) % parts.max(1);
+        for n in (first..parts).chain(0..first) {
+            let Some(slot) = self.capturing.get_mut(n) else {
+                continue;
+            };
             let Some(c) = slot else { continue };
             let done = match self.parts.get_mut(n) {
                 Some(Some(p)) if p.generation == c.generation => c.read(&mut p.engine, &mut budget),

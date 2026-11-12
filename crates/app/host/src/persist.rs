@@ -174,15 +174,15 @@ struct Span {
     control: bool,
 }
 
-/// How far a [`Capture::read`] is: not begun, or the next number or text
-/// span and the cells of it already read, or done.
+/// How far a [`Capture::read`] is: not begun, the next number or text
+/// span and the cells of it already read, the next control, or done.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Cursor {
     #[default]
     Start,
     Numbers(usize, usize),
     Texts(usize, usize),
-    Controls,
+    Controls(usize),
     Done,
 }
 
@@ -298,19 +298,26 @@ impl Capture {
                 self.at = Cursor::Texts(at.0, at.1);
                 return false;
             }
-            self.at = Cursor::Controls;
+            self.at = Cursor::Controls(0);
         }
-        if self.at == Cursor::Controls {
-            // ponytail: a part's controls are read in one go (hundreds, not
-            // millions); chunk them too if a library has tens of thousands.
+        if let Cursor::Controls(mut next) = self.at {
             let fresh = |slot: u8| self.fresh.get(usize::from(slot)).copied().unwrap_or(false);
-            for &(slot, cell, to) in self.controls.iter().filter(|c| fresh(c.0)) {
-                *budget = budget.saturating_sub(CONTROL_WEIGHT);
+            while let Some(&(slot, cell, to)) = self.controls.get(next) {
+                if !fresh(slot) {
+                    next += 1;
+                    continue;
+                }
+                let Some(left) = budget.checked_sub(CONTROL_WEIGHT) else {
+                    self.at = Cursor::Controls(next);
+                    return false;
+                };
+                *budget = left;
                 if let (Some(saved), Some(value)) =
                     (engine.script_saved_in(slot, cell), self.values.get_mut(to))
                 {
                     *value = saved;
                 }
+                next += 1;
             }
             self.at = Cursor::Done;
         }

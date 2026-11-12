@@ -126,6 +126,7 @@ impl Snapshot {
             .collect();
         self.level = meters.master[0].max(meters.master[1]);
         if let Some(s) = rack.stats() {
+            self.readout.peak(&s, rack.rate());
             self.stats = s;
         }
         self.readout.sample(&self.stats, rack);
