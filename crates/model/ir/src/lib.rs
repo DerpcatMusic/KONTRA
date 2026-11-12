@@ -24,7 +24,8 @@ pub use drive::{
 };
 pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
-    IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
+    IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Reverb, Transient,
+    VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
 pub use kontra_law::{FormulaId, common};
@@ -689,6 +690,8 @@ pub enum EffectKind {
     Delay(Delay),
     /// A phaser (the wet path; `dry` mixes the input back).
     Phaser(Phaser),
+    /// A phaser of second-order allpasses, its input mixed in (`dry` 0).
+    Notches(Notches),
     /// A transient shaper, in place.
     Transient(Transient),
     /// Not carried, an insert: audio passes unchanged (its output gain trims
