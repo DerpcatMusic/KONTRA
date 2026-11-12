@@ -101,7 +101,7 @@ fn value(d: &Decl<'_>, c: &Control, v: f64) -> f64 {
 
 /// A page shown: its state, where its widgets start in the tree, its size
 /// and where its instances were placed.
-pub(in crate::ui) struct Shown {
+pub(crate) struct Shown {
     page: nui::Page,
     /// Each control by the page's id: its UI id, range, and whether the
     /// page reads it 0..1 across that range.

@@ -10,6 +10,8 @@ use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 use crate::perf_view::{View, ViewControl};
 
+pub mod perf_view;
+
 mod keybed;
 mod looks;
 pub mod lua;
@@ -18,12 +20,10 @@ mod picture;
 mod waves;
 mod widget;
 use kontra_ui_model as ui;
-pub use looks::Looks;
+pub use looks::{LOOK, Looks};
 pub use picture::{Library, meta as picture_meta};
 pub use waves::Waves;
 use widget::{Decl, widget};
-
-use crate::script::LOOK;
 
 /// Kontakt's instrument width in pixels when the script sets none.
 const DEFAULT_WIDTH: u32 = 633;
@@ -177,7 +177,7 @@ const STATE_FONTS: [&str; 6] = [
 
 /// Carried, or accepted without effect: NKS properties map a control for
 /// Komplete Kontrol hardware and have no view or sound of their own.
-pub(crate) fn mapped(par: &str) -> bool {
+pub fn mapped(par: &str) -> bool {
     MAPPED.contains(&par)
         || STATE_FONTS.contains(&par)
         || COLORS.iter().any(|(c, _)| *c == par)

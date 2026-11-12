@@ -144,3 +144,136 @@ fn a_cycling_group_plays_one_slot_per_note_in_turn() {
         assert!((out[128][0] - sum).abs() < 1e-3, "{key}: {:?}", out[128]);
     }
 }
+
+/// A zone `set_zone_par` moves into a wavetable group plays its sample as a
+/// table there, built off the audio thread; at load only that group's
+/// zones get one.
+#[test]
+fn a_zone_moved_into_a_wavetable_group_gets_its_table() {
+    let wavetable = ir::Wavetable {
+        position: 0.0,
+        phase: 0.0,
+        warps: [ir::Warp::OFF; 2],
+    };
+    let mut bank = zone(1);
+    (bank.id, bank.end) = (1, 4096);
+    let instrument = ir::Instrument {
+        samples: vec![sample("table", 500), sample("bank", 500)],
+        groups: vec![
+            ir::Group {
+                wavetable: Some(wavetable),
+                zones: vec![zone(0)],
+                ..ir::Group::DEFAULT
+            },
+            ir::Group {
+                zones: vec![bank],
+                ..ir::Group::DEFAULT
+            },
+        ],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (mut plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    let client = store.client();
+    assert!(kontra_prepare::tables(&plan, &client).is_none());
+    assert!(plan.zones[1].region.table.is_none());
+    assert!(plan.edit_zone(1, ir::ZonePar::Group, 0));
+    let plan = kontra_prepare::tables(&plan, &client).unwrap();
+    assert!(plan.zones[1].region.table.is_some());
+    assert_eq!(plan.zones[1].root, 69, "a table plays its cycle at A4");
+}
+
+/// A zone `set_zone_par` moves to another group takes what the loader gives
+/// that group's own zones: start rules, trigger, choke, key tracking.
+#[test]
+fn a_zone_moved_to_another_group_takes_that_groups_rules() {
+    let mut moved = zone(0);
+    moved.id = 7;
+    let mut released = group(25, vec![zone(0)]);
+    (released.trigger, released.keytrack, released.one_shot) = (ir::Trigger::Release, 0.0, true);
+    released.off_by = Some(0);
+    let instrument = ir::Instrument {
+        samples: vec![sample("a", 500)],
+        groups: vec![group(24, vec![moved]), released],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (mut plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    assert!(plan.edit_zone(7, ir::ZonePar::Group, 1));
+    let (z, own) = (&plan.zones[0], &plan.zones[1]);
+    assert_eq!(
+        (&z.start, z.trigger, z.off_by, z.keytrack, z.one_shot),
+        (
+            &own.start,
+            own.trigger,
+            own.off_by,
+            own.keytrack,
+            own.one_shot
+        )
+    );
+    assert_eq!(z.member, u16::MAX, "no mix route of its new group names it");
+}
+
+/// A zone's table reads as its current group says (Codex r4547464027): moved
+/// between wavetable groups it keeps its levels and takes the destination's
+/// read; moved to a group without one it plays its sample at its own root.
+#[test]
+fn a_moved_zones_table_follows_its_group() {
+    let read = |position| ir::Wavetable {
+        position,
+        phase: 0.0,
+        warps: [ir::Warp::OFF; 2],
+    };
+    let instrument = ir::Instrument {
+        samples: vec![sample("table", 500)],
+        groups: vec![
+            ir::Group {
+                wavetable: Some(read(0.0)),
+                zones: vec![zone(0)],
+                ..ir::Group::DEFAULT
+            },
+            ir::Group {
+                wavetable: Some(read(0.75)),
+                ..ir::Group::DEFAULT
+            },
+            ir::Group::DEFAULT,
+        ],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (mut plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    let levels = plan.zones[0].region.table.as_ref().unwrap().data.clone();
+    assert!(plan.edit_zone(0, ir::ZonePar::Group, 1));
+    let table = plan.zones[0].region.table.as_ref().unwrap();
+    assert_eq!(table.read.position, 0.75, "the destination's read");
+    assert!(Arc::ptr_eq(&table.data, &levels), "its levels reused");
+    assert!(plan.edit_zone(0, ir::ZonePar::Group, 2));
+    assert!(plan.zones[0].region.table.is_none());
+    assert_eq!(plan.zones[0].root, 60, "its own root again");
+}
+
+/// A zone's fades keep their lengths when a script moves its key range
+/// (Codex r4549008557): a high-key fade at 60..=70 moved to 80..=90 fades
+/// at 90, as the loader's own zone there does, and sounds across 80..=85.
+#[test]
+fn a_moved_zones_fades_follow_its_range() {
+    let faded = |keys| ir::Zone {
+        keys,
+        key_fade: (0, 5),
+        ..zone(0)
+    };
+    let mut moved = faded(60..=70);
+    moved.id = 7;
+    let instrument = ir::Instrument {
+        samples: vec![sample("a", 500)],
+        groups: vec![group(24, vec![moved, faded(80..=90)])],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (mut plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    assert!(plan.edit_zone(7, ir::ZonePar::HighKey, 90));
+    assert!(plan.edit_zone(7, ir::ZonePar::LowKey, 80));
+    let (z, own) = (&plan.zones[0], &plan.zones[1]);
+    assert_eq!((&z.keys, &z.crossfades), (&own.keys, &own.crossfades));
+    assert_eq!(z.crossfades[0].gain(85), 1.0);
+}

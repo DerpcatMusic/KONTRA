@@ -1,7 +1,7 @@
 //! The header follows the instrument's own preset controls by name. After
 //! the player changed a part, a text its script began to show or a file it
 //! loaded that names exactly one preset of the part's instrument (a
-//! snapshot of its base, or the instrument file itself) is
+//! snapshot or user preset of its base, or the instrument file itself) is
 //! the preset that plays, unchanged. Names compare without case, runs of
 //! spaces or leading list labels. No match keeps the name, marked changed.
 
@@ -31,7 +31,9 @@ fn key(name: &str) -> String {
 
 /// Whether `file` is a preset of the instrument at `base`.
 fn of(file: &Path, base: &Path) -> bool {
-    file == base || kontra_host::instrument::preset(file).is_some_and(|s| s.base == base)
+    file == base
+        || kontra_host::presets::read(file).is_some_and(|u| u.base == base)
+        || kontra_host::instrument::preset(file).is_some_and(|s| s.base == base)
 }
 
 /// Makes the preset each changed part's script just named the one it plays.

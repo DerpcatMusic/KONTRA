@@ -39,6 +39,7 @@ mod ui;
 mod voice_gain;
 mod voice_groups;
 mod voice_rack;
+mod zone_edits;
 
 use std::sync::Arc;
 
@@ -60,7 +61,9 @@ pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
-pub use kontra_plan::{EnginePar, EnginePars, Recall, Saved, ZoneFacts, files, zone_name};
+pub use kontra_plan::{
+    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, zone_name,
+};
 pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;
@@ -77,6 +80,7 @@ pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
+pub use zone_edits::ZoneEdit;
 
 use buses::BusState;
 use group_masks::GroupMasks;
@@ -130,6 +134,8 @@ struct Slot {
     warp: [f32; modulators::WARPS],
     /// Its chaotic LFOs' states ([`modulators::Chaos`]).
     chaos: [modulators::Chaos; modulators::WARPS],
+    /// Its envelopes' attack stretch, fixed at note-on ([`modulators::Age::stretch`]).
+    stretch: [f32; modulators::WARPS],
     #[cfg(feature = "trace")]
     pending_trace_cc: std::cell::Cell<u128>,
 }
@@ -153,6 +159,10 @@ pub struct Engine {
     init_impulses: Vec<impulse_knobs::InitImpulse>,
     /// Effects scripts asked to load since the host last drained them.
     requests: Vec<fx_types::EffectRequest>,
+    /// `set_zone_par` calls waiting for the host (zone_edits.rs).
+    zone_edits: Vec<ZoneEdit>,
+    /// Per script slot, the edits refused because that queue was full.
+    zone_refused: Box<[u32]>,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -226,9 +236,13 @@ pub struct Engine {
     reshaped: Box<[reshaped::Reshaped]>,
     /// The routes each script `#key` names.
     route_names: ir::RouteNames,
-    /// Shared EQ chains, and each zone's chain.
+    /// The group whose route amounts the running callback moved, and whether
+    /// others too: its voices refresh once, when it returns or waits.
+    routes_moved: Option<(usize, bool)>,
+    /// Shared EQ chains, and each group's chain (a zone plays through its
+    /// group's, so `set_zone_par` moving it needs no rebuild).
     chains: Vec<filters::Chain>,
-    zone_chain: Box<[Option<u16>]>,
+    group_chain: Box<[Option<u16>]>,
     /// Per group, the inserts that run on each voice.
     voice_units: Box<[Arc<[voice_rack::Unit]>]>,
     /// Per group, the first slot its summed voices run (group_racks.rs).
@@ -288,6 +302,7 @@ impl Engine {
                 pan: [0.0; 2],
                 warp: [0.0; modulators::WARPS],
                 chaos: [modulators::CHAOS_START; modulators::WARPS],
+                stretch: [1.0; modulators::WARPS],
                 #[cfg(feature = "trace")]
                 pending_trace_cc: std::cell::Cell::new(0),
             })
@@ -303,6 +318,7 @@ impl Engine {
             .max()
             .unwrap_or(0)
             .max(plan.groups.len());
+        let script_count = plan.scripts.len();
         let vms = plan
             .scripts
             .iter()
@@ -334,12 +350,15 @@ impl Engine {
             loaded: Vec::with_capacity(fx_types::REQUESTS),
             init_impulses: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
+            zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
+            zone_refused: vec![0; script_count].into(),
             stream,
             voices,
             buses,
             pedal: [false; 16],
             stats: Stats::default(),
             vms,
+            routes_moved: None,
             route_names: ir::RouteNames::of_names(
                 shared
                     .iter()
@@ -377,7 +396,7 @@ impl Engine {
             taps,
             main,
             chains: Vec::new(),
-            zone_chain: Box::new([]),
+            group_chain: Box::new([]),
             voice_units: Box::new([]),
             group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),

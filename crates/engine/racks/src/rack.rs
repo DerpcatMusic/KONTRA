@@ -297,6 +297,25 @@ mod tests {
         }
     }
 
+    /// A notch phaser at its swept, fed-back defaults (its input mixed in).
+    fn notches() -> ir::Effect {
+        ir::Effect {
+            kind: ir::EffectKind::Notches(ir::Notches {
+                sections: 6,
+                hz: 622.0,
+                q: 0.5,
+                octaves: 4.6,
+                q_octaves: 0.0,
+                feedback: 0.5,
+                rate: ir::Rate::Hz(0.9),
+                phase: 0.25,
+                mix: 1.0,
+                invert: false,
+            }),
+            ..chorus()
+        }
+    }
+
     /// A burst, seconds of silence, a burst: what the rack plays, span by
     /// span; `gate` false clears its silence count each span, so it never sleeps.
     fn play(rack: &mut Rack, gate: bool) -> Vec<[f32; 2]> {
@@ -322,7 +341,13 @@ mod tests {
     /// never slept.
     #[test]
     fn a_silent_slot_sleeps_and_wakes_in_step() {
-        let make = || Rack::new(&[Some(chorus())], RATE, &[]);
+        for effect in [chorus(), notches()] {
+            sleeps_and_wakes_in_step(effect);
+        }
+    }
+
+    fn sleeps_and_wakes_in_step(effect: ir::Effect) {
+        let make = || Rack::new(&[Some(effect)], RATE, &[]);
         let (mut gated, mut always) = (make(), make());
         let a = play(&mut gated, true);
         let b = play(&mut always, false);

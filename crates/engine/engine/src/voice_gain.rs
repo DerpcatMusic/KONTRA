@@ -194,10 +194,11 @@ impl Engine {
                 }
                 Some(sum)
             }
-            ir::Source::Envelope(n) => Some(modulators::envelope(
-                group()?.envelopes.get(usize::from(n))?,
-                age,
-            )),
+            ir::Source::Envelope(n) => {
+                let e = group()?.envelopes.get(usize::from(n))?;
+                let stretch = age.stretch.get(usize::from(n)).copied().unwrap_or(1.0);
+                Some(modulators::stretched(e, age, stretch))
+            }
             ir::Source::Lfo(n) => {
                 let g = group()?;
                 let mut lfo = *g.lfos.get(usize::from(n))?;
@@ -443,6 +444,46 @@ impl Engine {
         (f64::from(x) * range).round().clamp(-range, range) as i64
     }
 
+    /// How much its attack routes stretch each of the group's first
+    /// [`modulators::WARPS`] envelopes' first segment for a voice starting
+    /// now: read once, so a controller moving mid-attack times the next
+    /// note, not this one (as the amplitude envelope's attack).
+    // ponytail: envelopes past the eighth keep their drawn attack; widen
+    // WARPS if a group routes one.
+    pub(crate) fn stretches(&self, zone: &Zone, note: &Note) -> [f32; modulators::WARPS] {
+        let mut out = [1.0; modulators::WARPS];
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return out;
+        };
+        let reshaped = self.reshaped.get(zone.group as usize);
+        for ((n, stretch), e) in (0u8..).zip(&mut out).zip(&g.envelopes) {
+            let drawn = e.points.first().map_or(0.0, |p| p.ms.max(0.0));
+            if drawn <= 0.0 {
+                continue;
+            }
+            let mut ms = drawn;
+            let routes = reshaped.into_iter().flat_map(|r| r.attacking(n));
+            for m in routes.filter_map(|i| g.mods.get(i)).filter(|m| !m.bypass) {
+                if let ir::ModKind::Attack {
+                    source,
+                    intensity,
+                    floor_ms,
+                    ..
+                } = m.kind
+                    // Sources are read at note-on, as Kontakt reads them. An
+                    // envelope source is then its start level: its arm reads
+                    // the voice's latched stretch, never these routes, so an
+                    // envelope timing itself (or another) cannot recurse.
+                    && let Some(x) = self.unit(zone, source, note, Age::START)
+                {
+                    ms = time_route(ms, x, intensity, floor_ms);
+                }
+            }
+            *stretch = ms / drawn;
+        }
+        out
+    }
+
     /// The group's envelope for a voice, its attack and release scaled by
     /// their routes.
     /// ponytail: release routes read at note-on too; a source moving
@@ -459,6 +500,7 @@ impl Engine {
                     source,
                     intensity,
                     floor_ms,
+                    envelope: None,
                 } => (source, intensity, floor_ms, &mut e.attack),
                 ir::ModKind::Release {
                     source,
@@ -467,21 +509,11 @@ impl Engine {
                 } => (source, intensity, floor_ms, &mut e.release),
                 _ => continue,
             };
-            // Outside the signed families the law compiler (FUN_140873040)
-            // reads a bipolar source without `frange_bi`: 0..=1.
             let Some(x) = self.unit(zone, source, note, Age::START) else {
                 continue;
             };
-            let x = if intensity < 0.0 { 1.0 - x } else { x };
-            let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
-            let ms = *frames as f32 * 1000.0 / rate;
-            let ms = if floor_ms > 0.0 {
-                let span = ir::common::geometric(floor_ms, (ms + floor_ms) / floor_ms);
-                span.eval_unclamped(multiplier * multiplier * multiplier) - floor_ms
-            } else {
-                ms * multiplier
-            };
-            *frames = (ms.max(0.0) * rate / 1000.0).round() as u32;
+            let ms = time_route(*frames as f32 * 1000.0 / rate, x, intensity, floor_ms);
+            *frames = (ms * rate / 1000.0).round() as u32;
             #[cfg(feature = "trace")]
             self.trace_route(
                 zone,
@@ -541,4 +573,21 @@ fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
         (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
             .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
+}
+
+/// An envelope time `ms` as an attack or release route sets it from its
+/// source `x` (0..=1) at note-on: `m = 1 − (1 − x)·|intensity|` (`1 − x`
+/// for a negative intensity), then `ms·m`, or with a floor a knob linear in
+/// `ln(ms + floor)`. Outside the signed families the law compiler
+/// (FUN_140873040) reads a bipolar source without `frange_bi`: 0..=1.
+fn time_route(ms: f32, x: f32, intensity: f32, floor_ms: f32) -> f32 {
+    let x = if intensity < 0.0 { 1.0 - x } else { x };
+    let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
+    let ms = if floor_ms > 0.0 {
+        let span = ir::common::geometric(floor_ms, (ms + floor_ms) / floor_ms);
+        span.eval_unclamped(multiplier * multiplier * multiplier) - floor_ms
+    } else {
+        ms * multiplier
+    };
+    ms.max(0.0)
 }

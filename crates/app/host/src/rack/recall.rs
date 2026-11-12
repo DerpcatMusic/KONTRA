@@ -7,9 +7,33 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::instrument::Preset;
-use kontra_engine::{Engine, Plan, Recall, Saved};
+use kontra_engine::{Engine, Plan, Recall, Saved, ir};
 
 use super::{Command, Part, Rack, ScriptState};
+
+/// Puts the effect types and responses scripts loaded after `on init` into
+/// `plan`'s slots, before its `on init` runs (a load and a restart alike);
+/// those the plan took.
+pub(crate) fn put_slots(
+    plan: &mut Plan,
+    types: &[(ir::RackAt, u8, u16)],
+    responses: &[(ir::RackAt, u8, String)],
+    rate: u32,
+) -> crate::state::LiveSlots {
+    let types = (types.iter().copied())
+        .filter(|&(at, slot, ty)| plan.load_type(at, slot, ty))
+        .collect();
+    let responses = (responses.iter())
+        .filter(|(at, slot, name)| plan.load_response(*at, *slot, name, rate))
+        .cloned()
+        .collect();
+    (types, responses)
+}
+
+/// `a` and `b` hold the same entries, in any order.
+fn same<T: PartialEq>(a: &[T], b: &[T]) -> bool {
+    a.len() == b.len() && a.iter().all(|x| b.contains(x))
+}
 
 impl Rack {
     /// Recalls `preset` into `part` when the part plays the preset's base
@@ -61,6 +85,86 @@ impl Rack {
         true
     }
 
+    /// The preset at `path` played by `part`: recalled into it when it plays
+    /// its base, else a user preset loads with its values and its scripts'
+    /// effect types and responses. None for any other file.
+    pub(super) fn load_preset(
+        &mut self,
+        part: usize,
+        path: &Path,
+    ) -> Option<Result<(), Box<dyn std::error::Error>>> {
+        let preset = crate::instrument::preset(path).or_else(|| self.user_preset(part, path));
+        if let Some(preset) = preset
+            && self.recall(part, &preset, Some(path))
+        {
+            return Some(Ok(()));
+        }
+        let user = crate::presets::read(path)?;
+        let (types, responses) = crate::state::live_slots(&user.slot_types, &user.slot_responses);
+        Some(self.load_saved(part, path, &user.scripts, &types, &responses))
+    }
+
+    /// The user preset at `path` as a [`Preset`] for `part`: its values by
+    /// the slot each of the part's scripts sits in. None for other files,
+    /// and when its effect types or responses differ from the part's (those
+    /// only a load puts in).
+    pub(crate) fn user_preset(&self, part: usize, path: &Path) -> Option<Preset> {
+        let user = crate::presets::read(path)?;
+        let p = self.parts.get(part)?.as_ref()?;
+        let (types, responses) = crate::state::live_slots(&user.slot_types, &user.slot_responses);
+        if !(same(&types, &p.slot_types) && same(&responses, &p.slot_responses)) {
+            return None;
+        }
+        let slots = &p.script.slots;
+        let mut saved = vec![Vec::new(); slots.iter().max().map_or(0, |m| m + 1)];
+        for (slot, values) in slots.iter().zip(user.scripts) {
+            if let Some(s) = saved.get_mut(*slot) {
+                *s = values;
+            }
+        }
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+        Some(Preset {
+            name: name.unwrap_or_default(),
+            base: user.base,
+            saved,
+        })
+    }
+
+    /// Saves what `part` plays as user preset `name` of `library` under
+    /// `folder` (over one of that name only with [`Overwrite::Replace`]),
+    /// which it then plays; the file's path.
+    ///
+    /// [`Overwrite::Replace`]: crate::presets::Overwrite::Replace
+    ///
+    /// # Errors
+    /// As [`crate::presets::save`], and when the part plays nothing.
+    pub fn save_preset(
+        &mut self,
+        part: usize,
+        folder: &Path,
+        library: &str,
+        name: &str,
+        overwrite: crate::presets::Overwrite,
+    ) -> std::io::Result<std::path::PathBuf> {
+        let scripts = self.saved_scripts(part);
+        let p = self.parts.get(part).and_then(Option::as_ref);
+        let p = p.ok_or_else(|| std::io::Error::other("no instrument in this part"))?;
+        let base = p.source.clone();
+        let base = base.ok_or_else(|| std::io::Error::other("no instrument in this part"))?;
+        let (slot_types, slot_responses) =
+            crate::state::saved_slots(&p.slot_types, &p.slot_responses);
+        let preset = crate::presets::UserPreset {
+            version: crate::presets::VERSION,
+            base,
+            scripts,
+            slot_types,
+            slot_responses,
+        };
+        let path = crate::presets::save(folder, library, name, &preset, overwrite)?;
+        self.set_preset(part, &path);
+        Ok(path)
+    }
+
     /// `part` plays the preset at `path` as saved there (named by its file,
     /// not modified): a script reached it, or it was saved or renamed.
     pub fn set_preset(&mut self, part: usize, path: &Path) {
@@ -70,6 +174,28 @@ impl Rack {
                 .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
             p.path = Some(path.to_owned());
             p.modified = false;
+        }
+    }
+
+    /// The user preset file `from` was renamed to `to`, or deleted (None):
+    /// every part playing it follows, keeping its changed mark; a part
+    /// whose file is gone plays on as its base instrument, changed.
+    pub fn preset_moved(&mut self, from: &Path, to: Option<&Path>) {
+        for p in self.parts.iter_mut().flatten() {
+            if p.path.as_deref() != Some(from) {
+                continue;
+            }
+            match to {
+                Some(to) => {
+                    p.path = Some(to.to_owned());
+                    let stem = to.file_stem().map(|s| s.to_string_lossy().into_owned());
+                    p.name = stem.unwrap_or_default();
+                }
+                None => {
+                    p.path.clone_from(&p.source);
+                    p.modified = true;
+                }
+            }
         }
     }
 
@@ -88,20 +214,26 @@ impl Rack {
             return;
         };
         let mut plan = plan.clone();
+        // The part's plan is as it loaded: what its scripts loaded since
+        // goes in as a load puts it.
+        let (slot_types, slot_responses) =
+            put_slots(&mut plan, &old.slot_types, &old.slot_responses, self.rate);
         for (script, saved) in plan.scripts.iter_mut().zip(saved) {
             (script.restore, script.restore_texts) = (saved.ints, saved.texts);
         }
         let plan = Arc::new(plan);
-        let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
+        let mut engine = Engine::new(plan, self.store.client(), self.rate);
+        super::requests::init_tables(&mut engine, &self.store.client());
         let pages: Vec<Option<kontra_lua::Ui>> = old.faces.iter().map(|_| None).collect();
-        let view = crate::view::View::of(&old.faces, &pages, &engine, old.path.as_deref());
+        let near = old.source.as_deref().or(old.path.as_deref());
+        let view = crate::view::View::of(&old.faces, &pages, &engine, near);
         let info = Part {
             recall: engine.recall_law(),
             sounds: crate::sound::Sounds::new(self.rate, engine.group_sounds()),
             view,
-            plan: Some(plan),
-            slot_types: Vec::new(),
-            slot_responses: Vec::new(),
+            plan: Some(Arc::clone(engine.plan())),
+            slot_types,
+            slot_responses,
             script: ScriptState {
                 vars: old.script.vars,
                 loaded,

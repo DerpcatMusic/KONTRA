@@ -40,8 +40,9 @@ const COMMANDS_SHARE: f64 = 0.05;
 /// for them as for every program.
 const KNOWN_SLOW: [(&str, &str); 1] = [(
     "W Strings Harmonic",
-    "a ui_control callback of its Lua machine runs 3.0-3.7 s with no host calls: \
-     Lua tracebacks walking package.loaded (#1325)",
+    "its own MasterPitchBend `changed` checks 55,872 pitch connections and sets \
+     6,984 route amounts in one callback: ~10 ms, of which the library's loop is \
+     5.3 ms even in bare Luau; UVI runs `changed` as real-time code too",
 )];
 
 /// Below this in every sample after its note-on, a note never sounded.
@@ -663,6 +664,7 @@ fn state(path: PathBuf) -> String {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     saved.write()

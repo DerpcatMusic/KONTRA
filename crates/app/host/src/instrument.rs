@@ -41,6 +41,22 @@ pub fn read_saved(
     path: &Path,
     saved: &[Vec<String>],
 ) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+    // A user preset: its base with its values, unless a project gave its own.
+    if let Some(user) = crate::presets::read(path) {
+        let saved = if saved.is_empty() {
+            &user.scripts
+        } else {
+            saved
+        };
+        let mut out = read_saved(&user.base, saved)?;
+        for (script, saved) in out.scripts.iter_mut().zip(saved) {
+            script.saved.clone_from(saved);
+        }
+        if let Some(name) = path.file_stem() {
+            out.name = name.to_string_lossy().into_owned();
+        }
+        return Ok(out);
+    }
     if kontra_format_uvi::is_uvi(path) {
         // The load pass runs once per script, in order.
         let next = std::cell::Cell::new(0);
@@ -130,8 +146,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         }
         let set: Vec<&str> = conditions.iter().map(String::as_str).collect();
         let view = crate::perf_view::find(&script.data).map(|(_, v)| v);
-        let view: Vec<&str> = (view.iter().flat_map(|v| &v.controls))
-            .map(|c| c.name.as_str())
+        let view: Vec<(&str, &[i32])> = (view.iter().flat_map(|v| &v.controls))
+            .map(|c| (c.name.as_str(), c.params.as_slice()))
             .collect();
         match kontra_ksp::compile_with_view(&script.source, &set, &view) {
             Ok(compiled) => {

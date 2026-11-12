@@ -358,6 +358,13 @@ fn a_legato_waits_its_own_hold_and_a_legato_script_keeps_the_order() {
 /// A DC part whose script loads a high-pass into insert 0 in `on init`
 /// and empties the slot again from `on note`, as Shreddage loads an EQ.
 fn effect_loading(store: &mut Store) -> Box<Engine> {
+    let plan = effect_plan(store, 7, 0);
+    Box::new(Engine::new(Arc::new(plan), store.client(), RATE))
+}
+
+/// A part's plan whose script loads effect type `init` (7, a high-pass;
+/// 0 empties) into insert slot 0 in `on init` and `note` on each note.
+fn effect_plan(store: &mut Store, init: u16, note: u16) -> Plan {
     use kontra_engine::ir;
     let mut plan = plan_of(store, 0.5);
     plan.inserts = vec![None];
@@ -388,18 +395,61 @@ fn effect_loading(store: &mut Store) -> Box<Engine> {
     };
     plan.slot_shapes.types = vec![ty(0, None), ty(7, Some(effect))];
     let script = kontra_ksp::compile(
-        "on init
-            declare $a
-            $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 7, -1, 0, 1)
-        end on
-        on note
-            $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 0, -1, 0, 1)
-        end on",
+        &format!(
+            "on init
+                declare $a
+                $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, {init}, -1, 0, 1)
+            end on
+            on note
+                $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, {note}, -1, 0, 1)
+            end on"
+        ),
         &[],
     )
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
-    Box::new(Engine::new(Arc::new(plan), store.client(), RATE))
+    plan
+}
+
+/// A preset recalled by restarting the part's engine keeps the effects its
+/// script loaded since the part loaded: the restart's plan has them.
+#[test]
+fn a_restarted_recall_keeps_the_effects_a_script_loaded_after_init() {
+    let (mut rack, mut audio) = rack();
+    let plan = Arc::new(effect_plan(rack.store_mut(), 0, 7));
+    let engine = Box::new(Engine::new(
+        Arc::clone(&plan),
+        rack.store_mut().client(),
+        RATE,
+    ));
+    let base = Some(std::path::PathBuf::from("dc.nki"));
+    let p = Part {
+        path: base.clone(),
+        source: base,
+        plan: Some(plan),
+        ..part("a")
+    };
+    rack.install(0, engine, p);
+    play(&mut audio, &[(0, note(0))]);
+    rack.tick();
+    let high = |rack: &Rack| {
+        let p = rack.parts()[0].as_ref().unwrap();
+        let slot = p
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.inserts.first().cloned());
+        (p.slot_types.clone(), slot.flatten().is_some())
+    };
+    // Type 7 is the plan's second slot type.
+    let loaded = vec![(kontra_engine::ir::RackAt::Inserts, 0, 1)];
+    assert_eq!(high(&rack).0, loaded, "the note's load is recorded");
+    let preset = kontra_host::instrument::Preset {
+        name: "b".into(),
+        base: "dc.nki".into(),
+        saved: Vec::new(),
+    };
+    assert!(rack.recall(0, &preset, None));
+    assert_eq!(high(&rack), (loaded, true), "the restart's plan has it");
 }
 
 #[test]
@@ -894,6 +944,34 @@ fn a_changed_preset_saves_as_changed_until_a_preset_is_picked() {
     );
 }
 
+/// A user preset renamed or deleted moves every part that plays it, by
+/// one path: renamed, they keep their changed mark; deleted, they play on
+/// as their base instrument, changed.
+#[test]
+fn a_renamed_or_deleted_user_preset_moves_every_part_playing_it() {
+    use std::path::Path;
+    let (mut rack, _audio) = rack();
+    for part in [0, 1] {
+        let instrument = snapshot_of(1, &[]);
+        (rack.load_ir(part, instrument, Some("u/Mine.kontra".into()))).unwrap();
+    }
+    rack.set_modified(1);
+    let playing = |rack: &Rack| {
+        (rack.parts().iter().flatten())
+            .map(|p| (p.path.clone().unwrap(), p.name.clone(), p.modified))
+            .collect::<Vec<_>>()
+    };
+    rack.preset_moved(
+        Path::new("u/Mine.kontra"),
+        Some(Path::new("u/Yours.kontra")),
+    );
+    let yours = |modified| ("u/Yours.kontra".into(), "Yours".to_owned(), modified);
+    assert_eq!(playing(&rack), [yours(false), yours(true)]);
+    rack.preset_moved(Path::new("u/Yours.kontra"), None);
+    let paths: Vec<_> = playing(&rack).into_iter().map(|(p, _, m)| (p, m)).collect();
+    assert_eq!(paths, [("a.nki".into(), true), ("a.nki".into(), true)]);
+}
+
 /// A folder of this test process alone, removed when dropped (also when
 /// an assertion fails).
 struct Scratch(std::path::PathBuf);
@@ -1110,4 +1188,68 @@ fn an_array_loaded_in_init_saves_one_ended_line_per_value() {
         saved.contains(&"!names first\nsecond\n".to_owned()),
         "{saved:?}"
     );
+}
+
+/// A callback's `set_zone_par` calls reach the control side as one batch,
+/// are applied together to the part's plan off the audio thread, and swap
+/// in: the held note's zone left its group and fades, the next note-on plays
+/// the zone through its new group (gain 2) at its new key.
+#[test]
+fn a_callbacks_zone_edits_apply_together_off_audio_and_swap_in() {
+    let (mut rack, mut audio) = rack();
+    let store = rack.store_mut();
+    let mut zones = plan_of(store, 0.5).zones;
+    let mut other = zones[0].clone();
+    (other.id, other.group, other.keys) = (1, 1, 100..=100);
+    zones[0].keys = 60..=60;
+    zones.push(other);
+    let mut plan = Plan::new(zones, 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.groups[1].level.gain = 2.0;
+    let script = kontra_ksp::compile(
+        "on note
+            if ($EVENT_NOTE = 60)
+                set_zone_par(0, $ZONE_PAR_GROUP, 1)
+                set_zone_par(0, $ZONE_PAR_LOW_KEY, 72)
+                set_zone_par(0, $ZONE_PAR_HIGH_KEY, 72)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let plan = Arc::new(plan);
+    let engine = Box::new(Engine::new(Arc::clone(&plan), store.client(), RATE));
+    rack.install(
+        0,
+        engine,
+        Part {
+            plan: Some(plan),
+            ..part("z")
+        },
+    );
+    let [held, _] = play(&mut audio, &[(0, note(0))]);
+    assert!((held - 0.5).abs() < 1e-3, "{held}");
+    rack.tick();
+    let p = rack.parts()[0].as_ref().unwrap();
+    let zone = &p.plan.as_ref().unwrap().zones[0];
+    assert_eq!((zone.group, zone.keys.clone()), (1, 72..=72));
+    let [gone, _] = play(&mut audio, &[]);
+    assert!(gone.abs() < 1e-4, "{gone}");
+    let at = |key| match note(0) {
+        Event::NoteOn {
+            note,
+            velocity,
+            tune,
+        } => Event::NoteOn {
+            note: HostNote { key, ..note },
+            velocity,
+            tune,
+        },
+        e => e,
+    };
+    let [moved, _] = play(&mut audio, &[(0, at(72))]);
+    assert!((moved - 1.0).abs() < 1e-3, "{moved}");
 }

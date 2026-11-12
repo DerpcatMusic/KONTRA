@@ -61,7 +61,9 @@ pub enum ModKind {
     /// `source × depth` of the zone's [`Zone::start_mod`](crate::Zone::start_mod) frames added to
     /// where its voices start, read at note-on.
     SampleStart { source: Source, depth: f32 },
-    /// Scales the [`Group::envelope`](crate::Group::envelope) attack `t` at note-on by
+    /// Scales the attack `t` of the [`Group::envelope`](crate::Group::envelope)
+    /// (`envelope` none) or of the group's breakpoint envelope `envelope`
+    /// (its first segment) at note-on by
     /// `m = 1 − (1 − x)·|intensity|` (`x` read at note-on, `1 − x` for a
     /// negative intensity): `t·m` when `floor_ms` is 0, else as a knob linear
     /// in `ln(t + floor_ms)`, `floor_ms·((t + floor_ms)/floor_ms)^(m³) − floor_ms`.
@@ -69,8 +71,9 @@ pub enum ModKind {
         source: Source,
         intensity: f32,
         floor_ms: f32,
+        envelope: Option<u8>,
     },
-    /// As [`ModKind::Attack`], on the release time.
+    /// As [`ModKind::Attack`], on the amplitude envelope's release time.
     Release {
         source: Source,
         intensity: f32,

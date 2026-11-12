@@ -12,7 +12,7 @@ use super::super::Builder;
 
 /// What a node draws with, inherited from the modifiers around it.
 #[derive(Clone, Copy, Debug)]
-pub(in crate::ui) struct Env {
+pub(crate) struct Env {
     font: f64,
     color: [f64; 4],
     opacity: f64,
@@ -237,7 +237,7 @@ fn stack(bld: &mut Builder<'_>, n: &Node, axis: Axis, room: Size, env: Env) -> (
 /// inherited, its widgets (`start..end`), and how many slots inside it
 /// follow it in [`Builder::nui`].
 #[derive(Clone, Debug)]
-pub(in crate::ui) struct Slot {
+pub(crate) struct Slot {
     pub(super) path: String,
     pub(super) rect: ui::Rect,
     pub(super) env: Env,

@@ -10,6 +10,8 @@ mod controls;
 mod mapping;
 mod mixer;
 mod part;
+mod preset;
+pub use preset::{PresetEdit, USER};
 mod rack;
 mod report;
 mod settings;
@@ -255,6 +257,8 @@ pub struct View {
     /// Preset folders folded shut.
     pub folded: Vec<String>,
     pub sheet: Option<Sheet>,
+    /// The name typed in a preset sheet.
+    pub preset_name: String,
     /// The id of the open popup menu.
     pub menu: Option<String>,
     pub mixer_wide: bool,
@@ -312,6 +316,12 @@ pub const FACE_SCALES: [f64; 4] = [0., 1., 1.5, 2.];
 pub enum Sheet {
     Settings,
     About,
+    /// Name what a part plays as a user preset.
+    SavePreset(usize),
+    /// Name the user preset a part plays anew.
+    RenamePreset(usize),
+    /// Confirm deleting the user preset a part plays.
+    DeletePreset(usize),
 }
 
 /// What the user asked for this frame, for the host to carry out.
@@ -336,6 +346,11 @@ pub enum Action {
     Step {
         part: usize,
         by: i32,
+    },
+    /// The player's own preset of a part, saved, renamed or deleted.
+    Preset {
+        part: usize,
+        edit: PresetEdit,
     },
     Volume(usize, f64),
     Pan(usize, f64),
@@ -631,6 +646,9 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
     let (title, content) = match which {
         Sheet::Settings => ("Settings", settings::view(ui, app, out)),
+        Sheet::SavePreset(n) | Sheet::RenamePreset(n) | Sheet::DeletePreset(n) => {
+            preset::sheet(ui, app, n, which, out)
+        }
         Sheet::About => (
             "About",
             col![

@@ -40,6 +40,45 @@ pub(crate) fn skreamer(tone: f32, drive: f32, bass: f32, bright: f32, mix: f32) 
     })
 }
 
+/// The saved record's knobs as a script moves them: every move rebuilds
+/// the overdrive from all five through [`skreamer`].
+pub(crate) fn model(public: &[u8]) -> Option<ir::KnobModel> {
+    use ir::SlotKnob::{Knob, Mix};
+    let saved = (0..5)
+        .map(|i| {
+            Some(f32::from_le_bytes(
+                public.get(4 * i..4 * i + 4)?.try_into().ok()?,
+            ))
+        })
+        .collect::<Option<Box<[f32]>>>()?;
+    Some(ir::KnobModel {
+        knobs: [Knob(0), Knob(1), Knob(2), Knob(3), Mix].into(),
+        saved,
+        build: |p| {
+            let [tone, drive, bass, bright, mix] = *p else {
+                return None;
+            };
+            Some(skreamer(tone, drive, bass, bright, mix))
+        },
+    })
+}
+
+/// The KSP names of [`model`]'s knobs. Each is the record's field as set
+/// (bindings table `fx_dynamics_dist_tape.tsv`); Kontakt 8.13.1 displays
+/// each as 0..100 % in a straight line (sweep `sk-tp-sweep/sweep.tsv`).
+pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
+    use ir::KnobTarget::Slot;
+    use ir::SlotKnob::{Knob, Mix};
+    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    [
+        ("$ENGINE_PAR_SK_TONE", Slot(Knob(0)), unit()),
+        ("$ENGINE_PAR_SK_DRIVE", Slot(Knob(1)), unit()),
+        ("$ENGINE_PAR_SK_BASS", Slot(Knob(2)), unit()),
+        ("$ENGINE_PAR_SK_BRIGHT", Slot(Knob(3)), unit()),
+        ("$ENGINE_PAR_SK_MIX", Slot(Mix), unit()),
+    ]
+}
+
 const Q: f32 = 32_768.0;
 
 /// The clipping curve's values (the table at 0x144f3a100 interleaves each
@@ -90,6 +129,29 @@ mod tests {
             let index = 1_000.0 + n as f32 / 10.0;
             assert_eq!(table(index), (index / 60.0 - 20.0).exp2(), "index {index}");
         }
+    }
+
+    /// A script's SK_DRIVE moves the record's drive field, and the model
+    /// rebuilds the same overdrive the saved record reads as.
+    #[test]
+    fn sk_drive_moves_the_saved_drive() {
+        let public: Vec<u8> = [0.1f32, 0.2, 0.3, 0.4, 0.5]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        let model = model(&public).unwrap();
+        let drive = |p: &[f32]| match (model.build)(p) {
+            Some(ir::EffectKind::Overdrive(o)) => o.drive,
+            _ => panic!("an overdrive"),
+        };
+        let mut p = model.saved.to_vec();
+        assert_eq!(drive(&p), table(199.315_67 * 0.2 + 1_550.795_7) * 4.0);
+        let (_, ir::KnobTarget::Slot(knob), _) = rows()[1] else {
+            panic!("a slot knob");
+        };
+        let at = model.knobs.iter().position(|&k| k == knob).unwrap();
+        p[at] = 0.9;
+        assert_eq!(drive(&p), table(199.315_67 * 0.9 + 1_550.795_7) * 4.0);
     }
 
     #[test]

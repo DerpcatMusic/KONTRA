@@ -308,7 +308,9 @@ impl Engine {
     }
 
     /// Sets the amount of every route named with `#key` to `micros`
-    /// millionths ([`kontra_vm::Action::RouteAmount`]).
+    /// millionths ([`kontra_vm::Action::RouteAmount`]). The voices follow
+    /// once the callback returns or waits ([`Self::refresh_moved_routes`]):
+    /// W Strings sets 6,984 in one `changed`.
     pub(crate) fn set_route_amount(&mut self, key: i32, micros: i32) {
         let v = micros as f32 / 1e6;
         // The groups it moved: a route names one keygroup's group as a rule.
@@ -329,12 +331,20 @@ impl Engine {
                 one = Some(g);
             }
         }
-        match (one, many) {
-            (Some(_), true) => self.refresh_all(None),
-            (Some(g), false) => {
-                self.refresh_voices(None, |_, zone| zone.group as usize == g);
-            }
-            (None, _) => {}
+        if let Some(g) = one {
+            self.routes_moved = Some(match self.routes_moved {
+                Some((first, others)) => (first, others || many || first != g),
+                None => (g, many),
+            });
+        }
+    }
+
+    /// Refreshes the voices of the groups whose route amounts moved.
+    pub(crate) fn refresh_moved_routes(&mut self) {
+        match self.routes_moved.take() {
+            Some((_, true)) => self.refresh_all(None),
+            Some((g, false)) => self.refresh_voices(None, |_, zone| zone.group as usize == g),
+            None => {}
         }
     }
 
