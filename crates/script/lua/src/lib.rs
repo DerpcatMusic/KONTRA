@@ -694,17 +694,27 @@ mod tests {
             local text = ''
             function onLoad(state) text = state.presetText end
             local landed = false
-            function onNote() assert(landed) end
-            function onInit()
-                local arp = nil
+            local function studio()
                 loadState('../Script/presets/Studio 1.VHFPreset', function(t)
                     assert(air.value == 66 and seen == 66 and text == 'Studio 1*' and t.success)
                     assert(panel.value == false)
                     assert(steps:getValue(1) == 0.5 and steps:getValue(2) == 1)
                     landed = true
                 end)
-                -- Nothing lands within the call: its callbacks are paced.
-                assert(air.value == 0 and seen == 0)
+            end
+            function onNote()
+                -- Once running, nothing lands within the call: its
+                -- callbacks are paced.
+                air.value, seen, text, landed = 0, 0, '', false
+                studio()
+                assert(air.value == 0 and seen == 0 and not landed)
+            end
+            function onRelease() assert(landed) end
+            function onInit()
+                local arp = nil
+                -- In init the preset lands within the call.
+                studio()
+                assert(landed)
                 local before = air.changed
                 -- A changed that fails still runs on the next change.
                 local fails = true
@@ -742,6 +752,9 @@ mod tests {
         let co = m.start(Callbacks::INIT, 0).expect("init");
         let mut log = Log(Vec::new());
         assert_eq!(m.run(co, &mut log), Step::Done);
+        assert!(m.spawned().is_none(), "init's preset landed in the call");
+        let note = m.start(Callbacks::NOTE, 0).expect("note");
+        assert_eq!(m.run(note, &mut log), Step::Done);
         // The preset's task, already waiting before its first control: one
         // more wait after the only control with a changed (air).
         let (task, _) = m.spawned().expect("the preset lands in a task");
@@ -750,6 +763,36 @@ mod tests {
             waits += 1;
         }
         assert_eq!(waits, 1, "a wait after air's changed");
+        let release = m.start(Callbacks::RELEASE, 0).expect("release");
+        assert_eq!(m.run(release, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+    }
+
+    #[test]
+    fn a_projects_saved_state_wins_over_the_default_preset_init_loads() {
+        let source = r#"
+            local text = ''
+            function onLoad(state) text = state.presetText end
+            function onInit() loadState('default.VHFPreset') end
+            function onNote() assert(text == 'Mine', text) end"#;
+        let modules = [
+            ("__dir.lua".to_string(), "return \"Script\"".to_string()),
+            (
+                "__file/script/default.vhfpreset".to_string(),
+                r#"return {values={},state={["presetText"]="Default"}}"#.to_string(),
+            ),
+            (
+                "__state.lua".to_string(),
+                r#"return {presetText="Mine"}"#.to_string(),
+            ),
+        ];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("init");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        while let Some((task, _)) = m.spawned() {
+            while let Step::Wait(_) = m.run(task, &mut log) {}
+        }
         let note = m.start(Callbacks::NOTE, 0).expect("note");
         assert_eq!(m.run(note, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
