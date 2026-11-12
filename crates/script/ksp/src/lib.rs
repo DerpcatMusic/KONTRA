@@ -29,9 +29,8 @@ pub fn compile(source: &str, conditions: &[&str]) -> Result<Script, Error> {
 
 /// [`compile`] for a script whose performance view has the controls `view`
 /// (names with their type marks and declaration parameters, in the view's
-/// order). A script that loads
-/// a view uses its controls by name without declaring them; they are
-/// declared in the view's order, so their UI ids follow one another as
+/// order). A script that loads a view uses its controls by name without
+/// declaring them; they are declared in the view's order, so their UI ids follow one another as
 /// Kontakt's do (Conflux reaches macro `k` as `get_ui_id($Footer__Macro__1)
 /// + k`). Names the view does not list are declared where first used.
 pub fn compile_with_view<'a>(
@@ -48,7 +47,7 @@ pub fn compile_with_view<'a>(
 fn compile_plain<'a>(
     source: &'a str,
     conditions: &[&str],
-    view: &[&'a str],
+    view: &[(&'a str, &'a [i32])],
 ) -> Result<Script, Error> {
     let mut tokens = lex::lex(source)?;
     let mut set = conditions.iter().map(|&c| c.to_owned()).collect();

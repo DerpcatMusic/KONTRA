@@ -27,14 +27,6 @@ pub struct ZoneEdit {
 
 impl Engine {
     pub(crate) fn set_zone_par(&mut self, zone: u32, par: ZonePar, value: i32) -> i32 {
-        if self.running.kind == Kind::Init {
-            // Init runs before the engine plays, on the control thread.
-            if !Arc::make_mut(&mut self.plan).edit_zone(zone, par, value) {
-                self.count_unhandled(Action::SetZonePar);
-            }
-            return -1;
-        }
-        let script = self.running.slot;
         let carried = matches!(
             par,
             ZonePar::Group
@@ -43,15 +35,26 @@ impl Engine {
                 | ZonePar::LowVelocity
                 | ZonePar::HighVelocity
         );
+        if !carried {
+            self.count_unhandled(Action::SetZonePar);
+        }
+        if self.running.kind == Kind::Init {
+            // Init runs before the engine plays, on the control thread. A
+            // zone the instrument lacks is the script's no-op, not a gap.
+            if carried {
+                Arc::make_mut(&mut self.plan).edit_zone(zone, par, value);
+            }
+            return -1;
+        }
+        if !carried {
+            return self.start_async(Exit::Done);
+        }
+        let script = self.running.slot;
         let now = self.plan.zone_facts.iter().find(|z| z.id == zone);
         let pending = self
             .zone_edits
             .iter()
             .any(|e| (e.zone, e.par) == (zone, par));
-        if !carried {
-            self.count_unhandled(Action::SetZonePar);
-            return self.start_async(Exit::Done);
-        }
         // Conflux sets every zone each time; only changes go to the host.
         if now.map(|z| z.get(par)) == Some(value) && !pending {
             return self.start_async(Exit::Done);
