@@ -295,8 +295,19 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
             w.images.first().copied(),
         );
     let pictured = matches!(w.kind, ui::Kind::Button { .. }) && !w.images.is_empty();
-    if let Some(text) = text.filter(|t| *t != w.text && !pictured) {
-        w.text = text.to_owned();
+    // A menu's text is its selected item's, which the script may rename.
+    let shown = match (&mut w.kind, &w.value) {
+        (ui::Kind::Menu { items }, Some(ui::Value::Integer(at))) => items
+            .iter_mut()
+            .find(|i| i.value == *at)
+            .map(|i| &mut i.text),
+        _ => Some(&mut w.text),
+    };
+    if let Some((shown, text)) = shown
+        .zip(text)
+        .filter(|(s, t)| !pictured && s.as_str() != *t)
+    {
+        *shown = text.to_owned();
         changed = true;
     }
     changed

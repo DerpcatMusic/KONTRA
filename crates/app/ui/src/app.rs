@@ -95,6 +95,8 @@ pub enum Format {
 pub struct Part {
     pub name: String,
     pub library: String,
+    /// The preset it plays, as an index into its library's presets.
+    pub preset: Option<usize>,
     /// MIDI channel 1..=16, or 0 for every channel.
     pub channel: u8,
     /// Stereo output 1..=16, or 0 to let the host pick.
