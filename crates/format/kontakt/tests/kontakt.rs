@@ -60,3 +60,56 @@ fn an_analog_strings_snapshot_is_its_instrument_with_its_saved_values() {
     assert_eq!(snap.scripts.len(), base.scripts.len());
     assert_ne!(saved(&snap), saved(&base));
 }
+
+/// The members of one archive list in its own order, the same on every
+/// read: a hash index's order changes per map, so a listing of
+/// `ir_samples` (a response's sample index) changed between two loads.
+#[test]
+fn members_list_in_the_archives_order_on_every_read() {
+    let offsets = [
+        700u32, 100, 900, 300, 500, 200, 800, 400, 600, 1000, 1100, 1200,
+    ];
+    let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
+    bytes.extend(0x110u16.to_le_bytes());
+    bytes.extend([0; 8]);
+    bytes.extend((offsets.len() as u32).to_le_bytes());
+    bytes.extend([0; 4]);
+    for (n, offset) in offsets.iter().enumerate() {
+        bytes.extend(16u16.to_le_bytes());
+        bytes.extend(offset.to_le_bytes());
+        bytes.extend(0u16.to_le_bytes());
+        for c in format!("m{n:02}").encode_utf16().chain([0]) {
+            bytes.extend(c.to_le_bytes());
+        }
+    }
+    let listed = || -> Vec<(u64, String)> {
+        let archive =
+            ni_file::nkr::Archive::read_index(std::io::Cursor::new(bytes.clone())).unwrap();
+        archive
+            .members()
+            .map(|e| (e.header_offset, e.name.clone()))
+            .collect()
+    };
+    let first = listed();
+    let mut sorted = first.clone();
+    sorted.sort();
+    assert_eq!(first, sorted, "by header offset");
+    for _ in 0..8 {
+        assert_eq!(listed(), first);
+    }
+}
+
+/// An instrument reads the same every time: an A/B or a saved project
+/// relies on its IR, sample order included, being the file's own.
+#[test]
+fn an_instrument_loads_the_same_twice() {
+    let root = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../tools/kontakt-reference/scenarios"
+    );
+    for name in ["calibration.nki", "cutoff_mod.nki"] {
+        let path = Path::new(root).join(name);
+        let read = || format!("{:?}", kontra_format_kontakt::load(&path).unwrap());
+        assert_eq!(read(), read(), "{name}");
+    }
+}
