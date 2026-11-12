@@ -10,15 +10,17 @@ directory with native.wav and the v3 render of the same events. Recordings are c
 libraries' output: keep ROOT outside the repo (default PluginArtifacts/KONTRA/parity-refs).
 
 `score` re-renders v3 with BIN (default: the newest release kontra-inspect) at Kontakt's measured
-note positions and scores every case; it never starts Kontakt. Kontakt's MIDI reaches it through
+note positions and scores every case; it never starts Kontakt.
+Scores are cached per library in ROOT/score-cache.json, keyed by the binary's content hash, --spread,
+the key-up fit, ROOT and this script's hash: a main-side board is rendered once and reused. Kontakt's MIDI reaches it through
 Wine 0-3 ms off the grid (and a capture can step once in time), so identical overlapping samples
 (repeats, chords) sum differently from a render on the grid: each group of simultaneous note-ons is
 moved to the lag (+-40 ms) that best correlates 0.5 s of native audio with v3's, and v3 plays again.
 Note-offs jitter too (up to 15 ms): each cluster of them is moved within +-15 ms to where v3's
 release best matches Kontakt's (one render per 2.5 ms step; the fitted shifts print per library;
 a best shift at the bound counts as unfitted and prints as unfit(..); --no-keyup turns it off).
-Fast repeats are scored statistically against v3's own spread under per-note key-up jitter
-(JITTER_CASES).
+Fast repeats are scored statistically against v3's own spread under per-note key-up and note-on
+jitter (JITTER_CASES).
 
 The scenario starts after LEAD seconds of silence: Kontakt keeps loading samples after it reports
 the instrument loaded, and a note that arrives first plays late or not at all.
@@ -30,6 +32,7 @@ first 60 ms of envelope 1.5 dB; release tail (+100..+700 ms after key-up over th
 1.5 dB; L/R balance 1 dB. Both engines silent (key out of range) counts as within.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -37,6 +40,7 @@ import random
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -67,9 +71,14 @@ KEYUP_MS, KEYUP_STEP, KEYUP_TAIL = 15.0, 2.5, 0.7
 # Fast repeats are scored statistically: twelve 42 ms notes overlap, and the per-note key-up jitter
 # alone swings each slot by +-3-5 dB with no consistent sign (v3 against itself with note-offs moved
 # 0-15 ms: Dolce slot sd 2.3-2.4 dB, native 2.7; Chorus 0.8-1.2, native 0.9; slots 3+ r 0.4-0.8).
+# Note-ons too: Wine's 0-3 ms spread is a full period of a 300 Hz fundamental, so twelve copies
+# of one sample on the exact 1/12 s grid cancel or add by their fixed phase (Pacific key 62: 24.5
+# periods apart, -60 dB flat), where Kontakt's add in random phase and build up (-53..-56 dB from
+# the 6th; v3 with note-ons moved +-1.5 ms: -53..-57; Una Corda's +-2 dB slot swing likewise).
 # One cluster shift cannot follow that, so these cases also allow v3's own spread over
-# JITTER_RENDERS renders with each note-off moved by its own random +-KEYUP_MS/2.
-JITTER_CASES, JITTER_RENDERS = ("repeats",), 4
+# JITTER_RENDERS renders with each note-off moved by its own random +-KEYUP_MS/2 and each note-on
+# by its own +-NOTE_ON_MS/2.
+JITTER_CASES, JITTER_RENDERS, NOTE_ON_MS = ("repeats",), 4, 3.0
 
 
 def scenario():
@@ -110,13 +119,21 @@ def scenario():
 
 
 def inspect_binary(given):
+    """`--inspect`, else this worktree's own release build where build-slot puts it (never the newest
+    build of some other worktree: a total from another lane's branch is worse than none)."""
     if given:
         return given
-    root = Path("/data/dev/workspace/Toolchains/User/cargo-target/KONTRA")
-    found = sorted(root.glob("*/release/kontra-inspect"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not found:
-        sys.exit("kontra-inspect not built: build-slot cargo build --release -p kontra-inspect")
-    return str(found[0])
+    tree = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=HERE, capture_output=True,
+                          text=True).stdout.strip()
+    common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=HERE,
+                            capture_output=True, text=True).stdout.strip()
+    target = (Path("/data/dev/workspace/Toolchains/User/cargo-target") / Path(common).parent.name
+              / f"{Path(tree).name}-{hashlib.sha1(tree.encode()).hexdigest()[:8]}")
+    found = target / "release" / "kontra-inspect"
+    if not tree or not found.exists():
+        sys.exit(f"no kontra-inspect for this worktree at {found}: "
+                 "build-slot cargo build --release -p kontra-inspect, or pass --inspect BIN")
+    return str(found)
 
 
 def play(binary, nki, events, wav=None, oracle=False, report=None):
@@ -164,10 +181,14 @@ def thirds(x):
     return centres, [float(spec[(f >= c * 2 ** (-1 / 6)) & (f < c * 2 ** (1 / 6))].sum()) for c in centres]
 
 
-def case_metrics(x, hold):
+def case_metrics(x, hold, first=None):
+    """`first`: ms from the case start to its second note-on. The onset is measured against the first
+    note's own peak (5 % of the loudest point before the second note), so a build-up later in the
+    case does not move it."""
     e = env_ms(x)
     s = smooth(e)
-    onset = int(np.argmax(s > s.max() * 0.05)) if s.max() > 1e-5 else None
+    own = s[:first] if first else s
+    onset = int(np.argmax(own > own.max() * 0.05)) if own.max() > 1e-5 else None
     off = int(hold * 1000)
     before = float(np.mean(e[max(0, off - 300):off] ** 2))
     tail = (10 * math.log10(float(np.mean(e[off + 100:off + 700] ** 2)) / before + 1e-20)
@@ -177,10 +198,10 @@ def case_metrics(x, hold):
                 balance=db(np.sqrt((x[0] ** 2).mean())) - db(np.sqrt((x[1] ** 2).mean())))
 
 
-def score_case(n, o, hold, spread=None):
+def score_case(n, o, hold, spread=None, first=None):
     """`o` against native `n`. With `spread` (this function's result for a second native take),
     each metric's tolerance is the larger of TOL and Kontakt's own run-to-run difference, band by band."""
-    a, b = case_metrics(n, hold), case_metrics(o, hold)
+    a, b = case_metrics(n, hold, first), case_metrics(o, hold, first)
     if a["rms"] < -80 and b["rms"] < -80:
         return dict(ok=True, silent="both")
     if a["rms"] < -80 or b["rms"] < -80:
@@ -323,11 +344,12 @@ def keyups(binary, nki, events, nat, base):
 
 
 def jittered(events, case, seed):
-    """`events` with each note-off inside `case` moved by its own random +-KEYUP_MS/2."""
-    rnd, half = random.Random(seed), KEYUP_MS / 2
+    """`events` with each note-off inside `case` moved by its own random +-KEYUP_MS/2 and each
+    note-on by its own +-NOTE_ON_MS/2."""
+    rnd, half = random.Random(seed), {"note_off": KEYUP_MS / 2, "note_on": NOTE_ON_MS / 2}
     a, z = case["start"] * R, (case["start"] + case["len"]) * R
-    out = [dict(e, frame=e["frame"] + round(rnd.uniform(-half, half) * R / 1000))
-           if e["type"] == "note_off" and a <= e["frame"] < z else e for e in events]
+    out = [dict(e, frame=e["frame"] + round(rnd.uniform(-half[e["type"]], half[e["type"]]) * R / 1000))
+           if e["type"] in half and a <= e["frame"] < z else e for e in events]
     return sorted(out, key=lambda e: e["frame"])
 
 
@@ -349,11 +371,17 @@ def score(args):
     root = Path(args.root)
     binary = inspect_binary(args.inspect)
     table = {}
-    for name in args.only or LIBRARIES:
-        cap = root / f"{name}.capture.json"
-        if not cap.exists():
-            print(f"{name}: no capture (run `capture` first)")
-            continue
+    # Per-library scores cached beside the refs, keyed by what decides them: the binary (content
+    # hash), the spread and reference sets, and this script. A main-side board renders once.
+    cache_file = root / "score-cache.json"
+    cache = json.loads(cache_file.read_text()) if cache_file.exists() else {}
+    digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+    key = f"{digest(binary)}|spread={args.spread or ''}|keyup={not args.no_keyup}|refs={root}|script={digest(__file__)}"
+    if key in cache:
+        print(f"cache {cache_file}: {sorted(cache[key])} reused for this key")
+
+    def library(name, cap):
+        """Renders and scores one library: (rows, fit text), or None when v3 fails to render."""
         c = json.loads(cap.read_text())
         art = Path(c["artifacts"])
         nat = compare.load(art / "native.wav")[:, int(compare.PRE * R):]
@@ -368,7 +396,7 @@ def score(args):
         p = play(binary, c["nki"], events, wav=wav)
         if not wav.exists():
             print(f"{name}: v3 render failed: {p.stderr.strip().splitlines()[-1:]}")
-            continue
+            return None
         ours = compare.load(wav)
         nat = nat[:, base:] if base > 0 else nat
         ours = ours if base > 0 else ours[:, -base:]
@@ -392,28 +420,49 @@ def score(args):
         rows = []
         for case in c["cases"]:
             a, z = round(case["start"] * R), round((case["start"] + case["len"]) * R)
+            ons = sorted({e["frame"] for e in c["events"] if e["type"] == "note_on" and a <= e["frame"] < z})
+            first = (ons[1] - a) // 48 if len(ons) > 1 else None
             if z > min(nat.shape[1], ours.shape[1]):
                 rows.append(dict(case=case["name"], ok=False, silent="short"))
                 continue
             spread = None
             if nat2 is not None and z <= nat2.shape[1]:
-                spread = score_case(nat[:, a:z], nat2[:, a:z], case["hold"])
-            own = [score_case(ours[:, a:z], j[:, a:z], case["hold"]) for j in jits.get(case["name"], [])
+                spread = score_case(nat[:, a:z], nat2[:, a:z], case["hold"], first=first)
+            own = [score_case(ours[:, a:z], j[:, a:z], case["hold"], first=first) for j in jits.get(case["name"], [])
                    if z <= j.shape[1]]
             if own:
                 spread = widest(spread, *own)
-            r = score_case(nat[:, a:z], ours[:, a:z], case["hold"], spread)
+            r = score_case(nat[:, a:z], ours[:, a:z], case["hold"], spread, first=first)
             r["jitter"] = len(own)
-            r["plain"] = score_case(nat[:, a:z], ours[:, a:z], case["hold"])["ok"]
+            plain = score_case(nat[:, a:z], ours[:, a:z], case["hold"], first=first)
+            r["plain"], r["grid"] = plain["ok"], plain.get("fails", [])
             r["spread"] = spread and {k: v for k, v in spread.items() if k in ("level", "onset", "attack", "release", "balance", "band")}
             rows.append(dict(case=case["name"], **r))
         wav.unlink()
+        return rows, fit
+
+    for name in args.only or LIBRARIES:
+        cap = root / f"{name}.capture.json"
+        if not cap.exists():
+            print(f"{name}: no capture (run `capture` first)")
+            continue
+        hit = cache.get(key, {}).get(name)
+        got = (hit["rows"], hit["fit"]) if hit else library(name, cap)
+        if got is None:
+            continue
+        rows, fit = got
+        if not hit:
+            cache.setdefault(key, {})[name] = {"rows": rows, "fit": fit}
+            cache_file.write_text(json.dumps(cache, default=float))
         table[name] = rows
         ok = sum(r["ok"] for r in rows)
         print(f"{name}: {ok}/{len(rows)}{fit}")
         for r in rows:
-            if not r["ok"]:
-                print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"])))
+            # A row scored against v3's own jitter spread also shows its score on the exact grid,
+            # so a regression in repeat handling cannot hide inside the spread.
+            grid = f" | exact grid: {', '.join(r['grid']) or 'ok'}" if r.get("jitter") else ""
+            if not r["ok"] or grid:
+                print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"]) or "ok") + grid)
     total = sum(r["ok"] for rows in table.values() for r in rows)
     if args.spread:
         inside = sum(r["ok"] and not r.get("plain", True) and not r.get("jitter") for rows in table.values() for r in rows)
@@ -421,11 +470,15 @@ def score(args):
     stat = [r for rows in table.values() for r in rows if r.get("jitter")]
     if stat:
         print(f"scored statistically ({', '.join(JITTER_CASES)}: tolerance includes v3's own spread over "
-              f"{JITTER_RENDERS} renders with per-note key-up jitter +-{KEYUP_MS / 2:g} ms): "
+              f"{JITTER_RENDERS} renders with per-note key-up jitter +-{KEYUP_MS / 2:g} ms, note-on +-{NOTE_ON_MS / 2:g} ms): "
               f"{sum(r['ok'] for r in stat)}/{len(stat)}, of which inside only that spread "
               f"{sum(r['ok'] and not r.get('plain', True) for r in stat)}")
     cases = sum(len(rows) for rows in table.values())
-    print(f"total: {total}/{cases} within tolerance")
+    # The default binary is the newest build in ANY worktree's target dir: name it, so two totals
+    # are only compared when binary, build time and --spread match.
+    built = time.strftime("%Y-%m-%d %H:%M", time.localtime(Path(binary).stat().st_mtime))
+    print(f"total: {total}/{cases} within tolerance (binary {binary}, built {built}; "
+          f"spread {args.spread or 'off'})")
     (root / f"score-{args.tag}.json").write_text(json.dumps(table, indent=1, default=float))
 
 

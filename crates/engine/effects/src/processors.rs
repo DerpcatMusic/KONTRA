@@ -403,16 +403,27 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
 
 fn notches(n: ir::Notches, tempo: f32) -> NotchSettings {
     NotchSettings {
-        sections: n.sections,
+        stages: n.stages,
         hz: n.hz,
-        q: n.q,
         octaves: n.octaves,
-        q_octaves: n.q_octaves,
+        spread: n.spread,
+        spread_swing: n.spread_swing,
+        spread_limit: n.spread_limit,
         feedback: n.feedback,
+        loop_width: n.loop_width,
+        loop_top: n.loop_top,
         lfo_hz: hz(n.rate, tempo),
+        rounding: n.rounding,
+        depth: n.depth,
+        warp: n.warp,
         phase: n.phase,
+        sign: match n.polarity {
+            ir::Polarity::Normal => 1.0,
+            ir::Polarity::Inverted => -1.0,
+        },
         mix: n.mix,
-        invert: n.invert,
+        low_cut_hz: n.low_cut_hz,
+        internal_hz: n.internal_hz,
     }
 }
 
@@ -539,11 +550,7 @@ pub fn processor(
         }
         Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(p, 120.0), rate))),
         Some(ir::EffectKind::Notches(n)) => wet(Box::new(Notches::new(notches(n, 120.0), rate))),
-        // ponytail: lines for 120 ms, the longest a Kontakt Choral reaches
-        // (66 ms base + its widest swing at the slowest rate).
-        Some(ir::EffectKind::Ensemble(e)) => {
-            wet(Box::new(crate::ensemble::Ensemble::new(e, rate, 120.0)))
-        }
+        Some(ir::EffectKind::Ensemble(e)) => wet(Box::new(crate::ensemble::Ensemble::new(e, rate))),
         Some(ir::EffectKind::CombBank(c)) => wet(Box::new(CombBank::new(
             comb_bank(c, 120.0),
             rate,

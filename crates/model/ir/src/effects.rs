@@ -1,6 +1,6 @@
 //! The dynamics and time effects' settings in physical units.
 
-use crate::{Network, Rate};
+use crate::{Network, Rate, Section};
 
 /// A feed-forward compressor in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -124,69 +124,99 @@ pub struct Phaser {
     pub phase: f32,
 }
 
-/// A phaser of second-order allpasses: `sections` at one corner the LFO
-/// sweeps by `octaves` (and their Q by `q_octaves`), around a feedback loop,
-/// `mix` of `(input ± sections)/2` with the input.
+/// A notch phaser: `stages` second-order allpasses at one corner the LFO
+/// sweeps, inside a loop through its own band-pass, averaged with their
+/// input, mixed with the dry signal at a held level, then high-passed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Notches {
-    /// 1..=12, one notch each.
-    pub sections: u8,
+    /// 1..=12.
+    pub stages: u8,
+    /// The corner with the LFO at 0, and the LFO's swing of it, octaves.
     pub hz: f32,
-    /// Q ½ is two first-order stages at the corner; above crowds the notches.
-    pub q: f32,
     pub octaves: f32,
-    pub q_octaves: f32,
+    /// The stages' damping is `2·2^r` (their Q `1/(2·2^r)`),
+    /// `r = spread + spread_swing·lfo` held within `±spread_limit`.
+    pub spread: f32,
+    pub spread_swing: f32,
+    pub spread_limit: f32,
+    /// The loop gain; its band-pass spans the corner `÷a` to `·a`,
+    /// `a = r + √(1 + r²)`, `r = loop_width·2^r`, the top edge at most
+    /// `loop_top` as `tan(π·f/rate)` at the running rate.
     pub feedback: f32,
+    pub loop_width: f32,
+    pub loop_top: f32,
+    /// The LFO's rate, rounding (0: a triangle), depth and warp, and the
+    /// channels' phases either side of it, cycles.
     pub rate: Rate,
-    /// Cycles the right LFO runs ahead of the left.
+    pub rounding: f32,
+    pub depth: f32,
+    pub warp: f32,
     pub phase: f32,
+    pub polarity: Polarity,
     pub mix: f32,
-    pub invert: bool,
+    /// The output's high-pass, and the rate it runs nearest to by octaves.
+    pub low_cut_hz: f32,
+    pub internal_hz: f32,
 }
 
-/// A chorus ensemble: up to [`ENSEMBLE_VOICES`] modulated delay voices, each
-/// adding its delayed input to the sum, plus `direct` of the input itself
-/// (the dry level and the voices' undelayed share together). What every
-/// voice shares is carried once: its input gain, the pitch its sweep
-/// reaches, and a loop gain set as if every line were the first's length.
+/// A chorus ensemble: [`ENSEMBLE_VOICES`] swept delay lines whose reads
+/// feed back into every line through a circulant `scatter`; each voice's
+/// tap (its read plus its input) turns in the stereo field to a wet bus
+/// with a low shelf on it, plus `direct` of the input. The voices' fixed
+/// shape is shared data; the knobs set the rest.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ensemble {
-    pub voices: [EnsembleVoice; ENSEMBLE_VOICES],
-    /// Each voice's sweep span times its LFO rate, ms·Hz: every voice
-    /// sweeps to the same pitch whatever its rate.
-    pub sweep: f32,
-    pub input: f32,
-    /// The first voice's loop gain (its sign the polarity); a voice `k`
-    /// times as long takes it to the power `k`, so all decay alike per
-    /// second.
-    pub feedback: f32,
-    pub direct: f32,
-}
-
-pub const ENSEMBLE_VOICES: usize = 6;
-
-/// One voice: a stereo delay line its LFO sweeps up from `ms`, filtered on
-/// the way in, fed back on itself, turned by `angle` to the output.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EnsembleVoice {
-    pub ms: f32,
+    pub voices: &'static EnsembleVoices,
+    /// The rest delays' scale: voice `v` rests at `delay[v]·span` s.
+    pub span: f32,
+    /// The LFOs' scale: voice `v` runs at `rate[v]·hz`.
     pub hz: f32,
-    /// The LFO's start, cycles.
-    pub start: f32,
-    pub filter: LineFilter,
-    /// The delayed signal's level out, zero for a silent voice, and its
-    /// turn in the stereo field (radians, a rotation).
-    pub level: f32,
-    pub angle: f32,
+    /// A voice's swing times its LFO rate, s·Hz: every voice sweeps to the
+    /// same pitch whatever its rate.
+    pub sweep: f32,
+    /// Each voice's level on the wet bus (0: heard only through `scatter`)
+    /// and its turn in the stereo field (radians, a rotation).
+    pub levels: [f32; ENSEMBLE_VOICES],
+    pub angles: [f32; ENSEMBLE_VOICES],
+    /// The loop's circulant mix, its first row: line `i` takes
+    /// `Σₖ scatter[(k − i) mod 7]` of read `k` (`[1, 0, …]` each its own).
+    pub scatter: [f32; ENSEMBLE_VOICES],
+    /// The first voice's loop gain; a voice `k` times as long takes it to
+    /// the power `k`, so all decay alike per second.
+    pub feedback: f32,
+    /// The reads' polarity, in the loop and on the bus.
+    pub polarity: Polarity,
+    /// The input into the lines, the wet bus's gain out, and the input
+    /// straight out.
+    pub input: f32,
+    pub wet: f32,
+    pub direct: f32,
+    /// The filter on the wet bus.
+    pub shelf: Section,
 }
 
-/// A one-pole on a delay line's input.
+pub const ENSEMBLE_VOICES: usize = 7;
+
+/// The voices' fixed shape, a field per row.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LineFilter {
-    None,
-    /// Its corner, Hz.
-    LowPass(f32),
-    HighPass(f32),
+pub struct EnsembleVoices {
+    /// The rest delay per unit span.
+    pub delay: [f32; ENSEMBLE_VOICES],
+    /// The LFO's rate per unit hz, and its start (cycles). The LFO is a
+    /// triangle from the rest delay up to the swing and back.
+    pub rate: [f32; ENSEMBLE_VOICES],
+    pub start: [f32; ENSEMBLE_VOICES],
+    /// The triangle's bend: `u` becomes `(1 − b)·u + b·u²`.
+    pub bend: [f32; ENSEMBLE_VOICES],
+    /// A second LFO, a cosine starting at its low point: its rate over the
+    /// voice's, and its depth in swings (0 for none). It moves the delay by
+    /// `depth·(1 + ½·cos)`.
+    pub wobble_rate: [f32; ENSEMBLE_VOICES],
+    pub wobble: [f32; ENSEMBLE_VOICES],
+    /// The one-pole that rounds the sweep, Hz (infinite for none).
+    pub smooth_hz: [f32; ENSEMBLE_VOICES],
+    /// The filter on each line's input.
+    pub filter: [Section; ENSEMBLE_VOICES],
 }
 
 /// Whether a signal passes as it is or turned over.

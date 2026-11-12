@@ -34,7 +34,7 @@ fn region(store: &mut Store, name: &str, frames: u64) -> std::io::Result<Region>
         sample,
         start: 0,
         end: frames,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     })
 }
@@ -182,7 +182,8 @@ fn the_pedal_holds_released_notes_until_it_lifts() {
         end: 1000,
         crossfade: 0,
         ..Default::default()
-    }];
+    }]
+    .into();
     let mut engine = Engine::new(plan(vec![z], 8), store.client(), RATE);
     render(
         &mut engine,
@@ -204,7 +205,8 @@ fn a_script_owned_pedal_does_not_hold_released_notes() {
         end: 1000,
         crossfade: 0,
         ..Default::default()
-    }];
+    }]
+    .into();
     let mut p = (*plan(vec![z], 8)).clone();
     p.sustain_pedal = kontra_engine::SustainPedal::ToScripts;
     let mut engine = Engine::new(Arc::new(p), store.client(), RATE);

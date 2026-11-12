@@ -44,7 +44,7 @@ fn plan_of(store: &mut Store, level: f32) -> Plan {
         sample,
         start: 0,
         end: frames,
-        loops: vec![],
+        loops: Default::default(),
         reverse: false,
     };
     let mut zone = Zone::new(region, 60, RATE);
@@ -1070,8 +1070,9 @@ fn a_renamed_or_deleted_user_preset_moves_every_part_playing_it() {
     let yours = |modified| ("u/Yours.kontra".into(), "Yours".to_owned(), modified);
     assert_eq!(playing(&rack), [yours(false), yours(true)]);
     rack.preset_moved(Path::new("u/Yours.kontra"), None);
-    let paths: Vec<_> = playing(&rack).into_iter().map(|(p, _, m)| (p, m)).collect();
-    assert_eq!(paths, [("a.nki".into(), true), ("a.nki".into(), true)]);
+    // They keep the sound, named by their instrument, changed.
+    let base = ("a.nki".into(), "a".to_owned(), true);
+    assert_eq!(playing(&rack), [base.clone(), base]);
 }
 
 /// A folder of this test process alone, removed when dropped (also when

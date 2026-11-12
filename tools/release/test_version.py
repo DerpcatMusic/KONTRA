@@ -1,7 +1,6 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('release_version', Path(__file__).resolve().parents[1] / 'version.py')
 version = importlib.util.module_from_spec(spec)
@@ -9,9 +8,15 @@ spec.loader.exec_module(version)
 
 
 class VersionTest(unittest.TestCase):
-    def test_nightly_uses_commit_time_and_count(self):
-        with patch.object(version, 'git', side_effect=['0', '42']):
-            self.assertEqual(version.nightly(), '3.0.0-nightly.19700101.42')
+    def test_a_fix_raises_patch_and_a_feature_raises_minor(self):
+        self.assertEqual(version.bump('v3.0.4', ['fix(ui): menus scroll (#1)']), '3.0.5')
+        self.assertEqual(version.bump('v3.0.4', ['fix: a (#1)', 'feat(kontakt): snapshots (#2)']), '3.1.0')
+        self.assertEqual(version.bump('v3.1.9', ['feat!: new state format (#3)']), '3.2.0')
+        self.assertEqual(version.bump('v3.1.9', ['feature flags tidied (#4)']), '3.1.10')
+
+    def test_the_first_release_follows_the_dated_builds(self):
+        self.assertEqual(version.bump('v3.0.0-nightly.20261112.7735', ['fix: a (#1)']), '3.0.1')
+        self.assertEqual(version.bump(None, ['feat: a (#1)']), '3.1.0')
 
 
 if __name__ == '__main__':
