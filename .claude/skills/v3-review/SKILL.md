@@ -76,6 +76,5 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
   `python3 tools/plan/plan.py sync` and `ready`.
 - After each merge batch, on that clean `origin/v3` checkout, run
   `cargo xtask deps-check`, `cargo xtask debt --check` and `cargo xtask size --check`. Required checks are not strict, so two PRs can each pass and still
-  break the ratchet together (P1.1b merged just before the size baseline did).
-  Fix forward at once: a PR that carries the `size-growth` label (add it before
-  pushing) and the baseline from `size --update`.
+  break a limit together. Fix forward at once. Size has no committed count:
+  only the 8,000-line crate and 800-line file limits.

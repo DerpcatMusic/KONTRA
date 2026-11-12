@@ -76,9 +76,10 @@ tools/xtask/  (cargo xtask <cmd>, not shipped)
 └── ci             the one local gate: rustfmt --check and clippy on changed files, tests of changed packages, deps-check, debt --check
 ```
 
-Debt and size are ratchets: `debt-baseline.toml` is committed, the `v3 plan`
-check fails a PR that grows any counter, and `--update` tightens it when a
-counter falls. Production lines may grow only with the `size-growth` label.
+Debt is a ratchet: `debt-baseline.toml` is committed, the `v3 plan` check
+fails a PR that grows any counter, and `--update` tightens it when a counter
+falls. Size is two hard limits, 8,000 production lines a crate and 800 a file;
+there is no per-crate growth count to commit.
 
 ## 4. CI (GitHub runners, per memory: CI on GitHub runners)
 
