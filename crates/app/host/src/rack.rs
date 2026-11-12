@@ -717,7 +717,8 @@ impl Rack {
             {
                 let s = &mut p.script;
                 s.asked = false;
-                if c.is_done() {
+                // Nothing read again: the latest stands, with nothing to copy.
+                if c.is_done() && (c.read_any() || s.latest.is_none()) {
                     c.keep(s.latest.as_deref_mut());
                     s.spare = s.latest.replace(c);
                 } else {

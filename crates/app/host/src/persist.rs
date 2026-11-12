@@ -342,6 +342,12 @@ impl Capture {
         self.at == Cursor::Done
     }
 
+    /// Whether it read any slot: one that read none holds nothing newer
+    /// than the capture before it.
+    pub(crate) fn read_any(&self) -> bool {
+        self.fresh.contains(&true)
+    }
+
     /// Asks only for what changed since `last`, this part's capture before,
     /// and starts the read over (a capture is reused).
     pub fn after(&mut self, last: Option<&Self>) {
@@ -391,33 +397,6 @@ impl Capture {
             mine.2 = theirs.2;
         }
     }
-
-    /// Where each (slot, cell) was read, for lookups in time linear in the
-    /// cells captured.
-    fn index(&self) -> HashMap<(u8, u32), Option<i64>> {
-        cells_of(&self.spans, &self.values)
-            .map(|(k, v)| (k, v.copied()))
-            .collect()
-    }
-
-    fn text_index(&self) -> HashMap<(u8, u32), Option<&str>> {
-        cells_of(&self.text_spans, &self.texts)
-            .map(|(k, v)| (k, v.map(Text::as_str)))
-            .collect()
-    }
-}
-
-/// Each (slot, cell) of `spans` and its value in `values`, if it was read.
-fn cells_of<'c, T>(
-    spans: &'c [Span],
-    values: &'c [T],
-) -> impl Iterator<Item = ((u8, u32), Option<&'c T>)> {
-    spans.iter().flat_map(move |s| {
-        (0..s.len).filter_map(move |n| {
-            let cell = u32::try_from(s.base + n).ok()?;
-            Some(((s.slot, cell), values.get(s.to + n).filter(|_| s.read)))
-        })
-    })
 }
 
 /// Copies the cells of `spans` in the `fresh` slots from `cells` into
@@ -463,8 +442,10 @@ fn copy<'e, T: Copy + 'e>(
 /// cells and entries: a persistent array may hold a million values.
 #[must_use]
 pub fn saved(loaded: &[Vec<String>], slots: &[Vars], capture: &Capture) -> Vec<Vec<String>> {
-    let read = capture.index();
-    let read_text = capture.text_index();
+    // By (slot, first cell, text): the captured values of each variable.
+    let numbers = (capture.spans.iter()).map(|s| ((s.slot, s.base, false), *s));
+    let texts = (capture.text_spans.iter()).map(|s| ((s.slot, s.base, true), *s));
+    let spans: HashMap<(u8, usize, bool), Span> = numbers.chain(texts).collect();
     let mut out = loaded.to_vec();
     lua_saved(&mut out, slots, capture);
     for (slot, vars) in slots.iter().enumerate() {
@@ -475,28 +456,27 @@ pub fn saved(loaded: &[Vec<String>], slots: &[Vars], capture: &Capture) -> Vec<V
             .filter_map(|(n, e)| Some((bare(e.split(' ').next()?), n)))
             .collect();
         for var in &vars.vars {
-            let values: Option<Vec<String>> = (var.base..var.base + var.len)
-                .map(|c| {
-                    if var.text {
-                        read_text
-                            .get(&(slot, c))
-                            .copied()
-                            .flatten()
-                            .map(str::to_owned)
-                    } else {
-                        read.get(&(slot, c))
-                            .copied()
-                            .flatten()
-                            .map(|v| text(v, var.real))
-                    }
-                })
-                .collect();
-            let Some(values) = values else {
+            let span = usize::try_from(var.base)
+                .ok()
+                .and_then(|base| spans.get(&(slot, base, var.text)))
+                .filter(|s| s.read && usize::try_from(var.len).is_ok_and(|len| len == s.len));
+            let Some(span) = span else {
                 continue;
             };
-            // A text array saves one line per value.
-            let joiner = if var.text { "\n" } else { " " };
-            let entry = format!("{} {}", var.name, values.join(joiner));
+            let range = span.to..span.to + span.len;
+            let entry = if var.text {
+                let Some(values) = capture.texts.get(range) else {
+                    continue;
+                };
+                // A text array saves one line per value.
+                let values: Vec<&str> = values.iter().map(Text::as_str).collect();
+                format!("{} {}", var.name, values.join("\n"))
+            } else {
+                let Some(values) = capture.values.get(range) else {
+                    continue;
+                };
+                numbers_entry(&var.name, values, var.real)
+            };
             match by_name
                 .get(&bare(&var.name))
                 .and_then(|&n| entries.get_mut(n))
@@ -510,6 +490,24 @@ pub fn saved(loaded: &[Vec<String>], slots: &[Vars], capture: &Capture) -> Vec<V
         }
     }
     out
+}
+
+/// `name` and its cells, space-separated, as Kontakt saves them: written
+/// into one string, a million values with no allocation each.
+fn numbers_entry(name: &str, cells: &[i64], real: bool) -> String {
+    use std::fmt::Write as _;
+    let mut entry = String::with_capacity(name.len() + cells.len() * 4);
+    entry.push_str(name);
+    for &cell in cells {
+        // Writing into a String cannot fail.
+        let _ = if real {
+            write!(entry, " {}", f64::from_bits(cell.cast_unsigned()))
+        } else {
+            // Integer cells hold Kontakt's 32-bit values: the low half.
+            write!(entry, " {}", cell as i32)
+        };
+    }
+    entry
 }
 
 /// Room for a Lua script's saved state (Augmented Orchestra's: 336 bytes).
@@ -550,16 +548,6 @@ fn lua_saved(out: &mut [Vec<String>], slots: &[Vars], capture: &Capture) {
                 }
             }
         }
-    }
-}
-
-/// A cell's value as Kontakt saves it.
-fn text(cell: i64, real: bool) -> String {
-    if real {
-        f64::from_bits(cell as u64).to_string()
-    } else {
-        // Integer cells hold Kontakt's 32-bit values.
-        (cell as i32).to_string()
     }
 }
 
