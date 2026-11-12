@@ -86,6 +86,7 @@ impl Engine {
             let pan = self.group_pan(zone);
             let (gain, lag) = self.voice_gain(zone, &n, factor, self.age(self.now, None), pan);
             let (step, bend) = self.step(zone, &n, self.age(self.now, None));
+            let stretch = self.stretches(zone, &n);
             let start = VoiceStart {
                 region,
                 step: voice_gain::bent(self.plan.route_pitch, step, bend.instant + bend.semitones),
@@ -166,6 +167,7 @@ impl Engine {
             slot.pan = [pan; 2];
             slot.warp = [0.0; modulators::WARPS];
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
+            slot.stretch = stretch;
             #[cfg(feature = "trace")]
             slot.pending_trace_cc.set(0);
             #[cfg(feature = "trace")]

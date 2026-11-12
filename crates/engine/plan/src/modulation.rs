@@ -16,6 +16,9 @@ pub struct Age {
     pub warp: [f32; WARPS],
     /// The voice's chaotic LFOs' levels this span (at the current span).
     pub chaos: [f32; WARPS],
+    /// How much the voice's attack routes stretched the group's first
+    /// [`WARPS`] envelopes' first segment, fixed at note-on (1: as drawn).
+    pub stretch: [f32; WARPS],
 }
 
 /// How many of a group's LFOs a live rate route can move.
@@ -28,6 +31,7 @@ impl Age {
         now: 0.0,
         warp: [0.0; WARPS],
         chaos: [0.0; WARPS],
+        stretch: [1.0; WARPS],
     };
 }
 

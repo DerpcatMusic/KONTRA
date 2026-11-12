@@ -195,27 +195,8 @@ impl Engine {
                 Some(sum)
             }
             ir::Source::Envelope(n) => {
-                let g = group()?;
-                let e = g.envelopes.get(usize::from(n))?;
-                // Its attack routes, read at note-on.
-                let attack_ms = e.points.first().map_or(0.0, |p| p.ms.max(0.0));
-                let mut ms = attack_ms;
-                let routes = (self.reshaped.get(zone.group as usize).into_iter())
-                    .flat_map(|r| r.attacking(n))
-                    .filter_map(|i| g.mods.get(i));
-                for m in routes.filter(|m| !m.bypass) {
-                    if let ir::ModKind::Attack {
-                        source,
-                        intensity,
-                        floor_ms,
-                        ..
-                    } = m.kind
-                        && let Some(x) = self.unit(zone, source, note, Age::START)
-                    {
-                        ms = time_route(ms, x, intensity, floor_ms);
-                    }
-                }
-                let stretch = if attack_ms > 0.0 { ms / attack_ms } else { 1.0 };
+                let e = group()?.envelopes.get(usize::from(n))?;
+                let stretch = age.stretch.get(usize::from(n)).copied().unwrap_or(1.0);
                 Some(modulators::stretched(e, age, stretch))
             }
             ir::Source::Lfo(n) => {
@@ -461,6 +442,42 @@ impl Engine {
             .sum();
         let range = zone.start_mod as f64;
         (f64::from(x) * range).round().clamp(-range, range) as i64
+    }
+
+    /// How much its attack routes stretch each of the group's first
+    /// [`modulators::WARPS`] envelopes' first segment for a voice starting
+    /// now: read once, so a controller moving mid-attack times the next
+    /// note, not this one (as the amplitude envelope's attack).
+    // ponytail: envelopes past the eighth keep their drawn attack; widen
+    // WARPS if a group routes one.
+    pub(crate) fn stretches(&self, zone: &Zone, note: &Note) -> [f32; modulators::WARPS] {
+        let mut out = [1.0; modulators::WARPS];
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return out;
+        };
+        let reshaped = self.reshaped.get(zone.group as usize);
+        for ((n, stretch), e) in (0u8..).zip(&mut out).zip(&g.envelopes) {
+            let drawn = e.points.first().map_or(0.0, |p| p.ms.max(0.0));
+            if drawn <= 0.0 {
+                continue;
+            }
+            let mut ms = drawn;
+            let routes = reshaped.into_iter().flat_map(|r| r.attacking(n));
+            for m in routes.filter_map(|i| g.mods.get(i)).filter(|m| !m.bypass) {
+                if let ir::ModKind::Attack {
+                    source,
+                    intensity,
+                    floor_ms,
+                    ..
+                } = m.kind
+                    && let Some(x) = self.unit(zone, source, note, Age::START)
+                {
+                    ms = time_route(ms, x, intensity, floor_ms);
+                }
+            }
+            *stretch = ms / drawn;
+        }
+        out
     }
 
     /// The group's envelope for a voice, its attack and release scaled by

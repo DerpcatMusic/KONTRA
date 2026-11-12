@@ -23,6 +23,7 @@ impl Engine {
             now: seconds(self.now),
             warp: [0.0; WARPS],
             chaos: [0.0; WARPS],
+            stretch: [1.0; WARPS],
         }
     }
 
@@ -64,6 +65,7 @@ impl Engine {
             let age = Age {
                 warp: slot.warp,
                 chaos: chaos.map(|c| c[3]),
+                stretch: slot.stretch,
                 ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
             };
             let warp = self.warp(zone, &n, age, span);
