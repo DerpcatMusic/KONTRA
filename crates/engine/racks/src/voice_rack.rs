@@ -171,7 +171,7 @@ pub fn process(
                 r.at += n as u32;
                 if r.at.is_multiple_of(TICK) || r.at >= r.len {
                     let k = route_depth::lerp(r.from, r.to, (r.at as f32 / r.len as f32).min(1.0));
-                    tune(&mut u.kind, &mut u.outer, Tune::Effect(k), rate);
+                    tune(&mut u.kind, &mut u.outer, Tune::Effect(&k), rate);
                 }
             }
             rest = tail;
@@ -202,33 +202,36 @@ fn drive(
     }
 }
 
-pub fn tune_unit(u: &mut Unit, t: Tune, ramp: Option<Ramp>, rate: u32) {
+pub fn tune_unit(u: &mut Unit, t: Tune<'_>, ramp: Option<Ramp>, rate: u32) {
     u.ramp = ramp;
     tune(&mut u.kind, &mut u.outer, t, rate);
 }
 
-fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune, rate: u32) {
+fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune<'_>, rate: u32) {
     match (kind, t) {
         (Kind::Filter(f), Tune::Filter(hz, k)) => {
             f.set_cutoff(hz, rate);
             f.set_damping(k);
         }
         (Kind::Eq(q), Tune::Eq(bells)) => q.retune(bells, rate),
-        (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(v), rate),
+        (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(*v), rate),
         (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => {
-            let new = shaper(v, rate);
+            let new = shaper(*v, rate);
             s.retune(&new.core);
             outer.retune(&new.outer);
         }
-        (Kind::Crush(c), Tune::Effect(ir::EffectKind::Crush(v))) => c.set(reduction(v, rate)),
-        (Kind::Overdrive(o), Tune::Effect(ir::EffectKind::Overdrive(v))) => o.set(voicing(v), rate),
+        (Kind::Crush(c), Tune::Effect(ir::EffectKind::Crush(v))) => c.set(reduction(*v, rate)),
+        (Kind::Overdrive(o), Tune::Effect(ir::EffectKind::Overdrive(v))) => {
+            o.set(voicing(*v), rate)
+        }
         _ => {}
     }
 }
 
 /// A moved unit's new settings.
-pub enum Tune {
+pub enum Tune<'a> {
     Filter(f32, [f32; 3]),
     Eq([ir::Bell; 4]),
-    Effect(ir::EffectKind),
+    /// Borrowed: an effect's settings outweigh the other moves.
+    Effect(&'a ir::EffectKind),
 }
