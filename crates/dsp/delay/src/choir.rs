@@ -1,0 +1,295 @@
+//! [`CHOIR_VOICES`] swept stereo delay lines that feed back into one
+//! another. Per frame: every line's input is the input plus a circulant mix
+//! of the last reads; each voice's tap (its last read plus its input) turns
+//! in the stereo field onto a bus, which a filter shapes; then each line
+//! filters its input, writes it, and reads it back at a delay its sweep
+//! sets: a bent triangle, plus an optional cosine, rounded by a one-pole.
+//! Physical settings in [`ChoirSettings`].
+//!
+//! Every per-voice quantity is a row over the voices, so a frame's voice
+//! loops run straight over `[f32; 7]` fields.
+
+use kontra_dsp_core::{Biquad, Section, bilinear};
+
+use crate::{flush, fract, sine};
+
+/// The voices.
+pub const CHOIR_VOICES: usize = 7;
+const V: usize = CHOIR_VOICES;
+/// The longest delay a line holds, s.
+pub const CHOIR_MAX_S: f32 = 0.5;
+/// The read's floor, frames: the cubic needs a newer frame.
+const FLOOR: f32 = 2.0;
+/// How long a rest delay glides to a new length.
+/// ponytail: the reference ramps its knobs and re-runs its laws; this
+/// glides the rest delays only.
+const GLIDE_S: f32 = 0.015;
+
+type Row = [f32; V];
+
+/// Voice `v` of `r`.
+fn at(r: &Row, v: usize) -> f32 {
+    r.get(v).copied().unwrap_or(0.0)
+}
+
+/// `f` per voice.
+fn row(f: impl FnMut(usize) -> f32) -> Row {
+    std::array::from_fn(f)
+}
+
+/// A choir in physical units, a field per row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChoirSettings {
+    /// Each line's delay at the sweep's low point, and how far the sweep's
+    /// full travel moves it, s.
+    pub delay_s: Row,
+    pub swing_s: Row,
+    /// The triangle LFO's rate and offset (cycles); it bends `u ∈ 0..1` to
+    /// `(1 − b)·u + b·u²`.
+    pub lfo_hz: Row,
+    pub start: Row,
+    pub bend: Row,
+    /// A cosine LFO from its low point, adding `depth·(1 + ½·cos)` swings;
+    /// depth 0 for none.
+    pub wobble_hz: Row,
+    pub wobble: Row,
+    /// The one-pole on the sweep, Hz (infinite for none).
+    pub smooth_hz: Row,
+    /// Each line's input filter.
+    pub filter: [Section; V],
+    /// Each read back into the lines, before the circulant mix.
+    pub loop_gain: Row,
+    /// The circulant's first row: line `i` takes
+    /// `Σₖ scatter[(k − i) mod 7]·loop_gain[k]·read_k`.
+    pub scatter: Row,
+    /// The reads' sign, in the loop and on the bus.
+    pub sign: f32,
+    /// The input into the lines.
+    pub input: f32,
+    /// Each tap's level on the bus and its turn (radians, a rotation).
+    pub level: Row,
+    pub angle: Row,
+    /// The bus's filter and its gain out.
+    pub bus: Section,
+    pub gain: f32,
+}
+
+/// See [`ChoirSettings`].
+#[derive(Debug)]
+pub struct Choir {
+    s: ChoirSettings,
+    rate: f32,
+    /// [`V`] lines of `len` frames (a power of two), line `v` from `v·len`.
+    ring: Box<[[f32; 2]]>,
+    len: usize,
+    /// Where the next frame goes.
+    at: usize,
+    /// The rest delays as they glide, frames; `None` until the first frame.
+    rest: Option<Row>,
+    glide: f32,
+    /// The loop: the circulant times the loop gains and the sign.
+    mix: [Row; V],
+    /// The bus rotation's cosine and sine rows, times the levels.
+    turn: [Row; 2],
+    alpha: Row,
+    /// Both LFOs' steps and phases, cycles.
+    step: [[f64; V]; 2],
+    cycle: [[f64; V]; 2],
+    /// The rounded sweep, 0..1 (more with the cosine).
+    sweep: Row,
+    /// The last reads, per channel.
+    read: [Row; 2],
+    /// The line filters, transposed direct form II with `a0 = 1`:
+    /// `b0, b1, b2, a1, a2`, and per channel two states.
+    c: [Row; 5],
+    z: [[Row; 2]; 2],
+    bus: Biquad,
+    written: f32,
+}
+
+impl Choir {
+    /// Lines of [`CHOIR_MAX_S`]. Not real-time: allocates.
+    #[must_use]
+    pub fn new(s: ChoirSettings, rate: u32) -> Self {
+        let len = ((CHOIR_MAX_S * rate as f32) as usize + 8).next_power_of_two();
+        let mut c = Self {
+            s,
+            rate: rate as f32,
+            ring: vec![[0.0; 2]; len * V].into(),
+            len,
+            at: 0,
+            rest: None,
+            glide: 1.0 - (-1.0 / (GLIDE_S * rate as f32)).exp(),
+            mix: [[0.0; V]; V],
+            turn: [[0.0; V]; 2],
+            alpha: [0.0; V],
+            step: [[0.0; V]; 2],
+            cycle: [[0.0; V]; 2],
+            sweep: [0.0; V],
+            read: [[0.0; V]; 2],
+            c: [[0.0; V]; 5],
+            z: [[[0.0; V]; 2]; 2],
+            bus: Biquad::analog(s.bus, rate),
+            written: 0.0,
+        };
+        c.set(s);
+        c
+    }
+
+    /// Changes the settings while it plays; never allocates.
+    pub fn set(&mut self, s: ChoirSettings) {
+        self.s = s;
+        let rate = self.rate as u32;
+        self.mix = std::array::from_fn(|i| {
+            row(|k| s.sign * at(&s.loop_gain, k) * at(&s.scatter, (k + V - i) % V))
+        });
+        self.turn = [f32::cos, f32::sin].map(|f| row(|v| at(&s.level, v) * f(at(&s.angle, v))));
+        self.alpha = s
+            .smooth_hz
+            .map(|hz| (-std::f32::consts::TAU * hz / self.rate).exp());
+        self.step = [s.lfo_hz, s.wobble_hz].map(|r| r.map(|hz| f64::from(hz / self.rate)));
+        let filters = s.filter.map(|f| bilinear(f, rate));
+        self.c = std::array::from_fn(|k| {
+            // b0, b1, b2 then a1, a2, each over a0.
+            let k = if k < 3 { k } else { k + 1 };
+            row(|v| {
+                let f = filters.get(v).copied().unwrap_or_default();
+                (f.get(k).copied().unwrap_or(0.0) / f.get(3).copied().unwrap_or(1.0)) as f32
+            })
+        });
+        self.bus.retune(&Biquad::analog(s.bus, rate));
+    }
+
+    /// Each line's length, frames: how long silent input can still echo.
+    #[must_use]
+    pub fn memory(&self) -> usize {
+        self.len
+    }
+
+    /// The loudest value the last [`Self::process`] wrote into the lines.
+    #[must_use]
+    pub fn written(&self) -> f32 {
+        self.written
+    }
+
+    /// Lets `frames` silent frames pass: the clocks and the write point
+    /// move on, the rest delays arrive.
+    pub fn idle(&mut self, frames: usize) {
+        self.rest = Some(self.target());
+        self.at = (self.at + frames) & (self.len - 1);
+        for (cycle, step) in self.cycle.iter_mut().zip(&self.step) {
+            for (c, s) in cycle.iter_mut().zip(step) {
+                *c = fract(*c + s * frames as f64);
+            }
+        }
+    }
+
+    fn target(&self) -> Row {
+        self.s.delay_s.map(|d| d * self.rate)
+    }
+
+    /// Line `v`'s channel `c`, `d` frames back from the newest frame (at
+    /// least [`FLOOR`]), 4-point cubic.
+    fn tap(&self, v: usize, c: usize, d: f32) -> f32 {
+        let whole = d as usize;
+        let t = d - whole as f32;
+        let mask = self.len - 1;
+        // The newest frame sits at `at − 1`: one back is it (no delay).
+        let back = |b: usize| {
+            let i = v * self.len + ((self.at + self.len - b) & mask);
+            self.ring
+                .get(i)
+                .and_then(|f| f.get(c))
+                .copied()
+                .unwrap_or(0.0)
+        };
+        let [ym1, y0, y1, y2] = [
+            back(whole - 1),
+            back(whole),
+            back(whole + 1),
+            back(whole + 2),
+        ];
+        // Catmull-Rom from y0 (t = 0) to y1 (t = 1).
+        let a = -0.5 * ym1 + 1.5 * y0 - 1.5 * y1 + 0.5 * y2;
+        let b = ym1 - 2.5 * y0 + 2.0 * y1 - 0.5 * y2;
+        let k = -0.5 * ym1 + 0.5 * y1;
+        ((a * t + b) * t + k) * t + y0
+    }
+
+    /// Replaces `io` with the wet signal.
+    pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        let s = self.s;
+        let target = self.target();
+        let mut rest = self.rest.unwrap_or(target);
+        let swing = s.swing_s.map(|d| d * self.rate);
+        let longest = (self.len - 4) as f32;
+        let mut written = 0.0f32;
+        let dot = |a: &Row, b: &Row| a.iter().zip(b).map(|(a, b)| a * b).sum::<f32>();
+        for frame in io.iter_mut() {
+            // The lines' inputs, then the taps onto the bus.
+            let into = [0, 1].map(|ch| {
+                let read = self.read.get(ch).copied().unwrap_or_default();
+                let x = frame.get(ch).copied().unwrap_or(0.0);
+                self.mix.map(|m| dot(&m, &read) + s.input * x)
+            });
+            let [l, r] = [0, 1].map(|ch| {
+                let read = self.read.get(ch).copied().unwrap_or_default();
+                let into = into.get(ch).copied().unwrap_or_default();
+                row(|v| s.sign * at(&read, v) + at(&into, v))
+            });
+            let [cos, sin] = &self.turn;
+            let mut bus = [dot(cos, &l) - dot(sin, &r), dot(sin, &l) + dot(cos, &r)];
+            self.bus.process(std::slice::from_mut(&mut bus));
+            *frame = bus.map(|b| b * s.gain);
+            // Each line's filter, into the ring.
+            let [b0, b1, b2, a1, a2] = &self.c;
+            for ((x, [z1, z2]), ch) in into.iter().zip(&mut self.z).zip(0..) {
+                let y = row(|v| at(b0, v) * at(x, v) + at(z1, v));
+                *z1 = row(|v| flush(at(b1, v) * at(x, v) - at(a1, v) * at(&y, v) + at(z2, v)));
+                *z2 = row(|v| flush(at(b2, v) * at(x, v) - at(a2, v) * at(&y, v)));
+                for (v, y) in y.iter().enumerate() {
+                    written = written.max(y.abs());
+                    let slot = self.ring.get_mut(v * self.len + self.at);
+                    if let Some(slot) = slot.and_then(|f| f.get_mut(ch)) {
+                        *slot = *y;
+                    }
+                }
+            }
+            self.at = (self.at + 1) & (self.len - 1);
+            // Each sweep, then the reads.
+            let [p1, p2] = self.cycle;
+            let shape = row(|v| {
+                let phase = fract(p1.get(v).copied().unwrap_or(0.0) + f64::from(at(&s.start, v)));
+                let u = 1.0 - (1.0 - 2.0 * phase).abs() as f32;
+                let bend = at(&s.bend, v);
+                let wobble = at(&s.wobble, v);
+                let cos = match wobble == 0.0 {
+                    true => 0.0,
+                    false => {
+                        let p = p2.get(v).copied().unwrap_or(0.0);
+                        (1.0 - 0.5 * sine(p + 0.25) as f32) * wobble
+                    }
+                };
+                (1.0 - bend) * u + bend * u * u + cos
+            });
+            self.sweep =
+                row(|v| at(&shape, v) + (at(&self.sweep, v) - at(&shape, v)) * at(&self.alpha, v));
+            rest = row(|v| at(&rest, v) + (at(&target, v) - at(&rest, v)) * self.glide);
+            // `max` maps NaN to the floor.
+            let d = row(|v| {
+                (at(&rest, v) + at(&swing, v) * at(&self.sweep, v))
+                    .max(FLOOR)
+                    .min(longest)
+            });
+            self.read = [0, 1].map(|ch| row(|v| self.tap(v, ch, at(&d, v))));
+            for (cycle, step) in self.cycle.iter_mut().zip(&self.step) {
+                for (c, s) in cycle.iter_mut().zip(step) {
+                    let next = *c + s;
+                    *c = if next >= 1.0 { fract(next) } else { next };
+                }
+            }
+        }
+        self.rest = Some(rest);
+        self.written = written;
+    }
+}

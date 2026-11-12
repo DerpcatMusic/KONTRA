@@ -542,7 +542,7 @@ pub fn processor(
         // ponytail: lines for 120 ms, the longest a Kontakt Choral reaches
         // (66 ms base + its widest swing at the slowest rate).
         Some(ir::EffectKind::Ensemble(e)) => {
-            wet(Box::new(crate::ensemble::Ensemble::new(e, rate, 120.0)))
+            wet(Box::new(crate::ensemble::Ensemble::new(e, rate)))
         }
         Some(ir::EffectKind::CombBank(c)) => wet(Box::new(CombBank::new(
             comb_bank(c, 120.0),
