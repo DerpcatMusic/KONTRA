@@ -144,7 +144,8 @@ impl Browser {
 
     /// Kontakt's user snapshot folder: the player's choice, else Kontakt's
     /// own once the player's presets are listed (never in tests).
-    fn kontakt(&self) -> Option<PathBuf> {
+    #[must_use]
+    pub fn kontakt(&self) -> Option<PathBuf> {
         let own = || {
             self.user
                 .as_ref()
