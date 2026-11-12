@@ -750,6 +750,25 @@ mod tests {
     }
 
     #[test]
+    fn set_value_runs_changed_only_on_a_change_but_a_users_move_always() {
+        // W Strings Harmonic: linked buttons set each other.
+        let source = "n = 0
+            local a = OnOffButton('a', false)
+            local b = OnOffButton('b', false)
+            a.changed = function(s) n = n + 1; b:setValue(s.value) end
+            b.changed = function(s) a:setValue(s.value) end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function(s) assert(n == 2, n) end";
+        let compiled = compile(source, &[], &[]).unwrap();
+        let mut m = compiled.machine();
+        for (control, value) in [(0, 1.0), (0, 1.0), (2, 0.5)] {
+            let co = m.control(control, value, 0).expect("control");
+            assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        }
+        assert_eq!(m.faults().bad_code, 0);
+    }
+
+    #[test]
     fn a_note_callback_reaches_the_host() {
         let compiled =
             compile("function onNote(e) playNote(e.note + 7, 100) end", &[], &[]).unwrap();

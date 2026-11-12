@@ -31,4 +31,6 @@ pub enum Form {
     Hundredths,
     /// A whole number in five places (degrees).
     WideWhole,
+    /// No text: a switch shows none.
+    Blank,
 }

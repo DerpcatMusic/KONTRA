@@ -347,6 +347,8 @@ pub enum SlotKnob {
     BandHz(u8),
     BandWidth(u8),
     BandGain(u8),
+    /// An EQ band's switch between its shelf and a bell, by band.
+    BandBell(u8),
     /// A delay's time, feedback, pan, damping, low-cut and high-cut knobs.
     DelayTime,
     DelayFeedback,
@@ -404,6 +406,19 @@ pub struct KnobModel {
     pub build: fn(&[f32]) -> Option<crate::EffectKind>,
 }
 
+impl KnobModel {
+    /// The most positions a model holds: its live positions fit a fixed
+    /// array, so moving a knob allocates nothing.
+    pub const MAX: usize = 16;
+}
+
+impl PartialEq for KnobModel {
+    fn eq(&self, other: &Self) -> bool {
+        (self.knobs == other.knobs && self.saved == other.saved)
+            && std::ptr::fn_addr_eq(self.build, other.build)
+    }
+}
+
 /// Shape `id` a script may switch a filter slot
 /// ([`SlotShapes::slots`]) to: its pass, stages, ladder taps and
 /// ranges come from `filter`. The resonance moves to the new last stage, the
@@ -454,6 +469,8 @@ pub struct SlotType {
     pub kind: i32,
     pub effect: Option<crate::Effect>,
     pub laws: std::sync::Arc<[(SlotKnob, EffectParam, crate::Law)]>,
+    /// How its knobs rebuild it together, when they interact.
+    pub model: Option<KnobModel>,
 }
 
 impl SlotShape {

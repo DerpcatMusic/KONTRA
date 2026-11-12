@@ -297,6 +297,20 @@ impl<'a> Compiler<'a> {
             args.get(i)
                 .ok_or_else(|| Error::new(span, "missing argument"))
         };
+        // An array loaded in `on init` is implicitly persistent (KSP manual,
+        // load_array): its saved values land at the end of init, unless
+        // read_persistent_var reloaded it first.
+        // ponytail: a load in a function init calls is not seen.
+        if self.in_init && matches!(b, Builtin::LoadArray | Builtin::LoadArrayStr) {
+            let (v, _) = self.named(arg(0)?)?;
+            if let Some(var) = self
+                .vars
+                .get_mut(v)
+                .filter(|v| v.persistence == Persistence::None)
+            {
+                var.persistence = Persistence::Snapshot;
+            }
+        }
         match b {
             Builtin::Exit => {
                 self.emit(Op::Exit);

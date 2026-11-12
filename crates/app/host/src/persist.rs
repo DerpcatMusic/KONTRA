@@ -482,9 +482,12 @@ pub fn saved(loaded: &[Vec<String>], slots: &[Vars], capture: &Capture) -> Vec<V
                 let Some(values) = capture.texts.get(range) else {
                     continue;
                 };
-                // A text array saves one line per value.
+                // A text array saves one line per value, each ended by a
+                // newline, as Kontakt writes it (oracle: 80 values, 80
+                // newlines); a single text saves bare.
                 let values: Vec<&str> = values.iter().map(Text::as_str).collect();
-                format!("{} {}", var.name, values.join("\n"))
+                let end = if values.len() > 1 { "\n" } else { "" };
+                format!("{} {}{end}", var.name, values.join("\n"))
             } else {
                 let Some(values) = capture.values.get(range) else {
                     continue;
