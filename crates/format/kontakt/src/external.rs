@@ -65,7 +65,8 @@ pub(crate) fn external(
                 let raw = source;
                 let source = match (raw, t.shaper.as_ref().filter(|s| s.enabled)) {
                     (Some(s), Some(shaper)) => {
-                        let result = shaped(&mut out.shapers, s, &shaper.curve);
+                        let signed = s == ir::Source::PitchBend && signed_route(&t.param);
+                        let result = shaped(&mut out.shapers, s, &shaper.curve, signed);
                         kontra_law::record(|| kontra_law::Application {
                             id: kontra_law::LawId("kontakt.mod_shaper.v1"),
                             location: format!(
@@ -276,11 +277,24 @@ pub(crate) fn external(
     Ok(())
 }
 
-/// `source` through a modulation shaper, sampled at 128 even steps.
+/// Whether a Kontakt target reads its source signed (-1..=1): every target
+/// but the gains and times the engine reads on 0..=1.
+fn signed_route(param: &str) -> bool {
+    !matches!(
+        param,
+        "volume" | "ahdsr_attack" | "ahdsr_release" | "intensity" | "filterQ"
+    )
+}
+
+/// `source` through a modulation shaper, sampled at 128 even steps. Kontakt
+/// draws every shaper on 0..=1; a bipolar source's shaper keeps its source's
+/// polarity (centre 0.5 = rest), so on a `signed` route the table becomes
+/// `2y - 1`, the domain the IR reads it in.
 fn shaped(
     shapers: &mut Vec<ir::Transfer>,
     source: ir::Source,
     curve: &ShaperCurve,
+    signed: bool,
 ) -> Option<ir::Source> {
     let n = u8::try_from(shapers.len()).ok()?;
     let law = match curve {
@@ -295,8 +309,10 @@ fn shaped(
         table: (0..128)
             .map(|k| {
                 let x = k as f32 / 127.0;
-                law.as_ref()
-                    .map_or_else(|| curve.evaluate(x), |law| law.eval(x))
+                let y = law
+                    .as_ref()
+                    .map_or_else(|| curve.evaluate(x), |law| law.eval(x));
+                if signed { 2.0 * y - 1.0 } else { y }
             })
             .collect(),
     });
@@ -326,9 +342,42 @@ mod tests {
                 point(0.667_322_8, b, 0.0),
             ]);
             let mut shapers = Vec::new();
-            shaped(&mut shapers, ir::Source::Controller(1), &curve).unwrap();
+            shaped(&mut shapers, ir::Source::Controller(1), &curve, false).unwrap();
             let actual = shapers[0].apply(64.0 / 127.0);
             assert!((actual - native).abs() < 0.035, "{actual} vs {native}");
         }
+    }
+
+    #[test]
+    fn a_shaped_pitch_bend_stays_bipolar_on_a_signed_route() {
+        let flat = ShaperCurve::Breakpoints(vec![
+            Breakpoint {
+                x: 0.0,
+                y: 0.5,
+                curve: 0.0,
+            },
+            Breakpoint {
+                x: 1.0,
+                y: 0.5,
+                curve: 0.0,
+            },
+        ]);
+        let mut shapers = Vec::new();
+        shaped(
+            &mut shapers,
+            ir::Source::PitchBend,
+            &flat,
+            signed_route("playPos"),
+        )
+        .unwrap();
+        shaped(
+            &mut shapers,
+            ir::Source::PitchBend,
+            &flat,
+            signed_route("volume"),
+        )
+        .unwrap();
+        assert!(shapers[0].apply(0.5).abs() < 1e-6, "{:?}", shapers[0].table);
+        assert!((shapers[1].apply(0.5) - 0.5).abs() < 1e-6);
     }
 }

@@ -70,7 +70,6 @@ impl Engine {
                 tau_ms,
             } = m.kind
             {
-                // HeldTime is fixed at the voice's start: see `release_counter`.
                 let intensity = intensity * self.scale(zone, source, note, age);
                 let input = self.unit(zone, source, note, age);
                 let g = input.map_or(1.0, |x| curve.gain(intensity, x));
@@ -265,7 +264,7 @@ impl Engine {
                     .unwrap_or_else(|| self.script_mod(index)) as f32
                     / 1_000_000.0,
             ),
-            ir::Source::HeldTime { .. } => None,
+            ir::Source::HeldTime { span_ms } => Some(kontra_plan::held_time(span_ms, note.held)),
         }
     }
 
@@ -409,9 +408,8 @@ impl Engine {
         shift
     }
 
-    /// Frames the zone's start moves for a voice started after the key was
-    /// held `held` seconds, within its start range either way.
-    pub(crate) fn start_offset(&self, zone: &Zone, note: &Note, held: f32) -> i64 {
+    /// Frames the zone's start moves, within its start range either way.
+    pub(crate) fn start_offset(&self, zone: &Zone, note: &Note) -> i64 {
         let Some(g) = self.groups.get(zone.group as usize) else {
             return 0;
         };
@@ -421,10 +419,7 @@ impl Engine {
             .filter(|m| !m.bypass)
             .filter_map(|m| match m.kind {
                 ir::ModKind::SampleStart { source, depth } => {
-                    let x = match source {
-                        ir::Source::HeldTime { span_ms } => kontra_plan::held_time(span_ms, held),
-                        source => self.source(zone, source, note, Age::START)?,
-                    };
+                    let x = self.source(zone, source, note, Age::START)?;
                     let value = x * depth;
                     #[cfg(feature = "trace")]
                     self.trace_route(
@@ -443,11 +438,11 @@ impl Engine {
         (f64::from(x) * range).round().clamp(-range, range) as i64
     }
 
-    /// The group's envelope for a voice started after the key was held
-    /// `held` seconds, its attack and release scaled by their routes.
+    /// The group's envelope for a voice, its attack and release scaled by
+    /// their routes.
     /// ponytail: release routes read at note-on too; a source moving
     /// before note-off is missed, read at release if a library needs it.
-    pub(crate) fn envelope(&self, zone: &Zone, note: &Note, held: f32) -> Ahdsr {
+    pub(crate) fn envelope(&self, zone: &Zone, note: &Note) -> Ahdsr {
         let Some(g) = self.groups.get(zone.group as usize) else {
             return Ahdsr::GATE;
         };
@@ -467,13 +462,9 @@ impl Engine {
                 } => (source, intensity, floor_ms, &mut e.release),
                 _ => continue,
             };
-            let x = match source {
-                ir::Source::HeldTime { span_ms } => Some(kontra_plan::held_time(span_ms, held)),
-                // Outside the signed families the law compiler (FUN_140873040)
-                // reads a bipolar source without `frange_bi`: 0..=1.
-                source => self.unit(zone, source, note, Age::START),
-            };
-            let Some(x) = x else {
+            // Outside the signed families the law compiler (FUN_140873040)
+            // reads a bipolar source without `frange_bi`: 0..=1.
+            let Some(x) = self.unit(zone, source, note, Age::START) else {
                 continue;
             };
             let x = if intensity < 0.0 { 1.0 - x } else { x };
@@ -496,26 +487,6 @@ impl Engine {
             );
         }
         e
-    }
-
-    /// The release-trigger counter's gain for a voice started after the key
-    /// was held `held` seconds.
-    pub(crate) fn release_counter(&self, zone: &Zone, held: f32) -> f32 {
-        self.groups.get(zone.group as usize).map_or(1.0, |g| {
-            g.mods
-                .iter()
-                .filter(|m| !m.bypass)
-                .map(|m| match m.kind {
-                    ir::ModKind::Volume {
-                        source: ir::Source::HeldTime { span_ms: ms },
-                        intensity,
-                        curve,
-                        ..
-                    } => curve.gain(intensity, kontra_plan::held_time(ms, held)),
-                    _ => 1.0,
-                })
-                .product()
-        })
     }
 
     /// Whether moving `cc` changes this zone's level.

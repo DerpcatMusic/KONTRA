@@ -37,7 +37,7 @@ fn directory() -> Result<PathBuf> {
     Ok(path)
 }
 
-fn wav(path: &Path, audio: &[[f32; 2]]) -> Result<()> {
+pub fn wav(path: &Path, audio: &[[f32; 2]]) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate: RATE,
