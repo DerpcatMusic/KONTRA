@@ -207,8 +207,8 @@ impl Core {
             *y = (sum - lp) as f32;
         }
         // Only the stages in use move; the rest were flushed when they ran.
-        let moved = used.iter_mut().flatten().flatten();
-        for v in moved.chain(self.band.iter_mut().flatten()) {
+        let moved = used.as_flattened_mut().as_flattened_mut();
+        for v in moved.iter_mut().chain(self.band.as_flattened_mut()) {
             if v.abs() < 1e-20 {
                 *v = 0.0;
             }
