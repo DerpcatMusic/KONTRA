@@ -33,7 +33,7 @@ use moose::prelude::*;
 /// The build as About shows it: the version and its source revision.
 pub const BUILD: &str = concat!(
     "Version ",
-    env!("CARGO_PKG_VERSION"),
+    env!("KONTRA_VERSION"),
     " · ",
     env!("KONTRA_REVISION")
 );

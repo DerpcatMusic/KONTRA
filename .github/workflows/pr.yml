@@ -1,0 +1,30 @@
+name: Pull request
+
+# A pull request's title becomes the commit on main and a line in the release;
+# its description becomes the commit's body and its release note. This checks
+# they read well (tools/release/pr.py), again whenever either is edited.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-text-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  text:
+    name: title and release note
+    if: '!github.event.pull_request.draft'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 tools/release/pr.py

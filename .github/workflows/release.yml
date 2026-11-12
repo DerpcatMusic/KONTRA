@@ -1,15 +1,13 @@
 name: Release
 
-# Every change to main publishes the newest build as the Latest release; older
-# nightly releases are removed (their tags stay, so notes still diff from them).
-# Downloads use stable names, so releases/latest/download/<name> always works.
+# One release a day, when main has changed what ships since the last one, and
+# on demand (Actions > Release > Run workflow). Each release gets the next
+# version (tools/version.py), notes written from its pull requests
+# (tools/release/notes.py) and stays published. Downloads use stable names, so
+# releases/latest/download/<name> always works.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - 'website/**'
-      - '**/*.md'
+  schedule:
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -47,6 +45,14 @@ jobs:
           fi
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
           git tag --points-at HEAD > head-tags.txt
+          # A scheduled run with nothing new in what ships has nothing to release.
+          last=$(python3 tools/version.py previous)
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ -n "$last" ] && git diff --quiet "$last" HEAD -- . \
+              ':(exclude)docs' ':(exclude)website' ':(exclude)tools' ':(exclude)*.md'; then
+            echo "Nothing that ships changed since $last"
+            echo 'released=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           python3 tools/release/already_released.py
 
   verify:
@@ -92,14 +98,17 @@ jobs:
       - name: Install cargo-moose
         shell: bash
         run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
-      - name: CLAP and VST3 bundles
-        shell: bash
-        run: |
-          cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
-          git diff --exit-code -- Cargo.lock
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
+      - name: CLAP and VST3 bundles
+        shell: bash
+        run: |
+          # About shows the release's version.
+          KONTRA_VERSION=$(python3 tools/version.py next)
+          export KONTRA_VERSION
+          cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
+          git diff --exit-code -- Cargo.lock
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: runner.os != 'macOS'
         with:
@@ -221,7 +230,7 @@ jobs:
             [ -n "${!name:-}" ] || { echo "Missing required signing secret: $name" >&2; exit 1; }
           done
           for arch in arm64 x86_64; do ditto -x -k "dist/KONTRA-nightly-macos-$arch.zip" inputs; done
-          version=$(python3 tools/version.py v3-nightly)
+          version=$(python3 tools/version.py next)
           python3 .github/scripts/package_macos.py --arm64 inputs/KONTRA-nightly-macos-arm64 \
             --x86-64 inputs/KONTRA-nightly-macos-x86_64 --stage universal-stage --revision "$GITHUB_SHA" --version "$version"
           mkdir -p "universal-stage/payload/Library/Application Support/KONTRA"
@@ -283,10 +292,6 @@ jobs:
               exit 0
             fi
           done
-          version=$(python3 tools/version.py v3-nightly)
-          python3 tools/release/notes.py > notes.md
+          version=$(python3 tools/version.py next)
+          python3 tools/release/notes.py --version "$version" > notes.md
           gh release create "v$version" --target "$GITHUB_SHA" --latest --title "KONTRA $version" --notes-file notes.md KONTRA-nightly-*.zip KONTRA-nightly-macos-universal.pkg KONTRA-nightly-macos-universal.notarization.json
-          # Only the newest nightly stays published; the tags keep the history.
-          gh release list --limit 200 --json tagName --jq '.[].tagName' \
-            | grep '^v3\.0\.0-nightly\.' | grep -vxF "v$version" \
-            | xargs -r -n1 gh release delete --yes

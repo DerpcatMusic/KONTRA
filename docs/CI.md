@@ -11,7 +11,7 @@ checks cannot turn the aggregate green.
 
 | Check | What it establishes | Local command |
 | --- | --- | --- |
-| Workflow checks | YAML, expressions, dependency graph, documentation filtering and simulated release safety | `bash .github/scripts/check_workflows.sh` (Linux); `python3 -m unittest discover -s .github/scripts -p 'test_*.py'`; `python3 .github/workflows/check_nightly.py` |
+| Workflow checks | YAML, expressions, dependency graph, documentation filtering and simulated release safety | `bash .github/scripts/check_workflows.sh` (Linux); `python3 -m unittest discover -s .github/scripts -p 'test_*.py'` |
 | rustfmt | Formatting differences, currently advisory because the tree has existing debt | `cargo fmt --all --check` |
 | clippy | Compilation plus Rust lint diagnostics; existing warning policy is unchanged | `cargo clippy --locked --profile ci --all-targets` |
 | Linux tests | Default-feature unit/integration/doc-tests for the root and every first-party workspace package, including the parity ledger and corpus collector | `cargo test --locked --profile ci -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p kontra-ui-model -p sampler-perf -p sampler-parity -p corpus-health` |
@@ -45,66 +45,25 @@ Caches are separated by OS/target, profile and feature set. The cache action als
 keys the compiler, Cargo manifests/lockfile and compiler-related environment.
 Caches are accelerators, not test evidence or release artifacts.
 
-## Nightly and deeper verification
+## Releases
 
-Every push or merge to public `main`, including documentation-only changes, starts
-Nightly. Manual **Actions → Nightly → Run workflow → main** also rechecks and
-rebuilds the selected commit. An unchanged version rerun preserves every release.
-Shipping verification is always forced; documentation filtering applies only to
-routine CI. Each native shipping-check and packaging job derives the same nightly
-SemVer and `SOURCE_DATE_EPOCH` from that exact source commit.
+`.github/workflows/release.yml` runs once a day and on demand. A scheduled
+run that finds nothing new in what ships (everything outside `docs/`,
+`website/`, `tools/` and Markdown) since the last release tag stops there.
+Otherwise it:
 
-The graph is:
+1. runs the full verification (`v3-verify.yml`) on the commit;
+2. builds the CLAP and VST3 bundles for Linux, Windows and both macOS
+   architectures, stamped with the release's version;
+3. composes, signs and notarizes the universal macOS installer;
+4. tags the commit `vX.Y.Z` (`tools/version.py next`) and publishes the
+   release with notes from the merged pull requests
+   (`tools/release/notes.py`).
 
-1. Check out the event's exact source SHA
-2. Call this commit's CI workflow with `release_validation: true`
-3. Require release-profile Linux tests and Windows/macOS compilation
-4. Build CLAP, VST3 and standalone for Linux x64, Windows x64, macOS arm64 and macOS x64.
-   Linux packages use Ubuntu 22.04 and reject any artifact requiring glibc newer than 2.35.
-5. Verify all four ZIP checksum sidecars, required binaries/legal files and embedded
-   build identities, then publish the event SHA after confirming it belongs to `main`.
-   Linux and Windows ZIPs contain the three products, README, install/uninstall
-   scripts and consolidated `LICENSES.txt`. Source and build JSON move to the
-   published `release-manifest.json`; build JSON sidecars remain transient.
-   MPL covered source is a separate release asset. macOS publishes the universal
-   installer only; its architecture ZIPs remain internal packaging inputs.
-   Sidecars are transient build-to-publisher checks; release checksums are in the
-   downloadable manifest. cargo-moose builds CLAP and VST3 separately with
-   `--no-default-features`, each format plus the non-format defaults and requested
-   `library-access`; manifests are matched uniquely to their actual format features.
-   macOS bundle plist versions use numeric Cargo base SemVer before signing; the
-   full nightly version remains in `KONTRAVersion` and embedded build JSON. See
-   Apple's [bundle build version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion)
-   and [release version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring) formats.
-6. Publish under an immutable `v<nightly SemVer>` tag. Latest points to the newest
-   complete source snapshot, even when runs finish out of order. Generate plain
-   New/Fixed/Improved bullets from ledger IDs newly accepted since the previous
-   published source, plus at most five user-facing Known issues from CHANGELOG.
-   Installation links the README; source range and checksums are collapsed.
-   The same notes appear in the release body and `release-manifest.json`.
-   A missing previous ledger bootstraps from current accepted entries.
-   The base patch is checked against explicitly accepted logical IDs in
-   `release-fixes.json`, and all binaries derive it from Cargo before packaging.
-   These are experimental nightlies, not stable-quality releases. GitHub's
-   prerelease flag is false because prereleases cannot serve its permanent
-   `/releases/latest/download/<asset>` URLs. The SemVer itself remains a nightly.
-   See [GitHub release API](https://docs.github.com/en/rest/releases/releases).
-   Keep every published nightly and its immutable source tag. Only transient
-   staging releases and abandoned drafts are removed. After successful publication,
-   remove this run's transient Actions artifacts. Failed builds/uploads retain their
-   artifacts for one day. Release downloads are independent of Actions artifacts.
-
-No PR workflow publishes. Downloads come only from the same Nightly run, not a
-cache or a different PR. Release verification and build concurrency groups include
-the source SHA, so consecutive main pushes do not cancel one another. Publication
-uses [GitHub's FIFO queue](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
-with cancellation disabled. Existing read/write permission boundaries are preserved.
-These checks are automated regression coverage, not DAW or Kontakt certification.
-
-To test shipping optimization without publishing, use **Actions → CI → Run
-workflow**, leave **release_validation** enabled, and choose your branch. Locally:
-`cargo test --locked --release`. Changes to DSP, unsafe code, CPU assumptions,
-compiler settings or dependencies particularly deserve this deeper check.
+Releases stay published. Download names are stable, so
+`releases/latest/download/<name>` always serves the newest. No pull request
+workflow publishes. How versions and notes are derived:
+[CONTRIBUTING.md](../CONTRIBUTING.md#pull-requests-commits-and-releases).
 
 ## Before/after and what to measure
 

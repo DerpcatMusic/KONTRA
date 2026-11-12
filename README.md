@@ -20,7 +20,7 @@ Under the hood it is **one engine**: a single universal set of sampler, synthesi
 [![Download for macOS, universal](https://img.shields.io/badge/Download-macOS%20Universal-222222?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-macos-universal.pkg)
 [![Download for Linux x64](https://img.shields.io/badge/Download-Linux%20x64-E8A317?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-linux-x86_64.zip)
 
-Built from every change to main · CLAP and VST3 · [All downloads & release notes](https://github.com/DerpcatMusic/KONTRA/releases/latest)
+A new release most days · CLAP and VST3 · [All releases and what changed in each](https://github.com/DerpcatMusic/KONTRA/releases)
 
 **Alpha software, under heavy development.** Features, UI, compatibility and saved-state formats may change substantially between builds. Expect incomplete behavior and regressions; this is not yet a dependable replacement for Kontakt or Falcon.
 

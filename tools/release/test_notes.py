@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from notes import fields, pull_body, render, section
+from notes import fields, pull, render, section
 from already_released import already_released
 
 
@@ -30,28 +30,32 @@ class NotesTest(unittest.TestCase):
                 self.assertEqual(section([path]), expected)
         self.assertEqual(section(['tools/inspect/src/main.rs', 'crates/app/ui/src/lib.rs']), 'Interface')
 
-    def test_render_uses_body_not_title(self):
-        entries = [('Release note: Find your sounds faster.\nArea: libraries', '1234', ['tools/a.py']),
-                   ('Release note: See the knobs clearly.\n', '1235', ['plugin/src/editor.rs']),
-                   ('Release note: none\nArea: sound', '1236', ['crates/engine/engine/src/lib.rs']),
-                   ('P8.4: internal technical title', '1237', ['crates/app/ui/src/lib.rs']),
-                   ('Release note: Hidden work.', '1238', ['tools/inspect/src/main.rs'])]
+    def test_a_note_is_the_pull_requests_sentence_credited_to_its_author(self):
+        def pr(number, body, paths, title='chore: internal title', author='ada'):
+            return dict(number=number, body=body, paths=paths, title=title, author=author)
+        entries = [pr('1234', 'Release note: Find your sounds faster.\nArea: libraries', ['tools/a.py']),
+                   pr('1235', 'Release note: See the knobs clearly.\n', ['plugin/src/editor.rs'], author=''),
+                   pr('1236', 'Release note: none\nArea: sound', ['crates/engine/engine/src/lib.rs'],
+                      title='refactor(engine): one queue (#1236)'),
+                   pr('1238', 'Release note: Hidden work.', ['tools/inspect/src/main.rs'])]
         result = render(entries)
-        self.assertIn('### Libraries & loading\n\n- Find your sounds faster. ([#1234](https://github.com/DerpcatMusic/KONTRA/pull/1234))', result)
-        self.assertIn('### Interface\n\n- See the knobs clearly. ([#1235](https://github.com/DerpcatMusic/KONTRA/pull/1235))', result)
-        self.assertIn('<summary>Internal: 3 changes</summary>', result)
-        internal = result.split('<details>', 1)[1].split('</details>', 1)[0]
-        for number in ('1236', '1237', '1238'):
-            self.assertIn(f'- [#{number}](https://github.com/DerpcatMusic/KONTRA/pull/{number})', internal)
-        self.assertNotIn('#1234', internal)
-        self.assertNotIn('P8.4', result)
+        self.assertIn('### Libraries & loading\n\n- Find your sounds faster. '
+                      '([#1234](https://github.com/DerpcatMusic/KONTRA/pull/1234) by @ada)', result)
+        self.assertIn('- See the knobs clearly. ([#1235](https://github.com/DerpcatMusic/KONTRA/pull/1235))', result)
+        self.assertIn('<summary>Under the hood: 2 changes</summary>', result)
+        under = result.split('<details>', 1)[1].split('</details>', 1)[0]
+        self.assertIn('- refactor(engine): one queue ([#1236](https://github.com/DerpcatMusic/KONTRA/pull/1236) by @ada)', under)
+        self.assertNotIn('#1234', under)
         self.assertNotIn('Hidden work', result)
 
-    def test_one_internal_link_and_no_empty_section(self):
-        result = render([('Release note: none', '42', ['tools/example.py'])])
-        self.assertIn('<summary>Internal: 1 change</summary>', result)
-        self.assertIn('- [#42](https://github.com/DerpcatMusic/KONTRA/pull/42)', result)
-        self.assertNotIn('<details>', render([]))
+    def test_a_release_opens_with_its_count_and_ends_with_the_compare_link(self):
+        entry = dict(number='42', body='Release note: Louder.\nArea: sound', paths=[], title='feat: louder', author='ada')
+        result = render([entry], '3.1.0', 'v3.0.4')
+        self.assertTrue(result.startswith('1 change since [3.0.4](https://github.com/DerpcatMusic/KONTRA/releases/tag/v3.0.4), 1 of them'))
+        self.assertIn('### Install', result)
+        self.assertIn('**Full changelog:** [v3.0.4...v3.1.0](https://github.com/DerpcatMusic/KONTRA/compare/v3.0.4...v3.1.0)', result)
+        self.assertNotIn('<details>', result)
+        self.assertEqual(render([]), '')
 
     def test_only_published_release_at_head_skips_build(self):
         pages = [[{'tag_name': 'v3.old', 'draft': False}],
@@ -60,9 +64,11 @@ class NotesTest(unittest.TestCase):
         self.assertFalse(already_released({'v3.draft'}, pages))
         self.assertFalse(already_released({'unrelated'}, pages))
 
-    @patch('notes.subprocess.check_output', return_value='{"body":"Release note: Smoother playback."}')
-    def test_fetches_pr_body(self, run):
-        self.assertEqual(pull_body('42'), 'Release note: Smoother playback.')
+    @patch('notes.subprocess.check_output',
+           return_value='{"title":"fix: smoother","body":"Release note: Smoother playback.","user":{"login":"ada"}}')
+    def test_fetches_the_pull_request(self, run):
+        self.assertEqual(pull('42'), dict(number='42', title='fix: smoother',
+                                          body='Release note: Smoother playback.', author='ada'))
         run.assert_called_once_with(['gh', 'api', 'repos/DerpcatMusic/KONTRA/pulls/42'], text=True)
 
 

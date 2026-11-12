@@ -1,13 +1,20 @@
 <!--
-v3 PRs: base `v3`, branch `v3-<task id>-<slug>`, title "<task id>: <task title>".
-See docs/architecture-v3/12-WORKFLOW.md. Other PRs: delete the v3 section.
+Title: type(scope): what changed, in plain words, within 72 characters.
+  fix(ui): long preset menus scroll        feat(kontakt): snapshots load their effects
+Types: feat, fix, perf, refactor, docs, test, build, ci, chore.
+The title becomes the commit on main; this description becomes its body.
 -->
 
 ## What changed and why
 
-<!-- The behaviour this changes, in user or engine terms. -->
+<!-- What was missing or wrong, what someone using KONTRA gets now, and why
+     this is the right fix. Plain words first; no addresses or lane names. -->
 
-## Vision check
+## How it was checked
+
+<!-- The commands run and what they showed. Say what was not checked. -->
+
+## Design test
 
 <!-- One line each: docs/architecture-v3/VISION.md, "The design test". -->
 
@@ -17,31 +24,8 @@ See docs/architecture-v3/12-WORKFLOW.md. Other PRs: delete the v3 section.
 4. Future (what it keeps possible):
 5. Reported, not dropped:
 
-## v3 task
+<!-- Technical detail a reviewer needs (measurements, sources read) goes below. -->
 
-Task: <!-- P1.2 --> · Issue: #<!-- n -->
-
-- [ ] `python3 tools/plan/plan.py scope <id>` passes (or the coordinator added `scope-override`)
-- [ ] Gate commands from the brief run; output below
-- [ ] Done criteria from the brief hold
-- [ ] Docs in `docs/architecture-v3/` updated where the code diverged from them
-
-<details><summary>Gate output</summary>
-
-```text
-
-```
-
-</details>
-
-**Net production lines:** <!-- e.g. -1,240 (cargo xtask size, or git diff --stat) -->
-
-**Deviations from the brief:** <!-- none, or what and why -->
-
-## Checks run
-
-<!-- Exact commands and results. Say what was not run. -->
-
-<!-- Use one plain sentence for musicians, or "none" for internal work. -->
+<!-- One plain sentence for musicians, or "none" for work they will not notice. -->
 Release note: none
 Area: <!-- sound | interface | libraries | performance | fix -->
