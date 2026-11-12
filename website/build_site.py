@@ -93,6 +93,27 @@ def render_table(data):
 <script type="application/json" id="compatibility-data">{embedded}</script>'''
 
 
+def render_sound(sound):
+    """The sound scoreboard: the same notes played in Kontakt and in KONTRA, per library."""
+    libraries = sound['libraries']
+    passed, total = sum(l['passed'] for l in libraries), sum(l['total'] for l in libraries)
+    measured = datetime.fromisoformat(sound['measured']).strftime('%d %b %Y').lstrip('0')
+    revision = sound.get('revision')
+    at = f' at <a href="{REPO}/commit/{escape(revision, quote=True)}">{escape(revision[:7])}</a>' if revision else ''
+    rows = ''
+    for l in libraries:
+        name, score = escape(l['name']), f'{l["passed"]} of {l["total"]}'
+        misses = ''.join(f'<li>{escape(m)}</li>' for m in l['misses'])
+        rows += (f'<div class="sampler-row"><h3>{name}<meter class="meter" min="0" max="{l["total"]}" value="{l["passed"]}">{score}</meter></h3>'
+                 f'<span class="score {"status-done" if l["passed"] == l["total"] else "status-partial"}">{score} match</span></div>')
+        if misses:
+            rows += f'<details class="sampler-scope"><summary>What differs in {name}</summary><ul>{misses}</ul></details>'
+    return f'''<section class="sampler-phase"><h2>Sound against Kontakt</h2><div>
+<p class="progress-total"><strong>{passed} of {total}</strong> test plays sound the same in KONTRA as in Kontakt.</p>
+<p>Each library plays the same 13 things in both: single notes low, middle and high at three strengths, a chord, fast repeats, a mod wheel sweep and a pedalled phrase. A play matches when loudness, tone in every third-octave band, start time, attack, release and left/right balance are all within about 1 dB and 5 ms. Measured {measured}{at}.</p>
+<div class="sampler-list">{rows}</div></div></section>'''
+
+
 def build(output):
     output = output.resolve()
     if output == SITE or SITE.is_relative_to(output):
@@ -114,6 +135,11 @@ def build(output):
     counts = data['counts']
     page = page.replace('<!-- compatibility:counts -->', ' · '.join(f'<span class="status-{key}">{counts.get(key, 0)} {label.lower()}</span>' for key, label in LABELS.items()))
     (output / 'features.html').write_text(page)
+    progress = (SITE / 'progress.html').read_text()
+    marker = '<!-- progress:sound -->'
+    assert progress.count(marker) == 1, 'Progress template marker missing or duplicated'
+    sound = json.loads((SITE / 'progress.json').read_text())['sound']
+    (output / 'progress.html').write_text(progress.replace(marker, render_sound(sound)))
     (output / 'compatibility.json').write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
     # Preserve links to the old tracker while keeping one public compatibility surface.
     (output / 'tracker').mkdir(exist_ok=True)

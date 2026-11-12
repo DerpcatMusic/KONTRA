@@ -2,7 +2,7 @@
 
 **One free, open-source sampler for the libraries you paid for.**
 
-Under the hood it is **one engine**: a single universal set of sampler, synthesis and effect processing that is configured to match each emulated product exactly. Kontakt and UVI/Falcon support are extensions that map their formats onto it. See [docs/ENGINE.md](docs/ENGINE.md).
+KONTRA is a plugin that plays Kontakt and UVI / Falcon sample libraries, aiming to sound and behave like the originals and then to do more.
 
 <!-- derpcat-support -->
 <p align="center">
@@ -12,7 +12,7 @@ Under the hood it is **one engine**: a single universal set of sampler, synthesi
 </p>
 <!-- /derpcat-support -->
 
-[Website & documentation](https://derpcatmusic.github.io/KONTRA/) · [Support](https://derpcatmusic.github.io/KONTRA/features.html) · [Roadmap](ROADMAP.md)
+[Website](https://derpcatmusic.github.io/KONTRA/) · [Progress](https://derpcatmusic.github.io/KONTRA/progress.html) · [Releases](https://github.com/DerpcatMusic/KONTRA/releases) · [Roadmap](ROADMAP.md)
 
 ## Downloads
 
@@ -22,19 +22,31 @@ Under the hood it is **one engine**: a single universal set of sampler, synthesi
 
 A new release most days · CLAP and VST3 · [All releases and what changed in each](https://github.com/DerpcatMusic/KONTRA/releases)
 
-**Alpha software, under heavy development.** Features, UI, compatibility and saved-state formats may change substantially between builds. Expect incomplete behavior and regressions; this is not yet a dependable replacement for Kontakt or Falcon.
+**Alpha software.** It loads and plays many Kontakt and UVI libraries, some of them closely, none of them perfectly yet. Expect wrong sounds, dead controls and changes between releases; it is not yet a replacement for Kontakt or Falcon.
 
-Rust. Custom UI framework. Windows, macOS, Linux. CLAP and VST3.
+## Where it stands
 
-| Feature | Works | Missing |
-| :--- | :--- | :--- |
-| Kontakt | Experimental playback | Full compatibility |
-| Scripts, UI & effects | Partial support | Full coverage |
-| Falcon / UFS | Experimental sample playback, Lua and authored UI | Full module coverage and native sound parity |
+**[Progress](https://derpcatmusic.github.io/KONTRA/progress.html)** shows it with numbers: for each test library, how many of the same notes, chords and phrases sound the same in KONTRA as in Kontakt, and what differs in the ones that do not. The same page lists the open problems and the latest releases.
 
-## Feature status
+| | Today |
+| :--- | :--- |
+| Kontakt libraries | Load and play; sound is measured against Kontakt per library on the Progress page |
+| Instrument panels and scripts | Each library's own interface is drawn and scripted; not every control works yet |
+| Effects | Many Kontakt effects are modelled; some are still passed through unprocessed |
+| UVI / Falcon libraries | Sample playback, scripts and interfaces work in part; sound is not yet measured |
+| Plugin | CLAP and VST3 on Windows, macOS and Linux |
 
-See the **[full feature inventory](docs/FEATURES.md)** for ✓ implemented, ◐ partial and ✗ missing functionality across DSP, filters, scripting, UI, formats and routing. Each entry includes implementation evidence and remaining gaps, cross-referenced with official Kontakt, KSP, Falcon and UVIScript documentation.
+Feature by feature: [compatibility table](https://derpcatmusic.github.io/KONTRA/features.html).
+
+## Something is wrong?
+
+[Open an issue](https://github.com/DerpcatMusic/KONTRA/issues/new/choose) with the library, what you did and what you heard or saw. Questions and ideas go in [Discussions](https://github.com/DerpcatMusic/KONTRA/discussions).
+
+## How it is built
+
+One engine plays everything; each format is translated into the same description of an instrument. [docs/ENGINE.md](docs/ENGINE.md) explains the design and [docs/architecture-v3/VISION.md](docs/architecture-v3/VISION.md) why.
+
+Every change arrives as a pull request whose title says what changed in plain words; a release is cut most days, numbered `3.MINOR.PATCH`, with notes that credit each change to its pull request and author. Details in [CONTRIBUTING.md](CONTRIBUTING.md#pull-requests-commits-and-releases).
 
 [Contribute](CONTRIBUTING.md)
 

@@ -43,6 +43,12 @@ from the locked dependency graph and review new licenses, native components
 and vendored changes. The required `ni-file` permission and focused GPL
 reference review remain unresolved; a successful build is not clearance.
 
+## Publishing measured progress
+
+The website's Progress page is built from `website/progress.json`. After a sound
+scoreboard run, `tools/progress.py sound <score.json> --revision <commit>` rewrites it in
+plain words; commit the file with the change that moved the numbers.
+
 ## Where the work is planned
 
 The engine's design, its rules and the reasoning behind them are in

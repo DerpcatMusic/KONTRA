@@ -1,0 +1,89 @@
+{
+ "sound": {
+  "measured": "2026-11-12",
+  "libraries": [
+   {
+    "name": "Analog Strings",
+    "passed": 6,
+    "total": 13,
+    "misses": [
+     "Low note, soft: 1.5 dB quieter around 125 Hz",
+     "Low note, hard: 1.7 dB louder around 198 Hz",
+     "Middle note, soft: 1.3 dB quieter around 125 Hz",
+     "High note, soft: 1.2 dB louder around 250 Hz",
+     "High note, medium: 1.2 dB louder around 1260 Hz",
+     "Fast repeated notes: 1.3 dB quieter around 125 Hz",
+     "Held note with a mod wheel sweep: 1.6 dB louder around 315 Hz"
+    ]
+   },
+   {
+    "name": "Afflatus Brass: 3 Trumpets Legato",
+    "passed": 12,
+    "total": 13,
+    "misses": [
+     "Fast repeated notes: 1.7 dB louder around 2000 Hz"
+    ]
+   },
+   {
+    "name": "Afflatus Brass: Solo French Horn Legato",
+    "passed": 9,
+    "total": 13,
+    "misses": [
+     "Middle note, soft: 1.5 dB quieter in the first 60 ms",
+     "High note, medium: 1.2 dB quieter around 2000 Hz",
+     "Fast repeated notes: 1.8 dB quieter around 2000 Hz",
+     "Phrase with the sustain pedal: 1.7 dB louder around 500 Hz"
+    ]
+   },
+   {
+    "name": "Pacific Ensemble Strings: 10 Cellos Legato",
+    "passed": 10,
+    "total": 13,
+    "misses": [
+     "Low note, medium: 1.2 dB louder around 630 Hz",
+     "Fast repeated notes: 4.8 dB louder around 630 Hz",
+     "Phrase with the sustain pedal: 1.2 dB louder around 250 Hz, starts 66 ms early"
+    ]
+   },
+   {
+    "name": "Chorus: Women",
+    "passed": 11,
+    "total": 13,
+    "misses": [
+     "Five-note chord: 6.2 dB quieter around 397 Hz",
+     "Fast repeated notes: 1.6 dB quieter around 500 Hz"
+    ]
+   },
+   {
+    "name": "Areia: 16 Violins",
+    "passed": 10,
+    "total": 13,
+    "misses": [
+     "Fast repeated notes: 5.4 dB quieter around 250 Hz",
+     "Held note with a mod wheel sweep: starts 11 ms early",
+     "Phrase with the sustain pedal: starts 7 ms early"
+    ]
+   },
+   {
+    "name": "Dolce: 7 1st Violins Legato",
+    "passed": 10,
+    "total": 13,
+    "misses": [
+     "Five-note chord: 1.7 dB quieter in the first 60 ms",
+     "Fast repeated notes: 2.0 dB quieter overall, 2.4 dB louder around 3175 Hz",
+     "Phrase with the sustain pedal: 1.1 dB louder around 2000 Hz, starts 7 ms early"
+    ]
+   },
+   {
+    "name": "Una Corda: Felt",
+    "passed": 10,
+    "total": 13,
+    "misses": [
+     "Five-note chord: 3.3 dB louder around 630 Hz",
+     "Fast repeated notes: 1.7 dB quieter overall, 3.3 dB louder around 794 Hz",
+     "Phrase with the sustain pedal: 3.6 dB quieter around 794 Hz, 1.8 dB louder in the release tail"
+    ]
+   }
+  ]
+ }
+}

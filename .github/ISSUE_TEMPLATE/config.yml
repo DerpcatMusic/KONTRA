@@ -1,5 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
-  - name: v3 refactor plan
-    url: https://github.com/DerpcatMusic/KONTRA/tree/v3/docs/architecture-v3
-    about: Architecture docs, the task index and the workflow for the v3 refactor.
+  - name: Question or idea
+    url: https://github.com/DerpcatMusic/KONTRA/discussions
+    about: Ask how something works, or talk an idea through, in Discussions.
+  - name: Where KONTRA stands
+    url: https://derpcatmusic.github.io/KONTRA/progress.html
+    about: Measured progress per library, known problems and recent releases.

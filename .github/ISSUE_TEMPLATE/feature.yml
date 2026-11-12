@@ -1,0 +1,16 @@
+name: Feature request
+description: Something KONTRA should do that it does not do yet
+labels: [enhancement]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What should KONTRA do?
+      description: One or two sentences, from the point of view of someone making music.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Where does it matter?
+      description: The library, instrument or workflow that needs it, and what the original sampler does there.
