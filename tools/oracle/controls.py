@@ -77,8 +77,22 @@ def reached(body, functions):
     return "\n".join(text)
 
 
-def controls(src, saved):
-    """Rows: name, page, kind, values to visit, default, what the body writes."""
+def listed(binary, nki, out):
+    """Script 0's controls as our engine builds them, including those a performance view declares
+    (KONTRA_INSPECT_UI_LIST): {name: (kind, values)}."""
+    env = dict(os.environ, KONTRA_INSPECT_UI_LIST="1")
+    subprocess.run(["nice", "-n", "19", binary, "ui", str(nki), "--json", str(out)], env=env,
+                   capture_output=True)
+    if not out.exists():
+        return {}
+    rows = json.loads(out.read_text())["result"]["controls"]
+    return {r["name"].lstrip("$").lower(): (r["kind"], r["targets"]) for r in rows if r["slot"] == 0}
+
+
+def controls(src, saved, view=None):
+    """Rows: name, page, kind, values to visit, default, what the body writes. `view` adds the
+    controls a performance view declares (their callbacks are in the script, their declarations
+    are not)."""
     code = strip(src)
     consts = {m[0].lower(): int(m[1]) for m in re.findall(r"declare\s+(?:const\s+)?\$(\w+)\s*:=\s*(-?\d+)", code)}
     init = code[: code.lower().find("end on")]
@@ -88,8 +102,18 @@ def controls(src, saved):
     for name, body in BODY.findall(code):
         bodies[name.lower()] = body
     functions = {n.lower(): b for n, b in FUNCTION.findall(code)}
+    declared = DECLARE.findall(code)
+    known = {n.lower() for _, n, _ in declared}
+    for key, (kind, values) in (view or {}).items():
+        name = next((n for n in re.findall(r"on\s+ui_control\s*\(\s*\$(\w+)", code, re.I)
+                     if n.lower() == key), None)
+        if name and key not in known and values:
+            k = {"Knob": "knob", "Slider": "slider", "ValueEdit": "value_edit", "Switch": "switch",
+                 "Button": "button", "Menu": "menu"}.get(kind, "slider")
+            items[key] = [int(v) for v in values] if k == "menu" else items.get(key, [])
+            declared.append((k, name, f"{int(min(values))},{int(max(values))}" if k not in ("menu",) else ""))
     rows = []
-    for kind, name, args in DECLARE.findall(code):
+    for kind, name, args in declared:
         key, kind = name.lower(), kind.lower()
         parts = [number(a, consts) for a in args.split(",")] if args else []
         if kind in ("switch", "button"):
@@ -340,13 +364,16 @@ def main():
     ap.add_argument("--src", help="KONTRA_SCRIPT_DUMP directory of this instrument")
     ap.add_argument("--inspect", help="kontra-inspect binary")
     ap.add_argument("--plan", action="store_true", help="write the script and scenario, render nothing")
+    ap.add_argument("--view", action="store_true", help="also take controls from our engine's UI model")
     ap.add_argument("--rescore", action="store_true", help="score OUTDIR's existing renders again")
     args = ap.parse_args()
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     src_dir = Path(args.src) if args.src else dump(Path(args.nki), out / "src")
     src = (src_dir / "0.ksp").read_text(errors="replace")
-    rows = controls(src, saved_values(src_dir / "0-saved.txt"))
+    binary, nki = sb.inspect_binary(args.inspect), Path(args.nki).resolve()
+    view = listed(binary, nki, out / "ui.json") if not DECLARE.search(src) or args.view else None
+    rows = controls(src, saved_values(src_dir / "0-saved.txt"), view)
     context = {k.lower(): int(v) for k, v in (p.split("=") for p in args.context.split(",") if p)}
     for r in rows:
         r["measure"] = bool(re.search(args.only, r["name"], re.I)) and not r["note"]
@@ -361,7 +388,6 @@ def main():
           f"{len(steps) * PERIOD / 60:.1f} min per side", flush=True)
     if args.plan:
         return
-    binary, nki = sb.inspect_binary(args.inspect), Path(args.nki).resolve()
     (out / "oracle").mkdir(exist_ok=True)
     if not args.rescore:
         play(binary, nki, out, out / "scenario.json", out / "script", "a", oracle=False)

@@ -200,6 +200,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
     let (_, mut settled) = render(&mut engine, &plan, &stream, &events, |_| {});
     engine.clear_trace();
     let mut controls = Vec::new();
+    let list_only = std::env::var_os("KONTRA_INSPECT_UI_LIST").is_some();
     // A move keeps at most the trace's capacity per window; the moves that
     // passed it are named with how many events they dropped (the renders
     // between moves are not kept, so their drops lose nothing). Only a
@@ -254,6 +255,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 break;
             }
             seen.insert(key);
+            // KONTRA_INSPECT_UI_LIST=1: each control and the values it would
+            // visit, without moving it (tools/oracle/controls.py reads this).
+            if list_only {
+                controls.push(json!({"slot":slot,"widget":widget_index,"name":widget.name,"kind":format!("{:?}",widget.kind).split([' ', '{', '(']).next(),"hidden":widget.hidden,"enabled":widget.enabled,"targets":values}));
+                continue;
+            }
             let mut moves = Vec::new();
             if values.is_empty() {
                 moves.push(json!({"error":"control has no selectable values"}));
