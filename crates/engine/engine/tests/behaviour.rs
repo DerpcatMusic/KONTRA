@@ -2147,6 +2147,47 @@ fn shaped_release_counter_reads_the_key_held_time() {
     assert!((source - 0.6).abs() < 0.01, "{source}");
 }
 
+/// A shaper keeps its source's polarity: pitch bend at rest through a flat
+/// 0.5 table (Pacific's release start route) is 0, not half the depth.
+#[cfg(feature = "trace")]
+#[test]
+fn shaped_pitch_bend_stays_bipolar() {
+    use kontra_engine::TraceEvent;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    plan.groups[0].shapers = vec![ir::Transfer {
+        source: ir::Source::PitchBend,
+        table: vec![0.5, 0.5],
+    }];
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "bend".into(),
+        slot: 7,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::SampleStart {
+            source: ir::Source::Shaped(0),
+            depth: 1.0,
+        },
+    }];
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
+    level(&mut engine, &[on(60, 1.0)]);
+    let source = engine
+        .trace_events()
+        .iter()
+        .find_map(|event| match event {
+            TraceEvent::RouteOnset {
+                mod_slot: 7,
+                source,
+                ..
+            } => *source,
+            _ => None,
+        })
+        .expect("the shaped bend has a value at the voice's start");
+    assert!(source.abs() < 1e-6, "{source}");
+}
+
 #[cfg(feature = "trace")]
 #[test]
 fn voice_snapshot_reports_the_playing_envelope_and_pitch() {

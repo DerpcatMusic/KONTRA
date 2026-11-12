@@ -178,9 +178,12 @@ impl Engine {
         let channel = note.host.channel;
         let group = || self.groups.get(zone.group as usize);
         match source {
+            // A shaper keeps its source's polarity: a bipolar source's table
+            // (0..=1, centre 0.5) reads back on -1..=1, as the source would.
             ir::Source::Shaped(n) => {
                 let s = group()?.shapers.get(usize::from(n))?;
-                self.through(zone, s, note, age, true)
+                let y = self.through(zone, s, note, age, true)?;
+                Some(if bipolar(s.source) { 2.0 * y - 1.0 } else { y })
             }
             ir::Source::Blend(n) => {
                 let b = group()?.blends.get(usize::from(n))?;
@@ -309,9 +312,18 @@ impl Engine {
     /// `s` on 0..=1: a bipolar source read as `(x + 1)/2`.
     pub(crate) fn unit(&self, zone: &Zone, s: ir::Source, note: &Note, age: Age) -> Option<f32> {
         let x = self.source(zone, s, note, age)?;
-        Some(match s {
-            ir::Source::Lfo(_) | ir::Source::PitchBend => (x + 1.0) * 0.5,
-            _ => x,
+        let shaped_bipolar = || match s {
+            ir::Source::Shaped(n) => self
+                .groups
+                .get(zone.group as usize)
+                .and_then(|g| g.shapers.get(usize::from(n)))
+                .is_some_and(|t| bipolar(t.source)),
+            _ => false,
+        };
+        Some(if bipolar(s) || shaped_bipolar() {
+            (x + 1.0) * 0.5
+        } else {
+            x
         })
     }
 
@@ -536,4 +548,9 @@ fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
         (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
             .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
+}
+
+/// Sources that swing either side of zero.
+fn bipolar(s: ir::Source) -> bool {
+    matches!(s, ir::Source::Lfo(_) | ir::Source::PitchBend)
 }
