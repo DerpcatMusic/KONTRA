@@ -462,12 +462,11 @@ pub fn menu(
     let tall = rows.len() as f64 * (CONTROL + 1.);
     let most = MENU_ROWS * (CONTROL + 1.);
     let list = col(rows).gap(1).when(columns == 1, |e| e.w(TEXT * 16.));
+    let list_id = format!("{id}-list");
     let list = match tall > most {
-        true => list.scroll().h(most),
+        true => col![list.scroll().h(most).id(list_id.clone())].h(most),
         false => list.min_h(tall),
     };
-    // The popup is the list itself, under the popup's id.
-    let list_id = format!("{id}-popup");
     // Up and Down move the focus a row, from the anchor into the list, and
     // a scrolling list follows it.
     let step = |keys: &[KeyPress]| {
@@ -572,8 +571,9 @@ pub fn dropdown(
 }
 
 /// `content` floated over everything, pinned under the element `anchor`
-/// names, easing in from just above it. It keeps the wheel: what it holds
-/// scrolls, and nothing under it (a knob, the rack) moves.
+/// names, easing in from just above it. It keeps the wheel from what lies
+/// under it (a knob, the rack); a node that keeps the wheel does not scroll
+/// itself, so scrolling `content` nests its scroller inside.
 pub fn popup(anchor: &str, content: El) -> El {
     content
         .fill(lift(2))
@@ -685,20 +685,22 @@ mod tests {
     use super::*;
 
     /// What `under` read of a wheel turned over it for a few frames, with
-    /// an open popup on top of it or none.
-    fn wheel_under(with_popup: bool) -> Option<Vec2> {
+    /// a long menu open on top of it or none, and how far the menu scrolled.
+    fn wheel_under(with_menu: bool) -> (Option<Vec2>, f64) {
+        let names: Vec<String> = (0..100).map(|n| format!("p{n}")).collect();
+        let items: Vec<&str> = names.iter().map(String::as_str).collect();
         let mut ui = Ui::default();
         let mut read = None;
-        for n in 0..6 {
+        for n in 0..8 {
             read = read.or(ui.wheel("under"));
-            let mut top = vec![block(20., 20.).id("anchor")];
-            if with_popup {
-                top.push(popup("anchor", block(200., 200.).id("inside")));
+            let mut top = vec![block(20., 20.).id("m")];
+            if with_menu {
+                top.push(menu(&mut ui, "m", &items, 1, None).el);
             }
-            let el = stack![block(400., 400.).id("under"), col(top)];
+            let el = stack![block(900., 900.).id("under"), col(top)];
             let input = Input {
                 pointer: PointerInput {
-                    pos: Some(Point::new(200., 100.)),
+                    pos: Some(Point::new(450., 200.)),
                     ..Default::default()
                 },
                 wheel: if n >= 2 {
@@ -709,11 +711,11 @@ mod tests {
                 ..Default::default()
             };
             assert!(
-                ui.frame(el, Some(Size::new(400., 400.)), input, 1. / 60.)
+                ui.frame(el, Some(Size::new(900., 900.)), input, 1. / 60.)
                     .is_ok()
             );
         }
-        read
+        (read, ui.scroll("m-list")[1])
     }
 
     /// Down from the anchor walks a long menu past its fold, and the list
@@ -748,7 +750,7 @@ mod tests {
         let row: usize = focused.trim_start_matches("m-").parse().unwrap_or(0);
         assert!(row > MENU_ROWS as usize, "walked past the fold: {focused}");
         let top = row as f64 * (CONTROL + 1.);
-        let at = ui.scroll("m-popup")[1];
+        let at = ui.scroll("m-list")[1];
         assert!(
             at <= top && top < at + MENU_ROWS * (CONTROL + 1.),
             "{top} in view of {at}"
@@ -756,8 +758,10 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_over_a_popup_never_reaches_what_lies_under_it() {
-        assert!(wheel_under(false).is_some(), "without a popup it does");
-        assert_eq!(wheel_under(true), None);
+    fn the_wheel_over_a_popup_scrolls_it_and_never_reaches_what_lies_under_it() {
+        assert!(wheel_under(false).0.is_some(), "without a menu it does");
+        let (read, scrolled) = wheel_under(true);
+        assert_eq!(read, None);
+        assert!(scrolled > 0., "the menu scrolls instead");
     }
 }
