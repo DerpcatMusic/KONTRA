@@ -410,6 +410,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut block = vec![[0.0f32; 2]; 512];
     // Time inside `Engine::process` alone (not disk waits): the render's CPU.
     let mut busy = std::time::Duration::ZERO;
+    // The slowest block and its index: the Peak readout's worst case.
+    let mut slowest = (std::time::Duration::ZERO, 0);
     // KONTRA_BEND=0: pitch bend (its high 7 bits) sent with the wheel at 1 s.
     let bend = std::env::var("KONTRA_BEND")
         .ok()
@@ -540,6 +542,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let processing = std::time::Instant::now();
         engine.process(&mut block, input);
         busy += processing.elapsed();
+        slowest = slowest.max((processing.elapsed(), n));
+        if timed_controls.iter().any(|c| c.0 + 1 == n) {
+            let us = processing.elapsed().as_secs_f64() * 1e6;
+            println!("  block {n} after a control's edits: {us:.1} µs");
+        }
         install_requests(&mut engine, &plan, &stream);
         if n == 0 || n == 3 * RATE as usize / 512 {
             let during: Vec<_> = engine
@@ -604,6 +611,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "render cpu {:.1} ms for {seconds:.1} s of audio: rtf {:.5}",
         busy.as_secs_f64() * 1e3,
         busy.as_secs_f64() / seconds.max(1e-9)
+    );
+    println!(
+        "slowest block {}: {:.1} µs",
+        slowest.1,
+        slowest.0.as_secs_f64() * 1e6
     );
     println!("stream: {:?}", stream.stats());
     println!("all actions: {:?}", engine.unhandled_actions());
@@ -709,11 +721,24 @@ fn install_requests(engine: &mut Engine, plan: &Plan, client: &kontra_stream::St
         true
     });
     if !edits.is_empty() {
+        let started = std::time::Instant::now();
         let mut plan = Plan::clone(engine.plan());
         let done: Vec<_> = (edits.iter())
             .map(|e| (*e, plan.edit_zone(e.zone, e.par, e.value)))
             .collect();
         let plan = kontra_prepare::tables(&plan, client).unwrap_or(plan);
-        engine.swap_plan(&mut Arc::new(plan), &done);
+        let built = started.elapsed();
+        // The old plan comes back in `plan`; the host frees it off audio.
+        let mut plan = Arc::new(plan);
+        let swapping = std::time::Instant::now();
+        engine.swap_plan(&mut plan, &done);
+        let swap = swapping.elapsed();
+        drop(plan);
+        println!(
+            "zone swap: {} edits, plan and tables built in {:.2} ms off audio, swap {:.1} µs",
+            edits.len(),
+            built.as_secs_f64() * 1e3,
+            swap.as_secs_f64() * 1e6
+        );
     }
 }
