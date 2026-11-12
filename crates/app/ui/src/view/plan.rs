@@ -77,7 +77,11 @@ pub(super) fn page<'a>(
                         pressed.binary_search(&index).is_ok(),
                     ),
                     size: {
-                        let size = drawn(raw, meta);
+                        // A handle keeps its own size to ride its track.
+                        let size = match (use_.role, meta.size) {
+                            (Role::Handle, Some(own)) => own,
+                            _ => drawn(raw, meta),
+                        };
                         model::Size {
                             width: size.width * scale,
                             height: size.height * scale,
