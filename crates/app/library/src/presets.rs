@@ -185,7 +185,7 @@ pub fn save(
     }
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{name}.{EXTENSION}"));
-    let temp = written(&dir, &name, &bytes)?;
+    let temp = written(&dir, name, &bytes)?;
     let placed = match overwrite {
         Overwrite::Create => created(&temp, &path, &bytes, |from, to| {
             std::fs::hard_link(from, to)
