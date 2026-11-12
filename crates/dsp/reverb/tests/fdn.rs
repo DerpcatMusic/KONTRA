@@ -196,3 +196,43 @@ fn the_tail_energy_follows_the_loop_power() {
         assert!(off_db.abs() < 1.0, "{seconds} s: {off_db} dB");
     }
 }
+
+/// 1 s of noise, unswung then swung (modulation switched on at 0.5 s).
+fn reference_render() -> Vec<[f32; 2]> {
+    let s = Settings {
+        damping: 0.4,
+        diffusion: 0.7,
+        stereo: 0.8,
+        ..settings(2.0)
+    };
+    let mut fdn = Fdn::new(s, RATE);
+    let mut seed = 0x6c07_8965_u32;
+    let mut noise = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+    };
+    let mut io: Vec<[f32; 2]> = (0..RATE as usize).map(|_| [noise(), noise()]).collect();
+    for (k, block) in io.chunks_mut(480).enumerate() {
+        if k == 50 {
+            fdn.set(Settings {
+                modulation_ms: 1.5,
+                modulation_hz: 0.8,
+                ..s
+            });
+        }
+        fdn.process(block);
+    }
+    io
+}
+
+/// Speed-ups keep the sound bit for bit: FNV-1a over the output's bits.
+#[test]
+fn the_reference_render_is_unchanged() {
+    let hash = reference_render()
+        .iter()
+        .flatten()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, v| {
+            (h ^ u64::from(v.to_bits())).wrapping_mul(0x0100_0000_01b3)
+        });
+    assert_eq!(hash, 10_852_715_099_910_411_571, "render changed");
+}
