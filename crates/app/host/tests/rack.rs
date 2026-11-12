@@ -358,6 +358,13 @@ fn a_legato_waits_its_own_hold_and_a_legato_script_keeps_the_order() {
 /// A DC part whose script loads a high-pass into insert 0 in `on init`
 /// and empties the slot again from `on note`, as Shreddage loads an EQ.
 fn effect_loading(store: &mut Store) -> Box<Engine> {
+    let plan = effect_plan(store, 7, 0);
+    Box::new(Engine::new(Arc::new(plan), store.client(), RATE))
+}
+
+/// A part's plan whose script loads effect type `init` (7, a high-pass;
+/// 0 empties) into insert slot 0 in `on init` and `note` on each note.
+fn effect_plan(store: &mut Store, init: u16, note: u16) -> Plan {
     use kontra_engine::ir;
     let mut plan = plan_of(store, 0.5);
     plan.inserts = vec![None];
@@ -388,18 +395,61 @@ fn effect_loading(store: &mut Store) -> Box<Engine> {
     };
     plan.slot_shapes.types = vec![ty(0, None), ty(7, Some(effect))];
     let script = kontra_ksp::compile(
-        "on init
-            declare $a
-            $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 7, -1, 0, 1)
-        end on
-        on note
-            $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 0, -1, 0, 1)
-        end on",
+        &format!(
+            "on init
+                declare $a
+                $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, {init}, -1, 0, 1)
+            end on
+            on note
+                $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, {note}, -1, 0, 1)
+            end on"
+        ),
         &[],
     )
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
-    Box::new(Engine::new(Arc::new(plan), store.client(), RATE))
+    plan
+}
+
+/// A preset recalled by restarting the part's engine keeps the effects its
+/// script loaded since the part loaded: the restart's plan has them.
+#[test]
+fn a_restarted_recall_keeps_the_effects_a_script_loaded_after_init() {
+    let (mut rack, mut audio) = rack();
+    let plan = Arc::new(effect_plan(rack.store_mut(), 0, 7));
+    let engine = Box::new(Engine::new(
+        Arc::clone(&plan),
+        rack.store_mut().client(),
+        RATE,
+    ));
+    let base = Some(std::path::PathBuf::from("dc.nki"));
+    let p = Part {
+        path: base.clone(),
+        source: base,
+        plan: Some(plan),
+        ..part("a")
+    };
+    rack.install(0, engine, p);
+    play(&mut audio, &[(0, note(0))]);
+    rack.tick();
+    let high = |rack: &Rack| {
+        let p = rack.parts()[0].as_ref().unwrap();
+        let slot = p
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.inserts.first().cloned());
+        (p.slot_types.clone(), slot.flatten().is_some())
+    };
+    // Type 7 is the plan's second slot type.
+    let loaded = vec![(kontra_engine::ir::RackAt::Inserts, 0, 1)];
+    assert_eq!(high(&rack).0, loaded, "the note's load is recorded");
+    let preset = kontra_host::instrument::Preset {
+        name: "b".into(),
+        base: "dc.nki".into(),
+        saved: Vec::new(),
+    };
+    assert!(rack.recall(0, &preset, None));
+    assert_eq!(high(&rack), (loaded, true), "the restart's plan has it");
 }
 
 #[test]

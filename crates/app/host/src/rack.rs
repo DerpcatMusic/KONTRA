@@ -419,13 +419,8 @@ impl Rack {
                 saves: saves.clone(),
             }));
         }
-        let slot_types: Vec<_> = (slot_types.iter().copied())
-            .filter(|&(at, slot, ty)| loaded.plan.load_type(at, slot, ty))
-            .collect();
-        let slot_responses: Vec<_> = (slot_responses.iter())
-            .filter(|(at, slot, name)| loaded.plan.load_response(*at, *slot, name, self.rate))
-            .cloned()
-            .collect();
+        let (slot_types, slot_responses) =
+            recall::put_slots(&mut loaded.plan, slot_types, slot_responses, self.rate);
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref())

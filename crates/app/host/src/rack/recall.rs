@@ -7,9 +7,28 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::instrument::Preset;
-use kontra_engine::{Engine, Plan, Recall, Saved};
+use kontra_engine::{Engine, Plan, Recall, Saved, ir};
 
 use super::{Command, Part, Rack, ScriptState};
+
+/// Puts the effect types and responses scripts loaded after `on init` into
+/// `plan`'s slots, before its `on init` runs (a load and a restart alike);
+/// those the plan took.
+pub(crate) fn put_slots(
+    plan: &mut Plan,
+    types: &[(ir::RackAt, u8, u16)],
+    responses: &[(ir::RackAt, u8, String)],
+    rate: u32,
+) -> crate::state::LiveSlots {
+    let types = (types.iter().copied())
+        .filter(|&(at, slot, ty)| plan.load_type(at, slot, ty))
+        .collect();
+    let responses = (responses.iter())
+        .filter(|(at, slot, name)| plan.load_response(*at, *slot, name, rate))
+        .cloned()
+        .collect();
+    (types, responses)
+}
 
 /// `a` and `b` hold the same entries, in any order.
 fn same<T: PartialEq>(a: &[T], b: &[T]) -> bool {
@@ -191,6 +210,10 @@ impl Rack {
             return;
         };
         let mut plan = plan.clone();
+        // The part's plan is as it loaded: what its scripts loaded since
+        // goes in as a load puts it.
+        let (slot_types, slot_responses) =
+            put_slots(&mut plan, &old.slot_types, &old.slot_responses, self.rate);
         for (script, saved) in plan.scripts.iter_mut().zip(saved) {
             (script.restore, script.restore_texts) = (saved.ints, saved.texts);
         }
@@ -203,6 +226,8 @@ impl Rack {
             sounds: crate::sound::Sounds::new(self.rate, engine.group_sounds()),
             view,
             plan: Some(plan),
+            slot_types,
+            slot_responses,
             script: ScriptState {
                 vars: old.script.vars,
                 loaded,
