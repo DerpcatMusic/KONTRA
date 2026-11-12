@@ -601,27 +601,6 @@ impl Rack {
         }
     }
 
-    /// Records `part`'s measured attack delay (auto-align), saved with it.
-    /// Marks `part`'s preset as changed by the player ([`Part::modified`]),
-    /// as a project saved it.
-    pub fn set_modified(&mut self, part: usize) {
-        if let Some(Some(p)) = self.parts.get_mut(part) {
-            p.modified = true;
-        }
-    }
-
-    pub fn set_delays(&mut self, part: usize, delays: Delays) {
-        if let Some(Some(p)) = self.parts.get_mut(part) {
-            p.delays = Some(delays);
-        }
-    }
-
-    /// Holds each note into `part` by its `hold` from the next block on,
-    /// so it sounds in time with a later part (auto-align).
-    pub fn set_hold(&mut self, part: usize, hold: Hold) {
-        self.send(Command::Hold(part, hold));
-    }
-
     pub fn set_master(&mut self, gain: f32) {
         self.send(Command::Master(gain));
     }

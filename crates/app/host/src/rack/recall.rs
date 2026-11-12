@@ -61,6 +61,14 @@ impl Rack {
         true
     }
 
+    /// Marks `part`'s preset as changed by the player ([`Part::modified`]),
+    /// as a project saved it.
+    pub fn set_modified(&mut self, part: usize) {
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.modified = true;
+        }
+    }
+
     /// Starts a new engine for `part` on a copy of `plan` with `saved` as its
     /// restored values: `on init` runs again, nothing is read or prepared.
     fn restart(&mut self, part: usize, plan: &Plan, saved: Vec<Saved>, loaded: Vec<Vec<String>>) {
