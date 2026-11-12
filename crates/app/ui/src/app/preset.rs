@@ -4,9 +4,24 @@
 
 use mui::prelude::*;
 
-use super::{Action, App, PresetEdit, Sheet, USER};
+use super::{Action, App, Sheet};
 use crate::kit::{self, button};
 use crate::theme::{SPACE, secondary};
+
+/// The folder the player's own presets are listed in, by each library's.
+pub const USER: &str = "User/";
+
+/// What to do with the player's own preset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresetEdit {
+    /// Save what the part plays under this name; a user preset of that
+    /// name is replaced (the player clicked Save or Replace).
+    Save(String),
+    /// Rename the user preset the part plays.
+    Rename(String),
+    /// Delete the user preset the part plays.
+    Delete,
+}
 
 /// What the header's preset menu offers after the presets, for the preset
 /// a part plays: Save only for a user preset (it replaces that file),

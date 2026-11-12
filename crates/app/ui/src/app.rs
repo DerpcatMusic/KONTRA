@@ -11,6 +11,7 @@ mod mapping;
 mod mixer;
 mod part;
 mod preset;
+pub use preset::{PresetEdit, USER};
 mod rack;
 mod report;
 mod settings;
@@ -321,21 +322,6 @@ pub enum Sheet {
     RenamePreset(usize),
     /// Confirm deleting the user preset a part plays.
     DeletePreset(usize),
-}
-
-/// The folder the player's own presets are listed in, by each library's.
-pub const USER: &str = "User/";
-
-/// What to do with the player's own preset.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PresetEdit {
-    /// Save what the part plays under this name; a user preset of that
-    /// name is replaced (the player clicked Save or Replace).
-    Save(String),
-    /// Rename the user preset the part plays.
-    Rename(String),
-    /// Delete the user preset the part plays.
-    Delete,
 }
 
 /// What the user asked for this frame, for the host to carry out.
