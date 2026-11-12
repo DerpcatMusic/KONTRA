@@ -9,10 +9,9 @@ use std::sync::Arc;
 use kontra_ir::ZonePar;
 
 use crate::queue::Exit;
-use crate::script::Kind;
 use crate::{Action, Engine, Plan};
 
-/// Edits waiting for the host, at most (Conflux sets three per wavetable).
+/// Edits waiting for the host, at most (Conflux sets 297 per selection).
 pub(crate) const ZONE_EDITS: usize = 1024;
 
 /// One `set_zone_par` waiting for the host.
@@ -38,9 +37,12 @@ impl Engine {
         if !carried {
             self.count_unhandled(Action::SetZonePar);
         }
-        if self.running.kind == Kind::Init {
-            // Init runs before the engine plays, on the control thread. A
-            // zone the instrument lacks is the script's no-op, not a gap.
+        if self.building {
+            // The engine under construction (`on init`, its first
+            // `persistence_changed`) runs on the control thread, before it
+            // plays: the edit lands at once. A zone the instrument lacks is
+            // the script's no-op, not a gap. Every other run queues, a
+            // recall's too (it runs on the audio thread).
             if carried {
                 Arc::make_mut(&mut self.plan).edit_zone(zone, par, value);
             }
@@ -50,15 +52,9 @@ impl Engine {
             return self.start_async(Exit::Done);
         }
         let script = self.running.slot;
-        let now = self.plan.zone_facts.iter().find(|z| z.id == zone);
-        let pending = self
-            .zone_edits
-            .iter()
-            .any(|e| (e.zone, e.par) == (zone, par));
-        // Conflux sets every zone each time; only changes go to the host.
-        if now.map(|z| z.get(par)) == Some(value) && !pending {
-            return self.start_async(Exit::Done);
-        }
+        // Every carried edit queues, unchanged ones too: the plan here lags
+        // the edits awaiting a swap, so comparing with it could drop the
+        // later of two edits that undo each other.
         if self.zone_edits.len() >= ZONE_EDITS {
             self.refuse_zone_edit(script);
             return self.start_async(Exit::Failed);
