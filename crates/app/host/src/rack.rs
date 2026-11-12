@@ -255,6 +255,17 @@ pub struct Rack {
     generation: u64,
     /// Where scripts' array saves go ([`files`]); none writes nothing.
     saves: Option<PathBuf>,
+    /// Whether anyone looks at the parts' interfaces.
+    interfaces: Interfaces,
+}
+
+/// Whether the parts' interfaces are on screen. Hidden, [`Rack::tick`]
+/// stops asking the audio side for what their scripts changed; the first
+/// tick after they show again asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interfaces {
+    Shown,
+    Hidden,
 }
 
 impl Rack {
@@ -284,6 +295,7 @@ impl Rack {
             parts: (0..MAX_PARTS).map(|_| None).collect(),
             saves: None,
             pending: std::collections::VecDeque::new(),
+            interfaces: Interfaces::Shown,
             generation: 0,
         };
         (rack, audio)
@@ -640,6 +652,11 @@ impl Rack {
 
     /// Frees what the audio thread let go of and resends refused commands.
     /// Call it from the control thread now and then.
+    /// Whether the next ticks keep the parts' interfaces current.
+    pub fn show_interfaces(&mut self, interfaces: Interfaces) {
+        self.interfaces = interfaces;
+    }
+
     pub fn tick(&mut self) {
         while self.channels.retired.recv().is_some() {}
         while self.channels.units.recv().is_some() {}
@@ -686,15 +703,18 @@ impl Rack {
                 view.refresh(&p.faces, p.path.as_deref(), frame);
             }
         }
-        let looks: Vec<_> = (self.parts.iter_mut().enumerate())
-            .filter_map(|(n, p)| {
-                let p = p.as_mut()?;
-                let mut frame = p.view.as_mut()?.frame.take()?;
-                (frame.part, frame.generation) = (n, p.script.generation);
-                Some(frame)
-            })
-            .collect();
-        for frame in looks {
+        let looked = match self.interfaces {
+            Interfaces::Shown => self.parts.len(),
+            Interfaces::Hidden => 0,
+        };
+        for n in 0..looked {
+            let Some(Some(p)) = self.parts.get_mut(n) else {
+                continue;
+            };
+            let Some(mut frame) = p.view.as_mut().and_then(|v| v.frame.take()) else {
+                continue;
+            };
+            (frame.part, frame.generation) = (n, p.script.generation);
             self.send(Command::Look(frame));
         }
         while let Some(c) = self.channels.captured.recv() {
@@ -709,23 +729,19 @@ impl Rack {
         }
         // Ask again for every part with persistent values: what a save
         // writes is at most one tick old.
-        let ask: Vec<_> = (self.parts.iter_mut().enumerate())
-            .filter_map(|(n, p)| {
-                let s = &mut p.as_mut()?.script;
-                if s.asked
-                    || s.vars
-                        .iter()
-                        .all(|v| v.vars.is_empty() && v.widgets.is_empty() && !v.state)
-                {
-                    return None;
-                }
-                s.asked = true;
-                let mut c = Capture::new(n, s.generation, &s.vars);
-                c.after(s.latest.as_deref());
-                Some(c)
-            })
-            .collect();
-        for c in ask {
+        for n in 0..self.parts.len() {
+            let Some(Some(p)) = self.parts.get_mut(n) else {
+                continue;
+            };
+            let s = &mut p.script;
+            let nothing =
+                |v: &crate::persist::Vars| v.vars.is_empty() && v.widgets.is_empty() && !v.state;
+            if s.asked || s.vars.iter().all(nothing) {
+                continue;
+            }
+            s.asked = true;
+            let mut c = Capture::new(n, s.generation, &s.vars);
+            c.after(s.latest.as_deref());
             self.send(Command::Capture(c));
         }
         while let Some(c) = self.pending.pop_front() {

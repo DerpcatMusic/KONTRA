@@ -20,9 +20,10 @@ mod readout;
 mod tests;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
+use std::time::Duration;
 
-use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
+use kontra_host::rack::{Event, Interfaces, Rack, RackAudio, Store, StoreConfig};
 use kontra_host::state::Saved;
 use moose::core::LosslessEventRef;
 use moose::prelude::*;
@@ -100,6 +101,10 @@ pub struct Shared {
     restored: AtomicU32,
     /// The "Add folder" dialog; dropping it closes an open one.
     folder: folder::Dialog,
+    /// The editor is open: the tick keeps its copy of the rack current.
+    shown: AtomicBool,
+    /// A load holds the rack; `saved` is the state from just before it.
+    holding: AtomicBool,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -167,11 +172,18 @@ impl KontraParams {
         if loading {
             Tick.run(self);
         }
-        // A tick holds the rack through a whole load (seconds on a big
-        // program): the host's thread does not wait for it, and saves the
-        // state the last tick that changed the rack left.
-        let Ok(rack) = self.shared.rack.try_lock() else {
-            return;
+        // A load holds the rack for seconds: the host's thread does not
+        // wait for it, and keeps the state the tick saved just before it.
+        // Any other tick is over in milliseconds.
+        let rack = loop {
+            match self.shared.rack.try_lock() {
+                Ok(rack) => break rack,
+                Err(TryLockError::Poisoned(e)) => break e.into_inner(),
+                Err(TryLockError::WouldBlock) if self.shared.holding.load(Ordering::Acquire) => {
+                    return;
+                }
+                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+            }
         };
         if let Some(rack) = rack.as_ref() {
             *self.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
@@ -236,12 +248,22 @@ impl BackgroundTask for Tick {
         };
         let requests = std::mem::take(&mut *lock(&p.shared.requests));
         let changed = !requests.is_empty();
+        let shown = p.shared.shown.load(Ordering::Acquire);
         let mut report = Vec::new();
         let mut browser = lock(&p.shared.browser);
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
         for r in requests {
             let loads = r.loads();
+            let holds = loads || matches!(r, Request::Restore(_));
+            if holds {
+                // What a host save during the load writes (`capture`); a
+                // state waiting to load is already what `saved` holds.
+                if loads && !requests_restoring(p) {
+                    *p.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
+                }
+                p.shared.holding.store(true, Ordering::Release);
+            }
             match r {
                 Request::Load { part, path } => {
                     let loaded = match (part, rack.free()) {
@@ -266,6 +288,7 @@ impl BackgroundTask for Tick {
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
             }
+            p.shared.holding.store(false, Ordering::Release);
             if loads {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
             }
@@ -275,14 +298,23 @@ impl BackgroundTask for Tick {
         }
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
+        rack.show_interfaces(if shown {
+            Interfaces::Shown
+        } else {
+            Interfaces::Hidden
+        });
         rack.tick();
-        // What a save while the next tick is busy writes (`capture`).
-        if changed && !requests_restoring(p) {
-            *p.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
-        }
+        let mut view = lock(&p.shared.view);
+        // A closed editor's copy only keeps the report; it catches up on
+        // the first tick after the editor opens.
+        let refreshed = if shown {
+            view.refresh(rack, browser, report)
+        } else {
+            view.report(report)
+        };
         // What the requests did shows, whether or not the editor's copy
         // of the rack noticed (a script's answer to a click).
-        if lock(&p.shared.view).refresh(rack, browser, report) | changed {
+        if refreshed | changed {
             p.shared
                 .dirty
                 .store(true, std::sync::atomic::Ordering::Release);
