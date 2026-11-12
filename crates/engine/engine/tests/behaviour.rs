@@ -628,6 +628,45 @@ fn pitch_bend_moves_sounding_voices_by_its_route() {
 }
 
 #[test]
+fn a_mapped_bend_bends_pitch_by_its_table_as_is() {
+    // A UVI mapper emits its table in the route's domain: -1..=2 of 2 st.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].shapers = vec![ir::Transfer {
+        source: ir::Source::PitchBend,
+        table: vec![-1.0, 0.0, 1.0, 2.0],
+    }];
+    plan.groups[0].mods = vec![ir::Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Pitch {
+            source: ir::Source::Shaped(0),
+            semitones: 2.0,
+            depth: 1.0,
+            tau_ms: 0.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let bend = |lsb, msb| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xE0, lsb, msb),
+    };
+    let semitones = |e: &mut Engine, events: &[Timed<Event>]| {
+        let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+        let from = at(e);
+        level(e, events);
+        12.0 * ((at(e) - from) / 256.0).log2()
+    };
+    level(&mut e, &[on(60, 1.0)]);
+    let down = semitones(&mut e, &[bend(0, 0)]);
+    assert!((down + 2.0).abs() < 1e-3, "{down}");
+    let up = semitones(&mut e, &[bend(0x7F, 0x7F)]);
+    assert!((up - 4.0).abs() < 2e-3, "{up}");
+}
+
+#[test]
 fn a_sample_start_route_moves_the_start_within_its_range() {
     use kontra_engine::ir::{Mod, ModKind, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -2102,6 +2141,53 @@ fn release_route_trace_uses_the_key_held_time() {
     assert!((source - 0.5).abs() < 0.001, "{source}");
 }
 
+/// A shaper over the release-trigger counter (Pacific and Dolce move their
+/// release samples' start this way) reads the held time like a bare route.
+#[cfg(feature = "trace")]
+#[test]
+fn shaped_release_counter_reads_the_key_held_time() {
+    use kontra_engine::TraceEvent;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.trigger = Trigger::Release;
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    plan.groups[0].shapers = vec![ir::Transfer {
+        source: ir::Source::HeldTime { span_ms: 1000 },
+        table: vec![0.2, 1.0],
+    }];
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "held".into(),
+        slot: 7,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::SampleStart {
+            source: ir::Source::Shaped(0),
+            depth: 1.0,
+        },
+    }];
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
+    let mut output = vec![[0.0; 2]; 24_000];
+    engine.process(&mut output, &[on(60, 1.0)]);
+    level(&mut engine, &[off(60)]);
+    let source = engine
+        .trace_events()
+        .iter()
+        .find_map(|event| match event {
+            TraceEvent::RouteOnset {
+                mod_slot: 7,
+                source,
+                ..
+            } => *source,
+            _ => None,
+        })
+        .expect("the shaped counter has a value at the release voice's start");
+    // Held 0.5 s of a 1 s span: counter 0.5, through 0.2..1.0 is 0.6.
+    assert!((source - 0.6).abs() < 0.01, "{source}");
+}
+
+/// A shaper keeps its source's polarity: pitch bend at rest through a flat
+/// 0.5 table (Pacific's release start route) is 0, not half the depth.
 #[cfg(feature = "trace")]
 #[test]
 fn voice_snapshot_reports_the_playing_envelope_and_pitch() {

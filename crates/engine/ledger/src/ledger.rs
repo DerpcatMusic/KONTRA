@@ -118,6 +118,9 @@ pub struct Note {
     pub pass: u8,
     /// Event marks (`set_event_mark`), one bit each.
     pub marks: u32,
+    /// Seconds the key had been held when the note's zones last started:
+    /// the release-trigger counter's input.
+    pub held: f32,
 }
 
 impl Note {
@@ -153,6 +156,7 @@ impl Note {
             first: 0,
             pass: 0,
             marks: 0,
+            held: 0.0,
         }
     }
 

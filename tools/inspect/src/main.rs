@@ -4,6 +4,7 @@
 //! ```sh
 //! kontra-inspect load <instrument> [--json FILE]
 //! kontra-inspect law [NAME]
+//! kontra-inspect play <instrument> [--scenario user|FILE] [--oracle]  # KONTRA_INSPECT_WAV=FILE writes the render
 //! ```
 //!
 //! `<instrument>` is a Kontakt instrument or a UVI program as

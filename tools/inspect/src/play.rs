@@ -262,6 +262,10 @@ fn run_events(
         && wait_timeouts == 0
         && stream_stats.read_errors == 0
         && stream_stats.requests_refused == 0;
+    // KONTRA_INSPECT_WAV=<file>: also write what v3 rendered, for offline A/B.
+    if let Some(out) = std::env::var_os("KONTRA_INSPECT_WAV") {
+        super::oracle::wav(Path::new(&out), &rendered)?;
+    }
     let reference = if oracle {
         if complete {
             Some(
