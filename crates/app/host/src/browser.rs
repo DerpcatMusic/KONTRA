@@ -10,6 +10,12 @@ use std::sync::mpsc;
 
 use kontra_library::{Cache, Catalog, Prefs, Progress, Root};
 
+/// Whether `path` is a Kontakt instrument file.
+fn nki(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+}
+
 /// Where v3 keeps its own settings, beside v2's `kontra`.
 const FOLDER: &str = "kontra-v3";
 
@@ -114,13 +120,49 @@ impl Browser {
         self.generation += 1;
     }
 
-    /// Each library's user presets, after its own.
+    /// Each library's user presets after its own, then Kontakt's user
+    /// snapshots of its instruments.
     fn with_user(&self, catalog: &mut Catalog) {
-        let Some(user) = &self.user else { return };
+        let kontakt = self.kontakt();
         for l in &mut catalog.libraries {
-            l.presets.retain(|p| !p.starts_with(user));
-            l.presets.extend(crate::presets::list(user, &l.name));
+            let ours = |p: &PathBuf| {
+                [&self.user, &kontakt]
+                    .iter()
+                    .any(|f| f.as_ref().is_some_and(|f| p.starts_with(f)))
+            };
+            l.presets.retain(|p| !ours(p));
+            if let Some(user) = &self.user {
+                l.presets.extend(crate::presets::list(user, &l.name));
+            }
+            if let Some(kontakt) = &kontakt {
+                let instruments = (l.presets.iter()).filter(|p| nki(p)).map(PathBuf::as_path);
+                let snapshots = kontra_library::presets::snapshots(kontakt, instruments);
+                l.presets.extend(snapshots);
+            }
         }
+    }
+
+    /// Kontakt's user snapshot folder: the player's choice, else Kontakt's
+    /// own once the player's presets are listed (never in tests).
+    fn kontakt(&self) -> Option<PathBuf> {
+        let own = || {
+            self.user
+                .as_ref()
+                .and_then(|_| kontra_library::presets::kontakt_folder())
+        };
+        self.prefs.kontakt_snapshots.clone().or_else(own)
+    }
+
+    /// Every instrument of the catalog, by file ([`crate::rack::Rack::know`]).
+    #[must_use]
+    pub fn instruments(&self) -> Vec<PathBuf> {
+        (self
+            .catalog
+            .libraries
+            .iter()
+            .flat_map(|l| l.presets.iter().filter(|p| nki(p))))
+        .cloned()
+        .collect()
     }
 
     /// Whether a scan is running.

@@ -266,6 +266,44 @@ pub fn list(folder: &Path, library: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Kontakt's own folder of user snapshots (its `User Content`, a folder
+/// per instrument), where Kontakt keeps it.
+#[must_use]
+pub fn kontakt_folder() -> Option<PathBuf> {
+    Some(dirs::document_dir()?.join("Native Instruments/User Content"))
+}
+
+/// The snapshots in `folder` (Kontakt's user snapshots) of each of
+/// `instruments`: `<folder>/<its name, any case>/*.nksn`, sorted. Only
+/// read, never written.
+#[must_use]
+pub fn snapshots<'a>(
+    folder: &Path,
+    instruments: impl IntoIterator<Item = &'a Path>,
+) -> Vec<PathBuf> {
+    let files = |dir: &Path| -> Vec<PathBuf> {
+        (std::fs::read_dir(dir).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .collect()
+    };
+    let named = files(folder);
+    let mut out = Vec::new();
+    for stem in instruments.into_iter().filter_map(Path::file_stem) {
+        let dirs = named
+            .iter()
+            .filter(|d| d.file_name().is_some_and(|n| n.eq_ignore_ascii_case(stem)));
+        let mut found: Vec<PathBuf> = (dirs.flat_map(|d| files(d)))
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
+            })
+            .collect();
+        found.sort();
+        out.extend(found);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +316,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn kontakts_user_snapshots_list_by_instrument_name() {
+        let root =
+            Scratch(std::env::temp_dir().join(format!("kontra-snapshots-{}", std::process::id())));
+        for file in [
+            "strings/b.nksn",
+            "Strings/a.NKSN",
+            "Strings/notes.txt",
+            "Piano/p.nksn",
+        ] {
+            let path = root.0.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"").unwrap();
+        }
+        let listed = snapshots(&root.0, [Path::new("/lib/Instruments/Strings.nki")]);
+        let mut names: Vec<_> = listed.iter().filter_map(|p| p.file_name()).collect();
+        names.sort();
+        assert_eq!(names, ["a.NKSN", "b.nksn"]);
+        assert!(snapshots(&root.0.join("none"), [Path::new("Strings.nki")]).is_empty());
     }
 
     fn preset(scripts: Vec<Vec<String>>) -> UserPreset {
