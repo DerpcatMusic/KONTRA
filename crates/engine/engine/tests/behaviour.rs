@@ -1180,6 +1180,7 @@ fn a_velocity_attack_route_shortens_soft_attacks() {
             source: ir::Source::Velocity,
             intensity: 1.0,
             floor_ms: 2.0,
+            envelope: None,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -2369,6 +2370,7 @@ fn onset_route_trace_records_sample_and_envelope_values() {
                 source: ir::Source::Controller(1),
                 intensity: 1.0,
                 floor_ms: 0.0,
+                envelope: None,
             },
         },
     ];
@@ -2467,4 +2469,129 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         && !v.direct_controller_source
         && !v.controller_can_affect
         && matches!(v.unit, RouteUnit::GainMultiplier)));
+}
+
+/// An attack route into a modulation envelope stretches that envelope's
+/// attack per voice with the amplitude attack's law: velocity 0.5 at
+/// intensity 1 halves a 100 ms rise, so 60 ms in its pitch route is at the
+/// top (an octave) while a full-velocity voice is still rising.
+/// One zone whose envelope 0 rises over 100 ms and bends pitch up an octave,
+/// its attack timed by `source`.
+fn a_rise_timed_by(store: &mut Store, source: kontra_engine::ir::Source) -> Plan {
+    use kontra_engine::ir::{Breakpoint, Breakpoints, Mod, ModKind, Source};
+    let route = |kind| Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind,
+    };
+    let mut plan = Plan::new(vec![zone(store, 1.0)], 8);
+    plan.groups[0].envelopes = vec![Breakpoints {
+        start: 0.0,
+        points: vec![Breakpoint {
+            ms: 100.0,
+            level: 1.0,
+            curve: 0.0,
+        }],
+        sustain: Some(0),
+        loop_from: None,
+        stages: false,
+    }];
+    plan.groups[0].mods = vec![
+        route(ModKind::Pitch {
+            source: Source::Envelope(0),
+            semitones: 12.0,
+            depth: 1.0,
+            tau_ms: 0.0,
+        }),
+        route(ModKind::Attack {
+            source,
+            intensity: 1.0,
+            floor_ms: 0.0,
+            envelope: Some(0),
+        }),
+    ];
+    plan
+}
+
+/// Runs `e` to `ms` and returns each sounding voice's bend over one block,
+/// semitones above its key's own pitch (`keys` in voice order).
+fn bends_at(e: &mut Engine, ms: u64, keys: &[u8]) -> Vec<f64> {
+    while e.now().0 < u64::from(RATE) * ms / 1000 {
+        level(e, &[]);
+    }
+    let from: Vec<f64> = e.voices().map(|(_, p, _)| p).collect();
+    level(e, &[]);
+    let to = e.voices().map(|(_, p, _)| p);
+    (from.iter().zip(to).zip(keys))
+        .map(|((a, b), &k)| 12.0 * ((b - a) / 256.0).log2() - (f64::from(k) - 60.0))
+        .collect()
+}
+
+#[test]
+fn an_attack_route_stretches_a_modulation_envelopes_attack() {
+    let semitones_at_60_ms = |velocity| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let plan = a_rise_timed_by(&mut store, kontra_engine::ir::Source::Velocity);
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut e, &[on(60, velocity)]);
+        bends_at(&mut e, 60, &[60])[0]
+    };
+    let soft = semitones_at_60_ms(0.5);
+    assert!(
+        (soft - 12.0).abs() < 0.1,
+        "a 50 ms rise is at the top: {soft}"
+    );
+    let hard = semitones_at_60_ms(1.0);
+    assert!((hard - 7.2).abs() < 0.5, "a 100 ms rise is at 0.6: {hard}");
+}
+
+#[test]
+fn a_controller_times_the_next_attack_not_the_rising_one() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = a_rise_timed_by(&mut store, kontra_engine::ir::Source::Controller(1));
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[cc(1, 127), on(60, 1.0)]);
+    bends_at(&mut e, 30, &[60]);
+    level(&mut e, &[cc(1, 64), on(72, 1.0)]);
+    // Read 3,072..3,328 frames in: the first voice is 64 ms into its
+    // 100 ms rise; the next started at 1,792 (37.3 ms), so 26.7 ms into
+    // 50.4 ms. Re-timed live, the first would sit at the top (12).
+    let [first, next] = bends_at(&mut e, 60, &[60, 72])[..] else {
+        panic!("two voices");
+    };
+    assert!(
+        (first - 12.0 * 0.64).abs() < 0.3,
+        "the rising voice keeps its 100 ms: {first}"
+    );
+    let x = (3072.0 - 1792.0) / 48.0 / (100.0 * 64.0 / 127.0);
+    assert!(
+        (next - 12.0 * x).abs() < 0.3,
+        "the next note rises over 50 ms: {next}"
+    );
+}
+
+#[test]
+fn an_envelope_timing_its_own_attack_renders() {
+    use kontra_engine::ir::{ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = a_rise_timed_by(&mut store, Source::Envelope(0));
+    // A second envelope and the first time each other's attack too.
+    let rise = plan.groups[0].envelopes[0].clone();
+    plan.groups[0].envelopes.push(rise);
+    let mut cross = plan.groups[0].mods[1].clone();
+    cross.kind = ModKind::Attack {
+        source: Source::Envelope(1),
+        intensity: 1.0,
+        floor_ms: 0.0,
+        envelope: Some(0),
+    };
+    plan.groups[0].mods.push(cross);
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60, 1.0)]);
+    // Read at note-on, an envelope is its start level (0 here), which
+    // shortens the rise to nothing: the bend is at the top at once.
+    let bend = bends_at(&mut e, 10, &[60])[0];
+    assert!((bend - 12.0).abs() < 0.1, "{bend}");
 }
