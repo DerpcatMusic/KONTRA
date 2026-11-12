@@ -1,15 +1,30 @@
-//! Choral (`$EFFECT_TYPE_CHORAL`, 43) onto [`ir::Ensemble`]. Measured in
-//! Kontakt 8.13.1 (scratch/lanes/shared/modfx-audio/choral*: impulses
-//! through the factory INIT preset; modfx-sweep: every knob's text); the
-//! per-mode voice tables are Kontakt's own (0x14193cd70, read for v2):
-//! - six voices in pairs, each a delay line swept by its own sine, turned
-//!   in the stereo field by Width, summed at `mix·input·norm·0.707`;
-//! - every voice also passes its input straight through, so Mix 100 % keeps
-//!   an undelayed share (measured 0.50 at Width 100 %, one voice);
-//! - first tap `G0·(5·Delay + 0.1)` s (mode 0: 0.4 + 15·Delay ms; modes 1–3
-//!   at 7.15, 11.08, 7.06 ms, all `G0[0]`);
-//! - the sweep spans `(R − 1)/(2·Hz)` s, `R = 2^(0.025·(0.99·a² + 0.01))`
-//!   (33.6 ms measured at Amount 100 %, 0.25 Hz).
+//! Choral (`$EFFECT_TYPE_CHORAL`, 43) onto [`ir::Ensemble`], from Kontakt
+//! 8.13.1's own structure (file 0141930000.c):
+//! - seven voices; per mode, nine rows of per-voice data (FUN_14193cd70):
+//!   delay scale, LFO rate and offset, a second LFO's rate and depth, the
+//!   line filter's corner and high-pass share, the sweep's bend and its
+//!   smoothing (per sample at the host rate);
+//! - per sample (FUN_14193be50): line `i` takes `inv·g_i·Σₖ c[(k − i) mod
+//!   7]·read_k + cin·x`; its tap `inv·read_i + input_i` turns to the bus by
+//!   Width; the bus passes a low shelf; out
+//!   `bus·mix·cin·norm·0.707 + (1 − mix)·x`;
+//! - each line's input passes a Butterworth state-variable filter mixed
+//!   `(1 − hp)·LP + hp·HP`, and is read 4-point cubic at
+//!   `G0·span·fs + fs·(R − 1)/(2·f)·m`, `m` the bent triangle
+//!   `u(1 − σ) + σu²` plus `D2·(1 + ½·l2)`, l2 a cosine from its low point,
+//!   rounded by `m ← (1 − α)·m' + α·m`;
+//! - knobs (FUN_14193b140, FUN_14193ae70, FUN_14193a3e0, FUN_14193a4a0,
+//!   FUN_14193a620): rate `7.4·r³ + 0.25` Hz, `R = 2^(0.025·(0.99·a² +
+//!   0.01))`, span `5·Delay + 0.1`, `F = min(0.999·fb^¼, 0.99)`,
+//!   `cin = (1 − F⁴)^¼`, `g_v = F^(G0[v]/G0[0])`, the voices' levels and
+//!   pans, the scatter row, the shelf `S = max(1 − F, 0.2)` at
+//!   `min(0.25/(G0[0]·span), 50)/S^¼` Hz.
+//!
+//! Unread: the second LFO's start (taken as 0); modes 3 and 4 share a
+//! table.
+
+use std::f32::consts::{FRAC_PI_4, SQRT_2};
+use std::sync::LazyLock;
 
 use kontra_ir as ir;
 
@@ -17,39 +32,105 @@ use kontra_ir as ir;
 /// rate, mode, amount, voices, delay, width, feedback, scatter, invert, mix.
 pub(crate) const INIT: [f32; 10] = [0.0, 0.0, 0.494_95, 0.0, 0.18, 0.5, 0.0, 0.0, 0.0, 0.995];
 
-/// Per mode and voice: delay scale (s), LFO rate scale, LFO start
-/// (cycles), filter corner (Hz), and whether that filter is a high-pass.
-type Mode = ([f32; 6], [f32; 6], [f32; 6], [f32; 6], [bool; 6]);
+const V: usize = ir::ENSEMBLE_VOICES;
+type Row = [f32; V];
 
-const MODES: [Mode; 4] = [
-    (
-        [0.003, 0.003, 0.007, 0.007, 0.011, 0.011],
-        [1.0, 1.0, 1.428_571, 1.43, 1.724_2, 1.727_65],
-        [0.0, 0.5, 0.0, 0.5, 0.0, 0.5],
-        [5000.0, 5000.0, 5000.0, 5000.0, 10_000.0, 10_000.0],
-        [false; 6],
-    ),
-    (
-        [0.007, 0.007, 0.007, 0.007, 0.013, 0.013],
-        [1.0; 6],
-        [0.0, 0.5, 0.333_3, 0.833_3, 0.666_7, 0.166_7],
-        [4000.0, 4000.0, 6000.0, 6000.0, 10_000.0, 10_000.0],
-        [false; 6],
-    ),
-    (
-        [0.011; 6],
-        [1.0; 6],
-        [0.0, 0.5, 0.5, 0.0, 0.25, 0.75],
-        [12_000.0, 12_000.0, 150.0, 150.0, 20_000.0, 20_000.0],
-        [false, false, true, true, false, false],
-    ),
-    (
-        [0.007, 0.007, 0.011, 0.011, 0.013, 0.013],
-        [1.0, 1.0, 1.428_571, 1.428_571, 1.724_2, 1.724_2],
-        [0.0, 0.0, 0.0, 0.25, 0.0, 0.25],
-        [20_000.0; 6],
-        [false; 6],
-    ),
+/// Per mode, Kontakt's nine rows (0x14193cd70): delay scale (s), LFO rate
+/// ratio, LFO offset (cycles), LFO 2 rate ratio, LFO 2 raw depth, filter
+/// corner (Hz), high-pass share, bend, smoothing per sample.
+const TABLES: [[Row; 9]; 4] = [
+    [
+        [0.003, 0.003, 0.007, 0.007, 0.011, 0.011, 0.013],
+        [1.0, 1.0, 1.428_57, 1.429_999, 1.724_2, 1.727_648, 0.742_3],
+        [0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0],
+        [6.1, 6.1, 6.1, 6.1, 0.1, 0.1, 1.0],
+        [0.0, 0.0, 0.0, 0.0, 0.01, 0.01, 0.0],
+        [5000.0, 5000.0, 5000.0, 5000.0, 10_000.0, 10_000.0, 50.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        [0.2, 0.21, 0.21, 0.2, 0.4, 0.4, 0.0],
+        [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.0],
+    ],
+    [
+        [0.007, 0.007, 0.007, 0.007, 0.013, 0.013, 0.029],
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.742_3],
+        [0.0, 0.5, 0.333_33, 0.833_33, 0.666_66, 0.166_66, 0.0],
+        [4.1, 4.1, 4.0, 4.0, 4.12, 4.124_12, 1.0],
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],
+        [4000.0, 4000.0, 6000.0, 6000.0, 10_000.0, 10_000.0, 50.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        [0.01, 0.01, 0.01, 0.013, 0.014, 0.012, 0.0],
+        [0.3, 0.32, 0.32, 0.3, 0.33, 0.3, 0.4],
+    ],
+    [
+        [0.011, 0.011, 0.011, 0.011, 0.011, 0.011, 0.053],
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.742_3],
+        [0.0, 0.5, 0.5, 0.0, 0.25, 0.75, 0.0],
+        [6.1, 6.1, 6.1, 6.1, 6.1, 6.1, 1.0],
+        [0.0; V],
+        [12_000.0, 12_000.0, 150.0, 150.0, 20_000.0, 20_000.0, 50.0],
+        [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+        [0.1, 0.1, 0.101, 0.101, 0.4, 0.4, 0.0],
+        [0.2, 0.22, 0.22, 0.2, 0.2, 0.2, 0.0],
+    ],
+    [
+        [0.007, 0.007, 0.011, 0.011, 0.013, 0.013, 0.029],
+        [1.0, 1.0, 1.428_57, 1.428_57, 1.724_2, 1.724_2, 0.742_3],
+        [0.0, 0.0, 0.0, 0.25, 0.0, 0.25, 0.0],
+        [6.1, 6.1, 6.1, 6.1, 6.1, 6.1, 1.0],
+        [0.0, 0.0, 0.3, 0.3, 0.6, 0.6, 0.0],
+        [
+            20_000.0, 20_000.0, 20_000.0, 20_000.0, 20_000.0, 20_000.0, 50.0,
+        ],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.99; V],
+    ],
+];
+
+/// The host rate the smoothing's per-sample coefficients were heard at.
+const SMOOTH_RATE: f32 = 48_000.0;
+
+/// Each mode's rows in physical units.
+static MODES: LazyLock<[ir::EnsembleVoices; 4]> = LazyLock::new(|| {
+    TABLES.map(
+        |[delay, rate, start, rate2, depth2, corner, hp, bend, alpha]| {
+            fn pair<T>(a: Row, b: Row, f: impl Fn(f32, f32) -> T) -> [T; V] {
+                std::array::from_fn(|v| f(at(&a, v), at(&b, v)))
+            }
+            ir::EnsembleVoices {
+                delay,
+                rate,
+                start,
+                bend,
+                wobble_rate: rate2,
+                // LFO 2 runs only above 1e-8 (0x147697a60), at depth G4/G3.
+                wobble: pair(
+                    depth2,
+                    rate2,
+                    |d, r| if d > 1e-8 && r > 0.0 { d / r } else { 0.0 },
+                ),
+                smooth_hz: alpha.map(|a| match a > 0.0 {
+                    true => -a.ln() * SMOOTH_RATE / std::f32::consts::TAU,
+                    false => f32::INFINITY,
+                }),
+                filter: pair(corner, hp, |hz, hp| ir::Section {
+                    hz,
+                    num: [1.0 - hp, 0.0, hp],
+                    den: [1.0, SQRT_2, 1.0],
+                }),
+            }
+        },
+    )
+});
+
+fn at(r: &Row, v: usize) -> f32 {
+    r.get(v).copied().unwrap_or(0.0)
+}
+
+/// The circulant's first row at Scatter 1 (FUN_14193a620); Scatter 0 is
+/// the identity.
+const SCATTER: Row = [
+    -0.554_097, -0.261_204, -0.261_204, 0.445_903, -0.261_204, 0.445_903, 0.445_903,
 ];
 
 /// The chorus at knob positions `p` (see [`INIT`]).
@@ -62,64 +143,63 @@ pub(crate) fn choral(p: [f32; 10]) -> ir::EffectKind {
         delay,
         width,
         feedback,
-        _scatter,
+        scatter,
         invert,
         mix,
     ] = p;
-    let [rate, amount, voices, delay, width, feedback, mix] =
-        [rate, amount, voices, delay, width, feedback, mix].map(|x| x.clamp(0.0, 1.0));
-    let [m0, m1, m2, m3] = MODES;
-    let (scale, speeds, starts, corners, high_pass) = match mode.round() as i32 {
+    let [rate, amount, voices, delay, width, feedback, scatter, mix] =
+        [rate, amount, voices, delay, width, feedback, scatter, mix].map(|x| x.clamp(0.0, 1.0));
+    let [m0, m1, m2, m3] = &*MODES;
+    let table = match mode.round() as i32 {
         ..=0 => m0,
         1 => m1,
         2 => m2,
         _ => m3,
     };
-    let [first, ..] = scale;
-    let hz = 7.4 * rate.powi(3) + 0.25;
-    let ratio = 2f32.powf(0.025 * (0.99 * amount * amount + 0.01));
     let span = 5.0 * delay + 0.1;
-    // Feedback: g = fb^¼·0.999, the input eased by (1 − min(g, .99)^4)^¼.
-    let g = feedback.sqrt().sqrt() * 0.999;
-    let input = (1.0 - g.min(0.99).powi(4)).sqrt().sqrt();
-    // Pairs 2/3 and 4/5 fade in over Voices' two halves.
+    let ratio = 2f32.powf(0.025 * (0.99 * amount * amount + 0.01));
+    let f = (0.999 * feedback.sqrt().sqrt()).min(0.99);
+    let input = (1.0 - f.powi(4)).sqrt().sqrt();
+    // Pairs 2/3 and 4/5 fade in over Voices' two halves; voice 6 is heard
+    // only through the scatter.
     let fade = |k: f32| (2.0 * voices - k).clamp(0.0, 1.0).sqrt();
-    let gains = [1.0, 1.0, fade(0.0), fade(0.0), fade(1.0), fade(1.0)];
-    let sum: f32 = gains.iter().sum();
-    let wet = mix * input * (0.2 * sum + 0.6).sqrt() / sum * 0.707;
-    let sign = if invert > 0.0 { -1.0 } else { 1.0 };
-    let mut direct = 1.0 - mix;
-    let voices = std::array::from_fn(|v| {
-        let at = |t: [f32; 6]| t.get(v).copied().unwrap_or_default();
-        // Pair k turns by ∓ Width·π/4·(1 − 2k/7), even voices left.
-        let reach = 1.0 - (v / 2 * 2) as f32 / 7.0;
-        let side = if v % 2 == 0 { -1.0 } else { 1.0 };
-        let angle = side * width * std::f32::consts::FRAC_PI_4 * reach;
-        let gain = wet * at(gains);
-        // The pair's cross terms cancel in the straight-through share.
-        direct += gain * input * angle.cos();
-        // Longer voices feed back as if over the same time as voice 0.
-        let fb = g.powf(at(scale) / first);
-        ir::EnsembleVoice {
-            ms: 1000.0 * at(scale) * span,
-            hz: at(speeds) * hz,
-            start: at(starts),
-            filter: if high_pass.get(v).copied().unwrap_or_default() {
-                ir::LineFilter::HighPass(at(corners))
-            } else {
-                ir::LineFilter::LowPass(at(corners))
-            },
-            level: gain * sign * (1.0 + fb),
-            angle,
+    let levels = [1.0, 1.0, fade(0.0), fade(0.0), fade(1.0), fade(1.0), 0.0];
+    let sum: f32 = levels.iter().sum();
+    let norm = (0.2 * sum + 0.6).sqrt() / sum;
+    // Pair k turns by ∓ Width·π/4·(1 − 2k/7), even voices left.
+    let angles = std::array::from_fn(|v| match v {
+        0..6 => {
+            let reach = 1.0 - (v / 2 * 2) as f32 / 7.0;
+            let side = if v % 2 == 0 { -1.0 } else { 1.0 };
+            side * width * FRAC_PI_4 * reach
         }
+        _ => 0.0,
     });
+    let first = at(&table.delay, 0) * span;
+    let shelf = (1.0 - f).max(0.2);
     ir::EffectKind::Ensemble(ir::Ensemble {
-        voices,
-        // The sweep `(R − 1)/(2·Hz)` s for every voice's rate.
-        sweep: 500.0 * (ratio - 1.0),
+        voices: table,
+        span,
+        hz: 7.4 * rate.powi(3) + 0.25,
+        sweep: 0.5 * (ratio - 1.0),
+        levels,
+        angles,
+        scatter: std::array::from_fn(|k| {
+            at(&SCATTER, k) * scatter + if k == 0 { 1.0 } else { 0.0 }
+        }),
+        feedback: f,
+        polarity: match invert > 0.0 {
+            true => ir::Polarity::Inverted,
+            false => ir::Polarity::Normal,
+        },
         input,
-        feedback: sign * g,
-        direct,
+        wet: mix * input * norm * 0.707,
+        direct: 1.0 - mix,
+        shelf: ir::Section {
+            hz: (0.25 / first).min(50.0) / shelf.sqrt().sqrt(),
+            num: [shelf, SQRT_2 * shelf.sqrt(), 1.0],
+            den: [1.0, SQRT_2, 1.0],
+        },
     })
 }
 
@@ -179,21 +259,14 @@ mod tests {
 
     #[test]
     fn a_new_choral_is_kontakts_init() {
-        // Kontakt 8.13.1 at INIT: one voice pair, first tap 3 ms·(5·0.18 + 0.1),
-        // 0.25 Hz, half a cycle apart; Mix 99.5 % leaves the pair's
-        // straight-through share, 0.354·2·cos(π/8).
+        // Kontakt 8.13.1 at INIT: one voice pair, first tap 3 ms·(5·0.18 +
+        // 0.1), 0.25 Hz, half a cycle apart; the other voices silent.
         let ir::EffectKind::Ensemble(e) = choral(INIT) else {
             panic!("an ensemble");
         };
-        let [a, b, c, ..] = e.voices;
-        assert!(
-            (a.ms - 3.0).abs() < 1e-3 && (b.ms - 3.0).abs() < 1e-3,
-            "{}",
-            a.ms
-        );
-        assert!((a.hz - 0.25).abs() < 1e-6 && (b.start - 0.5).abs() < 1e-6);
-        assert_eq!(c.level, 0.0);
-        let share = 0.005 + 0.995 * 0.354 * 2.0 * (std::f32::consts::PI / 8.0).cos();
-        assert!((e.direct - share).abs() < 2e-3, "{}", e.direct);
+        assert!((e.voices.delay[0] * e.span - 0.003).abs() < 1e-6);
+        assert!((e.hz - 0.25).abs() < 1e-6 && (e.voices.start[1] - 0.5).abs() < 1e-6);
+        assert_eq!(e.levels[2..], [0.0; 5]);
+        assert_eq!(e.scatter, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 }

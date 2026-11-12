@@ -324,27 +324,42 @@ mod tests {
         }
     }
 
-    /// Six swept, fed-back voices at their own LFO starts, the last two
-    /// silent (their clocks still run), and a straight-through share.
+    /// Seven swept voices fed back through a scatter, the last silent
+    /// (heard through the loop), and a straight-through share.
     fn ensemble() -> ir::Effect {
-        let voices = std::array::from_fn(|v| {
-            let g = if v < 4 { 0.3 } else { 0.0 };
-            ir::EnsembleVoice {
-                ms: 3.0 + 4.0 * v as f32,
-                hz: 0.25 * (1.0 + v as f32 * 0.2),
-                start: v as f32 / 6.0,
-                filter: ir::LineFilter::LowPass(5_000.0),
-                level: g,
-                angle: 0.1,
-            }
-        });
+        static VOICES: ir::EnsembleVoices = ir::EnsembleVoices {
+            delay: [0.003, 0.003, 0.007, 0.007, 0.011, 0.011, 0.013],
+            rate: [1.0, 1.0, 1.4, 1.4, 1.7, 1.7, 0.7],
+            start: [0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0],
+            bend: [0.2; 7],
+            wobble_rate: [6.0; 7],
+            wobble: [0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.0],
+            smooth_hz: [3000.0; 7],
+            filter: [ir::Section {
+                hz: 5_000.0,
+                num: [1.0, 0.0, 0.0],
+                den: [1.0, 1.414, 1.0],
+            }; 7],
+        };
         ir::Effect {
             kind: ir::EffectKind::Ensemble(ir::Ensemble {
-                voices,
-                sweep: 2.0,
-                input: 0.9,
+                voices: &VOICES,
+                span: 1.0,
+                hz: 0.25,
+                sweep: 0.004,
+                levels: [1.0, 1.0, 0.7, 0.7, 0.0, 0.0, 0.0],
+                angles: [-0.1, 0.1, -0.1, 0.1, 0.0, 0.0, 0.0],
+                scatter: [0.5, -0.2, -0.2, 0.3, -0.2, 0.3, 0.3],
                 feedback: 0.5,
+                polarity: ir::Polarity::Normal,
+                input: 0.9,
+                wet: 0.3,
                 direct: 0.7,
+                shelf: ir::Section {
+                    hz: 30.0,
+                    num: [0.5, 1.0, 1.0],
+                    den: [1.0, 1.414, 1.0],
+                },
             }),
             ..chorus()
         }

@@ -17,8 +17,8 @@ moved to the lag (+-40 ms) that best correlates 0.5 s of native audio with v3's,
 Note-offs jitter too (up to 15 ms): each cluster of them is moved within +-15 ms to where v3's
 release best matches Kontakt's (one render per 2.5 ms step; the fitted shifts print per library;
 a best shift at the bound counts as unfitted and prints as unfit(..); --no-keyup turns it off).
-Fast repeats are scored statistically against v3's own spread under per-note key-up jitter
-(JITTER_CASES).
+Fast repeats are scored statistically against v3's own spread under per-note key-up and note-on
+jitter (JITTER_CASES).
 
 The scenario starts after LEAD seconds of silence: Kontakt keeps loading samples after it reports
 the instrument loaded, and a note that arrives first plays late or not at all.
@@ -67,9 +67,14 @@ KEYUP_MS, KEYUP_STEP, KEYUP_TAIL = 15.0, 2.5, 0.7
 # Fast repeats are scored statistically: twelve 42 ms notes overlap, and the per-note key-up jitter
 # alone swings each slot by +-3-5 dB with no consistent sign (v3 against itself with note-offs moved
 # 0-15 ms: Dolce slot sd 2.3-2.4 dB, native 2.7; Chorus 0.8-1.2, native 0.9; slots 3+ r 0.4-0.8).
+# Note-ons too: Wine's 0-3 ms spread is a full period of a 300 Hz fundamental, so twelve copies
+# of one sample on the exact 1/12 s grid cancel or add by their fixed phase (Pacific key 62: 24.5
+# periods apart, -60 dB flat), where Kontakt's add in random phase and build up (-53..-56 dB from
+# the 6th; v3 with note-ons moved +-1.5 ms: -53..-57; Una Corda's +-2 dB slot swing likewise).
 # One cluster shift cannot follow that, so these cases also allow v3's own spread over
-# JITTER_RENDERS renders with each note-off moved by its own random +-KEYUP_MS/2.
-JITTER_CASES, JITTER_RENDERS = ("repeats",), 4
+# JITTER_RENDERS renders with each note-off moved by its own random +-KEYUP_MS/2 and each note-on
+# by its own +-NOTE_ON_MS/2.
+JITTER_CASES, JITTER_RENDERS, NOTE_ON_MS = ("repeats",), 4, 3.0
 
 
 def scenario():
@@ -323,11 +328,12 @@ def keyups(binary, nki, events, nat, base):
 
 
 def jittered(events, case, seed):
-    """`events` with each note-off inside `case` moved by its own random +-KEYUP_MS/2."""
-    rnd, half = random.Random(seed), KEYUP_MS / 2
+    """`events` with each note-off inside `case` moved by its own random +-KEYUP_MS/2 and each
+    note-on by its own +-NOTE_ON_MS/2."""
+    rnd, half = random.Random(seed), {"note_off": KEYUP_MS / 2, "note_on": NOTE_ON_MS / 2}
     a, z = case["start"] * R, (case["start"] + case["len"]) * R
-    out = [dict(e, frame=e["frame"] + round(rnd.uniform(-half, half) * R / 1000))
-           if e["type"] == "note_off" and a <= e["frame"] < z else e for e in events]
+    out = [dict(e, frame=e["frame"] + round(rnd.uniform(-half[e["type"]], half[e["type"]]) * R / 1000))
+           if e["type"] in half and a <= e["frame"] < z else e for e in events]
     return sorted(out, key=lambda e: e["frame"])
 
 
@@ -404,7 +410,8 @@ def score(args):
                 spread = widest(spread, *own)
             r = score_case(nat[:, a:z], ours[:, a:z], case["hold"], spread)
             r["jitter"] = len(own)
-            r["plain"] = score_case(nat[:, a:z], ours[:, a:z], case["hold"])["ok"]
+            plain = score_case(nat[:, a:z], ours[:, a:z], case["hold"])
+            r["plain"], r["grid"] = plain["ok"], plain.get("fails", [])
             r["spread"] = spread and {k: v for k, v in spread.items() if k in ("level", "onset", "attack", "release", "balance", "band")}
             rows.append(dict(case=case["name"], **r))
         wav.unlink()
@@ -412,8 +419,11 @@ def score(args):
         ok = sum(r["ok"] for r in rows)
         print(f"{name}: {ok}/{len(rows)}{fit}")
         for r in rows:
-            if not r["ok"]:
-                print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"])))
+            # A row scored against v3's own jitter spread also shows its score on the exact grid,
+            # so a regression in repeat handling cannot hide inside the spread.
+            grid = f" | exact grid: {', '.join(r['grid']) or 'ok'}" if r.get("jitter") else ""
+            if not r["ok"] or grid:
+                print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"]) or "ok") + grid)
     total = sum(r["ok"] for rows in table.values() for r in rows)
     if args.spread:
         inside = sum(r["ok"] and not r.get("plain", True) and not r.get("jitter") for rows in table.values() for r in rows)
@@ -421,7 +431,7 @@ def score(args):
     stat = [r for rows in table.values() for r in rows if r.get("jitter")]
     if stat:
         print(f"scored statistically ({', '.join(JITTER_CASES)}: tolerance includes v3's own spread over "
-              f"{JITTER_RENDERS} renders with per-note key-up jitter +-{KEYUP_MS / 2:g} ms): "
+              f"{JITTER_RENDERS} renders with per-note key-up jitter +-{KEYUP_MS / 2:g} ms, note-on +-{NOTE_ON_MS / 2:g} ms): "
               f"{sum(r['ok'] for r in stat)}/{len(stat)}, of which inside only that spread "
               f"{sum(r['ok'] and not r.get('plain', True) for r in stat)}")
     cases = sum(len(rows) for rows in table.values())
