@@ -893,6 +893,34 @@ fn a_changed_preset_saves_as_changed_until_a_preset_is_picked() {
     );
 }
 
+/// A user preset renamed or deleted moves every part that plays it, by
+/// one path: renamed, they keep their changed mark; deleted, they play on
+/// as their base instrument, changed.
+#[test]
+fn a_renamed_or_deleted_user_preset_moves_every_part_playing_it() {
+    use std::path::Path;
+    let (mut rack, _audio) = rack();
+    for part in [0, 1] {
+        let instrument = snapshot_of(1, &[]);
+        (rack.load_ir(part, instrument, Some("u/Mine.kontra".into()))).unwrap();
+    }
+    rack.set_modified(1);
+    let playing = |rack: &Rack| {
+        (rack.parts().iter().flatten())
+            .map(|p| (p.path.clone().unwrap(), p.name.clone(), p.modified))
+            .collect::<Vec<_>>()
+    };
+    rack.preset_moved(
+        Path::new("u/Mine.kontra"),
+        Some(Path::new("u/Yours.kontra")),
+    );
+    let yours = |modified| ("u/Yours.kontra".into(), "Yours".to_owned(), modified);
+    assert_eq!(playing(&rack), [yours(false), yours(true)]);
+    rack.preset_moved(Path::new("u/Yours.kontra"), None);
+    let paths: Vec<_> = playing(&rack).into_iter().map(|(p, _, m)| (p, m)).collect();
+    assert_eq!(paths, [("a.nki".into(), true), ("a.nki".into(), true)]);
+}
+
 /// A folder of this test process alone, removed when dropped (also when
 /// an assertion fails).
 struct Scratch(std::path::PathBuf);

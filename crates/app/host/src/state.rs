@@ -69,6 +69,42 @@ pub struct SlotType {
     pub ty: u16,
 }
 
+/// Effect types and responses scripts loaded after `on init`, by rack.
+pub type LiveSlots = (Vec<(RackAt, u8, u16)>, Vec<(RackAt, u8, String)>);
+
+/// `types` and `responses` as a part keeps them, as a file saves them.
+pub(crate) fn saved_slots(
+    types: &[(RackAt, u8, u16)],
+    responses: &[(RackAt, u8, String)],
+) -> (Vec<SlotType>, Vec<SlotResponse>) {
+    let types = (types.iter())
+        .map(|&(at, slot, ty)| SlotType {
+            rack: at.into(),
+            slot,
+            ty,
+        })
+        .collect();
+    let responses = (responses.iter())
+        .map(|(at, slot, name)| SlotResponse {
+            rack: (*at).into(),
+            slot: *slot,
+            name: name.clone(),
+        })
+        .collect();
+    (types, responses)
+}
+
+/// [`saved_slots`] back as a part keeps them.
+pub(crate) fn live_slots(types: &[SlotType], responses: &[SlotResponse]) -> LiveSlots {
+    let types = (types.iter())
+        .map(|t| (t.rack.into(), t.slot, t.ty))
+        .collect();
+    let responses = (responses.iter())
+        .map(|r| (r.rack.into(), r.slot, r.name.clone()))
+        .collect();
+    (types, responses)
+}
+
 /// [`RackAt`] as a project saves it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SavedRack {
@@ -194,20 +230,8 @@ impl Rack {
                     mute: p.mute,
                     scripts: self.saved_scripts(part),
                     delays: p.delays.clone(),
-                    slot_types: (p.slot_types.iter())
-                        .map(|&(at, slot, ty)| SlotType {
-                            rack: at.into(),
-                            slot,
-                            ty,
-                        })
-                        .collect(),
-                    slot_responses: (p.slot_responses.iter())
-                        .map(|(at, slot, name)| SlotResponse {
-                            rack: (*at).into(),
-                            slot: *slot,
-                            name: name.clone(),
-                        })
-                        .collect(),
+                    slot_types: saved_slots(&p.slot_types, &p.slot_responses).0,
+                    slot_responses: saved_slots(&p.slot_types, &p.slot_responses).1,
                     modified: p.modified,
                 })
             })
@@ -245,12 +269,7 @@ impl Rack {
         }
         let mut failed = Vec::new();
         for p in saved.parts.iter().filter(|p| !kept.contains(&p.part)) {
-            let types: Vec<_> = (p.slot_types.iter())
-                .map(|t| (t.rack.into(), t.slot, t.ty))
-                .collect();
-            let responses: Vec<_> = (p.slot_responses.iter())
-                .map(|r| (r.rack.into(), r.slot, r.name.clone()))
-                .collect();
+            let (types, responses) = live_slots(&p.slot_types, &p.slot_responses);
             match self.load_saved(p.part, &p.path, &p.scripts, &types, &responses) {
                 Ok(()) => {
                     self.set_mix(

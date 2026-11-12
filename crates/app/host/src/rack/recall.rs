@@ -11,6 +11,11 @@ use kontra_engine::{Engine, Plan, Recall, Saved};
 
 use super::{Command, Part, Rack, ScriptState};
 
+/// `a` and `b` hold the same entries, in any order.
+fn same<T: PartialEq>(a: &[T], b: &[T]) -> bool {
+    a.len() == b.len() && a.iter().all(|x| b.contains(x))
+}
+
 impl Rack {
     /// Recalls `preset` into `part` when the part plays the preset's base
     /// file and only KSP scripts; false (nothing done) when it must load. A
@@ -61,11 +66,37 @@ impl Rack {
         true
     }
 
+    /// The preset at `path` played by `part`: recalled into it when it plays
+    /// its base, else a user preset loads with its values and its scripts'
+    /// effect types and responses. None for any other file.
+    pub(super) fn load_preset(
+        &mut self,
+        part: usize,
+        path: &Path,
+    ) -> Option<Result<(), Box<dyn std::error::Error>>> {
+        let preset = crate::instrument::preset(path).or_else(|| self.user_preset(part, path));
+        if let Some(preset) = preset
+            && self.recall(part, &preset, Some(path))
+        {
+            return Some(Ok(()));
+        }
+        let user = crate::presets::read(path)?;
+        let (types, responses) = crate::state::live_slots(&user.slot_types, &user.slot_responses);
+        Some(self.load_saved(part, path, &user.scripts, &types, &responses))
+    }
+
     /// The user preset at `path` as a [`Preset`] for `part`: its values by
-    /// the slot each of the part's scripts sits in. None for other files.
+    /// the slot each of the part's scripts sits in. None for other files,
+    /// and when its effect types or responses differ from the part's (those
+    /// only a load puts in).
     pub(crate) fn user_preset(&self, part: usize, path: &Path) -> Option<Preset> {
         let user = crate::presets::read(path)?;
-        let slots = &self.parts.get(part)?.as_ref()?.script.slots;
+        let p = self.parts.get(part)?.as_ref()?;
+        let (types, responses) = crate::state::live_slots(&user.slot_types, &user.slot_responses);
+        if !(same(&types, &p.slot_types) && same(&responses, &p.slot_responses)) {
+            return None;
+        }
+        let slots = &p.script.slots;
         let mut saved = vec![Vec::new(); slots.iter().max().map_or(0, |m| m + 1)];
         for (slot, values) in slots.iter().zip(user.scripts) {
             if let Some(s) = saved.get_mut(*slot) {
@@ -93,9 +124,20 @@ impl Rack {
         name: &str,
     ) -> std::io::Result<std::path::PathBuf> {
         let scripts = self.saved_scripts(part);
-        let base = (self.parts.get(part).and_then(Option::as_ref)).and_then(|p| p.source.clone());
+        let p = self.parts.get(part).and_then(Option::as_ref);
+        let p = p.ok_or_else(|| std::io::Error::other("no instrument in this part"))?;
+        let base = p.source.clone();
         let base = base.ok_or_else(|| std::io::Error::other("no instrument in this part"))?;
-        let path = crate::presets::save(folder, library, name, &base, &scripts)?;
+        let (slot_types, slot_responses) =
+            crate::state::saved_slots(&p.slot_types, &p.slot_responses);
+        let preset = crate::presets::UserPreset {
+            version: crate::presets::VERSION,
+            base,
+            scripts,
+            slot_types,
+            slot_responses,
+        };
+        let path = crate::presets::save(folder, library, name, &preset)?;
         self.set_preset(part, &path);
         Ok(path)
     }
@@ -109,6 +151,28 @@ impl Rack {
                 .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
             p.path = Some(path.to_owned());
             p.modified = false;
+        }
+    }
+
+    /// The user preset file `from` was renamed to `to`, or deleted (None):
+    /// every part playing it follows, keeping its changed mark; a part
+    /// whose file is gone plays on as its base instrument, changed.
+    pub fn preset_moved(&mut self, from: &Path, to: Option<&Path>) {
+        for p in self.parts.iter_mut().flatten() {
+            if p.path.as_deref() != Some(from) {
+                continue;
+            }
+            match to {
+                Some(to) => {
+                    p.path = Some(to.to_owned());
+                    let stem = to.file_stem().map(|s| s.to_string_lossy().into_owned());
+                    p.name = stem.unwrap_or_default();
+                }
+                None => {
+                    p.path.clone_from(&p.source);
+                    p.modified = true;
+                }
+            }
         }
     }
 
@@ -139,8 +203,6 @@ impl Rack {
             sounds: crate::sound::Sounds::new(self.rate, engine.group_sounds()),
             view,
             plan: Some(plan),
-            slot_types: Vec::new(),
-            slot_responses: Vec::new(),
             script: ScriptState {
                 vars: old.script.vars,
                 loaded,

@@ -12,21 +12,26 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::state::{SlotResponse, SlotType};
+
 /// The extension of a user preset file.
 pub const EXTENSION: &str = "kontra";
-const VERSION: u32 = 1;
+pub const VERSION: u32 = 1;
 /// The most a preset file may hold; anything larger is not one.
 const LIMIT: u64 = 16 << 20;
-/// The longest name kept, in characters.
-const NAME: usize = 64;
 
-/// A user preset: its base instrument and, by instrument script, the
-/// values a project would save for it.
+/// A user preset: its base instrument and what a project saves of a part
+/// playing it: by instrument script its values, and the effect types and
+/// responses its scripts loaded after `on init`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserPreset {
     pub version: u32,
     pub base: PathBuf,
     pub scripts: Vec<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slot_types: Vec<SlotType>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slot_responses: Vec<SlotResponse>,
 }
 
 /// KONTRA's presets folder.
@@ -35,44 +40,23 @@ pub fn folder() -> Option<PathBuf> {
     Some(dirs::data_dir()?.join("kontra/presets"))
 }
 
-/// What the player typed, as a file name: no separators, control or
-/// reserved characters, no leading dot, at most [`NAME`] characters.
-#[must_use]
-pub fn sanitized(name: &str) -> Option<String> {
-    let kept: String = (name.chars())
-        .filter(|c| !c.is_control() && !r#"/\:*?"<>|"#.contains(*c))
-        .take(NAME)
-        .collect();
-    let kept = kept.trim().trim_start_matches('.').trim();
-    (!kept.is_empty()).then(|| kept.to_owned())
-}
+pub use kontra_ui_model::preset_file_name as sanitized;
 
 fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what)
 }
 
-/// Writes preset `name` of `library` (replacing one of that name: the
+/// Writes `preset` as `name` of `library` (replacing one of that name: the
 /// caller asked the player first); its path.
 ///
 /// # Errors
 /// When a name is empty once sanitised, or the file cannot be written.
-pub fn save(
-    folder: &Path,
-    library: &str,
-    name: &str,
-    base: &Path,
-    scripts: &[Vec<String>],
-) -> io::Result<PathBuf> {
+pub fn save(folder: &Path, library: &str, name: &str, preset: &UserPreset) -> io::Result<PathBuf> {
     let dir = folder.join(sanitized(library).ok_or_else(|| invalid("library name"))?);
     let name = sanitized(name).ok_or_else(|| invalid("preset name"))?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{name}.{EXTENSION}"));
-    let preset = UserPreset {
-        version: VERSION,
-        base: base.to_owned(),
-        scripts: scripts.to_vec(),
-    };
-    let bytes = serde_json::to_vec_pretty(&preset).map_err(io::Error::other)?;
+    let bytes = serde_json::to_vec_pretty(preset).map_err(io::Error::other)?;
     let temp = dir.join(format!(".{name}.{EXTENSION}.tmp"));
     std::fs::write(&temp, bytes)?;
     std::fs::rename(&temp, &path)?;
@@ -158,13 +142,22 @@ mod tests {
         let folder = root.join("presets");
         let base = Path::new("/lib/Piano.nki");
         let scripts = vec![vec!["1".to_owned()]];
-        let path = save(&folder, "Una/Corda", "../My: Soft*", base, &scripts).unwrap();
+        let preset = UserPreset {
+            version: VERSION,
+            base: base.to_owned(),
+            scripts: scripts.clone(),
+            slot_types: Vec::new(),
+            slot_responses: Vec::new(),
+        };
+        let path = save(&folder, "Una/Corda", "../My: Soft*", &preset).unwrap();
         assert_eq!(path, folder.join("UnaCorda").join("My Soft.kontra"));
         assert_eq!(read(&path).map(|p| p.scripts), Some(scripts.clone()));
         assert_eq!(list(&folder, "Una/Corda"), std::slice::from_ref(&path));
         assert!(sanitized(" .. ").is_none());
+        // The editor's Replace check names collisions by this file name.
+        assert_eq!(sanitized("Soft?"), sanitized("Soft"));
         // The name is taken: no rename over it.
-        let other = save(&folder, "UnaCorda", "Bright", base, &scripts).unwrap();
+        let other = save(&folder, "UnaCorda", "Bright", &preset).unwrap();
         assert!(rename(&folder, &path, "Bright").is_err());
         let path = rename(&folder, &path, "Soft").unwrap();
         // Nothing outside the folder, nor any other file, is removed.

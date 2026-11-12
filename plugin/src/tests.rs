@@ -827,6 +827,35 @@ fn shreddage_loads_an_eq_from_its_console_and_a_reload_keeps_it() {
     assert_eq!(first, second, "re-save after reload is identical");
 }
 
+/// A user preset carries the effect types its scripts loaded after init:
+/// picked into a fresh part, the EQ is back in its slot.
+#[test]
+fn a_user_preset_keeps_an_effect_its_script_loaded() {
+    let Some((live, mut live_dsp, _)) = shreddage_eq() else {
+        return;
+    };
+    settle(&live, &mut live_dsp);
+    let folder = std::env::temp_dir().join(format!("kontra-user-fx-{}", std::process::id()));
+    let mut rack = crate::lock(&live.shared.rack);
+    let path = rack
+        .as_mut()
+        .unwrap()
+        .save_preset(0, &folder, "Shreddage", "EQ");
+    drop(rack);
+    let path = path.unwrap();
+    let user = kontra_host::presets::read(&path).expect("saved");
+    assert_eq!(user.slot_types.len(), 1, "{user:?}");
+    let (fresh, mut fresh_dsp) = activate(&Saved::new(Vec::new()).write());
+    let loaded = crate::lock(&fresh.shared.rack)
+        .as_mut()
+        .unwrap()
+        .load(0, &path);
+    assert!(loaded.is_ok(), "{loaded:?}");
+    settle(&fresh, &mut fresh_dsp);
+    assert_eq!(slot_types(&fresh), slot_types(&live));
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
 #[test]
 fn shreddage_eq_band_gain_is_audible_and_survives_reload() {
     let Some((live, mut live_dsp, dry)) = shreddage_eq() else {

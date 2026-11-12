@@ -72,9 +72,13 @@ pub(super) fn sheet(
     };
     let library =
         (app.parts.get(part)).and_then(|p| app.libraries.iter().find(|l| l.name == p.library));
+    // By the file name the host saves it as: `Soft?` replaces `Soft`.
+    let file = kontra_ui_model::preset_file_name(&app.view.preset_name);
     let taken = library.is_some_and(|l| {
-        let name = app.view.preset_name.trim();
-        l.presets.iter().any(|p| p.strip_prefix(USER) == Some(name))
+        (l.presets.iter()).any(|p| {
+            p.strip_prefix(USER)
+                .is_some_and(|p| Some(p) == file.as_deref())
+        })
     });
     let mut items = Vec::new();
     if matches!(which, Sheet::DeletePreset(_)) {

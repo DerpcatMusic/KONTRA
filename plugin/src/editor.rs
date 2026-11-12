@@ -314,27 +314,23 @@ fn edit_preset(
         .clone()
         .ok_or_else(|| std::io::Error::other("no presets folder"))?;
     let playing = rack.parts().get(part).and_then(Option::as_ref);
-    let (path, base) = (
-        playing.and_then(|p| p.path.clone()),
-        playing.and_then(|p| p.source.clone()),
-    );
+    let path = playing.and_then(|p| p.path.clone());
     let library = (path.as_deref().and_then(|p| browser.find(p)))
         .and_then(|(l, _)| browser.catalog.libraries.get(l))
         .map(|l| l.name.clone())
         .ok_or_else(|| std::io::Error::other("not in a listed library"))?;
-    match (edit, path, base) {
-        (app::PresetEdit::Save(name), ..) => {
+    match (edit, path) {
+        (app::PresetEdit::Save(name), _) => {
             rack.save_preset(part, &folder, &library, &name)?;
         }
-        (app::PresetEdit::Rename(name), Some(path), _) => {
+        (app::PresetEdit::Rename(name), Some(path)) => {
             let to = presets::rename(&folder, &path, &name)?;
-            rack.set_preset(part, &to);
+            rack.preset_moved(&path, Some(&to));
         }
         // What plays stays; it is its base instrument, changed, from now on.
-        (app::PresetEdit::Delete, Some(path), Some(base)) => {
+        (app::PresetEdit::Delete, Some(path)) => {
             presets::delete(&folder, &path)?;
-            rack.set_preset(part, &base);
-            rack.set_modified(part);
+            rack.preset_moved(&path, None);
         }
         _ => return Err(std::io::Error::other("the part plays no user preset")),
     }
