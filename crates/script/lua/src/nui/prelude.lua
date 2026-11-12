@@ -213,9 +213,9 @@ local kontakt = {
 	end,
 	connect_level_meter = function(id)
 		return {
-			level_value = function()
+			level_value = getter(function()
 				return __meters[id] or 0
-			end,
+			end),
 		}
 	end,
 	create_tmp_midi_file = function()
@@ -336,9 +336,9 @@ expand = function(v, path, context)
 			local saved = current
 			current = { path = path .. "/each", hook = 0, context = context, reads = saved.reads, instance = saved.instance }
 			for i, item in ipairs(data or {}) do
-				local ok, child = pcall(v.props.content, item, function()
+				local ok, child = pcall(v.props.content, item, getter(function()
 					return i
-				end)
+				end))
 				if not ok then
 					current = saved
 					error(child, 0)
