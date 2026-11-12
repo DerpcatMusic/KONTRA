@@ -105,16 +105,19 @@ script/lua/src/
 - **Inline on the audio thread.** A Lua callback runs at its event's
   sample, just like KSP. `ScriptThread`, the 1 ms poll and the separate
   offline host are deleted. Offline and real time run the same path.
-- **Real-time safety.** The Luau state lives in a TLSF arena (`alloc.rs`,
-  `rlsf`): `kontra-lua` installs a routing `#[global_allocator]`, since
-  mlua 0.12 allocates through the Rust global allocator (option A of
-  `spikes/luau-alloc-mlua.md`). A load grows the arena; an audio callback
+- **Real-time safety.** Each Luau state lives in a TLSF arena of its own
+  (`alloc.rs`, `rlsf`): `kontra-lua` installs a routing `#[global_allocator]`,
+  since mlua 0.12 allocates through the Rust global allocator (option A of
+  `spikes/luau-alloc-mlua.md`). A load grows its arena; an audio callback
   never does, and an allocation that does not fit is counted as a spill.
-  There is no separate GC step: Luau's incremental collector does its work
-  inside the callback's own allocations. Its atomic phase is indivisible and
-  grows with the live heap; its worst-case pause is not measured yet. Each
-  arena operation takes a short spin lock, so a free on another thread can
-  make the audio thread wait for one TLSF operation (growth runs outside it).
+  Another script loading on another thread uses another arena, so it never
+  holds the lock a callback takes, nor eats its headroom
+  (`tests/realtime.rs`). A free finds its arena by address in O(1), about
+  2 ns over the system heap for the rest of the plugin. There is no separate
+  GC step: Luau's incremental collector does its work inside the callback's
+  own allocations; measured steps stay under 0.2 ms on Augmented Orchestra
+  (`examples/lua_cost` in `kontra-host` prints callback, allocation, GC and
+  lock-wait numbers for a real program).
 - **Same scheduler.** `wait(ms)` becomes `Work::Resume` at the exact
   sample. Calling `playNote` from Lua creates a ledger child, exactly as KSP
   `play_note` does.
