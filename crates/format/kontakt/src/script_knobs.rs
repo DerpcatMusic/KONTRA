@@ -935,7 +935,9 @@ mod tests {
             (50, true), (51, true), (52, true), (53, true), (54, true), (55, true),
             (56, true), (57, true), (58, true), (59, true), (60, true), (61, true),
             (62, true),
-            // Appended entries, in order.
+            // Appended entries, in order. The pairs are Kontakt's own
+            // `$EFFECT_TYPE_*` ids, not indices: Phasis (41) is index 48,
+            // Choral (43) index 49; Flair (42) comes next, at 50.
             (0, true),
             (41, false),
             (43, false),
