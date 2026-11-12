@@ -2,6 +2,8 @@
 //! reset, the control tick, audio blocks with notes, state out.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use kontra_host::state::{Saved, SavedPart};
 use moose::prelude::*;
@@ -38,6 +40,8 @@ pub(super) fn activate(saved: &str) -> (KontraParams, Dsp) {
     params.restore();
     let mut dsp = Dsp::default();
     <Kontra as PluginLogic>::reset(&mut dsp, &params, &AudioConfig::new(RATE, BLOCK));
+    // The tests read the parts' interfaces, as an open editor does.
+    params.shared.shown.store(true, Ordering::Release);
     Tick.run(&params);
     (params, dsp)
 }
@@ -822,7 +826,6 @@ fn the_same_state_restored_again_loads_nothing_twice() {
 /// it shows leaves it clean, and one that does marks it.
 #[test]
 fn an_idle_tick_draws_no_frame() {
-    use std::sync::atomic::Ordering;
     let (params, mut dsp) = activate("");
     settle(&params, &mut dsp);
     params.shared.dirty.store(false, Ordering::Release);
@@ -965,26 +968,25 @@ fn an_augmented_orchestra_knob_moved_on_its_page_changes_the_sound_and_survives_
 }
 
 #[test]
-fn a_host_save_during_a_long_load_does_not_wait_for_it() {
-    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
-    params
-        .shared
-        .request(crate::Request::Browse(kontra_ui::app::Action::Panic));
-    Tick.run(&params);
-    block(&params, &mut dsp, &[]);
-    let before = params.saved.read().unwrap().clone();
-    assert!(before.contains("parts"), "the tick left no state: {before}");
+fn a_host_save_waits_out_a_tick_but_not_a_load() {
+    let (params, _dsp) = activate(&Saved::new(Vec::new()).write());
+    *params.saved.write().unwrap() = "before the load".into();
     // A tick loading a program holds the rack for seconds.
     let held = crate::lock(&params.shared.rack);
+    params.shared.holding.store(true, Ordering::Release);
     let t = std::time::Instant::now();
     params.capture();
-    assert!(
-        t.elapsed() < std::time::Duration::from_millis(50),
-        "{:?}",
-        t.elapsed()
-    );
-    drop(held);
-    assert_eq!(*params.saved.read().unwrap(), before);
+    assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
+    assert_eq!(*params.saved.read().unwrap(), "before the load");
+    // Any other tick is short: the save waits for it and writes the rack.
+    params.shared.holding.store(false, Ordering::Release);
+    std::thread::scope(|s| {
+        s.spawn(|| params.capture());
+        std::thread::sleep(Duration::from_millis(20));
+        drop(held);
+    });
+    let saved = params.saved.read().unwrap().clone();
+    assert!(saved.contains("parts"), "the save wrote no rack: {saved}");
 }
 
 /// A load asked for shows as loading until the tick carries it out, even
@@ -1040,17 +1042,39 @@ fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
         t.visible(kontra_ui_model::WidgetRef(n.expect("Areia's panel")))
     };
     assert!(panel(&params), "init shows the panel until the timer runs");
-    let mut slowest = std::time::Duration::ZERO;
-    for _ in 0..10 {
+    // The editor closed: the timer runs all the same, and an idle tick
+    // stays cheap.
+    params.shared.shown.store(false, Ordering::Release);
+    let (mut slowest, mut ticks) = (Duration::ZERO, Duration::ZERO);
+    for _ in 0..TICKS {
+        let t = std::time::Instant::now();
         Tick.run(&params);
+        ticks += t.elapsed();
         let t = std::time::Instant::now();
         live_block(&params, &mut dsp);
         slowest = slowest.max(t.elapsed());
+    }
+    let tick = ticks / TICKS;
+    assert!(tick < IDLE_TICK, "an idle tick took {tick:?}");
+    // Opened, the interface catches up with what the timer did.
+    params.shared.shown.store(true, Ordering::Release);
+    for _ in 0..2 {
+        Tick.run(&params);
+        live_block(&params, &mut dsp);
     }
     Tick.run(&params);
     assert!(!panel(&params), "the timer never hid the panel");
     assert!(slowest.as_secs_f64() < 2.0, "a live block took {slowest:?}");
 }
+
+/// Idle ticks the timer test times.
+const TICKS: u32 = 20;
+
+/// The most an idle tick of a loaded Areia may take on average, at 20 ticks
+/// a second (1 ms there is 2% of one core).
+// ponytail: 10% of a core while each tick rebuilds its persistent-cell
+// capture (persist.rs); 1 ms once the capture is reused.
+const IDLE_TICK: Duration = Duration::from_millis(if cfg!(debug_assertions) { 50 } else { 5 });
 
 /// One live block with no events and the transport stopped, as a host
 /// plays a part nobody is playing.
