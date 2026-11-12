@@ -17,6 +17,8 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::EffectParam as E;
     use ir::KnobTarget::{Effect, LfoPhase, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
+    // A switch: any KSP value but 0 (in millionths) is on.
+    let on = || ir::Law::Breakpoints([(0.0, 0.0, 0.0), (1e-6, 1.0, 0.0), (1.0, 1.0, 0.0)].into());
     let mod_hz = ir::Law::Exp { lo: 0.05, hi: 8.0 };
     let mut rows = vec![
         // The filter in the slot carries these knobs' laws (filter_knobs).
@@ -214,16 +216,17 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Slot(ir::SlotKnob::BandHz(3)),
             lin(0.0, 1.0),
         ),
-        // The bell switches take 0 or 1 as set, not millionths.
+        // The bell switches: any value but 0 is on, read back as 1
+        // (probes/b2: 1, 2, 500000, 1000000 all read 1).
         (
             "$ENGINE_PAR_SEQ_LF_BELL",
             Slot(ir::SlotKnob::BandBell(0)),
-            lin(0.0, 1e6),
+            on(),
         ),
         (
             "$ENGINE_PAR_SEQ_HF_BELL",
             Slot(ir::SlotKnob::BandBell(3)),
-            lin(0.0, 1e6),
+            on(),
         ),
         // Solid Bus Comp: its slot's knob model (bus_model).
         (
@@ -636,9 +639,18 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     let bus_comp = Some(unit(ir::EffectKind::Compressor(
         crate::laws::bus_compressor(BUS_COMP_INIT, true).0,
     )));
+    // Any switchable filter shape loads as a subtype too: Una Corda switches
+    // a bus slot holding the Versatile filter to the ladder (30), as Kontakt
+    // does (probes/b2: 7.50 → 7.30).
+    // ponytail: a fresh unit's cutoff and resonance are unmeasured; the
+    // shape's own (0.5, 0.5).
+    let shapes = crate::laws::filter_shapes().into_iter().map(|s| {
+        let effect = Some(unit(ir::EffectKind::Filter(s.filter)));
+        ty(s.id, true, s.id, effect, s.laws)
+    });
     // ponytail: an empty slot's subtype readback is unmeasured; 0, as for
     // the reverb and send levels.
-    vec![
+    let mut types = vec![
         ir::SlotType {
             model: Some(bus_model(BUS_COMP_INIT, true)),
             ..ty(29, false, 0, bus_comp, [].into())
@@ -659,7 +671,9 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         ty(13, true, 13, clocked(13), crate::clocked::knobs().into()),
         ty(14, true, 14, clocked(14), crate::clocked::knobs().into()),
         ty(15, true, 15, clocked(15), crate::clocked::knobs().into()),
-    ]
+    ];
+    types.extend(shapes);
+    types
 }
 
 /// Saved ms for a knob `x`, `lo + (hi − lo)·(e^(kx) − 1)/(e^k − 1)`, fitted
@@ -909,6 +923,18 @@ mod tests {
                 .iter()
                 .all(|(k, _, _)| *k != ir::SlotKnob::DelayTime)
         );
+    }
+
+    /// Una Corda switches a Versatile bus slot to the ladder (30).
+    #[test]
+    fn every_switchable_filter_shape_loads_as_a_subtype() {
+        let types = slot_types();
+        let ladder = types.iter().find(|t| t.id == 30 && t.subtype).unwrap();
+        assert_eq!((ladder.kind, ladder.reads), (7, 30));
+        assert!(matches!(
+            ladder.effect.map(|e| e.kind),
+            Some(ir::EffectKind::Filter(_))
+        ));
     }
 
     #[test]

@@ -3947,3 +3947,61 @@ fn interacting_knobs_rebuild_the_slot_in_any_order() {
     assert_eq!(a, ("800000 600000".to_owned(), want));
     assert_eq!(b, a);
 }
+
+/// A Solid G-EQ's bell switch reads any value but 0 back as 1 and shows no
+/// text; its gains show ±20 dB (Kontakt 8.13.1, probes/b2).
+#[test]
+fn a_bell_switch_reads_one_and_shows_nothing() {
+    use kontra_engine::ir;
+    fn build(p: &[f32]) -> Option<ir::EffectKind> {
+        let gain_db = 40.0 * p.first()? - 20.0;
+        let shape = if *p.get(1)? > 0.5 {
+            ir::Shape::Peak
+        } else {
+            ir::Shape::LowShelf
+        };
+        let band = ir::Bell {
+            shape,
+            hz: 100.0,
+            q: 0.7,
+            gain_db,
+        };
+        Some(ir::EffectKind::Eq([
+            band,
+            ir::Bell::FLAT,
+            ir::Bell::FLAT,
+            ir::Bell::FLAT,
+        ]))
+    }
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].inserts = vec![Some(ir::Effect {
+        kind: build(&[0.5, 0.0]).unwrap(),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let model = ir::KnobModel {
+        knobs: [ir::SlotKnob::BandGain(0), ir::SlotKnob::BandBell(0)].into(),
+        saved: [0.5, 0.0].into(),
+        build,
+    };
+    plan.slot_models = vec![(ir::RackAt::Group(0), 0, model)];
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Group(0), 0, 28)];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_SEQ_LF_BELL, 2, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_SEQ_LF_GAIN, 250000, 0, 0, -1)
+            message(get_engine_par($ENGINE_PAR_SEQ_LF_BELL, 0, 0, -1) & \"[\" & get_engine_par_disp($ENGINE_PAR_SEQ_LF_BELL, 0, 0, -1) & \"]\" & get_engine_par_disp($ENGINE_PAR_SEQ_LF_GAIN, 0, 0, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "1[]-10.0");
+    assert!(e.unhandled_actions().is_empty());
+    let sounds = e.group_sounds();
+    let eq = sounds[0].1[0].as_ref().map(|e| e.kind);
+    assert_eq!(eq, build(&[0.25, 1.0]));
+}
