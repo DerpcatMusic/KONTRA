@@ -164,19 +164,7 @@ impl Engine {
         at: ir::RackAt,
         slot: i32,
     ) -> Option<(&'p ir::KnobModel, usize)> {
-        let model = match self.loaded_type(at, slot) {
-            Some(ty) => plan
-                .slot_shapes
-                .types
-                .get(usize::from(ty))?
-                .model
-                .as_ref()?,
-            None => {
-                let here =
-                    |m: &&(ir::RackAt, u8, ir::KnobModel)| m.0 == at && i32::from(m.1) == slot;
-                &plan.slot_models.iter().find(here)?.2
-            }
-        };
+        let model = plan.knob_model(at, u8::try_from(slot).ok()?, self.loaded_type(at, slot))?;
         Some((model, model.knobs.iter().position(|&k| k == knob)?))
     }
 

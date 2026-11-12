@@ -113,10 +113,24 @@ impl Behaviour {
             rls_reset: [0; 128],
             shapes: vec![None; plan.slot_shapes.slots.len()],
             loaded: Vec::with_capacity(LOADED.max(plan.loaded.len())),
-            knobs: Vec::with_capacity(LOADED + plan.slot_models.len()),
+            knobs: Vec::with_capacity(LOADED + plan.slot_models.len() + plan.loaded.len()),
         };
-        let saved = plan.slot_models.iter();
-        (behaviour.knobs).extend(saved.map(|(at, slot, m)| (*at, *slot, positions(m))));
+        // Every modelled slot starts at its model's saved positions: the
+        // type a recalled project loaded there, else the slot's own.
+        let slots = (plan.slot_models.iter().map(|m| (m.0, m.1)))
+            .chain(plan.loaded.iter().map(|l| (l.0, l.1)));
+        for (at, slot) in slots {
+            let ty = plan
+                .loaded
+                .iter()
+                .find(|l| (l.0, l.1) == (at, slot))
+                .map(|l| l.2);
+            if !behaviour.knobs.iter().any(|k| (k.0, k.1) == (at, slot))
+                && let Some(model) = plan.knob_model(at, slot, ty)
+            {
+                behaviour.knobs.push((at, slot, positions(model)));
+            }
+        }
         behaviour.loaded.extend_from_slice(&plan.loaded);
         if let Some(key) = plan.default_keyswitch {
             behaviour.press(plan, key);

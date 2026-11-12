@@ -345,8 +345,7 @@ impl Engine {
         // Its knobs start where the new unit's are.
         let knobs = &mut self.behaviour.knobs;
         knobs.retain(|&(a, s, _)| (a, s) != (at, slot));
-        let model = self.plan.slot_shapes.types.get(usize::from(ty));
-        if let Some(model) = model.and_then(|t| t.model.as_ref())
+        if let Some(model) = self.plan.knob_model(at, slot, Some(ty))
             && knobs.len() < knobs.capacity()
         {
             knobs.push((at, slot, kontra_behaviour::positions(model)));

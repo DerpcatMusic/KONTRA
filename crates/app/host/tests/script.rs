@@ -3968,6 +3968,67 @@ fn interacting_knobs_rebuild_the_slot_in_any_order() {
     assert_eq!(b, a);
 }
 
+/// A recalled project's type loaded into an empty slot before the engine is
+/// built (Rack::load_built → Plan::load_type) starts at its model's saved
+/// knobs: scripts read and move them as in a slot that held it all along.
+#[test]
+fn a_restored_type_in_an_empty_slot_reads_and_moves_its_modelled_knobs() {
+    use kontra_engine::ir;
+    fn build(p: &[f32]) -> Option<ir::EffectKind> {
+        let (input, makeup) = (*p.first()?, *p.get(1)?);
+        Some(ir::EffectKind::Compressor(ir::Compressor {
+            threshold_db: -50.0 * input,
+            ratio: 4.0,
+            knee_db: 0.0,
+            attack_ms: 10.0,
+            release_ms: 100.0,
+            makeup_db: 50.0 * makeup - 40.0,
+            link: true,
+            mix: 1.0,
+            detector: ir::Detector::Output,
+        }))
+    }
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].inserts = vec![None];
+    let model = ir::KnobModel {
+        knobs: [ir::SlotKnob::Input, ir::SlotKnob::Makeup].into(),
+        saved: [0.4, 0.8].into(),
+        build,
+    };
+    let effect = build(&model.saved).map(|kind| ir::Effect {
+        kind,
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    });
+    plan.slot_shapes.types = vec![ir::SlotType {
+        id: 30,
+        subtype: false,
+        reads: 300,
+        kind: 30,
+        effect,
+        laws: Vec::new().into(),
+        model: Some(model),
+    }];
+    assert!(plan.load_type(ir::RackAt::Group(0), 0, 0));
+    let script = kontra_ksp::compile(
+        "on init
+            declare @was
+            @was := get_engine_par($ENGINE_PAR_FCOMP_INPUT, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_FCOMP_INPUT, 600000, 0, 0, -1)
+            message(@was & \" \" & get_engine_par($ENGINE_PAR_FCOMP_INPUT, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_FCOMP_MAKEUP, 0, 0, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "400000 600000 800000");
+    let sounds = e.group_sounds();
+    assert_eq!(sounds[0].1[0].as_ref().map(|e| e.kind), build(&[0.6, 0.8]));
+}
+
 /// A Solid G-EQ's bell switch reads any value but 0 back as 1 and shows no
 /// text; its gains show ±20 dB (Kontakt 8.13.1, probes/b2).
 #[test]
