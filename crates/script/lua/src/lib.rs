@@ -990,6 +990,41 @@ mod tests {
     }
 
     #[test]
+    fn a_level_change_sends_only_the_levels_it_reaches() {
+        // Init sends every level once; a change after it sends its own.
+        let levels = |source: &str| {
+            let log = run(source, Callbacks::INIT);
+            let count = |action| log.0.iter().filter(|(a, _)| *a == action).count();
+            let last = |action, target| {
+                log.0
+                    .iter()
+                    .rev()
+                    .find(|(a, ints)| *a == action && ints.first() == Some(&target))
+                    .and_then(|(_, ints)| ints.get(1).copied())
+            };
+            let sent = [Action::GroupVolume, Action::GroupPan, Action::BusVolume].map(count);
+            (
+                sent,
+                last(Action::GroupVolume, 3),
+                last(Action::BusVolume, 2),
+            )
+        };
+        let (init, ..) = levels("");
+        let more = |sent: [usize; 3]| [0, 1, 2].map(|i| sent[i] - init[i]);
+        let keygroup =
+            "function onInit() Program.layers[2].keygroups[1]:setParameter('Gain', 0.5) end";
+        let (sent, group, _) = levels(keygroup);
+        assert_eq!((more(sent), group), ([1, 1, 0], Some(-6_021)));
+        // Its bus, and its two keygroups that have groups.
+        let layer = "function onInit() Program.layers[2]:setParameter('Mute', true) end";
+        let (sent, group, bus) = levels(layer);
+        assert_eq!(
+            (more(sent), group, bus),
+            ([2, 2, 1], Some(-200_000), Some(-200_000))
+        );
+    }
+
+    #[test]
     fn a_saved_widget_restored_after_init_sets_a_connections_route() {
         let tree = "return {params={},db=0,pan=0,layers={{params={},keygroups={
             {params={},group=0,links={2,1}}}}},
