@@ -10,7 +10,7 @@ use crate::voice_gain::{self, GROUP_PAN_TAU_MS};
 use crate::{Engine, MAX_SPAN};
 
 pub(crate) use kontra_plan::modulation::{
-    Age, CHAOS_START, Chaos, WARPS, chaos_step, envelope, lfo,
+    Age, CHAOS_START, Chaos, WARPS, chaos_step, lfo, stretched,
 };
 
 impl Engine {
@@ -160,6 +160,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kontra_plan::modulation::envelope;
 
     #[test]
     fn a_lorenz_lfo_wanders_both_lobes_within_its_scale() {

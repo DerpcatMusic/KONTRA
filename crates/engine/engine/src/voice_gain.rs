@@ -194,10 +194,30 @@ impl Engine {
                 }
                 Some(sum)
             }
-            ir::Source::Envelope(n) => Some(modulators::envelope(
-                group()?.envelopes.get(usize::from(n))?,
-                age,
-            )),
+            ir::Source::Envelope(n) => {
+                let g = group()?;
+                let e = g.envelopes.get(usize::from(n))?;
+                // Its attack routes, read at note-on.
+                let attack_ms = e.points.first().map_or(0.0, |p| p.ms.max(0.0));
+                let mut ms = attack_ms;
+                let routes = (self.reshaped.get(zone.group as usize).into_iter())
+                    .flat_map(|r| r.attacking(n))
+                    .filter_map(|i| g.mods.get(i));
+                for m in routes.filter(|m| !m.bypass) {
+                    if let ir::ModKind::Attack {
+                        source,
+                        intensity,
+                        floor_ms,
+                        ..
+                    } = m.kind
+                        && let Some(x) = self.unit(zone, source, note, Age::START)
+                    {
+                        ms = time_route(ms, x, intensity, floor_ms);
+                    }
+                }
+                let stretch = if attack_ms > 0.0 { ms / attack_ms } else { 1.0 };
+                Some(modulators::stretched(e, age, stretch))
+            }
             ir::Source::Lfo(n) => {
                 let g = group()?;
                 let mut lfo = *g.lfos.get(usize::from(n))?;
@@ -459,6 +479,7 @@ impl Engine {
                     source,
                     intensity,
                     floor_ms,
+                    envelope: None,
                 } => (source, intensity, floor_ms, &mut e.attack),
                 ir::ModKind::Release {
                     source,
@@ -467,21 +488,11 @@ impl Engine {
                 } => (source, intensity, floor_ms, &mut e.release),
                 _ => continue,
             };
-            // Outside the signed families the law compiler (FUN_140873040)
-            // reads a bipolar source without `frange_bi`: 0..=1.
             let Some(x) = self.unit(zone, source, note, Age::START) else {
                 continue;
             };
-            let x = if intensity < 0.0 { 1.0 - x } else { x };
-            let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
-            let ms = *frames as f32 * 1000.0 / rate;
-            let ms = if floor_ms > 0.0 {
-                let span = ir::common::geometric(floor_ms, (ms + floor_ms) / floor_ms);
-                span.eval_unclamped(multiplier * multiplier * multiplier) - floor_ms
-            } else {
-                ms * multiplier
-            };
-            *frames = (ms.max(0.0) * rate / 1000.0).round() as u32;
+            let ms = time_route(*frames as f32 * 1000.0 / rate, x, intensity, floor_ms);
+            *frames = (ms * rate / 1000.0).round() as u32;
             #[cfg(feature = "trace")]
             self.trace_route(
                 zone,
@@ -541,4 +552,21 @@ fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
         (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
             .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
+}
+
+/// An envelope time `ms` as an attack or release route sets it from its
+/// source `x` (0..=1) at note-on: `m = 1 − (1 − x)·|intensity|` (`1 − x`
+/// for a negative intensity), then `ms·m`, or with a floor a knob linear in
+/// `ln(ms + floor)`. Outside the signed families the law compiler
+/// (FUN_140873040) reads a bipolar source without `frange_bi`: 0..=1.
+fn time_route(ms: f32, x: f32, intensity: f32, floor_ms: f32) -> f32 {
+    let x = if intensity < 0.0 { 1.0 - x } else { x };
+    let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
+    let ms = if floor_ms > 0.0 {
+        let span = ir::common::geometric(floor_ms, (ms + floor_ms) / floor_ms);
+        span.eval_unclamped(multiplier * multiplier * multiplier) - floor_ms
+    } else {
+        ms * multiplier
+    };
+    ms.max(0.0)
 }

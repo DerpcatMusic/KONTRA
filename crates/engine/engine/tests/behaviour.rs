@@ -1180,6 +1180,7 @@ fn a_velocity_attack_route_shortens_soft_attacks() {
             source: ir::Source::Velocity,
             intensity: 1.0,
             floor_ms: 2.0,
+            envelope: None,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -2369,6 +2370,7 @@ fn onset_route_trace_records_sample_and_envelope_values() {
                 source: ir::Source::Controller(1),
                 intensity: 1.0,
                 floor_ms: 0.0,
+                envelope: None,
             },
         },
     ];
@@ -2467,4 +2469,65 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         && !v.direct_controller_source
         && !v.controller_can_affect
         && matches!(v.unit, RouteUnit::GainMultiplier)));
+}
+
+/// An attack route into a modulation envelope stretches that envelope's
+/// attack per voice with the amplitude attack's law: velocity 0.5 at
+/// intensity 1 halves a 100 ms rise, so 60 ms in its pitch route is at the
+/// top (an octave) while a full-velocity voice is still rising.
+#[test]
+fn an_attack_route_stretches_a_modulation_envelopes_attack() {
+    use kontra_engine::ir::{Breakpoint, Breakpoints, Mod, ModKind, Source};
+    let route = |kind| Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind,
+    };
+    let semitones_at_60_ms = |velocity| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+        plan.groups[0].envelopes = vec![Breakpoints {
+            start: 0.0,
+            points: vec![Breakpoint {
+                ms: 100.0,
+                level: 1.0,
+                curve: 0.0,
+            }],
+            sustain: Some(0),
+            loop_from: None,
+            stages: false,
+        }];
+        plan.groups[0].mods = vec![
+            route(ModKind::Pitch {
+                source: Source::Envelope(0),
+                semitones: 12.0,
+                depth: 1.0,
+                tau_ms: 0.0,
+            }),
+            route(ModKind::Attack {
+                source: Source::Velocity,
+                intensity: 1.0,
+                floor_ms: 0.0,
+                envelope: Some(0),
+            }),
+        ];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+        level(&mut e, &[on(60, velocity)]);
+        while e.now().0 < u64::from(RATE) * 60 / 1000 {
+            level(&mut e, &[]);
+        }
+        let from = at(&e);
+        level(&mut e, &[]);
+        12.0 * ((at(&e) - from) / 256.0).log2()
+    };
+    let soft = semitones_at_60_ms(0.5);
+    assert!(
+        (soft - 12.0).abs() < 0.1,
+        "a 50 ms rise is at the top: {soft}"
+    );
+    let hard = semitones_at_60_ms(1.0);
+    assert!((hard - 7.2).abs() < 0.5, "a 100 ms rise is at 0.6: {hard}");
 }
