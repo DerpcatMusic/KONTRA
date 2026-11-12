@@ -65,11 +65,14 @@ fn bits_hash(x: &[[f32; 2]]) -> u64 {
     })
 }
 
+/// Pinned with the LFO and coefficients held for 8 ticks at the middle of
+/// their run: against computing them every tick it differs by −84.5 dB RMS
+/// here (−63.6 dB with a 10 Hz LFO).
 #[test]
 fn the_reference_render_is_unchanged() {
     assert_eq!(
         bits_hash(&render(3)),
-        14_704_478_438_288_586_395,
+        3_104_610_534_117_950_367,
         "render changed"
     );
 }
