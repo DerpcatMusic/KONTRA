@@ -53,8 +53,17 @@ fn run_events(
         .max()
         .context("scenario needs a note-off")?;
     let stop = end.max(last_off + TAIL_SECONDS * u64::from(RATE));
-    let ir = kontra_host::instrument::read(path)
+    let mut ir = kontra_host::instrument::read(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    // KONTRA_SCRIPT_SOURCE=<dir>: script n's source is <dir>/n.ksp when that file exists
+    // (the oracle capture loads the same files, so both sides run the same edited script).
+    if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_SOURCE") {
+        for (n, script) in ir.scripts.iter_mut().enumerate() {
+            if let Ok(source) = std::fs::read_to_string(Path::new(&dir).join(format!("{n}.ksp"))) {
+                script.source = source;
+            }
+        }
+    }
     let samples: Vec<_> = ir.samples.iter().map(|s| s.name.clone()).collect();
     let group_samples: Vec<Vec<usize>> = ir
         .groups
