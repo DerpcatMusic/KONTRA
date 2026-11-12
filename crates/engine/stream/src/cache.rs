@@ -102,8 +102,8 @@ impl Cache {
             let w1 = (start + out.len() * frame).div_ceil(8);
             let src = words.get(w0..w1.min(words.len())).unwrap_or_default();
             let filled = src.len() * 8;
-            for (dst, word) in stack.chunks_exact_mut(8).zip(src) {
-                dst.copy_from_slice(&word.load(Ordering::Relaxed).to_le_bytes());
+            for (dst, word) in stack.as_chunks_mut::<8>().0.iter_mut().zip(src) {
+                *dst = word.load(Ordering::Relaxed).to_le_bytes();
             }
             let bytes = stack.get(skip..filled).unwrap_or_default();
             fmt.decode(bytes, 0, out, mix);
