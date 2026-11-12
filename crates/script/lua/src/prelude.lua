@@ -1042,34 +1042,45 @@ end
 
 -- loadState(path, done): a saved script preset. Its widgets take their
 -- values and run `changed` as on a reload, then `onLoad` gets its state.
+-- Milliseconds of audio between the controls a loaded preset sets: longer
+-- than a 512-frame block at 48 kHz.
+local PRESET_PACE = 12
+
 function loadState(path, done)
 	local file = __file(bank_path(path))
 	if not (file and file.values) then
 		return
 	end
-	for _, w in ipairs(__ui.widgets) do
-		local text = w.name and file.values[w.name]
-		if text ~= nil and w.kind == "Table" and w.persistent ~= false then
-			for i, v in ipairs(cells(text)) do
-				w:setValue(i, v)
+	-- As in UVI, the preset lands after the call returns, one control's
+	-- callbacks every PRESET_PACE ms of audio: a preset's 26 callbacks
+	-- (VWinds, up to 4 ms each) never pile into one audio block.
+	spawn(function()
+		wait(PRESET_PACE)
+		for _, w in ipairs(__ui.widgets) do
+			local text = w.name and file.values[w.name]
+			local ok, err = true, nil
+			if text ~= nil and w.kind == "Table" and w.persistent ~= false then
+				for i, v in ipairs(cells(text)) do
+					w:setValue(i, v)
+				end
+				ok, err = pcall(run_changed, w)
+			elseif text ~= nil and w.persistent ~= false then
+				ok, err = pcall(w.setValue, w, parsed(text, w.value))
 			end
-			local ok, err = pcall(run_changed, w)
 			if not ok then
 				print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
 			end
-		elseif text ~= nil and w.persistent ~= false then
-			local ok, err = pcall(w.setValue, w, parsed(text, w.value))
-			if not ok then
-				print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
+			if text ~= nil and type(rawget(w, "changed")) == "function" then
+				wait(PRESET_PACE)
 			end
 		end
-	end
-	if onLoad and file.state ~= nil then
-		onLoad(file.state)
-	end
-	if type(done) == "function" then
-		done({ success = true })
-	end
+		if onLoad and file.state ~= nil then
+			onLoad(file.state)
+		end
+		if type(done) == "function" then
+			done({ success = true })
+		end
+	end)
 end
 
 -- ponytail: saving needs a file the user picked, and browseForFile has no
