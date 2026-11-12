@@ -301,16 +301,24 @@ mod tests {
     fn notches() -> ir::Effect {
         ir::Effect {
             kind: ir::EffectKind::Notches(ir::Notches {
-                sections: 6,
+                stages: 6,
                 hz: 622.0,
-                q: 0.5,
                 octaves: 4.6,
-                q_octaves: 0.0,
+                spread: 0.0,
+                spread_swing: 1.0,
+                spread_limit: 2.7,
                 feedback: 0.5,
+                loop_width: 8.0,
+                loop_top: 0.1,
                 rate: ir::Rate::Hz(0.9),
+                rounding: 0.0,
+                depth: 1.0,
+                warp: 0.1,
                 phase: 0.25,
+                polarity: ir::Polarity::Normal,
                 mix: 1.0,
-                invert: false,
+                low_cut_hz: 5.0,
+                internal_hz: 90_000.0,
             }),
             ..chorus()
         }

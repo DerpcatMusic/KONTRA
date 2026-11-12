@@ -21,7 +21,7 @@ pub use huovilainen::Huovilainen;
 pub use kontra_dsp_core::Biquad;
 use kontra_dsp_core::flush;
 pub use ladder::Ladder;
-pub use notches::{MAX_SECTIONS, NotchSettings, Notches};
+pub use notches::{MAX_STAGES, NotchSettings, Notches};
 pub use sallen_key::SallenKey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
