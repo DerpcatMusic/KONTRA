@@ -415,6 +415,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ),
     ];
     rows.extend(crate::dynamics::feedback_rows());
+    rows.extend(crate::skreamer::rows());
     rows.extend(crate::impulse::script_knobs());
     rows
 }
