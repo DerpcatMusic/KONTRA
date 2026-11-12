@@ -42,6 +42,8 @@ struct PartView {
     name: String,
     /// Its library's name in the browser, if the browser lists it.
     library: String,
+    /// The preset it plays, as its library's preset index, found by path.
+    preset: Option<usize>,
     mix: Mix,
     solo: bool,
     mute: bool,
@@ -100,13 +102,15 @@ impl Snapshot {
                     Some(v) if v.sounds.0 == p.sounds.revision => v.sounds.clone(),
                     _ => (p.sounds.revision, Arc::new(sounds(&p.sounds))),
                 };
-                let library = match same {
-                    Some(v) if !rescanned => v.library.clone(),
-                    _ => (p.path.as_deref())
-                        .and_then(|path| browser.find(path))
-                        .and_then(|(l, _)| browser.catalog.libraries.get(l))
-                        .map(|l| l.name.clone())
-                        .unwrap_or_default(),
+                // A recall changes the path, not the load.
+                let (library, preset) = match same {
+                    Some(v) if !rescanned && v.path == p.path => (v.library.clone(), v.preset),
+                    _ => {
+                        let found = p.path.as_deref().and_then(|path| browser.find(path));
+                        let library = found.and_then(|(l, _)| browser.catalog.libraries.get(l));
+                        let name = library.map(|l| l.name.clone()).unwrap_or_default();
+                        (name, found.map(|(_, n)| n))
+                    }
                 };
                 Some(PartView {
                     slot,
@@ -117,6 +121,7 @@ impl Snapshot {
                     sounds,
                     name: p.name.clone(),
                     library,
+                    preset,
                     mix: p.mix,
                     solo: p.solo,
                     mute: p.mute,
@@ -134,6 +139,12 @@ impl Snapshot {
     }
 
     /// Adds this tick's `report`; whether it held anything.
+    /// By part, the preset the header shows as current.
+    #[cfg(test)]
+    pub(crate) fn presets(&self) -> Vec<Option<usize>> {
+        self.parts.iter().map(|p| p.preset).collect()
+    }
+
     pub fn report(&mut self, report: Vec<String>) -> bool {
         let reported = !report.is_empty();
         self.report.extend(report);
@@ -162,6 +173,7 @@ impl Snapshot {
                     p.revision,
                     p.name.clone(),
                     p.library.clone(),
+                    p.preset,
                     mix,
                 )
             })
@@ -236,6 +248,7 @@ impl Snapshot {
                 face,
                 name: p.name.clone(),
                 library: p.library.clone(),
+                preset: p.preset,
                 channel: p.mix.channel,
                 output: p.mix.output + 1,
                 volume: f64::from(linear_to_db(p.mix.gain)),

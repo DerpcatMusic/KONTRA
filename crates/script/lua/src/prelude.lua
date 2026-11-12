@@ -67,11 +67,54 @@ local widget
 
 -- A container makes children (`panel:Label{...}`); any other method is inert.
 -- A capitalised key no widget has (`w.Widget`) is nil: scripts test for it.
+-- A widget's value lives in `__value`: assigning `w.value` runs its
+-- `changed`, as UVIWorkstation's setter does (VWinds' preset arrows set
+-- `menu.value` and rely on it), except from inside its own `changed`.
+local function run_changed(w)
+	local changed = rawget(w, "changed")
+	if type(changed) == "function" and not rawget(w, "__changing") then
+		rawset(w, "__changing", true)
+		changed(w)
+		rawset(w, "__changing", nil)
+	end
+end
+
+-- A menu's items: read, renamed (VWinds marks a loaded preset `Name*`),
+-- added and cleared.
+local menu_methods = {
+	getText = function(w, i)
+		return rawget(w, "items")[i] or ""
+	end,
+	setItem = function(w, i, text)
+		rawget(w, "items")[i] = text
+	end,
+	addItem = function(w, text)
+		table.insert(rawget(w, "items"), text)
+	end,
+	clear = function(w)
+		table.clear(rawget(w, "items"))
+	end,
+}
+
 local widget_meta = {
+	__newindex = function(w, key, v)
+		if key == "value" then
+			rawset(w, "__value", v)
+			run_changed(w)
+		else
+			rawset(w, key, v)
+		end
+	end,
 	__index = function(w, key)
+		if key == "value" then
+			return rawget(w, "__value")
+		end
 		local items = rawget(w, "items")
 		if items and (key == "text" or key == "selectedText") then
-			return items[rawget(w, "value")] or ""
+			return items[rawget(w, "__value")] or ""
+		end
+		if items and menu_methods[key] then
+			return menu_methods[key]
 		end
 		if is_kind[key] then
 			return function(parent, ...)
@@ -189,11 +232,12 @@ widget = function(kind, name, value, ...)
 	end
 	local w = setmetatable({ kind = kind, name = name, alpha = 1, enabled = true, visible = true }, widget_meta)
 	for k, v in pairs(fields) do
-		if type(k) == "string" then
-			w[k] = v
+		if type(k) == "string" and k ~= "value" then
+			rawset(w, k, v)
 		end
 	end
-	w.value = value
+	-- Made with its value: no `changed` runs yet.
+	rawset(w, "__value", value)
 	w.items = items
 	if kind == "Knob" or kind == "Slider" or kind == "NumBox" then
 		-- `Knob(name, value, min, max, integer)`: the range by place too.
@@ -223,9 +267,9 @@ widget = function(kind, name, value, ...)
 		return table_widget(w, name, fields)
 	end
 	w.setValue = function(self, v, run)
-		self.value = v
-		if run ~= false and type(rawget(self, "changed")) == "function" then
-			self:changed()
+		rawset(self, "__value", v)
+		if run ~= false then
+			run_changed(self)
 		end
 	end
 	w.getValue = function(self)
@@ -957,8 +1001,63 @@ function run(f, ...)
 	return f(...)
 end
 
+-- A path a script names, relative to its own folder in the bank (`__dir`),
+-- as the bank path its data file is carried under.
+local function bank_path(path)
+	local found, dir = pcall(require, "__dir")
+	local full = (found and type(dir) == "string" and dir .. "/" or "") .. tostring(path):gsub("\\", "/")
+	local parts = {}
+	for part in string.gmatch(full, "[^/]+") do
+		if part == ".." then
+			table.remove(parts)
+		elseif part ~= "." then
+			table.insert(parts, part)
+		end
+	end
+	return table.concat(parts, "/")
+end
+
+-- loadData(path, done): the JSON file's table. The program carries the
+-- bank's data files (the format reader), so this reads no disk; a file it
+-- does not carry calls nothing, as a failed load does.
+function loadData(path, done)
+	local file = __file(bank_path(path))
+	if file and file.data ~= nil and type(done) == "function" then
+		done(file.data)
+	end
+end
+
+-- loadState(path, done): a saved script preset. Its widgets take their
+-- values and run `changed` as on a reload, then `onLoad` gets its state.
+function loadState(path, done)
+	local file = __file(bank_path(path))
+	if not (file and file.values) then
+		return
+	end
+	for _, w in ipairs(__ui.widgets) do
+		local text = w.name and file.values[w.name]
+		if text ~= nil and w.kind ~= "Table" and w.persistent ~= false then
+			local n = tonumber(text)
+			local value = type(w.value) == "boolean" and (n ~= nil and n ~= 0) or n or text
+			local ok, err = pcall(w.setValue, w, value)
+			if not ok then
+				print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
+			end
+		end
+	end
+	if onLoad and file.state ~= nil then
+		onLoad(file.state)
+	end
+	if type(done) == "function" then
+		done({ success = true })
+	end
+end
+
+-- ponytail: saving needs a file the user picked, and browseForFile has no
+-- dialog yet: it never calls back, as a cancelled dialog does, so the save
+-- calls after it are never reached. saveData/saveState write nothing.
 for _, name in ipairs({
-	"loadData", "saveData", "loadState", "saveState",
+	"saveData", "saveState",
 	"setKeyColour", "setSampleOffset", "browseForFile", "setKeyType", "setKeyPressed",
 }) do
 	_G[name] = function() end

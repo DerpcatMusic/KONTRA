@@ -123,7 +123,7 @@ pub(crate) fn read(lua: &Lua) -> Ui {
                 parent,
                 rect: ["x", "y", "width", "height"].map(|k| num(w, k).unwrap_or(0.)),
                 sized: [flag(w, "width_set", false), flag(w, "height_set", false)],
-                value: num(w, "value").unwrap_or(0.),
+                value: num(w, "__value").unwrap_or(0.),
                 min: num(w, "min").unwrap_or(0.),
                 max: num(w, "max").unwrap_or(1.),
                 default: num(w, "default"),
@@ -197,7 +197,7 @@ impl Reads {
         let key = |k: &str| lua.create_string(k).ok();
         Some(Self {
             widgets,
-            value: key("value")?,
+            value: key("__value")?,
             visible: key("visible")?,
             enabled: key("enabled")?,
             text: key("text")?,

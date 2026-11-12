@@ -142,6 +142,7 @@ fn survey(a: &Path, b: &Path) -> Result<String, Box<dyn std::error::Error>> {
 /// Moves each preset menu one item on (and presses preset buttons), and
 /// says how many saved values each move changed.
 fn own_controls(rack: &mut Rack, audio: &mut RackAudio, before: &[String]) -> String {
+    let item: Option<usize> = std::env::var("MENU_ITEM").ok().and_then(|n| n.parse().ok());
     let found: Vec<(usize, String, f64)> = {
         let Some(view) = rack
             .parts()
@@ -164,9 +165,11 @@ fn own_controls(rack: &mut Rack, audio: &mut RackAudio, before: &[String]) -> St
                     _ => w.initial_value,
                 };
                 let to = match &w.kind {
-                    Kind::Menu { items } if items.len() > 1 => {
-                        ((now.max(0.0) as usize + 2) % items.len()) as f64
-                    }
+                    // `MENU_ITEM=n` picks item n of every menu.
+                    Kind::Menu { items } if items.len() > 1 => match item {
+                        Some(n) => n.min(items.len() - 1) as f64,
+                        None => ((now.max(0.0) as usize + 2) % items.len()) as f64,
+                    },
                     Kind::Button { .. } | Kind::Switch => f64::from(u8::from(now < 0.5)),
                     _ => return None,
                 };
@@ -184,6 +187,12 @@ fn own_controls(rack: &mut Rack, audio: &mut RackAudio, before: &[String]) -> St
         rack.control(0, widget, None, to, UiModifiers::default());
         run(rack, audio, 0.5);
         let now = values(rack);
+        if std::env::var_os("SHOW_DIFF").is_some() {
+            let menus: Vec<String> = (rack.parts().first().and_then(Option::as_ref).and_then(|p| p.view.as_ref()))
+                .map(|v| v.tree().widgets.iter().filter(|w| w.name.contains("Preset")).map(|w| format!("{}={:?}", w.name, w.value)).collect())
+                .unwrap_or_default();
+            eprintln!("after {name}: {menus:?}");
+        }
         out.push(format!("{name}={}", changed(&last, &now)));
         last = now;
     }

@@ -16,6 +16,7 @@ mod blend;
 mod delay;
 mod digital_eq;
 mod fade;
+pub(crate) mod files;
 mod filters;
 mod gains;
 mod lfo_routes;
@@ -37,6 +38,11 @@ pub(crate) trait Library {
     fn sample(&self, program_dir: &str, reference: &str) -> Result<ir::Sample, String>;
     /// Every Lua member of the bank, by its path: what `require` may load.
     fn modules(&self) -> Vec<(String, Vec<u8>)>;
+    /// Members a script may read as data after it loads, by path
+    /// ([`files::may_be_data`], at most [`files::FILE_LIMIT`] each).
+    fn data(&self) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
+    }
 }
 
 /// Kontakt's streamed head per channel and its grain, the law the other
@@ -610,6 +616,7 @@ impl<L: Library> Translator<'_, '_, L> {
             return;
         }
         let modules = self.library.modules();
+        let files = files::modules(&self.library.data(), &mut self.notes);
         for processor in processors {
             let source = processor
                 .children()
@@ -631,12 +638,11 @@ impl<L: Library> Translator<'_, '_, L> {
                 data.push(("__state.lua".into(), load::lua_literal(state).into_bytes()));
             }
             let script_path = child("Properties").and_then(|p| p.attribute("ScriptPath"));
-            self.script_dirs.push(
-                script_path
-                    .and_then(|p| p.rsplit_once('/'))
-                    .map_or(".", |(dir, _)| dir)
-                    .into(),
-            );
+            let dir = (script_path.and_then(|p| p.rsplit_once('/'))).map_or(".", |(dir, _)| dir);
+            let in_bank = crate::bank::normalize(&format!("{}/{dir}", self.program_dir));
+            data.push(files::dir_module(&in_bank));
+            data.extend(files.iter().cloned());
+            self.script_dirs.push(dir.into());
             self.out.scripts.push(ir::Script {
                 name: processor.attribute("Name").unwrap_or_default().into(),
                 slot: self.out.scripts.len(),

@@ -156,6 +156,16 @@ impl crate::program::Library for Bank {
             .collect()
     }
 
+    fn data(&self) -> Vec<(String, Vec<u8>)> {
+        use crate::program::files::{FILE_LIMIT, may_be_data};
+        (self.directory.files.iter())
+            .filter_map(|m| Some((m.path.clone()?, m)))
+            .filter(|(path, _)| may_be_data(path))
+            .filter_map(|(path, m)| Some((path, self.read(m).ok()?)))
+            .filter(|(_, bytes)| bytes.len() <= FILE_LIMIT)
+            .collect()
+    }
+
     fn sample(&self, program_dir: &str, reference: &str) -> Result<ir::Sample, String> {
         let index = self
             .resolve(program_dir, reference)
@@ -216,7 +226,7 @@ fn programs(directory: &Directory) -> Vec<usize> {
     found.into_iter().map(|(_, i)| i).collect()
 }
 
-fn normalize(path: &str) -> String {
+pub(crate) fn normalize(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {
