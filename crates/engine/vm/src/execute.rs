@@ -16,43 +16,88 @@ pub(crate) fn execute(
     faults: &mut Faults,
     host: &mut dyn HostApi,
 ) -> Step {
-    // The position and stack top live in registers while it runs.
+    // The position, the stack depth and the top value live in registers
+    // while it runs. Value `k` lives in slot `k + 1` (slot 0 is spare, so a
+    // push never branches on an empty stack); the top's slot is stale until
+    // `flush!` writes it back.
     let (mut pc, mut sp) = (c.pc, c.sp);
     let stack = &mut c.stack[..];
+    let room = stack.len().saturating_sub(1);
+    let mut tos = stack.get(sp).copied().unwrap_or(0);
+    macro_rules! flush {
+        () => {
+            if let Some(slot) = stack.get_mut(sp) {
+                *slot = tos;
+            }
+        };
+    }
     macro_rules! leave {
         ($step:expr) => {{
+            flush!();
             (c.pc, c.sp) = (pc, sp);
             return $step;
         }};
     }
     macro_rules! pop {
-        () => {
-            match sp
-                .checked_sub(1)
-                .and_then(|top| Some((top, *stack.get(top)?)))
-            {
-                Some((top, v)) => {
-                    sp = top;
-                    v
-                }
-                None => {
-                    faults.bad_code += 1;
-                    leave!(Step::Done);
-                }
+        () => {{
+            if sp == 0 {
+                faults.bad_code += 1;
+                leave!(Step::Done);
             }
-        };
+            let v = tos;
+            sp -= 1;
+            tos = stack.get(sp).copied().unwrap_or(0);
+            v
+        }};
     }
     macro_rules! push {
         ($v:expr) => {{
             let v: i64 = $v;
-            match stack.get_mut(sp) {
-                Some(slot) => *slot = v,
-                None => {
-                    faults.stack_overflow += 1;
-                    leave!(Step::Done);
-                }
+            if sp >= room {
+                faults.stack_overflow += 1;
+                leave!(Step::Done);
             }
+            flush!();
+            tos = v;
             sp += 1;
+        }};
+    }
+    // `loop_check(exit)`: counts a turn, leaving at the limit or when stuck.
+    macro_rules! loop_check {
+        ($exit:expr) => {{
+            let exit: u32 = $exit;
+            c.loop_count += 1;
+            let mut stuck = false;
+            // The hash reads every cell: probe once the loops turned as
+            // often as there are cells, so it never costs more than they did.
+            let cost = u32::try_from(cells.len() + poly.len()).unwrap_or(u32::MAX);
+            if c.loop_count >= LOOP_PROBE.max(cost) && c.loop_count.is_power_of_two() {
+                // A host call moved state outside the hash: not stuck, no hash.
+                c.loop_hash = if std::mem::take(&mut c.hosted) {
+                    0
+                } else {
+                    flush!();
+                    let hash = state_hash(
+                        cells,
+                        texts,
+                        poly,
+                        stack.get(1..=sp).unwrap_or_default(),
+                        &c.texts,
+                    );
+                    stuck = hash == c.loop_hash;
+                    hash
+                };
+            }
+            // The limit holds for the rest of the run (every loop exits
+            // until the next wait); a stuck loop frees only itself.
+            if c.loop_count >= LOOP_LIMIT {
+                faults.loop_limits += 1;
+                pc = exit;
+            } else if stuck {
+                faults.loop_limits += 1;
+                c.loop_count = 0;
+                pc = exit;
+            }
         }};
     }
     macro_rules! pop_text {
@@ -294,39 +339,7 @@ pub(crate) fn execute(
                     pc = to;
                 }
             }
-            Op::LoopCheck { exit } => {
-                c.loop_count += 1;
-                let mut stuck = false;
-                // The hash reads every cell: probe once the loops turned as
-                // often as there are cells, so it never costs more than they did.
-                let cost = u32::try_from(cells.len() + poly.len()).unwrap_or(u32::MAX);
-                if c.loop_count >= LOOP_PROBE.max(cost) && c.loop_count.is_power_of_two() {
-                    // A host call moved state outside the hash: not stuck, no hash.
-                    c.loop_hash = if std::mem::take(&mut c.hosted) {
-                        0
-                    } else {
-                        let hash = state_hash(
-                            cells,
-                            texts,
-                            poly,
-                            stack.get(..sp).unwrap_or_default(),
-                            &c.texts,
-                        );
-                        stuck = hash == c.loop_hash;
-                        hash
-                    };
-                }
-                // The limit holds for the rest of the run (every loop exits
-                // until the next wait); a stuck loop frees only itself.
-                if c.loop_count >= LOOP_LIMIT {
-                    faults.loop_limits += 1;
-                    pc = exit;
-                } else if stuck {
-                    faults.loop_limits += 1;
-                    c.loop_count = 0;
-                    pc = exit;
-                }
-            }
+            Op::LoopCheck { exit } => loop_check!(exit),
             Op::LoopExit => c.loop_hash = 0,
             Op::Call(to) => {
                 if c.frames.len() == c.frames.capacity() {
@@ -389,6 +402,66 @@ pub(crate) fn execute(
                 }
                 pc += 1;
             }
+            Op::LoadAtBin {
+                base,
+                len,
+                bin,
+                a,
+                b,
+            } => {
+                let i = bin.apply(src!(a), src!(b));
+                match element(base, len, i) {
+                    Some(at) => push!(cells.get(at).copied().unwrap_or(0)),
+                    None => {
+                        faults.out_of_range += 1;
+                        faults.first_out_of_range.get_or_insert((base, false, i));
+                        push!(0);
+                    }
+                }
+                pc += 3;
+            }
+            Op::LoadAtTop { base, len, bin, b } => {
+                let i = bin.apply(int(pop!()), src!(b));
+                match element(base, len, i) {
+                    Some(at) => push!(cells.get(at).copied().unwrap_or(0)),
+                    None => {
+                        faults.out_of_range += 1;
+                        faults.first_out_of_range.get_or_insert((base, false, i));
+                        push!(0);
+                    }
+                }
+                pc += 2;
+            }
+            Op::CmpJump { cmp, to } => {
+                let b = int(pop!());
+                let a = int(pop!());
+                pc = if compare(cmp, a.cmp(&b)) { pc + 1 } else { to };
+            }
+            Op::BinStore { bin, to } => {
+                let b = int(pop!());
+                let a = int(pop!());
+                let v = i64::from(bin.apply(a, b));
+                let cell = match to {
+                    Src::Cell(n) => cells.get_mut(n as usize),
+                    Src::Poly(n) => poly.get_mut(usize::from(n)),
+                    Src::Int(_) => None,
+                };
+                if let Some(cell) = cell {
+                    *cell = v;
+                }
+                pc += 1;
+            }
+            Op::BinBin { inner, outer } => {
+                let z = int(pop!());
+                let y = int(pop!());
+                let x = int(pop!());
+                push!(i64::from(outer.apply(x, inner.apply(y, z))));
+                pc += 1;
+            }
+            Op::LoopJump { top, exit } => {
+                pc = top + 1;
+                loop_check!(exit);
+            }
             Op::StoreAtSrc { base, len, v } => {
                 let v = slot!(v);
                 let i = int(pop!());
@@ -423,7 +496,8 @@ pub(crate) fn execute(
                 let mut text_out = Text::EMPTY;
                 let int_from = sp - ints;
                 let text_from = c.texts.len() - text_args;
-                let args = stack.get(int_from..sp).unwrap_or_default();
+                flush!();
+                let args = stack.get(int_from + 1..=sp).unwrap_or_default();
                 let value = match pure::eval(action, args, cells) {
                     Some(value) => value,
                     None => {
@@ -449,6 +523,7 @@ pub(crate) fn execute(
                     leave!(Step::Wait(micros));
                 }
                 sp = int_from;
+                tos = stack.get(sp).copied().unwrap_or(0);
                 c.texts.truncate(text_from);
                 match (returns, value) {
                     (Returns::Nothing, _) => {}

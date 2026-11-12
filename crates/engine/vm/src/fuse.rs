@@ -48,13 +48,13 @@ impl Op {
 #[must_use]
 pub fn fuse(code: &[Op]) -> Vec<Op> {
     (code.iter().enumerate())
-        .map(|(at, &op)| code.get(at..).and_then(fused).unwrap_or(op))
+        .map(|(at, &op)| fused(code, at).unwrap_or(op))
         .collect()
 }
 
-/// The fused op for the run at the start of `run`, longest first.
-fn fused(run: &[Op]) -> Option<Op> {
-    let at = |n: usize| run.get(n).copied();
+/// The fused op for the run that starts at `start`, longest first.
+fn fused(code: &[Op], start: usize) -> Option<Op> {
+    let at = |n: usize| code.get(start + n).copied();
     let src = |n: usize| at(n).and_then(Op::src);
     let bin = |n: usize| at(n).and_then(Op::bin);
     let branch = |n: usize| match (at(n), at(n + 1)) {
@@ -71,6 +71,18 @@ fn fused(run: &[Op]) -> Option<Op> {
     if let (Some(a), Some(b), Some((cmp, to))) = (src(0), src(1), branch(2)) {
         return Some(Op::Branch { cmp, a, b, to });
     }
+    // a b ⊕ load_at
+    if let (Some(a), Some(b), Some(bin), Some(Op::LoadAt { base, len })) =
+        (src(0), src(1), bin(2), at(3))
+    {
+        return Some(Op::LoadAtBin {
+            base,
+            len,
+            bin,
+            a,
+            b,
+        });
+    }
     // a b ⊕
     if let (Some(a), Some(b), Some(bin)) = (src(0), src(1), bin(2)) {
         return Some(Op::Bin { bin, a, b });
@@ -78,6 +90,10 @@ fn fused(run: &[Op]) -> Option<Op> {
     // b cmp jz, on the value below
     if let (Some(b), Some((cmp, to))) = (src(0), branch(1)) {
         return Some(Op::BranchTop { cmp, b, to });
+    }
+    // b ⊕ load_at, on the value below
+    if let (Some(b), Some(bin), Some(Op::LoadAt { base, len })) = (src(0), bin(1), at(2)) {
+        return Some(Op::LoadAtTop { base, len, bin, b });
     }
     match (at(0), at(1)) {
         // b ⊕, on the value below
@@ -95,6 +111,25 @@ fn fused(run: &[Op]) -> Option<Op> {
             len,
             v: op.src()?,
         }),
+        // cmp jz
+        (Some(Op::ICmp(cmp)), Some(Op::JumpIfZero(to))) => Some(Op::CmpJump { cmp, to }),
+        // ⊕ store
+        (Some(op), Some(next)) if op.bin().is_some() && next.dst().is_some() => {
+            Some(Op::BinStore {
+                bin: op.bin()?,
+                to: next.dst()?,
+            })
+        }
+        // ⊕ ⊕
+        (Some(op), Some(next)) if op.bin().is_some() && next.bin().is_some() => Some(Op::BinBin {
+            inner: op.bin()?,
+            outer: next.bin()?,
+        }),
+        // a jump back to a loop's check runs the check
+        (Some(Op::Jump(top)), _) => match code.get(top as usize) {
+            Some(&Op::LoopCheck { exit }) => Some(Op::LoopJump { top, exit }),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -112,19 +147,6 @@ impl Bin {
             Self::Xor => a ^ b,
             Self::Shl => a.wrapping_shl(b as u32),
             Self::Shr => a.wrapping_shr(b as u32),
-        }
-    }
-}
-
-impl Op {
-    /// How many plain ops this op runs: 1, or a fused run's length.
-    #[must_use]
-    pub fn width(self) -> u32 {
-        match self {
-            Self::BinTo { .. } | Self::Branch { .. } => 4,
-            Self::Bin { .. } | Self::BranchTop { .. } => 3,
-            Self::BinTop { .. } | Self::LoadAtCell { .. } | Self::StoreAtSrc { .. } => 2,
-            _ => 1,
         }
     }
 }

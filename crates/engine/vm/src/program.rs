@@ -189,6 +189,41 @@ pub enum Op {
         len: u32,
         i: u32,
     },
+    /// `a b ⊕ load_at`.
+    LoadAtBin {
+        base: u32,
+        len: u32,
+        bin: Bin,
+        a: Src,
+        b: Src,
+    },
+    /// `b ⊕ load_at`, on the value on the stack.
+    LoadAtTop {
+        base: u32,
+        len: u32,
+        bin: Bin,
+        b: Src,
+    },
+    /// `cmp jump_if_zero(to)`.
+    CmpJump {
+        cmp: Cmp,
+        to: u32,
+    },
+    /// `⊕ store`.
+    BinStore {
+        bin: Bin,
+        to: Src,
+    },
+    /// `inner outer`: two binary ops on the top three values.
+    BinBin {
+        inner: Bin,
+        outer: Bin,
+    },
+    /// `jump(top)` onto `loop_check(exit)`: the check, then the loop body.
+    LoopJump {
+        top: u32,
+        exit: u32,
+    },
     /// `v store_at`, the index on the stack.
     StoreAtSrc {
         base: u32,

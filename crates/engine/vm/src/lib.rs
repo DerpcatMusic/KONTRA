@@ -166,7 +166,7 @@ struct Coroutine {
     generation: u16,
     pc: u32,
     context: u64,
-    /// Value stack, live up to `sp`.
+    /// Value stack: value `k` of `sp` in slot `k + 1` (see `execute`).
     stack: Box<[i64]>,
     sp: usize,
     texts: Vec<Text>,
@@ -207,7 +207,7 @@ impl Instance {
                 generation: 0,
                 pc: 0,
                 context: 0,
-                stack: vec![0; stack].into(),
+                stack: vec![0; stack + 1].into(),
                 sp: 0,
                 texts: Vec::with_capacity(stack),
                 frames: Vec::with_capacity(program.max_depth.max(1)),
