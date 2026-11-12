@@ -100,14 +100,20 @@ fn inside(folder: &Path, path: &Path) -> io::Result<PathBuf> {
 /// When `path` is not a user preset in `folder`, the name is empty or
 /// taken, or the rename fails.
 pub fn rename(folder: &Path, path: &Path, name: &str) -> io::Result<PathBuf> {
-    let path = inside(folder, path)?;
+    let real = inside(folder, path)?;
     let name = sanitized(name).ok_or_else(|| invalid("preset name"))?;
-    let to = path.with_file_name(format!("{name}.{EXTENSION}"));
+    let file = format!("{name}.{EXTENSION}");
+    let to = real.with_file_name(&file);
     if to.exists() {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, name));
     }
-    std::fs::rename(&path, &to)?;
-    Ok(to)
+    std::fs::rename(&real, &to)?;
+    // As the caller spelled its folder (the listing's spelling, which may
+    // pass through a link), when that is the folder the file is really in.
+    let spelled = path.parent().filter(|dir| {
+        dir.canonicalize().ok().as_deref() == to.parent() && path.file_name() == real.file_name()
+    });
+    Ok(spelled.map_or(to, |dir| dir.join(file)))
 }
 
 /// Deletes the preset at `path`.
@@ -160,6 +166,8 @@ mod tests {
         let other = save(&folder, "UnaCorda", "Bright", &preset).unwrap();
         assert!(rename(&folder, &path, "Bright").is_err());
         let path = rename(&folder, &path, "Soft").unwrap();
+        // The new path keeps the spelling of the folder it was listed under.
+        assert_eq!(path, folder.join("UnaCorda").join("Soft.kontra"));
         // Nothing outside the folder, nor any other file, is removed.
         let outside = root.join("x.kontra");
         std::fs::write(&outside, b"{}").unwrap();
