@@ -67,6 +67,8 @@ pub struct Behaviour {
     pub shapes: Vec<Option<u16>>,
     /// Slots and the [`ir::SlotShapes::types`] entry each was last loaded with.
     pub loaded: Vec<(kontra_ir::RackAt, u8, u16)>,
+    /// Per [`Plan::slot_models`] entry, its knobs' positions as last set.
+    pub models: Vec<Box<[f32]>>,
 }
 
 impl Behaviour {
@@ -99,6 +101,7 @@ impl Behaviour {
             rls_reset: [0; 128],
             shapes: vec![None; plan.slot_shapes.slots.len()],
             loaded: Vec::with_capacity(LOADED.max(plan.loaded.len())),
+            models: plan.slot_models.iter().map(|m| m.2.saved.clone()).collect(),
         };
         behaviour.loaded.extend_from_slice(&plan.loaded);
         if let Some(key) = plan.default_keyswitch {

@@ -335,6 +335,8 @@ pub enum SlotKnob {
     Ratio,
     Input,
     Makeup,
+    /// The wet share of an effect whose knobs a [`KnobModel`] reads.
+    Mix,
     /// A reverb's knobs.
     ReverbPredelay,
     ReverbSize,
@@ -386,6 +388,20 @@ pub struct SlotLaw {
     pub knob: SlotKnob,
     pub field: EffectParam,
     pub law: crate::Law,
+}
+
+/// A slot whose knobs interact: the effect is rebuilt from all of them
+/// whenever a script moves one, so the result does not depend on the order
+/// they were set in, and each reads back exactly as set.
+#[derive(Clone, Debug)]
+pub struct KnobModel {
+    /// The knobs, in the order [`Self::build`] reads their positions.
+    pub knobs: Box<[SlotKnob]>,
+    /// The saved positions, then any fixed settings `build` reads after them.
+    pub saved: Box<[f32]>,
+    /// The effect at these positions: the same mapping the saved slot was
+    /// read through.
+    pub build: fn(&[f32]) -> Option<crate::EffectKind>,
 }
 
 /// Shape `id` a script may switch a filter slot

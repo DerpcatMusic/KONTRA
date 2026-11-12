@@ -96,6 +96,9 @@ impl Engine {
         let Some(at) = rack_at(group, generic) else {
             return false;
         };
+        if let Some(hit) = self.set_modelled(knob, x, at, group, slot, generic) {
+            return hit;
+        }
         let mut hit = false;
         for (field, law) in laws(&plan, self.own_laws(&plan, at, slot), knob, at, slot) {
             let effect = self.effect_mut(group, slot, generic);
@@ -115,9 +118,57 @@ impl Engine {
     fn slot_x(&mut self, knob: ir::SlotKnob, group: i32, slot: i32, generic: i32) -> Option<f32> {
         let plan = Arc::clone(&self.plan);
         let at = rack_at(group, generic)?;
+        if let Some((n, k)) = self.modelled(&plan, knob, at, slot) {
+            return self.behaviour.models.get(n)?.get(k).copied();
+        }
         let (field, law) = laws(&plan, self.own_laws(&plan, at, slot), knob, at, slot).next()?;
         let y = *field.field_mut(&mut self.effect_mut(group, slot, generic)?.kind)?;
         Some(law.invert(y))
+    }
+
+    /// Moves `knob` of a slot whose knobs interact to `x` and rebuilds its
+    /// effect from all its knobs; `None` when it has no such model.
+    fn set_modelled(
+        &mut self,
+        knob: ir::SlotKnob,
+        x: f32,
+        at: ir::RackAt,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> Option<bool> {
+        let plan = Arc::clone(&self.plan);
+        let (n, k) = self.modelled(&plan, knob, at, slot)?;
+        let positions = self.behaviour.models.get_mut(n)?;
+        *positions.get_mut(k)? = x;
+        let kind = plan.slot_models.get(n).and_then(|m| (m.2.build)(positions));
+        let (Some(kind), Some(effect)) = (kind, self.effect_mut(group, slot, generic)) else {
+            return Some(false);
+        };
+        effect.kind = kind;
+        self.refresh_all(None);
+        Some(true)
+    }
+
+    /// The [`Plan::slot_models`] entry of slot `slot` of `at` and the place of
+    /// `knob` in it, unless a script loaded another type into the slot.
+    fn modelled(
+        &self,
+        plan: &Plan,
+        knob: ir::SlotKnob,
+        at: ir::RackAt,
+        slot: i32,
+    ) -> Option<(usize, usize)> {
+        let here = |m: &(ir::RackAt, u8, ir::KnobModel)| m.0 == at && i32::from(m.1) == slot;
+        let n = plan.slot_models.iter().position(here)?;
+        let k = plan
+            .slot_models
+            .get(n)?
+            .2
+            .knobs
+            .iter()
+            .position(|&k| k == knob)?;
+        self.loaded_type(at, slot).is_none().then_some((n, k))
     }
 
     /// The addressed slot's own laws: those of the shape it last switched
