@@ -396,7 +396,7 @@ mod tests {
     /// the rack plays then. `gate` false: a rack that never sleeps.
     fn reveal(hidden: ir::Effect, open: ir::Effect, quiet: f32, gate: bool) -> Vec<[f32; 2]> {
         let mut rack = Rack::new(&[Some(hidden)], RATE, &[]);
-        let mut span = |rack: &mut Rack, io: &mut [[f32; 2]]| {
+        let span = |rack: &mut Rack, io: &mut [[f32; 2]]| {
             rack.process(io, &mut [], 120.0);
             if !gate {
                 rack.quiet.fill(0);
