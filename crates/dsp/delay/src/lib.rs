@@ -6,6 +6,9 @@ use std::f64::consts::TAU;
 
 use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
 
+mod comb_bank;
+pub use comb_bank::{COMB_VOICES, CombBank, CombSettings, ScanShape};
+
 /// The longest line [`ModDelay::new`] allocates, ms.
 pub const MAX_MS: f32 = 6000.0;
 /// The time a line takes to glide to a new length, so a change never clicks.

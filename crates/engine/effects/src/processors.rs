@@ -2,7 +2,7 @@
 //! delays, dynamics, drives, a cascade) and the summed EQ and filter stages,
 //! with their settings in DSP terms. Not real-time unless a function says so.
 
-use kontra_dsp::delay::{MAX_MS, ModDelay, Phaser, PhaserSettings};
+use kontra_dsp::delay::{CombBank, CombSettings, MAX_MS, ModDelay, Phaser, PhaserSettings};
 use kontra_dsp::drive::{self, Circuit, Clipper, Crush, Overdrive, Reduction, Shaper, Voicing};
 use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
@@ -189,6 +189,30 @@ impl Wet for ModDelay {
     fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
         if let ir::EffectKind::Delay(d) = kind {
             ModDelay::set(self, delay(d, tempo));
+        }
+    }
+}
+
+impl Wet for CombBank {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        CombBank::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(CombBank::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        CombBank::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        CombBank::idle(self, silence.len());
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+        if let ir::EffectKind::CombBank(c) = kind {
+            CombBank::set(self, comb_bank(c, tempo));
         }
     }
 }
@@ -392,6 +416,36 @@ fn notches(n: ir::Notches, tempo: f32) -> NotchSettings {
     }
 }
 
+fn comb_bank(c: ir::CombBank, tempo: f32) -> CombSettings {
+    use kontra_dsp::delay::ScanShape;
+    let blend = |on: bool| if on { 1.0 } else { 0.0 };
+    CombSettings {
+        root_hz: c.root_hz,
+        ratio: c.ratio,
+        detune: c.detune,
+        feedback: c.feedback,
+        voices: c.voices,
+        damping: c.damping,
+        depth: c.depth,
+        lfo_hz: hz(c.rate, tempo),
+        offset: c.offset,
+        polarity: match c.polarity {
+            ir::Polarity::Normal => 1.0,
+            ir::Polarity::Inverted => -1.0,
+        },
+        thru_zero: blend(c.mode == ir::CombMode::ThruZero),
+        scan: blend(c.mode == ir::CombMode::Scan),
+        scan_depth: c.scan_depth,
+        scan_shape: match c.scan_shape {
+            ir::ScanShape::Triangle => ScanShape::Triangle,
+            ir::ScanShape::SawUp => ScanShape::SawUp,
+            ir::ScanShape::SawDown => ScanShape::SawDown,
+        },
+        width: c.width,
+        mix: c.mix,
+    }
+}
+
 fn phaser(p: ir::Phaser, tempo: f32) -> PhaserSettings {
     PhaserSettings {
         stages: p.stages,
@@ -490,6 +544,11 @@ pub fn processor(
         Some(ir::EffectKind::Ensemble(e)) => {
             wet(Box::new(crate::ensemble::Ensemble::new(e, rate, 120.0)))
         }
+        Some(ir::EffectKind::CombBank(c)) => wet(Box::new(CombBank::new(
+            comb_bank(c, 120.0),
+            rate,
+            c.lowest_hz,
+        ))),
         Some(ir::EffectKind::Cascade(c)) => wet(Box::new(Cascade::new(cascade(c), rate))),
         Some(ir::EffectKind::Clocked(c)) => {
             let shape = match c.shape {
