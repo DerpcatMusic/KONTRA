@@ -35,6 +35,24 @@ local function is_node(v)
 	return getmetatable(v) == Node
 end
 
+-- A node's positional items in order, past the holes a `@{ cond and x }`
+-- leaves when it is nil.
+local function positional(t)
+	local last = 0
+	for k in pairs(t) do
+		if type(k) == "number" and k > last then
+			last = k
+		end
+	end
+	local out = {}
+	for i = 1, last do
+		if t[i] ~= nil and t[i] ~= false then
+			out[#out + 1] = t[i]
+		end
+	end
+	return out
+end
+
 -- Colours: 0..255 channels and an alpha 0..1; `ui.Color(0xAARRGGBB)` too.
 local Color = {}
 Color.__index = Color
@@ -217,11 +235,18 @@ __callbacks = {}
 
 local expand
 
--- A modifier's arguments with their nodes expanded and functions numbered.
-local function plain(v, path, context)
+-- A value a primitive draws with, its nodes expanded: a computed one
+-- (a getter: no arguments) read now, a callback (gestures) numbered.
+local function plain(v, path, context, reactive)
 	if is_node(v) then
 		return expand(v, path, context)
-	elseif type(v) == "function" then
+	elseif type(v) == "function" and reactive then
+		local ok, value = pcall(v)
+		if ok and type(value) ~= "function" then
+			return plain(value, path, context)
+		end
+	end
+	if type(v) == "function" then
 		__callbacks[#__callbacks + 1] = v
 		return { __callback = #__callbacks }
 	elseif type(v) == "table" and not v.__color then
@@ -238,8 +263,9 @@ local function expand_mods(mods, path, context)
 	local out = {}
 	for i, m in ipairs(mods) do
 		local e = { m[1] }
+		local reactive = string.sub(m[1], 1, 3) ~= "on_"
 		for j = 2, #m do
-			e[j] = plain(m[j], path .. "/m" .. i, context)
+			e[j] = plain(m[j], path .. "/m" .. i, context, reactive)
 		end
 		out[i] = e
 	end
@@ -261,7 +287,7 @@ expand = function(v, path, context)
 		local out = { kind = f.__primitive, props = {}, children = {}, mods = expand_mods(v.mods, path, context) }
 		for k, x in pairs(v.props) do
 			if type(k) == "string" and k ~= "content" and k ~= "data" then
-				out.props[k] = plain(x, path .. "." .. k, context)
+				out.props[k] = plain(x, path .. "." .. k, context, true)
 			end
 		end
 		local children = {}
@@ -286,9 +312,7 @@ expand = function(v, path, context)
 			end
 			current = saved
 		else
-			for i, c in ipairs(v.props) do
-				children[i] = c
-			end
+			children = positional(v.props)
 		end
 		for i, c in ipairs(children) do
 			local e = expand(c, path .. "/" .. i, context)
@@ -300,10 +324,10 @@ expand = function(v, path, context)
 	end
 	-- A component sees its positional items as `props.children`.
 	local props = v.props
-	if props.children == nil and props[1] ~= nil then
-		props.children = {}
-		for i, c in ipairs(props) do
-			props.children[i] = c
+	if props.children == nil then
+		local items = positional(props)
+		if #items > 0 then
+			props.children = items
 		end
 	end
 	local saved = current

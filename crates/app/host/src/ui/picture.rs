@@ -61,17 +61,41 @@ impl Library {
     }
 }
 
-/// A PNG's pixel size, from its header.
-fn size(png: &[u8]) -> Option<(f64, f64)> {
-    if png.get(..8)? != b"\x89PNG\r\n\x1a\n" || png.get(12..16)? != b"IHDR" {
-        return None;
+/// A picture's size, from its header: a PNG's or WebP's pixels, an SVG's
+/// points (`width`/`height`, else its `viewBox`).
+fn size(bytes: &[u8]) -> Option<(f64, f64)> {
+    let at = |at: usize, n: usize| Some(bytes.get(at..at + n)?.iter().rev().fold(0, |v, b| v << 8 | u32::from(*b)));
+    if bytes.get(..8)? == b"\x89PNG\r\n\x1a\n" && bytes.get(12..16)? == b"IHDR" {
+        let be = |at: usize| Some(f64::from(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?)));
+        return Some((be(16)?, be(20)?));
     }
-    let be = |at: usize| {
-        Some(f64::from(u32::from_be_bytes(
-            png.get(at..at + 4)?.try_into().ok()?,
-        )))
+    if bytes.get(..4)? == b"RIFF" && bytes.get(8..12)? == b"WEBP" {
+        let (w, h) = match bytes.get(12..16)? {
+            b"VP8X" => (at(24, 3)? + 1, at(27, 3)? + 1),
+            b"VP8L" => {
+                let bits = at(21, 4)?;
+                ((bits & 0x3fff) + 1, (bits >> 14 & 0x3fff) + 1)
+            }
+            _ => (at(26, 2)? & 0x3fff, at(28, 2)? & 0x3fff),
+        };
+        return Some((f64::from(w), f64::from(h)));
+    }
+    svg_size(std::str::from_utf8(bytes.get(..bytes.len().min(1024))?).ok()?)
+}
+
+fn svg_size(text: &str) -> Option<(f64, f64)> {
+    let tag = text.get(text.find("<svg")?..)?;
+    let tag = tag.get(..tag.find('>')?)?;
+    let attr = |name: &str| {
+        let v = tag.split(&format!(" {name}=\"")).nth(1)?;
+        v.get(..v.find('"')?)
     };
-    Some((be(16)?, be(20)?))
+    let px = |v: &str| v.trim_end_matches("px").parse::<f64>().ok();
+    if let (Some(w), Some(h)) = (attr("width").and_then(px), attr("height").and_then(px)) {
+        return Some((w, h));
+    }
+    let view: Vec<f64> = attr("viewBox")?.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+    Some((*view.get(2)?, *view.get(3)?))
 }
 
 /// The sidecar's keys, in the order Kontakt writes them.

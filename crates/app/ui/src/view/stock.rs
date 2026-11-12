@@ -676,17 +676,23 @@ fn outline(shape: model::Shape, w: f64, h: f64, k: f64) -> Path {
             sweep,
         } => {
             // Outer edge forward, inner edge back: one closed band.
-            let (cx, cy) = (w / 2., h / 2.);
+            let center = Point::new(w / 2., h / 2.);
             let outer = w.min(h) / 2.;
-            let inner = (outer - thickness * k).max(0.);
-            let steps = (sweep.abs() / 4.).ceil().max(1.) as usize;
-            let at = |r: f64, i: usize| {
-                let a = (start + sweep * i as f64 / steps as f64).to_radians();
-                Point::new(cx + r * a.cos(), cy + r * a.sin())
+            let inner = (outer - thickness * k).max(f64::EPSILON);
+            let (a, sweep) = (start.to_radians(), sweep.clamp(-360., 360.).to_radians());
+            let arc = |radius: f64, from: f64, sweep: f64| mui::geometry::Arc {
+                center,
+                radius,
+                start_angle: from,
+                sweep,
+                to: center + Vec2::from_angle(from + sweep) * radius,
             };
-            let edge = (0..=steps).map(|i| at(outer, i));
-            let back = (0..=steps).rev().map(|i| at(inner, i));
-            Path::polyline(edge.chain(back), true)
+            let at = |r: f64, a: f64| center + Vec2::from_angle(a) * r;
+            let mut p = Path::default().move_to(at(outer, a));
+            p.commands.push(mui::geometry::PathCommand::ArcTo(arc(outer, a, sweep)));
+            p = p.line_to(at(inner, a + sweep));
+            p.commands.push(mui::geometry::PathCommand::ArcTo(arc(inner, a + sweep, -sweep)));
+            p.close()
         }
     }
 }
