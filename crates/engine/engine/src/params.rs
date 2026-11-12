@@ -311,21 +311,30 @@ impl Engine {
     /// millionths ([`kontra_vm::Action::RouteAmount`]).
     pub(crate) fn set_route_amount(&mut self, key: i32, micros: i32) {
         let v = micros as f32 / 1e6;
-        let mut any = false;
+        // The groups it moved: a route names one keygroup's group as a rule.
+        let (mut one, mut many) = (None, false);
         for (g, m) in self.route_names.of(key) {
             let Some(m) = self.groups.get_mut(g).and_then(|g| g.mods.get_mut(m)) else {
                 continue;
             };
-            any |= match &mut m.kind {
+            let set = match &mut m.kind {
                 ir::ModKind::Pitch { semitones, .. } => {
                     *semitones = v;
                     true
                 }
                 kind => depth(kind).map(|d| *d = v).is_some(),
             };
+            if set {
+                many |= one.is_some_and(|o| o != g);
+                one = Some(g);
+            }
         }
-        if any {
-            self.refresh_all(None);
+        match (one, many) {
+            (Some(_), true) => self.refresh_all(None),
+            (Some(g), false) => {
+                self.refresh_voices(None, |_, zone| zone.group as usize == g);
+            }
+            (None, _) => {}
         }
     }
 
@@ -412,8 +421,9 @@ impl Engine {
             }),
             _ => return self.set_envelope(par, x, group, slot),
         };
-        if set {
-            self.refresh_all(None);
+        // A route or LFO belongs to its group: only that group's voices read it.
+        if set && let Ok(g) = u32::try_from(group) {
+            self.refresh_voices(None, |_, zone| zone.group == g);
         }
         set
     }
@@ -520,12 +530,7 @@ impl Engine {
 
     /// Re-reads gain (and pitch, unless `cc` moved) of every sounding note.
     pub(crate) fn refresh_all(&mut self, cc: Option<u8>) {
-        let mut hits = std::mem::take(&mut self.hits);
-        self.notes.select(&mut hits, |_| true);
-        for &note in &hits {
-            self.refresh_note(note, cc);
-        }
-        self.hits = hits;
+        self.refresh_voices(cc, |_, _| true);
     }
 }
 

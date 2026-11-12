@@ -22,7 +22,8 @@ pub struct ScriptPlan {
     pub library_folder: Option<Text>,
     /// The installed sampler's factory data folder, when one was found.
     pub factory_folder: Option<Text>,
-    /// Saved values written after `on init`, before `on persistence_changed`.
+    /// Saved values written after `on init`, before `on persistence_changed`;
+    /// sorted by cell (`read_persistent_var` binary-searches a range).
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
     pub controls: Controls,
@@ -239,7 +240,8 @@ impl Recall {
     }
 }
 
-/// One script slot's saved values, as cell writes.
+/// One script slot's saved values, as cell writes, each sorted by cell
+/// (`read_persistent_var` binary-searches a range).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Saved {
     pub ints: Vec<(u32, i64)>,
