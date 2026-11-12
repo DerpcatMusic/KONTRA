@@ -15,7 +15,7 @@ use crate::script_knobs::{
 // ponytail: the cutoff law is the one filter measured (ANALOG's); measure
 // each filter kind when a library shows another.
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
-    use ir::Form::{Decimal, Hundredths, Padded, Pan, Ratio, Whole, Wide, WideWhole};
+    use ir::Form::{Blank, Decimal, Hundredths, Padded, Pan, Ratio, Whole, Wide, WideWhole};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
     let curve = |points: [(f32, f32, f32); 2]| ir::Law::Breakpoints(points.into());
@@ -120,6 +120,15 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
             none,
         ),
         ("$ENGINE_PAR_LFO_PHASE", lin(0.0, 360.0), WideWhole, none),
+        // Una Corda's Solid G-EQ, bus 0 slot 7 (Kontakt 8.13.1, 2026-11-12,
+        // scratch/lane-scripts/probes/b2): every band's gain ±20 dB; the
+        // bell switches show nothing.
+        ("$ENGINE_PAR_SEQ_LF_GAIN", lin(-20.0, 20.0), Padded, none),
+        ("$ENGINE_PAR_SEQ_LMF_GAIN", lin(-20.0, 20.0), Padded, none),
+        ("$ENGINE_PAR_SEQ_HMF_GAIN", lin(-20.0, 20.0), Padded, none),
+        ("$ENGINE_PAR_SEQ_HF_GAIN", lin(-20.0, 20.0), Padded, none),
+        ("$ENGINE_PAR_SEQ_LF_BELL", lin(0.0, 1.0), Blank, none),
+        ("$ENGINE_PAR_SEQ_HF_BELL", lin(0.0, 1.0), Blank, none),
     ]);
     rows.into_iter()
         .map(|(name, law, form, ends)| (name, ir::Readout { law, form, ends }))
