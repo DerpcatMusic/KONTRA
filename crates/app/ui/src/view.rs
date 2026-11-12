@@ -158,6 +158,7 @@ fn drawn_page(
             .and_then(|_| item.picture.as_ref().map(|p| p.size));
         let style = item.style;
         let t = item.position;
+        let handle = (item.picture.as_ref()).is_some_and(|p| p.use_.role == model::Role::Handle);
         let look = item.look;
         let stock_art = look
             .as_ref()
@@ -253,7 +254,7 @@ fn drawn_page(
             (
                 &words,
                 &look,
-                stock.then_some(t.to_bits()),
+                (stock || handle).then_some(t.to_bits()),
                 match &wd.value {
                     Some(model::Value::Reals(v)) => {
                         Some(v.iter().map(|v| v.to_bits()).collect::<Vec<_>>())
@@ -301,7 +302,15 @@ fn drawn_page(
                 } else {
                     0.
                 };
-                let image = sliced(img, meta, (a.width, a.height), scale).at(inset, inset);
+                // A slider's handle rides its track: bottom to top, left to right.
+                let (x, y) = match (&wd.kind, handle) {
+                    (Kind::Slider { orientation, .. }, true) => match orientation {
+                        model::Orientation::Vertical => (0., (1. - t) * (h - a.height)),
+                        model::Orientation::Horizontal => (t * (w - a.width), 0.),
+                    },
+                    _ => (inset, inset),
+                };
+                let image = sliced(img, meta, (a.width, a.height), scale).at(x, y);
                 parts.push(if inset > 0. {
                     stack([image]).w(a.width).h(a.height).radius(0.).clip()
                 } else {

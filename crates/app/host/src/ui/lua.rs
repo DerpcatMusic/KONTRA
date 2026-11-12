@@ -64,6 +64,7 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
                 w.strip.as_ref().map(|(p, f)| (p.as_str(), *f)),
                 ui::Role::Strip,
             ),
+            (w.handle.as_deref().map(|p| (p, 1)), ui::Role::Handle),
             (w.image.as_deref().map(|p| (p, 1)), ui::Role::Background),
             (
                 w.background.as_deref().map(|p| (p, 1)),
@@ -76,7 +77,8 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
         for (path, role) in roles {
             if let Some((path, frames)) = path {
                 let (at, size) = asset(&mut tree, path, frames);
-                own = own.or(size);
+                // A handle is smaller than the track it moves along.
+                own = own.or(size.filter(|_| role != ui::Role::Handle));
                 out.images.push(ui::ImageUse::new(at, role));
             }
         }
@@ -165,7 +167,9 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
         },
         "Slider" => ui::Kind::Slider {
             range,
-            orientation: if w.vertical {
+            // `Slider{name, value, min, max, integer, vertical}` sets it by
+            // place, which the prelude does not keep: a tall slider is vertical.
+            orientation: if w.vertical || w.rect[3] > w.rect[2] {
                 ui::Orientation::Vertical
             } else {
                 ui::Orientation::Horizontal
@@ -457,5 +461,28 @@ mod tests {
         };
         assert!(!apply(&mut tree, 0, look, Some("Main")));
         assert_eq!(tree.widgets[0].text, "");
+    }
+
+    #[test]
+    fn a_tall_slider_with_a_handle_is_vertical_and_draws_its_handle() {
+        // W Strings' crossfader: `Slider{name, 0.5, 0, 1, false, true, ...}`.
+        let page = kontra_lua::compile(
+            r#"Slider{"XFade", 0.5, 0, 1, false, true, bounds={0, 87, 58, 265}, handleImage="h.png"}"#,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .ui;
+        let tree = tree(&page, &|_| None);
+        let w = &tree.widgets[0];
+        assert!(matches!(
+            w.kind,
+            ui::Kind::Slider {
+                orientation: ui::Orientation::Vertical,
+                ..
+            }
+        ));
+        assert_eq!(w.images.first().map(|i| i.role), Some(ui::Role::Handle));
+        assert_eq!((w.rect.width, w.rect.height), (58., 265.));
     }
 }

@@ -55,6 +55,8 @@ pub struct Widget {
     pub normal: Option<String>,
     pub pressed: Option<String>,
     pub background: Option<String>,
+    /// A slider's handle, moved along its track by the value.
+    pub handle: Option<String>,
     /// A strip of value frames, and how many.
     pub strip: Option<(String, u32)>,
     /// Hex colours by field: background, text, fill.
@@ -141,6 +143,7 @@ pub(crate) fn read(lua: &Lua) -> Ui {
                 normal: text(w, "normalImage"),
                 pressed: text(w, "pressedImage"),
                 background: text(w, "backgroundImage"),
+                handle: text(w, "handleImage"),
                 strip,
                 colours: ["backgroundColour", "textColour", "fillColour"].map(|k| text(w, k)),
                 cells: w
