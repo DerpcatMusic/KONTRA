@@ -114,23 +114,27 @@ impl Slowest {
         }
     }
 
-    /// Packed so the slower orders higher: the time above, the frames in
-    /// the low 16 bits (a block holds at most 65,535 frames; more reads as
-    /// that many, and a time past 2^48 ns, 78 hours, as that).
+    /// Packed so the larger share of its deadline orders higher, whatever
+    /// the block sizes: the time per frame above, the frames in the low 16
+    /// bits (a block holds at most 65,535 frames; more reads as that many).
+    /// The time comes back to a nanosecond per frame.
     fn pack(self) -> u64 {
-        let frames = u64::from(u16::try_from(self.frames).unwrap_or(u16::MAX));
-        (self.ns.min(MAX_PACKED_NS) << 16) | frames
+        let frames = u16::try_from(self.frames).unwrap_or(u16::MAX);
+        let per_frame = self.ns / u64::from(frames.max(1));
+        (per_frame.min(MAX_PER_FRAME) << 16) | u64::from(frames)
     }
 
     fn unpack(bits: u64) -> Self {
+        let frames = bits & 0xffff;
         Self {
-            ns: bits >> 16,
-            frames: u32::from(u16::try_from(bits & 0xffff).unwrap_or(u16::MAX)),
+            ns: (bits >> 16) * frames,
+            frames: u32::from(u16::try_from(frames).unwrap_or(u16::MAX)),
         }
     }
 }
 
-const MAX_PACKED_NS: u64 = (1 << 48) - 1;
+/// The most nanoseconds per frame [`Slowest::pack`] keeps (78 hours).
+const MAX_PER_FRAME: u64 = (1 << 48) - 1;
 
 /// The audio thread's [`Meters`] for the UI: each level is the highest
 /// published since the UI last took it. Plain atomics, so publishing never
@@ -239,21 +243,25 @@ mod tests {
             slowest_commands_ns: commands,
             ..Stats::default()
         };
-        cells.publish(&block(900, 64, 5));
-        cells.publish(&block(5_000, 512, 40));
-        cells.publish(&block(1_000, 128, 7));
+        cells.publish(&block(640, 64, 5));
+        cells.publish(&block(10_240, 512, 40));
+        cells.publish(&block(1_024, 128, 7));
         let s = cells.take().unwrap();
         assert_eq!(
             s.slowest,
             Slowest {
-                ns: 5_000,
+                ns: 10_240,
                 frames: 512
             }
         );
         assert_eq!(s.slowest_commands_ns, 40);
-        cells.publish(&block(1_000, 128, 7));
+        cells.publish(&block(1_024, 128, 7));
         let s = cells.take().unwrap();
-        assert_eq!((s.slowest.ns, s.slowest_commands_ns), (1_000, 7));
+        assert_eq!((s.slowest.ns, s.slowest_commands_ns), (1_024, 7));
+        // A short block over its deadline outranks a longer one under it.
+        cells.publish(&block(2_000_000, 64, 0));
+        cells.publish(&block(3_000_000, 512, 0));
+        assert_eq!(cells.take().unwrap().slowest.frames, 64);
         assert!(
             (Slowest {
                 ns: 5_333_333,
