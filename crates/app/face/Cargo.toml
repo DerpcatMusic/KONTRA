@@ -1,0 +1,20 @@
+[package]
+name = "kontra-face"
+version = "0.0.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-engine = { path = "../../engine/engine" }
+kontra-format-kontakt = { path = "../../format/kontakt" }
+kontra-format-uvi = { path = "../../format/uvi" }
+kontra-ksp = { path = "../../script/ksp" }
+kontra-lua = { path = "../../script/lua" }
+kontra-protocol = { path = "../../model/protocol" }
+kontra-stream = { path = "../../engine/stream" }
+kontra-ui-model = { path = "../../model/ui-model" }
+serde_json = "1"

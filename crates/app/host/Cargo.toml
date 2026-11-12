@@ -17,6 +17,7 @@ kontra-format-native = { path = "../../format/native" }
 kontra-format-sfz = { path = "../../format/sfz" }
 kontra-format-uvi = { path = "../../format/uvi" }
 kontra-ksp = { path = "../../script/ksp" }
+kontra-face = { path = "../face" }
 kontra-library = { path = "../library" }
 kontra-lua = { path = "../../script/lua" }
 kontra-protocol = { path = "../../model/protocol" }
