@@ -2571,3 +2571,27 @@ fn a_controller_times_the_next_attack_not_the_rising_one() {
         "the next note rises over 50 ms: {next}"
     );
 }
+
+#[test]
+fn an_envelope_timing_its_own_attack_renders() {
+    use kontra_engine::ir::{ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = a_rise_timed_by(&mut store, Source::Envelope(0));
+    // A second envelope and the first time each other's attack too.
+    let rise = plan.groups[0].envelopes[0].clone();
+    plan.groups[0].envelopes.push(rise);
+    let mut cross = plan.groups[0].mods[1].clone();
+    cross.kind = ModKind::Attack {
+        source: Source::Envelope(1),
+        intensity: 1.0,
+        floor_ms: 0.0,
+        envelope: Some(0),
+    };
+    plan.groups[0].mods.push(cross);
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60, 1.0)]);
+    // Read at note-on, an envelope is its start level (0 here), which
+    // shortens the rise to nothing: the bend is at the top at once.
+    let bend = bends_at(&mut e, 10, &[60])[0];
+    assert!((bend - 12.0).abs() < 0.1, "{bend}");
+}

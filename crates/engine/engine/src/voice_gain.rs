@@ -470,6 +470,10 @@ impl Engine {
                     floor_ms,
                     ..
                 } = m.kind
+                    // Sources are read at note-on, as Kontakt reads them. An
+                    // envelope source is then its start level: its arm reads
+                    // the voice's latched stretch, never these routes, so an
+                    // envelope timing itself (or another) cannot recurse.
                     && let Some(x) = self.unit(zone, source, note, Age::START)
                 {
                     ms = time_route(ms, x, intensity, floor_ms);
