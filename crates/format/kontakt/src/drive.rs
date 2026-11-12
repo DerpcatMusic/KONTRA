@@ -1,7 +1,8 @@
 //! Saturation, Distortion, Lo-Fi and Skreamer onto the engine's waveshaper and
 //! reducer: their saved records (readers 0x140d02c30, 0x140d00c60,
 //! 0x140d01f20, via v2 sampler-kontakt effects/mod.rs) and knob laws.
-//! Group racks only: the engine runs these on each voice.
+//! Any rack: the engine runs them on each voice in a group rack and on the
+//! sum in a bus or instrument rack.
 
 use kontra_format::Notes;
 use kontra_ir as ir;
@@ -22,9 +23,6 @@ pub(crate) fn effect(
     at: &str,
     notes: &mut Notes,
 ) -> Option<ir::EffectKind> {
-    if !at.starts_with("group") {
-        return None;
-    }
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
@@ -185,6 +183,19 @@ pub(crate) fn unmoved(inserts: &[Option<ir::Effect>], mods: &[ir::Mod], notes: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skreamer_is_carried_in_any_rack() {
+        let public: Vec<u8> = [0.5f32; 5].iter().flat_map(|v| v.to_le_bytes()).collect();
+        for at in [
+            "groups/0/inserts/0",
+            "bus 0/inserts/2",
+            "instrument/inserts/1",
+        ] {
+            let kind = effect(0x21, 0, &public, at, &mut Notes::default());
+            assert!(matches!(kind, Some(ir::EffectKind::Overdrive(_))), "{at}");
+        }
+    }
 
     #[test]
     fn the_damping_corner_reproduces_kontakts_poles() {
