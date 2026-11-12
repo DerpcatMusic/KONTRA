@@ -144,12 +144,14 @@ pub enum Command {
         value: f64,
         cell: Option<u32>,
     },
-    /// The user edited a group's sound (the Sound tab).
+    /// The user edited a group's sound (the Sound tab): its envelope, and
+    /// the insert it changed, if any. The box comes back empty, so audio
+    /// frees nothing.
     Sound {
         part: usize,
         group: usize,
         envelope: kontra_engine::Ahdsr,
-        insert: Option<(usize, ir::Effect)>,
+        insert: Box<Option<(usize, ir::Effect)>>,
     },
 }
 
@@ -171,6 +173,8 @@ pub struct Channels {
     pub zones: requests::ZoneRings,
     /// Effect units swapped out, to free on the control side.
     pub units: Ring<Box<Option<Prepared>>>,
+    /// Sound edits' emptied boxes ([`Command::Sound`]), to free here.
+    pub sounds: Ring<Box<Option<(usize, ir::Effect)>>>,
     /// Typed texts the audio side wrote ([`Command::ControlText`]), to free here.
     pub typed: Ring<Box<kontra_engine::Text>>,
     /// Interface reads filled on the audio side ([`Command::Look`]).
@@ -293,6 +297,7 @@ impl Rack {
             // An engine queues at most 16 at once.
             requests: Ring::new(16 * MAX_PARTS),
             units: Ring::new(16 * MAX_PARTS),
+            sounds: Ring::new(256),
             zones: requests::ZoneRings::new(MAX_PARTS),
             files: Ring::new(16 * MAX_PARTS),
             filed: Ring::new(16 * MAX_PARTS),
@@ -542,10 +547,22 @@ impl Rack {
             return;
         };
         p.modified = true;
-        let Some(view) = p.view.as_ref() else {
+        let Some(view) = p.view.as_mut() else {
             return;
         };
-        if let Some((slot, n)) = view.widget(widget) {
+        if let Some(set) = view.tap(widget, value) {
+            for (slot, id, value) in set {
+                let cell = 0;
+                self.send(Command::Control {
+                    part,
+                    slot,
+                    id,
+                    cell,
+                    value,
+                    keys,
+                });
+            }
+        } else if let Some((slot, n)) = view.widget(widget) {
             self.send(Command::Widget {
                 part,
                 slot,
@@ -614,7 +631,7 @@ impl Rack {
                 part,
                 group,
                 envelope,
-                insert,
+                insert: Box::new(insert),
             });
         }
     }
@@ -665,6 +682,7 @@ impl Rack {
     pub fn tick(&mut self) {
         while self.channels.retired.recv().is_some() {}
         while self.channels.units.recv().is_some() {}
+        while self.channels.sounds.recv().is_some() {}
         while self.channels.typed.recv().is_some() {}
         while self.channels.recalled.recv().is_some() {}
         self.files();
