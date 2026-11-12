@@ -197,15 +197,21 @@ local saved_widgets = {}
 -- What a user or host can move, by name: each live macro as the program
 -- tree makes it, then each named widget as the script does.
 __controls = {}
+-- `setValue`'s second argument for a move that runs `changed` even when the
+-- value stays (a user's edit, a restore).
+__FORCE = {}
+local function force(w)
+	return w.kind ~= "Table" and __FORCE or nil
+end
 
 -- Control `id` (0-based in `__controls`) moves to `value` and runs its
 -- `changed`, as a user's edit would; a button reads nonzero as on.
 function __control(id, value)
 	local c = __controls[id + 1]
 	if c and type(c.value) == "boolean" then
-		c:setValue(value ~= 0)
+		c:setValue(value ~= 0, __FORCE)
 	elseif c then
-		c:setValue(value)
+		c:setValue(value, force(c))
 	end
 end
 -- The UI the script builds, for the editor: every widget in the order the
@@ -225,7 +231,7 @@ function __restore()
 		-- Each `changed` runs on its own: one that fails (VWinds' `dynamics`
 		-- names a Macro 7 its Bb Clarinet lacks) leaves the rest restored.
 		if w.persistent ~= false then
-			local ok, err = pcall(w.setValue, w, restored(w.name, w.value))
+			local ok, err = pcall(w.setValue, w, restored(w.name, w.value), force(w))
 			if not ok then
 				table.insert(__restore_errors, tostring(w.name) .. ": " .. tostring(err))
 			end
@@ -288,9 +294,14 @@ widget = function(kind, name, value, ...)
 	if kind == "Table" then
 		return table_widget(w, name, fields)
 	end
+	-- A script's setValue runs `changed` only when the value changes, as
+	-- JUCE's controls under UVI do: W Strings Harmonic's linked arpeggiator
+	-- buttons set each other and recursed without end. A user's move and a
+	-- restore always run it (`__FORCE`).
 	w.setValue = function(self, v, run)
+		local was = rawget(self, "__value")
 		rawset(self, "__value", v)
-		if run ~= false then
+		if run ~= false and (run == __FORCE or v ~= was) then
 			run_changed(self)
 		end
 	end
@@ -937,7 +948,7 @@ __entries = {
 		elseif w.kind == "Menu" or rawget(w, "integer") == true then
 			v = math.floor(v + 0.5)
 		end
-		w:setValue(v)
+		w:setValue(v, __FORCE)
 	end,
 	[3] = function()
 		onController({
@@ -1078,7 +1089,7 @@ local function land(file, done, pace)
 			end
 			ok, err = pcall(run_changed, w)
 		elseif text ~= nil and w.persistent ~= false then
-			ok, err = pcall(w.setValue, w, parsed(text, w.value))
+			ok, err = pcall(w.setValue, w, parsed(text, w.value), force(w))
 		end
 		if not ok then
 			print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
