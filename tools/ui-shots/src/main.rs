@@ -342,7 +342,7 @@ fn lua_page(
     };
     settle(engine, &mut tree);
     let stem = name.replace(['/', ' '], "_");
-    shot(&tree, path, &out.join(format!("{stem}-{slot}.png")))?;
+    shot(&tree, path, &out.join(format!("{stem}-{slot}-initial.png")))?;
     controls(&tree, &out.join(format!("{stem}-{slot}-controls.jsonl")))?;
     // `UI_SHOTS_KNOB=<name>` picks the knob; else the first shown one.
     let wanted = std::env::var("UI_SHOTS_KNOB").ok();
@@ -439,7 +439,14 @@ fn controls(
         writeln!(lines, "{{\"page\":[{},{}]}}", p.size.width, p.size.height)?;
     }
     for (n, w) in tree.widgets.iter().enumerate() {
+        // A range with one value (Pacific's `ui_value_edit $x(-180,-180,1)`)
+        // cannot move in Kontakt either: not a control to sweep.
         let kind = match w.kind {
+            Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. }
+                if range.min.total_cmp(&range.max).is_eq() =>
+            {
+                continue;
+            }
             Kind::Knob { .. } => "knob",
             Kind::Slider { .. } => "slider",
             Kind::Button { .. } => "button",
