@@ -1,5 +1,5 @@
-//! The player's own presets in a part's header: Save, Save as, Rename and
-//! Delete after the preset list, each a click the player makes; naming and
+//! The player's own presets in a part's More menu: Save, Save as, Rename
+//! and Delete, each a click the player makes; naming and
 //! deleting ask in a sheet first.
 
 use mui::prelude::*;
@@ -23,15 +23,19 @@ pub enum PresetEdit {
     Delete,
 }
 
-/// What the header's preset menu offers after the presets, for the preset
-/// a part plays: Save only for a user preset (it replaces that file),
-/// Rename and Delete as well.
+/// What a part's More menu offers first, for the preset it plays: Save
+/// only for a user preset (it replaces that file), Rename and Delete too.
 #[must_use]
 pub(super) fn edits(playing: Option<&str>) -> &'static [&'static str] {
     if playing.is_some_and(|p| p.starts_with(USER)) {
-        &["Save", "Save as…", "Rename…", "Delete…"]
+        &[
+            "Save preset",
+            "Save preset as…",
+            "Rename preset…",
+            "Delete preset…",
+        ]
     } else {
-        &["Save as…"]
+        &["Save preset as…"]
     }
 }
 
@@ -39,13 +43,13 @@ pub(super) fn edits(playing: Option<&str>) -> &'static [&'static str] {
 /// rest open their sheet.
 pub(super) fn picked(app: &mut App, n: usize, name: &str, pick: &str, out: &mut Vec<Action>) {
     let sheet = match pick {
-        "Save" => {
+        "Save preset" => {
             let edit = PresetEdit::Save(name.to_owned());
             out.push(Action::Preset { part: n, edit });
             return;
         }
-        "Rename…" => Sheet::RenamePreset(n),
-        "Delete…" => Sheet::DeletePreset(n),
+        "Rename preset…" => Sheet::RenamePreset(n),
+        "Delete preset…" => Sheet::DeletePreset(n),
         _ => Sheet::SavePreset(n),
     };
     app.view.sheet = Some(sheet);

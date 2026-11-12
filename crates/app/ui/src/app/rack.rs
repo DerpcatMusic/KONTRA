@@ -297,28 +297,21 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         (Some(name), false) => name,
         (None, _) => "Select preset…",
     };
-    // The player's own presets: save, rename, delete, after the list.
-    let playing = current.and_then(|c| presets.get(c)).map(String::as_str);
-    let edits = super::preset::edits(playing);
-    let listed: Vec<&str> = names.iter().chain(edits).copied().collect();
     let preset = kit::dropdown(
         ui,
         menu,
         &id("preset"),
         (None, shown, "Preset"),
-        &listed,
+        &names,
         current,
     );
-    let mut edit = None;
-    match preset.changed.map(|i| (i, i.checked_sub(names.len()))) {
-        Some((preset, None)) => out.push(Action::Switch { part: n, preset }),
-        Some((_, Some(e))) => {
-            edit = edits
-                .get(e)
-                .map(|e| (*e, named.unwrap_or(&p.name).to_owned()))
-        }
-        None => {}
+    if let Some(preset) = preset.changed {
+        out.push(Action::Switch { part: n, preset });
     }
+    // The player's own presets: save, rename, delete, in the More menu.
+    let playing = current.and_then(|c| presets.get(c)).map(String::as_str);
+    let edits = super::preset::edits(playing);
+    let mut edit = None;
     let prev = icon_button(ui, id("prev"), Icon::Left, "Previous preset", false);
     let next = icon_button(ui, id("next"), Icon::Right, "Next preset", false);
     for (r, by) in [(&prev, -1), (&next, 1)] {
@@ -421,10 +414,16 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         close.el,
     ];
     if kit::toggle(ui, menu, &id("more"), more.changed) {
-        let m = kit::menu(ui, &id("more"), &["Duplicate", "Remove"], 1, None);
-        match m.changed {
-            Some(0) => out.push(Action::Duplicate(n)),
-            Some(_) => out.push(Action::Remove(n)),
+        let more: Vec<&str> = edits
+            .iter()
+            .chain(&["Duplicate", "Remove"])
+            .copied()
+            .collect();
+        let m = kit::menu(ui, &id("more"), &more, 1, None);
+        match m.changed.and_then(|i| more.get(i)).copied() {
+            Some("Duplicate") => out.push(Action::Duplicate(n)),
+            Some("Remove") => out.push(Action::Remove(n)),
+            Some(pick) => edit = Some((pick, named.unwrap_or(&p.name).to_owned())),
             None => {}
         }
         if m.changed.is_some() {
