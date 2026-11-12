@@ -3732,6 +3732,25 @@ fn a_script_loads_only_the_performance_view_it_has() {
     );
 }
 
+/// A knob's declared range reads back as its min and max, a performance
+/// view knob's too (Conflux loops its wavetables up to `$WTSelect`'s max).
+#[test]
+fn a_knobs_declared_range_reads_back() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "on init
+        load_performance_view(\"v\")
+        declare ui_knob $k(-5, 40, 1)
+        message(get_control_par(get_ui_id($k), $CONTROL_PAR_MIN_VALUE) & \" \" & ...
+            get_control_par(get_ui_id($k), $CONTROL_PAR_MAX_VALUE) & \" \" & ...
+            get_control_par(get_ui_id($wt), $CONTROL_PAR_MAX_VALUE))
+    end on";
+    let script = kontra_ksp::compile_with_view(source, &[], &[("$wt", &[0, 99, 1])]).unwrap();
+    let mut plan = Plan::new(vec![], 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "-5 40 99");
+}
+
 /// Conflux: a route the engine does not carry (a wavetable target) keeps
 /// the depth it was saved with; a script reads it, shows it and moves it.
 #[test]
@@ -4156,4 +4175,64 @@ fn a_reloaded_variable_keeps_what_init_wrote_after_reading_it() {
         e.last_message(),
         "k70 a5,6,7 m0 p9 q0 | k10 a5,0,7 m2 p1 q4"
     );
+}
+
+/// `set_zone_par` (KSP manual; Kontakt 8.13.1, probes/zonepar): a callback's
+/// edits wait for the host and go in together; the voice sounding in the
+/// zone that changed group fades out, the async ids complete after the
+/// swap, and the next note-on plays the zone through its new group.
+#[test]
+fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut moved = zone(&mut store, 0.5, 0);
+    (moved.id, moved.keys) = (0, 60..=60);
+    let mut other = zone(&mut store, 0.25, 1);
+    (other.id, other.keys) = (1, 100..=100);
+    let script = kontra_ksp::compile(
+        "on init
+            declare $a
+            declare $b
+            declare $c
+        end on
+        on note
+            if ($EVENT_NOTE = 61)
+                ignore_event($EVENT_ID)
+                $a := set_zone_par(0, $ZONE_PAR_GROUP, 1)
+                $b := set_zone_par(0, $ZONE_PAR_LOW_KEY, 72)
+                $c := set_zone_par(0, $ZONE_PAR_HIGH_KEY, 72)
+            end if
+        end on
+        on async_complete
+            message(\"done \" & $NI_ASYNC_ID & \" of \" & $a & \" \" & $b & \" \" & $c)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![moved, other], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.groups[1].level.gain = 2.0;
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    level(&mut e, &[on(61)]);
+    let mut edits = Vec::new();
+    e.drain_zone_edits(|edit| {
+        edits.push(edit);
+        true
+    });
+    assert_eq!(edits.len(), 3);
+    assert!(!e.last_message().starts_with("done"));
+    let mut plan = Plan::clone(e.plan());
+    let done: Vec<_> = edits
+        .iter()
+        .map(|x| (*x, plan.edit_zone(x.zone, x.par, x.value)))
+        .collect();
+    e.swap_plan(&mut Arc::new(plan), &done);
+    // The held voice's zone changed group: it fades out.
+    assert!(level(&mut e, &[]).abs() < 1e-4);
+    assert!(e.last_message().starts_with("done"), "{}", e.last_message());
+    assert!((level(&mut e, &[off(60), on(60)])).abs() < 1e-4);
+    assert!((level(&mut e, &[on(72)]) - 1.0).abs() < 1e-3);
 }

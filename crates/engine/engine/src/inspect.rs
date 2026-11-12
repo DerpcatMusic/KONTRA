@@ -21,7 +21,12 @@ impl Engine {
 
     /// EQ chains on summed voices, and the zones each feeds.
     pub fn eq_chains(&self) -> (usize, usize) {
-        let zones = self.zone_chain.iter().flatten().count();
+        let chained = |z: &&crate::plan::Zone| {
+            self.group_chain
+                .get(z.group as usize)
+                .is_some_and(Option::is_some)
+        };
+        let zones = self.plan.zones.iter().filter(chained).count();
         (self.chains.len(), zones)
     }
 

@@ -256,6 +256,9 @@ impl RackAudio {
                     lost += 1;
                 }
             });
+            let edits = &self.channels.zones.edits;
+            p.engine
+                .drain_zone_edits(|e| edits.send((n, generation, e)).is_ok());
             let files = &self.channels.files;
             p.engine
                 .drain_files(|r| files.send((n, generation, r)).is_ok());
@@ -325,6 +328,7 @@ impl RackAudio {
             && !self.channels.typed.is_full()
             && !self.channels.looks.is_full()
             && !self.channels.recalled.is_full()
+            && !self.channels.zones.done.is_full()
             && !self.channels.filed.is_full()
         {
             let Some(command) = self.channels.commands.recv() else {
@@ -382,6 +386,22 @@ impl RackAudio {
                             generation,
                             outgoing: [None, None],
                         }));
+                    }
+                }
+                Command::Zones {
+                    part,
+                    generation,
+                    mut swap,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part)
+                        && p.generation == generation
+                    {
+                        p.engine.swap_plan(&mut swap.plan, &swap.edits);
+                    }
+                    if let Err(swap) = self.channels.zones.done.send(swap) {
+                        // Checked for room first; if it ever fails, it frees here.
+                        self.dropped += 1;
+                        drop(swap);
                     }
                 }
                 Command::Effect {

@@ -419,6 +419,10 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     .is_some_and(|e| !e.is_empty())
         })
         .count();
+    let refused: Vec<_> = (engine.zone_edits_refused().iter().enumerate())
+        .filter(|(_, n)| **n > 0)
+        .map(|(slot, n)| format!("script {slot}: {n}"))
+        .collect();
     let summary = format!(
         "{}: {} UI models, {} controls, {failed} moves with errors\n  missing sample frames {}; offline wait timeouts {}; dropped trace events {}; truncated moves {truncated:?}; complete {complete}\n",
         loaded.name,
@@ -428,6 +432,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         engine.offline_wait_timeouts(),
         engine.trace_dropped()
     );
+    // `set_zone_par` calls refused because the queue was full, by script.
+    let summary = if refused.is_empty() {
+        summary
+    } else {
+        format!("{summary}  zone edits refused: {}\n", refused.join(", "))
+    };
     Ok((
         json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"trace_truncated":truncated,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
         summary,

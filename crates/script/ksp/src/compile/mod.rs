@@ -99,7 +99,7 @@ struct Function {
 pub fn compile<'a>(
     items: &[Item<'a>],
     conditions: Vec<String>,
-    view_names: &[(&'a str, Span)],
+    view_names: &[(&'a str, Span, &'a [i32])],
 ) -> Result<Script, Error> {
     let mut c = Compiler::<'a>::default();
     for item in items {
@@ -125,8 +125,8 @@ pub fn compile<'a>(
         };
         c.declarations(body)?;
     }
-    for &(name, span) in view_names {
-        c.view_control(name, span)?;
+    for &(name, span, params) in view_names {
+        c.view_control(name, span, params)?;
     }
     let mut callbacks: Vec<Callback> = Vec::new();
     let mut roots = Vec::new();
@@ -161,6 +161,9 @@ pub fn compile<'a>(
                 // several ui_control pairs). ponytail: the later one replaces the
                 // earlier, as a table keyed by control would; unverified in Kontakt.
                 c.in_init = kind == CallbackKind::Init;
+                if c.in_init {
+                    c.declared_ranges();
+                }
                 c.block(body)?;
                 c.in_init = false;
                 c.emit(Op::Exit);

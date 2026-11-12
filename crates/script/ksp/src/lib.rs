@@ -28,15 +28,15 @@ pub fn compile(source: &str, conditions: &[&str]) -> Result<Script, Error> {
 }
 
 /// [`compile`] for a script whose performance view has the controls `view`
-/// (names with their type marks, in the view's order). A script that loads
-/// a view uses its controls by name without declaring them; they are
-/// declared in the view's order, so their UI ids follow one another as
+/// (names with their type marks and declaration parameters, in the view's
+/// order). A script that loads a view uses its controls by name without
+/// declaring them; they are declared in the view's order, so their UI ids follow one another as
 /// Kontakt's do (Conflux reaches macro `k` as `get_ui_id($Footer__Macro__1)
 /// + k`). Names the view does not list are declared where first used.
 pub fn compile_with_view<'a>(
     source: &'a str,
     conditions: &[&str],
-    view: &[&'a str],
+    view: &[(&'a str, &'a [i32])],
 ) -> Result<Script, Error> {
     let mut script = compile_plain(source, conditions, view)?;
     script.program.code = kontra_vm::fuse(&script.program.code);
@@ -47,7 +47,7 @@ pub fn compile_with_view<'a>(
 fn compile_plain<'a>(
     source: &'a str,
     conditions: &[&str],
-    view: &[&'a str],
+    view: &[(&'a str, &'a [i32])],
 ) -> Result<Script, Error> {
     let mut tokens = lex::lex(source)?;
     let mut set = conditions.iter().map(|&c| c.to_owned()).collect();
@@ -56,9 +56,9 @@ fn compile_plain<'a>(
     let views = tokens.iter().any(
         |t| matches!(t.tok, lex::Tok::Word(w) if w.eq_ignore_ascii_case("load_performance_view")),
     );
-    let listed = view.iter().filter(|_| views).map(|&v| (v, Span::default()));
+    let listed = (view.iter().filter(|_| views)).map(|&(v, params)| (v, Span::default(), params));
     let used = tokens.iter().filter_map(|t| match t.tok {
-        lex::Tok::Var(v) if views && v.starts_with(['$', '%', '@']) => Some((v, t.span)),
+        lex::Tok::Var(v) if views && v.starts_with(['$', '%', '@']) => Some((v, t.span, &[][..])),
         _ => None,
     });
     let view_names = listed.chain(used).collect::<Vec<_>>();

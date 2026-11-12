@@ -85,16 +85,11 @@ pub fn positions(model: &kontra_ir::KnobModel) -> Positions {
 
 impl Behaviour {
     pub fn new(plan: &Plan) -> Self {
-        let mut groups: Vec<(u32, Counter)> = Vec::new();
-        for zone in &plan.zones {
-            let cycles = zone
-                .start
-                .iter()
-                .any(|(_, a)| matches!(a, Atom::RoundRobin(_)));
-            if cycles && !groups.iter().any(|(g, _)| *g == zone.group) {
-                groups.push((zone.group, Counter::default()));
-            }
-        }
+        // A counter for every group: `set_zone_par` may move a cycling zone
+        // into a group that had none.
+        let count = (plan.zones.iter().map(|z| z.group + 1).max().unwrap_or(0))
+            .max(u32::try_from(plan.groups.len()).unwrap_or(u32::MAX));
+        let groups: Vec<(u32, Counter)> = (0..count).map(|g| (g, Counter::default())).collect();
         // Every controller reads 0 until a message sets it, as in a fresh
         // Kontakt 8 (measured: %CC 1, 2, 7, 10, 11, 21, 64, 100 all 0); a
         // source that starts elsewhere says so (`Source::ControllerFrom`).

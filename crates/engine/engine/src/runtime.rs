@@ -99,6 +99,12 @@ impl Engine {
                     }
                 }
             }
+            Action::SetZonePar => match (u32::try_from(int(0)), self.engine_par(int(1))) {
+                (Ok(zone), Some(crate::EnginePar::Zone(par))) => {
+                    HostValue::Int(self.set_zone_par(zone, par, int(2)))
+                }
+                _ => return None,
+            },
             // Time Machine Pro's own voice pools: KONTRA's stretch draws on
             // the engine's voices, so the change is done at once.
             Action::SetVoiceLimit => HostValue::Int(self.start_async(Exit::Done)),

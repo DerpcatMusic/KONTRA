@@ -255,7 +255,11 @@ fn controls_ids_callbacks_and_persistence() {
         .find(|v| &*v.name == "$volume")
         .unwrap();
     assert_eq!(volume.persistence, Persistence::Snapshot);
-    let (b, ints) = &r.host.calls[0];
+    // `on init` first sets the knob's declared range, then runs.
+    let range = |i: usize| r.script.symbol(r.host.calls[i].1[1] as i32);
+    assert_eq!(range(0), Some("$CONTROL_PAR_MIN_VALUE"));
+    assert_eq!(r.host.calls[1].1[2], 1000);
+    let (b, ints) = &r.host.calls[2];
     assert_eq!(*b, Action::SetControlPar);
     assert_eq!(ints[0], i64::from(FIRST_UI_ID + 1));
     assert_eq!(r.script.symbol(ints[1] as i32), Some("$CONTROL_PAR_HIDE"));
@@ -622,14 +626,17 @@ fn hide_part_takes_a_variable_that_is_not_a_control() {
             hide_part($knob, $HIDE_PART_BG)
         end on",
     );
-    assert_eq!(r.host.calls.len(), 2);
-    assert_eq!(r.host.calls[0].0, Action::HidePart);
+    // After the knob's declared range.
+    let hides: Vec<_> = (r.host.calls.iter())
+        .filter(|c| c.0 == Action::HidePart)
+        .collect();
+    assert_eq!(hides.len(), 2);
     assert_eq!(
-        r.host.calls[0].1,
+        hides[0].1,
         [i64::from(FIRST_UI_ID), 1],
         "the plain variable's UI id and $HIDE_PART_BG"
     );
-    assert_eq!(r.host.calls[1].1, [i64::from(FIRST_UI_ID + 1), 1]);
+    assert_eq!(hides[1].1, [i64::from(FIRST_UI_ID + 1), 1]);
     // The argument still has to be a variable, as the manual says.
     assert!(compile("on init hide_part(3, 1) end on", &[]).is_err());
     // `on ui_control` still needs a real control.
@@ -713,7 +720,7 @@ fn view_controls_follow_one_another_in_the_views_order() {
         $b_id := get_ui_id($m2)
         $b_id := get_ui_id($m1)
     end on";
-    let script = kontra_ksp::compile_with_view(source, &[], &["$m1", "$m2"]).unwrap();
+    let script = kontra_ksp::compile_with_view(source, &[], &[("$m1", &[]), ("$m2", &[])]).unwrap();
     let index = |name: &str| {
         script
             .variables
