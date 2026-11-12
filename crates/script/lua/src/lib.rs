@@ -20,6 +20,7 @@ use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, Variadic};
 pub mod alloc;
 mod interrupt;
 mod literal;
+pub mod nui;
 pub mod probe;
 mod save;
 mod ui;
@@ -256,13 +257,10 @@ fn module_name(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(&name).to_lowercase()
 }
 
-/// A sandboxed state with the prelude, `require` and `source` loaded, and
-/// the count its interrupt stops at [`CHECKPOINTS`].
-fn state(
-    source: &str,
-    modules: &Arc<HashMap<String, String>>,
-    saved: &[(String, String)],
-) -> mlua::Result<(Lua, Arc<AtomicU32>)> {
+/// A state with the standard libraries a script may use, its heap capped
+/// at [`MEMORY`] and its runs counted: past the limit (at first
+/// [`LOAD_CHECKPOINTS`]) a run stops. The count and the limit, to set.
+fn sandbox() -> mlua::Result<(Lua, Arc<AtomicU32>, Arc<AtomicU32>)> {
     let libs = StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT;
     let lua = Lua::new_with(libs, LuaOptions::new())?;
     lua.set_memory_limit(MEMORY)?;
@@ -285,6 +283,17 @@ fn state(
         Ok(mlua::VmState::Continue)
     });
     interrupt::install(&lua)?;
+    Ok((lua, checkpoints, limit))
+}
+
+/// A sandboxed state with the prelude, `require` and `source` loaded, and
+/// the count its interrupt stops at [`CHECKPOINTS`].
+fn state(
+    source: &str,
+    modules: &Arc<HashMap<String, String>>,
+    saved: &[(String, String)],
+) -> mlua::Result<(Lua, Arc<AtomicU32>)> {
+    let (lua, checkpoints, limit) = sandbox()?;
     let actions = lua.create_table()?;
     for &action in Action::all() {
         actions.set(format!("{action:?}"), action.id())?;

@@ -1,0 +1,390 @@
+//! Kontakt 8 `native_ui`: its modules rewritten to Luau ([`transform`]), run
+//! in a sandboxed state with the same limits as a UVI script's, and rendered
+//! to a tree of primitive [`Node`]s for the host to lay out. Runs on the
+//! control thread, never the audio thread.
+
+pub mod transform;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use mlua::{Function, Lua, Table, Value};
+
+const PRELUDE: &str = include_str!("nui/prelude.lua");
+
+/// Why a page shows nothing: the module, its line when known, the reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub module: String,
+    pub line: Option<u32>,
+    pub message: String,
+}
+
+/// A primitive the page draws, with its properties, its modifiers in order
+/// (`frame`, `padding`, ...) and its children.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Node {
+    pub kind: String,
+    pub props: Vec<(String, Prop)>,
+    pub mods: Vec<(String, Vec<Prop>)>,
+    pub children: Vec<Node>,
+}
+
+impl Node {
+    /// Property `name`.
+    #[must_use]
+    pub fn prop(&self, name: &str) -> Option<&Prop> {
+        self.props.iter().find(|(k, _)| k == name).map(|(_, v)| v)
+    }
+}
+
+/// A property or modifier argument.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Prop {
+    Number(f64),
+    Text(String),
+    Bool(bool),
+    /// 0..255 channels, alpha 0..1.
+    Color([f64; 4]),
+    Node(Box<Node>),
+    /// Named arguments (`.frame(width = 1)`) or a plain table.
+    Table(Vec<(String, Prop)>),
+    /// A function the page holds (a gesture), by number for [`Page::call`].
+    Callback(u32),
+}
+
+impl Prop {
+    #[must_use]
+    pub fn number(&self) -> Option<f64> {
+        match self {
+            Self::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Field `name` of a table.
+    #[must_use]
+    pub fn field(&self, name: &str) -> Option<&Prop> {
+        match self {
+            Self::Table(t) => t.iter().find(|(k, _)| k == name).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+}
+
+/// A control the page connects to by name, as the host drives it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Control {
+    pub name: String,
+    pub label: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    /// A menu's entries: text and value.
+    pub entries: Vec<(String, f64)>,
+}
+
+/// A loaded page: its state, the count its interrupt stops at, its arena.
+pub struct Page {
+    lua: Lua,
+    checkpoints: Arc<AtomicU32>,
+    root: Function,
+    // Declared last: dropped after the state.
+    _arena: crate::alloc::Claim,
+}
+
+impl std::fmt::Debug for Page {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("nui::Page")
+    }
+}
+
+/// Loads the page `entry` (`"main"`) from `modules`: each `.nui` path under
+/// the library's `native_ui` folder, and its source.
+///
+/// # Errors
+/// The first module the rewrite does not cover, or the entry's load error.
+pub fn load(modules: &[(String, String)], entry: &str) -> Result<Page, Diagnostic> {
+    let mut sources = HashMap::new();
+    for (path, src) in modules {
+        let name = path.trim_end_matches(".nui").replace('\\', "/");
+        let lua = transform::transform(src).map_err(|e| Diagnostic {
+            module: path.clone(),
+            line: Some(e.line),
+            message: e.message,
+        })?;
+        sources.insert(name, lua);
+    }
+    let fail = |module: &str| {
+        let module = module.to_owned();
+        move |e: mlua::Error| Diagnostic {
+            module: module.clone(),
+            line: None,
+            message: e.to_string(),
+        }
+    };
+    let arena = crate::alloc::Claim::arena();
+    let load = arena.load();
+    let (lua, checkpoints, limit) = crate::sandbox().map_err(fail("native_ui"))?;
+    lua.load(PRELUDE)
+        .set_name("native_ui")
+        .exec()
+        .map_err(fail("native_ui"))?;
+    let require = require(&lua, sources).map_err(fail("native_ui"))?;
+    lua.globals()
+        .set("require", require.clone())
+        .map_err(fail("native_ui"))?;
+    let root = require.call::<Function>(entry).map_err(fail(entry))?;
+    limit.store(crate::CHECKPOINTS, Ordering::Relaxed);
+    drop(load);
+    Ok(Page {
+        lua,
+        checkpoints,
+        root,
+        _arena: arena,
+    })
+}
+
+/// `require` over the page's modules: `a.b` is `a/b.nui`, else
+/// `a/b/init.nui`; `native_ui`, `native_ui_util` and `kontakt` are built in.
+fn require(lua: &Lua, sources: HashMap<String, String>) -> mlua::Result<Function> {
+    let loaded = lua.create_table()?;
+    let builtins: Table = lua.globals().get("__builtins")?;
+    lua.create_function(move |lua, name: String| {
+        if let Ok(v) = builtins.get::<Value>(name.as_str())
+            && !v.is_nil()
+        {
+            return Ok(v);
+        }
+        let path = name.replace('.', "/");
+        let init = format!("{path}/init");
+        let (key, text) = [&path, &init]
+            .into_iter()
+            .find_map(|k| sources.get(k.as_str()).map(|t| (k.clone(), t)))
+            .ok_or_else(|| mlua::Error::runtime(format!("module {name} not found")))?;
+        if let Ok(v) = loaded.get::<Value>(key.as_str())
+            && !v.is_nil()
+        {
+            return Ok(v);
+        }
+        let value: Value = lua.load(text.as_str()).set_name(&key).call(())?;
+        let value = if value.is_nil() {
+            Value::Boolean(true)
+        } else {
+            value
+        };
+        loaded.set(key, value.clone())?;
+        Ok(value)
+    })
+}
+
+impl Page {
+    /// The controls the page's parameters read their properties from.
+    ///
+    /// # Errors
+    /// Only when the state is out of memory.
+    pub fn set_controls(&mut self, controls: &[Control]) -> Result<(), Diagnostic> {
+        let fail = |e: mlua::Error| Diagnostic {
+            module: "native_ui".into(),
+            line: None,
+            message: e.to_string(),
+        };
+        let lua = &self.lua;
+        let all = lua.create_table().map_err(fail)?;
+        for c in controls {
+            let t = lua.create_table().map_err(fail)?;
+            t.set("label", c.label.as_str()).map_err(fail)?;
+            t.set("min", c.min).map_err(fail)?;
+            t.set("max", c.max).map_err(fail)?;
+            t.set("default", c.default).map_err(fail)?;
+            let entries = lua.create_table().map_err(fail)?;
+            for (n, (text, value)) in (1..).zip(&c.entries) {
+                let e = lua.create_table().map_err(fail)?;
+                e.set("text", text.as_str()).map_err(fail)?;
+                e.set("value", *value).map_err(fail)?;
+                e.set("shown", true).map_err(fail)?;
+                entries.set(n, e).map_err(fail)?;
+            }
+            t.set("entries", entries).map_err(fail)?;
+            all.set(c.name.as_str(), t).map_err(fail)?;
+        }
+        lua.globals().set("__controls", all).map_err(fail)
+    }
+
+    /// The tree as it stands, with `params` (control name and value) read
+    /// by the page's parameters.
+    ///
+    /// # Errors
+    /// The page's runtime error, as Luau reports it.
+    pub fn render(&mut self, params: &[(String, f64)]) -> Result<Option<Node>, Diagnostic> {
+        let fail = |e: mlua::Error| Diagnostic {
+            module: "native_ui".into(),
+            line: None,
+            message: e.to_string(),
+        };
+        self.checkpoints.store(0, Ordering::Relaxed);
+        let globals = self.lua.globals();
+        let table: Table = globals.get("__params").map_err(fail)?;
+        for (name, value) in params {
+            table.set(name.as_str(), *value).map_err(fail)?;
+        }
+        let render: Function = globals.get("__render").map_err(fail)?;
+        let tree: Value = render.call(self.root.clone()).map_err(fail)?;
+        Ok(node(&tree))
+    }
+}
+
+fn node(v: &Value) -> Option<Node> {
+    let Value::Table(t) = v else { return None };
+    let kind = t.get::<String>("kind").ok()?;
+    let props = t
+        .get::<Table>("props")
+        .map(|p| fields(&p))
+        .unwrap_or_default();
+    let mods = t
+        .get::<Table>("mods")
+        .map(|m| {
+            m.sequence_values::<Table>()
+                .flatten()
+                .filter_map(|m| {
+                    let name = m.get::<String>(1).ok()?;
+                    let args = m
+                        .sequence_values::<Value>()
+                        .flatten()
+                        .skip(1)
+                        .filter_map(|a| prop(&a))
+                        .collect();
+                    Some((name, args))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let children = t
+        .get::<Table>("children")
+        .map(|c| {
+            c.sequence_values::<Value>()
+                .flatten()
+                .filter_map(|c| node(&c))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Node {
+        kind,
+        props,
+        mods,
+        children,
+    })
+}
+
+fn fields(t: &Table) -> Vec<(String, Prop)> {
+    let mut out: Vec<(String, Prop)> = t
+        .pairs::<Value, Value>()
+        .flatten()
+        .filter_map(|(k, v)| {
+            let k = match k {
+                Value::String(s) => s.to_str().ok()?.to_owned(),
+                Value::Integer(i) => i.to_string(),
+                Value::Number(n) => n.to_string(),
+                _ => return None,
+            };
+            Some((k, prop(&v)?))
+        })
+        .collect();
+    // Table order is not the source's: sorted, so renders compare.
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn prop(v: &Value) -> Option<Prop> {
+    Some(match v {
+        Value::Integer(i) => Prop::Number(*i as f64),
+        Value::Number(n) => Prop::Number(*n),
+        Value::Boolean(b) => Prop::Bool(*b),
+        Value::String(s) => Prop::Text(s.to_str().ok()?.to_owned()),
+        Value::Table(t) => {
+            if t.get::<bool>("__color").unwrap_or(false) {
+                let c = |k: &str| t.get::<f64>(k).unwrap_or(0.);
+                Prop::Color([c("r"), c("g"), c("b"), c("a")])
+            } else if let Ok(n) = t.get::<u32>("__callback") {
+                Prop::Callback(n)
+            } else if t.contains_key("kind").unwrap_or(false) {
+                Prop::Node(Box::new(node(v)?))
+            } else {
+                Prop::Table(fields(t))
+            }
+        }
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(modules: &[(&str, &str)]) -> Page {
+        let modules: Vec<(String, String)> = modules
+            .iter()
+            .map(|(p, s)| ((*p).to_owned(), (*s).to_owned()))
+            .collect();
+        load(&modules, "main").unwrap()
+    }
+
+    #[test]
+    fn a_page_renders_primitives_through_components_and_contexts() {
+        let mut page = page(&[
+            (
+                "lib/init.nui",
+                r#"local ui = require "native_ui"
+                local Theme = ui.create_context("light")
+                return {
+                    Theme = Theme,
+                    Label = function(props)
+                        local theme = ui.use_context(Theme)()
+                        return @ui.Text { text = props.text .. "/" .. theme }
+                        .frame(width = 40)
+                    end,
+                }"#,
+            ),
+            (
+                "main.nui",
+                r#"local ui = require "native_ui"
+                local lib = require "lib"
+                local kontakt = require "kontakt"
+                return function()
+                    local page = kontakt.connect_parameter("Header__Page")
+                    return @ui.VStack {
+                        spacing = 2
+                        @lib.Label { text = "a" }
+                        @{ page:value() == 1 and @ui.Spacer{} }
+                    }
+                    .context(key = lib.Theme, value = "dark")
+                end"#,
+            ),
+        ]);
+        let tree = page
+            .render(&[("Header__Page".into(), 1.)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(tree.kind, "VStack");
+        assert_eq!(tree.prop("spacing"), Some(&Prop::Number(2.)));
+        let label = &tree.children[0];
+        assert_eq!(label.prop("text"), Some(&Prop::Text("a/dark".into())));
+        assert_eq!(label.mods[0].0, "frame");
+        assert_eq!(label.mods[0].1[0].field("width"), Some(&Prop::Number(40.)));
+        assert_eq!(tree.children[1].kind, "Spacer");
+        // The parameter moved: the spacer goes.
+        let tree = page
+            .render(&[("Header__Page".into(), 0.)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(tree.children.len(), 1);
+    }
+
+    #[test]
+    fn a_module_the_rewrite_does_not_cover_is_named_with_its_line() {
+        let modules = vec![("main.nui".to_owned(), "return 1\nreturn @ 3".to_owned())];
+        let err = load(&modules, "main").unwrap_err();
+        assert_eq!((err.module.as_str(), err.line), ("main.nui", Some(2)));
+    }
+}
