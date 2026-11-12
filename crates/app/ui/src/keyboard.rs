@@ -119,12 +119,7 @@ pub fn keyboard(
     });
     let keys = keys.clone();
     let face = canvas(move |s| {
-        let rect = |x: f64, y: f64, w: f64, h: f64| {
-            Path::polyline(
-                [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|(x, y)| Point::new(x, y)),
-                true,
-            )
-        };
+        let rect = |x: f64, y: f64, w: f64, h: f64| crate::kit::rect_path(x, y, x + w, y + h);
         let all = layout(keys.range, s.width);
         let held = |n: u8| keys.held.contains(&n);
         // A keyswitch takes its articulation's colour; a key a part plays

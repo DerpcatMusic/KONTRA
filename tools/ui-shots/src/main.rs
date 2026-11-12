@@ -1,6 +1,7 @@
 //! Draws each instrument's Original view headless, the way the editor will,
 //! and says what it cost: first frame, settled, paint, idle, RAM. Saves the
-//! settled page as `<out>/<name>-<slot>.png`.
+//! settled page as `<out>/<name>-<slot>.png`, and the face before any control
+//! moves as `<out>/<name>-<slot>-initial.png`. `UI_SHOTS_SCALE` sets the zoom.
 //! With `--app`, the page is also drawn where the user meets it, inside an
 //! open part of the rack, and saved as `<out>/<name>-<slot>-app.png`.
 //! `cargo run --release -p ui-shots -- [--press <control>] [--app] <out dir> <instrument>...`
@@ -69,7 +70,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Some(p) = live.tree.pages.first() else {
                 continue;
             };
-            let (w, h) = (p.size.width.ceil() as u16, p.size.height.ceil() as u16);
+            let scale = scale();
+            let (w, h) = (
+                (p.size.width * scale).ceil() as u16,
+                (p.size.height * scale).ceil() as u16,
+            );
             let start = Instant::now();
             // The worker opens the library itself: the first frame waits on nothing.
             let (reader, library) = (path.clone(), std::sync::Mutex::new(None));
@@ -81,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
             let mut ui = kontra_ui::ui();
             let frame = |ui: &mut Ui, pictures: &mut Pictures, live: &Live| {
-                let (el, built) = view::page(ui, 0, &live.tree, PageRef(0), pictures, (1., &[]));
+                let (el, built) = view::page(ui, 0, &live.tree, PageRef(0), pictures, (scale, &[]));
                 ui.frame(
                     el,
                     Some(Size::new(f64::from(w), f64::from(h))),
@@ -120,6 +125,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The face as it loads, for the rack shot: the timing moves below
             // change what a library shows (ANALOG's knob shows its value).
             let untouched = live.tree.clone();
+            // The face before anything moves: what the oracle's screenshot shows.
+            let stem = loaded.name.replace(['/', ' '], "_");
+            shot(
+                &untouched,
+                &path,
+                &out.join(format!("{stem}-{slot}-initial.png")),
+            )?;
+            controls(
+                &untouched,
+                &out.join(format!("{stem}-{slot}-controls.jsonl")),
+            )?;
             // One shown knob moved: the widgets that frame builds.
             let knob = live.tree.widgets.iter().enumerate().find_map(|(n, w)| {
                 let knob = matches!(w.kind, Kind::Knob { .. } | Kind::Slider { .. });
@@ -326,7 +342,8 @@ fn lua_page(
     };
     settle(engine, &mut tree);
     let stem = name.replace(['/', ' '], "_");
-    shot(&tree, path, &out.join(format!("{stem}-{slot}.png")))?;
+    shot(&tree, path, &out.join(format!("{stem}-{slot}-initial.png")))?;
+    controls(&tree, &out.join(format!("{stem}-{slot}-controls.jsonl")))?;
     // `UI_SHOTS_KNOB=<name>` picks the knob; else the first shown one.
     let wanted = std::env::var("UI_SHOTS_KNOB").ok();
     // A shown knob or slider: its number, name and top.
@@ -370,7 +387,11 @@ fn shot(
     let Some(p) = tree.pages.first() else {
         return Ok(());
     };
-    let (w, h) = (p.size.width.ceil() as u16, p.size.height.ceil() as u16);
+    let scale = scale();
+    let (w, h) = (
+        (p.size.width * scale).ceil() as u16,
+        (p.size.height * scale).ceil() as u16,
+    );
     let (reader, library) = (path.to_path_buf(), std::sync::Mutex::new(None));
     let mut pictures = Pictures::new(Box::new(move |p: &str| {
         let mut library = library.lock().ok()?;
@@ -380,7 +401,7 @@ fn shot(
     }));
     let mut ui = kontra_ui::ui();
     let frame = |ui: &mut Ui, pictures: &mut Pictures| {
-        let (el, _) = view::page(ui, 0, tree, PageRef(0), pictures, (1., &[]));
+        let (el, _) = view::page(ui, 0, tree, PageRef(0), pictures, (scale, &[]));
         ui.frame(
             el,
             Some(Size::new(f64::from(w), f64::from(h))),
@@ -390,14 +411,76 @@ fn shot(
         .map(|_| ())
         .map_err(|e| format!("{e:?}"))
     };
+    // A frame can ask for more pictures (stock art, then the fonts it
+    // shows): frame again until nothing is pending.
     frame(&mut ui, &mut pictures)?;
     while pictures.pending() > 0 {
-        if !pictures.poll() {
-            std::thread::sleep(Duration::from_micros(500));
+        while pictures.pending() > 0 {
+            if !pictures.poll() {
+                std::thread::sleep(Duration::from_micros(500));
+            }
         }
+        frame(&mut ui, &mut pictures)?;
     }
-    frame(&mut ui, &mut pictures)?;
     save(file, w, h, &paint(&ui, w, h)?)
+}
+
+/// The page size, then every shown control a player can move, one JSON line
+/// each: its widget
+/// number, name, kind and page rectangle in points, for the real-window
+/// sweep (`tools/kontra-window/sweep.py`).
+fn controls(
+    tree: &kontra_ui_model::Interface,
+    file: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+    let mut lines = String::new();
+    if let Some(p) = tree.pages.first() {
+        writeln!(lines, "{{\"page\":[{},{}]}}", p.size.width, p.size.height)?;
+    }
+    for (n, w) in tree.widgets.iter().enumerate() {
+        // A range with one value (Pacific's `ui_value_edit $x(-180,-180,1)`)
+        // cannot move in Kontakt either: not a control to sweep.
+        let kind = match w.kind {
+            Kind::Knob { range, .. }
+            | Kind::Slider { range, .. }
+            | Kind::ValueEdit { range, .. }
+                if range.min.total_cmp(&range.max).is_eq() =>
+            {
+                continue;
+            }
+            Kind::Knob { .. } => "knob",
+            Kind::Slider { .. } => "slider",
+            Kind::Button { .. } => "button",
+            Kind::Switch => "switch",
+            Kind::Menu { .. } => "menu",
+            Kind::ValueEdit { .. } => "value_edit",
+            Kind::Table { .. } => "table",
+            Kind::Xy { .. } => "xy",
+            _ => continue,
+        };
+        if !tree.visible(WidgetRef(n)) || !w.enabled {
+            continue;
+        }
+        let r = tree.page_rect(WidgetRef(n));
+        writeln!(
+            lines,
+            "{{\"widget\":{n},\"name\":{:?},\"kind\":\"{kind}\",\"rect\":[{},{},{},{}]}}",
+            w.name, r.x, r.y, r.width, r.height
+        )?;
+    }
+    std::fs::write(file, lines)?;
+    Ok(())
+}
+
+/// `UI_SHOTS_SCALE=<f>` draws pages at that zoom (1.5 matches the oracle's
+/// 150% Kontakt screenshots); 1 otherwise.
+fn scale() -> f64 {
+    std::env::var("UI_SHOTS_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|s: &f64| *s > 0.)
+        .unwrap_or(1.)
 }
 
 fn ms(d: Duration) -> f64 {

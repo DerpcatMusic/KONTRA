@@ -12,7 +12,7 @@ use kontra_engine::{ControlLook, Engine, FIRST_FONT, Key, MenuItem, Page, Text, 
 use kontra_ui_model as model;
 
 use crate::ui::lua::Page as _;
-use crate::ui::{Changes, Face, Library, Live, Looks};
+use crate::ui::{Changes, Face, Library, Live, Looks, Waves};
 
 /// The interface of a part's first script with one.
 pub struct View {
@@ -24,6 +24,8 @@ pub struct View {
     pub(crate) frame: Option<Box<LookFrame>>,
     /// The library's resources, opened once and kept for later pictures.
     library: Option<Library>,
+    /// The zone samples its waveform displays show.
+    pub(crate) waves: Waves,
 }
 
 /// A KSP script's tree and what keeps it current, or a Lua script's tree.
@@ -99,6 +101,17 @@ impl View {
         Some(view)
     }
 
+    /// Gives the page's waveform displays the instrument's zone samples
+    /// (`attach_zone`); they draw empty until it has them.
+    #[must_use]
+    pub fn with_waves(mut self, mut waves: Waves) -> Self {
+        if let Shown::Ksp(live) = &mut self.shown {
+            waves.fill(&mut live.tree);
+        }
+        self.waves = waves;
+        self
+    }
+
     /// Script slot `slot`'s page, or `None` when it has none or the tree it
     /// declares is malformed.
     fn at_slot(
@@ -143,6 +156,7 @@ impl View {
             revision: 0,
             frame: Some(frame),
             library: None,
+            waves: Waves::default(),
         }
     }
 
@@ -189,6 +203,7 @@ impl View {
         if frame.state == Filled::Whole {
             let changes: Changes = live.refresh(face, self.slot, &*frame, &meta);
             if !changes.is_empty() {
+                self.waves.fill(&mut live.tree);
                 self.revision += 1;
             }
         }
@@ -272,6 +287,8 @@ pub struct LookFrame {
     /// The keyboard's keys, by note (a fixed 128: copied in place).
     keys: Vec<Key>,
     pressed_support: bool,
+    /// The last `message` a script printed.
+    message: Text,
     state: Filled,
 }
 
@@ -335,6 +352,7 @@ impl LookFrame {
                 .collect(),
             keys: now.keys().to_vec(),
             pressed_support: now.pressed_support(),
+            message: Text::from_str_cut(now.message()).0,
             state: Filled::No,
         })
     }
@@ -389,6 +407,7 @@ impl LookFrame {
             // Room for the engine's 128 keys, though a Lua page shows none.
             keys: Vec::with_capacity(128),
             pressed_support: false,
+            message: Text::EMPTY,
             state: Filled::No,
         })
     }
@@ -474,6 +493,7 @@ impl LookFrame {
             whole = false;
         }
         self.pressed_support = engine.pressed_support();
+        self.message = Text::from_str_cut(engine.last_message()).0;
         // Only what can show: a widget whose parent shows (Augmented
         // Orchestra makes 10,145, about 100 of them shown at once).
         for &n in &self.reads {
@@ -641,6 +661,10 @@ impl Looks for LookFrame {
 
     fn pressed_support(&self) -> bool {
         self.pressed_support
+    }
+
+    fn message(&self) -> &str {
+        self.message.as_str()
     }
 }
 
