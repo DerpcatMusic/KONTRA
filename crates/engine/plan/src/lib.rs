@@ -337,6 +337,8 @@ pub struct Zone {
     pub velocities: RangeInclusive<u8>,
     /// See [`ir::Zone::slot`].
     pub slot: u16,
+    /// See [`ir::Zone::id`].
+    pub id: u32,
     /// Start conditions folded left to right by their joins; empty always starts.
     pub start: Vec<(ir::Join, Atom)>,
     pub trigger: Trigger,
@@ -380,6 +382,7 @@ impl Zone {
             keys: 0..=127,
             velocities: 1..=127,
             slot: 0,
+            id: 0,
             start: Vec::new(),
             trigger: Trigger::Attack,
             crossfades: Vec::new(),

@@ -268,7 +268,9 @@ widget = function(kind, name, value, ...)
 	if name ~= nil and __saved[name] ~= nil and kind ~= "Table" then
 		table.insert(saved_widgets, w)
 	end
-	local pos, size = fields.pos or {}, fields.size or {}
+	-- UVI names it `position` (UVIWorkstation's Widget properties: width,
+	-- height, position, bounds); `pos` is kept for scripts that use it.
+	local pos, size = fields.position or fields.pos or {}, fields.size or {}
 	local bounds = fields.bounds or {}
 	w.x, w.y = pos[1] or bounds[1] or 0, pos[2] or bounds[2] or 0
 	w.width, w.height = size[1] or bounds[3] or 0, size[2] or bounds[4] or 0

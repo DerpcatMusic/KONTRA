@@ -30,6 +30,8 @@ pub(super) struct Widget<'a> {
     pub source: &'a model::Widget,
     pub rect: model::Rect,
     pub picture: Option<Picture<'a>>,
+    /// A slider's handle, drawn over its picture at its value.
+    pub handle: Option<Picture<'a>>,
     pub style: Option<&'a model::TextStyle>,
     pub position: f64,
     pub look: Option<stock::Look>,
@@ -64,7 +66,7 @@ pub(super) fn page<'a>(
             if !tree.visible(index) || !on_page(raw) {
                 return None;
             }
-            let picture = w.images.first().filter(|_| !bare).and_then(|use_| {
+            let picture = |use_: &ImageUse| {
                 let (path, meta) = image_asset(tree, use_.asset)?;
                 Some(Picture {
                     use_: *use_,
@@ -77,14 +79,22 @@ pub(super) fn page<'a>(
                         pressed.binary_search(&index).is_ok(),
                     ),
                     size: {
-                        let size = drawn(raw, meta);
+                        // A handle keeps its own size to ride its track.
+                        let size = match (use_.role, meta.size) {
+                            (Role::Handle, Some(own)) => own,
+                            _ => drawn(raw, meta),
+                        };
                         model::Size {
                             width: size.width * scale,
                             height: size.height * scale,
                         }
                     },
                 })
-            });
+            };
+            let (handles, faces): (Vec<&ImageUse>, Vec<&ImageUse>) =
+                w.images.iter().partition(|u| u.role == Role::Handle);
+            let handle = handles.first().filter(|_| !bare).and_then(|u| picture(u));
+            let picture = faces.first().filter(|_| !bare).and_then(|u| picture(u));
             let style = w.style.and_then(|s| tree.styles.get(s.0));
             let position = position(w);
             let look = stock::Look::of(
@@ -111,6 +121,7 @@ pub(super) fn page<'a>(
                     height: raw.height * scale,
                 },
                 picture,
+                handle,
                 style,
                 position,
                 look,
@@ -206,7 +217,10 @@ pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
 }
 
 /// Geometry and ink of a label, in view points. Explicit line breaks keep
-/// their empty rows and use the source's measured line pitch.
+/// their empty rows and use the source's measured line pitch. A Kontakt
+/// label's words start at its top however tall it is (Areia's 18- and
+/// 22-point labels both ink from 3.3 points down in Kontakt 8); anything
+/// else's single line sits in its middle.
 pub(super) struct Text {
     pub size: f64,
     pub line: f64,
@@ -221,42 +235,49 @@ pub(super) fn text(
     words: &str,
     style: Option<&model::TextStyle>,
     widget: &model::Widget,
-    height: f64,
-    scale: f64,
+    (height, scale): (f64, f64),
+    source: model::Source,
 ) -> Text {
     let size = style.and_then(|s| s.size).map_or(super::TEXT, f64::from) * scale;
     let multiline = words.contains('\n');
     let line = size * if multiline { 13. / 11. } else { 1.25 };
-    let top = widget.text_y.map_or_else(
-        || {
-            if multiline {
-                0.
-            } else {
-                ((height - line) / 2.).max(0.)
-            }
-        },
-        |y| f64::from(y) * scale,
-    );
+    let lua = matches!(source, model::Source::FalconLua);
+    let (align, top) = placed(words, style, widget, (height, line, scale), !lua);
+    let label = matches!(widget.kind, model::Kind::Label);
     Text {
         size,
         line,
-        top,
-        inset: if matches!(widget.kind, model::Kind::Label) {
-            7. * scale
-        } else {
-            2. * scale
-        },
-        align: style.map_or(
-            if matches!(widget.kind, model::Kind::Label) {
-                model::Align::Left
-            } else {
-                model::Align::Center
-            },
-            |s| s.align,
-        ),
+        top: top.max(0.),
+        inset: if label { 7. } else { 2. } * scale,
+        align,
         color: style.map(|s| s.color),
         multiline,
     }
+}
+
+/// How a widget's words align across it, and where their first line's top
+/// sits: a label's at its top when `label_from_top` (Kontakt), explicit
+/// lines always at the top, anything else in its middle.
+fn placed(
+    words: &str,
+    style: Option<&model::TextStyle>,
+    widget: &model::Widget,
+    (height, line, scale): (f64, f64, f64),
+    label_from_top: bool,
+) -> (model::Align, f64) {
+    let label = matches!(widget.kind, model::Kind::Label);
+    let fallback = if label {
+        model::Align::Left
+    } else {
+        model::Align::Center
+    };
+    let from_top = words.contains('\n') || (label && label_from_top);
+    let top = widget
+        .text_y
+        .map_or(if from_top { 0. } else { (height - line) / 2. }, |y| {
+            f64::from(y) * scale
+        });
+    (style.map_or(fallback, |s| s.align), top)
 }
 
 /// One bitmap glyph and its page-local destination, in view points.
@@ -277,20 +298,8 @@ pub(super) fn glyphs(
     (scale, line): (f64, f64),
     width_of: impl Fn(usize) -> Option<u32>,
 ) -> Vec<Glyph> {
-    let align = style.map_or(
-        if matches!(widget.kind, model::Kind::Label) {
-            model::Align::Left
-        } else {
-            model::Align::Center
-        },
-        |s| s.align,
-    );
-    let multiline = words.contains('\n');
-    let top = widget
-        .text_y
-        .map_or(if multiline { 0. } else { (height - line) / 2. }, |y| {
-            f64::from(y) * scale
-        });
+    // Picture fonts are Kontakt's: a label starts at its top.
+    let (align, top) = placed(words, style, widget, (height, line, scale), true);
     let advance = |c| width_of(crate::pictures::glyph(c)).map_or(0., |w| f64::from(w) * scale);
     let mut result = Vec::new();
     for (n, row) in words.split('\n').enumerate() {
@@ -430,6 +439,31 @@ pub(super) fn label_fits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kontakt_label_starts_at_its_top_and_a_lua_one_sits_in_its_middle() {
+        let label = model::Widget::new(
+            "$label",
+            PageRef(0),
+            model::Rect::new(0, 0, 50, 22),
+            model::Kind::Label,
+        );
+        let top = |source| text("Sordino", None, &label, (22., 1.), source).top;
+        assert_eq!(top(model::Source::Ksp { slot: 0 }), 0.);
+        assert!(top(model::Source::FalconLua) > 0.);
+        let mut button = label.clone();
+        button.kind = model::Kind::Button { momentary: false };
+        assert!(
+            text(
+                "Go",
+                None,
+                &button,
+                (22., 1.),
+                model::Source::Ksp { slot: 0 }
+            )
+            .top > 0.
+        );
+    }
 
     #[test]
     fn a_held_button_selects_its_pressed_picture_in_the_plan() {
