@@ -596,8 +596,10 @@ fn sends(public: &[u8]) -> Option<ir::EffectKind> {
     Some(ir::EffectKind::Sends(levels))
 }
 
+/// Group `index`'s insert rack: `saved` (a snapshot's) or the group's own.
 pub(crate) fn group(
     group: &Group,
+    saved: Option<BParamArrayBParFX8>,
     index: usize,
     impulses: &mut Impulses,
     notes: &mut Notes,
@@ -606,7 +608,7 @@ pub(crate) fn group(
     let rack_at = u32::try_from(index)
         .ok()
         .map(|g| (ir::RackAt::Group(g), laws));
-    match group.insert_fx() {
+    match saved.map_or_else(|| group.insert_fx(), Ok) {
         Ok(array) => rack(
             &array,
             &format!("group {index} insert"),
@@ -622,6 +624,62 @@ pub(crate) fn group(
             );
             Vec::new()
         }
+    }
+}
+
+/// Puts `saved` racks (a snapshot's) in place of the program's own, kind
+/// by kind. Kontakt names a rack by its place among its id's chunks
+/// ([`program`]: the first `RACK` the insert rack, then send and main; the
+/// n-th `BUS` bus n), so the n-th saved one replaces the n-th own one; own
+/// ones the snapshot lacks stay, saved ones the program lacks are added
+/// after the last, where that place is theirs.
+pub(crate) fn replace_racks(children: &mut Vec<Chunk>, saved: Vec<Chunk>) {
+    let (racks, buses): (Vec<Chunk>, Vec<Chunk>) = saved.into_iter().partition(|c| c.id == RACK);
+    for (id, saved) in [(RACK, racks), (BUS, buses)] {
+        let mut saved = saved.into_iter();
+        for own in children.iter_mut().filter(|c| c.id == id) {
+            match saved.next() {
+                Some(chunk) => *own = chunk,
+                None => break,
+            }
+        }
+        children.extend(saved);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshots_racks_replace_the_programs_by_kind_and_add_what_it_lacks() {
+        let chunk = |id, tag: u8| Chunk {
+            id,
+            data: vec![tag],
+        };
+        let tags = |c: &[Chunk], id| -> Vec<u8> {
+            c.iter()
+                .filter(|c| c.id == id)
+                .filter_map(|c| c.data.first().copied())
+                .collect()
+        };
+        // The program has an insert rack and one bus; the snapshot an
+        // insert, a send and two buses.
+        let mut children = vec![chunk(1, 0), chunk(RACK, 10), chunk(BUS, 20)];
+        let saved = vec![
+            chunk(RACK, 11),
+            chunk(RACK, 12),
+            chunk(BUS, 21),
+            chunk(BUS, 22),
+        ];
+        replace_racks(&mut children, saved);
+        assert_eq!(tags(&children, RACK), [11, 12]);
+        assert_eq!(tags(&children, BUS), [21, 22]);
+        // A snapshot with fewer racks keeps the program's others.
+        let mut children = vec![chunk(RACK, 10), chunk(RACK, 13), chunk(BUS, 20)];
+        replace_racks(&mut children, vec![chunk(RACK, 11)]);
+        assert_eq!(tags(&children, RACK), [11, 13]);
+        assert_eq!(tags(&children, BUS), [20]);
     }
 }
 

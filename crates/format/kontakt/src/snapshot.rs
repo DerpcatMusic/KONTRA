@@ -7,7 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use kontra_ir as ir;
-use ni_file::kontakt::objects::{Snapshot, snapshot_metadata_names};
+use ni_file::kontakt::Chunk;
+use ni_file::kontakt::objects::{BParamArrayBParFX8, Snapshot, snapshot_metadata_names};
 
 use crate::{Error, container, translate};
 
@@ -27,6 +28,37 @@ pub struct Preset {
     /// Saved persistent values by script slot; an empty slot keeps the
     /// base's own.
     pub saved: Vec<Vec<String>>,
+    /// It saves the instrument's effect racks and groups' insert effects
+    /// too, not only script values (Kontakt's native snapshot state).
+    pub effects: bool,
+}
+
+/// What a snapshot saves of the instrument besides its scripts: the
+/// program's racks (instrument insert, send, main and bus chunks, as the
+/// program holds them) and each group's insert effects, by group. The
+/// translator reads them in place of the base's, by the same reader.
+pub(crate) struct Native {
+    pub racks: Vec<Chunk>,
+    pub groups: Vec<Option<BParamArrayBParFX8>>,
+}
+
+impl Native {
+    /// None for a script-only snapshot (it saves no group data).
+    ///
+    /// # Errors
+    /// When its group data does not decode: its effects are not guessed.
+    fn of(state: Snapshot) -> Result<Option<Self>, ni_file::Error> {
+        if state.groups.is_none() {
+            return Ok(None);
+        }
+        let groups = (state.group_snapshots()?.into_iter())
+            .map(|(_, g)| Some(g.fx))
+            .collect();
+        Ok(Some(Self {
+            racks: state.effect_children,
+            groups,
+        }))
+    }
 }
 
 /// Reads the snapshot at `path` as a [`Preset`].
@@ -35,24 +67,32 @@ pub struct Preset {
 /// When the file is not a snapshot this can read, or its base instrument
 /// is not found.
 pub fn preset(path: &Path) -> Result<Preset, Error> {
+    read(path).map(|(preset, _)| preset)
+}
+
+/// [`preset`], with what it saves of the instrument.
+fn read(path: &Path) -> Result<(Preset, Snapshot), Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let chunks = container::chunks(path)?;
     let state =
         (chunks.find_first(SNAPSHOT)).ok_or_else(|| Error::new(path, "snapshot", "missing"))?;
-    let state = Snapshot::try_from(state).map_err(decode("snapshot"))?;
+    let mut state = Snapshot::try_from(state).map_err(decode("snapshot"))?;
     let names = (chunks.find_first(METADATA))
         .ok_or_else(|| Error::new(path, "snapshot metadata", "missing"))?;
     let names = snapshot_metadata_names(names).map_err(decode("snapshot metadata"))?;
     let base = base(path, &names)?;
-    Ok(Preset {
+    let preset = Preset {
         name: (path.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
         base: std::path::absolute(&base).unwrap_or(base),
-        saved: state.persistent,
-    })
+        saved: std::mem::take(&mut state.persistent),
+        effects: state.groups.is_some(),
+    };
+    Ok((preset, state))
 }
 
 pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
-    let preset = preset(path)?;
+    let (preset, state) = read(path)?;
+    let native = Native::of(state).map_err(|e| Error::new(path, "snapshot groups", e))?;
     let (base_chunks, monolith, encrypted) = container::opened(&preset.base)?;
     let mut out = translate::instrument(
         &preset.base,
@@ -60,11 +100,32 @@ pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
         monolith,
         &preset.saved,
         encrypted,
+        native,
     )?;
     if !preset.name.is_empty() {
         out.name = preset.name;
     }
     Ok(out)
+}
+
+/// Kontakt saves a snapshot's group effects in the instrument's group
+/// order, one per group: each group of the two counts the other lacks is
+/// noted (a base group keeps its own effects, a saved one goes unused).
+pub(crate) fn unmatched(saved: usize, groups: usize, notes: &mut kontra_format::Notes) {
+    for group in groups..saved {
+        notes.add(
+            ir::Impact::Audible,
+            "snapshot group effects without a group",
+            group,
+        );
+    }
+    for group in saved..groups {
+        notes.add(
+            ir::Impact::Audible,
+            "group without snapshot group effects",
+            group,
+        );
+    }
 }
 
 /// The name of the instrument a snapshot was saved from. Factory snapshots
@@ -160,6 +221,42 @@ fn find(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_group_a_snapshot_and_its_instrument_do_not_share_is_noted() {
+        let noted = |saved, groups| {
+            let mut notes = kontra_format::Notes::default();
+            unmatched(saved, groups, &mut notes);
+            let found = notes.finish();
+            found
+                .iter()
+                .map(|d| format!("{}: {}", d.feature, d.detail))
+                .collect::<Vec<_>>()
+        };
+        assert!(noted(3, 3).is_empty());
+        assert_eq!(
+            noted(5, 3),
+            ["snapshot group effects without a group: 2× (first: 3)"]
+        );
+        assert_eq!(
+            noted(2, 3),
+            ["group without snapshot group effects: 1× (first: 2)"]
+        );
+    }
+
+    #[test]
+    fn a_snapshots_group_effects_that_do_not_decode_are_an_error_not_none() {
+        let state = |groups: Option<Vec<u8>>| Snapshot {
+            groups: groups.map(|data| Chunk { id: 0x50, data }),
+            version: 1,
+            group_count: 2,
+            effect_children: Vec::new(),
+            persistent: Vec::new(),
+        };
+        assert!(matches!(Native::of(state(None)), Ok(None)), "script-only");
+        // It says two groups and holds none of them.
+        assert!(Native::of(state(Some(2u32.to_le_bytes().to_vec()))).is_err());
+    }
 
     #[test]
     fn a_template_name_binds_by_its_second_name() {

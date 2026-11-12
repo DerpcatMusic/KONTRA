@@ -89,7 +89,7 @@ pub fn prepare(
                 tune: g.tune,
             },
             purged: g.purged,
-            inserts: g.inserts.clone(),
+            inserts: Vec::new(),
             mods: g.mods.clone(),
             envelope: envelope(g.envelope, rate),
             envelopes: g.envelopes.clone(),
@@ -111,7 +111,7 @@ pub fn prepare(
                 name: b.name.clone(),
                 gain: gain(b.volume_db),
                 pan: b.pan,
-                inserts: b.inserts.clone(),
+                inserts: Vec::new(),
                 sends: b.sends.clone(),
                 to_main: b.to_main,
                 enabled: true,
@@ -120,12 +120,37 @@ pub fn prepare(
             })
             .collect();
     }
-    plan.inserts.clone_from(&instrument.inserts);
-    plan.sends.clone_from(&instrument.sends);
-    plan.main.clone_from(&instrument.main);
     plan.output = instrument.output;
     plan.route_pitch = instrument.route_pitch;
     plan.steal_whole_groups = instrument.steal_whole_groups;
+    effects(&mut plan, instrument, rate, &mut diagnostics);
+    plan.polyphony = polyphony;
+    plan.voice_groups.clone_from(&instrument.voice_groups);
+    plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();
+    plan.switches = switches;
+    (plan, diagnostics)
+}
+
+/// Puts `instrument`'s effects into `plan`, whose groups and buses are
+/// its own: every rack, the buses' levels, the slots' laws and the
+/// convolution responses (read here). A build does it, and so does a
+/// snapshot that saves other effects for the same instrument.
+pub fn effects(
+    plan: &mut Plan,
+    instrument: &ir::Instrument,
+    rate: u32,
+    diagnostics: &mut Vec<ir::Diagnostic>,
+) {
+    for (g, from) in plan.groups.iter_mut().zip(&instrument.groups) {
+        g.inserts.clone_from(&from.inserts);
+    }
+    for (b, from) in plan.buses.iter_mut().zip(&instrument.buses) {
+        b.inserts.clone_from(&from.inserts);
+        (b.gain, b.pan) = (gain(from.volume_db), from.pan);
+    }
+    plan.inserts.clone_from(&instrument.inserts);
+    plan.sends.clone_from(&instrument.sends);
+    plan.main.clone_from(&instrument.main);
     plan.slot_laws.clone_from(&instrument.slot_laws);
     plan.slot_models.clone_from(&instrument.slot_models);
     plan.slot_shapes.clone_from(&instrument.slot_shapes);
@@ -171,11 +196,6 @@ pub fn prepare(
             plan.responses.push((name.clone(), s.clone()));
         }
     }
-    plan.polyphony = polyphony;
-    plan.voice_groups.clone_from(&instrument.voice_groups);
-    plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();
-    plan.switches = switches;
-    (plan, diagnostics)
 }
 
 /// Loads each sample a resident zone plays, pinning the union of its zones'
