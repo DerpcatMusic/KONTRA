@@ -46,6 +46,7 @@ impl Engine {
             }
             let age = modulators::Age {
                 warp: slot.warp,
+                stretch: slot.stretch,
                 chaos: slot.chaos.map(|c| c[3]),
                 ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
             };

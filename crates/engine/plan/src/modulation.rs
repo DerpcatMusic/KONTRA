@@ -16,6 +16,9 @@ pub struct Age {
     pub warp: [f32; WARPS],
     /// The voice's chaotic LFOs' levels this span (at the current span).
     pub chaos: [f32; WARPS],
+    /// How much the voice's attack routes stretched the group's first
+    /// [`WARPS`] envelopes' first segment, fixed at note-on (1: as drawn).
+    pub stretch: [f32; WARPS],
 }
 
 /// How many of a group's LFOs a live rate route can move.
@@ -28,6 +31,7 @@ impl Age {
         now: 0.0,
         warp: [0.0; WARPS],
         chaos: [0.0; WARPS],
+        stretch: [1.0; WARPS],
     };
 }
 
@@ -76,11 +80,21 @@ pub fn hz(l: &ir::Lfo, tempo: f32) -> f32 {
 
 /// The envelope's level at `age`.
 pub fn envelope(e: &ir::Breakpoints, age: Age) -> f32 {
+    stretched(e, age, 1.0)
+}
+
+/// [`envelope`] with its first segment (the attack) `attack` times as long,
+/// as a voice's attack routes set it at note-on; what follows keeps its own
+/// times, shifted by the change.
+pub fn stretched(e: &ir::Breakpoints, age: Age, attack: f32) -> f32 {
+    let a = e.points.first().map_or(0.0, |p| p.ms.max(0.0) / 1000.0);
+    let s = attack.max(0.0);
+    let unstretch = |t: f32| if t < a * s { t / s } else { t + a * (1.0 - s) };
     let Some((sustain, released)) = e.sustain.zip(age.released) else {
-        return held(e, age.held);
+        return held(e, unstretch(age.held));
     };
     let after = e.points.get(sustain + 1..).unwrap_or_default();
-    walk(held(e, released), after, age.held - released).0
+    walk(held(e, unstretch(released)), after, age.held - released).0
 }
 
 /// The level `t` seconds after the start with the key down: through the

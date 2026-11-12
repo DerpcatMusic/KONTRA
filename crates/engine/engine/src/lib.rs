@@ -134,6 +134,8 @@ struct Slot {
     warp: [f32; modulators::WARPS],
     /// Its chaotic LFOs' states ([`modulators::Chaos`]).
     chaos: [modulators::Chaos; modulators::WARPS],
+    /// Its envelopes' attack stretch, fixed at note-on ([`modulators::Age::stretch`]).
+    stretch: [f32; modulators::WARPS],
     #[cfg(feature = "trace")]
     pending_trace_cc: std::cell::Cell<u128>,
 }
@@ -300,6 +302,7 @@ impl Engine {
                 pan: [0.0; 2],
                 warp: [0.0; modulators::WARPS],
                 chaos: [modulators::CHAOS_START; modulators::WARPS],
+                stretch: [1.0; modulators::WARPS],
                 #[cfg(feature = "trace")]
                 pending_trace_cc: std::cell::Cell::new(0),
             })

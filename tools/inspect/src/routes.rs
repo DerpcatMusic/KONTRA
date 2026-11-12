@@ -66,8 +66,9 @@ pub fn route(kind: ModKind) -> Value {
             source: s,
             intensity,
             floor_ms,
+            envelope,
         } => {
-            json!({"target":"attack", "source":source(s), "intensity":intensity, "floor_ms":floor_ms})
+            json!({"target":"attack", "source":source(s), "intensity":intensity, "floor_ms":floor_ms, "envelope":envelope})
         }
         ModKind::Release {
             source: s,
