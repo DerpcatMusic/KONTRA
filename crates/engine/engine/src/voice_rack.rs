@@ -58,16 +58,18 @@ impl Engine {
                 continue;
             };
             let mut ramp = None;
+            let effect = match u.kind {
+                Kind::Filter(_) | Kind::Eq(_) => None,
+                _ => self.voice_effect(zone, u.insert, note, age),
+            };
             let tune = match u.kind {
                 Kind::Filter(_) => self
                     .voice_filter(zone, u.insert, note, age)
                     .map(|(hz, k)| Tune::Filter(hz, k)),
                 Kind::Eq(_) => self.voice_bells(zone, u.insert, note, age).map(Tune::Eq),
-                Kind::Formant(_) | Kind::Overdrive(_) => self
-                    .voice_effect(zone, u.insert, note, age)
-                    .map(Tune::Effect),
+                Kind::Formant(_) | Kind::Overdrive(_) => effect.as_ref().map(Tune::Effect),
                 Kind::Shaper(_) | Kind::Crush(_) => {
-                    let now = self.voice_effect(zone, u.insert, note, age);
+                    let now = effect;
                     // The next refresh, on the grid.
                     let len = (crate::MAX_SPAN - self.now.0 % crate::MAX_SPAN) as u32;
                     let dt = len as f32 / rate as f32;
@@ -87,7 +89,7 @@ impl Engine {
                             len,
                         });
                     }
-                    now.map(Tune::Effect)
+                    effect.as_ref().map(Tune::Effect)
                 }
             };
             if let (Some(u), Some(t)) =

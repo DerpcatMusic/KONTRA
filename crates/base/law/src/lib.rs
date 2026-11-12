@@ -13,6 +13,7 @@ mod formula;
 mod law;
 mod network;
 mod real;
+mod section;
 mod trace;
 
 pub use catalog::{Named, catalog};
@@ -20,6 +21,7 @@ pub use file::{LawError, LawSource, LawSpec, parse};
 pub use formula::FormulaId;
 pub use law::{Law, ModuleLaw};
 pub use network::{CombNetwork, HadamardNetwork, LINES as NETWORK_LINES, ReverbNetwork};
+pub use section::{Section, Sections, Stage};
 pub use trace::{Application, LawId, collect, record};
 
 /// Declares embedded law files as `pub const` [`LawSource`]s and generates a test that

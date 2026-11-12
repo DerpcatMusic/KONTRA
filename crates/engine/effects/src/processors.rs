@@ -229,15 +229,22 @@ impl Wet for Notches {
     }
 }
 
-impl Wet for Shaper {
+impl Wet for Rated<Shaper> {
     fn process(&mut self, io: &mut [[f32; 2]]) {
-        Shaper::process(self, io);
+        self.0.process(io);
     }
 
     fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Shaper(s) = kind {
-            self.set_curve(curve(s.curve));
+            self.0.retune(curve(s.curve), tone(s), self.1);
         }
+    }
+
+    // A memoryless curve between filters whose slowest pole (a 12.5 Hz
+    // Butterworth high-pass) is down 120 dB after a quarter second: silent
+    // input for that long leaves it silent.
+    fn memory(&self) -> Option<usize> {
+        Some(self.1 as usize / 4)
     }
 }
 
@@ -494,7 +501,7 @@ pub fn processor(
         }
         // Drive effects run in any rack: on one voice in a group rack, on
         // the sum in a bus or instrument rack.
-        Some(ir::EffectKind::Shaper(s)) => wet(Box::new(shaper(s, rate))),
+        Some(ir::EffectKind::Shaper(s)) => wet(Box::new(Rated(shaper(s, rate), rate))),
         Some(ir::EffectKind::Overdrive(o)) => {
             wet(Box::new(Rated(Overdrive::new(voicing(o), rate), rate)))
         }
@@ -540,12 +547,17 @@ pub fn apply(m: Gain, io: &mut [[f32; 2]]) {
 
 /// The waveshaper for `s` at `rate`, in a group rack or a bus rack.
 pub fn shaper(s: ir::Shaper, rate: u32) -> Shaper {
-    let tone = drive::Tone {
+    Shaper::new(curve(s.curve), tone(s), rate)
+}
+
+/// The filters around `s`'s curve.
+pub fn tone(s: ir::Shaper) -> drive::Tone {
+    drive::Tone {
         pre_lowpass_hz: s.pre_lowpass_hz,
         lowpass_hz: s.lowpass_hz,
         highpass_hz: s.highpass_hz,
-    };
-    Shaper::new(curve(s.curve), tone, rate)
+        sections: s.sections,
+    }
 }
 
 pub fn curve(c: ir::DriveCurve) -> drive::Curve {
@@ -557,6 +569,8 @@ pub fn curve(c: ir::DriveCurve) -> drive::Curve {
         ir::DriveCurve::Fold(x) => drive::Curve::Fold(x),
         ir::DriveCurve::Tanh(x) => drive::Curve::Tanh(x),
         ir::DriveCurve::Atan(x) => drive::Curve::Atan(x),
+        ir::DriveCurve::Saturate(x) => drive::Curve::Saturate(x),
+        ir::DriveCurve::Table { drive, points } => drive::Curve::Table { drive, points },
     }
 }
 

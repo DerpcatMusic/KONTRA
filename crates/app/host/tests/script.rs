@@ -455,6 +455,7 @@ fn a_script_switches_on_a_waveshaper_bypassed_at_load() {
             curve: ir::DriveCurve::Soft(1.0),
             lowpass_hz: None,
             highpass_hz: None,
+            sections: ir::Sections::NONE,
         }),
         bypass: true,
         output: 1.0,
