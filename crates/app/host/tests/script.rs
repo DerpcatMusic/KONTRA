@@ -2062,6 +2062,21 @@ fn uvi_waits_and_spawned_coroutines_land_on_time() {
     assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
 }
 
+/// A task that waits 10 µs, then spawns its replacement, moves time on by
+/// the summed waits: 10000 links are 100 ms (4800 frames), never a spin.
+#[test]
+fn a_wait_then_spawn_chain_advances_by_its_summed_waits() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let chain = "function link(n)
+            wait(0.01)
+            if n < 10000 then spawn(function() link(n + 1) end) else playNote(60, 100) end
+        end
+        function onNote(e) link(1) end";
+    let mut e = lua_engine(&mut store, chain);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+}
+
 #[test]
 fn a_uvi_script_that_fails_counts_a_fault_and_the_engine_plays_on() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -2440,6 +2455,52 @@ fn stop_wait_ends_the_current_wait_or_every_wait() {
         assert_eq!(at_release != 0.0, sounds_at_release, "rest {rest}");
         assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3, "rest {rest}");
     }
+}
+
+/// A wait keeps its wake time to the microsecond: one shorter than a frame
+/// goes on in the same frame, so 10000 × `wait(1)` take 10 ms, not 10000
+/// frames (oracle, Kontakt 8.13.1: 10 / 100 / 200 / 210 ms for 10000 ×
+/// `wait(1 | 10 | 20 | 21)`, `$ENGINE_UPTIME`).
+#[test]
+fn a_wait_shorter_than_a_frame_goes_on_in_the_same_frame() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let source = "on init
+            declare $i
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            while ($i < 10000)
+                wait(1)
+                inc($i)
+            end while
+            play_note(60, 127, 0, 0)
+        end on";
+    let mut e = engine(&store, vec![z], source);
+    // 10 ms = 480 frames: inside the first 4096-frame block.
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+}
+
+/// Waits that end in the same frame go on in time order: B (1 + 20 µs)
+/// before A (41 µs), though A started waiting first.
+#[test]
+fn waits_ending_in_one_frame_go_on_in_time_order() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let source = "on note
+            ignore_event($EVENT_ID)
+            if ($EVENT_NOTE = 60)
+                wait(41)
+                message(\"A\")
+            else
+                wait(1)
+                wait(20)
+                message(\"B\")
+            end if
+        end on";
+    let mut e = engine(&store, vec![z], source);
+    level(&mut e, &[on(60), on(62)]);
+    assert_eq!(e.last_message(), "A");
 }
 
 /// Kontakt keeps one release-trigger counter per key; its system script

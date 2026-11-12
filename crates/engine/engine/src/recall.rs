@@ -40,7 +40,7 @@ impl Engine {
         self.notes.release_all();
         let mut queue = std::mem::replace(&mut self.queue, EventQueue::new(0));
         queue.retain(|work| match *work {
-            Work::Resume(slot, co, _) => {
+            Work::Resume(slot, co, ..) => {
                 if let Some(vm) = self.vm_mut(slot) {
                     vm.cancel(co);
                 }
