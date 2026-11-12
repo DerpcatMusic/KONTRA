@@ -349,7 +349,12 @@ pub struct Zone {
     /// Start conditions folded left to right by their joins; empty always starts.
     pub start: Vec<(ir::Join, Atom)>,
     pub trigger: Trigger,
+    /// Velocity and key crossfades, then any on controllers. Those on
+    /// velocity and key follow [`Self::fades`] and the current ranges
+    /// ([`Self::range_crossfades`]).
     pub crossfades: Vec<Crossfade>,
+    /// Velocity and key fade lengths, each (in, out), as the zone saves them.
+    pub fades: [(u8, u8); 2],
     // Voice group.
     /// Voice group, for polyphony limits, choke and group round robins.
     pub group: u32,
@@ -382,6 +387,33 @@ pub struct Zone {
 }
 
 impl Zone {
+    /// Sets the velocity and key crossfades from [`Self::fades`] at the
+    /// current ranges, as Kontakt measures them: from `low` a fade `F`
+    /// rises over (low − 1, low + F), to `high` it falls over
+    /// (high − F, high + 1). The loader and a range edit both call it.
+    pub fn range_crossfades(&mut self) {
+        let ranged = [
+            (Control::Velocity, &self.velocities, self.fades[0]),
+            (Control::Key, &self.keys, self.fades[1]),
+        ];
+        let ranged: Vec<_> = (ranged.into_iter())
+            .filter(|&(_, _, (fade_in, fade_out))| fade_in > 0 || fade_out > 0)
+            .map(|(control, range, (fade_in, fade_out))| {
+                let (low, high) = (*range.start(), *range.end());
+                Crossfade {
+                    control,
+                    fade_in: (fade_in > 0)
+                        .then(|| (low.saturating_sub(1), low.saturating_add(fade_in))),
+                    fade_out: (fade_out > 0)
+                        .then(|| (high.saturating_sub(fade_out), high.saturating_add(1))),
+                }
+            })
+            .collect();
+        self.crossfades
+            .retain(|x| matches!(x.control, Control::Cc(_)));
+        self.crossfades.splice(0..0, ranged);
+    }
+
     /// A plain attack zone over the full key and velocity range on bus 0.
     #[must_use]
     pub fn new(region: Region, root: u8, sample_rate: u32) -> Self {
@@ -393,6 +425,7 @@ impl Zone {
             start: Vec::new(),
             trigger: Trigger::Attack,
             crossfades: Vec::new(),
+            fades: [(0, 0); 2],
             group: 0,
             member: 0,
             off_by: None,

@@ -104,7 +104,7 @@ impl crate::Plan {
     // ponytail: a zone moved into a cycling group whose slots lack its own
     // reads the cycle as if its slot were there; recount the cycle if a
     // library moves zones between cycles.
-    // ponytail: the fades, root, volume, pan, tune, sample bounds and BPM
+    // ponytail: the fade lengths, root, volume, pan, tune, sample bounds and BPM
     // are not settable yet; add each when a library sets it.
     pub fn edit_zone(&mut self, id: u32, par: ZonePar, value: i32) -> bool {
         let key = u8::try_from(value.clamp(0, 127)).unwrap_or(0);
@@ -134,7 +134,11 @@ impl crate::Plan {
         } = self;
         for z in zones.iter_mut().filter(|z| z.id == id) {
             let was = z.group;
-            found |= edit(&mut z.keys, &mut z.velocities, &mut z.group);
+            if edit(&mut z.keys, &mut z.velocities, &mut z.group) {
+                // Its fades keep their lengths at the new range.
+                z.range_crossfades();
+                found = true;
+            }
             if let Some(g) = groups.get(z.group as usize).filter(|_| z.group != was) {
                 g.zones.apply(z);
                 z.member = u16::MAX;

@@ -251,3 +251,29 @@ fn a_moved_zones_table_follows_its_group() {
     assert!(plan.zones[0].region.table.is_none());
     assert_eq!(plan.zones[0].root, 60, "its own root again");
 }
+
+/// A zone's fades keep their lengths when a script moves its key range
+/// (Codex r4549008557): a high-key fade at 60..=70 moved to 80..=90 fades
+/// at 90, as the loader's own zone there does, and sounds across 80..=85.
+#[test]
+fn a_moved_zones_fades_follow_its_range() {
+    let faded = |keys| ir::Zone {
+        keys,
+        key_fade: (0, 5),
+        ..zone(0)
+    };
+    let mut moved = faded(60..=70);
+    moved.id = 7;
+    let instrument = ir::Instrument {
+        samples: vec![sample("a", 500)],
+        groups: vec![group(24, vec![moved, faded(80..=90)])],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (mut plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    assert!(plan.edit_zone(7, ir::ZonePar::HighKey, 90));
+    assert!(plan.edit_zone(7, ir::ZonePar::LowKey, 80));
+    let (z, own) = (&plan.zones[0], &plan.zones[1]);
+    assert_eq!((&z.keys, &z.crossfades), (&own.keys, &own.crossfades));
+    assert_eq!(z.crossfades[0].gain(85), 1.0);
+}
