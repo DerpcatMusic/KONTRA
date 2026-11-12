@@ -7,7 +7,7 @@ pub mod browser;
 pub mod instrument;
 pub mod perf_view;
 pub mod persist;
-pub use kontra_library::presets;
+pub mod presets;
 pub mod rack;
 pub mod script;
 pub mod sound;

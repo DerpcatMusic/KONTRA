@@ -68,7 +68,15 @@ pub fn folder() -> Option<PathBuf> {
     Some(dirs::data_dir()?.join("kontra/presets"))
 }
 
-pub use kontra_ui_model::preset_file_name as sanitized;
+/// `name` when it is a plain file name: nothing a path or a filesystem
+/// reads as more than a name. The caller cleans what the player typed.
+fn plain(name: &str) -> io::Result<&str> {
+    let odd = |c: char| c.is_control() || r#"/\:*?"<>|"#.contains(c);
+    match name.is_empty() || name.starts_with('.') || name != name.trim() || name.contains(odd) {
+        true => Err(invalid("preset name")),
+        false => Ok(name),
+    }
+}
 
 /// Whether a save may replace a preset of the same name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,8 +167,8 @@ fn created(
 /// name stays unless `overwrite` is [`Overwrite::Replace`].
 ///
 /// # Errors
-/// `AlreadyExists` when creating over a preset of that name; when a name
-/// is empty once sanitised, the preset is larger than a preset file may
+/// `AlreadyExists` when creating over a preset of that name; when `name`
+/// is not a plain file name, the preset is larger than a preset file may
 /// be, or the file cannot be written.
 pub fn save(
     folder: &Path,
@@ -170,7 +178,7 @@ pub fn save(
     overwrite: Overwrite,
 ) -> io::Result<PathBuf> {
     let dir = library_dir(folder, library)?;
-    let name = sanitized(name).ok_or_else(|| invalid("preset name"))?;
+    let name = plain(name)?;
     let bytes = serde_json::to_vec_pretty(preset).map_err(io::Error::other)?;
     if u64::try_from(bytes.len()).map_or(true, |n| n > LIMIT) {
         return Err(invalid("preset larger than a preset file may be"));
@@ -220,7 +228,7 @@ fn inside(folder: &Path, path: &Path) -> io::Result<PathBuf> {
 /// taken, or the rename fails.
 pub fn rename(folder: &Path, path: &Path, name: &str) -> io::Result<PathBuf> {
     let real = inside(folder, path)?;
-    let name = sanitized(name).ok_or_else(|| invalid("preset name"))?;
+    let name = plain(name)?;
     let file = format!("{name}.{EXTENSION}");
     let to = real.with_file_name(&file);
     if to.exists() {
@@ -289,16 +297,20 @@ mod tests {
         let scripts = vec![vec!["1".to_owned()]];
         let one = preset(scripts.clone());
         let create = Overwrite::Create;
-        let path = save(&folder, "Una/Corda", "../My: Soft*", &one, create).unwrap();
+        // Only a plain file name is written: the caller cleans what was typed.
+        for odd in ["../My Soft", "My: Soft*", ".hidden", " ", ""] {
+            assert!(
+                save(&folder, "Una/Corda", odd, &one, create).is_err(),
+                "{odd}"
+            );
+        }
+        let path = save(&folder, "Una/Corda", "My Soft", &one, create).unwrap();
         assert_eq!(path, folder.join("Una%2FCorda").join("My Soft.kontra"));
         assert_eq!(read(&path).map(|p| p.scripts), Some(scripts.clone()));
         assert_eq!(list(&folder, "Una/Corda"), std::slice::from_ref(&path));
         // Libraries whose names differ by a reserved character list apart.
         let other = save(&folder, "UnaCorda", "Bright", &one, create).unwrap();
         assert_eq!(list(&folder, "UnaCorda"), std::slice::from_ref(&other));
-        assert!(sanitized(" .. ").is_none());
-        // The editor's Replace check names collisions by this file name.
-        assert_eq!(sanitized("Soft?"), sanitized("Soft"));
         // Creating over a preset of that name is refused; it stays as it was.
         let two = preset(vec![vec!["2".to_owned()]]);
         let taken = save(&folder, "Una/Corda", "My Soft", &two, create);
