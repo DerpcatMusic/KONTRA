@@ -1,4 +1,5 @@
-//! The header's load readout: the audio thread's CPU, the disk's streaming
+//! The header's load readout: the audio thread's CPU and its slowest block,
+//! the disk's streaming
 //! rate, sample and process memory. Taken twice a second from counters, so
 //! a figure is a mean over that span (as v2's `src/ui/mod.rs` meters) and
 //! an idle rack reads a steady 0.
@@ -19,6 +20,11 @@ pub struct Readout {
     read: u64,
     /// Percent of the audio thread's real time spent rendering.
     pub cpu: f64,
+    /// The slowest block of the last span, in percent of its own real
+    /// time: past 100 the host heard a dropout.
+    pub peak: f64,
+    /// The slowest block's share of its real time since the last look.
+    slowest: f64,
     pub disk_mbs: f64,
     pub cache_mb: u32,
     /// The samples' preloaded pages.
@@ -30,6 +36,10 @@ pub struct Readout {
 impl Readout {
     /// Takes a new look when half a second passed since the last.
     pub fn sample(&mut self, stats: &Stats, rack: &Rack) {
+        // Every block counts, not just the one before a look.
+        self.slowest = self
+            .slowest
+            .max(stats.slowest.share(f64::from(rack.rate())));
         let now = Instant::now();
         let since = self.at.map(|t| now - t);
         if since.is_some_and(|s| s < EVERY) {
@@ -53,6 +63,7 @@ impl Readout {
         let rate = since.map_or(0.0, |s| read / s.as_secs_f64());
         // Eased, as v2's: one preempted block is scheduling, not work.
         self.cpu = settle(self.cpu * 0.5 + load * 0.5, 0.5);
+        self.peak = std::mem::take(&mut self.slowest) * 100.0;
         self.disk_mbs = settle(self.disk_mbs * 0.5 + rate * 0.5, 0.05);
         self.cache_mb = mb(stream.cache_bytes);
         self.samples_mb = mb(rack.store().pinned_bytes());
@@ -60,10 +71,11 @@ impl Readout {
     }
 
     /// As the header prints it, for redraw detection.
-    pub fn shown(&self) -> (i64, i64, u32, Option<u32>) {
+    pub fn shown(&self) -> (i64, i64, i64, u32, Option<u32>) {
         let cpu = self.cpu.round() as i64;
+        let peak = self.peak.round() as i64;
         let disk = (self.disk_mbs * 10.0).round() as i64;
-        (cpu, disk, self.samples_mb, self.process_mb)
+        (cpu, peak, disk, self.samples_mb, self.process_mb)
     }
 }
 
@@ -104,6 +116,8 @@ mod tests {
         let stats = rack.stats().unwrap();
         assert_eq!(stats.span_ns, 1_000_000_000);
         assert!(stats.busy_ns > 0 && stats.busy_ns < stats.span_ns);
+        assert_eq!(stats.slowest.frames, 480);
+        assert!(stats.slowest.ns > 0 && stats.slowest.share(48_000.0) < 1.0);
         let mut r = Readout::default();
         let at = |busy_ns, span_ns| Stats {
             busy_ns,
@@ -115,6 +129,21 @@ mod tests {
         r.sample(&at(500_000_000, 1_000_000_000), &rack);
         // Eased half way to 50%.
         assert_eq!(r.cpu, 25.0);
+        // The slowest block of the span, a fifth of its 10 ms.
+        let slow = kontra_protocol::Slowest {
+            ns: 2_000_000,
+            frames: 480,
+        };
+        r.sample(
+            &Stats {
+                slowest: slow,
+                ..at(500_000_000, 1_000_000_000)
+            },
+            &rack,
+        );
+        r.at = r.at.map(|t| t - EVERY);
+        r.sample(&at(500_000_000, 1_000_000_000), &rack);
+        assert!((r.peak - 20.0).abs() < 1e-9, "{}", r.peak);
         assert_eq!(r.cache_mb, 128);
         if cfg!(target_os = "linux") {
             assert!(r.process_mb.is_some_and(|m| m > 0));

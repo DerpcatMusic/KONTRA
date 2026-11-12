@@ -266,6 +266,7 @@ impl Snapshot {
         let r = &self.readout;
         app.stats = app::Stats {
             cpu: r.cpu,
+            peak: r.peak,
             voices: self.stats.voices,
             ram_mb: r.process_mb.unwrap_or(0),
             samples_mb: r.samples_mb,

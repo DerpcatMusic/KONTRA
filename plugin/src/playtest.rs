@@ -26,6 +26,13 @@ const UVI: &str = "/data/main/Libraries/UVI";
 
 /// The longest a release tail may ring after a segment's last note-off.
 const TAIL_S: f64 = 20.0;
+/// The most of a block's real time one block may take in a release build:
+/// half, so a host with other plugins and a busier machine still has room.
+const BLOCK_SHARE: f64 = 0.5;
+/// The most of a block's real time the control side's commands (captures,
+/// recalls, installs) may take in one block: they never make the sound.
+const COMMANDS_SHARE: f64 = 0.05;
+
 /// Below this in every sample after its note-on, a note never sounded.
 const SILENT: f32 = 1e-5;
 /// Below this in both channels, an output block is quiet.
@@ -201,6 +208,9 @@ struct Report {
     name: String,
     load_s: f64,
     hold_ms: f32,
+    /// The slowest block after load, and the most its commands took.
+    slowest: kontra_protocol::Slowest,
+    commands_ns: u64,
     failed: Vec<String>,
     segments: Vec<Segment>,
     ui: touch::Touched,
@@ -532,6 +542,9 @@ struct Played {
     refused: u64,
     cut: u64,
     missing: u64,
+    /// The slowest block and the most its commands took, since reset.
+    slowest: kontra_protocol::Slowest,
+    commands_ns: u64,
 }
 
 fn output_peaks(channels: &[Vec<f32>]) -> [f32; 2] {
@@ -595,6 +608,12 @@ fn block_in(
             refused: s.notes_refused + s.events_refused + s.dropped,
             cut: s.voices_cut,
             missing: s.missing_frames,
+            slowest: if s.slowest.ns > last.slowest.ns {
+                s.slowest
+            } else {
+                last.slowest
+            },
+            commands_ns: s.slowest_commands_ns.max(last.commands_ns),
         },
         None => Played {
             audio,
@@ -671,6 +690,8 @@ fn perform(path: PathBuf) -> Report {
     drop(dsp);
     drop(params);
     let (params, mut dsp, mut last) = start();
+    // The load's blocks are not played live.
+    (last.slowest, last.commands_ns) = Default::default();
     let mut failed = Vec::new();
     let mut fail = |what: String| failed.push(format!("{name}: {what}"));
     let latency_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
@@ -836,6 +857,26 @@ fn perform(path: PathBuf) -> Report {
     }
     let ui = touch::touch(&params, &mut dsp, &mut last, &mut fail);
     let diagnostics = touch::diagnostics(&params);
+    let (slowest, commands_ns) = (last.slowest, last.commands_ns);
+    let real_ns = BLOCK as f64 * 1e9 / RATE;
+    // A debug build is ten times slower: only a release build is held to it.
+    if !cfg!(debug_assertions) {
+        if slowest.share(RATE) > BLOCK_SHARE {
+            fail(format!(
+                "a block took {:.0} us, {:.0}% of its {:.0} us",
+                slowest.ns as f64 / 1e3,
+                slowest.share(RATE) * 100.0,
+                real_ns / 1e3
+            ));
+        }
+        if commands_ns as f64 > COMMANDS_SHARE * real_ns {
+            fail(format!(
+                "a block's commands took {:.0} us of its {:.0} us",
+                commands_ns as f64 / 1e3,
+                real_ns / 1e3
+            ));
+        }
+    }
     println!(
         "{name}: hold {latency_ms:.1} ms, probe onsets {onsets:?} ms; touched {} of {} controls, {} reached the sound, {} clicked; diagnostics {} broken, {} audible",
         ui.touched,
@@ -849,6 +890,8 @@ fn perform(path: PathBuf) -> Report {
         name,
         load_s,
         hold_ms: latency_ms,
+        slowest,
+        commands_ns,
         failed,
         segments,
         ui,

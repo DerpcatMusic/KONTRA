@@ -212,6 +212,8 @@ pub struct ScriptState {
     pub slots: Vec<usize>,
     generation: u64,
     latest: Option<Box<Capture>>,
+    /// The capture before `latest`, sent again: its room is reused.
+    spare: Option<Box<Capture>>,
     asked: bool,
 }
 
@@ -709,14 +711,18 @@ impl Rack {
             (frame.part, frame.generation) = (n, p.script.generation);
             self.send(Command::Look(frame));
         }
-        while let Some(c) = self.channels.captured.recv() {
+        while let Some(mut c) = self.channels.captured.recv() {
             if let Some(Some(p)) = self.parts.get_mut(c.part)
                 && p.script.generation == c.generation
             {
-                p.script.asked = false;
-                let mut c = c;
-                c.keep(p.script.latest.take());
-                p.script.latest = Some(c);
+                let s = &mut p.script;
+                s.asked = false;
+                if c.is_done() {
+                    c.keep(s.latest.as_deref_mut());
+                    s.spare = s.latest.replace(c);
+                } else {
+                    s.spare = Some(c);
+                }
             }
         }
         // Ask again for every part with persistent values: what a save
@@ -732,7 +738,8 @@ impl Rack {
                 continue;
             }
             s.asked = true;
-            let mut c = Capture::new(n, s.generation, &s.vars);
+            let spare = s.spare.take().filter(|c| c.generation == s.generation);
+            let mut c = spare.unwrap_or_else(|| Capture::new(n, s.generation, &s.vars));
             c.after(s.latest.as_deref());
             self.send(Command::Capture(c));
         }

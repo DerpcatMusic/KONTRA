@@ -131,117 +131,330 @@ impl Vars {
 const SIGILS: [char; 6] = ['$', '%', '~', '?', '@', '!'];
 
 /// Cells for the audio side to read out of one part's engine.
+///
+/// The read is bounded: only the script slots that ran or were written since
+/// the last capture are read, and the audio side reads at most a budget of
+/// cells a block ([`Capture::read`]), going on in the next block. A save is
+/// as old as the read took (a million cells: a few blocks).
 pub struct Capture {
     pub(crate) part: usize,
     pub(crate) generation: u64,
-    cells: Box<[(u8, u32)]>,
-    values: Box<[Option<i64>]>,
-    text_cells: Box<[(u8, u32)]>,
-    texts: Box<[Option<Text>]>,
+    /// Persistent number variables, back to back in `values`.
+    spans: Box<[Span]>,
+    values: Box<[i64]>,
+    /// Control value cells, read again in a save's form: (slot, cell, where
+    /// in `values`).
+    controls: Box<[(u8, usize, usize)]>,
+    /// Persistent text variables, back to back in `texts`.
+    text_spans: Box<[Span]>,
+    texts: Box<[Text]>,
     /// Lua widgets by (slot, number), and their values.
     widgets: Box<[(u8, u32)]>,
     widget_values: Box<[Option<f64>]>,
     /// By Lua slot, room for its `onSave` state and how much it took.
     states: Box<[State]>,
-    /// The engine's callback count when the states were last taken, and
-    /// whether this capture took them.
-    seen: Option<u32>,
-    fresh: bool,
+    /// By script slot, its change count ([`kontra_engine::Vm::runs`]) when
+    /// last read, and whether this capture reads it.
+    seen: Box<[Option<u32>]>,
+    fresh: Box<[bool]>,
+    /// How far the read is.
+    at: Cursor,
+}
+
+/// One variable's cells: its slot, first cell and length, where they go in
+/// the capture, and whether they were there to read.
+#[derive(Clone, Copy, Debug)]
+struct Span {
+    slot: u8,
+    base: usize,
+    len: usize,
+    to: usize,
+    read: bool,
+    /// A control's value: read again in its saved form.
+    control: bool,
+}
+
+/// How far a [`Capture::read`] is: not begun, or the next number or text
+/// span and the cells of it already read, or done.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Cursor {
+    #[default]
+    Start,
+    Numbers(usize, usize),
+    Texts(usize, usize),
+    Controls,
+    Done,
 }
 
 /// A Lua slot, room for its saved state, and the length it took.
 type State = (u8, Box<[u8]>, Option<usize>);
 
+/// What one text cell costs a read's budget, in number cells.
+const TEXT_WEIGHT: usize = size_of::<Text>() / size_of::<i64>();
+/// What reading one control cell in its saved form costs, in number cells
+/// (a search of the controls and of its menu).
+const CONTROL_WEIGHT: usize = 16;
+
 impl Capture {
     /// Every persistent cell of a part whose script slots are `slots`.
     #[must_use]
     pub fn new(part: usize, generation: u64, slots: &[Vars]) -> Box<Self> {
-        let cells = |text: bool| -> Box<[(u8, u32)]> {
-            (slots.iter().enumerate())
-                .filter_map(|(slot, v)| Some((u8::try_from(slot).ok()?, v)))
-                .flat_map(|(slot, v)| {
-                    (v.vars.iter())
-                        .filter(move |var| var.text == text)
-                        .flat_map(move |var| (var.base..var.base + var.len).map(move |c| (slot, c)))
+        let slotted = || {
+            (slots.iter().enumerate()).filter_map(|(slot, v)| Some((u8::try_from(slot).ok()?, v)))
+        };
+        let spans = |text: bool| -> Box<[Span]> {
+            let mut to = 0;
+            slotted()
+                .flat_map(|(slot, v)| v.vars.iter().map(move |var| (slot, var)))
+                .filter(|(_, var)| var.text == text)
+                .filter_map(|(slot, var)| {
+                    let (base, len) = (
+                        usize::try_from(var.base).ok()?,
+                        usize::try_from(var.len).ok()?,
+                    );
+                    let control = var.control.is_some();
+                    let span = Span {
+                        slot,
+                        base,
+                        len,
+                        to,
+                        read: false,
+                        control,
+                    };
+                    to += len;
+                    Some(span)
                 })
                 .collect()
         };
-        let (cells, text_cells) = (cells(false), cells(true));
-        let widgets: Box<[(u8, u32)]> = (slots.iter().enumerate())
-            .filter_map(|(slot, v)| Some((u8::try_from(slot).ok()?, v)))
+        let (spans, text_spans) = (spans(false), spans(true));
+        let controls = (spans.iter().filter(|s| s.control))
+            .flat_map(|s| (0..s.len).map(move |n| (s.slot, s.base + n, s.to + n)))
+            .collect();
+        let widgets: Box<[(u8, u32)]> = slotted()
             .flat_map(|(slot, v)| v.widgets.iter().map(move |&(_, n)| (slot, n)))
             .collect();
-        let states = (slots.iter().enumerate())
+        let states = slotted()
             .filter(|(_, v)| v.state)
-            .filter_map(|(slot, _)| Some((u8::try_from(slot).ok()?, vec![0; STATE].into(), None)))
+            .map(|(slot, _)| (slot, vec![0; STATE].into(), None))
             .collect();
         Box::new(Self {
             part,
             generation,
-            states,
-            seen: None,
-            fresh: false,
-            values: vec![None; cells.len()].into_boxed_slice(),
-            texts: vec![None; text_cells.len()].into_boxed_slice(),
-            widget_values: vec![None; widgets.len()].into_boxed_slice(),
-            cells,
-            text_cells,
+            values: vec![0; spans.iter().map(|s| s.len).sum()].into(),
+            texts: vec![Text::EMPTY; text_spans.iter().map(|s| s.len).sum()].into(),
+            spans,
+            controls,
+            text_spans,
+            widget_values: vec![None; widgets.len()].into(),
             widgets,
+            states,
+            seen: vec![None; slots.len()].into(),
+            fresh: vec![false; slots.len()].into(),
+            at: Cursor::Start,
         })
     }
 
-    /// Reads the cells from `engine`; runs on the audio thread, in place.
-    /// `onSave` runs only when a callback ran since the states were last
-    /// taken: an idle part costs nothing (a host's save cannot wait for
-    /// the audio thread, so the state is kept ready).
-    pub(crate) fn read(&mut self, engine: &mut Engine) {
-        let runs = |slot| engine.vm(slot).map_or(0, kontra_engine::Vm::runs);
-        let now = (self.states.iter()).fold(0u32, |n, s| n.wrapping_add(runs(s.0)));
-        self.fresh = self.seen != Some(now);
-        if self.fresh {
-            for (slot, room, len) in &mut *self.states {
-                *len = engine.save_state(*slot, room);
+    /// Reads on from where it stands, at most `budget` cells' worth (taken
+    /// from it), from `engine`; true once done. Runs on the audio thread,
+    /// in place. A slot whose machine did not run and was not written since
+    /// the last capture is not read: its values are that capture's
+    /// ([`Capture::keep`]), and an idle part costs nothing.
+    pub(crate) fn read(&mut self, engine: &mut Engine, budget: &mut usize) -> bool {
+        if self.at == Cursor::Start {
+            self.begin(engine);
+            self.at = Cursor::Numbers(0, 0);
+        }
+        let engine = &*engine;
+        if let Cursor::Numbers(span, done) = self.at {
+            let cells = |slot, range| engine.vm(slot)?.cells(range);
+            let mut at = (span, done);
+            if !copy(
+                &mut self.spans,
+                &mut self.values,
+                &self.fresh,
+                &mut at,
+                budget,
+                1,
+                cells,
+            ) {
+                self.at = Cursor::Numbers(at.0, at.1);
+                return false;
             }
+            self.at = Cursor::Texts(0, 0);
         }
-        self.seen = Some(now);
-        for (value, &(slot, cell)) in self.values.iter_mut().zip(self.cells.iter()) {
-            *value = engine.script_saved_in(slot, cell as usize);
+        if let Cursor::Texts(span, done) = self.at {
+            let cells = |slot, range| engine.vm(slot)?.texts(range);
+            let mut at = (span, done);
+            let (spans, texts) = (&mut self.text_spans, &mut self.texts);
+            if !copy(
+                spans,
+                texts,
+                &self.fresh,
+                &mut at,
+                budget,
+                TEXT_WEIGHT,
+                cells,
+            ) {
+                self.at = Cursor::Texts(at.0, at.1);
+                return false;
+            }
+            self.at = Cursor::Controls;
         }
-        for (value, &(slot, cell)) in self.texts.iter_mut().zip(self.text_cells.iter()) {
-            *value = engine.script_text_in(slot, cell as usize);
+        if self.at == Cursor::Controls {
+            // ponytail: a part's controls are read in one go (hundreds, not
+            // millions); chunk them too if a library has tens of thousands.
+            let fresh = |slot: u8| self.fresh.get(usize::from(slot)).copied().unwrap_or(false);
+            for &(slot, cell, to) in self.controls.iter().filter(|c| fresh(c.0)) {
+                *budget = budget.saturating_sub(CONTROL_WEIGHT);
+                if let (Some(saved), Some(value)) =
+                    (engine.script_saved_in(slot, cell), self.values.get_mut(to))
+                {
+                    *value = saved;
+                }
+            }
+            self.at = Cursor::Done;
         }
-        for (value, &(slot, n)) in self.widget_values.iter_mut().zip(self.widgets.iter()) {
+        true
+    }
+
+    /// Decides which slots this capture reads, and takes their Lua widgets
+    /// and saved states (a few per part).
+    fn begin(&mut self, engine: &mut Engine) {
+        for (slot, (seen, fresh)) in (0u8..).zip(self.seen.iter_mut().zip(self.fresh.iter_mut())) {
+            let now = engine.vm(slot).map(kontra_engine::Vm::runs);
+            // A slot with no machine reads as missing every time.
+            *fresh = now.is_none() || *seen != now;
+            *seen = now;
+        }
+        let fresh = |slot: u8| self.fresh.get(usize::from(slot)).copied().unwrap_or(false);
+        for (slot, room, len) in self.states.iter_mut().filter(|s| fresh(s.0)) {
+            *len = engine.save_state(*slot, room);
+        }
+        let widgets = self.widget_values.iter_mut().zip(self.widgets.iter());
+        for (value, &(slot, n)) in widgets.filter(|(_, w)| fresh(w.0)) {
             *value = engine.widget(slot, n).map(|w| w.value);
         }
     }
 
-    /// Asks only for what changed since `last`, this part's capture before.
-    pub fn after(&mut self, last: Option<&Self>) {
-        self.seen = last.and_then(|l| l.seen);
+    /// Whether the audio side read it to the end; one it gave up on (its
+    /// part was replaced or removed) is not a capture of anything.
+    pub(crate) fn is_done(&self) -> bool {
+        self.at == Cursor::Done
     }
 
-    /// Keeps `last`'s states when this capture did not take them.
-    pub fn keep(&mut self, last: Option<Box<Self>>) {
-        if let Some(mut last) = last.filter(|_| !self.fresh) {
-            std::mem::swap(&mut self.states, &mut last.states);
+    /// Asks only for what changed since `last`, this part's capture before,
+    /// and starts the read over (a capture is reused).
+    pub fn after(&mut self, last: Option<&Self>) {
+        match last.filter(|l| l.seen.len() == self.seen.len()) {
+            Some(last) => self.seen.copy_from_slice(&last.seen),
+            None => self.seen.fill(None),
+        }
+        self.fresh.fill(false);
+        self.at = Cursor::Start;
+    }
+
+    /// Takes `last`'s values for the slots this capture did not read: they
+    /// did not change since.
+    pub fn keep(&mut self, last: Option<&mut Self>) {
+        let Some(last) = last.filter(|l| l.generation == self.generation) else {
+            return;
+        };
+        let fresh = |slot: u8| self.fresh.get(usize::from(slot)).copied().unwrap_or(false);
+        let spans = self.spans.iter_mut().zip(last.spans.iter());
+        for (mine, theirs) in spans.filter(|(s, _)| !fresh(s.slot)) {
+            mine.read = theirs.read;
+            let range = mine.to..mine.to + mine.len;
+            if let (Some(to), Some(from)) =
+                (self.values.get_mut(range.clone()), last.values.get(range))
+            {
+                to.copy_from_slice(from);
+            }
+        }
+        let spans = self.text_spans.iter_mut().zip(last.text_spans.iter());
+        for (mine, theirs) in spans.filter(|(s, _)| !fresh(s.slot)) {
+            mine.read = theirs.read;
+            let range = mine.to..mine.to + mine.len;
+            if let (Some(to), Some(from)) =
+                (self.texts.get_mut(range.clone()), last.texts.get(range))
+            {
+                to.copy_from_slice(from);
+            }
+        }
+        let widgets =
+            (self.widget_values.iter_mut().zip(self.widgets.iter())).zip(last.widget_values.iter());
+        for ((mine, _), theirs) in widgets.filter(|((_, w), _)| !fresh(w.0)) {
+            *mine = *theirs;
+        }
+        let states = self.states.iter_mut().zip(last.states.iter_mut());
+        for (mine, theirs) in states.filter(|(s, _)| !fresh(s.0)) {
+            std::mem::swap(&mut mine.1, &mut theirs.1);
+            mine.2 = theirs.2;
         }
     }
 
     /// Where each (slot, cell) was read, for lookups in time linear in the
     /// cells captured.
     fn index(&self) -> HashMap<(u8, u32), Option<i64>> {
-        self.cells
-            .iter()
-            .copied()
-            .zip(self.values.iter().copied())
+        cells_of(&self.spans, &self.values)
+            .map(|(k, v)| (k, v.copied()))
             .collect()
     }
 
     fn text_index(&self) -> HashMap<(u8, u32), Option<&str>> {
-        (self.text_cells.iter().copied())
-            .zip(self.texts.iter().map(|t| t.as_ref().map(Text::as_str)))
+        cells_of(&self.text_spans, &self.texts)
+            .map(|(k, v)| (k, v.map(Text::as_str)))
             .collect()
     }
+}
+
+/// Each (slot, cell) of `spans` and its value in `values`, if it was read.
+fn cells_of<'c, T>(
+    spans: &'c [Span],
+    values: &'c [T],
+) -> impl Iterator<Item = ((u8, u32), Option<&'c T>)> {
+    spans.iter().flat_map(move |s| {
+        (0..s.len).filter_map(move |n| {
+            let cell = u32::try_from(s.base + n).ok()?;
+            Some(((s.slot, cell), values.get(s.to + n).filter(|_| s.read)))
+        })
+    })
+}
+
+/// Copies the cells of `spans` in the `fresh` slots from `cells` into
+/// `values`, from `at` (span, cells of it done), each cell costing `weight`
+/// of `budget`; true once every span is copied, else `at` is where to go on.
+fn copy<'e, T: Copy + 'e>(
+    spans: &mut [Span],
+    values: &mut [T],
+    fresh: &[bool],
+    at: &mut (usize, usize),
+    budget: &mut usize,
+    weight: usize,
+    cells: impl Fn(u8, std::ops::Range<usize>) -> Option<&'e [T]>,
+) -> bool {
+    while let Some(span) = spans.get_mut(at.0) {
+        let left = span.len.saturating_sub(at.1);
+        if left == 0 || !fresh.get(usize::from(span.slot)).copied().unwrap_or(false) {
+            *at = (at.0 + 1, 0);
+            continue;
+        }
+        let n = left.min(*budget / weight);
+        if n == 0 {
+            return false;
+        }
+        *budget -= n * weight;
+        if at.1 == 0 {
+            span.read = true;
+        }
+        let from = span.base + at.1;
+        let to = span.to + at.1;
+        match (cells(span.slot, from..from + n), values.get_mut(to..to + n)) {
+            (Some(src), Some(dst)) => dst.copy_from_slice(src),
+            _ => span.read = false,
+        }
+        at.1 += n;
+    }
+    true
 }
 
 /// By instrument script, the saved values to load it with: `loaded` (what it
@@ -407,9 +620,15 @@ mod tests {
         assert!(vars.vars[0].control.is_some() && vars.vars[1].control.is_none());
         let mut capture = Capture::new(0, 0, std::slice::from_ref(&vars));
         let cell = |name: &str| vars.vars.iter().find(|v| &*v.name == name).unwrap().base;
+        capture.spans.iter_mut().for_each(|s| s.read = true);
+        capture.text_spans.iter_mut().for_each(|s| s.read = true);
         let set = |c: &mut Capture, cell: u32, v: i64| {
-            let at = c.cells.iter().position(|&x| x == (0, cell)).unwrap();
-            c.values[at] = Some(v);
+            let span = c
+                .spans
+                .iter()
+                .find(|s| (s.base..s.base + s.len).contains(&(cell as usize)));
+            let at = span.map(|s| s.to + cell as usize - s.base).unwrap();
+            c.values[at] = v;
         };
         set(&mut capture, cell("$vol"), 37);
         set(&mut capture, cell("~tone"), 0.25f64.to_bits() as i64);
@@ -417,11 +636,10 @@ mod tests {
             set(&mut capture, cell("%steps") + n, i64::from(n) - 1);
         }
         let at = capture
-            .text_cells
+            .text_spans
             .iter()
-            .position(|&x| x == (0, cell("@name")))
-            .unwrap();
-        capture.texts[at] = Some(Text::from_str_cut("solo cello").0);
+            .find(|s| s.base == cell("@name") as usize);
+        capture.texts[at.unwrap().to] = Text::from_str_cut("solo cello").0;
         let loaded = vec![vec!["$VOL 10".to_owned(), "@name strings".to_owned()]];
         let out = saved(&loaded, std::slice::from_ref(&vars), &capture);
         assert_eq!(

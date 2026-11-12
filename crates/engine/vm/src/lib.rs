@@ -212,6 +212,9 @@ pub struct Instance {
     polys: Box<[Poly]>,
     starts: u64,
     faults: Faults,
+    /// Counts what may have written a cell (a run, a host's write),
+    /// wrapping: unchanged, every cell is as it was.
+    changes: u32,
 }
 
 impl Instance {
@@ -256,6 +259,7 @@ impl Instance {
             polys,
             starts: 0,
             faults: Faults::default(),
+            changes: 0,
         }
     }
 
@@ -270,12 +274,14 @@ impl Instance {
     }
 
     pub fn set_cell(&mut self, n: usize, value: i64) {
+        self.changes = self.changes.wrapping_add(1);
         if let Some(c) = self.cells.get_mut(n) {
             *c = value;
         }
     }
 
     pub fn set_text(&mut self, n: usize, value: Text) {
+        self.changes = self.changes.wrapping_add(1);
         if let Some(t) = self.texts.get_mut(n) {
             *t = value;
         }
@@ -284,6 +290,25 @@ impl Instance {
     #[must_use]
     pub fn text(&self, n: usize) -> Option<&Text> {
         self.texts.get(n)
+    }
+
+    /// The cells in `range`, `None` when it runs past them.
+    #[must_use]
+    pub fn cells(&self, range: std::ops::Range<usize>) -> Option<&[i64]> {
+        self.cells.get(range)
+    }
+
+    /// The text cells in `range`, `None` when it runs past them.
+    #[must_use]
+    pub fn texts(&self, range: std::ops::Range<usize>) -> Option<&[Text]> {
+        self.texts.get(range)
+    }
+
+    /// How many times something may have written a cell: each run of a
+    /// callback and each write from outside, wrapping.
+    #[must_use]
+    pub fn changes(&self) -> u32 {
+        self.changes
     }
 
     /// The context a callback was started with.
@@ -385,6 +410,7 @@ impl Instance {
 
     /// Runs a callback until it ends or waits.
     pub fn run(&mut self, program: &Program, co: CoId, host: &mut dyn HostApi) -> Step {
+        self.changes = self.changes.wrapping_add(1);
         let Self {
             cells,
             texts,

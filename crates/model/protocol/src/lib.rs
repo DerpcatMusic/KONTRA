@@ -74,6 +74,11 @@ pub struct Stats {
     /// looks is the audio thread's load over that span.
     pub busy_ns: u64,
     pub span_ns: u64,
+    /// The slowest block since the last take: its time and its frames.
+    pub slowest: Slowest,
+    /// The most time one block spent on the control side's commands
+    /// (captures, recalls, installs) since the last take, in ns.
+    pub slowest_commands_ns: u64,
     pub voices: u32,
     /// Since the plugin started, across parts.
     pub voices_stolen: u64,
@@ -86,6 +91,44 @@ pub struct Stats {
     /// Commands the audio thread had to refuse or could not retire.
     pub dropped: u64,
 }
+
+/// One block's time rendering, in ns, and the frames it rendered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Slowest {
+    pub ns: u64,
+    pub frames: u32,
+}
+
+impl Slowest {
+    /// The block's time as a share of the real time it rendered at `rate`:
+    /// over 1.0, the block came late.
+    #[must_use]
+    pub fn share(self, rate: f64) -> f64 {
+        let real_ns = f64::from(self.frames) * 1e9 / rate;
+        if real_ns > 0.0 {
+            self.ns as f64 / real_ns
+        } else {
+            0.0
+        }
+    }
+
+    /// Packed so the slower orders higher: the time above, the frames in
+    /// the low 16 bits (a block holds at most 65,535 frames; more reads as
+    /// that many, and a time past 2^48 ns, 78 hours, as that).
+    fn pack(self) -> u64 {
+        let frames = u64::from(u16::try_from(self.frames).unwrap_or(u16::MAX));
+        (self.ns.min(MAX_PACKED_NS) << 16) | frames
+    }
+
+    fn unpack(bits: u64) -> Self {
+        Self {
+            ns: bits >> 16,
+            frames: u32::from(u16::try_from(bits & 0xffff).unwrap_or(u16::MAX)),
+        }
+    }
+}
+
+const MAX_PACKED_NS: u64 = (1 << 48) - 1;
 
 /// The audio thread's [`Meters`] for the UI: each level is the highest
 /// published since the UI last took it. Plain atomics, so publishing never
@@ -132,6 +175,9 @@ impl MeterCells {
 pub struct StatCells {
     busy_ns: AtomicU64,
     span_ns: AtomicU64,
+    /// [`Slowest::pack`]ed, raised by each publish, cleared by a take.
+    slowest: AtomicU64,
+    slowest_commands_ns: AtomicU64,
     voices: AtomicU32,
     voices_stolen: AtomicU64,
     voices_cut: AtomicU64,
@@ -146,6 +192,9 @@ impl StatCells {
     pub fn publish(&self, s: &Stats) {
         self.busy_ns.store(s.busy_ns, Ordering::Relaxed);
         self.span_ns.store(s.span_ns, Ordering::Relaxed);
+        self.slowest.fetch_max(s.slowest.pack(), Ordering::Relaxed);
+        self.slowest_commands_ns
+            .fetch_max(s.slowest_commands_ns, Ordering::Relaxed);
         self.voices.store(s.voices, Ordering::Relaxed);
         self.voices_stolen.store(s.voices_stolen, Ordering::Relaxed);
         self.voices_cut.store(s.voices_cut, Ordering::Relaxed);
@@ -163,6 +212,8 @@ impl StatCells {
         self.fresh.swap(false, Ordering::Acquire).then(|| Stats {
             busy_ns: self.busy_ns.load(Ordering::Relaxed),
             span_ns: self.span_ns.load(Ordering::Relaxed),
+            slowest: Slowest::unpack(self.slowest.swap(0, Ordering::Relaxed)),
+            slowest_commands_ns: self.slowest_commands_ns.swap(0, Ordering::Relaxed),
             voices: self.voices.load(Ordering::Relaxed),
             voices_stolen: self.voices_stolen.load(Ordering::Relaxed),
             voices_cut: self.voices_cut.load(Ordering::Relaxed),
@@ -177,6 +228,41 @@ impl StatCells {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_take_reports_the_slowest_block_since_the_last_take() {
+        let cells = StatCells::default();
+        let block = |ns, frames, commands| Stats {
+            slowest: Slowest { ns, frames },
+            slowest_commands_ns: commands,
+            ..Stats::default()
+        };
+        cells.publish(&block(900, 64, 5));
+        cells.publish(&block(5_000, 512, 40));
+        cells.publish(&block(1_000, 128, 7));
+        let s = cells.take().unwrap();
+        assert_eq!(
+            s.slowest,
+            Slowest {
+                ns: 5_000,
+                frames: 512
+            }
+        );
+        assert_eq!(s.slowest_commands_ns, 40);
+        cells.publish(&block(1_000, 128, 7));
+        let s = cells.take().unwrap();
+        assert_eq!((s.slowest.ns, s.slowest_commands_ns), (1_000, 7));
+        assert!(
+            (Slowest {
+                ns: 5_333_333,
+                frames: 512
+            }
+            .share(48_000.0)
+                - 0.5)
+                .abs()
+                < 1e-6
+        );
+    }
 
     #[test]
     fn a_full_ring_hands_the_value_back_without_blocking() {
