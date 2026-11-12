@@ -166,8 +166,10 @@ impl Engine {
         match par {
             event::ZONE_ID => voice.map_or(-1, |(_, z)| z.id as i32),
             event::PLAY_POS => voice.map_or(0, |(s, z)| {
-                let frames = z.region.start as f64 + s.voice.position();
-                (frames * 1e6 / f64::from(z.sample_rate.max(1))) as i32
+                // The position in the sample: a looped or reversed voice's
+                // cursor is not its elapsed frames.
+                let frame = s.voice.sample_frame(&z.region).unwrap_or(z.region.end);
+                (frame as f64 * 1e6 / f64::from(z.sample_rate.max(1))) as i32
             }),
             0..=event::CUSTOM_LAST => n.custom.get(par as usize).copied().unwrap_or(0),
             event::VOLUME => n.script_volume,
