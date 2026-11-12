@@ -71,6 +71,9 @@ pub struct RackAudio {
     span_ns: u64,
     /// By part, the capture being read, a budget of cells a block.
     capturing: Box<[Option<Box<Capture>>]>,
+    /// This block's time in the script callbacks a control or widget move
+    /// ran: script work, as a note's callbacks, not the commands' own.
+    ui_scripts_ns: u64,
 }
 
 impl RackAudio {
@@ -103,6 +106,7 @@ impl RackAudio {
             busy_ns: 0,
             span_ns: 0,
             capturing: (0..MAX_PARTS).map(|_| None).collect(),
+            ui_scripts_ns: 0,
         }
     }
 
@@ -164,9 +168,10 @@ impl RackAudio {
     pub fn process(&mut self, frames: usize, input: &[(u32, Event)]) {
         let start = std::time::Instant::now();
         let frames = frames.min(self.scratch.len());
+        self.ui_scripts_ns = 0;
         self.apply_commands();
         self.read_captures(frames);
-        let commands = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let commands = ns_since(start).saturating_sub(self.ui_scripts_ns);
         for out in &mut self.outputs {
             if let Some(o) = out.get_mut(..frames) {
                 o.fill([0.0; 2]);
@@ -502,11 +507,13 @@ impl RackAudio {
                     value,
                     keys,
                 } => {
+                    let t = std::time::Instant::now();
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         let held = [keys.shift, keys.alt, keys.ctrl || keys.cmd];
                         p.engine.set_click(slot, id, held, cell);
                         p.engine.set_control(slot, id, value);
                     }
+                    self.ui_scripts_ns += ns_since(t);
                 }
                 Command::ControlText {
                     part,
@@ -515,6 +522,7 @@ impl RackAudio {
                     cell,
                     text,
                 } => {
+                    let t = std::time::Instant::now();
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         if let Some(vm) = p.engine.vm_mut(slot) {
                             vm.set_text(cell as usize, *text);
@@ -522,6 +530,7 @@ impl RackAudio {
                         p.engine.set_click(slot, id, [false; 3], 0);
                         p.engine.set_control(slot, id, 0);
                     }
+                    self.ui_scripts_ns += ns_since(t);
                     // Freed on the control side: the loop takes no command while the ring is full.
                     if self.channels.typed.send(text).is_err() {
                         self.dropped += 1;
@@ -534,9 +543,11 @@ impl RackAudio {
                     value,
                     cell,
                 } => {
+                    let t = std::time::Instant::now();
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         p.engine.set_widget(slot, n, value, cell);
                     }
+                    self.ui_scripts_ns += ns_since(t);
                 }
             }
         }
@@ -610,6 +621,11 @@ fn release() -> [Event; 18] {
 /// (measured 20-40 us), so a million-cell part is read in about 20 blocks
 /// (0.2 s at 48 kHz) and a few hundred cells at once.
 const CAPTURE_CELLS: usize = 128;
+
+/// Nanoseconds since `t`.
+fn ns_since(t: std::time::Instant) -> u64 {
+    u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
 
 /// Events [`Command::Play`] holds for one block.
 const PLAYED: usize = 64;

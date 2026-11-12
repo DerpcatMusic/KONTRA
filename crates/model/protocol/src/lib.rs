@@ -77,7 +77,9 @@ pub struct Stats {
     /// The slowest block since the last take: its time and its frames.
     pub slowest: Slowest,
     /// The most time one block spent on the control side's commands
-    /// (captures, recalls, installs) since the last take, in ns.
+    /// (captures, looks, recalls, installs, files) since the last take, in
+    /// ns. The script callbacks a control or widget move runs are script
+    /// work, as a note's: they count in [`Stats::slowest`] only.
     pub slowest_commands_ns: u64,
     pub voices: u32,
     /// Since the plugin started, across parts.
