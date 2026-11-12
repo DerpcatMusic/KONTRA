@@ -359,6 +359,10 @@ mod tests {
                         spacing = 2
                         @lib.Label { text = "a" }
                         @{ page:value() == 1 and @ui.Spacer{} }
+                        @ui.ForEach {
+                            data = { "x" }
+                            content = function(item, index) return @ui.Text { text = index } end
+                        }
                     }
                     .context(key = lib.Theme, value = { get = theme, set = set_theme })
                 end"#,
@@ -377,12 +381,15 @@ mod tests {
         assert_eq!(label.mods[0].1[0].field("width"), Some(&Prop::Number(40.)));
         assert!(matches!(label.mods[1].1[0], Prop::Callback(_)));
         assert_eq!(tree.children[1].kind, "Spacer");
+        // A ForEach's index getter is read, not numbered as a callback.
+        let each = &tree.children[2];
+        assert_eq!(each.children[0].prop("text"), Some(&Prop::Number(1.)));
         // The parameter moved: the spacer goes.
         let tree = page
             .render(&[("Header__Page".into(), 0.)])
             .unwrap()
             .unwrap();
-        assert_eq!(tree.children.len(), 1);
+        assert_eq!(tree.children.len(), 2);
         // The binding's setter was passed, never called: the state holds.
         let text = tree.children[0].prop("text");
         assert_eq!(text, Some(&Prop::Text("a/dark".into())));
