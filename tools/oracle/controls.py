@@ -311,12 +311,12 @@ def writes_per_step(report, steps):
 
 
 def probe(writes):
-    """A script that replays step k's engine writes on CC 103·128 + CC 102 = k."""
+    """A script that replays step k's engine writes on CC 103·128 + CC 102 = k. Kontakt runs
+    purge_group only in UI callbacks and refuses the script otherwise, so purges are left out."""
     def line(w):
-        if w[0] == "purge_group":
-            return f"      purge_group({w[1]}, {w[2]})\n"
         return "      set_engine_par({}, {}, {}, {}, {})\n".format(*w)
-    cases = "".join(f"    case {k}\n" + "".join(map(line, w)) for k, w in enumerate(writes) if w)
+    sets = [[x for x in w if x[0] != "purge_group"] for w in writes]
+    cases = "".join(f"    case {k}\n" + "".join(map(line, w)) for k, w in enumerate(sets) if w)
     return ("on init\n  declare $step\nend on\non controller\n  if ($CC_NUM = 102)\n"
             "    $step := %CC[103] * 128 + %CC[102]\n    select ($step)\n" + cases
             + "    end select\n  end if\nend on\n")
@@ -405,7 +405,9 @@ def main():
         sys.exit(f"no Kontakt capture; see {out / 'b.log'}")
     for r in rows:  # a row whose steps write no engine parameter cannot be replayed in Kontakt
         ks = [k for k, (sr, _, t) in enumerate(steps) if sr is r and t != "context"]
-        if r["measure"] and ks and not any(writes[k] for k in ks):
+        if r["measure"] and any(x[0] == "purge_group" for k in ks for x in writes[k]):
+            r["measure"], r["note"] = False, "loads or unloads groups (purge_group), which Kontakt runs only from its panel"
+        elif r["measure"] and ks and not any(writes[k] for k in ks):
             r["measure"], r["note"] = False, "sets script state only (read by other callbacks); not replayable"
         elif r["measure"] and len(ks) >= 2 and writes[ks[0]] == writes[ks[1]]:
             r["measure"], r["note"] = False, "min and max write the same engine values; its effect is script state"
