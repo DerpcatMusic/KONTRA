@@ -53,7 +53,7 @@ LIBRARIES = {
     "unacorda": "Una Corda Library/Instruments/Una Corda Felt.nki",
 }
 TOL = dict(level=1.0, band=1.0, onset_ms=5.0, attack=1.5, release=1.5, balance=1.0)
-WIN, SEARCH = 24000, 1920  # replay: correlation window and lag search, frames
+WIN, SEARCH, NEAR, MARGIN = 24000, 1920, 240, 0.05  # replay: window, lag search, near search (frames), margin
 
 
 def scenario():
@@ -214,24 +214,32 @@ def capture(args):
 
 
 def replayed(nat, ours, events, base):
-    """`events` moved, per group of simultaneous note-ons, to where Kontakt played them."""
+    """`events` moved, per group of simultaneous note-ons, to where Kontakt played them.
+
+    Wine adds 0-3 ms per event and the capture timeline rarely steps, so a group keeps the shift
+    before it unless another lag correlates clearly better (MARGIN): a group under a second after
+    the previous one is searched within +-NEAR of it. Without that, 1/12 s repeats lock onto the
+    neighbouring note (Horn: +39 ms)."""
     nat, ours = nat.sum(0), ours.sum(0)
     shift, out, last_on = 0, [], None
+
+    def corr(f, lag):
+        a, ref = f + base + lag, ours[f:f + WIN]
+        if a < 0 or a + WIN > len(nat) or len(ref) < WIN:
+            return -1.0
+        n = nat[a:a + WIN]
+        return float(np.dot(n, ref)) / (math.sqrt(float(np.dot(n, n)) * float(np.dot(ref, ref))) + 1e-20)
+
     for e in events:
         f = e["frame"]
         if e["type"] == "note_on" and f != last_on:
+            near = last_on is not None and f - last_on < R
             last_on = f
-            ref = ours[f:f + WIN]
-            best, score = 0, 0.5
-            for lag in range(-SEARCH, SEARCH + 1, 4):
-                a = f + base + lag
-                if a < 0 or a + WIN > len(nat) or len(ref) < WIN:
-                    continue
-                n = nat[a:a + WIN]
-                c = float(np.dot(n, ref)) / (math.sqrt(float(np.dot(n, n)) * float(np.dot(ref, ref))) + 1e-20)
-                if c > score:
-                    best, score = lag, c
-            shift = best
+            span = range(shift - NEAR, shift + NEAR + 1, 4) if near else range(-SEARCH, SEARCH + 1, 4)
+            keep = corr(f, shift)
+            best = max(span, key=lambda lag: corr(f, lag))
+            if corr(f, best) > max(keep + MARGIN, 0.5):
+                shift = best
         out.append(dict(e, frame=max(0, f + shift)))
     return sorted(out, key=lambda e: e["frame"])
 
