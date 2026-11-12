@@ -96,12 +96,16 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             }
             None => {}
         }
-        // A widget says its name unless the script gave it words or a picture.
-        if out.text.is_empty() && out.images.is_empty() {
-            match out.kind {
-                ui::Kind::Label | ui::Kind::Button { .. } => out.text.clone_from(&w.name),
-                _ => {}
+        // A widget says its name unless the script gave it words or a picture;
+        // a button's picture carries its own caption (Augmented Orchestra's
+        // tabs: `displayName` over art that already reads "Main").
+        if out.images.is_empty() {
+            if out.text.is_empty() && matches!(out.kind, ui::Kind::Label | ui::Kind::Button { .. })
+            {
+                out.text.clone_from(&w.name);
             }
+        } else if matches!(out.kind, ui::Kind::Button { .. }) {
+            out.text.clear();
         }
         if w.font.is_some() || w.font_size.is_some() || w.align.is_some() || w.colours[1].is_some()
         {
@@ -279,7 +283,8 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
             w.enabled,
             w.images.first().copied(),
         );
-    if let Some(text) = text.filter(|t| *t != w.text) {
+    let pictured = matches!(w.kind, ui::Kind::Button { .. }) && !w.images.is_empty();
+    if let Some(text) = text.filter(|t| *t != w.text && !pictured) {
         w.text = text.to_owned();
         changed = true;
     }
@@ -417,5 +422,33 @@ mod tests {
         assert!(apply(&mut tree, 2, on, None));
         assert_eq!(shown(&tree), ui::Role::Pressed);
         assert!(!apply(&mut tree, 2, on, None));
+    }
+
+    #[test]
+    fn a_pictured_button_shows_no_caption_and_position_places_a_widget() {
+        let page = kontra_lua::compile(
+            r#"local b = OnOffButton{"MainTab", false, displayName="Main", position={180, 16}}
+               b.normalImage = "off.png"; b.pressedImage = "on.png"
+               Button{"Plain", displayName="Go", position={4, 5}, size={20, 10}}"#,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .ui;
+        let mut tree = tree(&page, &|_| None);
+        let (pictured, plain) = (&tree.widgets[0], &tree.widgets[1]);
+        assert_eq!((pictured.rect.x, pictured.rect.y), (180., 16.));
+        assert_eq!(pictured.text, "");
+        assert_eq!(
+            (plain.text.as_str(), plain.rect.x, plain.rect.y),
+            ("Go", 4., 5.)
+        );
+        let look = WidgetLook {
+            value: 0.,
+            visible: true,
+            enabled: true,
+        };
+        assert!(!apply(&mut tree, 0, look, Some("Main")));
+        assert_eq!(tree.widgets[0].text, "");
     }
 }
