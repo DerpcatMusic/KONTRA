@@ -462,7 +462,8 @@ mod tests {
                     Label = function(props)
                         local theme = ui.use_context(Theme)()
                         return @ui.Text { text = props.text .. "/" .. theme }
-                        .frame(width = 40)
+                        .frame(width = ui.create_computed(function() return 40 end))
+                        .on_tap_gesture(function() end)
                     end,
                 }"#,
             ),
@@ -491,7 +492,9 @@ mod tests {
         let label = &tree.children[0];
         assert_eq!(label.prop("text"), Some(&Prop::Text("a/dark".into())));
         assert_eq!(label.mods[0].0, "frame");
+        // A computed named argument is read; a gesture's stays a callback.
         assert_eq!(label.mods[0].1[0].field("width"), Some(&Prop::Number(40.)));
+        assert!(matches!(label.mods[1].1[0], Prop::Callback(_)));
         assert_eq!(tree.children[1].kind, "Spacer");
         // The parameter moved: the spacer goes.
         let tree = page
