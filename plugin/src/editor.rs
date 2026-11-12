@@ -458,13 +458,22 @@ const COVER_BYTES: u64 = 32 << 20;
 /// Carries out a browser action: a preset loads into the first free part.
 pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &mut Vec<String>) {
     match action {
-        Action::Load { library, preset } => {
+        Action::Load {
+            library,
+            preset,
+            into,
+        } => {
             let Some(path) = browser.preset(library, preset) else {
                 return;
             };
-            let loaded = match rack.free() {
-                Some(part) => rack.load(part, &path).map(|()| place(rack, browser, part)),
-                None => Err("every part is in use".into()),
+            // A preset recalls into the part named; anything else adds one.
+            let into = into
+                .filter(|_| is_preset(&path))
+                .filter(|&p| rack.parts().get(p).is_some_and(Option::is_some));
+            let loaded = match (into, rack.free()) {
+                (Some(part), _) => rack.load(part, &path),
+                (None, Some(part)) => rack.load(part, &path).map(|()| place(rack, browser, part)),
+                (None, None) => Err("every part is in use".into()),
             };
             match loaded {
                 Ok(()) => browser.loaded(&path),
@@ -764,10 +773,25 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 }
                 continue;
             }
+            // The browser names the focused part by its row: the rack's slot.
+            if let Action::Load {
+                library,
+                preset,
+                into,
+            } = action
+            {
+                let into = into.and_then(|n| slots.get(n).copied());
+                let load = Action::Load {
+                    library,
+                    preset,
+                    into,
+                };
+                p.shared.request(Request::Browse(load));
+                continue;
+            }
             if matches!(
                 action,
-                Action::Load { .. }
-                    | Action::Star(..)
+                Action::Star(..)
                     | Action::Refresh
                     | Action::RemoveFolder(_)
                     | Action::NewParts { .. }
@@ -876,6 +900,15 @@ fn played(action: &Action) -> Option<Event> {
         }
         Action::Modulation(x) => Event::midi1(0xB0, 1, (x.clamp(0.0, 1.0) * 127.0).round() as u8),
         _ => return None,
+    })
+}
+
+/// Whether `path` is a preset of an instrument rather than one: a Kontakt
+/// snapshot or the player's own preset.
+fn is_preset(path: &std::path::Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str());
+    ext.is_some_and(|e| {
+        e.eq_ignore_ascii_case("nksn") || e.eq_ignore_ascii_case(kontra_host::presets::EXTENSION)
     })
 }
 

@@ -85,7 +85,8 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
         clicks(&mut ui, &mut app, "preset-0", 2),
         vec![Action::Load {
             library: 0,
-            preset: 0
+            preset: 0,
+            into: None
         }]
     );
     app.parts.push(Part {
@@ -398,7 +399,8 @@ fn a_preset_dragged_onto_a_part_replaces_it_and_onto_free_space_adds_one() {
     assert!(
         onto_rack.contains(&Action::Load {
             library: 0,
-            preset: 1
+            preset: 1,
+            into: None
         }),
         "{onto_rack:?}"
     );

@@ -324,12 +324,22 @@ pub enum Sheet {
     DeletePreset(usize),
 }
 
+/// The focused part: the first one open, else the first.
+fn focused(parts: &[Part]) -> Option<usize> {
+    (parts.iter().position(|p| p.open)).or_else(|| (!parts.is_empty()).then_some(0))
+}
+
 /// What the user asked for this frame, for the host to carry out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// A browser preset to play. A preset (a snapshot, a user preset)
+    /// recalls `into` that part when one is named; an instrument, or a
+    /// preset with no part named, adds a part (Kontakt's browser
+    /// double-click, with its replace-selected-slot option).
     Load {
         library: usize,
         preset: usize,
+        into: Option<usize>,
     },
     /// A browser preset dropped on a part: it plays that instead.
     Replace {
@@ -691,8 +701,7 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
         .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");
-    // The focused part: the first one open, else the first.
-    let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
+    let focused = focused(&app.parts).and_then(|n| app.parts.get(n));
     // Its script's last `message`, where Kontakt's status bar shows it.
     let message = (focused.and_then(|p| p.face.as_ref()))
         .map(|f| f.tree.message.as_str())
