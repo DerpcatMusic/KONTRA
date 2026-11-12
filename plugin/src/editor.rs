@@ -358,7 +358,10 @@ fn edit_preset(
 
 /// The catalog as the browser lists it: presets by path inside their
 /// library, without the extension.
-fn libraries(browser: &Browser) -> Vec<app::Library> {
+pub(crate) fn libraries(browser: &Browser) -> Vec<app::Library> {
+    // Kontakt's user snapshots, read only: `User Content/<instrument>/<name>`.
+    let kontakt = browser.kontakt();
+    let user_content = kontakt.as_deref().and_then(std::path::Path::parent);
     (browser.catalog.libraries.iter())
         .map(|l| app::Library {
             name: l.name.clone(),
@@ -376,7 +379,9 @@ fn libraries(browser: &Browser) -> Vec<app::Library> {
                             p.file_stem().unwrap_or_default().display()
                         ),
                         None => {
-                            let p = p.strip_prefix(&l.dir).unwrap_or(p).with_extension("");
+                            let from = user_content.filter(|k| p.starts_with(k));
+                            let from = from.unwrap_or(&l.dir);
+                            let p = p.strip_prefix(from).unwrap_or(p).with_extension("");
                             p.to_string_lossy().into_owned()
                         }
                     },
