@@ -8,6 +8,7 @@
 //! Nothing allocates after [`Instance::new`].
 
 mod action;
+mod host;
 mod machine;
 mod poly;
 mod program;
@@ -17,6 +18,7 @@ mod text;
 use std::hash::{Hash, Hasher};
 
 pub use action::{Action, event};
+pub use host::{HostApi, HostCall, HostValue};
 pub use machine::Vm;
 use poly::{POLY_EVENTS, Poly, free_poly, take_poly};
 pub use program::{Cmp, Op, Program, Returns};
@@ -28,39 +30,6 @@ pub use text::{TEXT_CAPACITY, Text};
 pub const LOOP_LIMIT: u32 = 10_000_001;
 /// First iteration count at which a loop's state is compared; doubles after.
 const LOOP_PROBE: u32 = 1024;
-
-/// One host call: the action, its arguments and the instance cells (for
-/// actions that take arrays by reference as `base, len` pairs).
-pub struct HostCall<'a> {
-    pub action: Action,
-    /// Opaque context the engine gave the callback ([`Instance::start`]), e.g. its event.
-    pub context: u64,
-    pub ints: &'a [i64],
-    pub texts: &'a [Text],
-    pub cells: &'a mut [i64],
-    /// The script's text variables (a saved text read back mid-init).
-    pub text_cells: &'a mut [Text],
-    /// Where a builtin that returns text writes it (then returns [`HostValue::Text`]).
-    pub text_out: &'a mut Text,
-}
-
-/// What a host call returns. Must match the call's [`Returns`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum HostValue {
-    Nothing,
-    Int(i32),
-    Real(f64),
-    /// The text is in [`HostCall::text_out`].
-    Text,
-    /// Not done yet: the callback waits this many microseconds, then makes
-    /// the same call again (`wait_async` on a command still running).
-    Wait(u64),
-}
-
-/// The engine side of every non-pure action, implemented once (`kontra-engine`).
-pub trait HostApi {
-    fn call(&mut self, call: HostCall<'_>) -> HostValue;
-}
 
 /// A front end that runs its own language (Lua) on the engine: the same
 /// [`HostApi`], coroutine handles and [`Step`]s as [`Instance`].
@@ -212,6 +181,9 @@ pub struct Instance {
     polys: Box<[Poly]>,
     starts: u64,
     faults: Faults,
+    /// Counts what may have written a cell (a run, a host's write),
+    /// wrapping: unchanged, every cell is as it was.
+    changes: u32,
 }
 
 impl Instance {
@@ -256,6 +228,7 @@ impl Instance {
             polys,
             starts: 0,
             faults: Faults::default(),
+            changes: 0,
         }
     }
 
@@ -272,12 +245,14 @@ impl Instance {
     pub fn set_cell(&mut self, n: usize, value: i64) {
         if let Some(c) = self.cells.get_mut(n) {
             *c = value;
+            self.changes = self.changes.wrapping_add(1);
         }
     }
 
     pub fn set_text(&mut self, n: usize, value: Text) {
         if let Some(t) = self.texts.get_mut(n) {
             *t = value;
+            self.changes = self.changes.wrapping_add(1);
         }
     }
 
@@ -391,6 +366,7 @@ impl Instance {
             coroutines,
             polys,
             faults,
+            changes,
             ..
         } = self;
         let Some(c) = coroutines
@@ -399,6 +375,7 @@ impl Instance {
         else {
             return Step::Done;
         };
+        *changes = changes.wrapping_add(1);
         let poly = polys
             .get_mut(c.poly)
             .map_or(&mut [][..], |p| &mut p.cells[..]);

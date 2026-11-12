@@ -4,10 +4,11 @@
 use std::sync::Arc;
 
 use kontra_engine::{Engine, Play, SampleTime, Timed};
-use kontra_protocol::{Meters, Stats};
+use kontra_protocol::{Meters, Slowest, Stats};
 
 use super::hold::{Held, Hold};
 use super::{Channels, Command, Event, HostPattern, Mix, OUTPUTS};
+use crate::persist::Capture;
 use kontra_protocol::MAX_PARTS;
 
 struct Playing {
@@ -68,6 +69,14 @@ pub struct RackAudio {
     /// Time in [`RackAudio::process`] and the real time it rendered, in ns.
     busy_ns: u64,
     span_ns: u64,
+    /// By part, the capture being read, a budget of cells a block.
+    capturing: Box<[Option<Box<Capture>>]>,
+    /// The part whose capture is served first this block: it turns, so a
+    /// busy part never keeps the budget from the others.
+    capture_turn: usize,
+    /// This block's time in the script callbacks a control or widget move
+    /// ran: script work, as a note's callbacks, not the commands' own.
+    ui_scripts_ns: u64,
 }
 
 impl RackAudio {
@@ -99,6 +108,9 @@ impl RackAudio {
             dropped: 0,
             busy_ns: 0,
             span_ns: 0,
+            capturing: (0..MAX_PARTS).map(|_| None).collect(),
+            capture_turn: 0,
+            ui_scripts_ns: 0,
         }
     }
 
@@ -160,7 +172,10 @@ impl RackAudio {
     pub fn process(&mut self, frames: usize, input: &[(u32, Event)]) {
         let start = std::time::Instant::now();
         let frames = frames.min(self.scratch.len());
+        self.ui_scripts_ns = 0;
         self.apply_commands();
+        self.read_captures(frames);
+        let commands = ns_since(start).saturating_sub(self.ui_scripts_ns);
         for out in &mut self.outputs {
             if let Some(o) = out.get_mut(..frames) {
                 o.fill([0.0; 2]);
@@ -291,6 +306,11 @@ impl RackAudio {
         self.busy_ns = self.busy_ns.saturating_add(busy);
         self.span_ns += (frames as f64 * 1e9 / self.rate) as u64;
         (stats.busy_ns, stats.span_ns) = (self.busy_ns, self.span_ns);
+        stats.slowest = Slowest {
+            ns: busy,
+            frames: u32::try_from(frames).unwrap_or(u32::MAX),
+        };
+        stats.slowest_commands_ns = commands;
         self.channels.meters.publish(&self.meters);
         self.channels.stats.publish(&stats);
         self.meters = Meters::default();
@@ -452,15 +472,17 @@ impl RackAudio {
                         self.dropped += 1;
                     }
                 }
-                Command::Capture(mut c) => {
-                    if let Some(Some(p)) = self.parts.get_mut(c.part) {
-                        c.read(&mut p.engine);
+                // Read from the next block on, a budget at a time.
+                Command::Capture(c) => match self.capturing.get_mut(c.part) {
+                    Some(slot @ None) => *slot = Some(c),
+                    // One is being read already: this one goes back unread.
+                    _ => {
+                        if let Err(c) = self.channels.captured.send(c) {
+                            self.dropped += 1;
+                            drop(c);
+                        }
                     }
-                    if let Err(c) = self.channels.captured.send(c) {
-                        self.dropped += 1;
-                        drop(c);
-                    }
-                }
+                },
                 Command::Look(mut frame) => {
                     match self.parts.get(frame.part) {
                         Some(Some(p)) if p.generation == frame.generation => frame.fill(&p.engine),
@@ -489,11 +511,13 @@ impl RackAudio {
                     value,
                     keys,
                 } => {
+                    let t = std::time::Instant::now();
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         let held = [keys.shift, keys.alt, keys.ctrl || keys.cmd];
                         p.engine.set_click(slot, id, held, cell);
                         p.engine.set_control(slot, id, value);
                     }
+                    self.ui_scripts_ns += ns_since(t);
                 }
                 Command::ControlText {
                     part,
@@ -502,6 +526,7 @@ impl RackAudio {
                     cell,
                     text,
                 } => {
+                    let t = std::time::Instant::now();
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         if let Some(vm) = p.engine.vm_mut(slot) {
                             vm.set_text(cell as usize, *text);
@@ -509,6 +534,7 @@ impl RackAudio {
                         p.engine.set_click(slot, id, [false; 3], 0);
                         p.engine.set_control(slot, id, 0);
                     }
+                    self.ui_scripts_ns += ns_since(t);
                     // Freed on the control side: the loop takes no command while the ring is full.
                     if self.channels.typed.send(text).is_err() {
                         self.dropped += 1;
@@ -521,10 +547,41 @@ impl RackAudio {
                     value,
                     cell,
                 } => {
+                    let t = std::time::Instant::now();
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         p.engine.set_widget(slot, n, value, cell);
                     }
+                    self.ui_scripts_ns += ns_since(t);
                 }
+            }
+        }
+    }
+
+    /// Reads on the captures being read, at most [`CAPTURE_CELLS`] a frame
+    /// of this block in all; a finished one goes back to the control side,
+    /// as does one whose part was replaced or removed, unfinished.
+    fn read_captures(&mut self, frames: usize) {
+        let mut budget = frames.saturating_mul(CAPTURE_CELLS);
+        let (first, parts) = (self.capture_turn, self.capturing.len());
+        self.capture_turn = (first + 1) % parts.max(1);
+        for n in (first..parts).chain(0..first) {
+            let Some(slot) = self.capturing.get_mut(n) else {
+                continue;
+            };
+            let Some(c) = slot else { continue };
+            let done = match self.parts.get_mut(n) {
+                Some(Some(p)) if p.generation == c.generation => c.read(&mut p.engine, &mut budget),
+                _ => true,
+            };
+            if done
+                && let Some(c) = slot.take()
+                && let Err(c) = self.channels.captured.send(c)
+            {
+                // No room: it goes back in a later block.
+                *slot = Some(c);
+            }
+            if budget == 0 {
+                break;
             }
         }
     }
@@ -566,6 +623,17 @@ fn release() -> [Event; 18] {
         Ok(ch @ 0..=15) => Event::midi1(0xB0 | ch, 64, 0),
         _ => off(n == 16),
     })
+}
+
+/// Persistent cells a capture reads per frame of a block: 64k cells (512
+/// KiB) in a 512-frame block, about 1% of its real time on a desktop core
+/// (measured 20-40 us), so a million-cell part is read in about 20 blocks
+/// (0.2 s at 48 kHz) and a few hundred cells at once.
+const CAPTURE_CELLS: usize = 128;
+
+/// Nanoseconds since `t`.
+fn ns_since(t: std::time::Instant) -> u64 {
+    u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Events [`Command::Play`] holds for one block.

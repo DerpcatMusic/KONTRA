@@ -203,6 +203,8 @@ impl FaceLook {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stats {
     pub cpu: f64,
+    /// The slowest recent block, in percent of its real time.
+    pub peak: f64,
     pub voices: u32,
     /// The whole process; 0 where the host cannot read it.
     pub ram_mb: u32,
@@ -511,6 +513,12 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             format!("{:.0}%", s.cpu),
             "100%",
             "The audio thread's time spent rendering".into()
+        ),
+        stat(
+            "Peak",
+            format!("{:.0}%", s.peak),
+            "100%",
+            "The slowest block of the last half second, in percent of its real time: past 100% the host hears a dropout".into()
         ),
         stat(
             "Voices",
