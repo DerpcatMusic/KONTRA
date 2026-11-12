@@ -42,15 +42,15 @@ impl SampleFmt {
         self.encoding.bytes() * self.channels as usize
     }
 
-    /// Decodes frames `first..first + out.len()` of a page into stereo.
-    /// `byte(i)` reads byte `i` of the page and returns 0 past its end.
+    /// Decodes frames `first..first + out.len()` of a page into stereo; a
+    /// value not wholly inside `bytes` reads 0.
     /// With `mix`, channel `c` adds `mix[c]` times its value to the outputs;
     /// without, mono plays on both sides and channels past the second are not
     /// played.
-    // ponytail: scalar per-byte decode; SIMD per encoding when C10 shows it in a profile.
+    // ponytail: scalar per value; SIMD per encoding when a profile shows it.
     pub(crate) fn decode(
         self,
-        byte: impl Fn(usize) -> u8,
+        bytes: &[u8],
         first: usize,
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
@@ -58,15 +58,14 @@ impl SampleFmt {
         let width = self.encoding.bytes();
         let frame_bytes = self.bytes_per_frame();
         let value = |at: usize| -> f32 {
-            match self.encoding {
-                Encoding::I16 => f32::from(i16::from_le_bytes([byte(at), byte(at + 1)])) / 32_768.0,
-                Encoding::I24 => {
-                    let raw = i32::from_le_bytes([0, byte(at), byte(at + 1), byte(at + 2)]) >> 8;
+            match (self.encoding, bytes.get(at..at + width)) {
+                (Encoding::I16, Some(&[a, b])) => f32::from(i16::from_le_bytes([a, b])) / 32_768.0,
+                (Encoding::I24, Some(&[a, b, c])) => {
+                    let raw = i32::from_le_bytes([0, a, b, c]) >> 8;
                     raw as f32 / 8_388_608.0
                 }
-                Encoding::F32 => {
-                    f32::from_le_bytes([byte(at), byte(at + 1), byte(at + 2), byte(at + 3)])
-                }
+                (Encoding::F32, Some(&[a, b, c, d])) => f32::from_le_bytes([a, b, c, d]),
+                _ => 0.0,
             }
         };
         let at = |n: usize, c: usize| value((first + n) * frame_bytes + c * width);
@@ -109,7 +108,7 @@ mod tests {
 
     fn decode(fmt: SampleFmt, bytes: &[u8], frames: usize) -> Vec<[f32; 2]> {
         let mut out = vec![[9.0; 2]; frames];
-        fmt.decode(|i| bytes.get(i).copied().unwrap_or(0), 0, &mut out, None);
+        fmt.decode(bytes, 0, &mut out, None);
         out
     }
 
@@ -124,12 +123,7 @@ mod tests {
         mix[0] = [1.0, 0.0];
         mix[2] = [0.5, 1.0];
         let mut out = [[9.0; 2]];
-        fmt.decode(
-            |i| bytes.get(i).copied().unwrap_or(0),
-            0,
-            &mut out,
-            Some(&mix),
-        );
+        fmt.decode(&bytes, 0, &mut out, Some(&mix));
         assert_eq!(out, [[0.25, -0.5]]);
     }
 

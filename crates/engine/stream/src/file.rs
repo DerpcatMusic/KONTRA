@@ -94,8 +94,7 @@ pub fn decode(sample: &ir::Sample, max_frames: u64) -> io::Result<(u32, Vec<[f32
     let mut bytes = vec![0; size];
     o.source.read(0, &mut bytes)?;
     let mut out = vec![[0.0; 2]; frames];
-    o.fmt
-        .decode(|i| bytes.get(i).copied().unwrap_or(0), 0, &mut out, None);
+    o.fmt.decode(&bytes, 0, &mut out, None);
     Ok((o.rate, out))
 }
 
