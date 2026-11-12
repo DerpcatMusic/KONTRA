@@ -163,7 +163,12 @@ impl<'a> Compiler<'a> {
     /// knob, a table for a `%` name, a text edit for an `@` name. ponytail: the view's own defaults, ranges
     /// and table sizes are not read from its `.nckp`; controls start at 0 and
     /// tables take KSP's largest size.
-    pub(super) fn view_control(&mut self, name: &'a str, span: Span) -> Result<(), Error> {
+    pub(super) fn view_control(
+        &mut self,
+        name: &'a str,
+        span: Span,
+        params: &[i32],
+    ) -> Result<(), Error> {
         let key = name.to_ascii_lowercase();
         if self.names.contains_key(&key)
             || Builtin::from_name(name).is_some()
@@ -191,7 +196,7 @@ impl<'a> Compiler<'a> {
         self.controls.push(Control {
             kind,
             variable: self.vars.len() as u32,
-            params: Vec::new(),
+            params: params.to_vec(),
         });
         self.names.insert(key, self.vars.len());
         self.vars.push(Var {
@@ -309,15 +314,38 @@ impl<'a> Compiler<'a> {
         self.patch(done, end);
     }
 
+    /// Every knob, slider and value edit's constant range, set as `on init`
+    /// starts: `get_control_par` reads it as `$CONTROL_PAR_MIN_VALUE` and
+    /// `MAX_VALUE` (Conflux loops its wavetables up to a view knob's max).
+    /// A range from variables is set again where its declaration runs.
+    pub(super) fn declared_ranges(&mut self) {
+        const RANGE: [&str; 2] = ["$CONTROL_PAR_MIN_VALUE", "$CONTROL_PAR_MAX_VALUE"];
+        let ranges: Vec<(u32, i32, i32)> = (self.controls.iter())
+            .filter(|c| ranged(c.kind))
+            .filter_map(|c| match c.params.as_slice() {
+                &[lo, hi, ..] => Some((c.variable, lo, hi)),
+                _ => None,
+            })
+            .collect();
+        if ranges.is_empty() {
+            return;
+        }
+        let pars = RANGE.map(|p| self.symbol(p));
+        for (variable, lo, hi) in ranges {
+            for (par, value) in pars.into_iter().zip([lo, hi]) {
+                self.emit(Op::Int(super::ui_id(variable as usize)));
+                self.emit(Op::Int(par));
+                self.emit(Op::Int(value));
+                self.host(Action::SetControlPar, 3, 0, Returns::Nothing);
+            }
+        }
+    }
+
     /// A knob, slider or value edit whose range comes from variables gets it
     /// set where the declaration runs.
     pub(super) fn control_params(&mut self, d: &Declare<'a>, control: u32) -> Result<(), Error> {
         const RANGE: [&str; 2] = ["$CONTROL_PAR_MIN_VALUE", "$CONTROL_PAR_MAX_VALUE"];
-        let kind = self.controls.get(control as usize).map(|c| c.kind);
-        let ranged = matches!(
-            kind,
-            Some(ControlKind::Knob | ControlKind::Slider | ControlKind::ValueEdit)
-        );
+        let ranged = (self.controls.get(control as usize)).is_some_and(|c| ranged(c.kind));
         for (i, p) in d.params.iter().enumerate() {
             if self.fold_int(p).is_ok() {
                 continue;
@@ -564,4 +592,12 @@ fn fold_binary(op: Bin, a: Value, b: Value) -> Option<Value> {
         (Bin::Ge, Int(a), Int(b)) => Bool(a >= b),
         _ => return None,
     })
+}
+
+/// Whether a control of `kind` has a value range.
+fn ranged(kind: ControlKind) -> bool {
+    matches!(
+        kind,
+        ControlKind::Knob | ControlKind::Slider | ControlKind::ValueEdit
+    )
 }

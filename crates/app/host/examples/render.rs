@@ -688,4 +688,17 @@ fn install_requests(engine: &mut Engine, plan: &Plan) {
         }
         engine.install(Prepared::new(r, Some(plan), RATE));
     }
+    // Zone edits (`set_zone_par`), applied together as the host does.
+    let mut edits = Vec::new();
+    engine.drain_zone_edits(|e| {
+        edits.push(e);
+        true
+    });
+    if !edits.is_empty() {
+        let mut plan = Plan::clone(engine.plan());
+        let done: Vec<_> = (edits.iter())
+            .map(|e| (*e, plan.edit_zone(e.zone, e.par, e.value)))
+            .collect();
+        engine.swap_plan(&mut Arc::new(plan), &done);
+    }
 }

@@ -3712,6 +3712,25 @@ fn a_script_loads_only_the_performance_view_it_has() {
     );
 }
 
+/// A knob's declared range reads back as its min and max, a performance
+/// view knob's too (Conflux loops its wavetables up to `$WTSelect`'s max).
+#[test]
+fn a_knobs_declared_range_reads_back() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "on init
+        load_performance_view(\"v\")
+        declare ui_knob $k(-5, 40, 1)
+        message(get_control_par(get_ui_id($k), $CONTROL_PAR_MIN_VALUE) & \" \" & ...
+            get_control_par(get_ui_id($k), $CONTROL_PAR_MAX_VALUE) & \" \" & ...
+            get_control_par(get_ui_id($wt), $CONTROL_PAR_MAX_VALUE))
+    end on";
+    let script = kontra_ksp::compile_with_view(source, &[], &[("$wt", &[0, 99, 1])]).unwrap();
+    let mut plan = Plan::new(vec![], 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "-5 40 99");
+}
+
 /// Conflux: a route the engine does not carry (a wavetable target) keeps
 /// the depth it was saved with; a script reads it, shows it and moves it.
 #[test]

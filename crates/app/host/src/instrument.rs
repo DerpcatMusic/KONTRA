@@ -130,8 +130,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         }
         let set: Vec<&str> = conditions.iter().map(String::as_str).collect();
         let view = crate::perf_view::find(&script.data).map(|(_, v)| v);
-        let view: Vec<&str> = (view.iter().flat_map(|v| &v.controls))
-            .map(|c| c.name.as_str())
+        let view: Vec<(&str, &[i32])> = (view.iter().flat_map(|v| &v.controls))
+            .map(|c| (c.name.as_str(), c.params.as_slice()))
             .collect();
         match kontra_ksp::compile_with_view(&script.source, &set, &view) {
             Ok(compiled) => {
