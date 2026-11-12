@@ -336,18 +336,6 @@ impl Capture {
         }
     }
 
-    /// Whether the audio side read it to the end; one it gave up on (its
-    /// part was replaced or removed) is not a capture of anything.
-    pub(crate) fn is_done(&self) -> bool {
-        self.at == Cursor::Done
-    }
-
-    /// Whether it read any slot: one that read none holds nothing newer
-    /// than the capture before it.
-    pub(crate) fn read_any(&self) -> bool {
-        self.fresh.contains(&true)
-    }
-
     /// Asks only for what changed since `last`, this part's capture before,
     /// and starts the read over (a capture is reused).
     pub fn after(&mut self, last: Option<&Self>) {
@@ -361,7 +349,7 @@ impl Capture {
 
     /// Takes `last`'s values for the slots this capture did not read: they
     /// did not change since.
-    pub fn keep(&mut self, last: Option<&mut Self>) {
+    fn keep(&mut self, last: Option<&mut Self>) {
         let Some(last) = last.filter(|l| l.generation == self.generation) else {
             return;
         };
@@ -396,6 +384,25 @@ impl Capture {
             std::mem::swap(&mut mine.1, &mut theirs.1);
             mine.2 = theirs.2;
         }
+    }
+}
+
+/// Takes capture `c` back from the audio side. Read to the end and having
+/// read any slot, it becomes `latest`, with what it did not read again kept
+/// from the one before; the other goes to `spare`, its room for the next.
+/// One that read nothing leaves `latest` standing: nothing is copied. One
+/// the audio side gave up on (its part was replaced) is not a capture.
+pub(crate) fn landed(
+    mut c: Box<Capture>,
+    latest: &mut Option<Box<Capture>>,
+    spare: &mut Option<Box<Capture>>,
+) {
+    let done = c.at == Cursor::Done;
+    if done && (c.fresh.contains(&true) || latest.is_none()) {
+        c.keep(latest.as_deref_mut());
+        *spare = latest.replace(c);
+    } else {
+        *spare = Some(c);
     }
 }
 

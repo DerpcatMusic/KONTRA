@@ -711,19 +711,12 @@ impl Rack {
             (frame.part, frame.generation) = (n, p.script.generation);
             self.send(Command::Look(frame));
         }
-        while let Some(mut c) = self.channels.captured.recv() {
+        while let Some(c) = self.channels.captured.recv() {
             if let Some(Some(p)) = self.parts.get_mut(c.part)
                 && p.script.generation == c.generation
             {
-                let s = &mut p.script;
-                s.asked = false;
-                // Nothing read again: the latest stands, with nothing to copy.
-                if c.is_done() && (c.read_any() || s.latest.is_none()) {
-                    c.keep(s.latest.as_deref_mut());
-                    s.spare = s.latest.replace(c);
-                } else {
-                    s.spare = Some(c);
-                }
+                p.script.asked = false;
+                crate::persist::landed(c, &mut p.script.latest, &mut p.script.spare);
             }
         }
         // Ask again for every part with persistent values: what a save
