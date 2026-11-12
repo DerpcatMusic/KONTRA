@@ -33,8 +33,9 @@ impl From<bool> for Exit {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Work {
     Input(Event),
-    /// A waiting callback of a script slot continues, if still that wait.
-    Resume(u8, CoId, u32),
+    /// A waiting callback of a script slot continues, if still that wait;
+    /// the last field is its wake time's part of a frame, in millionths.
+    Resume(u8, CoId, u32, u32),
     /// A script note's duration is up.
     Release(NoteRef),
     /// The note a `play_note(.., -1)` child was played for is released: its

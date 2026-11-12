@@ -468,7 +468,7 @@ impl Engine {
     fn dispatch(&mut self, work: Work) {
         let event = match work {
             Work::Input(event) => event,
-            Work::Resume(slot, co, wait) => return self.resume(slot, co, wait),
+            Work::Resume(slot, co, wait, part) => return self.resume(slot, co, wait, part),
             Work::Release(note) => return self.end_note(note),
             Work::ParentUp(note) => return self.parent_up(note),
             Work::PgsChanged => return self.run_pgs_changed(),

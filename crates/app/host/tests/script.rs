@@ -2442,6 +2442,30 @@ fn stop_wait_ends_the_current_wait_or_every_wait() {
     }
 }
 
+/// A wait keeps its wake time to the microsecond: one shorter than a frame
+/// goes on in the same frame, so 10000 × `wait(1)` take 10 ms, not 10000
+/// frames (oracle, Kontakt 8.13.1: 10 / 100 / 200 / 210 ms for 10000 ×
+/// `wait(1 | 10 | 20 | 21)`, `$ENGINE_UPTIME`).
+#[test]
+fn a_wait_shorter_than_a_frame_goes_on_in_the_same_frame() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let source = "on init
+            declare $i
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            while ($i < 10000)
+                wait(1)
+                inc($i)
+            end while
+            play_note(60, 127, 0, 0)
+        end on";
+    let mut e = engine(&store, vec![z], source);
+    // 10 ms = 480 frames: inside the first 4096-frame block.
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+}
+
 /// Kontakt keeps one release-trigger counter per key; its system script
 /// restarts it on every attack, and a script that ignores the attack
 /// restarts it with `reset_rls_trig_counter` (string and system script in
