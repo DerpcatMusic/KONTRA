@@ -37,7 +37,8 @@ pub(crate) fn effect(
         // Input, make-up, attack, release, ratio, mix and an unbound float;
         // then high quality, link and side chain bytes.
         0x4c => {
-            let c = feedback([f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?], byte(29)?);
+            let (saved, link) = feedback_saved(public)?;
+            let c = feedback(saved, link);
             Some((
                 ir::EffectKind::Compressor(c),
                 byte(30)?.then_some("Feedback Compressor side chain"),
@@ -45,6 +46,51 @@ pub(crate) fn effect(
         }
         _ => None,
     }
+}
+
+/// A version 0x10 Feedback Compressor record's six knobs (input, make-up,
+/// attack, release, ratio, mix, each 0..=1) and its link byte.
+fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
+    let f = |n: usize| {
+        let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let saved = [f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?];
+    Some((saved, *public.get(29)? != 0))
+}
+
+/// The Feedback Compressor's script knobs (`$ENGINE_PAR_FCOMP_*`): every
+/// move rebuilds the compressor from all six through [`feedback`], as the
+/// native setter derives each field from all of them (the input drives the
+/// threshold down and the make-up up; the ratio moves the knee).
+pub(crate) fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
+    use ir::SlotKnob::{Attack, Input, Makeup, Mix, Ratio, Release};
+    let (saved, link) = feedback_saved(public)?;
+    let mut positions = saved.to_vec();
+    positions.push(f32::from(u8::from(link)));
+    Some(ir::KnobModel {
+        knobs: [Input, Makeup, Attack, Release, Ratio, Mix].into(),
+        saved: positions.into(),
+        build: |p| {
+            let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
+            Some(ir::EffectKind::Compressor(feedback(knobs, link)))
+        },
+    })
+}
+
+/// The Feedback Compressor's KSP names, each a knob of [`feedback_model`].
+pub(crate) fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 6] {
+    use ir::KnobTarget::Slot;
+    use ir::SlotKnob::{Attack, Input, Makeup, Mix, Ratio, Release};
+    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    [
+        ("$ENGINE_PAR_FCOMP_INPUT", Slot(Input), unit()),
+        ("$ENGINE_PAR_FCOMP_MAKEUP", Slot(Makeup), unit()),
+        ("$ENGINE_PAR_FCOMP_ATTACK", Slot(Attack), unit()),
+        ("$ENGINE_PAR_FCOMP_RELEASE", Slot(Release), unit()),
+        ("$ENGINE_PAR_FCOMP_RATIO", Slot(Ratio), unit()),
+        ("$ENGINE_PAR_FCOMP_MIX", Slot(Mix), unit()),
+    ]
 }
 
 /// Setter 0x141ac87b0: attack `2(x − ½)·120` and sustain `2(x − ½)·115` dB
@@ -94,6 +140,18 @@ fn feedback([input, makeup, attack, release, ratio, mix]: [f32; 6], link: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_feedback_model_is_the_reader_at_the_saved_knobs() {
+        let mut public: Vec<u8> = [0.4f32, 0.8, 0.5, 0.5, 0.25, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        public.extend([1, 1, 0]);
+        let (read, _) = effect(0x4c, 0x10, &public).unwrap();
+        let model = feedback_model(&public).unwrap();
+        assert_eq!((model.build)(&model.saved), Some(read));
+    }
 
     #[test]
     fn transient_centres_are_neutral_and_the_clip_is_an_integer() {

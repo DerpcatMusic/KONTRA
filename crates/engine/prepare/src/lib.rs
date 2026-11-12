@@ -125,6 +125,7 @@ pub fn prepare(
     plan.route_pitch = instrument.route_pitch;
     plan.steal_whole_groups = instrument.steal_whole_groups;
     plan.slot_laws.clone_from(&instrument.slot_laws);
+    plan.slot_models.clone_from(&instrument.slot_models);
     plan.slot_shapes.clone_from(&instrument.slot_shapes);
     plan.impulses = instrument
         .impulses

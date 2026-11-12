@@ -114,15 +114,16 @@ fn rack(
         .enumerate()
         .map(|(slot, chunk)| {
             let chunk = chunk.as_ref()?;
-            let mut knobs = Vec::new();
+            let (mut knobs, mut model) = (Vec::new(), None);
             let effect = slot_effect(
                 chunk,
                 impulses,
                 &format!("{at} slot {slot}"),
                 notes,
-                &mut knobs,
+                (&mut knobs, &mut model),
             );
             if let (Some((rack_at, laws)), Ok(slot)) = (laws.as_mut(), u8::try_from(slot)) {
+                laws.models.extend(model.map(|m| (*rack_at, slot, m)));
                 laws.laws
                     .extend(knobs.into_iter().map(|(knob, field, law)| ir::SlotLaw {
                         at: *rack_at,
@@ -236,7 +237,10 @@ fn slot_effect(
     impulses: &mut Impulses,
     at: &str,
     notes: &mut Notes,
-    knobs: &mut Vec<crate::script_knobs::SlotKnob>,
+    (knobs, model): (
+        &mut Vec<crate::script_knobs::SlotKnob>,
+        &mut Option<ir::KnobModel>,
+    ),
 ) -> Option<(ir::Effect, u16, i32)> {
     let fx = BParFX::try_from(chunk).ok()?;
     let params = fx.params().ok()?;
@@ -338,6 +342,9 @@ fn slot_effect(
                 })
         }
         0x43 | 0x4c => {
+            if effect.id == 0x4c && object.version == 0x10 {
+                *model = crate::dynamics::feedback_model(&public);
+            }
             crate::dynamics::effect(effect.id, object.version, &public).map(|(kind, lost)| {
                 if let Some(feature) = lost {
                     let impact = if params.bypass {
@@ -631,6 +638,8 @@ pub(crate) struct Slots {
     pub subtypes: Vec<(ir::RackAt, u8, i32)>,
     /// Each saved slot's effect type, as a script reads it.
     pub types: Vec<(ir::RackAt, u8, i32)>,
+    /// Slots whose knobs interact, rebuilt together.
+    pub models: Vec<(ir::RackAt, u8, ir::KnobModel)>,
 }
 
 pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {

@@ -30,6 +30,15 @@ impl Engine {
     /// 0, its text "" and a set there is dropped.
     pub(crate) fn absent(&mut self, par: i32, group: i32, slot: i32, generic: i32) -> bool {
         use Holder as H;
+        // A parameter of one effect type, on a slot holding another type.
+        let owner = self.script().and_then(|s| s.engine_pars.owner(par));
+        if let Some(owner) = owner
+            && self
+                .effect_type(group, slot, generic)
+                .is_some_and(|ty| ty != owner)
+        {
+            return true;
+        }
         let found = self.engine_par(par).zip(self.script());
         match found.map(|(p, s)| (p, s.holder(p))) {
             Some(_) if usize::try_from(group).is_ok_and(|g| g >= self.groups.len()) => true,
