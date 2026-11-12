@@ -348,6 +348,12 @@ impl Convolver {
         }
     }
 
+    /// The longest response's length, frames: how long silent input still rings.
+    #[must_use]
+    pub fn taps(&self) -> usize {
+        self.taps
+    }
+
     /// True once the input has been silent for at least the IR length, so no tail is left.
     pub fn is_silent(&self) -> bool {
         self.quiet >= self.taps
