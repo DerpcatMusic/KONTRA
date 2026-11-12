@@ -3,7 +3,7 @@
 use kontra_engine::{ControlLook, Engine, Page};
 
 /// What a [`super::Live`] reads of a running script: the engine itself, or a copy
-/// of those reads made on the audio thread (`crate::view::LookFrame`).
+/// of those reads made on the audio thread (the host's `LookFrame`).
 pub trait Looks {
     fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>>;
     fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64>;

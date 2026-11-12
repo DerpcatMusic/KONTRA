@@ -10,6 +10,8 @@ use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 use crate::perf_view::{View, ViewControl};
 
+pub mod perf_view;
+
 mod keybed;
 mod looks;
 pub mod lua;
@@ -23,7 +25,30 @@ pub use picture::{Library, meta as picture_meta};
 pub use waves::Waves;
 use widget::{Decl, widget};
 
-use crate::script::LOOK;
+/// The parameters the UI-look builtins set, after the script's own symbols:
+/// a script that names one shares its id; `move_control`'s grid and the
+/// table's shown steps have no constant, so always get their own.
+pub const LOOK: [&str; 19] = [
+    "$CONTROL_PAR_TEXT",
+    "$CONTROL_PAR_LABEL",
+    "$CONTROL_PAR_HELP",
+    "$CONTROL_PAR_UNIT",
+    "$CONTROL_PAR_DEFAULT_VALUE",
+    "$CONTROL_PAR_POS_X",
+    "$CONTROL_PAR_POS_Y",
+    "$CONTROL_PAR_HIDE",
+    "grid_x",
+    "grid_y",
+    "table_steps_shown",
+    "level_meter",
+    "level_meter_group",
+    "level_meter_generic",
+    "wf_flags",
+    "wf_cursor",
+    "$CONTROL_PAR_WT_ZONE",
+    "$CONTROL_PAR_PICTURE",
+    "$CONTROL_PAR_PICTURE_STATE",
+];
 
 /// Kontakt's instrument width in pixels when the script sets none.
 const DEFAULT_WIDTH: u32 = 633;
@@ -177,7 +202,7 @@ const STATE_FONTS: [&str; 6] = [
 
 /// Carried, or accepted without effect: NKS properties map a control for
 /// Komplete Kontrol hardware and have no view or sound of their own.
-pub(crate) fn mapped(par: &str) -> bool {
+pub fn mapped(par: &str) -> bool {
     MAPPED.contains(&par)
         || STATE_FONTS.contains(&par)
         || COLORS.iter().any(|(c, _)| *c == par)

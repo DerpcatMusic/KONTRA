@@ -1,6 +1,7 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
 use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, LookPars, ScriptPlan, Text, ir};
+use kontra_face::LOOK;
 use kontra_ksp::ControlKind;
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
@@ -324,31 +325,6 @@ fn controls(script: &Script) -> Controls {
         .map(|name| symbol(script, name)),
     }
 }
-
-/// The parameters the UI-look builtins set, after the script's own symbols:
-/// a script that names one shares its id; `move_control`'s grid and the
-/// table's shown steps have no constant, so always get their own.
-pub(crate) const LOOK: [&str; 19] = [
-    "$CONTROL_PAR_TEXT",
-    "$CONTROL_PAR_LABEL",
-    "$CONTROL_PAR_HELP",
-    "$CONTROL_PAR_UNIT",
-    "$CONTROL_PAR_DEFAULT_VALUE",
-    "$CONTROL_PAR_POS_X",
-    "$CONTROL_PAR_POS_Y",
-    "$CONTROL_PAR_HIDE",
-    "grid_x",
-    "grid_y",
-    "table_steps_shown",
-    "level_meter",
-    "level_meter_group",
-    "level_meter_generic",
-    "wf_flags",
-    "wf_cursor",
-    "$CONTROL_PAR_WT_ZONE",
-    "$CONTROL_PAR_PICTURE",
-    "$CONTROL_PAR_PICTURE_STATE",
-];
 
 /// The id the look parameter `name` is stored under.
 pub(crate) fn look_par(script: &Script, name: &str) -> i32 {
