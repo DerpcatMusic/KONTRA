@@ -138,16 +138,28 @@ impl Network {
 }
 
 impl Unit {
-    /// [`Self::tick`] on `n` frames from `w0`, `x` in and out. While every
-    /// delay outlasts the span, each frame's state is read before the span
-    /// and the frames run side by side.
+    /// [`Self::tick`] on `n` frames from `w0`, `x` in and out, in runs as
+    /// long as the shortest delay.
     fn run(&mut self, w0: usize, n: usize, x: &mut [f32; MAX], written: &mut f32) {
-        if self.d.iter().any(|&d| d < n) {
-            for (f, x) in x.iter_mut().take(n).enumerate() {
+        let x = x.get_mut(..n).unwrap_or_default();
+        // Runs no longer than the shortest delay read only frames from before
+        // them; a delay too short for that runs frame by frame.
+        let shortest = self.d.iter().copied().min().unwrap_or(0);
+        if shortest < 8 {
+            for (f, x) in x.iter_mut().enumerate() {
                 *x = self.tick(w0.wrapping_add(f), *x, written);
             }
             return;
         }
+        for (k, x) in x.chunks_mut(shortest).enumerate() {
+            self.run_ahead(w0.wrapping_add(k * shortest), x, written);
+        }
+    }
+
+    /// `x` (no longer than any delay) as [`Self::tick`] frame by frame: every
+    /// frame's state is read before the run and the frames go side by side.
+    fn run_ahead(&mut self, w0: usize, x: &mut [f32], written: &mut f32) {
+        let n = x.len();
         let mut z = [[0f32; MAX]; 3];
         for ((z, ring), (&d, &z0)) in z
             .iter_mut()
@@ -233,18 +245,24 @@ impl Line {
     /// at `swing·depth + base`.
     fn read(&self, w0: usize, n: usize, swing: &[f32; MAX], out: &mut [f32; MAX]) {
         let (depth, base, mask) = (self.depth, self.base, self.ring.mask);
+        // The ring's length is `mask + 1`; said here, the masked loads below
+        // need no bounds checks.
+        let Some(buf) = self.ring.buf.get(..=mask) else {
+            return;
+        };
         let d = swing.map(|s| s * depth + base);
         let i = d.map(|d| (d as i32).max(0));
-        for (f, (out, (&d, &i))) in out.iter_mut().zip(d.iter().zip(&i)).take(n).enumerate() {
-            let frac = d - i as f32;
+        // The two neighbours of every frame first, then the blend as a
+        // vector loop.
+        let (mut x0, mut x1) = ([0f32; MAX], [0f32; MAX]);
+        for (f, ((x0, x1), &i)) in x0.iter_mut().zip(&mut x1).zip(&i).take(n).enumerate() {
             let at = w0.wrapping_add(f).wrapping_sub(i as usize);
-            let x0 = self.ring.buf.get(at & mask).copied().unwrap_or(0.0);
-            let x1 = self
-                .ring
-                .buf
-                .get(at.wrapping_sub(1) & mask)
-                .copied()
-                .unwrap_or(0.0);
+            *x0 = buf.get(at & mask).copied().unwrap_or(0.0);
+            *x1 = buf.get(at.wrapping_sub(1) & mask).copied().unwrap_or(0.0);
+        }
+        for (out, (((&d, &i), &x0), &x1)) in out.iter_mut().zip(d.iter().zip(&i).zip(&x0).zip(&x1))
+        {
+            let frac = d - i as f32;
             *out = (1.0 - frac) * x0 + frac * x1;
         }
     }
