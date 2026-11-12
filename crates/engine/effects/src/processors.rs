@@ -3,7 +3,7 @@
 //! with their settings in DSP terms. Not real-time unless a function says so.
 
 use kontra_dsp::delay::{MAX_MS, ModDelay, Phaser, PhaserSettings};
-use kontra_dsp::drive::{self, Circuit, Clipper, Shaper};
+use kontra_dsp::drive::{self, Circuit, Clipper, Crush, Overdrive, Reduction, Shaper, Voicing};
 use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
@@ -215,6 +215,33 @@ impl Wet for Shaper {
     }
 }
 
+/// A drive unit on summed audio and the rate its settings retune at.
+struct Rated<T>(T, u32);
+
+impl Wet for Rated<Overdrive> {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        self.0.process(io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Overdrive(o) = kind {
+            self.0.set(voicing(o), self.1);
+        }
+    }
+}
+
+impl Wet for Rated<Crush> {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        self.0.process(io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Crush(c) = kind {
+            self.0.set(reduction(c, self.1));
+        }
+    }
+}
+
 impl Wet for Clipper {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Clipper::process(self, io);
@@ -418,7 +445,15 @@ pub fn processor(
             };
             wet(Box::new(Clocked::new(shape, [c.cutoff, c.resonance], rate)))
         }
+        // Drive effects run in any rack: on one voice in a group rack, on
+        // the sum in a bus or instrument rack.
         Some(ir::EffectKind::Shaper(s)) => wet(Box::new(shaper(s, rate))),
+        Some(ir::EffectKind::Overdrive(o)) => {
+            wet(Box::new(Rated(Overdrive::new(voicing(o), rate), rate)))
+        }
+        Some(ir::EffectKind::Crush(c)) => {
+            wet(Box::new(Rated(Crush::new(reduction(c, rate), 1), rate)))
+        }
         Some(ir::EffectKind::Clipper(c)) => wet(Box::new(Clipper::new(
             Circuit {
                 drive: c.drive,
@@ -475,5 +510,73 @@ pub fn curve(c: ir::DriveCurve) -> drive::Curve {
         ir::DriveCurve::Fold(x) => drive::Curve::Fold(x),
         ir::DriveCurve::Tanh(x) => drive::Curve::Tanh(x),
         ir::DriveCurve::Atan(x) => drive::Curve::Atan(x),
+    }
+}
+
+/// Skreamer-style overdrive settings in DSP terms.
+pub fn voicing(o: ir::Overdrive) -> Voicing {
+    Voicing {
+        split_hz: o.split_hz,
+        smooth_hz: o.smooth_hz,
+        drive: o.drive,
+        mix: o.mix,
+        level: o.level,
+        curve: o.curve,
+    }
+}
+
+/// Lo-Fi settings in DSP terms: sample hold, bits and noise.
+pub fn reduction(c: ir::Crush, rate: u32) -> Reduction {
+    let hold = if c.rate < 1.0 {
+        (1.0 / c.rate.max(1e-6)).min(rate as f32 / 50.0) + 1.0
+    } else {
+        1.0
+    };
+    Reduction {
+        hold,
+        bits: (c.bits < 16.0).then_some(c.bits.max(1.0)),
+        noise: c.noise,
+        noise_tone: c.noise_tone,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_effects_run_on_summed_audio() {
+        let o = ir::Overdrive {
+            split_hz: [700.0, 2000.0, 4000.0],
+            smooth_hz: [8000.0, 6000.0, 3000.0],
+            drive: 4.0,
+            mix: 1.0,
+            level: 1.0,
+            curve: Box::leak(Box::new(std::array::from_fn(|i| (i as f32 - 128.0) / 64.0))),
+        };
+        let c = ir::Crush {
+            rate: 0.25,
+            bits: 8.0,
+            noise: 0.0,
+            noise_tone: 0.0,
+        };
+        for kind in [ir::EffectKind::Overdrive(o), ir::EffectKind::Crush(c)] {
+            let slot = ir::Effect {
+                kind,
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            };
+            let Dsp::Wet(mut unit, _) = processor(Some(slot), false, 48_000, &Responses(&[], &[]))
+            else {
+                panic!("{kind:?} has no bus processor");
+            };
+            let mut io: Vec<[f32; 2]> = (0..256)
+                .map(|n| [(n as f32 * 0.05).sin() * 0.8; 2])
+                .collect();
+            let dry = io.clone();
+            unit.process(&mut io);
+            assert_ne!(io, dry, "{kind:?}");
+        }
     }
 }

@@ -53,7 +53,7 @@ LIBRARIES = {
     "unacorda": "Una Corda Library/Instruments/Una Corda Felt.nki",
 }
 TOL = dict(level=1.0, band=1.0, onset_ms=5.0, attack=1.5, release=1.5, balance=1.0)
-WIN, SEARCH = 24000, 1920  # replay: correlation window and lag search, frames
+WIN, SEARCH, NEAR = 24000, 40, 5  # replay: window (frames), lag search and near search (ms)
 
 
 def scenario():
@@ -161,7 +161,9 @@ def case_metrics(x, hold):
                 balance=db(np.sqrt((x[0] ** 2).mean())) - db(np.sqrt((x[1] ** 2).mean())))
 
 
-def score_case(n, o, hold):
+def score_case(n, o, hold, spread=None):
+    """`o` against native `n`. With `spread` (this function's result for a second native take),
+    each metric's tolerance is the larger of TOL and Kontakt's own run-to-run difference, band by band."""
     a, b = case_metrics(n, hold), case_metrics(o, hold)
     if a["rms"] < -80 and b["rms"] < -80:
         return dict(ok=True, silent="both")
@@ -179,13 +181,22 @@ def score_case(n, o, hold):
         attack = float(np.mean(20 * np.log10(a["env"][o0:o0 + 60] + 1e-9) - 20 * np.log10(b["env"][o0:o0 + 60] + 1e-9))) - level
     tail = None if a["tail"] is None or b["tail"] is None else a["tail"] - b["tail"]
     balance = a["balance"] - b["balance"]
+    sp = spread if spread and "level" in spread else {}
+
+    def tol(key, x):
+        own = sp.get(key)
+        return abs(x) > max(TOL[key if key != "onset" else "onset_ms"], abs(own) if own is not None else 0.0)
+
+    own_band = dict(sp.get("bands", []))
+    loud = [(c, d) for c, d in bands if abs(d) > max(TOL["band"], abs(own_band.get(c, 0.0)))]
+    worst_out = max(loud, key=lambda t: abs(t[1])) if loud else None
     fails = [f for f, bad in (
-        (f"level {level:+.1f}", abs(level) > TOL["level"]),
-        (f"band {worst[0]:.0f}Hz {worst[1]:+.1f}", abs(worst[1]) > TOL["band"]),
-        (f"onset {onset}ms", onset is not None and abs(onset) > TOL["onset_ms"]),
-        (f"attack {attack or 0:+.1f}", attack is not None and abs(attack) > TOL["attack"]),
-        (f"release {tail or 0:+.1f}", tail is not None and abs(tail) > TOL["release"]),
-        (f"balance {balance:+.1f}", abs(balance) > TOL["balance"])) if bad]
+        (f"level {level:+.1f}", tol("level", level)),
+        (f"band {worst_out[0] if worst_out else 0:.0f}Hz {worst_out[1] if worst_out else 0:+.1f}", worst_out is not None),
+        (f"onset {onset}ms", onset is not None and tol("onset", onset)),
+        (f"attack {attack or 0:+.1f}", attack is not None and tol("attack", attack)),
+        (f"release {tail or 0:+.1f}", tail is not None and tol("release", tail)),
+        (f"balance {balance:+.1f}", tol("balance", balance))) if bad]
     return dict(ok=not fails, fails=fails, level=level, band=worst, bands=bands, onset=onset, attack=attack,
                 release=tail, balance=balance)
 
@@ -214,24 +225,39 @@ def capture(args):
 
 
 def replayed(nat, ours, events, base):
-    """`events` moved, per group of simultaneous note-ons, to where Kontakt played them."""
+    """`events` moved, per group of simultaneous note-ons, to where Kontakt played them.
+
+    The lag comes from the 1 ms log envelopes (+-40 ms, or +-5 ms around the previous group's
+    shift when that group is under a second back), then the waveform refines it within +-1 ms
+    so overlapping copies sum as Kontakt's did. Waveform correlation alone locks 1/12 s repeats
+    onto the neighbouring note (Horn: +39 ms). A group with no clear match keeps the shift."""
+    ne, oe = (np.log(env_ms(x) + 1e-6) for x in (nat, ours))
     nat, ours = nat.sum(0), ours.sum(0)
     shift, out, last_on = 0, [], None
+
+    def pearson(a, b):
+        if len(a) != len(b) or len(a) < 2:
+            return -1.0
+        a, b = a - a.mean(), b - b.mean()
+        return float(np.dot(a, b)) / (math.sqrt(float(np.dot(a, a)) * float(np.dot(b, b))) + 1e-20)
+
     for e in events:
         f = e["frame"]
         if e["type"] == "note_on" and f != last_on:
+            near = last_on is not None and f - last_on < R
             last_on = f
-            ref = ours[f:f + WIN]
-            best, score = 0, 0.5
-            for lag in range(-SEARCH, SEARCH + 1, 4):
-                a = f + base + lag
-                if a < 0 or a + WIN > len(nat) or len(ref) < WIN:
-                    continue
-                n = nat[a:a + WIN]
-                c = float(np.dot(n, ref)) / (math.sqrt(float(np.dot(n, n)) * float(np.dot(ref, ref))) + 1e-20)
-                if c > score:
-                    best, score = lag, c
-            shift = best
+            at, w = f // 48, WIN // 48
+            ref = oe[at:at + w]
+            ms = shift // 48
+            span = range(ms - NEAR, ms + NEAR + 1) if near else range(-SEARCH, SEARCH + 1)
+            score = {L: pearson(ne[max(0, at + (base // 48) + L):at + (base // 48) + L + w], ref) for L in span}
+            lag = max(score, key=score.get)
+            if score[lag] > 0.5:
+                wave = ours[f:f + WIN]
+                def corr(x):
+                    a = f + base + x
+                    return pearson(nat[a:a + WIN], wave) if a >= 0 else -1.0
+                shift = max(range(lag * 48 - 48, lag * 48 + 49, 2), key=corr)
         out.append(dict(e, frame=max(0, f + shift)))
     return sorted(out, key=lambda e: e["frame"])
 
@@ -258,13 +284,25 @@ def score(args):
         ours = compare.load(wav)
         nat = nat[:, base:] if base > 0 else nat
         ours = ours if base > 0 else ours[:, -base:]
+        nat2 = None
+        if args.spread and (Path(args.spread) / f"{name}.capture.json").exists():
+            c2 = json.loads((Path(args.spread) / f"{name}.capture.json").read_text())
+            nat2 = compare.load(Path(c2["artifacts"]) / "native.wav")[:, int(compare.PRE * R):]
+            lag2 = global_lag(nat2, nat)
+            nat2 = nat2[:, lag2:] if lag2 >= 0 else np.pad(nat2, ((0, 0), (-lag2, 0)))
         rows = []
         for case in c["cases"]:
             a, z = round(case["start"] * R), round((case["start"] + case["len"]) * R)
             if z > min(nat.shape[1], ours.shape[1]):
                 rows.append(dict(case=case["name"], ok=False, silent="short"))
                 continue
-            rows.append(dict(case=case["name"], **score_case(nat[:, a:z], ours[:, a:z], case["hold"])))
+            spread = None
+            if nat2 is not None and z <= nat2.shape[1]:
+                spread = score_case(nat[:, a:z], nat2[:, a:z], case["hold"])
+            r = score_case(nat[:, a:z], ours[:, a:z], case["hold"], spread)
+            r["plain"] = score_case(nat[:, a:z], ours[:, a:z], case["hold"])["ok"]
+            r["spread"] = spread and {k: v for k, v in spread.items() if k in ("level", "onset", "attack", "release", "balance", "band")}
+            rows.append(dict(case=case["name"], **r))
         wav.unlink()
         table[name] = rows
         ok = sum(r["ok"] for r in rows)
@@ -273,6 +311,9 @@ def score(args):
             if not r["ok"]:
                 print(f"  {r['case']:9} " + (f"silent {r['silent']}" if "silent" in r else ", ".join(r["fails"])))
     total = sum(r["ok"] for rows in table.values() for r in rows)
+    if args.spread:
+        inside = sum(r["ok"] and not r.get("plain", True) for rows in table.values() for r in rows)
+        print(f"inside Kontakt's own run-to-run spread (fail the fixed tolerance only): {inside}")
     cases = sum(len(rows) for rows in table.values())
     print(f"total: {total}/{cases} within tolerance")
     (root / f"score-{args.tag}.json").write_text(json.dumps(table, indent=1, default=float))
@@ -287,6 +328,7 @@ def main():
         p.add_argument("--only", nargs="*", choices=sorted(LIBRARIES))
         p.add_argument("--inspect")
         p.add_argument("--tag", default="v3")
+        p.add_argument("--spread", help="a second capture ROOT: tolerances widen to native-vs-native per case")
     args = ap.parse_args()
     capture(args) if args.cmd == "capture" else score(args)
 
