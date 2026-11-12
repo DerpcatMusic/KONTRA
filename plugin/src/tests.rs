@@ -542,6 +542,11 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     let count = presets.len();
     browse(kontra_ui::app::Action::Step { part: 0, by: 1 });
     assert_eq!(path(&params), Some(presets[(preset + 1) % count].clone()));
+    // The header names the preset by its path, whatever its instrument's
+    // own name (a snapshot recalled in place keeps the load).
+    let shown = format!("{:?}", *crate::lock(&params.shared.view));
+    let want = format!("preset: Some({})", (preset + 1) % count);
+    assert!(shown.contains(&want), "the header's preset: {shown:.300}");
     browse(kontra_ui::app::Action::Step { part: 0, by: -1 });
     assert_eq!(path(&params), Some(felt.clone()), "back");
     browse(kontra_ui::app::Action::Switch { part: 0, preset: 0 });

@@ -64,6 +64,10 @@ pub trait Machine: Send {
     fn widget_text(&self, _n: u32, _out: &mut Text) -> bool {
         false
     }
+    /// Menu widget `n`'s item `i` (from 0) into `out`; false past its last.
+    fn widget_item(&self, _n: u32, _i: u32, _out: &mut Text) -> bool {
+        false
+    }
     /// The state the script saves for a project, written into `out` in the
     /// front end's own form; its length, or `None` when it saves none or
     /// it does not fit.
@@ -88,6 +92,9 @@ pub struct WidgetLook {
     pub value: f64,
     pub visible: bool,
     pub enabled: bool,
+    /// A menu's item list revision: it moves when the script adds, renames
+    /// or clears items.
+    pub items: u32,
 }
 
 /// Compiled code a [`Machine`] runs; each engine makes its own machine.

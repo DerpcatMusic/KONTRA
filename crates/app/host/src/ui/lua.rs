@@ -71,12 +71,14 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             ),
             (w.normal.as_deref().map(|p| (p, 1)), ui::Role::Background),
             (w.pressed.as_deref().map(|p| (p, 1)), ui::Role::Pressed),
+            (w.handle.as_deref().map(|p| (p, 1)), ui::Role::Handle),
         ];
         let mut own = None;
         for (path, role) in roles {
             if let Some((path, frames)) = path {
                 let (at, size) = asset(&mut tree, path, frames);
-                own = own.or(size);
+                // A handle is smaller than the track it moves along.
+                own = own.or(size.filter(|_| role != ui::Role::Handle));
                 out.images.push(ui::ImageUse::new(at, role));
             }
         }
@@ -96,12 +98,16 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             }
             None => {}
         }
-        // A widget says its name unless the script gave it words or a picture.
-        if out.text.is_empty() && out.images.is_empty() {
-            match out.kind {
-                ui::Kind::Label | ui::Kind::Button { .. } => out.text.clone_from(&w.name),
-                _ => {}
+        // A widget says its name unless the script gave it words or a picture;
+        // a button's picture carries its own caption (Augmented Orchestra's
+        // tabs: `displayName` over art that already reads "Main").
+        if out.images.is_empty() {
+            if out.text.is_empty() && matches!(out.kind, ui::Kind::Label | ui::Kind::Button { .. })
+            {
+                out.text.clone_from(&w.name);
             }
+        } else if matches!(out.kind, ui::Kind::Button { .. }) {
+            out.text.clear();
         }
         if w.font.is_some() || w.font_size.is_some() || w.align.is_some() || w.colours[1].is_some()
         {
@@ -161,7 +167,9 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
         },
         "Slider" => ui::Kind::Slider {
             range,
-            orientation: if w.vertical {
+            // `Slider{name, value, min, max, integer, vertical}` sets it by
+            // place, which the prelude does not keep: a tall slider is vertical.
+            orientation: if w.vertical || w.rect[3] > w.rect[2] {
                 ui::Orientation::Vertical
             } else {
                 ui::Orientation::Horizontal
@@ -193,8 +201,15 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
         },
         "Label" => ui::Kind::Label,
         "Image" => ui::Kind::Image,
-        // ponytail: tables, XY pads, meters and wave views draw as empty
-        // panels; give each its kind when a library's page needs it.
+        // ponytail: a meter shows the part's output, not the program node
+        // the script names (a layer); per-node levels when one needs them.
+        "AudioMeter" => ui::Kind::LevelMeter {
+            orientation: ui::Orientation::Vertical,
+            channel: Some(0),
+            bus: None,
+        },
+        // ponytail: XY pads and wave views draw as empty panels; give each
+        // its kind when a library's page needs it.
         _ => ui::Kind::Panel,
     };
     let [x, y, width, height] = w.rect;
@@ -279,8 +294,20 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
             w.enabled,
             w.images.first().copied(),
         );
-    if let Some(text) = text.filter(|t| *t != w.text) {
-        w.text = text.to_owned();
+    let pictured = matches!(w.kind, ui::Kind::Button { .. }) && !w.images.is_empty();
+    // A menu's text is its selected item's, which the script may rename.
+    let shown = match (&mut w.kind, &w.value) {
+        (ui::Kind::Menu { items }, Some(ui::Value::Integer(at))) => items
+            .iter_mut()
+            .find(|i| i.value == *at)
+            .map(|i| &mut i.text),
+        _ => Some(&mut w.text),
+    };
+    if let Some((shown, text)) = shown
+        .zip(text)
+        .filter(|(s, t)| !pictured && s.as_str() != *t)
+    {
+        *shown = text.to_owned();
         changed = true;
     }
     changed
@@ -413,9 +440,64 @@ mod tests {
             value: 1.,
             visible: true,
             enabled: true,
+            items: 0,
         };
         assert!(apply(&mut tree, 2, on, None));
         assert_eq!(shown(&tree), ui::Role::Pressed);
         assert!(!apply(&mut tree, 2, on, None));
+    }
+
+    #[test]
+    fn a_pictured_button_shows_no_caption_and_position_places_a_widget() {
+        let page = kontra_lua::compile(
+            r#"local b = OnOffButton{"MainTab", false, displayName="Main", position={180, 16}}
+               b.normalImage = "off.png"; b.pressedImage = "on.png"
+               Button{"Plain", displayName="Go", position={4, 5}, size={20, 10}}"#,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .ui;
+        let mut tree = tree(&page, &|_| None);
+        let (pictured, plain) = (&tree.widgets[0], &tree.widgets[1]);
+        assert_eq!((pictured.rect.x, pictured.rect.y), (180., 16.));
+        assert_eq!(pictured.text, "");
+        assert_eq!(
+            (plain.text.as_str(), plain.rect.x, plain.rect.y),
+            ("Go", 4., 5.)
+        );
+        let look = WidgetLook {
+            value: 0.,
+            visible: true,
+            enabled: true,
+            items: 0,
+        };
+        assert!(!apply(&mut tree, 0, look, Some("Main")));
+        assert_eq!(tree.widgets[0].text, "");
+    }
+
+    #[test]
+    fn a_tall_slider_with_a_handle_is_vertical_and_draws_its_handle() {
+        // W Strings' crossfader: `Slider{name, 0.5, 0, 1, false, true, ...}`.
+        let page = kontra_lua::compile(
+            r#"Slider{"XFade", 0.5, 0, 1, false, true, bounds={0, 87, 58, 265}, handleImage="h.png", backgroundImage="t.png"}"#,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .ui;
+        let tree = tree(&page, &|_| None);
+        let w = &tree.widgets[0];
+        assert!(matches!(
+            w.kind,
+            ui::Kind::Slider {
+                orientation: ui::Orientation::Vertical,
+                ..
+            }
+        ));
+        // Its track picture stays; the handle is drawn over it.
+        let roles: Vec<_> = w.images.iter().map(|i| i.role).collect();
+        assert_eq!(roles, [ui::Role::Background, ui::Role::Handle]);
+        assert_eq!((w.rect.width, w.rect.height), (58., 265.));
     }
 }

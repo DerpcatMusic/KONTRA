@@ -67,6 +67,8 @@ pub struct Interface {
     /// Set when the source shows only the keys it presses (KSP
     /// `set_key_pressed_support`): those keys, in place of the keys played.
     pub key_pressed: Option<Vec<u8>>,
+    /// The last status text the source printed (KSP `message`).
+    pub message: String,
     pub unsupported: Vec<Unsupported>,
 }
 
@@ -410,6 +412,11 @@ pub struct Waveform {
     pub table: Vec<i32>,
     pub highlighted: Option<u32>,
     pub midi_start_note: u8,
+    /// The zone's sample as columns of (lowest, highest) level, ±127 full
+    /// scale; empty until the host read it.
+    pub peaks: Vec<[i8; 2]>,
+    /// The sample's length, for the cursor.
+    pub length_us: i64,
 }
 
 /// Exact authored WaveView display request. This does not assert that a

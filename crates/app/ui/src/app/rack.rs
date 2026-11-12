@@ -284,7 +284,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .iter()
         .map(|s| s.rsplit('/').next().unwrap_or(s))
         .collect();
-    let current = names.iter().position(|&s| s == p.name);
+    let current = p.preset.filter(|&n| n < names.len());
     // v2's preset field beside the name: what plays, or what to pick.
     let shown = current
         .and_then(|c| names.get(c).copied())
