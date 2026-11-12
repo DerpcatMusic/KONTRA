@@ -113,6 +113,8 @@ pub struct Voice {
     scratch: Box<[[f32; 2]]>,
     /// The frames a loop crossfade blends in.
     partner: Box<[[f32; 2]]>,
+    /// The last compressed block its reads decoded (4 KiB).
+    memo: Box<kontra_stream::BlockMemo>,
     /// Interpolated frames before the envelope and gain.
     raw: Box<[[f32; 2]]>,
     /// Cursor position of the note's release, once it came.
@@ -144,6 +146,7 @@ impl Voice {
             life: Life::Held,
             scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
+            memo: Box::default(),
             raw: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             released: None,
             missing: 0,
@@ -466,6 +469,7 @@ impl Voice {
         let span = (self.at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
         let (anchor, elapsed, step) = (self.anchor, self.elapsed, self.step);
         let partner = &mut self.partner;
+        let memo = &mut *self.memo;
         let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
             return 0;
         };
@@ -493,16 +497,20 @@ impl Voice {
             if let Some(dst) = window.get_mut(offset..offset + count) {
                 if run.descending {
                     missing += sample
-                        .read_mixed(client, run.first + 1 - count as u64, dst, mix)
+                        .read_mixed_memo(client, run.first + 1 - count as u64, dst, mix, memo)
                         .missing;
                     dst.reverse();
                 } else {
-                    missing += sample.read_mixed(client, run.first, dst, mix).missing;
+                    missing += sample
+                        .read_mixed_memo(client, run.first, dst, mix, memo)
+                        .missing;
                     if let Some((at, from, n, fade_start, fade)) = run.crossfade()
                         && let (Some(blend), Some(head)) =
                             (partner.get_mut(..n), dst.get_mut(at..at + n))
                     {
-                        missing += sample.read_mixed(client, from, blend, mix).missing;
+                        missing += sample
+                            .read_mixed_memo(client, from, blend, mix, memo)
+                            .missing;
                         let p0 = run.first + at as u64 - fade_start;
                         for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
                             let w = (p0 + k as u64) as f32 / fade as f32;
