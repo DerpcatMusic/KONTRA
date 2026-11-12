@@ -43,6 +43,7 @@ impl Rack {
             .collect();
         p.name.clone_from(&preset.name);
         p.path = path.map(Path::to_owned);
+        p.modified = false;
         match p.recall {
             Recall::Keep => {
                 p.script.loaded = loaded;

@@ -199,6 +199,9 @@ pub struct Part {
     /// Library responses its scripts loaded into convolutions after
     /// `on init`, as (rack, slot, name); put back after the types.
     pub slot_responses: Vec<(ir::RackAt, u8, String)>,
+    /// The player changed one of its library's controls since its preset
+    /// loaded: what plays is no longer the preset as saved.
+    pub modified: bool,
 }
 
 /// What the rack keeps to save a part's scripts.
@@ -432,6 +435,7 @@ impl Rack {
             sounds,
             slot_types,
             slot_responses,
+            modified: false,
             plan: Some(plan),
             delays: None,
             path,
@@ -516,9 +520,10 @@ impl Rack {
         value: f64,
         keys: UiModifiers,
     ) {
-        let Some(Some(p)) = self.parts.get(part) else {
+        let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        p.modified = true;
         let Some(view) = p.view.as_ref() else {
             return;
         };
@@ -545,9 +550,10 @@ impl Rack {
     /// The user typed `text` into text edit `widget` of `part`'s interface:
     /// its variable reads it, then its callbacks run.
     pub fn control_text(&mut self, part: usize, widget: usize, text: &str) {
-        let Some(Some(p)) = self.parts.get(part) else {
+        let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        p.modified = true;
         let Some(view) = p.view.as_ref() else {
             return;
         };
@@ -596,6 +602,14 @@ impl Rack {
     }
 
     /// Records `part`'s measured attack delay (auto-align), saved with it.
+    /// Marks `part`'s preset as changed by the player ([`Part::modified`]),
+    /// as a project saved it.
+    pub fn set_modified(&mut self, part: usize) {
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.modified = true;
+        }
+    }
+
     pub fn set_delays(&mut self, part: usize, delays: Delays) {
         if let Some(Some(p)) = self.parts.get_mut(part) {
             p.delays = Some(delays);

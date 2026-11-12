@@ -46,6 +46,9 @@ pub struct SavedPart {
     /// `on init`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slot_responses: Vec<SlotResponse>,
+    /// The player changed its preset after it loaded ([`crate::rack::Part::modified`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub modified: bool,
 }
 
 /// One convolution a script loaded with a library response, by the name
@@ -205,6 +208,7 @@ impl Rack {
                             name: name.clone(),
                         })
                         .collect(),
+                    modified: p.modified,
                 })
             })
             .collect();
@@ -262,6 +266,9 @@ impl Rack {
                     self.set_solo_mute(p.part, p.solo, p.mute);
                     if let Some(delays) = p.delays.clone() {
                         self.set_delays(p.part, delays);
+                    }
+                    if p.modified {
+                        self.set_modified(p.part);
                     }
                 }
                 Err(e) => failed.push((p.part, e.to_string())),

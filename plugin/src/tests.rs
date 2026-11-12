@@ -166,6 +166,7 @@ fn recall(path: PathBuf) -> Result<String, String> {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
     }]);
     let t = std::time::Instant::now();
     let (live, mut live_dsp) = activate(&saved.write());
@@ -309,6 +310,7 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
     };
     let saved = Saved::new(vec![part(0, a), part(1, b)]);
     let (params, mut dsp) = activate(&saved.write());
@@ -400,6 +402,7 @@ fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
     settle(&params, &mut dsp);
@@ -611,6 +614,7 @@ fn shreddage_eq() -> Option<(KontraParams, Dsp, f32)> {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
     settle(&params, &mut dsp);
@@ -808,6 +812,7 @@ fn the_same_state_restored_again_loads_nothing_twice() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
     settle(&params, &mut dsp);
@@ -888,6 +893,7 @@ fn uvi_knob_moves_the_sound_and_survives_reload(program: &str, knob: &str, to: f
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
     };
     let (params, mut dsp) = activate(&Saved::new(vec![part(path)]).write());
     settle(&params, &mut dsp);
@@ -1037,6 +1043,7 @@ fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
     let panel = |params: &KontraParams| {
@@ -1141,6 +1148,7 @@ fn one_part(path: &Path) -> String {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        modified: false,
     }])
     .write()
 }
