@@ -1,0 +1,44 @@
+{ Kontakt 8.13.1: real division by zero and real_to_int. Run in a free script slot (ANALOG STRINGS slot 1),
+  one trigger note; results are marker notes read by pitch (librender.py + pitch.py, laneDSP scratch).
+  Measured 2026-11-12:
+    real_to_int(0.0/0.0) > 0; real_to_int(127.0*0.0/0.0) = 42; real_to_int(1000.0*(0.0/0.0)) = 42
+    real_to_int(1.0/0.0) = 2147483647
+  So a NaN converts to 42 whatever its scale, and infinity saturates.
+  Markers: y1 = real_to_int(1000.0*(0.0/0.0)) as five digits, key 60 + d, 2 s apart (84 when out of range);
+  then 72 when real_to_int(1.0/0.0) = 2147483647, 74 when 0 < it < 100000, else 76. }
+on init
+  declare $z := 0
+  declare $y1
+  declare $y2
+  declare $p
+  declare $done
+end on
+on note
+  ignore_event($EVENT_ID)
+  if ($done = 0)
+    $done := 1
+    $y1 := real_to_int(1000.0 * (int_to_real($z)/int_to_real($z)))
+    $y2 := real_to_int(1.0/int_to_real($z))
+    wait(1000000)
+    if ($y1 >= 0 and $y1 < 100000)
+      $p := 10000
+      while ($p > 0)
+        play_note(60 + ($y1 / $p) mod 10, 100, 0, 1200000)
+        wait(2000000)
+        $p := $p / 10
+      end while
+    else
+      play_note(84, 100, 0, 1200000)
+      wait(2000000)
+    end if
+    if ($y2 = 2147483647)
+      play_note(72, 100, 0, 1200000)
+    else
+      if ($y2 > 0 and $y2 < 100000)
+        play_note(74, 100, 0, 1200000)
+      else
+        play_note(76, 100, 0, 1200000)
+      end if
+    end if
+  end if
+end on

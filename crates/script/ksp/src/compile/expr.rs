@@ -343,7 +343,7 @@ impl<'a> Compiler<'a> {
             Builtin::RealToInt | Builtin::Int => {
                 let got = self.expr(arg(0)?)?;
                 self.convert(got, Ty::Real, span)?;
-                self.emit(Op::RealToInt);
+                self.emit(Op::RealToInt(crate::builtins::NAN_INT));
                 return Ok(Some(Ty::Int));
             }
             Builtin::ShLeft | Builtin::ShRight => {

@@ -2,6 +2,13 @@
 
 use kontra_vm::Action;
 
+/// What `real_to_int` gives for NaN (a real `0.0/0.0`). Kontakt 8.13
+/// returns 42 for `real_to_int(x/0.0)` with x = 0, 127·0 and 1000·0, and its
+/// own scripts depend on it: Dolce sets CC 113 = `(127 − 127·0/0)·½` = 42 when
+/// its start-offset range is 0 (probe `probes/real_div_zero.ksp`). Infinity
+/// saturates (`1.0/0.0` → 2147483647).
+pub const NAN_INT: i32 = 42;
+
 /// How an argument is passed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arg {
