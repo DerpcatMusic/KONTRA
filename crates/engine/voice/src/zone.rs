@@ -4,6 +4,11 @@ use std::sync::Arc;
 
 use kontra_stream::{Mix, Sample};
 
+/// A region's loops, held inline: starting a voice copies its region, and
+/// the audio thread never allocates. Eight is the most any format writes
+/// (Kontakt's loop array); a ninth would spill to the heap.
+pub type Loops = smallvec::SmallVec<[Loop; 8]>;
+
 /// A loop over source frames `start..end`, inside the region.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Loop {
@@ -69,7 +74,7 @@ pub struct Region {
     /// end; a loop ending before the playhead or past the region is skipped.
     // ponytail: a release inside a crossfade drops the blend at once; fade the
     // blend out when a library's release clicks.
-    pub loops: Vec<Loop>,
+    pub loops: Loops,
     /// Plays `end - 1` down to `start`; loops are ignored.
     pub reverse: bool,
     /// How the sample's channels reach the voice's left and right; `None`
@@ -305,7 +310,7 @@ mod tests {
             sample,
             start,
             end,
-            loops,
+            loops: loops.into(),
             reverse,
             mix: None,
             table: None,
