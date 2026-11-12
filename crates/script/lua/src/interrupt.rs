@@ -25,6 +25,9 @@ thread_local! {
 }
 
 unsafe extern "C-unwind" fn strided(state: *mut ffi::lua_State, gc: c_int) {
+    if gc >= 0 {
+        crate::probe::gc_edge();
+    }
     let due = TICKS.with(|t| {
         let n = t.get().wrapping_add(1);
         t.set(n);
