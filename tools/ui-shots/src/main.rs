@@ -442,7 +442,9 @@ fn controls(
         // A range with one value (Pacific's `ui_value_edit $x(-180,-180,1)`)
         // cannot move in Kontakt either: not a control to sweep.
         let kind = match w.kind {
-            Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. }
+            Kind::Knob { range, .. }
+            | Kind::Slider { range, .. }
+            | Kind::ValueEdit { range, .. }
                 if range.min.total_cmp(&range.max).is_eq() =>
             {
                 continue;
