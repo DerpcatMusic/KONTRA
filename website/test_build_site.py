@@ -38,6 +38,15 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Duplicate'):
             build_site.collect([feature(), feature()], SHA, DATE)
 
+    def test_progress_counts_and_escapes(self):
+        sound = dict(measured='2026-11-12', libraries=[
+            dict(name='A <b>', passed=2, total=3, misses=['Chord: 2.0 dB quieter around 630 Hz']),
+            dict(name='B', passed=3, total=3, misses=[])])
+        markup = build_site.render_sound(sound)
+        self.assertIn('<strong>5 of 6</strong>', markup)
+        self.assertIn('A &lt;b&gt;', markup)
+        self.assertEqual(markup.count('<details'), 1)
+
     def test_v3_snapshot_has_scoped_evidence_without_private_paths(self):
         rows = build_site.tracker.all_features()
         self.assertTrue(any(row['id'].startswith('ksp/') for row in rows))

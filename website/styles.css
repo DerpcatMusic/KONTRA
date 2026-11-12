@@ -289,3 +289,10 @@ button:disabled { cursor: default; }
   .inspector-selection .primary-button { flex: 1; }
   #inspection-viewer { min-height: 640px; }
 }
+
+/* Progress page */
+.meter { display: block; width: 100%; height: 6px; margin-top: 8px; accent-color: currentColor; }
+.sampler-row .score { font-variant-numeric: tabular-nums; }
+.progress-total { font-size: 1.15rem; }
+.sampler-scope li { margin: 4px 0; }
+.sampler-phase > div > p { max-width: 68ch; margin-bottom: 12px; }
