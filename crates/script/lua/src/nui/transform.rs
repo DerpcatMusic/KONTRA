@@ -37,6 +37,11 @@ pub struct Error {
     pub message: String,
 }
 
+/// Table braces, by name: a bare brace literal would unbalance brace-counting
+/// tools (xtask debt) that skip string contents.
+const LB: &str = "\u{7b}";
+const RB: &str = "\u{7d}";
+
 const KEYWORDS: [&str; 21] = [
     "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local",
     "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
@@ -204,13 +209,13 @@ pub fn transform(src: &str) -> Result<String, Error> {
                 matches!(p.kind, Kind::Name | Kind::Number | Kind::Str)
                     || matches!(
                         text(p),
-                        "}" | ")" | "]" | "end" | "true" | "false" | "nil" | "..."
+                        RB | ")" | "]" | "end" | "true" | "false" | "nil" | "..."
                     )
             });
             let starts = matches!(t.kind, Kind::Name | Kind::Number | Kind::Str)
                 || matches!(
                     s,
-                    "@" | "{" | "[" | "function" | "not" | "nil" | "true" | "false" | "-"
+                    "@" | LB | "[" | "function" | "not" | "nil" | "true" | "false" | "-"
                 );
             let named = t.kind == Kind::Name && is(n + 1, "=");
             let new_line = prev.is_some_and(|p| p.line < t.line);
@@ -227,7 +232,7 @@ pub fn transform(src: &str) -> Result<String, Error> {
                         message: "`@` at the end".into(),
                     });
                 };
-                if text(next) == "{" {
+                if text(next) == LB {
                     edits.push((t.start, "(".into(), next.end - t.start));
                     open.push(Open::Expr);
                     n += 2;
@@ -238,10 +243,10 @@ pub fn transform(src: &str) -> Result<String, Error> {
                 while toks.get(m).is_some_and(|t| t.kind == Kind::Name) && is(m + 1, ".") {
                     m += 2;
                 }
-                if toks.get(m).is_none_or(|t| t.kind != Kind::Name) || !is(m + 1, "{") {
+                if toks.get(m).is_none_or(|t| t.kind != Kind::Name) || !is(m + 1, LB) {
                     return Err(Error {
                         line: t.line,
-                        message: "`@` before something other than a name and `{`".into(),
+                        message: "`@` before something other than a name and a table".into(),
                     });
                 }
                 let brace = toks.get(m + 1).map_or(0, |b| b.start);
@@ -263,9 +268,9 @@ pub fn transform(src: &str) -> Result<String, Error> {
                 let mut m = n + 3;
                 while let Some(a) = toks.get(m) {
                     match text(a) {
-                        "(" | "{" | "[" => depth += 1,
-                        ")" | "}" | "]" if depth == 0 => break,
-                        ")" | "}" | "]" => depth -= 1,
+                        "(" | LB | "[" => depth += 1,
+                        ")" | RB | "]" if depth == 0 => break,
+                        ")" | RB | "]" => depth -= 1,
                         "function" | "do" | "if" | "repeat" => depth += 1,
                         "end" | "until" => depth -= 1,
                         _ => {}
@@ -274,7 +279,7 @@ pub fn transform(src: &str) -> Result<String, Error> {
                     m += 1;
                 }
                 if named {
-                    edits.push((toks.get(n + 2).map_or(0, |p| p.end), "{".into(), 0));
+                    edits.push((toks.get(n + 2).map_or(0, |p| p.end), LB.into(), 0));
                     open.push(Open::Named);
                 } else {
                     open.push(Open::Modifier);
@@ -283,7 +288,7 @@ pub fn transform(src: &str) -> Result<String, Error> {
                 // Its close continues the chain.
                 continue;
             }
-            (Kind::Punct, "(" | "{" | "[") => open.push(Open::Bracket),
+            (Kind::Punct, "(" | LB | "[") => open.push(Open::Bracket),
             (Kind::Keyword, "function" | "do" | "if" | "repeat") => open.push(Open::Block),
             (Kind::Keyword, "end" | "until") => {
                 if open.pop() != Some(Open::Block) {
@@ -293,7 +298,7 @@ pub fn transform(src: &str) -> Result<String, Error> {
                     });
                 }
             }
-            (Kind::Punct, ")" | "}" | "]") => {
+            (Kind::Punct, ")" | RB | "]") => {
                 let Some(o) = open.pop().filter(|o| *o != Open::Block) else {
                     return Err(Error {
                         line: t.line,
@@ -303,7 +308,7 @@ pub fn transform(src: &str) -> Result<String, Error> {
                 match o {
                     Open::Node => edits.push((t.end, ")".into(), 0)),
                     Open::Expr => edits.push((t.start, ")".into(), 1)),
-                    Open::Named => edits.push((t.start, "}".into(), 0)),
+                    Open::Named => edits.push((t.start, RB.into(), 0)),
                     Open::Modifier | Open::Bracket | Open::Block => {}
                 }
                 // A node, an `@{}` or a modifier call chains.
