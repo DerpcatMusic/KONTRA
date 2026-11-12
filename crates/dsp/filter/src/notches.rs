@@ -225,12 +225,13 @@ impl Notches {
         }
     }
 
-    /// Frames after which silent input leaves it silent.
+    /// Host frames after which silent input leaves it silent.
     // ponytail: 2 s covers its longest ring (loop gain 0.95 through a
     // band-pass of Q ½ at most); derive it if a slower tail turns up.
     #[must_use]
     pub fn memory(&self) -> usize {
-        (2.0 * self.core.rate) as usize
+        let factor = if self.halfband.is_some() { 2.0 } else { 1.0 };
+        (2.0 * self.core.rate / factor) as usize
     }
 
     /// The loudest loop value the last [`Self::process`] ran.
