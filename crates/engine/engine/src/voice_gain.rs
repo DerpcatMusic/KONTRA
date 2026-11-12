@@ -4,8 +4,9 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
+use ir::TableValue::{Position, Warp};
 use kontra_stream::Mix;
-use kontra_voice::{Ahdsr, Gain, Lag};
+use kontra_voice::{Ahdsr, Gain, Lag, Read};
 
 use crate::effects::{self, product};
 use crate::modulators::{self, Age};
@@ -147,6 +148,36 @@ impl Engine {
             }
         }
         moved.then_some(mix)
+    }
+
+    /// Where this note's voice reads its group's wavetable: each value as
+    /// the group (or a script) set it plus its routes' `source × depth`,
+    /// held within 0..=1. `None` outside a wavetable group.
+    pub(crate) fn voice_read(&self, zone: &Zone, note: &Note, age: Age) -> Option<Read> {
+        let g = self.groups.get(zone.group as usize)?;
+        let mut read = g.wavetable?;
+        for m in g.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::Wavetable {
+                source,
+                value,
+                depth,
+            } = m.kind
+            {
+                let input = self.routed(zone, source, note, age);
+                let moved = input.unwrap_or(0.0) * depth;
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, moved, crate::RouteUnit::TableFraction);
+                if let Some(v) = table_value(&mut read, value) {
+                    *v += moved;
+                }
+            }
+        }
+        for v in [Position, Warp(0), Warp(1)] {
+            if let Some(v) = table_value(&mut read, v) {
+                *v = v.clamp(0.0, 1.0);
+            }
+        }
+        Some(read)
     }
 
     /// The pan the zone's group is set to.
@@ -539,7 +570,8 @@ impl Engine {
                     | ir::ModKind::EqGain { source, .. }
                     | ir::ModKind::EffectParam { source, .. }
                     | ir::ModKind::Mix { source, .. }
-                    | ir::ModKind::Intensity { source, .. } => g.reads(source, cc),
+                    | ir::ModKind::Intensity { source, .. }
+                    | ir::ModKind::Wavetable { source, .. } => g.reads(source, cc),
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
                     | ir::ModKind::Attack { .. }
@@ -590,4 +622,12 @@ fn time_route(ms: f32, x: f32, intensity: f32, floor_ms: f32) -> f32 {
         ms * multiplier
     };
     ms.max(0.0)
+}
+
+/// The wavetable value `v` of `read`.
+pub(crate) fn table_value(read: &mut Read, v: ir::TableValue) -> Option<&mut f32> {
+    match v {
+        Position => Some(&mut read.position),
+        Warp(n) => read.warps.get_mut(usize::from(n)).map(|w| &mut w.amount),
+    }
 }
