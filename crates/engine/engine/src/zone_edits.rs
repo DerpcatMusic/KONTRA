@@ -124,7 +124,10 @@ impl Engine {
         &self.zone_refused
     }
 
+    /// A full queue fails the edit's async and counts it, with the refused
+    /// events and per script ([`Self::zone_edits_refused`]).
     fn refuse_zone_edit(&mut self, script: u8) {
+        self.stats.events_refused += 1;
         if let Some(n) = self.zone_refused.get_mut(usize::from(script)) {
             *n = n.saturating_add(1);
         }
