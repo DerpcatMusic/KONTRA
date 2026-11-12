@@ -373,7 +373,7 @@ fn compressor(c: ir::Compressor) -> CompressorSettings {
         knee_db: c.knee_db,
         attack_ms: c.attack_ms,
         release_ms: c.release_ms,
-        makeup_db: c.makeup_db,
+        makeup_db: c.makeup(),
         link: c.link,
         mix: c.mix,
         detector: match c.detector {

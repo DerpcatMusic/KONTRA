@@ -15,13 +15,24 @@ pub struct Compressor {
     /// Time constants of the gain reduction rising and falling.
     pub attack_ms: f32,
     pub release_ms: f32,
-    /// Gain after compression.
+    /// Gain after compression, before [`Self::makeup_slope`]'s share.
     pub makeup_db: f32,
+    /// Make-up that follows the settings: this many dB per dB of the
+    /// threshold's full-scale reduction `−threshold·(1 − 1/ratio)`; 0 is none.
+    pub makeup_slope: f32,
     /// Both channels follow the louder one.
     pub link: bool,
     /// 0..=1: the compressed share of the output.
     pub mix: f32,
     pub detector: Detector,
+}
+
+impl Compressor {
+    /// The whole make-up gain in dB at the current threshold and ratio.
+    pub fn makeup(&self) -> f32 {
+        let reduction = -self.threshold_db * (1.0 - 1.0 / self.ratio.max(1.0));
+        self.makeup_db + self.makeup_slope * reduction
+    }
 }
 
 /// What a compressor's level detector reads.
