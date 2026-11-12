@@ -70,7 +70,7 @@ impl Claim {
     /// A free arena, or the shared arena 0 when all [`ARENAS`] are held. An
     /// arena given back keeps its pools for the next state.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn arena() -> Self {
         let free = (ARENA.iter().enumerate().skip(1)).find(|(_, a)| {
             a.claimed
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -95,12 +95,6 @@ impl Claim {
         if let Some(arena) = ARENA.get(self.0) {
             arena.reserve(bytes);
         }
-    }
-}
-
-impl Default for Claim {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -399,8 +393,8 @@ mod tests {
 
     #[test]
     fn scoped_blocks_come_from_their_arena_and_go_back_by_address() {
-        let arena = Claim::new();
-        let other = Claim::new();
+        let arena = Claim::arena();
+        let other = Claim::arena();
         arena.reserve(1 << 20);
         let (inside, before) = {
             let _scope = arena.audio();
@@ -430,7 +424,7 @@ mod tests {
 
     #[test]
     fn a_load_scope_grows_the_arena() {
-        let arena = Claim::new();
+        let arena = Claim::arena();
         let _scope = arena.load();
         let big = vec![0u8; 40 << 20];
         assert!(owner(big.as_ptr().cast_mut()).is_some());

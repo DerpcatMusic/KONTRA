@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let on = Event::NoteOn {
                     note,
-                    velocity: 0.8.into(),
+                    velocity: 0.8,
                     tune: 0.0,
                 };
                 events.push(Timed {

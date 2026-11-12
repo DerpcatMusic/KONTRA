@@ -97,7 +97,7 @@ pub fn compile(
     saved: &[String],
 ) -> Result<Compiled, String> {
     let (modules, saved) = inputs(modules, saved);
-    let arena = alloc::Claim::new();
+    let arena = alloc::Claim::arena();
     let load = arena.load();
     let built = state(source, &modules, &saved).map_err(|e| e.to_string());
     drop(load);
@@ -212,7 +212,7 @@ impl Foreign for Compiled {
         let (lua, checkpoints, arena) = match built {
             Some(built) => built,
             None => {
-                let arena = alloc::Claim::new();
+                let arena = alloc::Claim::arena();
                 let load = arena.load();
                 let built = state(&self.source, &self.modules, &self.saved);
                 drop(load);
