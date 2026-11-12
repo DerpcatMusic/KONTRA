@@ -33,7 +33,7 @@ fn key(name: &str) -> String {
 fn of(file: &Path, base: &Path) -> bool {
     file == base
         || kontra_host::presets::read(file).is_some_and(|u| u.base == base)
-        || kontra_host::instrument::preset(file).is_some_and(|s| s.base == base)
+        || kontra_host::instrument::preset(file, &[base.to_owned()]).is_some_and(|s| s.base == base)
 }
 
 /// Makes the preset each changed part's script just named the one it plays.

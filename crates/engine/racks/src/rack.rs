@@ -323,20 +323,46 @@ mod tests {
             let g = if v < 4 { 0.3 } else { 0.0 };
             ir::EnsembleVoice {
                 ms: 3.0 + 4.0 * v as f32,
-                depth_ms: 8.0,
                 hz: 0.25 * (1.0 + v as f32 * 0.2),
                 start: v as f32 / 6.0,
-                damping_hz: 5_000.0,
-                low_cut_hz: 0.0,
-                input: 0.9,
-                feedback: 0.5,
-                output: [[g, -0.1 * g], [0.1 * g, g]],
+                filter: ir::LineFilter::LowPass(5_000.0),
+                level: g,
+                angle: 0.1,
             }
         });
         ir::Effect {
             kind: ir::EffectKind::Ensemble(ir::Ensemble {
                 voices,
+                sweep: 2.0,
+                input: 0.9,
+                feedback: 0.5,
                 direct: 0.7,
+            }),
+            ..chorus()
+        }
+    }
+
+    /// A comb bank half way into its scan: swept heads, the window moving,
+    /// three voices fed back hard, wide, through zero off.
+    fn comb_bank() -> ir::Effect {
+        ir::Effect {
+            kind: ir::EffectKind::CombBank(ir::CombBank {
+                root_hz: 110.0,
+                ratio: [1.0, 1.25, 1.5, 2.0],
+                detune: [1.01, 0.99, 0.98, 1.02],
+                lowest_hz: 50.0,
+                feedback: 0.9,
+                voices: 2.0,
+                damping: 0.1,
+                depth: 0.5,
+                rate: ir::Rate::Hz(0.9),
+                offset: 0.1,
+                polarity: ir::Polarity::Normal,
+                mode: ir::CombMode::Scan,
+                scan_depth: 0.5,
+                scan_shape: ir::ScanShape::SawUp,
+                width: 0.5,
+                mix: 0.7,
             }),
             ..chorus()
         }
@@ -367,7 +393,7 @@ mod tests {
     /// never slept.
     #[test]
     fn a_silent_slot_sleeps_and_wakes_in_step() {
-        for effect in [chorus(), notches(), ensemble()] {
+        for effect in [chorus(), notches(), ensemble(), comb_bank()] {
             sleeps_and_wakes_in_step(effect);
         }
     }

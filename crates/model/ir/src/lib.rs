@@ -23,9 +23,10 @@ pub use drive::{
     Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
-    Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector,
-    ENSEMBLE_VOICES, Ensemble, EnsembleVoice, Formant, IDENTITY, ImpulseCuts, ImpulseKnob, Limiter,
-    Matrix, Notches, Phaser, Reverb, Transient, VowelSet,
+    Cascade, CascadeStage, Clocked, ClockedShape, CombBank, CombMode, Compressor, Delay, DelayTime,
+    Detector, ENSEMBLE_VOICES, Ensemble, EnsembleVoice, Formant, IDENTITY, ImpulseCuts,
+    ImpulseKnob, Limiter, LineFilter, Matrix, Notches, Phaser, Polarity, Reverb, ScanShape,
+    Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
@@ -281,6 +282,14 @@ mod tests {
         assert_eq!(piece, plain[300..1100]);
         key.apply(4096, &mut whole);
         assert_eq!(whole, plain);
+    }
+
+    /// An effect travels by value through racks and commands: an effect kind
+    /// that grows past this bound states its shared fields once instead.
+    #[test]
+    fn an_effect_stays_small() {
+        let size = std::mem::size_of::<Effect>();
+        assert!(size <= 208, "ir::Effect is {size} bytes");
     }
 }
 
@@ -694,6 +703,8 @@ pub enum EffectKind {
     Notches(Notches),
     /// A chorus ensemble, its input mixed in (`dry` 0).
     Ensemble(Ensemble),
+    /// A bank of tuned combs, its input mixed in (`dry` 0).
+    CombBank(CombBank),
     /// A transient shaper, in place.
     Transient(Transient),
     /// Not carried, an insert: audio passes unchanged (its output gain trims

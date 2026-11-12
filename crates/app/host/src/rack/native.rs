@@ -5,7 +5,7 @@
 //! restarts the part on it with the snapshot's values. Neither the audio
 //! thread nor the rack waits for the read.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use std::sync::Arc;
@@ -24,13 +24,13 @@ pub(crate) struct Native {
     loaded: Vec<Vec<String>>,
 }
 
-/// `plan` (a part's, of the base instrument) with the effects of the
-/// snapshot at `path`, and what its reading and those effects report; as
-/// it is when the snapshot cannot be read (the values still land), with
-/// why.
-fn rebuilt(plan: &Plan, path: &Path, rate: u32) -> (Plan, Vec<ir::Diagnostic>) {
+/// `plan` (a part's, of the base instrument `base`) with the effects of
+/// the snapshot at `path`, and what its reading and those effects report;
+/// as it is when the snapshot cannot be read (the values still land),
+/// with why.
+fn rebuilt(plan: &Plan, path: &Path, base: &[PathBuf], rate: u32) -> (Plan, Vec<ir::Diagnostic>) {
     let mut plan = plan.clone();
-    match crate::instrument::read(path) {
+    match crate::instrument::read_saved(path, &[], base) {
         Ok(instrument) => {
             let mut diagnostics = Vec::new();
             kontra_prepare::effects(&mut plan, &instrument, rate, &mut diagnostics);
@@ -66,7 +66,7 @@ impl Rack {
         let (faces, near) = (p.faces.clone(), p.source.clone());
         // The snapshot's racks are the effects: no slots a script loaded.
         std::thread::spawn(move || {
-            let (plan, diagnostics) = rebuilt(&plan, &path, rate);
+            let (plan, diagnostics) = rebuilt(&plan, &path, near.as_slice(), rate);
             let face = (faces.as_slice(), near.as_deref().or(Some(path.as_path())));
             // None waits when the part moved on (another load or recall).
             let mut started = started(plan, &Default::default(), saved, (client, rate), face);

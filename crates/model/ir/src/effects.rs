@@ -146,32 +146,115 @@ pub struct Notches {
 
 /// A chorus ensemble: up to [`ENSEMBLE_VOICES`] modulated delay voices, each
 /// adding its delayed input to the sum, plus `direct` of the input itself
-/// (the dry level and the voices' undelayed share together).
+/// (the dry level and the voices' undelayed share together). What every
+/// voice shares is carried once: its input gain, the pitch its sweep
+/// reaches, and a loop gain set as if every line were the first's length.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ensemble {
     pub voices: [EnsembleVoice; ENSEMBLE_VOICES],
+    /// Each voice's sweep span times its LFO rate, ms·Hz: every voice
+    /// sweeps to the same pitch whatever its rate.
+    pub sweep: f32,
+    pub input: f32,
+    /// The first voice's loop gain (its sign the polarity); a voice `k`
+    /// times as long takes it to the power `k`, so all decay alike per
+    /// second.
+    pub feedback: f32,
     pub direct: f32,
 }
 
 pub const ENSEMBLE_VOICES: usize = 6;
 
-/// One voice: a stereo delay line its LFO sweeps between `ms` and
-/// `ms + depth_ms`, filtered on the way in, fed back on itself.
+/// One voice: a stereo delay line its LFO sweeps up from `ms`, filtered on
+/// the way in, fed back on itself, turned by `angle` to the output.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EnsembleVoice {
     pub ms: f32,
-    pub depth_ms: f32,
     pub hz: f32,
     /// The LFO's start, cycles.
     pub start: f32,
-    /// One-pole low-pass on the line; `f32::INFINITY` for none.
-    pub damping_hz: f32,
-    /// One-pole high-pass on the line; 0 for none.
-    pub low_cut_hz: f32,
-    pub input: f32,
+    pub filter: LineFilter,
+    /// The delayed signal's level out, zero for a silent voice, and its
+    /// turn in the stereo field (radians, a rotation).
+    pub level: f32,
+    pub angle: f32,
+}
+
+/// A one-pole on a delay line's input.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LineFilter {
+    None,
+    /// Its corner, Hz.
+    LowPass(f32),
+    HighPass(f32),
+}
+
+/// Whether a signal passes as it is or turned over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Polarity {
+    Normal,
+    Inverted,
+}
+
+/// Four stereo combs on one input, each a line around a soft-clipped,
+/// rotated feedback loop with a smoother in it, read by a swept head, its
+/// mirror and a still head; a triangle LFO sweeps the heads or scans a
+/// window across the voices. Its input mixed in (slot `dry` 0). What the
+/// voices share is carried once; per voice only the interval and detune.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CombBank {
+    /// The first voice's pitch before its interval and detune.
+    pub root_hz: f32,
+    /// Each voice's interval over the root (it also sets the voice's loop
+    /// gain, `feedback^(1/ratio)`) and its detune factor.
+    pub ratio: [f32; 4],
+    pub detune: [f32; 4],
+    /// The lowest voice pitch any setting reaches: the lines' length.
+    pub lowest_hz: f32,
+    /// The root's loop gain a pass.
     pub feedback: f32,
-    /// The delayed signal to the output; zero for a silent voice.
-    pub output: Matrix,
+    /// 0..=3: the voices after the first, fading in one by one; where the
+    /// scan rests.
+    pub voices: f32,
+    /// 0..=¼: the loop smoother's outer tap, ¼ a zero at Nyquist.
+    pub damping: f32,
+    /// 0..=1: the heads' swing, a share of their rest delay.
+    pub depth: f32,
+    pub rate: Rate,
+    /// How much further back the still head reads, a share of the rest.
+    pub offset: f32,
+    /// The swept head's sign, out and round the loop.
+    pub polarity: Polarity,
+    pub mode: CombMode,
+    /// The share of its shape the LFO moves the scan window.
+    pub scan_depth: f32,
+    pub scan_shape: ScanShape,
+    /// 0..=1: the heads turned apart (and the mirror head in).
+    pub width: f32,
+    /// The wet share; the input makes up the rest.
+    pub mix: f32,
+}
+
+/// What a [`CombBank`]'s voices play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CombMode {
+    /// The swept heads.
+    Standard,
+    /// The swept heads around the still one.
+    ThruZero,
+    /// Still heads, a window scanning the voices.
+    Scan,
+}
+
+/// What moves a [`CombBank`]'s scan window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanShape {
+    /// From the first voice to the last and back.
+    Triangle,
+    /// Once round all the voices, rising.
+    SawUp,
+    /// Once round, falling.
+    SawDown,
 }
 
 /// An algorithmic reverb in physical units.

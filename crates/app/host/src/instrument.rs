@@ -1,7 +1,7 @@
 //! Loading an instrument file into a plan the engine plays: the format reads
 //! it into the IR, prepare loads its samples, its script is compiled.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kontra_engine::{Plan, ir};
 use kontra_prepare::prepare;
@@ -28,18 +28,20 @@ pub struct Loaded {
 /// # Errors
 /// When the file is not an instrument this can read.
 pub fn read(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
-    read_saved(path, &[])
+    read_saved(path, &[], &[])
 }
 
 /// [`read`], with the scripts' `saved` values (by instrument script) in
 /// place of the file's: a UVI program's load pass then loads the samples
-/// a project's saved menus and state pick.
+/// a project's saved menus and state pick. A snapshot with no base near it
+/// binds to one of `known` ([`preset`]).
 ///
 /// # Errors
 /// As [`read`].
 pub fn read_saved(
     path: &Path,
     saved: &[Vec<String>],
+    known: &[PathBuf],
 ) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     // A user preset: its base with its values, unless a project gave its own.
     if let Some(user) = crate::presets::read(path) {
@@ -48,7 +50,7 @@ pub fn read_saved(
         } else {
             saved
         };
-        let mut out = read_saved(&user.base, saved)?;
+        let mut out = read_saved(&user.base, saved, known)?;
         for (script, saved) in out.scripts.iter_mut().zip(saved) {
             script.saved.clone_from(saved);
         }
@@ -66,7 +68,7 @@ pub fn read_saved(
         };
         Ok(kontra_format_uvi::load_with(path, &swaps)?)
     } else {
-        Ok(kontra_format_kontakt::load(path)?)
+        Ok(kontra_format_kontakt::load_known(path, known)?)
     }
 }
 
@@ -77,7 +79,7 @@ pub struct Preset {
     pub name: String,
     /// The instrument file the values are for, absolute, as its IR's
     /// `source_path` names it.
-    pub base: std::path::PathBuf,
+    pub base: PathBuf,
     /// Saved values by script slot ([`ir::Script::slot`]); an empty slot
     /// means the base's own, which only a full load reads.
     pub saved: Vec<Vec<String>>,
@@ -86,12 +88,13 @@ pub struct Preset {
 }
 
 /// The file at `path` as a [`Preset`] (a Kontakt snapshot), read without
-/// its base instrument; None for anything else, or a snapshot this cannot
-/// read (its full load then reports why).
+/// its base instrument, which is near it or else the one of `known` (the
+/// instruments the player has) it names; None for anything else, or a
+/// snapshot this cannot read (its full load then reports why).
 #[must_use]
-pub fn preset(path: &Path) -> Option<Preset> {
+pub fn preset(path: &Path, known: &[PathBuf]) -> Option<Preset> {
     let snapshot = (path.extension()).is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
-    let p = snapshot.then(|| kontra_format_kontakt::preset(path).ok())??;
+    let p = snapshot.then(|| kontra_format_kontakt::preset(path, known).ok())??;
     Some(Preset {
         name: p.name,
         base: p.base,
@@ -321,7 +324,7 @@ mod tests {
         let mut saved: Vec<Vec<String>> = program.scripts.iter().map(|s| s.saved.clone()).collect();
         let state = r#"__state={{{["loadedLayer"]="Strings Ensemble/Strings Ensemble Marcato M"},{["loadedLayer"]="Strings Ensemble/Strings Ensemble Marcato ST"}},{{["loadedLayer"]="Strings Ensemble/Strings Ensemble Marcato M"},{["loadedLayer"]="Strings Ensemble/Strings Ensemble Marcato ST"}}}"#;
         saved[0].push(state.to_owned());
-        let project = super::read_saved(path, &saved).unwrap();
+        let project = super::read_saved(path, &saved, &[]).unwrap();
         let (b, m) = (names(&program, "Bartok"), names(&program, "Marcato"));
         let (b2, m2) = (names(&project, "Bartok"), names(&project, "Marcato"));
         println!("program: {b} Bartok, {m} Marcato; project: {b2} Bartok, {m2} Marcato");

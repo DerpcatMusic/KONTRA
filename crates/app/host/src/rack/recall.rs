@@ -100,7 +100,8 @@ impl Rack {
         part: usize,
         path: &Path,
     ) -> Option<Result<(), Box<dyn std::error::Error>>> {
-        let preset = crate::instrument::preset(path).or_else(|| self.user_preset(part, path));
+        let preset =
+            crate::instrument::preset(path, &self.known.1).or_else(|| self.user_preset(part, path));
         if let Some(preset) = preset
             && self.recall(part, &preset, Some(path))
         {
