@@ -20,6 +20,7 @@ use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, Variadic};
 pub mod alloc;
 mod interrupt;
 mod literal;
+pub mod probe;
 mod save;
 mod ui;
 
@@ -78,8 +79,11 @@ pub struct Compiled {
     pub ui: Ui,
     /// The state that load built, for the first machine (a big program's
     /// state is tens of MB and a second of load).
-    built: Mutex<Option<(Lua, Arc<AtomicU32>)>>,
+    built: Mutex<Option<Built>>,
 }
+
+/// A state, its interrupt count and the arena it lives in (dropped last).
+type Built = (Lua, Arc<AtomicU32>, alloc::Claim);
 
 /// Loads `source` once, with `modules` (name, source) for `require` and the
 /// widgets' `saved` values (`name=value`), to learn its callbacks. Each
@@ -93,7 +97,8 @@ pub fn compile(
     saved: &[String],
 ) -> Result<Compiled, String> {
     let (modules, saved) = inputs(modules, saved);
-    let load = alloc::Scope::load();
+    let arena = alloc::Claim::arena();
+    let load = arena.load();
     let built = state(source, &modules, &saved).map_err(|e| e.to_string());
     drop(load);
     let (lua, checkpoints) = built?;
@@ -122,7 +127,7 @@ pub fn compile(
         callbacks,
         controls,
         ui,
-        built: Mutex::new(Some((lua, checkpoints))),
+        built: Mutex::new(Some((lua, checkpoints, arena))),
     })
 }
 
@@ -203,27 +208,37 @@ impl Foreign for Compiled {
     }
 
     fn machine(&self) -> Box<dyn Machine> {
-        let load = alloc::Scope::load();
         let built = self.built.lock().ok().and_then(|mut b| b.take());
-        let machine = built
-            .map_or_else(|| state(&self.source, &self.modules, &self.saved), Ok)
-            .map(|(lua, checkpoints)| LuaMachine {
-                reads: ui::Reads::new(&lua),
-                lua: Some(lua),
-                checkpoints,
-                slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
-                spawned: Vec::with_capacity(COROUTINES),
-                faults: Faults::default(),
-                runs: 0,
-            });
+        let (lua, checkpoints, arena) = match built {
+            Some(built) => built,
+            None => {
+                let arena = alloc::Claim::arena();
+                let load = arena.load();
+                let built = state(&self.source, &self.modules, &self.saved);
+                drop(load);
+                // `compile` loaded the same source, so this fails only on memory.
+                let Ok((lua, checkpoints)) = built else {
+                    return Box::new(LuaMachine::empty(arena));
+                };
+                (lua, checkpoints, arena)
+            }
+        };
+        let load = arena.load();
+        let machine = LuaMachine {
+            reads: ui::Reads::new(&lua),
+            lua: Some(lua),
+            checkpoints,
+            slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
+            spawned: Vec::with_capacity(COROUTINES),
+            faults: Faults::default(),
+            runs: 0,
+            arena,
+        };
         drop(load);
-        if let Ok(m) = &machine
-            && let Some(lua) = &m.lua
-        {
-            alloc::reserve(HEADROOM.max(lua.used_memory() / 2));
+        if let Some(lua) = &machine.lua {
+            machine.arena.reserve(HEADROOM.max(lua.used_memory() / 2));
         }
-        // `compile` loaded the same source, so this fails only on memory.
-        Box::new(machine.unwrap_or_else(|_| LuaMachine::empty()))
+        Box::new(machine)
     }
 }
 
@@ -325,10 +340,12 @@ struct LuaMachine {
     faults: Faults,
     /// Runs of a callback or task, each resume one ([`Machine::runs`]).
     runs: u32,
+    /// The state's arena; declared last, so it is given back after the state.
+    arena: alloc::Claim,
 }
 
 impl LuaMachine {
-    fn empty() -> Self {
+    fn empty(arena: alloc::Claim) -> Self {
         Self {
             lua: None,
             reads: None,
@@ -337,6 +354,7 @@ impl LuaMachine {
             spawned: Vec::new(),
             faults: Faults::default(),
             runs: 0,
+            arena,
         }
     }
 
@@ -385,7 +403,8 @@ impl LuaMachine {
 
 impl Machine for LuaMachine {
     fn start(&mut self, entry: u32, context: u64) -> Option<CoId> {
-        let _arena = alloc::Scope::audio();
+        let _run = probe::Run::start();
+        let _arena = self.arena.audio();
         let lua = self.lua.as_ref()?;
         let callback = lua
             .globals()
@@ -397,7 +416,8 @@ impl Machine for LuaMachine {
     }
 
     fn run(&mut self, co: CoId, host: &mut dyn HostApi) -> Step {
-        let _arena = alloc::Scope::audio();
+        let _run = probe::Run::start();
+        let _arena = self.arena.audio();
         let Some(lua) = self.lua.clone() else {
             return Step::Done;
         };
@@ -441,7 +461,7 @@ impl Machine for LuaMachine {
     }
 
     fn cancel(&mut self, co: CoId) {
-        let _arena = alloc::Scope::audio();
+        let _arena = self.arena.audio();
         if let Some(slot) = self.slot(co) {
             slot.thread = None;
         }
@@ -464,7 +484,8 @@ impl Machine for LuaMachine {
     }
 
     fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId> {
-        let _arena = alloc::Scope::audio();
+        let _run = probe::Run::start();
+        let _arena = self.arena.audio();
         let lua = self.lua.as_ref()?;
         let set = lua.globals().get::<Function>("__control").ok()?;
         let thread = lua.create_thread(set.bind((id, value)).ok()?).ok()?;
@@ -472,7 +493,7 @@ impl Machine for LuaMachine {
     }
 
     fn stage_widget(&mut self, n: u32, value: f64, cell: Option<u32>) {
-        let _arena = alloc::Scope::audio();
+        let _arena = self.arena.audio();
         if let Some(lua) = &self.lua {
             let g = lua.globals();
             // The prelude's widget entry reads these when it starts.
@@ -483,17 +504,17 @@ impl Machine for LuaMachine {
     }
 
     fn widget(&self, n: u32) -> Option<kontra_vm::WidgetLook> {
-        let _arena = alloc::Scope::audio();
+        let _arena = self.arena.audio();
         self.reads.as_ref()?.widget(n)
     }
 
     fn widget_cells(&self, n: u32, out: &mut [f64]) -> bool {
-        let _arena = alloc::Scope::audio();
+        let _arena = self.arena.audio();
         self.reads.as_ref().is_some_and(|r| r.cells(n, out))
     }
 
     fn widget_text(&self, n: u32, out: &mut Text) -> bool {
-        let _arena = alloc::Scope::audio();
+        let _arena = self.arena.audio();
         self.reads.as_ref().is_some_and(|r| r.text(n, out))
     }
 
@@ -506,7 +527,8 @@ impl Machine for LuaMachine {
     }
 
     fn save_state(&mut self, out: &mut [u8]) -> Option<usize> {
-        let _arena = alloc::Scope::audio();
+        let _run = probe::Run::start();
+        let _arena = self.arena.audio();
         self.checkpoints.store(0, Ordering::Relaxed);
         save::state(self.lua.as_ref()?, out)
     }
