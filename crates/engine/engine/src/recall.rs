@@ -62,6 +62,9 @@ impl Engine {
         text_cells: &mut [Text],
     ) {
         let slot = self.running.slot;
+        if self.building {
+            self.reloaded.push((slot, range.clone(), text));
+        }
         let recalled = std::mem::take(&mut self.recalled);
         let plan = std::sync::Arc::clone(&self.plan);
         let (ints, texts) = match (
@@ -87,6 +90,29 @@ impl Engine {
             }
         }
         self.recalled = recalled;
+    }
+
+    /// The end of `on init` at load: slot `slot`'s saved values land, except
+    /// in the cells `read_persistent_var` already reloaded. The script's
+    /// later writes to those stand (Kontakt 8.13.1: ANALOG reloads
+    /// `%steps__n`, zeroes two of its cells and saves them as 0).
+    pub(crate) fn restore_after_init(&mut self, slot: u8) {
+        let plan = std::sync::Arc::clone(&self.plan);
+        let Some(script) = plan.scripts.get(usize::from(slot)) else {
+            return;
+        };
+        let reloaded = std::mem::take(&mut self.reloaded);
+        let fresh = |cell: u32, text: bool| {
+            let mut here = reloaded.iter().filter(|r| r.0 == slot && r.2 == text);
+            !here.any(|r| r.1.contains(&cell))
+        };
+        for &(cell, value) in script.restore.iter().filter(|e| fresh(e.0, false)) {
+            self.write_saved(slot, &[(cell, value)], &[]);
+        }
+        for &(cell, text) in script.restore_texts.iter().filter(|e| fresh(e.0, true)) {
+            self.write_saved(slot, &[], &[(cell, text)]);
+        }
+        self.reloaded = reloaded;
     }
 
     /// Writes saved values into slot `slot`'s cells (a menu's saved entry

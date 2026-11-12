@@ -160,7 +160,9 @@ pub fn compile<'a>(
                 // Kontakt compiles a callback defined twice (ANALOG STRINGS ships
                 // several ui_control pairs). ponytail: the later one replaces the
                 // earlier, as a table keyed by control would; unverified in Kontakt.
+                c.in_init = kind == CallbackKind::Init;
                 c.block(body)?;
+                c.in_init = false;
                 c.emit(Op::Exit);
                 let callback = Callback {
                     kind,
@@ -326,6 +328,8 @@ struct Compiler<'a> {
     /// `Call` instructions waiting for their function's entry.
     fixups: Vec<(usize, usize)>,
     current: Option<usize>,
+    /// True while `on init`'s own body compiles.
+    in_init: bool,
     called: Vec<usize>,
     /// `continue` targets of the enclosing loops.
     loops: Vec<u32>,

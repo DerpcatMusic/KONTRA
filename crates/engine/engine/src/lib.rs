@@ -192,6 +192,9 @@ pub struct Engine {
     recalled: Box<[Saved]>,
     /// True while `new` runs the scripts' `init`, off the audio thread.
     building: bool,
+    /// While `on init` runs at load, the cells `read_persistent_var`
+    /// reloaded, by slot (texts flagged): the end-of-init restore skips them.
+    reloaded: Vec<(u8, std::ops::Range<u32>, bool)>,
     /// Array files scripts asked to load or save, for the control side.
     files: Vec<kontra_plan::files::FileRequest>,
     /// Calls per action the engine does not implement yet, by action id.
@@ -354,6 +357,7 @@ impl Engine {
             recall: Recall::Restart,
             recalled: Box::new([]),
             building: true,
+            reloaded: Vec::new(),
             files: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
@@ -380,7 +384,7 @@ impl Engine {
             if let Some(init) = script.callbacks.init {
                 engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
-            engine.write_saved(slot, &script.restore, &script.restore_texts);
+            engine.restore_after_init(slot);
             engine.persistence_changed(slot);
         }
         engine.pgs.prepare_runtime();

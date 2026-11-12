@@ -136,6 +136,9 @@ pub struct Store {
     menus: Box<[Box<[Vec<MenuItem>]>]>,
     /// Per script slot, by control: the entry a menu last selected.
     selected: Box<[Box<[u16]>]>,
+    /// Per script slot, by control: the saved entry a menu restored before
+    /// it had it waits for (`u16::MAX`: none).
+    waiting: Box<[Box<[u16]>]>,
     /// Per script slot, by control: the text parameters it set.
     texts: Box<[Box<[Texts]>]>,
     keys: Box<[Key]>,
@@ -189,6 +192,7 @@ impl Store {
                 .map(|n| vec![Vec::new(); n].into())
                 .collect(),
             selected: controls.clone().map(|n| vec![0; n].into()).collect(),
+            waiting: controls.clone().map(|n| vec![u16::MAX; n].into()).collect(),
             texts: controls
                 .clone()
                 .map(|n| vec![Vec::new(); n].into())
@@ -262,6 +266,29 @@ impl Store {
         let entries = self.menus.get(usize::from(slot))?.get(n)?;
         let found = entries.iter().position(|e| i64::from(e.value) == value);
         (!entries.is_empty()).then(|| found.unwrap_or_else(|| self.selected(slot, n)))
+    }
+
+    /// Menu control `n` of script `slot` selects entry `index` once it has it.
+    pub fn wait_for(&mut self, slot: u8, n: usize, index: usize) {
+        if let Some(w) = self
+            .waiting
+            .get_mut(usize::from(slot))
+            .and_then(|w| w.get_mut(n))
+        {
+            *w = u16::try_from(index).unwrap_or(u16::MAX);
+        }
+    }
+
+    /// The index of the entry menu control `n` of script `slot` just got,
+    /// when it is the one it waited for.
+    pub fn arrived(&mut self, slot: u8, n: usize) -> Option<usize> {
+        let at = self.menu(slot, Some(n)).len().checked_sub(1)?;
+        let w = self.waiting.get_mut(usize::from(slot))?.get_mut(n)?;
+        if usize::from(*w) != at {
+            return None;
+        }
+        *w = u16::MAX;
+        Some(at)
     }
 
     /// The entry menu control `n` of script `slot` last selected.

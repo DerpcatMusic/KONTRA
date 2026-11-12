@@ -33,6 +33,8 @@ pub struct Controls {
     /// cell: a save finds each cell's control in log time instead of
     /// scanning every control per cell (Areia: seconds on the audio thread).
     pub by_cell: Vec<(u32, u32)>,
+    /// The menus among them, by control, sorted.
+    pub menus: Vec<u32>,
     /// Where the UI-look builtins store what they set.
     pub look: LookPars,
     /// The parameter ids that read whether Shift, Alt and Ctrl were held at
@@ -86,10 +88,19 @@ impl Store {
     /// What saved `value` restores in `cell` of script `slot`. A menu saves
     /// the index of its selected entry and restores that entry's value
     /// (Kontakt 8.13 oracle, `probes/menu_save_restore.lua`: 30 of 10/20/30
-    /// saves "2" and reads back 30).
+    /// saves "2" and reads back 30). A menu without entries yet reads 0 and
+    /// selects the saved entry when `add_menu_item` adds it (Kontakt 8.13.1,
+    /// probes/b2/reload.lua: saved 2, read before its entries 0, 2 after).
     pub fn saved_value(&mut self, c: &Controls, slot: u8, cell: u32, value: i64) -> i64 {
         let n = c.of_cell(cell);
         let index = usize::try_from(value).ok();
+        let menu = n.filter(|&n| c.menus.binary_search(&(n as u32)).is_ok());
+        if let (Some(n), Some(index)) = (menu, index)
+            && self.menu(slot, Some(n)).is_empty()
+        {
+            self.wait_for(slot, n, index);
+            return 0;
+        }
         n.zip(index)
             .and_then(|(n, index)| self.pick(slot, n, index))
             .map_or(value, i64::from)
@@ -233,6 +244,12 @@ impl Store {
         if let Some(value) = self.call(slot, n, Some(&look), call) {
             if first && !self.menu(slot, n).is_empty() {
                 self.set_control_par(c, slot, call.cells, id, c.value_par, 0);
+            }
+            let arrived = n.filter(|_| call.action == Action::AddMenuItem);
+            // A menu's value parameter selects by entry index.
+            let at = arrived.and_then(|n| self.arrived(slot, n));
+            if let Some(at) = at.and_then(|at| i32::try_from(at).ok()) {
+                self.set_control_par(c, slot, call.cells, id, c.value_par, at);
             }
             return Some(value);
         }

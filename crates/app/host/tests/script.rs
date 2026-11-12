@@ -4005,3 +4005,54 @@ fn a_bell_switch_reads_one_and_shows_nothing() {
     let eq = sounds[0].1[0].as_ref().map(|e| e.kind);
     assert_eq!(eq, build(&[0.25, 1.0]));
 }
+
+/// The end-of-init restore skips what `read_persistent_var` already
+/// reloaded, so the script's later writes stand; the rest lands after
+/// `on init`. A menu read before its entries reads 0 and selects its saved
+/// entry as it gets it. Kontakt 8.13.1 reloading the same script and saved
+/// values (probes/b2/reload.lua): read `k70 a5,6,7 m0 p9 q0`, saved
+/// `k10 a5,0,7 m2 p1 q4`.
+#[test]
+fn a_reloaded_variable_keeps_what_init_wrote_after_reading_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let script = kontra_ksp::compile(
+        "on init
+            declare ui_knob $k (0, 100, 1)
+            declare ui_menu $m
+            declare %a[3]
+            declare $p
+            declare $q
+            declare @t
+            make_persistent($k)
+            make_persistent($m)
+            make_persistent(%a)
+            make_persistent($p)
+            make_persistent($q)
+            read_persistent_var($k)
+            read_persistent_var(%a)
+            read_persistent_var($m)
+            read_persistent_var($p)
+            @t := \"k\" & $k & \" a\" & %a[0] & \",\" & %a[1] & \",\" & %a[2] & \" m\" & $m & \" p\" & $p & \" q\" & $q
+            $k := 10
+            %a[1] := 0
+            $p := 1
+            $q := 3
+            add_menu_item($m, \"a\", 0)
+            add_menu_item($m, \"b\", 1)
+            add_menu_item($m, \"c\", 2)
+        end on
+        on persistence_changed
+            message(@t & \" | k\" & $k & \" a\" & %a[0] & \",\" & %a[1] & \",\" & %a[2] & \" m\" & $m & \" p\" & $p & \" q\" & $q)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let saved = ["$k 70", "$m 2", "%a 5 6 7", "$p 9", "$q 4"].map(String::from);
+    plan.scripts = vec![kontra_host::script::plan(&script, &saved, &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(
+        e.last_message(),
+        "k70 a5,6,7 m0 p9 q0 | k10 a5,0,7 m2 p1 q4"
+    );
+}

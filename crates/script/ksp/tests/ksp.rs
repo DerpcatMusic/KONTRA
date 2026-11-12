@@ -723,3 +723,32 @@ fn view_controls_follow_one_another_in_the_views_order() {
     };
     assert_eq!(index("$m2"), index("$m1") + 1);
 }
+
+/// An array loaded in `on init` is implicitly persistent (KSP manual,
+/// load_array); one loaded later is not.
+#[test]
+fn an_array_loaded_in_init_is_persistent() {
+    let script = compile(
+        "on init
+            declare !names[4]
+            declare %later[4]
+            declare $id
+            $id := load_array_str(!names, \"names.nka\")
+        end on
+        on persistence_changed
+            $id := load_array(%later, 1)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let persistence = |name: &str| {
+        script
+            .variables
+            .iter()
+            .find(|v| &*v.name == name)
+            .unwrap()
+            .persistence
+    };
+    assert_eq!(persistence("!names"), Persistence::Snapshot);
+    assert_eq!(persistence("%later"), Persistence::None);
+}
