@@ -497,6 +497,7 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
 
 const MIN_DAMPING: f32 = 0.01;
 
+#[rustfmt::skip]
 mod solid;
 
 /// The Solid G-EQ's four bands from its knobs (each 0..=1): LF gain and Hz,
