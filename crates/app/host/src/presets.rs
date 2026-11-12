@@ -103,6 +103,32 @@ fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what)
 }
 
+/// Puts the new file `temp` (holding `bytes`) at `path` by `link`, which
+/// the filesystem refuses in one step when the name is taken. Where it
+/// has no links (FAT, exFAT, some network mounts) the file is created
+/// there exclusively instead and written, removed again if the write
+/// fails.
+fn created(
+    temp: &Path,
+    path: &Path,
+    bytes: &[u8],
+    link: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    use std::io::Write;
+    match link(temp, path) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+            let mut file = std::fs::File::create_new(path)?;
+            let done = file.write_all(bytes).and_then(|()| file.sync_all());
+            if done.is_err() {
+                drop(file);
+                let _ = std::fs::remove_file(path);
+            }
+            done
+        }
+        linked => linked,
+    }
+}
+
 /// Writes `preset` as `name` of `library`; its path. A preset of that
 /// name stays unless `overwrite` is [`Overwrite::Replace`].
 ///
@@ -127,8 +153,9 @@ pub fn save(
     let path = dir.join(format!("{name}.{EXTENSION}"));
     let temp = written(&dir, &name, &bytes)?;
     let placed = match overwrite {
-        // A link is refused when the name is taken, in one step.
-        Overwrite::Create => std::fs::hard_link(&temp, &path),
+        Overwrite::Create => created(&temp, &path, &bytes, |from, to| {
+            std::fs::hard_link(from, to)
+        }),
         Overwrite::Replace => std::fs::rename(&temp, &path),
     };
     if overwrite == Overwrite::Create || placed.is_err() {
@@ -279,5 +306,25 @@ mod tests {
         assert!(delete(&folder, &path).is_ok() && delete(&folder, &bright).is_ok());
         assert!(list(&folder, "Una/Corda").is_empty() && outside.exists());
         assert!(ours(Path::new("a.KONTRA")) && !ours(Path::new("a.nki")));
+    }
+
+    /// Without hard links the file is created in place, and a name that is
+    /// taken is still refused.
+    #[test]
+    fn a_new_preset_is_created_where_files_cannot_be_linked() {
+        let root =
+            Scratch(std::env::temp_dir().join(format!("kontra-nolink-{}", std::process::id())));
+        std::fs::create_dir_all(&root.0).unwrap();
+        let (temp, path) = (root.0.join("t.tmp"), root.0.join("New.kontra"));
+        std::fs::write(&temp, b"new").unwrap();
+        let unlinkable = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::Unsupported));
+        created(&temp, &path, b"new", unlinkable).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let taken = created(&temp, &path, b"other", unlinkable);
+        assert_eq!(
+            taken.map_err(|e| e.kind()),
+            Err(io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
     }
 }
