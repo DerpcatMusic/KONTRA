@@ -214,7 +214,12 @@ fn browse() -> kontra_host::browser::Browser {
     } else {
         (dirs::config_dir(), dirs::cache_dir())
     };
-    kontra_host::browser::Browser::open(config.as_deref(), cache.as_deref())
+    let mut browser = kontra_host::browser::Browser::open(config.as_deref(), cache.as_deref());
+    // The player's own presets, listed with their libraries' (not in tests).
+    if let Some(user) = config.and_then(|_| kontra_host::presets::folder()) {
+        browser.set_user(user);
+    }
+    browser
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {

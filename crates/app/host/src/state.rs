@@ -24,6 +24,8 @@ pub struct Saved {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedPart {
     pub part: usize,
+    /// The instrument file it loads: for a user preset, its base, so the
+    /// project never needs the preset's file.
     pub path: PathBuf,
     pub channel: u8,
     pub output: u8,
@@ -46,6 +48,10 @@ pub struct SavedPart {
     /// `on init`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slot_responses: Vec<SlotResponse>,
+    /// The user preset it plays, only to name it: a file that is gone
+    /// leaves the part its base instrument, changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<PathBuf>,
     /// The player changed its preset after it loaded ([`crate::rack::Part::modified`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub modified: bool,
@@ -67,6 +73,42 @@ pub struct SlotType {
     pub rack: SavedRack,
     pub slot: u8,
     pub ty: u16,
+}
+
+/// Effect types and responses scripts loaded after `on init`, by rack.
+pub(crate) type LiveSlots = (Vec<(RackAt, u8, u16)>, Vec<(RackAt, u8, String)>);
+
+/// `types` and `responses` as a part keeps them, as a file saves them.
+pub(crate) fn saved_slots(
+    types: &[(RackAt, u8, u16)],
+    responses: &[(RackAt, u8, String)],
+) -> (Vec<SlotType>, Vec<SlotResponse>) {
+    let types = (types.iter())
+        .map(|&(at, slot, ty)| SlotType {
+            rack: at.into(),
+            slot,
+            ty,
+        })
+        .collect();
+    let responses = (responses.iter())
+        .map(|(at, slot, name)| SlotResponse {
+            rack: (*at).into(),
+            slot: *slot,
+            name: name.clone(),
+        })
+        .collect();
+    (types, responses)
+}
+
+/// [`saved_slots`] back as a part keeps them.
+pub(crate) fn live_slots(types: &[SlotType], responses: &[SlotResponse]) -> LiveSlots {
+    let types = (types.iter())
+        .map(|t| (t.rack.into(), t.slot, t.ty))
+        .collect();
+    let responses = (responses.iter())
+        .map(|r| (r.rack.into(), r.slot, r.name.clone()))
+        .collect();
+    (types, responses)
 }
 
 /// [`RackAt`] as a project saves it.
@@ -183,9 +225,11 @@ impl Rack {
         let parts = (self.parts().iter().enumerate())
             .filter_map(|(part, p)| {
                 let p = p.as_ref()?;
+                let user = (p.path.as_deref()).filter(|f| crate::presets::ours(f));
                 Some(SavedPart {
                     part,
-                    path: p.path.clone()?,
+                    path: if user.is_some() { &p.source } else { &p.path }.clone()?,
+                    preset: user.map(std::path::Path::to_owned),
                     channel: p.mix.channel,
                     output: p.mix.output,
                     gain: p.mix.gain,
@@ -194,20 +238,8 @@ impl Rack {
                     mute: p.mute,
                     scripts: self.saved_scripts(part),
                     delays: p.delays.clone(),
-                    slot_types: (p.slot_types.iter())
-                        .map(|&(at, slot, ty)| SlotType {
-                            rack: at.into(),
-                            slot,
-                            ty,
-                        })
-                        .collect(),
-                    slot_responses: (p.slot_responses.iter())
-                        .map(|(at, slot, name)| SlotResponse {
-                            rack: (*at).into(),
-                            slot: *slot,
-                            name: name.clone(),
-                        })
-                        .collect(),
+                    slot_types: saved_slots(&p.slot_types, &p.slot_responses).0,
+                    slot_responses: saved_slots(&p.slot_types, &p.slot_responses).1,
                     modified: p.modified,
                 })
             })
@@ -245,12 +277,7 @@ impl Rack {
         }
         let mut failed = Vec::new();
         for p in saved.parts.iter().filter(|p| !kept.contains(&p.part)) {
-            let types: Vec<_> = (p.slot_types.iter())
-                .map(|t| (t.rack.into(), t.slot, t.ty))
-                .collect();
-            let responses: Vec<_> = (p.slot_responses.iter())
-                .map(|r| (r.rack.into(), r.slot, r.name.clone()))
-                .collect();
+            let (types, responses) = live_slots(&p.slot_types, &p.slot_responses);
             match self.load_saved(p.part, &p.path, &p.scripts, &types, &responses) {
                 Ok(()) => {
                     self.set_mix(
@@ -266,6 +293,11 @@ impl Rack {
                     self.set_solo_mute(p.part, p.solo, p.mute);
                     if let Some(delays) = p.delays.clone() {
                         self.set_delays(p.part, delays);
+                    }
+                    match &p.preset {
+                        Some(preset) if preset.is_file() => self.set_preset(p.part, preset),
+                        Some(_) => self.set_modified(p.part),
+                        None => {}
                     }
                     if p.modified {
                         self.set_modified(p.part);

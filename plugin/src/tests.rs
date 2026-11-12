@@ -166,6 +166,7 @@ fn recall(path: PathBuf) -> Result<String, String> {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let t = std::time::Instant::now();
@@ -310,6 +311,7 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     };
     let saved = Saved::new(vec![part(0, a), part(1, b)]);
@@ -402,6 +404,7 @@ fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
@@ -562,6 +565,7 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     browse(kontra_ui::app::Action::Switch { part: 0, preset });
     let back = path(&params).unwrap();
     assert!(back.ends_with("Una Corda Felt.nki"), "{back:?}");
+    users_own_preset(&params, library, preset);
     // With the settings on, a second part takes its own channel and output.
     browse(kontra_ui::app::Action::NewParts {
         next_channel: true,
@@ -641,6 +645,114 @@ fn the_header_follows_an_instruments_own_preset_arrows_by_name() {
     }
 }
 
+/// A folder of this test alone, removed when dropped (also when an
+/// assertion fails).
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        Self(std::env::temp_dir().join(format!("kontra-{name}-{}", std::process::id())))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The player's own preset of the part playing `preset`: saved into the
+/// presets folder, listed under its library and named by the header,
+/// picked back with the values it saved, renamed, then deleted.
+fn users_own_preset(params: &KontraParams, library: usize, preset: usize) {
+    use kontra_ui::app::{Action, PresetEdit};
+    let scratch = Scratch::new("user-presets");
+    let folder = scratch.0.clone();
+    crate::lock(&params.shared.browser)
+        .as_mut()
+        .unwrap()
+        .set_user(folder.clone());
+    let browse = |action| {
+        params.shared.request(crate::Request::Browse(action));
+        Tick.run(params);
+    };
+    let playing = || {
+        let rack = crate::lock(&params.shared.rack);
+        let rack = rack.as_ref().unwrap();
+        let p = rack.parts()[0].as_ref().unwrap();
+        (p.path.clone().unwrap(), p.modified, rack.saved_scripts(0))
+    };
+    let listed = |path: &std::path::Path| {
+        let b = crate::lock(&params.shared.browser);
+        let presets = &b.as_ref().unwrap().catalog.libraries[library].presets;
+        presets.iter().position(|p| p == path)
+    };
+    browse(Action::Preset {
+        part: 0,
+        edit: PresetEdit::Save("Mine".into()),
+    });
+    let (mine, modified, values) = playing();
+    assert!(
+        mine.starts_with(&folder) && mine.ends_with("Mine.kontra"),
+        "{mine:?}"
+    );
+    assert!(!modified);
+    let at = listed(&mine).expect("listed with its library");
+    let shown = format!("{:?}", *crate::lock(&params.shared.view));
+    assert!(
+        shown.contains(&format!("preset: Some({at})")),
+        "{shown:.300}"
+    );
+    // Picked again from another preset: the values it saved, exactly.
+    browse(Action::Switch { part: 0, preset });
+    browse(Action::Switch {
+        part: 0,
+        preset: at,
+    });
+    assert_eq!(playing(), (mine.clone(), false, values.clone()));
+    // A project reload plays the same preset with the same values.
+    params.capture();
+    let state = params.saved.read().unwrap().clone();
+    let (again, _again_dsp) = activate(&state);
+    Tick.run(&again);
+    let reloaded = {
+        let rack = crate::lock(&again.shared.rack);
+        let rack = rack.as_ref().unwrap();
+        let p = rack.parts()[0].as_ref().unwrap();
+        (p.path.clone().unwrap(), p.modified, rack.saved_scripts(0))
+    };
+    assert_eq!(reloaded, (mine.clone(), false, values));
+    browse(Action::Preset {
+        part: 0,
+        edit: PresetEdit::Rename("Yours".into()),
+    });
+    let (yours, ..) = playing();
+    assert!(yours.ends_with("Yours.kontra") && !mine.exists() && listed(&yours).is_some());
+    // A project saved now does not need the preset's file to reopen.
+    let (_, _, kept) = playing();
+    params.capture();
+    let project = params.saved.read().unwrap().clone();
+    // Deleted: the part plays on, as its base instrument, changed.
+    browse(Action::Preset {
+        part: 0,
+        edit: PresetEdit::Delete,
+    });
+    let (base, modified, _) = playing();
+    assert!(base.ends_with("Una Corda Felt.nki") && modified, "{base:?}");
+    assert!(!yours.exists() && listed(&yours).is_none());
+    let (reopened, _reopened_dsp) = activate(&project);
+    Tick.run(&reopened);
+    let rack = crate::lock(&reopened.shared.rack);
+    let rack = rack.as_ref().unwrap();
+    let p = rack.parts()[0].as_ref().expect("the part reopens");
+    let base = p.path.clone().unwrap();
+    assert!(
+        base.ends_with("Una Corda Felt.nki") && p.modified,
+        "{base:?}"
+    );
+    assert_eq!(rack.saved_scripts(0), kept, "with the project's values");
+}
+
 const SHREDDAGE: &str = "Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org/Instruments/Shreddage 3.5 E-Upright.nki";
 
 /// Sets Shreddage's console control `name` to `value`, as its UI would,
@@ -681,6 +793,7 @@ fn shreddage_eq() -> Option<(KontraParams, Dsp, f32)> {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
@@ -747,6 +860,35 @@ fn shreddage_loads_an_eq_from_its_console_and_a_reload_keeps_it() {
         "the console's own record comes back"
     );
     assert_eq!(first, second, "re-save after reload is identical");
+}
+
+/// A user preset carries the effect types its scripts loaded after init:
+/// picked into a fresh part, the EQ is back in its slot.
+#[test]
+fn a_user_preset_keeps_an_effect_its_script_loaded() {
+    let Some((live, mut live_dsp, _)) = shreddage_eq() else {
+        return;
+    };
+    settle(&live, &mut live_dsp);
+    let folder = Scratch::new("user-fx");
+    let mut rack = crate::lock(&live.shared.rack);
+    let create = kontra_host::presets::Overwrite::Create;
+    let path = rack
+        .as_mut()
+        .unwrap()
+        .save_preset(0, &folder.0, "Shreddage", "EQ", create);
+    drop(rack);
+    let path = path.unwrap();
+    let user = kontra_host::presets::read(&path).expect("saved");
+    assert_eq!(user.slot_types.len(), 1, "{user:?}");
+    let (fresh, mut fresh_dsp) = activate(&Saved::new(Vec::new()).write());
+    let loaded = crate::lock(&fresh.shared.rack)
+        .as_mut()
+        .unwrap()
+        .load(0, &path);
+    assert!(loaded.is_ok(), "{loaded:?}");
+    settle(&fresh, &mut fresh_dsp);
+    assert_eq!(slot_types(&fresh), slot_types(&live));
 }
 
 #[test]
@@ -879,6 +1021,7 @@ fn the_same_state_restored_again_loads_nothing_twice() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
@@ -960,6 +1103,7 @@ fn uvi_knob_moves_the_sound_and_survives_reload(program: &str, knob: &str, to: f
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     };
     let (params, mut dsp) = activate(&Saved::new(vec![part(path)]).write());
@@ -1110,6 +1254,7 @@ fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
@@ -1215,6 +1360,7 @@ fn one_part(path: &Path) -> String {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }])
     .write()

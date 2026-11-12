@@ -663,6 +663,7 @@ fn state(path: PathBuf) -> String {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     saved.write()
