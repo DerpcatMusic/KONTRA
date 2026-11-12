@@ -91,15 +91,9 @@ impl Rack {
         mods: &[ir::ModKind],
         blends: &[ir::Blend],
     ) -> Self {
-        let moved = |n: usize| {
-            mods.iter().any(
-                |m| matches!(m, ir::ModKind::EffectParam { insert, .. } if usize::from(*insert) == n),
-            )
-        };
         let dsp = slots
             .iter()
-            .enumerate()
-            .map(|(n, slot)| processor(*slot, moved(n), rate, &impulses))
+            .map(|slot| processor(*slot, rate, &impulses))
             .collect();
         Self {
             slots: slots.into(),

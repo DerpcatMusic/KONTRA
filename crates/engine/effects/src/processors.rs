@@ -501,17 +501,12 @@ fn settings(r: ir::Reverb) -> Settings {
     }
 }
 
-/// The processor slot `slot` runs; `moved` when routes move it. Not real-time.
-pub fn processor(
-    slot: Option<ir::Effect>,
-    moved: bool,
-    rate: u32,
-    impulses: &Responses<'_>,
-) -> Dsp {
+/// The processor slot `slot` runs. Not real-time.
+pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) -> Dsp {
     match slot.map(|e| e.kind) {
-        Some(ir::EffectKind::Eq(bells)) if moved => {
-            Dsp::Bells(Box::new(filters::VoiceEq::new(bells, rate)))
-        }
+        // Retuned from its slot each span: a route or a script may move any
+        // band, and one saved flat (no stages) may be raised later.
+        Some(ir::EffectKind::Eq(bells)) => Dsp::Bells(Box::new(filters::VoiceEq::new(bells, rate))),
         Some(ir::EffectKind::Filter(f)) => {
             let mut svf = Svf::new(filters::shape(&f));
             svf.set_cutoff(f.hz, rate);
@@ -520,7 +515,7 @@ pub fn processor(
             Dsp::Filter(Box::new(svf))
         }
         // Built even while bypassed: a script may enable it later.
-        Some(ir::EffectKind::Eq(_) | ir::EffectKind::Formant(_)) => {
+        Some(ir::EffectKind::Formant(_)) => {
             let live = slot.map(|e| ir::Effect { bypass: false, ..e });
             let sections = filters::sections(&[live]);
             Dsp::Eq(filters::stages(&sections, rate))
@@ -694,8 +689,7 @@ mod tests {
                 output: 1.0,
                 dry: 0.0,
             };
-            let Dsp::Wet(mut unit, _) = processor(Some(slot), false, 48_000, &Responses(&[], &[]))
-            else {
+            let Dsp::Wet(mut unit, _) = processor(Some(slot), 48_000, &Responses(&[], &[])) else {
                 panic!("{kind:?} has no bus processor");
             };
             let mut io: Vec<[f32; 2]> = (0..256)
