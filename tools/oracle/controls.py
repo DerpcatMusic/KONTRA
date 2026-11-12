@@ -134,12 +134,22 @@ def plan(src, rows, context):
     for r in rows:
         if r["measure"]:
             steps += [(r, v, tag) for v, tag in zip(visits(r), ("a", "b", "default"))]
+    # A control's default is the value it holds when the first step arrives (its init may read
+    # it from the engine): every measured control is captured then and restored to it.
+    measured = [r for r in rows if r["measure"]]
+    slot = {id(r): i for i, r in enumerate(measured)}
+    capture = "".join(f"      %kontra_orig[{i}] := ${r['name']}\n" for i, r in enumerate(measured))
     cases = []
-    for k, (r, v, _) in enumerate(steps):
+    for k, (r, v, tag) in enumerate(steps):
         if r is not None:
-            cases.append(f"    case {k}\n      ${r['name']} := {v}\n{r['body']}\n")
-    table = ("  if ($CC_NUM = 102)\n    select (%CC[103] * 128 + %CC[102])\n" + "".join(cases)
-             + "    end select\n    exit\n  end if\n")
+            value = f"%kontra_orig[{slot[id(r)]}]" if tag == "default" else v
+            cases.append(f"    case {k}\n      ${r['name']} := {value}\n{r['body']}\n")
+    table = ("  if ($CC_NUM = 102)\n    if ($kontra_taken = 0)\n" + capture
+             + "      $kontra_taken := 1\n    end if\n    select (%CC[103] * 128 + %CC[102])\n"
+             + "".join(cases) + "    end select\n    exit\n  end if\n")
+    init = re.search(r"^on\s+init\s*$", src, re.I | re.M)
+    decl = f"\n  declare %kontra_orig[{max(len(measured), 1)}]\n  declare $kontra_taken\n"
+    src = src[: init.end()] + decl + src[init.end():]
     head = re.search(r"^on\s+controller\s*$", src, re.I | re.M)
     script = (src[: head.end()] + "\n" + table + src[head.end():] if head
               else src + "\non controller\n" + table + "end on\n")
