@@ -61,6 +61,22 @@ fn fused(code: &[Op], start: usize) -> Option<Op> {
         (Some(Op::ICmp(cmp)), Some(Op::JumpIfZero(to))) => Some((cmp, to)),
         _ => None,
     };
+    // x k ± store(x) jump
+    if let (Some(x), Some(Src::Int(k)), Some(bin), Some(to), Some(Op::Jump(top))) =
+        (src(0), src(1), bin(2), at(3).and_then(Op::dst), at(4))
+        && x == to
+        && let Some(by) = match bin {
+            Bin::Add => Some(k),
+            Bin::Sub => Some(k.wrapping_neg()),
+            _ => None,
+        }
+    {
+        let check = match code.get(top as usize) {
+            Some(&Op::LoopCheck { exit }) => Some(exit),
+            _ => None,
+        };
+        return Some(Op::NextTurn { x, by, top, check });
+    }
     // a b ⊕ store
     if let (Some(a), Some(b), Some(bin), Some(to)) =
         (src(0), src(1), bin(2), at(3).and_then(Op::dst))

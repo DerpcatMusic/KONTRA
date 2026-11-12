@@ -224,6 +224,15 @@ pub enum Op {
         top: u32,
         exit: u32,
     },
+    /// `x k ⊕ store(x) jump(top)` with ⊕ an add or subtract: a loop's
+    /// counter steps `by`, then the loop goes round, through its
+    /// `loop_check(exit)` when `top` is one.
+    NextTurn {
+        x: Src,
+        by: i32,
+        top: u32,
+        check: Option<u32>,
+    },
     /// `v store_at`, the index on the stack.
     StoreAtSrc {
         base: u32,

@@ -462,6 +462,24 @@ pub(crate) fn execute(
                 pc = top + 1;
                 loop_check!(exit);
             }
+            Op::NextTurn { x, by, top, check } => {
+                let v = i64::from(src!(x).wrapping_add(by));
+                let cell = match x {
+                    Src::Cell(n) => cells.get_mut(n as usize),
+                    Src::Poly(n) => poly.get_mut(usize::from(n)),
+                    Src::Int(_) => None,
+                };
+                if let Some(cell) = cell {
+                    *cell = v;
+                }
+                match check {
+                    Some(exit) => {
+                        pc = top + 1;
+                        loop_check!(exit);
+                    }
+                    None => pc = top,
+                }
+            }
             Op::StoreAtSrc { base, len, v } => {
                 let v = slot!(v);
                 let i = int(pop!());
