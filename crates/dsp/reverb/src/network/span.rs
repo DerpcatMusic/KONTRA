@@ -68,14 +68,14 @@ impl Network {
         for (line, read) in self.lines.iter_mut().zip(&mut v) {
             let swing = swing.get(usize::from(line.sin)).unwrap_or(&[0.0; MAX]);
             let x = input.get(usize::from(line.right)).unwrap_or(&[0.0; MAX]);
-            line.read(w0, n, swing, read);
-            if line.inject != 0.0 {
-                if line.reads_own_input(self.inject_offset, n) {
-                    line.read_with_input(w0, n, swing, (at, x), read);
-                } else {
-                    line.ring
-                        .add_run(at, x.get(..n).unwrap_or_default(), line.inject);
-                }
+            if line.inject == 0.0 {
+                line.read(w0, n, swing, read);
+            } else if line.reads_own_input(self.inject_offset, n) {
+                line.read_with_input(w0, n, swing, (at, x), read);
+            } else {
+                line.read(w0, n, swing, read);
+                line.ring
+                    .add_run(at, x.get(..n).unwrap_or_default(), line.inject);
             }
         }
         for (lines, reads) in self.lines.chunks_mut(4).zip(v.chunks_mut(4)) {
@@ -138,16 +138,28 @@ impl Network {
 }
 
 impl Unit {
-    /// [`Self::tick`] on `n` frames from `w0`, `x` in and out. While every
-    /// delay outlasts the span, each frame's state is read before the span
-    /// and the frames run side by side.
+    /// [`Self::tick`] on `n` frames from `w0`, `x` in and out, in runs as
+    /// long as the shortest delay.
     fn run(&mut self, w0: usize, n: usize, x: &mut [f32; MAX], written: &mut f32) {
-        if self.d.iter().any(|&d| d < n) {
-            for (f, x) in x.iter_mut().take(n).enumerate() {
+        let x = x.get_mut(..n).unwrap_or_default();
+        // Runs no longer than the shortest delay read only frames from before
+        // them; a delay too short for that runs frame by frame.
+        let shortest = self.d.iter().copied().min().unwrap_or(0);
+        if shortest < 8 {
+            for (f, x) in x.iter_mut().enumerate() {
                 *x = self.tick(w0.wrapping_add(f), *x, written);
             }
             return;
         }
+        for (k, x) in x.chunks_mut(shortest).enumerate() {
+            self.run_ahead(w0.wrapping_add(k * shortest), x, written);
+        }
+    }
+
+    /// `x` (no longer than any delay) as [`Self::tick`] frame by frame: every
+    /// frame's state is read before the run and the frames go side by side.
+    fn run_ahead(&mut self, w0: usize, x: &mut [f32], written: &mut f32) {
+        let n = x.len();
         let mut z = [[0f32; MAX]; 3];
         for ((z, ring), (&d, &z0)) in z
             .iter_mut()
@@ -233,18 +245,37 @@ impl Line {
     /// at `swing·depth + base`.
     fn read(&self, w0: usize, n: usize, swing: &[f32; MAX], out: &mut [f32; MAX]) {
         let (depth, base, mask) = (self.depth, self.base, self.ring.mask);
+        // The ring's length is `mask + 1`; said here, the masked loads below
+        // need no bounds checks.
+        let Some(buf) = self.ring.buf.get(..=mask) else {
+            return;
+        };
         let d = swing.map(|s| s * depth + base);
         let i = d.map(|d| (d as i32).max(0));
-        for (f, (out, (&d, &i))) in out.iter_mut().zip(d.iter().zip(&i)).take(n).enumerate() {
+        // The two neighbours of every frame first, then the blend as a
+        // vector loop.
+        let (mut x0, mut x1) = ([0f32; MAX], [0f32; MAX]);
+        let held = i.get(..n).and_then(|i| i.split_first());
+        match held {
+            // A slow swing mostly holds its whole frames over a span: then
+            // both neighbours are runs of the ring.
+            Some((&first, rest)) if rest.iter().all(|&i| i == first) => {
+                let at = w0.wrapping_sub(first as usize);
+                copy_run(buf, at, x0.get_mut(..n).unwrap_or_default());
+                copy_run(buf, at.wrapping_sub(1), x1.get_mut(..n).unwrap_or_default());
+            }
+            _ => {
+                let frames = x0.iter_mut().zip(&mut x1).zip(&i).take(n).enumerate();
+                for (f, ((x0, x1), &i)) in frames {
+                    let at = w0.wrapping_add(f).wrapping_sub(i as usize);
+                    *x0 = buf.get(at & mask).copied().unwrap_or(0.0);
+                    *x1 = buf.get(at.wrapping_sub(1) & mask).copied().unwrap_or(0.0);
+                }
+            }
+        }
+        for (out, (((&d, &i), &x0), &x1)) in out.iter_mut().zip(d.iter().zip(&i).zip(&x0).zip(&x1))
+        {
             let frac = d - i as f32;
-            let at = w0.wrapping_add(f).wrapping_sub(i as usize);
-            let x0 = self.ring.buf.get(at & mask).copied().unwrap_or(0.0);
-            let x1 = self
-                .ring
-                .buf
-                .get(at.wrapping_sub(1) & mask)
-                .copied()
-                .unwrap_or(0.0);
             *out = (1.0 - frac) * x0 + frac * x1;
         }
     }
@@ -275,6 +306,20 @@ impl Line {
                 .weighted(w0.wrapping_add(f), swing * self.depth + self.base);
             self.ring.add(at.wrapping_add(f), x * self.inject);
         }
+    }
+}
+
+/// `out` from a power-of-two ring `buf` at `at`, `at + 1`, …, wrapping, as
+/// masked loads one by one.
+fn copy_run(buf: &[f32], at: usize, out: &mut [f32]) {
+    let start = at & buf.len().wrapping_sub(1);
+    let (wrapped, from) = buf.split_at(start.min(buf.len()));
+    let (head, tail) = out.split_at_mut(out.len().min(from.len()));
+    for (o, &v) in head.iter_mut().zip(from) {
+        *o = v;
+    }
+    for (o, &v) in tail.iter_mut().zip(wrapped) {
+        *o = v;
     }
 }
 
