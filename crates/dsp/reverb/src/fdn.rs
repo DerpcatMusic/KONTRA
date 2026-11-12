@@ -234,9 +234,15 @@ impl Fdn {
                 x = y;
             }
             let mut y = [0.0f32; 8];
-            // Two quadrature swings, 0..=1 of the peak-to-peak depth.
-            let (sin, cos) = (std::f64::consts::TAU * self.cycle).sin_cos();
-            let swings = [0.0, 0.5 + 0.5 * sin as f32, 0.5 + 0.5 * cos as f32];
+            // Two quadrature swings, 0..=1 of the peak-to-peak depth; read
+            // only while the lines swing.
+            let swings = match self.swing > 0.0 {
+                true => {
+                    let (sin, cos) = (std::f64::consts::TAU * self.cycle).sin_cos();
+                    [0.0, 0.5 + 0.5 * sin as f32, 0.5 + 0.5 * cos as f32]
+                }
+                false => [0.0; 3],
+            };
             self.cycle = (self.cycle + self.cycle_step).fract();
             let lines = self.lines.iter().zip(&mut self.lows).zip(self.gains);
             for (i, (v, ((line, low), g))) in y.iter_mut().zip(lines).enumerate() {

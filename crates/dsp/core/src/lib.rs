@@ -29,6 +29,7 @@ impl Biquad {
     }
 
     /// Filters both channels of `io` in place.
+    #[inline]
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let [b0, b1, b2, a1, a2] = self.c;
         for frame in io {
