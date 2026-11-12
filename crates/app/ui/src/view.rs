@@ -15,6 +15,7 @@ use crate::meter::Shown;
 
 mod plan;
 mod stock;
+mod wave;
 
 use plan::caption;
 #[cfg(test)]
@@ -125,17 +126,45 @@ fn drawn_page(
         let n = item.index;
         let r = item.rect;
         let wd = item.source;
+        let lit = match wd.kind {
+            Kind::LevelMeter {
+                orientation,
+                channel: Some(c),
+                bus,
+            } => {
+                let from = level.get(bus.map_or(0, |b| usize::from(b) + 1));
+                let shown = from.and_then(|l| l.get(usize::from(c)));
+                Some((orientation, lit(shown.copied().unwrap_or_default())))
+            }
+            _ => None,
+        };
+        // A meter with a picture strip shows the frame for its level (a UVI
+        // AudioMeter's animated VU) instead of a bar.
+        let stepped = |p: &plan::Picture| match lit {
+            Some((_, (t, ..))) if p.meta.frames > 1 => {
+                (t * f64::from(p.meta.frames - 1)).round() as usize
+            }
+            _ => p.frame,
+        };
         let picture = item.picture.as_ref().and_then(|p| {
             Some((
-                pictures.frame(p.use_.asset, p.path, p.meta, p.frame, device)?,
+                pictures.frame(p.use_.asset, p.path, p.meta, stepped(p), device)?,
                 p.meta,
             ))
         });
+        let lit = lit.filter(|_| !item.picture.as_ref().is_some_and(|p| p.meta.frames > 1));
         let art = picture
             .as_ref()
             .and_then(|_| item.picture.as_ref().map(|p| p.size));
         let style = item.style;
         let t = item.position;
+        let handle = item.handle.as_ref().and_then(|p| {
+            Some((
+                pictures.frame(p.use_.asset, p.path, p.meta, 0, device)?,
+                p.meta,
+                p.size,
+            ))
+        });
         let look = item.look;
         let stock_art = look
             .as_ref()
@@ -223,27 +252,18 @@ fn drawn_page(
         } else {
             words
         };
-        let lit = match wd.kind {
-            Kind::LevelMeter {
-                orientation,
-                channel: Some(c),
-                bus,
-            } => {
-                let from = level.get(bus.map_or(0, |b| usize::from(b) + 1));
-                let shown = from.and_then(|l| l.get(usize::from(c)));
-                Some((orientation, lit(shown.copied().unwrap_or_default())))
-            }
-            _ => None,
-        };
         let deps = (
             lit.map(|(o, (t, peak, over))| (o as u8, t.to_bits(), peak.to_bits(), over)),
             [r.x, r.y, r.width, r.height, scale, device].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
-            picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
+            (
+                picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
+                handle.as_ref().map(|(i, ..)| Arc::as_ptr(i) as usize),
+            ),
             (
                 &words,
                 &look,
-                stock.then_some(t.to_bits()),
+                (stock || handle.is_some()).then_some(t.to_bits()),
                 match &wd.value {
                     Some(model::Value::Reals(v)) => {
                         Some(v.iter().map(|v| v.to_bits()).collect::<Vec<_>>())
@@ -258,6 +278,7 @@ fn drawn_page(
                 wd.table_inner_edge.map(|edge| edge.visible),
                 wd.hide.background,
                 bare,
+                (wd.waveform.as_ref()).map(|v| (v.cursor_us, v.length_us, v.peaks.clone())),
             ),
             glyphs
                 .as_ref()
@@ -308,6 +329,15 @@ fn drawn_page(
                     .at(0., 0.),
                 );
             }
+            // A slider's handle rides its track over its picture: bottom to
+            // top, left to right.
+            if let (Some((img, meta, a)), Kind::Slider { orientation, .. }) = (&handle, &wd.kind) {
+                let (x, y) = match orientation {
+                    model::Orientation::Vertical => (0., (1. - t) * (h - a.height)),
+                    model::Orientation::Horizontal => (t * (w - a.width), 0.),
+                };
+                parts.push(sliced(img, meta, (a.width, a.height), scale).at(x, y));
+            }
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
             } else if !words.is_empty() {
@@ -329,9 +359,23 @@ fn drawn_page(
                     ));
                 } else {
                     parts.push(
-                        words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.),
+                        words_el(
+                            &words,
+                            style,
+                            wd,
+                            (w, h),
+                            scale,
+                            outline.as_ref(),
+                            tree.source,
+                        )
+                        .at(0., 0.),
                     );
                 }
+            }
+            if let Some(wave) =
+                (wd.waveform.as_ref()).and_then(|v| wave::draw(v, &wd.colors, (w, h, scale)))
+            {
+                parts.push(wave.at(0., 0.));
             }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, (w, h, scale)).at(0., 0.));
@@ -506,6 +550,7 @@ fn words_el(
     (width, height): (f64, f64),
     scale: f64,
     font: Option<&Font>,
+    source: model::Source,
 ) -> El {
     let native_style = style.cloned().map(|mut style| {
         if font.is_some() && style.font == model::Font::Stock(23) {
@@ -513,7 +558,7 @@ fn words_el(
         }
         style
     });
-    let geometry = plan::text(words, native_style.as_ref(), w, height, scale);
+    let geometry = plan::text(words, native_style.as_ref(), w, (height, scale), source);
     let size = geometry.size;
     let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
     let align = geometry.align;

@@ -156,12 +156,7 @@ fn grid(
         .collect();
     let octaves = usize::from((hi - lo + 1) / 12);
     let canvas = canvas(move |s| {
-        let rect = |x0: f64, y0: f64, x1: f64, y1: f64| {
-            Path::polyline(
-                [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| Point::new(x, y)),
-                true,
-            )
-        };
+        let rect = crate::kit::rect_path;
         let mut draw = vec![Draw::fill(rect(0., 0., s.width, s.height), lift(1))];
         for o in 1..octaves {
             let x = s.width * o as f64 / octaves as f64;

@@ -16,6 +16,8 @@ pub trait Looks {
     fn keys(&self) -> &[kontra_engine::Key];
     /// Whether the keyboard shows only the keys scripts press.
     fn pressed_support(&self) -> bool;
+    /// The last `message` a script printed.
+    fn message(&self) -> &str;
 }
 
 impl Looks for Engine {
@@ -45,5 +47,9 @@ impl Looks for Engine {
 
     fn pressed_support(&self) -> bool {
         Engine::key_pressed_support(self)
+    }
+
+    fn message(&self) -> &str {
+        Engine::last_message(self)
     }
 }
