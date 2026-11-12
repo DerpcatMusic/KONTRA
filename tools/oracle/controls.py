@@ -310,14 +310,18 @@ def writes_per_step(report, steps):
     return out, len(cc102)
 
 
-def probe(writes):
+def probe(writes, context=()):
     """A script that replays step k's engine writes on CC 103·128 + CC 102 = k. Kontakt runs
-    purge_group only in UI callbacks and refuses the script otherwise, so purges are left out."""
+    purge_group only in UI and persistence callbacks, so the context steps' purges (`context`:
+    their indices) run once in on persistence_changed and other purges are left out."""
     def line(w):
         return "      set_engine_par({}, {}, {}, {}, {})\n".format(*w)
     sets = [[x for x in w if x[0] != "purge_group"] for w in writes]
     cases = "".join(f"    case {k}\n" + "".join(map(line, w)) for k, w in enumerate(sets) if w)
-    return ("on init\n  declare $step\nend on\non controller\n  if ($CC_NUM = 102)\n"
+    loads = "".join(f"  purge_group({x[1]}, {x[2]})\n" for k in context for x in writes[k] if x[0] == "purge_group")
+    return ("on init\n  declare $step\nend on\n"
+            + (f"on persistence_changed\n{loads}end on\n" if loads else "")
+            + "on controller\n  if ($CC_NUM = 102)\n"
             "    $step := %CC[103] * 128 + %CC[102]\n    select ($step)\n" + cases
             + "    end select\n  end if\nend on\n")
 
@@ -396,7 +400,7 @@ def main():
         sys.exit(f"pass A ran {seen} of {len(steps)} steps; see {out / 'a.log'}")
     slot = len(list(src_dir.glob("[0-9].ksp")))
     (out / "probe").mkdir(exist_ok=True)
-    (out / "probe" / f"{slot}.ksp").write_text(probe(writes))
+    (out / "probe" / f"{slot}.ksp").write_text(probe(writes, [k for k, s in enumerate(steps) if s[2] == "context"]))
     (out / "writes.json").write_text(json.dumps(writes))
     if not args.rescore:
         play(binary, nki, out, out / "scenario.json", out / "probe", "b", oracle=True)
