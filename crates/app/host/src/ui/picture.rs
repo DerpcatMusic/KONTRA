@@ -64,9 +64,21 @@ impl Library {
 /// A picture's size, from its header: a PNG's or WebP's pixels, an SVG's
 /// points (`width`/`height`, else its `viewBox`).
 fn size(bytes: &[u8]) -> Option<(f64, f64)> {
-    let at = |at: usize, n: usize| Some(bytes.get(at..at + n)?.iter().rev().fold(0, |v, b| v << 8 | u32::from(*b)));
+    let at = |at: usize, n: usize| {
+        Some(
+            bytes
+                .get(at..at + n)?
+                .iter()
+                .rev()
+                .fold(0, |v, b| v << 8 | u32::from(*b)),
+        )
+    };
     if bytes.get(..8)? == b"\x89PNG\r\n\x1a\n" && bytes.get(12..16)? == b"IHDR" {
-        let be = |at: usize| Some(f64::from(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?)));
+        let be = |at: usize| {
+            Some(f64::from(u32::from_be_bytes(
+                bytes.get(at..at + 4)?.try_into().ok()?,
+            )))
+        };
         return Some((be(16)?, be(20)?));
     }
     if bytes.get(..4)? == b"RIFF" && bytes.get(8..12)? == b"WEBP" {
@@ -94,7 +106,10 @@ fn svg_size(text: &str) -> Option<(f64, f64)> {
     if let (Some(w), Some(h)) = (attr("width").and_then(px), attr("height").and_then(px)) {
         return Some((w, h));
     }
-    let view: Vec<f64> = attr("viewBox")?.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+    let view: Vec<f64> = attr("viewBox")?
+        .split_whitespace()
+        .filter_map(|n| n.parse().ok())
+        .collect();
     Some((*view.get(2)?, *view.get(3)?))
 }
 

@@ -48,17 +48,25 @@ fn control(d: &Decl<'_>) -> Control {
         d.kind,
         ControlKind::Knob | ControlKind::Slider | ControlKind::ValueEdit
     );
-    let par = |i: usize| range.then(|| d.params.get(i)).flatten().map(|&v| f64::from(v));
+    let par = |i: usize| {
+        range
+            .then(|| d.params.get(i))
+            .flatten()
+            .map(|&v| f64::from(v))
+    };
     let label = d.view.and_then(|v| {
         let t = |k: &str| v.texts.iter().find(|(p, _)| p == k).map(|(_, t)| t.clone());
         t("$CONTROL_PAR_LABEL").or_else(|| t("$CONTROL_PAR_TEXT"))
     });
     let entries = if d.look.menu.is_empty() {
         let menu = d.view.map(|v| v.menu.as_slice()).unwrap_or_default();
-        menu.iter().map(|(t, v, _)| (t.clone(), f64::from(*v))).collect()
+        menu.iter()
+            .map(|(t, v, _)| (t.clone(), f64::from(*v)))
+            .collect()
     } else {
         let menu = d.look.menu.iter();
-        menu.map(|m| (m.text.as_str().to_owned(), f64::from(m.value))).collect()
+        menu.map(|m| (m.text.as_str().to_owned(), f64::from(m.value)))
+            .collect()
     };
     let (min, max) = match d.kind {
         ControlKind::Button | ControlKind::Switch => (0., 1.),
@@ -105,7 +113,11 @@ pub(super) fn face(bld: &mut Builder<'_>, native: &Native, decls: &[Decl<'_>]) {
         Ok(None) => return,
         Err(e) => {
             let at = e.line.map_or_else(String::new, |l| format!(":{l}"));
-            bld.unsupported(None, "native_ui", format!("{}{at}: {}", e.module, e.message));
+            bld.unsupported(
+                None,
+                "native_ui",
+                format!("{}{at}: {}", e.module, e.message),
+            );
             return;
         }
     };
@@ -253,7 +265,10 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
         "padding" => {
             let [l, t, r, b] = pads(args);
             let (iw, ih) = inner((room.0 - l - r, room.1 - t - b));
-            (if iw > 0. { iw + l + r } else { 0. }, if ih > 0. { ih + t + b } else { 0. })
+            (
+                if iw > 0. { iw + l + r } else { 0. },
+                if ih > 0. { ih + t + b } else { 0. },
+            )
         }
         _ => inner(room),
     }
@@ -264,7 +279,10 @@ fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size
         "Spacer" => (0., 0.),
         // ponytail: an average glyph width; measure with the font when a
         // page's layout turns on it.
-        "Text" => (words(n).chars().count() as f64 * env.font * 0.55, env.font * 1.25),
+        "Text" => (
+            words(n).chars().count() as f64 * env.font * 0.55,
+            env.font * 1.25,
+        ),
         "Image" if !matches!(n.prop("resizable"), Some(Prop::Bool(true))) => {
             image(bld, n).and_then(|(_, s)| s).unwrap_or((0., 0.))
         }
@@ -301,7 +319,11 @@ impl Axis {
     }
     /// A size from its length along the axis and across it.
     fn size(self, along: f64, across: f64) -> Size {
-        if self == Self::Across { (along, across) } else { (across, along) }
+        if self == Self::Across {
+            (along, across)
+        } else {
+            (across, along)
+        }
     }
 }
 
@@ -359,7 +381,11 @@ fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
             let w = num(arg(args, "width")).unwrap_or(r.width);
             let h = num(arg(args, "height")).unwrap_or(r.height);
             let room = aligned(r, (w, h), (0.5, 0.5));
-            aligned(room, size(bld, room), alignment(text(arg(args, "alignment"))))
+            aligned(
+                room,
+                size(bld, room),
+                alignment(text(arg(args, "alignment"))),
+            )
         }
         "padding" => {
             let [l, t, rr, b] = pads(args);
@@ -407,7 +433,10 @@ fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
 
 /// What takes what it is given (zero) takes `r`'s size along that axis.
 fn or_room((w, h): Size, r: ui::Rect) -> Size {
-    (if w > 0. { w } else { r.width }, if h > 0. { h } else { r.height })
+    (
+        if w > 0. { w } else { r.width },
+        if h > 0. { h } else { r.height },
+    )
 }
 
 /// An image node's asset, which stretches to the widget it shows in, and
@@ -436,7 +465,11 @@ fn rgba(c: [f64; 4], opacity: f64) -> ui::Rgba {
 fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
     let along = |axis| {
         let a = alignment(text(n.prop("alignment")));
-        if axis == Axis::Across { (0., a.1) } else { (a.0, 0.) }
+        if axis == Axis::Across {
+            (0., a.1)
+        } else {
+            (a.0, 0.)
+        }
     };
     let kind = match n.kind.as_str() {
         "Rectangle" => ui::Kind::Shape(ui::Shape::Rect {
@@ -464,18 +497,46 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
             return;
         }
         "HStack" | "VStack" => {
-            let axis = if n.kind == "HStack" { Axis::Across } else { Axis::Down };
+            let axis = if n.kind == "HStack" {
+                Axis::Across
+            } else {
+                Axis::Down
+            };
             let (lengths, _) = stack(bld, n, axis, (r.width, r.height), env);
             let spacing = num(n.prop("spacing")).unwrap_or(0.);
             let mut at = 0.;
             for (c, len) in children(n).into_iter().zip(lengths) {
                 let slot = match axis {
-                    Axis::Across => ui::Rect { x: r.x + at, width: len, ..r },
-                    Axis::Down => ui::Rect { y: r.y + at, height: len, ..r },
+                    Axis::Across => ui::Rect {
+                        x: r.x + at,
+                        width: len,
+                        ..r
+                    },
+                    Axis::Down => ui::Rect {
+                        y: r.y + at,
+                        height: len,
+                        ..r
+                    },
                 };
-                let thick = axis.across(measure(bld, c, c.mods.len(), (slot.width, slot.height), env));
-                let thick = if thick > 0. { thick } else { axis.across((r.width, r.height)) };
-                place(c, c.mods.len(), aligned(slot, axis.size(len, thick), along(axis)), env, bld);
+                let thick = axis.across(measure(
+                    bld,
+                    c,
+                    c.mods.len(),
+                    (slot.width, slot.height),
+                    env,
+                ));
+                let thick = if thick > 0. {
+                    thick
+                } else {
+                    axis.across((r.width, r.height))
+                };
+                place(
+                    c,
+                    c.mods.len(),
+                    aligned(slot, axis.size(len, thick), along(axis)),
+                    env,
+                    bld,
+                );
                 at += len + spacing;
             }
             return;
@@ -490,7 +551,11 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
     let r = match n.kind.as_str() {
         "Text" => {
             let em = words(n).chars().count() as f64 * env.font;
-            aligned(r, (em.max(r.width), (env.font * 1.5).max(r.height)), (0.5, 0.5))
+            aligned(
+                r,
+                (em.max(r.width), (env.font * 1.5).max(r.height)),
+                (0.5, 0.5),
+            )
         }
         _ => r,
     };
@@ -513,8 +578,11 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
             w.style = Some(ui::StyleRef(bld.ui.styles.len() - 1));
         }
         "Image" => {
-            let Some((asset, _)) = image(bld, n) else { return };
-            w.images.push(ui::ImageUse::new(asset, ui::Role::Background));
+            let Some((asset, _)) = image(bld, n) else {
+                return;
+            };
+            w.images
+                .push(ui::ImageUse::new(asset, ui::Role::Background));
         }
         _ if w.colors.background.is_none() => return,
         _ => {}

@@ -619,7 +619,11 @@ pub enum Shape {
     Rect { radius: f64 },
     /// An arc of a ring `thickness` points wide, inside the widget's bounds,
     /// from `start` degrees (0 at 3 o'clock, clockwise) over `sweep`.
-    Ring { thickness: f64, start: f64, sweep: f64 },
+    Ring {
+        thickness: f64,
+        start: f64,
+        sweep: f64,
+    },
 }
 
 impl Kind {

@@ -689,9 +689,14 @@ fn outline(shape: model::Shape, w: f64, h: f64, k: f64) -> Path {
             };
             let at = |r: f64, a: f64| center + Vec2::from_angle(a) * r;
             let mut p = Path::default().move_to(at(outer, a));
-            p.commands.push(mui::geometry::PathCommand::ArcTo(arc(outer, a, sweep)));
+            p.commands
+                .push(mui::geometry::PathCommand::ArcTo(arc(outer, a, sweep)));
             p = p.line_to(at(inner, a + sweep));
-            p.commands.push(mui::geometry::PathCommand::ArcTo(arc(inner, a + sweep, -sweep)));
+            p.commands.push(mui::geometry::PathCommand::ArcTo(arc(
+                inner,
+                a + sweep,
+                -sweep,
+            )));
             p.close()
         }
     }
@@ -834,7 +839,10 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
             }
             Kind::Shape(shape) => {
                 if let Some(c) = background {
-                    d.push(Draw::fill(outline(shape, w, h, k), Fill::from(super::color(c))));
+                    d.push(Draw::fill(
+                        outline(shape, w, h, k),
+                        Fill::from(super::color(c)),
+                    ));
                 }
             }
             _ => field(&mut d, FIELD),
