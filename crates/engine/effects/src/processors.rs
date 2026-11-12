@@ -403,16 +403,27 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
 
 fn notches(n: ir::Notches, tempo: f32) -> NotchSettings {
     NotchSettings {
-        sections: n.sections,
+        stages: n.stages,
         hz: n.hz,
-        q: n.q,
         octaves: n.octaves,
-        q_octaves: n.q_octaves,
+        spread: n.spread,
+        spread_swing: n.spread_swing,
+        spread_limit: n.spread_limit,
         feedback: n.feedback,
+        loop_width: n.loop_width,
+        loop_top: n.loop_top,
         lfo_hz: hz(n.rate, tempo),
+        rounding: n.rounding,
+        depth: n.depth,
+        warp: n.warp,
         phase: n.phase,
+        sign: match n.polarity {
+            ir::Polarity::Normal => 1.0,
+            ir::Polarity::Inverted => -1.0,
+        },
         mix: n.mix,
-        invert: n.invert,
+        low_cut_hz: n.low_cut_hz,
+        internal_hz: n.internal_hz,
     }
 }
 
