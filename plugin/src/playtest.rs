@@ -35,23 +35,14 @@ const BLOCK_SHARE: f64 = 0.5;
 /// note's, held to [`BLOCK_SHARE`].
 const COMMANDS_SHARE: f64 = 0.05;
 /// Programs whose slowest block is known to pass [`BLOCK_SHARE`] at times,
-/// by part of their name, and why (PR #1319, release, a loaded machine,
-/// two runs each). They are reported, not failed, until the cause is
-/// fixed; [`COMMANDS_SHARE`] holds for them as for every program.
-const KNOWN_SLOW: [(&str, &str); 3] = [
-    (
-        "Areia",
-        "its ui_control callbacks run 3.2-4.2 ms in the KSP interpreter: blocks of 33-51%",
-    ),
-    (
-        "Dolce",
-        "an engine block of 4.7-7.8 ms (44-73%) with 0.1-29 us of commands: not yet traced",
-    ),
-    (
-        "ANALOG STRINGS",
-        "an engine block of 5.2-6.2 ms (49-58%) with 0.2-140 us of commands: not yet traced",
-    ),
-];
+/// by part of their name, and why (release, a loaded machine). They are
+/// reported, not failed, until the cause is fixed; [`COMMANDS_SHARE`] holds
+/// for them as for every program.
+const KNOWN_SLOW: [(&str, &str); 1] = [(
+    "W Strings Harmonic",
+    "a ui_control callback of its Lua machine runs 3.0-3.7 s with no host calls: \
+     Lua tracebacks walking package.loaded (#1325)",
+)];
 
 /// Below this in every sample after its note-on, a note never sounded.
 const SILENT: f32 = 1e-5;

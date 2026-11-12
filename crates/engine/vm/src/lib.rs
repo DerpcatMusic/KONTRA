@@ -8,6 +8,8 @@
 //! Nothing allocates after [`Instance::new`].
 
 mod action;
+mod execute;
+mod fuse;
 mod host;
 mod machine;
 mod poly;
@@ -15,13 +17,12 @@ mod program;
 mod pure;
 mod text;
 
-use std::hash::{Hash, Hasher};
-
 pub use action::{Action, event};
+pub use fuse::fuse;
 pub use host::{HostApi, HostCall, HostValue};
 pub use machine::Vm;
 use poly::{POLY_EVENTS, Poly, free_poly, take_poly};
-pub use program::{Cmp, Op, Program, Returns};
+pub use program::{Bin, Cmp, Op, Program, Returns, Src};
 pub use text::{TEXT_CAPACITY, Text};
 
 /// Iterations a callback's `while` loops run between waits before Kontakt
@@ -165,7 +166,9 @@ struct Coroutine {
     generation: u16,
     pc: u32,
     context: u64,
-    stack: Vec<i64>,
+    /// Value stack: value `k` of `sp` in slot `k + 1` (see `execute`).
+    stack: Box<[i64]>,
+    sp: usize,
     texts: Vec<Text>,
     frames: Vec<u32>,
     /// Its note event's polyphonic cells, in [`Instance::polys`].
@@ -204,7 +207,8 @@ impl Instance {
                 generation: 0,
                 pc: 0,
                 context: 0,
-                stack: Vec::with_capacity(stack),
+                stack: vec![0; stack + 1].into(),
+                sp: 0,
                 texts: Vec::with_capacity(stack),
                 frames: Vec::with_capacity(program.max_depth.max(1)),
                 poly: usize::MAX,
@@ -300,7 +304,7 @@ impl Instance {
         co.generation = co.generation.wrapping_add(1);
         co.pc = entry;
         co.context = context;
-        co.stack.clear();
+        co.sp = 0;
         co.texts.clear();
         co.frames.clear();
         co.loop_count = 0;
@@ -386,398 +390,11 @@ impl Instance {
         let poly = polys
             .get_mut(c.poly)
             .map_or(&mut [][..], |p| &mut p.cells[..]);
-        let step = execute(program, cells, texts, poly, c, faults, host);
+        let step = execute::execute(program, cells, texts, poly, c, faults, host);
         if step == Step::Done {
             c.busy = false;
             free_poly(polys, c.poly);
         }
         step
     }
-}
-
-fn execute(
-    program: &Program,
-    cells: &mut [i64],
-    texts: &mut [Text],
-    poly: &mut [i64],
-    c: &mut Coroutine,
-    faults: &mut Faults,
-    host: &mut dyn HostApi,
-) -> Step {
-    macro_rules! pop {
-        () => {
-            match c.stack.pop() {
-                Some(v) => v,
-                None => {
-                    faults.bad_code += 1;
-                    return Step::Done;
-                }
-            }
-        };
-    }
-    macro_rules! push {
-        ($v:expr) => {{
-            let v: i64 = $v;
-            if c.stack.len() == c.stack.capacity() {
-                faults.stack_overflow += 1;
-                return Step::Done;
-            }
-            c.stack.push(v);
-        }};
-    }
-    macro_rules! pop_text {
-        () => {
-            match c.texts.pop() {
-                Some(v) => v,
-                None => {
-                    faults.bad_code += 1;
-                    return Step::Done;
-                }
-            }
-        };
-    }
-    macro_rules! push_text {
-        ($v:expr) => {{
-            if c.texts.len() == c.texts.capacity() {
-                faults.stack_overflow += 1;
-                return Step::Done;
-            }
-            c.texts.push($v);
-        }};
-    }
-    let int = |v: i64| v as i32;
-    let real = |v: i64| f64::from_bits(v as u64);
-    let from_real = |v: f64| v.to_bits() as i64;
-
-    loop {
-        let Some(&op) = program.code.get(c.pc as usize) else {
-            faults.bad_code += 1;
-            return Step::Done;
-        };
-        c.pc += 1;
-        match op {
-            Op::Int(v) => push!(i64::from(v)),
-            Op::Real(v) => push!(from_real(v)),
-            Op::Text(n) => {
-                let t = program
-                    .texts
-                    .get(n as usize)
-                    .copied()
-                    .unwrap_or(Text::EMPTY);
-                push_text!(t);
-            }
-            Op::Pop => {
-                pop!();
-            }
-            Op::Dup => {
-                let v = pop!();
-                push!(v);
-                push!(v);
-            }
-            Op::Load(n) => push!(cells.get(n as usize).copied().unwrap_or(0)),
-            Op::Store(n) => {
-                let v = pop!();
-                if let Some(cell) = cells.get_mut(n as usize) {
-                    *cell = v;
-                }
-            }
-            Op::LoadAt { base, len } => {
-                let i = int(pop!());
-                match element(base, len, i) {
-                    Some(at) => push!(cells.get(at).copied().unwrap_or(0)),
-                    None => {
-                        faults.out_of_range += 1;
-                        faults.first_out_of_range.get_or_insert((base, false, i));
-                        push!(0);
-                    }
-                }
-            }
-            Op::StoreAt { base, len } => {
-                let v = pop!();
-                let i = int(pop!());
-                match element(base, len, i).and_then(|at| cells.get_mut(at)) {
-                    Some(cell) => *cell = v,
-                    None => {
-                        faults.out_of_range += 1;
-                        faults.first_out_of_range.get_or_insert((base, false, i));
-                    }
-                }
-            }
-            Op::LoadPoly(n) => push!(poly.get(usize::from(n)).copied().unwrap_or(0)),
-            Op::StorePoly(n) => {
-                let v = pop!();
-                if let Some(cell) = poly.get_mut(usize::from(n)) {
-                    *cell = v;
-                }
-            }
-            Op::TLoad(n) => push_text!(texts.get(n as usize).copied().unwrap_or(Text::EMPTY)),
-            Op::TStore(n) => {
-                let t = pop_text!();
-                if let Some(cell) = texts.get_mut(n as usize) {
-                    *cell = t;
-                }
-            }
-            Op::TLoadAt { base, len } => {
-                let i = int(pop!());
-                match element(base, len, i) {
-                    Some(at) => push_text!(texts.get(at).copied().unwrap_or(Text::EMPTY)),
-                    None => {
-                        faults.out_of_range += 1;
-                        faults.first_out_of_range.get_or_insert((base, true, i));
-                        push_text!(Text::EMPTY);
-                    }
-                }
-            }
-            Op::TStoreAt { base, len } => {
-                let t = pop_text!();
-                let i = int(pop!());
-                match element(base, len, i).and_then(|at| texts.get_mut(at)) {
-                    Some(cell) => *cell = t,
-                    None => {
-                        faults.out_of_range += 1;
-                        faults.first_out_of_range.get_or_insert((base, true, i));
-                    }
-                }
-            }
-            Op::TFromInt => {
-                let mut t = Text::EMPTY;
-                t.push_fmt(format_args!("{}", int(pop!())));
-                push_text!(t);
-            }
-            Op::TFromReal => {
-                let mut t = Text::EMPTY;
-                t.push_fmt(format_args!("{:.6}", real(pop!())));
-                push_text!(t);
-            }
-            Op::TConcat => {
-                let b = pop_text!();
-                let mut a = pop_text!();
-                if !a.push(b.as_str()) {
-                    faults.texts_cut += 1;
-                }
-                push_text!(a);
-            }
-            Op::TEq => {
-                let b = pop_text!();
-                let a = pop_text!();
-                push!(i64::from(a == b));
-            }
-            Op::IAdd
-            | Op::ISub
-            | Op::IMul
-            | Op::IDiv
-            | Op::IMod
-            | Op::IAnd
-            | Op::IOr
-            | Op::IXor
-            | Op::IShl
-            | Op::IShr => {
-                let b = int(pop!());
-                let a = int(pop!());
-                let v = match op {
-                    Op::IAdd => a.wrapping_add(b),
-                    Op::ISub => a.wrapping_sub(b),
-                    Op::IMul => a.wrapping_mul(b),
-                    Op::IDiv | Op::IMod if b == 0 => {
-                        faults.divide_by_zero += 1;
-                        faults.first_divide_by_zero.get_or_insert(c.pc - 1);
-                        0
-                    }
-                    Op::IDiv => a.wrapping_div(b),
-                    Op::IMod => a.wrapping_rem(b),
-                    Op::IAnd => a & b,
-                    Op::IOr => a | b,
-                    Op::IXor => a ^ b,
-                    Op::IShl => a.wrapping_shl(b as u32),
-                    _ => a.wrapping_shr(b as u32),
-                };
-                push!(i64::from(v));
-            }
-            Op::INeg => {
-                let a = int(pop!());
-                push!(i64::from(a.wrapping_neg()));
-            }
-            Op::IBitNot => {
-                let a = int(pop!());
-                push!(i64::from(!a));
-            }
-            Op::FAdd | Op::FSub | Op::FMul | Op::FDiv => {
-                let b = real(pop!());
-                let a = real(pop!());
-                let v = match op {
-                    Op::FAdd => a + b,
-                    Op::FSub => a - b,
-                    Op::FMul => a * b,
-                    _ => a / b,
-                };
-                push!(from_real(v));
-            }
-            Op::FNeg => {
-                let a = real(pop!());
-                push!(from_real(-a));
-            }
-            Op::ICmp(cmp) => {
-                let b = int(pop!());
-                let a = int(pop!());
-                push!(i64::from(compare(cmp, a.cmp(&b))));
-            }
-            Op::FCmp(cmp) => {
-                let b = real(pop!());
-                let a = real(pop!());
-                let ordering = a.partial_cmp(&b);
-                push!(i64::from(
-                    ordering.is_some_and(|o| compare(cmp, o))
-                        || (cmp == Cmp::Ne && ordering.is_none())
-                ));
-            }
-            Op::Not => {
-                let a = pop!();
-                push!(i64::from(a == 0));
-            }
-            Op::IntToReal => {
-                let a = int(pop!());
-                push!(from_real(f64::from(a)));
-            }
-            Op::RealToInt => {
-                let a = real(pop!());
-                push!(i64::from(a as i32));
-            }
-            Op::Jump(to) => c.pc = to,
-            Op::JumpIfZero(to) => {
-                if pop!() == 0 {
-                    c.pc = to;
-                }
-            }
-            Op::LoopCheck { exit } => {
-                c.loop_count += 1;
-                let mut stuck = false;
-                // The hash reads every cell: probe once the loops turned as
-                // often as there are cells, so it never costs more than they did.
-                let cost = u32::try_from(cells.len() + poly.len()).unwrap_or(u32::MAX);
-                if c.loop_count >= LOOP_PROBE.max(cost) && c.loop_count.is_power_of_two() {
-                    // A host call moved state outside the hash: not stuck, no hash.
-                    c.loop_hash = if std::mem::take(&mut c.hosted) {
-                        0
-                    } else {
-                        let hash = state_hash(cells, texts, poly, c);
-                        stuck = hash == c.loop_hash;
-                        hash
-                    };
-                }
-                // The limit holds for the rest of the run (every loop exits
-                // until the next wait); a stuck loop frees only itself.
-                if c.loop_count >= LOOP_LIMIT {
-                    faults.loop_limits += 1;
-                    c.pc = exit;
-                } else if stuck {
-                    faults.loop_limits += 1;
-                    c.loop_count = 0;
-                    c.pc = exit;
-                }
-            }
-            Op::LoopExit => c.loop_hash = 0,
-            Op::Call(to) => {
-                if c.frames.len() == c.frames.capacity() {
-                    faults.stack_overflow += 1;
-                    return Step::Done;
-                }
-                c.frames.push(c.pc);
-                c.pc = to;
-            }
-            Op::Ret => match c.frames.pop() {
-                Some(back) => c.pc = back,
-                None => return Step::Done,
-            },
-            Op::Exit => return Step::Done,
-            Op::Wait => {
-                let micros = pop!();
-                c.loop_count = 0;
-                if !c.no_wait {
-                    c.waits = c.waits.wrapping_add(1);
-                    return Step::Wait(u64::try_from(micros).unwrap_or(0));
-                }
-            }
-            Op::Host {
-                action,
-                ints,
-                texts: text_args,
-                returns,
-            } => {
-                let (ints, text_args) = (usize::from(ints), usize::from(text_args));
-                if c.stack.len() < ints || c.texts.len() < text_args {
-                    faults.bad_code += 1;
-                    return Step::Done;
-                }
-                let mut text_out = Text::EMPTY;
-                let int_from = c.stack.len() - ints;
-                let text_from = c.texts.len() - text_args;
-                let args = c.stack.get(int_from..).unwrap_or_default();
-                let value = match pure::eval(action, args, cells) {
-                    Some(value) => value,
-                    None => {
-                        // A message changes nothing the loop can read.
-                        c.hosted |= action != Action::Message;
-                        host.call(HostCall {
-                            action,
-                            context: c.context,
-                            ints: args,
-                            texts: c.texts.get(text_from..).unwrap_or_default(),
-                            cells,
-                            text_cells: texts,
-                            text_out: &mut text_out,
-                        })
-                    }
-                };
-                if let HostValue::Wait(micros) = value
-                    && !c.no_wait
-                {
-                    c.pc -= 1;
-                    c.loop_count = 0;
-                    c.waits = c.waits.wrapping_add(1);
-                    return Step::Wait(micros);
-                }
-                c.stack.truncate(int_from);
-                c.texts.truncate(text_from);
-                match (returns, value) {
-                    (Returns::Nothing, _) => {}
-                    (Returns::Int, HostValue::Int(v)) => push!(i64::from(v)),
-                    (Returns::Real, HostValue::Real(v)) => push!(from_real(v)),
-                    (Returns::Text, HostValue::Text) => push_text!(text_out),
-                    (Returns::Int, _) => push!(0),
-                    (Returns::Real, _) => push!(from_real(0.0)),
-                    (Returns::Text, _) => push_text!(Text::EMPTY),
-                }
-            }
-        }
-    }
-}
-
-fn element(base: u32, len: u32, index: i32) -> Option<usize> {
-    let i = u32::try_from(index).ok().filter(|&i| i < len)?;
-    Some(base as usize + i as usize)
-}
-
-fn compare(cmp: Cmp, o: std::cmp::Ordering) -> bool {
-    use std::cmp::Ordering::{Equal, Greater, Less};
-    match cmp {
-        Cmp::Eq => o == Equal,
-        Cmp::Ne => o != Equal,
-        Cmp::Lt => o == Less,
-        Cmp::Le => o != Greater,
-        Cmp::Gt => o == Greater,
-        Cmp::Ge => o != Less,
-    }
-}
-
-/// State a loop iteration can change: if equal at two checkpoints, the loop
-/// can never exit and the limit applies now instead of after ten million turns.
-fn state_hash(cells: &[i64], texts: &[Text], poly: &[i64], c: &Coroutine) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    cells.hash(&mut h);
-    poly.hash(&mut h);
-    c.stack.hash(&mut h);
-    for t in texts.iter().chain(&c.texts) {
-        t.as_str().hash(&mut h);
-    }
-    h.finish()
 }

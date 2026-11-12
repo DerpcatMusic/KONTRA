@@ -89,6 +89,11 @@ impl Engine {
                 };
                 bus.rack.follow(&live);
                 bus.rack.process(mix, &mut self.taps, tempo);
+            }
+            if bus.idle(len) {
+                continue;
+            }
+            if let Some(mix) = bus.mix.get_mut(..len) {
                 // A send to an earlier bus would come a span late: none.
                 // Pre-fader sends, the fader's glide, post-fader sends, the pan.
                 for post in [false, true] {

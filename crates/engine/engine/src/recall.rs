@@ -76,13 +76,13 @@ impl Engine {
             (None, None) => (&[][..], &[][..]),
         };
         if text {
-            for &(cell, value) in texts.iter().filter(|(c, _)| range.contains(c)) {
+            for &(cell, value) in in_range(texts, &range) {
                 if let Some(t) = text_cells.get_mut(cell as usize) {
                     *t = value;
                 }
             }
         } else {
-            for &(cell, value) in ints.iter().filter(|(c, _)| range.contains(c)) {
+            for &(cell, value) in in_range(ints, &range) {
                 let value = self.saved_value(slot, cell, value);
                 if let Some(c) = cells.get_mut(cell as usize) {
                     *c = value;
@@ -137,4 +137,11 @@ impl Engine {
             self.run_callback(slot, changed, Running::new(Kind::Init, None));
         }
     }
+}
+
+/// The writes to cells in `range`, of `saved` sorted by cell.
+fn in_range<'a, T>(saved: &'a [(u32, T)], range: &std::ops::Range<u32>) -> &'a [(u32, T)] {
+    let from = saved.partition_point(|(cell, _)| *cell < range.start);
+    let to = saved.partition_point(|(cell, _)| *cell < range.end);
+    saved.get(from..to).unwrap_or_default()
 }
