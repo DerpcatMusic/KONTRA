@@ -21,6 +21,7 @@ use crate::{Dsp, Kontra, KontraParams, Tick};
 
 mod live;
 mod touch;
+mod window;
 
 const UVI: &str = "/data/main/Libraries/UVI";
 
@@ -715,6 +716,7 @@ fn perform(path: PathBuf) -> Report {
     let mut segments = Vec::new();
     let mut blocks = 0usize;
     for (segment, events) in performance(by) {
+        let (counted, counted_from) = (window::open(segment), blocks);
         let (stolen, refused) = (last.stolen, last.refused);
         let end = events.iter().map(|e| e.0).max().unwrap_or(0) + 1;
         let starts: Vec<usize> = events
@@ -754,6 +756,9 @@ fn perform(path: PathBuf) -> Report {
                 ));
                 break;
             }
+        }
+        if counted {
+            window::close(&name, segment, blocks - counted_from);
         }
         let quiet = ring_out(&params, &mut dsp, &mut last, quiet_s, |tail| {
             peaks.push(tail.audio.iter().fold(0.0f32, |p, x| p.max(x.abs())));
