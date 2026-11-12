@@ -23,8 +23,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 use std::time::Duration;
 
-use kontra_host::rack::{Event, Interfaces, Rack, RackAudio, Store, StoreConfig};
+use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
 use kontra_host::state::Saved;
+use kontra_host::view::Interfaces;
 use moose::core::LosslessEventRef;
 use moose::prelude::*;
 

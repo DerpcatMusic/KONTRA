@@ -10,6 +10,7 @@ use std::sync::Arc;
 use kontra_engine::{EffectRequest, Engine, Prepared};
 
 use crate::persist::Capture;
+use crate::view::Interfaces;
 pub(crate) use files::DiskFiles;
 pub use files::user_saves;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan, ir};
@@ -257,15 +258,6 @@ pub struct Rack {
     saves: Option<PathBuf>,
     /// Whether anyone looks at the parts' interfaces.
     interfaces: Interfaces,
-}
-
-/// Whether the parts' interfaces are on screen. Hidden, [`Rack::tick`]
-/// stops asking the audio side for what their scripts changed; the first
-/// tick after they show again asks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Interfaces {
-    Shown,
-    Hidden,
 }
 
 impl Rack {

@@ -555,6 +555,15 @@ impl Looks for LookFrame {
     }
 }
 
+/// Whether the parts' interfaces are on screen. Hidden, [`crate::rack::Rack::tick`]
+/// stops asking the audio side for what their scripts changed; the first
+/// tick after they show again asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interfaces {
+    Shown,
+    Hidden,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
