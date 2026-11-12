@@ -59,15 +59,18 @@ pub struct NotchSettings {
     pub internal_hz: f32,
 }
 
-/// One channel's states.
-#[derive(Clone, Copy, Debug, Default)]
-struct Channel {
-    /// Each stage's two integrators.
-    stages: [[f64; 2]; MAX_STAGES],
-    /// The loop band-pass's two integrators.
-    band: [f64; 2],
-    /// The high-pass's low-pass state.
-    low: f64,
+/// One channel's coefficients at this frame's LFO: the stages' corner `g`,
+/// `h` and `k = 4R`; the loop band-pass's `gb`, `kb`, `hb` and its upper
+/// share.
+#[derive(Clone, Copy, Debug)]
+struct Coeffs {
+    g: f64,
+    h: f64,
+    k: f64,
+    gb: f64,
+    kb: f64,
+    hb: f64,
+    share: f64,
 }
 
 /// Everything but the resampler.
@@ -77,9 +80,18 @@ struct Core {
     /// The running rate.
     rate: f64,
     cycle: f64,
-    channels: [Channel; 2],
+    /// The states, both channels side by side (their arithmetic is the
+    /// same, so they run as pairs): each stage's two integrators, by stage
+    /// then channel; the loop band-pass's two integrators; the high-pass's
+    /// low-pass state.
+    stages: [[[f64; 2]; 2]; MAX_STAGES],
+    band: [[f64; 2]; 2],
+    low: [f64; 2],
     /// The high-pass coefficient `G/(1 + G)`, `G = tan(π·f/rate)`.
     low_cut: f64,
+    /// Of the settings alone: `expm1(warp)` and the output level.
+    warp_m1: f64,
+    level: f64,
     written: f32,
 }
 
@@ -98,10 +110,42 @@ impl Core {
         let w = f64::from(s.warp);
         let x = w * u;
         let warped = match w > 0.0 {
-            true => u * (1.0 + x / 2.0 + x * x / 6.0) * w / w.exp_m1(),
+            true => u * (1.0 + x / 2.0 + x * x / 6.0) * w / self.warp_m1,
             false => u,
         };
         side * (2.0 * warped - 1.0) * f64::from(s.depth)
+    }
+
+    /// One channel's coefficients with the LFO at `lfo`.
+    fn coeffs(&self, lfo: f64) -> Coeffs {
+        let s = &self.s;
+        let limit = f64::from(s.spread_limit);
+        // The stages: corner `g`, damping `2R`.
+        let hz = f64::from(s.hz) * (f64::from(s.octaves) * lfo).exp2();
+        let g = tan(std::f64::consts::PI * hz / self.rate);
+        let r = (f64::from(s.spread) + f64::from(s.spread_swing) * lfo)
+            .clamp(-limit, limit)
+            .exp2();
+        let h = 1.0 / (1.0 + 2.0 * r * g + g * g);
+        let k = 4.0 * r;
+        // The loop band-pass: edges `g/a` and `min(g·a, top)`, centred
+        // between them, unity at its peak, scaled by the upper share.
+        let wide = f64::from(s.loop_width) * r;
+        let a = wide + (1.0 + wide * wide).sqrt();
+        let (low, high) = (g / a, (g * a).min(f64::from(s.loop_top)));
+        let gb = (low * high).sqrt();
+        let kb = (low + high) / gb;
+        let hb = 1.0 / (1.0 + kb * gb + gb * gb);
+        let share = high / (low + high);
+        Coeffs {
+            g,
+            h,
+            k,
+            gb,
+            kb,
+            hb,
+            share,
+        }
     }
 
     /// One frame at the running rate.
@@ -110,65 +154,63 @@ impl Core {
         let stages = usize::from(s.stages).clamp(1, MAX_STAGES);
         let fb = f64::from(s.feedback);
         let mix = f64::from(s.mix);
-        let level = 1.0 / (mix / (1.0 - fb) + 1.0 - mix).sqrt();
+        let level = self.level;
         let sign = f64::from(s.sign);
-        let limit = f64::from(s.spread_limit);
-        let top = f64::from(s.loop_top);
         let lfo = [1.0, -1.0].map(|side| self.lfo(self.cycle + side * f64::from(s.phase)));
-        let mut out = [0.0f32; 2];
-        for (((y, x), ch), lfo) in out.iter_mut().zip(frame).zip(&mut self.channels).zip(lfo) {
-            let x = f64::from(x);
-            // The stages: corner `g`, damping `2R`.
-            let hz = f64::from(s.hz) * (f64::from(s.octaves) * lfo).exp2();
-            let g = tan(std::f64::consts::PI * hz / self.rate);
-            let r = (f64::from(s.spread) + f64::from(s.spread_swing) * lfo)
-                .clamp(-limit, limit)
-                .exp2();
-            let h = 1.0 / (1.0 + 2.0 * r * g + g * g);
-            let k = 4.0 * r;
-            // The loop band-pass: edges `g/a` and `min(g·a, top)`, centred
-            // between them, unity at its peak, scaled by the upper share.
-            let wide = f64::from(s.loop_width) * r;
-            let a = wide + (1.0 + wide * wide).sqrt();
-            let (low, high) = (g / a, (g * a).min(top));
-            let gb = (low * high).sqrt();
-            let kb = (low + high) / gb;
-            let hb = 1.0 / (1.0 + kb * gb + gb * gb);
-            let share = high / (low + high);
-            let used = ch.stages.get(..stages).unwrap_or_default();
-            // The cascade as `A·u + B`.
-            let (gain, offset) = used.iter().fold((1.0, 0.0), |(a, b), [i1, i2]| {
-                let pass = 1.0 - g * h * k;
-                (a * pass, b * pass - h * (i1 - g * i2))
-            });
-            let [b1, b2] = ch.band;
-            let loop_gain = sign * share * hb * gb * kb;
-            let u = (x + fb * ((b1 - gb * b2) * hb + loop_gain * offset))
-                / (1.0 - fb * loop_gain * gain);
-            let mut tail = u;
-            for [i1, i2] in ch.stages.iter_mut().take(stages) {
-                let v = ((tail * k - *i2) * g + *i1) * h;
-                tail -= v;
-                *i1 = 2.0 * v - *i1;
-                *i2 += 2.0 * g * v;
+        let c = lfo.map(|lfo| self.coeffs(lfo));
+        let x = frame.map(f64::from);
+        let used = self.stages.get_mut(..stages).unwrap_or_default();
+        // The cascade as `A·u + B`.
+        let (mut gain, mut offset) = ([1.0f64; 2], [0.0f64; 2]);
+        for stage in used.iter() {
+            for (((a, b), [i1, i2]), c) in gain.iter_mut().zip(&mut offset).zip(stage).zip(&c) {
+                let pass = 1.0 - c.g * c.h * c.k;
+                (*a, *b) = (*a * pass, *b * pass - c.h * (i1 - c.g * i2));
             }
+        }
+        // The loop solved for `u`, then the stages run on it.
+        let mut u = [0.0f64; 2];
+        let solve = (u.iter_mut().zip(&x).zip(&self.band).zip(&c)).zip(gain.iter().zip(&offset));
+        for ((((u, &x), [b1, b2]), c), (&gain, &offset)) in solve {
+            let loop_gain = sign * c.share * c.hb * c.gb * c.kb;
+            *u = (x + fb * ((b1 - c.gb * b2) * c.hb + loop_gain * offset))
+                / (1.0 - fb * loop_gain * gain);
+        }
+        let mut tail = u;
+        for stage in used.iter_mut() {
+            for ((tail, [i1, i2]), c) in tail.iter_mut().zip(stage).zip(&c) {
+                let v = ((*tail * c.k - *i2) * c.g + *i1) * c.h;
+                *tail -= v;
+                *i1 = 2.0 * v - *i1;
+                *i2 += 2.0 * c.g * v;
+            }
+        }
+        let mut out = [0.0f32; 2];
+        let rest = (out
+            .iter_mut()
+            .zip(&x)
+            .zip(&mut self.band)
+            .zip(&mut self.low))
+        .zip(c.iter().zip(u.iter().zip(&tail)));
+        for ((((y, &x), band), low), (c, (&u, &tail))) in rest {
             let tail = sign * tail;
-            let v = ((share * tail * kb - b2) * gb + b1) * hb;
-            ch.band = [2.0 * v - b1, b2 + 2.0 * gb * v];
+            let [b1, b2] = *band;
+            let v = ((c.share * tail * c.kb - b2) * c.gb + b1) * c.hb;
+            *band = [2.0 * v - b1, b2 + 2.0 * c.gb * v];
             let wet = 0.5 * (u + tail);
             let sum = (x + (wet - x) * mix) * level;
             // The high-pass: what a trapezoidal one-pole low-pass leaves.
-            let d = (sum - ch.low) * self.low_cut;
-            let lp = d + ch.low;
-            ch.low = d + lp;
+            let d = (sum - *low) * self.low_cut;
+            let lp = d + *low;
+            *low = d + lp;
             self.written = self.written.max(u.abs() as f32);
             *y = (sum - lp) as f32;
-            // Only the stages in use move; the rest were flushed when they ran.
-            let moved = ch.stages.iter_mut().take(stages).flatten();
-            for v in moved.chain(&mut ch.band) {
-                if v.abs() < 1e-20 {
-                    *v = 0.0;
-                }
+        }
+        // Only the stages in use move; the rest were flushed when they ran.
+        let moved = used.iter_mut().flatten().flatten();
+        for v in moved.chain(self.band.iter_mut().flatten()) {
+            if v.abs() < 1e-20 {
+                *v = 0.0;
             }
         }
         let next = self.cycle + f64::from(s.lfo_hz) / self.rate;
@@ -180,6 +222,9 @@ impl Core {
         self.s = s;
         let g = (std::f64::consts::PI * f64::from(s.low_cut_hz) / self.rate).tan();
         self.low_cut = g / (1.0 + g);
+        self.warp_m1 = f64::from(s.warp).exp_m1();
+        let (fb, mix) = (f64::from(s.feedback), f64::from(s.mix));
+        self.level = 1.0 / (mix / (1.0 - fb) + 1.0 - mix).sqrt();
     }
 }
 
@@ -205,8 +250,12 @@ impl Notches {
             s,
             rate: f64::from(rate.max(1)) * factor,
             cycle: 0.0,
-            channels: [Channel::default(); 2],
+            stages: [[[0.0; 2]; 2]; MAX_STAGES],
+            band: [[0.0; 2]; 2],
+            low: [0.0; 2],
             low_cut: 0.0,
+            warp_m1: 0.0,
+            level: 0.0,
             written: 0.0,
         };
         core.set(s);
