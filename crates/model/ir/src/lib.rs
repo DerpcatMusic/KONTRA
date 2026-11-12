@@ -282,6 +282,14 @@ mod tests {
         key.apply(4096, &mut whole);
         assert_eq!(whole, plain);
     }
+
+    /// An effect travels by value through racks and commands: an effect kind
+    /// that grows past this bound states its shared fields once instead.
+    #[test]
+    fn an_effect_stays_small() {
+        let size = std::mem::size_of::<Effect>();
+        assert!(size <= 200, "ir::Effect is {size} bytes");
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -146,32 +146,41 @@ pub struct Notches {
 
 /// A chorus ensemble: up to [`ENSEMBLE_VOICES`] modulated delay voices, each
 /// adding its delayed input to the sum, plus `direct` of the input itself
-/// (the dry level and the voices' undelayed share together).
+/// (the dry level and the voices' undelayed share together). What every
+/// voice shares is carried once: its input gain, the pitch its sweep
+/// reaches, and a loop gain set as if every line were the first's length.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ensemble {
     pub voices: [EnsembleVoice; ENSEMBLE_VOICES],
+    /// Each voice's sweep span times its LFO rate, ms·Hz: every voice
+    /// sweeps to the same pitch whatever its rate.
+    pub sweep: f32,
+    pub input: f32,
+    /// The first voice's loop gain (its sign the polarity); a voice `k`
+    /// times as long takes it to the power `k`, so all decay alike per
+    /// second.
+    pub feedback: f32,
     pub direct: f32,
 }
 
 pub const ENSEMBLE_VOICES: usize = 6;
 
-/// One voice: a stereo delay line its LFO sweeps between `ms` and
-/// `ms + depth_ms`, filtered on the way in, fed back on itself.
+/// One voice: a stereo delay line its LFO sweeps up from `ms`, filtered on
+/// the way in, fed back on itself, turned by `angle` to the output.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EnsembleVoice {
     pub ms: f32,
-    pub depth_ms: f32,
     pub hz: f32,
     /// The LFO's start, cycles.
     pub start: f32,
-    /// One-pole low-pass on the line; `f32::INFINITY` for none.
-    pub damping_hz: f32,
-    /// One-pole high-pass on the line; 0 for none.
-    pub low_cut_hz: f32,
-    pub input: f32,
-    pub feedback: f32,
-    /// The delayed signal to the output; zero for a silent voice.
-    pub output: Matrix,
+    /// A one-pole on the line: a low-pass there, or a high-pass if
+    /// `high_pass`; `f32::INFINITY` low-pass for none.
+    pub corner_hz: f32,
+    pub high_pass: bool,
+    /// The delayed signal's level out, zero for a silent voice, and its
+    /// turn in the stereo field (radians, a rotation).
+    pub level: f32,
+    pub angle: f32,
 }
 
 /// Four stereo combs on one input, each a line around a soft-clipped,

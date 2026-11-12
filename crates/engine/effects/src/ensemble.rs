@@ -19,20 +19,33 @@ pub struct Ensemble {
     direct: f32,
 }
 
-fn settings(v: &ir::EnsembleVoice) -> Settings {
-    let swing = 0.5 * v.depth_ms.max(0.0);
+fn settings(e: &ir::Ensemble, v: &ir::EnsembleVoice) -> Settings {
+    let swing = if v.hz > 0.0 {
+        0.5 * (e.sweep / v.hz).max(0.0)
+    } else {
+        0.0
+    };
     let diagonal = |g: f32| [[g, 0.0], [0.0, g]];
+    let first = e.voices.first().map_or(v.ms, |f| f.ms);
+    let length = if first > 0.0 { v.ms / first } else { 1.0 };
+    let feedback = e.feedback.signum() * e.feedback.abs().powf(length);
+    let (s, c) = v.angle.sin_cos();
+    let g = v.level;
     Settings {
         ms: v.ms + swing,
         depth_ms: swing,
         second_head: false,
-        input: diagonal(v.input),
+        input: diagonal(e.input),
         // Kontakt's 100 % is 0.999: a comb that charges for ~15 s. Clamped
         // where 30 s renders stop growing (see the PR's grid).
-        feedback: diagonal(v.feedback.clamp(-LOOP, LOOP)),
-        output: v.output,
-        damping_hz: v.damping_hz,
-        low_cut_hz: v.low_cut_hz,
+        feedback: diagonal(feedback.clamp(-LOOP, LOOP)),
+        output: [[g * c, -g * s], [g * s, g * c]],
+        damping_hz: if v.high_pass {
+            f32::INFINITY
+        } else {
+            v.corner_hz
+        },
+        low_cut_hz: if v.high_pass { v.corner_hz } else { 0.0 },
         steep_low_cut: false,
         high_shelf: None,
         spread_ms: 0.0,
@@ -46,7 +59,7 @@ impl Ensemble {
     /// real-time: allocates.
     pub fn new(e: ir::Ensemble, rate: u32, max_ms: f32) -> Self {
         let voices = e.voices.map(|v| {
-            let mut line = ModDelay::new(settings(&v), rate, max_ms);
+            let mut line = ModDelay::new(settings(&e, &v), rate, max_ms);
             // Its LFO starts `start` cycles in: the public clock, run on.
             if v.hz > 0.0 {
                 line.idle((v.start.rem_euclid(1.0) / v.hz * rate as f32) as usize);
@@ -64,8 +77,8 @@ impl Ensemble {
 
     fn apply(&mut self, e: ir::Ensemble) {
         for ((line, live), v) in self.voices.iter_mut().zip(&mut self.live).zip(&e.voices) {
-            line.set(settings(v));
-            *live = v.output != [[0.0; 2]; 2];
+            line.set(settings(&e, v));
+            *live = v.level != 0.0;
         }
         self.direct = e.direct;
     }

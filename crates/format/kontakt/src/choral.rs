@@ -94,29 +94,30 @@ pub(crate) fn choral(p: [f32; 10]) -> ir::EffectKind {
         // Pair k turns by ∓ Width·π/4·(1 − 2k/7), even voices left.
         let reach = 1.0 - (v / 2 * 2) as f32 / 7.0;
         let side = if v % 2 == 0 { -1.0 } else { 1.0 };
-        let (s, c) = (side * width * std::f32::consts::FRAC_PI_4 * reach).sin_cos();
+        let angle = side * width * std::f32::consts::FRAC_PI_4 * reach;
         let gain = wet * at(gains);
         // The pair's cross terms cancel in the straight-through share.
-        direct += gain * input * c;
+        direct += gain * input * angle.cos();
         // Longer voices feed back as if over the same time as voice 0.
         let fb = g.powf(at(scale) / first);
-        let out = gain * sign * (1.0 + fb);
-        let voice_hz = at(speeds) * hz;
-        let corner = at(corners);
-        let hp = high_pass.get(v).copied().unwrap_or_default();
         ir::EnsembleVoice {
             ms: 1000.0 * at(scale) * span,
-            depth_ms: 1000.0 * (ratio - 1.0) / (2.0 * voice_hz),
-            hz: voice_hz,
+            hz: at(speeds) * hz,
             start: at(starts),
-            damping_hz: if hp { f32::INFINITY } else { corner },
-            low_cut_hz: if hp { corner } else { 0.0 },
-            input,
-            feedback: sign * fb,
-            output: [[out * c, -out * s], [out * s, out * c]],
+            corner_hz: at(corners),
+            high_pass: high_pass.get(v).copied().unwrap_or_default(),
+            level: gain * sign * (1.0 + fb),
+            angle,
         }
     });
-    ir::EffectKind::Ensemble(ir::Ensemble { voices, direct })
+    ir::EffectKind::Ensemble(ir::Ensemble {
+        voices,
+        // The sweep `(R − 1)/(2·Hz)` s for every voice's rate.
+        sweep: 500.0 * (ratio - 1.0),
+        input,
+        feedback: sign * g,
+        direct,
+    })
 }
 
 /// A Choral's knobs as a script moves them: every move rebuilds it from all.
@@ -188,7 +189,7 @@ mod tests {
             a.ms
         );
         assert!((a.hz - 0.25).abs() < 1e-6 && (b.start - 0.5).abs() < 1e-6);
-        assert_eq!(c.output, [[0.0; 2]; 2]);
+        assert_eq!(c.level, 0.0);
         let share = 0.005 + 0.995 * 0.354 * 2.0 * (std::f32::consts::PI / 8.0).cos();
         assert!((e.direct - share).abs() < 2e-3, "{}", e.direct);
     }
