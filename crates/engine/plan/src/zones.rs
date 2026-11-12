@@ -100,7 +100,7 @@ impl crate::Plan {
     /// range, in the zones that play and in what scripts read. A zone moved
     /// to another group takes that group's [`ZoneRules`]; no mix route of
     /// its new group names it. False for a zone or group the plan lacks, or
-    /// a parameter not carried yet.
+    /// a parameter not carried yet. A table follows the zone's group too.
     // ponytail: a zone moved into a cycling group whose slots lack its own
     // reads the cycle as if its slot were there; recount the cycle if a
     // library moves zones between cycles.
@@ -126,13 +126,32 @@ impl crate::Plan {
         for z in self.zone_facts.iter_mut().filter(|z| z.id == id) {
             found |= edit(&mut z.keys, &mut z.velocities, &mut z.group);
         }
-        let Self { zones, groups, .. } = self;
+        let Self {
+            zones,
+            groups,
+            zone_facts,
+            ..
+        } = self;
         for z in zones.iter_mut().filter(|z| z.id == id) {
             let was = z.group;
             found |= edit(&mut z.keys, &mut z.velocities, &mut z.group);
             if let Some(g) = groups.get(z.group as usize).filter(|_| z.group != was) {
                 g.zones.apply(z);
                 z.member = u16::MAX;
+                // A table reads as its group says; outside a wavetable group
+                // the zone plays its sample at its own root and rate. A zone
+                // entering one without a table gets it built off the audio
+                // thread (`kontra_prepare::tables`).
+                match (g.wavetable, &mut z.region.table) {
+                    (Some(read), Some(table)) => table.read = read,
+                    (None, table @ Some(_)) => {
+                        *table = None;
+                        if let Some(f) = zone_facts.iter().find(|f| f.id == id) {
+                            (z.root, z.sample_rate) = (f.root, f.rate);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         found

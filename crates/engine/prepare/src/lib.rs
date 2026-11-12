@@ -383,9 +383,12 @@ const TABLE_PITCH: (u8, u32) = (69, (440.0 * PERIOD) as u32);
 
 /// `plan` with a table for every zone in a wavetable group that has none
 /// (`set_zone_par` moved it there), built off the audio thread; `None` when
-/// none lacks one. A sample not in memory stays without (plays raw).
-// ponytail: a zone moved out of a wavetable group keeps its table and plays
-// as one; keep its own root and rate if a library plays it there.
+/// none lacks one. A sample not in memory stays without (plays raw). How a
+/// table reads, and dropping it outside a wavetable group, is
+/// `Plan::edit_zone`'s.
+// ponytail: a zone that leaves a wavetable group drops its table and one
+// that returns has it built again (~2 ms off audio); keep it aside if a
+// library toggles zones faster.
 #[must_use]
 pub fn tables(plan: &Plan, client: &StreamClient) -> Option<Plan> {
     let read = |z: &Zone| {
