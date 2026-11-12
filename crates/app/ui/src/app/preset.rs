@@ -14,9 +14,12 @@ pub const USER: &str = "User/";
 /// What to do with the player's own preset.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PresetEdit {
-    /// Save what the part plays under this name; a user preset of that
-    /// name is replaced (the player clicked Save or Replace).
+    /// Save what the part plays as a new user preset of this name; one
+    /// already there stays (the host refuses, and its list is read again).
     Save(String),
+    /// Save what the part plays over the user preset of this name (the
+    /// player clicked Save preset or Replace).
+    Replace(String),
     /// Rename the user preset the part plays.
     Rename(String),
     /// Delete the user preset the part plays.
@@ -44,7 +47,7 @@ pub(super) fn edits(playing: Option<&str>) -> &'static [&'static str] {
 pub(super) fn picked(app: &mut App, n: usize, name: &str, pick: &str, out: &mut Vec<Action>) {
     let sheet = match pick {
         "Save preset" => {
-            let edit = PresetEdit::Save(name.to_owned());
+            let edit = PresetEdit::Replace(name.to_owned());
             out.push(Action::Preset { part: n, edit });
             return;
         }
@@ -98,6 +101,7 @@ pub(super) fn sheet(
         let edit = match which {
             Sheet::RenamePreset(_) => PresetEdit::Rename(name),
             Sheet::DeletePreset(_) => PresetEdit::Delete,
+            _ if verb == "Replace" => PresetEdit::Replace(name),
             _ => PresetEdit::Save(name),
         };
         out.push(Action::Preset { part, edit });

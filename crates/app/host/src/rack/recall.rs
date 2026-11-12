@@ -131,16 +131,20 @@ impl Rack {
     }
 
     /// Saves what `part` plays as user preset `name` of `library` under
-    /// `folder`, which it then plays; the file's path.
+    /// `folder` (over one of that name only with [`Overwrite::Replace`]),
+    /// which it then plays; the file's path.
+    ///
+    /// [`Overwrite::Replace`]: crate::presets::Overwrite::Replace
     ///
     /// # Errors
-    /// When the part plays nothing, or the file cannot be written.
+    /// As [`crate::presets::save`], and when the part plays nothing.
     pub fn save_preset(
         &mut self,
         part: usize,
         folder: &Path,
         library: &str,
         name: &str,
+        overwrite: crate::presets::Overwrite,
     ) -> std::io::Result<std::path::PathBuf> {
         let scripts = self.saved_scripts(part);
         let p = self.parts.get(part).and_then(Option::as_ref);
@@ -156,7 +160,7 @@ impl Rack {
             slot_types,
             slot_responses,
         };
-        let path = crate::presets::save(folder, library, name, &preset)?;
+        let path = crate::presets::save(folder, library, name, &preset, overwrite)?;
         self.set_preset(part, &path);
         Ok(path)
     }
@@ -220,7 +224,8 @@ impl Rack {
         let plan = Arc::new(plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let pages: Vec<Option<kontra_lua::Ui>> = old.faces.iter().map(|_| None).collect();
-        let view = crate::view::View::of(&old.faces, &pages, &engine, old.path.as_deref());
+        let near = old.source.as_deref().or(old.path.as_deref());
+        let view = crate::view::View::of(&old.faces, &pages, &engine, near);
         let info = Part {
             recall: engine.recall_law(),
             sounds: crate::sound::Sounds::new(self.rate, engine.group_sounds()),

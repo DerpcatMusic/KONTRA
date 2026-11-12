@@ -3,9 +3,11 @@
 //! never in a library. Loading one is loading its base instrument with
 //! these values (a recall when the part already plays that base).
 //!
-//! Writes go to a temporary file renamed into place; rename and delete
-//! touch only `.kontra` files inside the folder; no path read from a preset
-//! file is ever written to.
+//! Writes go to a temporary file of their own, then into place: a new
+//! preset never replaces a file (the filesystem refuses one already there,
+//! whatever its case), a replace is one rename. Rename and delete touch
+//! only `.kontra` files inside the folder; no path read from a preset file
+//! is ever written to.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -42,53 +44,117 @@ pub fn folder() -> Option<PathBuf> {
 
 pub use kontra_ui_model::preset_file_name as sanitized;
 
+/// Whether a save may replace a preset of the same name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overwrite {
+    /// A new preset: a file of that name (in any case) refuses it.
+    Create,
+    /// The player chose to replace the preset of that name.
+    Replace,
+}
+
+/// Whether `path` names a user preset file, by its extension in any case.
+#[must_use]
+pub fn ours(path: &Path) -> bool {
+    (path.extension()).is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION))
+}
+
+/// `library`'s folder under `folder`: its name with separators, reserved
+/// and control characters, `%` and a leading dot percent-encoded, so two
+/// libraries never share one.
+fn library_dir(folder: &Path, library: &str) -> io::Result<PathBuf> {
+    let mut name = String::new();
+    for (at, c) in library.trim().chars().enumerate() {
+        if c.is_control() || r#"/\:*?"<>|%"#.contains(c) || (at == 0 && c == '.') {
+            for b in c.encode_utf8(&mut [0; 4]).bytes() {
+                name.push_str(&format!("%{b:02X}"));
+            }
+        } else {
+            name.push(c);
+        }
+    }
+    match name.is_empty() {
+        true => Err(invalid("library name")),
+        false => Ok(folder.join(name)),
+    }
+}
+
+/// `bytes` in a new file of `dir` no other save uses; its path. Nothing is
+/// left behind when it cannot be written.
+fn written(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SAVES: AtomicU64 = AtomicU64::new(0);
+    let n = SAVES.fetch_add(1, Ordering::Relaxed);
+    let temp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    let done = file.write_all(bytes).and_then(|()| file.sync_all());
+    if let Err(e) = done {
+        drop(file);
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    Ok(temp)
+}
 fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what)
 }
 
-/// Writes `preset` as `name` of `library` (replacing one of that name: the
-/// caller asked the player first); its path.
+/// Writes `preset` as `name` of `library`; its path. A preset of that
+/// name stays unless `overwrite` is [`Overwrite::Replace`].
 ///
 /// # Errors
-/// When a name is empty once sanitised, or the file cannot be written.
-pub fn save(folder: &Path, library: &str, name: &str, preset: &UserPreset) -> io::Result<PathBuf> {
-    let dir = folder.join(sanitized(library).ok_or_else(|| invalid("library name"))?);
+/// `AlreadyExists` when creating over a preset of that name; when a name
+/// is empty once sanitised, the preset is larger than a preset file may
+/// be, or the file cannot be written.
+pub fn save(
+    folder: &Path,
+    library: &str,
+    name: &str,
+    preset: &UserPreset,
+    overwrite: Overwrite,
+) -> io::Result<PathBuf> {
+    let dir = library_dir(folder, library)?;
     let name = sanitized(name).ok_or_else(|| invalid("preset name"))?;
+    let bytes = serde_json::to_vec_pretty(preset).map_err(io::Error::other)?;
+    if u64::try_from(bytes.len()).map_or(true, |n| n > LIMIT) {
+        return Err(invalid("preset larger than a preset file may be"));
+    }
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{name}.{EXTENSION}"));
-    let bytes = serde_json::to_vec_pretty(preset).map_err(io::Error::other)?;
-    let temp = dir.join(format!(".{name}.{EXTENSION}.tmp"));
-    std::fs::write(&temp, bytes)?;
-    std::fs::rename(&temp, &path)?;
-    Ok(path)
+    let temp = written(&dir, &name, &bytes)?;
+    let placed = match overwrite {
+        // A link is refused when the name is taken, in one step.
+        Overwrite::Create => std::fs::hard_link(&temp, &path),
+        Overwrite::Replace => std::fs::rename(&temp, &path),
+    };
+    if overwrite == Overwrite::Create || placed.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    placed.map(|()| path)
 }
 
 /// The user preset at `path`; None for any other file.
 #[must_use]
 pub fn read(path: &Path) -> Option<UserPreset> {
-    let ours = path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION));
     let meta = std::fs::metadata(path)
         .ok()
-        .filter(|m| ours && m.is_file())?;
+        .filter(|m| ours(path) && m.is_file())?;
     if meta.len() > LIMIT {
         return None;
     }
     let preset: UserPreset = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     // Its base is an instrument, never another preset.
-    let base_ours = preset
-        .base
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION));
-    (preset.version == VERSION && !base_ours).then_some(preset)
+    (preset.version == VERSION && !ours(&preset.base)).then_some(preset)
 }
 
 /// `path` itself when it is a preset file inside `folder`.
 fn inside(folder: &Path, path: &Path) -> io::Result<PathBuf> {
     let (folder, path) = (folder.canonicalize()?, path.canonicalize()?);
-    let ours = path.extension().is_some_and(|e| e == EXTENSION);
-    match path.starts_with(&folder) && ours {
+    match path.starts_with(&folder) && ours(&path) {
         true => Ok(path),
         false => Err(invalid("not a KONTRA user preset")),
     }
@@ -127,12 +193,12 @@ pub fn delete(folder: &Path, path: &Path) -> io::Result<()> {
 /// `library`'s user presets, sorted by name.
 #[must_use]
 pub fn list(folder: &Path, library: &str) -> Vec<PathBuf> {
-    let Some(dir) = sanitized(library).map(|l| folder.join(l)) else {
+    let Ok(dir) = library_dir(folder, library) else {
         return Vec::new();
     };
     let mut out: Vec<PathBuf> = (std::fs::read_dir(dir).into_iter().flatten().flatten())
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == EXTENSION))
+        .filter(|p| ours(p))
         .collect();
     out.sort();
     out
@@ -142,38 +208,76 @@ pub fn list(folder: &Path, library: &str) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_preset_saves_renames_and_deletes_only_inside_its_folder() {
-        let root = std::env::temp_dir().join(format!("kontra-presets-{}", std::process::id()));
-        let folder = root.join("presets");
-        let base = Path::new("/lib/Piano.nki");
-        let scripts = vec![vec!["1".to_owned()]];
-        let preset = UserPreset {
+    /// A folder of this test alone, removed when dropped (also when an
+    /// assertion fails).
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn preset(scripts: Vec<Vec<String>>) -> UserPreset {
+        UserPreset {
             version: VERSION,
-            base: base.to_owned(),
-            scripts: scripts.clone(),
+            base: PathBuf::from("/lib/Piano.nki"),
+            scripts,
             slot_types: Vec::new(),
             slot_responses: Vec::new(),
-        };
-        let path = save(&folder, "Una/Corda", "../My: Soft*", &preset).unwrap();
-        assert_eq!(path, folder.join("UnaCorda").join("My Soft.kontra"));
+        }
+    }
+
+    #[test]
+    fn a_preset_saves_renames_and_deletes_only_inside_its_folder() {
+        let root =
+            Scratch(std::env::temp_dir().join(format!("kontra-presets-{}", std::process::id())));
+        let folder = root.0.join("presets");
+        let scripts = vec![vec!["1".to_owned()]];
+        let one = preset(scripts.clone());
+        let create = Overwrite::Create;
+        let path = save(&folder, "Una/Corda", "../My: Soft*", &one, create).unwrap();
+        assert_eq!(path, folder.join("Una%2FCorda").join("My Soft.kontra"));
         assert_eq!(read(&path).map(|p| p.scripts), Some(scripts.clone()));
         assert_eq!(list(&folder, "Una/Corda"), std::slice::from_ref(&path));
+        // Libraries whose names differ by a reserved character list apart.
+        let other = save(&folder, "UnaCorda", "Bright", &one, create).unwrap();
+        assert_eq!(list(&folder, "UnaCorda"), std::slice::from_ref(&other));
         assert!(sanitized(" .. ").is_none());
         // The editor's Replace check names collisions by this file name.
         assert_eq!(sanitized("Soft?"), sanitized("Soft"));
+        // Creating over a preset of that name is refused; it stays as it was.
+        let two = preset(vec![vec!["2".to_owned()]]);
+        let taken = save(&folder, "Una/Corda", "My Soft", &two, create);
+        assert_eq!(
+            taken.map_err(|e| e.kind()),
+            Err(io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(read(&path).map(|p| p.scripts), Some(scripts.clone()));
+        // A preset too large to read back is refused before the file moves.
+        let huge = preset(vec![vec!["x".repeat(usize::try_from(LIMIT).unwrap())]]);
+        assert!(save(&folder, "Una/Corda", "My Soft", &huge, Overwrite::Replace).is_err());
+        assert_eq!(read(&path).map(|p| p.scripts), Some(scripts.clone()));
+        let replaced = save(&folder, "Una/Corda", "My Soft", &two, Overwrite::Replace).unwrap();
+        assert_eq!(
+            read(&replaced).map(|p| p.scripts),
+            Some(two.scripts.clone())
+        );
+        // No temporary file stays behind.
+        let files = std::fs::read_dir(path.parent().unwrap()).unwrap().count();
+        assert_eq!(files, 1);
         // The name is taken: no rename over it.
-        let other = save(&folder, "UnaCorda", "Bright", &preset).unwrap();
+        let bright = save(&folder, "Una/Corda", "Bright", &one, create).unwrap();
         assert!(rename(&folder, &path, "Bright").is_err());
         let path = rename(&folder, &path, "Soft").unwrap();
         // The new path keeps the spelling of the folder it was listed under.
-        assert_eq!(path, folder.join("UnaCorda").join("Soft.kontra"));
+        assert_eq!(path, folder.join("Una%2FCorda").join("Soft.kontra"));
         // Nothing outside the folder, nor any other file, is removed.
-        let outside = root.join("x.kontra");
+        let outside = root.0.join("x.kontra");
         std::fs::write(&outside, b"{}").unwrap();
         assert!(delete(&folder, &outside).is_err());
-        assert!(delete(&folder, &path).is_ok() && delete(&folder, &other).is_ok());
-        assert!(list(&folder, "UnaCorda").is_empty() && outside.exists());
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(delete(&folder, &path).is_ok() && delete(&folder, &bright).is_ok());
+        assert!(list(&folder, "Una/Corda").is_empty() && outside.exists());
+        assert!(ours(Path::new("a.KONTRA")) && !ours(Path::new("a.nki")));
     }
 }

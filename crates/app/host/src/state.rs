@@ -76,7 +76,7 @@ pub struct SlotType {
 }
 
 /// Effect types and responses scripts loaded after `on init`, by rack.
-pub type LiveSlots = (Vec<(RackAt, u8, u16)>, Vec<(RackAt, u8, String)>);
+pub(crate) type LiveSlots = (Vec<(RackAt, u8, u16)>, Vec<(RackAt, u8, String)>);
 
 /// `types` and `responses` as a part keeps them, as a file saves them.
 pub(crate) fn saved_slots(
@@ -225,10 +225,7 @@ impl Rack {
         let parts = (self.parts().iter().enumerate())
             .filter_map(|(part, p)| {
                 let p = p.as_ref()?;
-                let user = (p.path.as_deref()).filter(|f| {
-                    f.extension()
-                        .is_some_and(|e| e == crate::presets::EXTENSION)
-                });
+                let user = (p.path.as_deref()).filter(|f| crate::presets::ours(f));
                 Some(SavedPart {
                     part,
                     path: if user.is_some() { &p.source } else { &p.path }.clone()?,

@@ -423,7 +423,9 @@ impl Rack {
             recall::put_slots(&mut loaded.plan, slot_types, slot_responses, self.rate);
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
-        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref())
+        // Its library's resources are found near the instrument file.
+        let near = source.as_deref().or(path.as_deref());
+        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, near)
             .map(|view| view.with_waves(waves));
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {

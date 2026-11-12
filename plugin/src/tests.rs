@@ -645,12 +645,29 @@ fn the_header_follows_an_instruments_own_preset_arrows_by_name() {
     }
 }
 
+/// A folder of this test alone, removed when dropped (also when an
+/// assertion fails).
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        Self(std::env::temp_dir().join(format!("kontra-{name}-{}", std::process::id())))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// The player's own preset of the part playing `preset`: saved into the
 /// presets folder, listed under its library and named by the header,
 /// picked back with the values it saved, renamed, then deleted.
 fn users_own_preset(params: &KontraParams, library: usize, preset: usize) {
     use kontra_ui::app::{Action, PresetEdit};
-    let folder = std::env::temp_dir().join(format!("kontra-user-presets-{}", std::process::id()));
+    let scratch = Scratch::new("user-presets");
+    let folder = scratch.0.clone();
     crate::lock(&params.shared.browser)
         .as_mut()
         .unwrap()
@@ -734,7 +751,6 @@ fn users_own_preset(params: &KontraParams, library: usize, preset: usize) {
         "{base:?}"
     );
     assert_eq!(rack.saved_scripts(0), kept, "with the project's values");
-    std::fs::remove_dir_all(folder).unwrap();
 }
 
 const SHREDDAGE: &str = "Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org/Instruments/Shreddage 3.5 E-Upright.nki";
@@ -854,12 +870,13 @@ fn a_user_preset_keeps_an_effect_its_script_loaded() {
         return;
     };
     settle(&live, &mut live_dsp);
-    let folder = std::env::temp_dir().join(format!("kontra-user-fx-{}", std::process::id()));
+    let folder = Scratch::new("user-fx");
     let mut rack = crate::lock(&live.shared.rack);
+    let create = kontra_host::presets::Overwrite::Create;
     let path = rack
         .as_mut()
         .unwrap()
-        .save_preset(0, &folder, "Shreddage", "EQ");
+        .save_preset(0, &folder.0, "Shreddage", "EQ", create);
     drop(rack);
     let path = path.unwrap();
     let user = kontra_host::presets::read(&path).expect("saved");
@@ -872,7 +889,6 @@ fn a_user_preset_keeps_an_effect_its_script_loaded() {
     assert!(loaded.is_ok(), "{loaded:?}");
     settle(&fresh, &mut fresh_dsp);
     assert_eq!(slot_types(&fresh), slot_types(&live));
-    std::fs::remove_dir_all(folder).unwrap();
 }
 
 #[test]
