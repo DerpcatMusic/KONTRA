@@ -61,6 +61,9 @@ impl BusState {
     /// Whether this span of `len` frames leaves the bus as it is: its mix
     /// (after the rack) is silent and its faders rest, so the fader, sends,
     /// balance and meter would change neither a sample nor their state.
+    /// The meter here is only the peak since the last take (a silent span
+    /// leaves it as it is); its fall is the editor's, fed by those takes,
+    /// so an idle bus's meter keeps falling.
     pub(crate) fn idle(&mut self, len: usize) -> bool {
         let mix = self.mix.get(..len).unwrap_or_default();
         let aim = [self.gain, self.pan];
