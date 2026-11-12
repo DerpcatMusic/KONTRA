@@ -221,6 +221,8 @@ pub struct Widget {
     /// Scalar state for controls without a numeric range (toggles/menus).
     pub initial_value: f64,
     pub opacity: f32,
+    /// Degrees clockwise about its own centre (a `native_ui` knob pointer).
+    pub rotation: f64,
     pub intercepts_mouse: bool,
     /// Clip children and offset their origin (UVI Viewport).
     pub viewport: Option<[i32; 2]>,
@@ -286,6 +288,7 @@ impl Widget {
             components: Vec::new(),
             initial_value: 0.0,
             opacity: 1.0,
+            rotation: 0.,
             intercepts_mouse: true,
             viewport: None,
             mapper: None,
