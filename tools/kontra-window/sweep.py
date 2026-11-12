@@ -63,24 +63,35 @@ def share(a, b, box=None, level=12):
     return mask.histogram()[255] / max(1, mask.width * mask.height)
 
 
+def press_at(x, y):
+    """The pointer arrives, then presses: a real pointer is seen over a
+    control before it clicks, and a press in the same instant as the warp
+    lands before the editor has seen where the pointer is."""
+    sh('xdotool', 'mousemove', str(x), str(y))
+    time.sleep(0.25)
+    sh('xdotool', 'mousedown', '1')
+
+
 def move(kind, x0, y0, x1, y1, sign=1):
     """Moves a control; `sign` -1 drags the other way (down and left)."""
     cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
     if kind in ('knob', 'slider', 'value_edit'):
-        sh('xdotool', 'mousemove', str(cx), str(cy), 'mousedown', '1')
+        press_at(cx, cy)
         for step in range(1, 9):
             sh('xdotool', 'mousemove', str(cx + sign * 6 * step), str(cy - sign * 8 * step))
             time.sleep(0.03)
         sh('xdotool', 'mouseup', '1')
     elif kind in ('table', 'xy'):
-        sh('xdotool', 'mousemove', str(x0 + 3), str(y1 - 3), 'mousedown', '1')
+        press_at(x0 + 3, y1 - 3)
         for step in range(1, 9):
             sh('xdotool', 'mousemove', str(x0 + 3 + (x1 - x0 - 6) * step // 8),
                str(y1 - 3 - (y1 - y0 - 6) * step // 8))
             time.sleep(0.03)
         sh('xdotool', 'mouseup', '1')
     else:
-        sh('xdotool', 'mousemove', str(cx), str(cy), 'click', '1')
+        press_at(cx, cy)
+        time.sleep(0.05)
+        sh('xdotool', 'mouseup', '1')
 
 
 def main():
