@@ -37,6 +37,7 @@ import random
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -435,7 +436,11 @@ def score(args):
               f"{sum(r['ok'] for r in stat)}/{len(stat)}, of which inside only that spread "
               f"{sum(r['ok'] and not r.get('plain', True) for r in stat)}")
     cases = sum(len(rows) for rows in table.values())
-    print(f"total: {total}/{cases} within tolerance")
+    # The default binary is the newest build in ANY worktree's target dir: name it, so two totals
+    # are only compared when binary, build time and --spread match.
+    built = time.strftime("%Y-%m-%d %H:%M", time.localtime(Path(binary).stat().st_mtime))
+    print(f"total: {total}/{cases} within tolerance (binary {binary}, built {built}; "
+          f"spread {args.spread or 'off'})")
     (root / f"score-{args.tag}.json").write_text(json.dumps(table, indent=1, default=float))
 
 
