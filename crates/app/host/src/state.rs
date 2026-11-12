@@ -24,6 +24,8 @@ pub struct Saved {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedPart {
     pub part: usize,
+    /// The instrument file it loads: for a user preset, its base, so the
+    /// project never needs the preset's file.
     pub path: PathBuf,
     pub channel: u8,
     pub output: u8,
@@ -46,6 +48,10 @@ pub struct SavedPart {
     /// `on init`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slot_responses: Vec<SlotResponse>,
+    /// The user preset it plays, only to name it: a file that is gone
+    /// leaves the part its base instrument, changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<PathBuf>,
     /// The player changed its preset after it loaded ([`crate::rack::Part::modified`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub modified: bool,
@@ -219,9 +225,14 @@ impl Rack {
         let parts = (self.parts().iter().enumerate())
             .filter_map(|(part, p)| {
                 let p = p.as_ref()?;
+                let user = (p.path.as_deref()).filter(|f| {
+                    f.extension()
+                        .is_some_and(|e| e == crate::presets::EXTENSION)
+                });
                 Some(SavedPart {
                     part,
-                    path: p.path.clone()?,
+                    path: if user.is_some() { &p.source } else { &p.path }.clone()?,
+                    preset: user.map(std::path::Path::to_owned),
                     channel: p.mix.channel,
                     output: p.mix.output,
                     gain: p.mix.gain,
@@ -285,6 +296,11 @@ impl Rack {
                     self.set_solo_mute(p.part, p.solo, p.mute);
                     if let Some(delays) = p.delays.clone() {
                         self.set_delays(p.part, delays);
+                    }
+                    match &p.preset {
+                        Some(preset) if preset.is_file() => self.set_preset(p.part, preset),
+                        Some(_) => self.set_modified(p.part),
+                        None => {}
                     }
                     if p.modified {
                         self.set_modified(p.part);

@@ -166,6 +166,7 @@ fn recall(path: PathBuf) -> Result<String, String> {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let t = std::time::Instant::now();
@@ -310,6 +311,7 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     };
     let saved = Saved::new(vec![part(0, a), part(1, b)]);
@@ -402,6 +404,7 @@ fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
@@ -708,6 +711,10 @@ fn users_own_preset(params: &KontraParams, library: usize, preset: usize) {
     });
     let (yours, ..) = playing();
     assert!(yours.ends_with("Yours.kontra") && !mine.exists() && listed(&yours).is_some());
+    // A project saved now does not need the preset's file to reopen.
+    let (_, _, kept) = playing();
+    params.capture();
+    let project = params.saved.read().unwrap().clone();
     // Deleted: the part plays on, as its base instrument, changed.
     browse(Action::Preset {
         part: 0,
@@ -716,6 +723,17 @@ fn users_own_preset(params: &KontraParams, library: usize, preset: usize) {
     let (base, modified, _) = playing();
     assert!(base.ends_with("Una Corda Felt.nki") && modified, "{base:?}");
     assert!(!yours.exists() && listed(&yours).is_none());
+    let (reopened, _reopened_dsp) = activate(&project);
+    Tick.run(&reopened);
+    let rack = crate::lock(&reopened.shared.rack);
+    let rack = rack.as_ref().unwrap();
+    let p = rack.parts()[0].as_ref().expect("the part reopens");
+    let base = p.path.clone().unwrap();
+    assert!(
+        base.ends_with("Una Corda Felt.nki") && p.modified,
+        "{base:?}"
+    );
+    assert_eq!(rack.saved_scripts(0), kept, "with the project's values");
     std::fs::remove_dir_all(folder).unwrap();
 }
 
@@ -759,6 +777,7 @@ fn shreddage_eq() -> Option<(KontraParams, Dsp, f32)> {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
@@ -986,6 +1005,7 @@ fn the_same_state_restored_again_loads_nothing_twice() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
@@ -1067,6 +1087,7 @@ fn uvi_knob_moves_the_sound_and_survives_reload(program: &str, knob: &str, to: f
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     };
     let (params, mut dsp) = activate(&Saved::new(vec![part(path)]).write());
@@ -1217,6 +1238,7 @@ fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }]);
     let (params, mut dsp) = activate(&saved.write());
@@ -1322,6 +1344,7 @@ fn one_part(path: &Path) -> String {
         delays: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        preset: None,
         modified: false,
     }])
     .write()
