@@ -132,6 +132,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &path,
                 &out.join(format!("{stem}-{slot}-initial.png")),
             )?;
+            controls(
+                &untouched,
+                &out.join(format!("{stem}-{slot}-controls.jsonl")),
+            )?;
             // One shown knob moved: the widgets that frame builds.
             let knob = live.tree.widgets.iter().enumerate().find_map(|(n, w)| {
                 let knob = matches!(w.kind, Kind::Knob { .. } | Kind::Slider { .. });
@@ -339,6 +343,7 @@ fn lua_page(
     settle(engine, &mut tree);
     let stem = name.replace(['/', ' '], "_");
     shot(&tree, path, &out.join(format!("{stem}-{slot}.png")))?;
+    controls(&tree, &out.join(format!("{stem}-{slot}-controls.jsonl")))?;
     // `UI_SHOTS_KNOB=<name>` picks the knob; else the first shown one.
     let wanted = std::env::var("UI_SHOTS_KNOB").ok();
     // A shown knob or slider: its number, name and top.
@@ -418,6 +423,45 @@ fn shot(
         frame(&mut ui, &mut pictures)?;
     }
     save(file, w, h, &paint(&ui, w, h)?)
+}
+
+/// The page size, then every shown control a player can move, one JSON line
+/// each: its widget
+/// number, name, kind and page rectangle in points, for the real-window
+/// sweep (`tools/kontra-window/sweep.py`).
+fn controls(
+    tree: &kontra_ui_model::Interface,
+    file: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+    let mut lines = String::new();
+    if let Some(p) = tree.pages.first() {
+        writeln!(lines, "{{\"page\":[{},{}]}}", p.size.width, p.size.height)?;
+    }
+    for (n, w) in tree.widgets.iter().enumerate() {
+        let kind = match w.kind {
+            Kind::Knob { .. } => "knob",
+            Kind::Slider { .. } => "slider",
+            Kind::Button { .. } => "button",
+            Kind::Switch => "switch",
+            Kind::Menu { .. } => "menu",
+            Kind::ValueEdit { .. } => "value_edit",
+            Kind::Table { .. } => "table",
+            Kind::Xy { .. } => "xy",
+            _ => continue,
+        };
+        if !tree.visible(WidgetRef(n)) || !w.enabled {
+            continue;
+        }
+        let r = tree.page_rect(WidgetRef(n));
+        writeln!(
+            lines,
+            "{{\"widget\":{n},\"name\":{:?},\"kind\":\"{kind}\",\"rect\":[{},{},{},{}]}}",
+            w.name, r.x, r.y, r.width, r.height
+        )?;
+    }
+    std::fs::write(file, lines)?;
+    Ok(())
 }
 
 /// `UI_SHOTS_SCALE=<f>` draws pages at that zoom (1.5 matches the oracle's
