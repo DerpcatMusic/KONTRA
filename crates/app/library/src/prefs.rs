@@ -25,6 +25,9 @@ pub struct Prefs {
     /// channel; its own output pair, else the main one.
     pub next_channel: bool,
     pub own_output: bool,
+    /// Kontakt's user snapshot folder, when not where Kontakt keeps it
+    /// ([`crate::presets::kontakt_folder`]); only read.
+    pub kontakt_snapshots: Option<PathBuf>,
 }
 
 impl Prefs {
