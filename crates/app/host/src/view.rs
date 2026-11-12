@@ -329,10 +329,11 @@ impl LookFrame {
         })
     }
 
-    /// A frame for a Lua page's widgets, and its labels' texts.
+    /// A frame for a Lua page's widgets, and its labels' and menus' texts
+    /// (a script renames a menu's items).
     fn lua(slot: u8, tree: &model::Interface) -> Box<Self> {
         let labels = (tree.widgets.iter().enumerate())
-            .filter(|(_, w)| matches!(w.kind, model::Kind::Label))
+            .filter(|(_, w)| matches!(w.kind, model::Kind::Label | model::Kind::Menu { .. }))
             .filter_map(|(n, _)| Some((u32::try_from(n).ok()?, false, Text::EMPTY)));
         Box::new(Self {
             part: 0,

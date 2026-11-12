@@ -166,6 +166,10 @@ fn inputs(modules: &[(String, String)], saved: &[String]) -> Inputs {
 /// The saved entry, and the module `onLoad` takes, of what `onSave` returned.
 pub const STATE: &str = "__state";
 
+/// Data modules named so are files a script reads after load (`loadData`,
+/// `loadState`), by bank path; the format reader carries them.
+pub const FILE: &str = "__file/";
+
 /// Runs a program's load once, off the audio thread (init, then `onLoad`),
 /// and returns the samples it loads; arguments as [`compile`]. A script that
 /// fails part way returns what it loaded before.
@@ -244,6 +248,10 @@ impl Foreign for Compiled {
 
 /// `require("a.b")` and a member `a/b.lua` name the same module.
 fn module_name(name: &str) -> String {
+    // A data file a script reads keeps its bank path ([`FILE`]).
+    if name.starts_with(FILE) {
+        return name.to_lowercase();
+    }
     let name = name.trim_end_matches(".lua").replace(['/', '\\'], ".");
     name.rsplit('.').next().unwrap_or(&name).to_lowercase()
 }
@@ -314,6 +322,14 @@ fn state(
         Ok(value)
     })?;
     globals.set("require", require)?;
+    // A carried data file's value, read fresh each time (a script may change
+    // the table it gets); nil for a file the program does not carry.
+    let files = Arc::clone(modules);
+    let file = lua.create_function(move |lua, path: String| {
+        let key = format!("{FILE}{}", path.to_lowercase());
+        Ok(files.get(&key).and_then(|text| literal::read(lua, text)))
+    })?;
+    globals.set("__file", file)?;
     lua.load(PRELUDE).set_name("prelude").exec()?;
     lua.load(source).set_name("script").exec()?;
     globals.get::<Function>("__restore")?.call::<()>(())?;
@@ -655,6 +671,63 @@ mod tests {
         assert_eq!(m.run(co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         assert_eq!(sent(&log), [vec![-1, 30, 500_000, 32768, 0]]);
+    }
+
+    /// VWinds' preset menu (`loadState` of a `.VHFPreset`) and Augmented
+    /// Orchestra's arpeggiator presets (`loadData` of a JSON `.arp`), by
+    /// paths relative to the script's folder: widgets take the preset's
+    /// values and run `changed`, `onLoad` gets its state, and `done` runs.
+    #[test]
+    fn a_script_loads_its_banks_presets_and_data_by_relative_path() {
+        let source = r#"
+            local air = Knob('air', 0, 0, 100)
+            local panel = OnOffButton('panel', false)
+            local steps = Table('steps', 2, 0, 0, 1)
+            local seen = 0
+            air.changed = function(s) seen = s.value end
+            local text = ''
+            function onLoad(state) text = state.presetText end
+            function onInit()
+                local done, arp = false, nil
+                loadState('../Script/presets/Studio 1.VHFPreset', function(t) done = t.success end)
+                assert(air.value == 66 and seen == 66 and text == 'Studio 1*' and done)
+                assert(panel.value == false)
+                assert(steps:getValue(1) == 0.5 and steps:getValue(2) == 1)
+                -- A changed that fails still runs on the next change.
+                local fails = true
+                air.changed = function(s) if fails then fails = false error('once') end seen = s.value end
+                assert(not pcall(air.setValue, air, 1))
+                air.value = 2
+                assert(seen == 2)
+                loadData('./../JSON/Arp/Frames.arp', function(d) arp = d end)
+                assert(arp.steps[2] == 5)
+                loadData('missing.arp', function() error('called for a missing file') end)
+                -- VWinds' preset arrows: assigning a menu's value runs its
+                -- changed, but not from inside that changed.
+                local menu = Menu{'preset', {'a', 'b', 'c'}}
+                local runs = 0
+                menu.changed = function(m) runs = runs + 1 m.value = 3 end
+                menu.value = 2
+                assert(runs == 1 and menu.value == 3 and menu.text == 'c')
+                menu:setItem(1, menu:getText(3) .. '*')
+                menu:addItem('d')
+                assert(menu:getText(1) == 'c*' and menu:getText(4) == 'd')
+            end"#;
+        let modules = [
+            ("__dir.lua".to_string(), "return \"Script\"".to_string()),
+            (
+                "__file/script/presets/studio 1.vhfpreset".to_string(),
+                r#"return {values={["air"]="66",["panel"]="0",["steps"]="0,5 1"},state={["presetText"]="Studio 1*"}}"#.to_string(),
+            ),
+            (
+                "__file/json/arp/frames.arp".to_string(),
+                "return {data={steps={4,5}}}".to_string(),
+            ),
+        ];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("init");
+        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
     }
 
     #[test]
