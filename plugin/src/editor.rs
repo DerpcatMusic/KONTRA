@@ -64,6 +64,7 @@ pub struct Snapshot {
     libraries: (u64, Arc<Vec<app::Library>>),
     recent: Vec<(usize, usize)>,
     folders: Vec<String>,
+    snapshot_folder: app::SnapshotFolder,
     /// [`kontra_library::Prefs::next_channel`] and `own_output`.
     new_parts: (bool, bool),
     level: f32,
@@ -85,6 +86,11 @@ impl Snapshot {
                 .map(|r| r.path.display().to_string())
                 .collect();
             self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
+            self.snapshot_folder = match browser.kontakt() {
+                Some(f) if f.is_dir() => app::SnapshotFolder::Found(f.display().to_string()),
+                Some(f) => app::SnapshotFolder::Missing(f.display().to_string()),
+                None => app::SnapshotFolder::Unset,
+            };
         }
         let meters = rack.meters();
         let level = |slot: usize| {
@@ -207,6 +213,7 @@ impl Snapshot {
             app.libraries = fresh.clone();
             app.recent.clone_from(&self.recent);
             app.folders.clone_from(&self.folders);
+            app.snapshot_folder.clone_from(&self.snapshot_folder);
             (app.next_channel, app.own_output) = self.new_parts;
             shown.browser = self.libraries.0;
         }
@@ -755,7 +762,15 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             if action == Action::AddFolder {
                 // The browser's first folder, from the editor's own copy.
                 let from = app.folders.first().map(PathBuf::from);
-                p.shared.folder.ask(from);
+                p.shared.folder.ask(crate::folder::Wanted::Libraries, from);
+                continue;
+            }
+            if action == Action::ChooseSnapshotFolder {
+                let from = match &app.snapshot_folder {
+                    app::SnapshotFolder::Found(f) => Some(PathBuf::from(f)),
+                    _ => None,
+                };
+                p.shared.folder.ask(crate::folder::Wanted::Snapshots, from);
                 continue;
             }
             if let Some(event) = played(&action) {

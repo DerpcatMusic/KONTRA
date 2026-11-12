@@ -2,9 +2,9 @@
 
 use mui::prelude::*;
 
-use super::{Action, App, FaceLook, SCALES};
+use super::{Action, App, FaceLook, SCALES, SnapshotFolder};
 use crate::kit::{self, Icon, button, icon_button, latch, rule, section};
-use crate::theme::{SPACE, TIGHT};
+use crate::theme::{SPACE, TIGHT, secondary};
 
 /// The settings sheet's body.
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
@@ -72,6 +72,25 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if add.changed {
         out.push(Action::AddFolder);
     }
+    let choose = button(ui, "snapshot-folder", "Choose…", false);
+    if choose.changed {
+        out.push(Action::ChooseSnapshotFolder);
+    }
+    let snapshots = match &app.snapshot_folder {
+        SnapshotFolder::Found(f) => caption(f.clone()).tip(f.clone()),
+        SnapshotFolder::Missing(f) => caption(format!("Not found: {f}"))
+            .fill(secondary())
+            .tip(f.clone()),
+        SnapshotFolder::Unset => {
+            caption("Not set: choose the User Content folder Kontakt saves snapshots in")
+                .fill(secondary())
+        }
+    };
+    let snapshots = snapshots
+        .lines(1)
+        .min_w(0)
+        .grow(1)
+        .id("snapshot-folder-path");
     let rescan = button(ui, "rescan", "Rescan", false);
     if rescan.changed {
         out.push(Action::Refresh);
@@ -126,6 +145,8 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .gap(SPACE)
             .align(Align::Center),
         folders,
+        row![section("Kontakt snapshots"), spacer(), choose.el].align(Align::Center),
+        snapshots,
         rule(),
         section("Interface"),
         line("Size", size.el),
