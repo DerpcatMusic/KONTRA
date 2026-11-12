@@ -1,144 +1,18 @@
-//! A Kontakt 8 `native_ui` page laid out into the tree. The page renders to
-//! primitives ([`kontra_lua::nui`]); this places them as SwiftUI stacks do
-//! and lowers each into a widget the renderer already draws: a rectangle or
-//! ring as a [`ui::Kind::Shape`], an image as an image, a text as a label.
-//! A node's modifiers wrap it from the inside out.
-//!
-//! Not copied: `Canvas` paths, `TextInput`, `rotation` (a knob's pointer
-//! stays upright), gestures. They lay out but draw nothing.
+//! A rendered `native_ui` tree laid out as SwiftUI stacks do and lowered
+//! into widgets the renderer already draws: a rectangle or ring as a
+//! [`ui::Kind::Shape`], an image as an image, a text as a label. A node's
+//! modifiers wrap it from the inside out. Each component instance's root
+//! is recorded where it was placed ([`Slot`]), so a re-render goes back
+//! into the same room.
 
-use kontra_ksp::ControlKind;
-use kontra_lua::nui::{self, Control, Node, Prop};
+use kontra_lua::nui::{Node, Prop};
 use kontra_ui_model as ui;
 
-use super::{Builder, Decl};
-
-/// A page's modules (path under `native_ui/`, source) and its entry.
-#[derive(Clone, Debug, Default)]
-pub struct Native {
-    modules: Vec<(String, String)>,
-    entry: String,
-}
-
-impl Native {
-    /// The page among a script's library files, if it loads one.
-    pub(super) fn of(data: &[(String, Vec<u8>)]) -> Option<Self> {
-        let (_, entry) = data.iter().find(|(n, _)| n == "native_ui.entry")?;
-        let modules = data
-            .iter()
-            .filter_map(|(n, bytes)| {
-                let path = n.strip_prefix("native_ui/")?;
-                Some((path.to_owned(), String::from_utf8_lossy(bytes).into_owned()))
-            })
-            .collect();
-        Some(Self {
-            modules,
-            entry: String::from_utf8_lossy(entry).into_owned(),
-        })
-    }
-}
-
-/// The page's id of a control: its script name without the sigil.
-fn id(name: &str) -> &str {
-    name.trim_start_matches(['$', '%', '@', '~', '?', '!'])
-}
-
-fn control(d: &Decl<'_>) -> Control {
-    let range = matches!(
-        d.kind,
-        ControlKind::Knob | ControlKind::Slider | ControlKind::ValueEdit
-    );
-    let par = |i: usize| {
-        range
-            .then(|| d.params.get(i))
-            .flatten()
-            .map(|&v| f64::from(v))
-    };
-    let label = d.view.and_then(|v| {
-        let t = |k: &str| v.texts.iter().find(|(p, _)| p == k).map(|(_, t)| t.clone());
-        t("$CONTROL_PAR_LABEL").or_else(|| t("$CONTROL_PAR_TEXT"))
-    });
-    let entries = if d.look.menu.is_empty() {
-        let menu = d.view.map(|v| v.menu.as_slice()).unwrap_or_default();
-        menu.iter()
-            .map(|(t, v, _)| (t.clone(), f64::from(*v)))
-            .collect()
-    } else {
-        let menu = d.look.menu.iter();
-        menu.map(|m| (m.text.as_str().to_owned(), f64::from(m.value)))
-            .collect()
-    };
-    let (min, max) = match d.kind {
-        ControlKind::Button | ControlKind::Switch => (0., 1.),
-        _ => (par(0).unwrap_or(0.), par(1).unwrap_or(1_000_000.)),
-    };
-    Control {
-        name: id(d.name).to_owned(),
-        label: label.unwrap_or_else(|| id(d.name).to_owned()),
-        min,
-        max,
-        default: min,
-        entries,
-    }
-}
-
-/// What a page's parameter reads for a control at `v`: a knob, slider or
-/// value edit 0 to 1 across its range (the page maps it back through its
-/// own range configs), a menu or button its own value.
-fn value(d: &Decl<'_>, c: &Control, v: f64) -> f64 {
-    match d.kind {
-        ControlKind::Knob | ControlKind::Slider | ControlKind::ValueEdit if c.max > c.min => {
-            (v - c.min) / (c.max - c.min)
-        }
-        _ => v,
-    }
-}
-
-/// Renders `native` over the script's controls and appends what it draws
-/// on the page, in place of the controls' own widgets. Whatever the page
-/// does not cover is reported, and then it shows nothing of the page.
-pub(super) fn face(bld: &mut Builder<'_>, native: &Native, decls: &[Decl<'_>]) {
-    let rendered = nui::load(&native.modules, &native.entry).and_then(|mut page| {
-        let controls: Vec<_> = decls.iter().map(control).collect();
-        page.set_controls(&controls)?;
-        let values: Vec<_> = decls
-            .iter()
-            .zip(&controls)
-            .filter_map(|(d, c)| Some((c.name.clone(), value(d, c, d.look.value? as f64))))
-            .collect();
-        page.render(&values)
-    });
-    let root = match rendered {
-        Ok(Some(root)) => root,
-        Ok(None) => return,
-        Err(e) => {
-            let at = e.line.map_or_else(String::new, |l| format!(":{l}"));
-            bld.unsupported(
-                None,
-                "native_ui",
-                format!("{}{at}: {}", e.module, e.message),
-            );
-            return;
-        }
-    };
-    let size = bld.ui.pages.first().map_or(PAGE, |p| p.size);
-    for w in &mut bld.ui.widgets {
-        w.hidden = true;
-    }
-    let first = bld.ui.widgets.len();
-    lower(&root, size, bld);
-    bld.ui.paint_order = Some((first..bld.ui.widgets.len()).map(ui::WidgetRef).collect());
-}
-
-/// Kontakt 8's instrument page when the script sets none.
-const PAGE: ui::Size = ui::Size {
-    width: 970.,
-    height: 600.,
-};
+use super::super::Builder;
 
 /// What a node draws with, inherited from the modifiers around it.
 #[derive(Clone, Copy, Debug)]
-struct Env {
+pub(crate) struct Env {
     font: f64,
     color: [f64; 4],
     opacity: f64,
@@ -147,7 +21,7 @@ struct Env {
 /// A size, or an offer of room along each axis.
 type Size = (f64, f64);
 
-fn lower(root: &Node, size: ui::Size, bld: &mut Builder<'_>) {
+pub(super) fn lower(root: &Node, size: ui::Size, bld: &mut Builder<'_>) {
     let env = Env {
         font: 12.,
         color: [255., 255., 255., 1.],
@@ -279,7 +153,7 @@ fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size
         "Spacer" => (0., 0.),
         // ponytail: an average glyph width; measure with the font when a
         // page's layout turns on it.
-        "Text" => (
+        "Text" | "TextInput" => (
             words(n).chars().count() as f64 * env.font * 0.55,
             env.font * 1.25,
         ),
@@ -359,8 +233,100 @@ fn stack(bld: &mut Builder<'_>, n: &Node, axis: Axis, room: Size, env: Env) -> (
     (lengths, axis.size(length, thick))
 }
 
-/// Places layer `k` of `n` in `r`, appending what it draws.
-fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
+/// Where a component instance's root was placed: its room and what it
+/// inherited, its widgets (`start..end`), and how many slots inside it
+/// follow it in [`Builder::nui`].
+#[derive(Clone, Debug)]
+pub(crate) struct Slot {
+    pub(super) path: String,
+    pub(super) rect: ui::Rect,
+    pub(super) env: Env,
+    pub(super) start: usize,
+    pub(super) end: usize,
+    pub(super) inner: usize,
+    /// The parameters it read, and whether it is still being placed.
+    reads: Vec<String>,
+    open: bool,
+}
+
+/// Places layer `k` of `n` in `r`, appending what it draws; a whole
+/// instance root is recorded as a [`Slot`].
+pub(super) fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
+    let Some(path) = n.instance.as_ref().filter(|_| k == n.mods.len()) else {
+        return place_layer(n, k, r, env, bld);
+    };
+    let (start, at) = (bld.ui.widgets.len(), bld.nui.len());
+    bld.nui.push(Slot {
+        path: path.clone(),
+        rect: r,
+        env,
+        start,
+        end: start,
+        inner: 0,
+        reads: n.reads.clone(),
+        open: true,
+    });
+    place_layer(n, k, r, env, bld);
+    let (end, inner) = (bld.ui.widgets.len(), bld.nui.len() - at - 1);
+    if let Some(s) = bld.nui.get_mut(at) {
+        (s.end, s.inner, s.open) = (end, inner, false);
+    }
+}
+
+/// Puts instance `path`'s new tree (`None`: it draws nothing now) in the
+/// room its last one had, in place of that one's widgets and slots; the
+/// root (`""`) is the whole page again from widget `first` on.
+pub(super) fn splice(
+    bld: &mut Builder<'_>,
+    first: usize,
+    size: ui::Size,
+    path: &str,
+    node: Option<&Node>,
+) {
+    if path.is_empty() {
+        bld.ui.widgets.truncate(first);
+        bld.nui.clear();
+        if let Some(n) = node {
+            lower(n, size, bld);
+        }
+        return;
+    }
+    let Some(i) = bld.nui.iter().position(|s| s.path == path) else {
+        return;
+    };
+    let Some(old) = bld.nui.get(i).cloned() else {
+        return;
+    };
+    let tail = bld.ui.widgets.split_off(old.end);
+    bld.ui.widgets.truncate(old.start);
+    let after = bld.nui.split_off(i + 1 + old.inner);
+    bld.nui.truncate(i);
+    match node {
+        Some(n) => place(n, n.mods.len(), old.rect, old.env, bld),
+        None => bld.nui.push(Slot {
+            end: old.start,
+            inner: 0,
+            ..old.clone()
+        }),
+    }
+    let shift = bld.ui.widgets.len().wrapping_sub(old.end);
+    let grown = (bld.nui.len() - i - 1).wrapping_sub(old.inner);
+    bld.ui.widgets.extend(tail);
+    bld.nui.extend(after.into_iter().map(|s| Slot {
+        start: s.start.wrapping_add(shift),
+        end: s.end.wrapping_add(shift),
+        ..s
+    }));
+    // The slots around it end where it now ends, and hold what it holds.
+    for (j, s) in bld.nui.iter_mut().enumerate().take(i) {
+        if j + s.inner >= i {
+            s.end = s.end.wrapping_add(shift);
+            s.inner = s.inner.wrapping_add(grown);
+        }
+    }
+}
+
+fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
     let Some((m, args)) = k.checked_sub(1).and_then(|i| n.mods.get(i)) else {
         return primitive(n, r, env, bld);
     };
@@ -371,10 +337,24 @@ fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
     };
     let r = match m.as_str() {
         "hidden" if matches!(args.first(), Some(Prop::Bool(true)) | None) => return,
-        // Not copied: a turned node (a knob's pointer) shows nothing rather
-        // than point the wrong way.
-        "rotation" if num(args.first()).is_some_and(|a| a != 0.) => {
-            bld.unsupported(None, "native_ui rotation", n.kind.clone());
+        // Turned about the centre of its room, as SwiftUI's rotation
+        // effect: each widget's centre swings about it, and the widget
+        // turns as much about its own.
+        "rotation" => {
+            let start = bld.ui.widgets.len();
+            place_layer(n, k - 1, r, inner_env, bld);
+            let angle = num(args.first()).unwrap_or(0.);
+            let (cx, cy) = (r.x + r.width / 2., r.y + r.height / 2.);
+            let (sin, cos) = angle.to_radians().sin_cos();
+            for w in bld.ui.widgets.iter_mut().skip(start) {
+                let (dx, dy) = (
+                    w.rect.x + w.rect.width / 2. - cx,
+                    w.rect.y + w.rect.height / 2. - cy,
+                );
+                w.rect.x = cx + dx * cos - dy * sin - w.rect.width / 2.;
+                w.rect.y = cy + dx * sin + dy * cos - w.rect.height / 2.;
+                w.rotation += angle;
+            }
             return;
         }
         "frame" => {
@@ -411,6 +391,11 @@ fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
                 height: h,
             }
         }
+        "on_drag_gesture" | "on_tap_gesture" => {
+            place_layer(n, k - 1, r, inner_env, bld);
+            gesture(bld, m, args, r);
+            return;
+        }
         "background" | "overlay" => {
             let other = |bld: &mut Builder<'_>| {
                 if let Some(Prop::Node(b)) = args.first() {
@@ -429,6 +414,64 @@ fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
         _ => r,
     };
     place(n, k - 1, r, inner_env, bld);
+}
+
+/// The control a drag in the instance being placed moves: the innermost
+/// open instance that read a ranged control's parameter. Its own (hidden)
+/// widget, which the editor drags as it would that control.
+fn dragged(bld: &Builder<'_>) -> Option<ui::Widget> {
+    let open = bld.nui.iter().rev().filter(|s| s.open);
+    open.flat_map(|s| &s.reads)
+        .find_map(|id| {
+            bld.ui.widgets.iter().find(|w| {
+                w.hidden
+                    && super::id(&w.name) == id
+                    && matches!(
+                        w.kind,
+                        ui::Kind::Knob { .. }
+                            | ui::Kind::Slider { .. }
+                            | ui::Kind::ValueEdit { .. }
+                    )
+            })
+        })
+        .cloned()
+}
+
+/// A gesture's area over what it modifies, drawn as nothing: a drag
+/// drives its control's own widget; a tap is a momentary button the host
+/// answers with the page's own callbacks ([`super::TAP`]).
+fn gesture(bld: &mut Builder<'_>, m: &str, args: &[Prop], r: ui::Rect) {
+    let callback = |k: &str| match arg(args, k) {
+        Some(Prop::Callback(n)) => *n,
+        _ => 0,
+    };
+    let w = match m {
+        "on_drag_gesture" => dragged(bld).map(|w| ui::Widget {
+            rect: r,
+            auto_size: false,
+            default_axes: [false; 2],
+            hidden: false,
+            parent: None,
+            images: Vec::new(),
+            ..w
+        }),
+        _ if callback("start") + callback("complete") > 0 => Some(ui::Widget::new(
+            format!(
+                "{} {} {}",
+                super::TAP,
+                callback("start"),
+                callback("complete")
+            ),
+            ui::PageRef(0),
+            r,
+            ui::Kind::Button { momentary: true },
+        )),
+        _ => None,
+    };
+    if let Some(mut w) = w.filter(|_| r.width > 0. && r.height > 0.) {
+        w.opacity = 0.;
+        bld.ui.widgets.push(w);
+    }
 }
 
 /// What takes what it is given (zero) takes `r`'s size along that axis.
@@ -486,7 +529,7 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
                 sweep,
             })
         }
-        "Text" => ui::Kind::Label,
+        "Text" | "TextInput" => ui::Kind::Label,
         "Image" => ui::Kind::Image,
         "ZStack" | "ForEach" => {
             let a = alignment(text(n.prop("alignment")));
@@ -549,7 +592,7 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
     // A text is never cut to its room: it overhangs it, centred, by an em
     // a character (the label draws it centred, so the slack is free).
     let r = match n.kind.as_str() {
-        "Text" => {
+        "Text" | "TextInput" => {
             let em = words(n).chars().count() as f64 * env.font;
             aligned(
                 r,
@@ -566,16 +609,20 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
         _ => None,
     };
     match n.kind.as_str() {
-        "Text" => {
+        "Text" | "TextInput" => {
             w.text = words(n);
             w.colors.background = None;
-            bld.ui.styles.push(ui::TextStyle {
+            let style = ui::TextStyle {
                 font: ui::Font::Default,
                 size: Some(env.font as f32),
                 color: rgba(env.color, 1.),
                 align: ui::Align::Center,
-            });
-            w.style = Some(ui::StyleRef(bld.ui.styles.len() - 1));
+            };
+            let at = bld.ui.styles.iter().position(|s| *s == style);
+            w.style = Some(ui::StyleRef(at.unwrap_or_else(|| {
+                bld.ui.styles.push(style);
+                bld.ui.styles.len() - 1
+            })));
         }
         "Image" => {
             let Some((asset, _)) = image(bld, n) else {
