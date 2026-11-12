@@ -248,7 +248,11 @@ impl BackgroundTask for Tick {
         };
         let requests = std::mem::take(&mut *lock(&p.shared.requests));
         let changed = !requests.is_empty();
-        let shown = p.shared.shown.load(Ordering::Acquire);
+        let interfaces = if p.shared.shown.load(Ordering::Acquire) {
+            Interfaces::Shown
+        } else {
+            Interfaces::Hidden
+        };
         let mut report = Vec::new();
         let mut browser = lock(&p.shared.browser);
         let browser = browser.get_or_insert_with(browse);
@@ -298,19 +302,14 @@ impl BackgroundTask for Tick {
         }
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
-        rack.show_interfaces(if shown {
-            Interfaces::Shown
-        } else {
-            Interfaces::Hidden
-        });
+        rack.show_interfaces(interfaces);
         rack.tick();
         let mut view = lock(&p.shared.view);
         // A closed editor's copy only keeps the report; it catches up on
         // the first tick after the editor opens.
-        let refreshed = if shown {
-            view.refresh(rack, browser, report)
-        } else {
-            view.report(report)
+        let refreshed = match interfaces {
+            Interfaces::Shown => view.refresh(rack, browser, report),
+            Interfaces::Hidden => view.report(report),
         };
         // What the requests did shows, whether or not the editor's copy
         // of the rack noticed (a script's answer to a click).

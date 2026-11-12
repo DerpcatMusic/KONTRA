@@ -650,13 +650,13 @@ impl Rack {
         self.saves = Some(root);
     }
 
-    /// Frees what the audio thread let go of and resends refused commands.
-    /// Call it from the control thread now and then.
     /// Whether the next ticks keep the parts' interfaces current.
     pub fn show_interfaces(&mut self, interfaces: Interfaces) {
         self.interfaces = interfaces;
     }
 
+    /// Frees what the audio thread let go of and resends refused commands.
+    /// Call it from the control thread now and then.
     pub fn tick(&mut self) {
         while self.channels.retired.recv().is_some() {}
         while self.channels.units.recv().is_some() {}
