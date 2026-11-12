@@ -192,6 +192,7 @@ mod tests {
                 (old_attack_x(shape) * 1e6).round(),
                 "{raw}"
             );
+            assert_eq!((attack_x(shape) * 1e6).round(), f64::from(raw), "{raw}");
         }
     }
 
