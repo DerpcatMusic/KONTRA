@@ -124,6 +124,26 @@ pub struct Phaser {
     pub phase: f32,
 }
 
+/// A phaser of second-order allpasses: `sections` at one corner the LFO
+/// sweeps by `octaves` (and their Q by `q_octaves`), around a feedback loop,
+/// `mix` of `(input ± sections)/2` with the input.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Notches {
+    /// 1..=12, one notch each.
+    pub sections: u8,
+    pub hz: f32,
+    /// Q ½ is two first-order stages at the corner; above crowds the notches.
+    pub q: f32,
+    pub octaves: f32,
+    pub q_octaves: f32,
+    pub feedback: f32,
+    pub rate: Rate,
+    /// Cycles the right LFO runs ahead of the left.
+    pub phase: f32,
+    pub mix: f32,
+    pub invert: bool,
+}
+
 /// An algorithmic reverb in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reverb {

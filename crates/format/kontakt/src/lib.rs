@@ -16,6 +16,7 @@ mod impulse;
 mod laws;
 mod legacy_reverb;
 mod links;
+mod phasis;
 mod provenance;
 mod readouts;
 mod replika;

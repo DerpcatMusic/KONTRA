@@ -8,7 +8,9 @@ use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
 };
-use kontra_dsp::filter::{Cascade, CascadeSettings, CascadeStage, Clocked, ClockedShape, Svf};
+use kontra_dsp::filter::{
+    Cascade, CascadeSettings, CascadeStage, Clocked, ClockedShape, NotchSettings, Notches, Svf,
+};
 use kontra_dsp::reverb::{Combs, Convolver, Fdn, Hadamard, Network, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -203,6 +205,30 @@ impl Wet for Phaser {
     }
 }
 
+impl Wet for Notches {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Notches::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(Notches::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        Notches::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        Notches::idle(self, silence.len());
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+        if let ir::EffectKind::Notches(n) = kind {
+            Notches::set(self, notches(n, tempo));
+        }
+    }
+}
+
 impl Wet for Shaper {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Shaper::process(self, io);
@@ -344,6 +370,21 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
     }
 }
 
+fn notches(n: ir::Notches, tempo: f32) -> NotchSettings {
+    NotchSettings {
+        sections: n.sections,
+        hz: n.hz,
+        q: n.q,
+        octaves: n.octaves,
+        q_octaves: n.q_octaves,
+        feedback: n.feedback,
+        lfo_hz: hz(n.rate, tempo),
+        phase: n.phase,
+        mix: n.mix,
+        invert: n.invert,
+    }
+}
+
 fn phaser(p: ir::Phaser, tempo: f32) -> PhaserSettings {
     PhaserSettings {
         stages: p.stages,
@@ -436,6 +477,7 @@ pub fn processor(
             wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
         }
         Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(p, 120.0), rate))),
+        Some(ir::EffectKind::Notches(n)) => wet(Box::new(Notches::new(notches(n, 120.0), rate))),
         Some(ir::EffectKind::Cascade(c)) => wet(Box::new(Cascade::new(cascade(c), rate))),
         Some(ir::EffectKind::Clocked(c)) => {
             let shape = match c.shape {
