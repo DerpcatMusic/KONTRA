@@ -650,6 +650,8 @@ fn translate_group(
             }
         }
     }
+    let mods = group.0.find_first(INTERNAL_MODS);
+    crate::timed::modulator_routes(&mut out, mods, &timed_slots, notes)?;
     external(
         group,
         group_index,

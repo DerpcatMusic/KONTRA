@@ -2,9 +2,13 @@
 
 use kontra_format::Notes;
 use kontra_ir as ir;
-use ni_file::kontakt::objects::{InternalModParams, Modulator};
+use ni_file::kontakt::Chunk;
+use ni_file::kontakt::objects::{InternalModArray16, InternalModParams, Modulator};
 
 use crate::laws;
+
+/// A modulator's flag index for bypass: [router open, bypass, retrigger, unknown].
+const BYPASS: usize = 1;
 
 /// Records the selected law and its input and output when tracing is enabled.
 fn trace_timed(
@@ -33,7 +37,6 @@ pub(crate) fn timed(
     unmapped: &mut Vec<u8>,
 ) {
     // The modulator's flags: [router open, bypass, retrigger, unknown].
-    const BYPASS: usize = 1;
     const RETRIGGER: usize = 2;
     let report = |notes: &mut Notes, unmapped: &mut Vec<u8>, what: &str| {
         for t in &p.targets {
@@ -171,6 +174,9 @@ pub(crate) fn timed(
             {
                 kind
             }
+            // Another modulator's knob: routed once every slot's source is
+            // known (`modulator_routes`).
+            ("intensity" | "frequency", Some(_)) => continue,
             _ => {
                 let to = if t.slot.is_some() { "module " } else { "" };
                 let feature = format!("internal modulator {what} -> {to}{}", t.param);
@@ -201,4 +207,46 @@ pub(crate) fn timed(
             kind,
         });
     }
+}
+
+/// Each timed modulator's routes to another modulator's `intensity` or
+/// `frequency`, resolved against every slot's source: a route may name a slot
+/// translated after its own.
+pub(crate) fn modulator_routes(
+    out: &mut ir::Group,
+    mods: Option<&Chunk>,
+    timed_slots: &[(usize, ir::Source)],
+    notes: &mut Notes,
+) -> Result<(), ni_file::Error> {
+    let Some(chunk) = mods else {
+        return Ok(());
+    };
+    for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
+        let p = m.params()?;
+        let Some(&(_, source)) = timed_slots.iter().find(|&&(s, _)| s == n) else {
+            continue;
+        };
+        for (target, t) in p.targets.iter().enumerate() {
+            let (param @ ("intensity" | "frequency"), Some(at)) = (t.param.as_str(), t.slot) else {
+                continue;
+            };
+            let Some(kind) = crate::external::modulator_route(source, param, at, t, timed_slots)
+            else {
+                notes.add(
+                    ir::Impact::Audible,
+                    &format!("internal modulator -> module {param}"),
+                    &p.name,
+                );
+                continue;
+            };
+            out.mods.push(ir::Mod {
+                name: p.name.clone(),
+                slot: u16::try_from(n).unwrap_or(u16::MAX),
+                target: u16::try_from(target).unwrap_or(u16::MAX),
+                bypass: p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0),
+                kind,
+            });
+        }
+    }
+    Ok(())
 }

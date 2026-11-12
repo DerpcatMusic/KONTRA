@@ -32,12 +32,25 @@ struct Counter {
 }
 
 /// The round-robin values one note-on read, kept so its release triggers
-/// pick the same step as its attack.
+/// pick the same step as its attack; also the note's random modulation value.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RrDraw {
     global: u32,
     key: u32,
     random: u32,
+}
+
+impl RrDraw {
+    /// The note's random modulation value, 0..=1: the draw through the
+    /// splitmix64 finalizer, so it does not follow the round-robin choice
+    /// and the generator's sequence stays as it was.
+    #[must_use]
+    pub fn unit(self) -> f32 {
+        let mut z = u64::from(self.random).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
+    }
 }
 
 pub struct Behaviour {
@@ -305,5 +318,43 @@ impl Behaviour {
             Control::Key => key,
             Control::Cc(n) => self.cc(channel, n),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RrDraw;
+
+    /// The random modulation sources' per-note value covers 0..1 evenly and
+    /// does not follow the round-robin draw it is derived from.
+    #[test]
+    fn note_random_spans_the_unit_range() {
+        let units: Vec<f32> = (0..4096u32)
+            .map(|i| {
+                RrDraw {
+                    random: i.wrapping_mul(0x9E37_79B9),
+                    ..RrDraw::default()
+                }
+                .unit()
+            })
+            .collect();
+        assert!(units.iter().all(|u| (0.0..1.0).contains(u)));
+        let mean = units.iter().sum::<f32>() / units.len() as f32;
+        assert!((mean - 0.5).abs() < 0.02, "mean {mean}");
+        for quarter in 0..4 {
+            let lo = quarter as f32 / 4.0;
+            let n = units
+                .iter()
+                .filter(|u| (lo..lo + 0.25).contains(*u))
+                .count();
+            assert!((900..1150).contains(&n), "quarter {quarter}: {n}");
+        }
+        let low_rr = |i: u32| i.wrapping_mul(0x9E37_79B9) % 2 == 0;
+        let even = (0..4096u32)
+            .filter(|&i| low_rr(i))
+            .map(|i| units[i as usize])
+            .sum::<f32>()
+            / 2048.0;
+        assert!((even - 0.5).abs() < 0.03, "even-step mean {even}");
     }
 }

@@ -517,6 +517,10 @@ pub enum Source {
     HeldTime {
         span_ms: u32,
     },
+    /// A value drawn once per note and held: 0..=1, or −1..=1 when `bipolar`.
+    Random {
+        bipolar: bool,
+    },
 }
 
 impl Source {
