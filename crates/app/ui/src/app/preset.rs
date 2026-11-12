@@ -59,6 +59,19 @@ pub(super) fn picked(app: &mut App, n: usize, name: &str, pick: &str, out: &mut 
     app.view.preset_name = name.to_owned();
 }
 
+/// Whether `name` saves over one of a library's user `presets`: by the file
+/// name the host saves it as (`Soft?` is `Soft`), in any case, as a
+/// case-insensitive filesystem has it (`soft` is `Soft`).
+fn taken(presets: &[String], name: &str) -> bool {
+    let Some(file) = kontra_ui_model::preset_file_name(name).map(|f| f.to_lowercase()) else {
+        return false;
+    };
+    (presets.iter()).any(|p| {
+        p.strip_prefix(USER)
+            .is_some_and(|p| p.to_lowercase() == file)
+    })
+}
+
 /// The sheet `which` asks in: a name to save or rename to, or a delete to
 /// confirm. A name a user preset of the library has already reads Replace.
 pub(super) fn sheet(
@@ -75,14 +88,7 @@ pub(super) fn sheet(
     };
     let library =
         (app.parts.get(part)).and_then(|p| app.libraries.iter().find(|l| l.name == p.library));
-    // By the file name the host saves it as: `Soft?` replaces `Soft`.
-    let file = kontra_ui_model::preset_file_name(&app.view.preset_name);
-    let taken = library.is_some_and(|l| {
-        (l.presets.iter()).any(|p| {
-            p.strip_prefix(USER)
-                .is_some_and(|p| Some(p) == file.as_deref())
-        })
-    });
+    let taken = library.is_some_and(|l| taken(&l.presets, &app.view.preset_name));
     let mut items = Vec::new();
     if matches!(which, Sheet::DeletePreset(_)) {
         let text = format!("Delete \"{}\"? The file is removed.", app.view.preset_name);
@@ -109,4 +115,13 @@ pub(super) fn sheet(
     }
     items.push(go.el);
     (title, col(items).gap(SPACE))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_name_is_taken_by_its_file_name_in_any_case() {
+        let presets = ["User/Soft".to_owned(), "Felt".to_owned()];
+        assert!(super::taken(&presets, "soft?") && !super::taken(&presets, "Felt"));
+    }
 }
