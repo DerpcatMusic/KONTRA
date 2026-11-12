@@ -112,10 +112,11 @@ impl Rack {
             let Some(p) = live.filter(|p| p.script.generation == generation) else {
                 continue;
             };
-            if !request.save {
+            let reply = Box::new(answer(self.saves.as_deref(), request));
+            // Only a load that read its file names a preset.
+            if reply.loaded.is_some() {
                 p.named.loaded(request.path.as_str());
             }
-            let reply = Box::new(answer(self.saves.as_deref(), request));
             self.send(Command::File {
                 part,
                 generation,
