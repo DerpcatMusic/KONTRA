@@ -43,6 +43,39 @@ impl ZoneFacts {
     }
 }
 
+impl crate::Plan {
+    /// `set_zone_par(id, par, value)`: zone `id`'s group, key or velocity
+    /// range, in the zones that play and in what scripts read. False for a
+    /// zone or group the plan lacks, or a parameter not carried yet.
+    // ponytail: the fades, root, volume, pan, tune, sample bounds and BPM
+    // are not settable yet; add each when a library sets it.
+    pub fn edit_zone(&mut self, id: u32, par: ZonePar, value: i32) -> bool {
+        let key = u8::try_from(value.clamp(0, 127)).unwrap_or(0);
+        let group = u32::try_from(value)
+            .ok()
+            .filter(|&g| (g as usize) < self.groups.len());
+        let edit = |keys: &mut RangeInclusive<u8>, vels: &mut RangeInclusive<u8>, g: &mut u32| {
+            match (par, group) {
+                (ZonePar::LowKey, _) => *keys = key..=*keys.end(),
+                (ZonePar::HighKey, _) => *keys = *keys.start()..=key,
+                (ZonePar::LowVelocity, _) => *vels = key..=*vels.end(),
+                (ZonePar::HighVelocity, _) => *vels = *vels.start()..=key,
+                (ZonePar::Group, Some(to)) => *g = to,
+                _ => return false,
+            }
+            true
+        };
+        let mut found = false;
+        for z in self.zone_facts.iter_mut().filter(|z| z.id == id) {
+            found |= edit(&mut z.keys, &mut z.velocities, &mut z.group);
+        }
+        for z in self.zones.iter_mut().filter(|z| z.id == id) {
+            found |= edit(&mut z.keys, &mut z.velocities, &mut z.group);
+        }
+        found
+    }
+}
+
 /// A sample's name as a zone is called: no folder, no extension.
 #[must_use]
 pub fn zone_name(sample: &str) -> &str {

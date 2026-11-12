@@ -92,14 +92,14 @@ impl Rack {
             (script.restore, script.restore_texts) = (saved.ints, saved.texts);
         }
         let plan = Arc::new(plan);
-        let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
+        let engine = Engine::new(plan, self.store.client(), self.rate);
         let pages: Vec<Option<kontra_lua::Ui>> = old.faces.iter().map(|_| None).collect();
         let view = crate::view::View::of(&old.faces, &pages, &engine, old.path.as_deref());
         let info = Part {
             recall: engine.recall_law(),
             sounds: crate::sound::Sounds::new(self.rate, engine.group_sounds()),
             view,
-            plan: Some(plan),
+            plan: Some(Arc::clone(engine.plan())),
             slot_types: Vec::new(),
             slot_responses: Vec::new(),
             script: ScriptState {

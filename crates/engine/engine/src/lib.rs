@@ -37,6 +37,7 @@ mod ui;
 mod voice_gain;
 mod voice_groups;
 mod voice_rack;
+mod zone_edits;
 
 use std::sync::Arc;
 
@@ -75,6 +76,7 @@ pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
+pub use zone_edits::ZoneEdit;
 
 use buses::BusState;
 use group_masks::GroupMasks;
@@ -151,6 +153,10 @@ pub struct Engine {
     init_impulses: Vec<impulse_knobs::InitImpulse>,
     /// Effects scripts asked to load since the host last drained them.
     requests: Vec<fx_types::EffectRequest>,
+    /// `set_zone_par` calls waiting for the host (zone_edits.rs).
+    zone_edits: Vec<ZoneEdit>,
+    /// Per script slot, the edits refused because that queue was full.
+    zone_refused: Box<[u32]>,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -222,9 +228,10 @@ pub struct Engine {
     groups: Box<[Group]>,
     /// The routes each script `#key` names.
     route_names: ir::RouteNames,
-    /// Shared EQ chains, and each zone's chain.
+    /// Shared EQ chains, and each group's chain (a zone plays through its
+    /// group's, so `set_zone_par` moving it needs no rebuild).
     chains: Vec<filters::Chain>,
-    zone_chain: Box<[Option<u16>]>,
+    group_chain: Box<[Option<u16>]>,
     /// Per group, the inserts that run on each voice.
     voice_units: Box<[Arc<[voice_rack::Unit]>]>,
     /// Per group, the first slot its summed voices run (group_racks.rs).
@@ -299,6 +306,7 @@ impl Engine {
             .max()
             .unwrap_or(0)
             .max(plan.groups.len());
+        let script_count = plan.scripts.len();
         let vms = plan
             .scripts
             .iter()
@@ -330,6 +338,8 @@ impl Engine {
             loaded: Vec::with_capacity(fx_types::REQUESTS),
             init_impulses: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
+            zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
+            zone_refused: vec![0; script_count].into(),
             stream,
             voices,
             buses,
@@ -372,7 +382,7 @@ impl Engine {
             taps,
             main,
             chains: Vec::new(),
-            zone_chain: Box::new([]),
+            group_chain: Box::new([]),
             voice_units: Box::new([]),
             group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),

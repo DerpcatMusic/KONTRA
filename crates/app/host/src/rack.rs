@@ -23,6 +23,7 @@ mod files;
 mod hold;
 mod named;
 mod recall;
+mod requests;
 pub use audio::RackAudio;
 pub use hold::{HOLD_STEPS, Hold};
 
@@ -67,6 +68,13 @@ pub enum Command {
         mix: Mix,
         /// Which load it is: effect units built for another never go in.
         generation: u64,
+    },
+    /// Swap in `part`'s plan with its scripts' zone edits, if the part is
+    /// still the load that made them; the box comes back with the old plan.
+    Zones {
+        part: usize,
+        generation: u64,
+        swap: Box<requests::ZoneSwap>,
     },
     /// Put the effect unit a script asked for into `part`'s slot, if the
     /// part is still the load that asked; the box comes back holding what
@@ -158,6 +166,8 @@ pub struct Channels {
     /// Answered file requests, by part and load: a save's values to write,
     /// the rest to free.
     pub filed: Ring<(usize, u64, Box<kontra_engine::files::FileReply>)>,
+    /// Zone edits scripts made, and plans swapped out to free here.
+    pub zones: requests::ZoneRings,
     /// Effect units swapped out, to free on the control side.
     pub units: Ring<Box<Option<Prepared>>>,
     /// Typed texts the audio side wrote ([`Command::ControlText`]), to free here.
@@ -280,6 +290,7 @@ impl Rack {
             // An engine queues at most 16 at once.
             requests: Ring::new(16 * MAX_PARTS),
             units: Ring::new(16 * MAX_PARTS),
+            zones: requests::ZoneRings::new(MAX_PARTS),
             files: Ring::new(16 * MAX_PARTS),
             filed: Ring::new(16 * MAX_PARTS),
             looks: Ring::new(2 * MAX_PARTS),
@@ -429,7 +440,7 @@ impl Rack {
             .cloned()
             .collect();
         let plan = Arc::new(loaded.plan);
-        let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
+        let engine = Engine::new(plan, self.store.client(), self.rate);
         let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref())
             .map(|view| view.with_waves(waves));
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
@@ -442,7 +453,8 @@ impl Rack {
             slot_responses,
             modified: false,
             named: named::Named::default(),
-            plan: Some(plan),
+            // With the zone edits its `on init` made.
+            plan: Some(Arc::clone(engine.plan())),
             delays: None,
             path,
             name: loaded.name,
@@ -656,36 +668,8 @@ impl Rack {
         while self.channels.typed.recv().is_some() {}
         while self.channels.recalled.recv().is_some() {}
         self.files();
-        // Effect types scripts loaded: built here, off the audio thread.
-        while let Some((part, generation, request)) = self.channels.requests.recv() {
-            let Some(Some(p)) = self.parts.get_mut(part) else {
-                continue;
-            };
-            if p.script.generation != generation {
-                continue;
-            }
-            let here = (request.at, request.slot);
-            let (asked, ty) = (request.response.is_some(), request.ty);
-            let unit = Prepared::new(request, p.plan.as_deref(), self.rate);
-            // A response that fails to decode leaves the slot playing what it
-            // had, so the save keeps what it had too.
-            if let Some(name) = unit.response_name() {
-                p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
-                p.slot_responses.push((here.0, here.1, name.to_owned()));
-            } else if let Some(ty) = ty.filter(|_| !asked) {
-                // None: the slot's own effect built again (a reverb's
-                // network), which saves no type.
-                p.slot_types.retain(|&(at, slot, _)| (at, slot) != here);
-                p.slot_types.push((here.0, here.1, ty));
-                p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
-            }
-            let unit = Box::new(Some(unit));
-            self.send(Command::Effect {
-                part,
-                generation,
-                unit,
-            });
-        }
+        // Effect types and zone edits scripts asked for, built here.
+        self.script_requests();
         // The interfaces catch up with what their scripts changed, and ask
         // again: the editor shows each at most one tick late.
         while let Some(frame) = self.channels.looks.recv() {
