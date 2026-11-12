@@ -285,10 +285,18 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .map(|s| s.rsplit('/').next().unwrap_or(s))
         .collect();
     let current = p.preset.filter(|&n| n < names.len());
-    // v2's preset field beside the name: what plays, or what to pick.
-    let shown = current
-        .and_then(|c| names.get(c).copied())
-        .unwrap_or("Select preset…");
+    // v2's preset field beside the name: what plays, or what to pick; a
+    // star once the player changed it, as UVI marks an edited preset.
+    let named = current.and_then(|c| names.get(c).copied());
+    let starred;
+    let shown = match (named, p.modified) {
+        (Some(name), true) => {
+            starred = format!("{name} *");
+            starred.as_str()
+        }
+        (Some(name), false) => name,
+        (None, _) => "Select preset…",
+    };
     let preset = kit::dropdown(
         ui,
         menu,

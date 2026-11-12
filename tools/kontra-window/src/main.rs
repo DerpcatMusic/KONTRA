@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 delays: None,
                 slot_types: Vec::new(),
                 slot_responses: Vec::new(),
+                modified: false,
             }],
         };
         let params = plugin.params_arc();

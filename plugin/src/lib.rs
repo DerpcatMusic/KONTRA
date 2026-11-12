@@ -11,6 +11,7 @@
 mod align;
 mod editor;
 mod folder;
+mod follow;
 mod input;
 mod look;
 #[cfg(test)]
@@ -308,6 +309,7 @@ impl BackgroundTask for Tick {
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.show_interfaces(interfaces);
         rack.tick();
+        follow::follow(rack, browser);
         let mut view = lock(&p.shared.view);
         // A closed editor's copy only keeps the report; it catches up on
         // the first tick after the editor opens.

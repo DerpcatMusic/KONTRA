@@ -108,11 +108,15 @@ impl Rack {
             }
         }
         while let Some((part, generation, request)) = self.channels.files.recv() {
-            let live = self.parts.get(part).and_then(Option::as_ref);
-            if live.is_none_or(|p| p.script.generation != generation) {
+            let live = self.parts.get_mut(part).and_then(Option::as_mut);
+            let Some(p) = live.filter(|p| p.script.generation == generation) else {
                 continue;
-            }
+            };
             let reply = Box::new(answer(self.saves.as_deref(), request));
+            // Only a load that read its file names a preset.
+            if reply.loaded.is_some() {
+                p.named.loaded(request.path.as_str());
+            }
             self.send(Command::File {
                 part,
                 generation,
