@@ -216,7 +216,7 @@ pub(super) fn row(path: &str, r: &Report) -> String {
         })
         .collect();
     format!(
-        "{{\"program\":{},\"name\":{},\"works\":{},\"load_s\":{:.2},\"hold_ms\":{:.1},\"failed\":{},\"segments\":[{}],\
+        "{{\"program\":{},\"name\":{},\"works\":{},\"load_s\":{:.2},\"hold_ms\":{:.1},\"slowest_block_us\":{:.0},\"slowest_block_share\":{:.3},\"slowest_commands_us\":{:.0},\"failed\":{},\"segments\":[{}],\
          \"ui\":{{\"shown\":{},\"touched\":{},\"reached\":{},\"clicks\":{},\"quiet\":{}}},\
          \"diagnostics\":{{\"broken\":{},\"audible\":{},\"latent\":{},\"top\":{}}}}}",
         json(path),
@@ -224,6 +224,9 @@ pub(super) fn row(path: &str, r: &Report) -> String {
         r.failed.is_empty() && d.0 == 0,
         r.load_s,
         r.hold_ms,
+        r.slowest.ns as f64 / 1e3,
+        r.slowest.share(super::RATE),
+        r.commands_ns as f64 / 1e3,
         list(&r.failed),
         segments.join(","),
         t.shown,

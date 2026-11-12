@@ -727,6 +727,68 @@ fn a_lua_state_restored_after_a_wait_saves_as_restored() {
     assert_eq!(state(&rack), Some(saved[0].clone()));
 }
 
+/// A million-cell persistent array is captured a budget of cells a block,
+/// never all in one; an idle script is not read again, and what a callback
+/// wrote reaches the save once the next capture is read.
+#[test]
+fn a_big_persistent_array_is_captured_over_blocks_and_saves_what_changed() {
+    use kontra_engine::ir;
+    let source = "on init
+            declare %big[100000]
+            make_persistent(%big)
+            %big[99999] := 7
+        end on
+        on note
+            %big[99999] := %big[99999] + 1
+        end on";
+    let instrument = ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "big".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source: source.into(),
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, None).unwrap();
+    let last = |rack: &Rack| {
+        let saved = rack.saved_scripts(0).concat();
+        let big = saved.into_iter().find(|s| s.starts_with("%big "));
+        big.and_then(|b| b.rsplit(' ').next().map(str::to_owned))
+    };
+    // Blocks until a capture is back: 100,000 cells at 128 a frame of a
+    // 256-frame block take four.
+    let captured = |rack: &mut Rack, audio: &mut RackAudio| {
+        rack.tick();
+        let before = last(rack);
+        (1..=20)
+            .find(|_| {
+                audio.process(BLOCK, &[]);
+                rack.tick();
+                last(rack) != before
+            })
+            .unwrap_or(0)
+    };
+    assert_eq!(captured(&mut rack, &mut audio), 4);
+    assert_eq!(last(&rack).as_deref(), Some("7"));
+    // Idle, the next capture reads nothing: back after one block.
+    rack.tick();
+    audio.process(BLOCK, &[]);
+    rack.tick();
+    assert_eq!(last(&rack).as_deref(), Some("7"));
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..8 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
+    rack.tick();
+    assert_eq!(last(&rack).as_deref(), Some("8"), "the note's write");
+}
+
 /// An instrument read from "a.nki" whose one script keeps `$knob` and
 /// counts, in `$marker`, init (5) and each persistence-changed (+1); its
 /// snapshot type is `kind`, its saved values `saved`.

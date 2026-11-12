@@ -212,6 +212,8 @@ pub struct ScriptState {
     pub slots: Vec<usize>,
     generation: u64,
     latest: Option<Box<Capture>>,
+    /// The capture before `latest`, sent again: its room is reused.
+    spare: Option<Box<Capture>>,
     asked: bool,
 }
 
@@ -714,9 +716,7 @@ impl Rack {
                 && p.script.generation == c.generation
             {
                 p.script.asked = false;
-                let mut c = c;
-                c.keep(p.script.latest.take());
-                p.script.latest = Some(c);
+                crate::persist::landed(c, &mut p.script.latest, &mut p.script.spare);
             }
         }
         // Ask again for every part with persistent values: what a save
@@ -732,7 +732,8 @@ impl Rack {
                 continue;
             }
             s.asked = true;
-            let mut c = Capture::new(n, s.generation, &s.vars);
+            let spare = s.spare.take().filter(|c| c.generation == s.generation);
+            let mut c = spare.unwrap_or_else(|| Capture::new(n, s.generation, &s.vars));
             c.after(s.latest.as_deref());
             self.send(Command::Capture(c));
         }

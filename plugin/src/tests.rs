@@ -1011,7 +1011,7 @@ fn a_load_shows_until_the_tick_is_done_with_it() {
 /// transport stopped and nothing clicked; the audio thread never stalls on
 /// the control tick's capture of its persistent cells (it scanned every
 /// control per cell: about 9 s per capture, so no timer ran and a page
-/// switch showed the panel).
+/// switch showed the panel; then 11 ms, a whole block, per capture).
 #[test]
 fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
     let Some(path) = library(
@@ -1045,14 +1045,16 @@ fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
     // The editor closed: the timer runs all the same, and an idle tick
     // stays cheap.
     params.shared.shown.store(false, Ordering::Release);
-    let (mut slowest, mut ticks) = (Duration::ZERO, Duration::ZERO);
+    let (mut commands, mut ticks) = (0, Duration::ZERO);
     for _ in 0..TICKS {
         let t = std::time::Instant::now();
         Tick.run(&params);
         ticks += t.elapsed();
-        let t = std::time::Instant::now();
         live_block(&params, &mut dsp);
-        slowest = slowest.max(t.elapsed());
+        let stats = crate::lock(&params.shared.rack)
+            .as_ref()
+            .and_then(|r| r.stats());
+        commands = commands.max(stats.map_or(0, |s| s.slowest_commands_ns));
     }
     let tick = ticks / TICKS;
     assert!(tick < IDLE_TICK, "an idle tick took {tick:?}");
@@ -1064,17 +1066,24 @@ fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
     }
     Tick.run(&params);
     assert!(!panel(&params), "the timer never hid the panel");
-    assert!(slowest.as_secs_f64() < 2.0, "a live block took {slowest:?}");
+    // Its 1.28 million persistent cells are read a budget a block: the
+    // commands keep to 5% of a block (a debug build is ten times slower).
+    // Its timer's own script work is the playtest's to bound.
+    let real_ns = BLOCK as f64 * 1e9 / RATE;
+    let share = if cfg!(debug_assertions) { 0.5 } else { 0.05 };
+    assert!(
+        commands as f64 <= share * real_ns,
+        "a block's commands took {commands} ns of {real_ns} ns"
+    );
 }
 
 /// Idle ticks the timer test times.
 const TICKS: u32 = 20;
 
 /// The most an idle tick of a loaded Areia may take on average, at 20 ticks
-/// a second (1 ms there is 2% of one core).
-// ponytail: 10% of a core while each tick rebuilds its persistent-cell
-// capture (persist.rs); 1 ms once the capture is reused.
-const IDLE_TICK: Duration = Duration::from_millis(if cfg!(debug_assertions) { 50 } else { 5 });
+/// a second (1 ms there is 2% of one core; measured 34 us, the capture's
+/// room reused).
+const IDLE_TICK: Duration = Duration::from_millis(if cfg!(debug_assertions) { 10 } else { 1 });
 
 /// One live block with no events and the transport stopped, as a host
 /// plays a part nobody is playing.
