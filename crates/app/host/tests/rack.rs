@@ -74,6 +74,7 @@ fn part(name: &str) -> Part {
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
         modified: false,
+        named: Default::default(),
         sounds: Default::default(),
     }
 }
