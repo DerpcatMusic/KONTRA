@@ -7,7 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use kontra_ir as ir;
-use ni_file::kontakt::objects::{Snapshot, snapshot_metadata_names};
+use ni_file::kontakt::Chunk;
+use ni_file::kontakt::objects::{BParamArrayBParFX8, Snapshot, snapshot_metadata_names};
 
 use crate::{Error, container, translate};
 
@@ -27,6 +28,31 @@ pub struct Preset {
     /// Saved persistent values by script slot; an empty slot keeps the
     /// base's own.
     pub saved: Vec<Vec<String>>,
+    /// It saves the instrument's effect racks and groups' insert effects
+    /// too, not only script values (Kontakt's native snapshot state).
+    pub effects: bool,
+}
+
+/// What a snapshot saves of the instrument besides its scripts: the
+/// program's racks (instrument insert, send, main and bus chunks, as the
+/// program holds them) and each group's insert effects, by group. The
+/// translator reads them in place of the base's, by the same reader.
+pub(crate) struct Native {
+    pub racks: Vec<Chunk>,
+    pub groups: Vec<Option<BParamArrayBParFX8>>,
+}
+
+impl Native {
+    fn of(state: Snapshot) -> Option<Self> {
+        state.groups.as_ref()?;
+        let groups = (state.group_snapshots().unwrap_or_default().into_iter())
+            .map(|(_, g)| Some(g.fx))
+            .collect();
+        Some(Self {
+            racks: state.effect_children,
+            groups,
+        })
+    }
 }
 
 /// Reads the snapshot at `path` as a [`Preset`].
@@ -35,24 +61,31 @@ pub struct Preset {
 /// When the file is not a snapshot this can read, or its base instrument
 /// is not found.
 pub fn preset(path: &Path) -> Result<Preset, Error> {
+    read(path).map(|(preset, _)| preset)
+}
+
+/// [`preset`], with what it saves of the instrument.
+fn read(path: &Path) -> Result<(Preset, Snapshot), Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let chunks = container::chunks(path)?;
     let state =
         (chunks.find_first(SNAPSHOT)).ok_or_else(|| Error::new(path, "snapshot", "missing"))?;
-    let state = Snapshot::try_from(state).map_err(decode("snapshot"))?;
+    let mut state = Snapshot::try_from(state).map_err(decode("snapshot"))?;
     let names = (chunks.find_first(METADATA))
         .ok_or_else(|| Error::new(path, "snapshot metadata", "missing"))?;
     let names = snapshot_metadata_names(names).map_err(decode("snapshot metadata"))?;
     let base = base(path, &names)?;
-    Ok(Preset {
+    let preset = Preset {
         name: (path.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
         base: std::path::absolute(&base).unwrap_or(base),
-        saved: state.persistent,
-    })
+        saved: std::mem::take(&mut state.persistent),
+        effects: state.groups.is_some(),
+    };
+    Ok((preset, state))
 }
 
 pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
-    let preset = preset(path)?;
+    let (preset, state) = read(path)?;
     let (base_chunks, monolith, encrypted) = container::opened(&preset.base)?;
     let mut out = translate::instrument(
         &preset.base,
@@ -60,6 +93,7 @@ pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
         monolith,
         &preset.saved,
         encrypted,
+        Native::of(state),
     )?;
     if !preset.name.is_empty() {
         out.name = preset.name;
@@ -183,5 +217,85 @@ mod tests {
         std::fs::write(root.join("More/Lib.nki"), b"").unwrap();
         assert!(base(&snap, &names).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    #[test]
+    #[ignore]
+    fn probe() {
+        for (base, snap) in [
+            (
+                "/data/main/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+                "/data/main/Libraries/Kontakt/ANALOG STRINGS/Snapshots/ANALOG STRINGS/Factory/Blown Fuse.nksn",
+            ),
+            (
+                "/data/main/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Cotton.nki",
+                "/data/main/Libraries/Kontakt/Una Corda Library/Snapshots/Una Corda Cotton/Cotton - Tape Echo.nksn",
+            ),
+        ] {
+            let b = crate::load(std::path::Path::new(base)).unwrap();
+            let s = crate::load(std::path::Path::new(snap)).unwrap();
+            let g = b
+                .groups
+                .iter()
+                .zip(&s.groups)
+                .filter(|(x, y)| format!("{:?}", x.inserts) != format!("{:?}", y.inserts))
+                .count();
+            let bus = b
+                .buses
+                .iter()
+                .zip(&s.buses)
+                .filter(|(x, y)| {
+                    format!("{:?}{}{}", x.inserts, x.volume_db, x.pan)
+                        != format!("{:?}{}{}", y.inserts, y.volume_db, y.pan)
+                })
+                .count();
+            let racks = [
+                (&b.inserts, &s.inserts),
+                (&b.sends, &s.sends),
+                (&b.main, &s.main),
+            ]
+            .iter()
+            .filter(|(x, y)| format!("{x:?}") != format!("{y:?}"))
+            .count();
+            let unreadable = s
+                .diagnostics
+                .iter()
+                .filter(|d| format!("{d:?}").contains("unreadable"))
+                .count();
+            println!(
+                "{snap}: groups differ {g}/{}, buses {bus}/{}, instrument racks {racks}/3, unreadable {unreadable} (base {}), impulses {} vs {}",
+                s.groups.len(),
+                s.buses.len(),
+                b.diagnostics
+                    .iter()
+                    .filter(|d| format!("{d:?}").contains("unreadable"))
+                    .count(),
+                b.impulses.len(),
+                s.impulses.len()
+            );
+            if let Some((x, y)) = b
+                .groups
+                .iter()
+                .zip(&s.groups)
+                .find(|(x, y)| format!("{:?}", x.inserts) != format!("{:?}", y.inserts))
+            {
+                println!(
+                    "  first group: base {:?}\n  snap {:?}",
+                    x.inserts
+                        .iter()
+                        .flatten()
+                        .map(|e| format!("{:?}", e.kind).chars().take(60).collect::<String>())
+                        .collect::<Vec<_>>(),
+                    y.inserts
+                        .iter()
+                        .flatten()
+                        .map(|e| format!("{:?}", e.kind).chars().take(60).collect::<String>())
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
     }
 }

@@ -34,9 +34,10 @@ pub(crate) fn instrument(
     monolith: Option<ni_file::file_container::NIFileContainer>,
     saved: &[Vec<String>],
     encrypted: Option<bool>,
+    native: Option<crate::snapshot::Native>,
 ) -> Result<ir::Instrument, Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
-    let program = chunks
+    let mut program = chunks
         .program()
         .ok_or_else(|| Error::new(path, "program", "missing"))?
         .map_err(decode("program"))?;
@@ -117,11 +118,18 @@ pub(crate) fn instrument(
     let mut impulses = crate::impulse::Impulses::new(others, &mut resolver, path, resources);
     let mut criteria = Vec::new();
     let mut slots = crate::effects::Slots::default();
+    // A snapshot's racks and group effects stand in for the base's.
+    let mut group_fx = Vec::new();
+    if let Some(native) = native {
+        crate::effects::replace_racks(&mut program.0.children, native.racks);
+        group_fx = native.groups;
+    }
     for (index, group) in groups.groups.iter().enumerate() {
         let t = translate_group(group, index, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
-        g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes, &mut slots);
+        let fx = group_fx.get_mut(index).and_then(Option::take);
+        g.inserts = crate::effects::group(group, fx, index, &mut impulses, &mut notes, &mut slots);
         crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
         // ponytail: a filter a modulator moves passes unfiltered until filters
         // run per voice; its routes are reported.

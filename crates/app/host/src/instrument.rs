@@ -81,6 +81,8 @@ pub struct Preset {
     /// Saved values by script slot ([`ir::Script::slot`]); an empty slot
     /// means the base's own, which only a full load reads.
     pub saved: Vec<Vec<String>>,
+    /// It saves the instrument's effects too: a recall rebuilds them.
+    pub effects: bool,
 }
 
 /// The file at `path` as a [`Preset`] (a Kontakt snapshot), read without
@@ -94,6 +96,7 @@ pub fn preset(path: &Path) -> Option<Preset> {
         name: p.name,
         base: p.base,
         saved: p.saved,
+        effects: p.effects,
     })
 }
 

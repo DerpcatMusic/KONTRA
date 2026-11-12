@@ -594,8 +594,10 @@ fn sends(public: &[u8]) -> Option<ir::EffectKind> {
     Some(ir::EffectKind::Sends(levels))
 }
 
+/// Group `index`'s insert rack: `saved` (a snapshot's) or the group's own.
 pub(crate) fn group(
     group: &Group,
+    saved: Option<BParamArrayBParFX8>,
     index: usize,
     impulses: &mut Impulses,
     notes: &mut Notes,
@@ -604,7 +606,7 @@ pub(crate) fn group(
     let rack_at = u32::try_from(index)
         .ok()
         .map(|g| (ir::RackAt::Group(g), laws));
-    match group.insert_fx() {
+    match saved.map_or_else(|| group.insert_fx(), Ok) {
         Ok(array) => rack(
             &array,
             &format!("group {index} insert"),
@@ -619,6 +621,18 @@ pub(crate) fn group(
                 format!("group {index}: {e}"),
             );
             Vec::new()
+        }
+    }
+}
+
+/// Puts `saved` racks (a snapshot's, in its order) in place of the
+/// program's own, kind by kind in order: instrument racks, then buses.
+pub(crate) fn replace_racks(children: &mut [Chunk], saved: Vec<Chunk>) {
+    let (racks, buses): (Vec<Chunk>, Vec<Chunk>) = saved.into_iter().partition(|c| c.id == RACK);
+    for (id, saved) in [(RACK, racks), (BUS, buses)] {
+        let own = children.iter_mut().filter(|c| c.id == id);
+        for (own, saved) in own.zip(saved) {
+            *own = saved;
         }
     }
 }

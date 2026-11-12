@@ -68,6 +68,10 @@ impl Rack {
         p.name.clone_from(&preset.name);
         p.path = path.map(Path::to_owned);
         p.modified = false;
+        if let Some(path) = path.filter(|_| preset.effects) {
+            self.recall_native(part, plan, path, (saved, loaded));
+            return true;
+        }
         match p.recall {
             Recall::Keep => {
                 p.script.loaded = loaded;
@@ -127,6 +131,7 @@ impl Rack {
             name: name.unwrap_or_default(),
             base: user.base,
             saved,
+            effects: false,
         })
     }
 
@@ -209,24 +214,44 @@ impl Rack {
 
     /// Starts a new engine for `part` on a copy of `plan` with `saved` as its
     /// restored values: `on init` runs again, nothing is read or prepared.
-    fn restart(&mut self, part: usize, plan: &Plan, saved: Vec<Saved>, loaded: Vec<Vec<String>>) {
+    pub(super) fn restart(
+        &mut self,
+        part: usize,
+        plan: &Plan,
+        saved: Vec<Saved>,
+        loaded: Vec<Vec<String>>,
+    ) {
+        let Some(Some(p)) = self.parts.get(part) else {
+            return;
+        };
+        // The part's plan is as it loaded: what its scripts loaded since
+        // goes in as a load puts it.
+        let slots = (p.slot_types.clone(), p.slot_responses.clone());
+        let engine = (self.store.client(), self.rate);
+        // Its library's resources are found near the instrument file.
+        let face = (
+            p.faces.as_slice(),
+            p.source.as_deref().or(p.path.as_deref()),
+        );
+        let started = started(plan.clone(), &slots, saved, engine, face);
+        self.restarted(part, started, loaded);
+    }
+
+    /// `part` plays `started`, its scripts' values saved as `loaded`.
+    pub(super) fn restarted(&mut self, part: usize, started: Started, loaded: Vec<Vec<String>>) {
         let Some(old) = self.parts.get_mut(part).and_then(Option::take) else {
             return;
         };
-        let mut plan = plan.clone();
-        // The part's plan is as it loaded: what its scripts loaded since
-        // goes in as a load puts it.
-        let (slot_types, slot_responses) =
-            put_slots(&mut plan, &old.slot_types, &old.slot_responses, self.rate);
-        for (script, saved) in plan.scripts.iter_mut().zip(saved) {
-            (script.restore, script.restore_texts) = (saved.ints, saved.texts);
-        }
-        let plan = Arc::new(plan);
-        let mut engine = Engine::new(plan, self.store.client(), self.rate);
-        super::requests::init_tables(&mut engine, &self.store.client());
-        let pages: Vec<Option<kontra_lua::Ui>> = old.faces.iter().map(|_| None).collect();
-        let near = old.source.as_deref().or(old.path.as_deref());
-        let view = crate::view::View::of(&old.faces, &pages, &engine, near);
+        let Started {
+            plan,
+            engine,
+            slots: (slot_types, slot_responses),
+            view,
+        } = started;
+        // Its waveform displays keep the zone samples they show.
+        let mut old = old;
+        let waves = old.view.as_mut().map(|v| std::mem::take(&mut v.waves));
+        let view = view.map(|v| v.with_waves(waves.unwrap_or_default()));
         let info = Part {
             recall: engine.recall_law(),
             sounds: crate::sound::Sounds::new(self.rate, engine.group_sounds()),
@@ -242,6 +267,43 @@ impl Rack {
             },
             ..old
         };
-        self.install(part, Box::new(engine), info);
+        self.install(part, engine, info);
+    }
+}
+
+/// A restarted part: its plan, its engine, the slots its plan took and its
+/// interface on that engine.
+pub(super) struct Started {
+    plan: Arc<Plan>,
+    engine: Box<Engine>,
+    slots: crate::state::LiveSlots,
+    view: Option<crate::view::View>,
+}
+
+/// `plan` with `slots` (types, responses) put in and `saved` as its
+/// restored values, an engine started on it (`on init` runs) and the
+/// part's interface (`faces`, of the library at the path) on it. It needs
+/// no rack, so it runs on any thread.
+pub(super) fn started(
+    mut plan: Plan,
+    (types, responses): &crate::state::LiveSlots,
+    saved: Vec<Saved>,
+    (client, rate): (kontra_stream::StreamClient, u32),
+    (faces, path): (&[Option<crate::ui::Face>], Option<&Path>),
+) -> Started {
+    let slots = put_slots(&mut plan, types, responses, rate);
+    for (script, saved) in plan.scripts.iter_mut().zip(saved) {
+        (script.restore, script.restore_texts) = (saved.ints, saved.texts);
+    }
+    let mut engine = Box::new(Engine::new(Arc::new(plan), client.clone(), rate));
+    super::requests::init_tables(&mut engine, &client);
+    let plan = Arc::clone(engine.plan());
+    let pages: Vec<Option<kontra_lua::Ui>> = faces.iter().map(|_| None).collect();
+    let view = crate::view::View::of(faces, &pages, &engine, path);
+    Started {
+        plan,
+        engine,
+        slots,
+        view,
     }
 }

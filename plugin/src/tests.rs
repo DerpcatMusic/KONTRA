@@ -1411,3 +1411,129 @@ fn a_multis_page_is_the_performance_view_not_its_first_slot() {
         "the page names {pictures} pictures, so it is not the instrument's page"
     );
 }
+
+/// A snapshot that saves other effects recalls into the part playing its
+/// base without holding the rack or the audio thread for the read: its
+/// plan is made on a thread, and a tick restarts the part on it. Prints
+/// the time the recall held the rack, the time until the part plays the
+/// snapshot's effects, the slowest tick and the slowest audio block while
+/// a note plays through it, and the effects that changed.
+#[test]
+#[ignore = "real libraries; run with --ignored --nocapture"]
+fn a_snapshot_recalls_its_effects_without_holding_the_rack() {
+    use std::time::{Duration, Instant};
+    let cases = [
+        (
+            "ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+            "ANALOG STRINGS/Snapshots/ANALOG STRINGS/Factory/Blown Fuse.nksn",
+        ),
+        (
+            "Una Corda Library/Instruments/Una Corda Cotton.nki",
+            "Una Corda Library/Snapshots/Una Corda Cotton/Cotton - Tape Echo.nksn",
+        ),
+    ];
+    for (base, snapshot) in cases {
+        let (Some(base), Some(snapshot)) = (library(base), library(snapshot)) else {
+            continue;
+        };
+        let saved = Saved::new(vec![SavedPart {
+            part: 0,
+            path: base,
+            channel: 0,
+            output: 0,
+            gain: 1.0,
+            pan: 0.0,
+            solo: false,
+            mute: false,
+            scripts: Vec::new(),
+            delays: None,
+            slot_types: Vec::new(),
+            slot_responses: Vec::new(),
+            preset: None,
+            modified: false,
+        }]);
+        let (params, mut dsp) = activate(&saved.write());
+        settle(&params, &mut dsp);
+        let effects = |params: &KontraParams| {
+            let rack = crate::lock(&params.shared.rack);
+            let p = rack.as_ref().and_then(|r| r.parts()[0].as_ref());
+            let plan = p.and_then(|p| p.plan.clone()).unwrap();
+            let generation = p.map(|p| p.script.generation());
+            (plan, generation)
+        };
+        let (before, generation) = effects(&params);
+        block(&params, &mut dsp, &[note(true, 60)]);
+        let t = Instant::now();
+        let loaded = crate::lock(&params.shared.rack)
+            .as_mut()
+            .unwrap()
+            .load(0, &snapshot);
+        let held = t.elapsed();
+        assert!(loaded.is_ok(), "{loaded:?}");
+        let (mut slowest_block, mut slowest_tick) = (Duration::ZERO, Duration::ZERO);
+        let switched = loop {
+            let b = Instant::now();
+            block(&params, &mut dsp, &[]);
+            slowest_block = slowest_block.max(b.elapsed());
+            let k = Instant::now();
+            Tick.run(&params);
+            slowest_tick = slowest_tick.max(k.elapsed());
+            if effects(&params).1 != generation {
+                break t.elapsed();
+            }
+            assert!(t.elapsed().as_secs() < 30, "the snapshot's plan never came");
+        };
+        block(&params, &mut dsp, &[note(false, 60)]);
+        let (after, _) = effects(&params);
+        // Two slots as text, from a little before where they first differ.
+        let diff = |x: &Option<kontra_host::rack::ir::Effect>, y: &Option<_>| {
+            let (x, y) = (format!("{x:?}"), format!("{y:?}"));
+            let at = x.bytes().zip(y.bytes()).take_while(|(a, b)| a == b).count();
+            let from =
+                |t: &str| -> String { t.chars().skip(at.saturating_sub(20)).take(60).collect() };
+            format!("…{} -> …{}", from(&x), from(&y))
+        };
+        let mut changed = Vec::new();
+        for (n, (a, b)) in before.groups.iter().zip(&after.groups).enumerate() {
+            for (s, (x, y)) in a.inserts.iter().zip(&b.inserts).enumerate() {
+                if x != y {
+                    let purged = if a.purged { " (purged)" } else { "" };
+                    changed.push(format!("group {n}{purged} slot {s}: {}", diff(x, y)));
+                }
+            }
+        }
+        for (n, (a, b)) in before.buses.iter().zip(&after.buses).enumerate() {
+            for (s, (x, y)) in a.inserts.iter().zip(&b.inserts).enumerate() {
+                if x != y {
+                    changed.push(format!("bus {n} slot {s}: {}", diff(x, y)));
+                }
+            }
+        }
+        let racks = [
+            ("insert", &before.inserts, &after.inserts),
+            ("send", &before.sends, &after.sends),
+            ("main", &before.main, &after.main),
+        ];
+        for (name, a, b) in racks {
+            for (s, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                if x != y {
+                    changed.push(format!("instrument {name} slot {s}: {}", diff(x, y)));
+                }
+            }
+        }
+        let rack_changed = racks.iter().filter(|(_, a, b)| a != b).count();
+        let sounding = changed.iter().filter(|c| !c.contains("purged")).count();
+        println!(
+            "{}: recall held the rack {held:?}; plays the snapshot's effects after {switched:?}; \
+             slowest tick {slowest_tick:?}, slowest block {slowest_block:?} of {:?}; \
+             {} slots changed ({sounding} outside purged groups), {rack_changed} instrument racks",
+            snapshot.display(),
+            Duration::from_secs_f64(BLOCK as f64 / RATE),
+            changed.len(),
+        );
+        for c in changed.iter().filter(|c| !c.contains("purged")).take(12) {
+            println!("  {c}");
+        }
+        assert!(!changed.is_empty() || rack_changed > 0, "no effect changed");
+    }
+}

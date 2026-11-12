@@ -22,6 +22,7 @@ mod audio;
 mod files;
 mod hold;
 mod named;
+mod native;
 mod recall;
 mod requests;
 pub use audio::RackAudio;
@@ -276,6 +277,8 @@ pub struct Rack {
     saves: Option<PathBuf>,
     /// Whether anyone looks at the parts' interfaces.
     interfaces: Interfaces,
+    /// Snapshot recalls whose plans are being made ([`native`]).
+    native: Vec<native::Native>,
 }
 
 impl Rack {
@@ -308,6 +311,7 @@ impl Rack {
             pending: std::collections::VecDeque::new(),
             interfaces: Interfaces::Shown,
             generation: 0,
+            native: Vec::new(),
         };
         (rack, audio)
     }
@@ -665,6 +669,7 @@ impl Rack {
         while self.channels.recalled.recv().is_some() {}
         self.files();
         // Effect types and zone edits scripts asked for, built here.
+        self.native_ready();
         self.script_requests();
         // The interfaces catch up with what their scripts changed, and ask
         // again: the editor shows each at most one tick late.

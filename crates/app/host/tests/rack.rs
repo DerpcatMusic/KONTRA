@@ -447,6 +447,7 @@ fn a_restarted_recall_keeps_the_effects_a_script_loaded_after_init() {
         name: "b".into(),
         base: "dc.nki".into(),
         saved: Vec::new(),
+        effects: false,
     };
     assert!(rack.recall(0, &preset, None));
     assert_eq!(high(&rack), (loaded, true), "the restart's plan has it");
@@ -902,6 +903,7 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
             name: "b".into(),
             base: "a.nki".into(),
             saved: vec![vec!["$knob 42".into()]],
+            effects: false,
         };
         assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
         let saved = saved_now(&mut rack, &mut audio);
@@ -936,6 +938,7 @@ fn a_changed_preset_saves_as_changed_until_a_preset_is_picked() {
         name: "b".into(),
         base: "a.nki".into(),
         saved: vec![vec!["$knob 42".into()]],
+        effects: false,
     };
     assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
     assert!(
