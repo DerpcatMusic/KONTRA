@@ -249,7 +249,9 @@ impl Engine {
         let Some(script) = plan.scripts.get(usize::from(slot)) else {
             return;
         };
-        if let Step::Wait(micros) = vm.run(&script.program, co, self) {
+        let step = vm.run(&script.program, co, self);
+        self.refresh_moved_routes();
+        if let Step::Wait(micros) = step {
             self.wake(slot, vm, co, micros, now);
         }
         // A callback started beside this one waits from this one's time.
