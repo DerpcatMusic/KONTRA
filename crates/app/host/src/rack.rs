@@ -352,10 +352,8 @@ impl Rack {
     pub fn load(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         // A preset of the instrument the part plays recalls into it,
         // without reading the instrument.
-        if let Some(preset) = crate::instrument::preset(path)
-            && self.recall(part, &preset, Some(path))
-        {
-            return Ok(());
+        if let Some(done) = self.load_preset(part, path) {
+            return done;
         }
         self.load_ir(part, crate::instrument::read(path)?, Some(path.to_owned()))
     }
@@ -432,17 +430,14 @@ impl Rack {
                 saves: saves.clone(),
             }));
         }
-        let slot_types: Vec<_> = (slot_types.iter().copied())
-            .filter(|&(at, slot, ty)| loaded.plan.load_type(at, slot, ty))
-            .collect();
-        let slot_responses: Vec<_> = (slot_responses.iter())
-            .filter(|(at, slot, name)| loaded.plan.load_response(*at, *slot, name, self.rate))
-            .cloned()
-            .collect();
+        let (slot_types, slot_responses) =
+            recall::put_slots(&mut loaded.plan, slot_types, slot_responses, self.rate);
         let plan = Arc::new(loaded.plan);
         let mut engine = Engine::new(plan, self.store.client(), self.rate);
         requests::init_tables(&mut engine, &self.store.client());
-        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref())
+        // Its library's resources are found near the instrument file.
+        let near = source.as_deref().or(path.as_deref());
+        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, near)
             .map(|view| view.with_waves(waves));
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
