@@ -429,7 +429,10 @@ fn comb_bank(c: ir::CombBank, tempo: f32) -> CombSettings {
         depth: c.depth,
         lfo_hz: hz(c.rate, tempo),
         offset: c.offset,
-        polarity: if c.invert { -1.0 } else { 1.0 },
+        polarity: match c.polarity {
+            ir::Polarity::Normal => 1.0,
+            ir::Polarity::Inverted => -1.0,
+        },
         thru_zero: blend(c.mode == ir::CombMode::ThruZero),
         scan: blend(c.mode == ir::CombMode::Scan),
         scan_depth: c.scan_depth,

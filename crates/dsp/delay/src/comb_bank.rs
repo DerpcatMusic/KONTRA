@@ -285,13 +285,13 @@ impl Clock {
     fn tick(&mut self, d: &Derived) -> f32 {
         let phase = self.phase as f32;
         let triangle = (2.0 - 4.0 * phase).abs() - 1.0;
-        self.lfo = self.lfo_pole * self.lfo + (1.0 - self.lfo_pole) * triangle;
+        self.lfo = flush(self.lfo_pole * self.lfo + (1.0 - self.lfo_pole) * triangle);
         // The window moves only while scanning (`+0x5cc == 2`); elsewhere
         // its levels hold where they were.
         if d.s.scan > 0.0 {
             let target = window(sweep(&d.s, phase));
             for (l, t) in self.levels.iter_mut().zip(target) {
-                *l = self.scan_pole * *l + (1.0 - self.scan_pole) * t;
+                *l = flush(self.scan_pole * *l + (1.0 - self.scan_pole) * t);
             }
         }
         let next = self.phase + d.step;
@@ -571,15 +571,19 @@ mod tests {
         assert_eq!(hits, [0, 119, 239, 359]);
     }
 
-    /// Full feedback on a loud constant: the clip holds the loop within
-    /// `input + 2` a pass, where a linear loop grows without end.
+    /// Flair's 100 % feedback (0.999) on a loud constant: the clip holds the
+    /// loop within `input + 2` a pass, where a linear loop grows without
+    /// end, and the loop still sounds.
     #[test]
     fn the_soft_clip_bounds_the_loop() {
-        let mut bank = CombBank::new(one(400.0, 1.0), 48_000, 20.0);
+        let mut bank = CombBank::new(one(400.0, 0.999), 48_000, 20.0);
         let mut io = vec![[10.0f32; 2]; 48_000];
         bank.process(&mut io);
         let loudest = io.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
         assert!(loudest.is_finite() && loudest < 20.0, "{loudest}");
+        // The input still reaches the loop: the clip holds it, not silence.
+        let last = io.last().map_or(0.0, |f| f[0].abs());
+        assert!(last > 1.0, "{last}");
         assert!(soft_clip(1e6) <= 2.0 && soft_clip(-1e6) >= -2.0);
     }
 

@@ -25,7 +25,8 @@ pub use drive::{
 pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, CombBank, CombMode, Compressor, Delay, DelayTime,
     Detector, ENSEMBLE_VOICES, Ensemble, EnsembleVoice, Formant, IDENTITY, ImpulseCuts,
-    ImpulseKnob, Limiter, Matrix, Notches, Phaser, Reverb, ScanShape, Transient, VowelSet,
+    ImpulseKnob, Limiter, LineFilter, Matrix, Notches, Phaser, Polarity, Reverb, ScanShape,
+    Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};

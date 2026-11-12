@@ -173,14 +173,27 @@ pub struct EnsembleVoice {
     pub hz: f32,
     /// The LFO's start, cycles.
     pub start: f32,
-    /// A one-pole on the line: a low-pass there, or a high-pass if
-    /// `high_pass`; `f32::INFINITY` low-pass for none.
-    pub corner_hz: f32,
-    pub high_pass: bool,
+    pub filter: LineFilter,
     /// The delayed signal's level out, zero for a silent voice, and its
     /// turn in the stereo field (radians, a rotation).
     pub level: f32,
     pub angle: f32,
+}
+
+/// A one-pole on a delay line's input.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LineFilter {
+    None,
+    /// Its corner, Hz.
+    LowPass(f32),
+    HighPass(f32),
+}
+
+/// Whether a signal passes as it is or turned over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Polarity {
+    Normal,
+    Inverted,
 }
 
 /// Four stereo combs on one input, each a line around a soft-clipped,
@@ -210,8 +223,8 @@ pub struct CombBank {
     pub rate: Rate,
     /// How much further back the still head reads, a share of the rest.
     pub offset: f32,
-    /// The swept head's sign flipped, out and round the loop.
-    pub invert: bool,
+    /// The swept head's sign, out and round the loop.
+    pub polarity: Polarity,
     pub mode: CombMode,
     /// The share of its shape the LFO moves the scan window.
     pub scan_depth: f32,

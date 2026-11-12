@@ -104,8 +104,11 @@ pub(crate) fn choral(p: [f32; 10]) -> ir::EffectKind {
             ms: 1000.0 * at(scale) * span,
             hz: at(speeds) * hz,
             start: at(starts),
-            corner_hz: at(corners),
-            high_pass: high_pass.get(v).copied().unwrap_or_default(),
+            filter: if high_pass.get(v).copied().unwrap_or_default() {
+                ir::LineFilter::HighPass(at(corners))
+            } else {
+                ir::LineFilter::LowPass(at(corners))
+            },
             level: gain * sign * (1.0 + fb),
             angle,
         }

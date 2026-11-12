@@ -40,12 +40,14 @@ fn settings(e: &ir::Ensemble, v: &ir::EnsembleVoice) -> Settings {
         // where 30 s renders stop growing (see the PR's grid).
         feedback: diagonal(feedback.clamp(-LOOP, LOOP)),
         output: [[g * c, -g * s], [g * s, g * c]],
-        damping_hz: if v.high_pass {
-            f32::INFINITY
-        } else {
-            v.corner_hz
+        damping_hz: match v.filter {
+            ir::LineFilter::LowPass(hz) => hz,
+            _ => f32::INFINITY,
         },
-        low_cut_hz: if v.high_pass { v.corner_hz } else { 0.0 },
+        low_cut_hz: match v.filter {
+            ir::LineFilter::HighPass(hz) => hz,
+            _ => 0.0,
+        },
         steep_low_cut: false,
         high_shelf: None,
         spread_ms: 0.0,

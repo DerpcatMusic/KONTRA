@@ -6,8 +6,10 @@
 //!
 //! ponytail: the KSP-to-lane map and the raw scaling of Pitch, Chord and
 //! Mode are unread: each knob is mapped to its lane by meaning, Pitch as
-//! semitones 0..=96, Chord and Mode as indices. Rate Unit (host sync) is
-//! unread: the rate is always free Hz.
+//! semitones 0..=96, Chord and Mode as indices. Rate Unit (host sync,
+//! `FUN_1419622b0` through the unit table `FUN_1419a0200`) is not read
+//! yet, so `$ENGINE_PAR_FLAIR_RATE_UNIT` has no row: a script that sets it
+//! goes unanswered (and is listed so) instead of silently running free.
 
 use kontra_ir as ir;
 
@@ -130,7 +132,11 @@ pub(crate) fn flair(p: [f32; 15]) -> ir::EffectKind {
         rate: ir::Rate::Hz(440.0 * (11.5 * rate - 16.25).exp2()),
         // Offset: the still head `0.2·p` further back (0x144f38948).
         offset: 0.2 * offset,
-        invert: invert >= 0.5,
+        polarity: if invert >= 0.5 {
+            ir::Polarity::Inverted
+        } else {
+            ir::Polarity::Normal
+        },
         mode,
         scan_depth: amount,
         scan_shape,
@@ -168,9 +174,10 @@ pub(crate) fn slot_type() -> ir::SlotType {
     }
 }
 
-/// The KSP names of [`model`]'s knobs: a straight 0..1 for the continuous
-/// ones; mode, chord, pitch (a note), the unit and the switches are raw.
-pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 15] {
+/// The KSP names of [`model`]'s knobs but the unit (see the module docs): a
+/// straight 0..1 for the continuous ones; mode, chord, pitch (a note) and
+/// the switches are raw.
+pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 14] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
@@ -180,7 +187,6 @@ pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 15] {
         ("$ENGINE_PAR_FLAIR_CHORD", Slot(Knob(1)), raw()),
         ("$ENGINE_PAR_FLAIR_INVERT_PHASE", Slot(Knob(2)), raw()),
         ("$ENGINE_PAR_FLAIR_RATE", Slot(Knob(3)), unit()),
-        ("$ENGINE_PAR_FLAIR_RATE_UNIT", Slot(Knob(4)), raw()),
         ("$ENGINE_PAR_FLAIR_FEEDBACK", Slot(Knob(5)), unit()),
         ("$ENGINE_PAR_FLAIR_AMOUNT", Slot(Knob(6)), unit()),
         ("$ENGINE_PAR_FLAIR_WIDTH", Slot(Knob(7)), unit()),
@@ -220,8 +226,8 @@ mod tests {
         };
         assert!(near(hz, 0.1), "{hz}");
         assert_eq!(
-            (c.mode, c.invert, c.mix),
-            (ir::CombMode::Standard, false, 0.5)
+            (c.mode, c.polarity, c.mix),
+            (ir::CombMode::Standard, ir::Polarity::Normal, 0.5)
         );
     }
 }

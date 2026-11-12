@@ -325,8 +325,7 @@ mod tests {
                 ms: 3.0 + 4.0 * v as f32,
                 hz: 0.25 * (1.0 + v as f32 * 0.2),
                 start: v as f32 / 6.0,
-                corner_hz: 5_000.0,
-                high_pass: false,
+                filter: ir::LineFilter::LowPass(5_000.0),
                 level: g,
                 angle: 0.1,
             }
@@ -358,7 +357,7 @@ mod tests {
                 depth: 0.5,
                 rate: ir::Rate::Hz(0.9),
                 offset: 0.1,
-                invert: false,
+                polarity: ir::Polarity::Normal,
                 mode: ir::CombMode::Scan,
                 scan_depth: 0.5,
                 scan_shape: ir::ScanShape::SawUp,
