@@ -1547,3 +1547,28 @@ fn a_snapshot_recalls_its_effects_without_holding_the_rack() {
         assert!(!changed.is_empty() || rack_changed > 0, "no effect changed");
     }
 }
+
+/// Kontakt's user snapshots list under `User Content/<instrument>`, never
+/// by their absolute folder, and not as the player's own (`User/`, which
+/// the editor offers to rename and delete): Kontakt's files are only read.
+#[test]
+fn kontakts_user_snapshots_list_under_user_content() {
+    let mut browser = kontra_host::browser::Browser::open(None, None);
+    let content = PathBuf::from("/home/me/Documents/Native Instruments/User Content");
+    browser.prefs.kontakt_snapshots = Some(content.clone());
+    browser.catalog.libraries = vec![kontra_library::Library {
+        dir: PathBuf::from("/libs/Strings"),
+        name: "Strings".into(),
+        presets: vec![
+            PathBuf::from("/libs/Strings/Instruments/Strings.nki"),
+            content.join("Strings/Mine.nksn"),
+        ],
+        ..Default::default()
+    }];
+    let listed = crate::editor::libraries(&browser);
+    let names = listed
+        .first()
+        .map(|l| l.presets.clone())
+        .unwrap_or_default();
+    assert_eq!(names, ["Instruments/Strings", "User Content/Strings/Mine"]);
+}
