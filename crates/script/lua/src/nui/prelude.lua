@@ -82,9 +82,24 @@ local ColorType = setmetatable({}, {
 })
 
 -- Rendering state: the node being expanded, its hooks, the states kept.
+-- Each component call is an instance, kept by its path: what it was called
+-- with and the parameters it read, so a change re-renders only the
+-- instances that read what changed (`__update`).
 local states = {}
-local current = { path = "", hook = 0, context = {} }
+local instances = {}
+local current = { path = "", hook = 0, context = {}, reads = {}, instance = "" }
+-- Instances whose state changed since they last rendered.
+local stale = {}
 __dirty = false
+
+-- The functions native_ui made to be read (a state's, a computed, a
+-- context's): only these are read while drawing; any other function a
+-- page passes (a setter, a gesture's) is a callback, never called then.
+local getters = setmetatable({}, { __mode = "k" })
+local function getter(f)
+	getters[f] = true
+	return f
+end
 
 local function hook_key()
 	current.hook = current.hook + 1
@@ -101,17 +116,19 @@ function ui.create_state(initial)
 		states[key] = { value = initial }
 	end
 	local s = states[key]
-	return function()
+	local owner = current.instance
+	return getter(function()
 		return s.value
-	end, function(v)
+	end), function(v)
 		if s.value ~= v then
 			s.value = v
+			stale[owner] = true
 			__dirty = true
 		end
 	end
 end
 function ui.create_computed(f)
-	return f
+	return getter(f)
 end
 function ui.create_effect(f) end
 function ui.create_context(default)
@@ -123,14 +140,14 @@ function ui.use_context(c)
 	if v == nil then
 		v = c.default
 	end
-	return function()
+	return getter(function()
 		return v
-	end
+	end)
 end
 function ui.is_enabled()
-	return function()
+	return getter(function()
 		return true
-	end
+	end)
 end
 function ui.resign_focus() end
 setmetatable(ui, {
@@ -144,27 +161,44 @@ setmetatable(ui, {
 __params, __meters, __writes = {}, {}, {}
 local Parameter = {}
 Parameter.__index = Parameter
-function Parameter:value()
-	return __params[self.id] or 0
+-- The host gives raw values (`__params`). A knob, slider or value edit
+-- reads 0..1 across its range; with an index (a table's cell, Conflux's
+-- `util.prepare_value_from_ksp`) any control reads and writes raw.
+local function span(id, index)
+	local c = __controls[id]
+	if index == nil and c and c.normalized and c.max > c.min then
+		return c.min, c.max - c.min
+	end
 end
-function Parameter:set_value(v)
-	__params[self.id] = v
-	__writes[#__writes + 1] = { self.id, v }
+function Parameter:value(index)
+	current.reads[self.id] = true
+	local raw = __params[self.id] or 0
+	local min, width = span(self.id, index)
+	return min and (raw - min) / width or raw
+end
+function Parameter:set_value(v, index)
+	local min, width = span(self.id, index)
+	local raw = min and min + v * width or v
+	__params[self.id] = raw
+	__writes[#__writes + 1] = { self.id, raw }
 	__dirty = true
 end
--- The control's KSP properties, as the page's own uses read them: 0 and 14
--- its label, 16 its default, 17 its entries' count, 18/19/20 entry `i`'s
+-- The control's KSP properties, as the page's own uses read them: 0 its
+-- text, 14 its value as shown, 16 its default, 17 its entries' count, 18/19/20 entry `i`'s
 -- text, value and shown, 21/22 its range. From the host (`__controls`).
 __controls = {}
 local ENTRY = { [18] = "text", [19] = "value", [20] = "shown" }
 function Parameter:ksp_control_property(property, i)
+	current.reads[self.id] = true
 	local c = __controls[self.id] or {}
 	if ENTRY[property] then
 		local e = (c.entries or {})[(i or 0) + 1]
 		return e and e[ENTRY[property]]
 	end
-	if property == 0 or property == 14 then
+	if property == 0 then
 		return c.label or ""
+	elseif property == 14 then
+		return c.value_text or ""
 	elseif property == 16 then
 		return c.default
 	elseif property == 17 then
@@ -192,9 +226,9 @@ local kontakt = {
 	end,
 	connect_level_meter = function(id)
 		return {
-			level_value = function()
+			level_value = getter(function()
 				return __meters[id] or 0
-			end,
+			end),
 		}
 	end,
 	create_tmp_midi_file = function()
@@ -233,14 +267,27 @@ __builtins = { native_ui = ui, native_ui_util = util, kontakt = kontakt }
 -- Callbacks the tree holds (gestures), by number for the host.
 __callbacks = {}
 
+-- Runs callback `n` with `event`; what the page wrote meanwhile, as
+-- { id, value } pairs.
+function __call(n, event)
+	__writes = {}
+	local f = __callbacks[n]
+	if f then
+		f(event)
+	end
+	local w = __writes
+	__writes = {}
+	return w
+end
+
 local expand
 
 -- A value a primitive draws with, its nodes expanded: a computed one
--- (a getter: no arguments) read now, a callback (gestures) numbered.
+-- (one of `getters`) read now, any other function numbered as a callback.
 local function plain(v, path, context, reactive)
 	if is_node(v) then
 		return expand(v, path, context)
-	elseif type(v) == "function" and reactive then
+	elseif type(v) == "function" and reactive and getters[v] then
 		local ok, value = pcall(v)
 		if ok and type(value) ~= "function" then
 			return plain(value, path, context)
@@ -276,6 +323,7 @@ expand = function(v, path, context)
 	if not is_node(v) then
 		return nil
 	end
+	local outer = context
 	-- `.context(key = k, value = v)` provides to the node's whole subtree.
 	for _, m in ipairs(v.mods) do
 		if m[1] == "context" and type(m[2]) == "table" then
@@ -299,11 +347,11 @@ expand = function(v, path, context)
 			-- Each item's content runs where the ForEach stands: its
 			-- contexts, its own hooks.
 			local saved = current
-			current = { path = path .. "/each", hook = 0, context = context }
+			current = { path = path .. "/each", hook = 0, context = context, reads = saved.reads, instance = saved.instance }
 			for i, item in ipairs(data or {}) do
-				local ok, child = pcall(v.props.content, item, function()
+				local ok, child = pcall(v.props.content, item, getter(function()
 					return i
-				end)
+				end))
 				if not ok then
 					current = saved
 					error(child, 0)
@@ -331,17 +379,40 @@ expand = function(v, path, context)
 		end
 	end
 	local saved = current
-	current = { path = path, hook = 0, context = context }
+	local reads = {}
+	current = { path = path, hook = 0, context = context, reads = reads, instance = path }
 	local ok, result = pcall(f, props)
-	current = saved
 	if not ok then
+		current = saved
 		error(result, 0)
 	end
-	local out = expand(result, path .. "/", context)
+	-- Its primitives' props are its own reads: expanded in its scope.
+	local expanded, out = pcall(expand, result, path .. "/", context)
+	current = saved
+	if not expanded then
+		error(out, 0)
+	end
+	instances[path] = { node = v, context = outer, reads = reads }
+	stale[path] = nil
 	if out then
-		-- A component's own modifiers wrap its root.
+		-- A component whose root is another's: one root, the outer's, and
+		-- the inner renders again as the outer does.
+		local inner = out.instance and instances[out.instance]
+		if inner then
+			inner.alias = path
+			for id in pairs(inner.reads) do
+				reads[id] = true
+			end
+		end
+		-- A component's own modifiers wrap its root; the root is the
+		-- instance's, for the host to put a re-render back in place.
 		for _, m in ipairs(expand_mods(v.mods, path, context)) do
 			out.mods[#out.mods + 1] = m
+		end
+		out.instance = path
+		out.reads = {}
+		for id in pairs(reads) do
+			out.reads[#out.reads + 1] = id
 		end
 	end
 	return out
@@ -350,6 +421,54 @@ end
 -- The entry's tree, from `root` (the entry module's value: a function).
 function __render(root)
 	__callbacks = {}
+	instances, stale = {}, {}
 	__dirty = false
 	return expand(__nui(root, {}), "", {})
+end
+
+local function within(path, outer)
+	return path == outer or string.sub(path, 1, #outer + 1) == outer .. "/"
+end
+
+-- Re-renders the instances that read a parameter in `changed` (a set of
+-- ids) or whose state changed: the outermost of them only, each as
+-- { path, tree }. The root among them is the whole page again.
+function __update(changed)
+	__dirty = false
+	local dirty = {}
+	for path, i in pairs(instances) do
+		local hit = stale[path]
+		for id in pairs(changed) do
+			hit = hit or i.reads[id]
+		end
+		if hit then
+			while instances[path] and instances[path].alias do
+				path = instances[path].alias
+			end
+			dirty[#dirty + 1] = path
+		end
+	end
+	table.sort(dirty, function(a, b)
+		return #a < #b
+	end)
+	local done, out = {}, {}
+	for _, path in ipairs(dirty) do
+		local inner = false
+		for _, d in ipairs(done) do
+			inner = inner or within(path, d)
+		end
+		if not inner then
+			done[#done + 1] = path
+			local i = instances[path]
+			for p in pairs(instances) do
+				if within(p, path) then
+					instances[p] = nil
+				end
+			end
+			-- ponytail: the replaced subtree's callbacks stay numbered
+			-- until the next whole render.
+			out[#out + 1] = { path = path, tree = expand(i.node, path, i.context) }
+		end
+	end
+	return out
 end

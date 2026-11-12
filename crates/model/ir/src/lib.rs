@@ -23,12 +23,12 @@ pub use drive::{
     Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
-    Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
-    IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Reverb, Transient,
-    VowelSet,
+    Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector,
+    ENSEMBLE_VOICES, Ensemble, EnsembleVoice, Formant, IDENTITY, ImpulseCuts, ImpulseKnob, Limiter,
+    Matrix, Notches, Phaser, Reverb, Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
-pub use kontra_law::{FormulaId, common};
+pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
 pub use output::{Balance, Output, OutputControllers};
@@ -692,6 +692,8 @@ pub enum EffectKind {
     Phaser(Phaser),
     /// A phaser of second-order allpasses, its input mixed in (`dry` 0).
     Notches(Notches),
+    /// A chorus ensemble, its input mixed in (`dry` 0).
+    Ensemble(Ensemble),
     /// A transient shaper, in place.
     Transient(Transient),
     /// Not carried, an insert: audio passes unchanged (its output gain trims

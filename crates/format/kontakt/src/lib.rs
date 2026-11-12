@@ -3,6 +3,7 @@
 //! store; everything this cannot carry over is an [`ir::Diagnostic`].
 
 mod access;
+mod choral;
 mod clocked;
 mod container;
 mod delays;
@@ -26,6 +27,7 @@ mod samples;
 mod script_knobs;
 mod skreamer;
 mod snapshot;
+mod tape;
 pub use snapshot::{Preset, preset};
 mod solid_knobs;
 mod timed;
