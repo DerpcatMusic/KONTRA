@@ -7,6 +7,7 @@ pub mod browser;
 pub mod instrument;
 pub mod perf_view;
 pub mod persist;
+pub mod presets;
 pub mod rack;
 pub mod script;
 pub mod sound;

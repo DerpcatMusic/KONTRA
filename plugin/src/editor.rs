@@ -32,6 +32,9 @@ struct PartView {
     /// Which load of the part this is.
     generation: u64,
     path: Option<PathBuf>,
+    /// The instrument file its pictures are found near: a user preset's
+    /// base, not the preset in KONTRA's own folder.
+    source: Option<PathBuf>,
     /// Its library's interface; copied when the part loads and whenever
     /// its script changes it ([`kontra_host::view::View::revision`]).
     tree: Option<Arc<Interface>>,
@@ -118,6 +121,7 @@ impl Snapshot {
                     slot,
                     generation,
                     path: p.path.clone(),
+                    source: p.source.clone().or_else(|| p.path.clone()),
                     tree,
                     revision,
                     sounds,
@@ -240,7 +244,7 @@ impl Snapshot {
                         f
                     })
                 }
-                _ => p.tree.as_deref().map(|tree| face(tree, p.path.clone())),
+                _ => p.tree.as_deref().map(|tree| face(tree, p.source.clone())),
             };
             Part {
                 face,
@@ -300,6 +304,58 @@ struct Shown {
     browser: u64,
 }
 
+/// Saves, renames or deletes the player's preset `part` plays, under the
+/// browser's presets folder, and lists the user presets again.
+fn edit_preset(
+    rack: &mut Rack,
+    browser: &mut Browser,
+    part: usize,
+    edit: app::PresetEdit,
+) -> std::io::Result<()> {
+    use kontra_host::presets::{self, Overwrite};
+    let folder = browser
+        .user
+        .clone()
+        .ok_or_else(|| std::io::Error::other("no presets folder"))?;
+    let playing = rack.parts().get(part).and_then(Option::as_ref);
+    let path = playing.and_then(|p| p.path.clone());
+    let library = (path.as_deref().and_then(|p| browser.find(p)))
+        .and_then(|(l, _)| browser.catalog.libraries.get(l))
+        .map(|l| l.name.clone())
+        .ok_or_else(|| std::io::Error::other("not in a listed library"))?;
+    match (edit, path) {
+        (app::PresetEdit::Save(name), _) => {
+            let saved = rack.save_preset(part, &folder, &library, &name, Overwrite::Create);
+            if let Err(e) = saved {
+                // The list was stale: read again, Save preset as… offers Replace.
+                browser.user_changed();
+                return Err(match e.kind() {
+                    std::io::ErrorKind::AlreadyExists => std::io::Error::new(
+                        e.kind(),
+                        format!("\"{name}\" exists: Save preset as… again to replace it"),
+                    ),
+                    _ => e,
+                });
+            }
+        }
+        (app::PresetEdit::Replace(name), _) => {
+            rack.save_preset(part, &folder, &library, &name, Overwrite::Replace)?;
+        }
+        (app::PresetEdit::Rename(name), Some(path)) => {
+            let to = presets::rename(&folder, &path, &name)?;
+            rack.preset_moved(&path, Some(&to));
+        }
+        // What plays stays; it is its base instrument, changed, from now on.
+        (app::PresetEdit::Delete, Some(path)) => {
+            presets::delete(&folder, &path)?;
+            rack.preset_moved(&path, None);
+        }
+        _ => return Err(std::io::Error::other("the part plays no user preset")),
+    }
+    browser.user_changed();
+    Ok(())
+}
+
 /// The catalog as the browser lists it: presets by path inside their
 /// library, without the extension.
 fn libraries(browser: &Browser) -> Vec<app::Library> {
@@ -311,10 +367,20 @@ fn libraries(browser: &Browser) -> Vec<app::Library> {
                 kontra_library::Format::Uvi => app::Format::Uvi,
             },
             presets: (l.presets.iter())
-                .map(|p| {
-                    let p = p.strip_prefix(&l.dir).unwrap_or(p).with_extension("");
-                    p.to_string_lossy().into_owned()
-                })
+                .map(
+                    |p| match browser.user.as_deref().filter(|u| p.starts_with(u)) {
+                        // The player's own, in a folder of their own.
+                        Some(_) => format!(
+                            "{}{}",
+                            app::USER,
+                            p.file_stem().unwrap_or_default().display()
+                        ),
+                        None => {
+                            let p = p.strip_prefix(&l.dir).unwrap_or(p).with_extension("");
+                            p.to_string_lossy().into_owned()
+                        }
+                    },
+                )
                 .collect(),
             starred: browser.prefs.starred(&l.dir),
             art: art(&l.art),
@@ -451,6 +517,11 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
             } % count;
             let switch = Action::Switch { part, preset };
             browse(rack, browser, switch, report);
+        }
+        Action::Preset { part, edit } => {
+            if let Err(e) = edit_preset(rack, browser, part, edit) {
+                report.push(format!("preset: {e}"));
+            }
         }
         Action::Star(library, on) => browser.star(library, on),
         Action::Refresh => browser.rescan(),
@@ -706,6 +777,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                     row(part).map(|part| Action::Switch { part, preset })
                 }
                 Action::Step { part, by } => row(part).map(|part| Action::Step { part, by }),
+                Action::Preset { part, ref edit } => row(part).map(|part| Action::Preset {
+                    part,
+                    edit: edit.clone(),
+                }),
                 Action::Replace {
                     part,
                     library,

@@ -16,6 +16,9 @@
 
 use std::fmt;
 
+mod preset_name;
+pub use preset_name::preset_file_name;
+
 macro_rules! reference {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(
         $(#[$doc])*
