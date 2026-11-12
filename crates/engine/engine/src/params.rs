@@ -20,11 +20,11 @@ impl Engine {
         self.script()?.engine_pars.get(id)
     }
 
-    /// A send level addressed to `$NI_SEND_BUS` on the instrument is its
-    /// insert chain's Send Levels slot: Kontakt moves it there (Una Corda's
-    /// reverb amount, `generic 0`, raises its tail 10 dB; controls.py,
-    /// 2026-11-12). Send effects have no send levels of their own.
-    fn send_generic(&self, par: i32, group: i32, generic: i32) -> i32 {
+    /// A send level addressed to the send chain (generic 0) on the instrument
+    /// moves its insert chain's Send Levels slot: send effects have no send
+    /// levels of their own (a library's reverb amount knob raises its tail
+    /// 10 dB this way; tools/oracle/controls.py, 2026-11-12).
+    pub(crate) fn send_generic(&self, par: i32, group: i32, generic: i32) -> i32 {
         let send = matches!(self.engine_par(par), Some(EnginePar::SendLevel(_)));
         if send && group < 0 && generic == 0 {
             1
