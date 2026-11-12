@@ -369,6 +369,9 @@ pub(crate) fn libraries(browser: &Browser) -> Vec<app::Library> {
                 kontra_library::Format::Kontakt => app::Format::Kontakt,
                 kontra_library::Format::Uvi => app::Format::Uvi,
             },
+            recalls: (l.presets.iter().enumerate())
+                .filter_map(|(n, p)| is_preset(p).then_some(n))
+                .collect(),
             presets: (l.presets.iter())
                 .map(
                     |p| match browser.user.as_deref().filter(|u| p.starts_with(u)) {
@@ -746,7 +749,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         for action in response.changed {
             let asked = match action {
-                Action::Load { .. } => Some(app::Loading::New),
+                Action::Load { into: Some(n), .. } => Some(app::Loading::Part(n)),
+                Action::Load { into: None, .. } => Some(app::Loading::New),
                 Action::Replace { part, .. }
                 | Action::Switch { part, .. }
                 | Action::Step { part, .. } => Some(app::Loading::Part(part)),

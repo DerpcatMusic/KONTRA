@@ -309,6 +309,7 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                 None,
                 view.picked == Some(at),
             );
+            let into = into.filter(|_| l.recalls.binary_search(&preset).is_ok());
             pick(
                 ui,
                 &id,
@@ -423,6 +424,7 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                 None,
                 shown,
             );
+            let into = into.filter(|_| l.recalls.binary_search(&n).is_ok());
             pick(ui, &id, (&mut v.picked, &mut v.clicked), at, into, out);
             rows.push(r.el.pad(kit::edges(0., 0., 0., SPACE)));
         }
@@ -466,9 +468,9 @@ pub(super) struct Carried {
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// A preset row's pointer, as v2 read it: a click selects it, a
-/// double-click or Enter loads it (a preset into the focused part `into`,
-/// an instrument into a new part), a drag carries it to the rack (onto a
-/// part to replace it, onto free space to add one).
+/// double-click or Enter loads it (into part `into` when named, else into
+/// a new part), a drag carries it to the rack (onto a part to replace it,
+/// onto free space to add one).
 fn pick(
     ui: &mut Ui,
     id: &str,

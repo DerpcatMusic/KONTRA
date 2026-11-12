@@ -78,6 +78,10 @@ pub struct Library {
     pub format: Format,
     /// Its instruments by path inside the library: `Folder/Name`.
     pub presets: Vec<String>,
+    /// Which of `presets` (sorted indices) are presets of an instrument (a
+    /// snapshot, the player's own) rather than one: a double-click recalls
+    /// those into the focused part, and adds a part for the rest.
+    pub recalls: Vec<usize>,
     pub starred: bool,
     /// Pictures that may be its cover, best first, as the host's cover
     /// store reads them; the first that decodes is shown.
@@ -332,10 +336,9 @@ fn focused(parts: &[Part]) -> Option<usize> {
 /// What the user asked for this frame, for the host to carry out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// A browser preset to play. A preset (a snapshot, a user preset)
-    /// recalls `into` that part when one is named; an instrument, or a
-    /// preset with no part named, adds a part (Kontakt's browser
-    /// double-click, with its replace-selected-slot option).
+    /// A browser preset to play: into part `into` when named (a preset of
+    /// an instrument, double-clicked with a part focused, as Kontakt's
+    /// browser replaces the selected slot), else into a new part.
     Load {
         library: usize,
         preset: usize,
