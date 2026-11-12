@@ -748,6 +748,5 @@ fn translate_zone(
         loops: found,
         reverse,
         slot: 0,
-        id: 0,
     })
 }

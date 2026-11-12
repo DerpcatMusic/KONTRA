@@ -87,7 +87,6 @@ impl View {
         pages: &[Option<kontra_lua::Ui>],
         engine: &Engine,
         path: Option<&Path>,
-        mut waves: Waves,
     ) -> Option<Self> {
         let library = path.map(|p| RefCell::new(Library::open(p)));
         let meta = |p: &str| library.as_ref()?.borrow_mut().meta(p);
@@ -97,13 +96,19 @@ impl View {
                 .into_iter()
                 .find_map(|slot| Self::at_slot(slot, faces, pages, engine, &meta))?;
             view.library = library.map(RefCell::into_inner);
-            if let Shown::Ksp(live) = &mut view.shown {
-                waves.fill(&mut live.tree);
-            }
-            view.waves = waves;
             view
         };
         Some(view)
+    }
+
+    /// Gives the page's waveform displays the instrument's zone samples
+    /// (`attach_zone`); they draw empty until it has them.
+    pub fn set_waves(&mut self, mut waves: Waves) {
+        if let Shown::Ksp(live) = &mut self.shown {
+            waves.fill(&mut live.tree);
+            self.revision += 1;
+        }
+        self.waves = waves;
     }
 
     /// Script slot `slot`'s page, or `None` when it has none or the tree it
