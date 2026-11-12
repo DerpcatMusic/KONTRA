@@ -89,19 +89,26 @@ local function run_changed(w)
 end
 
 -- A menu's items: read, renamed (VWinds marks a loaded preset `Name*`),
--- added and cleared.
+-- added and cleared. Each change moves the list's revision, which the
+-- editor reads to copy the items again.
+local function items_changed(w)
+	rawset(w, "__items_revision", (rawget(w, "__items_revision") or 0) + 1)
+end
 local menu_methods = {
 	getText = function(w, i)
 		return rawget(w, "items")[i] or ""
 	end,
 	setItem = function(w, i, text)
 		rawget(w, "items")[i] = text
+		items_changed(w)
 	end,
 	addItem = function(w, text)
 		table.insert(rawget(w, "items"), text)
+		items_changed(w)
 	end,
 	clear = function(w)
 		table.clear(rawget(w, "items"))
+		items_changed(w)
 	end,
 }
 
@@ -683,7 +690,7 @@ function wait(ms)
 end
 
 function getTime()
-	return host_call("EngineUptime") or 0
+	return host_call("EngineMs") or 0
 end
 
 function getTempo()

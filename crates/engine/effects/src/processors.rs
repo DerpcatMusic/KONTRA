@@ -513,7 +513,7 @@ pub fn curve(c: ir::DriveCurve) -> drive::Curve {
     }
 }
 
-/// Skreamer-style overdrive settings in DSP terms.
+/// Multiband overdrive settings in DSP terms.
 pub fn voicing(o: ir::Overdrive) -> Voicing {
     Voicing {
         split_hz: o.split_hz,
@@ -525,7 +525,7 @@ pub fn voicing(o: ir::Overdrive) -> Voicing {
     }
 }
 
-/// Lo-Fi settings in DSP terms: sample hold, bits and noise.
+/// Sample-and-bit reduction settings in DSP terms: sample hold, bits and noise.
 pub fn reduction(c: ir::Crush, rate: u32) -> Reduction {
     let hold = if c.rate < 1.0 {
         (1.0 / c.rate.max(1e-6)).min(rate as f32 / 50.0) + 1.0
