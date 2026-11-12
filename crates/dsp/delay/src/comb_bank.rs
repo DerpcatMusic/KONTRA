@@ -446,6 +446,11 @@ impl CombBank {
     }
 
     /// Replaces `io` with the output: the wet sum and the input's share.
+    ///
+    /// ponytail: one frame at a time, ~100 µs per 512 frames at 48 kHz
+    /// (half a 2 % budget). Upgrade: the four voices as one 4-lane SIMD
+    /// pass (smoother, clip, cubic reads), the clock and heads in spans,
+    /// `Derived` only while gliding.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let mut written = 0.0f32;
         for frame in io {
