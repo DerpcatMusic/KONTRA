@@ -354,7 +354,7 @@ fn output_controllers(version: u16, private: &[u8]) -> Option<ir::OutputControll
         12 => 7874.0,
         _ => 4956.0,
     };
-    let top_db = 60.0 * (127.0 * k / 629_960.524_947_f32).log10();
+    let top_db = 60.0 * (127.0 * k / 629_960.5_f32).log10();
     on.then_some(ir::OutputControllers {
         volume: 7,
         pan: 10,
