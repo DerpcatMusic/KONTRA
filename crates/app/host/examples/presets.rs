@@ -188,9 +188,20 @@ fn own_controls(rack: &mut Rack, audio: &mut RackAudio, before: &[String]) -> St
         run(rack, audio, 0.5);
         let now = values(rack);
         if std::env::var_os("SHOW_DIFF").is_some() {
-            let menus: Vec<String> = (rack.parts().first().and_then(Option::as_ref).and_then(|p| p.view.as_ref()))
-                .map(|v| v.tree().widgets.iter().filter(|w| w.name.contains("Preset")).map(|w| format!("{}={:?}", w.name, w.value)).collect())
-                .unwrap_or_default();
+            let menus: Vec<String> = (rack
+                .parts()
+                .first()
+                .and_then(Option::as_ref)
+                .and_then(|p| p.view.as_ref()))
+            .map(|v| {
+                v.tree()
+                    .widgets
+                    .iter()
+                    .filter(|w| w.name.contains("Preset"))
+                    .map(|w| format!("{}={:?}", w.name, w.value))
+                    .collect()
+            })
+            .unwrap_or_default();
             eprintln!("after {name}: {menus:?}");
         }
         out.push(format!("{name}={}", changed(&last, &now)));

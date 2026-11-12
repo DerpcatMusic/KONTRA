@@ -185,6 +185,7 @@ pub(crate) struct Reads {
     enabled: LuaString,
     text: LuaString,
     values: LuaString,
+    items: LuaString,
 }
 
 impl Reads {
@@ -202,7 +203,18 @@ impl Reads {
             enabled: key("enabled")?,
             text: key("text")?,
             values: key("values")?,
+            items: key("items")?,
         })
+    }
+
+    /// A menu's selected item, as its items now read.
+    fn item(&self, w: &Table) -> Option<LuaString> {
+        let items = w.raw_get::<Table>(&self.items).ok()?;
+        let at = number(&w.raw_get::<Value>(&self.value).ok()?)?;
+        match items.raw_get::<Value>(at as i64).ok()? {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
     }
 
     fn table(&self, n: u32) -> Option<Table> {
@@ -241,9 +253,17 @@ impl Reads {
     }
 
     /// Widget `n`'s `text` into `out`.
+    /// Widget `n`'s text: its own, or a menu's selected item's (a script
+    /// renames items, VWinds' `Name*` for the loaded preset).
     pub(crate) fn text(&self, n: u32, out: &mut Text) -> bool {
-        let Some(Ok(Value::String(s))) = self.table(n).map(|w| w.raw_get::<Value>(&self.text))
-        else {
+        let Some(w) = self.table(n) else {
+            return false;
+        };
+        let text = match w.raw_get::<Value>(&self.text) {
+            Ok(Value::String(s)) => Some(s),
+            _ => self.item(&w),
+        };
+        let Some(s) = text else {
             return false;
         };
         let Ok(s) = s.to_str() else {

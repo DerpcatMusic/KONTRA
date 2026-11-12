@@ -40,17 +40,23 @@ inert.__index = function()
 	return function() end
 end
 
+-- A saved value's text as a value like `value`: a boolean, a number, else
+-- the text.
+local function parsed(text, value)
+	local n = tonumber(text)
+	if type(value) == "boolean" then
+		return n ~= nil and n ~= 0
+	end
+	return n or text
+end
+
 -- A widget's saved value when the program has one, else `value`.
 local function restored(name, value)
 	local text = name and __saved[name]
 	if text == nil then
 		return value
 	end
-	local n = tonumber(text)
-	if type(value) == "boolean" then
-		return n ~= nil and n ~= 0
-	end
-	return n or text
+	return parsed(text, value)
 end
 
 local kinds = {
@@ -1037,9 +1043,7 @@ function loadState(path, done)
 	for _, w in ipairs(__ui.widgets) do
 		local text = w.name and file.values[w.name]
 		if text ~= nil and w.kind ~= "Table" and w.persistent ~= false then
-			local n = tonumber(text)
-			local value = type(w.value) == "boolean" and (n ~= nil and n ~= 0) or n or text
-			local ok, err = pcall(w.setValue, w, value)
+			local ok, err = pcall(w.setValue, w, parsed(text, w.value))
 			if not ok then
 				print("loadState " .. tostring(w.name) .. ": " .. tostring(err))
 			end
