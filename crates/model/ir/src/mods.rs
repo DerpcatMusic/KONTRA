@@ -178,6 +178,10 @@ impl Factor {
 /// A source through a transfer table: `table` holds the outputs for evenly
 /// spaced inputs 0..=1, read with linear interpolation; an LFO enters as
 /// `(x + 1)/2`. Its source is never itself shaped.
+///
+/// The output is used as is, in the domain the route that reads it consumes
+/// (a pitch or sample-start route reads -1..=1, a gain 0..=1): the engine
+/// converts no polarity, so a translator emits each table in its route's domain.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transfer {
     pub source: Source,
