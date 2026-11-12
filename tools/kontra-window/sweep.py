@@ -4,16 +4,15 @@
 The editor runs under Xvfb (as drive.sh does) and each control is moved with
 real xdotool pointer input: knobs, sliders and value edits are dragged,
 buttons and switches clicked, menus opened, tables and XY pads swept. A
-control passes when the face changes after its move. A move that repaints
-more than 15% of the face (a page switch) reopens the editor, so the next
-control is tried on the face as it loads.
+control passes when the face changes after its move. A control an earlier
+move repainted (a page switch, a linked control) is tried on a freshly
+opened editor, on the face as it loads.
 
   tools/kontra-window/sweep.py <kontra-window> <instrument> <controls.jsonl> <out dir>
 
 <controls.jsonl> is ui-shots' `<name>-<slot>-controls.jsonl`: the page size,
-then each control's widget, name, kind and page rect in points. The face is found as the bounding box of what
-differs from the part panel's background; its width over the page width is
-the editor's zoom. Prints one JSON line per control, then a summary line.
+then each control's widget, name, kind and page rect in points; its
+`-initial.png` beside it places the face in the window. Prints one JSON line per control, then a summary line.
 """
 import json
 import os
@@ -22,6 +21,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageChops
 
 # The interface panel at the default 1180x780 window, device scale 1.5:
@@ -41,6 +41,7 @@ def shot(path):
 
 
 def face_box(image):
+    """The bounding box of what differs from the part panel's background."""
     panel = image.crop(PANEL)
     background = Image.new('RGB', panel.size, panel.getpixel((10, 4)))
     diff = ImageChops.difference(panel, background).convert('L').point(lambda v: 255 if v > 6 else 0)
@@ -48,6 +49,46 @@ def face_box(image):
     if not box:
         return None
     return (box[0] + PANEL[0], box[1] + PANEL[1], box[2] + PANEL[0], box[3] + PANEL[1])
+
+
+def place(image, page, drawn):
+    """Where the face sits in the window and its zoom. The bounding box of
+    what differs from the panel can take in the part's chrome, so the face's
+    own picture (`drawn`, ui-shots' untouched shot) is matched inside it:
+    zoom and offset coarse on a quarter-size image, then refined."""
+    box = face_box(image)
+    if not box:
+        return None
+    window = np.asarray(image.convert('L'), dtype=np.float32)
+
+    def best(zooms, xs, ys, k):
+        found = None
+        small = window[::k, ::k]
+        for zoom in zooms:
+            w, h = round(page[0] * zoom), round(page[1] * zoom)
+            face = np.asarray(drawn.convert('L').resize((max(1, w // k), max(1, h // k))), dtype=np.float32)
+            fh, fw = face.shape
+            for y in ys(h):
+                for x in xs(w):
+                    region = small[y // k:y // k + fh, x // k:x // k + fw]
+                    if region.shape != face.shape:
+                        continue
+                    cost = float(np.abs(region - face).mean())
+                    if found is None or cost < found[0]:
+                        found = (cost, zoom, x, y)
+        return found
+
+    top = min((box[2] - box[0]) / page[0], (box[3] - box[1]) / page[1])
+    zooms = [top * (1 - n / 200) for n in range(0, 21)]
+    coarse = best(zooms, lambda w: range(box[0], max(box[0], box[2] - w) + 1, 4),
+                  lambda h: range(box[1], max(box[1], box[3] - h) + 1, 4), 4)
+    if coarse is None:
+        return None
+    _, z, x0, y0 = coarse
+    fine = best([z * (1 + n / 1000) for n in range(-6, 7)], lambda w: range(x0 - 4, x0 + 5),
+                lambda h: range(y0 - 4, y0 + 5), 1)
+    _, zoom, x, y = fine or coarse
+    return (x, y, x + round(page[0] * zoom), y + round(page[1] * zoom)), zoom
 
 
 def changed(a, b, box=None, level=12):
@@ -100,7 +141,7 @@ def main():
     binary, instrument, listing, out = sys.argv[1], sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])
     out.mkdir(parents=True, exist_ok=True)
     lines = [json.loads(line) for line in listing.read_text().splitlines() if line.strip()]
-    page_width = next(line['page'][0] for line in lines if 'page' in line)
+    page = next(line['page'] for line in lines if 'page' in line)
     controls = sorted((c for c in lines if 'kind' in c), key=lambda c: ORDER.get(c['kind'], 9))
     display = os.environ.get('XDISPLAY', ':96')
     lock = Path(f'/tmp/.X{display[1:]}-lock')
@@ -130,10 +171,11 @@ def main():
         editor = reopen(None)
         before = shot(out / 'open.png')
         opened = before
-        box = face_box(before)
-        if not box:
+        drawn = Image.open(str(listing).replace('-controls.jsonl', '-initial.png'))
+        placed = place(before, page, drawn)
+        if not placed:
             sys.exit('FAIL no face in the interface panel')
-        zoom = (box[2] - box[0]) / page_width
+        box, zoom = placed
         print(json.dumps({'face': box, 'zoom': round(zoom, 4)}), flush=True)
         passed = tried = 0
         for n, c in enumerate(controls):
@@ -144,6 +186,11 @@ def main():
             if r[3] > PANEL[3] or r[2] > PANEL[2]:
                 print(json.dumps(dict(c, result='offscreen')), flush=True)
                 continue
+            # An earlier move changed this control (a page switch, a linked
+            # control): try it on the face as it loads.
+            if share(opened, before, r) > 0.3:
+                editor = reopen(editor)
+                before = shot(out / 'last.png')
             tried += 1
             after = None
             # A fader already at its top answers the other way.
@@ -165,9 +212,6 @@ def main():
                 time.sleep(0.3)
             time.sleep(0.3)
             before = shot(out / 'last.png')
-            if share(opened, before, box) > 0.15:
-                editor = reopen(editor)
-                before = shot(out / 'last.png')
         print(json.dumps({'summary': f'{passed}/{tried}', 'passed': passed, 'controls': tried}), flush=True)
     finally:
         for p in (editor, xvfb):
