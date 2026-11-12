@@ -64,7 +64,7 @@ pub struct Snapshot {
     libraries: (u64, Arc<Vec<app::Library>>),
     recent: Vec<(usize, usize)>,
     folders: Vec<String>,
-    snapshot_folder: app::SnapshotFolder,
+    snapshot_folder: String,
     /// [`kontra_library::Prefs::next_channel`] and `own_output`.
     new_parts: (bool, bool),
     level: f32,
@@ -87,9 +87,9 @@ impl Snapshot {
                 .collect();
             self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
             self.snapshot_folder = match browser.kontakt() {
-                Some(f) if f.is_dir() => app::SnapshotFolder::Found(f.display().to_string()),
-                Some(f) => app::SnapshotFolder::Missing(f.display().to_string()),
-                None => app::SnapshotFolder::Unset,
+                Some(f) if f.is_dir() => f.display().to_string(),
+                Some(f) => format!("Not found: {}", f.display()),
+                None => "Not set: choose the User Content folder Kontakt saves snapshots in".into(),
             };
         }
         let meters = rack.meters();
@@ -766,11 +766,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 continue;
             }
             if action == Action::ChooseSnapshotFolder {
-                let from = match &app.snapshot_folder {
-                    app::SnapshotFolder::Found(f) => Some(PathBuf::from(f)),
-                    _ => None,
-                };
-                p.shared.folder.ask(crate::folder::Wanted::Snapshots, from);
+                p.shared.folder.ask(crate::folder::Wanted::Snapshots, None);
                 continue;
             }
             if let Some(event) = played(&action) {

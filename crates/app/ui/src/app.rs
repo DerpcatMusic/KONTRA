@@ -50,8 +50,9 @@ pub struct App {
     pub build: String,
     /// The folders the browser scans.
     pub folders: Vec<String>,
-    /// Where Kontakt's user snapshots are read from.
-    pub snapshot_folder: SnapshotFolder,
+    /// What Settings says of Kontakt's user snapshot folder: the folder,
+    /// or in one line why there is none.
+    pub snapshot_folder: String,
     /// The editor's width in points, as the host frames it: a library's
     /// view fits what the rack has of it. 0 while unknown.
     pub width: f64,
@@ -84,17 +85,6 @@ pub struct Library {
     /// Pictures that may be its cover, best first, as the host's cover
     /// store reads them; the first that decodes is shown.
     pub art: Vec<String>,
-}
-
-/// Kontakt's user snapshot folder as Settings shows it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum SnapshotFolder {
-    /// None chosen, and Kontakt's own is unknown.
-    #[default]
-    Unset,
-    /// This folder, which is not there.
-    Missing(String),
-    Found(String),
 }
 
 /// Which family of libraries the browser lists.

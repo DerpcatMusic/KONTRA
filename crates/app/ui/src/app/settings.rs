@@ -3,7 +3,7 @@
 
 use mui::prelude::*;
 
-use super::{Action, App, FaceLook, SCALES, Sheet, SnapshotFolder};
+use super::{Action, App, FaceLook, SCALES, Sheet};
 use crate::kit::{self, Icon, button, icon_button, latch, rule, section};
 use crate::theme::{SPACE, TIGHT, secondary};
 
@@ -77,17 +77,8 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if choose.changed {
         out.push(Action::ChooseSnapshotFolder);
     }
-    let snapshots = match &app.snapshot_folder {
-        SnapshotFolder::Found(f) => caption(f.clone()).tip(f.clone()),
-        SnapshotFolder::Missing(f) => caption(format!("Not found: {f}"))
-            .fill(secondary())
-            .tip(f.clone()),
-        SnapshotFolder::Unset => {
-            caption("Not set: choose the User Content folder Kontakt saves snapshots in")
-                .fill(secondary())
-        }
-    };
-    let snapshots = snapshots
+    let snapshots = caption(app.snapshot_folder.clone())
+        .tip(app.snapshot_folder.clone())
         .lines(1)
         .min_w(0)
         .grow(1)
