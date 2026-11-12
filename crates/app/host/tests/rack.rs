@@ -886,7 +886,10 @@ fn a_changed_preset_saves_as_changed_until_a_preset_is_picked() {
         saved: vec![vec!["$knob 42".into()]],
     };
     assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
-    assert!(!rack.save().parts[0].modified, "a picked preset is unchanged");
+    assert!(
+        !rack.save().parts[0].modified,
+        "a picked preset is unchanged"
+    );
 }
 
 /// A folder of this test process alone, removed when dropped (also when
