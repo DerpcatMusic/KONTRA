@@ -100,11 +100,7 @@ impl Reader<'_> {
                 b'"' => break,
                 b'\\' => {
                     self.at += 1;
-                    out.push(match *self.bytes.get(self.at)? {
-                        b'n' => b'\n',
-                        b @ (b'"' | b'\\') => b,
-                        _ => return None,
-                    });
+                    self.escape(&mut out)?;
                 }
                 b'\n' => return None,
                 b => out.push(b),
@@ -113,6 +109,62 @@ impl Reader<'_> {
         }
         self.at += 1;
         self.lua.create_string(out).ok().map(Value::String)
+    }
+
+    /// The escape at `at` (after its backslash), as the format reader
+    /// writes them: JSON's (`lua_literal`: `\u{XXXX}`, surrogate pairs
+    /// joined, and `\b \f \n \r \t \" \\`) and an XML value's
+    /// (`quote`: `\DDD` for other control characters). `at` ends on its
+    /// last byte.
+    fn escape(&mut self, out: &mut Vec<u8>) -> Option<()> {
+        let byte = match *self.bytes.get(self.at)? {
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'b' => 8,
+            b'f' => 12,
+            b @ (b'"' | b'\\') => b,
+            b'u' => {
+                let mut code = self.code()?;
+                if (0xD800..0xDC00).contains(&code)
+                    && self.bytes.get(self.at + 1..self.at + 3) == Some(b"\\u")
+                {
+                    let at = self.at;
+                    self.at += 2;
+                    match self.code() {
+                        Some(low @ 0xDC00..0xE000) => {
+                            code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                        }
+                        _ => self.at = at,
+                    }
+                }
+                let c = char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER);
+                out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+                return Some(());
+            }
+            b'0'..=b'9' => {
+                let digits = (self.bytes.get(self.at..)?.iter())
+                    .take(3)
+                    .take_while(|b| b.is_ascii_digit())
+                    .count();
+                let text = std::str::from_utf8(self.bytes.get(self.at..self.at + digits)?).ok()?;
+                self.at += digits - 1;
+                u8::try_from(text.parse::<u32>().ok()?).ok()?
+            }
+            _ => return None,
+        };
+        out.push(byte);
+        Some(())
+    }
+
+    /// `u{hex}` at `at` (on its `u`), as a code point; `at` ends on `}`.
+    fn code(&mut self) -> Option<u32> {
+        (self.bytes.get(self.at + 1) == Some(&b'{')).then_some(())?;
+        let start = self.at + 2;
+        let len = self.bytes.get(start..)?.iter().position(|&b| b == b'}')?;
+        let hex = std::str::from_utf8(self.bytes.get(start..start + len)?).ok()?;
+        self.at = start + len;
+        u32::from_str_radix(hex, 16).ok()
     }
 
     fn table(&mut self) -> Option<Value> {
@@ -180,5 +232,24 @@ mod tests {
         ] {
             assert!(super::read(&lua, code).is_none(), "{code}");
         }
+    }
+
+    #[test]
+    fn a_string_reads_every_escape_the_format_reader_writes() {
+        let lua = Lua::new();
+        // `lua_literal` of the JSON
+        // `{"a":"tab\there\r\"q\" back\\slash café 😀 \/x"}`,
+        // then `quote`'s decimal escape. A surrogate pair is one character.
+        let text =
+            r#"return {["a"]="tab\there\r\"q\" back\\slash caf\u{00e9} \u{d83d}\u{de00} /x\7"}"#;
+        let read = super::read(&lua, text).expect("a constant");
+        let Value::Table(read) = read else {
+            panic!("a table")
+        };
+        let a: String = read.get("a").unwrap();
+        assert_eq!(
+            a,
+            "tab\there\r\"q\" back\\slash caf\u{e9} \u{1F600} /x\u{7}"
+        );
     }
 }
