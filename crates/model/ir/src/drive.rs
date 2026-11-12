@@ -364,6 +364,9 @@ pub enum SlotKnob {
     StageMorph(u8),
     StageWet(u8),
     OutputGain,
+    /// A [`KnobModel`]'s knob with no name shared across effects, by its
+    /// place in that model.
+    Knob(u8),
 }
 
 /// The rack a [`SlotLaw`]'s slot is in.

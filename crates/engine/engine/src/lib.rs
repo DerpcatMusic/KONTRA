@@ -234,6 +234,9 @@ pub struct Engine {
     reshaped: Box<[reshaped::Reshaped]>,
     /// The routes each script `#key` names.
     route_names: ir::RouteNames,
+    /// The group whose route amounts the running callback moved, and whether
+    /// others too: its voices refresh once, when it returns or waits.
+    routes_moved: Option<(usize, bool)>,
     /// Shared EQ chains, and each group's chain (a zone plays through its
     /// group's, so `set_zone_par` moving it needs no rebuild).
     chains: Vec<filters::Chain>,
@@ -352,6 +355,7 @@ impl Engine {
             pedal: [false; 16],
             stats: Stats::default(),
             vms,
+            routes_moved: None,
             route_names: ir::RouteNames::of_names(
                 shared
                     .iter()

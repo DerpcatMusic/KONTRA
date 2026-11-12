@@ -395,7 +395,12 @@ fn slot_effect(
             *knobs = crate::replika::knobs(r);
             crate::replika::delay(r).map(ir::EffectKind::Delay)
         }),
-        id => crate::drive::effect(id, object.version, &public, at, notes),
+        id => {
+            if id == 0x21 {
+                *model = crate::skreamer::model(&public);
+            }
+            crate::drive::effect(id, object.version, &public, at, notes)
+        }
     };
     // The legacy delay, chorus and flanger, Replika, the Gainer and Convolution mix
     // their slot's dry level back in; other modules' stored dry is unused

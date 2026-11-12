@@ -15,8 +15,7 @@ use kontra_stream::{
 use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp};
 
 use kontra_engine::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
-    ZoneRules, response,
+    Atom, Bus, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone, ZoneRules, response,
 };
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
@@ -451,21 +450,8 @@ fn zone(
     out.id = z.id;
     out.keys = z.keys.clone();
     out.velocities = z.velocities.clone();
-    for (control, range, (fade_in, fade_out)) in [
-        (Control::Velocity, &z.velocities, z.velocity_fade),
-        (Control::Key, &z.keys, z.key_fade),
-    ] {
-        let (low, high) = (*range.start(), *range.end());
-        if fade_in > 0 || fade_out > 0 {
-            out.crossfades.push(Crossfade {
-                control,
-                fade_in: (fade_in > 0)
-                    .then(|| (low.saturating_sub(1), low.saturating_add(fade_in))),
-                fade_out: (fade_out > 0)
-                    .then(|| (high.saturating_sub(fade_out), high.saturating_add(1))),
-            });
-        }
-    }
+    out.fades = [z.velocity_fade, z.key_fade];
+    out.range_crossfades();
     out.group = group_id;
     rules.apply(&mut out);
     // The group's own level, pan and tune are its plan group's.
