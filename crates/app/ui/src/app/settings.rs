@@ -74,15 +74,9 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         out.push(Action::AddFolder);
     }
     let choose = button(ui, "snapshot-folder", "Choose…", false);
-    if choose.changed {
-        out.push(Action::ChooseSnapshotFolder);
-    }
-    let snapshots = caption(app.snapshot_folder.clone())
-        .tip(app.snapshot_folder.clone())
-        .lines(1)
-        .min_w(0)
-        .grow(1)
-        .id("snapshot-folder-path");
+    out.extend(choose.changed.then_some(Action::ChooseSnapshotFolder));
+    let path = &app.snapshot_folder;
+    let snapshots = caption(path.clone()).tip(path.clone()).lines(1).min_w(0);
     let rescan = button(ui, "rescan", "Rescan", false);
     if rescan.changed {
         out.push(Action::Refresh);
