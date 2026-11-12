@@ -150,7 +150,11 @@ fn reference_render() -> Vec<[f32; 2]> {
 /// The reference with the input landing short of every line's reads and
 /// units longer than a span.
 fn far_input_render() -> Vec<[f32; 2]> {
-    render(Box::leak(Box::new(ReverbNetwork {
+    render(far_input_law())
+}
+
+fn far_input_law() -> &'static ReverbNetwork {
+    Box::leak(Box::new(ReverbNetwork {
         inject_lead: 150,
         units: [
             [89, 97, 101],
@@ -160,11 +164,23 @@ fn far_input_render() -> Vec<[f32; 2]> {
         ],
         unit_count: 3,
         ..*law()
-    })))
+    }))
+}
+
+/// The far-input reference swung so wide that lines read past their rings'
+/// ends, onto frames just written (as Room B's line 7 does natively).
+fn wrapping_render() -> Vec<[f32; 2]> {
+    render_swung(far_input_law(), 2.0, [4.0, 4.0])
 }
 
 /// 2 s of noise through `law`, its size and damping changed at 0.96 s.
 fn render(law: &'static ReverbNetwork) -> Vec<[f32; 2]> {
+    render_swung(law, 2.0, [1.0, 1.4])
+}
+
+/// [`render`] with the lines' swing at `modulation_ms`, its size `sizes[0]`
+/// and then `sizes[1]`.
+fn render_swung(law: &'static ReverbNetwork, modulation_ms: f32, sizes: [f32; 2]) -> Vec<[f32; 2]> {
     let s = Settings {
         seconds: 2.5,
         damping: 0.6,
@@ -172,9 +188,9 @@ fn render(law: &'static ReverbNetwork) -> Vec<[f32; 2]> {
         high_cut_hz: 9_000.0,
         low_shelf_db: -4.0,
         stereo: 0.7,
-        modulation_ms: 2.0,
+        modulation_ms,
         modulation_hz: 0.6,
-        ..settings(1.0)
+        ..settings(sizes[0])
     };
     let mut n = Network::new(law, s, RATE);
     let mut seed = 0x2545_f491_u32;
@@ -186,7 +202,7 @@ fn render(law: &'static ReverbNetwork) -> Vec<[f32; 2]> {
     for (k, block) in io.chunks_mut(512).enumerate() {
         if k == 90 {
             n.set(Settings {
-                size: 1.4,
+                size: sizes[1],
                 damping: 0.2,
                 ..s
             });
@@ -216,6 +232,11 @@ fn the_reference_render_is_unchanged() {
         bits_hash(&far_input_render()),
         17_184_959_724_877_187_036,
         "far-input render changed"
+    );
+    assert_eq!(
+        bits_hash(&wrapping_render()),
+        13_083_940_929_046_424_378,
+        "wrapping render changed"
     );
 }
 

@@ -11,11 +11,20 @@ pub(super) const MAX: usize = 64;
 
 impl Line {
     /// The longest span this line can run with no read seeing a value put
-    /// in the same span: every read reaches past the span's start.
+    /// in the same span: every read reaches past the span's start, and none
+    /// past the ring's end, where it wraps onto frames just written (the
+    /// native kernel's rings are as short, so it hears them).
     fn span(&self) -> usize {
-        // The phasor's swing stays within ±1 (a rotation), with margin.
-        let nearest = (self.base - self.depth.abs() * 1.01 - 1.0).floor();
-        if nearest < 1.0 { 1 } else { nearest as usize }
+        // The phasor's swing stays within ±1 (a rotation), with margin; a
+        // read touches the frame `d` back and the one before it.
+        let swing = self.depth.abs() * 1.01 + 1.0;
+        let nearest = (self.base - swing).floor();
+        let farthest = (self.base + swing).ceil() + 1.0;
+        if nearest < 1.0 || farthest >= self.ring.buf.len() as f32 {
+            1
+        } else {
+            nearest as usize
+        }
     }
 }
 
