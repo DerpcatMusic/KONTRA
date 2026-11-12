@@ -80,12 +80,18 @@ impl Engine {
             {
                 region.shift_loops(start, length);
             }
-            if let Some(mix) = self.voice_mix(zone, &n, self.age(self.now, None)) {
+            // Read first: the onset targets below see the stretched envelopes.
+            let stretch = self.stretches(zone, &n);
+            let onset = modulators::Age {
+                stretch,
+                ..self.age(self.now, None)
+            };
+            if let Some(mix) = self.voice_mix(zone, &n, onset) {
                 region.mix = Some(mix);
             }
             let pan = self.group_pan(zone);
-            let (gain, lag) = self.voice_gain(zone, &n, factor, self.age(self.now, None), pan);
-            let (step, bend) = self.step(zone, &n, self.age(self.now, None));
+            let (gain, lag) = self.voice_gain(zone, &n, factor, onset, pan);
+            let (step, bend) = self.step(zone, &n, onset);
             let start = VoiceStart {
                 region,
                 step: voice_gain::bent(self.plan.route_pitch, step, bend.instant + bend.semitones),
@@ -166,13 +172,14 @@ impl Engine {
             slot.pan = [pan; 2];
             slot.warp = [0.0; modulators::WARPS];
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
+            slot.stretch = stretch;
             #[cfg(feature = "trace")]
             slot.pending_trace_cc.set(0);
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {
                 trace.routes.begin_onset(index);
             }
-            self.start_rack(i, zone, &n, self.age(now, None));
+            self.start_rack(i, zone, &n, onset);
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {
                 trace.routes.finish_onset(Some(i));

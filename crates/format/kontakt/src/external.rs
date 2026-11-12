@@ -162,6 +162,7 @@ pub(crate) fn external(
                                 source,
                                 intensity,
                                 floor_ms,
+                                envelope: None,
                             }
                         } else {
                             ir::ModKind::Release {
@@ -169,6 +170,22 @@ pub(crate) fn external(
                                 intensity,
                                 floor_ms,
                             }
+                        })
+                    }
+                    // Another AHDSR runs as a breakpoint source: the same
+                    // target (ahdsr_attack) and law compiler stretch its
+                    // attack segment.
+                    (Some(source), "ahdsr_attack", Some(at)) => {
+                        timed_slots.iter().find_map(|&(n, of)| match of {
+                            ir::Source::Envelope(e) if n == usize::from(at) => {
+                                Some(ir::ModKind::Attack {
+                                    source,
+                                    intensity: t.signed_intensity(),
+                                    floor_ms: laws::time_floor_ms(&p.unknown_source_data),
+                                    envelope: Some(e),
+                                })
+                            }
+                            _ => None,
                         })
                     }
                     // The target table (FUN_140a6d410) names it 0xb4; the law
