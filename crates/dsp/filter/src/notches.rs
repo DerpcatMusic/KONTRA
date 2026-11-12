@@ -97,7 +97,18 @@ impl Notches {
         }
     }
 
+    /// Fewer sections clear the ones they stop running, so raising the
+    /// count later starts them silent, not with the audio they held.
     pub fn set(&mut self, s: NotchSettings) {
+        let count = |s: &NotchSettings| usize::from(s.sections).clamp(1, MAX_SECTIONS);
+        let new = count(&s);
+        if new < count(&self.s) {
+            for ch in &mut self.ch {
+                for state in ch.s.iter_mut().skip(new) {
+                    *state = [0.0; 2];
+                }
+            }
+        }
         self.s = s;
     }
 
@@ -116,8 +127,12 @@ impl Notches {
         let s = self.s;
         let n = usize::from(s.sections).clamp(1, MAX_SECTIONS);
         let wet = 0.5 * s.mix * if s.invert { -1.0 } else { 1.0 };
-        // Below 1, so the loop round the allpasses (gain 1) cannot ring up.
-        let feedback = s.feedback.clamp(-0.98, 0.98);
+        // Below 1: with the coefficients held, the loop round the allpasses
+        // (gain 1) cannot ring up. Moving them, measured over a knob grid at
+        // the fastest sweeps, full-scale input, 30 s (#1340): no setting grows
+        // with length; the worst peak is 26.7 at 0.9 against 87.6 at 0.98, so
+        // 0.9 (Kontakt's Phasis tops out at 0.84).
+        let feedback = s.feedback.clamp(-0.9, 0.9);
         let dry = 1.0 - s.mix + 0.5 * s.mix;
         let step = f64::from(s.lfo_hz / self.rate);
         let mut written = 0.0f32;
@@ -208,5 +223,37 @@ mod tests {
         // Inverted, they swap.
         let inverted = NotchSettings { invert: true, ..s };
         assert!(gain(inverted, 622.0) < 0.02);
+    }
+
+    #[test]
+    fn sections_switched_off_come_back_silent() {
+        let full = NotchSettings {
+            sections: 12,
+            hz: 622.0,
+            q: 0.5,
+            octaves: 0.0,
+            q_octaves: 0.0,
+            feedback: 0.0,
+            lfo_hz: 0.0,
+            phase: 0.0,
+            mix: 1.0,
+            invert: false,
+        };
+        let mut n = Notches::new(full, 48_000);
+        let mut noise: Vec<[f32; 2]> = (0..4_800)
+            .map(|i| [((i * 7919 % 101) as f32 / 101.0) - 0.5; 2])
+            .collect();
+        n.process(&mut noise);
+        n.set(NotchSettings {
+            sections: 2,
+            ..full
+        });
+        let mut silence = vec![[0.0f32; 2]; 48_000];
+        n.process(&mut silence);
+        n.set(full);
+        let mut after = vec![[0.0f32; 2]; 4_800];
+        n.process(&mut after);
+        let peak = after.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(peak < 1e-6, "{peak}");
     }
 }
