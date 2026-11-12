@@ -297,6 +297,32 @@ mod tests {
         }
     }
 
+    /// Six swept, fed-back voices at their own LFO starts, the last two
+    /// silent (their clocks still run), and a straight-through share.
+    fn ensemble() -> ir::Effect {
+        let voices = std::array::from_fn(|v| {
+            let g = if v < 4 { 0.3 } else { 0.0 };
+            ir::EnsembleVoice {
+                ms: 3.0 + 4.0 * v as f32,
+                depth_ms: 8.0,
+                hz: 0.25 * (1.0 + v as f32 * 0.2),
+                start: v as f32 / 6.0,
+                damping_hz: 5_000.0,
+                low_cut_hz: 0.0,
+                input: 0.9,
+                feedback: 0.5,
+                output: [[g, -0.1 * g], [0.1 * g, g]],
+            }
+        });
+        ir::Effect {
+            kind: ir::EffectKind::Ensemble(ir::Ensemble {
+                voices,
+                direct: 0.7,
+            }),
+            ..chorus()
+        }
+    }
+
     /// A burst, seconds of silence, a burst: what the rack plays, span by
     /// span; `gate` false clears its silence count each span, so it never sleeps.
     fn play(rack: &mut Rack, gate: bool) -> Vec<[f32; 2]> {
@@ -322,7 +348,13 @@ mod tests {
     /// never slept.
     #[test]
     fn a_silent_slot_sleeps_and_wakes_in_step() {
-        let make = || Rack::new(&[Some(chorus())], RATE, &[]);
+        for effect in [chorus(), ensemble()] {
+            sleeps_and_wakes_in_step(effect);
+        }
+    }
+
+    fn sleeps_and_wakes_in_step(effect: ir::Effect) {
+        let make = || Rack::new(&[Some(effect)], RATE, &[]);
         let (mut gated, mut always) = (make(), make());
         let a = play(&mut gated, true);
         let b = play(&mut always, false);

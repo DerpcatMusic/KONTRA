@@ -436,6 +436,11 @@ pub fn processor(
             wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
         }
         Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(p, 120.0), rate))),
+        // ponytail: lines for 120 ms, the longest a Kontakt Choral reaches
+        // (66 ms base + its widest swing at the slowest rate).
+        Some(ir::EffectKind::Ensemble(e)) => {
+            wet(Box::new(crate::ensemble::Ensemble::new(e, rate, 120.0)))
+        }
         Some(ir::EffectKind::Cascade(c)) => wet(Box::new(Cascade::new(cascade(c), rate))),
         Some(ir::EffectKind::Clocked(c)) => {
             let shape = match c.shape {

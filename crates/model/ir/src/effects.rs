@@ -124,6 +124,36 @@ pub struct Phaser {
     pub phase: f32,
 }
 
+/// A chorus ensemble: up to [`ENSEMBLE_VOICES`] modulated delay voices, each
+/// adding its delayed input to the sum, plus `direct` of the input itself
+/// (the dry level and the voices' undelayed share together).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ensemble {
+    pub voices: [EnsembleVoice; ENSEMBLE_VOICES],
+    pub direct: f32,
+}
+
+pub const ENSEMBLE_VOICES: usize = 6;
+
+/// One voice: a stereo delay line its LFO sweeps between `ms` and
+/// `ms + depth_ms`, filtered on the way in, fed back on itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnsembleVoice {
+    pub ms: f32,
+    pub depth_ms: f32,
+    pub hz: f32,
+    /// The LFO's start, cycles.
+    pub start: f32,
+    /// One-pole low-pass on the line; `f32::INFINITY` for none.
+    pub damping_hz: f32,
+    /// One-pole high-pass on the line; 0 for none.
+    pub low_cut_hz: f32,
+    pub input: f32,
+    pub feedback: f32,
+    /// The delayed signal to the output; zero for a silent voice.
+    pub output: Matrix,
+}
+
 /// An algorithmic reverb in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reverb {
