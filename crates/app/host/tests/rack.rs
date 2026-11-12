@@ -376,6 +376,7 @@ fn effect_loading(store: &mut Store) -> Box<Engine> {
         kind: id,
         effect,
         laws: Vec::new().into(),
+        model: None,
     };
     let effect = ir::Effect {
         kind: ir::EffectKind::Filter(high),

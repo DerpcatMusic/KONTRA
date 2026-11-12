@@ -2293,6 +2293,7 @@ fn a_script_loads_an_effect_type_into_a_slot() {
         kind: id,
         effect,
         laws: Vec::new().into(),
+        model: None,
     };
     let effect = ir::Effect {
         kind: ir::EffectKind::Filter(high),
@@ -2353,6 +2354,7 @@ fn wait_async_holds_until_the_effect_type_is_installed() {
         kind: id,
         effect: None,
         laws: Vec::new().into(),
+        model: None,
     };
     plan.slot_shapes.types = vec![ty(0), ty(7)];
     let script = kontra_ksp::compile(
@@ -2938,6 +2940,7 @@ fn a_loaded_filter_follows_its_subtype() {
         kind: 7,
         effect,
         laws: Vec::new().into(),
+        model: None,
     }];
     plan.slot_shapes.slots = vec![(ir::RackAt::Inserts, 0)];
     plan.slot_shapes.shapes = vec![ir::SlotShape {
@@ -3758,6 +3761,7 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
         kind: 0,
         effect: None,
         laws: Vec::new().into(),
+        model: None,
     }];
     let script = kontra_ksp::compile(
         "on init

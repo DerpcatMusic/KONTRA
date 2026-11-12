@@ -327,7 +327,7 @@ fn slot_effect(
                 .and_then(|v| v.try_into().ok())
                 .zip(byte(24))
                 .map(|(saved, link)| {
-                    *knobs = crate::script_knobs::bus_knobs(saved, link);
+                    *model = Some(crate::script_knobs::bus_model(saved, link));
                     let (c, auto) = crate::laws::bus_compressor(saved, link);
                     kontra_law::record(|| kontra_law::Application {
                         id: kontra_law::LawId("kontakt.bus_compressor.v1"),
@@ -358,7 +358,7 @@ fn slot_effect(
             })
         }
         0x17 => sends(&public),
-        0x44 => solid_eq(object.version, &public, at, notes, knobs),
+        0x44 => solid_eq(object.version, &public, at, notes, model),
         0x16 => impulses
             .convolution(object.version, &public, at, notes)
             .map(|impulse| ir::EffectKind::Convolution { impulse }),
@@ -470,7 +470,7 @@ fn solid_eq(
     public: &[u8],
     at: &str,
     notes: &mut Notes,
-    knobs: &mut Vec<crate::script_knobs::SlotKnob>,
+    model: &mut Option<ir::KnobModel>,
 ) -> Option<ir::EffectKind> {
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
@@ -489,11 +489,12 @@ fn solid_eq(
     let saved = [0, 4, 9, 13, 17, 21, 25, 29, 33, 37].map(f);
     let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
     let saved = [lg?, lh?, mg?, mh?, mq?, hg?, hh?, hq?, fg?, fh?];
+    let bells = [flag(8)?, flag(41)?];
     let shapes = [
-        bell(flag(8)?, ir::Shape::LowShelf),
-        bell(flag(41)?, ir::Shape::HighShelf),
+        bell(bells[0], ir::Shape::LowShelf),
+        bell(bells[1], ir::Shape::HighShelf),
     ];
-    *knobs = crate::solid_knobs::solid_knobs(saved, shapes);
+    *model = Some(crate::solid_knobs::solid_model(saved, bells));
     let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
     let [lf, hf] = shapes;
     let bands = crate::laws::solid_eq([lg, lh], lf, [mg, mh, mq], [hg, hh, hq], [fg, fh], hf);
