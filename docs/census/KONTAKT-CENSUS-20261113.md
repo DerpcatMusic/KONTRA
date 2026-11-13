@@ -18,9 +18,9 @@ ignores without a diagnostic is not in this table; that needs the oracle compari
 | 1 | `unassigned external modulator` | 152 | Areia | Cosmetic | None: a modulator with no source is inert in Kontakt too |
 | 2 | `sample_only_referenced_by_purged_groups` (load) | 284 | all | Benign | None: samples no kept group plays |
 | 3 | `GetEngineParDisp` unanswered (script reads a display string of an effect-slot par) | 5 | ANALOG STRINGS, Areia Pads and 3 more | Script label | Label text only |
-| 4 | `SetEnginePar` unanswered (effect-slot pars `$ENGINE_PAR_RT_*`, `CH_*`, `FL_*`, `PH_*`, `DL_*`, `NOISE*`) | 2 (15 calls) | ANALOG STRINGS, Conflux | Audible if the slot's effect exists | Chorus/flanger/phaser/rotator/delay knobs on the ANALOG GUI do nothing |
+| 4 | `SetEnginePar` unanswered (effect-slot pars `$ENGINE_PAR_RT_*`, `CH_*`, `FL_*`, `PH_*`, `DL_*`, `NOISE*`) | 2 (15 calls) | ANALOG STRINGS, Conflux | Audible if the slot's effect exists | Fixed: only `JMP_*` and `CH_DEPTH` (modules with no processor) go unanswered; their text now answers |
 | 5 | `silent effect Convolution` | 2 | Areia legacy 16Vlns+10Vls, 6Cll+4DblBsss legato | Cosmetic | None heard (IR missing) |
-| 6 | `impulse response size` (early 0.619 / late 1.003) | 1 | ANALOG STRINGS | Audible | Reverb tail length/level differs |
+| 6 | `impulse response size` (early 0.619 / late 1.003) | 1 | ANALOG STRINGS | Audible | Stale: no code emits it since #1483 (size is a live impulse knob) |
 | 7 | `bypassed effect Jump` | 1 | ANALOG STRINGS | Cosmetic | None |
 | 8 | `bypassed effect Rotator` | 1 | Areia Pads | Cosmetic | None |
 | 9 | `MIDI automation of a missing script control` | 1 | Conflux | Audible | One automated GUI control has no target |

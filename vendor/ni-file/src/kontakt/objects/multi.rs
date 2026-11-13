@@ -241,7 +241,9 @@ mod tests {
         data.extend(present);
         data.extend([0, 0x70, 0]);
         data.extend(3u32.to_le_bytes());
-        "aux".encode_utf16().for_each(|c| data.extend(c.to_le_bytes()));
+        "aux"
+            .encode_utf16()
+            .for_each(|c| data.extend(c.to_le_bytes()));
         data.extend(2u16.to_le_bytes());
         data.extend(0u16.to_le_bytes());
         data.extend(1f32.to_le_bytes());
@@ -251,7 +253,10 @@ mod tests {
         let o = OutputConfiguration::try_from(&Chunk { id: 0x3E, data }).unwrap();
         assert_eq!(o.channel_map, [0, 1]);
         let strip = &o.partitions[0];
-        assert_eq!((strip.index, strip.name.as_str(), strip.channels), (1, "aux", 2));
+        assert_eq!(
+            (strip.index, strip.name.as_str(), strip.channels),
+            (1, "aux", 2)
+        );
         assert_eq!(strip.fx.len(), 1);
     }
 }

@@ -303,29 +303,114 @@ impl Look {
     }
 }
 
+/// A label in the 9 px pixel font, as Kontakt draws it: the line laid out
+/// in whole font pixels, then scaled to the screen by area, so at 150 % a
+/// one-pixel stem is one full and one half-lit column (probed in Kontakt 8).
 pub(super) fn label(
     text: &str,
     style: &TextStyle,
     text_y: Option<i32>,
-    size: (f64, f64, f64, f64),
+    (w, h, s, device): (f64, f64, f64, f64),
     glyphs: &kontra_ui_pictures::Glyphs,
 ) -> El {
-    field_words(
-        text,
-        super::color(style.color),
-        style.align,
-        size,
-        Some(glyphs),
-        style.color,
-        StockMetrics::Label12(text_y),
+    let cells: Option<Vec<&Arc<Image>>> = text
+        .chars()
+        .map(|c| {
+            let at = kontra_ui_pictures::glyph(c);
+            (c == '?' || at != usize::from(b'?'))
+                .then(|| glyphs.get(at))
+                .flatten()
+        })
+        .collect();
+    let Some(cells) = cells else {
+        return words(text, super::color(style.color), style.align, w, h, s);
+    };
+    let advance = |c: char, g: &Image| if c == ' ' { 3 } else { g.width };
+    let width: u32 = text.chars().zip(&cells).map(|(c, g)| advance(c, g)).sum();
+    let (lw, lh) = ((w / s).ceil() as u32, (h / s).ceil() as u32);
+    let mut x = match style.align {
+        model::Align::Left => 5,
+        model::Align::Center => lw.saturating_sub(width) / 2,
+        model::Align::Right => lw.saturating_sub(5 + width),
+    };
+    // Without TEXTPOS_Y the cell sits 2 px down (probed at 100 % and 150 %).
+    let top = text_y.unwrap_or(2).max(0) as u32;
+    let mut line = vec![0u8; lw as usize * lh as usize];
+    for (c, g) in text.chars().zip(&cells) {
+        for (gy, row) in g.rgba.chunks_exact(g.width as usize * 4).enumerate() {
+            for (gx, p) in row.as_chunks::<4>().0.iter().enumerate() {
+                let (px, py) = (x as usize + gx, top as usize + gy);
+                if px < lw as usize
+                    && let Some(cov) = line.get_mut(py * lw as usize + px)
+                {
+                    *cov = p[3];
+                }
+            }
+        }
+        x += advance(c, g);
+    }
+    let color = style.color;
+    let (dw, dh) = (
+        (f64::from(lw) * device).round() as u32,
+        (f64::from(lh) * device).round() as u32,
+    );
+    let (across, down) = (area(lw, dw, device), area(lh, dh, device));
+    let line = &line;
+    let pixels: Vec<u8> = down
+        .iter()
+        .flat_map(|rows| across.iter().map(move |cols| (rows, cols)))
+        .flat_map(|(rows, cols)| {
+            let cov: f64 = rows
+                .iter()
+                .flat_map(|&(y, wy)| {
+                    cols.iter().map(move |&(x, wx)| {
+                        wy * wx * f64::from(line.get(y * lw as usize + x).copied().unwrap_or(0))
+                    })
+                })
+                .sum();
+            [
+                color.r,
+                color.g,
+                color.b,
+                ((cov.round().clamp(0., 255.) as u16 * u16::from(color.a)) / 255) as u8,
+            ]
+        })
+        .collect();
+    Image::rgba(dw, dh, pixels).map_or_else(
+        || words(text, super::color(style.color), style.align, w, h, s),
+        |image| {
+            stack([super::image(
+                &Arc::new(image),
+                f64::from(lw) * s,
+                f64::from(lh) * s,
+            )])
+            .w(w)
+            .h(h)
+            .clip()
+        },
     )
+}
+
+/// For each of `d` screen pixels along one axis, the font pixels of `n` it
+/// covers and the share of it each one fills, at `device` pixels per font pixel.
+pub(super) fn area(n: u32, d: u32, device: f64) -> Vec<Vec<(usize, f64)>> {
+    (0..d)
+        .map(|i| {
+            let (lo, hi) = (f64::from(i) / device, f64::from(i + 1) / device);
+            (lo.floor() as u32..(hi.ceil() as u32).min(n))
+                .map(|j| {
+                    let cover = hi.min(f64::from(j + 1)) - lo.max(f64::from(j));
+                    (j as usize, cover * device)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
 enum StockMetrics {
     Field,
     Button12,
-    Label12(Option<i32>),
 }
 
 fn field_words(
@@ -350,7 +435,7 @@ fn field_words(
         (if c == ' ' {
             match metrics {
                 StockMetrics::Field => f64::from(glyph.width),
-                StockMetrics::Button12 | StockMetrics::Label12(_) => 4.,
+                StockMetrics::Button12 => 4.,
             }
         } else {
             f64::from(glyph.width)
@@ -367,14 +452,7 @@ fn field_words(
     let mut x = match align {
         model::Align::Left => 7. * s,
         model::Align::Center => (w - width) / 2.,
-        model::Align::Right => {
-            let inset = if matches!(metrics, StockMetrics::Label12(_)) {
-                7.
-            } else {
-                11.
-            };
-            w - inset * s - width
-        }
+        model::Align::Right => w - 11. * s - width,
     };
     let mut layers = Vec::new();
     for c in text.chars() {
@@ -395,7 +473,7 @@ fn field_words(
                             StockMetrics::Field => {
                                 (u16::from(p[3]) * 255 / FIELD_ATLAS_COVERAGE).min(255) as u8
                             }
-                            StockMetrics::Button12 | StockMetrics::Label12(_) => p[3],
+                            StockMetrics::Button12 => p[3],
                         }) * u16::from(color.a))
                             / 255) as u8,
                     ]
@@ -408,8 +486,7 @@ fn field_words(
                     x,
                     match metrics {
                         StockMetrics::Field => (h - height) / 2. - s,
-                        StockMetrics::Button12 | StockMetrics::Label12(None) => (h - height) / 2.,
-                        StockMetrics::Label12(Some(y)) => f64::from(y) * s,
+                        StockMetrics::Button12 => (h - height) / 2.,
                     },
                 ));
             }
@@ -671,6 +748,21 @@ pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
             Kind::Slider { .. } | Kind::TextEdit | Kind::Table { .. }
         )
         || matches!(w.kind, Kind::Shape(_) | Kind::Canvas(_))
+}
+
+/// Kontakt's face for a script label with no picture: a flat grey, one
+/// pixel in on every side (Kontakt 8 oracle, a bare probe page).
+pub(super) fn label_face(
+    tree: &Interface,
+    w: &Widget,
+    (width, height, s): (f64, f64, f64),
+) -> Option<El> {
+    (matches!(w.kind, Kind::Label) && !w.hide.background && unpictured(tree, w)).then(|| {
+        block((width - 2. * s).max(0.), (height - 2. * s).max(0.))
+            .radius(0.)
+            .fill(rgb(0x77_7671))
+            .at(s, s)
+    })
 }
 
 /// A KSP control with no picture, or one the library lacks; `false` for

@@ -196,6 +196,13 @@ impl Browser {
         }
     }
 
+    /// Remembers that the library folder `from` is now at `to`.
+    pub fn relink(&mut self, from: PathBuf, to: PathBuf) {
+        self.prefs.moved.retain(|(f, _)| *f != from);
+        self.prefs.moved.push((from, to));
+        self.changed();
+    }
+
     /// Adds a folder the player dropped, and scans again.
     pub fn add_root(&mut self, path: PathBuf) {
         self.prefs.add_root(Root {

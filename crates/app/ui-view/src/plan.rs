@@ -423,11 +423,13 @@ pub(super) fn label_fits(
     width: f64,
     scale: f64,
 ) -> bool {
+    // The pixel font spaces 3 and insets 5 a side.
+    let (space, inset) = (3., 5.);
     let advance: f64 = text
         .chars()
         .map(|c| {
             if c == ' ' {
-                4.
+                space
             } else {
                 glyphs
                     .get(kontra_ui_pictures::glyph(c))
@@ -435,7 +437,7 @@ pub(super) fn label_fits(
             }
         })
         .sum();
-    advance * scale <= (width - 14. * scale).max(0.)
+    advance * scale <= (width - 2. * inset * scale).max(0.)
 }
 
 #[cfg(test)]

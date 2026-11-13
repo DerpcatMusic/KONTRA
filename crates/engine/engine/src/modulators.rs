@@ -21,9 +21,12 @@ pub(crate) struct Memo {
     envelope: [Slot; WARPS],
 }
 
+/// A source's value remembered at one age; `None` inside is "no value".
+type Aged = Option<(u64, Option<f32>)>;
+
 /// Up to two ages (now, and the next refresh) per source.
 #[derive(Default)]
-struct Slot([Cell<Option<(u64, Option<f32>)>>; 2]);
+struct Slot([Cell<Aged>; 2]);
 
 impl Memo {
     pub(crate) fn begin(&self) {
@@ -199,13 +202,19 @@ impl Engine {
                 *range = Some([lo, hi.max(lo)]);
             }
         }
-        for (((w, (hz, range)), lfo), places) in warp.iter_mut().zip(added).zip(&g.lfos).zip(shifted)
+        for (((w, (hz, range)), lfo), places) in
+            warp.iter_mut().zip(added).zip(&g.lfos).zip(shifted)
         {
             if let (Some([lo, hi]), ir::Rate::Hz(f)) = (range, lfo.rate) {
                 *w = (*w + ((f + hz).clamp(lo, hi) - f) * span).rem_euclid(1.0);
             }
-            if places != 0.0 && let ir::Rate::Beats(b) = lfo.rate {
-                let moved = ir::Lfo { rate: ir::Rate::Beats(ir::ladder_beats(b, places)), ..*lfo };
+            if places != 0.0
+                && let ir::Rate::Beats(b) = lfo.rate
+            {
+                let moved = ir::Lfo {
+                    rate: ir::Rate::Beats(ir::ladder_beats(b, places)),
+                    ..*lfo
+                };
                 let extra = kontra_plan::modulation::hz(&moved, self.tempo)
                     - kontra_plan::modulation::hz(lfo, self.tempo);
                 *w = (*w + extra * span).rem_euclid(1.0);

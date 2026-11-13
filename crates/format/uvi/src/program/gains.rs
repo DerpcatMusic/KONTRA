@@ -83,6 +83,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 source => ir::Transfer {
                     source,
                     table: vec![law(0.0), law(1.0)],
+                    ..Default::default()
                 },
             };
             own.push(ir::Source::Shaped(index_of(&mut group.shapers, t)));

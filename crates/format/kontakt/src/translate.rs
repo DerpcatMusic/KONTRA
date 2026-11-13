@@ -225,6 +225,9 @@ pub(crate) fn instrument(
             }
         }
     }
+    for why in resources.iter().flat_map(|r| &r.unreadable) {
+        notes.add(ir::Impact::Broken, "resource archive", why);
+    }
     let groups = program
         .0
         .find_first(GROUP_LIST)

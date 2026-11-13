@@ -83,6 +83,7 @@ pub(super) fn live(program: Node, connection: Node, group: &mut ir::Group) -> Op
         ir::Transfer {
             source: blend,
             table,
+            ..Default::default()
         },
     )))
 }
@@ -194,12 +195,14 @@ fn ratio(program: Node, connection: Node, keys: bool, macros: bool) -> Option<f3
             ir::Transfer {
                 source: ir::Source::Script(id),
                 table,
+                ..
             } if id >= MACROS => {
                 let node = source_node(program, f)?;
                 let x = num(node, "Value", 0.0).ok()? as f32;
                 ir::Transfer {
                     source: ir::Source::Constant,
                     table: vec![read(&table, x).unwrap_or(x)],
+                    ..Default::default()
                 }
             }
             t => t,
@@ -259,6 +262,7 @@ pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> 
         input: ir::Transfer {
             source: ir::Source::Key,
             table: (0..128u8).map(|x| at(f32::from(x))).collect(),
+            smooth_s: 0.0,
         },
         depth: held_ratio(program, connection)?.clamp(-1.0, 1.0),
     })
@@ -327,6 +331,7 @@ fn read(table: &[f32], x: f32) -> Option<f32> {
         ir::Transfer {
             source: ir::Source::Constant,
             table: table.to_vec(),
+            ..Default::default()
         }
         .apply(x)
     })
@@ -411,7 +416,11 @@ pub(super) fn transfer(
         if node.has_tag_name("ScriptEventModulation") {
             let source = ir::Source::Script(node.attribute("EventId")?.parse().ok()?);
             if !flag(node, "Bipolar") || table.len() < 2 {
-                return Some(ir::Transfer { source, table });
+                return Some(ir::Transfer {
+                    source,
+                    table,
+                    ..Default::default()
+                });
             }
             // Every point lands on a point or a segment's middle: exact.
             let last = (table.len() - 1) as f32;
@@ -421,6 +430,7 @@ pub(super) fn transfer(
             return Some(ir::Transfer {
                 source,
                 table: half,
+                ..Default::default()
             });
         } else if let Some(id) = live_macro(program, node) {
             // Its script sends its position ([`live_macro`]).
@@ -431,11 +441,12 @@ pub(super) fn transfer(
             return Some(ir::Transfer {
                 source: ir::Source::Constant,
                 table: vec![value],
+                ..Default::default()
             });
         } else if let (Some((lfo, 1.0)), Some(lfos)) = (modulation::lfo(node), lfos.as_deref_mut())
         {
             ir::Source::Lfo(index_of(lfos, lfo))
-        } else if let (true, Some((lfo, steps)), Some(lfos)) = (
+        } else if let (true, Some((lfo, steps, tau)), Some(lfos)) = (
             node.has_tag_name("StepEnvelope") && table.is_empty(),
             modulation::steps(node),
             lfos,
@@ -444,6 +455,7 @@ pub(super) fn transfer(
             return Some(ir::Transfer {
                 source: ir::Source::Lfo(index_of(lfos, lfo)),
                 table: steps,
+                smooth_s: tau,
             });
         } else if node.has_tag_name("LFO") || node.has_tag_name("MultiLFO") {
             // ponytail: an LFO not carried (VWinds' growl: a random wave whose
@@ -452,12 +464,17 @@ pub(super) fn transfer(
             return Some(ir::Transfer {
                 source: ir::Source::Constant,
                 table: vec![read(&table, 0.5).unwrap_or(0.0)],
+                ..Default::default()
             });
         } else {
             return None;
         }
     };
-    Some(ir::Transfer { source, table })
+    Some(ir::Transfer {
+        source,
+        table,
+        ..Default::default()
+    })
 }
 
 /// The first script modulation id [`live_macro`] gives.

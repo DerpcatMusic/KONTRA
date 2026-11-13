@@ -124,7 +124,10 @@ mod tests {
         assert!(script.params().unwrap().persistent.is_empty());
         script.0.public_data[0..4].copy_from_slice(&0x8000_0000u32.to_le_bytes());
         assert!(script.params().unwrap().text.is_none());
-        script.0.public_data.truncate(script.0.public_data.len() - 4);
+        script
+            .0
+            .public_data
+            .truncate(script.0.public_data.len() - 4);
         script.0.public_data.extend(1u32.to_le_bytes());
         assert!(script.params().is_err()); // Count1 without its entry.
         assert_eq!(BParScript::decode_source(vec![b'{', 0xe9, b'}']), "{é}");

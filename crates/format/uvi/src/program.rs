@@ -124,7 +124,6 @@ pub(crate) fn unfinished<'a, L: Library>(
     t.script_routes();
     // After the layers: they mark the matrix connections they carry.
     t.connections();
-    t.step_smoothing();
     ignored::report(program, &mut t.notes);
     if !t.out.scripts.is_empty() {
         let tree = t.tree();

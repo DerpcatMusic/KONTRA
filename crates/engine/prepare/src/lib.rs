@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::ops::{Range, RangeInclusive};
+use std::path::Path;
 use std::sync::Arc;
 
 mod levels;
@@ -243,6 +244,10 @@ fn load_samples(
     });
     let mut requests = Vec::new();
     let mut slots = Vec::new();
+    // A folder that moved fails every sample in it alike: one line per
+    // folder, not per sample; any other failure is told once per file.
+    let mut missing: std::collections::BTreeMap<&Path, (usize, &Path)> = Default::default();
+    let mut told: std::collections::HashSet<(&Path, String)> = Default::default();
     for ((index, zones), result) in used.iter().zip(opened) {
         let name = instrument
             .samples
@@ -251,7 +256,20 @@ fn load_samples(
         let (source, fmt) = match result {
             Ok(opened) => opened,
             Err(e) => {
-                diagnostics.push(broken("sample-open", format!("{name}: {e}")));
+                match instrument.samples.get(*index) {
+                    Some(s) if e.kind() == io::ErrorKind::NotFound => {
+                        let dir = s.file.parent().unwrap_or(Path::new(""));
+                        missing.entry(dir).or_insert((0, &s.file)).0 += 1;
+                    }
+                    Some(s) if told.insert((&s.file, e.to_string())) => {
+                        diagnostics.push(broken(
+                            "sample-open",
+                            format!("{} cannot be read: {e}", s.file.display()),
+                        ));
+                    }
+                    Some(_) => {}
+                    None => diagnostics.push(broken("sample-open", format!("{name}: {e}"))),
+                }
                 continue;
             }
         };
@@ -299,9 +317,34 @@ fn load_samples(
                         *slot = Some(s);
                     }
                 }
-                Err(e) => diagnostics.push(broken("sample-load", format!("sample {index}: {e}"))),
+                Err(e) => {
+                    let (name, file) = instrument
+                        .samples
+                        .get(index)
+                        .map_or((String::new(), Path::new("")), |s| {
+                            (s.name.clone(), s.file.as_path())
+                        });
+                    if told.insert((file, e.to_string())) {
+                        diagnostics.push(broken(
+                            "sample-load",
+                            format!("{} ({name}) is damaged: {e}", file.display()),
+                        ));
+                    }
+                }
             }
         }
+    }
+    for (dir, (count, first)) in missing {
+        // The first file is how the host searches for the folder.
+        diagnostics.push(broken(
+            "samples not found",
+            format!(
+                "{count} sample{} not found in {}\nfirst: {}",
+                if count == 1 { "" } else { "s" },
+                dir.display(),
+                first.display()
+            ),
+        ));
     }
     loaded
 }
