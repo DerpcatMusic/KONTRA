@@ -210,12 +210,20 @@ impl Rack {
                     };
                     // A script or the tempo may have moved it since the last block.
                     processor.set(kind, tempo);
-                    // Silence in and nothing but silence stored for longer than
-                    // it remembers: its state is silent, so its clocks move on alone.
-                    let still = is_silent(io);
+                    // Silence in (or an input it cannot hear) and nothing but
+                    // silence stored for longer than it remembers: its state is
+                    // silent, so its clocks move on alone.
+                    let deaf = processor.deaf();
+                    let still = deaf || is_silent(io);
                     if still && processor.memory().is_some_and(|m| *quiet >= m) {
                         processor.idle(wet);
-                        levels.idle(e.dry, e.output, io.len());
+                        if deaf {
+                            // The input still passes at the dry level.
+                            wet.fill([0.0; 2]);
+                            levels.mix(io, wet, e.dry, e.output);
+                        } else {
+                            levels.idle(e.dry, e.output, io.len());
+                        }
                         continue;
                     }
                     wet.copy_from_slice(io);
