@@ -271,6 +271,7 @@ impl Engine {
         };
         vm.set_fuel(std::mem::take(&mut self.fuel));
         let step = vm.run(&script.program, co, self);
+        self.flush_refresh();
         self.stats.script_turns += u64::from(vm.last_turns());
         self.refresh_moved_routes();
         if let Step::Wait(micros) = step {
