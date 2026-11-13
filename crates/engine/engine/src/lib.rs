@@ -51,7 +51,7 @@ use kontra_plan as plan;
 
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
-use kontra_voice::{KeyUp, Voice, VoiceStart};
+use kontra_voice::{KeyUp, Scratch, Voice, VoiceStart};
 
 pub use fx_types::{EffectRequest, Prepared};
 pub use inspect::{
@@ -195,6 +195,8 @@ pub struct Engine {
     notes: Ledger,
     behaviour: Behaviour,
     voices: Vec<Slot>,
+    /// The buffers every voice renders through, in turn.
+    voice_scratch: Scratch,
     buses: Vec<BusState>,
     /// Sustain pedal down, per MIDI channel.
     pedal: [bool; 16],
@@ -399,6 +401,7 @@ impl Engine {
             zone_index,
             stream,
             voices,
+            voice_scratch: Scratch::allocate(),
             buses,
             pedal: [false; 16],
             stats: Stats::default(),
