@@ -497,6 +497,7 @@ impl Rack {
         let Some(view) = p.view.as_mut() else {
             return;
         };
+        p.named.touch();
         if let Some(set) = view.tap(widget, value) {
             let vars = &p.script.vars;
             p.modified |= set.iter().any(|&(slot, id, _)| saves(vars, slot, id));
@@ -540,6 +541,7 @@ impl Rack {
             return;
         };
         p.modified = true;
+        p.named.touch();
         let Some(view) = p.view.as_ref() else {
             return;
         };
