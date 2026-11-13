@@ -826,11 +826,14 @@ function ms2beat(ms)
 end
 
 -- Beats since the engine started, at the current tempo.
--- ponytail: the host's song position is not passed in; song time is running time.
 function getRunningBeatTime()
 	return getTime() / beat2ms(1)
 end
-getBeatTime = getRunningBeatTime
+
+-- The host's song position in beats (960 ticks a beat).
+function getBeatTime()
+	return (host_call("SongPosition") or 0) / 960
+end
 
 function getBeatDuration()
 	return beat2ms(1)

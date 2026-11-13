@@ -1777,3 +1777,21 @@ fn a_moved_library_is_said_once_offered_found_and_plays_once_taken() {
     assert!(loudest(&mut audio) > 1e-4, "{}", level(&audio, 1));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_relinked_library_folder_is_remembered_by_the_next_session() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("relink-prefs");
+    let _fresh = std::fs::remove_dir_all(&dir);
+    let (config, cache) = (dir.join("config"), dir.join("cache"));
+    let (from, to) = (
+        std::path::PathBuf::from("/old/Lib"),
+        std::path::PathBuf::from("/new/Lib"),
+    );
+    {
+        let mut browser = kontra_host::browser::Browser::open(Some(&config), Some(&cache));
+        browser.relink(from.clone(), to.clone());
+    }
+    let browser = kontra_host::browser::Browser::open(Some(&config), Some(&cache));
+    assert_eq!(browser.prefs.moved, [(from, to)]);
+    let _clean = std::fs::remove_dir_all(&dir);
+}

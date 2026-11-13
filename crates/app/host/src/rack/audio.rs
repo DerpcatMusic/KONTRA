@@ -350,6 +350,11 @@ impl RackAudio {
         }
         self.panic = false;
         self.played.clear();
+        // The song moved on: the next call (a later part of the host's
+        // block) starts where this one ended, not back at the block's start.
+        if let (Some((Play::Running, quarters, _)), Some(bpm)) = (&mut self.transport, self.tempo) {
+            *quarters += frames as f64 / self.rate * f64::from(bpm) / 60.0;
+        }
         for o in self.outputs.iter().filter_map(|o| o.get(..frames)) {
             for s in o {
                 self.meters.master[0] = self.meters.master[0].max(s[0].abs());
