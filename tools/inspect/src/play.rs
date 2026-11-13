@@ -148,7 +148,7 @@ fn run_events(
     let mut event_blocks: Vec<[u64; 2]> = Vec::new();
     let mut rendered = Vec::new();
     // Per block: wall ns, minor and major page faults (KONTRA_INSPECT_DUMP).
-    let mut extras: Vec<(u64, i64, i64, u64)> = Vec::new();
+    let mut extras: Vec<(u64, i64, i64, u64, kontra_lua::probe::Probe)> = Vec::new();
     let (mut peak_voices, mut voice_blocks) = (0usize, 0u64);
     let mut process_time = Duration::ZERO;
     while at < stop {
@@ -172,6 +172,7 @@ fn run_events(
         let script_before = engine.stats();
         let mono_start = monotonic_ns();
         let faults_before = thread_faults();
+        let _ = kontra_lua::probe::take();
         let timer = (std::time::Instant::now(), on_cpu());
         engine.process(&mut audio[..frames], &timed);
         let spent = timer.0.elapsed();
@@ -182,6 +183,7 @@ fn run_events(
             faults_after.0 - faults_before.0,
             faults_after.1 - faults_before.1,
             mono_start,
+            kontra_lua::probe::take(),
         ));
         peak_voices = peak_voices.max(engine.active_voices());
         voice_blocks += u64::from(engine.active_voices() > 0);
@@ -341,7 +343,7 @@ fn run_events(
         let text: String = block_times
             .iter()
             .zip(&extras)
-            .map(|(t, e)| format!("{} {} {} {} {} {}\n", t.1, t.0, e.0, e.1, e.2, e.3))
+            .map(|(t, e)| format!("{} {} {} {} {} {} {} {} {} {} {}\n", t.1, t.0, e.0, e.1, e.2, e.3, e.4.runs, e.4.run_ns, e.4.allocs, e.4.gc_steps, e.4.gc_ns))
             .collect();
         std::fs::write(path, text)?;
     }
