@@ -72,6 +72,7 @@ impl Rack {
         p.name.clone_from(&preset.name);
         p.path = path.map(Path::to_owned);
         p.modified = false;
+        p.named.settle();
         if let Some(path) = path.filter(|_| preset.effects) {
             self.recall_native(part, plan, path, (saved, loaded));
             return true;
@@ -182,6 +183,7 @@ impl Rack {
             p.name = named(path);
             p.path = Some(path.to_owned());
             p.modified = false;
+            p.named.settle();
         }
     }
 
