@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Merge controls.py sessions into one table per patch and one ranking by mechanism.
 
-    controls_rank.py OUT SESSION_DIR...
+    controls_rank.py OUT [LIBRARY=]SESSION_DIR...
 
-Each SESSION_DIR is a controls.py OUTDIR (verdicts.json, steps.json, writes.json). Sessions of the
+LIBRARY= names the session's library where its verdicts carry another name. Each SESSION_DIR is a controls.py OUTDIR (verdicts.json, steps.json, writes.json). Sessions of the
 same patch merge, a measured row winning over a 'not reachable' one, an earlier session over a later.
 Writes OUT/controls.json (every control: library, patch, control, verdict, reason, mechanism) and
 OUT/ranking.json + OUT/RANKING.md: for each mechanism, how many controls it breaks (dead, different,
-or 'ours no change' where Kontakt could not be compared) in how many libraries, most first.
+or 'ours no change' where Kontakt could not be compared, unless it only moves script state) in
+how many libraries, most first.
 """
 import json
 import sys
@@ -37,10 +38,11 @@ def session(d):
 
 
 def main():
-    out, dirs = Path(sys.argv[1]), [Path(d) for d in sys.argv[2:]]
-    merged = {}
-    for d in dirs:
-        for v in session(d):
+    out, merged = Path(sys.argv[1]), {}
+    for arg in sys.argv[2:]:
+        name, _, d = arg.rpartition("=")
+        for v in session(Path(d)):
+            v["library"] = name or v["library"]
             key = (v["library"], v["patch"], v["control"])
             have = merged.get(key)
             if have is None or (have["verdict"] == "not reachable" and v["verdict"] != "not reachable"):
@@ -48,7 +50,9 @@ def main():
     rows = sorted(merged.values(), key=lambda v: (v["library"], v["patch"], v["control"]))
     rank = {}
     for v in rows:
-        if v["verdict"] in BROKEN:
+        # Without Kontakt, a control that only moves script state may be silent there too.
+        unproven = v["verdict"] == "ours no change" and v["mechanism"] == "script state"
+        if v["verdict"] in BROKEN and not unproven:
             m = rank.setdefault(v["mechanism"], {"mechanism": v["mechanism"], "controls": 0, "libraries": set(),
                                                  "examples": []})
             m["controls"] += 1
@@ -68,7 +72,7 @@ def main():
     lines = ["# Panel controls: what breaks, by mechanism", "",
              "Each control moved min → max through its own panel code (tools/oracle/controls.py). A control "
              "counts against its mechanism when it is dead, different from Kontakt, or (no Kontakt to compare) "
-             "does nothing in KONTRA.", "", "| library | " + " | ".join(sorted({k for t in totals.values() for k in t}))
+             "does nothing in KONTRA (unless it only moves script state).", "", "| library | " + " | ".join(sorted({k for t in totals.values() for k in t}))
              + " |"]
     keys = sorted({k for t in totals.values() for k in t})
     lines.append("|---" * (len(keys) + 1) + "|")

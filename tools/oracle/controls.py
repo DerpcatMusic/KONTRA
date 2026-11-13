@@ -53,6 +53,13 @@ ACTIONS = ("load_ir_sample", "purge_group", "change_vol", "change_tune", "set_vo
            "set_key_type", "load_array", "set_snapshot_type", "set_skin_offset")
 
 
+def library(nki):
+    """The library folder an instrument sits in: the one under the libraries root ('Kontakt')."""
+    for d in nki.parents:
+        if d.parent.name == "Kontakt":
+            return re.sub(r"\s*\[.*", "", d.name)
+    return nki.parent.name
+
 def strip(src):
     return re.sub(r"\{[^}]*\}", "", src.replace("\r", ""))
 
@@ -485,7 +492,7 @@ def verdicts(args, out, rows, by_row):
     reason, mechanism); controls_rank.py merges sessions into the ranking by mechanism."""
     nki = Path(args.nki)
     (out / "verdicts.json").write_text(json.dumps([
-        {"library": nki.parent.parent.name, "patch": nki.stem, "control": r["name"], "verdict": r["class"],
+        {"library": library(nki), "patch": nki.stem, "control": r["name"], "verdict": r["class"],
          "reason": r.get("cause") or r["reason"], "mechanism": mechanism(by_row[r["name"]])}
         for r in rows], indent=1))
 
