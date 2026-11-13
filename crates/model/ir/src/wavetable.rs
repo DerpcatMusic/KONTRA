@@ -15,6 +15,10 @@ pub struct Wavetable {
     /// The level the table plays at, linear: 1 plays the cycles as their
     /// samples are.
     pub gain: f32,
+    /// How far apart the partials above the first lie, in fundamentals:
+    /// partial `n` plays at `f·(1 + (n − 1)·stretch)`, each at its level
+    /// (1 is harmonic).
+    pub stretch: f32,
     /// Applied in order.
     pub warps: [Warp; 2],
 }

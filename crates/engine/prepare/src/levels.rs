@@ -28,6 +28,8 @@ pub(crate) fn table(
     let mut cycle = forward.make_input_vec();
     let mut spectrum = forward.make_output_vec();
     let mut data = Vec::new();
+    // Only a stretched read shifts frequency; the others never read it.
+    let mut quad = (read.stretch != 1.0).then(Vec::new);
     let mut spans = Vec::with_capacity(cycles as usize * LEVELS);
     for c in 0..cycles {
         if sample.read(client, first + c * CYCLE, &mut frames).missing > 0 {
@@ -56,7 +58,11 @@ pub(crate) fn table(
                 Some((above, span)) if quiet(above) => span,
                 _ => {
                     let span = (u32::try_from(data.len()).ok()?, size);
-                    data.extend(resynth(&mut planner, &spectrum, harmonics, size as usize)?);
+                    let size = size as usize;
+                    data.extend(resynth(&mut planner, &spectrum, (harmonics, size), false)?);
+                    if let Some(quad) = quad.as_mut() {
+                        quad.extend(resynth(&mut planner, &spectrum, (harmonics, size), true)?);
+                    }
                     kept = Some((harmonics, span));
                     span
                 }
@@ -66,30 +72,44 @@ pub(crate) fn table(
     }
     let peak = data
         .iter()
+        .chain(quad.iter().flatten())
         .fold(0.0f32, |m, x| m.max(x.abs()))
         .max(f32::MIN_POSITIVE);
-    let steps = data
-        .iter()
-        .map(|x| (x / peak * 32767.0).round() as i16)
-        .collect();
-    Table::new((steps, peak / 32767.0), spans.into(), read)
+    let steps = |v: &[f32]| {
+        v.iter()
+            .map(|x| (x / peak * 32767.0).round() as i16)
+            .collect()
+    };
+    let mut table = Table::new((steps(&data), peak / 32767.0), spans.into(), read)?;
+    table.quad = quad.as_deref().map(steps);
+    Some(table)
 }
 
 /// The harmonics of `spectrum` (a [`CYCLE`]-frame transform) up to
-/// `harmonics`, as one cycle of `size` frames.
+/// `harmonics`, as one cycle of `size` frames; with `quadrature`, each a
+/// quarter cycle on and no DC.
 fn resynth(
     planner: &mut RealFftPlanner<f32>,
     spectrum: &[Complex<f32>],
-    harmonics: usize,
-    size: usize,
+    (harmonics, size): (usize, usize),
+    quadrature: bool,
 ) -> Option<Vec<f32>> {
     let inverse = planner.plan_fft_inverse(size);
     let mut bins = inverse.make_input_vec();
+    let turn = if quadrature {
+        Complex::new(0.0, -1.0)
+    } else {
+        Complex::new(1.0, 0.0)
+    };
     for (bin, h) in bins.iter_mut().zip(spectrum).take(harmonics + 1) {
-        *bin = h / CYCLE as f32;
+        *bin = h * turn / CYCLE as f32;
     }
     if let Some(dc) = bins.first_mut() {
-        dc.im = 0.0;
+        *dc = if quadrature {
+            Complex::new(0.0, 0.0)
+        } else {
+            Complex::new(dc.re, 0.0)
+        };
     }
     let mut out = inverse.make_output_vec();
     inverse.process(&mut bins, &mut out).ok()?;
@@ -110,7 +130,7 @@ mod tests {
             *bin = Complex::new(0.0, -(CYCLE as f32) / h as f32);
         }
         // Level 11 keeps 80 harmonics in 512 frames.
-        let level = resynth(&mut planner, &spectrum, 80, 512).unwrap();
+        let level = resynth(&mut planner, &spectrum, (80, 512), false).unwrap();
         let fft = planner.plan_fft_forward(512);
         let mut back = fft.make_output_vec();
         fft.process(&mut level.clone(), &mut back).unwrap();
