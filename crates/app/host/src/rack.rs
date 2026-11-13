@@ -359,6 +359,14 @@ impl Rack {
         let slots = instrument.scripts.iter().map(|s| s.slot).collect();
         let waves = crate::ui::Waves::of(&instrument);
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+        // A store set to defer heads read them here, behind the part.
+        if let Some(heads) = self.store.take_heads() {
+            let lanes = std::thread::available_parallelism().map_or(4, |n| n.get() * 3);
+            // A failed spawn leaves the heads to stream on demand.
+            let _ = std::thread::Builder::new()
+                .name("kontra-heads".into())
+                .spawn(move || heads.load(lanes));
+        }
         if let Some(progress) = self.store.progress() {
             progress.stage(kontra_protocol::LoadStage::Interface);
         }

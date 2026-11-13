@@ -386,6 +386,8 @@ impl PluginLogic for Kontra {
             return;
         };
         store.set_progress(Arc::clone(&p.shared.progress));
+        // A part plays as soon as its plan exists; the sample heads follow.
+        store.defer_heads(true);
         let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
         if let Some(saves) = kontra_host::rack::user_saves() {
             rack.set_saves(saves);

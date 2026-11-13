@@ -19,4 +19,4 @@ pub use fmt::{Encoding, MAX_CHANNELS, Mix, SampleFmt};
 pub use probe::fast_storage;
 pub use sample::{PAGE_FRAMES, Read, Sample, SampleId};
 pub use source::{MemSource, Source};
-pub use store::{BlobKey, LoadRequest, Store, StoreConfig, StreamClient, StreamStats};
+pub use store::{BlobKey, Heads, LoadRequest, Store, StoreConfig, StreamClient, StreamStats};

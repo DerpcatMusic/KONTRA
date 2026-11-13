@@ -1,8 +1,8 @@
 //! One loaded sample: pinned pages (the preload law) plus a table of streamed pages.
 
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use crate::cache::tag;
 use crate::fmt::{Mix, SampleFmt, emit};
@@ -84,7 +84,8 @@ pub struct Sample {
     pub(crate) shift: u32,
     pub(crate) source: Arc<dyn Source>,
     /// Preloaded pages, shared with every other sample of the same blob.
-    pub(crate) pinned: Box<[Option<Page>]>,
+    /// Each page is set once: at load, or later by [`crate::Heads`].
+    pub(crate) pinned: Box<[OnceLock<Page>]>,
     pub(crate) streamed: Box<[AtomicU32]>,
 }
 
@@ -109,9 +110,7 @@ impl Sample {
     /// Whether frame `frame` is preloaded, so a voice starting there plays at once.
     #[must_use]
     pub fn is_pinned(&self, frame: u64) -> bool {
-        self.pinned
-            .get(page_of(frame, self.shift))
-            .is_some_and(Option::is_some)
+        (self.pinned.get(page_of(frame, self.shift))).is_some_and(|p| p.get().is_some())
     }
 
     /// Frames in each of this sample's pages.
@@ -168,12 +167,12 @@ impl Sample {
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
     ) -> bool {
-        match self.pinned.get(page) {
-            Some(Some(Page::Pcm(bytes))) => {
+        match self.pinned.get(page).and_then(OnceLock::get) {
+            Some(Page::Pcm(bytes)) => {
                 self.fmt.decode(bytes, offset, out, mix);
                 return true;
             }
-            Some(Some(Page::Blocks(bytes))) => {
+            Some(Page::Blocks(bytes)) => {
                 return self.read_blocks(bytes, page, offset, out, mix);
             }
             _ => {}
@@ -266,7 +265,7 @@ impl Sample {
         }
         for page in page_of(first, self.shift)..=page_of(end - 1, self.shift) {
             let due = page_due(page, self.shift, first..end, due, step, descending);
-            if self.pinned.get(page).is_some_and(Option::is_some) {
+            if (self.pinned.get(page)).is_some_and(|p| p.get().is_some()) {
                 continue;
             }
             let Some(entry) = self.streamed.get(page) else {
