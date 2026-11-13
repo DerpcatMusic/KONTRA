@@ -11,6 +11,7 @@
 mod align;
 mod editor;
 mod folder;
+mod frames;
 mod follow;
 mod input;
 mod look;
@@ -320,13 +321,14 @@ impl BackgroundTask for Tick {
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.show_interfaces(interfaces);
-        rack.tick();
+        // The looks the scripts sent (a native_ui rebuild among them).
+        frames::time("tick", || rack.tick());
         follow::follow(rack, browser);
         let mut view = lock(&p.shared.view);
         // A closed editor's copy only keeps the report; it catches up on
         // the first tick after the editor opens.
         let refreshed = match interfaces {
-            Interfaces::Shown => view.refresh(rack, browser, report),
+            Interfaces::Shown => frames::time("copy", || view.refresh(rack, browser, report)),
             Interfaces::Hidden => view.report(report),
         };
         // What the requests did shows, whether or not the editor's copy
@@ -386,6 +388,8 @@ impl PluginLogic for Kontra {
             return;
         };
         store.set_progress(Arc::clone(&p.shared.progress));
+        // A part plays as soon as its plan exists; the sample heads follow.
+        store.defer_heads(true);
         let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
         if let Some(saves) = kontra_host::rack::user_saves() {
             rack.set_saves(saves);
