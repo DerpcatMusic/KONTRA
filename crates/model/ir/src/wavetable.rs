@@ -16,8 +16,57 @@ pub struct Wavetable {
     /// samples are.
     pub gain: f32,
     pub inharmonic: Inharmonic,
+    pub modosc: ModOsc,
     /// Applied in order.
     pub warps: [Warp; 2],
+}
+
+/// A second oscillator, a sine, that moves the table's read or joins its
+/// output, per voice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModOsc {
+    pub kind: ModOscKind,
+    /// 0..=1; routes and scripts move it.
+    pub amount: f32,
+    /// 0..=1: its frequency over the note's, geometric from `tune_range.0`
+    /// to `tune_range.1`.
+    pub tune: f32,
+    pub tune_range: (f32, f32),
+    /// The FM kinds' frequency swing at amount 1, Hz.
+    pub fm_hz: f32,
+}
+
+impl ModOsc {
+    pub const OFF: Self = Self {
+        kind: ModOscKind::Off,
+        amount: 0.0,
+        tune: 0.5,
+        tune_range: (1.0, 1.0),
+        fm_hz: 0.0,
+    };
+}
+
+/// What the mod oscillator `m` does to the table's read at amount `a`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModOscKind {
+    Off,
+    /// The table's frequency moves by `fm_hz·a·m`.
+    Fm,
+    /// The oscillator sounds; the table's output `y` moves its frequency by
+    /// `2·fm_hz·a·y`.
+    FmBy,
+    /// The table's frequency moves by its own last output, `fm_hz·a·y`.
+    FmFeedback,
+    /// The table's phase moves by `a·m` cycles.
+    Pm,
+    /// The table's phase moves by its own last output, `a·y` cycles.
+    PmFeedback,
+    /// The output times `1 + 0.32·a·m`.
+    Ring,
+    /// The output plus `2a` of the oscillator at the table's level.
+    Mix,
+    /// The output crossfaded to the oscillator by `a`.
+    Blend,
 }
 
 /// How far apart the partials above the first lie, in fundamentals: partial
@@ -47,6 +96,9 @@ pub enum TableValue {
     Warp(u8),
     /// [`Inharmonic::amount`].
     Inharmonic,
+    /// [`ModOsc::amount`] and [`ModOsc::tune`].
+    ModAmount,
+    ModTune,
 }
 
 /// One form: a bend of the read phase, then a shaper of what it read.

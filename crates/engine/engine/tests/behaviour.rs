@@ -2537,6 +2537,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         reverb_networks: vec![],
         lfo_units: vec![],
         warp_modes: vec![],
+        mod_kinds: vec![],
         knobs: vec![],
         foreign: None,
         files: None,

@@ -17,6 +17,7 @@ mod impulse;
 mod laws;
 mod links;
 mod provenance;
+mod raum;
 mod readouts;
 mod replika;
 mod resources;
@@ -30,6 +31,7 @@ mod timed;
 mod translate;
 mod versatile;
 mod wavetable;
+mod wowflutter;
 
 pub use container::chunks;
 pub use engine_pars::{engine_pars, lfo_units, owner};
@@ -37,7 +39,7 @@ pub use engine_pars::{engine_pars, lfo_units, owner};
 pub use resources::LIMIT as RESOURCE_LIMIT;
 pub use resources::Resources;
 pub use reverb::{reverb, reverb_laws, reverb_networks};
-pub use wavetable::warp_modes;
+pub use wavetable::{mod_kinds, warp_modes};
 
 use std::fmt::Display;
 use std::path::{Path, PathBuf};

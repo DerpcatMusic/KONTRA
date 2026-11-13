@@ -2,11 +2,12 @@
 
 use kontra_format::Notes;
 use kontra_ir::{self as ir, FormShaper, Side, Warp, WarpShape};
-use kontra_law::kontakt::INHARMONIC_RANGE;
+use kontra_law::kontakt::{INHARMONIC_RANGE, MOD_FM_HZ, MOD_TUNE_RANGE};
 use ni_file::kontakt::objects::WavetableSource;
 
-/// The source's table, forms, start phase and inharmonic stretch. Its
-/// modulation oscillator is not played yet: it leaves a note.
+/// The source's table, forms, start phase, inharmonic stretch and mod
+/// oscillator. The oscillator plays a sine whatever its saved wave, and its
+/// saved tune is read as semitones (Conflux saves 0).
 pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes) -> ir::Wavetable {
     let mut warp = |form: u32, amount: f32| {
         let kind = form.checked_sub(1);
@@ -42,7 +43,8 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         ),
         output: String::new(),
     });
-    if source.mod_type != 0 {
+    let kind = mod_kind(source.mod_type);
+    if kind.is_none() {
         notes.add(ir::Impact::Audible, "wavetable modulation", group);
     }
     ir::Wavetable {
@@ -54,6 +56,13 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
             on: source.inharmonic_enabled,
             amount: source.inharmonic.clamp(0.0, 1.0),
             range: INHARMONIC_RANGE,
+        },
+        modosc: ir::ModOsc {
+            kind: kind.unwrap_or(ir::ModOscKind::Off),
+            amount: source.mod_amount.clamp(0.0, 1.0),
+            tune: ((source.mod_tune + 36.0) / 72.0).clamp(0.0, 1.0),
+            tune_range: MOD_TUNE_RANGE,
+            fm_hz: MOD_FM_HZ,
         },
         warps,
     }
@@ -73,6 +82,35 @@ pub(crate) fn target(param: &str) -> Option<ir::TableValue> {
         "warpFactor" => ir::TableValue::Warp(0),
         "warpFactor2" => ir::TableValue::Warp(1),
         "wavetableInharmonic" => ir::TableValue::Inharmonic,
+        "wavetableModAmount" => ir::TableValue::ModAmount,
+        "wavetableModFrequency" => ir::TableValue::ModTune,
+        _ => return None,
+    })
+}
+
+/// The mod oscillator kind of each `$NI_WT_MOD_TYPE_*` value (OFF 0, FM1 1,
+/// FM2 2, FM3 3, RM 4, MIX 5, PM1 6, PM2 7, PM3 8, BLEND 9), a script's
+/// `$ENGINE_PAR_WT_MOD_TYPE` and the saved type alike. Measured at amount ¼
+/// on oracle probes: FM1 moves the table's frequency, FM2 sounds the
+/// oscillator moved by the table, FM3 and PM3 feed the table back, PM1 and
+/// PM2 (without forms) move its phase; RM's and BLEND's laws are guesses.
+#[must_use]
+pub fn mod_kinds() -> Vec<Option<ir::ModOscKind>> {
+    (0..10).map(mod_kind).collect()
+}
+
+fn mod_kind(kind: u32) -> Option<ir::ModOscKind> {
+    use ir::ModOscKind as K;
+    Some(match kind {
+        0 => K::Off,
+        1 => K::Fm,
+        2 => K::FmBy,
+        3 => K::FmFeedback,
+        4 => K::Ring,
+        5 => K::Mix,
+        6 | 7 => K::Pm,
+        8 => K::PmFeedback,
+        9 => K::Blend,
         _ => return None,
     })
 }

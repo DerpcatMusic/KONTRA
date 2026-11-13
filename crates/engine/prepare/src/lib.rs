@@ -394,6 +394,23 @@ pub fn warp(w: ir::Warp) -> Warp {
     }
 }
 
+/// The voice's kind of mod oscillator.
+#[must_use]
+pub fn mod_kind(k: ir::ModOscKind) -> kontra_voice::ModKind {
+    use kontra_voice::ModKind as V;
+    match k {
+        ir::ModOscKind::Off => V::Off,
+        ir::ModOscKind::Fm => V::Fm,
+        ir::ModOscKind::FmBy => V::FmBy,
+        ir::ModOscKind::FmFeedback => V::FmFeedback,
+        ir::ModOscKind::Pm => V::Pm,
+        ir::ModOscKind::PmFeedback => V::PmFeedback,
+        ir::ModOscKind::Ring => V::Ring,
+        ir::ModOscKind::Mix => V::Mix,
+        ir::ModOscKind::Blend => V::Blend,
+    }
+}
+
 /// A group's wavetable as its voices read it.
 #[must_use]
 pub fn read(w: ir::Wavetable) -> Read {
@@ -407,6 +424,14 @@ pub fn read(w: ir::Wavetable) -> Read {
             amount: w.inharmonic.amount,
             range: w.inharmonic.range,
         },
+        modosc: kontra_voice::ModOsc {
+            kind: mod_kind(w.modosc.kind),
+            amount: w.modosc.amount,
+            tune: w.modosc.tune,
+            tune_range: w.modosc.tune_range,
+            fm_hz: w.modosc.fm_hz,
+        },
+        rate: 48_000.0,
         warps: w.warps.map(warp),
     }
 }

@@ -63,6 +63,9 @@ pub enum EnginePar {
     /// Whether a wavetable's partials stretch ([`crate::Inharmonic::on`]):
     /// 0 off, any other value on.
     InharmonicOn,
+    /// A wavetable's mod oscillator kind: the value indexes the script's
+    /// kind table.
+    ModOscKind,
     /// A control the engine does not carry yet: only the text of a value
     /// the script passes answers (`get_engine_par_disp_ext`); a set or a
     /// read is reported as unhandled.

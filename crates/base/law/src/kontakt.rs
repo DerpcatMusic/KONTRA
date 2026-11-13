@@ -26,6 +26,17 @@ pub const STRETCH_SPEED: [f32; 21] = [
 /// 0.05 %.
 pub const INHARMONIC_RANGE: (f32, f32) = (0.5, 2.0);
 
+/// A wavetable mod oscillator's tune at the knob's ends, as a ratio to the
+/// note: `$ENGINE_PAR_WT_MOD_TUNE` is linear −36..+36 semitones over its
+/// raw 0..1e6 (raw 569444 measured at +5 st on an oracle probe).
+pub const MOD_TUNE_RANGE: (f32, f32) = (0.125, 8.0);
+
+/// The carrier's frequency swing at mod amount 1 in the FM types, Hz:
+/// measured at amount ¼ on an oracle probe (sine carrier and modulator,
+/// FM1 β 1.35 at +5 st), 2000·A·m Hz; FM2's swing of the modulator is
+/// twice it.
+pub const MOD_FM_HZ: f32 = 2000.0;
+
 /// Controller source taper in a volume route.
 pub const CONTROLLER_VOLUME: Law = Law::Power {
     lo: 0.0,

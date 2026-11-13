@@ -150,6 +150,9 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
                 })
             })
             .collect(),
+        mod_kinds: (kontra_format_kontakt::mod_kinds().into_iter())
+            .map(|k| k.map(kontra_prepare::mod_kind))
+            .collect(),
         knobs: pars
             .iter()
             .filter_map(|p| match &p.drives {
@@ -427,6 +430,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         reverb_networks: Vec::new(),
         lfo_units: Vec::new(),
         warp_modes: Vec::new(),
+        mod_kinds: Vec::new(),
         knobs: Vec::new(),
         data: Vec::new(),
         text_data: Vec::new(),
