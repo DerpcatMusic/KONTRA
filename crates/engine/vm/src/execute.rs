@@ -99,6 +99,13 @@ pub(crate) fn execute(
                 c.loop_count = 0;
                 pc = exit;
             }
+            // Out of fuel: the run goes on from here at the next block.
+            if c.fuel == 1 {
+                c.fuel = 0;
+                c.waits = c.waits.wrapping_add(1);
+                leave!(Step::Yield);
+            }
+            c.fuel = c.fuel.saturating_sub(1);
         }};
     }
     macro_rules! pop_text {
