@@ -431,3 +431,24 @@ fn load_many_now_reads_its_heads_even_when_the_store_defers_them() {
     assert!(sample.is_pinned(0));
     assert!(store.take_heads().is_none());
 }
+
+#[test]
+fn heads_read_for_a_deferred_load_are_shared_with_the_next_load_of_the_blob() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (key, source) = ramp(4 * PAGE_FRAMES);
+    store.defer_heads(true);
+    let first = store
+        .load(&key, source, 4 * PAGE_FRAMES, &[0..PAGE_FRAMES])
+        .unwrap();
+    assert_eq!(store.pinned_bytes(), 0);
+    store.take_heads().unwrap().load(2);
+    assert!(store.pinned_bytes() > 0);
+    // A second instance of the instrument: its head is the first's, nothing to read.
+    let (_, source) = ramp(4 * PAGE_FRAMES);
+    let second = store
+        .load(&key, source, 4 * PAGE_FRAMES, &[0..PAGE_FRAMES])
+        .unwrap();
+    assert!(second.is_pinned(0));
+    assert!(store.take_heads().is_none());
+    drop((first, second));
+}
