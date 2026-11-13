@@ -566,6 +566,36 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     browse(kontra_ui::app::Action::Switch { part: 0, preset });
     let back = path(&params).unwrap();
     assert!(back.ends_with("Una Corda Felt.nki"), "{back:?}");
+    // A snapshot the library ships is in the same list: picked, it applies
+    // (the header names it, its values differ from the instrument's), and
+    // the arrows step on from it through that list.
+    let scripts = |params: &KontraParams| {
+        crate::lock(&params.shared.rack)
+            .as_ref()
+            .unwrap()
+            .saved_scripts(0)
+    };
+    let base = scripts(&params);
+    let snap = (presets.iter())
+        .position(|p| {
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
+        })
+        .expect("Una Corda ships snapshots");
+    browse(kontra_ui::app::Action::Switch {
+        part: 0,
+        preset: snap,
+    });
+    assert_eq!(path(&params), Some(presets[snap].clone()));
+    let shown = format!("{:?}", *crate::lock(&params.shared.view));
+    assert!(
+        shown.contains(&format!("preset: Some({snap})")),
+        "{shown:.300}"
+    );
+    assert_ne!(scripts(&params), base, "the snapshot changed nothing");
+    browse(kontra_ui::app::Action::Step { part: 0, by: 1 });
+    assert_eq!(path(&params), Some(presets[(snap + 1) % count].clone()));
+    browse(kontra_ui::app::Action::Switch { part: 0, preset });
     users_own_preset(&params, library, preset);
     // With the settings on, a second part takes its own channel and output.
     // An instrument double-clicked adds a part even with part 0 focused.
@@ -667,8 +697,9 @@ impl Drop for Scratch {
     }
 }
 
-/// UVI's side of the player's own preset (VWinds Clarinet A): saved from
-/// the header, a project reload plays it with the panel values it saved.
+/// UVI's side of the player's own preset (VWinds Clarinet A): two knobs
+/// and a menu moved, saved from the header, and a project reload plays it
+/// with the panel values it saved.
 #[test]
 fn a_uvi_preset_saved_in_the_header_reopens_with_its_panel() {
     use kontra_ui::app::{Action, PresetEdit};
@@ -678,7 +709,7 @@ fn a_uvi_preset_saved_in_the_header_reopens_with_its_panel() {
         return;
     }
     let scratch = Scratch::new("uvi-presets");
-    let (params, _dsp) = activate(&Saved::new(Vec::new()).write());
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
     params
         .shared
         .request(crate::Request::AddRoot(PathBuf::from(ROOT)));
@@ -717,6 +748,25 @@ fn a_uvi_preset_saved_in_the_header_reopens_with_its_panel() {
         preset,
         into: None,
     });
+    settle(&params, &mut dsp);
+    let moved = move_panel(&params);
+    settle(&params, &mut dsp);
+    settle(&params, &mut dsp);
+    let now = crate::lock(&params.shared.rack)
+        .as_ref()
+        .unwrap()
+        .saved_scripts(0)
+        .concat();
+    for (name, to) in &moved {
+        let entry = now
+            .iter()
+            .find(|e| e.split_once('=').is_some_and(|(n, _)| n == name));
+        let value = entry.and_then(|e| e.split_once('=')?.1.parse::<f64>().ok());
+        assert!(
+            value.is_some_and(|v| (v - to).abs() < 1e-3),
+            "{name} → {to}: {entry:?}"
+        );
+    }
     browse(Action::Preset {
         part: 0,
         edit: PresetEdit::Save("Mine".into()),
@@ -735,9 +785,59 @@ fn a_uvi_preset_saved_in_the_header_reopens_with_its_panel() {
     );
     params.capture();
     let state = params.saved.read().unwrap().clone();
-    let (again, _again_dsp) = activate(&state);
-    Tick.run(&again);
+    let (again, mut again_dsp) = activate(&state);
+    settle(&again, &mut again_dsp);
     assert_eq!(playing(&again), (mine, false, values));
+}
+
+/// Moves part 0's first two persistent knobs a quarter of their range and
+/// its first persistent menu to its third item, by the Lua widget's name;
+/// each name and the value it was set to.
+fn move_panel(params: &KontraParams) -> Vec<(String, f64)> {
+    use kontra_ui_model::Kind;
+    let (moves, saved) = {
+        let guard = crate::lock(&params.shared.rack);
+        let rack = guard.as_ref().unwrap();
+        let view = (rack.parts()[0].as_ref().unwrap().view.as_ref()).expect("a panel");
+        let saved = rack.saved_scripts(0).concat();
+        let listed =
+            |name: &str| (saved.iter()).any(|e| e.split_once('=').is_some_and(|(n, _)| n == name));
+        let mut knobs = Vec::new();
+        let mut menu = None;
+        let widgets = view.tree().widgets.iter().enumerate();
+        for (n, w) in widgets.filter(|(_, w)| !w.name.is_empty() && listed(&w.name)) {
+            match &w.kind {
+                Kind::Knob { range, .. } if knobs.len() < 2 && range.max > range.min => {
+                    let to = range.min + (range.max - range.min) * 0.25;
+                    knobs.push((n, w.name.clone(), to));
+                }
+                Kind::Menu { items } if menu.is_none() && items.len() > 2 => {
+                    menu = Some((n, w.name.clone(), 3.0));
+                }
+                _ => {}
+            }
+        }
+        (knobs.into_iter().chain(menu).collect::<Vec<_>>(), saved)
+    };
+    assert_eq!(moves.len(), 3, "two knobs and a menu among {saved:?}");
+    for (widget, _, value) in &moves {
+        params
+            .shared
+            .request(crate::Request::Ui(crate::editor::Edit {
+                slot: Some(0),
+                action: kontra_ui::app::Action::Control {
+                    part: 0,
+                    widget: *widget,
+                    value: *value,
+                    cell: None,
+                    keys: Default::default(),
+                },
+            }));
+    }
+    moves
+        .into_iter()
+        .map(|(_, name, value)| (name, value))
+        .collect()
 }
 
 /// The player's own preset of the part playing `preset`: saved into the

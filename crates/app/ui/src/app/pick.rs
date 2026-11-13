@@ -6,7 +6,7 @@ use mui::prelude::*;
 
 use super::{Action, App, FilePick};
 use crate::kit::{self, button, list_row};
-use crate::theme::{CONTROL, SPACE, TEXT, secondary};
+use crate::theme::{CONTROL, SPACE, secondary};
 
 /// The rows the list shows at once; more scroll.
 const ROWS: f64 = 8.;
@@ -36,7 +36,11 @@ pub(super) fn sheet(ui: &mut Ui, app: &mut App, pick: FilePick, out: &mut Vec<Ac
         .collect();
     let list = match rows.is_empty() {
         true => caption("Nothing saved for this instrument yet.").fill(secondary()),
-        false => col(rows).gap(1).scroll().h(ROWS * (CONTROL + 1.)).min_h(0),
+        false => (col(rows).gap(1).w(Len::Pct(100.)))
+            .scroll()
+            .h(ROWS * (CONTROL + 1.))
+            .w(Len::Pct(100.))
+            .min_h(0),
     };
     let mut items = vec![list];
     let verb = if pick.save { "Save" } else { "Open" };
@@ -53,7 +57,7 @@ pub(super) fn sheet(ui: &mut Ui, app: &mut App, pick: FilePick, out: &mut Vec<Ac
     }
     items.push(go.el);
     let title = if pick.save { "Save file" } else { "Open file" };
-    let content = col(items).gap(SPACE).w(TEXT * 24.);
+    let content = col(items).gap(SPACE).w(Len::Pct(100.));
     let r = kit::sheet(ui, "pick", title, content);
     if r.changed {
         answer = Some(None);
