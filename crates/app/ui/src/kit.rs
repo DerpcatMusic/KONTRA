@@ -437,6 +437,9 @@ pub fn menu(
     current: Option<usize>,
 ) -> Response<Option<usize>> {
     let mut picked = None;
+    // About 0.6 em a letter: a grid's cells all fit its longest pick.
+    let longest = items.iter().map(|i| i.chars().count()).max().unwrap_or(0);
+    let cell_w = (longest as f64 * TEXT * 0.6 + SPACE * 2.).max(TEXT * 3.);
     let mut cells: Vec<El> = items
         .iter()
         .enumerate()
@@ -450,11 +453,7 @@ pub fn menu(
             if r.changed {
                 picked = Some(n);
             }
-            if columns == 1 {
-                r.el
-            } else {
-                r.el.w(TEXT * 3.)
-            }
+            if columns == 1 { r.el } else { r.el.w(cell_w) }
         })
         .collect();
     let mut rows = Vec::new();
@@ -468,9 +467,8 @@ pub fn menu(
     // never what lies under it.
     let tall = rows.len() as f64 * (CONTROL + 1.);
     let most = MENU_ROWS * (CONTROL + 1.);
-    // A list of words is as wide as its longest (about 0.6 em a letter),
-    // within 16 to 32 em: a long preset name reads whole.
-    let longest = items.iter().map(|i| i.chars().count()).max().unwrap_or(0);
+    // A list of words is as wide as its longest, within 16 to 32 em: a
+    // long preset name reads whole.
     let wide = (longest as f64 * TEXT * 0.6 + SPACE * 2.).clamp(TEXT * 16., TEXT * 32.);
     let list = col(rows).gap(1).when(columns == 1, |e| e.w(wide));
     let list_id = format!("{id}-list");

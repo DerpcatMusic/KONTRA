@@ -86,8 +86,15 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 fn chip(progress: kontra_protocol::LoadSnapshot) -> El {
     let done = block(Len::Pct(f64::from(progress.percent)), 6).fill(Role::Ink.alpha(0.85));
     let bar = row![done].w(Len::Pct(100.)).h(6).fill(Role::Ink.alpha(0.1));
-    let text = caption(progress.to_string()).text_size(SMALL).lines(1);
-    col![text, bar].gap(4).grow(1).named("Loading")
+    let said = progress.to_string();
+    let text = caption(said.clone()).text_size(SMALL).lines(1);
+    // Wide enough for its stage beside a part's name; the rest on hover.
+    col![text, bar]
+        .gap(4)
+        .grow(1)
+        .min_w(TEXT * 11.)
+        .named("Loading")
+        .tip(said)
 }
 
 /// A header row's height: both rows are one, so the artwork lines up.
