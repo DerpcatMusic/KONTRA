@@ -6,8 +6,7 @@ use kontra_law::kontakt::{INHARMONIC_RANGE, MOD_FM_HZ, MOD_TUNE_RANGE};
 use ni_file::kontakt::objects::WavetableSource;
 
 /// The source's table, forms, start phase, inharmonic stretch and mod
-/// oscillator. The oscillator plays a sine whatever its saved wave, and its
-/// saved tune is read as semitones (Conflux saves 0).
+/// oscillator. The oscillator plays a sine whatever its saved wave.
 pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes) -> ir::Wavetable {
     let mut warp = |form: u32, amount: f32| {
         let kind = form.checked_sub(1);
@@ -43,7 +42,10 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         ),
         output: String::new(),
     });
-    let kind = mod_kind(source.mod_type);
+    // The reader's names are swapped: `mod_wave` holds the type and
+    // `mod_type` the wave (probes saved with type FM1/FM2 and wave sine read
+    // wave=1/2, type=0); the tune is in octaves (+5 st reads 0.41666).
+    let kind = mod_kind(source.mod_wave);
     if kind.is_none() {
         notes.add(ir::Impact::Audible, "wavetable modulation", group);
     }
@@ -60,7 +62,7 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         modosc: ir::ModOsc {
             kind: kind.unwrap_or(ir::ModOscKind::Off),
             amount: source.mod_amount.clamp(0.0, 1.0),
-            tune: ((source.mod_tune + 36.0) / 72.0).clamp(0.0, 1.0),
+            tune: ((12.0 * source.mod_tune + 36.0) / 72.0).clamp(0.0, 1.0),
             tune_range: MOD_TUNE_RANGE,
             fm_hz: MOD_FM_HZ,
         },
@@ -90,10 +92,12 @@ pub(crate) fn target(param: &str) -> Option<ir::TableValue> {
 
 /// The mod oscillator kind of each `$NI_WT_MOD_TYPE_*` value (OFF 0, FM1 1,
 /// FM2 2, FM3 3, RM 4, MIX 5, PM1 6, PM2 7, PM3 8, BLEND 9), a script's
-/// `$ENGINE_PAR_WT_MOD_TYPE` and the saved type alike. Measured at amount ¼
-/// on oracle probes: FM1 moves the table's frequency, FM2 sounds the
+/// `$ENGINE_PAR_WT_MOD_TYPE` and the saved type alike. Every type but BLEND
+/// (a guess) renders as Kontakt does at amount ¼ on a sine probe
+/// (scratch/laneDSP/b8 mo2_case*, partials within 1 dB; FM3's pitch pull
+/// 303 Hz vs 307): FM1 moves the table's frequency, FM2 sounds the
 /// oscillator moved by the table, FM3 and PM3 feed the table back, PM1 and
-/// PM2 (without forms) move its phase; RM's and BLEND's laws are guesses.
+/// PM2 (without forms) move its phase, RM scales by 1 − A.
 #[must_use]
 pub fn mod_kinds() -> Vec<Option<ir::ModOscKind>> {
     (0..10).map(mod_kind).collect()
