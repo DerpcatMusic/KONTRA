@@ -20,6 +20,8 @@ pub(crate) struct BusState {
     pub(crate) sends: Box<[ir::BusSend]>,
     pub(crate) to_main: bool,
     pub(crate) mix: Box<[[f32; 2]]>,
+    /// A send's scale at each frame of the span, where an oscillator moves it.
+    pub(crate) scales: Box<[f32]>,
     /// Its output's left and right peaks since they were last taken.
     pub(crate) peak: [f32; 2],
     /// The gain and pan its faders last aimed at, and the frames they have
@@ -52,6 +54,7 @@ impl BusState {
             sends: b.sends.clone().into(),
             to_main: b.to_main,
             mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
+            scales: vec![1.0; MAX_SPAN as usize].into(),
             peak: [0.0; 2],
             aim: [b.gain, b.pan],
             still: 0,

@@ -108,7 +108,28 @@ impl Engine {
                         else {
                             continue;
                         };
-                        // ponytail: a moved level steps once a span; ramp it if a ride zippers.
+                        if bus.rack.send_moves(n) {
+                            // An oscillator moves the level every frame, so
+                            // the result does not depend on where blocks split.
+                            let live = Live {
+                                behaviour: &self.behaviour,
+                                scripts: &self.script_mods,
+                                now: self.now,
+                                seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
+                                tempo,
+                            };
+                            let scales = bus.scales.get_mut(..len).unwrap_or_default();
+                            bus.rack
+                                .send_scales(&live, n, 1.0 / self.rate as f32, scales);
+                            for ((o, m), g) in to.mix.iter_mut().zip(mix.iter()).zip(scales.iter())
+                            {
+                                let level = send.level * g;
+                                o[0] += m[0] * level;
+                                o[1] += m[1] * level;
+                            }
+                            continue;
+                        }
+                        // ponytail: other moved levels step once a span; ramp if a ride zippers.
                         let level = send.level * bus.rack.send_scale(n);
                         for (o, m) in to.mix.iter_mut().zip(mix.iter()) {
                             o[0] += m[0] * level;

@@ -25,12 +25,44 @@ pub struct Rack {
     blends: Box<[ir::Blend]>,
     /// The oscillators `Source::Lfo` reads, free-running.
     lfos: Box<[ir::Lfo]>,
+    /// Per oscillator, the time it is read at this span's start (a synced
+    /// one's accumulated cycles over its rate, so a tempo change moves its
+    /// rate, not its phase), the cycles a synced one has run, and when the
+    /// rack last followed.
+    lfo_t: Box<[f32]>,
+    lfo_cycles: Box<[f64]>,
+    last_seconds: f32,
+    /// Per route, whether it reads an oscillator (a send's level then moves
+    /// every frame: [`Self::send_scales`]).
+    live: Box<[bool]>,
     amounts: Box<[f32]>,
     /// Each slot's levels, gliding where its settings move.
     levels: Box<[Levels]>,
     /// Per slot, frames its input and output have both been silent.
     quiet: Box<[usize]>,
     rate: u32,
+}
+
+/// Whether `source` reads an oscillator, directly or in its blend.
+fn reads_lfo(source: ir::Source, blends: &[ir::Blend]) -> bool {
+    let is = |t: &ir::Transfer| matches!(t.source, ir::Source::Lfo(_));
+    match source {
+        ir::Source::Lfo(_) => true,
+        ir::Source::Blend(n) => blends.get(usize::from(n)).is_some_and(|b| {
+            b.terms
+                .iter()
+                .any(|t| is(&t.input) || t.factors.iter().any(|f| is(&f.input)))
+        }),
+        _ => false,
+    }
+}
+
+/// The oscillators a rack's routes read, each at its own time plus `offset`.
+#[derive(Clone, Copy)]
+struct Clock<'a> {
+    lfos: &'a [ir::Lfo],
+    t: &'a [f32],
+    offset: f32,
 }
 
 /// The sources a rack's routes read: those no note owns.
@@ -45,7 +77,7 @@ pub struct Live<'a> {
 
 impl Live<'_> {
     /// Controllers and pitch bend come from the channel last played.
-    fn read(&self, source: ir::Source, blends: &[ir::Blend], lfos: &[ir::Lfo]) -> Option<f32> {
+    fn read(&self, source: ir::Source, blends: &[ir::Blend], clock: Clock) -> Option<f32> {
         let (b, channel) = (self.behaviour, self.behaviour.channel);
         Some(match source {
             ir::Source::Controller(cc) => f32::from(b.cc(channel, cc)) / 127.0,
@@ -59,20 +91,21 @@ impl Live<'_> {
             }
             ir::Source::Constant => 1.0,
             ir::Source::Lfo(n) => {
+                let t = clock.t.get(usize::from(n)).copied().unwrap_or(self.seconds) + clock.offset;
                 let age = Age {
-                    held: self.seconds,
-                    now: self.seconds,
+                    held: t,
+                    now: t,
                     ..Age::START
                 };
-                lfo(lfos.get(usize::from(n))?, age, 0, self.tempo)
+                lfo(clock.lfos.get(usize::from(n))?, age, 0, self.tempo)
             }
             ir::Source::Blend(n) => {
                 let b = blends.get(usize::from(n))?;
                 let mut sum = b.base;
                 for t in &b.terms {
-                    let mut x = t.amount * self.through(&t.input, lfos)?;
+                    let mut x = t.amount * self.through(&t.input, clock)?;
                     for f in &t.factors {
-                        x *= f.at(self.through(&f.input, lfos)?);
+                        x *= f.at(self.through(&f.input, clock)?);
                     }
                     sum += x;
                 }
@@ -84,8 +117,8 @@ impl Live<'_> {
 
     /// `t`'s source through its table; a bipolar source spans a table as
     /// `(x + 1)/2`. No blend: no recursion.
-    fn through(&self, t: &ir::Transfer, lfos: &[ir::Lfo]) -> Option<f32> {
-        let x = self.read(t.source, &[], lfos)?;
+    fn through(&self, t: &ir::Transfer, clock: Clock) -> Option<f32> {
+        let x = self.read(t.source, &[], clock)?;
         // An LFO is always read on 0..=1; pitch bend only through a table.
         let bipolar = matches!(t.source, ir::Source::Lfo(_))
             || (matches!(t.source, ir::Source::PitchBend) && !t.table.is_empty());
@@ -117,6 +150,15 @@ impl Rack {
             mods: mods.into(),
             blends: blends.into(),
             lfos: Box::default(),
+            lfo_t: Box::default(),
+            lfo_cycles: Box::default(),
+            last_seconds: 0.0,
+            live: mods
+                .iter()
+                .map(
+                    |m| matches!(m, ir::ModKind::Send { source, .. } if reads_lfo(*source, blends)),
+                )
+                .collect(),
             amounts: vec![0.0; mods.len()].into(),
             levels: vec![Levels::new(rate); slots.len()].into(),
             quiet: vec![0; slots.len()].into(),
@@ -128,6 +170,8 @@ impl Rack {
     #[must_use]
     pub fn with_lfos(mut self, lfos: &[ir::Lfo]) -> Self {
         self.lfos = lfos.into();
+        self.lfo_t = vec![0.0; lfos.len()].into();
+        self.lfo_cycles = vec![0.0; lfos.len()].into();
         self
     }
 
@@ -156,16 +200,78 @@ impl Rack {
 
     /// Reads its routes' sources for the next span.
     pub fn follow(&mut self, live: &Live) {
+        let dt = f64::from((live.seconds - self.last_seconds).max(0.0));
+        self.last_seconds = live.seconds;
+        for ((l, cycles), t) in self
+            .lfos
+            .iter()
+            .zip(self.lfo_cycles.iter_mut())
+            .zip(self.lfo_t.iter_mut())
+        {
+            let hz = kontra_plan::modulation::hz(l, live.tempo);
+            *t = match l.rate {
+                ir::Rate::Hz(_) => live.seconds,
+                _ => {
+                    *cycles += f64::from(hz) * dt;
+                    (*cycles / f64::from(hz.max(1e-6))) as f32
+                }
+            };
+        }
+        let clock = Clock {
+            lfos: &self.lfos,
+            t: &self.lfo_t,
+            offset: 0.0,
+        };
         for (m, amount) in self.mods.iter().zip(self.amounts.iter_mut()) {
             *amount = match *m {
                 ir::ModKind::EffectParam { source, depth, .. } => {
-                    live.read(source, &self.blends, &self.lfos).unwrap_or(0.0) * depth
+                    live.read(source, &self.blends, clock).unwrap_or(0.0) * depth
                 }
                 ir::ModKind::Send { source, .. } => {
-                    live.read(source, &self.blends, &self.lfos).unwrap_or(1.0)
+                    live.read(source, &self.blends, clock).unwrap_or(1.0)
                 }
                 _ => continue,
             };
+        }
+    }
+
+    fn clock(&self, offset: f32) -> Clock<'_> {
+        Clock {
+            lfos: &self.lfos,
+            t: &self.lfo_t,
+            offset,
+        }
+    }
+
+    /// Whether send `n`'s level reads an oscillator, so it moves within a span.
+    pub fn send_moves(&self, n: usize) -> bool {
+        self.mods.iter().zip(self.live.iter()).any(|(m, &l)| {
+            l && matches!(m, ir::ModKind::Send { send, .. } if usize::from(*send) == n)
+        })
+    }
+
+    /// Send `n`'s scale at each frame of the span `live` was followed for,
+    /// `step` seconds apart, so it does not depend on where blocks split.
+    pub fn send_scales(&self, live: &Live, n: usize, step: f32, out: &mut [f32]) {
+        for (k, o) in out.iter_mut().enumerate() {
+            let clock = self.clock(k as f32 * step);
+            let routes = self
+                .mods
+                .iter()
+                .zip(self.live.iter())
+                .zip(self.amounts.iter());
+            *o = routes
+                .filter_map(|((m, &moves), &held)| match *m {
+                    ir::ModKind::Send { source, send } if usize::from(send) == n => {
+                        Some(if moves {
+                            live.read(source, &self.blends, clock).unwrap_or(1.0)
+                        } else {
+                            held
+                        })
+                    }
+                    _ => None,
+                })
+                .product();
         }
     }
 

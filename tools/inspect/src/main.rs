@@ -3,6 +3,7 @@
 //!
 //! ```sh
 //! kontra-inspect load <instrument> [--json FILE]
+//! kontra-inspect script <instrument> [--slot N [--base CELL]]   # script slots, or one slot's source
 //! kontra-inspect law [NAME]
 //! kontra-inspect play <instrument> [--scenario user|FILE] [--oracle]  # KONTRA_INSPECT_WAV=FILE writes the render
 //! ```
@@ -53,6 +54,48 @@ fn run() -> Result<()> {
         let bank = args.next().context(USAGE)?;
         for program in kontra_format_uvi::programs(std::path::Path::new(&bank))? {
             println!("{program}");
+        }
+        return Ok(());
+    }
+    if command == "script" {
+        let (mut path, mut slot, mut base) = (None, None, None::<u32>);
+        while let Some(a) = args.next() {
+            match a.as_str() {
+                "--base" => {
+                    base = Some(args.next().context("--base needs a cell")?.parse::<u32>()?)
+                }
+                "--slot" => {
+                    slot = Some(
+                        args.next()
+                            .context("--slot needs a number")?
+                            .parse::<usize>()?,
+                    );
+                }
+                _ if a.starts_with('-') => bail!("unknown option {a}\n{USAGE}"),
+                _ => path = Some(PathBuf::from(a)),
+            }
+        }
+        let path = path.context(USAGE)?;
+        let instrument = kontra_host::instrument::read_timed(&path)
+            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?
+            .0;
+        for s in &instrument.scripts {
+            match slot {
+                None => println!("{}\t{}\t{} bytes", s.slot, s.name, s.source.len()),
+                Some(n) if n == s.slot => match base {
+                    // The array a fault names (`first_out_of_range`'s first field).
+                    Some(b) => {
+                        let script = kontra_ksp::compile(&s.source, &[])?;
+                        for v in script.variables.iter().filter(|v| {
+                            matches!(v.cells, kontra_ksp::Cells::Int { base, .. } | kontra_ksp::Cells::Real { base, .. } | kontra_ksp::Cells::Text { base, .. } if base == b)
+                        }) {
+                            println!("{}\t{:?}", v.name, v.cells);
+                        }
+                    }
+                    None => print!("{}", s.source),
+                },
+                Some(_) => {}
+            }
         }
         return Ok(());
     }
