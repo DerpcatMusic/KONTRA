@@ -605,4 +605,18 @@ mod tests {
         let tree = page.render(&[("Name".into(), 0.)]).unwrap().unwrap();
         assert_eq!(tree.prop("text"), Some(&Prop::Text("Cutoff".into())));
     }
+
+    /// Rounding gives 0, not -0: Kontakt's `math.ceil` returns integers.
+    #[test]
+    fn rounding_to_zero_reads_0_not_minus_0() {
+        let mut page = page(&[(
+            "main.nui",
+            r#"local ui = require "native_ui"
+            return function()
+                return @ui.Text { text = tostring(math.ceil(-0.5)) .. tostring(math.floor(-0)) }
+            end"#,
+        )]);
+        let tree = page.render(&[]).unwrap().unwrap();
+        assert_eq!(tree.prop("text"), Some(&Prop::Text("00".into())));
+    }
 }

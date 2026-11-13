@@ -14,6 +14,16 @@ function table.shallow_copy(t)
 	return c
 end
 
+-- Kontakt's Lua rounds to integers: `math.ceil(-0.5)` is 0, never the
+-- -0 a float keeps, which a page's `tostring` would show as "-0".
+local ceil, floor = math.ceil, math.floor
+function math.ceil(x)
+	return ceil(x) + 0
+end
+function math.floor(x)
+	return floor(x) + 0
+end
+
 local Node = {}
 -- Any method on a node is a modifier: recorded, in order, and chained.
 Node.__index = function(_, name)
