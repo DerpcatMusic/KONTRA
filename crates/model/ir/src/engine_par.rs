@@ -57,6 +57,9 @@ pub enum EnginePar {
     LfoUnit,
     /// A wavetable value, 0..=1 linear in the raw 0..=1e6.
     Wavetable(crate::TableValue),
+    /// The kind of wavetable form n (0 or 1): the value indexes the
+    /// script's form table.
+    WarpMode(u8),
     /// A control the engine does not carry yet: only the text of a value
     /// the script passes answers (`get_engine_par_disp_ext`); a set or a
     /// read is reported as unhandled.

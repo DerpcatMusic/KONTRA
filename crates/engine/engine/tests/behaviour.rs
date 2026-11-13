@@ -2460,6 +2460,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         reverb_laws: ir::ReverbControls::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
         reverb_networks: vec![],
         lfo_units: vec![],
+        warp_modes: vec![],
         knobs: vec![],
         foreign: None,
         files: None,

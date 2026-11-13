@@ -138,6 +138,18 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         reverb_laws: kontra_format_kontakt::reverb_laws(),
         reverb_networks: kontra_format_kontakt::reverb_networks().into(),
         lfo_units: kontra_format_kontakt::lfo_units(),
+        warp_modes: (kontra_format_kontakt::warp_modes().into_iter())
+            .map(|m| {
+                m.map(|(shape, shaper)| {
+                    let w = kontra_prepare::warp(ir::Warp {
+                        shape,
+                        shaper,
+                        amount: 0.0,
+                    });
+                    (w.shape, w.shaper)
+                })
+            })
+            .collect(),
         knobs: pars
             .iter()
             .filter_map(|p| match &p.drives {
@@ -414,6 +426,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         }),
         reverb_networks: Vec::new(),
         lfo_units: Vec::new(),
+        warp_modes: Vec::new(),
         knobs: Vec::new(),
         data: Vec::new(),
         text_data: Vec::new(),
