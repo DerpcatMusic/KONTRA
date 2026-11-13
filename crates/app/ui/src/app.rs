@@ -51,9 +51,9 @@ pub struct App {
     pub build: String,
     /// The folders the browser scans.
     pub folders: Vec<String>,
-    /// What Settings says of Kontakt's user snapshot folder: the folder,
-    /// or in one line why there is none.
-    pub snapshot_folder: String,
+    /// Kontakt's user snapshot folder, and whether it is there: `None`
+    /// while none is set (the path is then empty).
+    pub snapshot_folder: (String, Option<bool>),
     /// The editor's width in points, as the host frames it: a library's
     /// view fits what the rack has of it. 0 while unknown.
     pub width: f64,
@@ -319,6 +319,15 @@ pub struct View {
     pub face_scale: usize,
     /// How a part that chose none draws its interface.
     pub face_look: FaceLook,
+}
+
+impl View {
+    /// Escape: closes the open menu, else the open sheet. A plugin window
+    /// hands unclaimed keys to its host, so the host's editor calls this
+    /// itself rather than waiting for the key in the frame's input.
+    pub fn dismiss(&mut self) -> bool {
+        self.menu.take().is_some() || self.sheet.take().is_some()
+    }
 }
 
 /// The editor sizes on offer, in percent of its design size.
