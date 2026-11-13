@@ -788,10 +788,7 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
             Kind::Shape(shape) => {
                 d.extend(super::shape::fill(shape, page_width, (w, h), background))
             }
-            Kind::Canvas(ref paints) => d.extend(kontra_ui_pictures::canvas(
-                paints,
-                w / page_width.max(f64::EPSILON),
-            )),
+            Kind::Canvas(ref p) => d.extend(kontra_ui_pictures::canvas(p, w / page_width)),
             _ => field(&mut d, FIELD),
         }
         d
