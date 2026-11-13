@@ -112,11 +112,34 @@ local menu_methods = {
 	end,
 }
 
+-- A widget's place and size: kept as its x, y, width and height, never as
+-- the fields themselves, so one moved or sized after it is made
+-- (`w.pos = {x, y}`, as V Winds does for its tuning layout) draws there.
+local geometry = { pos = true, position = true, size = true, bounds = true }
+local function place(w, key, v)
+	local n = function(i)
+		return tonumber(v[i])
+	end
+	local at = key == "bounds" and 2 or 0
+	if key ~= "size" then
+		rawset(w, "x", n(1) or w.x)
+		rawset(w, "y", n(2) or w.y)
+	end
+	if key == "size" or key == "bounds" then
+		rawset(w, "width", n(at + 1) or w.width)
+		rawset(w, "height", n(at + 2) or w.height)
+		rawset(w, "width_set", n(at + 1) ~= nil or w.width_set)
+		rawset(w, "height_set", n(at + 2) ~= nil or w.height_set)
+	end
+end
+
 local widget_meta = {
 	__newindex = function(w, key, v)
 		if key == "value" then
 			rawset(w, "__value", v)
 			run_changed(w)
+		elseif geometry[key] and type(v) == "table" then
+			place(w, key, v)
 		else
 			rawset(w, key, v)
 		end
@@ -124,6 +147,12 @@ local widget_meta = {
 	__index = function(w, key)
 		if key == "value" then
 			return rawget(w, "__value")
+		elseif key == "pos" or key == "position" then
+			return { rawget(w, "x"), rawget(w, "y") }
+		elseif key == "size" then
+			return { rawget(w, "width"), rawget(w, "height") }
+		elseif key == "bounds" then
+			return { rawget(w, "x"), rawget(w, "y"), rawget(w, "width"), rawget(w, "height") }
 		end
 		local items = rawget(w, "items")
 		if items and (key == "text" or key == "selectedText") then
@@ -258,7 +287,7 @@ widget = function(kind, name, value, ...)
 	end
 	local w = setmetatable({ kind = kind, name = name, alpha = 1, enabled = true, visible = true }, widget_meta)
 	for k, v in pairs(fields) do
-		if type(k) == "string" and k ~= "value" then
+		if type(k) == "string" and k ~= "value" and not geometry[k] then
 			rawset(w, k, v)
 		end
 	end
