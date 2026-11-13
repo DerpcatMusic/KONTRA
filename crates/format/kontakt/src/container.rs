@@ -57,7 +57,7 @@ fn payload<R: Read + Seek>(
                 if expected > MAX_PRESET {
                     return Err(Error::new(path, "NKS preset", "too large"));
                 }
-                crate::fastlz::expand(&nks.compressed_data, expected)
+                kontra_fastlz::expand(&nks.compressed_data, expected)
                     .map_err(|e| Error::new(path, "NKS preset", e))
             }
             _ => Err(Error::new(

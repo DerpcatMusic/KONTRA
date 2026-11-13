@@ -31,7 +31,7 @@ pub use effects::{
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, Linked};
-pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
+pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Source, Term, Transfer, Wave};
 pub use output::{Balance, Output, OutputControllers};
 pub use readout::{Form, Readout};
 pub use reverb::{
@@ -482,56 +482,6 @@ pub struct Mod {
     /// Its modulator is switched off (scripts may switch it on).
     pub bypass: bool,
     pub kind: ModKind,
-}
-
-/// A per-note modulation source, 0..=1 unless noted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
-    Velocity,
-    Controller(u8),
-    /// Controller `cc`, reading `start` (0..=127) until its first message
-    /// on the channel arrives.
-    ControllerFrom {
-        cc: u8,
-        start: u8,
-    },
-    /// The channel's pitch bend, −1..=1.
-    PitchBend,
-    /// The note's key over 127.
-    Key,
-    /// The group's [`Group::envelopes`] entry.
-    Envelope(u8),
-    /// The group's [`Group::shapers`] entry: its source through its table.
-    Shaped(u8),
-    /// The group's [`Group::lfos`] entry, −1..=1.
-    Lfo(u8),
-    /// The group's [`Group::blends`] entry.
-    Blend(u8),
-    /// Always 1.
-    Constant,
-    /// The value a script sent this note for "from script" modulator `id`,
-    /// −1..=1; 0 until sent.
-    Script(u16),
-    /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
-    /// key-up, so a release sample is quieter the longer its key was held.
-    HeldTime {
-        span_ms: u32,
-    },
-    /// A value drawn once per note and held: 0..=1, or −1..=1 when `bipolar`.
-    Random {
-        bipolar: bool,
-    },
-}
-
-impl Source {
-    /// The controller it reads, if any.
-    #[must_use]
-    pub fn controller(self) -> Option<u8> {
-        match self {
-            Self::Controller(cc) | Self::ControllerFrom { cc, .. } => Some(cc),
-            _ => None,
-        }
-    }
 }
 
 /// A streamed zone's resident head: `bytes_per_channel` of stored audio
