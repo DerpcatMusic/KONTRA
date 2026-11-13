@@ -359,10 +359,11 @@ fn drawn_page(
             let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
             if let (Some((img, meta)), Some(a)) = (&picture, art) {
-                // A single-frame button or switch picture sits inside its one-pixel face border.
+                // A button or switch picture, of any frame count, sits one pixel
+                // right and down inside its face; a label's or slider's sits on its
+                // place (probed in Kontakt 8 at 100 % and 150 %).
                 let inset = if matches!(tree.source, model::Source::Ksp { .. })
                     && matches!(wd.kind, Kind::Button { .. } | Kind::Switch)
-                    && meta.frames == 1
                 {
                     scale
                 } else {
@@ -375,8 +376,9 @@ fn drawn_page(
                     None => sliced(img, meta, (a.width, a.height), scale),
                 }
                 .at(inset, inset);
+                // Drawn whole at its own size, clipped only by the control.
                 parts.push(if inset > 0. {
-                    stack([image]).w(a.width).h(a.height).radius(0.).clip()
+                    stack([image]).w(w).h(h).radius(0.).clip()
                 } else {
                     image
                 });
