@@ -67,21 +67,41 @@ impl Wet for Convolver {
     }
 }
 
-impl Wet for Compressor {
+// Dynamics follow their slot each span: a script may move any setting
+// (Una Corda's compressor amount and transient knobs).
+impl Wet for Rated<Compressor> {
     fn process(&mut self, io: &mut [[f32; 2]]) {
-        Compressor::process(self, io);
+        self.0.process(io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Compressor(c) = kind {
+            self.0.set(compressor(c), self.1);
+        }
     }
 }
 
-impl Wet for Limiter {
+impl Wet for Rated<Limiter> {
     fn process(&mut self, io: &mut [[f32; 2]]) {
-        Limiter::process(self, io);
+        self.0.process(io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Limiter(l) = kind {
+            self.0.set(limiter(l), self.1);
+        }
     }
 }
 
 impl Wet for Transient {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Transient::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Transient(t) = kind {
+            Transient::set(self, transient(t));
+        }
     }
 }
 
@@ -305,6 +325,15 @@ impl Wet for Clipper {
     }
 }
 
+fn transient(t: ir::Transient) -> TransientSettings {
+    TransientSettings {
+        attack: t.attack,
+        sustain: t.sustain,
+        gain_db: t.gain_db,
+        clip: t.clip,
+    }
+}
+
 /// A convolution playing `r`. Not real-time.
 pub fn convolver(r: &Response) -> Dsp {
     wet(Box::new(Convolver::new(&r.left, &r.right)))
@@ -344,7 +373,7 @@ fn compressor(c: ir::Compressor) -> CompressorSettings {
         knee_db: c.knee_db,
         attack_ms: c.attack_ms,
         release_ms: c.release_ms,
-        makeup_db: c.makeup_db,
+        makeup_db: c.makeup(),
         link: c.link,
         mix: c.mix,
         detector: match c.detector {
@@ -532,8 +561,12 @@ pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) 
             }
             None => wet(Box::new(Fdn::new(settings(r), rate))),
         },
-        Some(ir::EffectKind::Compressor(c)) => wet(Box::new(Compressor::new(compressor(c), rate))),
-        Some(ir::EffectKind::Limiter(l)) => wet(Box::new(Limiter::new(limiter(l), rate))),
+        Some(ir::EffectKind::Compressor(c)) => {
+            wet(Box::new(Rated(Compressor::new(compressor(c), rate), rate)))
+        }
+        Some(ir::EffectKind::Limiter(l)) => {
+            wet(Box::new(Rated(Limiter::new(limiter(l), rate), rate)))
+        }
         // ponytail: an echo gets the longest line, so a script or a
         // tempo can lengthen it; a swept line only what it needs.
         Some(ir::EffectKind::Delay(d)) => {
@@ -582,15 +615,7 @@ pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) 
             },
             rate,
         ))),
-        Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(
-            TransientSettings {
-                attack: t.attack,
-                sustain: t.sustain,
-                gain_db: t.gain_db,
-                clip: t.clip,
-            },
-            rate,
-        ))),
+        Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(transient(t), rate))),
         _ => Dsp::None,
     }
 }

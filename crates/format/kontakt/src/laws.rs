@@ -662,8 +662,10 @@ pub(crate) fn compressor(
         knee_db: 12.0,
         attack_ms,
         release_ms,
-        makeup_db: if mode == 2 {
-            -0.666 * (1.0 - r) * threshold_db
+        makeup_db: 0.0,
+        // The IR threshold is `2^(dB/6)` in true dB; Pro's slope reads the saved dB.
+        makeup_slope: if mode == 2 {
+            0.666 * 6.0 / (20.0 * 2f32.log10())
         } else {
             0.0
         },
@@ -724,6 +726,7 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
         attack_ms: at(ATTACK_MS, attack),
         release_ms: at(RELEASE_MS, release),
         makeup_db: -5.25 + 26.25 * makeup,
+        makeup_slope: 0.0,
         link,
         mix,
         detector: ir::Detector::Input,
@@ -839,12 +842,16 @@ mod tests {
     fn the_compressor_knob_is_the_output_slope_with_threshold_makeup() {
         let c = compressor(2, -20.0, 0.25, std::f32::consts::TAU, 69.3, false);
         assert!((c.ratio - 4.0).abs() < 1e-4);
-        assert!((c.makeup_db - 9.99).abs() < 1e-3);
+        assert!((c.makeup() - 9.99).abs() < 1e-3);
         assert!((c.attack_ms - 1.0).abs() < 1e-3 && (c.release_ms - 100.0).abs() < 0.1);
         assert!(c.link);
         assert!(!compressor(1, -20.0, 0.25, 1.0, 100.0, false).link);
+        // Pro's make-up follows a later threshold or ratio edit.
+        let mut moved = c;
+        moved.threshold_db *= 2.0;
+        assert!((moved.makeup() - 2.0 * c.makeup()).abs() < 1e-3);
         // Only Pro adds its own make-up.
-        assert_eq!(compressor(1, -20.0, 0.25, 1.0, 100.0, false).makeup_db, 0.0);
+        assert_eq!(compressor(1, -20.0, 0.25, 1.0, 100.0, false).makeup(), 0.0);
         // Classic and Enhanced keep long saved times that Pro clamps.
         let classic = compressor(0, -20.0, 0.25, 100.0, 300.0, false);
         assert!(
