@@ -109,29 +109,69 @@ fn cell_diff(before: &[Cells], after: &[Cells]) -> Vec<Json> {
     changes
 }
 
-/// The script actions in `engine`'s trace, each as its name and arguments.
-fn note_actions(engine: &Engine, plan: &Plan, zones: &[Option<String>]) -> Vec<(String, Json)> {
-    (engine.trace_events().iter())
-        .map(|e| super::trace_output::event(e, plan, zones, RATE))
-        .filter(|e| e["type"] == "script_action")
-        .map(|e| (e["action"].to_string(), e["args"].clone()))
-        .collect()
+/// What a note did, as named fields: each voice event's sample, pitch and
+/// gain, and each script action's arguments outside `init` (whose resumed
+/// loops run on their own clock), keyed by kind and occurrence.
+type Note = std::collections::BTreeMap<String, Json>;
+
+/// Adds `engine`'s trace (one block) to `note`, `names` keeping each
+/// callback's name by id across blocks.
+fn note_fields(
+    engine: &Engine,
+    plan: &Plan,
+    zones: &[Option<String>],
+    note: &mut Note,
+    names: &mut std::collections::HashMap<i64, String>,
+) {
+    let mut key = |note: &Note, kind: String| {
+        let n = note
+            .keys()
+            .filter(|k| k.starts_with(&format!("{kind}#")))
+            .count();
+        format!("{kind}#{n}")
+    };
+    for e in engine.trace_events().iter() {
+        let e = super::trace_output::event(e, plan, zones, RATE);
+        match e["type"].as_str() {
+            Some("callback") => {
+                if let (Some(id), Some(name)) =
+                    (e["callback_id"].as_i64(), e["callback_name"].as_str())
+                {
+                    names.insert(id, name.to_owned());
+                }
+            }
+            Some("script_action") => {
+                let callback = e["callback_id"].as_i64().and_then(|id| names.get(&id));
+                if callback.is_some_and(|c| c == "init") {
+                    continue;
+                }
+                let k = key(note, format!("{}", e["action"]));
+                note.insert(k, e["args"].clone());
+            }
+            Some("voice") => {
+                let k = key(note, format!("voice {}", e["event"]));
+                let fields = json!({"sample":e["sample"],"pitch":e["pitch_midi_relative_to_root"],"gain":e["gain"]});
+                note.insert(k, fields);
+            }
+            _ => {}
+        }
+    }
 }
 
-/// The actions of note `next` that differ from note `base` where notes
-/// `first` and `base` agree, by index; all of them when the sequences
-/// differ in length or names (a branch taken) and the noise agrees.
-fn note_diff(first: &[(String, Json)], base: &[(String, Json)], next: &[(String, Json)]) -> Json {
-    let names = |a: &[(String, Json)]| a.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
-    if names(first) != names(base) {
-        return json!("noisy");
-    }
-    if names(base) != names(next) {
-        return json!({"before":names(base),"after":names(next)});
-    }
-    let changed: Vec<_> = (base.iter().zip(next).zip(first).enumerate())
-        .filter(|(_, ((b, n), f))| b.1 != n.1 && f.1 == b.1)
-        .map(|(i, ((b, n), _))| json!({"at":i,"action":b.0,"before":b.1,"after":n.1}))
+/// The fields notes `next` and `again` (after a move) agree on that differ
+/// from what notes `first` and `base` (before it) agreed on: what moves on
+/// its own (round robins, humanizing, note ids, a velocity that drifts
+/// note by note) is left out.
+fn note_diff(first: &Note, base: &Note, next: &Note, again: &Note) -> Json {
+    let keys: std::collections::BTreeSet<&String> = base.keys().chain(next.keys()).collect();
+    let changed: Vec<_> = keys
+        .into_iter()
+        .filter(|k| {
+            first.get(*k) == base.get(*k)
+                && next.get(*k) == again.get(*k)
+                && base.get(*k) != next.get(*k)
+        })
+        .map(|k| json!({"field":k,"before":base.get(k),"after":next.get(k)}))
         .collect();
     json!(changed)
 }
@@ -228,6 +268,15 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
     engine.clear_trace();
     let mut controls = Vec::new();
     let list_only = std::env::var_os("KONTRA_INSPECT_UI_LIST").is_some();
+    // KONTRA_INSPECT_UI_SAMPLE=N moves about N controls a script slot
+    // shows, every k-th in tree order (so every page has some);
+    // KONTRA_INSPECT_UI_SECONDS=S stops moving after S seconds. Both cut
+    // the sweep short: `sampled` says so.
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let sample = env("KONTRA_INSPECT_UI_SAMPLE").filter(|&n| n > 0);
+    let deadline = env("KONTRA_INSPECT_UI_SECONDS")
+        .map(|s| std::time::Instant::now() + Duration::from_secs(s as u64));
+    let mut capped = false;
     // A move keeps at most the trace's capacity per window; the moves that
     // passed it are named with how many events they dropped (the renders
     // between moves are not kept, so their drops lose nothing). Only a
@@ -249,7 +298,18 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         let lua = loaded.pages.get(slot).is_some_and(Option::is_some);
         let slot_id = u8::try_from(slot).context("too many script slots")?;
         let mut seen = HashSet::new();
+        let stride = sample.map_or(1, |n| {
+            let all = tree(&loaded, &engine, slot).ok().flatten();
+            let movable = all.map_or(0, |t| {
+                t.widgets.iter().filter(|w| targets(w).is_some()).count()
+            });
+            movable.div_ceil(n).max(1)
+        });
         loop {
+            if deadline.is_some_and(|d| std::time::Instant::now() > d) {
+                capped = true;
+                break;
+            }
             let current = match tree(&loaded, &engine, slot) {
                 Ok(Some(tree)) => tree,
                 Ok(None) => break,
@@ -282,6 +342,9 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 break;
             }
             seen.insert(key);
+            if (seen.len() - 1) % stride != 0 {
+                continue;
+            }
             // KONTRA_INSPECT_UI_LIST=1: each control and the values it would
             // visit, without moving it (tools/oracle/controls.py reads this).
             if list_only {
@@ -308,13 +371,14 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 // the two (note ids, humanizing) is the note's own noise.
                 let fresh = |engine: &mut Engine| {
                     let at = engine.now();
-                    let mut acts = Vec::new();
+                    let mut acts = Note::new();
+                    let mut names = std::collections::HashMap::new();
                     let (rms, ready) = render(
                         engine,
                         &plan,
                         &stream,
                         &[Timed { at, body: off }, Timed { at, body: note }],
-                        |engine| acts.extend(note_actions(engine, &plan, &zone_samples)),
+                        |engine| note_fields(engine, &plan, &zone_samples, &mut acts, &mut names),
                     );
                     (rms, acts, ready)
                 };
@@ -445,8 +509,9 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 // And one after the move: a difference the noise does not
                 // explain is the move reaching the next note.
                 let (_, next, ready_next) = fresh(&mut engine);
-                settled &= ready_next;
-                let note_changed = note_diff(&first, &base, &next);
+                let (_, again, ready_again) = fresh(&mut engine);
+                settled &= ready_next && ready_again;
+                let note_changed = note_diff(&first, &base, &next, &again);
                 moves.push(json!({"value":value,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
@@ -499,7 +564,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         format!("{summary}  zone edits refused: {}\n", refused.join(", "))
     };
     Ok((
-        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"trace_truncated":truncated,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
+        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"sampled":{"per_slot":sample,"time_capped":capped},"trace_truncated":truncated,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
         summary,
     ))
 }
