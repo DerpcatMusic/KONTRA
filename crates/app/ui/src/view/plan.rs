@@ -49,13 +49,14 @@ pub(super) fn page<'a>(
     pressed: &[WidgetRef],
 ) -> Option<Page<'a>> {
     let source = tree.pages.get(page.0)?;
+    let above = f64::from(source.background.above);
     let on_page = |r: model::Rect| {
         r.width > 0.
             && r.height > 0.
             && r.x < source.size.width
             && r.y < source.size.height
             && r.x + r.width > 0.
-            && r.y + r.height > 0.
+            && r.y + r.height > -above
     };
     let widgets = tree
         .draw_order(page)
@@ -116,7 +117,7 @@ pub(super) fn page<'a>(
                 source: w,
                 rect: model::Rect {
                     x: raw.x * scale,
-                    y: raw.y * scale,
+                    y: (raw.y + above) * scale,
                     width: raw.width * scale,
                     height: raw.height * scale,
                 },
@@ -134,7 +135,7 @@ pub(super) fn page<'a>(
         source,
         size: model::Size {
             width: source.size.width * scale,
-            height: source.size.height * scale,
+            height: source.shown_height() * scale,
         },
         widgets,
     })
@@ -490,5 +491,32 @@ mod tests {
         };
         assert_eq!(frame(&[]), Some(0));
         assert_eq!(frame(&[WidgetRef(0)]), Some(2));
+    }
+
+    /// A page that shows rows above its y 0 draws a label placed there
+    /// (Pacific's headings at y -5) in that band, and grows by it.
+    #[test]
+    fn a_label_over_y_0_draws_in_the_band_the_page_shows_above_it() {
+        let mut tree = Interface::default();
+        tree.pages.push(model::Page {
+            size: model::Size {
+                width: 100.,
+                height: 50.,
+            },
+            background: model::Background {
+                above: 4,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        tree.widgets.push(model::Widget::new(
+            "$heading",
+            PageRef(0),
+            model::Rect::new(0, -5, 60, 18),
+            model::Kind::Label,
+        ));
+        let p = page(&tree, PageRef(0), false, 2., &[]).unwrap();
+        assert_eq!(p.size.height, 108.);
+        assert_eq!(p.widgets.first().map(|w| w.rect.y), Some(-2.));
     }
 }
