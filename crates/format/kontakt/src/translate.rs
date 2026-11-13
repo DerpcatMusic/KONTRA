@@ -256,6 +256,7 @@ pub(crate) fn instrument(
         .ok_or_else(|| Error::new(path, "zone list", "missing"))
         .and_then(|c| ZoneList::try_from(c).map_err(decode("zone list")))?;
     let mut sample_of: HashMap<u32, Option<usize>> = HashMap::new();
+    resolver.warm_zones(&zones, &muted, &table);
     // A zone's id is its place in the zone list, saved or not.
     for (zone_id, (zone, &group)) in (0u32..).zip(zones.zones().iter().zip(&zones.group_ids)) {
         let z = zone.params().map_err(decode("zone"))?;
@@ -320,9 +321,7 @@ pub(crate) fn instrument(
         }
     }
     let first = out.samples.len();
-    for i in &mut out.impulses {
-        i.sample += first;
-    }
+    out.impulses.iter_mut().for_each(|i| i.sample += first);
     for (_, sample) in &mut out.responses {
         *sample += first;
     }
