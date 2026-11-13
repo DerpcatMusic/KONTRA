@@ -311,3 +311,92 @@ pub fn resample(c: &[f32], from: u32, to: u32, max: usize) -> Vec<f32> {
 fn gcd(a: u32, b: u32) -> u32 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
+
+/// `x` at `ratio` times its length, pitch kept: Hann grains of 1024 frames
+/// read at `1/ratio` of where they are written, overlap-added every 256 and
+/// divided by the windows' sum. A response's tail is noise, so grains need
+/// no alignment. Not real-time: allocates.
+#[must_use]
+pub fn stretch(x: &[f32], ratio: f32) -> Vec<f32> {
+    const GRAIN: usize = 1024;
+    const HOP: usize = 256;
+    if ratio <= 0.0 || ratio.is_nan() || ratio == 1.0 || x.is_empty() {
+        return x.to_vec();
+    }
+    let len = (x.len() as f64 * f64::from(ratio)).round() as usize;
+    let window: Vec<f32> = (0..GRAIN)
+        .map(|i| {
+            let t = (i as f32 + 0.5) / GRAIN as f32;
+            0.5 - 0.5 * (std::f32::consts::TAU * t).cos()
+        })
+        .collect();
+    let mut out = vec![0.0f32; len];
+    let mut sum = vec![0.0f32; len];
+    let mut at = 0usize;
+    while at < len + GRAIN {
+        // The grain written from `at − GRAIN/2` reads around `at / ratio`.
+        let centre = (at as f64 / f64::from(ratio)) as i64;
+        for (i, w) in window.iter().enumerate() {
+            let o = at as i64 + i as i64 - (GRAIN / 2) as i64;
+            let r = centre + i as i64 - (GRAIN / 2) as i64;
+            let (Ok(o), Ok(r)) = (usize::try_from(o), usize::try_from(r)) else {
+                continue;
+            };
+            if let (Some(d), Some(s), Some(&v)) = (out.get_mut(o), sum.get_mut(o), x.get(r)) {
+                *d += w * v;
+                *s += w;
+            }
+        }
+        at += HOP;
+    }
+    for (d, s) in out.iter_mut().zip(&sum) {
+        if *s > 1e-6 {
+            *d /= s;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod stretch_tests {
+    /// A decaying low-passed noise: a reverb tail.
+    fn tail() -> Vec<f32> {
+        let (mut seed, mut lp) = (1u32, 0.0f32);
+        (0..96_000)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let white = (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+                lp += 0.1 * (white - lp);
+                lp * (-(i as f32) / 24_000.0).exp()
+            })
+            .collect()
+    }
+
+    /// Frames until 90 % of the energy, and zero crossings per frame.
+    fn measure(x: &[f32]) -> (f32, f32) {
+        let total: f32 = x.iter().map(|v| v * v).sum();
+        let mut sum = 0.0;
+        let reach = x
+            .iter()
+            .position(|v| {
+                sum += v * v;
+                sum > 0.9 * total
+            })
+            .unwrap_or(x.len());
+        let crossings = x
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        (reach as f32, crossings as f32 / x.len() as f32)
+    }
+
+    #[test]
+    fn a_stretch_scales_the_decay_and_keeps_the_pitch() {
+        let x = tail();
+        let y = super::stretch(&x, 0.619);
+        assert_eq!(y.len(), 59_424);
+        let ((r0, z0), (r1, z1)) = (measure(&x), measure(&y));
+        assert!((r1 / r0 / 0.619 - 1.0).abs() < 0.1, "decay {r0} -> {r1}");
+        assert!((z1 / z0 - 1.0).abs() < 0.15, "crossings {z0} -> {z1}");
+    }
+}

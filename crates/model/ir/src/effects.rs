@@ -358,6 +358,10 @@ pub enum ImpulseKnob {
         late: bool,
         high: bool,
     },
+    /// The early or late part's length ratio ([`crate::Impulse::size`]).
+    Size {
+        late: bool,
+    },
 }
 
 impl ImpulseKnob {
@@ -366,6 +370,10 @@ impl ImpulseKnob {
     pub fn field_mut(self, law: &mut crate::Impulse) -> &mut f32 {
         match self {
             Self::PredelayMs => &mut law.predelay_ms,
+            Self::Size { late } => {
+                let [early, late_part] = &mut law.size;
+                if late { late_part } else { early }
+            }
             Self::Cut { late, high } => {
                 let cuts = law.cuts.get_or_insert(ImpulseCuts {
                     early: [20.0, 20_000.0],
