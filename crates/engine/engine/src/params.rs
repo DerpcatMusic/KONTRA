@@ -20,6 +20,19 @@ impl Engine {
         self.script()?.engine_pars.get(id)
     }
 
+    /// A send level addressed to the send chain (generic 0) on the instrument
+    /// moves its insert chain's Send Levels slot: send effects have no send
+    /// levels of their own (a library's reverb amount knob raises its tail
+    /// 10 dB this way; tools/oracle/controls.py, 2026-11-12).
+    pub(crate) fn send_generic(&self, par: i32, group: i32, generic: i32) -> i32 {
+        let send = matches!(self.engine_par(par), Some(EnginePar::SendLevel(_)));
+        if send && group < 0 && generic == 0 {
+            1
+        } else {
+            generic
+        }
+    }
+
     /// Group `group`, if the instrument has it.
     pub(crate) fn group_mut(&mut self, group: i32) -> Option<&mut Group> {
         self.groups.get_mut(usize::try_from(group).ok()?)
@@ -220,6 +233,7 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> Option<i32> {
+        let generic = self.send_generic(par, group, generic);
         if self.absent(par, group, slot, generic) {
             return Some(0);
         }
@@ -365,6 +379,7 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> bool {
+        let generic = self.send_generic(par, group, generic);
         if self.absent(par, group, slot, generic) {
             return false;
         }

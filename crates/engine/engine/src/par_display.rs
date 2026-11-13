@@ -13,7 +13,7 @@ impl Engine {
         let par = self.script().and_then(|s| s.engine_pars.get(n(0)));
         *out = Text::EMPTY;
         // A known parameter on a missing target shows "" (Engine::absent).
-        if !ext && self.absent(n(0), n(1), n(2), n(3)) {
+        if !ext && self.absent(n(0), n(1), n(2), self.send_generic(n(0), n(1), n(3))) {
             return true;
         }
         let raw = match ext {
