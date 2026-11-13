@@ -379,6 +379,8 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
         let read = Read {
             position,
             phase: 0.0,
+            phase_random: 0.0,
+            gain: 1.0,
             warps: [Warp::OFF; 2],
         };
         let region = Region {
