@@ -1195,6 +1195,59 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     assert!(saved.contains(&"$result 11230000".to_owned()), "{saved:?}");
 }
 
+/// `save_array(%a, 0)` asks a dialog KONTRA does not show: the array has a
+/// file of its own under the saves, which `load_array(%a, 0)` reads back.
+#[test]
+fn an_array_saved_by_dialog_loads_back_from_its_own_file() {
+    use kontra_engine::ir;
+    let scratch = Scratch::new("array-dialog");
+    let saves = scratch.0.join("saves");
+    let source = "on init
+            declare %perf[2] := (4, 5)
+            declare $step
+            declare $id
+            declare $result
+            make_persistent($result)
+        end on
+        on note
+            $id := save_array(%perf, 0)
+        end on
+        on async_complete
+            if ($step = 0)
+                %perf[0] := 0
+                $id := load_array(%perf, 0)
+            else
+                $result := $NI_ASYNC_EXIT_STATUS * 100 + %perf[0] * 10 + %perf[1]
+            end if
+            inc($step)
+        end on"
+        .to_owned();
+    let instrument = ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let (mut rack, mut audio) = rack();
+    rack.set_saves(saves.clone());
+    rack.load_ir(0, instrument, None).unwrap();
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..8 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
+    let saved = saved_now(&mut rack, &mut audio);
+    let written = std::fs::read_to_string(saves.join("picked/perf.nka"));
+    assert_eq!(written.unwrap(), "%perf\n4\n5\n");
+    assert!(saved.contains(&"$result 145".to_owned()), "{saved:?}");
+}
+
 /// An install fades out the engine it replaces instead of cutting its
 /// sound dead, a second install before that fade ends keeps it fading, and
 /// the faded engines are freed off audio.

@@ -662,10 +662,23 @@ impl HostApi for Engine {
                     HostValue::Nothing
                 }
             }
-            // Mode 0 asks for a file in a dialog KONTRA does not show yet,
-            // taken as cancelled; mode 1 is the user's Data folder, which
-            // KONTRA never holds. The array stays as it is and `on
-            // async_complete` reports failure (KSP manual).
+            // Mode 0 asks for a file in a dialog. KONTRA shows none: each
+            // array has one file of its own (an empty path the control side
+            // names after the array), so a save loads back. Not while built:
+            // init has no dialog to answer.
+            action @ (Action::LoadArray | Action::SaveArray) if int(2) == 0 && !self.building => {
+                let save = action == Action::SaveArray;
+                let (slot, at) = (self.running.slot, (int(0) as u32, int(1) as u32));
+                let script = self.script();
+                match script.map(|s| s.file_request(slot, Text::EMPTY, at, i64::from(int(3)), save))
+                {
+                    Some(request) => HostValue::Int(self.request_file(request)),
+                    None => HostValue::Int(self.start_async(Exit::Failed)),
+                }
+            }
+            // Mode 1 is the user's Data folder, which KONTRA never holds:
+            // the array stays as it is and `on async_complete` reports
+            // failure (KSP manual).
             Action::LoadArray | Action::SaveArray if int(2) <= 1 => {
                 HostValue::Int(self.start_async(Exit::Failed))
             }

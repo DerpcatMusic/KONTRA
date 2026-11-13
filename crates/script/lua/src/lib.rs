@@ -794,6 +794,36 @@ mod tests {
         assert_eq!(m.faults().bad_code, 0);
     }
 
+    /// VWinds' Save/Load menu: `browseForFile` then `saveState`, and later
+    /// `browseForFile` then `loadState` of the path it answered.
+    #[test]
+    fn a_script_preset_saved_loads_back() {
+        let source = r#"
+            local air = Knob('air', 0, 0, 100)
+            local panel = OnOffButton('panel', true)
+            local text = 'mine'
+            function onSave() return {presetText = text} end
+            function onLoad(state) text = state.presetText end
+            function onInit()
+                browseForFile('open', 'Load', '', '*.VHFPreset', function() error('nothing saved yet') end)
+                air.value = 40
+                browseForFile('save', 'Save', '', '*.VHFPreset', function(task)
+                    saveState(task.result, function(t) assert(t.success) end)
+                end)
+                air.value, panel.value, text = 0, false, ''
+                local loaded = false
+                browseForFile('open', 'Load', '', '*.VHFPreset', function(task)
+                    loadState(task.result, function() loaded = true end)
+                end)
+                assert(loaded and air.value == 40 and panel.value == true and text == 'mine')
+            end"#;
+        let mut m = compile(source, &[], &[]).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("init");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+    }
+
     #[test]
     fn a_projects_saved_state_wins_over_the_default_preset_init_loads() {
         let source = r#"
