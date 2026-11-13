@@ -260,6 +260,10 @@ pub struct Engine {
     output: kontra_dsp::core::Fader,
     /// The instrument insert rack, on the final mix.
     rack: racks::Rack,
+    /// Reads the routes onto script knobs ([`kontra_plan::KnobModPlan`]), and
+    /// each one's last value.
+    knobs: racks::Rack,
+    knob_last: Box<[f32]>,
     /// One single-slot rack per send slot, its input, then the main rack.
     sends: Box<[racks::Rack]>,
     taps: Box<[Box<[[f32; 2]]>]>,
@@ -322,6 +326,8 @@ impl Engine {
             .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into())
             .collect();
         let main = racks::Rack::new(&plan.main, rate, &[]);
+        let knobs = racks::Rack::reader(&plan.knob_blends, &plan.knob_lfos, rate);
+        let knob_last = vec![f32::NAN; plan.knob_mods.len()].into();
         // A voice that ends early (stolen, choked or faded by a script)
         // fades for FADE_SECONDS in a spare slot. A chord on a full pool
         // steals one voice per note at once, up to the whole limit, so with
@@ -447,6 +453,8 @@ impl Engine {
             sends,
             taps,
             main,
+            knobs,
+            knob_last,
             chains: Vec::new(),
             group_chain: Box::new([]),
             voice_units: Box::new([]),
@@ -559,6 +567,7 @@ impl Engine {
             if let Some(span) = out.get_mut(from..from + len) {
                 self.mix_out(span);
             }
+            self.follow_knobs();
             self.now = until;
         }
         self.end_silent_notes();

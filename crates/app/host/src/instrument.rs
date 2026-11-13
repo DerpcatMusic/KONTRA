@@ -178,6 +178,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     let mut persist = Vec::new();
     let mut symbols = Vec::new();
     diagnostics.extend(instrument.diagnostics);
+    plan.knob_blends = instrument.knob_blends.clone();
+    plan.knob_lfos = instrument.knob_lfos.clone();
     // ponytail: a slot that fails to compile is dropped, and the slots after
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
     // Discovery walks the disk, so only a KSP script triggers it, and once.
@@ -201,10 +203,15 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                         if let Some(id) = found.and_then(|i| i32::try_from(i).ok()) {
                             plan.knob_mods.push(kontra_engine::KnobModPlan {
                                 slot,
-                                cc: k.cc,
                                 id,
                                 saved: k.saved,
-                                ratio: k.ratio,
+                                source: k.source,
+                            });
+                        } else {
+                            diagnostics.push(ir::Diagnostic {
+                                impact: ir::Impact::Audible,
+                                feature: "script knob route to a missing control".into(),
+                                detail: format!("{}: {}", script.name, k.name),
                             });
                         }
                     }

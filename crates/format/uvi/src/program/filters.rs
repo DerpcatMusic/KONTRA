@@ -7,8 +7,9 @@
 //! native renders, crates/sampler-uvi/src/modulation.rs). Any source the
 //! shared routes carry moves it the same way, `s` bipolar for an LFO.
 //!
-//! An `XpanderFilter` on any Algorithm with the soft saturator
-//! (DistortionType 0) is the explicit ladder, its `Freq` on the same range:
+//! An `XpanderFilter` with the soft saturator (DistortionType 0) is a
+//! ladder, its `Freq` on the same range. `Algorithm` I (0) is the explicit
+//! ladder with the feedback a sample late, II (1) the zero-delay one:
 //! Mode 0..=11 picks the taps (low 1..4 poles, high 1..4, band 2 and 4,
 //! notch 2 and 4; the table filled by 0x140842a10), `Q` is the resonance
 //! as is and `Drive` the input gain in dB (the setters around
@@ -91,9 +92,9 @@ fn trim_curve(trim: f64) -> [f32; 2] {
 
 /// An `XpanderFilter` on the explicit ladder with the soft saturator.
 fn ladder_shape(node: Node) -> bool {
-    // ponytail: Algorithm 1 (388 hits in Augmented Orchestra) plays as the
-    // explicit ladder, the nearest mode here; reported by `report::effects`.
+    // The Algorithm enum has two entries, "I" and "II" (table 0x14258cba0).
     num(node, "DistortionType", 0.0) == Ok(0.0)
+        && matches!(num(node, "Algorithm", 0.0), Ok(a) if a == 0.0 || a == 1.0)
         && num(node, "Mode", 3.0).is_ok_and(|m| (0.0..=11.0).contains(&m) && m.fract() == 0.0)
 }
 
@@ -182,9 +183,16 @@ pub(super) fn effect(node: Node, slot: usize) -> ir::Effect {
     if node.has_tag_name("XpanderFilter") {
         let q = num(node, "Q", 0.0).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
         let drive = num(node, "Drive", 0.0).unwrap_or(0.0).clamp(-20.0, 20.0) as f32;
-        filter.ladder = Some(ir::Ladder::Explicit {
-            taps: mode as u8 + 1,
-            fat: num(node, "Fat", 1.0).unwrap_or(1.0).clamp(0.0, 1.0) as f32,
+        let taps = mode as u8 + 1;
+        // Algorithm I is the classic solver, the feedback a sample late;
+        // II the zero-delay one (UVI Falcon manual, Xpander Filter).
+        filter.ladder = Some(if num(node, "Algorithm", 0.0) == Ok(1.0) {
+            ir::Ladder::ZeroDelay(taps)
+        } else {
+            ir::Ladder::Explicit {
+                taps,
+                fat: num(node, "Fat", 1.0).unwrap_or(1.0).clamp(0.0, 1.0) as f32,
+            }
         });
         filter.damping = [2.0 * (1.0 - q); 3];
         filter.gain = DB_GAIN.eval_unclamped(drive);

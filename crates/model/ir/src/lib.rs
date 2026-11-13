@@ -84,8 +84,12 @@ pub struct Instrument {
     pub slot_models: Vec<(RackAt, u8, KnobModel)>,
     /// The filter shapes a script may switch slots to.
     pub slot_shapes: SlotShapes,
-    /// Controllers that move a (Lua) script's knobs by name.
+    /// Routes that move a (Lua) script's knobs by name.
     pub knob_mods: Vec<KnobMod>,
+    /// What [`KnobMod::source`] reads: blends and the free oscillators they
+    /// read.
+    pub knob_blends: Vec<Blend>,
+    pub knob_lfos: Vec<Lfo>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -113,6 +117,8 @@ impl Instrument {
         slot_models: Vec::new(),
         slot_shapes: SlotShapes::NONE,
         knob_mods: Vec::new(),
+        knob_blends: Vec::new(),
+        knob_lfos: Vec::new(),
         diagnostics: Vec::new(),
     };
 }
