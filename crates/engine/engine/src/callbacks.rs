@@ -75,6 +75,14 @@ impl Engine {
         }
     }
 
+    /// A controller's route moved foreign script `slot`'s control `id`
+    /// ([`kontra_plan::KnobModPlan`]); the machine runs its `changed` if the
+    /// value moved.
+    pub fn set_control_mod(&mut self, slot: u8, id: i32, saved: f64, ratio: f64, m: f64) {
+        let running = Running::new(Kind::UiControl, None);
+        self.run_with(slot, running, |vm, context| vm.control_mod(id, saved, ratio, m, context));
+    }
+
     /// The UI or the host moved control `id` (its UI id) of script `slot` to
     /// `value`: it is stored, then `on ui_controls` runs and then the
     /// control's own `on ui_control`, as in Kontakt; a control without one
