@@ -35,6 +35,13 @@ impl Vm {
         }
     }
 
+    /// The next run yields after `turns` loop turns (the interpreter only).
+    pub fn set_fuel(&mut self, turns: u32) {
+        if let Self::Code(vm) = self {
+            vm.set_fuel(turns);
+        }
+    }
+
     /// Loop turns the last [`Vm::run`] made (the interpreter's; 0 for a foreign machine).
     #[must_use]
     pub fn last_turns(&self) -> u32 {

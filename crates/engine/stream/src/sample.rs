@@ -62,6 +62,29 @@ impl Page {
     }
 }
 
+/// The last codec block a reader decoded, so the next read inside the same
+/// block (a voice moves a few dozen frames a block, a block holds 512) does
+/// not decode it again. One per reader; keep it with the voice.
+pub struct Decoded {
+    sample: u32,
+    index: usize,
+    frames: usize,
+    values: [[i32; ncw::SAMPLES_PER_BLOCK]; 2],
+}
+
+impl Decoded {
+    /// Empty. Allocate at prepare, not on the audio thread.
+    #[must_use]
+    pub fn new() -> Box<Self> {
+        Box::new(Self {
+            sample: u32::MAX,
+            index: usize::MAX,
+            frames: 0,
+            values: [[0; ncw::SAMPLES_PER_BLOCK]; 2],
+        })
+    }
+}
+
 /// Block `n` of a [`Page::Blocks`] page.
 fn block(page: &[u8], n: usize) -> Option<&[u8]> {
     let word = |i: usize| {
@@ -136,6 +159,19 @@ impl Sample {
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
     ) -> Read {
+        self.read_cached(client, first, out, mix, None)
+    }
+
+    /// [`Self::read_mixed`] reusing `decoded`, the last codec block this
+    /// reader decoded: the same samples, less decoding.
+    pub fn read_cached(
+        &self,
+        client: &StreamClient,
+        first: u64,
+        out: &mut [[f32; 2]],
+        mix: Option<&Mix>,
+        mut decoded: Option<&mut Decoded>,
+    ) -> Read {
         let size = self.page_frames();
         let mut read = Read::default();
         let mut pos = first;
@@ -151,7 +187,7 @@ impl Sample {
                 .min(self.frames - pos)
                 .min(rest.len() as u64) as usize;
             let (chunk, tail) = rest.split_at_mut(len);
-            if !self.read_page(client, page, offset, chunk, mix) {
+            if !self.read_page(client, page, offset, chunk, mix, decoded.as_deref_mut()) {
                 read.missing += len as u32;
             }
             rest = tail;
@@ -167,6 +203,7 @@ impl Sample {
         offset: usize,
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
+        decoded: Option<&mut Decoded>,
     ) -> bool {
         match self.pinned.get(page) {
             Some(Some(Page::Pcm(bytes))) => {
@@ -174,7 +211,7 @@ impl Sample {
                 return true;
             }
             Some(Some(Page::Blocks(bytes))) => {
-                return self.read_blocks(bytes, page, offset, out, mix);
+                return self.read_blocks(bytes, page, offset, out, mix, decoded);
             }
             _ => {}
         }
@@ -205,6 +242,7 @@ impl Sample {
         offset: usize,
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
+        mut decoded: Option<&mut Decoded>,
     ) -> bool {
         const BLOCK: usize = ncw::SAMPLES_PER_BLOCK;
         let Some(packing) = self.source.packing() else {
@@ -212,15 +250,44 @@ impl Sample {
             return false;
         };
         let page_first = (page as u64) << self.shift;
-        let mut values = [[0i32; BLOCK]; 2];
+        let mut local = [[0i32; BLOCK]; 2];
         let mut done = 0;
         while done < out.len() {
             let at = offset + done;
             let index = ((page_first + at as u64) / BLOCK as u64) as usize;
-            let frames = block(bytes, at / BLOCK).and_then(|group| {
-                ncw::decode_group_fixed(group, &packing.header, packing.format, index, &mut values)
+            let frames = match decoded.as_deref_mut() {
+                Some(d) => {
+                    if d.sample != self.id.0 || d.index != index {
+                        d.sample = u32::MAX;
+                        let group = block(bytes, at / BLOCK);
+                        let ok = group.and_then(|group| {
+                            ncw::decode_group_fixed(
+                                group,
+                                &packing.header,
+                                packing.format,
+                                index,
+                                &mut d.values,
+                            )
+                            .ok()
+                        });
+                        if let Some(frames) = ok {
+                            (d.sample, d.index, d.frames) = (self.id.0, index, frames);
+                        }
+                    }
+                    (d.sample == self.id.0).then_some(d.frames)
+                }
+                None => block(bytes, at / BLOCK).and_then(|group| {
+                    ncw::decode_group_fixed(
+                        group,
+                        &packing.header,
+                        packing.format,
+                        index,
+                        &mut local,
+                    )
                     .ok()
-            });
+                }),
+            };
+            let values = decoded.as_deref().map_or(&local, |d| &d.values);
             let skip = at % BLOCK;
             let n = (BLOCK - skip).min(out.len() - done);
             let Some(chunk) = out.get_mut(done..done + n) else {

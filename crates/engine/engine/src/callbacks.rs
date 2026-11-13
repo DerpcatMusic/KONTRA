@@ -12,7 +12,7 @@ use kontra_voice::FadeTarget;
 use crate::ledger::{NoteRef, Releases};
 use crate::queue::{Due, Exit, Work};
 use crate::script::{Kind, Running, ScriptPlan};
-use crate::{Engine, ReleaseZones, Trigger};
+use crate::{BLOCK_SCRIPT_TURNS, Engine, ReleaseZones, Trigger};
 
 impl Engine {
     /// The plan of the slot whose callback runs.
@@ -181,6 +181,22 @@ impl Engine {
                 // A stopped wait: its callback already went on.
                 return self.put_vm(slot, vm);
             }
+            // What `on init` left waiting (loading, tables, UI) is chunked
+            // work with no deadline: a block runs a share of it, not all.
+            if self.block_end > self.now
+                && vm.context(co).is_some_and(|c| (c >> 32) as u8 == INIT_TYPE)
+            {
+                let left = BLOCK_SCRIPT_TURNS.saturating_sub(self.block_turns);
+                if left == 0
+                    && self
+                        .queue
+                        .push_due(Due::at(self.block_end), Work::Resume(slot, co, wait))
+                {
+                    self.stats.resumes_deferred += 1;
+                    return self.put_vm(slot, vm);
+                }
+                self.fuel = u32::try_from(left).unwrap_or(0);
+            }
             self.stats.script_resumes += 1;
             self.running = Running {
                 slot,
@@ -199,7 +215,9 @@ impl Engine {
                     resume: true,
                 });
             }
+            let turns = self.stats.script_turns;
             self.step_script(slot, &mut vm, co, due);
+            self.block_turns += self.stats.script_turns - turns;
             self.put_vm(slot, vm);
         }
         self.running = Running::IDLE;
@@ -251,11 +269,21 @@ impl Engine {
         let Some(script) = plan.scripts.get(usize::from(slot)) else {
             return;
         };
+        vm.set_fuel(std::mem::take(&mut self.fuel));
         let step = vm.run(&script.program, co, self);
         self.stats.script_turns += u64::from(vm.last_turns());
         self.refresh_moved_routes();
         if let Step::Wait(micros) = step {
             self.wake(slot, vm, co, micros, now);
+        } else if step == Step::Yield {
+            let wait = vm.wait_epoch(co).unwrap_or(0);
+            if !self
+                .queue
+                .push_due(Due::at(self.block_end), Work::Resume(slot, co, wait))
+            {
+                self.stats.events_refused += 1;
+                vm.cancel(co);
+            }
         }
         // A callback started beside this one waits from this one's time.
         while let Some((spawned, micros)) = vm.spawned() {
@@ -557,3 +585,6 @@ impl Engine {
         }
     }
 }
+
+/// The callback type number of `on init`, which a resumed `on init` keeps.
+const INIT_TYPE: u8 = 5;

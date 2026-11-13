@@ -3,7 +3,7 @@
 //! Language- and format-free. A front end compiles to [`Program`]; the engine
 //! implements [`HostApi`] once and drives callbacks as coroutines: `wait`
 //! suspends one ([`Step::Wait`]) and the engine resumes it at the exact sample.
-//! There is no fuel and no abort: a runaway `while` leaves at Kontakt's limit
+//! A resumed callback may be given fuel ([`Instance::set_fuel`]); otherwise there is no abort: a runaway `while` leaves at Kontakt's limit
 //! and the callback continues; runtime errors are counted, never fatal.
 //! Nothing allocates after [`Instance::new`].
 
@@ -114,6 +114,8 @@ pub enum Step {
     Done,
     /// Suspended for this many microseconds; resume with [`Instance::run`].
     Wait(u64),
+    /// Out of fuel ([`Instance::set_fuel`]) at a loop turn: resume it later.
+    Yield,
 }
 
 /// Runtime errors, counted. Kontakt logs these and continues; so does the VM.
@@ -176,6 +178,8 @@ struct Coroutine {
     loop_count: u32,
     /// Loop turns this run, whatever waits reset.
     turns: u32,
+    /// Loop turns left before the run yields; 0 runs to its end or wait.
+    fuel: u32,
     loop_hash: u64,
     /// A host call ran since the last stuck check: state outside the hash moved.
     hosted: bool,
@@ -197,6 +201,7 @@ pub struct Instance {
     /// wrapping: unchanged, every cell is as it was.
     changes: u32,
     last_turns: u32,
+    fuel: u32,
 }
 
 impl Instance {
@@ -217,6 +222,7 @@ impl Instance {
                 poly: usize::MAX,
                 loop_count: 0,
                 turns: 0,
+                fuel: 0,
                 loop_hash: 0,
                 hosted: false,
                 waits: 0,
@@ -245,6 +251,7 @@ impl Instance {
             faults: Faults::default(),
             changes: 0,
             last_turns: 0,
+            fuel: 0,
         }
     }
 
@@ -374,6 +381,11 @@ impl Instance {
             .filter(|c| c.busy && c.generation == co.generation)
     }
 
+    /// The next [`Instance::run`] yields after `turns` loop turns (0: never).
+    pub fn set_fuel(&mut self, turns: u32) {
+        self.fuel = turns;
+    }
+
     /// Loop turns the last [`Vm::run`] made.
     #[must_use]
     pub fn last_turns(&self) -> u32 {
@@ -390,6 +402,7 @@ impl Instance {
             faults,
             changes,
             last_turns,
+            fuel,
             ..
         } = self;
         let Some(c) = coroutines
@@ -403,6 +416,7 @@ impl Instance {
             .get_mut(c.poly)
             .map_or(&mut [][..], |p| &mut p.cells[..]);
         c.turns = 0;
+        c.fuel = std::mem::take(fuel);
         let step = execute::execute(program, cells, texts, poly, c, faults, host);
         *last_turns = c.turns;
         if step == Step::Done {
