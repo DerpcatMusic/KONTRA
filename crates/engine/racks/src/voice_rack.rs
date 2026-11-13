@@ -91,7 +91,7 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<(Kind, Outer)> {
         ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(f), rate)),
         ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(c, rate), 1)),
         ir::EffectKind::Overdrive(o) => Kind::Overdrive(Overdrive::new(voicing(o), rate)),
-        ir::EffectKind::Comb(c) => Kind::Comb(Comb::new(c.hz, c.feedback, rate)),
+        ir::EffectKind::Comb(c) => Kind::Comb(Comb::new(c.hz, c.feedback, c.forward, rate)),
         _ => return None,
     };
     Some((kind, Outer::empty()))

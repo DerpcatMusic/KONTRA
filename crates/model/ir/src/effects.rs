@@ -283,6 +283,8 @@ pub struct CombBank {
 pub struct Comb {
     pub hz: f32,
     pub feedback: f32,
+    /// Feed-forward: the input delayed, not the output (no ringing).
+    pub forward: bool,
     /// Octaves a [`crate::ModKind::Cutoff`] depth of 1 moves `hz` (the range
     /// of the format's frequency control).
     pub octaves: f32,

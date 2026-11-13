@@ -22,11 +22,15 @@ use super::sweep::{flanger, phasor};
 const POINTS: usize = 33;
 
 /// The levels and controls a moved parameter can change.
-const FIELDS: [ir::EffectParam; 4] = [
+const FIELDS: [ir::EffectParam; 7] = [
     ir::EffectParam::Output,
     ir::EffectParam::Dry,
     ir::EffectParam::ShaperAmount,
     ir::EffectParam::ModRate,
+    // A flanger's feedback is the matrix's diagonal; a phaser's is one knob.
+    ir::EffectParam::DelayLoop(0),
+    ir::EffectParam::DelayLoop(3),
+    ir::EffectParam::PhaserFeedback,
 ];
 
 type Build = fn(Params, &mut Notes) -> Result<Option<ir::Effect>, String>;
@@ -39,14 +43,15 @@ impl<L: Library> Translator<'_, '_, L> {
     /// `node`, in slot `insert` of bus `at`.
     pub(super) fn moves(&mut self, node: Node, at: usize, insert: u8) -> Result<(), String> {
         let (params, build): (&[&'static str], Build) = match node.tag_name().name() {
-            "Flanger" => (&["Mix", "Speed"], |p, _| flanger(p).map(Some)),
-            "Phasor" => (&["Depth", "Speed"], |p, n| phasor(p, n).map(Some)),
+            "Flanger" => (&["Mix", "Speed", "Feedback"], |p, _| flanger(p).map(Some)),
+            "Phasor" => (&["Depth", "Speed", "Feedback"], |p, n| phasor(p, n).map(Some)),
             "WaveShaper" => (&["Mix", "Amount"], wave_shaper),
             _ => return Ok(()),
         };
         let program = self.program;
         // Each moved parameter's one live connection, by its source.
         let mut by_source: Vec<(ir::Transfer, Vec<Moved>)> = Vec::new();
+        let mut extra: Vec<NodeId> = Vec::new();
         // The bus's oscillators; a bus has no voice, so each runs free.
         let mut lfos = self
             .out
@@ -55,13 +60,11 @@ impl<L: Library> Translator<'_, '_, L> {
             .map(|b| std::mem::take(&mut b.lfos))
             .unwrap_or_default();
         for &name in params {
-            let mut live = matrix::children(node).filter(|c| {
+            let live = matrix::children(node).filter(|c| {
                 c.attribute("Destination") == Some(name)
                     && c.attribute("Ratio").and_then(|r| r.parse::<f64>().ok()) != Some(0.0)
             });
-            let (Some(c), None) = (live.next(), live.next()) else {
-                continue;
-            };
+            for c in live {
             let Some(term) = matrix::term(program, c, Some(&mut lfos)) else {
                 continue;
             };
@@ -77,8 +80,16 @@ impl<L: Library> Translator<'_, '_, L> {
             }
             let moved = (name, saved, term.amount, c.id());
             match by_source.iter_mut().find(|(t, _)| *t == term.input) {
-                Some((_, m)) => m.push(moved),
+                Some((_, m)) => match m.iter_mut().find(|x| x.0 == name) {
+                    // One source on one parameter twice: the ratios add.
+                    Some(x) => {
+                        x.2 += moved.2;
+                        extra.push(c.id());
+                    }
+                    None => m.push(moved),
+                },
                 None => by_source.push((term.input, vec![moved])),
+            }
             }
         }
         for l in &mut lfos {
@@ -145,6 +156,7 @@ impl<L: Library> Translator<'_, '_, L> {
             }
             self.carried.extend(moved.iter().map(|m| m.3));
         }
+        self.carried.extend(extra);
         Ok(())
     }
 }
