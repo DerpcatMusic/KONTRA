@@ -104,8 +104,11 @@ use KontraParamsParamId as P;
 #[derive(Default)]
 pub struct Shared {
     rack: Mutex<Option<Rack>>,
-    /// Each macro's host value as last applied to its control.
-    macro_values: Mutex<[f64; macros::COUNT]>,
+    /// Each macro's host value as last applied to its control, as f64
+    /// bits: the audio thread applies a host's in-block moves too.
+    macro_values: [AtomicU64; macros::COUNT],
+    /// What the audio side was last told each macro moves.
+    macro_targets: Mutex<[Option<kontra_host::rack::MacroTarget>; macros::COUNT]>,
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
@@ -262,6 +265,8 @@ pub struct Dsp {
     input: Vec<(u32, Event)>,
     /// This chunk's share of `input`.
     chunk: Vec<(u32, Event)>,
+    /// This block's host macro moves: (frame, macro, host value).
+    moves: Vec<(u32, usize, f64)>,
     gain: f32,
     rate: f64,
     until_tick: usize,
@@ -353,6 +358,7 @@ impl BackgroundTask for Tick {
                 part.map(|p| macros::instrument(p.path.as_deref()))
             });
         }
+        macros::send_targets(p, rack);
         for (part, name, value) in macros::moved(p) {
             let tree = rack.parts().get(part).and_then(Option::as_ref);
             let tree = tree.and_then(|p| p.view.as_ref()).map(|v| v.tree());
@@ -421,6 +427,7 @@ impl PluginLogic for Kontra {
         s.gain = db_to_linear(p.volume.value());
         s.input = Vec::with_capacity(EVENTS);
         s.chunk = Vec::with_capacity(EVENTS);
+        s.moves = Vec::with_capacity(EVENTS);
         s.until_tick = 0;
         let rate = c.sample_rate.round() as u32;
         let Ok(mut store) = Store::new(StoreConfig::DEFAULT) else {
@@ -471,6 +478,7 @@ impl PluginLogic for Kontra {
         };
         s.latency = p.shared.latency.load(Ordering::Relaxed);
         s.input.clear();
+        s.moves.clear();
         audio.set_render_mode(if cx.process_mode.is_offline() {
             RenderMode::Offline
         } else {
@@ -499,7 +507,13 @@ impl PluginLogic for Kontra {
                     e
                 }
             };
-            if let EventBody::Transport(t) = e.body {
+            if let EventBody::ParamChange { id, value } = e.body
+                && let Some(n) = macros::index(id)
+            {
+                if s.moves.len() < s.moves.capacity() {
+                    s.moves.push((e.sample_offset, n, value));
+                }
+            } else if let EventBody::Transport(t) = e.body {
                 audio.set_tempo(t.tempo as f32);
                 audio.set_transport(
                     t.playing,
@@ -521,9 +535,20 @@ impl PluginLogic for Kontra {
         }
         // Rendered in chunks, so a long offline block never reads past what
         // the engine looked ahead for.
+        // Host macro moves split it too: each applies at its frame.
         let chunk = CHUNK.min(audio.max_block()).max(1);
-        for start in (0..frames).step_by(chunk) {
-            let len = chunk.min(frames - start);
+        let mut moves = s.moves.iter().peekable();
+        let mut start = 0;
+        while start < frames {
+            while let Some(&(_, n, value)) = moves.next_if(|m| m.0 as usize <= start) {
+                if audio.move_macro(n, value)
+                    && let Some(last) = p.shared.macro_values.get(n)
+                {
+                    last.store(value.to_bits(), Ordering::Relaxed);
+                }
+            }
+            let next = moves.peek().map_or(frames, |m| (m.0 as usize).min(frames));
+            let len = chunk.min(frames - start).min(next - start);
             let end = (start + len) as u32;
             s.chunk.clear();
             s.chunk.extend(
@@ -547,6 +572,7 @@ impl PluginLogic for Kontra {
                     peak = peak.max(o.abs());
                 }
             }
+            start += len;
         }
         s.gain = target;
         cx.set_meter(&p.level, peak.min(1.0));

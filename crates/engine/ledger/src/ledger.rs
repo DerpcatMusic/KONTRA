@@ -78,6 +78,10 @@ pub struct Note {
     pub expression_tune: f64,
     pub expression_gain: f32,
     pub expression_pan: f32,
+    /// Its own pressure and brightness (0..=1) once the host sent them:
+    /// they stand for its channel's pressure and controller 74.
+    pub expression_pressure: Option<f32>,
+    pub expression_brightness: Option<f32>,
     /// Key released while the sustain pedal was down.
     pub pedal_held: bool,
     /// Key released (directly or by the pedal coming up).
@@ -138,6 +142,8 @@ impl Note {
             expression_tune: 0.0,
             expression_gain: 1.0,
             expression_pan: 0.0,
+            expression_pressure: None,
+            expression_brightness: None,
             pedal_held: false,
             released: false,
             key_up: false,

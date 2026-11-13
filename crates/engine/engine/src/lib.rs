@@ -789,8 +789,8 @@ impl Engine {
                 NoteExpression::Tune(semitones) => n.expression_tune = semitones,
                 NoteExpression::Gain(g) => n.expression_gain = g as f32,
                 NoteExpression::Pan(p) => n.expression_pan = p as f32,
-                // ponytail: pressure and brightness reach the modulation matrix once it exists.
-                NoteExpression::Pressure(_) | NoteExpression::Brightness(_) => continue,
+                NoteExpression::Pressure(p) => n.expression_pressure = Some(p as f32),
+                NoteExpression::Brightness(b) => n.expression_brightness = Some(b as f32),
             }
             self.refresh_note(note, None);
         }
