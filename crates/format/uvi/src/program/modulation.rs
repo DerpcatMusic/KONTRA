@@ -51,6 +51,7 @@ impl<L: Library> Translator<'_, '_, L> {
             release: seconds("ReleaseTime")?,
             attack_shape: shape("AttackCurve"),
             fall_shape: fall,
+            early_key_up: ir::EarlyKeyUp::AtOnce,
         };
         super::provenance::record("uvi.amp_envelope.v1", env, &source, &result);
         Ok(Some(result))
