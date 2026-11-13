@@ -52,7 +52,8 @@ impl Archive {
     /// [`Archive::member`]. Reading a directory is sequential; every member
     /// header is a random read, so skipping unused members saves most I/O.
     pub fn read_index<R: Read + Seek>(reader: R) -> Result<Self, Error> {
-        let mut reader = BufReader::new(reader);
+        // 256 KiB: a directory and its neighbours arrive in one read.
+        let mut reader = BufReader::with_capacity(256 << 10, reader);
         let length = reader.seek(SeekFrom::End(0))?;
         let mut entries = HashMap::new();
         let mut case_variants = HashMap::new();
