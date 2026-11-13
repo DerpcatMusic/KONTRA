@@ -29,7 +29,7 @@ pub(super) fn draw(
     let cursor = (wave.cursor_us >= 0 && wave.length_us > 0)
         .then(|| (wave.cursor_us as f64 / wave.length_us as f64).clamp(0., 1.));
     let ink = super::color(c.wave_cursor.unwrap_or(model::Rgba::rgb(CURSOR)));
-    let rect = |x: f64, y: f64, w: f64, h: f64| crate::kit::rect_path(x, y, x + w, y + h);
+    let rect = |x: f64, y: f64, w: f64, h: f64| crate::rect_path(x, y, x + w, y + h);
     let grey = move |l: f32| match tint {
         Some(t) => t.with_alpha(l),
         None => Color::srgb(l, l, l),
