@@ -147,6 +147,8 @@ fn run_events(
     // Monotonic start/end (ns) of each block with input, for `perf record -k CLOCK_MONOTONIC`.
     let mut event_blocks: Vec<[u64; 2]> = Vec::new();
     let mut rendered = Vec::new();
+    // Per block: wall ns, minor and major page faults (KONTRA_INSPECT_DUMP).
+    let mut extras: Vec<(u64, i64, i64, u64)> = Vec::new();
     let (mut peak_voices, mut voice_blocks) = (0usize, 0u64);
     let mut process_time = Duration::ZERO;
     while at < stop {
@@ -169,10 +171,18 @@ fn run_events(
         let stream_before = stream.stats();
         let script_before = engine.stats();
         let mono_start = monotonic_ns();
+        let faults_before = thread_faults();
         let timer = (std::time::Instant::now(), on_cpu());
         engine.process(&mut audio[..frames], &timed);
         let spent = timer.0.elapsed();
         process_time += spent;
+        let faults_after = thread_faults();
+        extras.push((
+            u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX),
+            faults_after.0 - faults_before.0,
+            faults_after.1 - faults_before.1,
+            mono_start,
+        ));
         peak_voices = peak_voices.max(engine.active_voices());
         voice_blocks += u64::from(engine.active_voices() > 0);
         // Time on the CPU when the kernel reports it: a block the machine
@@ -328,7 +338,11 @@ fn run_events(
         })
         .collect();
     if let Some(path) = std::env::var_os("KONTRA_INSPECT_DUMP") {
-        let text: String = block_times.iter().map(|t| format!("{} {}\n", t.1, t.0)).collect();
+        let text: String = block_times
+            .iter()
+            .zip(&extras)
+            .map(|(t, e)| format!("{} {} {} {} {} {}\n", t.1, t.0, e.0, e.1, e.2, e.3))
+            .collect();
         std::fs::write(path, text)?;
     }
     let timing = block_timing(&block_times, block);
@@ -466,4 +480,13 @@ fn monotonic_ns() -> u64 {
     // SAFETY: `t` is a valid timespec the call fills in.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
     u64::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0)
+}
+
+/// This thread's (minor, major) page faults so far.
+fn thread_faults() -> (i64, i64) {
+    // SAFETY: an all-zero rusage is a valid value the call overwrites.
+    let mut r: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: `r` is a valid rusage the call fills in.
+    unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut r) };
+    (r.ru_minflt, r.ru_majflt)
 }

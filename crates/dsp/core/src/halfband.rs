@@ -40,16 +40,29 @@ impl Halfband {
     /// For a passband to 20 kHz (or 0.45 of the rate, below 44.1 kHz).
     #[must_use]
     pub fn new(rate: u32) -> Self {
-        let rate = f64::from(rate.max(1));
-        let edge = 20_000f64.min(0.45 * rate);
-        let (c, count) = design(edge / rate / 2.0, 78.0);
-        let mut coefs = [[0.0; 4]; PAIRS];
-        for (lanes, [c0, c1]) in coefs.iter_mut().zip(c.as_chunks::<2>().0) {
-            *lanes = [*c0, *c0, *c1, *c1];
+        // The design depends on the rate alone and costs a dozen `powf`s: a
+        // voice's shaper retunes build one every refresh, so keep the last.
+        thread_local! {
+            static LAST: std::cell::Cell<Option<(u32, [Lanes; PAIRS], usize)>> =
+                const { std::cell::Cell::new(None) };
         }
+        let (coefs, pairs) = match LAST.get() {
+            Some((r, coefs, pairs)) if r == rate => (coefs, pairs),
+            _ => {
+                let hz = f64::from(rate.max(1));
+                let edge = 20_000f64.min(0.45 * hz);
+                let (c, count) = design(edge / hz / 2.0, 78.0);
+                let mut coefs = [[0.0; 4]; PAIRS];
+                for (lanes, [c0, c1]) in coefs.iter_mut().zip(c.as_chunks::<2>().0) {
+                    *lanes = [*c0, *c0, *c1, *c1];
+                }
+                LAST.set(Some((rate, coefs, count / 2)));
+                (coefs, count / 2)
+            }
+        };
         Self {
             coefs,
-            pairs: count / 2,
+            pairs,
             up: [[[0.0; 4]; 2]; PAIRS],
             down: [[[0.0; 4]; 2]; PAIRS],
         }
