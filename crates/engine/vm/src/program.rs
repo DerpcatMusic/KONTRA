@@ -234,6 +234,29 @@ pub enum Op {
         top: u32,
         check: Option<u32>,
     },
+    /// `b icmp`, on the value on the stack: pushes the comparison.
+    CmpTop {
+        cmp: Cmp,
+        b: Src,
+    },
+    /// `icmp iand`: `p & (a cmp b)` from the top three values.
+    CmpAnd {
+        cmp: Cmp,
+    },
+    /// `b icmp iand`: `p & (a cmp b)`, `b` read in place, `a` and `p` on the stack.
+    CmpTopAnd {
+        cmp: Cmp,
+        b: Src,
+    },
+    /// `iand jump_if_zero(to)`.
+    AndJump {
+        to: u32,
+    },
+    /// `b iand jump_if_zero(to)`, on the value on the stack.
+    AndTopJump {
+        b: Src,
+        to: u32,
+    },
     /// `v store_at`, the index on the stack.
     StoreAtSrc {
         base: u32,
