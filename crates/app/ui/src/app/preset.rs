@@ -90,11 +90,15 @@ pub(super) fn sheet(
         (app.parts.get(part)).and_then(|p| app.libraries.iter().find(|l| l.name == p.library));
     let taken = library.is_some_and(|l| taken(&l.presets, &app.view.preset_name));
     let mut items = Vec::new();
+    // Enter in the name field does what the button does.
+    let mut submitted = false;
     if matches!(which, Sheet::DeletePreset(_)) {
         let text = format!("Delete \"{}\"? The file is removed.", app.view.preset_name);
         items.push(caption(text).fill(secondary()));
     } else {
-        items.push(kit::field(ui, "preset-name", "Preset name", &mut app.view.preset_name).el);
+        let field = kit::field(ui, "preset-name", "Preset name", &mut app.view.preset_name);
+        submitted = field.changed.submitted;
+        items.push(field.el);
     }
     let verb = if taken && verb == "Save" {
         "Replace"
@@ -103,7 +107,7 @@ pub(super) fn sheet(
     };
     let go = button(ui, "preset-go", verb, false);
     let name = app.view.preset_name.trim().to_owned();
-    if go.changed && (verb == "Delete" || !name.is_empty()) {
+    if (go.changed || submitted) && (verb == "Delete" || !name.is_empty()) {
         let edit = match which {
             Sheet::RenamePreset(_) => PresetEdit::Rename(name),
             Sheet::DeletePreset(_) => PresetEdit::Delete,
