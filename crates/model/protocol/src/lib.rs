@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crossbeam_queue::ArrayQueue;
 
+mod loading;
+pub use loading::{LoadProgress, LoadSnapshot, LoadStage};
+
 /// A fixed-capacity queue from one thread to another: commands into the
 /// audio thread, retirements out of it. Nothing is dropped silently: a full
 /// ring hands the value back.

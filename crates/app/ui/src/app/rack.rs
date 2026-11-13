@@ -21,7 +21,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             });
         }
     }
-    if app.parts.is_empty() {
+    if app.parts.is_empty() && app.loading != Some(super::Loading::New) {
         return col![
             spacer(),
             title("Pick an instrument"),
@@ -72,9 +72,8 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         strips.push(rule());
     }
     if app.loading == Some(super::Loading::New) {
-        let row = row![block(3, Len::Pct(100.)).fill(lift(3)).shrink(0), chip()]
-            .gap(SPACE)
-            .align(Align::Center);
+        let stripe = block(3, Len::Pct(100.)).fill(lift(3)).shrink(0);
+        let row = row![stripe, chip(app.load_progress)].gap(SPACE);
         strips.push(band(row, None, 0));
         strips.push(rule());
     }
@@ -82,14 +81,12 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     col(strips).scroll().min_h(0).w(Len::Pct(100.)).id("rack")
 }
 
-/// v2's load chip: shown until the instrument plays.
-fn chip() -> El {
-    caption("Loading…")
-        .text_size(SMALL - 1.)
-        .fill(secondary())
-        .lines(1)
-        .shrink(0)
-        .named("Loading")
+/// What the load is doing, in words, over a bar that fills with it.
+fn chip(progress: kontra_protocol::LoadSnapshot) -> El {
+    let done = block(Len::Pct(f64::from(progress.percent)), 6).fill(Role::Ink.alpha(0.85));
+    let bar = row![done].w(Len::Pct(100.)).h(6).fill(Role::Ink.alpha(0.1));
+    let text = caption(progress.to_string()).text_size(SMALL).lines(1);
+    col![text, bar].gap(4).grow(1).named("Loading")
 }
 
 /// A header row's height: both rows are one, so the artwork lines up.
@@ -257,6 +254,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .unwrap_or_default();
     let output = output(ui, app, n, id("output"), out);
     let loading = app.loading == Some(super::Loading::Part(n));
+    let progress = app.load_progress;
     let menu = &mut app.view.menu;
     let Some(p) = app.parts.get_mut(n) else {
         return spacer();
@@ -279,7 +277,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .grow(1)
         .tip(format!("{}\n{}", p.name, p.library));
     let name = match loading {
-        true => row![name, chip()]
+        true => row![name, chip(progress)]
             .gap(SPACE)
             .align(Align::Center)
             .grow(1)
