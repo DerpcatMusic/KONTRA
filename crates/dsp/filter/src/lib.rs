@@ -185,9 +185,12 @@ impl Svf {
     pub fn set_cutoff(&mut self, hz: f32, rate: u32) {
         let rate = f64::from(rate.max(1));
         let hz = f64::from(hz).max(1.0).min(0.49 * rate);
+        // Same cutoff and rate give the same `g`; `tan` is the cost.
+        if self.hz != hz as f32 || self.rate != rate || self.g == 0.0 {
+            self.g = (std::f64::consts::PI * hz / rate).tan();
+        }
         self.hz = hz as f32;
         self.rate = rate;
-        self.g = (std::f64::consts::PI * hz / rate).tan();
     }
 
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
