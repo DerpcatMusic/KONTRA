@@ -152,7 +152,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         return None;
     }
     let [base, cap, light, font, font13, button, font12, field] = found;
-    let decode = |png: Vec<u8>| super::decode(&png, ImageMeta::default(), 0);
+    let decode = |png: Vec<u8>| super::decode(&png, ImageMeta::default(), 0, 1.).map(|(i, _)| i);
     let images = super::cache::Art {
         main: [
             decode(base?)?,
