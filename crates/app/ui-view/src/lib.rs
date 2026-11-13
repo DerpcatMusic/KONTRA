@@ -269,13 +269,18 @@ fn drawn_page(
             _ => None,
         });
         let stock_glyphs = stock_glyphs.or_else(|| {
-            if matches!(tree.source, model::Source::Ksp { .. })
-                && matches!(wd.kind, Kind::Label)
-                && style.is_some_and(|s| s.font == model::Font::Stock(12))
-            {
-                pictures.font(model::AssetRef(usize::MAX - 6), "@stock/font12")
-            } else {
-                None
+            let atlas = style.and_then(|s| match s.font {
+                model::Font::Stock(id) => stock_atlas(id),
+                _ => None,
+            });
+            match atlas {
+                Some((id, path))
+                    if matches!(tree.source, model::Source::Ksp { .. })
+                        && matches!(wd.kind, Kind::Label) =>
+                {
+                    pictures.font(model::AssetRef(id), path)
+                }
+                _ => None,
             }
         });
         let stock = item.stock;
@@ -382,6 +387,8 @@ fn drawn_page(
                 } else {
                     image
                 });
+            } else if let Some(face) = stock::label_face(tree, wd, (w, h, scale)) {
+                parts.push(face);
             } else if stock {
                 parts.push(
                     stock::face(
@@ -412,7 +419,7 @@ fn drawn_page(
                     && words
                         .chars()
                         .all(|c| c == '?' || kontra_ui_pictures::glyph(c) != usize::from(b'?'))
-                    && style.font == model::Font::Stock(12)
+                    && matches!(style.font, model::Font::Stock(id) if stock_atlas(id).is_some())
                     && plan::label_fits(&words, glyphs, w, scale)
                 {
                     parts.push(stock::label(
@@ -618,6 +625,24 @@ pub(crate) fn knob_name(w: &model::Widget) -> String {
     }
 }
 
+/// The installed Kontakt glyph atlas a stock font id's label draws from:
+/// the 9 px pixel font's family (same advances and cell in the Kontakt 8
+/// oracle). The 13 px family, font 12 among it, runs 6 % tighter than the
+/// font 12 and 13 atlases, so it draws in the outline face at its weight.
+fn stock_atlas(id: i32) -> Option<(usize, &'static str)> {
+    matches!(id, 0 | 2 | 3 | 4 | 6 | 8 | 9 | 10 | 11 | 15 | 26)
+        .then_some((usize::MAX - 3, "@stock/font"))
+}
+
+/// The weight a stock font id's family draws in (Kontakt 8 oracle probe).
+fn stock_weight(id: i32) -> Option<f32> {
+    match id {
+        1 | 5 | 7 | 16 | 17 | 19 | 20 => Some(700.),
+        12 | 13 | 14 | 18 | 22 | 24 | 25 => Some(600.),
+        _ => None,
+    }
+}
+
 /// An image asset's path and layout.
 fn image_asset(tree: &Interface, a: model::AssetRef) -> Option<(&str, model::ImageMeta)> {
     let asset = tree.assets.get(a.0)?;
@@ -646,6 +671,17 @@ fn words_el(
         style.size = style.size.map(|s| s * em as f32);
         style
     });
+    // Kontakt's stock faces run in their own weights; ours is a variable face.
+    let wght = style
+        .filter(|_| font.is_none() && matches!(source, model::Source::Ksp { .. }))
+        .and_then(|s| match s.font {
+            model::Font::Stock(id) => stock_weight(id),
+            _ => None,
+        });
+    let weigh = |el: El| match wght {
+        Some(v) => el.text_axis("wght", v),
+        None => el,
+    };
     let geometry = plan::text(words, native_style.as_ref(), w, (height, scale, em), source);
     let size = geometry.size;
     let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
@@ -658,9 +694,11 @@ fn words_el(
             .split('\n')
             .enumerate()
             .map(|(n, words)| {
-                let el = text(words.trim_end_matches('\r').to_owned())
-                    .text_size(size)
-                    .fill(Fill::from(ink));
+                let el = weigh(
+                    text(words.trim_end_matches('\r').to_owned())
+                        .text_size(size)
+                        .fill(Fill::from(ink)),
+                );
                 let el = match font {
                     Some(font) => el.font(font.clone()),
                     None => el,
@@ -696,9 +734,11 @@ fn words_el(
     // Kontakt's factory faces run narrower than ours: a label sized for
     // them steps down to fit rather than cut its words (v1 `TextFont::fit`).
     let said = |k: f64| {
-        let el = text(words.to_owned())
-            .text_size(size * k)
-            .fill(Fill::from(ink));
+        let el = weigh(
+            text(words.to_owned())
+                .text_size(size * k)
+                .fill(Fill::from(ink)),
+        );
         match font {
             Some(font) => el.font(font.clone()),
             None => el,
