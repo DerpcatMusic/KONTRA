@@ -314,12 +314,21 @@ pub struct Dsp {
     input: Vec<(u32, Event)>,
     /// This chunk's share of `input`.
     chunk: Vec<(u32, Event)>,
-    /// This block's host macro moves: (frame, macro, host value).
-    moves: Vec<(u32, usize, f64)>,
+    /// This block's host changes that split it: macro moves and transport.
+    moves: Vec<(u32, Change)>,
     gain: f32,
     rate: f64,
     until_tick: usize,
     latency: u32,
+}
+
+/// A host change inside a block, applied at its frame.
+#[derive(Clone, Copy)]
+enum Change {
+    /// Macro `n` to host value `v`.
+    Macro(usize, f64),
+    /// Tempo, play state, song position and signature.
+    Transport(TransportInfo),
 }
 
 /// The control tick: carries out requests, frees what audio retired and
@@ -567,19 +576,17 @@ impl PluginLogic for Kontra {
                     e
                 }
             };
-            if let EventBody::ParamChange { id, value } = e.body
-                && let Some(n) = macros::index(id)
-            {
-                if s.moves.len() < s.moves.capacity() {
-                    s.moves.push((e.sample_offset, n, value));
+            let change = match e.body {
+                EventBody::ParamChange { id, value } => {
+                    macros::index(id).map(|n| Change::Macro(n, value))
                 }
-            } else if let EventBody::Transport(t) = e.body {
-                audio.set_tempo(t.tempo as f32);
-                audio.set_transport(
-                    t.playing,
-                    t.position_beats,
-                    (t.time_sig_num, t.time_sig_den),
-                );
+                EventBody::Transport(t) => Some(Change::Transport(t)),
+                _ => None,
+            };
+            if let Some(change) = change {
+                if s.moves.len() < s.moves.capacity() {
+                    s.moves.push((e.sample_offset, change));
+                }
             } else if let Some(event) = input::event(e)
                 && s.input.len() < s.input.capacity()
             {
@@ -595,16 +602,26 @@ impl PluginLogic for Kontra {
         }
         // Rendered in chunks, so a long offline block never reads past what
         // the engine looked ahead for.
-        // Host macro moves split it too: each applies at its frame.
+        // Host macro moves and transport changes split it too: each
+        // applies at its frame.
         let chunk = CHUNK.min(audio.max_block()).max(1);
         let mut moves = s.moves.iter().peekable();
         let mut start = 0;
         while start < frames {
-            while let Some(&(_, n, value)) = moves.next_if(|m| m.0 as usize <= start) {
-                if audio.move_macro(n, value)
-                    && let Some(last) = p.shared.macro_values.get(n)
-                {
-                    last.store(value.to_bits(), Ordering::Relaxed);
+            while let Some(&(_, change)) = moves.next_if(|m| m.0 as usize <= start) {
+                match change {
+                    Change::Macro(n, value) => {
+                        if audio.move_macro(n, value)
+                            && let Some(last) = p.shared.macro_values.get(n)
+                        {
+                            last.store(value.to_bits(), Ordering::Relaxed);
+                        }
+                    }
+                    Change::Transport(t) => {
+                        audio.set_tempo(t.tempo as f32);
+                        let signature = (t.time_sig_num, t.time_sig_den);
+                        audio.set_transport(t.playing, t.position_beats, signature);
+                    }
                 }
             }
             let next = moves.peek().map_or(frames, |m| (m.0 as usize).min(frames));

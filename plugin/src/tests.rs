@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use kontra_host::state::{Saved, SavedPart};
+use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress};
 use moose::prelude::*;
 
 use crate::{Dsp, Kontra, KontraParams, Tick};
@@ -1982,10 +1983,23 @@ fn a_host_macro_learns_a_touched_control_and_drives_it() {
 
 /// One 64-frame block with `events`: part 0's left channel.
 fn block_64(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event]) -> Vec<f32> {
+    block_64_exact(params, dsp, events, &[])
+}
+
+/// [`block_64`] with host-native events too.
+fn block_64_exact(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    events: &[moose::prelude::Event],
+    exact: &[ExactEvent],
+) -> Vec<f32> {
     const FRAMES: usize = 64;
     let mut list = EventList::with_capacity(16);
     for &e in events {
         list.push(e);
+    }
+    for &e in exact {
+        list.try_push_exact(e).unwrap();
     }
     let mut channels = vec![vec![0.0f32; FRAMES]; 2 * crate::OUTPUTS];
     {
@@ -1999,16 +2013,16 @@ fn block_64(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Even
     channels.swap_remove(0)
 }
 
-#[test]
-fn a_host_macro_move_inside_a_block_lands_on_its_frame() {
+/// Installs a part in the rack whose one zone plays a constant level on
+/// every key, run by KSP `source`; the store its sample lives in, and the
+/// last message the script's init sent.
+fn dc_part(params: &KontraParams, source: &str) -> (kontra_stream::Store, String) {
     use std::sync::Arc;
 
     use kontra_engine::{Engine, Plan, Region, Zone};
-    use kontra_host::rack::{Control, MacroTarget, Mix, Part, Scale};
+    use kontra_host::rack::{Mix, Part};
     use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
 
-    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
-    // A constant-level zone, and a script that plays it when its knob moves.
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let fmt = SampleFmt {
         encoding: Encoding::F32,
@@ -2043,7 +2057,48 @@ fn a_host_macro_move_inside_a_block_lands_on_its_frame() {
     for g in &mut plan.groups {
         g.mods.clear();
     }
-    let script = kontra_ksp::compile(
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let message = engine.last_message().to_owned();
+    let part = Part {
+        path: None,
+        source: None,
+        recall: kontra_engine::Recall::Restart,
+        name: "dc".into(),
+        diagnostics: vec![],
+        faces: vec![],
+        mix: Mix::DEFAULT,
+        solo: false,
+        mute: false,
+        script: Default::default(),
+        plan: None,
+        delays: None,
+        view: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+        modified: false,
+        named: Default::default(),
+        sounds: Default::default(),
+    };
+    let mut guard = crate::lock(&params.shared.rack);
+    guard.as_mut().unwrap().install(0, Box::new(engine), part);
+    (store, message)
+}
+
+/// The first frame of `out` that sounds.
+fn first_sound(out: &[f32]) -> Option<usize> {
+    out.iter().position(|x| *x != 0.0)
+}
+
+#[test]
+fn a_host_macro_move_inside_a_block_lands_on_its_frame() {
+    use kontra_host::rack::{Control, MacroTarget, Scale};
+
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    // A script that plays the zone when its knob moves.
+    let (_store, k) = dc_part(
+        &params,
         "on init
             declare ui_knob $k (0, 100, 1)
             message(get_ui_id($k))
@@ -2051,48 +2106,20 @@ fn a_host_macro_move_inside_a_block_lands_on_its_frame() {
         on ui_control ($k)
             play_note(60, 100, 0, -1)
         end on",
-        &[],
-    )
-    .unwrap();
-    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
-    let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
-    let k: i32 = engine.last_message().parse().unwrap();
-    {
-        let mut guard = crate::lock(&params.shared.rack);
-        let rack = guard.as_mut().unwrap();
-        let part = Part {
-            path: None,
-            source: None,
-            recall: kontra_engine::Recall::Restart,
-            name: "dc".into(),
-            diagnostics: vec![],
-            faces: vec![],
-            mix: Mix::DEFAULT,
-            solo: false,
-            mute: false,
-            script: Default::default(),
-            plan: None,
-            delays: None,
-            view: None,
-            slot_types: Vec::new(),
-            slot_responses: Vec::new(),
-            modified: false,
-            named: Default::default(),
-            sounds: Default::default(),
-        };
-        rack.install(0, Box::new(engine), part);
-        let scale = Scale::Range {
+    );
+    let target = MacroTarget {
+        part: 0,
+        slot: 0,
+        control: Control::Integer(k.parse().unwrap()),
+        scale: Scale::Range {
             min: 0.0,
             max: 100.0,
-        };
-        let target = MacroTarget {
-            part: 0,
-            slot: 0,
-            control: Control::Integer(k),
-            scale,
-        };
-        rack.set_macro(0, Some(target));
-    }
+        },
+    };
+    crate::lock(&params.shared.rack)
+        .as_mut()
+        .unwrap()
+        .set_macro(0, Some(target));
     assert!(block_64(&params, &mut dsp, &[]).iter().all(|x| *x == 0.0));
     // The host moves Macro 1 at frame 37 of the next block.
     let change = EventBody::ParamChange {
@@ -2100,9 +2127,78 @@ fn a_host_macro_move_inside_a_block_lands_on_its_frame() {
         value: 0.5,
     };
     let out = block_64(&params, &mut dsp, &[moose::prelude::Event::new(37, change)]);
-    let first = out.iter().position(|x| *x != 0.0);
+    let first = first_sound(&out);
     assert!(
         first.is_some_and(|f| f >= 37),
         "sound before the move's frame, or none: first non-zero frame {first:?}"
+    );
+}
+
+#[test]
+fn the_host_transport_starting_inside_a_block_reaches_the_script_at_its_frame() {
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    // The script plays when the song starts at bar 3 at 120 bpm.
+    let (_store, _) = dc_part(
+        &params,
+        "on init
+            set_listener($NI_SIGNAL_TRANSP_START, 1)
+        end on
+        on listener
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TRANSP_START and $NI_SONG_POSITION = 960 * 8 and $DURATION_QUARTER = 500000)
+                play_note(60, 100, 0, -1)
+            end if
+        end on",
+    );
+    assert!(block_64(&params, &mut dsp, &[]).iter().all(|x| *x == 0.0));
+    let start = EventBody::Transport(TransportInfo {
+        playing: true,
+        tempo: 120.0,
+        position_beats: 8.0,
+        time_sig_num: 4,
+        time_sig_den: 4,
+        ..TransportInfo::default()
+    });
+    let out = block_64(&params, &mut dsp, &[moose::prelude::Event::new(37, start)]);
+    let first = first_sound(&out);
+    assert!(
+        first.is_some_and(|f| f >= 37),
+        "the start sounded before its frame, or never: first non-zero frame {first:?}"
+    );
+}
+
+#[test]
+fn a_clap_pressure_expression_reaches_the_scripts_poly_at_at_its_frame() {
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    // The script plays a second note when key 60's pressure passes 100.
+    let (_store, _) = dc_part(
+        &params,
+        "on poly_at
+            if ($POLY_AT_NUM = 60 and %POLY_AT[60] > 100)
+                play_note(72, 100, 0, -1)
+            end if
+        end on",
+    );
+    block_64(&params, &mut dsp, &[note(true, 60)]);
+    let held = block_64(&params, &mut dsp, &[]);
+    // The host presses key 60's note harder at frame 37 (CLAP pressure).
+    let press = ExactEvent::new(
+        37,
+        ExactEventBody::NoteExpression {
+            expression_id: 6,
+            address: ExactNoteAddress::from_raw_signed(0, 0, 60, -1),
+            value: 0.9,
+        },
+    );
+    let out = block_64_exact(&params, &mut dsp, &[], &[press]);
+    let level = held[63];
+    assert!(level > 0.1, "the held note does not sound: {level}");
+    assert!(
+        out[..37].iter().all(|x| (x - level).abs() < 1e-4),
+        "the second note sounded before the pressure's frame"
+    );
+    assert!(
+        out[40..].iter().all(|x| *x > level + 0.1),
+        "the pressure did not reach on poly_at at its frame: {:?}",
+        &out[36..44]
     );
 }

@@ -794,6 +794,24 @@ impl Engine {
             }
             self.refresh_note(note, None);
         }
+        // A note's pressure is its key's polyphonic aftertouch to the
+        // scripts: `on poly_at` hears it, as it hears an MPE controller's.
+        let mut keys = [false; 128];
+        if let NoteExpression::Pressure(p) = expression {
+            for n in hits.iter().filter_map(|&note| self.notes.get(note)) {
+                if let Some(k) = keys.get_mut(usize::from(n.key)) {
+                    *k = true;
+                }
+            }
+            let value = (p.clamp(0.0, 1.0) * 127.0).round() as u8;
+            for (v, _) in self.poly_at.iter_mut().zip(keys).filter(|(_, k)| *k) {
+                *v = value;
+            }
+        }
+        // The scripts run with the hit list back in place: they use it.
         self.hits = hits;
+        for key in (0u8..).zip(keys).filter_map(|(key, k)| k.then_some(key)) {
+            self.run_poly_at(key);
+        }
     }
 }
