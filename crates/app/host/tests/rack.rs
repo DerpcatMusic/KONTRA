@@ -1644,3 +1644,50 @@ fn replacing_a_part_frees_the_old_instruments_samples() {
         "the replaced instrument's sample is still held"
     );
 }
+
+#[test]
+fn a_damaged_empty_or_foreign_state_loads_an_empty_rack_and_says_why() {
+    use kontra_host::state::{Saved, VERSION};
+    let good = Saved::new(vec![]).write();
+    // A blank state is a new instance: empty, no complaint.
+    assert_eq!(Saved::parse(""), Ok(Saved::new(vec![])));
+    assert_eq!(Saved::parse("  \n"), Ok(Saved::new(vec![])));
+    // Truncated, garbage and mistyped JSON, and other versions: a message.
+    for bad in [
+        &good[..good.len() / 2],
+        "\u{0}\u{1}not json",
+        "[1,2,3]",
+        "{\"version\":1}",
+        &format!("{{\"version\":{},\"parts\":[]}}", VERSION + 1),
+        "{\"version\":0,\"parts\":[]}",
+    ] {
+        let Err(message) = Saved::parse(bad) else {
+            panic!("{bad:?} should not parse");
+        };
+        assert!(message.contains("rack starts empty"), "{message}");
+        // `read` never fails: it is the empty rack.
+        assert_eq!(Saved::read(bad), Saved::new(vec![]));
+    }
+}
+
+#[test]
+fn a_state_with_hostile_values_is_made_safe() {
+    use kontra_host::state::Saved;
+    let part = |n: usize, gain: &str, channel: u32| {
+        format!(
+            "{{\"part\":{n},\"path\":\"/x.nki\",\"channel\":{channel},\"output\":255,\"gain\":{gain},\"pan\":9.0,\"solo\":false,\"mute\":false}}"
+        )
+    };
+    // Past the rack, repeated, an enormous gain and an unknown channel.
+    let json = format!(
+        "{{\"version\":1,\"parts\":[{},{},{},{}]}}",
+        part(0, "1e30", 99),
+        part(0, "0.5", 1),
+        part(4096, "1.0", 1),
+        part(3, "-2.0", 2)
+    );
+    let saved = Saved::parse(&json).unwrap();
+    let parts: Vec<_> = saved.parts.iter().map(|p| (p.part, p.gain, p.channel, p.output)).collect();
+    assert_eq!(parts, vec![(0, 16.0, 0, 15), (3, 0.0, 2, 15)]);
+    assert!(saved.parts.iter().all(|p| p.pan == 1.0));
+}
