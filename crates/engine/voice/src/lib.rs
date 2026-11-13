@@ -13,8 +13,8 @@ use kontra_stream::{Mix, StreamClient};
 
 pub use envelope::Ahdsr;
 pub use wavetable::{
-    CYCLE, Inharmonic, LEVELS, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP, Table, Warp, shape,
-    warp,
+    CYCLE, Inharmonic, LEVELS, ModKind, ModOsc, Osc, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP,
+    Table, Warp, shape, warp,
 };
 pub use zone::{Loop, Loops, Region};
 
@@ -407,7 +407,7 @@ impl Voice {
         {
             self.last_peak = 0.0;
         }
-        let Some(region) = self.region.take() else {
+        let Some(mut region) = self.region.take() else {
             return;
         };
         let sample = &region.sample;
@@ -420,8 +420,8 @@ impl Voice {
             self.heads.iter().fold(self.at(0), |a, &h| a.min(h))
         };
         let ahead = (LOOKAHEAD * step) as usize + (self.at(0) - from) as usize;
-        let table = region.table.as_ref();
-        let ahead = if table.is_some() { 0 } else { ahead };
+        let table = region.table.is_some();
+        let ahead = if table { 0 } else { ahead };
         region.runs(from as i64, ahead, released, |offset, run| {
             let low = if run.descending {
                 run.first + 1 - run.count as u64
@@ -441,7 +441,7 @@ impl Voice {
         let mut done = 0;
         let mut alive = true;
         while done < out.len() && alive {
-            let fit = if table.is_some() {
+            let fit = if table {
                 SCRATCH
             } else {
                 (((SCRATCH - 4) as f64 / self.step).floor() as usize).max(1)
@@ -452,7 +452,7 @@ impl Voice {
                 // Heads restart only at a chunk's start.
                 n = n.min((HALF_GRAIN - self.grain % HALF_GRAIN) as usize);
             }
-            let filled = if let Some(table) = table {
+            let filled = if let Some(table) = region.table.as_mut() {
                 let cursor = (self.at(0), self.step);
                 let raw = self.raw.get_mut(..n).unwrap_or_default();
                 table.render(cursor, raw);
@@ -491,7 +491,7 @@ impl Voice {
                 }
             }
             self.elapsed += n as u64;
-            if table.is_none() && region.finished(self.at(0), released) {
+            if !table && region.finished(self.at(0), released) {
                 alive = false;
             }
             done += n;

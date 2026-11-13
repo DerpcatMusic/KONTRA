@@ -89,7 +89,12 @@ pub fn load_with(
     // The scripts' load pass builds a script state: the document goes first.
     drop(doc);
     drop(text);
-    Ok(unfinished.finish(swaps))
+    // Where it was read from: the player's presets name it as their base.
+    let source_path = std::path::absolute(path).ok();
+    Ok(ir::Instrument {
+        source_path,
+        ..unfinished.finish(swaps)
+    })
 }
 
 /// The files of the bank a program lies in, for its script's pictures.

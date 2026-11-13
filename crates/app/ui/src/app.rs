@@ -267,6 +267,8 @@ pub struct View {
     pub sheet: Option<Sheet>,
     /// The name typed in a preset sheet.
     pub preset_name: String,
+    /// The name still waits to be selected, once its field is on screen.
+    pub select_name: bool,
     /// The id of the open popup menu.
     pub menu: Option<String>,
     pub mixer_wide: bool,

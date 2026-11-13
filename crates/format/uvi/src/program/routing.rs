@@ -50,6 +50,22 @@ impl<'a, 'input> Params<'a, 'input> {
 }
 
 /// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
+/// Values a script may set an effect's number to, for [`Translator::knobs`]:
+/// dB, ratios, ms, Hz.
+const PROBE_GRID: [f64; 40] = [
+    -60.0, -48.0, -36.0, -24.0, -18.0, -12.0, -6.0, -3.0, -1.0, 0.0, 0.01, 0.05, 0.1, 0.2, 0.3,
+    0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0, 300.0,
+    500.0, 1000.0, 2000.0, 3000.0, 5000.0, 8000.0, 12_000.0, 16_000.0, 20_000.0,
+];
+
+/// A number a script sets on an insert, the control it moves (its
+/// [`ir::EffectParam::code`]) and that control's value by the number.
+pub(super) struct Knob {
+    pub name: String,
+    pub code: u16,
+    pub law: Vec<(f64, f32)>,
+}
+
 /// Where an insert's effect plays, for scripts that bypass it: a keygroup's
 /// voices (its slot), a bus's rack or the program's.
 #[derive(Clone, Copy)]
@@ -261,7 +277,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 continue;
             }
             let racked = node.has_tag_name("EffectRack") || node.has_tag_name("FeedbackMachine");
-            if !racked || flag(node, "Bypass") {
+            if !racked {
                 let slot = self.slot(node)?;
                 if let Some(b) = self.out.buses.get_mut(at) {
                     let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
@@ -304,15 +320,31 @@ impl<L: Library> Translator<'_, '_, L> {
                 }
                 ends.push(end);
             }
-            // The chains' gains are their faders: scripts move them.
+            // The chains' gains are their faders: scripts move them. The
+            // chains sum on a wet bus and the input passes on a dry one; the
+            // rack's Bypass (saved, or a script's) opens one and shuts the
+            // other, so a rack saved bypassed is built and can be switched on.
             let input = at;
-            at = self.push(node);
+            let wet_bus = self.push(node);
             for end in ends {
-                self.feed(end, at, wet, true);
+                self.feed(end, wet_bus, wet, true);
             }
             if wet < 1.0 {
-                self.feed(input, at, 1.0 - wet, false);
+                self.feed(input, wet_bus, 1.0 - wet, false);
             }
+            let dry_bus = self.push(node);
+            self.feed(input, dry_bus, 1.0, false);
+            at = self.push(node);
+            self.feed(wet_bus, at, 1.0, true);
+            self.feed(dry_bus, at, 1.0, true);
+            let bypassed = flag(node, "Bypass");
+            for (bus, open) in [(wet_bus, !bypassed), (dry_bus, bypassed)] {
+                if let Some(b) = self.out.buses.get_mut(bus) {
+                    b.volume_db = if open { 0.0 } else { SILENT };
+                }
+            }
+            self.bus_of.insert(node.id(), wet_bus);
+            self.dry_of.insert(node.id(), dry_bus);
         }
         Ok(at)
     }
@@ -356,7 +388,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 .iter()
                 .find(|(n, _)| n.attribute("Name") == Some(target) && !flag(*n, "Bypass"));
             if let Some(&(_, to)) = found {
-                let (level, factors) = self.send_level(send)?;
+                let (level, factors) = self.send_level(send, from)?;
                 self.feed(from, to, level, !flag(send, "PreFader"));
                 self.move_send(from, factors);
             }
@@ -369,13 +401,20 @@ impl<L: Library> Translator<'_, '_, L> {
     /// 0x141002450 gives it a MultiplicativeParameterModulation, vtable
     /// 0x141e37a50: the law at 0x141429a80). A macro folds in at its value;
     /// a source no bus reads (an LFO, an envelope) stays reported.
-    fn send_level(&mut self, send: Node) -> Result<(f64, Vec<ir::Factor>), String> {
+    fn send_level(&mut self, send: Node, from: usize) -> Result<(f64, Vec<ir::Factor>), String> {
         let program = self.program;
         let mut level = num(send, "Gain", 1.0)?;
         let mut factors = Vec::new();
+        // The sending bus's oscillators; a bus has no voice, so each runs free.
+        let mut lfos = self
+            .out
+            .buses
+            .get_mut(from)
+            .map(|b| std::mem::take(&mut b.lfos))
+            .unwrap_or_default();
         let gains = matrix::children(send).filter(|c| c.attribute("Destination") == Some("Gain"));
         for c in gains {
-            let Some(f) = matrix::factor(program, c, None) else {
+            let Some(f) = matrix::factor(program, c, Some(&mut lfos)) else {
                 continue;
             };
             match f.input.source {
@@ -390,6 +429,12 @@ impl<L: Library> Translator<'_, '_, L> {
                 _ => factors.push(f),
             }
             self.carried.insert(c.id());
+        }
+        for l in &mut lfos {
+            l.clock = ir::Clock::Free;
+        }
+        if let Some(b) = self.out.buses.get_mut(from) {
+            b.lfos = lfos;
         }
         Ok((level, factors))
     }
@@ -423,7 +468,73 @@ impl<L: Library> Translator<'_, '_, L> {
     /// switch it on.
     fn slot(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {
         let bypass = flag(node, "Bypass");
-        Ok(self.built(node)?.map(|e| ir::Effect { bypass, ..e }))
+        let built = self.built(node)?.map(|e| ir::Effect { bypass, ..e });
+        if let Some(effect) = built {
+            let knobs = self.knobs(node, effect);
+            if !knobs.is_empty() {
+                self.knobs_of.insert(node.id(), knobs);
+            }
+        }
+        Ok(built)
+    }
+
+    /// What a script's `setParameter` on each of `node`'s numbers moves:
+    /// the effect is rebuilt with the number at each of [`PROBE_GRID`], and a
+    /// number that moves exactly one control gets that control's code and
+    /// its value at each grid point. Not for effects that load files.
+    // ponytail: one control per number, the others held at their saved
+    // values; a number that moves two (UVI's EQ GainMid) stays stored only.
+    fn knobs(&mut self, node: Node, base: ir::Effect) -> Vec<Knob> {
+        let loads = [
+            "Convolver",
+            "SampledReverb",
+            "EffectRack",
+            "FeedbackMachine",
+        ];
+        if loads.iter().any(|t| node.has_tag_name(*t)) {
+            return Vec::new();
+        }
+        let notes = std::mem::take(&mut self.notes);
+        let controls: Vec<ir::EffectParam> = (0..u16::MAX)
+            .map_while(ir::EffectParam::from_code)
+            .filter(|p| p.value(&mut base.clone()).is_some())
+            .collect();
+        let mut out = Vec::new();
+        for attr in node.attributes() {
+            let name = attr.name();
+            if name == "Bypass" || attr.value().trim().parse::<f64>().is_err() {
+                continue;
+            }
+            let mut moved: Vec<ir::EffectParam> = Vec::new();
+            let mut points = Vec::new();
+            for &x in &PROBE_GRID {
+                let Ok(Some(mut e)) = super::values::probing(node, name, x, || self.built(node))
+                else {
+                    continue;
+                };
+                for &p in &controls {
+                    if p.value(&mut e) != p.value(&mut base.clone()) && !moved.contains(&p) {
+                        moved.push(p);
+                    }
+                }
+                points.push((x, e));
+            }
+            let ([p], Some(code)) = (moved.as_slice(), moved.first().and_then(|p| p.code())) else {
+                continue;
+            };
+            let law = points
+                .iter_mut()
+                .filter_map(|(x, e)| Some((*x, p.value(e)?)))
+                .filter(|(_, y)| y.is_finite())
+                .collect();
+            out.push(Knob {
+                name: name.to_owned(),
+                code,
+                law,
+            });
+        }
+        self.notes = notes;
+        out
     }
 
     fn built(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {

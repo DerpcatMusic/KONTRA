@@ -210,11 +210,15 @@ fn an_effect_rack_fans_out_to_its_chains_and_back() {
     </Program>"#;
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-    // Main, the layer's entry, its three chains, then the join.
+    // Main, the layer's entry, its three chains, the rack's wet and dry
+    // buses, then the join.
     let b = &out.buses;
-    assert_eq!(b.len(), 6);
+    assert_eq!(b.len(), 8);
     assert_eq!(out.groups[0].bus, 1);
-    assert!(b[1].sends.iter().map(|s| s.bus).eq(2..=4));
+    assert!(b[1].sends.iter().map(|s| s.bus).eq([2, 3, 4, 6]));
+    // Not bypassed: the wet bus open, the dry one shut, both into the join.
+    assert!(b[5].volume_db == 0.0 && b[6].volume_db < -100.0);
+    assert!((5..=6).all(|n| b[n].sends[0].bus == 7));
     assert!(!b[1].to_main && !b[2].to_main);
     // A chain's gain is its fader into the join; a bypassed one is silent.
     let fader = |n: usize| b[n].volume_db;
@@ -227,8 +231,8 @@ fn an_effect_rack_fans_out_to_its_chains_and_back() {
     );
     assert!(matches!(b[3].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 2.0));
     // The rest of the inserts and the layer's fader are on the join.
-    assert!(matches!(b[5].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 3.0));
-    assert!(b[5].to_main && (b[5].volume_db + 6.0206).abs() < 1e-3);
+    assert!(matches!(b[7].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 3.0));
+    assert!(b[7].to_main && (b[7].volume_db + 6.0206).abs() < 1e-3);
     assert!(
         !out.diagnostics
             .iter()
@@ -2264,4 +2268,38 @@ fn a_second_order_digital_eq_peak_is_the_bell_and_a_steeper_one_is_reported() {
             .iter()
             .any(|d| d.feature == "DigitalEq band order")
     );
+}
+
+#[test]
+fn an_lfo_and_a_step_envelope_on_a_sends_gain_run_free_on_its_bus() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0">
+        <BusRouters>
+          <BusRouter Name="S0" Bypass="0" Gain="1" Destination="../../Aux3" PreFader="1"><Connections>
+            <SignalConnection Name="a" Ratio="0.5" Source="$Program/LFO 1" Destination="Gain" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Name="b" Ratio="1" Source="$Program/Step Envelope 1" Destination="Gain" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections></BusRouter>
+        </BusRouters>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+      <ControlSignalSources>
+        <LFO Name="LFO 1" Bypass="0" WaveFormType="0" Freq="2" Bipolar="1" Retrigger="1" Depth="1"/>
+        <StepEnvelope Name="Step Envelope 1" Bypass="0" Freq="1" NumSteps="2" Levels="1 0" Retrigger="0" SyncToHost="0"/>
+      </ControlSignalSources>
+      <Auxs><AuxEffect Name="Aux3" Bypass="0" Gain="1" PreInsert="1"/></Auxs>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| d.feature != "modulation Gain"),
+        "{:?}",
+        out.diagnostics
+    );
+    let layer = out.buses.iter().find(|b| !b.lfos.is_empty()).unwrap();
+    assert_eq!(layer.lfos.len(), 2);
+    assert!(layer.lfos.iter().all(|l| l.clock == ir::Clock::Free));
 }

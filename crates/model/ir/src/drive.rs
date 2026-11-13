@@ -312,6 +312,91 @@ impl EffectParam {
     }
 }
 
+/// Numbers every [`EffectParam`] for a script host: the plain controls in
+/// order, then each indexed one by its index below [`INDEXED`].
+macro_rules! param_codes {
+    (plain: $($p:ident),* ; indexed: $($i:ident),*) => {
+        impl EffectParam {
+            /// This control's number; `None` past [`INDEXED`].
+            #[must_use]
+            pub fn code(self) -> Option<u16> {
+                let plain = [$(Self::$p),*];
+                if let Some(n) = plain.iter().position(|&p| p == self) {
+                    return u16::try_from(n).ok();
+                }
+                let mut base = u16::try_from(plain.len()).ok()?;
+                $(
+                    if let Self::$i(k) = self {
+                        return (k < INDEXED).then(|| base + u16::from(k));
+                    }
+                    base += u16::from(INDEXED);
+                )*
+                let _ = base;
+                None
+            }
+
+            /// The control numbered `code` ([`Self::code`]).
+            #[must_use]
+            pub fn from_code(code: u16) -> Option<Self> {
+                let plain = [$(Self::$p),*];
+                if let Some(&p) = plain.get(usize::from(code)) {
+                    return Some(p);
+                }
+                let mut c = code.checked_sub(u16::try_from(plain.len()).ok()?)?;
+                $(
+                    if c < u16::from(INDEXED) {
+                        return u8::try_from(c).ok().map(Self::$i);
+                    }
+                    c -= u16::from(INDEXED);
+                )*
+                let _ = c;
+                None
+            }
+        }
+    };
+}
+
+/// Indexed controls (bands, stages, matrix cells) numbered per index.
+pub const INDEXED: u8 = 8;
+
+param_codes!(
+    plain: FormantTalk, FormantSharp, FormantSize, ShaperAmount, ShaperLowpassHz, CrushRate,
+    CrushBits, CompressorThreshold, CompressorRatio, CompressorAttack, CompressorRelease,
+    CompressorMakeup, CompressorMix, CompressorKnee, ModRate, ModPhase, PhaserExponent,
+    PhaserFeedback, TransientAttack, TransientSustain, TransientGain, ReverbSeconds,
+    ReverbDamping, ReverbStereo, ReverbHighCut, ReverbPredelay, LimiterInput, LimiterRelease,
+    FilterHz, FilterGain, FilterLastDamping, CascadeHz, CascadeGain, ClockedCutoff,
+    ClockedResonance, DelayMs, DelayDampingHz, DelayLowCutHz, DelayShelfHz, DelayShelfDb,
+    Output, Dry;
+    indexed: BellOctaves, BellHz, BellQ, BellGain, FilterDamping, CascadeShift, CascadeQ,
+    CascadeLimit, CascadePeak, CascadeMorph, CascadeWet, DelayInput, DelayLoop
+);
+
+impl EffectParam {
+    /// This control's value on `effect`, the slot's levels included.
+    pub fn value(self, effect: &mut Effect) -> Option<f32> {
+        match self {
+            Self::Output => Some(effect.output),
+            Self::Dry => Some(effect.dry),
+            _ => self.field_mut(&mut effect.kind).map(|v| *v),
+        }
+    }
+
+    /// Sets this control of `effect` to `value`; false when it has none.
+    pub fn set(self, effect: &mut Effect, value: f32) -> bool {
+        let at = match self {
+            Self::Output => &mut effect.output,
+            Self::Dry => &mut effect.dry,
+            _ => match self.field_mut(&mut effect.kind) {
+                Some(at) => at,
+                None => return false,
+            },
+        };
+        *at = value;
+        true
+    }
+}
+
 /// What a script's 0..=1 knob sets, through its format's law.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KnobTarget {

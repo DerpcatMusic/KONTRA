@@ -22,6 +22,11 @@ pub struct Bus {
     /// [`Source::Blend`]: crate::Source::Blend
     pub mods: Vec<crate::ModKind>,
     pub blends: Vec<crate::Blend>,
+    /// Free-running oscillators [`Source::Lfo`] reads in this bus's routes
+    /// and blends, from the engine's start.
+    ///
+    /// [`Source::Lfo`]: crate::Source::Lfo
+    pub lfos: Vec<crate::Lfo>,
 }
 
 impl Bus {
@@ -36,6 +41,7 @@ impl Bus {
             to_main: true,
             mods: Vec::new(),
             blends: Vec::new(),
+            lfos: Vec::new(),
         }
     }
 }
