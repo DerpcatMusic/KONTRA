@@ -230,6 +230,24 @@ impl Resources {
         names
     }
 
+    /// Every stored name of the archives and containers, as they are stored.
+    #[must_use]
+    pub fn member_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for source in &self.sources {
+            match source {
+                Source::Loose(_) => {}
+                Source::Nicnt(_, table, _) => {
+                    names.extend(table.items.iter().map(|i| i.filename.clone()));
+                }
+                Source::Nkr(_, archive, _) => {
+                    names.extend(archive.members().map(|e| e.name.clone()));
+                }
+            }
+        }
+        names
+    }
+
     /// The library's `.nkr` archives.
     pub(crate) fn archives(&self) -> impl Iterator<Item = &Path> {
         self.opened().map(|(path, _, _)| path)
