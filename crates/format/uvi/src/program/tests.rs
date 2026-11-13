@@ -2265,3 +2265,37 @@ fn a_second_order_digital_eq_peak_is_the_bell_and_a_steeper_one_is_reported() {
             .any(|d| d.feature == "DigitalEq band order")
     );
 }
+
+#[test]
+fn an_lfo_and_a_step_envelope_on_a_sends_gain_run_free_on_its_bus() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0">
+        <BusRouters>
+          <BusRouter Name="S0" Bypass="0" Gain="1" Destination="../../Aux3" PreFader="1"><Connections>
+            <SignalConnection Name="a" Ratio="0.5" Source="$Program/LFO 1" Destination="Gain" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Name="b" Ratio="1" Source="$Program/Step Envelope 1" Destination="Gain" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections></BusRouter>
+        </BusRouters>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+      <ControlSignalSources>
+        <LFO Name="LFO 1" Bypass="0" WaveFormType="0" Freq="2" Bipolar="1" Retrigger="1" Depth="1"/>
+        <StepEnvelope Name="Step Envelope 1" Bypass="0" Freq="1" NumSteps="2" Levels="1 0" Retrigger="0" SyncToHost="0"/>
+      </ControlSignalSources>
+      <Auxs><AuxEffect Name="Aux3" Bypass="0" Gain="1" PreInsert="1"/></Auxs>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| d.feature != "modulation Gain"),
+        "{:?}",
+        out.diagnostics
+    );
+    let layer = out.buses.iter().find(|b| !b.lfos.is_empty()).unwrap();
+    assert_eq!(layer.lfos.len(), 2);
+    assert!(layer.lfos.iter().all(|l| l.clock == ir::Clock::Free));
+}
