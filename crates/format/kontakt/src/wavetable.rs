@@ -2,6 +2,7 @@
 
 use kontra_format::Notes;
 use kontra_ir::{self as ir, FormShaper, Side, Warp, WarpShape};
+use kontra_law::kontakt::inharmonic_stretch;
 use ni_file::kontakt::objects::WavetableSource;
 
 /// The source's table, forms, start phase and inharmonic stretch. Its
@@ -35,13 +36,7 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         phase: source.phase,
         phase_random: source.phase_random.clamp(0.0, 1.0),
         gain: LEVEL,
-        // Measured on an oracle probe (a saw at Inharm 0, ¼, ½, ¾, 0.9, 1):
-        // partial n moved to f·(1 + (n − 1)·2^(2a − 1)) within 0.05 %.
-        stretch: if source.inharmonic_enabled {
-            2f32.powf(2.0 * source.inharmonic.clamp(0.0, 1.0) - 1.0)
-        } else {
-            1.0
-        },
+        stretch: inharmonic_stretch(source.inharmonic_enabled.then_some(source.inharmonic)),
         warps,
     }
 }
