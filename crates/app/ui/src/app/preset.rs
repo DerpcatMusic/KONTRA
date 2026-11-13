@@ -98,6 +98,13 @@ pub(super) fn sheet(
     } else {
         let field = kit::field(ui, "preset-name", "Preset name", &mut app.view.preset_name);
         submitted = field.changed.submitted;
+        // The field answers a selection once a frame has shown it.
+        let count = app.view.preset_name.chars().count();
+        if app.view.select_name
+            && ui.request_action(SemanticAction::set_selection("preset-name", 0, count))
+        {
+            app.view.select_name = false;
+        }
         items.push(field.el);
     }
     let verb = if taken && verb == "Save" {

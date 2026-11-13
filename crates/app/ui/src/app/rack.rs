@@ -446,10 +446,8 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     if let Some((pick, name)) = edit {
         super::preset::picked(app, n, &name, pick, out);
         // A sheet that asks a name opens with it selected, to type over.
-        let all =
-            SemanticAction::set_selection("preset-name", 0, app.view.preset_name.chars().count());
         ui.focus("preset-name");
-        ui.request_action(all);
+        app.view.select_name = true;
     }
     row(items)
         .gap(TIGHT)
