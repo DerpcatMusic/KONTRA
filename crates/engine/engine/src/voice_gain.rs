@@ -4,7 +4,7 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
-use ir::TableValue::{Inharmonic, Position, Warp};
+use ir::TableValue::{Inharmonic, ModAmount, ModTune, Position, Warp};
 use kontra_stream::Mix;
 use kontra_voice::{Ahdsr, Gain, Lag, Read};
 
@@ -157,6 +157,7 @@ impl Engine {
         let g = self.groups.get(zone.group as usize)?;
         let mut read = g.wavetable?;
         read.phase = (read.phase + note.draw.unit() * read.phase_random).fract();
+        read.rate = self.rate as f32;
         for m in g.mods.iter().filter(|m| !m.bypass) {
             if let ir::ModKind::Wavetable {
                 source,
@@ -173,7 +174,7 @@ impl Engine {
                 }
             }
         }
-        for v in [Position, Warp(0), Warp(1), Inharmonic] {
+        for v in [Position, Warp(0), Warp(1), Inharmonic, ModAmount, ModTune] {
             if let Some(v) = table_value(&mut read, v) {
                 *v = v.clamp(0.0, 1.0);
             }
@@ -640,5 +641,7 @@ pub(crate) fn table_value(read: &mut Read, v: ir::TableValue) -> Option<&mut f32
         Position => Some(&mut read.position),
         Warp(n) => read.warps.get_mut(usize::from(n)).map(|w| &mut w.amount),
         Inharmonic => Some(&mut read.inharmonic.amount),
+        ModAmount => Some(&mut read.modosc.amount),
+        ModTune => Some(&mut read.modosc.tune),
     }
 }

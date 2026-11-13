@@ -3969,6 +3969,7 @@ fn a_wavetable_form_mode_switches_the_forms_kind() {
         phase_random: 0.0,
         gain: 1.0,
         inharmonic: ir::Inharmonic::OFF,
+        modosc: ir::ModOsc::OFF,
         warps: [ir::Warp::OFF; 2],
     }));
     let script = kontra_ksp::compile(
