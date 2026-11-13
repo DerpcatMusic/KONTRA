@@ -56,11 +56,10 @@ const ATTACK_FLOOR: f64 = 20_000.0;
 fn attack_shape(curve: f64) -> f32 {
     let c = curve.clamp(-1.0, 1.0);
     let b = f64::from(((1.0 - c.abs()) * ATTACK_SPAN.ln() - ATTACK_FLOOR.ln()).exp() as f32);
-    // A positive knob is convex: the level starts slowly and arrives fast.
     let k = if c > 0.0 {
-        ((1.0 + b) / b).ln()
-    } else {
         (b / (1.0 + b)).ln()
+    } else {
+        ((1.0 + b) / b).ln()
     };
     k as f32
 }
@@ -72,7 +71,7 @@ fn attack_curve(shape: f64) -> f64 {
     }
     let b = 1.0 / shape.abs().exp_m1();
     let c = (1.0 - (b.ln() + ATTACK_FLOOR.ln()) / ATTACK_SPAN.ln()).clamp(0.0, 1.0);
-    shape.signum() * c
+    -shape.signum() * c
 }
 
 fn log_ratio(c: f64) -> f32 {
@@ -123,10 +122,9 @@ mod tests {
     fn the_attack_knob_is_odd_and_bends_hardest_at_its_ends() {
         let shape = |c| FormulaId::AttackShape.eval(c);
         assert!((shape(-0.4) + shape(0.4)).abs() < 1e-6);
-        // A positive knob starts slowly (a positive shape), harder toward 1.
-        assert!(shape(1.0) > shape(0.5) && shape(0.5) > 0.0);
-        // b = √(5·10⁵) / 2·10⁴ at 0.5 and 1 / 2·10⁴ at 1: ln((1 + b) / b).
-        assert!((shape(0.5) - 3.377_05).abs() < 1e-4, "{}", shape(0.5));
-        assert!((shape(1.0) - 9.903_54).abs() < 1e-4, "{}", shape(1.0));
+        assert!(shape(1.0) < shape(0.5) && shape(0.5) < 0.0);
+        // b = √(5·10⁵) / 2·10⁴ at 0.5 and 1 / 2·10⁴ at 1: ln(b / (1 + b)).
+        assert!((shape(0.5) + 3.377_05).abs() < 1e-4, "{}", shape(0.5));
+        assert!((shape(1.0) + 9.903_54).abs() < 1e-4, "{}", shape(1.0));
     }
 }
