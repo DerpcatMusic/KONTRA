@@ -28,6 +28,10 @@ Event = {
 	NoteOff = 2,
 	ControlChange = 3,
 	PitchBend = 4,
+	-- UVI's own names (its API's `afterTouch`/`polyAfterTouch`), and the
+	-- spellings this prelude used first.
+	AfterTouch = 5,
+	PolyAfterTouch = 6,
 	MidiAftertouch = 5,
 	PolyAftertouch = 6,
 	ProgramChange = 7,
