@@ -24,8 +24,66 @@ pub struct Read {
     /// samples are.
     pub gain: f32,
     pub inharmonic: Inharmonic,
+    pub modosc: ModOsc,
+    /// The host's rate, Hz: what the mod oscillator's Hz swing is read at.
+    pub rate: f32,
     /// Applied in order.
     pub warps: [Warp; 2],
+}
+
+/// A sine oscillator at `ratio()` times the note that moves the table's
+/// read or joins its output by `amount`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModOsc {
+    pub kind: ModKind,
+    pub amount: f32,
+    pub tune: f32,
+    pub tune_range: (f32, f32),
+    pub fm_hz: f32,
+}
+
+impl ModOsc {
+    pub const OFF: Self = Self {
+        kind: ModKind::Off,
+        amount: 0.0,
+        tune: 0.5,
+        tune_range: (1.0, 1.0),
+        fm_hz: 0.0,
+    };
+
+    /// Its frequency over the note's.
+    #[must_use]
+    pub fn ratio(self) -> f32 {
+        let (lo, hi) = self.tune_range;
+        if lo > 0.0 {
+            lo * (hi / lo).powf(self.tune.clamp(0.0, 1.0))
+        } else {
+            1.0
+        }
+    }
+}
+
+/// What the oscillator `m` does at amount `a` (see `kontra_ir::ModOscKind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModKind {
+    Off,
+    Fm,
+    FmBy,
+    FmFeedback,
+    Pm,
+    PmFeedback,
+    Ring,
+    Mix,
+    Blend,
+}
+
+/// A voice's mod oscillator: its phase, the table's extra phase from FM,
+/// and the table's last output, in cycles and levels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Osc {
+    phase: f64,
+    offset: f64,
+    last: f32,
 }
 
 /// How far apart the partials above the first lie, in fundamentals: partial
@@ -220,6 +278,8 @@ pub struct Table {
     /// Every table has them, so a script may stretch any (~2 % memory).
     pub quad: Option<std::sync::Arc<[i16]>>,
     pub read: Read,
+    /// Each voice's own copy runs its own oscillator.
+    pub osc: Osc,
 }
 
 impl Table {
@@ -241,6 +301,7 @@ impl Table {
             spans,
             quad: None,
             read,
+            osc: Osc::default(),
         })
     }
 
@@ -252,7 +313,10 @@ impl Table {
     /// partial down by `1 − stretch` fundamentals (single sideband: the
     /// read times a cosine less its quadrature times a sine), so the first
     /// stays on pitch.
-    pub(crate) fn render(&self, (x, step): (f64, f64), out: &mut [[f32; 2]]) {
+    /// The mod oscillator (a sine at its ratio of the note) runs per frame
+    /// from the voice's own state: FM accumulates into the read phase, PM
+    /// adds to it, the output kinds act on the level read.
+    pub(crate) fn render(&mut self, (x, step): (f64, f64), out: &mut [[f32; 2]]) {
         let at = f64::from(self.read.position.clamp(0.0, 1.0)) * (self.cycles - 1) as f64;
         let c0 = at as usize;
         let c1 = (c0 + 1).min(self.cycles - 1);
@@ -274,9 +338,25 @@ impl Table {
                 a + (cycle(data, c1, q) - a) * morph
             }
         };
+        let osc = self.read.modosc;
+        let a = osc.amount.clamp(0.0, 1.0);
+        let a64 = f64::from(a);
+        let cycles = step / PERIOD * rate;
+        let mod_step = cycles * f64::from(osc.ratio());
+        let hz = f64::from(osc.fm_hz) / f64::from(self.read.rate.max(1.0));
+        let gain = self.read.gain;
+        let mut st = self.osc;
         for (i, frame) in out.iter_mut().enumerate() {
             let cursor = (x + i as f64 * step) / PERIOD;
-            let p = (cursor * rate + f64::from(self.read.phase)).fract() as f32;
+            let m = (std::f64::consts::TAU * st.phase).sin();
+            let y = f64::from(st.last);
+            let pm = match osc.kind {
+                ModKind::Pm => a64 * m,
+                ModKind::PmFeedback => a64 * y,
+                _ => 0.0,
+            };
+            let p = (cursor * rate + f64::from(self.read.phase) + st.offset + pm).rem_euclid(1.0)
+                as f32;
             let q = warp(w2, warp(w1, p));
             let mut s = read(&self.data, q);
             if let Some(quad) = quad {
@@ -284,9 +364,31 @@ impl Table {
                     (std::f64::consts::TAU * (cursor * (1.0 - stretch)).fract()).sin_cos();
                 s = s * cos as f32 - read(quad, q) * sin as f32;
             }
-            let s = shape(w2, p, shape(w1, p, s)) * self.read.gain;
+            let s = shape(w2, p, shape(w1, p, s)) * gain;
+            st.last = s;
+            let m32 = m as f32;
+            let s = match osc.kind {
+                ModKind::FmBy => gain * m32,
+                ModKind::Ring => s * (1.0 + 0.32 * a * m32),
+                ModKind::Mix => s + 2.0 * a * gain * m32,
+                ModKind::Blend => s + (gain * m32 - s) * a,
+                _ => s,
+            };
+            st.offset = (st.offset
+                + match osc.kind {
+                    ModKind::Fm => hz * a64 * m,
+                    ModKind::FmFeedback => hz * a64 * f64::from(st.last),
+                    _ => 0.0,
+                })
+            .rem_euclid(1.0);
+            let by = match osc.kind {
+                ModKind::FmBy => 2.0 * hz * a64 * f64::from(st.last),
+                _ => 0.0,
+            };
+            st.phase = (st.phase + mod_step + by).rem_euclid(1.0);
             *frame = [s, s];
         }
+        self.osc = st;
     }
 
     /// The level at `span` read at phase `q`, wrapping within it.
@@ -458,6 +560,8 @@ mod tests {
             phase_random: 0.0,
             gain: 1.0,
             inharmonic: Inharmonic::OFF,
+            modosc: ModOsc::OFF,
+            rate: 48_000.0,
             warps: [Warp::OFF; 2],
         };
         let spans: std::sync::Arc<[_]> = vec![(0, 8); LEVELS].into();

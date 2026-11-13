@@ -218,27 +218,48 @@ impl Resolver {
     /// follow find them in the page cache: on a cold disk each is a random
     /// read, and one at a time they dominate the load.
     fn warm<'a>(&mut self, names: impl Iterator<Item = &'a str>) {
-        let mut wanted: Vec<(PathBuf, u64)> = Vec::new();
+        let mut named: Vec<(PathBuf, String)> = Vec::new();
         for name in names {
             let name = name.replace(['\\', '|'], "/");
-            for at in 0..self.bases.len() {
-                let Some(candidate) = self.bases.get(at).map(|b| lexical(&b.join(&name))) else {
-                    break;
-                };
+            let found = self.bases.iter().find_map(|base| {
+                let candidate = lexical(&base.join(&name));
                 if !candidate.starts_with(&self.root) {
-                    continue;
+                    return None;
                 }
-                let Some((archive, member)) = archive_member(&candidate, &self.archives) else {
-                    continue;
-                };
-                if let Some((_, index)) = self.open(&archive)
-                    && let Some(entry) = index.find(&member)
-                {
-                    wanted.push((archive, entry.header_offset));
-                    break;
-                }
-            }
+                archive_member(&candidate, &self.archives)
+            });
+            named.extend(found);
         }
+        // Open the archives (each reads its directory) side by side.
+        let mut missing: Vec<&PathBuf> = named
+            .iter()
+            .map(|(archive, _)| archive)
+            .filter(|a| !self.archives.contains_key(*a))
+            .collect();
+        missing.sort();
+        missing.dedup();
+        let opened: Vec<(PathBuf, Option<(File, Archive)>)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = missing
+                .iter()
+                .map(|archive| {
+                    scope.spawn(move || {
+                        let index = File::open(archive).ok().and_then(|f| {
+                            let index = Archive::read_index(&f).ok()?;
+                            Some((f, index))
+                        });
+                        ((*archive).clone(), index)
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        self.archives.extend(opened);
+        let mut wanted: Vec<(PathBuf, u64)> = (named.iter())
+            .filter_map(|(archive, member)| {
+                let (_, index) = self.archives.get(archive)?.as_ref()?;
+                Some((archive.clone(), index.find(member)?.header_offset))
+            })
+            .collect();
         wanted.sort();
         let archives = &self.archives;
         let lanes = 16;
@@ -250,7 +271,7 @@ impl Resolver {
                     for (archive, offset) in wanted.iter().skip(lane).step_by(lanes) {
                         if let Some(Some((file, _))) = archives.get(archive) {
                             // Only the page cache matters; a short or failed read is fine.
-                            let _ = std::os::unix::fs::FileExt::read_at(file, &mut header, *offset);
+                            let _ = read_at(file, &mut header, *offset);
                         }
                     }
                 });
@@ -382,4 +403,16 @@ fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
             _ => {}
         }
     }
+}
+
+/// Reads at `at` without moving the file's cursor, so lanes can share a file.
+#[cfg(unix)]
+fn read_at(file: &std::fs::File, out: &mut [u8], at: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, out, at)
+}
+
+/// Reads at `at` (Windows moves the cursor; header warming never uses it).
+#[cfg(windows)]
+fn read_at(file: &std::fs::File, out: &mut [u8], at: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, out, at)
 }

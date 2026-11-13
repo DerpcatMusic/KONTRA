@@ -178,6 +178,7 @@ fn note_controller_and_ui_callbacks_do_not_allocate_for_pgs() {
         reverb_networks: vec![],
         lfo_units: vec![],
         warp_modes: vec![],
+        mod_kinds: vec![],
         knobs: vec![],
         foreign: None,
         files: None,

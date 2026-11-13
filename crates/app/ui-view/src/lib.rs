@@ -677,6 +677,20 @@ fn words_el(
             .collect::<Vec<_>>();
         return stack(lines).w(width).h(height).radius(0.).clip();
     }
+    // UVI (JUCE's drawFittedText) squashes a line too wide for its room
+    // across, down to 0.7, rather than shrink it.
+    let room = (width - inset.0 - inset.1).max(0.);
+    let squash = (font.filter(|_| lua))
+        .and_then(|f| Some((f, room / kontra_ui_pictures::line_width(f, words, size)?)))
+        .filter(|&(_, sx)| (kontra_ui_pictures::MIN_SQUASH..1.).contains(&sx));
+    if let Some((f, sx)) = squash {
+        let draws = kontra_ui_pictures::squashed(f, words, size, sx, top + line / 2., ink);
+        let el = canvas(move |_| draws.clone())
+            .w(room)
+            .h(height)
+            .at(inset.0, 0.);
+        return stack([el]).w(width).h(height).radius(0.).clip();
+    }
     // Kontakt's factory faces run narrower than ours: a label sized for
     // them steps down to fit rather than cut its words (v1 `TextFont::fit`).
     let said = |k: f64| {

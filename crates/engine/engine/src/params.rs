@@ -337,6 +337,11 @@ impl Engine {
         if par == EnginePar::InharmonicOn {
             return Some(i32::from(g.wavetable?.inharmonic.on));
         }
+        if par == EnginePar::ModOscKind {
+            let kind = g.wavetable?.modosc.kind;
+            let kinds = &self.script()?.mod_kinds;
+            return i32::try_from(kinds.iter().position(|k| *k == Some(kind))?).ok();
+        }
         if let EnginePar::WarpMode(n) = par {
             let w = g.wavetable?.warps.get(usize::from(n)).copied()?;
             let modes = &self.script()?.warp_modes;
@@ -490,6 +495,15 @@ impl Engine {
                     .flatten()
             })
             .flatten();
+        let kind = (par == EnginePar::ModOscKind)
+            .then(|| {
+                self.script()?
+                    .mod_kinds
+                    .get(usize::try_from(value).ok()?)
+                    .copied()
+                    .flatten()
+            })
+            .flatten();
         let Some(g) = self.group_mut(group) else {
             return false;
         };
@@ -547,6 +561,12 @@ impl Engine {
                 .wavetable
                 .as_mut()
                 .map(|t| t.inharmonic.on = value != 0)
+                .is_some(),
+            EnginePar::ModOscKind => g
+                .wavetable
+                .as_mut()
+                .zip(kind)
+                .map(|(t, k)| t.modosc.kind = k)
                 .is_some(),
             EnginePar::WarpMode(n) => g
                 .wavetable

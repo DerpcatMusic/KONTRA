@@ -546,70 +546,78 @@ fn a_controller_scales_a_send_level_live() {
 fn a_free_lfo_scales_a_send_level_live() {
     use kontra_engine::ir;
     // A square LFO at 1 Hz: high (read 1) the first half cycle, low (0) the
-    // second; the send runs at 1 − 0.75 + 0.75·x of the zone's 0.5.
-    for (phase, level_at) in [(0.0, 0.5), (0.5, 0.125)] {
-        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-        let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
-        plan.groups[0].bus = 1;
-        let factor = ir::Factor {
+    // second; the send runs at 1 − 0.75 + 0.75·x of the zone's 0.5. One
+    // engine runs through the boundary, no new note.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].bus = 1;
+    let factor = ir::Factor {
+        input: ir::Transfer {
+            source: ir::Source::Lfo(0),
+            table: Vec::new(),
+        },
+        depth: 0.75,
+    };
+    let blend = ir::Blend {
+        base: 0.0,
+        terms: vec![ir::Term {
             input: ir::Transfer {
-                source: ir::Source::Lfo(0),
+                source: ir::Source::Constant,
                 table: Vec::new(),
             },
-            depth: 0.75,
-        };
-        let blend = ir::Blend {
-            base: 0.0,
-            terms: vec![ir::Term {
-                input: ir::Transfer {
-                    source: ir::Source::Constant,
-                    table: Vec::new(),
-                },
-                amount: 1.0,
-                factors: vec![factor],
-            }],
-        };
-        let lfo = ir::Lfo {
-            wave: ir::Wave::Square { width: 0.5 },
-            rate: ir::Rate::Hz(1.0),
-            phase,
-            fade_ms: 0.0,
-            clock: ir::Clock::Free,
-        };
-        plan.buses.push(Bus {
-            name: "Bus".into(),
-            gain: 0.0,
-            pan: 0.0,
-            inserts: Vec::new(),
-            sends: vec![ir::BusSend {
-                bus: 2,
-                level: 1.0,
-                post_fader: false,
-            }],
-            to_main: true,
-            enabled: true,
-            mods: vec![ir::ModKind::Send {
-                source: ir::Source::Blend(0),
-                send: 0,
-            }],
-            blends: vec![blend],
-            lfos: vec![lfo],
-        });
-        plan.buses.push(Bus {
-            name: "Aux".into(),
-            gain: 1.0,
-            pan: 0.0,
-            inserts: Vec::new(),
-            sends: Vec::new(),
-            to_main: true,
-            enabled: true,
-            mods: Vec::new(),
-            blends: Vec::new(),
-            lfos: Vec::new(),
-        });
-        let mut e = engine(&store, plan);
-        assert!(close(level(&mut e, &[on(60, 1.0)])[0], level_at), "{phase}");
+            amount: 1.0,
+            factors: vec![factor],
+        }],
+    };
+    let lfo = ir::Lfo {
+        wave: ir::Wave::Square { width: 0.5 },
+        rate: ir::Rate::Hz(1.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: ir::Clock::Free,
+    };
+    plan.buses.push(Bus {
+        name: "Bus".into(),
+        gain: 0.0,
+        pan: 0.0,
+        inserts: Vec::new(),
+        sends: vec![ir::BusSend {
+            bus: 2,
+            level: 1.0,
+            post_fader: false,
+        }],
+        to_main: true,
+        enabled: true,
+        mods: vec![ir::ModKind::Send {
+            source: ir::Source::Blend(0),
+            send: 0,
+        }],
+        blends: vec![blend],
+        lfos: vec![lfo],
+    });
+    plan.buses.push(Bus {
+        name: "Aux".into(),
+        gain: 1.0,
+        pan: 0.0,
+        inserts: Vec::new(),
+        sends: Vec::new(),
+        to_main: true,
+        enabled: true,
+        mods: Vec::new(),
+        blends: Vec::new(),
+        lfos: Vec::new(),
+    });
+    let mut e = engine(&store, plan);
+    assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.5), "first half");
+    // The second half cycle starts at 0.5 s (94 spans); the zone sounds for 1 s.
+    let mut seen = Vec::new();
+    for _ in 0..150 {
+        let l = level(&mut e, &[])[0];
+        if seen.last().is_none_or(|p: &f32| (p - l).abs() > 0.01) {
+            seen.push(l);
+        }
     }
+    assert!(seen.iter().any(|l| close(*l, 0.125)), "{seen:?}");
 }
 
 #[test]
@@ -2537,6 +2545,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         reverb_networks: vec![],
         lfo_units: vec![],
         warp_modes: vec![],
+        mod_kinds: vec![],
         knobs: vec![],
         foreign: None,
         files: None,
