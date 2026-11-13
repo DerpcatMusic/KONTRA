@@ -24,12 +24,14 @@ mod canvas;
 mod discovery;
 mod metrics;
 mod outline;
+mod squash;
 pub mod stock;
 mod vector;
 pub use canvas::canvas;
 pub use metrics::em_per_height;
 use mui::prelude::{Font, Image};
 pub use mui::scene::Vector;
+pub use squash::{MIN_SQUASH, line_width, squashed};
 
 /// Reads a library-relative path; `None` when there is no such file.
 pub type Read = dyn Fn(&str) -> Option<Vec<u8>> + Send;
