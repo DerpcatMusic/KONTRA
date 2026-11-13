@@ -175,6 +175,17 @@ impl Rack {
         }
     }
 
+    /// A rack with no slots that only reads `blends` and `lfos`: [`Self::follow`]
+    /// then [`Self::read`] give a route's value at control rate.
+    pub fn reader(blends: &[ir::Blend], lfos: &[ir::Lfo], rate: u32) -> Self {
+        Self::routed(&[], rate, Responses(&[], &[]), &[], blends).with_lfos(lfos)
+    }
+
+    /// `source` as of the last [`Self::follow`].
+    pub fn read(&self, live: &Live, source: ir::Source) -> Option<f32> {
+        live.read(source, &self.blends, self.clock(0.0))
+    }
+
     /// Sets the oscillators its routes read ([`ir::Bus::lfos`]).
     #[must_use]
     pub fn with_lfos(mut self, lfos: &[ir::Lfo]) -> Self {

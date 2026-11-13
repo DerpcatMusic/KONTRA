@@ -529,6 +529,9 @@ pub struct Plan {
     pub slot_shapes: ir::SlotShapes,
     /// Controllers that move foreign scripts' controls.
     pub knob_mods: Vec<KnobModPlan>,
+    /// What [`KnobModPlan::source`] reads ([`ir::Instrument::knob_blends`]).
+    pub knob_blends: Vec<ir::Blend>,
+    pub knob_lfos: Vec<ir::Lfo>,
     /// Slots loaded with a [`ir::SlotShapes::types`] entry ([`Plan::load_type`]).
     pub loaded: Vec<(ir::RackAt, u8, u16)>,
     /// Every zone as scripts find and read it (`find_zone`, `get_zone_par`).
@@ -589,6 +592,8 @@ impl Plan {
             slot_models: Vec::new(),
             slot_shapes: ir::SlotShapes::NONE,
             knob_mods: Vec::new(),
+            knob_blends: Vec::new(),
+            knob_lfos: Vec::new(),
             loaded: Vec::new(),
             zone_facts: Vec::new(),
         }

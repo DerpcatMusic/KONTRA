@@ -75,7 +75,54 @@ impl Engine {
         }
     }
 
-    /// A controller's route moved foreign script `slot`'s control `id`
+    /// Reads each route onto a script knob ([`kontra_plan::KnobModPlan`]) at
+    /// control rate, and moves the knob where the value changed.
+    pub(crate) fn follow_knobs(&mut self) {
+        let plan = Arc::clone(&self.plan);
+        if plan.knob_mods.is_empty() {
+            return;
+        }
+        let live = crate::racks::Live {
+            behaviour: &self.behaviour,
+            scripts: &self.script_mods,
+            now: self.now,
+            seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
+            tempo: self.tempo,
+        };
+        self.knobs.follow(&live);
+        // Routes onto one knob add: the sum of what each reads now, held
+        // within the knob's range once, runs its `changed` once.
+        let reads: Vec<f32> = plan
+            .knob_mods
+            .iter()
+            .map(|k| self.knobs.read(&live, k.source).unwrap_or(0.0))
+            .collect();
+        let mut moved = Vec::new();
+        for (n, k) in plan.knob_mods.iter().enumerate() {
+            let same = |o: &&crate::KnobModPlan| (o.slot, o.id) == (k.slot, k.id);
+            if plan.knob_mods.iter().position(|o| same(&o)) != Some(n) {
+                continue;
+            }
+            let sum: f32 = plan
+                .knob_mods
+                .iter()
+                .zip(&reads)
+                .filter(|(o, _)| same(o))
+                .map(|(_, m)| m)
+                .sum();
+            if let Some(last) = self.knob_last.get_mut(n)
+                && sum != *last
+            {
+                *last = sum;
+                moved.push((k, sum));
+            }
+        }
+        for (k, m) in moved {
+            self.set_control_mod(k.slot, k.id, f64::from(k.saved), 1.0, f64::from(m));
+        }
+    }
+
+    /// A route's value moved foreign script `slot`'s control `id`
     /// ([`kontra_plan::KnobModPlan`]); the machine runs its `changed` if the
     /// value moved.
     pub fn set_control_mod(&mut self, slot: u8, id: i32, saved: f64, ratio: f64, m: f64) {

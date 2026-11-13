@@ -707,21 +707,27 @@ mod tests {
 
     #[test]
     fn a_controller_route_moves_a_knob_within_its_range_and_runs_changed() {
-        let tree = "return {params={},db=0,pan=0,layers={},modulations={}}";
-        let source = "local k = Knob('drive', 0, -20, 20)
-            k.changed = function(s)
-                if s.value ~= 10 and s.value ~= -20 then error('moved to ' .. s.value) end
-            end";
+        let tree = "return {params={},db=0,pan=0,layers={},modulations={
+            {params={Name='Macro 7',Value='0',Bipolar='0'},mod=32768}}}";
+        let source = "local m = Program.modulations['Macro 7']
+            local k = Knob('drive', 0, -20, 20)
+            k.changed = function(s) m:setParameter('Value', s.value) end";
         let modules = [("__program.lua".to_string(), tree.to_string())];
         let compiled = compile(source, &modules, &[]).unwrap();
         let mut m = compiled.machine();
         // Saved -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
         // (10), and a ratio of -1 from there holds at the bottom (-20).
+        let mut log = Log(Vec::new());
         for (saved, ratio, at) in [(-10.0, 0.5, 1.0), (-10.0, -1.0, 1.0)] {
-            let co = m.control_mod(0, saved, ratio, at, 0).expect("route");
-            assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+            let co = m.control_mod(1, saved, ratio, at, 0).expect("route");
+            assert_eq!(m.run(co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0);
+        let sent: Vec<i64> = (log.0.iter())
+            .filter(|(a, _)| *a == Action::SetEventParArr)
+            .map(|(_, ints)| ints[2] / 1_000_000)
+            .collect();
+        assert_eq!(sent, [10, -20]);
     }
 
     #[test]
