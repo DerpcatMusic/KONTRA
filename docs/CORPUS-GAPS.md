@@ -59,7 +59,6 @@ Each feature is deduplicated across programs and impact classes, then ranked by 
 | 51 | external modulator Velocity -> warpFactor2 | 1 | Audible | H (triage) |
 | 52 | external modulator Velocity -> wavetableModAmount | 1 | Audible | H (triage) |
 | 53 | external modulator Velocity -> wavetablePosition | 1 | Audible | H (triage) |
-| 54 | impulse response size | 1 | Audible | H (triage) |
 | 55 | insert CombFilter | 1 | Audible, Latent | H (triage) |
 | 56 | insert Drive | 1 | Audible, Latent | H (triage) |
 | 57 | insert FeedbackMachine | 1 | Audible, Latent | H (triage) |

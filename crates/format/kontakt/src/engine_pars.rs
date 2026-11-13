@@ -156,6 +156,13 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_WT_MOD_TYPE", P::ModOscKind),
         ("$ENGINE_PAR_WT_MOD_WAVE", P::Shown),
         ("$ENGINE_PAR_WT_MOD_TUNE_UNIT", P::Shown),
+        // Modules KONTRA has no processor for: the knob's text answers, a
+        // set is reported.
+        ("$ENGINE_PAR_CH_DEPTH", P::Shown),
+        ("$ENGINE_PAR_JMP_PREAMP", P::Shown),
+        ("$ENGINE_PAR_JMP_BASS", P::Shown),
+        ("$ENGINE_PAR_JMP_MID", P::Shown),
+        ("$ENGINE_PAR_JMP_TREBLE", P::Shown),
         (
             "$ENGINE_PAR_WT_INHARMONIC",
             P::Wavetable(ir::TableValue::Inharmonic),

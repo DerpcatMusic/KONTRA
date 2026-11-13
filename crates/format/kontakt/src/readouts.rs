@@ -10,8 +10,8 @@ use crate::script_knobs::{
 };
 
 /// The readouts of `$ENGINE_PAR_*` names, by name.
-// The chorus depth and JMP amp knobs read 0.0..100.0 too, but KONTRA
-// carries neither module, so they have no row (scratch/laneB/disp).
+// The chorus depth and JMP amp knobs read 0.0..100.0 too; KONTRA carries
+// neither module, so they only show text (scratch/laneB/disp).
 // ponytail: the cutoff law is the one filter measured (ANALOG's); measure
 // each filter kind when a library shows another.
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
@@ -28,6 +28,11 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         "$ENGINE_PAR_RV_SIZE",
         "$ENGINE_PAR_PH_DEPTH",
         "$ENGINE_PAR_PH_FEEDBACK",
+        "$ENGINE_PAR_CH_DEPTH",
+        "$ENGINE_PAR_JMP_PREAMP",
+        "$ENGINE_PAR_JMP_BASS",
+        "$ENGINE_PAR_JMP_MID",
+        "$ENGINE_PAR_JMP_TREBLE",
     ];
     let none = [None; 2];
     let mut rows: Vec<_> = percent
@@ -130,6 +135,12 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ("$ENGINE_PAR_SEQ_LF_BELL", lin(0.0, 1.0), Blank, none),
         ("$ENGINE_PAR_SEQ_HF_BELL", lin(0.0, 1.0), Blank, none),
     ]);
+    // The Convolution's knobs read what they set: the measured knob laws
+    // (impulse.rs). ponytail: the print forms are unmeasured.
+    rows.extend(crate::impulse::script_knobs().into_iter().map(|(name, _, law)| {
+        let form = if name.contains("LENGTH") { Hundredths } else { Padded };
+        (name, law, form, none)
+    }));
     rows.into_iter()
         .map(|(name, law, form, ends)| (name, ir::Readout { law, form, ends }))
         .collect()
