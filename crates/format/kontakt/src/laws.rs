@@ -497,75 +497,19 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
 
 const MIN_DAMPING: f32 = 0.01;
 
-/// Solid G-EQ knob tables, 11 knots over 0..=1 (core `G_EQ`, constructor
-/// 0x141a800c0; v2 sampler-core eq_family/solid.rs, proved against the
-/// binary). `C_*` names are the curve's offset in the core.
-mod solid {
-    pub(super) const GAIN_HF: [f32; 11] = [-20.5, -18., -11., -6., -2., 0., 2., 6., 11., 18., 20.5];
-    pub(super) const FREQ_HF: [f32; 11] = [
-        1539., 1710., 2400., 3980., 5460., 6820., 9160., 13100., 17813., 21000., 21800.,
-    ];
-    pub(super) const GAIN_HMF: [f32; 11] =
-        [-20., -17.5, -11., -6., -2., 0., 2., 6., 11., 17.5, 20.];
-    pub(super) const FREQ_HMF: [f32; 11] = [
-        692.48, 730.72, 1022.48, 1614.67, 2112.54, 2619.29, 3291.53, 4544.29, 5634.35, 6444.74,
-        6892.65,
-    ];
-    pub(super) const Q_HMF: [f32; 11] = [
-        0.65, 0.62, 0.58, 0.5, 0.45, 0.4, 0.37, 0.31, 0.26, 0.22, 0.22,
-    ];
-    pub(super) const GAIN_LMF: [f32; 11] =
-        [-21.5, -18., -11., -6., -2., 0., 2., 6., 11., 18., 21.5];
-    pub(super) const FREQ_LMF: [f32; 11] = [
-        223., 239., 323., 494., 668., 809., 1050., 1479., 1841., 2083., 2200.,
-    ];
-    pub(super) const Q_LMF: [f32; 11] =
-        [0.65, 0.62, 0.58, 0.5, 0.45, 0.4, 0.37, 0.3, 0.25, 0.21, 0.2];
-    pub(super) const GAIN_LF: [f32; 11] =
-        [-19.5, -16., -10., -5.3, -2., 0., 2., 5.3, 10., 16., 19.5];
-    pub(super) const FREQ_LF: [f32; 11] = [
-        40.43, 44.64, 63.44, 101.36, 140.21, 183.73, 245.15, 351.55, 513.3, 614.68, 697.34,
-    ];
-    /// Bandwidth by gain: wider for small boosts and cuts.
-    pub(super) const C_4818: [f32; 11] = [
-        1.0, 0.9167, 0.6667, 0.5833, 0.5417, 0.5417, 0.5417, 0.5833, 0.6667, 0.9167, 1.0,
-    ];
-    pub(super) const C_5078: [f32; 11] = [
-        1.0, 1.0, 1.0, 1.0833, 1.0833, 1.0, 0.9167, 0.6666, 0.3333, 0.05, 0.0001,
-    ];
-    /// Q scale by gain for the LMF and HMF (C_71F8; LMF's C_82B8 is the same curve).
-    pub(super) const C_71F8: [f32; 11] = [
-        1.0, 0.8615, 0.6615, 0.5846, 0.5846, 0.5846, 0.5846, 0.5846, 0.6615, 0.8615, 1.0,
-    ];
-    pub(super) const C_9378: [f32; 11] = [
-        1.0, 0.8796, 0.713, 0.6296, 0.6296, 0.6296, 0.6296, 0.6296, 0.713, 0.8796, 1.0,
-    ];
-    /// Shelves: HF corner (× 2 × the Hz knob) and gain by the gain knob; LF
-    /// corner, its gain-knob scale, gain and its Hz-knob scale.
-    pub(super) const HF_CORNER: [f32; 11] = [
-        3800., 3295., 2790., 2510., 2455., 2400., 2474., 2547., 2815., 3655., 4509.,
-    ];
-    pub(super) const HF_SHELF_GAIN: [f32; 11] =
-        [-20., -18., -11., -6., -2., 0., 2., 6., 11., 18., 20.];
-    pub(super) const LF_CORNER: [f32; 11] = [
-        90., 100., 125., 184., 240., 290., 380., 500., 650., 730., 780.,
-    ];
-    pub(super) const C_A868: [f32; 11] = [
-        1.0, 1.1207, 1.2241, 1.2931, 1.2931, 1.2931, 1.2931, 1.2931, 1.2241, 1.1207, 1.0,
-    ];
-    pub(super) const LF_SHELF_GAIN: [f32; 11] =
-        [-20., -15.8, -11., -6.5, -2.6, 0., 2.6, 6.5, 11., 15.8, 20.];
-    pub(super) const C_AC98: [f32; 11] = [
-        0.895, 0.91, 0.925, 0.965, 0.985, 1.0, 1.02, 1.03, 1.035, 1.035, 1.04,
-    ];
-}
+#[rustfmt::skip]
+mod solid;
 
 /// The Solid G-EQ's four bands from its knobs (each 0..=1): LF gain and Hz,
 /// LMF and HMF gain, Hz and Q, HF gain and Hz. The LF and HF bands are
 /// shelves unless their shape is [`ir::Shape::Peak`] (the bell switch).
-// ponytail: the tables' main curves on standard cookbook bands, linearly
-// interpolated. The core's splines, its Orfanidis peaks, the LF shelf's two
-// shaping peaks and the HF shelf's DC cut are left out (v2 has them all).
+/// Each bell's centre is scaled by its gain knob and its gain by its Hz and
+/// Q knobs, as the core does (at full LMF boost 21.5 dB becomes 20.05 dB,
+/// Kontakt's native sweep, docs/re/engine/fx-measured/solid-geq.tsv).
+// ponytail: the tables on standard cookbook bands, linearly interpolated.
+// The core's splines, its Orfanidis peaks, HMF's iterative bandwidth, the
+// LF shelf's two shaping peaks and the HF shelf's DC cut are left out (v2
+// has them all).
 pub(crate) fn solid_eq(
     [lf_gain, lf_hz]: [f32; 2],
     lf_shape: ir::Shape,
@@ -584,8 +528,8 @@ pub(crate) fn solid_eq(
     };
     let lf = if lf_shape == ir::Shape::Peak {
         peak(
-            t(FREQ_LF, lf_hz),
-            t(GAIN_LF, lf_gain),
+            (1.0 - (1.0 - t(C_9BD8, lf_gain)) * 0.5 * lf_hz) * t(FREQ_LF, lf_hz),
+            t(C_97A8, lf_hz) * t(GAIN_LF, lf_gain),
             t(C_9378, lf_gain) * 1.08,
         )
     } else {
@@ -597,12 +541,24 @@ pub(crate) fn solid_eq(
         }
     };
     let [g, hz, q] = lmf;
-    let lmf = peak(t(FREQ_LMF, hz), t(GAIN_LMF, g), t(C_71F8, g) * t(Q_LMF, q));
+    let lmf = peak(
+        t(C_8F48, g) * t(FREQ_LMF, hz),
+        t(C_86E8, hz) * t(GAIN_LMF, g) * t(C_8B18, q),
+        t(C_71F8, g) * t(Q_LMF, q),
+    );
     let [g, hz, q] = hmf;
-    let hmf = peak(t(FREQ_HMF, hz), t(GAIN_HMF, g), t(C_71F8, g) * t(Q_HMF, q));
+    let hmf = peak(
+        t(C_7E88, g) * t(FREQ_HMF, hz),
+        t(C_7628, hz) * t(GAIN_HMF, g) * t(C_7A58, q),
+        t(C_71F8, g) * t(Q_HMF, q),
+    );
     let hf = if hf_shape == ir::Shape::Peak {
         let q = t(C_4818, hf_gain) * 1.2 * t(C_5078, hf_hz);
-        peak(t(FREQ_HF, hf_hz), t(GAIN_HF, hf_gain), q)
+        peak(
+            t(C_58D8, hf_gain) * t(FREQ_HF, hf_hz),
+            t(C_54A8, hf_hz) * t(GAIN_HF, hf_gain),
+            q,
+        )
     } else {
         ir::Bell {
             shape: ir::Shape::HighShelf,
@@ -898,8 +854,9 @@ mod tests {
         );
         assert_eq!(lf.shape, ir::Shape::LowShelf);
         assert_eq!(lf.gain_db, -20.0);
-        assert_eq!((lmf.gain_db, lmf.hz), (21.5, 809.0));
-        assert_eq!((hf.shape, hf.hz), (ir::Shape::Peak, 6820.0));
+        // Kontakt's sweep at full LMF boost peaks near 20.1 dB at 809 Hz.
+        assert!((lmf.gain_db - 20.05).abs() < 0.01 && lmf.hz == 809.0);
+        assert_eq!((hf.shape, hf.hz), (ir::Shape::Peak, 6820.0 * 0.9791));
     }
 
     #[test]
