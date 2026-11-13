@@ -422,20 +422,21 @@ impl RackAudio {
                         drop(unit);
                     }
                 }
-                Command::Recall {
-                    part,
-                    generation,
-                    mut saved,
-                } => {
-                    if let Some(Some(p)) = self.parts.get_mut(part)
-                        && p.generation == generation
+                Command::Recall(mut recalling) => {
+                    let slot = self.parts.get_mut(recalling.part);
+                    let ours = |p: &Playing| p.generation == recalling.generation;
+                    if let Some(slot) = slot.filter(|s| s.as_ref().is_some_and(ours))
+                        && let Some(p) = slot.take()
                     {
-                        saved = p.engine.recall(saved);
+                        recalling.engine = Some(p.engine);
+                        for f in p.outgoing.into_iter().flatten() {
+                            self.retire_engine(f.engine);
+                        }
                     }
-                    if let Err(saved) = self.channels.recalled.send(saved) {
+                    if let Err(recalling) = self.channels.recalled.send(recalling) {
                         // Checked for room first; if it ever fails, it frees here.
                         self.dropped += 1;
-                        drop(saved);
+                        drop(recalling);
                     }
                 }
                 Command::File {

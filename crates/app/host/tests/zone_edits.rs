@@ -1,13 +1,10 @@
-//! `set_zone_par` outside the engine's construction: it queues, allocates
-//! nothing on the audio thread and lands through the plan swap.
+//! `set_zone_par` outside the engine's construction: it queues and lands
+//! through the plan swap; a recall's lands at once, as a load's does.
 #![cfg(test)]
 
 use std::sync::Arc;
 
-use kontra_engine::ir::ZonePar;
 use kontra_engine::{Engine, Plan, Saved, ZoneEdit, ZoneFacts};
-use kontra_lua::alloc::Claim;
-use kontra_lua::probe;
 use kontra_stream::{Store, StoreConfig};
 
 /// An engine running `source` over one zone (id 0, group 0) in two groups;
@@ -74,11 +71,11 @@ fn group(e: &Engine) -> u32 {
     e.plan().zone_facts[0].group
 }
 
-/// A recall that keeps the scripts runs `persistence_changed` on the audio
-/// thread: its `set_zone_par` queues and allocates nothing, then lands
-/// through the swap (Codex r4547342735).
+/// A recall that keeps the scripts runs `persistence_changed` as a load
+/// runs it, off the audio thread (KSP manual: loading a snapshot stops the
+/// audio engine): its `set_zone_par` lands at once, nothing queues.
 #[test]
-fn a_recalls_zone_edit_queues_without_allocating_and_lands_through_the_swap() {
+fn a_recalls_zone_edit_lands_at_once() {
     let (mut e, cell, _) = engine(
         "on init
             declare $g
@@ -94,20 +91,9 @@ fn a_recalls_zone_edit_queues_without_allocating_and_lands_through_the_swap() {
         texts: vec![],
     }]
     .into();
-    // The host's allocator counts what an audio scope allocates.
-    let claim = Claim::arena();
-    let _ = probe::take();
-    let scope = claim.audio();
-    let old = e.recall(saved);
-    drop(scope);
-    assert_eq!(probe::take().allocs, 0, "the recall allocated");
-    drop(old);
-    assert_eq!(group(&e), 0, "the plan does not change on the audio thread");
-    let edits = drained(&mut e);
-    assert_eq!(edits.len(), 1);
-    assert_eq!((edits[0].par, edits[0].value), (ZonePar::Group, 1));
-    swap(&mut e, &edits);
+    e.recall(saved);
     assert_eq!(group(&e), 1);
+    assert!(drained(&mut e).is_empty());
 }
 
 /// 0 → 1, then 1 → 0 a block later while the first awaits its swap: both
