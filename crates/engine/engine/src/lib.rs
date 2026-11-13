@@ -40,6 +40,7 @@ mod voice_gain;
 mod voice_groups;
 mod voice_rack;
 mod zone_edits;
+mod zone_index;
 
 use std::sync::Arc;
 
@@ -186,7 +187,7 @@ pub struct Engine {
     /// The host keys held down (bit = key) as of this ledger version.
     keys_down: (u64, u128),
     /// Each zone's key range, packed: a note's start scans these, not the zones.
-    zone_keys: Vec<(u8, u8)>,
+    zone_index: Arc<zone_index::ZoneIndex>,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -362,11 +363,7 @@ impl Engine {
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
-        let zone_keys = plan
-            .zones
-            .iter()
-            .map(|z| (*z.keys.start(), *z.keys.end()))
-            .collect();
+        let zone_index = Arc::new(zone_index::ZoneIndex::new(&plan.zones));
         let release_zones = plan.zones.iter().any(|z| z.trigger == Trigger::Release);
         let mut engine = Self {
             #[cfg(feature = "trace")]
@@ -393,7 +390,7 @@ impl Engine {
             fuel: 0,
             release_zones,
             keys_down: (u64::MAX, 0),
-            zone_keys,
+            zone_index,
             stream,
             voices,
             buses,
