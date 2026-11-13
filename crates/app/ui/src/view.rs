@@ -583,21 +583,17 @@ fn words_el(
     font: Option<&Font>,
     source: model::Source,
 ) -> El {
+    // A UVI size is the font's line height (JUCE's): its words draw at the em that fills it.
+    let lua = matches!(source, model::Source::FalconLua);
+    let em = (font.filter(|_| lua)).map_or(1., kontra_ui_pictures::em_per_height);
     let native_style = style.cloned().map(|mut style| {
         if font.is_some() && style.font == model::Font::Stock(23) {
             style.size = Some(12.);
         }
-        // A UVI size is the font's line height (JUCE's), not its em.
-        if let (model::Source::FalconLua, Some(em), Some(size)) = (
-            source,
-            font.and_then(kontra_ui_pictures::em_per_height),
-            style.size,
-        ) {
-            style.size = Some(size * em as f32);
-        }
+        style.size = style.size.map(|s| s * em as f32);
         style
     });
-    let geometry = plan::text(words, native_style.as_ref(), w, (height, scale), source);
+    let geometry = plan::text(words, native_style.as_ref(), w, (height, scale, em), source);
     let size = geometry.size;
     let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
     let align = geometry.align;
