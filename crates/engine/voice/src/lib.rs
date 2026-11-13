@@ -13,7 +13,8 @@ use kontra_stream::{Mix, StreamClient};
 
 pub use envelope::Ahdsr;
 pub use wavetable::{
-    CYCLE, LEVELS, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP, Table, Warp, shape, warp,
+    CYCLE, Inharmonic, LEVELS, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP, Table, Warp, shape,
+    warp,
 };
 pub use zone::{Loop, Loops, Region};
 

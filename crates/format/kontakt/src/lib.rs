@@ -2,22 +2,20 @@
 //! model (06-FORMATS.md). Sample files are located here and decoded by the
 //! store; everything this cannot carry over is an [`ir::Diagnostic`].
 
+use kontra_kontakt_effects::{
+    choral, delays, dynamics, flair, legacy_reverb, phasis, skreamer, tape,
+};
+
 mod access;
-mod choral;
 mod clocked;
 mod container;
-mod delays;
 mod drive;
-mod dynamics;
 mod effects;
 mod engine_pars;
 mod external;
-mod flair;
 mod impulse;
 mod laws;
-mod legacy_reverb;
 mod links;
-mod phasis;
 mod provenance;
 mod readouts;
 mod replika;
@@ -25,9 +23,7 @@ mod resources;
 mod reverb;
 mod samples;
 mod script_knobs;
-mod skreamer;
 mod snapshot;
-mod tape;
 pub use snapshot::{Preset, preset};
 mod solid_knobs;
 mod timed;

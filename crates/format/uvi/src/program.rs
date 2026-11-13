@@ -93,6 +93,7 @@ pub(crate) fn unfinished<'a, L: Library>(
         lookups: HashMap::new(),
         made: HashMap::new(),
         bus_of: HashMap::new(),
+        fx_of: HashMap::new(),
         entry: HashMap::new(),
         script_dirs: Vec::new(),
         carried: HashSet::new(),
@@ -185,6 +186,8 @@ struct Translator<'a, 'input, L> {
     made: HashMap<roxmltree::NodeId, usize>,
     /// Each layer's and aux's fader bus (routing.rs).
     bus_of: HashMap<roxmltree::NodeId, usize>,
+    /// Each insert's effect slot, for scripts (routing.rs).
+    fx_of: HashMap<roxmltree::NodeId, routing::Fx>,
     /// Each layer's first bus, where its voices play.
     entry: HashMap<roxmltree::NodeId, usize>,
     /// Each script's folder in the bank, relative to the program's.

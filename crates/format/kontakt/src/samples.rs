@@ -120,7 +120,7 @@ impl Resolver {
             if !candidate.starts_with(&self.root) {
                 continue;
             }
-            if let Some((archive, member)) = archive_member(&candidate) {
+            if let Some((archive, member)) = archive_member(&candidate, &self.archives) {
                 // An archive already opened was checked when it was.
                 if (self.archives.contains_key(&archive) || self.inside(&archive))
                     && let Some(found) = self.archive_entry(&archive, &member)?
@@ -274,12 +274,16 @@ fn whole(file: PathBuf) -> Location {
 }
 
 /// `…/x.nkx/member` split into the archive and its member, when x.nkx is a file.
-fn archive_member(path: &Path) -> Option<(PathBuf, String)> {
+/// An archive already opened is a file: no stat to say so again.
+fn archive_member(
+    path: &Path,
+    opened: &HashMap<PathBuf, Option<(File, Archive)>>,
+) -> Option<(PathBuf, String)> {
     path.ancestors().skip(1).find_map(|parent| {
         let is_archive = parent
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"));
-        (is_archive && parent.is_file()).then(|| {
+        (is_archive && (opened.contains_key(parent) || parent.is_file())).then(|| {
             let member = path
                 .strip_prefix(parent)
                 .ok()?

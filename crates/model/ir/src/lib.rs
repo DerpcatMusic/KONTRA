@@ -39,7 +39,7 @@ pub use reverb::{
     ReverbPar,
 };
 pub use route_names::RouteNames;
-pub use wavetable::{FormShaper, Side, TableValue, Warp, WarpShape, Wavetable};
+pub use wavetable::{FormShaper, Inharmonic, Side, TableValue, Warp, WarpShape, Wavetable};
 
 #[derive(Clone, Debug)]
 pub struct Instrument {

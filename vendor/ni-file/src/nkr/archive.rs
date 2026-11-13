@@ -272,11 +272,24 @@ fn directory<R: ReadBytesExt>(
 /// Bytes a stale directory offset can point past its member header.
 const STALE_DIRECTORY_SHIFT: u64 = 0x8000;
 
-/// A member header magic: the three forms `check` accepts.
-fn header_magic_at<R: Read + Seek>(r: &mut R, at: u64) -> Result<bool, Error> {
+/// The (up to) 31 header bytes at `at`, zero-padded; `None` when fewer than 22 remain.
+fn header_at<R: Read + Seek>(r: &mut R, at: u64, length: u64) -> Result<Option<[u8; 31]>, Error> {
+    if at.saturating_add(22) > length {
+        return Ok(None);
+    }
     r.seek(SeekFrom::Start(at))?;
-    let mut magic = [0; 4];
-    Ok(r.read(&mut magic)? == 4 && matches!(u32::from_le_bytes(magic), 0x2ae905fa | 0x4916e63c | 0x16ccf80a))
+    let mut header = [0; 31];
+    let n = (length - at).min(31) as usize;
+    r.read_exact(&mut header[..n])?;
+    Ok(Some(header))
+}
+
+/// A member header magic: the three forms `check` accepts.
+fn has_magic(header: &[u8; 31]) -> bool {
+    matches!(
+        u32::from_le_bytes([header[0], header[1], header[2], header[3]]),
+        0x2ae905fa | 0x4916e63c | 0x16ccf80a
+    )
 }
 
 /// Read and validate a member header: one read of the longest header form.
@@ -285,20 +298,16 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
     // 0x8000 bytes past the member header, which is valid there. Only when the
     // declared position holds no header, so correct entries never move.
     let mut file_offset = e.header_offset;
-    if file_offset >= STALE_DIRECTORY_SHIFT
-        && !header_magic_at(r, file_offset)?
-        && header_magic_at(r, file_offset - STALE_DIRECTORY_SHIFT)?
-    {
-        file_offset -= STALE_DIRECTORY_SHIFT;
+    let mut found = header_at(r, file_offset, length)?;
+    if file_offset >= STALE_DIRECTORY_SHIFT && !found.as_ref().is_some_and(has_magic) {
+        let earlier = file_offset - STALE_DIRECTORY_SHIFT;
+        if let Some(header) = header_at(r, earlier, length)?.filter(has_magic) {
+            file_offset = earlier;
+            found = Some(header);
+        }
     }
     e.checked = true;
-    e.issue = if file_offset + 22 > length {
-        Some("Truncated NKX member header")
-    } else {
-        r.seek(SeekFrom::Start(file_offset))?;
-        let mut header = [0; 31];
-        let n = (length - file_offset).min(31) as usize;
-        r.read_exact(&mut header[..n])?;
+    e.issue = if let Some(header) = found {
         let magic = u32::from_le_bytes(header[..4].try_into().unwrap());
         let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
         let header_size = match magic {
@@ -344,6 +353,8 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
                 None
             }
         }
+    } else {
+        Some("Truncated NKX member header")
     };
     e.valid = e.issue.is_none();
     Ok(())

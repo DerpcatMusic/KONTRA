@@ -37,13 +37,13 @@ static COMBS: ir::CombNetwork = ir::CombNetwork {
 };
 
 /// The record's reverb, `None` when a field is missing.
-pub(crate) fn effect(version: u16, public: &[u8]) -> Option<ir::EffectKind> {
+pub fn effect(version: u16, public: &[u8]) -> Option<ir::EffectKind> {
     let (predelay_ms, knobs) = saved(version, public)?;
     Some(ir::EffectKind::Reverb(reverb(predelay_ms, knobs)))
 }
 
 /// The saved predelay ms and size, colour, stereo, damping knobs.
-pub(crate) fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
+pub fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
     if version != 0x50 {
         return None;
     }
@@ -56,7 +56,7 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
 
 // ponytail: the native lines hold 0x1fff frames, so it drops a predelay past
 // 170 ms at 48 kHz to none; kept as set.
-pub(crate) fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
+pub fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
     let [size, colour, stereo, damping] = knobs.map(|x| x.clamp(0.0, 1.0));
     let feedback = 0.3 * size + 0.65;
     let x = 0.75 * (1.0 - damping) + 0.25;
