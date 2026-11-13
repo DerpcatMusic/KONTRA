@@ -91,6 +91,13 @@ use queue::{EventQueue, Work};
 use script::{Kind, Running};
 
 use kontra_effects::MAX_SPAN;
+
+/// Each voice refreshes its timed modulators every [`MAX_SPAN`] frames, its
+/// phase (`slot % PHASES`) offset by `PHASE` frames, so a block pays for a
+/// quarter of the voices.
+const PHASES: u64 = 4;
+const PHASE: u64 = MAX_SPAN / PHASES;
+
 use kontra_effects::matrix as effects;
 /// Loop turns the resumed script callbacks may run in one block, a
 /// millisecond or less of a heavy script. A run that reaches it yields at its next
@@ -537,13 +544,19 @@ impl Engine {
                 }
                 self.dispatch(due, work);
             }
+            let grid = if self.voices.iter().any(|s| s.voice.is_active()) {
+                PHASE
+            } else {
+                MAX_SPAN
+            };
             let until = self
                 .queue
                 .next_at()
                 .map_or(end, |at| at.min(end))
                 // Spans end on a fixed grid, so timed modulators move at the
-                // same samples whatever the host's block size.
-                .min(SampleTime((self.now.0 / MAX_SPAN + 1) * MAX_SPAN));
+                // same samples whatever the host's block size: every PHASE
+                // frames while a voice sounds, else every MAX_SPAN.
+                .min(SampleTime((self.now.0 / grid + 1) * grid));
             let len = (until.0 - self.now.0) as usize;
             self.render_span(len);
             self.advance_transport(len);

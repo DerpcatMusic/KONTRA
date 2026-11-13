@@ -14,6 +14,16 @@ pub(crate) use kontra_plan::modulation::{
 };
 
 impl Engine {
+    /// Frames until voice `i`'s next timed refresh: its phase's next
+    /// boundary, a whole [`MAX_SPAN`] when it is on one.
+    pub(crate) fn until_refresh(&self, i: usize) -> u64 {
+        let at = (i as u64 % crate::PHASES) * crate::PHASE;
+        match (at + MAX_SPAN - self.now.0 % MAX_SPAN) % MAX_SPAN {
+            0 => MAX_SPAN,
+            d => d,
+        }
+    }
+
     /// A voice's age now, from when it started and when its key went up.
     pub(crate) fn age(&self, started: SampleTime, released: Option<SampleTime>) -> Age {
         let seconds = |t: SampleTime| t.0 as f32 / self.rate as f32;
@@ -30,10 +40,13 @@ impl Engine {
     /// Re-reads envelopes and LFOs for voices whose group has any, gliding
     /// voices' lagging pitch and group pan, and every voice while a script modulation
     /// ramps; once per [`MAX_SPAN`] grid step.
-    pub(crate) fn refresh_timed(&mut self) {
+    pub(crate) fn refresh_timed(&mut self, phase: usize) {
         let plan = self.plan.clone();
         let ramping = self.now.0 < self.ramping_until;
         for i in 0..self.voices.len() {
+            if i % crate::PHASES as usize != phase {
+                continue;
+            }
             let Some(slot) = self.voices.get(i) else {
                 continue;
             };
@@ -60,7 +73,7 @@ impl Engine {
                 trace.routes.begin_mask(i, slot.zone, pending);
             }
             let rate = self.rate;
-            let span = (MAX_SPAN - self.now.0 % MAX_SPAN) as f32 / rate as f32;
+            let span = self.until_refresh(i) as f32 / rate as f32;
             let chaos = self.chaos(zone, slot.chaos, span);
             let age = Age {
                 warp: slot.warp,
