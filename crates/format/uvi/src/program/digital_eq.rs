@@ -55,7 +55,9 @@ pub(super) fn digital_eq(node: Node, notes: &mut Notes) -> Result<Bands, String>
         // ponytail: the analog bandwidth law, within 0.5% of the digital
         // one below 1.3 kHz at 48 kHz; orders above these approximated.
         let q = match (shape, slope as i32) {
-            (ir::Shape::Peak, 0) => 1.0 / ((width / 2.0).exp2() - (-width / 2.0).exp2()),
+            // Orders 1 and 2 (Slope 0, 1): the bell is second order, so the
+            // order-2 peak is the bell itself (V Winds' 12 of 135 peaks).
+            (ir::Shape::Peak, 0 | 1) => 1.0 / ((width / 2.0).exp2() - (-width / 2.0).exp2()),
             (ir::Shape::LowShelf | ir::Shape::HighShelf, 1) => 1.0,
             _ => {
                 notes.add(ir::Impact::Audible, "DigitalEq band order", "");
