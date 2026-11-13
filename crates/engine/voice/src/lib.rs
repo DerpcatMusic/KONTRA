@@ -22,6 +22,15 @@ use envelope::Envelope;
 use fade::Fade;
 pub use fade::{FadeCurve, FadeTarget};
 
+/// How the host renders: live, where a read never waits, or offline (a
+/// bounce), where a read waits for the sample pages it needs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RenderMode {
+    #[default]
+    Live,
+    Offline,
+}
+
 /// Source frames decoded per inner chunk. Bounds per-voice memory, not pitch.
 const SCRATCH: usize = 512;
 /// Highest pitch step (source frames per output frame): +4 octaves at 4× rate.
@@ -139,7 +148,7 @@ pub struct Voice {
     #[cfg(feature = "trace")]
     last_peak: f32,
     /// A host's offline render: a read waits for its pages.
-    offline_wait: bool,
+    mode: RenderMode,
     offline_wait_timeouts: u64,
 }
 
@@ -195,7 +204,7 @@ impl Voice {
             grain: 0,
             #[cfg(feature = "trace")]
             last_peak: 0.0,
-            offline_wait: false,
+            mode: RenderMode::Live,
             offline_wait_timeouts: 0,
         }
     }
@@ -364,9 +373,10 @@ impl Voice {
         self.last_peak
     }
 
-    /// Enable blocking page waits for an offline renderer; never call from a live host.
-    pub fn set_offline_wait(&mut self, enabled: bool) {
-        self.offline_wait = enabled;
+    /// How the host renders: offline, a read waits for its pages; never
+    /// offline in a live host.
+    pub fn set_render_mode(&mut self, mode: RenderMode) {
+        self.mode = mode;
     }
 
     /// How many offline page waits timed out, including previous notes in this slot.
@@ -609,7 +619,7 @@ impl Voice {
         let Some(window) = scratch.window.get_mut(..span.min(SCRATCH)) else {
             return 0;
         };
-        if self.offline_wait {
+        if self.mode == RenderMode::Offline {
             region.runs(lo, window.len(), released, |_, run| {
                 let low = if run.descending {
                     run.first + 1 - run.count as u64

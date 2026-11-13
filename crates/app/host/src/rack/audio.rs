@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use kontra_engine::{Engine, Play, SampleTime, Timed};
+use kontra_engine::{Engine, Play, RenderMode, SampleTime, Timed};
 use kontra_protocol::{Meters, Slowest, Stats};
 
 use super::hold::{Held, Hold};
@@ -74,8 +74,8 @@ pub struct RackAudio {
     /// The part whose capture is served first this block: it turns, so a
     /// busy part never keeps the budget from the others.
     capture_turn: usize,
-    /// The host renders offline: voices wait for their pages.
-    offline: bool,
+    /// Offline, voices wait for their pages.
+    mode: RenderMode,
     /// This block's time in the script callbacks a control or widget move
     /// ran: script work, as a note's callbacks, not the commands' own.
     ui_scripts_ns: u64,
@@ -112,7 +112,7 @@ impl RackAudio {
             span_ns: 0,
             capturing: (0..MAX_PARTS).map(|_| None).collect(),
             capture_turn: 0,
-            offline: false,
+            mode: RenderMode::Live,
             ui_scripts_ns: 0,
         }
     }
@@ -120,13 +120,18 @@ impl RackAudio {
     /// Whether the host renders offline (a bounce, faster or slower than
     /// real time): then a voice waits for the sample pages it reads, deferred
     /// heads among them, instead of playing silence. Never live: it blocks.
-    pub fn set_offline(&mut self, on: bool) {
-        if self.offline == on {
+    /// Fading engines too: one installed during a bounce must not keep
+    /// blocking once the host plays live.
+    pub fn set_render_mode(&mut self, mode: RenderMode) {
+        if self.mode == mode {
             return;
         }
-        self.offline = on;
+        self.mode = mode;
         for p in self.parts.iter_mut().flatten() {
-            p.engine.set_offline_wait(on);
+            p.engine.set_render_mode(mode);
+            for f in p.outgoing.iter_mut().flatten() {
+                f.engine.set_render_mode(mode);
+            }
         }
     }
 
@@ -384,7 +389,7 @@ impl RackAudio {
                             (outgoing, gone) = ([a, b], c);
                         }
                         let mut engine = engine;
-                        engine.set_offline_wait(self.offline);
+                        engine.set_render_mode(self.mode);
                         *slot = Some(Playing {
                             engine,
                             mix,

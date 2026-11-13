@@ -4,7 +4,12 @@
 //! records its moves; the host's automation of a macro then moves that
 //! control, and its script runs its callback as for the player's move.
 //! Assignments save with the plugin's state (`KontraParams::macros`), one
-//! per line: `macro rack-slot min max widget-name`.
+//! per line, tab-separated: macro, rack slot, min, max, menu item values
+//! (comma-separated, empty for none), widget name, instrument path (empty
+//! until the tick learns it). An assignment frees itself when its part is
+//! removed or holds another instrument.
+
+use std::path::Path;
 
 use kontra_ui_model::{Kind, Widget};
 use moose::prelude::*;
@@ -21,12 +26,20 @@ pub struct Macro {
     pub widget: String,
     pub min: f64,
     pub max: f64,
+    /// A menu's item values: the control takes the nearest. Empty for a
+    /// continuous control.
+    pub steps: Vec<f64>,
+    /// The part's instrument when the control was learnt; empty until the
+    /// tick learns it.
+    pub path: String,
 }
 
 impl Macro {
     /// The control's value at host value `normalized` (0..1).
     fn plain(&self, normalized: f64) -> f64 {
-        self.min + normalized.clamp(0.0, 1.0) * (self.max - self.min)
+        let v = self.min + normalized.clamp(0.0, 1.0) * (self.max - self.min);
+        let nearest = |a: &&f64, b: &&f64| (*a - v).abs().total_cmp(&(*b - v).abs());
+        self.steps.iter().min_by(nearest).copied().unwrap_or(v)
     }
 
     /// Host value of the control's `plain` value.
@@ -44,16 +57,23 @@ impl Macro {
 /// edit's, a menu's item values, a switch's or latching button's 0..1.
 #[must_use]
 pub fn range(w: &Widget) -> Option<(f64, f64)> {
+    let (min, max, _) = span(w)?;
+    Some((min, max))
+}
+
+/// [`range`] and a menu's item values.
+fn span(w: &Widget) -> Option<(f64, f64, Vec<f64>)> {
     match &w.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => {
-            Some((range.min, range.max))
+            Some((range.min, range.max, Vec::new()))
         }
         Kind::Menu { items } => {
-            let values = items.iter().map(|i| f64::from(i.value));
-            let (lo, hi) = values.fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-            (lo < hi).then_some((lo, hi))
+            let values: Vec<f64> = items.iter().map(|i| f64::from(i.value)).collect();
+            let (lo, hi) =
+                (values.iter()).fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+            (lo < hi).then_some((lo, hi, values))
         }
-        Kind::Switch | Kind::Button { momentary: false } => Some((0.0, 1.0)),
+        Kind::Switch | Kind::Button { momentary: false } => Some((0.0, 1.0, Vec::new())),
         _ => None,
     }
 }
@@ -63,20 +83,25 @@ pub fn range(w: &Widget) -> Option<(f64, f64)> {
 pub fn read(text: &str) -> [Option<Macro>; COUNT] {
     let mut out: [Option<Macro>; COUNT] = Default::default();
     for line in text.lines() {
-        let mut f = line.splitn(5, ' ');
+        let mut f = line.split('\t');
         let mut num = || f.next().and_then(|s| s.parse::<f64>().ok());
         let (Some(n), Some(part), Some(min), Some(max)) = (num(), num(), num(), num()) else {
             continue;
         };
+        let steps = f.next().unwrap_or_default();
+        let steps = steps.split(',').filter_map(|s| s.parse().ok()).collect();
         let Some(widget) = f.next().filter(|w| !w.is_empty()) else {
             continue;
         };
+        let path = f.next().unwrap_or_default().to_owned();
         if let Some(slot) = out.get_mut(n as usize) {
             *slot = Some(Macro {
                 part: part as usize,
                 widget: widget.to_owned(),
                 min,
                 max,
+                steps,
+                path,
             });
         }
     }
@@ -89,9 +114,15 @@ pub fn write(macros: &[Option<Macro>; COUNT]) -> String {
     let mut out = String::new();
     for (n, m) in macros.iter().enumerate() {
         if let Some(m) = m {
+            let steps: Vec<String> = m.steps.iter().map(f64::to_string).collect();
             out.push_str(&format!(
-                "{n} {} {} {} {}\n",
-                m.part, m.min, m.max, m.widget
+                "{n}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                m.part,
+                m.min,
+                m.max,
+                steps.join(","),
+                m.widget,
+                m.path
             ));
         }
     }
@@ -102,7 +133,7 @@ pub fn write(macros: &[Option<Macro>; COUNT]) -> String {
 /// now if it had none and one is free, and its host value. None for a
 /// control no macro can drive, or when every macro is taken.
 pub fn touch(p: &KontraParams, part: usize, w: &Widget, plain: f64) -> Option<(u32, f64)> {
-    let (min, max) = range(w)?;
+    let (min, max, steps) = span(w)?;
     let mut text = p
         .macros
         .write()
@@ -113,7 +144,16 @@ pub fn touch(p: &KontraParams, part: usize, w: &Widget, plain: f64) -> Option<(u
             .is_some_and(|m| m.part == part && m.widget == w.name)
     };
     let n = match macros.iter().position(mine) {
-        Some(n) => n,
+        Some(n) => {
+            // The control's bounds can change (a script resets a range):
+            // the macro spans them as they are now.
+            let m = macros.get_mut(n)?.as_mut()?;
+            if (m.min, m.max) != (min, max) || m.steps != steps {
+                (m.min, m.max, m.steps) = (min, max, steps);
+                *text = write(&macros);
+            }
+            n
+        }
         None => {
             let n = macros.iter().position(Option::is_none)?;
             let taken = Macro {
@@ -121,6 +161,8 @@ pub fn touch(p: &KontraParams, part: usize, w: &Widget, plain: f64) -> Option<(u
                 widget: w.name.clone(),
                 min,
                 max,
+                steps,
+                path: String::new(),
             };
             *macros.get_mut(n)? = Some(taken);
             *text = write(&macros);
@@ -166,6 +208,38 @@ fn lock_last(p: &KontraParams) -> std::sync::MutexGuard<'_, [f64; COUNT]> {
     crate::lock(&p.shared.macro_values)
 }
 
+/// Frees the macros whose part no longer holds the instrument they were
+/// learnt on (removed or replaced), and records it for the ones learnt
+/// since. `instrument` is a rack part's instrument, None for an empty part;
+/// call only while no load is pending.
+pub fn release(p: &KontraParams, instrument: impl Fn(usize) -> Option<String>) {
+    let mut text = p
+        .macros
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut macros = read(&text);
+    let mut changed = false;
+    for slot in &mut macros {
+        let Some(m) = slot else { continue };
+        match instrument(m.part) {
+            Some(now) if now == m.path => {}
+            Some(now) if m.path.is_empty() => (m.path, changed) = (now, true),
+            _ => (*slot, changed) = (None, true),
+        }
+    }
+    if changed {
+        *text = write(&macros);
+    }
+}
+
+/// A loaded part's instrument as [`release`] keeps it: its path, empty for
+/// one with none.
+#[must_use]
+pub fn instrument(path: Option<&Path>) -> String {
+    path.map(|p| p.to_string_lossy().replace(['\t', '\n'], " "))
+        .unwrap_or_default()
+}
+
 /// The controls the host moved since the last call, as (rack part, widget
 /// name, the control's value): each macro whose host value is not the one
 /// last applied.
@@ -202,9 +276,23 @@ mod tests {
             widget: "$reverb amount".into(),
             min: -3.0,
             max: 1000.0,
+            steps: Vec::new(),
+            path: "/a lib/b.nki".into(),
+        });
+        macros[4] = Some(Macro {
+            part: 0,
+            widget: "mode menu".into(),
+            min: 0.0,
+            max: 10.0,
+            steps: vec![0.0, 1.0, 10.0],
+            path: String::new(),
         });
         assert_eq!(read(&write(&macros)), macros);
         let m = macros[2].as_ref().unwrap();
         assert!((m.plain(m.normalized(500.0)) - 500.0).abs() < 1e-9);
+        // A menu takes its nearest item value.
+        let menu = macros[4].as_ref().unwrap();
+        assert_eq!(menu.plain(0.4), 1.0);
+        assert_eq!(menu.plain(0.6), 10.0);
     }
 }

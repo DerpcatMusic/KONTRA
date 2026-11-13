@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 use std::time::Duration;
 
-use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
+use kontra_host::rack::{Event, Rack, RackAudio, RenderMode, Store, StoreConfig};
 use kontra_host::state::Saved;
 use kontra_host::view::Interfaces;
 use moose::core::LosslessEventRef;
@@ -347,6 +347,12 @@ impl BackgroundTask for Tick {
         rack.show_interfaces(interfaces);
         // The host's automation of a macro moves its control, as the
         // player's move does.
+        if !p.shared.loading() {
+            macros::release(p, |n| {
+                let part = rack.parts().get(n).and_then(Option::as_ref);
+                part.map(|p| macros::instrument(p.path.as_deref()))
+            });
+        }
         for (part, name, value) in macros::moved(p) {
             let tree = rack.parts().get(part).and_then(Option::as_ref);
             let tree = tree.and_then(|p| p.view.as_ref()).map(|v| v.tree());
@@ -465,7 +471,11 @@ impl PluginLogic for Kontra {
         };
         s.latency = p.shared.latency.load(Ordering::Relaxed);
         s.input.clear();
-        audio.set_offline(cx.process_mode.is_offline());
+        audio.set_render_mode(if cx.process_mode.is_offline() {
+            RenderMode::Offline
+        } else {
+            RenderMode::Live
+        });
         // VST3 hosts give the tempo only here; CLAP may also send events.
         audio.set_tempo(cx.transport.tempo as f32);
         let t = cx.transport;

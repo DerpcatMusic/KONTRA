@@ -207,10 +207,11 @@ impl Engine {
         self.trace.iter().flat_map(|t| t.routes.iter())
     }
 
-    /// Enable blocking page waits in every voice for offline rendering only.
-    pub fn set_offline_wait(&mut self, enabled: bool) {
+    /// How the host renders, for every voice: offline, a read waits for
+    /// its pages.
+    pub fn set_render_mode(&mut self, mode: kontra_voice::RenderMode) {
         for slot in &mut self.voices {
-            slot.voice.set_offline_wait(enabled);
+            slot.voice.set_render_mode(mode);
         }
     }
 
