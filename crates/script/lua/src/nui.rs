@@ -95,6 +95,8 @@ pub struct Control {
     pub normalized: bool,
     /// A menu's entries: text and value.
     pub entries: Vec<(String, f64)>,
+    /// A text control's text: what the page's parameter reads as its value.
+    pub text: Option<String>,
 }
 
 /// A loaded page: its state, the count its interrupt stops at, its arena.
@@ -213,6 +215,7 @@ impl Page {
             t.set("max", c.max).map_err(fail)?;
             t.set("default", c.default).map_err(fail)?;
             t.set("normalized", c.normalized).map_err(fail)?;
+            t.set("text", c.text.as_deref()).map_err(fail)?;
             let entries = lua.create_table().map_err(fail)?;
             for (n, (text, value)) in (1..).zip(&c.entries) {
                 let e = lua.create_table().map_err(fail)?;
@@ -549,6 +552,7 @@ mod tests {
             default: 0.,
             normalized: true,
             entries: Vec::new(),
+            text: None,
         };
         page.set_controls(std::slice::from_ref(&pb)).unwrap();
         let tree = page.render(&[("PB".into(), 100.)]).unwrap().unwrap();
@@ -571,5 +575,26 @@ mod tests {
         let modules = vec![("main.nui".to_owned(), "return 1\nreturn @ 3".to_owned())];
         let err = load(&modules, "main").unwrap_err();
         assert_eq!((err.module.as_str(), err.line), ("main.nui", Some(2)));
+    }
+
+    /// A text edit reads as its text, as a macro's name field does.
+    #[test]
+    fn a_text_control_reads_as_its_text() {
+        let mut page = page(&[(
+            "main.nui",
+            r#"local ui = require "native_ui"
+            local kontakt = require "kontakt"
+            return function()
+                return @ui.Text { text = kontakt.connect_parameter("Name"):value() }
+            end"#,
+        )]);
+        let name = Control {
+            name: "Name".into(),
+            text: Some("Cutoff".into()),
+            ..Control::default()
+        };
+        page.set_controls(std::slice::from_ref(&name)).unwrap();
+        let tree = page.render(&[("Name".into(), 0.)]).unwrap().unwrap();
+        assert_eq!(tree.prop("text"), Some(&Prop::Text("Cutoff".into())));
     }
 }

@@ -85,6 +85,7 @@ fn control(face: &Face, d: &Decl<'_>) -> Control {
         default: min,
         normalized: range && max > min,
         entries,
+        text: d.text.map(str::to_owned),
     }
 }
 
