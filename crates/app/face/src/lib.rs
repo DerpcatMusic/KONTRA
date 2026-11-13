@@ -719,6 +719,7 @@ fn page_of(bld: &mut Builder<'_>, page: &Page, view: Option<&View>) {
     let mut background = ui::Background {
         offset_y: page.skin_offset,
         origin_y: HEADER,
+        above: 4, // Kontakt shows a panel from 4 px over y 0 (Pacific, Una Corda shots)
         color: page
             .color
             .or(view.and_then(|v| v.color))

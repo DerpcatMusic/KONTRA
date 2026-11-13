@@ -26,11 +26,8 @@ pub(super) fn view(
     };
     let el = match (tab, &mut p.face) {
         (PartTab::Interface, Some(face)) => {
-            let size = face
-                .tree
-                .pages
-                .first()
-                .map_or((0., 0.), |p| (p.size.width, p.size.height));
+            let size =
+                (face.tree.pages.first()).map_or((0., 0.), |p| (p.size.width, p.shown_height()));
             let scale = fit(
                 FACE_SCALES.get(v.face_scale).copied().unwrap_or(0.),
                 room,
