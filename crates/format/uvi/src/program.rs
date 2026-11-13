@@ -96,6 +96,9 @@ pub(crate) fn unfinished<'a, L: Library>(
         bus_of: HashMap::new(),
         fx_of: HashMap::new(),
         knobs_of: HashMap::new(),
+        knob_sets: Vec::new(),
+        knob_cache: HashMap::new(),
+        script_words: HashSet::new(),
         dry_of: HashMap::new(),
         entry: HashMap::new(),
         script_dirs: Vec::new(),
@@ -111,6 +114,7 @@ pub(crate) fn unfinished<'a, L: Library>(
         },
     };
     t.scripts();
+    t.script_words = quoted_words(&t.out.scripts);
     t.effects();
     t.buses()?;
     for layer in program.descendants().filter(|n| n.has_tag_name("Layer")) {
@@ -119,6 +123,7 @@ pub(crate) fn unfinished<'a, L: Library>(
     t.script_routes();
     // After the layers: they mark the matrix connections they carry.
     t.connections();
+    t.step_smoothing();
     if !t.out.scripts.is_empty() {
         let tree = t.tree();
         for script in &mut t.out.scripts {
@@ -192,7 +197,14 @@ struct Translator<'a, 'input, L> {
     /// Each insert's effect slot, for scripts (routing.rs).
     fx_of: HashMap<roxmltree::NodeId, routing::Fx>,
     /// What each insert's numbers move, for scripts (routing.rs).
-    knobs_of: HashMap<roxmltree::NodeId, Vec<routing::Knob>>,
+    knobs_of: HashMap<roxmltree::NodeId, usize>,
+    /// The distinct answers, which [`Self::knobs_of`] index, and each one's
+    /// insert type and saved attributes.
+    knob_sets: Vec<Vec<routing::Knob>>,
+    knob_cache: HashMap<String, Option<usize>>,
+    /// Every name the program's scripts quote: only those numbers can be
+    /// set by name, so only those are probed (routing.rs).
+    script_words: HashSet<String>,
     /// Each effect rack's dry bus, open while it is bypassed (routing.rs).
     dry_of: HashMap<roxmltree::NodeId, usize>,
     /// Each layer's first bus, where its voices play.
@@ -732,3 +744,28 @@ fn placement<'a, 'input>(kg: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
 
 #[cfg(test)]
 mod tests;
+
+/// The identifier-like words `scripts` quote (`"FreqLowMid"`, `'Volume'`),
+/// in their sources and Lua modules.
+fn quoted_words(scripts: &[ir::Script]) -> HashSet<String> {
+    let mut words = HashSet::new();
+    let texts = scripts.iter().flat_map(|s| {
+        let modules = s.data.iter().filter(|(name, _)| name.ends_with(".lua"));
+        std::iter::once(s.source.as_bytes()).chain(modules.map(|(_, bytes)| bytes.as_slice()))
+    });
+    for text in texts {
+        for &quote in b"\"'" {
+            for piece in text.split(|&c| c == quote).skip(1).step_by(2) {
+                let word = !piece.is_empty()
+                    && piece.len() <= 64
+                    && piece
+                        .iter()
+                        .all(|c| c.is_ascii_alphanumeric() || *c == b'_');
+                if word && let Ok(w) = std::str::from_utf8(piece) {
+                    words.insert(w.to_owned());
+                }
+            }
+        }
+    }
+    words
+}
