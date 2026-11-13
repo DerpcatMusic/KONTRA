@@ -667,6 +667,79 @@ impl Drop for Scratch {
     }
 }
 
+/// UVI's side of the player's own preset (VWinds Clarinet A): saved from
+/// the header, a project reload plays it with the panel values it saved.
+#[test]
+fn a_uvi_preset_saved_in_the_header_reopens_with_its_panel() {
+    use kontra_ui::app::{Action, PresetEdit};
+    const ROOT: &str = "/data/main/Libraries/UVI/VWinds - Clarinets";
+    if !Path::new(ROOT).exists() {
+        eprintln!("skipped: no {ROOT}");
+        return;
+    }
+    let scratch = Scratch::new("uvi-presets");
+    let (params, _dsp) = activate(&Saved::new(Vec::new()).write());
+    params
+        .shared
+        .request(crate::Request::AddRoot(PathBuf::from(ROOT)));
+    let t = std::time::Instant::now();
+    let (library, preset) = loop {
+        Tick.run(&params);
+        let guard = crate::lock(&params.shared.browser);
+        let b = guard.as_ref().unwrap();
+        let found = b.catalog.libraries.iter().enumerate().find_map(|(n, l)| {
+            let p = l
+                .presets
+                .iter()
+                .position(|p| p.ends_with("Clarinet A.uvip"))?;
+            Some((n, p))
+        });
+        if let Some(found) = found.filter(|_| !b.scanning()) {
+            break found;
+        }
+        drop(guard);
+        assert!(
+            t.elapsed().as_secs() < 300,
+            "the scan never found Clarinet A"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    crate::lock(&params.shared.browser)
+        .as_mut()
+        .unwrap()
+        .set_user(scratch.0.clone());
+    let browse = |action| {
+        params.shared.request(crate::Request::Browse(action));
+        Tick.run(&params);
+    };
+    browse(Action::Load {
+        library,
+        preset,
+        into: None,
+    });
+    browse(Action::Preset {
+        part: 0,
+        edit: PresetEdit::Save("Mine".into()),
+    });
+    let playing = |params: &KontraParams| {
+        let rack = crate::lock(&params.shared.rack);
+        let rack = rack.as_ref().unwrap();
+        let p = rack.parts()[0].as_ref().unwrap();
+        (p.path.clone().unwrap(), p.modified, rack.saved_scripts(0))
+    };
+    let (mine, modified, values) = playing(&params);
+    assert!(mine.ends_with("Mine.kontra") && !modified, "{mine:?}");
+    assert!(
+        values.concat().iter().any(|e| e.contains('=')),
+        "no panel values: {values:?}"
+    );
+    params.capture();
+    let state = params.saved.read().unwrap().clone();
+    let (again, _again_dsp) = activate(&state);
+    Tick.run(&again);
+    assert_eq!(playing(&again), (mine, false, values));
+}
+
 /// The player's own preset of the part playing `preset`: saved into the
 /// presets folder, listed under its library and named by the header,
 /// picked back with the values it saved, renamed, then deleted.

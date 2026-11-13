@@ -10,6 +10,7 @@ mod controls;
 mod mapping;
 mod mixer;
 mod part;
+mod pick;
 mod preset;
 pub use preset::{PresetEdit, USER};
 mod rack;
@@ -57,6 +58,8 @@ pub struct App {
     /// view fits what the rack has of it. 0 while unknown.
     pub width: f64,
     pub view: View,
+    /// A file a part's script asks the player to pick, to save or open.
+    pub pick: Option<FilePick>,
     /// The libraries' cover pictures; the host gives a store whose worker
     /// reads [`Library::art`] and replaces it when the list changes.
     pub covers: Option<Pictures>,
@@ -269,6 +272,10 @@ pub struct View {
     pub preset_name: String,
     /// The name still waits to be selected, once its field is on screen.
     pub select_name: bool,
+    /// The name typed in a file pick, and the pick it is for (a new one
+    /// starts empty).
+    pub pick_name: String,
+    pub picking: Option<FilePick>,
     /// The id of the open popup menu.
     pub menu: Option<String>,
     pub mixer_wide: bool,
@@ -332,6 +339,15 @@ pub enum Sheet {
     RenamePreset(usize),
     /// Confirm deleting the user preset a part plays.
     DeletePreset(usize),
+}
+
+/// A file a part's script asks for: to save under a name, or to open one
+/// of `names`, those saved for its instrument.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FilePick {
+    pub part: usize,
+    pub save: bool,
+    pub names: Vec<String>,
 }
 
 /// What the user asked for this frame, for the host to carry out.
@@ -413,6 +429,8 @@ pub enum Action {
     },
     Duplicate(usize),
     Remove(usize),
+    /// The answer to [`App::pick`]: a name, or none (cancelled).
+    Picked(Option<String>),
     Master(f64),
     Note(u8, bool),
     Pitch(f64),
@@ -462,7 +480,9 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         middle.push(vrule());
     }
     let mut main = vec![main(ui, app, &mut out).grow(1).min_w(0).min_h(0)];
-    if let Some(s) = app.view.sheet {
+    if let Some(pick) = app.pick.clone() {
+        main.push(pick::sheet(ui, app, pick, &mut out).centered());
+    } else if let Some(s) = app.view.sheet {
         main.push(settings::sheet(ui, app, s, &mut out).centered());
     }
     middle.push(stack(main).grow(1).min_w(0).min_h(0));
