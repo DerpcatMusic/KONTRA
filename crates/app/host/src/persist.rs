@@ -113,8 +113,7 @@ impl Vars {
     #[must_use]
     pub fn recall(&self, saved: &[String]) -> kontra_engine::Saved {
         let restore = kontra_ksp::restore(saved, |key| {
-            let var = (self.vars.iter())
-                .find(|v| v.name.trim_start_matches(SIGILS).eq_ignore_ascii_case(key))?;
+            let var = (self.vars.iter()).find(|v| kontra_ksp::named(&v.name, key))?;
             let (base, len) = (var.base, var.len);
             Some(match (var.text, var.real) {
                 (true, _) => Cells::Text { base, len },
@@ -130,9 +129,6 @@ impl Vars {
         }
     }
 }
-
-/// The type marks a KSP variable name starts with.
-const SIGILS: [char; 6] = ['$', '%', '~', '?', '@', '!'];
 
 /// Cells for the audio side to read out of one part's engine.
 ///
