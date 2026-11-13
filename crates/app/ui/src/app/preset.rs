@@ -72,6 +72,41 @@ fn taken(presets: &[String], name: &str) -> bool {
     })
 }
 
+/// Each preset path as its name; a name another preset has too is followed
+/// by the nearest folder that tells them apart, without its extension
+/// (`Clarinet A (AClarinet_V2)`): the name first, as a narrow menu cuts the
+/// end.
+pub(super) fn names(presets: &[String]) -> Vec<String> {
+    fn name(p: &str) -> &str {
+        p.rsplit('/').next().unwrap_or(p)
+    }
+    let mut same: std::collections::HashMap<&str, Vec<Vec<&str>>> = Default::default();
+    for p in presets {
+        let folders = p.rsplit('/').skip(1).map(stem).collect();
+        same.entry(name(p)).or_default().push(folders);
+    }
+    presets
+        .iter()
+        .map(|p| {
+            let others = same.get(name(p)).filter(|o| o.len() > 1);
+            let mine: Vec<&str> = p.rsplit('/').skip(1).map(stem).collect();
+            let apart = others
+                .and_then(|o| (0..mine.len()).find(|&d| o.iter().any(|f| f.get(d) != mine.get(d))));
+            match apart.and_then(|d| mine.get(d)) {
+                Some(folder) => format!("{} ({folder})", name(p)),
+                None => name(p).to_owned(),
+            }
+        })
+        .collect()
+}
+
+fn stem(folder: &str) -> &str {
+    std::path::Path::new(folder)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(folder)
+}
+
 /// The sheet `which` asks in: a name to save or rename to, or a delete to
 /// confirm. A name a user preset of the library has already reads Replace.
 pub(super) fn sheet(
@@ -90,11 +125,22 @@ pub(super) fn sheet(
         (app.parts.get(part)).and_then(|p| app.libraries.iter().find(|l| l.name == p.library));
     let taken = library.is_some_and(|l| taken(&l.presets, &app.view.preset_name));
     let mut items = Vec::new();
+    // Enter in the name field does what the button does.
+    let mut submitted = false;
     if matches!(which, Sheet::DeletePreset(_)) {
         let text = format!("Delete \"{}\"? The file is removed.", app.view.preset_name);
         items.push(caption(text).fill(secondary()));
     } else {
-        items.push(kit::field(ui, "preset-name", "Preset name", &mut app.view.preset_name).el);
+        let field = kit::field(ui, "preset-name", "Preset name", &mut app.view.preset_name);
+        submitted = field.changed.submitted;
+        // The field answers a selection once a frame has shown it.
+        let count = app.view.preset_name.chars().count();
+        if app.view.select_name
+            && ui.request_action(SemanticAction::set_selection("preset-name", 0, count))
+        {
+            app.view.select_name = false;
+        }
+        items.push(field.el);
     }
     let verb = if taken && verb == "Save" {
         "Replace"
@@ -103,7 +149,7 @@ pub(super) fn sheet(
     };
     let go = button(ui, "preset-go", verb, false);
     let name = app.view.preset_name.trim().to_owned();
-    if go.changed && (verb == "Delete" || !name.is_empty()) {
+    if (go.changed || submitted) && (verb == "Delete" || !name.is_empty()) {
         let edit = match which {
             Sheet::RenamePreset(_) => PresetEdit::Rename(name),
             Sheet::DeletePreset(_) => PresetEdit::Delete,
@@ -123,5 +169,17 @@ mod tests {
     fn a_name_is_taken_by_its_file_name_in_any_case() {
         let presets = ["User/Soft".to_owned(), "Felt".to_owned()];
         assert!(super::taken(&presets, "soft?") && !super::taken(&presets, "Felt"));
+    }
+
+    #[test]
+    fn a_repeated_name_shows_the_folders_that_tell_it_apart() {
+        let presets = [
+            "a/V1.ufs/P/Clarinet A",
+            "a/V2.ufs/P/Clarinet A",
+            "a/V2.ufs/P/Oboe",
+        ];
+        let presets = presets.map(str::to_owned);
+        let names = ["Clarinet A (V1)", "Clarinet A (V2)", "Oboe"];
+        assert_eq!(super::names(&presets), names);
     }
 }

@@ -95,6 +95,8 @@ pub(crate) fn unfinished<'a, L: Library>(
         made: HashMap::new(),
         bus_of: HashMap::new(),
         fx_of: HashMap::new(),
+        knobs_of: HashMap::new(),
+        dry_of: HashMap::new(),
         entry: HashMap::new(),
         script_dirs: Vec::new(),
         carried: HashSet::new(),
@@ -189,6 +191,10 @@ struct Translator<'a, 'input, L> {
     bus_of: HashMap<roxmltree::NodeId, usize>,
     /// Each insert's effect slot, for scripts (routing.rs).
     fx_of: HashMap<roxmltree::NodeId, routing::Fx>,
+    /// What each insert's numbers move, for scripts (routing.rs).
+    knobs_of: HashMap<roxmltree::NodeId, Vec<routing::Knob>>,
+    /// Each effect rack's dry bus, open while it is bypassed (routing.rs).
+    dry_of: HashMap<roxmltree::NodeId, usize>,
     /// Each layer's first bus, where its voices play.
     entry: HashMap<roxmltree::NodeId, usize>,
     /// Each script's folder in the bank, relative to the program's.

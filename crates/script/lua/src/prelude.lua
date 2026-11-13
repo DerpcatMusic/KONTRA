@@ -473,8 +473,9 @@ end
 function Element.hasParameter(self, name)
 	return self.params[name] ~= nil
 end
--- An insert's `Bypass`, and a Gain insert's `Volume`, reach the effect the engine plays for it (`fx`:
--- where, group or bus, slot).
+-- An insert's `Bypass`, a Gain insert's `Volume` and the numbers its format
+-- mapped (`knobs`) reach the effect the engine plays for it (`fx`: where,
+-- group or bus, slot).
 function Element.setParameter(self, name, value)
 	self.params[name] = value
 	local fx = fields_of(self).fx
@@ -485,6 +486,25 @@ function Element.setParameter(self, name, value)
 		host_call("EffectBypass", fx[1], fx[2], fx[3], on and 1 or 0)
 	elseif name == "Volume" and type(value) == "number" then
 		host_call("EffectGain", fx[1], fx[2], fx[3], math.floor(value * 1e6 + 0.5))
+	end
+	-- Any other number the format mapped: `{control, x1, y1, ...}`, the
+	-- control's value by the number, straight between points.
+	local knob = (fields_of(self).knobs or EMPTY)[name]
+	local x = tonumber(value)
+	if knob and x and #knob >= 3 then
+		local y = knob[3]
+		if x >= knob[#knob - 1] then
+			y = knob[#knob]
+		else
+			for i = 4, #knob - 1, 2 do
+				if x < knob[i] then
+					local x0, y0, x1, y1 = knob[i - 2], knob[i - 1], knob[i], knob[i + 1]
+					y = x <= x0 and y0 or y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+					break
+				end
+			end
+		end
+		host_call("EffectField", fx[1], fx[2], fx[3], knob[1], math.floor(y * 1000 + 0.5))
 	end
 end
 
@@ -577,10 +597,12 @@ function element(node)
 		params = params,
 		group = node.group or false,
 		bus = node.bus or false,
+		dry = node.dry or false,
 		name = params.Name,
 		displayName = params.DisplayName,
 		mod = node.mod,
 		fx = node.fx,
+		knobs = node.knobs,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)
@@ -643,6 +665,10 @@ local function push_bus(e)
 	local off = e.params.Bypass or e.params.Mute
 	local db = off and -200 or decibels(e.params.Gain or 1)
 	host_call("BusVolume", e.bus, math.floor(db * 1000))
+	-- An effect rack's dry bus passes its input while it is bypassed.
+	if e.dry then
+		host_call("BusVolume", e.dry, off and 0 or -200000)
+	end
 end
 
 -- A keygroup's group level and pan, under its layer's mute and pan.
@@ -1136,11 +1162,16 @@ local function bank_path(path)
 	return table.concat(parts, "/")
 end
 
+-- Script presets saved this session (saveState/saveData), by bank path.
+-- ponytail: kept in the script, not on disk, so they last until the part
+-- reloads; write them through the host's file queue when that matters.
+local stored = {}
+
 -- loadData(path, done): the JSON file's table. The program carries the
 -- bank's data files (the format reader), so this reads no disk; a file it
 -- does not carry calls nothing, as a failed load does.
 function loadData(path, done)
-	local file = __file(bank_path(path))
+	local file = stored[bank_path(path)] or __file(bank_path(path))
 	if file and file.data ~= nil and type(done) == "function" then
 		done(file.data)
 	end
@@ -1181,8 +1212,49 @@ local function land(file, done, pace)
 	end
 end
 
+
+-- A widget's value as a saved file holds it (what `land` reads back).
+local function saved_text(w)
+	if w.kind == "Table" then
+		return table.concat(w.values or {}, " ")
+	elseif type(w.value) == "boolean" then
+		return w.value and "1" or "0"
+	end
+	return w.value
+end
+
+function saveState(path, done)
+	local values = {}
+	for _, w in ipairs(__ui.widgets) do
+		if w.name and w.persistent ~= false then
+			values[w.name] = saved_text(w)
+		end
+	end
+	stored[bank_path(path)] = { values = values, state = onSave and onSave() }
+	if type(done) == "function" then
+		done({ success = true })
+	end
+end
+
+function saveData(data, path, done)
+	stored[bank_path(path)] = { data = data }
+	if type(done) == "function" then
+		done({ success = true })
+	end
+end
+
+-- browseForFile(mode, title, initial, filter, done): no dialog. Each file
+-- type has one slot, named after it; an open of a slot nothing saved is a
+-- cancelled dialog, which calls nothing.
+function browseForFile(mode, _title, _initial, filter, done)
+	local path = "KONTRA" .. (tostring(filter or ""):match("%*(%.[%w_]+)") or "")
+	if type(done) == "function" and (mode == "save" or stored[bank_path(path)]) then
+		done({ result = path, success = true })
+	end
+end
+
 function loadState(path, done)
-	local file = __file(bank_path(path))
+	local file = stored[bank_path(path)] or __file(bank_path(path))
 	if not (file and file.values) then
 		return
 	end
@@ -1201,12 +1273,8 @@ function loadState(path, done)
 	end)
 end
 
--- ponytail: saving needs a file the user picked, and browseForFile has no
--- dialog yet: it never calls back, as a cancelled dialog does, so the save
--- calls after it are never reached. saveData/saveState write nothing.
 for _, name in ipairs({
-	"saveData", "saveState",
-	"setKeyColour", "setSampleOffset", "browseForFile", "setKeyType", "setKeyPressed",
+	"setKeyColour", "setSampleOffset", "setKeyType", "setKeyPressed",
 }) do
 	_G[name] = function() end
 end

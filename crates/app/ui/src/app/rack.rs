@@ -284,10 +284,8 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
             .min_w(0),
         false => name,
     };
-    let names: Vec<&str> = presets
-        .iter()
-        .map(|s| s.rsplit('/').next().unwrap_or(s))
-        .collect();
+    let names = super::preset::names(&presets);
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let current = p.preset.filter(|&n| n < names.len());
     // v2's preset field beside the name: what plays, or what to pick; a
     // star once the player changed it, as UVI marks an edited preset.
@@ -389,7 +387,15 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         })
         .shrink(0)
         .tip(if playing { "Playing" } else { "Silent" });
-    let more = icon_button(ui, id("more"), Icon::More, "More", false);
+    // Its tip would float over its own open menu.
+    let open = menu.as_deref() == Some(id("more").as_str());
+    let more = icon_button(
+        ui,
+        id("more"),
+        Icon::More,
+        if open { "" } else { "More" },
+        false,
+    );
     let close = icon_button(ui, id("remove"), Icon::Close, "Remove", false);
     if close.changed {
         out.push(Action::Remove(n));
@@ -437,6 +443,9 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     }
     if let Some((pick, name)) = edit {
         super::preset::picked(app, n, &name, pick, out);
+        // A sheet that asks a name opens with it selected, to type over.
+        ui.focus("preset-name");
+        app.view.select_name = true;
     }
     row(items)
         .gap(TIGHT)

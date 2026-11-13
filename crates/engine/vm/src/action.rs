@@ -165,6 +165,10 @@ actions! {
     /// A gain effect's level: `(where, index, slot, millionths)`, placed as
     /// for [`Action::EffectBypass`].
     EffectGain,
+    /// An effect control's value: `(where, index, slot, control, thousandths)`,
+    /// placed as for [`Action::EffectBypass`]; the control is an
+    /// `ir::EffectParam` code.
+    EffectField,
     // Time.
     WaitTicks,
     WaitAsync,
