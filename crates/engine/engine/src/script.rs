@@ -742,6 +742,30 @@ impl HostApi for Engine {
                 };
                 HostValue::Int(self.request_file(request))
             }
+            // A file the player picks: a request with no path and no array,
+            // the editor's answer read back by `PickedFile`.
+            Action::PickFile => {
+                let ext = call.texts.first().copied().unwrap_or(Text::EMPTY);
+                let request = kontra_plan::files::FileRequest {
+                    slot: self.running.slot,
+                    id: 0,
+                    base: 0,
+                    len: 0,
+                    kind: kontra_plan::files::ArrayKind::Text,
+                    path: Text::EMPTY,
+                    name: ext,
+                    save: int(0) == 1,
+                };
+                HostValue::Int(self.request_file(request))
+            }
+            Action::PickedFile => match self.take_picked(self.running.slot, int(0)) {
+                Some(Some(name)) => {
+                    *call.text_out = name;
+                    HostValue::Text
+                }
+                Some(None) => HostValue::Int(0),
+                None => HostValue::Nothing,
+            },
             Action::SetSnapshotType => {
                 self.recall = kontra_plan::Recall::of_type(i64::from(int(0)));
                 HostValue::Nothing

@@ -234,6 +234,9 @@ pub struct Engine {
     reloaded: Vec<(u8, std::ops::Range<u32>, bool)>,
     /// Array files scripts asked to load or save, for the control side.
     files: Vec<kontra_plan::files::FileRequest>,
+    /// The editor's answers to picks (`PickFile`): slot, async id, and the
+    /// file name, none when cancelled; until the script reads them.
+    picked: Vec<(u8, i32, Option<kontra_vm::Text>)>,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
     /// The engine-parameter addresses behind those calls (par, group, slot,
@@ -419,6 +422,7 @@ impl Engine {
             building: true,
             reloaded: Vec::new(),
             files: Vec::with_capacity(script_files::FILES),
+            picked: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             unanswered_pars: vec![([0; 4], 0); 64].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
