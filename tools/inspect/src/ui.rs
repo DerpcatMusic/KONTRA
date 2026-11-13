@@ -109,6 +109,33 @@ fn cell_diff(before: &[Cells], after: &[Cells]) -> Vec<Json> {
     changes
 }
 
+/// The script actions in `engine`'s trace, each as its name and arguments.
+fn note_actions(engine: &Engine, plan: &Plan, zones: &[Option<String>]) -> Vec<(String, Json)> {
+    (engine.trace_events().iter())
+        .map(|e| super::trace_output::event(e, plan, zones, RATE))
+        .filter(|e| e["type"] == "script_action")
+        .map(|e| (e["action"].to_string(), e["args"].clone()))
+        .collect()
+}
+
+/// The actions of note `next` that differ from note `base` where notes
+/// `first` and `base` agree, by index; all of them when the sequences
+/// differ in length or names (a branch taken) and the noise agrees.
+fn note_diff(first: &[(String, Json)], base: &[(String, Json)], next: &[(String, Json)]) -> Json {
+    let names = |a: &[(String, Json)]| a.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+    if names(first) != names(base) {
+        return json!("noisy");
+    }
+    if names(base) != names(next) {
+        return json!({"before":names(base),"after":names(next)});
+    }
+    let changed: Vec<_> = (base.iter().zip(next).zip(first).enumerate())
+        .filter(|(_, ((b, n), f))| b.1 != n.1 && f.1 == b.1)
+        .map(|(i, ((b, n), _))| json!({"at":i,"action":b.0,"before":b.1,"after":n.1}))
+        .collect();
+    json!(changed)
+}
+
 /// Each group's sound, and whether a script purged it (it plays silent).
 fn sound(engine: &Engine) -> Vec<String> {
     let purged: HashSet<usize> = engine.purged().collect();
@@ -270,7 +297,6 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     moves.push(json!({"value":value,"error":"control has no source id"}));
                     continue;
                 };
-                let at = engine.now();
                 let off = Event::NoteOff(HostPattern {
                     port: 0,
                     channel: 0,
@@ -278,14 +304,23 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     id: -1,
                     clap: true,
                 });
-                let (prior_rms, ready) = render(
-                    &mut engine,
-                    &plan,
-                    &stream,
-                    &[Timed { at, body: off }, Timed { at, body: note }],
-                    |_| {},
-                );
-                settled &= ready;
+                // A fresh note's script actions, twice: what differs between
+                // the two (note ids, humanizing) is the note's own noise.
+                let fresh = |engine: &mut Engine| {
+                    let at = engine.now();
+                    let mut acts = Vec::new();
+                    let (rms, ready) = render(
+                        engine,
+                        &plan,
+                        &stream,
+                        &[Timed { at, body: off }, Timed { at, body: note }],
+                        |engine| acts.extend(note_actions(engine, &plan, &zone_samples)),
+                    );
+                    (rms, acts, ready)
+                };
+                let (_, first, ready_first) = fresh(&mut engine);
+                let (prior_rms, base, ready) = fresh(&mut engine);
+                settled &= ready_first && ready;
                 engine.clear_trace();
                 let panel = |engine: &Engine| -> Vec<String> {
                     (tree(&loaded, engine, slot).ok().flatten())
@@ -407,7 +442,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 if engine.stats().missing_frames > before_missing {
                     errors.push("sample frames missing");
                 }
-                moves.push(json!({"value":value,"errors":errors,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
+                // And one after the move: a difference the noise does not
+                // explain is the move reaching the next note.
+                let (_, next, ready_next) = fresh(&mut engine);
+                settled &= ready_next;
+                let note_changed = note_diff(&first, &base, &next);
+                moves.push(json!({"value":value,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));
