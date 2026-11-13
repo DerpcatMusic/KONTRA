@@ -77,7 +77,9 @@ fn taken(presets: &[String], name: &str) -> bool {
 /// (`Clarinet A (AClarinet_V2)`): the name first, as a narrow menu cuts the
 /// end.
 pub(super) fn names(presets: &[String]) -> Vec<String> {
-    let name = |p: &str| p.rsplit('/').next().unwrap_or(p);
+    fn name(p: &str) -> &str {
+        p.rsplit('/').next().unwrap_or(p)
+    }
     let mut same: std::collections::HashMap<&str, Vec<Vec<&str>>> = Default::default();
     for p in presets {
         let folders = p.rsplit('/').skip(1).map(stem).collect();
