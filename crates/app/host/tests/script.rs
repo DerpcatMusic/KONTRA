@@ -2656,6 +2656,7 @@ fn a_script_loads_a_library_response_into_a_convolution() {
             cuts: None,
             envelope: None,
             mix: None,
+            size: [1.0, 1.0],
         },
     )];
     plan.responses = vec![(
@@ -2760,6 +2761,7 @@ fn a_scripts_convolution_predelay_prepares_its_response_again() {
         cuts: None,
         envelope: None,
         mix: None,
+        size: [1.0, 1.0],
     };
     plan.impulse_laws = vec![("half".into(), law)];
     plan.responses = vec![(

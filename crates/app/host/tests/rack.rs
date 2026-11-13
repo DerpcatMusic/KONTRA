@@ -511,6 +511,7 @@ fn loading_response(wav: &[u8], name: &str) -> (Rack, RackAudio) {
         cuts: None,
         envelope: None,
         mix: None,
+        size: [1.0, 1.0],
     };
     plan.impulse_laws = vec![("room".into(), law)];
     let sample = ir::Sample {

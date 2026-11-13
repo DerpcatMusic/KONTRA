@@ -651,6 +651,7 @@ impl<L: Library> Translator<'_, '_, L> {
             cuts: None,
             envelope: (time < 1.0 || flag(node, "UseWindowAtOriginalSize")).then(|| fade(time)),
             mix: (width != 0.0 && stereo).then(|| widen(width)),
+            size: [1.0, 1.0],
         });
         Ok(u16::try_from(self.out.impulses.len() - 1).ok())
     }
