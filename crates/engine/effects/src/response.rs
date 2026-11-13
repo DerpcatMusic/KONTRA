@@ -15,12 +15,29 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
         left.reverse();
         right.reverse();
     }
+    // Where the early part ends, as a fraction, once stretched.
+    let mut boundary = None;
+    if impulse.size != [1.0, 1.0] {
+        let at = impulse
+            .cuts
+            .and_then(|c| c.crossover)
+            .unwrap_or_else(|| kontra_dsp::reverb::shape::split([&left, &right], from));
+        let at = ((left.len() as f32 * at.clamp(0.0, 1.0)) as usize).min(left.len());
+        let [early, late] = impulse.size;
+        for c in [&mut left, &mut right] {
+            let (a, b) = c.split_at(at.min(c.len()));
+            let mut out = kontra_dsp::reverb::shape::stretch(a, early);
+            out.extend(kontra_dsp::reverb::shape::stretch(b, late));
+            *c = out;
+        }
+        boundary = Some(stretched_at(at, left.len(), early));
+    }
     if let Some(c) = impulse.cuts {
         let c = kontra_dsp::reverb::shape::Cuts {
             early: c.early,
             late: c.late,
             // None: where the response's decay turns diffuse.
-            crossover: c.crossover.or_else(|| {
+            crossover: boundary.or(c.crossover).or_else(|| {
                 (c.early != c.late).then(|| kontra_dsp::reverb::shape::split([&left, &right], from))
             }),
         };
@@ -42,6 +59,12 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
         c.splice(0..0, std::iter::repeat_n(0.0, delay));
     }
     Ok(resample(left, right, from, rate, impulse.normalize))
+}
+
+/// The early part's share of the stretched response: `at` frames of the
+/// original, stretched by `early`, over the new length `len`.
+fn stretched_at(at: usize, len: usize, early: f32) -> f32 {
+    (at as f32 * early / len.max(1) as f32).clamp(0.0, 1.0)
 }
 
 /// A prepared impulse response.

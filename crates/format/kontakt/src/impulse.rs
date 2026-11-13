@@ -91,13 +91,6 @@ impl<'a> Impulses<'a> {
         };
         // The size setter 0x1419b6750 keeps only sizes in 0.5..=1.5.
         let size = |n: usize| float(n).filter(|s| (0.5..=1.5).contains(s)).unwrap_or(1.0);
-        // ponytail: Kontakt stretches by the size with zplane's Élastique
-        // (0x1419b3450, offline into the response); not copied (one corpus
-        // instrument, 2026-10-28).
-        if size(3) != 1.0 || size(6) != 1.0 {
-            let what = format!("{at}: early {} late {}", size(3), size(6));
-            notes.add(ir::Impact::Audible, "impulse response size", what);
-        }
         // S.Rate runs the wet path at rate/d between a resampler pair
         // (0x140ab5e00, 0x140a84580). Auto (d < 0) with Preserve Length keeps
         // the response's length and picks the largest d of 1, 1.5 .. 8 that
@@ -166,6 +159,9 @@ impl<'a> Impulses<'a> {
             cuts,
             envelope,
             mix: None,
+            // Kontakt stretches with zplane's Élastique (0x1419b3450,
+            // offline into the response); ours overlap-adds grains.
+            size: [size(3), size(6)],
         });
         u16::try_from(self.out.len() - 1).ok()
     }
@@ -244,11 +240,10 @@ impl<'a> Impulses<'a> {
 /// .5, .75 → 634, 3591 Hz, fitted as the second-order Butterworths the
 /// response is shaped with).
 ///
-/// ponytail: the length ratios (ER and LR size: Kontakt stretches the
-/// response offline) and Auto Gain, Reverse and the ER/LR boundary (no
+/// ponytail: Auto Gain, Reverse and the ER/LR boundary (no
 /// corpus script writes them) are not carried.
-pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
-    use ir::ImpulseKnob::{Cut, PredelayMs};
+pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
+    use ir::ImpulseKnob::{Cut, PredelayMs, Size};
     use ir::KnobTarget::Impulse;
     let predelay: Vec<f32> = (0..=32)
         .map(|i| kontra_law::kontakt::CONVOLUTION_PREDELAY.eval(i as f32 / 32.0))
@@ -258,6 +253,7 @@ pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
         hi: 20_000.0,
     };
     let cut = |late, high| Impulse(Cut { late, high });
+    let size = || ir::Law::Linear { lo: 0.5, hi: 1.5 };
     [
         (
             "$ENGINE_PAR_IRC_PREDELAY",
@@ -268,5 +264,16 @@ pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
         ("$ENGINE_PAR_IRC_FREQ_LOWPASS_ER", cut(false, true), hz()),
         ("$ENGINE_PAR_IRC_FREQ_HIGHPASS_LR", cut(true, false), hz()),
         ("$ENGINE_PAR_IRC_FREQ_LOWPASS_LR", cut(true, true), hz()),
+        // The size knob's 0.5..1.5, taken as linear (good enough: unmeasured).
+        (
+            "$ENGINE_PAR_IRC_LENGTH_RATIO_ER",
+            Impulse(Size { late: false }),
+            size(),
+        ),
+        (
+            "$ENGINE_PAR_IRC_LENGTH_RATIO_LR",
+            Impulse(Size { late: true }),
+            size(),
+        ),
     ]
 }
