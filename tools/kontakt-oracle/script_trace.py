@@ -4,9 +4,12 @@
     oracle-slot python3 tools/kontakt-oracle/script_trace.py LIB.nki OUT_DIR KEY [KS,KS,...]
 
 Loads LIB.nki, puts a tracer KSP in the last free script slot and plays a phrase over MIDI:
-legato line, a repeated note (round robin), a pedalled pair, soft and loud notes, then each
-keyswitch followed by KEY. Every note event that reaches the tracer (MIDI or script-made) logs
-time ms, key, velocity, source slot, zone, group and sample name to OUT_DIR/trace.nka.
+legato line, a repeated note (round robin), a pedalled pair, soft and loud notes, each
+keyswitch followed by KEY, then a mod-wheel sweep over a held KEY. Every note event that
+reaches the tracer (MIDI or script-made) logs time ms, key, velocity, source slot, zone,
+group and sample name to OUT_DIR/trace.nka. A zone of -1 is retried after 10 and 50 ms;
+an event with no voice may still report an earlier event's zone (Kontakt 8). The key
+colours and names go to OUT_DIR/keys.nka.
 OUT_DIR/phrase.json is the same phrase for `kontra-inspect play --scenario`.
 """
 import importlib.util
@@ -49,6 +52,12 @@ def phrase(k: int, switches: list[int]) -> list[tuple]:
         note(at, s, 100)
         note(at + 200, k, 500)
         at += 1000
+    # Mod-wheel sweep over a held note, then a note at full wheel.
+    note(at, k, 2600)
+    for i in range(9):
+        ev.append((at + 200 + 250 * i, "cc", 1, min(127, 16 * i)))
+    note(at + 3000, k + 2, 400)
+    ev.append((at + 3600, "cc", 1, 90))
     return sorted(ev, key=lambda e: (e[0], e[1] != "off"))
 
 
@@ -73,8 +82,9 @@ def midi(ev, channel: int) -> bytes:
 TRACER = """on init
   declare !log[2000]
   declare $n := 0
-  declare $z
-  declare $id
+  declare polyphonic $z
+  declare polyphonic $id
+  declare polyphonic $t
   declare !keys[128]
   declare $k
   pgs_create_key(KTRACE, 1)
@@ -87,10 +97,19 @@ TRACER = """on init
 end on
 on note
   $id := $EVENT_ID
+  $t := $ENGINE_UPTIME
   wait(1)
   $z := get_event_par($id, $EVENT_PAR_ZONE_ID)
+  if ($z = -1)
+    wait(10000)
+    $z := get_event_par($id, $EVENT_PAR_ZONE_ID)
+  end if
+  if ($z = -1)
+    wait(50000)
+    $z := get_event_par($id, $EVENT_PAR_ZONE_ID)
+  end if
   if ($n < 2000)
-    !log[$n] := $ENGINE_UPTIME & "," & $EVENT_NOTE & "," & $EVENT_VELOCITY & "," ...
+    !log[$n] := $t & "," & $EVENT_NOTE & "," & $EVENT_VELOCITY & "," ...
       & get_event_par($id, $EVENT_PAR_SOURCE) & "," & $z & "," ...
       & group_name(get_zone_par($z, $ZONE_PAR_GROUP)) & "," & get_sample($z, $NI_FILE_NAME)
     inc($n)
@@ -128,6 +147,10 @@ kt.reset_multi()
 local i = kt.load_instrument({dump.lua_str(dump.winpath(nki))})
 log('{{"loaded":' .. tostring(i) .. '}}')
 pcall(kt.set_instrument_midi_channel, i, {channel + 1})
+-- A library may route to an output the standalone does not have: record, then use the first.
+local okc, out_ch = pcall(kt.get_instrument_output_channel, i)
+log('{{"output_channel":' .. tostring(out_ch) .. '}}')
+pcall(kt.set_instrument_output_channel, i, 0)
 local free = -1
 for s = 4, 0, -1 do
   local ok, name = pcall(kt.get_instrument_script_name, i, s)
