@@ -287,6 +287,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 );
                 settled &= ready;
                 engine.clear_trace();
+                let panel = |engine: &Engine| -> Vec<String> {
+                    (tree(&loaded, engine, slot).ok().flatten())
+                        .map(|t| t.widgets.iter().map(|w| format!("{w:?}")).collect())
+                        .unwrap_or_default()
+                };
+                let before_panel = panel(&engine);
                 let before = cells(&engine, &plan);
                 let before_sound = sound(&engine);
                 let (before_groups, before_buses) = engine.inspect_levels();
@@ -347,6 +353,13 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     ));
                 }
                 let after = cells(&engine, &plan);
+                let after_panel = panel(&engine);
+                // Other widgets whose state the move changed (shown, value,
+                // text): a panel switch or a linked control.
+                let panel_changed: Vec<_> = (before_panel.iter().zip(&after_panel).enumerate())
+                    .filter(|(i, (a, b))| *i != widget_index && a != b)
+                    .map(|(i, _)| i)
+                    .collect();
                 let after_sound = sound(&engine);
                 let (after_groups, after_buses) = engine.inspect_levels();
                 let after_effects: Vec<_> = engine
@@ -394,7 +407,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 if engine.stats().missing_frames > before_missing {
                     errors.push("sample frames missing");
                 }
-                moves.push(json!({"value":value,"errors":errors,"script_cells_changed":cell_diff(&before,&after), "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
+                moves.push(json!({"value":value,"errors":errors,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));
