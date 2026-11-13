@@ -85,6 +85,10 @@ fn run_events(
         .iter()
         .map(|g| g.zones.iter().map(|z| z.sample).collect())
         .collect();
+    // KSP sources by slot, to name the array a runtime fault hit.
+    let sources: Vec<Option<String>> = (ir.scripts.iter())
+        .map(|s| (s.dialect == kontra_engine::ir::Dialect::Ksp).then(|| s.source.clone()))
+        .collect();
     let mut store = Store::new(StoreConfig::DEFAULT).context("creating sample store")?;
     let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
     // Each script slot's symbol names in id order, as the engine compiled
@@ -324,6 +328,7 @@ fn run_events(
         }
     }
     let fingerprint = format!("{fingerprint:016x}");
+    let script_faults = faults(&engine.script_faults(), &sources);
     let loudest_remaining = engine
         .inspect_voices()
         .map(|v| v.last_peak)
@@ -456,7 +461,7 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "unhandled_actions":engine.unhandled_actions().iter().map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "unanswered_pars":engine.unanswered_pars().iter().take(40).map(|(p, n)| json!([p, n])).collect::<Vec<_>>(), "action_calls":engine.action_calls().iter().take(12).map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "script_faults":script_faults, "unhandled_actions":engine.unhandled_actions().iter().map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "unanswered_pars":engine.unanswered_pars().iter().take(40).map(|(p, n)| json!([p, n])).collect::<Vec<_>>(), "action_calls":engine.action_calls().iter().take(12).map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
 }
@@ -515,4 +520,42 @@ fn thread_faults() -> (i64, i64) {
     // SAFETY: `r` is a valid rusage the call fills in.
     unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut r) };
     (r.ru_minflt, r.ru_majflt)
+}
+
+/// Each script's runtime faults; the first out-of-range array by name.
+fn faults(all: &[kontra_engine::Faults], sources: &[Option<String>]) -> Vec<Value> {
+    let array = |slot: usize, base: u32, text: bool| -> Option<String> {
+        let source = sources.get(slot)?.as_ref()?;
+        let script = kontra_ksp::compile(source, &[]).ok()?;
+        script.variables.iter().find_map(|v| {
+            let (b, len, t) = match v.cells {
+                kontra_ksp::Cells::Int { base, len } | kontra_ksp::Cells::Real { base, len } => {
+                    (base, len, false)
+                }
+                kontra_ksp::Cells::Text { base, len } => (base, len, true),
+                _ => return None,
+            };
+            (t == text && (b..b + len.max(1)).contains(&base)).then(|| format!("{}[{len}]", v.name))
+        })
+    };
+    (all.iter().enumerate())
+        .filter(|(_, f)| {
+            f.divide_by_zero
+                + f.out_of_range
+                + f.stack_overflow
+                + f.loop_limits
+                + f.no_coroutine
+                + f.bad_code
+                > 0
+        })
+        .map(|(slot, f)| {
+            let first = f.first_out_of_range.map(
+                |(base, text, index)| json!({"array": array(slot, base, text), "index": index}),
+            );
+            json!({"slot": slot, "out_of_range": f.out_of_range, "first_out_of_range": first,
+                "divide_by_zero": f.divide_by_zero, "first_divide_by_zero": f.first_divide_by_zero,
+                "stack_overflow": f.stack_overflow, "loop_limits": f.loop_limits,
+                "no_coroutine": f.no_coroutine, "bad_code": f.bad_code, "texts_cut": f.texts_cut})
+        })
+        .collect()
 }
