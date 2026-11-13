@@ -67,6 +67,7 @@ pub(crate) fn execute(
         ($exit:expr) => {{
             let exit: u32 = $exit;
             c.loop_count += 1;
+            c.turns = c.turns.wrapping_add(1);
             let mut stuck = false;
             // The hash reads every cell: probe once the loops turned as
             // often as there are cells, so it never costs more than they did.

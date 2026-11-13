@@ -40,6 +40,7 @@ impl Engine {
         let mark = self.forward.len();
         if let Some(mut vm) = self.take_vm(slot) {
             if let Some(co) = start(&mut vm, running.context()) {
+                self.stats.script_starts += 1;
                 #[cfg(feature = "trace")]
                 if let Some(trace) = &mut self.trace {
                     trace.push(crate::TraceEvent::Callback {
@@ -180,6 +181,7 @@ impl Engine {
                 // A stopped wait: its callback already went on.
                 return self.put_vm(slot, vm);
             }
+            self.stats.script_resumes += 1;
             self.running = Running {
                 slot,
                 ..Running::resumed(vm.context(co).unwrap_or(0))
@@ -250,6 +252,7 @@ impl Engine {
             return;
         };
         let step = vm.run(&script.program, co, self);
+        self.stats.script_turns += u64::from(vm.last_turns());
         self.refresh_moved_routes();
         if let Step::Wait(micros) = step {
             self.wake(slot, vm, co, micros, now);

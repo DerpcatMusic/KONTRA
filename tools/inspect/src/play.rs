@@ -143,7 +143,7 @@ fn run_events(
         .map_or(BLOCK, |n| n.clamp(1, MAX_BLOCK));
     let mut audio = vec![[0f32; 2]; block];
     // Each block's time in `Engine::process`, ns, with where it was.
-    let mut block_times: Vec<(u64, u64, usize)> = Vec::new();
+    let mut block_times: Vec<(u64, u64, usize, [u64; 3])> = Vec::new();
     let mut rendered = Vec::new();
     let mut process_time = Duration::ZERO;
     while at < stop {
@@ -164,6 +164,7 @@ fn run_events(
         }
         let before = engine.stats().missing_frames;
         let stream_before = stream.stats();
+        let script_before = engine.stats();
         let timer = (std::time::Instant::now(), on_cpu());
         engine.process(&mut audio[..frames], &timed);
         let spent = timer.0.elapsed();
@@ -177,6 +178,14 @@ fn run_events(
             cpu.unwrap_or_else(|| u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX)),
             at,
             timed.len(),
+            {
+                let now = engine.stats();
+                [
+                    now.script_starts - script_before.script_starts,
+                    now.script_resumes - script_before.script_resumes,
+                    now.script_turns - script_before.script_turns,
+                ]
+            },
         ));
         stage_events.extend(
             engine
@@ -396,7 +405,7 @@ fn run_events(
 }
 
 /// Max, p50 and p99 of the per-block process time, and the five slowest blocks.
-fn block_timing(times: &[(u64, u64, usize)], block: usize) -> Value {
+fn block_timing(times: &[(u64, u64, usize, [u64; 3])], block: usize) -> Value {
     let mut sorted: Vec<u64> = times.iter().map(|t| t.0).collect();
     sorted.sort_unstable();
     let at = |q: f64| {
@@ -408,7 +417,10 @@ fn block_timing(times: &[(u64, u64, usize)], block: usize) -> Value {
     let top: Vec<_> = worst
         .iter()
         .take(5)
-        .map(|(ns, frame, events)| json!({"us":*ns as f64 / 1e3, "frame":frame, "events":events}))
+        .map(|(ns, frame, events, [starts, resumes, turns])| {
+            json!({"us":*ns as f64 / 1e3, "frame":frame, "events":events,
+                "script_starts":starts, "script_resumes":resumes, "script_loop_turns":turns})
+        })
         .collect();
     let budget = block as f64 / f64::from(RATE) * 1e6;
     json!({"block_frames":block, "budget_us":budget, "blocks":times.len(),
