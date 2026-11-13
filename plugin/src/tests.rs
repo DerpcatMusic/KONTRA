@@ -2202,3 +2202,131 @@ fn a_clap_pressure_expression_reaches_the_scripts_poly_at_at_its_frame() {
         &out[36..44]
     );
 }
+
+/// The host saves the project, closes the plug-in and opens the project in
+/// a new one: parameter values and persisted fields, as a host keeps them.
+fn reopen(params: &KontraParams) -> (KontraParams, Dsp) {
+    params.capture();
+    let (ids, values) = params.collect_values();
+    let persist = params.serialize_persist();
+    let again = KontraParams::new();
+    let pairs: Vec<(u32, f64)> = ids.into_iter().zip(values).collect();
+    again.restore_state(&pairs, &persist);
+    again.restore();
+    let mut dsp = Dsp::default();
+    <Kontra as PluginLogic>::reset(&mut dsp, &again, &AudioConfig::new(RATE, BLOCK));
+    again.shared.shown.store(true, Ordering::Release);
+    Tick.run(&again);
+    (again, dsp)
+}
+
+#[test]
+fn a_project_with_a_kontakt_and_a_uvi_part_reopens_as_it_was_saved() {
+    let Some(kontakt) = library("Una Corda Library/Instruments/Una Corda Felt.nki") else {
+        return;
+    };
+    let uvi = Path::new("/data/main/Libraries/UVI")
+        .join("VWinds - Clarinets/VWinds-BbClarinet.ufs/Presets/Bb Clarinet.uvip");
+    if !uvi.ancestors().any(Path::is_file) {
+        eprintln!("skipped: no {}", uvi.display());
+        return;
+    }
+    let part = |part: usize, path: PathBuf, preset: Option<PathBuf>| SavedPart {
+        part,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+        preset,
+        modified: false,
+    };
+    let saved = Saved::new(vec![part(0, kontakt, None), part(1, uvi, None)]);
+    let (params, mut dsp) = activate(&saved.write());
+    settle(&params, &mut dsp);
+    // On each part the player turns a panel knob, and a macro learns it.
+    let mut moved = Vec::new();
+    for n in 0..2 {
+        let mut guard = crate::lock(&params.shared.rack);
+        let rack = guard.as_mut().unwrap();
+        let p = rack.parts()[n].as_ref().unwrap();
+        let title = p.name.clone();
+        let view = p
+            .view
+            .as_ref()
+            .unwrap_or_else(|| panic!("part {n}: no panel"));
+        let found = view.tree().widgets.iter().enumerate().find_map(|(i, w)| {
+            let knob = matches!(
+                w.kind,
+                kontra_ui_model::Kind::Knob { .. } | kontra_ui_model::Kind::Slider { .. }
+            );
+            let (min, max) = crate::macros::range(w)?;
+            (knob && !w.hidden && max > min).then(|| (i, w.clone(), min + 0.75 * (max - min)))
+        });
+        let (widget, w, to) = found.unwrap_or_else(|| panic!("part {n}: no knob"));
+        rack.control(n, widget, None, to, Default::default());
+        moved.push(w.name.clone());
+        crate::macros::touch(&params, n, &title, &w, to).expect("a free macro");
+    }
+    settle(&params, &mut dsp);
+    settle(&params, &mut dsp);
+    params.capture();
+    let state = params.saved.read().unwrap().clone();
+    let macros = params.macros.read().unwrap().clone();
+    assert_eq!(macros.lines().count(), 2, "{macros}");
+    let names: Vec<_> = (0..2)
+        .map(|n| {
+            params
+                .parameter_presentation(crate::macros::id(n))
+                .map(|p| p.name)
+        })
+        .collect();
+    assert!(
+        names.iter().all(Option::is_some),
+        "unnamed macros: {names:?}"
+    );
+
+    let (again, mut again_dsp) = reopen(&params);
+    settle(&again, &mut again_dsp);
+    settle(&again, &mut again_dsp);
+    again.capture();
+    assert_eq!(*again.macros.read().unwrap(), macros, "the macros changed");
+    let names_again: Vec<_> = (0..2)
+        .map(|n| {
+            again
+                .parameter_presentation(crate::macros::id(n))
+                .map(|p| p.name)
+        })
+        .collect();
+    assert_eq!(names_again, names, "the macro names changed");
+    let (was, now) = (
+        Saved::read(&state),
+        Saved::read(&again.saved.read().unwrap()),
+    );
+    assert_eq!(now.parts.len(), 2, "a part did not come back");
+    for (a, name) in was.parts.iter().zip(&moved) {
+        let entries = a.scripts.iter().flatten();
+        let has =
+            |e: &&String| e.starts_with(&format!("{name}=")) || e.starts_with(&format!("{name} "));
+        assert!(
+            entries.clone().any(|e| has(&e)),
+            "part {}: {name} not saved",
+            a.part
+        );
+    }
+    for (a, b) in was.parts.iter().zip(&now.parts) {
+        assert_eq!(a.path, b.path);
+        assert_eq!(a.preset, b.preset, "part {}: its preset changed", a.part);
+        assert_eq!(
+            a.scripts, b.scripts,
+            "part {}: its script values changed",
+            a.part
+        );
+    }
+}
