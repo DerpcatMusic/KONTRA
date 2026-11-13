@@ -79,7 +79,8 @@ pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: b
         .focusable()
         .a11y(A11y::Button)
         .named(name.to_owned())
-        .tip(name.to_owned())
+        // No name, no tip: a menu's button while its menu is open.
+        .when(!name.is_empty(), |e| e.tip(name.to_owned()))
         .id(id);
     Response {
         el: interactive(el),
@@ -351,10 +352,10 @@ pub fn nudge(
 }
 
 /// A one-line field with a dim `hint` while empty and a search glyph.
-pub fn field(ui: &mut Ui, id: impl Into<Id>, hint: &str, value: &mut String) -> Response {
+pub fn field(ui: &mut Ui, id: impl Into<Id>, hint: &str, value: &mut String) -> Response<TextEdit> {
     let id: Id = id.into();
     let empty = value.is_empty();
-    let edit = text_input(ui, id, value);
+    let edit = text_edit(ui, id, value, TextOpts::default());
     let mut body_layers = vec![edit.el.radius(0.).no_fill().w(Len::Pct(100.))];
     if empty {
         let hint = caption(hint.to_owned()).fill(secondary()).lines(1);

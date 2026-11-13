@@ -389,7 +389,15 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         })
         .shrink(0)
         .tip(if playing { "Playing" } else { "Silent" });
-    let more = icon_button(ui, id("more"), Icon::More, "More", false);
+    // Its tip would float over its own open menu.
+    let open = menu.as_deref() == Some(id("more").as_str());
+    let more = icon_button(
+        ui,
+        id("more"),
+        Icon::More,
+        if open { "" } else { "More" },
+        false,
+    );
     let close = icon_button(ui, id("remove"), Icon::Close, "Remove", false);
     if close.changed {
         out.push(Action::Remove(n));
@@ -437,6 +445,9 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     }
     if let Some((pick, name)) = edit {
         super::preset::picked(app, n, &name, pick, out);
+        // A sheet that asks a name opens with it selected, to type over.
+        ui.focus("preset-name");
+        app.view.select_name = true;
     }
     row(items)
         .gap(TIGHT)

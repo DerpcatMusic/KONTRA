@@ -194,7 +194,9 @@ fn articulations(ui: &mut Ui, p: &mut Part, n: usize, v: &mut View, out: &mut Ve
         } else if v.grip.as_ref().is_some_and(|(g, _)| *g == grip) {
             v.grip = None;
         }
-        let more = icon_button(ui, format!("{id}-more"), Icon::More, "More", false);
+        let open = v.menu.as_deref() == Some(format!("{id}-more").as_str());
+        let tip = if open { "" } else { "More" };
+        let more = icon_button(ui, format!("{id}-more"), Icon::More, tip, false);
         let mut cells = vec![
             interactive(stack![glyph(Icon::Grip, TEXT, secondary()).centered()])
                 .square(CONTROL)
