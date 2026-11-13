@@ -402,10 +402,10 @@ fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
             }
         ]
     );
-    // Algorithm 1 (the zero-delay ladder) is not carried yet.
-    assert!(g.inserts[1].is_none());
+    // Algorithm 1 (the zero-delay ladder) plays as the explicit ladder.
+    assert!(g.inserts[1].is_some());
     let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
-    assert_eq!(features, ["insert XpanderFilter"], "{features:?}");
+    assert_eq!(features, ["XpanderFilter Algorithm"], "{features:?}");
 }
 
 #[test]

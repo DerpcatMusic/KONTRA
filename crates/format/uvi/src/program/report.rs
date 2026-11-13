@@ -38,6 +38,16 @@ impl<L: Library> Translator<'_, '_, L> {
             }
             let tag = node.tag_name().name();
             let parent = node.parent();
+            if tag == "XpanderFilter"
+                && (filters::carried(node) || filters::on_bus(node))
+                && num(node, "Algorithm", 0.0).is_ok_and(|a| a != 0.0)
+            {
+                self.notes.add(
+                    ir::Impact::Cosmetic,
+                    "XpanderFilter Algorithm",
+                    "played as Algorithm 0",
+                );
+            }
             // A keygroup's GainMatrix places its bundle members (`placement`).
             let placing = tag == "GainMatrix"
                 && parent
