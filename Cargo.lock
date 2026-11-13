@@ -2288,6 +2288,7 @@ dependencies = [
  "kontra-lua",
  "kontra-stream",
  "kontra-ui-model",
+ "libc",
  "rustfft",
  "serde_json",
 ]
