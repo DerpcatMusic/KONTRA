@@ -466,11 +466,12 @@ impl Rack {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
-        p.modified = true;
         let Some(view) = p.view.as_mut() else {
             return;
         };
         if let Some(set) = view.tap(widget, value) {
+            let vars = &p.script.vars;
+            p.modified |= set.iter().any(|&(slot, id, _)| saves(vars, slot, id));
             for (slot, id, value) in set {
                 let cell = 0;
                 self.send(Command::Control {
@@ -483,6 +484,7 @@ impl Rack {
                 });
             }
         } else if let Some((slot, n)) = view.widget(widget) {
+            p.modified = true;
             self.send(Command::Widget {
                 part,
                 slot,
@@ -491,6 +493,7 @@ impl Rack {
                 cell,
             });
         } else if let Some((slot, id, value)) = view.control(widget, value) {
+            p.modified |= saves(&p.script.vars, slot, id);
             self.send(Command::Control {
                 part,
                 slot,
@@ -726,5 +729,41 @@ impl Rack {
         if let Err(c) = self.channels.commands.send(command) {
             self.pending.push_back(c);
         }
+    }
+}
+
+/// A preset of the part saves control `id` of script `slot`: its value is
+/// persistent, and not the instrument's alone (a page tab, a view's
+/// settings), so moving it changes what plays as that preset.
+fn saves(vars: &[crate::persist::Vars], slot: u8, id: i32) -> bool {
+    let of = vars.get(usize::from(slot)).map(|v| v.vars.as_slice());
+    of.unwrap_or_default()
+        .iter()
+        .any(|v| v.control == Some(id) && !v.instrument)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::persist::{Var, Vars};
+
+    #[test]
+    fn only_a_control_a_snapshot_saves_marks_the_preset_changed() {
+        let var = |control, instrument| Var {
+            name: "$x".into(),
+            real: false,
+            text: false,
+            base: 0,
+            len: 1,
+            control: Some(control),
+            instrument,
+        };
+        let vars = [Vars {
+            vars: vec![var(1, false), var(2, true)],
+            ..Vars::default()
+        }];
+        assert!(super::saves(&vars, 0, 1));
+        assert!(!super::saves(&vars, 0, 2), "a page tab");
+        assert!(!super::saves(&vars, 0, 3), "not persistent");
+        assert!(!super::saves(&vars, 1, 1), "no such script");
     }
 }

@@ -40,6 +40,9 @@ pub struct Var {
     pub len: u32,
     /// Its UI id when it is a control's value.
     pub control: Option<i32>,
+    /// Saved with the instrument only (`make_instr_persistent`): a
+    /// snapshot neither saves nor changes it.
+    pub instrument: bool,
 }
 
 impl Vars {
@@ -67,6 +70,7 @@ impl Vars {
                     base,
                     len,
                     control: control(n),
+                    instrument: v.persistence == Persistence::Instrument,
                 })
             })
             .collect();

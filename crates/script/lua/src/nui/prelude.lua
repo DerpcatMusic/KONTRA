@@ -172,6 +172,11 @@ local function span(id, index)
 end
 function Parameter:value(index)
 	current.reads[self.id] = true
+	-- A text edit reads as its text, as a macro's name field does.
+	local c = __controls[self.id]
+	if index == nil and c and c.text then
+		return c.text
+	end
 	local raw = __params[self.id] or 0
 	local min, width = span(self.id, index)
 	return min and (raw - min) / width or raw
