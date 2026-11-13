@@ -11,10 +11,11 @@
 mod align;
 mod editor;
 mod folder;
-mod frames;
 mod follow;
+mod frames;
 mod input;
 mod look;
+mod macros;
 #[cfg(test)]
 mod playtest;
 mod readout;
@@ -64,12 +65,33 @@ pub struct KontraParams {
     /// reports the latest part's attack delay as the plugin's latency.
     #[param(id = 1, name = "Auto-align", default = false)]
     pub align: BoolParam,
+    /// Host automation of panel controls, each assigned when the player
+    /// first moves one ([`macros`]).
+    #[param(id = 2, name = "Macro 1", range = "linear(0, 1)", default = 0.0)]
+    pub macro_1: FloatParam,
+    #[param(id = 3, name = "Macro 2", range = "linear(0, 1)", default = 0.0)]
+    pub macro_2: FloatParam,
+    #[param(id = 4, name = "Macro 3", range = "linear(0, 1)", default = 0.0)]
+    pub macro_3: FloatParam,
+    #[param(id = 5, name = "Macro 4", range = "linear(0, 1)", default = 0.0)]
+    pub macro_4: FloatParam,
+    #[param(id = 6, name = "Macro 5", range = "linear(0, 1)", default = 0.0)]
+    pub macro_5: FloatParam,
+    #[param(id = 7, name = "Macro 6", range = "linear(0, 1)", default = 0.0)]
+    pub macro_6: FloatParam,
+    #[param(id = 8, name = "Macro 7", range = "linear(0, 1)", default = 0.0)]
+    pub macro_7: FloatParam,
+    #[param(id = 9, name = "Macro 8", range = "linear(0, 1)", default = 0.0)]
+    pub macro_8: FloatParam,
     /// The rack as JSON ([`Saved`]): parts, presets, mix.
     #[persist = "rack"]
     pub saved: RwLock<String>,
     /// The editor's view as JSON ([`kontra_host::state::SavedView`]).
     #[persist = "editor"]
     pub look: RwLock<String>,
+    /// Which panel control each macro moves ([`macros::write`]).
+    #[persist = "macros"]
+    pub macros: RwLock<String>,
     #[skip]
     pub shared: Shared,
     #[meter]
@@ -82,6 +104,8 @@ use KontraParamsParamId as P;
 #[derive(Default)]
 pub struct Shared {
     rack: Mutex<Option<Rack>>,
+    /// Each macro's host value as last applied to its control.
+    macro_values: Mutex<[f64; macros::COUNT]>,
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
@@ -321,6 +345,16 @@ impl BackgroundTask for Tick {
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.show_interfaces(interfaces);
+        // The host's automation of a macro moves its control, as the
+        // player's move does.
+        for (part, name, value) in macros::moved(p) {
+            let tree = rack.parts().get(part).and_then(Option::as_ref);
+            let tree = tree.and_then(|p| p.view.as_ref()).map(|v| v.tree());
+            let widget = tree.and_then(|t| t.widgets.iter().position(|w| w.name == name));
+            if let Some(widget) = widget {
+                rack.control(part, widget, None, value, Default::default());
+            }
+        }
         // The looks the scripts sent (a native_ui rebuild among them).
         frames::time("tick", || rack.tick());
         follow::follow(rack, browser);
@@ -431,6 +465,7 @@ impl PluginLogic for Kontra {
         };
         s.latency = p.shared.latency.load(Ordering::Relaxed);
         s.input.clear();
+        audio.set_offline(cx.process_mode.is_offline());
         // VST3 hosts give the tempo only here; CLAP may also send events.
         audio.set_tempo(cx.transport.tempo as f32);
         let t = cx.transport;
