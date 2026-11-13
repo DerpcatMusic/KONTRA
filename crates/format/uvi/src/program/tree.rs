@@ -91,6 +91,9 @@ impl<L: Library> Translator<'_, '_, L> {
         if let Some(bus) = self.bus_of.get(&node.id()) {
             out.push_str(&format!(",bus={bus}"));
         }
+        if let Some(dry) = self.dry_of.get(&node.id()) {
+            out.push_str(&format!(",dry={dry}"));
+        }
         // An insert's effect: `{0 keygroup's voices | 1 bus | 2 program, group
         // or bus, slot}`.
         let fx = self.fx_of.get(&node.id()).and_then(|&fx| match fx {
@@ -100,6 +103,19 @@ impl<L: Library> Translator<'_, '_, L> {
         });
         if let Some((at, index, slot)) = fx {
             out.push_str(&format!(",fx={{{at},{index},{slot}}}"));
+            // Each number's control and its value by the number:
+            // `{code, x1, y1, x2, y2, ...}`.
+            if let Some(knobs) = self.knobs_of.get(&node.id()) {
+                out.push_str(",knobs={");
+                for k in knobs {
+                    out.push_str(&format!("[{}]={{{}", lua_string(&k.name), k.code));
+                    for (x, y) in &k.law {
+                        out.push_str(&format!(",{x},{y}"));
+                    }
+                    out.push_str("},");
+                }
+                out.push('}');
+            }
         }
         if let Some(id) = matrix::live_macro(self.program, node) {
             out.push_str(&format!(",mod={id}"));

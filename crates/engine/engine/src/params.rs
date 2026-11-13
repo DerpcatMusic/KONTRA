@@ -155,6 +155,28 @@ impl Engine {
         }
     }
 
+    /// [`kontra_vm::Action::EffectField`]: one control of a placed effect.
+    pub(crate) fn set_effect_field(
+        &mut self,
+        at: i32,
+        index: i32,
+        slot: i32,
+        code: i32,
+        value: f32,
+    ) {
+        let Some(param) = u16::try_from(code)
+            .ok()
+            .and_then(ir::EffectParam::from_code)
+        else {
+            return;
+        };
+        if let Some(e) = self.placed_effect(at, index, slot)
+            && param.set(e, value)
+        {
+            self.refresh_all(None);
+        }
+    }
+
     fn placed_effect(&mut self, at: i32, index: i32, slot: i32) -> Option<&mut ir::Effect> {
         let (group, generic) = match at {
             0 => (index, -1),

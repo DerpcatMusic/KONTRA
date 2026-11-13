@@ -322,6 +322,11 @@ impl HostApi for Engine {
                 self.set_effect_bypass(int(0), int(1), int(2), int(3) != 0);
                 HostValue::Nothing
             }
+            Action::EffectField => {
+                let value = int(4) as f32 / 1000.0;
+                self.set_effect_field(int(0), int(1), int(2), int(3), value);
+                HostValue::Nothing
+            }
             Action::EffectGain => {
                 self.set_effect_gain(int(0), int(1), int(2), int(3) as f32 / 1e6);
                 HostValue::Nothing

@@ -210,11 +210,15 @@ fn an_effect_rack_fans_out_to_its_chains_and_back() {
     </Program>"#;
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-    // Main, the layer's entry, its three chains, then the join.
+    // Main, the layer's entry, its three chains, the rack's wet and dry
+    // buses, then the join.
     let b = &out.buses;
-    assert_eq!(b.len(), 6);
+    assert_eq!(b.len(), 8);
     assert_eq!(out.groups[0].bus, 1);
-    assert!(b[1].sends.iter().map(|s| s.bus).eq(2..=4));
+    assert!(b[1].sends.iter().map(|s| s.bus).eq([2, 3, 4, 6]));
+    // Not bypassed: the wet bus open, the dry one shut, both into the join.
+    assert!(b[5].volume_db == 0.0 && b[6].volume_db < -100.0);
+    assert!((5..=6).all(|n| b[n].sends[0].bus == 7));
     assert!(!b[1].to_main && !b[2].to_main);
     // A chain's gain is its fader into the join; a bypassed one is silent.
     let fader = |n: usize| b[n].volume_db;
@@ -227,8 +231,8 @@ fn an_effect_rack_fans_out_to_its_chains_and_back() {
     );
     assert!(matches!(b[3].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 2.0));
     // The rest of the inserts and the layer's fader are on the join.
-    assert!(matches!(b[5].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 3.0));
-    assert!(b[5].to_main && (b[5].volume_db + 6.0206).abs() < 1e-3);
+    assert!(matches!(b[7].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 3.0));
+    assert!(b[7].to_main && (b[7].volume_db + 6.0206).abs() < 1e-3);
     assert!(
         !out.diagnostics
             .iter()
