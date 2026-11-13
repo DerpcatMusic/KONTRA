@@ -308,7 +308,10 @@ fn play_live(path: PathBuf) -> Vec<String> {
 #[ignore = "real libraries, live pace: run with --ignored (release)"]
 fn a_loading_library_played_live_never_plays_late() {
     let mut failed = Vec::new();
-    for program in PROGRAMS {
+    // KONTRA_LIVE=<path under the Kontakt libraries> plays just that program.
+    let only = std::env::var("KONTRA_LIVE").ok();
+    let programs = only.iter().map(String::as_str).chain(PROGRAMS);
+    for program in programs.take(if only.is_some() { 1 } else { PROGRAMS.len() }) {
         let path = match program.strip_prefix("UVI:") {
             Some(p) => Path::new(UVI).join(p),
             None => Path::new(KONTAKT).join(program),

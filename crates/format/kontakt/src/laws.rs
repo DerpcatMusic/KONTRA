@@ -25,6 +25,9 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         release: seconds(e.release_ms),
         attack_shape: ATTACK_CURVE.eval_unclamped(e.attack_curve),
         fall_shape: FALL,
+        // Measured in Kontakt 8.13: a 125 ms attack with the key up after
+        // 20 ms or 60 ms reaches the level of a held note, on its time.
+        early_key_up: ir::EarlyKeyUp::AfterAttack,
     }
 }
 
