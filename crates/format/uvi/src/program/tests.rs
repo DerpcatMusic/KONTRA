@@ -2305,27 +2305,27 @@ fn an_lfo_and_a_step_envelope_on_a_sends_gain_run_free_on_its_bus() {
 }
 
 #[test]
-fn a_step_envelopes_smooth_glides_between_its_steps() {
+fn a_step_envelopes_smooth_is_a_live_one_pole_of_smooth_over_ln_3_seconds() {
     let step = |smooth: &str| {
         let xml = format!(
             r#"<StepEnvelope Name="S" Bypass="0" Freq="0.25" NumSteps="2" Levels="1 0" Retrigger="0" SyncToHost="1" Smooth="{smooth}"/>"#
         );
         let doc = roxmltree::Document::parse(&xml).unwrap();
-        modulation::steps(doc.root_element()).unwrap().1
+        modulation::steps(doc.root_element()).unwrap()
     };
     let (held, glide) = (step("0"), step("0.0845"));
-    // Read at the first step's start: the held table is at its level, the
-    // smoothed one is still on its way up from the last step's 0.
-    let first = |t: &[f32]| t[t.len() - 1];
-    assert_eq!(first(&held), 1.0);
-    assert!(
-        first(&glide) < 0.9 && first(&glide) > 0.0,
-        "{}",
-        first(&glide)
-    );
-    // Late in the first step it has settled toward 1.
-    let late = |t: &[f32]| t[t.len() * 11 / 20];
-    assert!(late(&glide) > 0.8, "{}", late(&glide));
+    assert_eq!(held.2, 0.0);
+    assert!((glide.2 - 0.0845 / 3f32.ln()).abs() < 1e-6);
+    // The table stays the held levels: the engine glides it at the tempo.
+    assert_eq!(held.1, glide.1);
+    // A one-pole after a step from 0 to 1 reaches 2/3 in `Smooth` seconds.
+    let t = ir::Transfer {
+        smooth_s: glide.2,
+        ..Default::default()
+    };
+    let at = |back: f32| Some(if back < 0.0845 { 1.0 } else { 0.0 });
+    let v = t.smoothed(at).unwrap();
+    assert!((v - 0.667).abs() < 0.06, "{v}");
 }
 
 #[test]

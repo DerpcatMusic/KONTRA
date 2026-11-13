@@ -449,6 +449,7 @@ impl<L: Library> Translator<'_, '_, L> {
             input: ir::Transfer {
                 source: ir::Source::Constant,
                 table: Vec::new(),
+                ..Default::default()
             },
             amount: 1.0,
             factors,

@@ -349,6 +349,7 @@ fn shaped(
                 if signed { 2.0 * y - 1.0 } else { y }
             })
             .collect(),
+        smooth_s: 0.0,
     });
     Some(ir::Source::Shaped(n))
 }

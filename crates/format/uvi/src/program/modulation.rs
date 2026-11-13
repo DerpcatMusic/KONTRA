@@ -1,8 +1,5 @@
 //! Modulation routes of a program that the engine carries.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-
 use kontra_ir as ir;
 use kontra_law::uvi::ENVELOPE_CURVE;
 use roxmltree::Node;
@@ -137,6 +134,7 @@ impl<L: Library> Translator<'_, '_, L> {
                             input: mapped.clone().unwrap_or(ir::Transfer {
                                 source: ir::Source::Script(id),
                                 table: Vec::new(),
+                                ..Default::default()
                             }),
                             amount: 1.0,
                             factors: macros.clone(),
@@ -173,7 +171,8 @@ pub(super) enum Timed {
     Lfo(ir::Lfo),
     Envelope(ir::Breakpoints),
     /// A saw LFO read through a table ([`steps`]).
-    Steps(ir::Lfo, Vec<f32>),
+    /// A saw LFO through a table, and the seconds of a one-pole after it.
+    Steps(ir::Lfo, Vec<f32>, f32),
     /// A source read through the connection's mapper ([`matrix::transfer`]).
     Mapped(ir::Transfer),
     /// An LFO its routes reach through a delay and rise ([`rising`]), read
@@ -259,6 +258,7 @@ pub(super) fn reach(
                 timed: Some(Timed::Mapped(ir::Transfer {
                     source: ir::Source::Velocity,
                     table,
+                    ..Default::default()
                 })),
                 ..fixed(ir::Source::Constant)
             }
@@ -274,8 +274,8 @@ pub(super) fn reach(
                 } else if node.has_tag_name("DAHDSR") {
                     Timed::Envelope(dahdsr(node)?)
                 } else {
-                    let (lfo, table) = steps(node)?;
-                    Timed::Steps(lfo, table)
+                    let (lfo, table, tau) = steps(node)?;
+                    Timed::Steps(lfo, table, tau)
                 };
                 Route {
                     timed: Some(timed),
@@ -309,6 +309,7 @@ pub(super) fn reach(
                     timed: Some(Timed::Mapped(ir::Transfer {
                         source,
                         table: vec![1.0, 0.0],
+                        ..Default::default()
                     })),
                     ..fixed(ir::Source::Constant)
                 }
@@ -351,7 +352,7 @@ pub(super) fn factor(mut r: Route, connection: Node) -> Option<Route> {
             r.unit = 1.0;
         }
         Some(Timed::Lfo(lfo)) => {
-            r.timed = Some(Timed::Steps(lfo, table));
+            r.timed = Some(Timed::Steps(lfo, table, 0.0));
             r.unit = 1.0;
         }
         Some(Timed::Blend(b)) => r.timed = Some(Timed::Blend(blend::gain(b, r.ratio))),
@@ -395,14 +396,25 @@ pub(super) fn group_source(
             if table.is_empty() {
                 of
             } else {
-                let t = ir::Transfer { source: of, table };
+                let t = ir::Transfer {
+                    source: of,
+                    table,
+                    ..Default::default()
+                };
                 ir::Source::Shaped(index_of(&mut group.shapers, t))
             }
         }
         Some(Timed::Envelope(e)) => ir::Source::Envelope(index_of(&mut group.envelopes, e)),
-        Some(Timed::Steps(lfo, table)) => {
+        Some(Timed::Steps(lfo, table, smooth_s)) => {
             let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
-            ir::Source::Shaped(index_of(&mut group.shapers, ir::Transfer { source, table }))
+            ir::Source::Shaped(index_of(
+                &mut group.shapers,
+                ir::Transfer {
+                    source,
+                    table,
+                    smooth_s,
+                },
+            ))
         }
         Some(Timed::Mapped(t)) => ir::Source::Shaped(index_of(&mut group.shapers, t)),
         Some(Timed::Blend(b)) => blend::lower(group, b),
@@ -665,8 +677,6 @@ pub(super) fn curve(node: Node, name: &str) -> Option<f32> {
 
 /// Table entries per step: a step's edge ramps over 1/16 of it.
 const ENTRIES_PER_STEP: usize = 16;
-/// With a `Smooth` the glide needs finer entries.
-const SMOOTH_ENTRIES: usize = 64;
 
 /// A `StepEnvelope` as a cycle of its `Levels`, each held for one step: a
 /// saw LFO (`1 − 2p` at phase `p`, read through a table as `(x + 1)/2`, so
@@ -677,7 +687,7 @@ const SMOOTH_ENTRIES: usize = 64;
 /// for an interpolated envelope (`InterpolationMode` 1, a cubic) or an
 /// unknown retrigger. `Smooth` is a one-pole reaching 2/3 of a step in
 /// `Smooth` s, baked into the table (see below).
-pub(super) fn steps(node: Node) -> Option<(ir::Lfo, Vec<f32>)> {
+pub(super) fn steps(node: Node) -> Option<(ir::Lfo, Vec<f32>, f32)> {
     if flag(node, "Bypass") || flag(node, "InterpolationMode") {
         return None;
     }
@@ -706,60 +716,22 @@ pub(super) fn steps(node: Node) -> Option<(ir::Lfo, Vec<f32>)> {
     } else {
         ir::Rate::Hz(freq / n as f32)
     };
-    // `Smooth` seconds to reach 2/3 of a step (a one-pole, τ = Smooth/ln 3),
-    // in steps of the cycle: a synced step is `Freq` beats (taken at 120 BPM:
-    // the table cannot see the host tempo), an unsynced one `1/Freq` s.
-    // ponytail: the tempo is assumed; bake per tempo if a synced smooth drifts.
+    // `Smooth` seconds to reach 2/3 of a step: a one-pole of time constant
+    // `Smooth/ln 3`, applied live by the engine to the held table (the
+    // table's own past, so the glide follows the host tempo).
     let smooth = num(node, "Smooth", 0.0)
         .ok()
         .map_or(0.0, |v| v.max(0.0) as f32);
-    let step_seconds = if flag(node, "SyncToHost") {
-        freq * 0.5
-    } else {
-        1.0 / freq
-    };
-    let tau = smooth / 3f32.ln() / step_seconds;
-    let per = if tau > 0.0 {
-        SMOOTH_ENTRIES
-    } else {
-        ENTRIES_PER_STEP
-    };
-    let last = per * n;
-    // ponytail: as `multi`'s peaks, one table per step pattern.
-    thread_local! {
-        static TABLES: RefCell<HashMap<Vec<u32>, Vec<f32>>> = RefCell::new(HashMap::new());
-    }
-    let mut key: Vec<u32> = levels.iter().map(|l| l.to_bits()).collect();
-    key.push(tau.to_bits());
-    let table = TABLES.with_borrow_mut(|tables| {
-        tables
-            .entry(key)
-            .or_insert_with(|| {
-                // The cycle forward: the held level, or the one-pole toward
-                // it (carried across steps; run twice to settle).
-                let k = 1.0 - (-1.0 / (tau.max(1e-6) * per as f32)).exp();
-                let mut at = levels.last().copied().unwrap_or(0.0);
-                let mut cycle = vec![0.0; last];
-                for round in 0..2 {
-                    for (e, out) in cycle.iter_mut().enumerate() {
-                        let held = levels.get(e / per).copied().unwrap_or(0.0);
-                        at = if tau > 0.0 {
-                            at + (held - at) * k
-                        } else {
-                            held
-                        };
-                        if round == 1 {
-                            *out = at;
-                        }
-                    }
-                }
-                // Entry j reads cycle position (last − j)/last; 0 wraps to 1.
-                (0..=last)
-                    .map(|j| cycle.get((last - j) % last).copied().unwrap_or(0.0))
-                    .collect()
-            })
-            .clone()
-    });
+    let tau = smooth / 3f32.ln();
+    let last = ENTRIES_PER_STEP * n;
+    // The cycle forward, each level held; entry j reads cycle position
+    // (last − j)/last (0 wraps to 1).
+    let table: Vec<f32> = (0..=last)
+        .map(|j| {
+            let e = (last - j) % last;
+            levels.get(e / ENTRIES_PER_STEP).copied().unwrap_or(0.0)
+        })
+        .collect();
     let lfo = ir::Lfo {
         wave: ir::Wave::Saw,
         rate,
@@ -767,7 +739,7 @@ pub(super) fn steps(node: Node) -> Option<(ir::Lfo, Vec<f32>)> {
         fade_ms: 0.0,
         clock,
     };
-    Some((lfo, table))
+    Some((lfo, table, tau))
 }
 
 /// A live connection from a script modulation to the gain of a layer,

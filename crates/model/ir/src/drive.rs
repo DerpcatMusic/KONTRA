@@ -193,6 +193,9 @@ pub enum EffectParam {
     DelayLowCutHz,
     DelayShelfHz,
     DelayShelfDb,
+    /// A tempo-synced [`crate::Delay`] or [`crate::Phaser`] LFO's beats a
+    /// cycle (not numbered for scripts: [`Self::code`] is `None`).
+    ModBeats,
     /// The slot's own [`Effect::output`] and [`Effect::dry`] levels, linear
     /// (moved on a bus's rack: [`Self::add_to`]).
     Output,
@@ -221,6 +224,11 @@ impl EffectParam {
             | (Self::ModRate, EffectKind::Phaser(crate::Phaser { rate, .. })) => match rate {
                 crate::Rate::Hz(hz) => hz,
                 crate::Rate::Beats(_) | crate::Rate::Steps { .. } => return None,
+            },
+            (Self::ModBeats, EffectKind::Delay(crate::Delay { rate, .. }))
+            | (Self::ModBeats, EffectKind::Phaser(crate::Phaser { rate, .. })) => match rate {
+                crate::Rate::Beats(b) => b,
+                crate::Rate::Hz(_) | crate::Rate::Steps { .. } => return None,
             },
             (Self::ModPhase, EffectKind::Delay(d)) => &mut d.phase,
             (Self::ModPhase, EffectKind::Phaser(p)) => &mut p.phase,
