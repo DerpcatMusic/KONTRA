@@ -637,8 +637,8 @@ fn stock_atlas(id: i32) -> Option<(usize, &'static str)> {
 /// The weight a stock font id's family draws in (Kontakt 8 oracle probe).
 fn stock_weight(id: i32) -> Option<f32> {
     match id {
-        1 | 5 | 7 | 16 | 17 | 19 | 20 => Some(700.),
-        12 | 13 | 14 | 18 | 22 | 24 | 25 => Some(600.),
+        1 | 5 | 7 | 16 | 17 | 19 | 20 | 21 => Some(700.),
+        12..=14 | 18 | 22..=25 => Some(600.),
         _ => None,
     }
 }

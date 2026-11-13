@@ -814,3 +814,19 @@ fn a_widget_in_a_scrolling_region_keeps_its_place_under_the_band() {
     let y = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame.y);
     assert_eq!(y(&surface(0, 1)), Some(14.));
 }
+
+#[test]
+fn a_pixel_font_stem_at_150_percent_is_one_full_and_one_half_column() {
+    // Font pixels 0 and 1 over three screen pixels: 0 fills the first and
+    // half the second, 1 the other half and the third.
+    let cols = crate::stock::area(2, 3, 1.5);
+    let share = |i: usize, j: usize| {
+        cols.get(i)
+            .and_then(|c| c.iter().find(|&&(k, _)| k == j))
+            .map_or(0., |&(_, w)| w)
+    };
+    assert!((share(0, 0) - 1.).abs() < 1e-9);
+    assert!((share(1, 0) - 0.5).abs() < 1e-9);
+    assert!((share(1, 1) - 0.5).abs() < 1e-9);
+    assert!((share(2, 1) - 1.).abs() < 1e-9);
+}
