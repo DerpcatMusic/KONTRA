@@ -4,7 +4,7 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
-use ir::TableValue::{Position, Warp};
+use ir::TableValue::{Inharmonic, Position, Warp};
 use kontra_stream::Mix;
 use kontra_voice::{Ahdsr, Gain, Lag, Read};
 
@@ -173,7 +173,7 @@ impl Engine {
                 }
             }
         }
-        for v in [Position, Warp(0), Warp(1)] {
+        for v in [Position, Warp(0), Warp(1), Inharmonic] {
             if let Some(v) = table_value(&mut read, v) {
                 *v = v.clamp(0.0, 1.0);
             }
@@ -639,5 +639,6 @@ pub(crate) fn table_value(read: &mut Read, v: ir::TableValue) -> Option<&mut f32
     match v {
         Position => Some(&mut read.position),
         Warp(n) => read.warps.get_mut(usize::from(n)).map(|w| &mut w.amount),
+        Inharmonic => Some(&mut read.inharmonic.amount),
     }
 }

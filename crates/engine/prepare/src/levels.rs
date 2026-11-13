@@ -28,8 +28,7 @@ pub(crate) fn table(
     let mut cycle = forward.make_input_vec();
     let mut spectrum = forward.make_output_vec();
     let mut data = Vec::new();
-    // Only a stretched read shifts frequency; the others never read it.
-    let mut quad = (read.stretch != 1.0).then(Vec::new);
+    let mut quad = Vec::new();
     let mut spans = Vec::with_capacity(cycles as usize * LEVELS);
     for c in 0..cycles {
         if sample.read(client, first + c * CYCLE, &mut frames).missing > 0 {
@@ -60,9 +59,7 @@ pub(crate) fn table(
                     let span = (u32::try_from(data.len()).ok()?, size);
                     let size = size as usize;
                     data.extend(resynth(&mut planner, &spectrum, (harmonics, size), false)?);
-                    if let Some(quad) = quad.as_mut() {
-                        quad.extend(resynth(&mut planner, &spectrum, (harmonics, size), true)?);
-                    }
+                    quad.extend(resynth(&mut planner, &spectrum, (harmonics, size), true)?);
                     kept = Some((harmonics, span));
                     span
                 }
@@ -72,7 +69,7 @@ pub(crate) fn table(
     }
     let peak = data
         .iter()
-        .chain(quad.iter().flatten())
+        .chain(&quad)
         .fold(0.0f32, |m, x| m.max(x.abs()))
         .max(f32::MIN_POSITIVE);
     let steps = |v: &[f32]| {
@@ -81,7 +78,7 @@ pub(crate) fn table(
             .collect()
     };
     let mut table = Table::new((steps(&data), peak / 32767.0), spans.into(), read)?;
-    table.quad = quad.as_deref().map(steps);
+    table.quad = Some(steps(&quad));
     Some(table)
 }
 

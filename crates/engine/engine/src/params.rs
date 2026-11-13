@@ -280,6 +280,9 @@ impl Engine {
             let x = *crate::voice_gain::table_value(&mut read, v)?;
             return Some((f64::from(x) * 1e6).round() as i32);
         }
+        if par == EnginePar::InharmonicOn {
+            return Some(i32::from(g.wavetable?.inharmonic.on));
+        }
         if let EnginePar::WarpMode(n) = par {
             let w = g.wavetable?.warps.get(usize::from(n)).copied()?;
             let modes = &self.script()?.warp_modes;
@@ -485,6 +488,11 @@ impl Engine {
                 .as_mut()
                 .and_then(|r| crate::voice_gain::table_value(r, v))
                 .map(|r| *r = x as f32)
+                .is_some(),
+            EnginePar::InharmonicOn => g
+                .wavetable
+                .as_mut()
+                .map(|t| t.inharmonic.on = value != 0)
                 .is_some(),
             EnginePar::WarpMode(n) => g
                 .wavetable

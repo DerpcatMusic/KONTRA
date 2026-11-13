@@ -20,14 +20,11 @@ pub const STRETCH_SPEED: [f32; 21] = [
     2.992_968, 4.653_069, 8.0,
 ];
 
-/// A wavetable's inharmonic stretch `s` for the knob `a` (0..1), or 1 (plain
-/// harmonics) when it is off: partial n sits at f·(1 + (n − 1)·s),
-/// s = 2^(2a − 1). Measured on an oracle probe (a saw at Inharm 0, ¼, ½, ¾,
-/// 0.9, 1) within 0.05 %.
-#[must_use]
-pub fn inharmonic_stretch(a: Option<f32>) -> f32 {
-    a.map_or(1.0, |a| 2f32.powf(2.0 * a.clamp(0.0, 1.0) - 1.0))
-}
+/// A wavetable's inharmonic stretch `s` at the knob's ends (0 and 1),
+/// geometric between: partial n sits at f·(1 + (n − 1)·s), s = 2^(2a − 1).
+/// Measured on an oracle probe (a saw at Inharm 0, ¼, ½, ¾, 0.9, 1) within
+/// 0.05 %.
+pub const INHARMONIC_RANGE: (f32, f32) = (0.5, 2.0);
 
 /// Controller source taper in a volume route.
 pub const CONTROLLER_VOLUME: Law = Law::Power {
