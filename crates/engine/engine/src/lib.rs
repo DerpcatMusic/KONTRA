@@ -401,7 +401,7 @@ impl Engine {
             zone_index,
             stream,
             voices,
-            voice_scratch: Scratch::new(),
+            voice_scratch: Scratch::allocate(),
             buses,
             pedal: [false; 16],
             stats: Stats::default(),

@@ -160,7 +160,7 @@ pub struct Scratch {
 impl Scratch {
     /// Allocates the buffers; call at prepare, never on the audio thread.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn allocate() -> Self {
         let buffer = || vec![[0.0; 2]; SCRATCH].into_boxed_slice();
         Self {
             window: buffer(),
@@ -168,12 +168,6 @@ impl Scratch {
             raw: buffer(),
             head: buffer(),
         }
-    }
-}
-
-impl Default for Scratch {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
