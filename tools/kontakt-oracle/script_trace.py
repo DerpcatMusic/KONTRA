@@ -82,8 +82,9 @@ def midi(ev, channel: int) -> bytes:
 TRACER = """on init
   declare !log[2000]
   declare $n := 0
-  declare $z
-  declare $id
+  declare polyphonic $z
+  declare polyphonic $id
+  declare polyphonic $t
   declare !keys[128]
   declare $k
   pgs_create_key(KTRACE, 1)
@@ -96,6 +97,7 @@ TRACER = """on init
 end on
 on note
   $id := $EVENT_ID
+  $t := $ENGINE_UPTIME
   wait(1)
   $z := get_event_par($id, $EVENT_PAR_ZONE_ID)
   if ($z = -1)
@@ -107,7 +109,7 @@ on note
     $z := get_event_par($id, $EVENT_PAR_ZONE_ID)
   end if
   if ($n < 2000)
-    !log[$n] := $ENGINE_UPTIME & "," & $EVENT_NOTE & "," & $EVENT_VELOCITY & "," ...
+    !log[$n] := $t & "," & $EVENT_NOTE & "," & $EVENT_VELOCITY & "," ...
       & get_event_par($id, $EVENT_PAR_SOURCE) & "," & $z & "," ...
       & group_name(get_zone_par($z, $ZONE_PAR_GROUP)) & "," & get_sample($z, $NI_FILE_NAME)
     inc($n)
