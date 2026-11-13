@@ -7,7 +7,7 @@ use std::io;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -138,7 +138,10 @@ type PinnedPages = HashMap<(BlobKey, usize), (Weak<[u8]>, bool)>;
 
 pub struct Store {
     shared: Arc<Shared>,
-    pinned: PinnedPages,
+    /// Shared with [`Heads`], which fills it in as deferred pages arrive.
+    /// Locked only by the control thread and the head-loading threads, never
+    /// by the audio thread (voices read their pages through `Sample`).
+    pinned: Arc<Mutex<PinnedPages>>,
     /// Whether loads leave their heads to [`Heads`].
     defer: bool,
     deferred: Vec<HeadJob>,
@@ -174,7 +177,7 @@ impl Store {
         };
         Ok(Self {
             shared,
-            pinned: HashMap::new(),
+            pinned: Arc::default(),
             defer: false,
             deferred: Vec::new(),
             registered,
@@ -204,7 +207,7 @@ impl Store {
     /// Bytes of the pages the loaded samples hold in memory, each page once.
     #[must_use]
     pub fn pinned_bytes(&self) -> u64 {
-        self.pinned
+        lock(&self.pinned)
             .values()
             .filter_map(|(page, _)| page.upgrade())
             .map(|page| page.len() as u64)
@@ -278,7 +281,8 @@ impl Store {
     }
 
     fn load_unique(&mut self, requests: Vec<LoadRequest>) -> Vec<io::Result<Arc<Sample>>> {
-        self.pinned.retain(|_, (page, _)| page.strong_count() > 0);
+        let shared = Arc::clone(&self.pinned);
+        lock(&shared).retain(|_, (page, _)| page.strong_count() > 0);
         // Pages already held, and the runs each request must read.
         let mut plans = Vec::with_capacity(requests.len());
         for r in &requests {
@@ -305,8 +309,7 @@ impl Store {
             }
             for (page, cell) in pages.iter_mut().enumerate() {
                 if wanted.get(page).copied().unwrap_or(false) {
-                    *cell = self
-                        .pinned
+                    *cell = lock(&shared)
                         .get(&(r.key.clone(), page))
                         .and_then(|(b, blocks)| {
                             let b = b.upgrade()?;
@@ -346,7 +349,12 @@ impl Store {
                     let sample = self.new_sample(&r, pages);
                     sample.heads_due.store(runs.len() as u32, Ordering::Release);
                     for run in runs {
-                        let job = (Arc::clone(&sample), Arc::clone(&r.source), run);
+                        let job = (
+                            Arc::clone(&sample),
+                            Arc::clone(&r.source),
+                            run,
+                            r.key.clone(),
+                        );
                         self.deferred.push(job);
                     }
                     Ok(sample)
@@ -439,7 +447,7 @@ impl Store {
             };
             for (page, shared) in run.zip(read) {
                 let blocks = matches!(shared, Page::Blocks(_));
-                self.pinned.insert(
+                lock(&self.pinned).insert(
                     (r.key.clone(), page),
                     (Arc::downgrade(shared.bytes()), blocks),
                 );
@@ -501,12 +509,13 @@ impl Store {
         (!jobs.is_empty()).then_some(Heads {
             jobs,
             max_frame_bytes: self.max_frame_bytes,
+            shared: Arc::clone(&self.pinned),
         })
     }
 }
 
 /// A run of pages of a sample still to read, and where from.
-type HeadJob = (Arc<Sample>, Arc<dyn Source>, Range<usize>);
+type HeadJob = (Arc<Sample>, Arc<dyn Source>, Range<usize>, BlobKey);
 
 /// A run of pages read for request `.0`.
 type RunRead = (usize, Range<usize>, io::Result<Vec<Page>>);
@@ -544,6 +553,9 @@ fn read_run(
 pub struct Heads {
     jobs: Vec<HeadJob>,
     max_frame_bytes: usize,
+    /// The store's page-sharing map: pages read here join it, so a reload or
+    /// a second instance of the instrument reuses them.
+    shared: Arc<Mutex<PinnedPages>>,
 }
 
 impl Heads {
@@ -553,7 +565,7 @@ impl Heads {
         std::thread::scope(|scope| {
             for _ in 0..lanes.clamp(1, self.jobs.len().max(1)) {
                 scope.spawn(|| {
-                    while let Some((sample, source, run)) =
+                    while let Some((sample, source, run, key)) =
                         self.jobs.get(next.fetch_add(1, Ordering::Relaxed) as usize)
                     {
                         let read = read_run(
@@ -564,8 +576,12 @@ impl Heads {
                             self.max_frame_bytes,
                         );
                         for (page, data) in run.clone().zip(read.into_iter().flatten()) {
-                            if let Some(cell) = sample.pinned.get(page) {
-                                let _ = cell.set(data);
+                            let blocks = matches!(data, Page::Blocks(_));
+                            let weak = Arc::downgrade(data.bytes());
+                            if let Some(cell) = sample.pinned.get(page)
+                                && cell.set(data).is_ok()
+                            {
+                                lock(&self.shared).insert((key.clone(), page), (weak, blocks));
                             }
                         }
                         sample.heads_due.fetch_sub(1, Ordering::Release);
@@ -573,7 +589,7 @@ impl Heads {
                 });
             }
         });
-        for (_, source, _) in &self.jobs {
+        for (_, source, ..) in &self.jobs {
             source.loaded();
         }
     }
@@ -875,4 +891,9 @@ fn clock(cache: &Cache, hand: &mut usize) -> u32 {
     let slot = (*hand % len) as u32;
     *hand = hand.wrapping_add(1);
     slot
+}
+
+/// The page map, whether or not a panicking thread held it.
+fn lock(map: &Mutex<PinnedPages>) -> std::sync::MutexGuard<'_, PinnedPages> {
+    map.lock().unwrap_or_else(PoisonError::into_inner)
 }
