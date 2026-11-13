@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use kontra_stream::{
-    BlobKey, Encoding, MAX_CHANNELS, MemSource, PAGE_FRAMES, SampleFmt, Source, Store, StoreConfig,
+    BlobKey, Encoding, LoadRequest, MAX_CHANNELS, MemSource, PAGE_FRAMES, SampleFmt, Source, Store,
+    StoreConfig,
 };
 
 const FMT: SampleFmt = SampleFmt {
@@ -413,4 +414,20 @@ fn a_deferred_head_is_silent_until_its_heads_load_then_reads_exactly() {
     let mut out = vec![[0.0; 2]; 64];
     assert_eq!(sample.read(&client, 10, &mut out).missing, 0);
     assert_eq!(out[0][0], value(10));
+}
+
+#[test]
+fn load_many_now_reads_its_heads_even_when_the_store_defers_them() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (key, source) = ramp(4 * PAGE_FRAMES);
+    store.defer_heads(true);
+    let request = LoadRequest {
+        key,
+        source,
+        frames: 4 * PAGE_FRAMES,
+        pin: vec![0..PAGE_FRAMES],
+    };
+    let sample = store.load_many_now(vec![request]).remove(0).unwrap();
+    assert!(sample.is_pinned(0));
+    assert!(store.take_heads().is_none());
 }
