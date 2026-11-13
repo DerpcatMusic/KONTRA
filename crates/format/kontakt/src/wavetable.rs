@@ -4,8 +4,8 @@ use kontra_format::Notes;
 use kontra_ir::{self as ir, FormShaper, Side, Warp, WarpShape};
 use ni_file::kontakt::objects::WavetableSource;
 
-/// The source's table and forms. Its modulation oscillator, inharmonic
-/// partials and random start phase are not played yet: each leaves a note.
+/// The source's table, forms and start phase. Its modulation oscillator
+/// and inharmonic partials are not played yet: each leaves a note.
 pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes) -> ir::Wavetable {
     let mut warp = |form: u32, amount: f32| {
         let kind = form.checked_sub(1);
@@ -30,7 +30,6 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
     for (on, feature) in [
         (source.mod_type != 0, "wavetable modulation"),
         (source.inharmonic_enabled, "wavetable inharmonic"),
-        (source.phase_random != 0.0, "wavetable random phase"),
     ] {
         if on {
             notes.add(ir::Impact::Audible, feature, group);
@@ -39,6 +38,7 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
     ir::Wavetable {
         position: source.position,
         phase: source.phase,
+        phase_random: source.phase_random.clamp(0.0, 1.0),
         warps,
     }
 }

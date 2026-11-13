@@ -17,6 +17,9 @@ pub struct Read {
     pub position: f32,
     /// Where in the cycle a note starts, 0..1.
     pub phase: f32,
+    /// How far past `phase` a note's start may fall, 0..=1: each note adds
+    /// its random draw times this (1 starts anywhere, `phase` then moot).
+    pub phase_random: f32,
     /// Applied in order.
     pub warps: [Warp; 2],
 }
@@ -399,6 +402,7 @@ mod tests {
         let read = Read {
             position: 0.0,
             phase: 0.0,
+            phase_random: 0.0,
             warps: [Warp::OFF; 2],
         };
         let spans: std::sync::Arc<[_]> = vec![(0, 8); LEVELS].into();

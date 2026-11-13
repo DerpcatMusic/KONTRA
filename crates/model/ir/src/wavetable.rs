@@ -9,6 +9,9 @@ pub struct Wavetable {
     pub position: f32,
     /// Where in the cycle a note starts, 0..1.
     pub phase: f32,
+    /// How far past `phase` a note's start may fall, 0..=1: each note adds
+    /// its random draw times this (1 starts anywhere, `phase` then moot).
+    pub phase_random: f32,
     /// Applied in order.
     pub warps: [Warp; 2],
 }

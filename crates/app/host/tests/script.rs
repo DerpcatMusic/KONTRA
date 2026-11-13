@@ -3962,6 +3962,7 @@ fn a_wavetable_form_mode_switches_the_forms_kind() {
     plan.groups[0].wavetable = Some(kontra_prepare::read(ir::Wavetable {
         position: 0.0,
         phase: 0.0,
+        phase_random: 0.0,
         warps: [ir::Warp::OFF; 2],
     }));
     let script = kontra_ksp::compile(
