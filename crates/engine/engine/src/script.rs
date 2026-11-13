@@ -233,6 +233,14 @@ impl Engine {
 }
 
 impl HostApi for Engine {
+    fn groups(&self) -> i64 {
+        #[cfg(feature = "trace")]
+        if self.trace.is_some() {
+            return -1;
+        }
+        self.masks.groups as i64
+    }
+
     /// `num_groups` and `key_down`, answered without the call machinery. A
     /// traced engine records every call, so it takes the general path.
     fn query(&mut self, action: Action, ints: &[i64]) -> Option<i32> {
@@ -256,6 +264,15 @@ impl HostApi for Engine {
                 i32::from(
                     u32::try_from(key).is_ok_and(|k| k < 128 && self.keys_down.1 >> k & 1 == 1),
                 )
+            }
+            Action::EventNote | Action::EventVelocity | Action::EventId => {
+                let running = self.running.event;
+                let current = running.and_then(|r| self.notes.get(r));
+                match action {
+                    Action::EventNote => current.map_or(0, |n| i32::from(n.key)),
+                    Action::EventVelocity => current.map_or(0, |n| i32::from(n.velocity_byte)),
+                    _ => running.map_or(0, NoteRef::event_id),
+                }
             }
             _ => return None,
         };
