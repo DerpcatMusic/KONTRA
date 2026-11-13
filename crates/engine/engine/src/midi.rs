@@ -23,9 +23,7 @@ impl Engine {
             self.behaviour.set_bend(channel, bend.max(-1.0));
             let mut hits = std::mem::take(&mut self.hits);
             self.notes.select(&mut hits, |n| n.host.channel == channel);
-            for &note in &hits {
-                self.refresh_note(note, None);
-            }
+            self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
             self.hits = hits;
             return;
         }
@@ -76,9 +74,10 @@ impl Engine {
             }
         }
         self.notes.select(&mut hits, |n| n.host.channel == channel);
-        for &note in &hits {
-            self.refresh_note(note, Some(controller));
-        }
+        // One pass over the voices, not one per note.
+        self.refresh_voices(Some(controller), |slot, _| {
+            slot.note.is_some_and(|n| hits.contains(&n))
+        });
         self.hits = hits;
     }
 
