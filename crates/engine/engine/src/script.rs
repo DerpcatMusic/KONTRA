@@ -12,7 +12,7 @@ use crate::queue::{Exit, Work};
 use crate::{Engine, EnginePar};
 
 pub(crate) use kontra_ledger::running::{Kind, Running};
-pub use kontra_plan::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
+pub use kontra_plan::{Callbacks, CcLink, Controls, KnobModPlan, LookPars, ScriptPlan};
 
 /// KSP's `$NI_NOT_FOUND`, what the `get_*_idx` lookups answer for a miss
 /// (measured on the oracle: `probes/ni_not_found.lua`).

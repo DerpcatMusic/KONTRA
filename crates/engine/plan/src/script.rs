@@ -182,6 +182,17 @@ impl CcLink {
     }
 }
 
+/// A controller that moves a foreign script's control `id` (see
+/// [`ir::KnobMod`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KnobModPlan {
+    pub slot: u8,
+    pub cc: u8,
+    pub id: i32,
+    pub saved: f32,
+    pub ratio: f32,
+}
+
 pub use kontra_script_ui::{Controls, LookPars};
 
 /// Entry points; a missing callback lets events through unchanged.

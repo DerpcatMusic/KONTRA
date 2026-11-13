@@ -405,7 +405,7 @@ pub(super) fn transfer(
     connection: Node,
     mut lfos: Option<&mut Vec<ir::Lfo>>,
 ) -> Option<ir::Transfer> {
-    let table = mapper(connection)?;
+    let mut table = mapper(connection)?;
     let name = connection.attribute("Source")?;
     let source = if let Some(cc) = name.strip_prefix("@MIDI CC ") {
         ir::Source::Controller(cc.trim().parse().ok()?)
@@ -443,8 +443,14 @@ pub(super) fn transfer(
                 table: vec![value],
                 ..Default::default()
             });
-        } else if let (Some((lfo, 1.0)), Some(lfos)) = (modulation::lfo(node), lfos.as_deref_mut())
+        } else if let (Some((lfo, d)), Some(lfos)) = (modulation::lfo(node), lfos.as_deref_mut())
+            && (d == 1.0 || table.is_empty())
         {
+            // At depth `d` the LFO enters as `(d·x + 1)/2`, a table over the
+            // `(x + 1)/2` it is read at.
+            if d != 1.0 {
+                table = vec![(1.0 - d) / 2.0, (1.0 + d) / 2.0];
+            }
             ir::Source::Lfo(index_of(lfos, lfo))
         } else if let (true, Some((lfo, steps, tau)), Some(lfos)) = (
             node.has_tag_name("StepEnvelope") && table.is_empty(),
