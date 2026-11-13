@@ -410,7 +410,11 @@ impl Voice {
         let released = self.released;
         let step = self.step * self.speed;
         // A stretching voice's heads trail or lead the cursor by up to a grain.
-        let from = self.heads.iter().fold(self.at(0), |a, &h| a.min(h));
+        let from = if self.speed == 1.0 {
+            self.at(0)
+        } else {
+            self.heads.iter().fold(self.at(0), |a, &h| a.min(h))
+        };
         let ahead = (LOOKAHEAD * step) as usize + (self.at(0) - from) as usize;
         let table = region.table.as_ref();
         let ahead = if table.is_some() { 0 } else { ahead };
@@ -452,7 +456,7 @@ impl Voice {
             } else if stretched {
                 self.read_stretched(client, &region, n)
             } else {
-                self.read_window(client, &region, n, self.at(0))
+                self.read_window(client, &region, n, (self.anchor, self.elapsed))
             };
             let raw = self.raw.get_mut(..filled).unwrap_or_default();
             insert(raw);
@@ -504,14 +508,14 @@ impl Voice {
         if self.grain % GRAIN == HALF_GRAIN {
             self.heads[0] = at;
         }
-        if self.grain % GRAIN == 0 {
+        if self.grain.is_multiple_of(GRAIN) {
             self.heads[1] = at;
         }
-        let a = self.read_window(client, region, n, self.heads[0]);
+        let a = self.read_window(client, region, n, (self.heads[0], 0));
         if let (Some(head), Some(raw)) = (self.head.get_mut(..a), self.raw.get(..a)) {
             head.copy_from_slice(raw);
         }
-        let filled = a.min(self.read_window(client, region, n, self.heads[1]));
+        let filled = a.min(self.read_window(client, region, n, (self.heads[1], 0)));
         let grain = self.grain;
         let pairs = self.raw.iter_mut().zip(self.head.iter()).take(filled);
         for (i, (b, a)) in pairs.enumerate() {
@@ -526,21 +530,24 @@ impl Voice {
         filled
     }
 
-    /// Reads the region about `from`, a cursor at the pitch's step, and
-    /// interpolates `n` frames into `raw`; returns how many it filled.
+    /// Reads the region about a cursor at the pitch's step, frame `i` at
+    /// `base + (frames + i) · step` (one product, so every host block size
+    /// lands on the same positions), and interpolates `n` frames into `raw`;
+    /// returns how many it filled.
     fn read_window(
         &mut self,
         client: &StreamClient,
         region: &Region,
         n: usize,
-        from: f64,
+        (base, frames): (f64, u64),
     ) -> usize {
         let sample = &region.sample;
         let mix = region.mix.as_ref();
         let released = self.released;
         let step = self.step;
-        let lo = from.floor() as i64 - 1;
-        let span = ((from + (n as f64 - 1.0) * step).floor() as i64 + 3 - lo) as usize;
+        let at = |i: u64| base + (frames + i) as f64 * step;
+        let lo = at(0).floor() as i64 - 1;
+        let span = (at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
         let partner = &mut self.partner;
         let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
             return 0;
@@ -593,7 +600,7 @@ impl Voice {
 
         let mut filled = 0;
         for (i, frame) in self.raw.iter_mut().take(n).enumerate() {
-            let x = from + i as f64 * step - lo as f64;
+            let x = at(i as u64) - lo as f64;
             let base = x.floor() as usize;
             let t = (x - base as f64) as f32;
             let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
