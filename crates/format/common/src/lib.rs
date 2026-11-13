@@ -1,6 +1,8 @@
 //! What every format reads into the instrument model: diagnostics folded by
 //! feature, so a format reports each gap once with a count (06-FORMATS.md).
 
+pub mod timing;
+
 use std::collections::BTreeMap;
 
 use kontra_ir as ir;

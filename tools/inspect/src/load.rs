@@ -14,8 +14,9 @@ use super::RATE;
 
 pub fn run(path: &Path) -> Result<(Value, String)> {
     let (instrument, law_applications) =
-        kontra_law::collect(|| kontra_host::instrument::read(path));
-    let instrument = instrument.map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+        kontra_law::collect(|| kontra_host::instrument::read_timed(path));
+    let (instrument, read_time, translate_time) =
+        instrument.map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
     // Prepare requests samples referenced by at least one non-purged group.
     let resident_samples: HashSet<usize> = instrument
         .groups
@@ -87,6 +88,8 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         .collect();
     let mut store = Store::new(StoreConfig::DEFAULT).context("creating sample store")?;
     let loaded = kontra_host::instrument::build(instrument, RATE, &mut store);
+    let build_times = loaded.timings;
+    let pinned_bytes = store.pinned_bytes();
     let original_slots: Vec<_> = loaded.persist.iter().map(|vars| vars.script).collect();
     let mapping = script_mapping(scripts.len(), &original_slots, loaded.plan.scripts.len());
     let mut callback_count = 0usize;
@@ -184,7 +187,9 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         })
         .collect();
     let plan = Arc::new(loaded.plan);
+    let started = std::time::Instant::now();
     let engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    let engine_init_time = started.elapsed();
     let library = RefCell::new(kontra_host::ui::Library::open(path));
     let asset_cache = RefCell::new(HashMap::<String, Option<usize>>::new());
     let metadata = |name: &str| library.borrow_mut().meta(name);
@@ -196,9 +201,13 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         asset_cache.borrow_mut().insert(name.to_owned(), size);
         size
     };
+    let ui_time = std::cell::Cell::new(build_times.faces);
     let ui: Vec<_> = loaded.faces.iter().zip(&loaded.pages).enumerate().map(|(slot, (face, page))| {
         if let (Some(face), Ok(slot_id)) = (face, u8::try_from(slot)) {
-            match kontra_host::ui::interface(face, slot_id, &engine, &metadata) {
+            let started = std::time::Instant::now();
+            let tree = kontra_host::ui::interface(face, slot_id, &engine, &metadata);
+            ui_time.set(ui_time.get() + started.elapsed());
+            match tree {
                 Ok(tree) => json!({"runtime_slot": slot, "original_slot": mapping.as_ref().and_then(|_| loaded.persist.get(slot)).map(|p| p.script), "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| {
                     let size = asset_size(&a.path);
                     json!({"path": a.path, "kind": format!("{:?}", a.kind),
@@ -208,7 +217,9 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                 Err(e) => json!({"runtime_slot": slot, "error": e.to_string()}),
             }
         } else if let Some(page) = page {
+            let started = std::time::Instant::now();
             let tree = kontra_host::ui::lua::tree(page, &metadata);
+            ui_time.set(ui_time.get() + started.elapsed());
             json!({"runtime_slot": slot, "original_slot": mapping.as_ref().and_then(|_| loaded.persist.get(slot)).map(|p| p.script), "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| {
                     let size = asset_size(&a.path);
                     json!({"path": a.path, "kind": format!("{:?}", a.kind),
@@ -217,6 +228,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                 }).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()})
         } else { json!({"runtime_slot": slot, "error": "no UI model"}) }
     }).collect();
+    let ui_time = ui_time.get();
     let (resolved_assets, unresolved_assets) = ui
         .iter()
         .filter_map(|model| model.get("assets").and_then(Value::as_array))
@@ -268,8 +280,10 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         faults,
         law_applications.len()
     );
+    let timings = json!({"read_seconds": read_time.as_secs_f64(), "translate_seconds": translate_time.map(|t| t.as_secs_f64()), "file_open_seconds": build_times.files.as_secs_f64(), "prepare_seconds": build_times.prepare.as_secs_f64(), "script_seconds": build_times.scripts.as_secs_f64(), "engine_init_seconds": engine_init_time.as_secs_f64(), "ui_seconds": ui_time.as_secs_f64(), "pinned_bytes": pinned_bytes});
+    let summary = format!("{summary}  load stages: {timings}\n");
     Ok((
-        json!({"schema_version": 1, "command": "load", "instrument": path,
+        json!({"timings": timings, "schema_version": 1, "command": "load", "instrument": path,
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
         "translated_zones": input_zones, "prepared_zones": zones, "unprepared_reasons": unprepared_reasons, "effects": effects, "slot_parameter_laws": parameter_laws, "scripts": scripts, "ui": ui,
         "diagnostics": diagnostics, "init_unanswered": unanswered, "init_unanswered_pars": unanswered_pars, "script_faults": faults,

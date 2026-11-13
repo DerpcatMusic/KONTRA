@@ -76,11 +76,7 @@ pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
     load_known(path, &[])
 }
 
-/// [`load`], a snapshot's base found among `known` (the instruments the
-/// player has) when none is near it ([`preset`]).
-///
-/// # Errors
-/// As [`load`].
+/// As [`load`], resolving a snapshot's base against `known` when needed.
 pub fn load_known(path: &Path, known: &[std::path::PathBuf]) -> Result<ir::Instrument, Error> {
     if path
         .extension()
@@ -88,6 +84,11 @@ pub fn load_known(path: &Path, known: &[std::path::PathBuf]) -> Result<ir::Instr
     {
         return snapshot::load(path, known);
     }
-    let (chunks, monolith, encrypted) = container::opened(path)?;
-    translate::instrument(path, &chunks, monolith, &[], encrypted, None)
+    let (chunks, monolith, encrypted) =
+        kontra_format::timing::measure(kontra_format::timing::Stage::Read, || {
+            container::opened(path)
+        })?;
+    kontra_format::timing::measure(kontra_format::timing::Stage::Translate, || {
+        translate::instrument(path, &chunks, monolith, &[], encrypted, None)
+    })
 }

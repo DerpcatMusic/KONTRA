@@ -7,8 +7,18 @@ use kontra_engine::{Plan, ir};
 use kontra_prepare::prepare;
 use kontra_stream::Store;
 
+/// Wall time spent in the stages of building a plan.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuildTimings {
+    pub files: std::time::Duration,
+    pub prepare: std::time::Duration,
+    pub scripts: std::time::Duration,
+    pub faces: std::time::Duration,
+}
+
 /// A plan ready for [`kontra_engine::Engine::new`], and what did not carry over.
 pub struct Loaded {
+    pub timings: BuildTimings,
     pub name: String,
     pub plan: Plan,
     pub diagnostics: Vec<ir::Diagnostic>,
@@ -29,6 +39,29 @@ pub struct Loaded {
 /// When the file is not an instrument this can read.
 pub fn read(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     read_saved(path, &[], &[])
+}
+
+/// Reads an ordinary instrument with separate format read and translation timings.
+///
+/// # Errors
+/// As [`read`]. For other formats the translation time is unavailable.
+pub fn read_timed(
+    path: &Path,
+) -> Result<
+    (
+        ir::Instrument,
+        std::time::Duration,
+        Option<std::time::Duration>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let start = std::time::Instant::now();
+    let (instrument, timings) = kontra_format::timing::collect(|| read(path));
+    Ok((
+        instrument?,
+        timings.read.unwrap_or_else(|| start.elapsed()),
+        timings.translate,
+    ))
 }
 
 /// [`read`], with the scripts' `saved` values (by instrument script) in
@@ -119,8 +152,14 @@ pub fn load(
 #[must_use]
 pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
     // Each file once, however many samples it holds.
+    let start = std::time::Instant::now();
     let files = kontra_stream::Files::new(instrument.samples.iter().map(|s| s.file.as_path()));
+    let files_time = start.elapsed();
+    let start = std::time::Instant::now();
     let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &|s| files.open(s));
+    let prepare_time = start.elapsed();
+    let scripts_start = std::time::Instant::now();
+    let mut faces_time = std::time::Duration::ZERO;
     let mut faces = Vec::new();
     let mut pages = Vec::new();
     let mut persist = Vec::new();
@@ -175,7 +214,9 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                     });
                 }
                 plan.scripts.push(planned);
+                let start = std::time::Instant::now();
                 faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
+                faces_time += start.elapsed();
                 pages.push(None);
                 persist.push(crate::persist::Vars::of(n, &compiled));
             }
@@ -201,6 +242,12 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         plan.sustain_pedal = kontra_engine::SustainPedal::ToScripts;
     }
     Loaded {
+        timings: BuildTimings {
+            files: files_time,
+            prepare: prepare_time,
+            scripts: scripts_start.elapsed().saturating_sub(faces_time),
+            faces: faces_time,
+        },
         name: instrument.name,
         plan,
         diagnostics,
