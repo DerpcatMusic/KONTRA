@@ -31,6 +31,9 @@ const HANG: Duration = Duration::from_secs(2);
 const SETUP: Duration = Duration::from_secs(60);
 
 static CURRENT: AtomicU64 = AtomicU64::new(0);
+/// Mutants the reader accepted, and refused: how deep the mutants get.
+static ACCEPTED: AtomicU64 = AtomicU64::new(0);
+static REFUSED: AtomicU64 = AtomicU64::new(0);
 
 struct Limited;
 
@@ -283,7 +286,10 @@ fn place(original: &Path, dir: &Path) -> std::io::Result<PathBuf> {
 }
 
 fn run_instrument(path: &Path, store: &mut Store) {
-    if let Ok(ir) = instrument::read(path) {
+    let read = instrument::read(path);
+    let counter = if read.is_ok() { &ACCEPTED } else { &REFUSED };
+    counter.fetch_add(1, Ordering::Relaxed);
+    if let Ok(ir) = read {
         let loaded = instrument::build(ir, 48_000, store);
         let engine = kontra_engine::Engine::new(
             std::sync::Arc::new(loaded.plan),
@@ -420,9 +426,19 @@ fn child(file: &Path, start: u64, count: u64) -> Result<(), Box<dyn std::error::
                 Vec::new()
             }
         };
+        let began = Instant::now();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // KONTRA_FUZZ_SELFTEST: every 500th mutant panics, to show the
+            // harness counts panics.
+            assert!(
+                std::env::var_os("KONTRA_FUZZ_SELFTEST").is_none() || i % 500 != 7,
+                "self-test panic"
+            );
             run_one(kind, &target, &mut store);
         }));
+        if began.elapsed() > Duration::from_millis(500) {
+            println!("T {i} {}", began.elapsed().as_millis());
+        }
         if !patched.is_empty() {
             let file = std::fs::OpenOptions::new().write(true).open(&target)?;
             for (at, old) in patched.iter().rev() {
@@ -430,7 +446,11 @@ fn child(file: &Path, start: u64, count: u64) -> Result<(), Box<dyn std::error::
             }
         }
     }
-    println!("D");
+    println!(
+        "D accepted {} refused {}",
+        ACCEPTED.load(Ordering::Relaxed),
+        REFUSED.load(Ordering::Relaxed)
+    );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
