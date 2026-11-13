@@ -258,7 +258,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
             // KONTRA_INSPECT_UI_LIST=1: each control and the values it would
             // visit, without moving it (tools/oracle/controls.py reads this).
             if list_only {
-                controls.push(json!({"slot":slot,"widget":widget_index,"name":widget.name,"kind":format!("{:?}",widget.kind).split([' ', '{', '(']).next(),"hidden":widget.hidden,"enabled":widget.enabled,"targets":values}));
+                controls.push(json!({"slot":slot,"widget":widget_index,"name":widget.name,"kind":format!("{:?}",widget.kind).split(|c: char| !c.is_alphanumeric()).next(),"hidden":widget.hidden,"enabled":widget.enabled,"targets":values}));
                 continue;
             }
             let mut moves = Vec::new();
