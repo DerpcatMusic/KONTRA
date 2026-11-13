@@ -16,6 +16,10 @@ pub struct Named {
     /// Texts that began to show, and stems of files loaded, since the last
     /// [`Rack::take_named`].
     new: Vec<String>,
+    /// The player moved one of its controls since its preset was last
+    /// set: what it names now is the player's choice (a preset arrow that
+    /// is not itself saved), not a load's.
+    touched: bool,
 }
 
 impl Named {
@@ -33,6 +37,17 @@ impl Named {
                 now.clone_into(was);
             }
         }
+    }
+
+    /// The player moved one of the part's controls.
+    pub(crate) fn touch(&mut self) {
+        self.touched = true;
+    }
+
+    /// A preset was set: until the player moves a control again, what
+    /// the part names is its own.
+    pub(crate) fn settle(&mut self) {
+        self.touched = false;
     }
 
     /// Notes a file the script loaded, by its stem.
@@ -54,10 +69,15 @@ fn shown(w: &model::Widget) -> &str {
 }
 
 impl Rack {
-    /// The names `part`'s script showed or loaded since the last call.
+    /// The names `part`'s script showed or loaded since the last call,
+    /// once the player moved one of its controls; none before (a load's
+    /// own names).
     pub fn take_named(&mut self, part: usize) -> Vec<String> {
         let p = self.parts.get_mut(part).and_then(Option::as_mut);
-        p.map(|p| std::mem::take(&mut p.named.new))
-            .unwrap_or_default()
+        p.map(|p| {
+            let new = std::mem::take(&mut p.named.new);
+            if p.named.touched { new } else { Vec::new() }
+        })
+        .unwrap_or_default()
     }
 }
