@@ -137,6 +137,8 @@ struct Slot {
     factor: f32,
     /// Its group's inserts that run on this voice alone.
     rack: Vec<voice_rack::Unit>,
+    /// The delay lines its combs run on, sized at build.
+    comb_lines: Vec<[f32; 2]>,
     /// Its lagging pitch routes' semitones: where they are, where they go.
     bend: [f32; 2],
     /// Its group's pan, gliding the same way.
@@ -323,6 +325,7 @@ impl Engine {
                 started: SampleTime(0),
                 factor: 1.0,
                 rack: Vec::new(),
+                comb_lines: Vec::new(),
                 bend: [0.0; 2],
                 pan: [0.0; 2],
                 warp: [0.0; modulators::WARPS],

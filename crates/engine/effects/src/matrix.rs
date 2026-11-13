@@ -77,7 +77,10 @@ pub fn matrix(e: &ir::Effect) -> Gain {
             product(balance(pan), width)
         }
         // Run per voice, their output gain after them (voice_rack.rs).
-        ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_) | ir::EffectKind::Overdrive(_) => {
+        ir::EffectKind::Shaper(_)
+        | ir::EffectKind::Crush(_)
+        | ir::EffectKind::Overdrive(_)
+        | ir::EffectKind::Comb(_) => {
             return IDENTITY;
         }
         // Its output gain trims processing that does not run here (a
