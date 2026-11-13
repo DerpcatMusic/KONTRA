@@ -42,7 +42,7 @@ pub(super) enum Look {
 impl Look {
     pub(super) fn pictures(
         &self,
-        store: &mut crate::Pictures,
+        store: &mut kontra_ui_pictures::Pictures,
         scale: f64,
     ) -> Option<[Arc<Image>; 3]> {
         let Self::Knob { frame, .. } = self else {
@@ -143,7 +143,7 @@ impl Look {
         (w, h, scale, device): (f64, f64, f64, f64),
         bare: bool,
         (artwork, button): (Option<&[Arc<Image>; 3]>, Option<&Arc<Image>>),
-        glyphs: Option<&crate::pictures::Glyphs>,
+        glyphs: Option<&kontra_ui_pictures::Glyphs>,
     ) -> Vec<El> {
         let bg = bare || !wd.hide.background;
         let ink = |default: u32| style.map_or(rgb(default), |s| super::color(s.color));
@@ -308,7 +308,7 @@ pub(super) fn label(
     style: &TextStyle,
     text_y: Option<i32>,
     size: (f64, f64, f64, f64),
-    glyphs: &crate::pictures::Glyphs,
+    glyphs: &kontra_ui_pictures::Glyphs,
 ) -> El {
     field_words(
         text,
@@ -333,7 +333,7 @@ fn field_words(
     ink: Color,
     align: model::Align,
     (w, h, s, device): (f64, f64, f64, f64),
-    glyphs: Option<&crate::pictures::Glyphs>,
+    glyphs: Option<&kontra_ui_pictures::Glyphs>,
     color: model::Rgba,
     metrics: StockMetrics,
 ) -> El {
@@ -342,7 +342,7 @@ fn field_words(
     };
     if text
         .chars()
-        .any(|c| c != '?' && crate::pictures::glyph(c) == usize::from(b'?'))
+        .any(|c| c != '?' && kontra_ui_pictures::glyph(c) == usize::from(b'?'))
     {
         return words(text, ink, align, w, h, s);
     }
@@ -360,7 +360,7 @@ fn field_words(
         .chars()
         .filter_map(|c| {
             glyphs
-                .get(crate::pictures::glyph(c))
+                .get(kontra_ui_pictures::glyph(c))
                 .map(|glyph| advance(c, glyph))
         })
         .sum();
@@ -378,7 +378,7 @@ fn field_words(
     };
     let mut layers = Vec::new();
     for c in text.chars() {
-        if let Some(glyph) = glyphs.get(crate::pictures::glyph(c)) {
+        if let Some(glyph) = glyphs.get(kontra_ui_pictures::glyph(c)) {
             let width = f64::from(glyph.width) * s;
             let height = f64::from(glyph.height) * s;
             let pixels: Vec<u8> = glyph
@@ -402,7 +402,7 @@ fn field_words(
                 })
                 .collect();
             if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels)
-                .and_then(|image| crate::pictures::at(image, device as f32))
+                .and_then(|image| kontra_ui_pictures::at(image, device as f32))
             {
                 layers.push(super::image(&Arc::new(image), width, height).at(
                     x,
@@ -456,7 +456,7 @@ fn bitmap_knob(
     value: &str,
     s: f64,
     art: &[Arc<Image>; 3],
-    glyphs: Option<&crate::pictures::Glyphs>,
+    glyphs: Option<&kontra_ui_pictures::Glyphs>,
 ) -> Vec<El> {
     let [base, cap, light] = art;
     vec![
@@ -468,7 +468,7 @@ fn bitmap_knob(
     ]
 }
 
-fn stock_words(text: &str, scale: f64, glyphs: Option<&crate::pictures::Glyphs>) -> El {
+fn stock_words(text: &str, scale: f64, glyphs: Option<&kontra_ui_pictures::Glyphs>) -> El {
     let Some(glyphs) = glyphs else {
         return words(
             text,
@@ -482,7 +482,7 @@ fn stock_words(text: &str, scale: f64, glyphs: Option<&crate::pictures::Glyphs>)
     let mut x = 0.;
     let mut layers = Vec::new();
     for c in text.chars() {
-        if let Some(glyph) = glyphs.get(crate::pictures::glyph(c)) {
+        if let Some(glyph) = glyphs.get(kontra_ui_pictures::glyph(c)) {
             let width = f64::from(glyph.width) * scale;
             layers.push(super::image(glyph, width, f64::from(glyph.height) * scale).at(x, 0.));
             x += width;

@@ -2473,6 +2473,7 @@ dependencies = [
  "kontra-protocol",
  "kontra-ui-model",
  "kontra-ui-pictures",
+ "kontra-ui-view",
  "mui",
  "mui-headless",
  "png",
@@ -2501,6 +2502,17 @@ dependencies = [
  "skrifa 0.46.2",
  "tempfile",
  "zune-jpeg",
+]
+
+[[package]]
+name = "kontra-ui-view"
+version = "0.0.0"
+dependencies = [
+ "kontra-ui-model",
+ "kontra-ui-pictures",
+ "mui",
+ "mui-headless",
+ "png",
 ]
 
 [[package]]

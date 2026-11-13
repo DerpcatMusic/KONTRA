@@ -28,7 +28,7 @@ pub const NOTO_SANS: &[u8] = include_bytes!("../../../../assets/NotoSans.ttf");
 /// A [`Ui`] in KONTRA's look.
 #[must_use]
 pub fn ui() -> Ui {
-    crate::pictures::stock::prewarm();
+    kontra_ui_pictures::stock::prewarm();
     let mut ui = Ui::new(Theme {
         palette: Palette {
             neutral: Pigment::new(260.0, 0.008),
