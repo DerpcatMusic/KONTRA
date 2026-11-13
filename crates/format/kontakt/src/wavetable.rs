@@ -4,8 +4,8 @@ use kontra_format::Notes;
 use kontra_ir::{self as ir, FormShaper, Side, Warp, WarpShape};
 use ni_file::kontakt::objects::WavetableSource;
 
-/// The source's table, forms and start phase. Its modulation oscillator
-/// and inharmonic partials are not played yet: each leaves a note.
+/// The source's table, forms, start phase and inharmonic stretch. Its
+/// modulation oscillator is not played yet: it leaves a note.
 pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes) -> ir::Wavetable {
     let mut warp = |form: u32, amount: f32| {
         let kind = form.checked_sub(1);
@@ -27,19 +27,21 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         warp(source.form_type, source.form1),
         warp(source.form2_type, source.form2),
     ];
-    for (on, feature) in [
-        (source.mod_type != 0, "wavetable modulation"),
-        (source.inharmonic_enabled, "wavetable inharmonic"),
-    ] {
-        if on {
-            notes.add(ir::Impact::Audible, feature, group);
-        }
+    if source.mod_type != 0 {
+        notes.add(ir::Impact::Audible, "wavetable modulation", group);
     }
     ir::Wavetable {
         position: source.position,
         phase: source.phase,
         phase_random: source.phase_random.clamp(0.0, 1.0),
         gain: LEVEL,
+        // Measured on an oracle probe (a saw at Inharm 0, ¼, ½, ¾, 0.9, 1):
+        // partial n moved to f·(1 + (n − 1)·2^(2a − 1)) within 0.05 %.
+        stretch: if source.inharmonic_enabled {
+            2f32.powf(2.0 * source.inharmonic.clamp(0.0, 1.0) - 1.0)
+        } else {
+            1.0
+        },
         warps,
     }
 }
