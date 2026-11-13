@@ -5,9 +5,9 @@
     tools/version.py previous   v0.4.2
     tools/version.py pending    2
 
-Versions are semver, 0.MINOR.PATCH while KONTRA is pre-1.0. A release that
-contains a new feature (a merged pull request titled `feat...`) raises MINOR;
-any other release raises PATCH. The first 0.x release is FIRST; the dated
+Versions are semver, 0.MINOR.PATCH while KONTRA is pre-1.0. Every release
+raises PATCH. MINOR rises only for a major feature: a merged pull request
+whose title is marked `!` (`feat!: ...`, `feat(ui)!: ...`). The first 0.x release is FIRST; the dated
 builds before it (0.3.x and 3.0.0 nightlies) are not counted.
 """
 import argparse
@@ -38,7 +38,7 @@ def bump(tag, subjects):
     if not match:
         return FIRST
     major, minor, patch = map(int, match.groups())
-    if any(re.match(r'feat(\(|!|:)', s) for s in subjects):
+    if any(re.match(r'\w+(\([^)]*\))?!:', s) for s in subjects):
         return f'{major}.{minor + 1}.0'
     return f'{major}.{minor}.{patch + 1}'
 
