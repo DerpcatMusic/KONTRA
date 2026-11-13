@@ -54,10 +54,16 @@ pub(super) fn view(
                     Some(menu) => stack![page, menu],
                     None => page,
                 };
-                // Wider than the rack at a fixed scale, it scrolls sideways.
+                // Wider than the rack at a fixed scale, it scrolls sideways;
+                // taller, it scrolls down inside its own box, not the rack.
                 let el = row![spacer(), page.shrink(0), spacer()]
                     .w(Len::Pct(100.))
                     .scroll();
+                let el = if size.1 * scale > room.1 + 0.5 && room.1 > 0. {
+                    col![el].w(Len::Pct(100.)).h(room.1).scroll()
+                } else {
+                    el
+                };
                 (edits, el)
             };
             input::apply(&mut face.tree, &edits);

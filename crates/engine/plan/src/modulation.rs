@@ -158,9 +158,9 @@ pub fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
         ((x >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
     };
     let pulse = |width: f32| if p < width { 1.0 } else { -1.0 };
-    let sine = (std::f32::consts::TAU * p).sin();
+    let sine = || (std::f32::consts::TAU * p).sin();
     let v = match l.wave {
-        ir::Wave::Sine => sine,
+        ir::Wave::Sine => sine(),
         ir::Wave::Triangle => 1.0 - 4.0 * ((p + 0.25).fract() - 0.5).abs(),
         ir::Wave::Saw => 1.0 - 2.0 * p,
         ir::Wave::Square { width } => pulse(width),
@@ -178,7 +178,7 @@ pub fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
             } else {
                 4.0 * (0.75 - p)
             };
-            let y = -w0 * sine + w1 * saw + w2 * triangle - w3 * pulse(width)
+            let y = -w0 * sine() + w1 * saw + w2 * triangle - w3 * pulse(width)
                 + w4 * random()
                 + w5 * (1.0 - 2.0 * p);
             let sum = [w0, w1, w2, w3, w4, w5]

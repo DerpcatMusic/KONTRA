@@ -4,6 +4,12 @@
 //! morphs between neighbouring cycles, and two forms bend where in the
 //! cycle it reads and shape what it read.
 
+/// The share of its own output a feedback kind feeds back, and a ring
+/// kind's depth.
+const FEEDBACK: f64 = 0.5;
+const FM_FEEDBACK: f64 = 0.62;
+const RING: f32 = 0.24;
+
 /// Frames in one cycle.
 pub const CYCLE: u64 = 2048;
 /// Cursor frames a voice moves per cycle played: a table zone's rate is
@@ -352,7 +358,7 @@ impl Table {
             let y = f64::from(st.last);
             let pm = match osc.kind {
                 ModKind::Pm => a64 * m,
-                ModKind::PmFeedback => a64 * y,
+                ModKind::PmFeedback => FEEDBACK * a64 * y,
                 _ => 0.0,
             };
             let p = (cursor * rate + f64::from(self.read.phase) + st.offset + pm).rem_euclid(1.0)
@@ -369,7 +375,7 @@ impl Table {
             let m32 = m as f32;
             let s = match osc.kind {
                 ModKind::FmBy => gain * m32,
-                ModKind::Ring => s * (1.0 + 0.32 * a * m32),
+                ModKind::Ring => s * (1.0 - a + RING * a * m32),
                 ModKind::Mix => s + 2.0 * a * gain * m32,
                 ModKind::Blend => s + (gain * m32 - s) * a,
                 _ => s,
@@ -377,7 +383,7 @@ impl Table {
             st.offset = (st.offset
                 + match osc.kind {
                     ModKind::Fm => hz * a64 * m,
-                    ModKind::FmFeedback => hz * a64 * f64::from(st.last),
+                    ModKind::FmFeedback => FM_FEEDBACK * hz * a64 * f64::from(st.last),
                     _ => 0.0,
                 })
             .rem_euclid(1.0);

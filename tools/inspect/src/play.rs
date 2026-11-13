@@ -147,6 +147,9 @@ fn run_events(
     // Monotonic start/end (ns) of each block with input, for `perf record -k CLOCK_MONOTONIC`.
     let mut event_blocks: Vec<[u64; 2]> = Vec::new();
     let mut rendered = Vec::new();
+    // Per block: wall ns, minor and major page faults (KONTRA_INSPECT_DUMP).
+    let mut extras: Vec<(u64, i64, i64, u64)> = Vec::new();
+    let (mut peak_voices, mut voice_blocks) = (0usize, 0u64);
     let mut process_time = Duration::ZERO;
     while at < stop {
         let frames = usize::try_from((stop - at).min(block as u64))?;
@@ -168,10 +171,20 @@ fn run_events(
         let stream_before = stream.stats();
         let script_before = engine.stats();
         let mono_start = monotonic_ns();
+        let faults_before = thread_faults();
         let timer = (std::time::Instant::now(), on_cpu());
         engine.process(&mut audio[..frames], &timed);
         let spent = timer.0.elapsed();
         process_time += spent;
+        let faults_after = thread_faults();
+        extras.push((
+            u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX),
+            faults_after.0 - faults_before.0,
+            faults_after.1 - faults_before.1,
+            mono_start,
+        ));
+        peak_voices = peak_voices.max(engine.active_voices());
+        voice_blocks += u64::from(engine.active_voices() > 0);
         // Time on the CPU when the kernel reports it: a block the machine
         // preempted is not a spike of ours.
         let cpu = on_cpu()
@@ -324,7 +337,19 @@ fn run_events(
             })
         })
         .collect();
+    if let Some(path) = std::env::var_os("KONTRA_INSPECT_DUMP") {
+        let text: String = block_times
+            .iter()
+            .zip(&extras)
+            .map(|(t, e)| format!("{} {} {} {} {} {}\n", t.1, t.0, e.0, e.1, e.2, e.3))
+            .collect();
+        std::fs::write(path, text)?;
+    }
     let timing = block_timing(&block_times, block);
+    // Load window: the first second. Play: everything after it.
+    let (load_times, play_times): (Vec<_>, Vec<_>) =
+        block_times.iter().copied().partition(|t| t.1 < u64::from(RATE));
+    let (load_timing, play_timing) = (block_timing(&load_times, block), block_timing(&play_times, block));
     let stats = engine.stats();
     let wait_timeouts = engine.offline_wait_timeouts() + settle_timeouts;
     let stream_stats = stream.stats();
@@ -405,7 +430,7 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "block_timing":timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
 }
@@ -430,7 +455,7 @@ fn block_timing(times: &[(u64, u64, usize, [u64; 3])], block: usize) -> Value {
         .collect();
     let budget = block as f64 / f64::from(RATE) * 1e6;
     json!({"block_frames":block, "budget_us":budget, "blocks":times.len(),
-        "p50_us":at(0.5), "p99_us":at(0.99), "max_us":at(1.0), "top":top})
+        "mean_us":sorted.iter().sum::<u64>() as f64 / sorted.len().max(1) as f64 / 1e3, "p50_us":at(0.5), "p99_us":at(0.99), "max_us":at(1.0), "top":top})
 }
 
 /// This thread's CPU time so far, ns (`CLOCK_THREAD_CPUTIME_ID`).
@@ -455,4 +480,13 @@ fn monotonic_ns() -> u64 {
     // SAFETY: `t` is a valid timespec the call fills in.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
     u64::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0)
+}
+
+/// This thread's (minor, major) page faults so far.
+fn thread_faults() -> (i64, i64) {
+    // SAFETY: an all-zero rusage is a valid value the call overwrites.
+    let mut r: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: `r` is a valid rusage the call fills in.
+    unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut r) };
+    (r.ru_minflt, r.ru_majflt)
 }
