@@ -101,7 +101,9 @@ pub enum Op {
     IAdd,
     ISub,
     IMul,
-    /// Division by zero gives 0 and is counted.
+    /// Division by zero gives 0 and is counted; so does `mod 0`, and the
+    /// callback goes on, as in Kontakt (oracle probe, Kontakt 8,
+    /// 2026-11-14; a real `7.0 / 0.0` gives inf there too).
     IDiv,
     IMod,
     IAnd,
