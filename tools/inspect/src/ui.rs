@@ -109,11 +109,11 @@ fn cell_diff(before: &[Cells], after: &[Cells]) -> Vec<Json> {
     changes
 }
 
+/// Each group's sound, and whether a script purged it (it plays silent).
 fn sound(engine: &Engine) -> Vec<String> {
-    engine
-        .group_sounds()
-        .iter()
-        .map(|x| format!("{x:?}"))
+    let purged: HashSet<usize> = engine.purged().collect();
+    (engine.group_sounds().iter().enumerate())
+        .map(|(g, x)| format!("{x:?} purged {}", purged.contains(&g)))
         .collect()
 }
 

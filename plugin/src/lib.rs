@@ -11,8 +11,8 @@
 mod align;
 mod editor;
 mod folder;
-mod follow;
 mod frames;
+mod follow;
 mod input;
 mod look;
 #[cfg(test)]

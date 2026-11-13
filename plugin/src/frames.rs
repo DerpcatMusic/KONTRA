@@ -35,11 +35,7 @@ pub fn note(stage: &'static str, took: Duration) {
         all.push(took);
         if all.len() >= EVERY {
             all.sort();
-            let at = |q: f64| {
-                all.get(((all.len() - 1) as f64 * q) as usize)
-                    .copied()
-                    .unwrap_or_default()
-            };
+            let at = |q: f64| all.get(((all.len() - 1) as f64 * q) as usize).copied().unwrap_or_default();
             let ms = |d: Duration| d.as_secs_f64() * 1e3;
             eprintln!(
                 "frame-times {stage}: p50 {:.2} ms, p99 {:.2} ms, max {:.2} ms",
