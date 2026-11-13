@@ -328,6 +328,10 @@ fn run_events(
         })
         .collect();
     let timing = block_timing(&block_times, block);
+    // Load window: the first second. Play: everything after it.
+    let (load_times, play_times): (Vec<_>, Vec<_>) =
+        block_times.iter().copied().partition(|t| t.1 < u64::from(RATE));
+    let (load_timing, play_timing) = (block_timing(&load_times, block), block_timing(&play_times, block));
     let stats = engine.stats();
     let wait_timeouts = engine.offline_wait_timeouts() + settle_timeouts;
     let stream_stats = stream.stats();
@@ -408,7 +412,7 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
 }
@@ -433,7 +437,7 @@ fn block_timing(times: &[(u64, u64, usize, [u64; 3])], block: usize) -> Value {
         .collect();
     let budget = block as f64 / f64::from(RATE) * 1e6;
     json!({"block_frames":block, "budget_us":budget, "blocks":times.len(),
-        "p50_us":at(0.5), "p99_us":at(0.99), "max_us":at(1.0), "top":top})
+        "mean_us":sorted.iter().sum::<u64>() as f64 / sorted.len().max(1) as f64 / 1e3, "p50_us":at(0.5), "p99_us":at(0.99), "max_us":at(1.0), "top":top})
 }
 
 /// This thread's CPU time so far, ns (`CLOCK_THREAD_CPUTIME_ID`).
