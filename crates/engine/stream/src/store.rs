@@ -144,6 +144,7 @@ pub struct Store {
     next_id: AtomicU32,
     max_frame_bytes: usize,
     io: Option<JoinHandle<()>>,
+    progress: Option<Arc<kontra_protocol::LoadProgress>>,
 }
 
 impl Store {
@@ -175,7 +176,19 @@ impl Store {
             next_id: AtomicU32::new(0),
             max_frame_bytes: config.max_frame_bytes,
             io: Some(io),
+            progress: None,
         })
+    }
+
+    /// Publishes load progress to the editor.
+    pub fn set_progress(&mut self, progress: Arc<kontra_protocol::LoadProgress>) {
+        self.progress = Some(progress);
+    }
+
+    /// The current load's progress, if an editor is observing it.
+    #[must_use]
+    pub fn progress(&self) -> Option<&kontra_protocol::LoadProgress> {
+        self.progress.as_deref()
     }
 
     /// log2 of the frames per page for samples in `fmt`.
@@ -327,6 +340,38 @@ impl Store {
             .filter_map(|(i, p)| p.as_ref().ok().map(|(_, runs)| (i, runs)))
             .flat_map(|(i, runs)| runs.iter().map(move |run| (i, run.clone())))
             .collect();
+        if let Some(progress) = self.progress.as_deref() {
+            let reused = plans
+                .iter()
+                .filter_map(|p| p.as_ref().ok())
+                .flat_map(|(pages, _)| pages.iter().flatten())
+                .map(|page| page.bytes().len() as u64)
+                .sum::<u64>();
+            let planned = jobs
+                .iter()
+                .filter_map(|(i, run)| {
+                    let r = requests.get(*i)?;
+                    let size = 1u64 << page_shift(r.key.fmt.bytes_per_frame(), max_frame_bytes);
+                    let first = run.start as u64 * size;
+                    let end = (run.end as u64 * size).min(r.frames);
+                    if let Some(per) = blocks_per_page(&*r.source, size) {
+                        let total = r.frames.div_ceil(ncw::SAMPLES_PER_BLOCK as u64) as usize;
+                        let start = run.start * per;
+                        let end = (run.end * per).min(total);
+                        let blocks = end.saturating_sub(start);
+                        let table = 4 * (blocks + 2 * blocks.div_ceil(per));
+                        r.source
+                            .block_bytes(start..end)
+                            .map(|bytes| bytes + table as u64)
+                    } else {
+                        Some((end - first) * r.key.fmt.bytes_per_frame() as u64)
+                    }
+                })
+                .sum::<u64>();
+            progress.sample_total(reused + planned);
+            progress.samples(reused);
+        }
+        let progress = self.progress.as_deref();
         let next = AtomicU32::new(0);
         let workers = std::thread::available_parallelism()
             .map_or(4, |n| n.get())
@@ -362,6 +407,11 @@ impl Store {
                                         .collect()
                                 })
                             };
+                            if let (Some(progress), Ok(pages)) = (progress, &result) {
+                                progress.samples(
+                                    pages.iter().map(|p: &Page| p.bytes().len() as u64).sum(),
+                                );
+                            }
                             done.push((*i, run.clone(), result));
                         }
                     })
