@@ -23,7 +23,9 @@ mod cache;
 mod discovery;
 mod outline;
 pub mod stock;
+mod vector;
 use mui::prelude::{Font, Image};
+pub use mui::scene::Vector;
 
 /// Reads a library-relative path; `None` when there is no such file.
 pub type Read = dyn Fn(&str) -> Option<Vec<u8>> + Send;
@@ -36,12 +38,20 @@ struct Job {
     scale: f32,
     /// A picture font: decoded at its own pixels, its glyphs cut by marker.
     font: bool,
-    outline: bool,
+    whole: Option<Whole>,
+}
+
+/// A file read and parsed whole, once.
+#[derive(Clone, Copy)]
+enum Whole {
+    Outline,
+    Vector,
 }
 
 enum Done {
     Image(AssetRef, u32, f32, bool, Option<Arc<Image>>),
     Outline(AssetRef, Option<Font>),
+    Vector(AssetRef, Option<Arc<Vector>>),
 }
 
 /// A picture font's 256 glyphs, in Windows-1252 order.
@@ -67,6 +77,7 @@ pub struct Pictures {
     last: HashMap<AssetRef, Arc<Image>>,
     fonts: HashMap<AssetRef, Option<Glyphs>>,
     outlines: HashMap<AssetRef, Option<Font>>,
+    vectors: HashMap<AssetRef, Option<Arc<Vector>>>,
     pending: usize,
     /// The scale the frames in `ready` decoded at.
     scale: f32,
@@ -91,13 +102,21 @@ impl Pictures {
             let mut decoded = HashMap::<u64, Option<Arc<Image>>>::new();
             let mut scale = 1.;
             for job in inbox {
-                if job.outline {
+                if let Some(whole) = job.whole {
                     let bytes = match job.path.as_str() {
                         "@stock/raldo" => stock::outline(),
                         _ => read(&job.path),
                     };
-                    let font = bytes.and_then(|bytes| Font::new(bytes).ok());
-                    if outbox.send(Done::Outline(job.asset, font)).is_err() {
+                    let done = match whole {
+                        Whole::Outline => {
+                            Done::Outline(job.asset, bytes.and_then(|b| Font::new(b).ok()))
+                        }
+                        Whole::Vector => Done::Vector(
+                            job.asset,
+                            bytes.and_then(|b| vector::vector(&b)).map(Arc::new),
+                        ),
+                    };
+                    if outbox.send(done).is_err() {
                         break;
                     }
                     ARRIVED.store(true, Ordering::Release);
@@ -161,6 +180,7 @@ impl Pictures {
             last: HashMap::new(),
             fonts: HashMap::new(),
             outlines: HashMap::new(),
+            vectors: HashMap::new(),
             pending: 0,
             scale: 1.,
         }
@@ -198,7 +218,7 @@ impl Pictures {
                     meta,
                     scale,
                     font: false,
-                    outline: false,
+                    whole: None,
                 };
                 if self.jobs.send(job).is_ok() {
                     self.pending += 1;
@@ -219,6 +239,11 @@ impl Pictures {
                 Done::Outline(asset, font) => {
                     arrived |= font.is_some();
                     self.outlines.insert(asset, font);
+                    continue;
+                }
+                Done::Vector(asset, vector) => {
+                    arrived |= vector.is_some();
+                    self.vectors.insert(asset, vector);
                     continue;
                 }
             };
@@ -254,7 +279,7 @@ impl Pictures {
             meta: ImageMeta::default(),
             scale: 1.,
             font: true,
-            outline: false,
+            whole: None,
         };
         if self.jobs.send(job).is_ok() {
             self.pending += 1;
@@ -275,7 +300,33 @@ impl Pictures {
             meta: ImageMeta::default(),
             scale: 1.,
             font: false,
-            outline: true,
+            whole: Some(Whole::Outline),
+        };
+        if self.jobs.send(job).is_ok() {
+            self.pending += 1;
+        }
+        None
+    }
+
+    /// The SVG `asset` at `path` as vector paths, parsed on the worker;
+    /// `None` until then, and for any other file or an SVG paths cannot
+    /// say, which [`Pictures::frame`] draws as pixels.
+    pub fn vector(&mut self, asset: AssetRef, path: &str) -> Option<Arc<Vector>> {
+        if !path.to_ascii_lowercase().ends_with(".svg") {
+            return None;
+        }
+        if let Some(vector) = self.vectors.get(&asset) {
+            return vector.clone();
+        }
+        self.vectors.insert(asset, None);
+        let job = Job {
+            asset,
+            frame: 0,
+            path: path.to_owned(),
+            meta: ImageMeta::default(),
+            scale: 1.,
+            font: false,
+            whole: Some(Whole::Vector),
         };
         if self.jobs.send(job).is_ok() {
             self.pending += 1;
@@ -461,6 +512,17 @@ pub fn at(image: Image, scale: f32) -> Option<Image> {
     }
     let size = |n: u32| ((f64::from(n) * f64::from(scale)).round() as u32).max(1);
     resample(&image, size(image.width), size(image.height))
+}
+
+/// The `size` pixels of `img` from `at`.
+pub fn crop(img: &Image, (x, y): (u32, u32), (w, h): (u32, u32)) -> Option<Arc<Image>> {
+    let stride = img.width as usize * 4;
+    let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+    for row in y as usize..(y + h) as usize {
+        let at = row * stride + x as usize * 4;
+        rgba.extend_from_slice(img.rgba.get(at..at + w as usize * 4)?);
+    }
+    Image::rgba(w, h, rgba).map(Arc::new)
 }
 
 /// `img` at `w` × `h` through a Catmull-Rom filter, widened when it

@@ -153,6 +153,7 @@ fn drawn_page(
                 p.meta,
             ))
         });
+        let vector = (item.picture.as_ref()).and_then(|p| pictures.vector(p.use_.asset, p.path));
         let lit = lit.filter(|_| !item.picture.as_ref().is_some_and(|p| p.meta.frames > 1));
         let art = picture
             .as_ref()
@@ -260,6 +261,7 @@ fn drawn_page(
             (
                 picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
                 handle.as_ref().map(|(i, ..)| Arc::as_ptr(i) as usize),
+                vector.as_ref().map(|v| Arc::as_ptr(v) as usize),
             ),
             (
                 &words,
@@ -312,7 +314,13 @@ fn drawn_page(
                 } else {
                     0.
                 };
-                let image = sliced(img, meta, (a.width, a.height), scale).at(inset, inset);
+                let image = match &vector {
+                    Some(v) => block(a.width, a.height)
+                        .radius(0.)
+                        .fill(Fill::Vector(v.clone(), Fit::Fill)),
+                    None => sliced(img, meta, (a.width, a.height), scale),
+                }
+                .at(inset, inset);
                 parts.push(if inset > 0. {
                     stack([image]).w(a.width).h(a.height).radius(0.).clip()
                 } else {
@@ -649,27 +657,19 @@ fn sliced(
                 .filter_map(|slice| {
                     let [sx, sy, sw, sh] = slice.source;
                     let [x, y, width, height] = slice.destination;
-                    Some(image(&crop(img, (sx, sy), (sw, sh))?, width, height).at(x, y))
+                    Some(
+                        image(
+                            &crate::pictures::crop(img, (sx, sy), (sw, sh))?,
+                            width,
+                            height,
+                        )
+                        .at(x, y),
+                    )
                 })
                 .collect();
             stack(pieces).w(w).h(h)
         }
     }
-}
-
-/// The `size` pixels of `img` from `at`.
-fn crop(
-    img: &mui::prelude::Image,
-    (x, y): (u32, u32),
-    (w, h): (u32, u32),
-) -> Option<Arc<mui::prelude::Image>> {
-    let stride = img.width as usize * 4;
-    let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
-    for row in y as usize..(y + h) as usize {
-        let at = row * stride + x as usize * 4;
-        rgba.extend_from_slice(img.rgba.get(at..at + w as usize * 4)?);
-    }
-    mui::prelude::Image::rgba(w, h, rgba).map(Arc::new)
 }
 
 /// Words in a library's picture font, as v1 drew them (`src/ui/perf_view.rs`
