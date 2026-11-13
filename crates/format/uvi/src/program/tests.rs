@@ -2224,3 +2224,23 @@ fn a_feedback_machine_runs_its_chain_and_mixes_it_with_its_input() {
         out.diagnostics
     );
 }
+
+#[test]
+fn a_held_macro_on_an_inserts_freq_leaves_the_saved_value_unreported() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup>
+        <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+      </Keygroup></Keygroups></Layer></Layers>
+      <Inserts><FeedbackMachine Bypass="0" Feedback="0" Mix="1">
+        <ControlSignalSources><ConstantModulation Name="Macro 1" Value="0.1"/></ControlSignalSources>
+        <Chains><AuxEffect Name="Chain1" Bypass="0" Gain="1" Pan="0"><Inserts>
+          <CombFilter Bypass="0" Mode="0" Freq="39.9" Q="0.9" KeyTracking="0"><Connections>
+            <SignalConnection Name="c" Ratio="1" Source="./../../Macro 1" Destination="Freq" ConnectionMode="1" Bypass="0" Inverted="0"/>
+          </Connections></CombFilter>
+        </Inserts></AuxEffect></Chains>
+      </FeedbackMachine></Inserts>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+}

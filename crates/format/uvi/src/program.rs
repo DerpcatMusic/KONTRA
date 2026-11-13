@@ -730,6 +730,17 @@ impl<L: Library> Translator<'_, '_, L> {
             if self.carried.contains(&connection.id()) {
                 continue;
             }
+            // An edit-mode connection (ConnectionMode 1) from a macro sets the
+            // knob when the macro moves; at load the saved value stands (the
+            // comb's Freq 39.905 is exactly the macro's 0.1 through its law).
+            // ponytail: the macro's own moves are not wired to the knob yet.
+            let owner = connection.parent().and_then(|c| c.parent());
+            if flag(connection, "ConnectionMode")
+                && held_macro(connection)
+                && owner.is_some_and(|o| routing::carried(o) || filters::carried(o))
+            {
+                continue;
+            }
             let feature = if dest.starts_with("Gain_") {
                 "matrix cell modulation"
             } else {
@@ -766,6 +777,21 @@ fn source_node<'a, 'input>(
     scope
         .descendants()
         .find(|n| n.attribute("Name") == Some(name))
+}
+
+/// Whether `connection`'s source is a `ConstantModulation` a module above it
+/// holds (`./../../Macro 1`, the effect's own control sources).
+fn held_macro(connection: Node) -> bool {
+    let name = connection
+        .attribute("Source")
+        .filter(|s| s.starts_with("./"))
+        .and_then(|s| s.rsplit('/').next());
+    connection.ancestors().any(|a| {
+        a.children()
+            .filter(|c| c.has_tag_name("ControlSignalSources"))
+            .flat_map(|c| c.children())
+            .any(|m| m.has_tag_name("ConstantModulation") && m.attribute("Name") == name)
+    })
 }
 
 /// The owners and destinations [`modulation::route`] carries.
