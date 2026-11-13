@@ -452,3 +452,24 @@ fn heads_read_for_a_deferred_load_are_shared_with_the_next_load_of_the_blob() {
     assert!(store.take_heads().is_none());
     drop((first, second));
 }
+
+#[test]
+fn stores_that_share_pages_in_the_process_pin_one_copy_of_an_instrument() {
+    let (mut a, mut b) = (
+        Store::new(StoreConfig::DEFAULT).unwrap(),
+        Store::new(StoreConfig::DEFAULT).unwrap(),
+    );
+    a.share_pages_in_process();
+    b.share_pages_in_process();
+    let (key, source) = ramp(4 * PAGE_FRAMES);
+    let first = a
+        .load(&key, source, 4 * PAGE_FRAMES, &[0..PAGE_FRAMES])
+        .unwrap();
+    let (_, source) = ramp(4 * PAGE_FRAMES);
+    let second = b
+        .load(&key, source, 4 * PAGE_FRAMES, &[0..PAGE_FRAMES])
+        .unwrap();
+    assert!(second.is_pinned(0));
+    assert_eq!(b.client().stats().bytes_read, 0);
+    drop((first, second));
+}

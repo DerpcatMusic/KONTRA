@@ -188,6 +188,16 @@ impl Store {
         })
     }
 
+    /// Pins through the process's one page map, so every store that calls
+    /// this (a plugin's instances in one host) shares the pinned pages of an
+    /// instrument another already holds; they free with the last holder.
+    /// Call before the first load. Stores that do not call it stay private,
+    /// which tests that reuse a key for different content rely on.
+    pub fn share_pages_in_process(&mut self) {
+        static PAGES: std::sync::OnceLock<Arc<Mutex<PinnedPages>>> = std::sync::OnceLock::new();
+        self.pinned = Arc::clone(PAGES.get_or_init(Arc::default));
+    }
+
     /// Publishes load progress to the editor.
     pub fn set_progress(&mut self, progress: Arc<kontra_protocol::LoadProgress>) {
         self.progress = Some(progress);

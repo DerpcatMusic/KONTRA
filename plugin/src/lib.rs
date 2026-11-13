@@ -387,6 +387,8 @@ impl PluginLogic for Kontra {
             s.audio = None;
             return;
         };
+        // Other instances in this host share this one's pinned pages.
+        store.share_pages_in_process();
         store.set_progress(Arc::clone(&p.shared.progress));
         // A part plays as soon as its plan exists; the sample heads follow.
         store.defer_heads(true);
