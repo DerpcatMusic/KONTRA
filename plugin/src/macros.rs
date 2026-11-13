@@ -6,14 +6,14 @@
 //! Assignments save with the plugin's state (`KontraParams::macros`), one
 //! per line, tab-separated: macro, rack slot, min, max, menu item values
 //! (comma-separated, empty for none), widget name, instrument path (empty
-//! until the tick learns it). An assignment frees itself when its part is
+//! until the tick learns it), host name ("Part: Control"). An assignment frees itself when its part is
 //! removed or holds another instrument.
 
 use std::path::Path;
 
 use std::sync::atomic::Ordering;
 
-use kontra_host::rack::{MacroTarget, Rack, STEPS, Scale};
+use kontra_host::rack::{Control, MacroTarget, Rack, STEPS, Scale};
 use kontra_ui_model::{Kind, Widget};
 use moose::prelude::*;
 
@@ -35,6 +35,8 @@ pub struct Macro {
     /// The part's instrument when the control was learnt; empty until the
     /// tick learns it.
     pub path: String,
+    /// The macro's host name: "Part: Control".
+    pub label: String,
 }
 
 impl Macro {
@@ -97,6 +99,7 @@ pub fn read(text: &str) -> [Option<Macro>; COUNT] {
             continue;
         };
         let path = f.next().unwrap_or_default().to_owned();
+        let label = f.next().unwrap_or_default().to_owned();
         if let Some(slot) = out.get_mut(n as usize) {
             *slot = Some(Macro {
                 part: part as usize,
@@ -105,6 +108,7 @@ pub fn read(text: &str) -> [Option<Macro>; COUNT] {
                 max,
                 steps,
                 path,
+                label,
             });
         }
     }
@@ -119,13 +123,14 @@ pub fn write(macros: &[Option<Macro>; COUNT]) -> String {
         if let Some(m) = m {
             let steps: Vec<String> = m.steps.iter().map(f64::to_string).collect();
             out.push_str(&format!(
-                "{n}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{n}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 m.part,
                 m.min,
                 m.max,
                 steps.join(","),
                 m.widget,
-                m.path
+                m.path,
+                m.label
             ));
         }
     }
@@ -134,8 +139,15 @@ pub fn write(macros: &[Option<Macro>; COUNT]) -> String {
 
 /// The player moved `w` of rack part `part` to `plain`: its macro, taken
 /// now if it had none and one is free, and its host value. None for a
-/// control no macro can drive, or when every macro is taken.
-pub fn touch(p: &KontraParams, part: usize, w: &Widget, plain: f64) -> Option<(u32, f64)> {
+/// control no macro can drive, or when every macro is taken. `title` is
+/// the part's, for the macro's host name.
+pub fn touch(
+    p: &KontraParams,
+    part: usize,
+    title: &str,
+    w: &Widget,
+    plain: f64,
+) -> Option<(u32, f64)> {
     let (min, max, steps) = span(w)?;
     let mut text = p
         .macros
@@ -166,9 +178,11 @@ pub fn touch(p: &KontraParams, part: usize, w: &Widget, plain: f64) -> Option<(u
                 max,
                 steps,
                 path: String::new(),
+                label: label(title, &w.name),
             };
             *macros.get_mut(n)? = Some(taken);
             *text = write(&macros);
+            renamed(p);
             n
         }
     };
@@ -215,8 +229,8 @@ pub fn index(id: u32) -> Option<usize> {
 }
 
 /// Tells the audio side what each macro moves, so a host's move inside a
-/// block applies at its frame: a script control with a fixed scale. A Lua
-/// widget, a tap area or a menu past [`STEPS`] items stays on the tick.
+/// block applies at its frame: a KSP control or a Lua widget. A native_ui
+/// tap area or a menu past [`STEPS`] items stays on the tick.
 pub fn send_targets(p: &KontraParams, rack: &mut Rack) {
     let macros = read(
         &p.macros
@@ -241,45 +255,38 @@ fn target(rack: &Rack, m: &Macro) -> Option<MacroTarget> {
         .iter()
         .position(|w| w.name == m.widget)?;
     let w = view.tree().widgets.get(widget)?;
-    if view.widget(widget).is_some()
-        || !matches!(
-            w.kind,
-            Kind::Knob { .. }
-                | Kind::Slider { .. }
-                | Kind::ValueEdit { .. }
-                | Kind::Menu { .. }
-                | Kind::Switch
-                | Kind::Button { momentary: false }
-        )
-    {
-        return None;
-    }
-    let (slot, id, _) = view.control(widget, m.min)?;
+    // A native_ui tap area's set comes from its page, which lives on the
+    // control side: it stays on the tick.
+    range(w)?;
+    let (slot, control) = match view.widget(widget) {
+        Some((slot, n)) => (slot, Control::Widget(n)),
+        None => {
+            let (slot, id, _) = view.control(widget, m.min)?;
+            match w.value {
+                Some(kontra_ui_model::Value::Real(_)) => (slot, Control::Real(id)),
+                _ => (slot, Control::Integer(id)),
+            }
+        }
+    };
     let scale = if m.steps.is_empty() {
-        match w.value {
-            Some(kontra_ui_model::Value::Real(_)) => Scale::Real {
-                min: m.min,
-                max: m.max,
-            },
-            _ => Scale::Int {
-                min: m.min,
-                max: m.max,
-            },
+        Scale::Range {
+            min: m.min,
+            max: m.max,
         }
     } else {
+        let len = u8::try_from(m.steps.len())
+            .ok()
+            .filter(|&l| usize::from(l) <= STEPS)?;
         let mut values = [0; STEPS];
         for (v, s) in values.iter_mut().zip(&m.steps) {
             *v = *s as i32;
         }
-        let len = u8::try_from(m.steps.len())
-            .ok()
-            .filter(|&l| usize::from(l) <= STEPS)?;
         Scale::Steps { values, len }
     };
     Some(MacroTarget {
         part: m.part,
         slot,
-        id,
+        control,
         scale,
     })
 }
@@ -305,7 +312,27 @@ pub fn release(p: &KontraParams, instrument: impl Fn(usize) -> Option<String>) {
     }
     if changed {
         *text = write(&macros);
+        renamed(p);
     }
+}
+
+/// A macro's host name changed: the host reads the names again on the
+/// next macro move.
+pub fn renamed(p: &KontraParams) {
+    p.shared.macro_names.fetch_add(1, Ordering::AcqRel);
+}
+
+/// "Part: Control", the control's script name without its type sigil.
+fn label(title: &str, widget: &str) -> String {
+    let control = widget
+        .trim_start_matches(['$', '%', '~', '@', '!', '?'])
+        .replace('_', " ");
+    let label = if title.is_empty() {
+        control
+    } else {
+        format!("{title}: {control}")
+    };
+    label.replace(['\t', '\n'], " ")
 }
 
 /// A loaded part's instrument as [`release`] keeps it: its path, empty for
@@ -353,7 +380,12 @@ mod tests {
             max: 1000.0,
             steps: Vec::new(),
             path: "/a lib/b.nki".into(),
+            label: label("Una Corda", "$reverb_amount"),
         });
+        assert_eq!(
+            macros[2].as_ref().unwrap().label,
+            "Una Corda: reverb amount"
+        );
         macros[4] = Some(Macro {
             part: 0,
             widget: "mode menu".into(),
@@ -361,6 +393,7 @@ mod tests {
             max: 10.0,
             steps: vec![0.0, 1.0, 10.0],
             path: String::new(),
+            label: String::new(),
         });
         assert_eq!(read(&write(&macros)), macros);
         let m = macros[2].as_ref().unwrap();

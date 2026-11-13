@@ -1947,8 +1947,13 @@ fn a_host_macro_learns_a_touched_control_and_drives_it() {
     };
     let (widget, var, min, max) = found.expect("a persistent knob on Una Corda's panel");
     // The player's touch: the first macro takes it.
-    let (id, _) = crate::macros::touch(&params, 0, &widget, min).expect("a free macro");
+    let (id, _) =
+        crate::macros::touch(&params, 0, "Una Corda", &widget, min).expect("a free macro");
     assert_eq!(id, crate::macros::FIRST);
+    // The host reads its name: the part's, then the control's.
+    let shown = params.parameter_presentation(id);
+    assert!(shown.is_some_and(|s| s.name.starts_with("Una Corda: ")));
+    assert!(params.macro_renamed(id) && !params.macro_renamed(id));
     // The host automates Macro 1 to three quarters of the control's range.
     let to = (min + 0.75 * (max - min)).round();
     let m = crate::macros::read(&params.macros.read().unwrap())[0]
@@ -1965,5 +1970,132 @@ fn a_host_macro_learns_a_touched_control_and_drives_it() {
     assert!(
         values.iter().any(|v| **v == format!("{var} {to}")),
         "Macro 1 → {to} did not reach {var}: {values:?}"
+    );
+}
+
+/// One 64-frame block with `events`: part 0's left channel.
+fn block_64(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event]) -> Vec<f32> {
+    const FRAMES: usize = 64;
+    let mut list = EventList::with_capacity(16);
+    for &e in events {
+        list.push(e);
+    }
+    let mut channels = vec![vec![0.0f32; FRAMES]; 2 * crate::OUTPUTS];
+    {
+        let mut outs: Vec<&mut [f32]> = channels.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outs, FRAMES);
+        let transport = TransportInfo::default();
+        let mut out_events = EventList::with_capacity(16);
+        let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut out_events);
+        <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+    }
+    channels.swap_remove(0)
+}
+
+#[test]
+fn a_host_macro_move_inside_a_block_lands_on_its_frame() {
+    use std::sync::Arc;
+
+    use kontra_engine::{Engine, Plan, Region, Zone};
+    use kontra_host::rack::{Control, MacroTarget, Mix, Part, Scale};
+    use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
+
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    // A constant-level zone, and a script that plays it when its knob moves.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let fmt = SampleFmt {
+        encoding: Encoding::F32,
+        channels: 1,
+    };
+    let frames = 48_000;
+    let key = BlobKey {
+        file: "dc".into(),
+        offset: 0,
+        fmt,
+    };
+    let bytes = (0..frames).flat_map(|_| 0.5f32.to_le_bytes()).collect();
+    let sample = (store.load(
+        &key,
+        Arc::new(MemSource::new(fmt, bytes)),
+        frames,
+        std::slice::from_ref(&(0..frames)),
+    ))
+    .unwrap();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+    let mut zone = Zone::new(region, 60, 48_000);
+    zone.keys = 0..=127;
+    let mut plan = Plan::new(vec![zone], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    let script = kontra_ksp::compile(
+        "on init
+            declare ui_knob $k (0, 100, 1)
+            message(get_ui_id($k))
+        end on
+        on ui_control ($k)
+            play_note(60, 100, 0, -1)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let k: i32 = engine.last_message().parse().unwrap();
+    {
+        let mut guard = crate::lock(&params.shared.rack);
+        let rack = guard.as_mut().unwrap();
+        let part = Part {
+            path: None,
+            source: None,
+            recall: kontra_engine::Recall::Restart,
+            name: "dc".into(),
+            diagnostics: vec![],
+            faces: vec![],
+            mix: Mix::DEFAULT,
+            solo: false,
+            mute: false,
+            script: Default::default(),
+            plan: None,
+            delays: None,
+            view: None,
+            slot_types: Vec::new(),
+            slot_responses: Vec::new(),
+            modified: false,
+            named: Default::default(),
+            sounds: Default::default(),
+        };
+        rack.install(0, Box::new(engine), part);
+        let scale = Scale::Range {
+            min: 0.0,
+            max: 100.0,
+        };
+        let target = MacroTarget {
+            part: 0,
+            slot: 0,
+            control: Control::Integer(k),
+            scale,
+        };
+        rack.set_macro(0, Some(target));
+    }
+    assert!(block_64(&params, &mut dsp, &[]).iter().all(|x| *x == 0.0));
+    // The host moves Macro 1 at frame 37 of the next block.
+    let change = EventBody::ParamChange {
+        id: crate::macros::FIRST,
+        value: 0.5,
+    };
+    let out = block_64(&params, &mut dsp, &[moose::prelude::Event::new(37, change)]);
+    let first = out.iter().position(|x| *x != 0.0);
+    assert!(
+        first.is_some_and(|f| f >= 37),
+        "sound before the move's frame, or none: first non-zero frame {first:?}"
     );
 }

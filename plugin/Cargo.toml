@@ -38,3 +38,6 @@ rfd = { version = "0.17", default-features = false }
 
 [dev-dependencies]
 moose-test = { workspace = true }
+kontra-engine = { path = "../crates/engine/engine" }
+kontra-ksp = { path = "../crates/script/ksp" }
+kontra-stream = { path = "../crates/engine/stream" }
