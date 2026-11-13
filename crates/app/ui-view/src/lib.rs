@@ -10,17 +10,68 @@ use std::sync::Arc;
 use kontra_ui_model::{self as model, Interface, Kind, PageRef};
 use mui::prelude::*;
 
-use crate::Pictures;
-use crate::meter::Shown;
+use kontra_ui_pictures::Pictures;
 
 mod plan;
 mod shape;
 mod stock;
+pub mod theme;
 mod wave;
 
 use plan::caption;
 #[cfg(test)]
 use plan::cuts;
+
+pub use theme::{NOTO_SANS, ui};
+
+/// One channel of a meter as it shows: the lit fraction, the peak line's,
+/// and whether the overload light is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Shown {
+    pub level: f64,
+    pub peak: f64,
+    pub over: bool,
+}
+
+/// The id of widget `n`'s surface on face `face` (a rack part): every
+/// face's ids are its own, so two open parts never share one.
+pub fn surface(face: usize, n: usize) -> String {
+    format!("kontra-w-{face}-{n}")
+}
+
+/// Whether a widget of `kind` takes the pointer.
+pub fn takes_input(w: &model::Widget) -> bool {
+    w.enabled
+        && matches!(
+            w.kind,
+            Kind::Knob { .. }
+                | Kind::Slider { .. }
+                | Kind::ValueEdit { .. }
+                | Kind::Button { .. }
+                | Kind::Switch
+                | Kind::Menu { .. }
+                | Kind::Table { .. }
+                | Kind::TextEdit
+        )
+}
+
+/// `note`'s name with middle C as C3, as samplers name it.
+#[must_use]
+pub fn note_name(note: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let name = NAMES.get(usize::from(note % 12)).copied().unwrap_or("?");
+    format!("{name}{}", i32::from(note / 12) - 2)
+}
+
+/// The rectangle from `(x0, y0)` to `(x1, y1)` as a closed path.
+pub fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
+    Path::polyline(
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| Point::new(x, y)),
+        true,
+    )
+}
 
 /// Text size where the source sets none, in source pixels.
 const TEXT: f64 = 11.;
@@ -78,7 +129,7 @@ fn drawn_page(
             {
                 return None;
             }
-            let response = ui.get(crate::input::surface(face, n));
+            let response = ui.get(surface(face, n));
             (response.held && response.button == Some(Button::Primary))
                 .then_some(model::WidgetRef(n))
         })
@@ -358,7 +409,7 @@ fn drawn_page(
                     && !words.contains('\n')
                     && words
                         .chars()
-                        .all(|c| c == '?' || crate::pictures::glyph(c) != usize::from(b'?'))
+                        .all(|c| c == '?' || kontra_ui_pictures::glyph(c) != usize::from(b'?'))
                     && style.font == model::Font::Stock(12)
                     && plan::label_fits(&words, glyphs, w, scale)
                 {
@@ -411,7 +462,7 @@ fn drawn_page(
         });
         // A control takes the pointer under its own id (crate::input), and
         // hovering it shows its help text (`set_control_help`).
-        let id = crate::input::surface(face, n.0);
+        let id = surface(face, n.0);
         // Its arrows show while the pointer is over it.
         let el = if matches!(wd.kind, Kind::ValueEdit { arrows: true, .. })
             && ui.get(id.clone()).hovered
@@ -422,7 +473,7 @@ fn drawn_page(
         } else {
             el
         };
-        let el = if crate::input::takes_input(wd) {
+        let el = if takes_input(wd) {
             let el = el
                 .id(id)
                 .focusable()
@@ -534,7 +585,7 @@ fn wallpaper(
 
 /// `w`'s value as its source shows it: the script's label, else the value
 /// over the display ratio with its unit.
-pub(crate) fn readout(w: &model::Widget, source: model::Source) -> String {
+pub fn readout(w: &model::Widget, source: model::Source) -> String {
     if w.hide.value {
         return String::new();
     }
@@ -544,7 +595,7 @@ pub(crate) fn readout(w: &model::Widget, source: model::Source) -> String {
     match &w.kind {
         // Ratio 0 ($VALUE_EDIT_MODE_NOTE_NAMES) names the note.
         Kind::ValueEdit { display, .. } if display.ratio == 0. => {
-            crate::keyboard::note_name(w.number().clamp(0., 127.) as u8)
+            note_name(w.number().clamp(0., 127.) as u8)
         }
         Kind::Knob { display, .. } | Kind::ValueEdit { display, .. } => {
             display.format_value(w.number(), true, source)
@@ -619,10 +670,9 @@ fn words_el(
                         model::Align::Center => Justify::Center,
                         model::Align::Right => Justify::End,
                     })
-                    .w(width)
+                    .w((width - inset.0 - inset.1).max(0.))
                     .h(line)
-                    .pad((inset, 0.))
-                    .at(0., top + n as f64 * line)
+                    .at(inset.0, top + n as f64 * line)
             })
             .collect::<Vec<_>>();
         return stack(lines).w(width).h(height).radius(0.).clip();
@@ -652,10 +702,9 @@ fn words_el(
         model::Align::Center => Justify::Center,
         model::Align::Right => Justify::End,
     })
-    .w(width)
+    .w((width - inset.0 - inset.1).max(0.))
     .h(line)
-    .pad((inset, 0.))
-    .at(0., top);
+    .at(inset.0, top);
     stack([el]).w(width).h(height).radius(0.).clip()
 }
 
@@ -681,7 +730,7 @@ fn sliced(
                     let [x, y, width, height] = slice.destination;
                     Some(
                         image(
-                            &crate::pictures::crop(img, (sx, sy), (sw, sh))?,
+                            &kontra_ui_pictures::crop(img, (sx, sy), (sw, sh))?,
                             width,
                             height,
                         )
@@ -704,7 +753,7 @@ fn bitmap_words(
     w: &model::Widget,
     (width, height): (f64, f64),
     scale: f64,
-    glyphs: &crate::pictures::Glyphs,
+    glyphs: &kontra_ui_pictures::Glyphs,
 ) -> El {
     let line = glyphs.first().map_or(0., |g| f64::from(g.height) * scale);
     let placements = plan::glyphs(words, style, w, (width, height), (scale, line), |n| {
@@ -723,7 +772,7 @@ fn image(img: &Arc<mui::prelude::Image>, w: f64, h: f64) -> El {
         .fill(Fill::Image(img.clone(), Fit::Fill))
 }
 
-pub(crate) fn color(c: model::Rgba) -> Color {
+pub fn color(c: model::Rgba) -> Color {
     Color::srgba(
         f32::from(c.r) / 255.,
         f32::from(c.g) / 255.,

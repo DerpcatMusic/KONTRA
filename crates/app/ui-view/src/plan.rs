@@ -211,7 +211,8 @@ pub(super) struct Text {
     pub size: f64,
     pub line: f64,
     pub top: f64,
-    pub inset: f64,
+    /// Room left and right of the words.
+    pub inset: (f64, f64),
     pub align: model::Align,
     pub color: Option<model::Rgba>,
     pub multiline: bool,
@@ -224,24 +225,32 @@ pub(super) fn text(
     (height, scale, em): (f64, f64, f64),
     source: model::Source,
 ) -> Text {
-    let size = style.and_then(|s| s.size).map_or(super::TEXT, f64::from) * scale;
     let multiline = words.contains('\n');
     let lua = matches!(source, model::Source::FalconLua);
+    let menu = lua && matches!(widget.kind, model::Kind::Menu { .. });
+    let size = style.and_then(|s| s.size).map_or(super::TEXT, f64::from) * scale;
     // Lines a UVI size apart (JUCE's font height, `size` at `em` per unit), Kontakt's 13/11.
     let pitch = if lua { 1. / em } else { 13. / 11. };
-    let line = size * if multiline { pitch } else { 1.25 };
+    // JUCE fits one line by width only: it sits in the middle however tall it runs.
+    let line = match (multiline, lua) {
+        (true, _) => size * pitch,
+        (false, true) => (size * 1.5).max(height),
+        (false, false) => size * 1.25,
+    };
     let (align, top) = placed(words, style, widget, (height, line, scale), !lua);
     let label = matches!(widget.kind, model::Kind::Label);
     Text {
         size,
         line,
-        top: top.max(0.),
-        // A UVI label is JUCE's, inset 5 by its border.
-        inset: match (label, lua) {
-            (true, true) => 5.,
-            (true, false) => 7.,
-            (false, _) => 2.,
-        } * scale,
+        top: if lua { top } else { top.max(0.) },
+        // A UVI label is JUCE's, inset 5 by its border; a UVI menu's sits
+        // at 1 in a combo, clear of its h − 3 arrow box (JUCE V2 positionComboBoxText).
+        inset: match (label, lua, menu) {
+            (_, _, true) => (6. * scale, height + scale),
+            (true, true, _) => (5. * scale, 5. * scale),
+            (true, false, _) => (7. * scale, 7. * scale),
+            (false, ..) => (2. * scale, 2. * scale),
+        },
         align,
         color: style.map(|s| s.color),
         multiline,
@@ -293,7 +302,7 @@ pub(super) fn glyphs(
 ) -> Vec<Glyph> {
     // Picture fonts are Kontakt's: a label starts at its top.
     let (align, top) = placed(words, style, widget, (height, line, scale), true);
-    let advance = |c| width_of(crate::pictures::glyph(c)).map_or(0., |w| f64::from(w) * scale);
+    let advance = |c| width_of(kontra_ui_pictures::glyph(c)).map_or(0., |w| f64::from(w) * scale);
     let mut result = Vec::new();
     for (n, row) in words.split('\n').enumerate() {
         let wide: f64 = row.chars().map(advance).sum();
@@ -303,7 +312,7 @@ pub(super) fn glyphs(
             model::Align::Right => width - 2. * scale - wide,
         };
         for c in row.chars() {
-            let index = crate::pictures::glyph(c);
+            let index = kontra_ui_pictures::glyph(c);
             let Some(w) = width_of(index) else { continue };
             let glyph_width = f64::from(w) * scale;
             result.push(Glyph {
@@ -410,7 +419,7 @@ pub(super) fn cuts(
 /// Whether a stock label fits inside the same inset used by the text fallback.
 pub(super) fn label_fits(
     text: &str,
-    glyphs: &crate::pictures::Glyphs,
+    glyphs: &kontra_ui_pictures::Glyphs,
     width: f64,
     scale: f64,
 ) -> bool {
@@ -421,7 +430,7 @@ pub(super) fn label_fits(
                 4.
             } else {
                 glyphs
-                    .get(crate::pictures::glyph(c))
+                    .get(kontra_ui_pictures::glyph(c))
                     .map_or(0., |g| f64::from(g.width))
             }
         })
@@ -441,9 +450,10 @@ mod tests {
             model::Rect::new(0, 0, 50, 22),
             model::Kind::Label,
         );
-        let top = |source| text("Sordino", None, &label, (22., 1., 1.), source).top;
-        assert_eq!(top(model::Source::Ksp { slot: 0 }), 0.);
-        assert!(top(model::Source::FalconLua) > 0.);
+        let at = |source| text("Sordino", None, &label, (22., 1., 1.), source);
+        assert_eq!(at(model::Source::Ksp { slot: 0 }).top, 0.);
+        let lua = at(model::Source::FalconLua);
+        assert_eq!(lua.top + lua.line / 2., 11.);
         let mut button = label.clone();
         button.kind = model::Kind::Button { momentary: false };
         assert!(
@@ -515,6 +525,29 @@ mod tests {
         let line = |source| text("a\nb", Some(&style), &w, (60., 1., 0.8), source).line;
         assert_eq!(line(model::Source::FalconLua), 27.5);
         assert_eq!(line(model::Source::Ksp { slot: 0 }), 26.);
+    }
+
+    /// A UVI menu's words sit in JUCE's combo label: 1 + 5 in, clear of the
+    /// h − 3 arrow box; one line is never fitted down by its height.
+    #[test]
+    fn a_uvi_menu_keeps_its_words_off_the_arrow() {
+        let w = model::Widget::new(
+            "m",
+            PageRef(0),
+            model::Rect::new(0, 0, 120, 20),
+            model::Kind::Menu { items: Vec::new() },
+        );
+        let t = text("Mode", None, &w, (20., 1., 1.), model::Source::FalconLua);
+        assert_eq!(t.inset, (6., 21.));
+        assert!(t.line >= t.size * 1.25);
+        let k = text(
+            "Mode",
+            None,
+            &w,
+            (20., 1., 1.),
+            model::Source::Ksp { slot: 0 },
+        );
+        assert_eq!(k.inset, (2., 2.));
     }
 
     /// A page that shows rows above its y 0 draws a label placed there

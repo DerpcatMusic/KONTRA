@@ -13,6 +13,7 @@ use mui::prelude::*;
 
 use crate::kit;
 use crate::theme::TEXT;
+pub use kontra_ui_view::{surface, takes_input};
 
 /// One control set by the user, and the modifier keys held at the click
 /// (a script reads them as `$CONTROL_PAR_KEY_*`).
@@ -51,28 +52,6 @@ pub struct Gesture {
 /// (Kontakt 8.13, measured: 12 steps in about 2 s).
 const REPEAT_DELAY: f64 = 0.4;
 const REPEAT_STEP: f64 = 0.15;
-
-/// The id of widget `n`'s surface on face `face` (a rack part): every
-/// face's ids are its own, so two open parts never share one.
-pub fn surface(face: usize, n: usize) -> String {
-    format!("kontra-w-{face}-{n}")
-}
-
-/// Whether a widget of `kind` takes the pointer.
-pub(crate) fn takes_input(w: &model::Widget) -> bool {
-    w.enabled
-        && matches!(
-            w.kind,
-            Kind::Knob { .. }
-                | Kind::Slider { .. }
-                | Kind::ValueEdit { .. }
-                | Kind::Button { .. }
-                | Kind::Switch
-                | Kind::Menu { .. }
-                | Kind::Table { .. }
-                | Kind::TextEdit
-        )
-}
 
 /// Which way a continuous control drags, and how many view points sweep
 /// its range. A source that sets no [`model::Drag`] gets the renderer's: a

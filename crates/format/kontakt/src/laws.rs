@@ -498,6 +498,14 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
 const MIN_DAMPING: f32 = 0.01;
 
 #[rustfmt::skip]
+pub(crate) fn semitones(ratio: f32) -> f64 {
+    kontra_law::common::SEMITONE_RATIO.inverse_f64(f64::from(ratio.max(1e-6))).unwrap_or(0.0)
+}
+
+#[rustfmt::skip]
+pub(crate) fn speed() -> ir::Law { ir::Law::Breakpoints((0u8..).zip(kontra_law::kontakt::STRETCH_SPEED).map(|(k, y)| (f32::from(k) / 20.0, y, 0.0)).collect()) }
+
+#[rustfmt::skip]
 mod solid;
 
 /// The Solid G-EQ's four bands from its knobs (each 0..=1): LF gain and Hz,

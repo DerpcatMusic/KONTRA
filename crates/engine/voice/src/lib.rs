@@ -29,6 +29,11 @@ pub const MAX_STEP: f64 = 64.0;
 pub const LOOKAHEAD: f64 = 8192.0;
 /// One-pole gain smoothing per frame (~2 ms at 48 kHz).
 const GAIN_SMOOTH: f32 = 0.01;
+/// The fastest a stretching voice plays (the stretch law's top).
+const MAX_SPEED: f64 = 8.0;
+/// A stretching voice's grain, output frames (43 ms at 48 kHz).
+const GRAIN: u64 = 2048;
+const HALF_GRAIN: u64 = GRAIN / 2;
 
 /// How each output channel (row) takes each source channel (column).
 pub type Gain = [[f32; 2]; 2];
@@ -73,6 +78,9 @@ pub struct VoiceStart {
     /// A fade its event asked for before it started; one up to a gain starts
     /// it from silence.
     pub fade: Option<(FadeTarget, u32, FadeCurve)>,
+    /// Source time per output frame over the pitch's: 1 plays as recorded;
+    /// otherwise the voice stretches time at its own pitch.
+    pub speed: f64,
 }
 
 /// What a voice does when its key goes up.
@@ -118,6 +126,15 @@ pub struct Voice {
     /// Cursor position of the note's release, once it came.
     released: Option<u64>,
     missing: u64,
+    /// See [`VoiceStart::speed`]; the cursor moves at `step · speed`.
+    speed: f64,
+    /// A stretching voice's two read heads, each a pitch-rate cursor that
+    /// restarts at the cursor once a grain, half a grain apart.
+    heads: [f64; 2],
+    /// Frames since the stretch began, which places its grains.
+    grain: u64,
+    /// Head 0's frames while head 1 reads.
+    head: Box<[[f32; 2]]>,
     #[cfg(feature = "trace")]
     last_peak: f32,
     #[cfg(feature = "trace")]
@@ -147,6 +164,10 @@ impl Voice {
             raw: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             released: None,
             missing: 0,
+            speed: 1.0,
+            heads: [0.0; 2],
+            grain: 0,
+            head: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             #[cfg(feature = "trace")]
             last_peak: 0.0,
             #[cfg(feature = "trace")]
@@ -178,6 +199,13 @@ impl Voice {
         }
         self.released = None;
         self.missing = 0;
+        self.speed = if start.speed.is_finite() {
+            start.speed.clamp(0.0, MAX_SPEED)
+        } else {
+            1.0
+        };
+        self.heads = [0.0; 2];
+        self.grain = 0;
         #[cfg(feature = "trace")]
         {
             self.last_peak = 0.0;
@@ -352,7 +380,7 @@ impl Voice {
 
     /// Cursor position `ahead` output frames from now.
     fn at(&self, ahead: u64) -> f64 {
-        self.anchor + (self.elapsed + ahead) as f64 * self.step
+        self.anchor + (self.elapsed + ahead) as f64 * self.step * self.speed
     }
 
     /// Mixes the next `out.len()` frames into `out`. `now` is the sample time of
@@ -380,11 +408,17 @@ impl Voice {
         };
         let sample = &region.sample;
         let released = self.released;
-        let ahead = (LOOKAHEAD * self.step) as usize;
-        let step = self.step;
+        let step = self.step * self.speed;
+        // A stretching voice's heads trail or lead the cursor by up to a grain.
+        let from = if self.speed == 1.0 {
+            self.at(0)
+        } else {
+            self.heads.iter().fold(self.at(0), |a, &h| a.min(h))
+        };
+        let ahead = (LOOKAHEAD * step) as usize + (self.at(0) - from) as usize;
         let table = region.table.as_ref();
         let ahead = if table.is_some() { 0 } else { ahead };
-        region.runs(self.at(0) as i64, ahead, released, |offset, run| {
+        region.runs(from as i64, ahead, released, |offset, run| {
             let low = if run.descending {
                 run.first + 1 - run.count as u64
             } else {
@@ -408,14 +442,21 @@ impl Voice {
             } else {
                 (((SCRATCH - 4) as f64 / self.step).floor() as usize).max(1)
             };
-            let n = fit.min(out.len() - done);
+            let mut n = fit.min(out.len() - done);
+            let stretched = self.speed != 1.0;
+            if stretched {
+                // Heads restart only at a chunk's start.
+                n = n.min((HALF_GRAIN - self.grain % HALF_GRAIN) as usize);
+            }
             let filled = if let Some(table) = table {
                 let cursor = (self.at(0), self.step);
                 let raw = self.raw.get_mut(..n).unwrap_or_default();
                 table.render(cursor, raw);
                 raw.len()
+            } else if stretched {
+                self.read_stretched(client, &region, n)
             } else {
-                self.read_window(client, &region, n)
+                self.read_window(client, &region, n, (self.anchor, self.elapsed))
             };
             let raw = self.raw.get_mut(..filled).unwrap_or_default();
             insert(raw);
@@ -456,15 +497,57 @@ impl Voice {
         }
     }
 
-    /// Reads the region about the cursor and interpolates `n` frames into
-    /// `raw`; returns how many it filled.
-    fn read_window(&mut self, client: &StreamClient, region: &Region, n: usize) -> usize {
+    /// `n` frames of a stretching voice into `raw`: its two heads read at the
+    /// pitch's rate, each faded in and out over its grain (triangles that sum
+    /// to one), so the cursor moves at `speed` while the pitch holds. Head 0
+    /// plays the note's start in full.
+    // ponytail: a plain two-head overlap at a fixed 2048-frame grain, no
+    // waveform alignment; Kontakt's stretch is smoother on sustained tones.
+    fn read_stretched(&mut self, client: &StreamClient, region: &Region, n: usize) -> usize {
+        let at = self.at(0);
+        if self.grain % GRAIN == HALF_GRAIN {
+            self.heads[0] = at;
+        }
+        if self.grain.is_multiple_of(GRAIN) {
+            self.heads[1] = at;
+        }
+        let a = self.read_window(client, region, n, (self.heads[0], 0));
+        if let (Some(head), Some(raw)) = (self.head.get_mut(..a), self.raw.get(..a)) {
+            head.copy_from_slice(raw);
+        }
+        let filled = a.min(self.read_window(client, region, n, (self.heads[1], 0)));
+        let grain = self.grain;
+        let pairs = self.raw.iter_mut().zip(self.head.iter()).take(filled);
+        for (i, (b, a)) in pairs.enumerate() {
+            let phase = ((grain + HALF_GRAIN + i as u64) % GRAIN) as f32 / GRAIN as f32;
+            let w = 1.0 - (2.0 * phase - 1.0).abs();
+            *b = [w * a[0] + (1.0 - w) * b[0], w * a[1] + (1.0 - w) * b[1]];
+        }
+        for h in &mut self.heads {
+            *h += n as f64 * self.step;
+        }
+        self.grain += n as u64;
+        filled
+    }
+
+    /// Reads the region about a cursor at the pitch's step, frame `i` at
+    /// `base + (frames + i) · step` (one product, so every host block size
+    /// lands on the same positions), and interpolates `n` frames into `raw`;
+    /// returns how many it filled.
+    fn read_window(
+        &mut self,
+        client: &StreamClient,
+        region: &Region,
+        n: usize,
+        (base, frames): (f64, u64),
+    ) -> usize {
         let sample = &region.sample;
         let mix = region.mix.as_ref();
         let released = self.released;
-        let lo = self.at(0).floor() as i64 - 1;
-        let span = (self.at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
-        let (anchor, elapsed, step) = (self.anchor, self.elapsed, self.step);
+        let step = self.step;
+        let at = |i: u64| base + (frames + i) as f64 * step;
+        let lo = at(0).floor() as i64 - 1;
+        let span = (at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
         let partner = &mut self.partner;
         let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
             return 0;
@@ -517,7 +600,7 @@ impl Voice {
 
         let mut filled = 0;
         for (i, frame) in self.raw.iter_mut().take(n).enumerate() {
-            let x = anchor + (elapsed + i as u64) as f64 * step - lo as f64;
+            let x = at(i as u64) - lo as f64;
             let base = x.floor() as usize;
             let t = (x - base as f64) as f32;
             let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
