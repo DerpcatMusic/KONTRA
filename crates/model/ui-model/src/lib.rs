@@ -110,6 +110,22 @@ pub struct Page {
     pub background: Background,
 }
 
+impl Page {
+    /// The height it shows: its own and the rows above its y 0.
+    #[must_use]
+    pub fn shown_height(&self) -> f64 {
+        self.size.height + f64::from(self.background.above)
+    }
+}
+
+impl Background {
+    /// The wallpaper row at the page's top edge.
+    #[must_use]
+    pub fn top_row(&self) -> u32 {
+        self.origin_y.saturating_sub(self.above)
+    }
+}
+
 /// What is drawn behind every widget on a page.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Background {
@@ -120,6 +136,9 @@ pub struct Background {
     pub offset_y: i32,
     /// Source/profile header rows, independent of the script's skin offset.
     pub origin_y: u32,
+    /// Rows the page shows above its y 0: the wallpaper's rows over
+    /// `origin_y`, and whatever widget a script placed there.
+    pub above: u32,
     /// The selected wallpaper strip frame.
     pub frame: u32,
 }

@@ -717,3 +717,55 @@ fn the_wheel_over_a_scrolling_region_never_scrolls_the_rack() {
     assert!(ui.scroll("kontra-v-0-0")[1] > 0., "the region scrolls");
     assert_eq!(ui.scroll("rack")[1], 0., "the rack does not");
 }
+
+/// A widget in a scrolling region sits where the script put it in that
+/// region, the band a page shows above its y 0 counted once.
+#[test]
+fn a_widget_in_a_scrolling_region_keeps_its_place_under_the_band() {
+    let at = |y, h| Rect {
+        x: 0.,
+        y,
+        width: 100.,
+        height: h,
+    };
+    let mut port = Widget::new("port", PageRef(0), at(10., 100.), Kind::Panel);
+    port.viewport = Some([0, 0]);
+    let mut go = Widget::new(
+        "go",
+        PageRef(0),
+        at(0., 20.),
+        Kind::Button { momentary: true },
+    );
+    go.parent = Some(model::WidgetRef(0));
+    let tree = Interface {
+        pages: vec![Page {
+            size: Size {
+                width: 200.,
+                height: 200.,
+            },
+            background: model::Background {
+                above: 4,
+                ..model::Background::default()
+            },
+            ..Page::default()
+        }],
+        widgets: vec![port, go],
+        ..Interface::default()
+    };
+    let mut pictures = pictures(Vec::new(), Vec::new());
+    let mut ui = Ui::default();
+    for _ in 0..2 {
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+        assert!(
+            ui.frame(
+                el,
+                Some(ViewSize::new(200., 210.)),
+                Input::default(),
+                1. / 60.
+            )
+            .is_ok()
+        );
+    }
+    let y = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame.y);
+    assert_eq!(y(&crate::input::surface(0, 1)), Some(14.));
+}

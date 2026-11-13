@@ -110,7 +110,7 @@ fn drawn_page(
         .and_then(|a| Some((a, image_asset(tree, a)?)))
     {
         let b = &p.background;
-        let skin = (b.frame, b.origin_y, b.offset_y.max(0));
+        let skin = (b.frame, b.top_row(), b.offset_y.max(0));
         for (n, y) in wallpaper(skin, meta.size.map_or(0., |s| s.height), meta.frames) {
             let Some(img) = pictures.frame(a, path, meta, n, device) else {
                 continue;
@@ -438,7 +438,9 @@ fn drawn_page(
         };
         let host = tree.scroller(n);
         let o = host.map_or(model::Rect::default(), |v| tree.page_rect(v));
-        let (x, y) = (r.x - o.x * scale, r.y - o.y * scale);
+        // A region's own place carries the band above the page, as `r` does.
+        let lift = f64::from(host.map_or(0, |_| p.background.above));
+        let (x, y) = (r.x - o.x * scale, r.y - (o.y + lift) * scale);
         let group = groups.entry(host).or_insert_with(Vec::new);
         group.push(el.at(x, y));
         if wd.viewport.is_some() {
