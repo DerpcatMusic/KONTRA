@@ -239,6 +239,12 @@ impl ModDelay {
         ((a * t + b) * t + k) * t + y0
     }
 
+    /// Whether every input gain is 0: the input never reaches the ring.
+    #[must_use]
+    pub fn deaf(&self) -> bool {
+        self.s.input == [[0.0; 2]; 2]
+    }
+
     /// The ring's length, frames: how long silent input can still echo.
     #[must_use]
     pub fn memory(&self) -> usize {
@@ -486,7 +492,29 @@ impl Phaser {
 
 #[cfg(test)]
 mod tests {
-    use super::{fract, round, trunc};
+    use super::{ModDelay, Settings, fract, round, trunc};
+
+    #[test]
+    fn a_delay_is_deaf_only_when_every_input_gain_is_zero() {
+        let mut s = Settings {
+            ms: 10.0,
+            depth_ms: 0.0,
+            second_head: false,
+            input: [[0.0; 2]; 2],
+            feedback: [[0.0; 2]; 2],
+            output: [[1.0, 0.0], [0.0, 1.0]],
+            damping_hz: f32::INFINITY,
+            low_cut_hz: 0.0,
+            steep_low_cut: false,
+            high_shelf: None,
+            spread_ms: 0.0,
+            lfo_hz: 1.0,
+            phase: 0.0,
+        };
+        assert!(ModDelay::new(s, 48_000, 50.0).deaf());
+        s.input[1][0] = 0.5;
+        assert!(!ModDelay::new(s, 48_000, 50.0).deaf());
+    }
 
     #[test]
     fn the_rounding_matches_libm_bit_for_bit() {
