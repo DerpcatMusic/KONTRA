@@ -114,6 +114,11 @@ pub struct Stats {
     pub actions_unhandled: u64,
     /// Script `message` calls.
     pub messages: u64,
+    /// Script callbacks started, and waits resumed.
+    pub script_starts: u64,
+    pub script_resumes: u64,
+    /// Script loop turns run, a measure of the work a script did.
+    pub script_turns: u64,
 }
 
 struct Slot {

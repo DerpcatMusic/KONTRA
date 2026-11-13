@@ -35,6 +35,15 @@ impl Vm {
         }
     }
 
+    /// Loop turns the last [`Vm::run`] made (the interpreter's; 0 for a foreign machine).
+    #[must_use]
+    pub fn last_turns(&self) -> u32 {
+        match self {
+            Self::Code(vm) => vm.last_turns(),
+            Self::Foreign(_) => 0,
+        }
+    }
+
     pub fn cancel(&mut self, co: CoId) {
         match self {
             Self::Code(vm) => vm.cancel(co),
