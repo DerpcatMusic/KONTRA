@@ -7,6 +7,22 @@ import sys
 import uuid
 
 
+# Apple's error text is unreviewed server output, so only a known cause is logged.
+REASONS = (
+    ('agreement', 'a required Apple Developer agreement is missing or expired; accept it at developer.apple.com'),
+    ('401', 'Apple rejected the credentials (Apple ID, app-specific password or team ID)'),
+    ('Unable to authenticate', 'Apple rejected the credentials (Apple ID, app-specific password or team ID)'),
+    ('403', 'Apple refused the request (account role or agreement)'),
+    ('timed out', 'the Apple notary service timed out'),
+    ('network', 'the Apple notary service could not be reached'),
+)
+
+
+def reason(text):
+    lower = text.lower()
+    return next((why for key, why in REASONS if key.lower() in lower), 'unknown cause')
+
+
 def notarize(artifact):
     auth = ['--apple-id', os.environ['APPLE_ID'], '--password',
             os.environ['APPLE_APP_SPECIFIC_PASSWORD'], '--team-id', os.environ['APPLE_TEAM_ID']]
@@ -16,7 +32,10 @@ def notarize(artifact):
         nonlocal result
         # Apple transport errors contain unreviewed server text. Log only safe result fields.
         child = subprocess.run(['xcrun', 'notarytool', *command, *auth, '--output-format', 'json'],
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if child.returncode:
+            print(f'notarytool {command[0]} exited {child.returncode}: {reason(child.stderr + child.stdout)}',
+                  file=sys.stderr)
         try:
             data = json.loads(child.stdout)
         except ValueError:

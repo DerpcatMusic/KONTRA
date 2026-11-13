@@ -37,7 +37,8 @@ def fields(body):
     note = re.search(r'^Release note:[ \t]*(.*?)[ \t]*$', body or '', re.I | re.M)
     area = re.search(r'^Area:[ \t]*(.*?)[ \t]*$', body or '', re.I | re.M)
     text = note.group(1).strip() if note else ''
-    if text.lower() == 'none':
+    # `none`, also with a reason after it: `none (internal move)`.
+    if re.match(r'none\b', text, re.I):
         text = ''
     name = AREAS.get(area.group(1).strip().lower()) if area else None
     return text, name
