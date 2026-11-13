@@ -55,13 +55,13 @@ pub enum ModOscKind {
     /// The oscillator sounds; the table's output `y` moves its frequency by
     /// `2·fm_hz·a·y`.
     FmBy,
-    /// The table's frequency moves by its own last output, `fm_hz·a·y`.
+    /// The table's frequency moves by its own last output, `0.62·fm_hz·a·y`.
     FmFeedback,
     /// The table's phase moves by `a·m` cycles.
     Pm,
-    /// The table's phase moves by its own last output, `a·y` cycles.
+    /// The table's phase moves by its own last output, `0.5·a·y` cycles.
     PmFeedback,
-    /// The output times `1 + 0.32·a·m`.
+    /// The output times `1 − a + 0.24·a·m`.
     Ring,
     /// The output plus `2a` of the oscillator at the table's level.
     Mix,
