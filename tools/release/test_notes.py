@@ -50,10 +50,10 @@ class NotesTest(unittest.TestCase):
 
     def test_a_release_opens_with_its_count_and_ends_with_the_compare_link(self):
         entry = dict(number='42', body='Release note: Louder.\nArea: sound', paths=[], title='feat: louder', author='ada')
-        result = render([entry], '3.1.0', 'v3.0.4')
-        self.assertTrue(result.startswith('1 change since [3.0.4](https://github.com/DerpcatMusic/KONTRA/releases/tag/v3.0.4), 1 of them'))
+        result = render([entry], '0.5.0', 'v0.4.4')
+        self.assertTrue(result.startswith('1 change since [0.4.4](https://github.com/DerpcatMusic/KONTRA/releases/tag/v0.4.4), 1 of them'))
         self.assertIn('### Install', result)
-        self.assertIn('**Full changelog:** [v3.0.4...v3.1.0](https://github.com/DerpcatMusic/KONTRA/compare/v3.0.4...v3.1.0)', result)
+        self.assertIn('**Full changelog:** [v0.4.4...v0.5.0](https://github.com/DerpcatMusic/KONTRA/compare/v0.4.4...v0.5.0)', result)
         self.assertNotIn('<details>', result)
         self.assertEqual(render([]), '')
 

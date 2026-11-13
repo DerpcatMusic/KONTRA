@@ -1,13 +1,14 @@
 name: Release
 
-# One release a day, when main has changed what ships since the last one, and
-# on demand (Actions > Release > Run workflow). Each release gets the next
-# version (tools/version.py), notes written from its pull requests
-# (tools/release/notes.py) and stays published. Downloads use stable names, so
-# releases/latest/download/<name> always works.
+# A release every third pull request merged on main, and on demand (Actions >
+# Release > Run workflow). Each release gets the next version
+# (tools/version.py), notes written from its pull requests
+# (tools/release/notes.py), the whole history as CHANGELOG.md
+# (tools/release/changelog.py) and stays published. Downloads use stable
+# names, so releases/latest/download/<name> always works.
 on:
-  schedule:
-    - cron: '0 3 * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -45,11 +46,10 @@ jobs:
           fi
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
           git tag --points-at HEAD > head-tags.txt
-          # A scheduled run with nothing new in what ships has nothing to release.
-          last=$(python3 tools/version.py previous)
-          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ -n "$last" ] && git diff --quiet "$last" HEAD -- . \
-              ':(exclude)docs' ':(exclude)website' ':(exclude)tools' ':(exclude)*.md'; then
-            echo "Nothing that ships changed since $last"
+          # A merge releases once three pull requests wait since the last release.
+          pending=$(python3 tools/version.py pending)
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$pending" -lt 3 ]; then
+            echo "$pending of 3 pull requests merged since $(python3 tools/version.py previous)"
             echo 'released=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -118,7 +118,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          stage="KONTRA-nightly-${{ matrix.name }}"
+          stage="KONTRA-${{ matrix.name }}"
           bundles="target/bundles/${{ matrix.target }}"
           if [ "$RUNNER_OS" = macOS ]; then
             mkdir "$stage"
@@ -143,7 +143,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'kontra-install-test'
-          $stage = Join-Path $env:GITHUB_WORKSPACE 'KONTRA-nightly-windows-x86_64'
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'KONTRA-windows-x86_64'
           & (Join-Path $stage 'install.ps1')
           $plugins = @('CLAP\KONTRA.clap', 'VST3\KONTRA.vst3')
           foreach ($plugin in $plugins) {
@@ -156,7 +156,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ runner.os == 'macOS' && 'macos-input' || 'release' }}-${{ matrix.name }}
-          path: KONTRA-nightly-${{ matrix.name }}.zip
+          path: KONTRA-${{ matrix.name }}.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -179,7 +179,7 @@ jobs:
           python3 tools/licenses.py --output "$lic"
           {
             echo "KONTRA redistribution notices and license texts."
-            echo "MPL covered source: KONTRA-nightly-covered-source.zip on the same release."
+            echo "MPL covered source: KONTRA-covered-source.zip on the same release."
             for f in LICENSE NOTICE THIRD_PARTY.md "$lic/THIRD_PARTY_NOTICES.txt"; do
               printf '\n===== %s =====\n' "$f"; cat "$f"
             done
@@ -187,13 +187,13 @@ jobs:
               printf '\n===== licenses/%s =====\n' "${f#"$lic"/}"; cat "$f"
             done
           } > LICENSES.txt
-          (cd "$lic" && zip -qr "$GITHUB_WORKSPACE/KONTRA-nightly-covered-source.zip" sources)
+          (cd "$lic" && zip -qr "$GITHUB_WORKSPACE/KONTRA-covered-source.zip" sources)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-legal
           path: |
             LICENSES.txt
-            KONTRA-nightly-covered-source.zip
+            KONTRA-covered-source.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -229,14 +229,14 @@ jobs:
           for name in APPLE_APPLICATION_CERTIFICATE_P12_BASE64 APPLE_INSTALLER_CERTIFICATE_P12_BASE64 APPLE_CERTIFICATE_PASSWORD APPLE_DEVELOPER_ID_APPLICATION APPLE_DEVELOPER_ID_INSTALLER APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
             [ -n "${!name:-}" ] || { echo "Missing required signing secret: $name" >&2; exit 1; }
           done
-          for arch in arm64 x86_64; do ditto -x -k "dist/KONTRA-nightly-macos-$arch.zip" inputs; done
+          for arch in arm64 x86_64; do ditto -x -k "dist/KONTRA-macos-$arch.zip" inputs; done
           version=$(python3 tools/version.py next)
-          python3 .github/scripts/package_macos.py --arm64 inputs/KONTRA-nightly-macos-arm64 \
-            --x86-64 inputs/KONTRA-nightly-macos-x86_64 --stage universal-stage --revision "$GITHUB_SHA" --version "$version"
+          python3 .github/scripts/package_macos.py --arm64 inputs/KONTRA-macos-arm64 \
+            --x86-64 inputs/KONTRA-macos-x86_64 --stage universal-stage --revision "$GITHUB_SHA" --version "$version"
           mkdir -p "universal-stage/payload/Library/Application Support/KONTRA"
           cp legal/LICENSES.txt "universal-stage/payload/Library/Application Support/KONTRA/LICENSES.txt"
           source .github/scripts/macos_signing_keychain.sh
-          bash .github/scripts/package_macos.sh universal-stage KONTRA-nightly-macos-universal.pkg
+          bash .github/scripts/package_macos.sh universal-stage KONTRA-macos-universal.pkg
       - name: Preserve signed macOS ZIP download
         run: |
           set -euo pipefail
@@ -245,11 +245,11 @@ jobs:
           ditto 'universal-stage/payload/Library/Audio/Plug-Ins/VST3/KONTRA.vst3' compatibility/KONTRA.vst3
           cp legal/LICENSES.txt compatibility/LICENSES.txt
           printf '%s\n' 'KONTRA universal plug-ins. The signed PKG installer is recommended; otherwise copy these bundles to your plug-in folders and rescan your DAW.' > compatibility/README.txt
-          ditto -c -k --sequesterRsrc compatibility KONTRA-nightly-macos-arm64.zip
+          ditto -c -k --sequesterRsrc compatibility KONTRA-macos-arm64.zip
       - name: Verify installed universal plugins
         run: |
           set -euo pipefail
-          sudo installer -pkg KONTRA-nightly-macos-universal.pkg -target /
+          sudo installer -pkg KONTRA-macos-universal.pkg -target /
           for bundle in /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3; do
             lipo "$bundle/Contents/MacOS/KONTRA" -verify_arch arm64 x86_64
             codesign --verify --deep --strict --all-architectures "$bundle"
@@ -259,9 +259,9 @@ jobs:
         with:
           name: release-macos-universal
           path: |
-            KONTRA-nightly-macos-universal.pkg
-            KONTRA-nightly-macos-universal.notarization.json
-            KONTRA-nightly-macos-arm64.zip
+            KONTRA-macos-universal.pkg
+            KONTRA-macos-universal.notarization.json
+            KONTRA-macos-arm64.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -286,7 +286,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for tag in $(git tag --points-at HEAD --list 'v3.*'); do
+          for tag in $(git tag --points-at HEAD --list 'v0.*'); do
             if gh release view "$tag" >/dev/null 2>&1; then
               echo "Already released as $tag"
               exit 0
@@ -294,4 +294,5 @@ jobs:
           done
           version=$(python3 tools/version.py next)
           python3 tools/release/notes.py --version "$version" > notes.md
-          gh release create "v$version" --target "$GITHUB_SHA" --latest --title "KONTRA $version" --notes-file notes.md KONTRA-nightly-*.zip KONTRA-nightly-macos-universal.pkg KONTRA-nightly-macos-universal.notarization.json
+          python3 tools/release/changelog.py > CHANGELOG.md
+          gh release create "v$version" --target "$GITHUB_SHA" --latest --title "KONTRA $version" --notes-file notes.md CHANGELOG.md KONTRA-*.zip KONTRA-macos-universal.pkg KONTRA-macos-universal.notarization.json

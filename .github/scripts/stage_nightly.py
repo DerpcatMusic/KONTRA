@@ -24,7 +24,7 @@ def stage(platform, output, bundles):
     install = 'powershell -ExecutionPolicy Bypass -File .\\install.ps1' if windows else 'bash ./install.sh'
     uninstall = 'powershell -ExecutionPolicy Bypass -File .\\uninstall.ps1' if windows else 'bash ./uninstall.sh'
     locations = '%LOCALAPPDATA%\\Programs\\Common\\CLAP and VST3' if windows else '~/.clap and ~/.vst3'
-    (output / 'README.txt').write_text(f'KONTRA nightly\n\nClose your DAW and extract the entire archive.\nInstall: {install}\nUninstall: {uninstall}\nInstalled per user in {locations}. Rescan plugins in your DAW.\nYour libraries and settings are preserved when uninstalling.\n\nLicenses: LICENSES.txt.\n', encoding='utf-8')
+    (output / 'README.txt').write_text(f'KONTRA\n\nClose your DAW and extract the entire archive.\nInstall: {install}\nUninstall: {uninstall}\nInstalled per user in {locations}. Rescan plugins in your DAW.\nYour libraries and settings are preserved when uninstalling.\n\nLicenses: LICENSES.txt.\n', encoding='utf-8')
 
 
 if __name__ == '__main__':
