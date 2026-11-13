@@ -2299,3 +2299,39 @@ fn an_lfo_and_a_step_envelope_on_a_sends_gain_run_free_on_its_bus() {
     assert_eq!(layer.lfos.len(), 2);
     assert!(layer.lfos.iter().all(|l| l.clock == ir::Clock::Free));
 }
+
+#[test]
+fn an_lfo_on_a_bus_flangers_mix_and_speed_moves_them_live() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup>
+        <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+      </Keygroup></Keygroups>
+      <Inserts><Flanger Name="F" Bypass="0" SyncToHost="0" Speed="0.4" Feedback="0.4" DelayTime="0.2" Depth="0.5" Mix="0.5"><Connections>
+        <SignalConnection Name="m" Ratio="0.3" Source="$Program/LFO 1" Destination="Mix" ConnectionMode="0" Bypass="0" Inverted="0"/>
+        <SignalConnection Name="s" Ratio="0.3" Source="$Program/LFO 1" Destination="Speed" ConnectionMode="0" Bypass="0" Inverted="0"/>
+      </Connections></Flanger></Inserts>
+      </Layer></Layers>
+      <ControlSignalSources>
+        <LFO Name="LFO 1" Bypass="0" WaveFormType="0" Freq="2" Bipolar="1" Retrigger="0" Depth="1"/>
+      </ControlSignalSources>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| !d.feature.starts_with("modulation")),
+        "{:?}",
+        out.diagnostics
+    );
+    let bus = out.buses.iter().find(|b| !b.lfos.is_empty()).unwrap();
+    let params: Vec<_> = bus
+        .mods
+        .iter()
+        .filter_map(|m| match m {
+            ir::ModKind::EffectParam { param, .. } => Some(*param),
+            _ => None,
+        })
+        .collect();
+    assert!(params.contains(&ir::EffectParam::ModRate), "{params:?}");
+}
