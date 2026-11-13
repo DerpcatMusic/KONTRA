@@ -39,6 +39,7 @@ fn ramp_region(store: &mut Store, frames: u64, pinned: u64) -> std::io::Result<R
 
 fn start(region: Region, step: f64, envelope: Ahdsr) -> VoiceStart {
     VoiceStart {
+        speed: 1.0,
         region,
         step,
         gain: [[1.0, 0.0], [0.0, 1.0]],
@@ -497,4 +498,34 @@ fn a_released_voice_that_is_stolen_keeps_its_release_time() {
     );
     assert!(voice.is_ending() && !voice.is_released());
     assert_eq!(voice.released_at(), Some(10));
+}
+
+/// A stretching voice plays the sample at its pitch (a ramp keeps its slope
+/// from the first frame) while its length follows the speed.
+#[test]
+fn a_stretching_voice_keeps_its_pitch_and_takes_its_speeds_time() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    for (speed, ends) in [(2.0, 4096), (0.5, 16_384)] {
+        let mut voice = Voice::allocate();
+        let mut s = start(
+            ramp_region(&mut store, 8192, 8192).unwrap(),
+            1.0,
+            Ahdsr::GATE,
+        );
+        s.speed = speed;
+        voice.start(s);
+        let out = render(&mut voice, &client, ends - 512);
+        assert_eq!(
+            out[1],
+            1.0 / 65_536.0,
+            "speed {speed}: the start plays as recorded"
+        );
+        assert!(
+            voice.is_active(),
+            "speed {speed}: still playing before its end"
+        );
+        render(&mut voice, &client, 1024);
+        assert!(!voice.is_active(), "speed {speed}: ended on time");
+    }
 }

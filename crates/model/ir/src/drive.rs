@@ -333,6 +333,8 @@ pub enum KnobTarget {
     Slot(SlotKnob),
     /// How the addressed convolution's response is prepared.
     Impulse(crate::ImpulseKnob),
+    /// The addressed group's [`crate::Group::speed`].
+    Speed,
 }
 
 /// A knob whose law the effect in the slot sets.

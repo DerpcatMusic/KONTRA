@@ -100,6 +100,7 @@ pub fn prepare(
             release_trigger: g.trigger == ir::Trigger::Release,
             bus: g.bus,
             wavetable: g.wavetable.map(read),
+            speed: g.speed,
             zones,
         })
         .collect();
