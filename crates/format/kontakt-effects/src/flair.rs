@@ -16,7 +16,7 @@ use kontra_ir as ir;
 /// A new Flair's knobs as Kontakt reads them back, in [`model`]'s order:
 /// mode, chord, invert, rate, rate unit, feedback, amount, width, pitch,
 /// damping, voices, detune, mix, offset, scan mode.
-pub(crate) const INIT: [f32; 15] = [
+pub const INIT: [f32; 15] = [
     0.0, 0.0, 0.0, 0.360_584, 0.0, 0.4, 1.0, 0.0, 48.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0,
 ];
 
@@ -61,7 +61,7 @@ fn pitch_hz(p: f32) -> f32 {
 }
 
 /// The comb at knob positions `p` (see [`INIT`]).
-pub(crate) fn flair(p: [f32; 15]) -> ir::EffectKind {
+pub fn flair(p: [f32; 15]) -> ir::EffectKind {
     let [
         mode,
         chord,
@@ -146,7 +146,7 @@ pub(crate) fn flair(p: [f32; 15]) -> ir::EffectKind {
 }
 
 /// A Flair's knobs as a script moves them: every move rebuilds it from all.
-pub(crate) fn model() -> ir::KnobModel {
+pub fn model() -> ir::KnobModel {
     ir::KnobModel {
         knobs: (0..15).map(ir::SlotKnob::Knob).collect(),
         saved: INIT.into(),
@@ -156,7 +156,7 @@ pub(crate) fn model() -> ir::KnobModel {
 
 /// What `$EFFECT_TYPE_FLAIR` (42) loads, as Morphology Evolved, Conflux
 /// and Shreddage load it: [`INIT`], every knob through [`model`].
-pub(crate) fn slot_type() -> ir::SlotType {
+pub fn slot_type() -> ir::SlotType {
     let effect = ir::Effect {
         kind: flair(INIT),
         bypass: false,
@@ -177,7 +177,7 @@ pub(crate) fn slot_type() -> ir::SlotType {
 /// The KSP names of [`model`]'s knobs but the unit (see the module docs): a
 /// straight 0..1 for the continuous ones; mode, chord, pitch (a note) and
 /// the switches are raw.
-pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 14] {
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 14] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };

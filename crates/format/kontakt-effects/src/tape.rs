@@ -144,7 +144,7 @@ static CURVE: [f32; 65] = [
 ];
 
 /// The record's knobs, each 0..=1, as the engine's waveshaper.
-pub(crate) fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
+pub fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
     let [gain, warmth, rolloff] = [gain, warmth, rolloff].map(|x| x.clamp(0.0, 1.0));
     let warmth = 10f32.powf((6.0 * warmth - 3.0) / 20.0);
     ir::EffectKind::Shaper(ir::Shaper {
@@ -175,7 +175,7 @@ pub(crate) fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
 
 /// The saved knobs (gain, warmth, roll-off, quality) as a script moves
 /// them: every move rebuilds the shaper through [`tape`].
-pub(crate) fn model(public: &[u8]) -> Option<ir::KnobModel> {
+pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
     use ir::SlotKnob::Knob;
     let f = |n: usize| Some(f32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?));
     let quality = f32::from(*public.get(12)?);
@@ -193,7 +193,7 @@ pub(crate) fn model(public: &[u8]) -> Option<ir::KnobModel> {
 
 /// The KSP names of [`model`]'s knobs; each is the record's field as set
 /// (bindings table; Quality stores 1 at any value ≥ 1).
-pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 4] {
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 4] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };

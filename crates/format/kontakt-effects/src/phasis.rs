@@ -29,7 +29,7 @@ use kontra_ir as ir;
 /// A new Phasis's knobs as Kontakt reads them back, in [`model`]'s order:
 /// rate, rate unit, Ultra, amount, centre, stereo, spread, feedback, mod
 /// mix, notches, invert phase, invert mod mix, mix.
-pub(crate) const INIT: [f32; 13] = [
+pub const INIT: [f32; 13] = [
     0.391_294, 0.0, 0.0, 1.0, 0.499_922, 0.5, 0.5, 0.210_526, 0.0, 2.0, 0.0, 1.0, 1.0,
 ];
 
@@ -39,7 +39,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 /// The notch phaser at knob positions `p` (see [`INIT`]).
-pub(crate) fn phasis(p: [f32; 13]) -> ir::EffectKind {
+pub fn phasis(p: [f32; 13]) -> ir::EffectKind {
     let [
         rate,
         _unit,
@@ -92,7 +92,7 @@ pub(crate) fn phasis(p: [f32; 13]) -> ir::EffectKind {
 }
 
 /// A Phasis's knobs as a script moves them: every move rebuilds it from all.
-pub(crate) fn model() -> ir::KnobModel {
+pub fn model() -> ir::KnobModel {
     ir::KnobModel {
         knobs: (0..13).map(ir::SlotKnob::Knob).collect(),
         saved: INIT.into(),
@@ -102,7 +102,7 @@ pub(crate) fn model() -> ir::KnobModel {
 
 /// What `$EFFECT_TYPE_PHASIS` (41) loads, as Morphology Evolved, Conflux
 /// and Shreddage load it: [`INIT`], every knob through [`model`].
-pub(crate) fn slot_type() -> ir::SlotType {
+pub fn slot_type() -> ir::SlotType {
     let effect = ir::Effect {
         kind: phasis(INIT),
         bypass: false,
@@ -124,7 +124,7 @@ pub(crate) fn slot_type() -> ir::SlotType {
 /// ones (their texts are 0..100 % straight lines, or the laws above); the
 /// stepped ones (notches 2..12, the switches, the unit) are set as raw
 /// values.
-pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 13] {
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 13] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };

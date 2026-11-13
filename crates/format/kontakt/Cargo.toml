@@ -13,6 +13,7 @@ aes = "0.8"
 kontra-format = { path = "../common" }
 kontra-fastlz = { path = "../../base/fastlz" }
 kontra-ir = { path = "../../model/ir" }
+kontra-kontakt-effects = { path = "../kontakt-effects" }
 kontra-law = { path = "../../base/law" }
 kontra-params = { path = "../../model/params" }
 ni-file = { path = "../../../vendor/ni-file" }

@@ -30,7 +30,7 @@ use kontra_ir as ir;
 
 /// A new Choral's knobs as Kontakt reads them back, in [`model`]'s order:
 /// rate, mode, amount, voices, delay, width, feedback, scatter, invert, mix.
-pub(crate) const INIT: [f32; 10] = [0.0, 0.0, 0.494_95, 0.0, 0.18, 0.5, 0.0, 0.0, 0.0, 0.995];
+pub const INIT: [f32; 10] = [0.0, 0.0, 0.494_95, 0.0, 0.18, 0.5, 0.0, 0.0, 0.0, 0.995];
 
 const V: usize = ir::ENSEMBLE_VOICES;
 type Row = [f32; V];
@@ -134,7 +134,7 @@ const SCATTER: Row = [
 ];
 
 /// The chorus at knob positions `p` (see [`INIT`]).
-pub(crate) fn choral(p: [f32; 10]) -> ir::EffectKind {
+pub fn choral(p: [f32; 10]) -> ir::EffectKind {
     let [
         rate,
         mode,
@@ -204,7 +204,7 @@ pub(crate) fn choral(p: [f32; 10]) -> ir::EffectKind {
 }
 
 /// A Choral's knobs as a script moves them: every move rebuilds it from all.
-pub(crate) fn model() -> ir::KnobModel {
+pub fn model() -> ir::KnobModel {
     ir::KnobModel {
         knobs: (0..10).map(ir::SlotKnob::Knob).collect(),
         saved: INIT.into(),
@@ -214,7 +214,7 @@ pub(crate) fn model() -> ir::KnobModel {
 
 /// What `$EFFECT_TYPE_CHORAL` (43) loads, as Morphology Evolved, Conflux
 /// and Shreddage load it: [`INIT`], every knob through [`model`].
-pub(crate) fn slot_type() -> ir::SlotType {
+pub fn slot_type() -> ir::SlotType {
     let effect = ir::Effect {
         kind: choral(INIT),
         bypass: false,
@@ -234,7 +234,7 @@ pub(crate) fn slot_type() -> ir::SlotType {
 
 /// The KSP names of [`model`]'s knobs: a straight 0..1 for the continuous
 /// ones; mode (0..3) and the switches are set as raw values.
-pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
