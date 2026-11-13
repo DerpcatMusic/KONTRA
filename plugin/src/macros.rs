@@ -11,6 +11,9 @@
 
 use std::path::Path;
 
+use std::sync::atomic::Ordering;
+
+use kontra_host::rack::{MacroTarget, Rack, STEPS, Scale};
 use kontra_ui_model::{Kind, Widget};
 use moose::prelude::*;
 
@@ -175,8 +178,8 @@ pub fn touch(p: &KontraParams, part: usize, w: &Widget, plain: f64) -> Option<(u
     // value the control has, and does not move it back.
     let param = param(p, n)?;
     param.set_value(value);
-    if let Some(last) = lock_last(p).get_mut(n) {
-        *last = value;
+    if let Some(last) = p.shared.macro_values.get(n) {
+        last.store(value.to_bits(), Ordering::Relaxed);
     }
     Some((id(n), value))
 }
@@ -204,8 +207,81 @@ pub(crate) fn param(p: &KontraParams, n: usize) -> Option<&FloatParam> {
     })
 }
 
-fn lock_last(p: &KontraParams) -> std::sync::MutexGuard<'_, [f64; COUNT]> {
-    crate::lock(&p.shared.macro_values)
+/// The macro host id `id` is, if one.
+#[must_use]
+pub fn index(id: u32) -> Option<usize> {
+    let n = id.checked_sub(FIRST)? as usize;
+    (n < COUNT).then_some(n)
+}
+
+/// Tells the audio side what each macro moves, so a host's move inside a
+/// block applies at its frame: a script control with a fixed scale. A Lua
+/// widget, a tap area or a menu past [`STEPS`] items stays on the tick.
+pub fn send_targets(p: &KontraParams, rack: &mut Rack) {
+    let macros = read(
+        &p.macros
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    let mut sent = crate::lock(&p.shared.macro_targets);
+    for (n, (m, sent)) in macros.iter().zip(sent.iter_mut()).enumerate() {
+        let target = m.as_ref().and_then(|m| target(rack, m));
+        if target != *sent {
+            *sent = target;
+            rack.set_macro(n, target);
+        }
+    }
+}
+
+fn target(rack: &Rack, m: &Macro) -> Option<MacroTarget> {
+    let view = rack.parts().get(m.part)?.as_ref()?.view.as_ref()?;
+    let widget = view
+        .tree()
+        .widgets
+        .iter()
+        .position(|w| w.name == m.widget)?;
+    let w = view.tree().widgets.get(widget)?;
+    if view.widget(widget).is_some()
+        || !matches!(
+            w.kind,
+            Kind::Knob { .. }
+                | Kind::Slider { .. }
+                | Kind::ValueEdit { .. }
+                | Kind::Menu { .. }
+                | Kind::Switch
+                | Kind::Button { momentary: false }
+        )
+    {
+        return None;
+    }
+    let (slot, id, _) = view.control(widget, m.min)?;
+    let scale = if m.steps.is_empty() {
+        match w.value {
+            Some(kontra_ui_model::Value::Real(_)) => Scale::Real {
+                min: m.min,
+                max: m.max,
+            },
+            _ => Scale::Int {
+                min: m.min,
+                max: m.max,
+            },
+        }
+    } else {
+        let mut values = [0; STEPS];
+        for (v, s) in values.iter_mut().zip(&m.steps) {
+            *v = *s as i32;
+        }
+        let len = u8::try_from(m.steps.len())
+            .ok()
+            .filter(|&l| usize::from(l) <= STEPS)?;
+        Scale::Steps { values, len }
+    };
+    Some(MacroTarget {
+        part: m.part,
+        slot,
+        id,
+        scale,
+    })
 }
 
 /// Frees the macros whose part no longer holds the instrument they were
@@ -249,15 +325,14 @@ pub fn moved(p: &KontraParams) -> Vec<(usize, String, f64)> {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
-    let mut last = lock_last(p);
     let mut out = Vec::new();
-    for (n, (m, last)) in macros.iter().zip(last.iter_mut()).enumerate() {
+    for (n, (m, last)) in macros.iter().zip(&p.shared.macro_values).enumerate() {
         let (Some(m), Some(param)) = (m, param(p, n)) else {
             continue;
         };
         let now = f64::from(param.value());
-        if (now - *last).abs() > 1e-6 {
-            *last = now;
+        if (now - f64::from_bits(last.load(Ordering::Relaxed))).abs() > 1e-6 {
+            last.store(now.to_bits(), Ordering::Relaxed);
             out.push((m.part, m.widget.clone(), m.plain(now)));
         }
     }
