@@ -109,6 +109,9 @@ pub struct Shared {
     shown: AtomicBool,
     /// A load holds the rack; `saved` is the state from just before it.
     holding: AtomicBool,
+    /// The audio thread caught a panic in the rack's render: the block went
+    /// silent. The tick tells the player, once per fault.
+    fault: AtomicBool,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -119,6 +122,8 @@ pub enum Request {
         path: std::path::PathBuf,
     },
     Restore(Saved),
+    /// A message for the player, shown with the load errors.
+    Notice(String),
     Ui(editor::Edit),
     /// The browser's own actions: load a preset, star, rescan.
     Browse(kontra_ui::app::Action),
@@ -207,7 +212,12 @@ impl KontraParams {
         self.shared.restored.fetch_add(1, Ordering::Release);
         let mut requests = lock(&self.shared.requests);
         requests.retain(|r| !matches!(r, Request::Restore(_)));
-        requests.push(Request::Restore(Saved::read(&json)));
+        // A damaged or foreign state loads an empty rack, and says so.
+        let saved = Saved::parse(&json).unwrap_or_else(|message| {
+            requests.push(Request::Notice(message));
+            Saved::new(Vec::new())
+        });
+        requests.push(Request::Restore(saved));
     }
 }
 
@@ -266,6 +276,12 @@ impl BackgroundTask for Tick {
             Interfaces::Hidden
         };
         let mut report = Vec::new();
+        if p.shared.fault.swap(false, Ordering::AcqRel) {
+            report.push(
+                "the audio engine hit an internal error and a block was silenced; if it repeats, reload the project"
+                    .to_string(),
+            );
+        }
         let mut browser = lock(&p.shared.browser);
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
@@ -304,6 +320,7 @@ impl BackgroundTask for Tick {
                     }
                     p.shared.restoring.store(false, Ordering::Release);
                 }
+                Request::Notice(message) => report.push(message),
                 Request::Ui(edit) => editor::apply(rack, edit),
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
@@ -490,7 +507,20 @@ impl PluginLogic for Kontra {
             if cx.process_mode.is_offline() {
                 audio.settle();
             }
-            audio.process(len, &s.chunk);
+            // A panic in the render is silence and a message, never an unwind
+            // into the host (catching costs nothing while nothing panics).
+            let chunk_events = &s.chunk;
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                audio.process(len, chunk_events);
+            }))
+            .is_err()
+            {
+                p.shared.fault.store(true, Ordering::Release);
+                for ch in 0..b.num_output_channels() {
+                    b.output(ch).fill(0.0);
+                }
+                return ProcessStatus::Normal;
+            }
             for ch in 0..b.num_output_channels() {
                 let pair = audio.output(ch / 2, len);
                 let Some(out) = b.output(ch).get_mut(start..start + len) else {
