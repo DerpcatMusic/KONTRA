@@ -147,6 +147,7 @@ fn run_events(
     // Monotonic start/end (ns) of each block with input, for `perf record -k CLOCK_MONOTONIC`.
     let mut event_blocks: Vec<[u64; 2]> = Vec::new();
     let mut rendered = Vec::new();
+    let (mut peak_voices, mut voice_blocks) = (0usize, 0u64);
     let mut process_time = Duration::ZERO;
     while at < stop {
         let frames = usize::try_from((stop - at).min(block as u64))?;
@@ -172,6 +173,8 @@ fn run_events(
         engine.process(&mut audio[..frames], &timed);
         let spent = timer.0.elapsed();
         process_time += spent;
+        peak_voices = peak_voices.max(engine.active_voices());
+        voice_blocks += u64::from(engine.active_voices() > 0);
         // Time on the CPU when the kernel reports it: a block the machine
         // preempted is not a spike of ours.
         let cpu = on_cpu()
@@ -405,7 +408,7 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "block_timing":timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
 }
