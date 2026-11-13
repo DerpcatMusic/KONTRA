@@ -36,6 +36,12 @@ impl Engine {
                 Some((ir::KnobTarget::LfoRate, law)) => {
                     return write(Readout::Padded(f64::from(law.eval(x))), 0.0, out);
                 }
+                // A time-stretch speed in %, one decimal (Kontakt 8.13.1, Time
+                // Machine 2: 0, .1, .5, 1 read "0.0", "26.4", "100.0", "800.0").
+                // ponytail: Time Machine Pro reads "1.0" at 0; its floor is not carried.
+                Some((ir::KnobTarget::Speed, law)) => {
+                    return write(Readout::Signed(100.0 * f64::from(law.eval(x))), 0.0, out);
+                }
                 _ => {}
             }
         }

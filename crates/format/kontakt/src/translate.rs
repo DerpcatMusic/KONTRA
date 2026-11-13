@@ -66,7 +66,7 @@ pub(crate) fn instrument(
     out.route_pitch = ir::Exp2::Quadratic { c: 0.33971 };
     // The instrument's tune applies to every group.
     let base = Base {
-        tune: semitones(params.tune) + f64::from(params.transpose),
+        tune: laws::semitones(params.tune) + f64::from(params.transpose),
         preload: params.dfd_channel_preload_size,
     };
     let mut resources = None;
@@ -380,12 +380,6 @@ pub(crate) fn db(linear: f32) -> f32 {
 
 /// Slots in each Kontakt effect rack.
 const SLOTS: usize = 8;
-fn semitones(ratio: f32) -> f64 {
-    kontra_law::common::SEMITONE_RATIO
-        .inverse_f64(f64::from(ratio.max(1e-6)))
-        .unwrap_or(0.0)
-}
-
 fn criteria_reverse(group: u32, groups: &GroupList) -> bool {
     groups
         .groups
@@ -531,7 +525,7 @@ fn translate_group(
         name: v.name.clone(),
         volume_db: db(v.volume),
         pan: v.pan.clamp(-1.0, 1.0),
-        tune: semitones(v.tune) + base.tune,
+        tune: laws::semitones(v.tune) + base.tune,
         keytrack: if v.key_tracking { 1.0 } else { 0.0 },
         trigger: if v.release_trigger {
             ir::Trigger::Release
@@ -540,6 +534,7 @@ fn translate_group(
         },
         purged: group.source_identity().is_ok_and(|s| s.flag == 1),
         stream: laws::stream(stream_mode, base.preload),
+        speed: matches!(stream_mode, 2 | 5 | 8).then_some(1.0), // Time Machine 1, 2, Pro
         ..ir::Group::DEFAULT
     };
     kontra_law::record(|| kontra_law::Application {
@@ -787,7 +782,7 @@ fn translate_zone(
         velocity_fade: (midi(z.fade_low_velocity), midi(z.fade_high_velocity)),
         key_fade: (midi(z.fade_low_key), midi(z.fade_high_key)),
         root: midi(z.root_key),
-        tune: semitones(z.zone_tune),
+        tune: laws::semitones(z.zone_tune),
         volume_db: db(z.zone_volume),
         pan: z.zone_pan.clamp(-1.0, 1.0),
         start,

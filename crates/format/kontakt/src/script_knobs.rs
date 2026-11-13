@@ -15,7 +15,7 @@ use kontra_law::common::BIPOLAR;
 /// are the slot's own (`Slot`), as are the legacy Delay's.
 pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::EffectParam as E;
-    use ir::KnobTarget::{Effect, LfoPhase, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot};
+    use ir::KnobTarget::{Effect, LfoPhase, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot, Speed};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     // A switch: any KSP value but 0 (in millionths) is on.
     let on = || ir::Law::Breakpoints([(0.0, 0.0, 0.0), (1e-6, 1.0, 0.0), (1.0, 1.0, 0.0)].into());
@@ -358,6 +358,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ("$ENGINE_PAR_LFO_TRI", LfoWeight(2), BIPOLAR),
         ("$ENGINE_PAR_LFO_RECT", LfoWeight(3), BIPOLAR),
         ("$ENGINE_PAR_LFO_RAND", LfoWeight(4), BIPOLAR),
+        ("$ENGINE_PAR_SPEED", Speed, crate::laws::speed()),
         (
             "$ENGINE_PAR_FILTER_SHIFTB",
             Slot(ir::SlotKnob::StageShift(1)),
