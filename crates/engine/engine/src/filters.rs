@@ -139,9 +139,10 @@ impl Engine {
                     .map(|g| &g.inserts[..])
                     .unwrap_or_default();
                 let (rack, spare, rate) = (&mut slot.rack, &mut *self.scratch, self.rate);
+                let lines = &mut slot.comb_lines;
                 slot.voice
                     .render_through(&self.stream, self.now.0, mix, |io| {
-                        crate::voice_rack::process(rack, inserts, io, spare, rate);
+                        crate::voice_rack::process(rack, inserts, io, spare, lines, rate);
                     });
             }
             self.stats.missing_frames += slot.voice.missing_frames() - before;

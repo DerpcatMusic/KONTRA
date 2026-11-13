@@ -276,6 +276,21 @@ pub struct CombBank {
     pub mix: f32,
 }
 
+/// A feedback comb on one voice: the input plus its own output, delayed one
+/// period of `hz` and scaled by `feedback` (0..1). Runs per voice, so a route
+/// can move `hz` for each note.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Comb {
+    pub hz: f32,
+    pub feedback: f32,
+    /// Octaves a [`crate::ModKind::Cutoff`] depth of 1 moves `hz` (the range
+    /// of the format's frequency control).
+    pub octaves: f32,
+}
+
+/// The lowest `hz` a [`Comb`] reaches: its line's length.
+pub const COMB_LOWEST_HZ: f32 = 20.0;
+
 /// What a [`CombBank`]'s voices play.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CombMode {

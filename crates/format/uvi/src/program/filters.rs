@@ -40,6 +40,10 @@ impl<L: Library> Translator<'_, '_, L> {
             .filter_map(|(insert, c)| {
                 let tag = c.parent()?.parent()?.tag_name().name();
                 let q = c.attribute("Destination") == Some("Q") && tag != "OnePole";
+                // A comb's Q is its loop gain: not a resonance route.
+                if q && tag == "CombFilter" {
+                    return None;
+                }
                 let mut r = if q {
                     modulation::factor(modulation::reach(program, c, (tag, "Q"))?, c)?
                 } else {
@@ -100,7 +104,8 @@ fn ladder_shape(node: Node) -> bool {
 /// or `MS20` (as above) with no key tracking.
 pub(super) fn carried(node: Node) -> bool {
     let xpander = node.has_tag_name("XpanderFilter") && ladder_shape(node);
-    (node.has_tag_name("OnePole") || node.has_tag_name("MS20") || xpander)
+    let comb = node.has_tag_name("CombFilter") && num(node, "Mode", 0.0) == Ok(0.0);
+    (node.has_tag_name("OnePole") || node.has_tag_name("MS20") || xpander || comb)
         && !flag(node, "Bypass")
         && !flag(node, "KeyTracking")
         && node
@@ -140,6 +145,22 @@ pub(super) fn on_bus(node: Node) -> bool {
 
 /// The filter at `node` (one `carried` or `on_bus` accepts), for slot `slot`.
 pub(super) fn effect(node: Node, slot: usize) -> ir::Effect {
+    if node.has_tag_name("CombFilter") {
+        // One feedback comb at `Freq` Hz, `Q` its loop gain (unverified law,
+        // as the bus comb); `Freq` moves on the same 20 Hz to 20 kHz range.
+        let comb = ir::Comb {
+            hz: (num(node, "Freq", 440.0).unwrap_or(440.0) as f32)
+                .clamp(ir::COMB_LOWEST_HZ, 20_000.0),
+            feedback: (num(node, "Q", 0.0).unwrap_or(0.0) as f32).clamp(0.0, 0.999),
+            octaves: FREQ_OCTAVES,
+        };
+        return ir::Effect {
+            kind: ir::EffectKind::Comb(comb),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        };
+    }
     let hz = num(node, "Freq", 20_000.0).unwrap_or(20_000.0) as f32;
     let mode = num(node, "Mode", 0.0).unwrap_or(0.0);
     let mut filter = ir::Filter {

@@ -621,6 +621,31 @@ fn a_free_lfo_scales_a_send_level_live() {
 }
 
 #[test]
+fn a_comb_insert_runs_on_each_voice_and_rings_at_its_feedback() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.25)], 8);
+    // A constant 0.25 through a comb with feedback 0.5 settles at 0.25/(1 − 0.5).
+    plan.groups[0].inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Comb(ir::Comb {
+            hz: 480.0,
+            feedback: 0.5,
+            octaves: 9.97,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0)]);
+    let mut last = 0.0;
+    for _ in 0..8 {
+        last = level(&mut e, &[])[0];
+    }
+    assert!(close(last, 0.5), "settled at {last}");
+}
+
+#[test]
 fn a_voice_group_steals_by_its_rule_and_an_exclusive_set_silences_the_others() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut keyed = |key: u8, level: f32, vg: u32| {

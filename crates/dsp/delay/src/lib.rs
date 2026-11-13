@@ -7,8 +7,10 @@ use std::f64::consts::TAU;
 use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
 
 mod choir;
+mod comb;
 mod comb_bank;
 pub use choir::{CHOIR_MAX_S, CHOIR_VOICES, Choir, ChoirSettings};
+pub use comb::{Comb, line_frames};
 pub use comb_bank::{COMB_VOICES, CombBank, CombSettings, ScanShape};
 
 /// The longest line [`ModDelay::new`] allocates, ms.
