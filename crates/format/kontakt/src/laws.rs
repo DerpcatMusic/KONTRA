@@ -369,6 +369,10 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
         q_octaves: 0.0,
     };
     match kind {
+        3 => {
+            legacy(&mut f, u, r);
+            f.hz *= ONE_POLE_HIGH_PASS;
+        }
         ..=17 if kind != 16 => legacy(&mut f, u, r),
         50..=62 => sv(&mut f, u, r),
         // The note each family's cutoff knob reaches (index `5n + 1381.88`
@@ -429,6 +433,13 @@ fn note(f: &mut ir::Filter, n: f32, per_unit: f32, r: f32) {
         *last = (2.0 * (1.0 - r) * (1.0 - r)).max(MIN_DAMPING);
     }
 }
+
+/// The legacy one-pole high-pass (HP1) sits below the cascade's cutoff: an
+/// oracle probe (`coverage_probe.py hp1`, $ENGINE_PAR_CUTOFF 0, .1, .5, .75)
+/// fits a pole-mapped one-pole within 0.02 dB at 0.819, 0.823, 0.825 and
+/// 0.837 of [`legacy`]'s Hz (35.6 Hz at 0, where the cascade gives 43.5).
+/// LP1 is not probed yet and keeps the cascade's Hz.
+const ONE_POLE_HIGH_PASS: f32 = 0.825;
 
 /// The legacy cascade (docs/re/engine/filt-legacy.md): the knob through the
 /// setters' exp series and warp, `(e^(6.15u) − 1) 0.0025728 + 0.002` of
@@ -701,6 +712,15 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_one_pole_high_pass_sits_at_kontakts_measured_corner() {
+        // Probed: 35.6 Hz at knob 0 and 989 Hz at 0.5 (pole-mapped fit).
+        for (u, hz) in [(0.0, 35.6), (0.5, 989.0)] {
+            let f = filter_at(3, u, 0.0, 0.0).unwrap();
+            assert!((f.hz / hz - 1.0).abs() < 0.02, "{u}: {}", f.hz);
+        }
+    }
 
     #[test]
     fn envelope_sustain_preserves_the_saved_cubic_mapping() {

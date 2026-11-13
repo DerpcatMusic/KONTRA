@@ -217,7 +217,8 @@ impl EffectParameters {
             Undecoded::Trailing(_) => Error::Static("Trailing FX parameter bytes"),
             other => Error::Generic(format!("{class} 0x{version:X}: {other:?}")),
         })?;
-        let reads: Vec<&native_schema::Field> = decoded.fields.iter().filter(|f| f.depth == 0).collect();
+        let reads: Vec<&native_schema::Field> =
+            decoded.fields.iter().filter(|f| f.depth == 0).collect();
         let kind = |f: &native_schema::Field| match f.kind {
             'F' => 'f',
             'I' => 'i',
@@ -229,7 +230,10 @@ impl EffectParameters {
             .filter(|_| module != 0x1d || version == 0x80)
             .filter(|names| {
                 names.len() >= reads.len()
-                    && reads.iter().zip(names.iter()).all(|(f, &(_, c))| kind(f) == c)
+                    && reads
+                        .iter()
+                        .zip(names.iter())
+                        .all(|(f, &(_, c))| kind(f) == c)
             });
         let mut fields = Vec::with_capacity(reads.len());
         for (index, f) in reads.iter().enumerate() {
@@ -248,7 +252,11 @@ impl EffectParameters {
                 },
             });
         }
-        Ok(Some(Self { module, version, fields }))
+        Ok(Some(Self {
+            module,
+            version,
+            fields,
+        }))
     }
 }
 
@@ -282,28 +290,40 @@ mod tests {
     fn hand_names_describe_the_native_layouts_and_native_framing_is_exact() {
         let mut checked = 0;
         for info in native_schema::readers() {
-            if !info.class.starts_with("BParFX") || info.class == "BParFX" || info.status != "typed" {
+            if !info.class.starts_with("BParFX") || info.class == "BParFX" || info.status != "typed"
+            {
                 continue;
             }
-            let Some(names) = effect_layout(info.sertype).filter(|_| info.sertype != 0x1d || info.current == 0x80) else {
+            let Some(names) = effect_layout(info.sertype)
+                .filter(|_| info.sertype != 0x1d || info.current == 0x80)
+            else {
                 continue;
             };
             let kinds: Vec<char> = names.iter().map(|&(_, c)| c).collect();
             // The hand table names one stored version's layout (the newest it was written for):
             // find the version whose native layout is exactly that kind sequence.
-            let Some(version) = info.versions.iter().flat_map(|&(lo, hi)| lo..=hi).find(|&v| {
-                native_schema::synthesize(info.sertype, v)
-                    .ok()
-                    .and_then(|b| native_schema::decode(info.sertype, v, &b).ok())
-                    .is_some_and(|d| {
-                        d.fields.iter().filter(|f| f.depth == 0).map(|f| match f.kind {
-                            'F' => 'f',
-                            'I' => 'i',
-                            'B' => 'b',
-                            o => o,
-                        }).eq(kinds.iter().copied())
-                    })
-            }) else {
+            let Some(version) = info
+                .versions
+                .iter()
+                .flat_map(|&(lo, hi)| lo..=hi)
+                .find(|&v| {
+                    native_schema::synthesize(info.sertype, v)
+                        .ok()
+                        .and_then(|b| native_schema::decode(info.sertype, v, &b).ok())
+                        .is_some_and(|d| {
+                            d.fields
+                                .iter()
+                                .filter(|f| f.depth == 0)
+                                .map(|f| match f.kind {
+                                    'F' => 'f',
+                                    'I' => 'i',
+                                    'B' => 'b',
+                                    o => o,
+                                })
+                                .eq(kinds.iter().copied())
+                        })
+                })
+            else {
                 continue;
             };
             let (bytes, expected) = bytes_for(kinds.iter().copied());
@@ -311,7 +331,11 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{} 0x{version:X}: {e}", info.class))
                 .unwrap();
             assert_eq!(
-                parsed.fields.iter().map(|f| f.value.clone()).collect::<Vec<_>>(),
+                parsed
+                    .fields
+                    .iter()
+                    .map(|f| f.value.clone())
+                    .collect::<Vec<_>>(),
                 expected,
                 "{}",
                 info.class
@@ -338,12 +362,15 @@ mod tests {
     fn every_native_effect_layout_round_trips_with_exact_boundaries() {
         let mut checked = 0;
         for info in native_schema::readers() {
-            if !info.class.starts_with("BParFX") || info.class == "BParFX" || info.status != "typed" {
+            if !info.class.starts_with("BParFX") || info.class == "BParFX" || info.status != "typed"
+            {
                 continue;
             }
             for &(lo, hi) in info.versions {
                 for version in lo..=hi {
-                    let Ok(bytes) = native_schema::synthesize(info.sertype, version) else { continue };
+                    let Ok(bytes) = native_schema::synthesize(info.sertype, version) else {
+                        continue;
+                    };
                     let p = EffectParameters::read(info.sertype, version, &bytes)
                         .unwrap_or_else(|e| panic!("{} 0x{version:X}: {e}", info.class))
                         .unwrap();
@@ -389,8 +416,13 @@ mod tests {
         }
         assert_eq!(parsed.fields[3].value, EffectValue::Byte(0xa5));
         assert_eq!(bytes, original);
-        assert!(EffectParameters::read(0xfe, 0x10, &bytes).unwrap().is_none());
-        assert_eq!(bytes, original, "an unknown kind must not mutate or alias the payload");
+        assert!(EffectParameters::read(0xfe, 0x10, &bytes)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            bytes, original,
+            "an unknown kind must not mutate or alias the payload"
+        );
     }
 
     /// Ladder filter (kind 33) at v0x92: u32 type, a flag byte, the type again, then floats.

@@ -28,6 +28,9 @@ pub struct Prefs {
     /// Kontakt's user snapshot folder, when not where Kontakt keeps it
     /// ([`crate::presets::kontakt_folder`]); only read.
     pub kontakt_snapshots: Option<PathBuf>,
+    /// Folders the player moved libraries to, as (old, new): samples under
+    /// the old one are read from the new.
+    pub moved: Vec<(PathBuf, PathBuf)>,
 }
 
 impl Prefs {

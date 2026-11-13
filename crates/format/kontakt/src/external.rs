@@ -49,6 +49,9 @@ pub(crate) fn external(
                     None => ir::Source::Controller(cc),
                 }),
                 ModSource::PitchBend => Some(ir::Source::PitchBend),
+                // Kontakt's aftertouch sources: a note's own pressure, or
+                // its channel's (MPE: the same).
+                ModSource::PolyAftertouch | ModSource::MonoAftertouch => Some(ir::Source::Pressure),
                 ModSource::KeyPosition => Some(ir::Source::Key),
                 ModSource::Constant => Some(ir::Source::Constant),
                 // KSP set_event_par_arr(id, $EVENT_PAR_MOD_VALUE_ID, v, index).

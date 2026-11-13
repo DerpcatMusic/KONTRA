@@ -205,7 +205,7 @@ impl Stage {
             x.set(&self.spec);
         }
         let bins = self.acc.re.len();
-        for (p, h) in self.parts.iter().take(1).filter(|(p, _)| *p == 0) {
+        for (_, h) in self.parts.iter().take(1).filter(|(p, _)| *p == 0) {
             if let Some(x) = self.slots.get(self.slot) {
                 self.acc.mac(h, x, 0..bins);
             }

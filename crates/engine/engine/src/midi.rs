@@ -28,7 +28,17 @@ impl Engine {
             return;
         }
         if status & 0xF0 == 0xA0 {
-            self.poly_aftertouch((word >> 8) as u8 & 0x7F, word as u8 & 0x7F);
+            self.poly_aftertouch(channel, (word >> 8) as u8 & 0x7F, word as u8 & 0x7F);
+            return;
+        }
+        // Channel pressure: every note on the channel (MPE: its one note).
+        if status & 0xF0 == 0xD0 {
+            self.behaviour
+                .set_pressure(channel, (word >> 8) as u8 & 0x7F);
+            let mut hits = std::mem::take(&mut self.hits);
+            self.notes.select(&mut hits, |n| n.host.channel == channel);
+            self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
+            self.hits = hits;
             return;
         }
         if status & 0xF0 != 0xB0 {
@@ -127,10 +137,27 @@ impl Engine {
 
     /// A key's polyphonic aftertouch: kept for `%POLY_AT`, then each
     /// script's `on poly_at` runs with the key as `$POLY_AT_NUM`.
-    fn poly_aftertouch(&mut self, key: u8, value: u8) {
+    fn poly_aftertouch(&mut self, channel: u8, key: u8, value: u8) {
         if let Some(v) = self.poly_at.get_mut(usize::from(key)) {
             *v = value;
         }
+        // The key's notes on the channel take it as their own pressure.
+        let mut hits = std::mem::take(&mut self.hits);
+        self.notes
+            .select(&mut hits, |n| n.host.channel == channel && n.key == key);
+        for &note in &hits {
+            if let Some(n) = self.notes.get_mut(note) {
+                n.expression_pressure = Some(f32::from(value) / 127.0);
+            }
+        }
+        self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
+        self.hits = hits;
+        self.run_poly_at(key);
+    }
+
+    /// Each script's `on poly_at` for `key`, its value already in
+    /// `%POLY_AT`.
+    pub(crate) fn run_poly_at(&mut self, key: u8) {
         let plan = Arc::clone(&self.plan);
         for (slot, script) in (0u8..).zip(&plan.scripts) {
             if let Some(entry) = script.callbacks.poly_at {

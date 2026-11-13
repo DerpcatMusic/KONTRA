@@ -21,7 +21,10 @@ fn status_mb(key: &str) -> u64 {
         / 1024
 }
 
-fn instance(path: &Path, private: bool) -> Result<(Rack, f64), Box<dyn std::error::Error + Send + Sync>> {
+fn instance(
+    path: &Path,
+    private: bool,
+) -> Result<(Rack, f64), Box<dyn std::error::Error + Send + Sync>> {
     let mut store = Store::new(StoreConfig::DEFAULT)?;
     if !private {
         store.share_pages_in_process();
@@ -65,7 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (rack, secs) = r
                 .map_err(|_| "instance thread panicked")?
                 .map_err(|e| e.to_string())?;
-            println!("  {:.2} s to load   {}", secs, p.rsplit('/').next().unwrap_or(p));
+            println!(
+                "  {:.2} s to load   {}",
+                secs,
+                p.rsplit('/').next().unwrap_or(p)
+            );
             racks.push(rack);
         }
     }

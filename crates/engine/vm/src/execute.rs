@@ -557,7 +557,11 @@ pub(crate) fn execute(
                 let text_from = c.texts.len() - text_args;
                 flush!();
                 let args = stack.get(int_from + 1..=sp).unwrap_or_default();
-                let value = match action.is_pure().then(|| pure::eval(action, args, cells)).flatten() {
+                let value = match action
+                    .is_pure()
+                    .then(|| pure::eval(action, args, cells))
+                    .flatten()
+                {
                     Some(value) => value,
                     None => {
                         // A message changes nothing the loop can read.

@@ -32,16 +32,26 @@ fn chords(start: u64) -> Vec<(u32, Event)> {
             };
             let (on, off) = (n * 24_000, n * 24_000 + 20_000);
             if (start..start + BLOCK as u64).contains(&on) {
-                input.push(((on - start) as u32, Event::NoteOn { note, velocity: 0.8, tune: 0.0 }));
+                input.push((
+                    (on - start) as u32,
+                    Event::NoteOn {
+                        note,
+                        velocity: 0.8,
+                        tune: 0.0,
+                    },
+                ));
             }
             if (start..start + BLOCK as u64).contains(&off) {
-                input.push(((off - start) as u32, Event::NoteOff(HostPattern {
-                    port: 0,
-                    channel: 0,
-                    key: i32::from(key),
-                    id: -1,
-                    clap: true,
-                })));
+                input.push((
+                    (off - start) as u32,
+                    Event::NoteOff(HostPattern {
+                        port: 0,
+                        channel: 0,
+                        key: i32::from(key),
+                        id: -1,
+                        clap: true,
+                    }),
+                ));
             }
         }
     }
@@ -125,7 +135,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 rack.tick();
             }
             play.store(false, Ordering::Relaxed);
-            println!("  after {seconds} s of chords: rss {} MB (load {after_load} MB)", rss_mb());
+            println!(
+                "  after {seconds} s of chords: rss {} MB (load {after_load} MB)",
+                rss_mb()
+            );
         }
         println!(
             "switch {}: {:.2} s to load, rss {} MB, live pinned {} MB   {}",

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use kontra_engine::ir::RackAt;
 
+use kontra_protocol::MAX_PARTS;
+
 use crate::rack::{Delays, Mix, Rack};
 
 /// Bumped when a field changes meaning; a state of another version loads
@@ -177,10 +179,53 @@ impl Saved {
     /// The state in `json`; an empty or foreign state is an empty rack.
     #[must_use]
     pub fn read(json: &str) -> Self {
-        serde_json::from_str::<Self>(json)
-            .ok()
-            .filter(|s| s.version == VERSION)
-            .unwrap_or_else(|| Self::new(Vec::new()))
+        Self::parse(json).unwrap_or_else(|_| Self::new(Vec::new()))
+    }
+
+    /// The state in `json`, made safe to load: parts past the rack, repeated
+    /// parts and values that are not numbers are dropped or reset. A blank
+    /// state is a new instance's: an empty rack, no error.
+    ///
+    /// # Errors
+    /// A message for the player when the state is corrupt or of another
+    /// version; the rack then starts empty.
+    pub fn parse(json: &str) -> Result<Self, String> {
+        if json.trim().is_empty() {
+            return Ok(Self::new(Vec::new()));
+        }
+        let mut saved: Self = serde_json::from_str(json).map_err(|e| {
+            format!("the project's saved state is damaged ({e}); the rack starts empty")
+        })?;
+        if saved.version != VERSION {
+            return Err(format!(
+                "the project's saved state is version {}, this KONTRA reads version {VERSION}; the rack starts empty",
+                saved.version
+            ));
+        }
+        let mut seen = Vec::new();
+        saved.parts.retain(|p| {
+            p.part < MAX_PARTS && !seen.contains(&p.part) && {
+                seen.push(p.part);
+                true
+            }
+        });
+        for p in &mut saved.parts {
+            p.gain = if p.gain.is_finite() {
+                p.gain.clamp(0.0, 16.0)
+            } else {
+                1.0
+            };
+            p.pan = if p.pan.is_finite() {
+                p.pan.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+            if p.channel > 16 {
+                p.channel = 0;
+            }
+            p.output = p.output.min(MAX_PARTS as u8 - 1);
+        }
+        Ok(saved)
     }
 
     #[must_use]

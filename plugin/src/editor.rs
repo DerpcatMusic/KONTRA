@@ -560,6 +560,16 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
         }
         Action::Star(library, on) => browser.star(library, on),
         Action::Refresh => browser.rescan(),
+        Action::Relink(line) => {
+            if let Some(o) = rack.take_offer(&line) {
+                browser.relink(o.from, o.to);
+                rack.know(browser);
+                let scripts = rack.saved_scripts(o.part);
+                if let Err(e) = rack.load_saved(o.part, &o.path, &scripts, &[], &[]) {
+                    report.push(format!("{}: {e}", o.path.display()));
+                }
+            }
+        }
         Action::RemoveFolder(n) => browser.remove_root(n),
         Action::Picked(name) => rack.picked(name.as_deref()),
         Action::NewParts {
@@ -852,6 +862,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 action,
                 Action::Star(..)
                     | Action::Refresh
+                    | Action::Relink(_)
                     | Action::RemoveFolder(_)
                     | Action::NewParts { .. }
                     | Action::Picked(_)
@@ -899,10 +910,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 Some(slot),
             ) = (&action, slot)
             {
-                let face = app.parts.get(*part).and_then(|p| p.face.as_ref());
+                let shown = app.parts.get(*part);
+                let title = shown.map_or("", |s| s.name.as_str());
+                let face = shown.and_then(|p| p.face.as_ref());
                 let w = face.and_then(|f| f.tree.widgets.get(*widget));
-                if let Some((id, value)) = w.and_then(|w| crate::macros::touch(&p, slot, w, *value))
-                {
+                let touched = w.and_then(|w| crate::macros::touch(&p, slot, title, w, *value));
+                if let Some((id, value)) = touched {
                     bridge.drag_gesture(id, value);
                 }
             }

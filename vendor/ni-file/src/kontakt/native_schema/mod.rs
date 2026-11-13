@@ -9,7 +9,10 @@
 mod programs;
 mod vm;
 
-pub use vm::{accepts, class_of, decode, decode_prefix, readers, synthesize, synthesize_all, Decoded, Field, ReaderInfo, Undecoded};
+pub use vm::{
+    accepts, class_of, decode, decode_prefix, readers, synthesize, synthesize_all, Decoded, Field,
+    ReaderInfo, Undecoded,
+};
 
 #[cfg(test)]
 mod tests {
@@ -31,11 +34,14 @@ mod tests {
                     let bytes = match synthesize(r.sertype, version) {
                         Ok(b) => b,
                         // Readers that only read through host objects have no synthesizable stream.
-                        Err(Undecoded::Unresolved(_) | Undecoded::Budget | Undecoded::Rejected) => continue,
+                        Err(Undecoded::Unresolved(_) | Undecoded::Budget | Undecoded::Rejected) => {
+                            continue
+                        }
                         Err(e) => panic!("{} 0x{:X}: {e:?}", r.class, version),
                     };
-                    let d = decode(r.sertype, version, &bytes)
-                        .unwrap_or_else(|e| panic!("{} 0x{:X} {bytes:02x?}: {e:?}", r.class, version));
+                    let d = decode(r.sertype, version, &bytes).unwrap_or_else(|e| {
+                        panic!("{} 0x{:X} {bytes:02x?}: {e:?}", r.class, version)
+                    });
                     assert_eq!(d.consumed, bytes.len(), "{} 0x{:X}", r.class, version);
                     if r.status == "typed" {
                         for end in 0..bytes.len() {
@@ -49,11 +55,22 @@ mod tests {
                         }
                         let mut longer = bytes.clone();
                         longer.push(0);
-                        assert!(decode(r.sertype, version, &longer).is_err(), "{} 0x{:X}", r.class, version);
+                        assert!(
+                            decode(r.sertype, version, &longer).is_err(),
+                            "{} 0x{:X}",
+                            r.class,
+                            version
+                        );
                     }
                     checked += 1;
                     if t0.elapsed().as_secs_f32() > 2.0 {
-                        eprintln!("slow: {} 0x{:X} {:?} ({} bytes)", r.class, version, t0.elapsed(), bytes.len());
+                        eprintln!(
+                            "slow: {} 0x{:X} {:?} ({} bytes)",
+                            r.class,
+                            version,
+                            t0.elapsed(),
+                            bytes.len()
+                        );
                     }
                 }
             }
@@ -78,12 +95,23 @@ mod tests {
             let bytes: Vec<u8> = if hex == "-" {
                 Vec::new()
             } else {
-                (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect()
+                (0..hex.len() / 2)
+                    .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+                    .collect()
             };
             let d = decode(sertype, version, &bytes)
                 .unwrap_or_else(|e| panic!("sertype 0x{sertype:X} v0x{version:X} {hex}: {e:?}"));
-            let got: String = d.fields.iter().filter(|f| f.depth == 0).map(|f| f.kind).collect();
-            assert_eq!(got, kinds, "sertype 0x{sertype:X} v0x{version:X} {}", d.class);
+            let got: String = d
+                .fields
+                .iter()
+                .filter(|f| f.depth == 0)
+                .map(|f| f.kind)
+                .collect();
+            assert_eq!(
+                got, kinds,
+                "sertype 0x{sertype:X} v0x{version:X} {}",
+                d.class
+            );
             n += 1;
         }
         assert!(n > 200, "only {n} samples");
@@ -91,7 +119,10 @@ mod tests {
 
     #[test]
     fn unknown_versions_are_not_guessed() {
-        assert_eq!(decode(0x08, 0x74, &[0; 64]).unwrap_err(), Undecoded::NoReader);
+        assert_eq!(
+            decode(0x08, 0x74, &[0; 64]).unwrap_err(),
+            Undecoded::NoReader
+        );
         assert!(!accepts(0x08, 0x6F));
         assert!(accepts(0x08, 0x73));
     }

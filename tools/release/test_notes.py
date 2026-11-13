@@ -16,6 +16,10 @@ class NotesTest(unittest.TestCase):
                                ('fix', 'Fixes')]:
             self.assertEqual(fields(f'Release note: Music.\nArea: {area}')[1], expected)
 
+    def test_none_with_a_reason_is_no_note(self):
+        self.assertEqual(fields('Release note: none (internal move)\nArea: fix')[0], '')
+        self.assertEqual(fields('Release note: Nonetheless louder.')[0], 'Nonetheless louder.')
+
     def test_paths(self):
         cases = [('tools/inspect/src/main.rs', None), ('.github/workflows/x.yml', None),
                  ('docs/plan.md', None), ('tools/xtask/src/main.rs', None),

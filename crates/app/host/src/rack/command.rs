@@ -3,7 +3,7 @@
 use kontra_engine::{Engine, Event, Prepared, ir};
 use kontra_ui_model::UiModifiers;
 
-use super::{Hold, Mix, requests};
+use super::{Hold, MacroTarget, Mix, requests};
 use crate::persist::Capture;
 
 /// What the control thread asks of the audio thread.
@@ -32,6 +32,13 @@ pub enum Command {
         unit: Box<Option<Prepared>>,
     },
     Remove(usize),
+    /// What host macro `n` moves at its frame ([`RackAudio::move_macro`]).
+    ///
+    /// [`RackAudio::move_macro`]: super::RackAudio::move_macro
+    Macro {
+        n: usize,
+        target: Option<MacroTarget>,
+    },
     Mix(usize, Mix),
     /// Linear master gain.
     Master(f32),
