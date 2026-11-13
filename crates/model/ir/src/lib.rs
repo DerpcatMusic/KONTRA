@@ -455,17 +455,6 @@ pub struct Envelope {
     pub attack_shape: f32,
     /// Decay and release shape, the same law.
     pub fall_shape: f32,
-    pub early_key_up: EarlyKeyUp,
-}
-
-/// What a key coming up during the attack does.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EarlyKeyUp {
-    /// The release starts at once, from the level reached.
-    #[default]
-    AtOnce,
-    /// The attack runs to full level first, then the release starts.
-    AfterAttack,
 }
 
 impl Envelope {
@@ -478,7 +467,6 @@ impl Envelope {
         release: 0.001_3,
         attack_shape: 0.0,
         fall_shape: 0.0,
-        early_key_up: EarlyKeyUp::AtOnce,
     };
 }
 

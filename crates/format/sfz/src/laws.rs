@@ -16,7 +16,6 @@ pub const ENVELOPE: ir::Envelope = ir::Envelope {
     release: 0.001,
     attack_shape: 0.0,
     fall_shape: 0.0,
-    early_key_up: ir::EarlyKeyUp::AtOnce,
 };
 
 /// A MIDI key from a number or a note name: `c4` is 60, `c-1` is 0.

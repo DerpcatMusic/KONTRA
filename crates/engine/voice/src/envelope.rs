@@ -18,17 +18,6 @@ pub struct Ahdsr {
     pub attack_shape: f32,
     /// Shape of decay and release.
     pub fall_shape: f32,
-    pub early_key_up: EarlyKeyUp,
-}
-
-/// What a key coming up during the attack does.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EarlyKeyUp {
-    /// The release starts at once, from the level reached.
-    #[default]
-    AtOnce,
-    /// The attack runs to full level first, then the release starts.
-    AfterAttack,
 }
 
 impl Ahdsr {
@@ -41,7 +30,6 @@ impl Ahdsr {
         release: 64,
         attack_shape: 0.0,
         fall_shape: 0.0,
-        early_key_up: EarlyKeyUp::AtOnce,
     };
 }
 
@@ -102,8 +90,6 @@ pub(crate) struct Envelope {
     stage: Stage,
     level: f32,
     segment: Segment,
-    /// The key came up during an attack that finishes first.
-    owed: bool,
 }
 
 impl Envelope {
@@ -113,7 +99,6 @@ impl Envelope {
             stage: Stage::Attack,
             level: 0.0,
             segment: Segment::new(0.0, 1.0, settings.attack, settings.attack_shape),
-            owed: false,
         };
         if settings.attack == 0 {
             env.level = 1.0;
@@ -134,9 +119,7 @@ impl Envelope {
     }
 
     pub(crate) fn release(&mut self) {
-        if self.stage == Stage::Attack && self.settings.early_key_up == EarlyKeyUp::AfterAttack {
-            self.owed = true;
-        } else if self.stage != Stage::Off && self.stage != Stage::Release {
+        if self.stage != Stage::Off && self.stage != Stage::Release {
             self.start_release();
         }
     }
@@ -162,9 +145,7 @@ impl Envelope {
             Stage::Attack | Stage::Decay | Stage::Release => {
                 let (level, ended) = self.segment.next();
                 self.level = level;
-                if ended && self.stage == Stage::Attack && self.owed {
-                    self.start_release();
-                } else if ended {
+                if ended {
                     self.stage = match self.stage {
                         Stage::Attack => Stage::Hold(0),
                         Stage::Decay => Stage::Sustain,
@@ -223,27 +204,6 @@ mod tests {
         assert!((levels[499] - half).abs() < 1e-4, "{}", levels[499]);
         assert_eq!(levels[999], 0.0);
         assert!(env.is_off());
-    }
-
-    /// A key up a quarter into the attack: at once the level falls from
-    /// there; after the attack it still reaches full level, then falls.
-    #[test]
-    fn a_key_up_during_the_attack_releases_at_once_or_after_it() {
-        let peak = |early_key_up| {
-            let mut env = Envelope::new(Ahdsr {
-                attack: 100,
-                release: 1000,
-                early_key_up,
-                ..Ahdsr::GATE
-            });
-            let rise: Vec<f32> = (0..25).map(|_| env.next()).collect();
-            env.release();
-            let rest: Vec<f32> = (0..1200).map(|_| env.next()).collect();
-            assert!(env.is_off());
-            rise.into_iter().chain(rest).fold(0.0f32, f32::max)
-        };
-        assert!((peak(EarlyKeyUp::AtOnce) - 0.25).abs() < 1e-3);
-        assert!((peak(EarlyKeyUp::AfterAttack) - 1.0).abs() < 1e-6);
     }
 
     #[test]
