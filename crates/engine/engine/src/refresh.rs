@@ -54,6 +54,7 @@ impl Engine {
             if let (Some(trace), Some(cc)) = (&self.trace, trace_cc) {
                 trace.routes.begin(i, slot.zone, cc);
             }
+            self.memo.begin();
             let pan = [slot.pan[0], self.group_pan(zone)];
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan[0]);
             let mix = self.voice_mix(zone, &n, age);
@@ -62,6 +63,7 @@ impl Engine {
             let law = self.plan.route_pitch;
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
             self.retune_rack(i, zone, &n, age);
+            self.memo.end();
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {
                 trace.routes.end();

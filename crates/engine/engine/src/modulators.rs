@@ -8,6 +8,60 @@ use kontra_time::SampleTime;
 use crate::ledger::Note;
 use crate::voice_gain::{self, GROUP_PAN_TAU_MS};
 use crate::{Engine, MAX_SPAN};
+use std::cell::Cell;
+
+/// Source values read more than once while one voice refreshes (per route,
+/// and again for the next refresh's ramp). Live only between [`Memo::begin`]
+/// and [`Memo::end`]: no event or script write lands inside one voice's
+/// refresh, so a repeat read at the same age is the same value.
+#[derive(Default)]
+pub(crate) struct Memo {
+    live: Cell<bool>,
+    lfo: [Slot; WARPS],
+    envelope: [Slot; WARPS],
+}
+
+/// Up to two ages (now, and the next refresh) per source.
+#[derive(Default)]
+struct Slot([Cell<Option<(u64, Option<f32>)>>; 2]);
+
+impl Memo {
+    pub(crate) fn begin(&self) {
+        for s in self.lfo.iter().chain(&self.envelope) {
+            for c in &s.0 {
+                c.set(None);
+            }
+        }
+        self.live.set(true);
+    }
+
+    pub(crate) fn end(&self) {
+        self.live.set(false);
+    }
+
+    pub(crate) fn lfo(&self, n: u8, age: Age, f: impl FnOnce() -> Option<f32>) -> Option<f32> {
+        self.read(self.lfo.get(usize::from(n)), age, f)
+    }
+
+    pub(crate) fn envelope(&self, n: u8, age: Age, f: impl FnOnce() -> Option<f32>) -> Option<f32> {
+        self.read(self.envelope.get(usize::from(n)), age, f)
+    }
+
+    fn read(&self, slot: Option<&Slot>, age: Age, f: impl FnOnce() -> Option<f32>) -> Option<f32> {
+        let Some(slot) = slot.filter(|_| self.live.get()) else {
+            return f();
+        };
+        let key = u64::from(age.held.to_bits()) << 32 | u64::from(age.now.to_bits());
+        if let Some((_, v)) = slot.0.iter().filter_map(Cell::get).find(|&(k, _)| k == key) {
+            return v;
+        }
+        let v = f();
+        if let Some(c) = slot.0.iter().find(|c| c.get().is_none()) {
+            c.set(Some((key, v)));
+        }
+        v
+    }
+}
 
 pub(crate) use kontra_plan::modulation::{
     Age, CHAOS_START, Chaos, WARPS, chaos_step, lfo, stretched,
@@ -59,6 +113,7 @@ impl Engine {
             {
                 trace.routes.begin_mask(i, slot.zone, pending);
             }
+            self.memo.begin();
             let rate = self.rate;
             let span = (MAX_SPAN - self.now.0 % MAX_SPAN) as f32 / rate as f32;
             let chaos = self.chaos(zone, slot.chaos, span);
@@ -77,6 +132,7 @@ impl Engine {
             let (step, bend) = self.step(zone, &n, age);
             let law = self.plan.route_pitch;
             self.retune_rack(i, zone, &n, age);
+            self.memo.end();
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {
                 trace.routes.end();

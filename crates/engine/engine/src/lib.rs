@@ -245,6 +245,7 @@ pub struct Engine {
     /// generic) and their counts; fixed size, the first ones seen.
     unanswered_pars: Box<[([i32; 4], u32)]>,
     called: Box<[u32]>,
+    memo: modulators::Memo,
     /// The instrument's level, pan and tune (a script's group -1); level and
     /// pan move [`Self::output`], after every effect.
     instrument: Level,
@@ -429,6 +430,7 @@ impl Engine {
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             unanswered_pars: vec![([0; 4], 0); 64].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
+            memo: Default::default(),
             ui,
             ids: callbacks::Ids::START,
             instrument: Level::panned(ir::common::DB_GAIN.eval_unclamped(out.volume_db), out.pan),

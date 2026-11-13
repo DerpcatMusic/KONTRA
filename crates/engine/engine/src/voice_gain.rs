@@ -200,6 +200,65 @@ impl Engine {
         }
     }
 
+    /// LFO `n`'s value for this note at `age` (see [`Self::source`]).
+    fn lfo_value(&self, zone: &Zone, n: u8, note: &Note, age: Age) -> Option<f32> {
+        let group = || self.groups.get(zone.group as usize);
+        let g = group()?;
+        let mut lfo = *g.lfos.get(usize::from(n))?;
+        let moving = (self.reshaped.get(zone.group as usize).into_iter())
+            .flat_map(|r| r.moving(n))
+            .filter_map(|i| g.mods.get(i));
+        // ponytail: phase and rate routes read their source at
+        // note-on (exact for velocity and note-on values); a live
+        // controller moving the rate needs a per-voice phase accumulator.
+        for m in moving.filter(|m| !m.bypass) {
+            match m.kind {
+                // An LFO source here would recurse.
+                ir::ModKind::LfoPhase {
+                    source,
+                    lfo: l,
+                    depth,
+                } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
+                    let input = self.source(zone, source, note, Age::START);
+                    let value = input.unwrap_or(0.0) * depth;
+                    #[cfg(feature = "trace")]
+                    self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
+                    lfo.phase += value;
+                }
+                ir::ModKind::LfoRate {
+                    source,
+                    lfo: l,
+                    depth,
+                    octaves,
+                    range_hz: [lo, hi],
+                } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
+                    let input = self.source(zone, source, note, Age::START);
+                    let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
+                    #[cfg(feature = "trace")]
+                    self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
+                    lfo.rate = match lfo.rate {
+                        ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
+                        ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
+                        ir::Rate::Steps { beats, count } => ir::Rate::Beats(beats * count / f),
+                    };
+                }
+                _ => {}
+            }
+        }
+        if let ir::Wave::Chaos { .. } = lfo.wave {
+            return age.chaos.get(usize::from(n)).copied();
+        }
+        lfo.phase += age.warp.get(usize::from(n)).copied().unwrap_or(0.0);
+        Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
+    }
+
+    fn envelope_value(&self, zone: &Zone, n: u8, age: Age) -> Option<f32> {
+        let group = || self.groups.get(zone.group as usize);
+        let e = group()?.envelopes.get(usize::from(n))?;
+        let stretch = age.stretch.get(usize::from(n)).copied().unwrap_or(1.0);
+        Some(modulators::stretched(e, age, stretch))
+    }
+
     /// A live source's value for this note; `None` for one fixed at the voice's start.
     pub(crate) fn source(
         &self,
@@ -227,62 +286,10 @@ impl Engine {
                 }
                 Some(sum)
             }
-            ir::Source::Envelope(n) => {
-                let e = group()?.envelopes.get(usize::from(n))?;
-                let stretch = age.stretch.get(usize::from(n)).copied().unwrap_or(1.0);
-                Some(modulators::stretched(e, age, stretch))
-            }
-            ir::Source::Lfo(n) => {
-                let g = group()?;
-                let mut lfo = *g.lfos.get(usize::from(n))?;
-                let moving = (self.reshaped.get(zone.group as usize).into_iter())
-                    .flat_map(|r| r.moving(n))
-                    .filter_map(|i| g.mods.get(i));
-                // ponytail: phase and rate routes read their source at
-                // note-on (exact for velocity and note-on values); a live
-                // controller moving the rate needs a per-voice phase accumulator.
-                for m in moving.filter(|m| !m.bypass) {
-                    match m.kind {
-                        // An LFO source here would recurse.
-                        ir::ModKind::LfoPhase {
-                            source,
-                            lfo: l,
-                            depth,
-                        } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
-                            let input = self.source(zone, source, note, Age::START);
-                            let value = input.unwrap_or(0.0) * depth;
-                            #[cfg(feature = "trace")]
-                            self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
-                            lfo.phase += value;
-                        }
-                        ir::ModKind::LfoRate {
-                            source,
-                            lfo: l,
-                            depth,
-                            octaves,
-                            range_hz: [lo, hi],
-                        } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
-                            let input = self.source(zone, source, note, Age::START);
-                            let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
-                            #[cfg(feature = "trace")]
-                            self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
-                            lfo.rate = match lfo.rate {
-                                ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
-                                ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
-                                ir::Rate::Steps { beats, count } => {
-                                    ir::Rate::Beats(beats * count / f)
-                                }
-                            };
-                        }
-                        _ => {}
-                    }
-                }
-                if let ir::Wave::Chaos { .. } = lfo.wave {
-                    return age.chaos.get(usize::from(n)).copied();
-                }
-                lfo.phase += age.warp.get(usize::from(n)).copied().unwrap_or(0.0);
-                Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
-            }
+            ir::Source::Envelope(n) => self
+                .memo
+                .envelope(n, age, || self.envelope_value(zone, n, age)),
+            ir::Source::Lfo(n) => self.memo.lfo(n, age, || self.lfo_value(zone, n, note, age)),
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
             ir::Source::ControllerFrom { cc, start } => {
