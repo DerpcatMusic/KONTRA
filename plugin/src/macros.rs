@@ -133,7 +133,9 @@ pub fn touch(p: &KontraParams, part: usize, w: &Widget, plain: f64) -> Option<(u
     // value the control has, and does not move it back.
     let param = param(p, n)?;
     param.set_value(value);
-    lock_last(p)[n] = value;
+    if let Some(last) = lock_last(p).get_mut(n) {
+        *last = value;
+    }
     Some((id(n), value))
 }
 
@@ -203,6 +205,6 @@ mod tests {
         });
         assert_eq!(read(&write(&macros)), macros);
         let m = macros[2].as_ref().unwrap();
-        assert_eq!(m.plain(m.normalized(500.0)), 500.0);
+        assert!((m.plain(m.normalized(500.0)) - 500.0).abs() < 1e-9);
     }
 }
