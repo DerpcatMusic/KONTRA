@@ -14,7 +14,7 @@ use kontra_ir as ir;
 
 pub(crate) use kontra_effects::summed::{Stage, run, sections};
 
-use crate::{Engine, MAX_SPAN, group_racks};
+use crate::{Engine, MAX_SPAN, PHASE, PHASES, group_racks};
 
 use crate::racks::Rack;
 pub(crate) use kontra_racks::chain::{Chain, on_bus};
@@ -99,9 +99,11 @@ impl Engine {
 
     /// Renders every voice into its chain or bus mix, then the chains.
     pub(crate) fn render_span(&mut self, len: usize) {
-        if self.now.0.is_multiple_of(MAX_SPAN) {
-            self.refresh_timed();
-            self.rearm_timers();
+        if self.now.0.is_multiple_of(PHASE) {
+            self.refresh_timed((self.now.0 / PHASE % PHASES) as usize);
+            if self.now.0.is_multiple_of(MAX_SPAN) {
+                self.rearm_timers();
+            }
         }
         for bus in &mut self.buses {
             if let Some(mix) = bus.mix.get_mut(..len) {

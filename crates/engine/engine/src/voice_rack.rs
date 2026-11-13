@@ -77,7 +77,7 @@ impl Engine {
                 Kind::Shaper(_) | Kind::Crush(_) => {
                     let now = effect;
                     // The next refresh, on the grid.
-                    let len = (crate::MAX_SPAN - self.now.0 % crate::MAX_SPAN) as u32;
+                    let len = self.until_refresh(i) as u32;
                     let dt = len as f32 / rate as f32;
                     let later = Age {
                         held: age.held + dt,
