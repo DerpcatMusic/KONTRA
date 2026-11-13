@@ -910,7 +910,8 @@ mod tests {
          busRouters={{params={Name='Send0',Gain='0.5'}}}},
         {params={DisplayName='Sustain',Gain='0'},bus=2,
          keygroups={{params={Gain='1'},group=3},{params={},group=nil},{params={},group=4}}}},
-        auxs={{params={Name='Aux0',Gain='0.5'},bus=3}}}";
+        auxs={{params={Name='Aux0',Gain='0.5'},bus=3,
+         inserts={{params={Name='InsertFX0',Bypass='1'},fx={1,3,0}},{params={Name='InsertFX1'}}}}}}";
 
     fn run(source: &str, entry: u32) -> Log {
         let modules = [("__program.lua".to_string(), TREE.to_string())];
@@ -982,6 +983,31 @@ mod tests {
             assert(#list == 0 and list[1]:getParameter('Ratio') == 0)
             assert(sustain:getParameterConnections('Gain') == list)";
         run(source, Callbacks::INIT);
+    }
+
+    #[test]
+    fn an_inserts_bypass_reaches_its_effect() {
+        // AO's Space switch: `Program.auxs[1].inserts[1]:setParameter("Bypass", ...)`.
+        let sent = |source: &str| {
+            let log = run(source, Callbacks::INIT);
+            let calls = log.0.iter().filter(|(a, _)| *a == Action::EffectBypass);
+            calls.map(|(_, ints)| ints.clone()).collect::<Vec<_>>()
+        };
+        let on = "Program.auxs[1].inserts[1]:setParameter('Bypass', false)
+            Program.auxs[1].inserts[2]:setParameter('Bypass', false)";
+        assert_eq!(sent(on), [vec![1, 3, 0, 0]]);
+        let off = "Program.auxs[1].inserts[1]:setParameter('Bypass', 1)";
+        assert_eq!(sent(off), [vec![1, 3, 0, 1]]);
+        // VWinds' reverb knob: a Gain insert's `Volume`.
+        let log = run(
+            "Program.auxs[1].inserts[1]:setParameter('Volume', 0.5)",
+            Callbacks::INIT,
+        );
+        let gain = log.0.iter().find(|(a, _)| *a == Action::EffectGain);
+        assert_eq!(
+            gain.map(|(_, ints)| ints.clone()),
+            Some(vec![1, 3, 0, 500_000])
+        );
     }
 
     #[test]

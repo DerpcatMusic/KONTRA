@@ -50,6 +50,15 @@ impl<'a, 'input> Params<'a, 'input> {
 }
 
 /// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
+/// Where an insert's effect plays, for scripts that bypass it: a keygroup's
+/// voices (its slot), a bus's rack or the program's.
+#[derive(Clone, Copy)]
+pub(super) enum Fx {
+    Voice(roxmltree::NodeId, usize),
+    Bus(usize, usize),
+    Instrument(usize),
+}
+
 const PER_VOICE: [&str; 2] = ["Gain", "ThreeBandShelves"];
 
 /// Whether `node` is an effect this module carries: in the program's
@@ -192,8 +201,11 @@ impl<L: Library> Translator<'_, '_, L> {
             self.sends_of(layer, &entries)?;
         }
         self.out.inserts = Vec::new();
-        for node in children(program, "Inserts", "") {
+        for (n, node) in children(program, "Inserts", "").enumerate() {
             let slot = self.slot(node)?;
+            if slot.is_some() {
+                self.fx_of.insert(node.id(), Fx::Instrument(n));
+            }
             self.out.inserts.push(slot);
         }
         Ok(())
@@ -202,9 +214,13 @@ impl<L: Library> Translator<'_, '_, L> {
     /// A keygroup's inserts its voices run, by slot; the rest are empty.
     pub(super) fn voice_slots(&mut self, kg: Node) -> Result<Vec<Option<ir::Effect>>, String> {
         let mut slots = Vec::new();
-        for node in children(kg, "Inserts", "") {
+        for (n, node) in children(kg, "Inserts", "").enumerate() {
             let per_voice = PER_VOICE.iter().any(|t| node.has_tag_name(*t));
-            slots.push(if per_voice { self.slot(node)? } else { None });
+            let slot = if per_voice { self.slot(node)? } else { None };
+            if slot.is_some() {
+                self.fx_of.insert(node.id(), Fx::Voice(kg.id(), n));
+            }
+            slots.push(slot);
         }
         if slots.iter().all(Option::is_none) {
             slots.clear();
@@ -251,6 +267,8 @@ impl<L: Library> Translator<'_, '_, L> {
                     let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
                     b.inserts.push(slot);
                     if slot.is_some() {
+                        self.fx_of
+                            .insert(node.id(), Fx::Bus(at, usize::from(insert)));
                         self.moves(node, at, insert)?;
                     }
                 }
@@ -401,10 +419,15 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 
     /// One insert as a slot; one not carried is empty (its input passes).
+    /// `node`'s effect, built bypassed when it is saved so: a script may
+    /// switch it on.
     fn slot(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {
-        Ok(if flag(node, "Bypass") {
-            None
-        } else if node.has_tag_name("Gain") {
+        let bypass = flag(node, "Bypass");
+        Ok(self.built(node)?.map(|e| ir::Effect { bypass, ..e }))
+    }
+
+    fn built(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {
+        Ok(if node.has_tag_name("Gain") {
             let kind = ir::EffectKind::Gain(num(node, "Volume", 1.0)? as f32);
             Some(effect(kind, 1.0, 0.0))
         } else if node.has_tag_name("DigitalEq") {

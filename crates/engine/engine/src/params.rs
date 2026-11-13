@@ -132,6 +132,38 @@ impl Engine {
         set
     }
 
+    /// [`kontra_vm::Action::EffectBypass`]: bypasses (`on`) or plays slot
+    /// `slot` of group `index`'s inserts (`at` 0), bus `index`'s rack (1) or
+    /// the instrument's inserts (2).
+    pub(crate) fn set_effect_bypass(&mut self, at: i32, index: i32, slot: i32, on: bool) {
+        if let Some(e) = self.placed_effect(at, index, slot)
+            && e.bypass != on
+        {
+            e.bypass = on;
+            self.refresh_all(None);
+        }
+    }
+
+    /// [`kontra_vm::Action::EffectGain`]: a gain effect's linear level.
+    pub(crate) fn set_effect_gain(&mut self, at: i32, index: i32, slot: i32, gain: f32) {
+        if let Some(ir::Effect {
+            kind: ir::EffectKind::Gain(g),
+            ..
+        }) = self.placed_effect(at, index, slot)
+        {
+            *g = gain.max(0.0);
+        }
+    }
+
+    fn placed_effect(&mut self, at: i32, index: i32, slot: i32) -> Option<&mut ir::Effect> {
+        let (group, generic) = match at {
+            0 => (index, -1),
+            1 => (-1, (BUS_OFFSET - 1).saturating_add(index)),
+            _ => (-1, 1),
+        };
+        self.effect_mut(group, slot, generic)
+    }
+
     /// A group's level, or the instrument's (group -1, generic -1). Buses
     /// (generic `$NI_BUS_OFFSET + n`) are [`Self::bus_mut`]'s.
     fn level_mut(&mut self, group: i32, generic: i32) -> Option<&mut Level> {

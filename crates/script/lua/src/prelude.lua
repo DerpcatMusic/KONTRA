@@ -473,8 +473,19 @@ end
 function Element.hasParameter(self, name)
 	return self.params[name] ~= nil
 end
+-- An insert's `Bypass`, and a Gain insert's `Volume`, reach the effect the engine plays for it (`fx`:
+-- where, group or bus, slot).
 function Element.setParameter(self, name, value)
 	self.params[name] = value
+	local fx = fields_of(self).fx
+	if not fx then
+		return
+	elseif name == "Bypass" then
+		local on = value == true or (type(value) == "number" and value ~= 0)
+		host_call("EffectBypass", fx[1], fx[2], fx[3], on and 1 or 0)
+	elseif name == "Volume" and type(value) == "number" then
+		host_call("EffectGain", fx[1], fx[2], fx[3], math.floor(value * 1e6 + 0.5))
+	end
 end
 
 local element
@@ -569,6 +580,7 @@ function element(node)
 		name = params.Name,
 		displayName = params.DisplayName,
 		mod = node.mod,
+		fx = node.fx,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)
