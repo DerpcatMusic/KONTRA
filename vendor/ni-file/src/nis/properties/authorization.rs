@@ -37,7 +37,10 @@ impl Authorization {
         // version == 1
         let version = reader.read_u32_le()?;
         if version != 1 {
-            return Err(NIFileError::VersionMismatch { expected: 1, got: version });
+            return Err(NIFileError::VersionMismatch {
+                expected: 1,
+                got: version,
+            });
         }
 
         let a = reader.read_u32_le()?; // 0x18
@@ -82,9 +85,17 @@ mod tests {
             words.push(1);
             words.push(snp.encode_utf16().count() as u32);
         }
-        for word in words { bytes.extend(word.to_le_bytes()); }
-        if license_info { for c in snp.encode_utf16() { bytes.extend(c.to_le_bytes()); } }
-        for word in [0u32, level, checksum] { bytes.extend(word.to_le_bytes()); }
+        for word in words {
+            bytes.extend(word.to_le_bytes());
+        }
+        if license_info {
+            for c in snp.encode_utf16() {
+                bytes.extend(c.to_le_bytes());
+            }
+        }
+        for word in [0u32, level, checksum] {
+            bytes.extend(word.to_le_bytes());
+        }
         bytes
     }
 
@@ -96,17 +107,32 @@ mod tests {
             let parsed = Authorization::read(&mut reader).unwrap();
             assert_eq!((parsed.level, parsed.read_checksum), (24, 0x1234));
             assert_eq!(reader.position() as usize, bytes.len());
-            assert_eq!(encode(1, license_info, "", parsed.level, parsed.read_checksum), bytes);
-            for n in 0..bytes.len() { assert!(Authorization::read(Cursor::new(&bytes[..n])).is_err()); }
+            assert_eq!(
+                encode(1, license_info, "", parsed.level, parsed.read_checksum),
+                bytes
+            );
+            for n in 0..bytes.len() {
+                assert!(Authorization::read(Cursor::new(&bytes[..n])).is_err());
+            }
         }
     }
 
     #[test]
     fn authorization_rejects_unsupported_version_and_license_info() {
-        assert!(matches!(Authorization::read(Cursor::new(encode(2, false, "", 1, 0))),
-            Err(NIFileError::VersionMismatch { expected: 1, got: 2 })));
-        assert!(matches!(Authorization::read(Cursor::new(encode(1, true, "abc", 1, 0))),
-            Err(NIFileError::InvalidField { field: "Authorization SNP ID", .. })));
+        assert!(matches!(
+            Authorization::read(Cursor::new(encode(2, false, "", 1, 0))),
+            Err(NIFileError::VersionMismatch {
+                expected: 1,
+                got: 2
+            })
+        ));
+        assert!(matches!(
+            Authorization::read(Cursor::new(encode(1, true, "abc", 1, 0))),
+            Err(NIFileError::InvalidField {
+                field: "Authorization SNP ID",
+                ..
+            })
+        ));
     }
 
     #[test]

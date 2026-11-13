@@ -259,20 +259,28 @@ impl Builder<'_> {
         *self.styles.entry((font, align)).or_insert_with(|| {
             // Kontakt's factory fonts carry their own colour and size, from
             // NI's font chart (KSP manual, control parameters).
-            const COLORS: [u32; 26] = [
+            // 26 is white (Kontakt 8 oracle probe; past NI's chart).
+            const COLORS: [u32; 27] = [
                 0xfefefe, 0xfefefe, 0x373733, 0xcccccc, 0xe3c269, 0xe4d182, 0x7d3012, 0x853519,
                 0x48443c, 0x000000, 0xd9d9d9, 0x898c8d, 0x1b1b1a, 0xd2dce1, 0xb9b9b9, 0x5f5f5f,
                 0x000000, 0xfefefe, 0xfefefe, 0x000000, 0x7f7f7f, 0x7f7f7f, 0x000000, 0x7f7f7f,
-                0xffffff, 0x0c2431,
+                0xffffff, 0x0c2431, 0xfefefe,
             ];
             let factory = usize::try_from(font)
                 .ok()
                 .and_then(|f| COLORS.get(f).map(|&c| (f, c)));
             styles.push(ui::TextStyle {
                 font: bitmap.map_or(ui::Font::Stock(font), ui::Font::Bitmap),
-                size: factory
-                    .filter(|(f, _)| matches!(f, 1 | 5 | 7 | 16 | 17 | 20))
-                    .map(|_| 13.),
+                // Sizes that run each family as wide as Kontakt 8 draws it
+                // (oracle probe: one line in every font id at 100 %).
+                size: factory.and_then(|(f, _)| match f {
+                    1 | 5 | 7 | 19 | 20 => Some(12.6),
+                    16 | 17 => Some(12.5),
+                    22 | 24 => Some(11.5),
+                    12 | 13 | 14 | 18 | 25 => Some(11.),
+                    0 | 2 | 3 | 4 | 6 | 8 | 9 | 10 | 11 | 15 | 26 => Some(10.),
+                    _ => None,
+                }),
                 color: factory.map_or(ui::Rgba::default(), |(_, c)| ui::Rgba::rgb(c)),
                 align: match align {
                     0 => ui::Align::Left,
@@ -723,7 +731,10 @@ fn page_of(bld: &mut Builder<'_>, page: &Page, view: Option<&View>) {
         color: page
             .color
             .or(view.and_then(|v| v.color))
-            .map(|c| ui::Rgba::rgb(c as u32)),
+            .map(|c| ui::Rgba::rgb(c as u32))
+            // Kontakt fills a panel the script gives no colour in its pale
+            // cream (Kontakt 8 oracle, a bare probe page).
+            .or(Some(ui::Rgba::rgb(0xf0_efe4))),
         frame: u32::try_from(page.wallpaper_frame).unwrap_or(0),
         ..Default::default()
     };

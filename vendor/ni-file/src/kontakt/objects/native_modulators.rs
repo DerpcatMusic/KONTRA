@@ -17,17 +17,30 @@ use crate::{
     Error,
 };
 
-fn open<'a>(chunk: &'a Chunk, id: u16, versions: &[u16]) -> Result<(Cursor<&'a Vec<u8>>, u16), Error> {
+fn open<'a>(
+    chunk: &'a Chunk,
+    id: u16,
+    versions: &[u16],
+) -> Result<(Cursor<&'a Vec<u8>>, u16), Error> {
     if chunk.id != id {
-        return Err(KontaktError::IncorrectID { expected: id, got: chunk.id }.into());
+        return Err(KontaktError::IncorrectID {
+            expected: id,
+            got: chunk.id,
+        }
+        .into());
     }
     let mut reader = Cursor::new(&chunk.data);
     if reader.read_u8()? != 0 {
-        return Err(Error::Static("Structured modulator payload is not supported"));
+        return Err(Error::Static(
+            "Structured modulator payload is not supported",
+        ));
     }
     let version = reader.read_u16_le()?;
     if !versions.contains(&version) {
-        return Err(Error::VersionMismatch { expected: versions[0].into(), got: version.into() });
+        return Err(Error::VersionMismatch {
+            expected: versions[0].into(),
+            got: version.into(),
+        });
     }
     Ok((reader, version))
 }
@@ -48,7 +61,10 @@ pub struct PackedRecord {
 }
 
 fn record(reader: &mut Cursor<&Vec<u8>>) -> Result<PackedRecord, Error> {
-    Ok(PackedRecord { values: floats::<3>(reader)?, flag: reader.read_u8()? })
+    Ok(PackedRecord {
+        values: floats::<3>(reader)?,
+        flag: reader.read_u8()?,
+    })
 }
 
 /// # EnvelopeDbd (`BParEnv_DBD`, 0x41)
@@ -79,8 +95,18 @@ impl TryFrom<&Chunk> for EnvelopeDbd {
         } else {
             (Some(floats::<2>(&mut r)?), None)
         };
-        let flag = if version == 0x10 { None } else { Some(r.read_u8()?) };
-        Ok(Self { version, values, extra, records, flag })
+        let flag = if version == 0x10 {
+            None
+        } else {
+            Some(r.read_u8()?)
+        };
+        Ok(Self {
+            version,
+            values,
+            extra,
+            records,
+            flag,
+        })
     }
 }
 
@@ -107,8 +133,17 @@ impl TryFrom<&Chunk> for Glide {
             return Err(Error::Static("Glide mode out of range"));
         }
         let values = floats::<2>(&mut r)?;
-        let extra = if version == 0x51 { Some((floats::<2>(&mut r)?, r.read_u8()?)) } else { None };
-        Ok(Self { version, mode, values, extra })
+        let extra = if version == 0x51 {
+            Some((floats::<2>(&mut r)?, r.read_u8()?))
+        } else {
+            None
+        };
+        Ok(Self {
+            version,
+            mode,
+            values,
+            extra,
+        })
     }
 }
 
@@ -123,7 +158,9 @@ impl TryFrom<&Chunk> for EnvelopeFollower {
 
     fn try_from(chunk: &Chunk) -> Result<Self, Error> {
         let (mut r, _) = open(chunk, 0x0A, &[0x60])?;
-        Ok(Self { values: floats::<4>(&mut r)? })
+        Ok(Self {
+            values: floats::<4>(&mut r)?,
+        })
     }
 }
 
@@ -138,7 +175,9 @@ impl TryFrom<&Chunk> for GroupDynamics {
 
     fn try_from(chunk: &Chunk) -> Result<Self, Error> {
         let (mut r, _) = open(chunk, 0x4A, &[0x10])?;
-        Ok(Self { values: floats::<64>(&mut r)? })
+        Ok(Self {
+            values: floats::<64>(&mut r)?,
+        })
     }
 }
 
@@ -159,7 +198,10 @@ mod tests {
     #[test]
     fn dbd_versions_follow_the_reader_schemas() {
         let v10 = EnvelopeDbd::try_from(&chunk(0x41, 0x10, &f(&[1., 2., 3., 4., 5.]))).unwrap();
-        assert_eq!((v10.values, v10.extra, v10.flag), ([1., 2., 3.], Some([4., 5.]), None));
+        assert_eq!(
+            (v10.values, v10.extra, v10.flag),
+            ([1., 2., 3.], Some([4., 5.]), None)
+        );
         let mut body = f(&[1., 2., 3., 4., 5.]);
         body.push(7);
         let v11 = EnvelopeDbd::try_from(&chunk(0x41, 0x11, &body)).unwrap();
@@ -171,7 +213,13 @@ mod tests {
         }
         body.push(9);
         let v12 = EnvelopeDbd::try_from(&chunk(0x41, 0x12, &body)).unwrap();
-        assert_eq!(v12.records.unwrap()[1], PackedRecord { values: [11., 11., 12.], flag: 1 });
+        assert_eq!(
+            v12.records.unwrap()[1],
+            PackedRecord {
+                values: [11., 11., 12.],
+                flag: 1
+            }
+        );
         assert_eq!(v12.flag, Some(9));
         assert!(EnvelopeDbd::try_from(&chunk(0x41, 0x13, &body)).is_err());
         assert!(EnvelopeDbd::try_from(&chunk(0x41, 0x12, &body[..body.len() - 1])).is_err());
@@ -185,15 +233,25 @@ mod tests {
         assert_eq!((g.mode, g.values, g.extra), (2, [0.5, 0.25], None));
         body.extend(f(&[1., 2.]));
         body.push(1);
-        assert_eq!(Glide::try_from(&chunk(0x0B, 0x51, &body)).unwrap().extra, Some(([1., 2.], 1)));
+        assert_eq!(
+            Glide::try_from(&chunk(0x0B, 0x51, &body)).unwrap().extra,
+            Some(([1., 2.], 1))
+        );
         body[..4].copy_from_slice(&3u32.to_le_bytes());
         assert!(Glide::try_from(&chunk(0x0B, 0x51, &body)).is_err());
         assert_eq!(
-            EnvelopeFollower::try_from(&chunk(0x0A, 0x60, &f(&[1., 2., 3., 4.]))).unwrap().values,
+            EnvelopeFollower::try_from(&chunk(0x0A, 0x60, &f(&[1., 2., 3., 4.])))
+                .unwrap()
+                .values,
             [1., 2., 3., 4.]
         );
         let all: Vec<f32> = (0..64).map(|n| n as f32).collect();
-        assert_eq!(GroupDynamics::try_from(&chunk(0x4A, 0x10, &f(&all))).unwrap().values[63], 63.);
+        assert_eq!(
+            GroupDynamics::try_from(&chunk(0x4A, 0x10, &f(&all)))
+                .unwrap()
+                .values[63],
+            63.
+        );
         assert!(GroupDynamics::try_from(&chunk(0x4A, 0x10, &f(&all[..63]))).is_err());
     }
 }

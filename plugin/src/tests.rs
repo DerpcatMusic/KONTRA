@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use kontra_host::state::{Saved, SavedPart};
+use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress};
 use moose::prelude::*;
 
 use crate::{Dsp, Kontra, KontraParams, Tick};
@@ -1861,7 +1862,11 @@ fn a_panic_in_the_render_is_one_silent_block_and_the_next_plays() {
     wav.extend(samples);
     std::fs::write(scratch.0.join("sine.wav"), wav).unwrap();
     let sfz = scratch.0.join("sine.sfz");
-    std::fs::write(&sfz, "<region> sample=sine.wav key=60 loop_mode=loop_continuous\n").unwrap();
+    std::fs::write(
+        &sfz,
+        "<region> sample=sine.wav key=60 loop_mode=loop_continuous\n",
+    )
+    .unwrap();
     let saved = Saved::new(vec![SavedPart {
         part: 0,
         path: sfz,
@@ -1881,7 +1886,10 @@ fn a_panic_in_the_render_is_one_silent_block_and_the_next_plays() {
     let (params, mut dsp) = activate(&saved.write());
     let peak = |audio: &[f32]| audio.iter().fold(0.0f32, |m, x| m.max(x.abs()));
     block(&params, &mut dsp, &[note(true, 60)]);
-    assert!(peak(&block(&params, &mut dsp, &[])) > 0.01, "the note plays");
+    assert!(
+        peak(&block(&params, &mut dsp, &[])) > 0.01,
+        "the note plays"
+    );
     // The next render panics: that block is silent, the host is not unwound
     // into, and the fault is flagged for the player.
     params.shared.inject_panic.store(true, Ordering::Release);
@@ -1947,8 +1955,13 @@ fn a_host_macro_learns_a_touched_control_and_drives_it() {
     };
     let (widget, var, min, max) = found.expect("a persistent knob on Una Corda's panel");
     // The player's touch: the first macro takes it.
-    let (id, _) = crate::macros::touch(&params, 0, &widget, min).expect("a free macro");
+    let (id, _) =
+        crate::macros::touch(&params, 0, "Una Corda", &widget, min).expect("a free macro");
     assert_eq!(id, crate::macros::FIRST);
+    // The host reads its name: the part's, then the control's.
+    let shown = params.parameter_presentation(id);
+    assert!(shown.is_some_and(|s| s.name.starts_with("Una Corda: ")));
+    assert!(params.macro_renamed(id) && !params.macro_renamed(id));
     // The host automates Macro 1 to three quarters of the control's range.
     let to = (min + 0.75 * (max - min)).round();
     let m = crate::macros::read(&params.macros.read().unwrap())[0]
@@ -1966,4 +1979,354 @@ fn a_host_macro_learns_a_touched_control_and_drives_it() {
         values.iter().any(|v| **v == format!("{var} {to}")),
         "Macro 1 → {to} did not reach {var}: {values:?}"
     );
+}
+
+/// One 64-frame block with `events`: part 0's left channel.
+fn block_64(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event]) -> Vec<f32> {
+    block_64_exact(params, dsp, events, &[])
+}
+
+/// [`block_64`] with host-native events too.
+fn block_64_exact(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    events: &[moose::prelude::Event],
+    exact: &[ExactEvent],
+) -> Vec<f32> {
+    const FRAMES: usize = 64;
+    let mut list = EventList::with_capacity(16);
+    for &e in events {
+        list.push(e);
+    }
+    for &e in exact {
+        list.try_push_exact(e).unwrap();
+    }
+    let mut channels = vec![vec![0.0f32; FRAMES]; 2 * crate::OUTPUTS];
+    {
+        let mut outs: Vec<&mut [f32]> = channels.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outs, FRAMES);
+        let transport = TransportInfo::default();
+        let mut out_events = EventList::with_capacity(16);
+        let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut out_events);
+        <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+    }
+    channels.swap_remove(0)
+}
+
+/// Installs a part in the rack whose one zone plays a constant level on
+/// every key, run by KSP `source`; the store its sample lives in, and the
+/// last message the script's init sent.
+fn dc_part(params: &KontraParams, source: &str) -> (kontra_stream::Store, String) {
+    use std::sync::Arc;
+
+    use kontra_engine::{Engine, Plan, Region, Zone};
+    use kontra_host::rack::{Mix, Part};
+    use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
+
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let fmt = SampleFmt {
+        encoding: Encoding::F32,
+        channels: 1,
+    };
+    let frames = 48_000;
+    let key = BlobKey {
+        file: "dc".into(),
+        offset: 0,
+        fmt,
+    };
+    let bytes = (0..frames).flat_map(|_| 0.5f32.to_le_bytes()).collect();
+    let sample = (store.load(
+        &key,
+        Arc::new(MemSource::new(fmt, bytes)),
+        frames,
+        std::slice::from_ref(&(0..frames)),
+    ))
+    .unwrap();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+    let mut zone = Zone::new(region, 60, 48_000);
+    zone.keys = 0..=127;
+    let mut plan = Plan::new(vec![zone], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let message = engine.last_message().to_owned();
+    let part = Part {
+        path: None,
+        source: None,
+        recall: kontra_engine::Recall::Restart,
+        name: "dc".into(),
+        diagnostics: vec![],
+        faces: vec![],
+        mix: Mix::DEFAULT,
+        solo: false,
+        mute: false,
+        script: Default::default(),
+        plan: None,
+        delays: None,
+        view: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+        modified: false,
+        named: Default::default(),
+        sounds: Default::default(),
+    };
+    let mut guard = crate::lock(&params.shared.rack);
+    guard.as_mut().unwrap().install(0, Box::new(engine), part);
+    (store, message)
+}
+
+/// The first frame of `out` that sounds.
+fn first_sound(out: &[f32]) -> Option<usize> {
+    out.iter().position(|x| *x != 0.0)
+}
+
+#[test]
+fn a_host_macro_move_inside_a_block_lands_on_its_frame() {
+    use kontra_host::rack::{Control, MacroTarget, Scale};
+
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    // A script that plays the zone when its knob moves.
+    let (_store, k) = dc_part(
+        &params,
+        "on init
+            declare ui_knob $k (0, 100, 1)
+            message(get_ui_id($k))
+        end on
+        on ui_control ($k)
+            play_note(60, 100, 0, -1)
+        end on",
+    );
+    let target = MacroTarget {
+        part: 0,
+        slot: 0,
+        control: Control::Integer(k.parse().unwrap()),
+        scale: Scale::Range {
+            min: 0.0,
+            max: 100.0,
+        },
+    };
+    crate::lock(&params.shared.rack)
+        .as_mut()
+        .unwrap()
+        .set_macro(0, Some(target));
+    assert!(block_64(&params, &mut dsp, &[]).iter().all(|x| *x == 0.0));
+    // The host moves Macro 1 at frame 37 of the next block.
+    let change = EventBody::ParamChange {
+        id: crate::macros::FIRST,
+        value: 0.5,
+    };
+    let out = block_64(&params, &mut dsp, &[moose::prelude::Event::new(37, change)]);
+    let first = first_sound(&out);
+    assert!(
+        first.is_some_and(|f| f >= 37),
+        "sound before the move's frame, or none: first non-zero frame {first:?}"
+    );
+}
+
+#[test]
+fn the_host_transport_starting_inside_a_block_reaches_the_script_at_its_frame() {
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    // The script plays when the song starts at bar 3 at 120 bpm.
+    let (_store, _) = dc_part(
+        &params,
+        "on init
+            set_listener($NI_SIGNAL_TRANSP_START, 1)
+        end on
+        on listener
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TRANSP_START and $NI_SONG_POSITION = 960 * 8 and $DURATION_QUARTER = 500000)
+                play_note(60, 100, 0, -1)
+            end if
+        end on",
+    );
+    assert!(block_64(&params, &mut dsp, &[]).iter().all(|x| *x == 0.0));
+    let start = EventBody::Transport(TransportInfo {
+        playing: true,
+        tempo: 120.0,
+        position_beats: 8.0,
+        time_sig_num: 4,
+        time_sig_den: 4,
+        ..TransportInfo::default()
+    });
+    let out = block_64(&params, &mut dsp, &[moose::prelude::Event::new(37, start)]);
+    let first = first_sound(&out);
+    assert!(
+        first.is_some_and(|f| f >= 37),
+        "the start sounded before its frame, or never: first non-zero frame {first:?}"
+    );
+}
+
+#[test]
+fn a_clap_pressure_expression_reaches_the_scripts_poly_at_at_its_frame() {
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    // The script plays a second note when key 60's pressure passes 100.
+    let (_store, _) = dc_part(
+        &params,
+        "on poly_at
+            if ($POLY_AT_NUM = 60 and %POLY_AT[60] > 100)
+                play_note(72, 100, 0, -1)
+            end if
+        end on",
+    );
+    block_64(&params, &mut dsp, &[note(true, 60)]);
+    let held = block_64(&params, &mut dsp, &[]);
+    // The host presses key 60's note harder at frame 37 (CLAP pressure).
+    let press = ExactEvent::new(
+        37,
+        ExactEventBody::NoteExpression {
+            expression_id: 6,
+            address: ExactNoteAddress::from_raw_signed(0, 0, 60, -1),
+            value: 0.9,
+        },
+    );
+    let out = block_64_exact(&params, &mut dsp, &[], &[press]);
+    let level = held[63];
+    assert!(level > 0.1, "the held note does not sound: {level}");
+    assert!(
+        out[..37].iter().all(|x| (x - level).abs() < 1e-4),
+        "the second note sounded before the pressure's frame"
+    );
+    assert!(
+        out[40..].iter().all(|x| *x > level + 0.1),
+        "the pressure did not reach on poly_at at its frame: {:?}",
+        &out[36..44]
+    );
+}
+
+/// The host saves the project, closes the plug-in and opens the project in
+/// a new one: parameter values and persisted fields, as a host keeps them.
+fn reopen(params: &KontraParams) -> (KontraParams, Dsp) {
+    params.capture();
+    let (ids, values) = params.collect_values();
+    let persist = params.serialize_persist();
+    let again = KontraParams::new();
+    let pairs: Vec<(u32, f64)> = ids.into_iter().zip(values).collect();
+    again.restore_state(&pairs, &persist);
+    again.restore();
+    let mut dsp = Dsp::default();
+    <Kontra as PluginLogic>::reset(&mut dsp, &again, &AudioConfig::new(RATE, BLOCK));
+    again.shared.shown.store(true, Ordering::Release);
+    Tick.run(&again);
+    (again, dsp)
+}
+
+#[test]
+fn a_project_with_a_kontakt_and_a_uvi_part_reopens_as_it_was_saved() {
+    let Some(kontakt) = library("Una Corda Library/Instruments/Una Corda Felt.nki") else {
+        return;
+    };
+    let uvi = Path::new("/data/main/Libraries/UVI")
+        .join("VWinds - Clarinets/VWinds-BbClarinet.ufs/Presets/Bb Clarinet.uvip");
+    if !uvi.ancestors().any(Path::is_file) {
+        eprintln!("skipped: no {}", uvi.display());
+        return;
+    }
+    let part = |part: usize, path: PathBuf, preset: Option<PathBuf>| SavedPart {
+        part,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+        preset,
+        modified: false,
+    };
+    let saved = Saved::new(vec![part(0, kontakt, None), part(1, uvi, None)]);
+    let (params, mut dsp) = activate(&saved.write());
+    settle(&params, &mut dsp);
+    // On each part the player turns a panel knob, and a macro learns it.
+    let mut moved = Vec::new();
+    for n in 0..2 {
+        let mut guard = crate::lock(&params.shared.rack);
+        let rack = guard.as_mut().unwrap();
+        let p = rack.parts()[n].as_ref().unwrap();
+        let title = p.name.clone();
+        let view = p
+            .view
+            .as_ref()
+            .unwrap_or_else(|| panic!("part {n}: no panel"));
+        let found = view.tree().widgets.iter().enumerate().find_map(|(i, w)| {
+            let knob = matches!(
+                w.kind,
+                kontra_ui_model::Kind::Knob { .. } | kontra_ui_model::Kind::Slider { .. }
+            );
+            let (min, max) = crate::macros::range(w)?;
+            (knob && !w.hidden && max > min).then(|| (i, w.clone(), min + 0.75 * (max - min)))
+        });
+        let (widget, w, to) = found.unwrap_or_else(|| panic!("part {n}: no knob"));
+        rack.control(n, widget, None, to, Default::default());
+        moved.push(w.name.clone());
+        crate::macros::touch(&params, n, &title, &w, to).expect("a free macro");
+    }
+    settle(&params, &mut dsp);
+    settle(&params, &mut dsp);
+    params.capture();
+    let state = params.saved.read().unwrap().clone();
+    let macros = params.macros.read().unwrap().clone();
+    assert_eq!(macros.lines().count(), 2, "{macros}");
+    let names: Vec<_> = (0..2)
+        .map(|n| {
+            params
+                .parameter_presentation(crate::macros::id(n))
+                .map(|p| p.name)
+        })
+        .collect();
+    assert!(
+        names.iter().all(Option::is_some),
+        "unnamed macros: {names:?}"
+    );
+
+    let (again, mut again_dsp) = reopen(&params);
+    settle(&again, &mut again_dsp);
+    settle(&again, &mut again_dsp);
+    again.capture();
+    assert_eq!(*again.macros.read().unwrap(), macros, "the macros changed");
+    let names_again: Vec<_> = (0..2)
+        .map(|n| {
+            again
+                .parameter_presentation(crate::macros::id(n))
+                .map(|p| p.name)
+        })
+        .collect();
+    assert_eq!(names_again, names, "the macro names changed");
+    let (was, now) = (
+        Saved::read(&state),
+        Saved::read(&again.saved.read().unwrap()),
+    );
+    assert_eq!(now.parts.len(), 2, "a part did not come back");
+    for (a, name) in was.parts.iter().zip(&moved) {
+        let entries = a.scripts.iter().flatten();
+        let has =
+            |e: &&String| e.starts_with(&format!("{name}=")) || e.starts_with(&format!("{name} "));
+        assert!(
+            entries.clone().any(|e| has(&e)),
+            "part {}: {name} not saved",
+            a.part
+        );
+    }
+    for (a, b) in was.parts.iter().zip(&now.parts) {
+        assert_eq!(a.path, b.path);
+        assert_eq!(a.preset, b.preset, "part {}: its preset changed", a.part);
+        assert_eq!(
+            a.scripts, b.scripts,
+            "part {}: its script values changed",
+            a.part
+        );
+    }
 }

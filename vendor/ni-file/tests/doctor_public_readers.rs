@@ -73,17 +73,35 @@ fn control_supported_reader_layouts_still_accept_and_consume() {
     }
     // One nonempty UTF-16 segment (including a surrogate pair).
     let segment = "音楽🎹";
-    let mut bytes = words(&[1, 0x10700E, 0, 2, 1, 1, segment.encode_utf16().count() as u32]);
-    for unit in segment.encode_utf16() { bytes.extend(unit.to_le_bytes()); }
+    let mut bytes = words(&[
+        1,
+        0x10700E,
+        0,
+        2,
+        1,
+        1,
+        segment.encode_utf16().count() as u32,
+    ]);
+    for unit in segment.encode_utf16() {
+        bytes.extend(unit.to_le_bytes());
+    }
     let mut reader = Cursor::new(&bytes);
     let parsed = RepositoryRoot::read(&mut reader).unwrap();
     assert_eq!(parsed.segments, [segment]);
     assert_eq!(reader.position() as usize, bytes.len());
-    let mut encoded = words(&[1, 0x10700E, parsed.repository_magic, parsed.repository_type,
-                              1, parsed.segments.len() as u32]);
+    let mut encoded = words(&[
+        1,
+        0x10700E,
+        parsed.repository_magic,
+        parsed.repository_type,
+        1,
+        parsed.segments.len() as u32,
+    ]);
     for s in parsed.segments {
         encoded.extend((s.encode_utf16().count() as u32).to_le_bytes());
-        for unit in s.encode_utf16() { encoded.extend(unit.to_le_bytes()); }
+        for unit in s.encode_utf16() {
+            encoded.extend(unit.to_le_bytes());
+        }
     }
     assert_eq!(encoded, bytes);
 }
@@ -101,7 +119,7 @@ fn control_supported_fm8_layouts_still_accept_and_reparse() {
         let mut reader = Cursor::new(exact);
         FM8Preset::read(&mut reader).unwrap();
         assert_eq!(reader.position() as usize, exact.len());
-        assert!(FM8Preset::read(Cursor::new(&exact[..end-1])).is_err());
+        assert!(FM8Preset::read(Cursor::new(&exact[..end - 1])).is_err());
     }
 }
 

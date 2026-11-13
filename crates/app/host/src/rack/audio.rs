@@ -7,7 +7,7 @@ use kontra_engine::{Engine, Play, RenderMode, SampleTime, Timed};
 use kontra_protocol::{Meters, Slowest, Stats};
 
 use super::hold::{Held, Hold};
-use super::{Channels, Command, Event, HostPattern, MACROS, MacroTarget, Mix, OUTPUTS};
+use super::{Channels, Command, Control, Event, HostPattern, MACROS, MacroTarget, Mix, OUTPUTS};
 use crate::persist::Capture;
 use kontra_protocol::MAX_PARTS;
 
@@ -150,8 +150,18 @@ impl RackAudio {
             return false;
         };
         let start = std::time::Instant::now();
-        p.engine.set_click(t.slot, t.id, [false; 3], 0);
-        p.engine.set_control(t.slot, t.id, t.value(normalized));
+        let plain = t.plain(normalized);
+        match t.control {
+            Control::Integer(id) | Control::Real(id) => {
+                let value = match t.control {
+                    Control::Real(_) => plain.to_bits() as i64,
+                    _ => plain.round() as i64,
+                };
+                p.engine.set_click(t.slot, id, [false; 3], 0);
+                p.engine.set_control(t.slot, id, value);
+            }
+            Control::Widget(n) => p.engine.set_widget(t.slot, n, plain, None),
+        }
         self.ui_scripts_ns += ns_since(start);
         true
     }
@@ -340,6 +350,11 @@ impl RackAudio {
         }
         self.panic = false;
         self.played.clear();
+        // The song moved on: the next call (a later part of the host's
+        // block) starts where this one ended, not back at the block's start.
+        if let (Some((Play::Running, quarters, _)), Some(bpm)) = (&mut self.transport, self.tempo) {
+            *quarters += frames as f64 / self.rate * f64::from(bpm) / 60.0;
+        }
         for o in self.outputs.iter().filter_map(|o| o.get(..frames)) {
             for s in o {
                 self.meters.master[0] = self.meters.master[0].max(s[0].abs());

@@ -50,7 +50,13 @@ const EVENTS: usize = 4096;
 const CHUNK: usize = 1024;
 
 #[derive(Params)]
-#[params(pre_save = "capture", post_load = "restore")]
+#[params(
+    pre_save = "capture",
+    post_load = "restore",
+    presentation = "macro_presentation",
+    presentation_revision = "macro_revision",
+    presentation_change = "macro_renamed"
+)]
 pub struct KontraParams {
     #[param(
         id = 0,
@@ -108,6 +114,10 @@ pub struct Shared {
     /// bits: the audio thread applies a host's in-block moves too.
     macro_values: [AtomicU64; macros::COUNT],
     /// What the audio side was last told each macro moves.
+    /// Bumped when a macro's host name changes ([`macros::renamed`]), and
+    /// the value the host was last asked to read the names at.
+    macro_names: AtomicU64,
+    macro_names_told: AtomicU64,
     macro_targets: Mutex<[Option<kontra_host::rack::MacroTarget>; macros::COUNT]>,
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
@@ -232,6 +242,30 @@ impl KontraParams {
         }
     }
 
+    /// A learnt macro's host name, "Part: Control".
+    fn macro_presentation(&self, id: u32) -> Option<moose::params::ParameterPresentation> {
+        let n = macros::index(id)?;
+        let text = self.macros.read().unwrap_or_else(PoisonError::into_inner);
+        let label = macros::read(&text).into_iter().nth(n)??.label;
+        (!label.is_empty()).then(|| moose::params::ParameterPresentation {
+            name: label,
+            ..Default::default()
+        })
+    }
+
+    fn macro_revision(&self) -> u64 {
+        self.shared.macro_names.load(Ordering::Acquire)
+    }
+
+    /// A macro's move asks the host to read the names again while one
+    /// changed since it last did: a learn's first move, or the next move
+    /// after a release. Atomics only: it runs on the audio thread too.
+    fn macro_renamed(&self, id: u32) -> bool {
+        let now = self.shared.macro_names.load(Ordering::Acquire);
+        macros::index(id).is_some()
+            && self.shared.macro_names_told.swap(now, Ordering::AcqRel) != now
+    }
+
     /// After the host loads a state: reload its parts on the next tick.
     fn restore(&self) {
         let json = self
@@ -240,6 +274,8 @@ impl KontraParams {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         self.shared.restored.fetch_add(1, Ordering::Release);
+        // The restored macros' names.
+        macros::renamed(self);
         let mut requests = lock(&self.shared.requests);
         requests.retain(|r| !matches!(r, Request::Restore(_)));
         // A damaged or foreign state loads an empty rack, and says so.
@@ -278,12 +314,21 @@ pub struct Dsp {
     input: Vec<(u32, Event)>,
     /// This chunk's share of `input`.
     chunk: Vec<(u32, Event)>,
-    /// This block's host macro moves: (frame, macro, host value).
-    moves: Vec<(u32, usize, f64)>,
+    /// This block's host changes that split it: macro moves and transport.
+    moves: Vec<(u32, Change)>,
     gain: f32,
     rate: f64,
     until_tick: usize,
     latency: u32,
+}
+
+/// A host change inside a block, applied at its frame.
+#[derive(Clone, Copy)]
+enum Change {
+    /// Macro `n` to host value `v`.
+    Macro(usize, f64),
+    /// Tempo, play state, song position and signature.
+    Transport(TransportInfo),
 }
 
 /// The control tick: carries out requests, frees what audio retired and
@@ -318,6 +363,8 @@ impl BackgroundTask for Tick {
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
         rack.know(browser);
+        // What the loads of this tick found missing comes after them.
+        let mut notices = Vec::new();
         // A state the host restored in this batch is what `saved` holds: a
         // load beside it must not write the rack over it.
         let restores = requests.iter().any(|r| matches!(r, Request::Restore(_)));
@@ -362,6 +409,8 @@ impl BackgroundTask for Tick {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
             }
         }
+        notices.extend(rack.take_notices());
+        report.extend(notices);
         match p.shared.folder.picked() {
             Some((folder::Wanted::Libraries, path)) => browser.add_root(path),
             Some((folder::Wanted::Snapshots, path)) => browser.set_kontakt(path),
@@ -527,19 +576,17 @@ impl PluginLogic for Kontra {
                     e
                 }
             };
-            if let EventBody::ParamChange { id, value } = e.body
-                && let Some(n) = macros::index(id)
-            {
-                if s.moves.len() < s.moves.capacity() {
-                    s.moves.push((e.sample_offset, n, value));
+            let change = match e.body {
+                EventBody::ParamChange { id, value } => {
+                    macros::index(id).map(|n| Change::Macro(n, value))
                 }
-            } else if let EventBody::Transport(t) = e.body {
-                audio.set_tempo(t.tempo as f32);
-                audio.set_transport(
-                    t.playing,
-                    t.position_beats,
-                    (t.time_sig_num, t.time_sig_den),
-                );
+                EventBody::Transport(t) => Some(Change::Transport(t)),
+                _ => None,
+            };
+            if let Some(change) = change {
+                if s.moves.len() < s.moves.capacity() {
+                    s.moves.push((e.sample_offset, change));
+                }
             } else if let Some(event) = input::event(e)
                 && s.input.len() < s.input.capacity()
             {
@@ -555,16 +602,26 @@ impl PluginLogic for Kontra {
         }
         // Rendered in chunks, so a long offline block never reads past what
         // the engine looked ahead for.
-        // Host macro moves split it too: each applies at its frame.
+        // Host macro moves and transport changes split it too: each
+        // applies at its frame.
         let chunk = CHUNK.min(audio.max_block()).max(1);
         let mut moves = s.moves.iter().peekable();
         let mut start = 0;
         while start < frames {
-            while let Some(&(_, n, value)) = moves.next_if(|m| m.0 as usize <= start) {
-                if audio.move_macro(n, value)
-                    && let Some(last) = p.shared.macro_values.get(n)
-                {
-                    last.store(value.to_bits(), Ordering::Relaxed);
+            while let Some(&(_, change)) = moves.next_if(|m| m.0 as usize <= start) {
+                match change {
+                    Change::Macro(n, value) => {
+                        if audio.move_macro(n, value)
+                            && let Some(last) = p.shared.macro_values.get(n)
+                        {
+                            last.store(value.to_bits(), Ordering::Relaxed);
+                        }
+                    }
+                    Change::Transport(t) => {
+                        audio.set_tempo(t.tempo as f32);
+                        let signature = (t.time_sig_num, t.time_sig_den);
+                        audio.set_transport(t.playing, t.position_beats, signature);
+                    }
                 }
             }
             let next = moves.peek().map_or(frames, |m| (m.0 as usize).min(frames));

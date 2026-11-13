@@ -33,7 +33,8 @@ impl Engine {
         }
         // Channel pressure: every note on the channel (MPE: its one note).
         if status & 0xF0 == 0xD0 {
-            self.behaviour.set_pressure(channel, (word >> 8) as u8 & 0x7F);
+            self.behaviour
+                .set_pressure(channel, (word >> 8) as u8 & 0x7F);
             let mut hits = std::mem::take(&mut self.hits);
             self.notes.select(&mut hits, |n| n.host.channel == channel);
             self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
@@ -142,6 +143,12 @@ impl Engine {
         }
         self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
         self.hits = hits;
+        self.run_poly_at(key);
+    }
+
+    /// Each script's `on poly_at` for `key`, its value already in
+    /// `%POLY_AT`.
+    pub(crate) fn run_poly_at(&mut self, key: u8) {
         let plan = Arc::clone(&self.plan);
         for (slot, script) in (0u8..).zip(&plan.scripts) {
             if let Some(entry) = script.callbacks.poly_at {

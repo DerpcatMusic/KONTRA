@@ -20,7 +20,11 @@ const STAGES: [&str; 3] = ["translate", "prepare", "engine"];
 
 /// Phase `p` is stage `p % 3` of instance `p / 3`.
 fn phase_name(p: usize) -> String {
-    format!("#{} {}", p / 3 + 1, STAGES.get(p % 3).copied().unwrap_or("?"))
+    format!(
+        "#{} {}",
+        p / 3 + 1,
+        STAGES.get(p % 3).copied().unwrap_or("?")
+    )
 }
 
 static PHASE: AtomicUsize = AtomicUsize::new(0);
@@ -145,7 +149,14 @@ fn names(frames: &[usize; FRAMES]) -> String {
         backtrace::resolve(*ip as *mut std::ffi::c_void, |s| {
             let name = s.name().map(|n| n.to_string()).unwrap_or_default();
             let name = name.rsplit_once("::h").map_or(name.as_str(), |(a, _)| a);
-            let skip = ["alloc::", "core::", "std::", "hashbrown", "<alloc", "heap::"];
+            let skip = [
+                "alloc::",
+                "core::",
+                "std::",
+                "hashbrown",
+                "<alloc",
+                "heap::",
+            ];
             if out.len() < 6 && !name.is_empty() && !skip.iter().any(|p| name.starts_with(p)) {
                 let at = s.filename().map_or(String::new(), |f| {
                     format!(" ({}:{})", f.display(), s.lineno().unwrap_or(0))
