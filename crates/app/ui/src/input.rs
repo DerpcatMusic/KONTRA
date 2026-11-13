@@ -264,10 +264,13 @@ pub fn read(
         }
         match &w.kind {
             Kind::Button { momentary: true } => {
+                // Its release always reports: a press can rebuild it at 0
+                // (a native page re-rendering), and the release still runs
+                // the source's own callback (a tab switching its page).
                 if r.pressed {
                     set(1.);
                 } else if r.released {
-                    set(0.);
+                    edits.push(edit(Set::Value(0.)));
                 }
             }
             Kind::Button { .. } | Kind::Switch => {

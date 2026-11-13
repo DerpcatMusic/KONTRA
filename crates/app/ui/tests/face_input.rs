@@ -355,3 +355,31 @@ fn a_value_edit_arrow_steps_one_shown_unit_a_press() {
     assert_eq!(held.len(), 6, "{held:?}");
     assert_eq!(f.value(3), 100.);
 }
+
+/// A native page's tap rebuilt at 0 while held (its press re-renders the
+/// page) still reports its release: that runs the page's own tap callback.
+#[test]
+fn a_momentary_button_rebuilt_while_held_reports_its_release() {
+    let mut f = Face::new();
+    f.tree.widgets.push(Widget::new(
+        "native_ui tap 1 2",
+        PageRef(0),
+        Rect::new(300, 100, 40, 20),
+        Kind::Button { momentary: true },
+    ));
+    let n = f.tree.widgets.len() - 1;
+    f.frame(Input::default());
+    let at = f.at(&input::surface(0, n));
+    let mut press = f.pointer(at, true, Mods::default());
+    press.extend(f.pointer(at, true, Mods::default()));
+    assert!(press.iter().any(|e| e.to == Set::Value(1.)), "{press:?}");
+    if let Some(w) = f.tree.widgets.get_mut(n) {
+        w.value = None;
+    }
+    let mut release = f.pointer(at, false, Mods::default());
+    release.extend(f.frame(Input::default()));
+    assert!(
+        release.iter().any(|e| e.to == Set::Value(0.)),
+        "{release:?}"
+    );
+}
