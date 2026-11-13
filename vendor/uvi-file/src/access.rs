@@ -221,7 +221,10 @@ mod tests {
         assert_eq!(failure_reason(&error), error.to_string());
         // The cause is the reason a bank fails; keep it, not just the outer context.
         let error = anyhow::anyhow!("Expected UFS2 container").context("Opening UFS bank");
-        assert_eq!(failure_reason(&error), "Opening UFS bank: Expected UFS2 container");
+        assert_eq!(
+            failure_reason(&error),
+            "Opening UFS bank: Expected UFS2 container"
+        );
     }
 
     fn authored_png() -> Vec<u8> {

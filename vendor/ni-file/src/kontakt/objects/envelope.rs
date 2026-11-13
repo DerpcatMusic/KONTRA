@@ -388,7 +388,11 @@ mod timing_tests {
         let chunk = flex.to_chunk().unwrap();
         let back = EnvelopeFlex::try_from(&chunk).unwrap();
         assert_eq!(
-            (back.points[0].time_ms, back.points[0].level, back.points[0].curve),
+            (
+                back.points[0].time_ms,
+                back.points[0].level,
+                back.points[0].curve
+            ),
             (-3.0, 1.5, -2.0)
         );
         flex.points[0].curve = f32::NAN;
@@ -412,7 +416,12 @@ mod timing_tests {
         assert_eq!((back.sustain, back.sustain_level()), (-1e-18, 0.0));
         // A sustain outside 0..=1 by more than rounding is still a misread record.
         for sustain in [-0.5, 3.7] {
-            assert!(EnvelopeAhdsr { sustain, ..envelope.clone() }.to_chunk().is_err());
+            assert!(EnvelopeAhdsr {
+                sustain,
+                ..envelope.clone()
+            }
+            .to_chunk()
+            .is_err());
         }
     }
 
