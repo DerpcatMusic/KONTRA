@@ -51,8 +51,10 @@ pub(crate) fn eval(action: Action, ints: &[i64], cells: &mut [i64]) -> Option<Ho
         Action::Search => {
             let (base, len, lo, hi) = (int(0), int(1), int(3), int(4));
             let needle = ints.get(2).copied().unwrap_or(0);
-            let found = range(base, len, lo, hi).find(|&at| cells.get(at) == Some(&needle));
-            HostValue::Int(found.map_or(-1, |at| at as i32 - base))
+            let r = range(base, len, lo, hi);
+            let hay = cells.get(r.start..r.end.min(cells.len())).unwrap_or_default();
+            let found = hay.iter().position(|&c| c == needle);
+            HostValue::Int(found.map_or(-1, |at| (r.start + at) as i32 - base))
         }
         Action::Sort => {
             let (base, len, descending, lo, hi) = (int(0), int(1), int(2) != 0, int(3), int(4));
@@ -89,4 +91,25 @@ fn range(base: i32, len: i32, lo: i32, hi: i32) -> std::ops::Range<usize> {
         return 0..0;
     }
     (base + lo) as usize..(base + hi + 1) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_pure_matches_eval() {
+        for &a in Action::all() {
+            assert_eq!(a.is_pure(), eval(a, &[0; 8], &mut [0; 16]).is_some(), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn search_finds_and_clamps() {
+        let mut cells = [5, 6, 7, 8];
+        let mut at = |n, lo, hi| eval(Action::Search, &[0, 4, n, lo, hi], &mut cells);
+        assert!(matches!(at(7, 0, 3), Some(HostValue::Int(2))));
+        assert!(matches!(at(7, 3, 9), Some(HostValue::Int(-1))));
+        assert!(matches!(at(8, -2, 9), Some(HostValue::Int(3))));
+    }
 }
