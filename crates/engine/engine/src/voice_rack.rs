@@ -7,7 +7,7 @@ use crate::ledger::Note;
 use crate::modulators::Age;
 use crate::{Engine, Zone};
 pub(crate) use kontra_racks::voice_rack::{
-    Kind, MIN_DAMPING, Ramp, Tune, Unit, process, template, tune_unit,
+    Kind, MIN_DAMPING, Ramp, Tune, Unit, comb_line, combs, process, start, template, tune_unit,
 };
 
 impl Engine {
@@ -17,8 +17,10 @@ impl Engine {
         let rate = self.rate;
         self.voice_units = self.groups.iter().map(|g| template(g, rate)).collect();
         let most = self.voice_units.iter().map(|u| u.len()).max().unwrap_or(0);
+        let lines = self.voice_units.iter().map(|u| combs(u)).max().unwrap_or(0) * comb_line(rate);
         for slot in &mut self.voices {
             slot.rack = Vec::with_capacity(most);
+            slot.comb_lines = vec![[0.0; 2]; lines];
             // A note an init callback started gets its units too; the next
             // refresh tunes them.
             let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
@@ -44,6 +46,7 @@ impl Engine {
                     c.reseed(seed);
                 }
             }
+            start(&mut slot.rack, &mut slot.comb_lines);
         }
         self.retune_rack(i, zone, note, age);
     }
@@ -59,7 +62,7 @@ impl Engine {
             };
             let mut ramp = None;
             let effect = match u.kind {
-                Kind::Filter(_) | Kind::Eq(_) => None,
+                Kind::Filter(_) | Kind::Eq(_) | Kind::Comb(_) => None,
                 _ => self.voice_effect(zone, u.insert, note, age),
             };
             let tune = match u.kind {
@@ -67,6 +70,9 @@ impl Engine {
                     .voice_filter(zone, u.insert, note, age)
                     .map(|(hz, k)| Tune::Filter(hz, k)),
                 Kind::Eq(_) => self.voice_bells(zone, u.insert, note, age).map(Tune::Eq),
+                Kind::Comb(_) => self
+                    .voice_comb(zone, u.insert, note, age)
+                    .map(|(hz, g)| Tune::Comb(hz, g)),
                 Kind::Formant(_) | Kind::Overdrive(_) => effect.as_ref().map(Tune::Effect),
                 Kind::Shaper(_) | Kind::Crush(_) => {
                     let now = effect;
@@ -157,6 +163,40 @@ impl Engine {
             .damping
             .map(|k| ((2.0 - (2.0 - k) * resonance) * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));
         Some((hz, damping))
+    }
+
+    /// The pitch in Hz and feedback of the comb in `insert` of `zone`'s group,
+    /// its cutoff routes applied for this note at `age`.
+    pub(crate) fn voice_comb(
+        &self,
+        zone: &Zone,
+        insert: u8,
+        note: &Note,
+        age: Age,
+    ) -> Option<(f32, f32)> {
+        let group = self.groups.get(zone.group as usize)?;
+        let effect = group.inserts.get(usize::from(insert))?.as_ref()?;
+        let ir::EffectKind::Comb(c) = effect.kind else {
+            return None;
+        };
+        let mut octaves = 0.0f32;
+        for m in group.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::Cutoff {
+                source,
+                insert: i,
+                depth,
+            } = m.kind
+                && i == insert
+            {
+                let input = self.routed(zone, source, note, age);
+                let value = input.unwrap_or(0.0) * depth;
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, value, crate::RouteUnit::CutoffDepth);
+                octaves += value;
+            }
+        }
+        let hz = (c.hz * (c.octaves * octaves).exp2()).clamp(ir::COMB_LOWEST_HZ, 20_000.0);
+        Some((hz, c.feedback))
     }
 
     /// The effect in `insert` of `zone`'s group, its controls moved by their

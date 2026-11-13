@@ -2305,6 +2305,30 @@ fn an_lfo_and_a_step_envelope_on_a_sends_gain_run_free_on_its_bus() {
 }
 
 #[test]
+fn a_step_envelopes_smooth_glides_between_its_steps() {
+    let step = |smooth: &str| {
+        let xml = format!(
+            r#"<StepEnvelope Name="S" Bypass="0" Freq="0.25" NumSteps="2" Levels="1 0" Retrigger="0" SyncToHost="1" Smooth="{smooth}"/>"#
+        );
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        modulation::steps(doc.root_element()).unwrap().1
+    };
+    let (held, glide) = (step("0"), step("0.0845"));
+    // Read at the first step's start: the held table is at its level, the
+    // smoothed one is still on its way up from the last step's 0.
+    let first = |t: &[f32]| t[t.len() - 1];
+    assert_eq!(first(&held), 1.0);
+    assert!(
+        first(&glide) < 0.9 && first(&glide) > 0.0,
+        "{}",
+        first(&glide)
+    );
+    // Late in the first step it has settled toward 1.
+    let late = |t: &[f32]| t[t.len() * 11 / 20];
+    assert!(late(&glide) > 0.8, "{}", late(&glide));
+}
+
+#[test]
 fn an_lfo_on_a_bus_flangers_mix_and_speed_moves_them_live() {
     let xml = r#"<Program Gain="1">
       <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup>
@@ -2338,4 +2362,41 @@ fn an_lfo_on_a_bus_flangers_mix_and_speed_moves_them_live() {
         })
         .collect();
     assert!(params.contains(&ir::EffectParam::ModRate), "{params:?}");
+}
+
+#[test]
+fn a_keygroup_comb_runs_per_voice_with_its_freq_routed() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+          <Inserts>
+            <CombFilter Name="InsertFX3" Bypass="0" Mode="0" Freq="1008.4754" Q="0.5" KeyTracking="0">
+              <Connections>
+                <SignalConnection Ratio="0.5" Source="@MIDI CC 1" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              </Connections>
+            </CombFilter>
+          </Inserts>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert!(matches!(
+        g.inserts[0].map(|e| e.kind),
+        Some(ir::EffectKind::Comb(c)) if (c.hz - 1008.4754).abs() < 1e-2 && c.feedback == 0.5
+    ));
+    assert!(
+        g.mods
+            .iter()
+            .any(|m| matches!(m.kind, ir::ModKind::Cutoff { insert: 0, .. }))
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| !d.feature.contains("Comb") && !d.feature.contains("Freq")),
+        "{:?}",
+        out.diagnostics
+    );
 }

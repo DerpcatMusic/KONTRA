@@ -233,6 +233,55 @@ impl Engine {
 }
 
 impl HostApi for Engine {
+    fn groups(&self) -> i64 {
+        #[cfg(feature = "trace")]
+        if self.trace.is_some() {
+            return -1;
+        }
+        self.masks.groups as i64
+    }
+
+    /// `num_groups` and `key_down`, answered without the call machinery. A
+    /// traced engine records every call, so it takes the general path.
+    fn query(&mut self, action: Action, ints: &[i64]) -> Option<i32> {
+        #[cfg(feature = "trace")]
+        if self.trace.is_some() {
+            return None;
+        }
+        let value = match action {
+            Action::NumGroups => self.masks.groups as i32,
+            Action::KeyDown => {
+                if self.keys_down.0 != self.notes.version() {
+                    let mut mask = 0u128;
+                    for (_, n) in self.notes.live() {
+                        if n.origin == Origin::Host && !n.is_up() && n.host.key < 128 {
+                            mask |= 1 << n.host.key;
+                        }
+                    }
+                    self.keys_down = (self.notes.version(), mask);
+                }
+                let key = ints.first().map_or(-1, |&v| v as i32);
+                i32::from(
+                    u32::try_from(key).is_ok_and(|k| k < 128 && self.keys_down.1 >> k & 1 == 1),
+                )
+            }
+            Action::EventNote | Action::EventVelocity | Action::EventId => {
+                let running = self.running.event;
+                let current = running.and_then(|r| self.notes.get(r));
+                match action {
+                    Action::EventNote => current.map_or(0, |n| i32::from(n.key)),
+                    Action::EventVelocity => current.map_or(0, |n| i32::from(n.velocity_byte)),
+                    _ => running.map_or(0, NoteRef::event_id),
+                }
+            }
+            _ => return None,
+        };
+        if let Some(n) = self.called.get_mut(usize::from(action.id())) {
+            *n += 1;
+        }
+        Some(value)
+    }
+
     fn call(&mut self, mut call: HostCall<'_>) -> HostValue {
         #[cfg(feature = "trace")]
         if let Some(trace) = &mut self.trace {
@@ -710,6 +759,30 @@ impl HostApi for Engine {
                 };
                 HostValue::Int(self.request_file(request))
             }
+            // A file the player picks: a request with no path and no array,
+            // the editor's answer read back by `PickedFile`.
+            Action::PickFile => {
+                let ext = call.texts.first().copied().unwrap_or(Text::EMPTY);
+                let request = kontra_plan::files::FileRequest {
+                    slot: self.running.slot,
+                    id: 0,
+                    base: 0,
+                    len: 0,
+                    kind: kontra_plan::files::ArrayKind::Text,
+                    path: Text::EMPTY,
+                    name: ext,
+                    save: int(0) == 1,
+                };
+                HostValue::Int(self.request_file(request))
+            }
+            Action::PickedFile => match self.take_picked(self.running.slot, int(0)) {
+                Some(Some(name)) => {
+                    *call.text_out = name;
+                    HostValue::Text
+                }
+                Some(None) => HostValue::Int(0),
+                None => HostValue::Nothing,
+            },
             Action::SetSnapshotType => {
                 self.recall = kontra_plan::Recall::of_type(i64::from(int(0)));
                 HostValue::Nothing

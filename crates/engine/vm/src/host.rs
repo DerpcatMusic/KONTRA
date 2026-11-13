@@ -41,4 +41,16 @@ pub enum HostValue {
 /// The engine side of every non-pure action, implemented once (`kontra-engine`).
 pub trait HostApi {
     fn call(&mut self, call: HostCall<'_>) -> HostValue;
+
+    /// A read-only answer the host keeps ready (a count, a flag): no call
+    /// record, no text or cell access. `None` sends the action to [`Self::call`].
+    fn query(&mut self, _action: Action, _ints: &[i64]) -> Option<i32> {
+        None
+    }
+
+    /// The group count when it is fixed and no call record is wanted: the VM
+    /// pushes it inline for `NumGroups`. Negative sends it to the host.
+    fn groups(&self) -> i64 {
+        -1
+    }
 }
