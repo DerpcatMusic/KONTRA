@@ -19,13 +19,19 @@ pub struct Offer {
 
 /// The folders (and one file in each) that `diagnostics` say were not found.
 pub fn missing(diagnostics: &[ir::Diagnostic]) -> Vec<(String, PathBuf)> {
-    (diagnostics.iter())
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    for d in diagnostics
+        .iter()
         .filter(|d| d.feature == "samples not found")
-        .filter_map(|d| {
-            let (summary, first) = d.detail.split_once("\nfirst: ")?;
-            Some((summary.to_owned(), PathBuf::from(first)))
-        })
-        .collect()
+    {
+        // A translator and prepare both say a folder's files are missing.
+        if let Some((summary, first)) = d.detail.split_once("\nfirst: ")
+            && !found.iter().any(|(s, _)| s == summary)
+        {
+            found.push((summary.to_owned(), PathBuf::from(first)));
+        }
+    }
+    found
 }
 
 /// A folder under `roots` named like the one `file` was in that holds a file

@@ -406,6 +406,17 @@ pub(crate) fn instrument(
                     });
                     Some(out.samples.len() - 1)
                 }
+                Err(e) if e == "not found" => {
+                    // Where the first folder looked would have it, which is
+                    // how the player finds a moved one.
+                    let at = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+                    let at = at
+                        .parent()
+                        .unwrap_or(Path::new(""))
+                        .join(name.replace(['\\', '|'], "/"));
+                    notes.add_missing(&at);
+                    None
+                }
                 Err(e) => {
                     notes.add(ir::Impact::Broken, "missing sample", format!("{name}: {e}"));
                     None

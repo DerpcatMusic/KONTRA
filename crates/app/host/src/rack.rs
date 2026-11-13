@@ -309,6 +309,7 @@ impl Rack {
             self.known = (browser.generation, browser.instruments());
         }
         self.moved.clone_from(&browser.prefs.moved);
+        kontra_format::set_moved(&self.moved);
         self.roots = browser.prefs.roots.iter().map(|r| r.path.clone()).collect();
     }
 
