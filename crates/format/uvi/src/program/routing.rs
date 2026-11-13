@@ -52,18 +52,16 @@ impl<'a, 'input> Params<'a, 'input> {
 /// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
 /// Values a script may set an effect's number to, for [`Translator::knobs`]:
 /// dB, ratios, ms, Hz.
-const PROBE_GRID: [f64; 40] = [
-    -60.0, -48.0, -36.0, -24.0, -18.0, -12.0, -6.0, -3.0, -1.0, 0.0, 0.01, 0.05, 0.1, 0.2, 0.3,
-    0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0, 300.0,
-    500.0, 1000.0, 2000.0, 3000.0, 5000.0, 8000.0, 12_000.0, 16_000.0, 20_000.0,
+const PROBE_GRID: [f64; 23] = [
+    -48.0, -24.0, -12.0, -6.0, 0.0, 0.01, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0,
+    200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0, 20_000.0,
 ];
 
-/// A number a script sets on an insert, the control it moves (its
-/// [`ir::EffectParam::code`]) and that control's value by the number.
+/// A number a script sets on an insert, and each control it moves (its
+/// [`ir::EffectParam::code`]) with that control's value by the number.
 pub(super) struct Knob {
     pub name: String,
-    pub code: u16,
-    pub law: Vec<(f64, f32)>,
+    pub controls: Vec<(u16, Vec<(f64, f32)>)>,
 }
 
 /// Where an insert's effect plays, for scripts that bypass it: a keygroup's
@@ -469,40 +467,48 @@ impl<L: Library> Translator<'_, '_, L> {
     fn slot(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {
         let bypass = flag(node, "Bypass");
         let built = self.built(node)?.map(|e| ir::Effect { bypass, ..e });
-        if let Some(effect) = built {
-            let knobs = self.knobs(node, effect);
-            if !knobs.is_empty() {
-                self.knobs_of.insert(node.id(), knobs);
-            }
+        if let Some(effect) = built
+            && let Some(set) = self.knobs(node, effect)
+        {
+            self.knobs_of.insert(node.id(), set);
         }
         Ok(built)
     }
 
     /// What a script's `setParameter` on each of `node`'s numbers moves:
-    /// the effect is rebuilt with the number at each of [`PROBE_GRID`], and a
-    /// number that moves exactly one control gets that control's code and
-    /// its value at each grid point. Not for effects that load files.
-    // ponytail: one control per number, the others held at their saved
-    // values; a number that moves two (UVI's EQ GainMid) stays stored only.
-    fn knobs(&mut self, node: Node, base: ir::Effect) -> Vec<Knob> {
+    /// the effect is rebuilt with the number at each of [`PROBE_GRID`], and
+    /// every control the number moves gets its code and its value at each
+    /// grid point. Inserts of one type saved alike share the answer, so a
+    /// program pays once per distinct insert. Not for effects that load files.
+    // ponytail: each number with the others held at their saved values.
+    fn knobs(&mut self, node: Node, base: ir::Effect) -> Option<usize> {
         let loads = [
             "Convolver",
             "SampledReverb",
             "EffectRack",
             "FeedbackMachine",
         ];
-        if loads.iter().any(|t| node.has_tag_name(*t)) {
-            return Vec::new();
+        if loads.iter().any(|t| node.has_tag_name(*t)) || self.script_words.is_empty() {
+            return None;
+        }
+        let mut key = node.tag_name().name().to_owned();
+        for a in node.attributes() {
+            key.push_str(&format!(" {}={}", a.name(), a.value()));
+        }
+        if let Some(&known) = self.knob_cache.get(&key) {
+            return known;
         }
         let notes = std::mem::take(&mut self.notes);
-        let controls: Vec<ir::EffectParam> = (0..u16::MAX)
+        let mut held = base;
+        let controls: Vec<(ir::EffectParam, f32)> = (0..u16::MAX)
             .map_while(ir::EffectParam::from_code)
-            .filter(|p| p.value(&mut base.clone()).is_some())
+            .filter_map(|p| Some((p, p.value(&mut held)?)))
             .collect();
         let mut out = Vec::new();
         for attr in node.attributes() {
             let name = attr.name();
-            if name == "Bypass" || attr.value().trim().parse::<f64>().is_err() {
+            let named = self.script_words.contains(name);
+            if !named || name == "Bypass" || attr.value().trim().parse::<f64>().is_err() {
                 continue;
             }
             let mut moved: Vec<ir::EffectParam> = Vec::new();
@@ -512,29 +518,38 @@ impl<L: Library> Translator<'_, '_, L> {
                 else {
                     continue;
                 };
-                for &p in &controls {
-                    if p.value(&mut e) != p.value(&mut base.clone()) && !moved.contains(&p) {
+                for &(p, saved) in &controls {
+                    if p.value(&mut e) != Some(saved) && !moved.contains(&p) {
                         moved.push(p);
                     }
                 }
                 points.push((x, e));
             }
-            let ([p], Some(code)) = (moved.as_slice(), moved.first().and_then(|p| p.code())) else {
-                continue;
-            };
-            let law = points
-                .iter_mut()
-                .filter_map(|(x, e)| Some((*x, p.value(e)?)))
-                .filter(|(_, y)| y.is_finite())
+            let controls: Vec<(u16, Vec<(f64, f32)>)> = moved
+                .iter()
+                .filter_map(|p| {
+                    let law = points
+                        .iter_mut()
+                        .filter_map(|(x, e)| Some((*x, p.value(e)?)))
+                        .filter(|(_, y)| y.is_finite())
+                        .collect();
+                    Some((p.code()?, law))
+                })
                 .collect();
-            out.push(Knob {
-                name: name.to_owned(),
-                code,
-                law,
-            });
+            if !controls.is_empty() {
+                out.push(Knob {
+                    name: name.to_owned(),
+                    controls,
+                });
+            }
         }
         self.notes = notes;
-        out
+        let set = (!out.is_empty()).then(|| {
+            self.knob_sets.push(out);
+            self.knob_sets.len() - 1
+        });
+        self.knob_cache.insert(key, set);
+        set
     }
 
     fn built(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {
