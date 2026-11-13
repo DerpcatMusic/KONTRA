@@ -64,7 +64,7 @@ pub struct Snapshot {
     libraries: (u64, Arc<Vec<app::Library>>),
     recent: Vec<(usize, usize)>,
     folders: Vec<String>,
-    snapshot_folder: String,
+    snapshot_folder: (String, Option<bool>),
     /// [`kontra_library::Prefs::next_channel`] and `own_output`.
     new_parts: (bool, bool),
     level: f32,
@@ -89,9 +89,8 @@ impl Snapshot {
                 .collect();
             self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
             self.snapshot_folder = match browser.kontakt() {
-                Some(f) if f.is_dir() => f.display().to_string(),
-                Some(f) => format!("Not found: {}", f.display()),
-                None => "Not set: choose the User Content folder Kontakt saves snapshots in".into(),
+                Some(f) => (f.display().to_string(), Some(f.is_dir())),
+                None => (String::new(), None),
             };
         }
         let meters = rack.meters();
@@ -740,8 +739,15 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let mut buttons = None;
     // Between builds: the frame before's paint and submit, and any idle wait.
     let mut last: Option<std::time::Instant> = None;
+    // Escape reaches the host when no field is focused; noted here, it
+    // still closes the open menu or sheet.
+    let escape = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let pressed = Arc::clone(&escape);
     MuiEditor::new(params, kontra_ui::ui(), SIZE, move |ui, bridge| {
         let start = std::time::Instant::now();
+        if escape.swap(false, Ordering::AcqRel) {
+            app.view.dismiss();
+        }
         if let Some(t) = last.replace(start) {
             crate::frames::note("between", start - t);
         }
@@ -893,6 +899,13 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     })
     .resizable((900, 600))
     .wheel_policy(wheel)
+    .on_key(move |_, k| {
+        use moose::mui::mui::host::NativeKey;
+        if k.down && k.key == NativeKey::Named(moose::mui::mui::input::Key::Escape) {
+            pressed.store(true, Ordering::Release);
+        }
+        false
+    })
     .on_files(move |_, _, paths, dropped| {
         let instruments: Vec<_> = paths.iter().filter(|p| is_instrument(p)).cloned().collect();
         let folders: Vec<_> = paths.iter().filter(|p| p.is_dir()).cloned().collect();

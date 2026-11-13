@@ -23,9 +23,7 @@ impl Engine {
             self.behaviour.set_bend(channel, bend.max(-1.0));
             let mut hits = std::mem::take(&mut self.hits);
             self.notes.select(&mut hits, |n| n.host.channel == channel);
-            for &note in &hits {
-                self.refresh_note(note, None);
-            }
+            self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
             self.hits = hits;
             return;
         }
@@ -70,15 +68,29 @@ impl Engine {
             if !down {
                 self.notes
                     .select(&mut hits, |n| n.pedal_held && n.host.channel == channel);
+                // Kontakt runs `on release` again at pedal-up for every note
+                // the pedal held, after `on controller` (oracle, sine probe,
+                // Kontakt 8, 2026-11-13); one that ignores it keeps playing.
                 for &note in &hits {
-                    self.release(note);
+                    if let Some(slot) = self.release_callbacks(note) {
+                        if let Some(n) = self.notes.get_mut(note) {
+                            n.pedal_held = false;
+                        }
+                        let script = self.plan.scripts.get(usize::from(slot));
+                        if script.is_some_and(|s| s.held_release_ends_children) {
+                            self.end_children(note);
+                        }
+                    } else {
+                        self.release(note);
+                    }
                 }
             }
         }
         self.notes.select(&mut hits, |n| n.host.channel == channel);
-        for &note in &hits {
-            self.refresh_note(note, Some(controller));
-        }
+        // One pass over the voices, not one per note.
+        self.refresh_voices(Some(controller), |slot, _| {
+            slot.note.is_some_and(|n| hits.contains(&n))
+        });
         self.hits = hits;
     }
 

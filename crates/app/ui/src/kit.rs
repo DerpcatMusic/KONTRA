@@ -803,6 +803,51 @@ mod tests {
         assert!(closed);
     }
 
+    /// Escape still closes a sheet right after a pick from a menu in it,
+    /// when the focus sat on the picked row that is now gone.
+    #[test]
+    fn escape_closes_a_sheet_after_a_menu_pick() {
+        let mut ui = Ui::default();
+        let mut open = Some("dd".to_owned());
+        let mut closed = false;
+        for n in 0..6 {
+            let d = dropdown(
+                &mut ui,
+                &mut open,
+                "dd",
+                (None, "Fit", "Size"),
+                &["Fit", "200%"],
+                Some(0),
+            );
+            let r = sheet(&mut ui, "s", "Settings", d.el);
+            closed |= r.changed;
+            let key = |key| {
+                vec![KeyPress {
+                    key,
+                    mods: Mods::default(),
+                }]
+            };
+            let keys = match n {
+                1 => {
+                    ui.focus("dd-1");
+                    key(Key::Enter)
+                }
+                3 => key(Key::Escape),
+                _ => Vec::new(),
+            };
+            let input = Input {
+                keys,
+                ..Default::default()
+            };
+            assert!(
+                ui.frame(r.el, Some(Size::new(900., 900.)), input, 1. / 60.)
+                    .is_ok()
+            );
+        }
+        assert_eq!(open, None, "the pick closed the menu");
+        assert!(closed);
+    }
+
     #[test]
     fn the_wheel_over_a_popup_scrolls_it_and_never_reaches_what_lies_under_it() {
         assert!(wheel_under(false).0.is_some(), "without a menu it does");

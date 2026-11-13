@@ -97,6 +97,13 @@ fn chip(progress: kontra_protocol::LoadSnapshot) -> El {
         .tip(said)
 }
 
+/// Whether a part's name and its preset's say the same: equal, or one
+/// holds the other, letter case aside.
+fn same_name(part: &str, preset: &str) -> bool {
+    let (a, b) = (part.to_lowercase(), preset.to_lowercase());
+    !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
+}
+
 /// A header row's height: both rows are one, so the artwork lines up.
 const ROW: f64 = CONTROL + 2. * TIGHT;
 /// The "Add an instrument" row under the parts.
@@ -279,7 +286,15 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     if fold.changed {
         p.open = !p.open;
     }
-    let name = body(p.name.clone())
+    // The preset field beside it names the same thing more often than not
+    // (Areia's "01 Areia - 16 Violins - Core..." twice): then the title is
+    // the library's, and the preset field alone carries the name.
+    let names = super::preset::names(&presets);
+    let title = match p.preset.and_then(|c| names.get(c)) {
+        Some(preset) if same_name(&p.name, preset) => p.library.clone(),
+        _ => p.name.clone(),
+    };
+    let name = body(title)
         .text_weight(Weight::SEMIBOLD)
         .lines(1)
         .min_w(TEXT * 6.)
@@ -294,7 +309,6 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
             .min_w(0),
         false => name,
     };
-    let names = super::preset::names(&presets);
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let current = p.preset.filter(|&n| n < names.len());
     // v2's preset field beside the name: what plays, or what to pick; a
@@ -313,7 +327,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         ui,
         menu,
         &id("preset"),
-        (None, shown, "Preset"),
+        (None, shown, &format!("Preset: {shown}")),
         &names,
         current,
     );
@@ -609,4 +623,25 @@ fn foot(ui: &mut Ui, app: &mut App) -> El {
     .id("rack-drop")
     .shrink(0);
     kit::interactive(el)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_part_named_as_its_preset_says_it_once() {
+        assert!(super::same_name(
+            "01 Areia - 16 Violins - Core",
+            "01 Areia - 16 Violins - Core"
+        ));
+        assert!(super::same_name(
+            "Clarinet A",
+            "Clarinet A (VWinds-AClarinet_V2)"
+        ));
+        assert!(super::same_name("conflux", "Conflux"));
+        assert!(!super::same_name(
+            "Strings Decrescendo Vel",
+            "V Strings Decrescendo"
+        ));
+        assert!(!super::same_name("", "Conflux"));
+    }
 }
