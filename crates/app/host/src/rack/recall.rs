@@ -183,7 +183,8 @@ impl Rack {
             p.name = named(path);
             p.path = Some(path.to_owned());
             p.modified = false;
-            p.named.settle();
+            // The player's last move stays live: a later press's name,
+            // queued behind this one's, is still followed.
         }
     }
 
