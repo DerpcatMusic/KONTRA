@@ -454,3 +454,67 @@ fn idle_costs_a_fraction_of_a_voice_and_voices_add_up_linearly() {
     assert!(idle * 4 < one, "idle {idle:?} vs one voice {one:?}");
     assert!(sixteen < one * 16, "sixteen {sixteen:?} vs one {one:?}");
 }
+
+/// A per-note expression reaches its own voice only: of two held notes,
+/// the one tuned up an octave reads its sample twice as fast; the other
+/// keeps its pace. As MPE's member-channel bend and pressure do, by note.
+#[test]
+fn a_note_expression_tunes_only_its_own_voice() {
+    use kontra_events::NoteExpression;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let frames = 4 * u64::from(RATE);
+    let mut zones = Vec::new();
+    for (name, key) in [("low", 60u8), ("high", 64u8)] {
+        let mut z = zone(region(&mut store, name, frames).unwrap(), 0.0);
+        z.keys = key..=key;
+        z.root = key;
+        zones.push(z);
+    }
+    let mut engine = Engine::new(plan(zones, 8), store.client(), RATE);
+    // Positions per zone after `events` and 0.1 s.
+    let step = (RATE / 10) as usize;
+    let mut at = 0u64;
+    let mut run = |engine: &mut Engine, events: &[Timed<Event>]| {
+        let shifted: Vec<_> = events
+            .iter()
+            .map(|e| Timed {
+                at: SampleTime(at),
+                body: e.body,
+            })
+            .collect();
+        let mut out = vec![[0.0; 2]; step];
+        for (i, chunk) in out.chunks_mut(512).enumerate() {
+            let input: Vec<_> = shifted.iter().copied().filter(|_| i == 0).collect();
+            engine.process(chunk, &input);
+        }
+        at += step as u64;
+        let mut pos = [0.0f64; 2];
+        for (zone, position, _) in engine.voices() {
+            if let Some(p) = pos.get_mut(zone) {
+                *p = position;
+            }
+        }
+        pos
+    };
+    let a = run(&mut engine, &[on(0, 60), on(0, 64)]);
+    let b = run(&mut engine, &[]);
+    let tune = Timed {
+        at: SampleTime(0),
+        body: Event::Expression(
+            HostPattern {
+                port: 0,
+                channel: 0,
+                key: 60,
+                id: -1,
+                clap: true,
+            },
+            NoteExpression::Tune(12.0),
+        ),
+    };
+    let c = run(&mut engine, &[tune]);
+    let d = run(&mut engine, &[]);
+    let pace = |x: [f64; 2], y: [f64; 2], n: usize| y[n] - x[n];
+    let (low, high) = (pace(c, d, 0) / pace(a, b, 0), pace(c, d, 1) / pace(a, b, 1));
+    assert!((low - 2.0).abs() < 0.05, "the tuned note's pace {low}");
+    assert!((high - 1.0).abs() < 0.01, "the other note's pace {high}");
+}

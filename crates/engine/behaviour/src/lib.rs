@@ -63,6 +63,9 @@ pub struct Behaviour {
     cc_set: [u128; 16],
     /// Pitch bend per channel, −1..=1.
     bend: [f32; 16],
+    /// Channel pressure per channel, 0..=127: an MPE member channel's is
+    /// its one note's.
+    pressure: [u8; 16],
     /// The channel the latest note, controller or bend came on: what routes
     /// no note owns read (the engine plays every channel).
     pub channel: u8,
@@ -113,6 +116,7 @@ impl Behaviour {
             cc,
             cc_set: [0; 16],
             bend: [0.0; 16],
+            pressure: [0; 16],
             channel: 0,
             global: Counter::default(),
             keys: [Counter::default(); 128],
@@ -207,6 +211,19 @@ impl Behaviour {
             .get(usize::from(channel & 15))
             .copied()
             .unwrap_or(0.0)
+    }
+
+    /// Channel pressure on `channel`, 0..=1.
+    #[must_use]
+    pub fn pressure(&self, channel: u8) -> f32 {
+        let v = self.pressure.get(usize::from(channel & 15)).copied();
+        f32::from(v.unwrap_or(0)) / 127.0
+    }
+
+    pub fn set_pressure(&mut self, channel: u8, value: u8) {
+        if let Some(v) = self.pressure.get_mut(usize::from(channel & 15)) {
+            *v = value;
+        }
     }
 
     pub fn set_bend(&mut self, channel: u8, value: f32) {

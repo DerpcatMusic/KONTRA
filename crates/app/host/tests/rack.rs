@@ -1644,3 +1644,154 @@ fn replacing_a_part_frees_the_old_instruments_samples() {
         "the replaced instrument's sample is still held"
     );
 }
+
+#[test]
+fn a_damaged_empty_or_foreign_state_loads_an_empty_rack_and_says_why() {
+    use kontra_host::state::{Saved, VERSION};
+    let good = Saved::new(vec![]).write();
+    // A blank state is a new instance: empty, no complaint.
+    assert_eq!(Saved::parse(""), Ok(Saved::new(vec![])));
+    assert_eq!(Saved::parse("  \n"), Ok(Saved::new(vec![])));
+    // Truncated, garbage and mistyped JSON, and other versions: a message.
+    for bad in [
+        &good[..good.len() / 2],
+        "\u{0}\u{1}not json",
+        "[1,2,3]",
+        "{\"version\":1}",
+        &format!("{{\"version\":{},\"parts\":[]}}", VERSION + 1),
+        "{\"version\":0,\"parts\":[]}",
+    ] {
+        let Err(message) = Saved::parse(bad) else {
+            panic!("{bad:?} should not parse");
+        };
+        assert!(message.contains("rack starts empty"), "{message}");
+        // `read` never fails: it is the empty rack.
+        assert_eq!(Saved::read(bad), Saved::new(vec![]));
+    }
+}
+
+#[test]
+fn a_state_with_hostile_values_is_made_safe() {
+    use kontra_host::state::Saved;
+    let part = |n: usize, gain: &str, channel: u32| {
+        format!(
+            "{{\"part\":{n},\"path\":\"/x.nki\",\"channel\":{channel},\"output\":255,\"gain\":{gain},\"pan\":9.0,\"solo\":false,\"mute\":false}}"
+        )
+    };
+    // Past the rack, repeated, an enormous gain and an unknown channel.
+    let json = format!(
+        "{{\"version\":1,\"parts\":[{},{},{},{}]}}",
+        part(0, "1e30", 99),
+        part(0, "0.5", 1),
+        part(4096, "1.0", 1),
+        part(3, "-2.0", 2)
+    );
+    let saved = Saved::parse(&json).unwrap();
+    let parts: Vec<_> = saved
+        .parts
+        .iter()
+        .map(|p| (p.part, p.gain, p.channel, p.output))
+        .collect();
+    assert_eq!(parts, vec![(0, 16.0, 0, 15), (3, 0.0, 2, 15)]);
+    assert!(saved.parts.iter().all(|p| p.pan == 1.0));
+}
+
+/// A mono 16-bit WAV of a loud, one-sided tone, for an instrument to play.
+fn tone_wav() -> Vec<u8> {
+    let data: Vec<u8> = (0..4800)
+        .flat_map(|i| (10_000 + (i % 48) as i16 * 100).to_le_bytes())
+        .collect();
+    let mut wav = Vec::new();
+    wav.extend(b"RIFF");
+    wav.extend((36 + data.len() as u32).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend([1, 0, 1, 0]);
+    wav.extend(48_000u32.to_le_bytes());
+    wav.extend(96_000u32.to_le_bytes());
+    wav.extend([2, 0, 16, 0]);
+    wav.extend(b"data");
+    wav.extend((data.len() as u32).to_le_bytes());
+    wav.extend(data);
+    wav
+}
+
+/// The loudest block mean while a note plays.
+fn loudest(audio: &mut RackAudio) -> f32 {
+    audio.process(BLOCK, &[(0, note(0))]);
+    let mut top = level(audio, 0).abs();
+    for _ in 0..8 {
+        audio.process(BLOCK, &[]);
+        top = top.max(level(audio, 0).abs());
+    }
+    top
+}
+
+#[test]
+fn a_moved_library_is_said_once_offered_found_and_plays_once_taken() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("moved-library");
+    let _ = std::fs::remove_dir_all(&dir);
+    let found = dir.join("found/deep/Lib");
+    std::fs::create_dir_all(&found).unwrap();
+    std::fs::create_dir_all(dir.join("inst")).unwrap();
+    std::fs::write(found.join("a.wav"), tone_wav()).unwrap();
+    // An instrument read where its samples are, then pointed at the folder
+    // they were in before it moved (SFZ reads headers while translating, so
+    // it cannot be moved on disk and still carry its frame counts).
+    let good = dir.join("found/deep/x.sfz");
+    std::fs::write(&good, "<region> sample=Lib/a.wav key=60\n").unwrap();
+    let old = dir.join("inst/Lib");
+    let moved_away = || {
+        let mut i = kontra_host::instrument::read(&good).unwrap();
+        for s in &mut i.samples {
+            s.file = old.join("a.wav");
+        }
+        i
+    };
+    let sfz = good.clone();
+
+    let (mut rack, mut audio) = rack();
+    let mut browser = kontra_host::browser::Browser::open(Some(&dir.join("config")), None);
+    browser.add_root(dir.join("found"));
+    rack.know(&browser);
+    rack.load_ir(0, moved_away(), Some(sfz)).unwrap();
+    // Missing: said once in plain text, and the part plays on without it.
+    let said = rack.take_notices();
+    assert!(said[0].contains("1 sample not found in "), "{said:?}");
+    let offer = said[1].clone();
+    assert!(
+        offer.contains("found at ") && offer.ends_with(", use it?"),
+        "{offer}"
+    );
+    assert!(rack.take_notices().is_empty());
+    assert!(loudest(&mut audio) < 1e-6);
+    // Taken: remembered in the settings, and the samples play.
+    let o = rack.take_offer(&offer).unwrap();
+    browser.relink(o.from, o.to);
+    rack.know(&browser);
+    rack.load_ir(o.part, moved_away(), Some(o.path)).unwrap();
+    assert!(rack.take_notices().is_empty());
+    assert_eq!(browser.prefs.moved.len(), 1);
+    let d = &rack.parts()[0].as_ref().unwrap().diagnostics;
+    assert!(d.is_empty(), "{d:?}");
+    assert!(loudest(&mut audio) > 1e-4, "{}", level(&audio, 1));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_relinked_library_folder_is_remembered_by_the_next_session() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("relink-prefs");
+    let _fresh = std::fs::remove_dir_all(&dir);
+    let (config, cache) = (dir.join("config"), dir.join("cache"));
+    let (from, to) = (
+        std::path::PathBuf::from("/old/Lib"),
+        std::path::PathBuf::from("/new/Lib"),
+    );
+    {
+        let mut browser = kontra_host::browser::Browser::open(Some(&config), Some(&cache));
+        browser.relink(from.clone(), to.clone());
+    }
+    let browser = kontra_host::browser::Browser::open(Some(&config), Some(&cache));
+    assert_eq!(browser.prefs.moved, [(from, to)]);
+    let _clean = std::fs::remove_dir_all(&dir);
+}

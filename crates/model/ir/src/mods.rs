@@ -389,6 +389,10 @@ pub enum Source {
     },
     /// The channel's pitch bend, −1..=1.
     PitchBend,
+    /// The note's pressure: its own (a per-note expression, or polyphonic
+    /// aftertouch on its key) once it has one, else its channel's (an MPE
+    /// member channel's is its one note's).
+    Pressure,
     /// The note's key over 127.
     Key,
     /// The group's [`Group::envelopes`](crate::Group::envelopes) entry.

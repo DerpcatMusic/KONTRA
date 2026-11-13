@@ -50,7 +50,13 @@ const EVENTS: usize = 4096;
 const CHUNK: usize = 1024;
 
 #[derive(Params)]
-#[params(pre_save = "capture", post_load = "restore")]
+#[params(
+    pre_save = "capture",
+    post_load = "restore",
+    presentation = "macro_presentation",
+    presentation_revision = "macro_revision",
+    presentation_change = "macro_renamed"
+)]
 pub struct KontraParams {
     #[param(
         id = 0,
@@ -104,8 +110,15 @@ use KontraParamsParamId as P;
 #[derive(Default)]
 pub struct Shared {
     rack: Mutex<Option<Rack>>,
-    /// Each macro's host value as last applied to its control.
-    macro_values: Mutex<[f64; macros::COUNT]>,
+    /// Each macro's host value as last applied to its control, as f64
+    /// bits: the audio thread applies a host's in-block moves too.
+    macro_values: [AtomicU64; macros::COUNT],
+    /// What the audio side was last told each macro moves.
+    /// Bumped when a macro's host name changes ([`macros::renamed`]), and
+    /// the value the host was last asked to read the names at.
+    macro_names: AtomicU64,
+    macro_names_told: AtomicU64,
+    macro_targets: Mutex<[Option<kontra_host::rack::MacroTarget>; macros::COUNT]>,
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
@@ -133,6 +146,12 @@ pub struct Shared {
     shown: AtomicBool,
     /// A load holds the rack; `saved` is the state from just before it.
     holding: AtomicBool,
+    /// The audio thread caught a panic in the rack's render: the block went
+    /// silent. The tick tells the player, once per fault.
+    fault: AtomicBool,
+    /// Tests only: the next render panics, as a bug in it would.
+    #[cfg(test)]
+    inject_panic: AtomicBool,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -143,6 +162,8 @@ pub enum Request {
         path: std::path::PathBuf,
     },
     Restore(Saved),
+    /// A message for the player, shown with the load errors.
+    Notice(String),
     Ui(editor::Edit),
     /// The browser's own actions: load a preset, star, rescan.
     Browse(kontra_ui::app::Action),
@@ -221,6 +242,30 @@ impl KontraParams {
         }
     }
 
+    /// A learnt macro's host name, "Part: Control".
+    fn macro_presentation(&self, id: u32) -> Option<moose::params::ParameterPresentation> {
+        let n = macros::index(id)?;
+        let text = self.macros.read().unwrap_or_else(PoisonError::into_inner);
+        let label = macros::read(&text).into_iter().nth(n)??.label;
+        (!label.is_empty()).then(|| moose::params::ParameterPresentation {
+            name: label,
+            ..Default::default()
+        })
+    }
+
+    fn macro_revision(&self) -> u64 {
+        self.shared.macro_names.load(Ordering::Acquire)
+    }
+
+    /// A macro's move asks the host to read the names again while one
+    /// changed since it last did: a learn's first move, or the next move
+    /// after a release. Atomics only: it runs on the audio thread too.
+    fn macro_renamed(&self, id: u32) -> bool {
+        let now = self.shared.macro_names.load(Ordering::Acquire);
+        macros::index(id).is_some()
+            && self.shared.macro_names_told.swap(now, Ordering::AcqRel) != now
+    }
+
     /// After the host loads a state: reload its parts on the next tick.
     fn restore(&self) {
         let json = self
@@ -229,9 +274,16 @@ impl KontraParams {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         self.shared.restored.fetch_add(1, Ordering::Release);
+        // The restored macros' names.
+        macros::renamed(self);
         let mut requests = lock(&self.shared.requests);
         requests.retain(|r| !matches!(r, Request::Restore(_)));
-        requests.push(Request::Restore(Saved::read(&json)));
+        // A damaged or foreign state loads an empty rack, and says so.
+        let saved = Saved::parse(&json).unwrap_or_else(|message| {
+            requests.push(Request::Notice(message));
+            Saved::new(Vec::new())
+        });
+        requests.push(Request::Restore(saved));
     }
 }
 
@@ -262,10 +314,21 @@ pub struct Dsp {
     input: Vec<(u32, Event)>,
     /// This chunk's share of `input`.
     chunk: Vec<(u32, Event)>,
+    /// This block's host changes that split it: macro moves and transport.
+    moves: Vec<(u32, Change)>,
     gain: f32,
     rate: f64,
     until_tick: usize,
     latency: u32,
+}
+
+/// A host change inside a block, applied at its frame.
+#[derive(Clone, Copy)]
+enum Change {
+    /// Macro `n` to host value `v`.
+    Macro(usize, f64),
+    /// Tempo, play state, song position and signature.
+    Transport(TransportInfo),
 }
 
 /// The control tick: carries out requests, frees what audio retired and
@@ -290,10 +353,18 @@ impl BackgroundTask for Tick {
             Interfaces::Hidden
         };
         let mut report = Vec::new();
+        if p.shared.fault.swap(false, Ordering::AcqRel) {
+            report.push(
+                "the audio engine hit an internal error and a block was silenced; if it repeats, reload the project"
+                    .to_string(),
+            );
+        }
         let mut browser = lock(&p.shared.browser);
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
         rack.know(browser);
+        // What the loads of this tick found missing comes after them.
+        let mut notices = Vec::new();
         // A state the host restored in this batch is what `saved` holds: a
         // load beside it must not write the rack over it.
         let restores = requests.iter().any(|r| matches!(r, Request::Restore(_)));
@@ -328,6 +399,7 @@ impl BackgroundTask for Tick {
                     }
                     p.shared.restoring.store(false, Ordering::Release);
                 }
+                Request::Notice(message) => report.push(message),
                 Request::Ui(edit) => editor::apply(rack, edit),
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
@@ -337,6 +409,8 @@ impl BackgroundTask for Tick {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
             }
         }
+        notices.extend(rack.take_notices());
+        report.extend(notices);
         match p.shared.folder.picked() {
             Some((folder::Wanted::Libraries, path)) => browser.add_root(path),
             Some((folder::Wanted::Snapshots, path)) => browser.set_kontakt(path),
@@ -353,6 +427,7 @@ impl BackgroundTask for Tick {
                 part.map(|p| macros::instrument(p.path.as_deref()))
             });
         }
+        macros::send_targets(p, rack);
         for (part, name, value) in macros::moved(p) {
             let tree = rack.parts().get(part).and_then(Option::as_ref);
             let tree = tree.and_then(|p| p.view.as_ref()).map(|v| v.tree());
@@ -421,6 +496,7 @@ impl PluginLogic for Kontra {
         s.gain = db_to_linear(p.volume.value());
         s.input = Vec::with_capacity(EVENTS);
         s.chunk = Vec::with_capacity(EVENTS);
+        s.moves = Vec::with_capacity(EVENTS);
         s.until_tick = 0;
         let rate = c.sample_rate.round() as u32;
         let Ok(mut store) = Store::new(StoreConfig::DEFAULT) else {
@@ -471,6 +547,7 @@ impl PluginLogic for Kontra {
         };
         s.latency = p.shared.latency.load(Ordering::Relaxed);
         s.input.clear();
+        s.moves.clear();
         audio.set_render_mode(if cx.process_mode.is_offline() {
             RenderMode::Offline
         } else {
@@ -499,13 +576,17 @@ impl PluginLogic for Kontra {
                     e
                 }
             };
-            if let EventBody::Transport(t) = e.body {
-                audio.set_tempo(t.tempo as f32);
-                audio.set_transport(
-                    t.playing,
-                    t.position_beats,
-                    (t.time_sig_num, t.time_sig_den),
-                );
+            let change = match e.body {
+                EventBody::ParamChange { id, value } => {
+                    macros::index(id).map(|n| Change::Macro(n, value))
+                }
+                EventBody::Transport(t) => Some(Change::Transport(t)),
+                _ => None,
+            };
+            if let Some(change) = change {
+                if s.moves.len() < s.moves.capacity() {
+                    s.moves.push((e.sample_offset, change));
+                }
             } else if let Some(event) = input::event(e)
                 && s.input.len() < s.input.capacity()
             {
@@ -521,9 +602,30 @@ impl PluginLogic for Kontra {
         }
         // Rendered in chunks, so a long offline block never reads past what
         // the engine looked ahead for.
+        // Host macro moves and transport changes split it too: each
+        // applies at its frame.
         let chunk = CHUNK.min(audio.max_block()).max(1);
-        for start in (0..frames).step_by(chunk) {
-            let len = chunk.min(frames - start);
+        let mut moves = s.moves.iter().peekable();
+        let mut start = 0;
+        while start < frames {
+            while let Some(&(_, change)) = moves.next_if(|m| m.0 as usize <= start) {
+                match change {
+                    Change::Macro(n, value) => {
+                        if audio.move_macro(n, value)
+                            && let Some(last) = p.shared.macro_values.get(n)
+                        {
+                            last.store(value.to_bits(), Ordering::Relaxed);
+                        }
+                    }
+                    Change::Transport(t) => {
+                        audio.set_tempo(t.tempo as f32);
+                        let signature = (t.time_sig_num, t.time_sig_den);
+                        audio.set_transport(t.playing, t.position_beats, signature);
+                    }
+                }
+            }
+            let next = moves.peek().map_or(frames, |m| (m.0 as usize).min(frames));
+            let len = chunk.min(frames - start).min(next - start);
             let end = (start + len) as u32;
             s.chunk.clear();
             s.chunk.extend(
@@ -535,7 +637,25 @@ impl PluginLogic for Kontra {
             if cx.process_mode.is_offline() {
                 audio.settle();
             }
-            audio.process(len, &s.chunk);
+            // A panic in the render is silence and a message, never an unwind
+            // into the host (catching costs nothing while nothing panics).
+            let chunk_events = &s.chunk;
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                assert!(
+                    !p.shared.inject_panic.swap(false, Ordering::AcqRel),
+                    "injected render panic"
+                );
+                audio.process(len, chunk_events);
+            }))
+            .is_err()
+            {
+                p.shared.fault.store(true, Ordering::Release);
+                for ch in 0..b.num_output_channels() {
+                    b.output(ch).fill(0.0);
+                }
+                return ProcessStatus::Normal;
+            }
             for ch in 0..b.num_output_channels() {
                 let pair = audio.output(ch / 2, len);
                 let Some(out) = b.output(ch).get_mut(start..start + len) else {
@@ -547,6 +667,7 @@ impl PluginLogic for Kontra {
                     peak = peak.max(o.abs());
                 }
             }
+            start += len;
         }
         s.gain = target;
         cx.set_meter(&p.level, peak.min(1.0));

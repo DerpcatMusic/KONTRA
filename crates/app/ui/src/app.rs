@@ -463,6 +463,8 @@ pub enum Action {
     ExportReport,
     LogFolder,
     Refresh,
+    /// Use the folder a report line offered for missing samples.
+    Relink(String),
 }
 
 /// The editor for `app`, and what the user did.

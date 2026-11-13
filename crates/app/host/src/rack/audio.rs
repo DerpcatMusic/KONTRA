@@ -7,7 +7,7 @@ use kontra_engine::{Engine, Play, RenderMode, SampleTime, Timed};
 use kontra_protocol::{Meters, Slowest, Stats};
 
 use super::hold::{Held, Hold};
-use super::{Channels, Command, Event, HostPattern, Mix, OUTPUTS};
+use super::{Channels, Command, Control, Event, HostPattern, MACROS, MacroTarget, Mix, OUTPUTS};
 use crate::persist::Capture;
 use kontra_protocol::MAX_PARTS;
 
@@ -76,6 +76,8 @@ pub struct RackAudio {
     capture_turn: usize,
     /// Offline, voices wait for their pages.
     mode: RenderMode,
+    /// What each host macro moves ([`Command::Macro`]).
+    macros: [Option<MacroTarget>; MACROS],
     /// This block's time in the script callbacks a control or widget move
     /// ran: script work, as a note's callbacks, not the commands' own.
     ui_scripts_ns: u64,
@@ -113,6 +115,7 @@ impl RackAudio {
             capturing: (0..MAX_PARTS).map(|_| None).collect(),
             capture_turn: 0,
             mode: RenderMode::Live,
+            macros: [None; MACROS],
             ui_scripts_ns: 0,
         }
     }
@@ -133,6 +136,34 @@ impl RackAudio {
                 f.engine.set_render_mode(mode);
             }
         }
+    }
+
+    /// The host moved macro `n` to `normalized` (0..1): its control moves
+    /// now, between the frames before and after, and its script hears it.
+    /// False when the macro has no target here (the tick moves it).
+    pub fn move_macro(&mut self, n: usize, normalized: f64) -> bool {
+        self.apply_commands();
+        let Some(Some(t)) = self.macros.get(n).copied() else {
+            return false;
+        };
+        let Some(Some(p)) = self.parts.get_mut(t.part) else {
+            return false;
+        };
+        let start = std::time::Instant::now();
+        let plain = t.plain(normalized);
+        match t.control {
+            Control::Integer(id) | Control::Real(id) => {
+                let value = match t.control {
+                    Control::Real(_) => plain.to_bits() as i64,
+                    _ => plain.round() as i64,
+                };
+                p.engine.set_click(t.slot, id, [false; 3], 0);
+                p.engine.set_control(t.slot, id, value);
+            }
+            Control::Widget(n) => p.engine.set_widget(t.slot, n, plain, None),
+        }
+        self.ui_scripts_ns += ns_since(start);
+        true
     }
 
     /// Waits until the sample pages the parts asked for are read, so an
@@ -319,6 +350,11 @@ impl RackAudio {
         }
         self.panic = false;
         self.played.clear();
+        // The song moved on: the next call (a later part of the host's
+        // block) starts where this one ended, not back at the block's start.
+        if let (Some((Play::Running, quarters, _)), Some(bpm)) = (&mut self.transport, self.tempo) {
+            *quarters += frames as f64 / self.rate * f64::from(bpm) / 60.0;
+        }
         for o in self.outputs.iter().filter_map(|o| o.get(..frames)) {
             for s in o {
                 self.meters.master[0] = self.meters.master[0].max(s[0].abs());
@@ -501,6 +537,11 @@ impl RackAudio {
                         let longest = p.held.hold.max().max(hold.max());
                         p.release = p.release.max(Some(longest));
                         p.held.hold = hold;
+                    }
+                }
+                Command::Macro { n, target } => {
+                    if let Some(slot) = self.macros.get_mut(n) {
+                        *slot = target;
                     }
                 }
                 Command::Master(gain) => self.master = gain,

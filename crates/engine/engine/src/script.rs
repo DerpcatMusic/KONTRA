@@ -44,7 +44,9 @@ impl Engine {
             return;
         }
         let notes = std::mem::take(&mut self.refresh_later);
-        self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| notes.contains(&n)));
+        self.refresh_voices(None, |slot, _| {
+            slot.note.is_some_and(|n| notes.contains(&n))
+        });
         self.refresh_later = notes;
         self.refresh_later.clear();
     }

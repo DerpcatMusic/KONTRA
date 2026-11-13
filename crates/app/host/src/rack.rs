@@ -23,6 +23,7 @@ mod audio;
 mod command;
 mod files;
 mod hold;
+mod macros;
 mod named;
 mod native;
 mod picks;
@@ -32,6 +33,7 @@ mod trim;
 pub use audio::RackAudio;
 pub use command::Command;
 pub use hold::{HOLD_STEPS, Hold};
+pub use macros::{Control, MACROS, MacroTarget, STEPS, Scale};
 
 /// A part's attack delays as auto-align measured them, by velocity range
 /// in rising order: its top velocity, then how late a first note and a
@@ -198,6 +200,14 @@ pub struct Rack {
     /// The instruments the player has, by the catalog generation they are
     /// of: a snapshot kept apart from its library binds to one by name.
     known: (u64, Vec<PathBuf>),
+    /// Library folders the player moved ([`crate::relink`]), and the folders
+    /// to look for them in.
+    moved: Vec<(PathBuf, PathBuf)>,
+    roots: Vec<PathBuf>,
+    /// Folders found for missing samples, waiting for a yes.
+    offers: Vec<crate::relink::Offer>,
+    /// What loading said, for the report ([`Rack::take_notices`]).
+    notices: Vec<String>,
 }
 
 impl Rack {
@@ -234,6 +244,10 @@ impl Rack {
             generation: 0,
             native: Vec::new(),
             known: (0, Vec::new()),
+            moved: Vec::new(),
+            roots: Vec::new(),
+            offers: Vec::new(),
+            notices: Vec::new(),
         };
         (rack, audio)
     }
@@ -294,6 +308,20 @@ impl Rack {
         if self.known.0 != browser.generation {
             self.known = (browser.generation, browser.instruments());
         }
+        self.moved.clone_from(&browser.prefs.moved);
+        self.roots = browser.prefs.roots.iter().map(|r| r.path.clone()).collect();
+    }
+
+    /// What loads said since the last call, in plain text.
+    pub fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
+    }
+
+    /// The folder offered by report line `line`, taken: the part it is for,
+    /// its instrument, and the old and new folders.
+    pub fn take_offer(&mut self, line: &str) -> Option<crate::relink::Offer> {
+        let n = self.offers.iter().position(|o| o.line == line)?;
+        Some(self.offers.remove(n))
     }
 
     /// [`Rack::load`], with each instrument script's saved values replaced
@@ -361,6 +389,7 @@ impl Rack {
             return Err(format!("part {part} is past the rack's {MAX_PARTS}").into());
         }
         let mut instrument = instrument;
+        crate::relink::apply(&self.moved, &mut instrument);
         // The files its scripts saved come back as the bank's own.
         let own = picks::script_files(self.saves.as_deref(), instrument.source_path.as_deref());
         for s in (instrument.scripts.iter_mut()).filter(|s| s.dialect == ir::Dialect::Lua) {
@@ -390,6 +419,28 @@ impl Rack {
             s.files = Some(Arc::new(DiskFiles {
                 saves: saves.clone(),
             }));
+        }
+        self.offers.retain(|o| o.part != part);
+        for (summary, first) in crate::relink::missing(&loaded.diagnostics) {
+            self.notices
+                .push(format!("part {} ({}): {summary}", part + 1, loaded.name));
+            if let Some((from, to)) = crate::relink::find(&self.roots, &first) {
+                let line = format!(
+                    "part {} ({}): found at {}, use it?",
+                    part + 1,
+                    loaded.name,
+                    to.display()
+                );
+                self.notices.push(line.clone());
+                let path = path.clone().unwrap_or_default();
+                self.offers.push(crate::relink::Offer {
+                    line,
+                    part,
+                    path,
+                    from,
+                    to,
+                });
+            }
         }
         let (slot_types, slot_responses) =
             recall::put_slots(&mut loaded.plan, slot_types, slot_responses, self.rate);
@@ -768,6 +819,12 @@ impl Rack {
                 self.send(Command::Mix(part, mix));
             }
         }
+    }
+
+    /// What host macro `n` moves on the audio side at its frame; None
+    /// leaves it to the control tick.
+    pub fn set_macro(&mut self, n: usize, target: Option<MacroTarget>) {
+        self.send(Command::Macro { n, target });
     }
 
     fn send(&mut self, command: Command) {
