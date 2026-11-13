@@ -758,7 +758,8 @@ fn matrix(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
 /// the peak level in dB floored at Threshold, smoothed, gives a gain of
 /// `Ceiling − level` dB. That is Threshold-to-Ceiling of input gain into a
 /// limiter at Ceiling. Its release falls to a third in Release ms
-/// (`e^(ln(1/3)/frames)`), close to the limiter's halving in the same time.
+/// (`e^(ln(1/3)/frames)`, ln(1/3) at 0x141e64248, read at 0x1416656ea): the
+/// limiter, which halves in its release time, gets `Release·ln 2/ln 3`.
 ///
 /// ponytail: the 2 ms lookahead, ReleaseBlend's slow release (100× longer,
 /// 0.1 in every corpus program) and SlewRate are not carried; Knee and
@@ -774,10 +775,13 @@ fn maximizer(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
     let kind = ir::EffectKind::Limiter(ir::Limiter {
         input_db: ceiling - threshold,
         ceiling_db: ceiling,
-        release_ms: num(node, "Release", 10.0)?.max(0.0) as f32,
+        release_ms: (num(node, "Release", 10.0)?.max(0.0) * THIRD_TO_HALF) as f32,
     });
     Ok(effect(kind, 1.0, 0.0))
 }
+
+/// A fall to a third in `t` is a halving in `t·ln 2/ln 3`.
+const THIRD_TO_HALF: f64 = std::f64::consts::LN_2 / 1.098_612_288_668_109_8;
 
 /// The dry level of an effect whose output is mostly a wet path (a reverb,
 /// a delay); `None` for one that processes in place.
@@ -868,7 +872,9 @@ mod tests {
         let ir::EffectKind::Limiter(l) = e.kind else {
             panic!("{e:?}")
         };
-        assert_eq!((l.input_db, l.ceiling_db, l.release_ms), (5.9, -0.1, 10.0));
+        // Falls to a third in 10 ms: halves in 6.31 ms.
+        assert_eq!((l.input_db, l.ceiling_db), (5.9, -0.1));
+        assert!((l.release_ms - 6.309).abs() < 0.01, "{}", l.release_ms);
         assert_eq!((e.output, e.dry), (1.0, 0.0));
     }
 
