@@ -75,8 +75,23 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     let choose = button(ui, "snapshot-folder", "Choose…", false);
     out.extend(choose.changed.then_some(Action::ChooseSnapshotFolder));
-    let path = &app.snapshot_folder;
-    let snapshots = caption(path.clone()).tip(path.clone()).lines(1).min_w(0);
+    // One short status; the path, or what to do, on hover.
+    let (path, found) = &app.snapshot_folder;
+    let (said, tip) = match found {
+        Some(true) => (
+            path.rsplit(['/', '\\'])
+                .find(|s| !s.is_empty())
+                .unwrap_or(path)
+                .to_owned(),
+            path.clone(),
+        ),
+        Some(false) => ("Not found".to_owned(), format!("Not found: {path}")),
+        None => (
+            "Not set".to_owned(),
+            "Choose the User Content folder Kontakt saves snapshots in".to_owned(),
+        ),
+    };
+    let snapshots = caption(said).tip(tip).lines(1).min_w(0);
     let rescan = button(ui, "rescan", "Rescan", false);
     if rescan.changed {
         out.push(Action::Refresh);
