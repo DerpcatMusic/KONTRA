@@ -347,14 +347,15 @@ fn mix(rows: &[[f32; 2]]) -> Option<Mix> {
     })
 }
 
-/// A group's wavetable as its voices read it.
-fn read(w: ir::Wavetable) -> Read {
+/// A wavetable form as voices read it.
+#[must_use]
+pub fn warp(w: ir::Warp) -> Warp {
     let side = |s| match s {
         ir::Side::Minus => Side::Minus,
         ir::Side::Plus => Side::Plus,
         ir::Side::Both => Side::Both,
     };
-    let warp = |w: ir::Warp| Warp {
+    Warp {
         shape: match w.shape {
             ir::WarpShape::Off => Shape::Off,
             ir::WarpShape::Sync => Shape::Sync,
@@ -388,7 +389,12 @@ fn read(w: ir::Wavetable) -> Read {
             ir::FormShaper::Wrap => Shaper::Wrap,
         },
         amount: w.amount,
-    };
+    }
+}
+
+/// A group's wavetable as its voices read it.
+#[must_use]
+pub fn read(w: ir::Wavetable) -> Read {
     Read {
         position: w.position,
         phase: w.phase,

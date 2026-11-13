@@ -136,12 +136,15 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         // Position and the form amounts are 0..=1 linear (readouts.rs shows
         // 0..100); the voice clamps each with its routes to 0..=1
         // (0x140b52133). The modulator and inharmonic are not carried yet:
-        // their text answers, a set is reported. The modes have no text.
+        // their text answers, a set is reported. The form modes are the
+        // `$NI_WT_FORM_*` kinds (wavetable::warp_modes); no mode has text.
         (
             "$ENGINE_PAR_WT_POSITION",
             P::Wavetable(ir::TableValue::Position),
         ),
         ("$ENGINE_PAR_WT_FORM", P::Wavetable(ir::TableValue::Warp(0))),
+        ("$ENGINE_PAR_WT_FORM_MODE", P::WarpMode(0)),
+        ("$ENGINE_PAR_WT_FORM2_MODE", P::WarpMode(1)),
         (
             "$ENGINE_PAR_WT_FORM2",
             P::Wavetable(ir::TableValue::Warp(1)),

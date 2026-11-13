@@ -280,6 +280,12 @@ impl Engine {
             let x = *crate::voice_gain::table_value(&mut read, v)?;
             return Some((f64::from(x) * 1e6).round() as i32);
         }
+        if let EnginePar::WarpMode(n) = par {
+            let w = g.wavetable?.warps.get(usize::from(n)).copied()?;
+            let modes = &self.script()?.warp_modes;
+            let mode = modes.iter().position(|m| *m == Some((w.shape, w.shaper)))?;
+            return i32::try_from(mode).ok();
+        }
         if let (Some((i, stage)), Some(e)) = (stage_point(par), routed_envelope(g, slot)) {
             // Measured (probes/flex_stage_writes.lua): an envelope without
             // stages (a flex) reads 0.
@@ -418,6 +424,15 @@ impl Engine {
         let unit = (par == EnginePar::LfoUnit)
             .then(|| self.lfo_unit(value))
             .flatten();
+        let mode = matches!(par, EnginePar::WarpMode(_))
+            .then(|| {
+                self.script()?
+                    .warp_modes
+                    .get(usize::try_from(value).ok()?)
+                    .copied()
+                    .flatten()
+            })
+            .flatten();
         let Some(g) = self.group_mut(group) else {
             return false;
         };
@@ -470,6 +485,16 @@ impl Engine {
                 .as_mut()
                 .and_then(|r| crate::voice_gain::table_value(r, v))
                 .map(|r| *r = x as f32)
+                .is_some(),
+            EnginePar::WarpMode(n) => g
+                .wavetable
+                .as_mut()
+                .and_then(|t| t.warps.get_mut(usize::from(n)))
+                .zip(mode)
+                .map(|(w, (shape, shaper))| {
+                    w.shape = shape;
+                    w.shaper = shaper;
+                })
                 .is_some(),
             EnginePar::LfoUnit => match (unit, g.lfo_mut(slot)) {
                 (Some(unit), Some(l)) => {
