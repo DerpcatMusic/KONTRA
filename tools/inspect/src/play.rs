@@ -170,7 +170,9 @@ fn run_events(
         process_time += spent;
         // Time on the CPU when the kernel reports it: a block the machine
         // preempted is not a spike of ours.
-        let cpu = on_cpu().zip(timer.1).map(|(end, start)| end.saturating_sub(start));
+        let cpu = on_cpu()
+            .zip(timer.1)
+            .map(|(end, start)| end.saturating_sub(start));
         block_times.push((
             cpu.unwrap_or_else(|| u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX)),
             at,
@@ -349,8 +351,11 @@ fn run_events(
     summary.push_str(&super::routes::summary(&route_events));
     summary.push_str(&format!(
         "  block timing ({} frames, budget {:.0} us): p50 {:.0} us, p99 {:.0} us, max {:.0} us\n",
-        block, timing["budget_us"].as_f64().unwrap_or(0.0), timing["p50_us"].as_f64().unwrap_or(0.0),
-        timing["p99_us"].as_f64().unwrap_or(0.0), timing["max_us"].as_f64().unwrap_or(0.0)
+        block,
+        timing["budget_us"].as_f64().unwrap_or(0.0),
+        timing["p50_us"].as_f64().unwrap_or(0.0),
+        timing["p99_us"].as_f64().unwrap_or(0.0),
+        timing["max_us"].as_f64().unwrap_or(0.0)
     ));
     if let Some(reference) = &reference {
         let status = reference
@@ -412,8 +417,13 @@ fn block_timing(times: &[(u64, u64, usize)], block: usize) -> Value {
 
 /// This thread's CPU time so far, ns (`CLOCK_THREAD_CPUTIME_ID`).
 fn on_cpu() -> Option<u64> {
-    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: `t` is a valid timespec the call fills in.
     let ok = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0;
-    ok.then(|| u64::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0))
+    ok.then(|| {
+        u64::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0)
+    })
 }
