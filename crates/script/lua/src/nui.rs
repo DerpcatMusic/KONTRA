@@ -89,9 +89,9 @@ pub struct Control {
     pub min: f64,
     pub max: f64,
     pub default: f64,
-    /// Whether the page reads it 0..1 across `min..max` (a knob, slider or
-    /// value edit), not raw (a menu, a button). An index (`value(i)`,
-    /// `set_value(v, i)`) reads and writes raw either way.
+    /// Whether the page reads and writes it 0..1 across `min..max` (a knob
+    /// or a slider, with an index or without), not raw (a value edit, a
+    /// table, a menu, a button).
     pub normalized: bool,
     /// A menu's entries: text and value.
     pub entries: Vec<(String, f64)>,
@@ -523,11 +523,11 @@ mod tests {
         assert_eq!(text, Some(&Prop::Text("a/dark".into())));
     }
 
-    /// A ranged control reads 0..1 across its range, and raw by index (a
-    /// table's cell, as Conflux's bend strip reads it); both writes are
-    /// raw for the host.
+    /// A knob reads 0..1 across its range with an index or without (a
+    /// stepper passes `idx or 0`); a value edit reads raw. Writes reach
+    /// the host raw.
     #[test]
-    fn a_ranged_control_reads_0_to_1_and_raw_by_index() {
+    fn a_knob_reads_0_to_1_by_index_too_and_a_value_edit_raw() {
         let mut page = page(&[(
             "main.nui",
             r#"local ui = require "native_ui"
@@ -537,10 +537,11 @@ mod tests {
                 return @ui.VStack {
                     @ui.Text { text = pb:value() }
                     @ui.Text { text = pb:value(0) }
+                    @ui.Text { text = kontakt.connect_parameter("Bend"):value(0) }
                 }
                 .on_tap_gesture(
                     start = function() pb:set_value(0.5) end,
-                    complete = function() pb:set_value(-100, 0) end)
+                    complete = function() pb:set_value(0, 0) end)
             end"#,
         )]);
         let pb = Control {
@@ -554,11 +555,18 @@ mod tests {
             entries: Vec::new(),
             text: None,
         };
-        page.set_controls(std::slice::from_ref(&pb)).unwrap();
-        let tree = page.render(&[("PB".into(), 100.)]).unwrap().unwrap();
+        let bend = Control {
+            name: "Bend".into(),
+            normalized: false,
+            ..pb.clone()
+        };
+        page.set_controls(&[pb, bend]).unwrap();
+        let values = [("PB".into(), 100.), ("Bend".into(), 100.)];
+        let tree = page.render(&values).unwrap().unwrap();
         let text = |i: usize| tree.children[i].prop("text").cloned();
         assert_eq!(text(0), Some(Prop::Number(1.)));
-        assert_eq!(text(1), Some(Prop::Number(100.)));
+        assert_eq!(text(1), Some(Prop::Number(1.)));
+        assert_eq!(text(2), Some(Prop::Number(100.)));
         let callback = |k: &str| match tree.mods[0].1[0].field(k) {
             Some(Prop::Callback(n)) => *n,
             _ => 0,
@@ -567,7 +575,7 @@ mod tests {
         let writes = page.call(start, [0.; 2], [1.; 2]).unwrap();
         assert_eq!(writes, [("PB".to_owned(), 0.)]);
         let writes = page.call(complete, [0.; 2], [1.; 2]).unwrap();
-        assert_eq!(writes, [("PB".to_owned(), -100.)]);
+        assert_eq!(writes, [("PB".to_owned(), -100.)], "0 is its minimum");
     }
 
     #[test]

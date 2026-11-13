@@ -83,7 +83,9 @@ fn control(face: &Face, d: &Decl<'_>) -> Control {
         min,
         max,
         default: min,
-        normalized: range && max > min,
+        // A value edit reads raw: a page's steppers read knobs 0..1 and
+        // their value edits raw (`denorm`), both with an index.
+        normalized: matches!(d.kind, ControlKind::Knob | ControlKind::Slider) && max > min,
         entries,
         text: d.text.map(str::to_owned),
     }

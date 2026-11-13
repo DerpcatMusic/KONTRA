@@ -161,12 +161,12 @@ setmetatable(ui, {
 __params, __meters, __writes = {}, {}, {}
 local Parameter = {}
 Parameter.__index = Parameter
--- The host gives raw values (`__params`). A knob, slider or value edit
--- reads 0..1 across its range; with an index (a table's cell, Conflux's
--- `util.prepare_value_from_ksp`) any control reads and writes raw.
-local function span(id, index)
+-- The host gives raw values (`__params`). A knob or slider reads and
+-- writes 0..1 across its range, with an index or without (a page's
+-- stepper passes `idx or 0`); a value edit or a table cell reads raw.
+local function span(id)
 	local c = __controls[id]
-	if index == nil and c and c.normalized and c.max > c.min then
+	if c and c.normalized and c.max > c.min then
 		return c.min, c.max - c.min
 	end
 end
@@ -178,11 +178,11 @@ function Parameter:value(index)
 		return c.text
 	end
 	local raw = __params[self.id] or 0
-	local min, width = span(self.id, index)
+	local min, width = span(self.id)
 	return min and (raw - min) / width or raw
 end
 function Parameter:set_value(v, index)
-	local min, width = span(self.id, index)
+	local min, width = span(self.id)
 	local raw = min and min + v * width or v
 	__params[self.id] = raw
 	__writes[#__writes + 1] = { self.id, raw }
