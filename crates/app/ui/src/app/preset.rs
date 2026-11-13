@@ -72,6 +72,30 @@ fn taken(presets: &[String], name: &str) -> bool {
     })
 }
 
+/// Each preset path as its own name, with as many of its folders before it
+/// (`V2 / Clarinet A`) as tell it from another of the same name.
+pub(super) fn names(presets: &[String]) -> Vec<String> {
+    let parts: Vec<Vec<&str>> = presets.iter().map(|p| p.split('/').collect()).collect();
+    let mut depth = vec![1; parts.len()];
+    let tail = |p: &[&str], d: usize| (p.get(p.len().saturating_sub(d)..).unwrap_or(p)).join(" / ");
+    loop {
+        let mut seen = std::collections::HashMap::new();
+        for (p, &d) in parts.iter().zip(&depth) {
+            *seen.entry(tail(p, d)).or_insert(0) += 1;
+        }
+        let mut grew = false;
+        for (p, d) in parts.iter().zip(&mut depth) {
+            if *d < p.len() && seen.get(&tail(p, *d)).is_some_and(|&n| n > 1) {
+                *d += 1;
+                grew = true;
+            }
+        }
+        if !grew {
+            return parts.iter().zip(&depth).map(|(p, &d)| tail(p, d)).collect();
+        }
+    }
+}
+
 /// The sheet `which` asks in: a name to save or rename to, or a delete to
 /// confirm. A name a user preset of the library has already reads Replace.
 pub(super) fn sheet(
@@ -123,5 +147,25 @@ mod tests {
     fn a_name_is_taken_by_its_file_name_in_any_case() {
         let presets = ["User/Soft".to_owned(), "Felt".to_owned()];
         assert!(super::taken(&presets, "soft?") && !super::taken(&presets, "Felt"));
+    }
+
+    #[test]
+    fn a_repeated_name_shows_the_folders_that_tell_it_apart() {
+        let presets = [
+            "V1/Clarinet A",
+            "V2/Clarinet A",
+            "V2/Oboe",
+            "A/X/Y",
+            "B/X/Y",
+        ];
+        let presets = presets.map(str::to_owned);
+        let names = [
+            "V1 / Clarinet A",
+            "V2 / Clarinet A",
+            "Oboe",
+            "A / X / Y",
+            "B / X / Y",
+        ];
+        assert_eq!(super::names(&presets), names);
     }
 }
