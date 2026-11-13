@@ -16,6 +16,7 @@ mui = { workspace = true }
 image-webp = "0.2.4"
 png = "0.18"
 peniko = "0.6.1"
+skrifa = "0.46.2"
 resvg = { version = "0.50.0", default-features = false }
 sha2 = "0.10.9"
 zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }

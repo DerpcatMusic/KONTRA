@@ -2498,6 +2498,7 @@ dependencies = [
  "png",
  "resvg",
  "sha2",
+ "skrifa 0.46.2",
  "tempfile",
  "zune-jpeg",
 ]
