@@ -437,9 +437,10 @@ pub fn menu(
     current: Option<usize>,
 ) -> Response<Option<usize>> {
     let mut picked = None;
-    // About 0.6 em a letter: a grid's cells all fit its longest pick.
     let longest = items.iter().map(|i| i.chars().count()).max().unwrap_or(0);
-    let cell_w = (longest as f64 * TEXT * 0.6 + SPACE * 2.).max(TEXT * 3.);
+    // A grid's cells all fit its longest pick: short picks run wider than
+    // a list's 0.6 em a letter ("Omni"), plus the button's own padding.
+    let cell_w = (longest as f64 * TEXT * 0.75 + SPACE * 3.).max(TEXT * 3.);
     let mut cells: Vec<El> = items
         .iter()
         .enumerate()
