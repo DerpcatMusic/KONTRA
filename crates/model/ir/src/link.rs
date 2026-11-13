@@ -12,6 +12,20 @@ pub struct CcLink {
     pub to: f32,
 }
 
+/// A controller a format's connection routes to a script knob by name: the
+/// knob (range `lo..hi`) moves to `saved + ratio·cc/127` of its range, held
+/// within it, and its callbacks run when it changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnobMod {
+    /// The script, by its place in [`crate::Instrument::scripts`].
+    pub script: usize,
+    pub cc: u8,
+    pub name: String,
+    /// The knob's own value, which the route moves from.
+    pub saved: f32,
+    pub ratio: f32,
+}
+
 /// The `n`th control of one kind its script declares (from 0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Linked {

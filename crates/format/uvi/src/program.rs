@@ -674,6 +674,44 @@ impl<L: Library> Translator<'_, '_, L> {
                 data,
                 links: Vec::new(),
             });
+            self.knob_mods(processor);
+        }
+    }
+
+    /// The controllers the processor's connections move its script's knobs
+    /// by (`Destination` is the knob's name, its saved value an attribute):
+    /// the knob moves from that value by `Ratio` of its range per unit of the
+    /// controller, held within it, and runs its `changed`.
+    fn knob_mods(&mut self, processor: Node) {
+        let script = self.out.scripts.len().saturating_sub(1);
+        let connections = processor
+            .children()
+            .filter(|c| c.has_tag_name("Connections"))
+            .flat_map(|c| c.children())
+            .filter(|c| c.has_tag_name("SignalConnection"))
+            .collect::<Vec<_>>();
+        for c in connections {
+            let cc = c
+                .attribute("Source")
+                .and_then(|s| s.strip_prefix("@MIDI CC "))
+                .and_then(|n| n.trim().parse::<u8>().ok());
+            let name = c.attribute("Destination").unwrap_or_default();
+            let saved = processor.attribute(name).and_then(|v| v.parse::<f32>().ok());
+            let ratio = num(c, "Ratio", 0.0).ok().map(|r| r as f32);
+            let (Some(cc), Some(saved), Some(ratio)) = (cc, saved, ratio) else {
+                continue;
+            };
+            if flag(c, "Bypass") || flag(c, "Inverted") || ratio == 0.0 || c.attribute("Mapper").is_some_and(|m| !m.is_empty()) {
+                continue;
+            }
+            self.out.knob_mods.push(ir::KnobMod {
+                script,
+                cc,
+                name: name.into(),
+                saved,
+                ratio,
+            });
+            self.carried.insert(c.id());
         }
     }
 }

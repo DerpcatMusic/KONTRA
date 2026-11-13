@@ -77,7 +77,7 @@ pub use plan::{
     RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
-pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
+pub use script::{Callbacks, CcLink, KnobModPlan, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
