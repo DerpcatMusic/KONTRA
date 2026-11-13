@@ -671,3 +671,49 @@ fn kontakt_label_tabs_are_blank_advances() {
         widget.text
     );
 }
+
+#[test]
+fn the_wheel_over_a_scrolling_region_never_scrolls_the_rack() {
+    let at = |y, h| Rect {
+        x: 0.,
+        y,
+        width: 100.,
+        height: h,
+    };
+    let mut port = Widget::new("port", PageRef(0), at(0., 100.), Kind::Panel);
+    port.viewport = Some([0, 0]);
+    let mut rows = Widget::new("rows", PageRef(0), at(0., 300.), Kind::Panel);
+    rows.parent = Some(model::WidgetRef(0));
+    let tree = Interface {
+        pages: vec![Page {
+            size: Size {
+                width: 200.,
+                height: 200.,
+            },
+            ..Page::default()
+        }],
+        widgets: vec![port, rows],
+        ..Interface::default()
+    };
+    let mut pictures = pictures(Vec::new(), Vec::new());
+    let mut ui = Ui::default();
+    // Far past the region's end: what is left over stays with it.
+    for n in 0..12 {
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+        let rack = col![col![el, block(200., 600.)].scroll().h(200.).id("rack")];
+        let input = Input {
+            pointer: mui::prelude::PointerInput {
+                pos: Some(Point::new(50., 50.)),
+                ..Default::default()
+            },
+            wheel: Vec2::new(0., if n >= 2 { 60. } else { 0. }),
+            ..Default::default()
+        };
+        assert!(
+            ui.frame(rack, Some(ViewSize::new(200., 200.)), input, 1. / 60.)
+                .is_ok()
+        );
+    }
+    assert!(ui.scroll("kontra-v-0-0")[1] > 0., "the region scrolls");
+    assert_eq!(ui.scroll("rack")[1], 0., "the rack does not");
+}

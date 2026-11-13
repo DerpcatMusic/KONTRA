@@ -184,7 +184,10 @@ impl Face {
     }
 
     fn value(&self, n: usize) -> f64 {
-        self.tree.widgets.get(n).map_or(f64::NAN, kontra_ui_model::Widget::number)
+        self.tree
+            .widgets
+            .get(n)
+            .map_or(f64::NAN, kontra_ui_model::Widget::number)
     }
 }
 
