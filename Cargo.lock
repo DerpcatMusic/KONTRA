@@ -2282,6 +2282,7 @@ dependencies = [
  "anyhow",
  "hound",
  "kontra-engine",
+ "kontra-format-uvi",
  "kontra-host",
  "kontra-ksp",
  "kontra-law",
