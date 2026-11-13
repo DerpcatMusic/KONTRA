@@ -127,9 +127,13 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
                     ui::Font::Named(path.clone())
                 }
             });
-            let align = match w.align.as_deref() {
-                Some("left") => ui::Align::Left,
-                Some("right") => ui::Align::Right,
+            // A label's words start at its left edge unless it says otherwise
+            // (UVI's labels are JUCE's: centred-left): V Winds sets "Max
+            // length:" in the 64 points before its number box.
+            let align = match w.align.as_deref().map(str::to_ascii_lowercase) {
+                Some(a) if a.ends_with("left") => ui::Align::Left,
+                Some(a) if a.ends_with("right") => ui::Align::Right,
+                None if matches!(out.kind, ui::Kind::Label) => ui::Align::Left,
                 _ => ui::Align::Center,
             };
             out.style = Some(ui::StyleRef(tree.styles.len()));
@@ -380,6 +384,25 @@ mod tests {
         assert_eq!(w.colors.bar, Some(ui::Rgba::rgb(0xdeb25d)));
         assert_eq!(w.colors.background, Some(ui::Rgba::rgb(0x474747)));
         assert_eq!(w.table_inner_edge.map(|e| e.visible), Some(false));
+    }
+
+    #[test]
+    fn a_label_that_names_no_alignment_starts_at_its_left_edge() {
+        let page = kontra_lua::compile(
+            r##"Label{"Thresh:", pos={159,330}, font="../art/C.ttf", fontSize=13}
+                Label{"Low", bounds={0,0,80,20}, font="../art/C.ttf", align="topLeft"}
+                Label{"Mid", bounds={0,0,80,20}, font="../art/C.ttf", align="centred"}"##,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .ui;
+        let tree = tree(&page, &|_| None);
+        let aligns: Vec<_> = (tree.widgets.iter())
+            .map(|w| w.style.map(|s| tree.styles[s.0].align))
+            .collect();
+        let [left, center] = [ui::Align::Left, ui::Align::Center].map(Some);
+        assert_eq!(aligns, [left, left, center]);
     }
 
     #[test]
