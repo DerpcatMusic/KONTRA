@@ -135,13 +135,15 @@ impl StreamClient {
 /// Pinned pages by (blob, page), shared while any sample holds them.
 /// Pinned pages by sample and page; `true` for a page of stored blocks.
 type PinnedPages = HashMap<(BlobKey, usize), (Weak<[u8]>, bool)>;
+/// The map as stores and head loaders share it.
+type SharedPages = Arc<Mutex<PinnedPages>>;
 
 pub struct Store {
     shared: Arc<Shared>,
     /// Shared with [`Heads`], which fills it in as deferred pages arrive.
     /// Locked only by the control thread and the head-loading threads, never
     /// by the audio thread (voices read their pages through `Sample`).
-    pinned: Arc<Mutex<PinnedPages>>,
+    pinned: SharedPages,
     /// Whether loads leave their heads to [`Heads`].
     defer: bool,
     deferred: Vec<HeadJob>,
@@ -194,7 +196,7 @@ impl Store {
     /// Call before the first load. Stores that do not call it stay private,
     /// which tests that reuse a key for different content rely on.
     pub fn share_pages_in_process(&mut self) {
-        static PAGES: std::sync::OnceLock<Arc<Mutex<PinnedPages>>> = std::sync::OnceLock::new();
+        static PAGES: std::sync::OnceLock<SharedPages> = std::sync::OnceLock::new();
         self.pinned = Arc::clone(PAGES.get_or_init(Arc::default));
     }
 
@@ -565,7 +567,7 @@ pub struct Heads {
     max_frame_bytes: usize,
     /// The store's page-sharing map: pages read here join it, so a reload or
     /// a second instance of the instrument reuses them.
-    shared: Arc<Mutex<PinnedPages>>,
+    shared: SharedPages,
 }
 
 impl Heads {
