@@ -382,7 +382,7 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
             phase: 0.0,
             phase_random: 0.0,
             gain: 1.0,
-            stretch: 1.0,
+            inharmonic: kontra_voice::Inharmonic::OFF,
             warps: [Warp::OFF; 2],
         };
         let region = Region {
