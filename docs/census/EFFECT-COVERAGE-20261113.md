@@ -18,7 +18,7 @@ instrument. Script-loaded effects (Conflux's Raum, Una Corda's Space presets) ar
 | 224 | 8 | 1/2/3-band EQ | **probe** + binary | EQ1 Peak, EQ2 Hi-Fi, EQ3 Old Radio: octave bands 63 Hz–8 kHz within 0.2 dB, 16 kHz within 0.7 dB; level within 0.46 dB |
 | 134 | 4 | Gainer | unverified, inaudible | every instance stores 1.0011 (+0.01 dB) |
 | 30 | 4 | Inverter | trivial | a sign or channel swap |
-| 20 | 3 | 1-pole high-pass, 43.5 Hz | unverified | no factory preset holds it; 556 slots |
+| 20 | 3 | 1-pole high-pass, 43.5 Hz | probe | `coverage_probe.py hp1`: corner at 0.825 of the cascade law (35.6 Hz at 0); within 0.4 dB at cutoff 0, .1, .25, .5, .75 |
 | ≤ 6 each | 1–2 | Soft/Tube shaper, ladder and SV filters, Limiter, Compressor, Delay, Crush, Formant | binary (kontakt-effects crate cites addresses) | |
 
 Probe tool: `tools/kontakt-oracle/coverage_probe.py stereo|spectral OUT_DIR`. The first instance
@@ -44,6 +44,11 @@ Active instances in the decoded program XML.
 
 - Kontakt factory impulse responses (`/presets/Effects/Convolution/K4IR.nkx/...`) do not resolve:
   the resolver knows no factory root. No library instrument uses one (0 of 682).
-- XpanderFilter Q → resonance: the consumer of the setter's dirty flag (+0xf0) is not in the
-  setters' neighbourhood; follow the class vtable next.
+- XpanderFilter Q → resonance: mapped as far as the node. The bindings sit at 0x1412be77e: Freq
+  +0x38, Q +0x3c (raw), Drive +0x4c, mode +0x48, each setting the dirty byte +0xf0. The
+  clone at 0x1412cb2e0 (vtable 0x141e79158) gives the defaults: 1000 Hz, Q 0, mode 3, Drive
+  1.0, key centre 60. Each channel has a 36-byte state in the +0x90 vector, plus 2× up/down
+  half-band oversamplers (+0xb0/+0xd0, designed at 0x14163cc40 with cutoff
+  min(20000/fs, 0.48)). The ladder kernel that reads Q is in neither of the node's vtables
+  and stays open. Next: the callers of the +0x90 vector's element.
 - Send Levels in isolation: a probe with a send-slot effect whose return is audible.

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Effect coverage probe: factory FX presets on one sample, one Kontakt session, each instance saved.
 
-    coverage_probe.py stereo|spectral OUT_DIR
+    coverage_probe.py stereo|spectral|hp1 OUT_DIR
 
 Renders OUT_DIR/kontakt.wav and saves OUT_DIR/<name>.nki per instance, so `kontra-inspect play`
 renders the same instruments for ours. Preset state saves with the instrument (KSP init writes on
 a preset-loaded effect do not), so no script is involved.
 - stereo: L = 500 Hz, R = 1300 Hz, -12 dB each, 1.5 s; each output channel's L and R content
   reads apart by frequency (Stereo Modeller presets).
-- spectral: a 0.5 s noise burst at -24 dB, then silence (EQ and convolution presets).
+- spectral, hp1: a 0.5 s noise burst at -24 dB, then silence (EQ and convolution presets).
 The first instance of a kind loaded in a session ramps in Kontakt (Stereo Modeller INIT: -4 dB,
 left channel rising over 0.6 s), so each set starts with a throwaway instance.
 """
@@ -55,6 +55,12 @@ SETS = {
         ("st_w50", [P + "Wide +50.nkp"], []),
         ("st_w100", [P + "Wide +100.nkp"], []),
     ],
+    "hp1": [("dry", [], [])] + [
+        (f"hp_{v}", [], [], "on init\\n  set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_FILTER, 0, 0, -1)\\n"
+         "  set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, $FILTER_TYPE_HP1POLE, 0, 0, -1)\\nend on\\n"
+         f"on note\\n  set_engine_par($ENGINE_PAR_CUTOFF, {v}, 0, 0, -1)\\nend on\\n")
+        for v in (0, 100000, 250000, 500000, 750000)
+    ],
     "spectral": [
         ("warm", [P + "Wide +50.nkp"], []),
         ("dry", [], []),
@@ -68,7 +74,7 @@ SETS = {
 INSTANCES = SETS[kind]
 
 body = []
-for k, (name, inserts, sends) in enumerate(INSTANCES):
+for k, (name, inserts, sends, *ksp) in enumerate(INSTANCES):
     ins = ",".join(json.dumps(eqrender.winpath(eqrender.init_preset(p))) for p in inserts)
     snd = ",".join(json.dumps(eqrender.winpath(eqrender.init_preset(p))) for p in sends)
     body.append(f"""
@@ -82,6 +88,7 @@ do
     local ok, e = pcall(kt.load_fx_preset, p, i, -1, s - 1, kt.send_fx)
     log('{{"send":' .. tostring(ok) .. ',"e":"' .. tostring(e):gsub('"', "'") .. '","k":{k}}}')
   end
+  if {json.dumps(bool(ksp))} then log('{{"ksp":' .. tostring(pcall(kt.set_instrument_script_source, i, 0, "{ksp[0] if ksp else ''}")) .. ',"k":{k}}}') end
   local ok, e = pcall(kt.save_instrument, i, {json.dumps(eqrender.winpath(out / (name + ".nki")))}, {{}})
   log('{{"save":' .. tostring(ok) .. ',"e":"' .. tostring(e):gsub('"', "'") .. '","k":{k}}}')
 end""")
@@ -95,4 +102,4 @@ fxrig.write_midi(len(INSTANCES), out / "probe.mid", hold=1.6 if kind == "stereo"
 total = fxrig.FIRST + len(INSTANCES) * fxrig.SLOT + 2.0
 subprocess.run([sys.executable, str(KO / "render.py"), str(out / "probe.lua"), str(out / "kontakt.wav"),
                 str(total), str(out / "probe.mid")], check=True)
-(out / "instances.json").write_text(json.dumps([n for n, _, _ in INSTANCES]))
+(out / "instances.json").write_text(json.dumps([i[0] for i in INSTANCES]))
