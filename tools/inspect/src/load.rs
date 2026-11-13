@@ -80,8 +80,15 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         "sends": format!("{:?}", instrument.sends), "main": format!("{:?}", instrument.main),
         "buses": format!("{:?}", instrument.buses), "slot_laws": format!("{:?}", instrument.slot_laws)});
     let mut store = Store::new(StoreConfig::DEFAULT).context("creating sample store")?;
+    // KONTRA_DEFER_HEADS: the plugin's path, a part playable before its heads are in.
+    store.defer_heads(std::env::var_os("KONTRA_DEFER_HEADS").is_some());
     let loaded = kontra_host::instrument::build(instrument, RATE, &mut store);
     let build_times = loaded.timings;
+    let heads_start = std::time::Instant::now();
+    let heads = store.take_heads().map(|heads| {
+        let lanes = std::thread::available_parallelism().map_or(4, |n| n.get() * 3);
+        std::thread::spawn(move || heads.load(lanes))
+    });
     let pinned_bytes = store.pinned_bytes();
     let original_slots: Vec<_> = loaded.persist.iter().map(|vars| vars.script).collect();
     let mapping = script_mapping(scripts.len(), &original_slots, loaded.plan.scripts.len());
@@ -277,7 +284,17 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         faults,
         law_applications.len()
     );
-    let timings = json!({"read_seconds": read_time.as_secs_f64(), "translate_seconds": translate_time.map(|t| t.as_secs_f64()), "file_open_seconds": build_times.files.as_secs_f64(), "prepare_seconds": build_times.prepare.as_secs_f64(), "script_seconds": build_times.scripts.as_secs_f64(), "engine_init_seconds": engine_init_time.as_secs_f64(), "ui_seconds": ui_time.as_secs_f64(), "pinned_bytes": pinned_bytes});
+    let first_note = read_time
+        + translate_time.unwrap_or_default()
+        + build_times.files
+        + build_times.prepare
+        + build_times.scripts
+        + engine_init_time;
+    let heads_time = heads.map(|h| {
+        let _ = h.join();
+        heads_start.elapsed()
+    });
+    let timings = json!({"time_to_first_note_seconds": first_note.as_secs_f64(), "heads_seconds": heads_time.map(|t| t.as_secs_f64()), "read_seconds": read_time.as_secs_f64(),"translate_seconds": translate_time.map(|t| t.as_secs_f64()), "file_open_seconds": build_times.files.as_secs_f64(), "prepare_seconds": build_times.prepare.as_secs_f64(), "script_seconds": build_times.scripts.as_secs_f64(), "engine_init_seconds": engine_init_time.as_secs_f64(), "ui_seconds": ui_time.as_secs_f64(), "pinned_bytes": pinned_bytes});
     let summary = format!("{summary}  load stages: {timings}\n");
     Ok((
         json!({"timings": timings, "schema_version": 1, "command": "load", "instrument": path,

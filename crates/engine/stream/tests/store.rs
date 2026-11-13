@@ -396,3 +396,21 @@ fn load_progress_counts_pinned_bytes_for_new_and_reused_pages() {
     assert_eq!(reused.percent, 85);
     drop((first, second));
 }
+
+#[test]
+fn a_deferred_head_is_silent_until_its_heads_load_then_reads_exactly() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let (key, source) = ramp(4 * PAGE_FRAMES);
+    store.defer_heads(true);
+    let sample = store
+        .load(&key, source, 4 * PAGE_FRAMES, &[0..PAGE_FRAMES])
+        .unwrap();
+    assert!(!sample.is_pinned(0));
+    let heads = store.take_heads().unwrap();
+    heads.load(2);
+    assert!(sample.is_pinned(0));
+    let mut out = vec![[0.0; 2]; 64];
+    assert_eq!(sample.read(&client, 10, &mut out).missing, 0);
+    assert_eq!(out[0][0], value(10));
+}

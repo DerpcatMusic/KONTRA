@@ -7,7 +7,7 @@ use std::io;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -139,6 +139,9 @@ type PinnedPages = HashMap<(BlobKey, usize), (Weak<[u8]>, bool)>;
 pub struct Store {
     shared: Arc<Shared>,
     pinned: PinnedPages,
+    /// Whether loads leave their heads to [`Heads`].
+    defer: bool,
+    deferred: Vec<HeadJob>,
     /// New samples, for the I/O thread's lookup table.
     registered: Sender<(SampleId, Weak<Sample>)>,
     next_id: AtomicU32,
@@ -172,6 +175,8 @@ impl Store {
         Ok(Self {
             shared,
             pinned: HashMap::new(),
+            defer: false,
+            deferred: Vec::new(),
             registered,
             next_id: AtomicU32::new(0),
             max_frame_bytes: config.max_frame_bytes,
@@ -332,6 +337,21 @@ impl Store {
             }
             plans.push(Ok((pages, runs)));
         }
+        if self.defer {
+            return plans
+                .into_iter()
+                .zip(requests)
+                .map(|(plan, r)| {
+                    let (pages, runs) = plan?;
+                    let sample = self.new_sample(&r, pages);
+                    for run in runs {
+                        let job = (Arc::clone(&sample), Arc::clone(&r.source), run);
+                        self.deferred.push(job);
+                    }
+                    Ok(sample)
+                })
+                .collect();
+        }
         let max_frame_bytes = self.max_frame_bytes;
         // Read every run, spread over the machine's cores.
         let jobs: Vec<(usize, Range<usize>)> = plans
@@ -389,24 +409,8 @@ impl Store {
                             let Some(r) = requests.get(*i) else {
                                 continue;
                             };
-                            let size =
-                                1u64 << page_shift(r.key.fmt.bytes_per_frame(), max_frame_bytes);
-                            let first = run.start as u64 * size;
-                            let end = (run.end as u64 * size).min(r.frames);
-                            let frame_bytes = r.key.fmt.bytes_per_frame();
-                            let result = if let Some(per) = blocks_per_page(&*r.source, size) {
-                                read_blocks(&*r.source, r.frames, run, per)
-                            } else {
-                                let mut buf = vec![0; (end - first) as usize * frame_bytes];
-                                // Split into pages here, so this thread's heap reuses
-                                // the freed run for the pages it keeps.
-                                let page_bytes = (size as usize * frame_bytes).max(1);
-                                r.source.read(first, &mut buf).map(|()| {
-                                    buf.chunks(page_bytes)
-                                        .map(|c| Page::Pcm(c.into()))
-                                        .collect()
-                                })
-                            };
+                            let result =
+                                read_run(&*r.source, r.key.fmt, r.frames, run, max_frame_bytes);
                             if let (Some(progress), Ok(pages)) = (progress, &result) {
                                 progress.samples(
                                     pages.iter().map(|p: &Page| p.bytes().len() as u64).sum(),
@@ -449,26 +453,119 @@ impl Store {
             .map(|(plan, r)| {
                 let (pages, _) = plan?;
                 r.source.loaded();
-                let id = SampleId(self.next_id.fetch_add(1, Ordering::Relaxed));
-                let sample = Arc::new(Sample {
-                    id,
-                    fmt: r.key.fmt,
-                    frames: r.frames,
-                    shift: self.shift(&r.key.fmt),
-                    source: r.source,
-                    streamed: (0..pages.len()).map(|_| AtomicU32::new(ABSENT)).collect(),
-                    pinned: pages.into(),
-                });
-                // The I/O thread only stops when the store drops, so this cannot fail.
-                let _ = self.registered.send((id, Arc::downgrade(&sample)));
-                Ok(sample)
+                Ok(self.new_sample(&r, pages))
             })
             .collect()
     }
+
+    /// A sample holding `pages` (the ones already read) and registered with the I/O thread.
+    fn new_sample(&self, r: &LoadRequest, pages: Vec<Option<Page>>) -> Arc<Sample> {
+        let id = SampleId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let sample = Arc::new(Sample {
+            id,
+            fmt: r.key.fmt,
+            frames: r.frames,
+            shift: self.shift(&r.key.fmt),
+            source: Arc::clone(&r.source),
+            streamed: (0..pages.len()).map(|_| AtomicU32::new(ABSENT)).collect(),
+            pinned: (pages.into_iter())
+                .map(|p| p.map_or_else(OnceLock::new, OnceLock::from))
+                .collect(),
+        });
+        // The I/O thread only stops when the store drops, so this cannot fail.
+        let _ = self.registered.send((id, Arc::downgrade(&sample)));
+        sample
+    }
+
+    /// From now on [`Store::load_many`] returns samples without their heads
+    /// (pages already held are kept) and queues the reads: take them with
+    /// [`Store::take_heads`] and run them in the background.
+    pub fn defer_heads(&mut self, on: bool) {
+        self.defer = on;
+    }
+
+    /// The reads queued since the last call, if any.
+    pub fn take_heads(&mut self) -> Option<Heads> {
+        let jobs = std::mem::take(&mut self.deferred);
+        (!jobs.is_empty()).then_some(Heads {
+            jobs,
+            max_frame_bytes: self.max_frame_bytes,
+        })
+    }
 }
+
+/// A run of pages of a sample still to read, and where from.
+type HeadJob = (Arc<Sample>, Arc<dyn Source>, Range<usize>);
 
 /// A run of pages read for request `.0`.
 type RunRead = (usize, Range<usize>, io::Result<Vec<Page>>);
+
+/// Pages `run` of a `frames`-long sample of `source`, as pinned pages.
+fn read_run(
+    source: &dyn Source,
+    fmt: SampleFmt,
+    frames: u64,
+    run: &Range<usize>,
+    max_frame_bytes: usize,
+) -> io::Result<Vec<Page>> {
+    let size = 1u64 << page_shift(fmt.bytes_per_frame(), max_frame_bytes);
+    let first = run.start as u64 * size;
+    let end = (run.end as u64 * size).min(frames);
+    let frame_bytes = fmt.bytes_per_frame();
+    if let Some(per) = blocks_per_page(source, size) {
+        return read_blocks(source, frames, run, per);
+    }
+    let mut buf = vec![0; end.saturating_sub(first) as usize * frame_bytes];
+    // Split into pages here, so this thread's heap reuses the freed run for
+    // the pages it keeps.
+    let page_bytes = (size as usize * frame_bytes).max(1);
+    source.read(first, &mut buf).map(|()| {
+        buf.chunks(page_bytes)
+            .map(|c| Page::Pcm(c.into()))
+            .collect()
+    })
+}
+
+/// The heads of samples built with [`Store::defer_heads`]: read them with
+/// [`Heads::load`] (off the audio thread, any thread) and the pages appear
+/// in the samples as each is read. Until then a voice streams its pages on
+/// demand, playing silence for any that are not yet in.
+pub struct Heads {
+    jobs: Vec<HeadJob>,
+    max_frame_bytes: usize,
+}
+
+impl Heads {
+    /// Reads every pending run on `lanes` threads (the reads wait on the disk).
+    pub fn load(self, lanes: usize) {
+        let next = AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..lanes.clamp(1, self.jobs.len().max(1)) {
+                scope.spawn(|| {
+                    while let Some((sample, source, run)) =
+                        self.jobs.get(next.fetch_add(1, Ordering::Relaxed) as usize)
+                    {
+                        let read = read_run(
+                            &**source,
+                            sample.fmt,
+                            sample.frames,
+                            run,
+                            self.max_frame_bytes,
+                        );
+                        for (page, data) in run.clone().zip(read.into_iter().flatten()) {
+                            if let Some(cell) = sample.pinned.get(page) {
+                                let _ = cell.set(data);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        for (_, source, _) in &self.jobs {
+            source.loaded();
+        }
+    }
+}
 
 /// Codec blocks in a page of `size` frames, when `source` keeps its pages
 /// as stored blocks: a page must hold whole blocks.
