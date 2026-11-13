@@ -614,12 +614,19 @@ impl Rack {
         // The interfaces catch up with what their scripts changed, and ask
         // again: the editor shows each at most one tick late.
         while let Some(frame) = self.channels.looks.recv() {
-            if let Some(Some(p)) = self.parts.get_mut(frame.part)
-                && p.script.generation == frame.generation
-                && let Some(view) = p.view.as_mut()
-            {
+            let Some(Some(p)) = self.parts.get_mut(frame.part) else {
+                continue;
+            };
+            let Some(view) = p.view.as_mut() else {
+                continue;
+            };
+            if p.script.generation == frame.generation {
                 view.refresh(&p.faces, p.path.as_deref(), frame);
                 p.named.look(view.tree());
+            } else if view.frame.is_none() {
+                // A recall kept this view and moved its generation on: the
+                // frame goes back unread, or the view could never ask again.
+                view.frame = Some(frame);
             }
         }
         let looked = match self.interfaces {

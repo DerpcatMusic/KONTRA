@@ -261,6 +261,10 @@ impl Rack {
         engine.recall(std::mem::take(&mut recalling.saved));
         super::requests::init_tables(&mut engine, &self.store.client());
         info.plan = Some(Arc::clone(engine.plan()));
+        // The Sound tab edits from what the recall left, not from before it.
+        let revision = info.sounds.revision + 1;
+        info.sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
+        info.sounds.revision = revision;
         // A capture still out answers the old load: ask the new one afresh.
         info.script.asked = false;
         self.install(part, engine, info);
