@@ -592,10 +592,11 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
         return;
     }
     // A text is never cut to its room: it overhangs it, centred, by an em
-    // a character (the label draws it centred, so the slack is free).
+    // a character and one more for the label's inset (a lone "0" lost its
+    // right half). The label draws it centred, so the slack is free.
     let r = match n.kind.as_str() {
         "Text" | "TextInput" => {
-            let em = words(n).chars().count() as f64 * env.font;
+            let em = (words(n).chars().count() + 1) as f64 * env.font;
             aligned(
                 r,
                 (em.max(r.width), (env.font * 1.5).max(r.height)),
