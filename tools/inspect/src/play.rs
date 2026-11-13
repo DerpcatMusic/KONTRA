@@ -524,9 +524,10 @@ fn thread_faults() -> (i64, i64) {
 
 /// Each script's runtime faults; the first out-of-range array by name.
 fn faults(all: &[kontra_engine::Faults], sources: &[Option<String>]) -> Vec<Value> {
-    let array = |slot: usize, base: u32, text: bool| -> Option<String> {
-        let source = sources.get(slot)?.as_ref()?;
-        let script = kontra_ksp::compile(source, &[]).ok()?;
+    let compiled: Vec<Option<kontra_ksp::Script>> = (sources.iter())
+        .map(|s| kontra_ksp::compile(s.as_deref()?, &[]).ok())
+        .collect();
+    let name = |script: &kontra_ksp::Script, cell: u32, text: bool| -> Option<String> {
         script.variables.iter().find_map(|v| {
             let (b, len, t) = match v.cells {
                 kontra_ksp::Cells::Int { base, len } | kontra_ksp::Cells::Real { base, len } => {
@@ -535,8 +536,26 @@ fn faults(all: &[kontra_engine::Faults], sources: &[Option<String>]) -> Vec<Valu
                 kontra_ksp::Cells::Text { base, len } => (base, len, true),
                 _ => return None,
             };
-            (t == text && (b..b + len.max(1)).contains(&base)).then(|| format!("{}[{len}]", v.name))
+            (t == text && (b..b + len.max(1)).contains(&cell)).then(|| format!("{}[{len}]", v.name))
         })
+    };
+    let array =
+        |slot: usize, base: u32, text: bool| name(compiled.get(slot)?.as_ref()?, base, text);
+    // The ops that pushed the divisor, their cells named.
+    let divisor = |slot: usize, pc: u32| -> Option<String> {
+        let script = compiled.get(slot)?.as_ref()?;
+        let ops: Vec<String> = (pc.saturating_sub(8)..pc)
+            .filter_map(|p| script.program.code.get(p as usize))
+            .map(|op| match op {
+                kontra_engine::Op::Load(n) => {
+                    name(script, *n, false).unwrap_or_else(|| format!("{op:?}"))
+                }
+                kontra_engine::Op::LoadAt { base, .. } => name(script, *base, false)
+                    .map_or_else(|| format!("{op:?}"), |n| format!("{n}[]")),
+                _ => format!("{op:?}"),
+            })
+            .collect();
+        Some(ops.join(" "))
     };
     (all.iter().enumerate())
         .filter(|(_, f)| {
@@ -554,6 +573,7 @@ fn faults(all: &[kontra_engine::Faults], sources: &[Option<String>]) -> Vec<Valu
             );
             json!({"slot": slot, "out_of_range": f.out_of_range, "first_out_of_range": first,
                 "divide_by_zero": f.divide_by_zero, "first_divide_by_zero": f.first_divide_by_zero,
+                "divisor": f.first_divide_by_zero.and_then(|pc| divisor(slot, pc)),
                 "stack_overflow": f.stack_overflow, "loop_limits": f.loop_limits,
                 "no_coroutine": f.no_coroutine, "bad_code": f.bad_code, "texts_cut": f.texts_cut})
         })
