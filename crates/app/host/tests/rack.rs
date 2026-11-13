@@ -1687,10 +1687,14 @@ fn a_state_with_hostile_values_is_made_safe() {
         part(3, "-2.0", 2)
     );
     let saved = Saved::parse(&json).unwrap();
-    let parts: Vec<_> = saved.parts.iter().map(|p| (p.part, p.gain, p.channel, p.output)).collect();
+    let parts: Vec<_> = saved
+        .parts
+        .iter()
+        .map(|p| (p.part, p.gain, p.channel, p.output))
+        .collect();
     assert_eq!(parts, vec![(0, 16.0, 0, 15), (3, 0.0, 2, 15)]);
     assert!(saved.parts.iter().all(|p| p.pan == 1.0));
-||||||| parent of 937792a11 (feat(host,ui): missing samples said once per folder, moved libraries offered and remembered)
+}
 
 /// A mono 16-bit WAV of a loud, one-sided tone, for an instrument to play.
 fn tone_wav() -> Vec<u8> {
