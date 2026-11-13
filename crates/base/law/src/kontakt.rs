@@ -12,6 +12,23 @@ pub const CONTROLLER_VOLUME_POWER: u8 = 1;
 /// Normalized voice source used by a volume route.
 pub const VOICE_VOLUME_POWER: u8 = 3;
 
+/// A time-stretching source's speed at knob 0, 0.05 .. 1 (Kontakt 8; v2
+/// tools/kontakt-oracle/tm_sweep.py, the stored speed after an init write).
+pub const STRETCH_SPEED: [f32; 21] = [
+    0., 0.115_737, 0.264_114, 0.431_853, 0.599_645, 0.748_098, 0.863_389, 0.940_286, 0.981_979,
+    0.997_732, 1., 1.002_273, 1.018_304, 1.062_935, 1.154_73, 1.321_269, 1.609_518, 2.107_464,
+    2.992_968, 4.653_069, 8.0,
+];
+
+/// A wavetable's inharmonic stretch `s` for the knob `a` (0..1), or 1 (plain
+/// harmonics) when it is off: partial n sits at f·(1 + (n − 1)·s),
+/// s = 2^(2a − 1). Measured on an oracle probe (a saw at Inharm 0, ¼, ½, ¾,
+/// 0.9, 1) within 0.05 %.
+#[must_use]
+pub fn inharmonic_stretch(a: Option<f32>) -> f32 {
+    a.map_or(1.0, |a| 2f32.powf(2.0 * a.clamp(0.0, 1.0) - 1.0))
+}
+
 /// Controller source taper in a volume route.
 pub const CONTROLLER_VOLUME: Law = Law::Power {
     lo: 0.0,

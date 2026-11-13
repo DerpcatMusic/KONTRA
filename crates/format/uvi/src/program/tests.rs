@@ -2244,3 +2244,24 @@ fn a_held_macro_on_an_inserts_freq_leaves_the_saved_value_unreported() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
 }
+
+#[test]
+fn a_second_order_digital_eq_peak_is_the_bell_and_a_steeper_one_is_reported() {
+    let eq = |slope: u8| {
+        let xml = format!(
+            r#"<Program Gain="1"><Inserts>
+              <DigitalEq Bypass="0" Enabled1="1" Type1="6" Slope1="{slope}" Freq1="1000" Gain1="3" Bandwidth1="1"/>
+            </Inserts></Program>"#
+        );
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap()
+    };
+    assert!(eq(1).diagnostics.is_empty(), "{:?}", eq(1).diagnostics);
+    let steep = eq(3);
+    assert!(
+        steep
+            .diagnostics
+            .iter()
+            .any(|d| d.feature == "DigitalEq band order")
+    );
+}

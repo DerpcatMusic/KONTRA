@@ -670,10 +670,9 @@ fn words_el(
                         model::Align::Center => Justify::Center,
                         model::Align::Right => Justify::End,
                     })
-                    .w(width)
+                    .w((width - inset.0 - inset.1).max(0.))
                     .h(line)
-                    .pad((inset, 0.))
-                    .at(0., top + n as f64 * line)
+                    .at(inset.0, top + n as f64 * line)
             })
             .collect::<Vec<_>>();
         return stack(lines).w(width).h(height).radius(0.).clip();
@@ -703,10 +702,9 @@ fn words_el(
         model::Align::Center => Justify::Center,
         model::Align::Right => Justify::End,
     })
-    .w(width)
+    .w((width - inset.0 - inset.1).max(0.))
     .h(line)
-    .pad((inset, 0.))
-    .at(0., top);
+    .at(inset.0, top);
     stack([el]).w(width).h(height).radius(0.).clip()
 }
 

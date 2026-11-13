@@ -21,8 +21,12 @@ fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
         return Err(io::ErrorKind::NotFound.into());
     }
     let level = sample.offset as f32 / 1000.0;
-    // "morph": a silent cycle, then one of a sine.
+    // "morph": a silent cycle, then one of a sine; "duo": harmonics 1 and 2 (½).
     let at = |i: u64| match sample.name.as_str() {
+        "duo" => {
+            let w = std::f32::consts::TAU * i as f32 / 2048.0;
+            w.sin() + 0.5 * (2.0 * w).sin()
+        }
         "morph" if i >= 2048 => (std::f32::consts::TAU * (i - 2048) as f32 / 2048.0).sin(),
         "morph" => 0.0,
         _ => level,
@@ -165,6 +169,7 @@ fn a_zone_moved_into_a_wavetable_group_gets_its_table() {
         phase: 0.0,
         phase_random: 0.0,
         gain: 1.0,
+        stretch: 1.0,
         warps: [ir::Warp::OFF; 2],
     };
     let mut bank = zone(1);
@@ -236,6 +241,7 @@ fn a_moved_zones_table_follows_its_group() {
         phase: 0.0,
         phase_random: 0.0,
         gain: 1.0,
+        stretch: 1.0,
         warps: [ir::Warp::OFF; 2],
     };
     let instrument = ir::Instrument {
@@ -309,6 +315,7 @@ fn a_velocity_route_moves_each_voices_table_position() {
                 phase: 0.0,
                 phase_random: 0.0,
                 gain: 1.0,
+                stretch: 1.0,
                 warps: [ir::Warp::OFF; 2],
             }),
             mods: vec![ir::Mod {
@@ -334,14 +341,52 @@ fn a_velocity_route_moves_each_voices_table_position() {
     e.process(&mut out, &[struck(69, 1.0), struck(81, 0.25)]);
     e.process(&mut out, &[]);
     // A4 and A5 (a table plays its cycle at A4), over 4800 frames: whole cycles of both.
-    let level = |hz: f32| {
-        let (mut c, mut s) = (0.0f32, 0.0f32);
-        for (i, f) in out.iter().enumerate() {
-            let w = std::f32::consts::TAU * hz * i as f32 / RATE as f32;
-            (c, s) = (c + f[0] * w.cos(), s + f[0] * w.sin());
-        }
-        2.0 * c.hypot(s) / out.len() as f32
-    };
-    let ratio = level(880.0) / level(440.0);
+    let ratio = level(&out, 880.0) / level(&out, 440.0);
     assert!((ratio - 0.25).abs() < 0.01, "{ratio}");
+}
+
+/// `out`'s level at `hz`, over its whole length.
+fn level(out: &[[f32; 2]], hz: f32) -> f32 {
+    let (mut c, mut s) = (0.0f32, 0.0f32);
+    for (i, f) in out.iter().enumerate() {
+        let w = std::f32::consts::TAU * hz * i as f32 / RATE as f32;
+        (c, s) = (c + f[0] * w.cos(), s + f[0] * w.sin());
+    }
+    2.0 * c.hypot(s) / out.len() as f32
+}
+
+/// A stretched read moves partial n to f·(1 + (n − 1)·stretch) at its own
+/// level, as Kontakt's Inharm does: a cycle of harmonics 1 and 2 (½) at
+/// stretch 2 plays A4 and 1320 Hz, ½ as loud, and nothing at 880 Hz.
+#[test]
+fn a_stretched_table_moves_its_partials() {
+    let mut table = sample("duo", 0);
+    table.frames = 2048;
+    let mut z = zone(0);
+    z.end = 2048;
+    let instrument = ir::Instrument {
+        samples: vec![table],
+        groups: vec![ir::Group {
+            wavetable: Some(ir::Wavetable {
+                position: 0.0,
+                phase: 0.0,
+                phase_random: 0.0,
+                gain: 1.0,
+                stretch: 2.0,
+                warps: [ir::Warp::OFF; 2],
+            }),
+            zones: vec![z],
+            ..ir::Group::DEFAULT
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; 4800];
+    e.process(&mut out, &[struck(69, 1.0)]);
+    e.process(&mut out, &[]);
+    let (first, octave, third) = (level(&out, 440.0), level(&out, 880.0), level(&out, 1320.0));
+    assert!((third / first - 0.5).abs() < 0.01, "{third} / {first}");
+    assert!(octave < 0.01 * first, "{octave}");
 }
