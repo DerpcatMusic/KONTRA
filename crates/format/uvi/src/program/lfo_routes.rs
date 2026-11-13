@@ -127,9 +127,10 @@ fn depth_route(program: Node, connection: Node, owner: &str) -> Option<Route> {
             Some(Timed::Steps(
                 lfo,
                 flip(vec![(1.0 - d) / 2.0, (1.0 + d) / 2.0]),
+                0.0,
             ))
         }
-        Some(Timed::Steps(lfo, table)) => Some(Timed::Steps(lfo, flip(table))),
+        Some(Timed::Steps(lfo, table, tau)) => Some(Timed::Steps(lfo, flip(table), tau)),
         Some(Timed::Mapped(mut t)) => {
             if t.table.is_empty() {
                 t.table = vec![0.0, 1.0];
@@ -140,6 +141,7 @@ fn depth_route(program: Node, connection: Node, owner: &str) -> Option<Route> {
         None if falling => Some(Timed::Mapped(ir::Transfer {
             source: r.source,
             table: vec![1.0, 0.0],
+            ..Default::default()
         })),
         None => None,
         Some(Timed::Envelope(_) | Timed::Rising(..) | Timed::Blend(_)) if falling => return None,

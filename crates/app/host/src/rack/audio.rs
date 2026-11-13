@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use kontra_engine::{Engine, Play, SampleTime, Timed};
+use kontra_engine::{Engine, Play, RenderMode, SampleTime, Timed};
 use kontra_protocol::{Meters, Slowest, Stats};
 
 use super::hold::{Held, Hold};
-use super::{Channels, Command, Event, HostPattern, Mix, OUTPUTS};
+use super::{Channels, Command, Event, HostPattern, MACROS, MacroTarget, Mix, OUTPUTS};
 use crate::persist::Capture;
 use kontra_protocol::MAX_PARTS;
 
@@ -74,6 +74,10 @@ pub struct RackAudio {
     /// The part whose capture is served first this block: it turns, so a
     /// busy part never keeps the budget from the others.
     capture_turn: usize,
+    /// Offline, voices wait for their pages.
+    mode: RenderMode,
+    /// What each host macro moves ([`Command::Macro`]).
+    macros: [Option<MacroTarget>; MACROS],
     /// This block's time in the script callbacks a control or widget move
     /// ran: script work, as a note's callbacks, not the commands' own.
     ui_scripts_ns: u64,
@@ -110,8 +114,46 @@ impl RackAudio {
             span_ns: 0,
             capturing: (0..MAX_PARTS).map(|_| None).collect(),
             capture_turn: 0,
+            mode: RenderMode::Live,
+            macros: [None; MACROS],
             ui_scripts_ns: 0,
         }
+    }
+
+    /// Whether the host renders offline (a bounce, faster or slower than
+    /// real time): then a voice waits for the sample pages it reads, deferred
+    /// heads among them, instead of playing silence. Never live: it blocks.
+    /// Fading engines too: one installed during a bounce must not keep
+    /// blocking once the host plays live.
+    pub fn set_render_mode(&mut self, mode: RenderMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        for p in self.parts.iter_mut().flatten() {
+            p.engine.set_render_mode(mode);
+            for f in p.outgoing.iter_mut().flatten() {
+                f.engine.set_render_mode(mode);
+            }
+        }
+    }
+
+    /// The host moved macro `n` to `normalized` (0..1): its control moves
+    /// now, between the frames before and after, and its script hears it.
+    /// False when the macro has no target here (the tick moves it).
+    pub fn move_macro(&mut self, n: usize, normalized: f64) -> bool {
+        self.apply_commands();
+        let Some(Some(t)) = self.macros.get(n).copied() else {
+            return false;
+        };
+        let Some(Some(p)) = self.parts.get_mut(t.part) else {
+            return false;
+        };
+        let start = std::time::Instant::now();
+        p.engine.set_click(t.slot, t.id, [false; 3], 0);
+        p.engine.set_control(t.slot, t.id, t.value(normalized));
+        self.ui_scripts_ns += ns_since(start);
+        true
     }
 
     /// Waits until the sample pages the parts asked for are read, so an
@@ -367,6 +409,8 @@ impl RackAudio {
                             let [a, b, c] = all;
                             (outgoing, gone) = ([a, b], c);
                         }
+                        let mut engine = engine;
+                        engine.set_render_mode(self.mode);
                         *slot = Some(Playing {
                             engine,
                             mix,
@@ -478,6 +522,11 @@ impl RackAudio {
                         let longest = p.held.hold.max().max(hold.max());
                         p.release = p.release.max(Some(longest));
                         p.held.hold = hold;
+                    }
+                }
+                Command::Macro { n, target } => {
+                    if let Some(slot) = self.macros.get_mut(n) {
+                        *slot = target;
                     }
                 }
                 Command::Master(gain) => self.master = gain,

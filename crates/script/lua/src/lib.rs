@@ -685,6 +685,8 @@ mod tests {
             local t = Table('t', 4, 0.5, 0, 1)
             t:setValue(0, 9) t:setValue(5, 9) t:setValue(2, 0.75)
             assert(t:getValue(0) == 0.5 and t:getValue(5) == 0.5 and t:getValue(2) == 0.75)
+            t:setRange(-1, 1) assert(t.min == -1 and t.max == 1 and t:getValue(0) == 0.5)
+            t:setRange(0, 0.25) assert(t:getValue(0) == 0.25)
             local info = Program.layers[1].keygroups[1].oscillators[1].sampleInfo
             assert(info.name == 'a-vel3.flac' and info.basenote == 49)";
         let modules = [("__program.lua".to_string(), tree.to_string())];

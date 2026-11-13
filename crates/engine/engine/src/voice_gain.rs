@@ -291,6 +291,12 @@ impl Engine {
                 .envelope(n, age, || self.envelope_value(zone, n, age)),
             ir::Source::Lfo(n) => self.memo.lfo(n, age, || self.lfo_value(zone, n, note, age)),
             ir::Source::Velocity => Some(note.velocity as f32),
+            // A note's own brightness is its controller 74 (MPE's timbre).
+            ir::Source::Controller(74) | ir::Source::ControllerFrom { cc: 74, .. }
+                if note.expression_brightness.is_some() =>
+            {
+                note.expression_brightness
+            }
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
             ir::Source::ControllerFrom { cc, start } => {
                 let v = if self.behaviour.cc_arrived(channel, cc) {
@@ -301,6 +307,9 @@ impl Engine {
                 Some(f32::from(v) / 127.0)
             }
             ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
+            ir::Source::Pressure => {
+                Some((note.expression_pressure).unwrap_or_else(|| self.behaviour.pressure(channel)))
+            }
             ir::Source::Key => Some(f32::from(note.key) / 127.0),
             ir::Source::Constant => Some(1.0),
             ir::Source::Script(index) => Some(
@@ -326,6 +335,26 @@ impl Engine {
         age: Age,
         shaper: bool,
     ) -> Option<f32> {
+        // A smoothed step wave reads its own past, so the glide follows the
+        // tempo through the LFO's rate with no state.
+        if t.smooth_s > 0.0
+            && let ir::Source::Lfo(n) = t.source
+        {
+            let scale = if shaper {
+                self.scale(zone, t.source, note, age)
+            } else {
+                1.0
+            };
+            return t.smoothed(|back| {
+                let past = Age {
+                    held: age.held - back,
+                    now: age.now - back,
+                    ..age
+                };
+                let x = self.lfo_value(zone, n, note, past)? * scale;
+                Some(t.apply((x + 1.0) / 2.0))
+            });
+        }
         let x = match t.source {
             ir::Source::Shaped(_) => return None,
             ir::Source::Blend(_) if !shaper => return None,

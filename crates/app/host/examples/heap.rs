@@ -16,7 +16,12 @@ use kontra_stream::{Store, StoreConfig};
 
 const MIN: usize = 512;
 const FRAMES: usize = 12;
-const PHASES: [&str; 3] = ["translate", "prepare", "engine"];
+const STAGES: [&str; 3] = ["translate", "prepare", "engine"];
+
+/// Phase `p` is stage `p % 3` of instance `p / 3`.
+fn phase_name(p: usize) -> String {
+    format!("#{} {}", p / 3 + 1, STAGES.get(p % 3).copied().unwrap_or("?"))
+}
 
 static PHASE: AtomicUsize = AtomicUsize::new(0);
 static TOTAL: AtomicUsize = AtomicUsize::new(0);
@@ -46,8 +51,10 @@ fn site() -> Site {
     unsafe {
         backtrace::trace_unsynchronized(|f| {
             skip += 1;
-            if skip > 3 && n < FRAMES {
-                frames[n] = f.ip() as usize;
+            if skip > 3
+                && let Some(slot) = frames.get_mut(n)
+            {
+                *slot = f.ip() as usize;
                 n += 1;
             }
             n < FRAMES
@@ -139,7 +146,7 @@ fn names(frames: &[usize; FRAMES]) -> String {
             let name = s.name().map(|n| n.to_string()).unwrap_or_default();
             let name = name.rsplit_once("::h").map_or(name.as_str(), |(a, _)| a);
             let skip = ["alloc::", "core::", "std::", "hashbrown", "<alloc", "heap::"];
-            if out.len() < 3 && !name.is_empty() && !skip.iter().any(|p| name.starts_with(p)) {
+            if out.len() < 6 && !name.is_empty() && !skip.iter().any(|p| name.starts_with(p)) {
                 let at = s.filename().map_or(String::new(), |f| {
                     format!(" ({}:{})", f.display(), s.lineno().unwrap_or(0))
                 });
@@ -150,7 +157,7 @@ fn names(frames: &[usize; FRAMES]) -> String {
     out.join(" < ")
 }
 
-fn report(label: &str) {
+fn report(label: &str, from: usize) {
     // Reporting allocates: keep it out of the counts, and out of the lock.
     BUSY.with(|b| b.set(true));
     let Ok(mut guard) = LIVE.lock() else {
@@ -159,7 +166,7 @@ fn report(label: &str) {
     let Some(live) = guard.as_mut() else {
         return;
     };
-    let mut by_phase = [0usize; PHASES.len()];
+    let mut by_phase = [0usize; 12];
     for ((phase, _), bytes) in &live.sites {
         if let Some(p) = by_phase.get_mut(*phase) {
             *p += bytes;
@@ -171,14 +178,15 @@ fn report(label: &str) {
         mb(TOTAL.load(Ordering::Relaxed)),
         anon_mb(),
         mb(tracked),
-        PHASES
+        by_phase
             .iter()
-            .zip(by_phase)
-            .map(|(n, b)| format!("{n} {:.1}", mb(b)))
+            .enumerate()
+            .filter(|(_, b)| **b > 0)
+            .map(|(p, b)| format!("{} {:.1}", phase_name(p), mb(*b)))
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let mut top: Vec<(&Site, &usize)> = live.sites.iter().collect();
+    let mut top: Vec<(&Site, &usize)> = live.sites.iter().filter(|(s, _)| s.0 >= from).collect();
     top.sort_by_key(|(_, b)| std::cmp::Reverse(**b));
     let top: Vec<(Site, usize)> = top.into_iter().take(10).map(|(s, b)| (*s, *b)).collect();
     // Resolving symbols allocates: do it outside the lock and untracked.
@@ -187,29 +195,44 @@ fn report(label: &str) {
         println!(
             "    {:7.1} MB [{}] {}",
             mb(bytes),
-            PHASES.get(phase).copied().unwrap_or("?"),
+            phase_name(phase),
             names(&frames)
         );
     }
     BUSY.with(|b| b.set(false));
 }
 
+/// Each file is one plugin instance in this process: its own store (sharing
+/// pinned pages with the others), heads deferred then read, every instance
+/// kept alive. The top sites listed are those of the latest instance.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    for path in std::env::args().skip(1) {
+    let mut alive = Vec::new();
+    TRACKING.store(1, Ordering::Relaxed);
+    for (n, path) in std::env::args().skip(1).enumerate() {
         println!("{path}");
-        TRACKING.store(1, Ordering::Relaxed);
-        PHASE.store(0, Ordering::Relaxed);
+        let first = 3 * n;
+        PHASE.store(first, Ordering::Relaxed);
         let mut store = Store::new(StoreConfig::DEFAULT)?;
+        store.share_pages_in_process();
+        store.defer_heads(true);
         let ir = kontra_host::instrument::read(path.as_ref())?;
-        report("after translate");
-        PHASE.store(1, Ordering::Relaxed);
+        report("after translate", first);
+        PHASE.store(first + 1, Ordering::Relaxed);
         let loaded = kontra_host::instrument::build(ir, 48_000, &mut store);
-        report("after prepare");
-        PHASE.store(2, Ordering::Relaxed);
+        println!(
+            "  {} zones of {} bytes each",
+            loaded.plan.zones.len(),
+            std::mem::size_of::<kontra_engine::Zone>(),
+        );
+        if let Some(heads) = store.take_heads() {
+            heads.load(8);
+        }
+        report("after prepare", first);
+        PHASE.store(first + 2, Ordering::Relaxed);
         let engine = Engine::new(std::sync::Arc::new(loaded.plan), store.client(), 48_000);
-        report("after engine");
-        drop(engine);
-        TRACKING.store(0, Ordering::Relaxed);
+        report("after engine", first);
+        alive.push((store, engine));
     }
+    TRACKING.store(0, Ordering::Relaxed);
     Ok(())
 }

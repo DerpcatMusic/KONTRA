@@ -118,7 +118,11 @@ fn run_events(
         Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 262144)
     };
     // Lean timing runs as the host does: no waiting for sample data inside a block.
-    engine.set_offline_wait(!lean);
+    engine.set_render_mode(if lean {
+        kontra_engine::RenderMode::Live
+    } else {
+        kontra_engine::RenderMode::Offline
+    });
     let mut at = 0u64;
     let mut next = 0usize;
     let mut next_tail = last_off;
@@ -343,15 +347,35 @@ fn run_events(
         let text: String = block_times
             .iter()
             .zip(&extras)
-            .map(|(t, e)| format!("{} {} {} {} {} {} {} {} {} {} {}\n", t.1, t.0, e.0, e.1, e.2, e.3, e.4.runs, e.4.run_ns, e.4.allocs, e.4.gc_steps, e.4.gc_ns))
+            .map(|(t, e)| {
+                format!(
+                    "{} {} {} {} {} {} {} {} {} {} {}\n",
+                    t.1,
+                    t.0,
+                    e.0,
+                    e.1,
+                    e.2,
+                    e.3,
+                    e.4.runs,
+                    e.4.run_ns,
+                    e.4.allocs,
+                    e.4.gc_steps,
+                    e.4.gc_ns
+                )
+            })
             .collect();
         std::fs::write(path, text)?;
     }
     let timing = block_timing(&block_times, block);
     // Load window: the first second. Play: everything after it.
-    let (load_times, play_times): (Vec<_>, Vec<_>) =
-        block_times.iter().copied().partition(|t| t.1 < u64::from(RATE));
-    let (load_timing, play_timing) = (block_timing(&load_times, block), block_timing(&play_times, block));
+    let (load_times, play_times): (Vec<_>, Vec<_>) = block_times
+        .iter()
+        .copied()
+        .partition(|t| t.1 < u64::from(RATE));
+    let (load_timing, play_timing) = (
+        block_timing(&load_times, block),
+        block_timing(&play_times, block),
+    );
     let stats = engine.stats();
     let wait_timeouts = engine.offline_wait_timeouts() + settle_timeouts;
     let stream_stats = stream.stats();
@@ -432,7 +456,7 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "unhandled_actions":engine.unhandled_actions().iter().map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "unanswered_pars":engine.unanswered_pars().iter().take(40).map(|(p, n)| json!([p, n])).collect::<Vec<_>>(), "action_calls":engine.action_calls().iter().take(12).map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
 }

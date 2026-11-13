@@ -455,6 +455,51 @@ fn a_script_switch_with_no_picture_draws_kontakts_stock_button() {
     assert!(shade(1).is_some_and(|p| p[0] > 0xe0));
 }
 
+/// A switch picture of any frame count sits one pixel right and down in its
+/// face, drawn whole (Kontakt 8, probed at 100 % and 150 %).
+#[test]
+fn a_switch_picture_sits_one_pixel_in() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    let mut face = Page {
+        size: Size {
+            width: 8.,
+            height: 4.,
+        },
+        ..Page::default()
+    };
+    face.background.color = Some(Rgba::rgb(0x808080));
+    tree.pages.push(face);
+    tree.assets.push(Asset {
+        path: "sw.png".into(),
+        kind: AssetKind::Image(ImageMeta {
+            frames: 2,
+            size: Some(Size {
+                width: 4.,
+                height: 2.,
+            }),
+            ..ImageMeta::default()
+        }),
+    });
+    let mut switch = Widget::new("$s", PageRef(0), Rect::new(0, 0, 5, 3), Kind::Switch);
+    switch.images.push(ImageUse::new(AssetRef(0), Role::Strip));
+    switch.value = Some(model::Value::Integer(0));
+    tree.widgets.push(switch);
+    let red = png(4, 4, [255, 0, 0, 255].repeat(16).as_slice());
+    let mut pictures = Pictures::new(Box::new(move |p| (p == "sw.png").then(|| red.clone())));
+    let mut ui = crate::ui();
+    settle(&mut ui, &tree, &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let px = paint(&mut ui, el, 8, 4);
+    let at = |x: usize, y: usize| px.get(y * 8 + x).copied();
+    assert_eq!(at(0, 0), Some([128, 128, 128, 255]), "the corner is page");
+    assert_eq!(at(1, 1), Some([255, 0, 0, 255]), "the picture starts 1 in");
+    assert_eq!(at(4, 2), Some([255, 0, 0, 255]), "and runs its whole 4 x 2");
+    assert_eq!(at(5, 2), Some([128, 128, 128, 255]), "the control clips it");
+}
+
 /// A label in a library picture font draws that font's glyph pixels, not
 /// an outline face (Shreddage's RoadGeek FX labels).
 #[test]

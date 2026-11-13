@@ -13,7 +13,7 @@ use crate::persist::Capture;
 use crate::view::Interfaces;
 pub(crate) use files::DiskFiles;
 pub use files::user_saves;
-pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan, ir};
+pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan, RenderMode, ir};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model::UiModifiers;
@@ -23,6 +23,7 @@ mod audio;
 mod command;
 mod files;
 mod hold;
+mod macros;
 mod named;
 mod native;
 mod picks;
@@ -32,6 +33,7 @@ mod trim;
 pub use audio::RackAudio;
 pub use command::Command;
 pub use hold::{HOLD_STEPS, Hold};
+pub use macros::{MACROS, MacroTarget, STEPS, Scale};
 
 /// A part's attack delays as auto-align measured them, by velocity range
 /// in rising order: its top velocity, then how late a first note and a
@@ -768,6 +770,12 @@ impl Rack {
                 self.send(Command::Mix(part, mix));
             }
         }
+    }
+
+    /// What host macro `n` moves on the audio side at its frame; None
+    /// leaves it to the control tick.
+    pub fn set_macro(&mut self, n: usize, target: Option<MacroTarget>) {
+        self.send(Command::Macro { n, target });
     }
 
     fn send(&mut self, command: Command) {

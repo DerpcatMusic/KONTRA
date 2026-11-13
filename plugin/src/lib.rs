@@ -11,10 +11,11 @@
 mod align;
 mod editor;
 mod folder;
-mod frames;
 mod follow;
+mod frames;
 mod input;
 mod look;
+mod macros;
 #[cfg(test)]
 mod playtest;
 mod readout;
@@ -25,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 use std::time::Duration;
 
-use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
+use kontra_host::rack::{Event, Rack, RackAudio, RenderMode, Store, StoreConfig};
 use kontra_host::state::Saved;
 use kontra_host::view::Interfaces;
 use moose::core::LosslessEventRef;
@@ -64,12 +65,33 @@ pub struct KontraParams {
     /// reports the latest part's attack delay as the plugin's latency.
     #[param(id = 1, name = "Auto-align", default = false)]
     pub align: BoolParam,
+    /// Host automation of panel controls, each assigned when the player
+    /// first moves one ([`macros`]).
+    #[param(id = 2, name = "Macro 1", range = "linear(0, 1)", default = 0.0)]
+    pub macro_1: FloatParam,
+    #[param(id = 3, name = "Macro 2", range = "linear(0, 1)", default = 0.0)]
+    pub macro_2: FloatParam,
+    #[param(id = 4, name = "Macro 3", range = "linear(0, 1)", default = 0.0)]
+    pub macro_3: FloatParam,
+    #[param(id = 5, name = "Macro 4", range = "linear(0, 1)", default = 0.0)]
+    pub macro_4: FloatParam,
+    #[param(id = 6, name = "Macro 5", range = "linear(0, 1)", default = 0.0)]
+    pub macro_5: FloatParam,
+    #[param(id = 7, name = "Macro 6", range = "linear(0, 1)", default = 0.0)]
+    pub macro_6: FloatParam,
+    #[param(id = 8, name = "Macro 7", range = "linear(0, 1)", default = 0.0)]
+    pub macro_7: FloatParam,
+    #[param(id = 9, name = "Macro 8", range = "linear(0, 1)", default = 0.0)]
+    pub macro_8: FloatParam,
     /// The rack as JSON ([`Saved`]): parts, presets, mix.
     #[persist = "rack"]
     pub saved: RwLock<String>,
     /// The editor's view as JSON ([`kontra_host::state::SavedView`]).
     #[persist = "editor"]
     pub look: RwLock<String>,
+    /// Which panel control each macro moves ([`macros::write`]).
+    #[persist = "macros"]
+    pub macros: RwLock<String>,
     #[skip]
     pub shared: Shared,
     #[meter]
@@ -82,6 +104,11 @@ use KontraParamsParamId as P;
 #[derive(Default)]
 pub struct Shared {
     rack: Mutex<Option<Rack>>,
+    /// Each macro's host value as last applied to its control, as f64
+    /// bits: the audio thread applies a host's in-block moves too.
+    macro_values: [AtomicU64; macros::COUNT],
+    /// What the audio side was last told each macro moves.
+    macro_targets: Mutex<[Option<kontra_host::rack::MacroTarget>; macros::COUNT]>,
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
@@ -251,6 +278,8 @@ pub struct Dsp {
     input: Vec<(u32, Event)>,
     /// This chunk's share of `input`.
     chunk: Vec<(u32, Event)>,
+    /// This block's host macro moves: (frame, macro, host value).
+    moves: Vec<(u32, usize, f64)>,
     gain: f32,
     rate: f64,
     until_tick: usize,
@@ -341,6 +370,23 @@ impl BackgroundTask for Tick {
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.show_interfaces(interfaces);
+        // The host's automation of a macro moves its control, as the
+        // player's move does.
+        if !p.shared.loading() {
+            macros::release(p, |n| {
+                let part = rack.parts().get(n).and_then(Option::as_ref);
+                part.map(|p| macros::instrument(p.path.as_deref()))
+            });
+        }
+        macros::send_targets(p, rack);
+        for (part, name, value) in macros::moved(p) {
+            let tree = rack.parts().get(part).and_then(Option::as_ref);
+            let tree = tree.and_then(|p| p.view.as_ref()).map(|v| v.tree());
+            let widget = tree.and_then(|t| t.widgets.iter().position(|w| w.name == name));
+            if let Some(widget) = widget {
+                rack.control(part, widget, None, value, Default::default());
+            }
+        }
         // The looks the scripts sent (a native_ui rebuild among them).
         frames::time("tick", || rack.tick());
         follow::follow(rack, browser);
@@ -401,6 +447,7 @@ impl PluginLogic for Kontra {
         s.gain = db_to_linear(p.volume.value());
         s.input = Vec::with_capacity(EVENTS);
         s.chunk = Vec::with_capacity(EVENTS);
+        s.moves = Vec::with_capacity(EVENTS);
         s.until_tick = 0;
         let rate = c.sample_rate.round() as u32;
         let Ok(mut store) = Store::new(StoreConfig::DEFAULT) else {
@@ -451,6 +498,12 @@ impl PluginLogic for Kontra {
         };
         s.latency = p.shared.latency.load(Ordering::Relaxed);
         s.input.clear();
+        s.moves.clear();
+        audio.set_render_mode(if cx.process_mode.is_offline() {
+            RenderMode::Offline
+        } else {
+            RenderMode::Live
+        });
         // VST3 hosts give the tempo only here; CLAP may also send events.
         audio.set_tempo(cx.transport.tempo as f32);
         let t = cx.transport;
@@ -474,7 +527,13 @@ impl PluginLogic for Kontra {
                     e
                 }
             };
-            if let EventBody::Transport(t) = e.body {
+            if let EventBody::ParamChange { id, value } = e.body
+                && let Some(n) = macros::index(id)
+            {
+                if s.moves.len() < s.moves.capacity() {
+                    s.moves.push((e.sample_offset, n, value));
+                }
+            } else if let EventBody::Transport(t) = e.body {
                 audio.set_tempo(t.tempo as f32);
                 audio.set_transport(
                     t.playing,
@@ -496,9 +555,20 @@ impl PluginLogic for Kontra {
         }
         // Rendered in chunks, so a long offline block never reads past what
         // the engine looked ahead for.
+        // Host macro moves split it too: each applies at its frame.
         let chunk = CHUNK.min(audio.max_block()).max(1);
-        for start in (0..frames).step_by(chunk) {
-            let len = chunk.min(frames - start);
+        let mut moves = s.moves.iter().peekable();
+        let mut start = 0;
+        while start < frames {
+            while let Some(&(_, n, value)) = moves.next_if(|m| m.0 as usize <= start) {
+                if audio.move_macro(n, value)
+                    && let Some(last) = p.shared.macro_values.get(n)
+                {
+                    last.store(value.to_bits(), Ordering::Relaxed);
+                }
+            }
+            let next = moves.peek().map_or(frames, |m| (m.0 as usize).min(frames));
+            let len = chunk.min(frames - start).min(next - start);
             let end = (start + len) as u32;
             s.chunk.clear();
             s.chunk.extend(
@@ -540,6 +610,7 @@ impl PluginLogic for Kontra {
                     peak = peak.max(o.abs());
                 }
             }
+            start += len;
         }
         s.gain = target;
         cx.set_meter(&p.level, peak.min(1.0));
