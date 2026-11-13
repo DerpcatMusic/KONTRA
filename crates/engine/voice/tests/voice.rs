@@ -3,7 +3,7 @@ use std::sync::Arc;
 use kontra_stream::{
     BlobKey, Encoding, MemSource, PAGE_FRAMES, SampleFmt, Store, StoreConfig, StreamClient,
 };
-use kontra_voice::{Ahdsr, FadeTarget, KeyUp, Loop, Region, Voice, VoiceStart};
+use kontra_voice::{Ahdsr, FadeTarget, KeyUp, Loop, Region, Scratch, Voice, VoiceStart};
 
 const FMT: SampleFmt = SampleFmt {
     encoding: Encoding::F32,
@@ -52,7 +52,7 @@ fn start(region: Region, step: f64, envelope: Ahdsr) -> VoiceStart {
 fn render(voice: &mut Voice, client: &StreamClient, frames: usize) -> Vec<f32> {
     let mut out = vec![[0.0; 2]; frames];
     for (i, block) in out.chunks_mut(128).enumerate() {
-        voice.render(client, (i * 128) as u64, block);
+        voice.render(&mut Scratch::allocate(), client, (i * 128) as u64, block);
     }
     out.iter().map(|f| f[0]).collect()
 }
@@ -104,7 +104,7 @@ fn a_page_not_in_memory_is_silent_and_the_cursor_keeps_time() {
         Ahdsr::GATE,
     ));
     let mut out = vec![[0.0; 2]; 2 * PAGE_FRAMES as usize];
-    voice.render(&client, 0, &mut out);
+    voice.render(&mut Scratch::allocate(), &client, 0, &mut out);
     assert_eq!(out[10][0], 10.0 / 65_536.0);
     assert!(voice.missing_frames() > 0);
     // Late audio never shifts the timeline: the cursor is exactly where the clock is.
@@ -326,9 +326,9 @@ fn an_until_release_loop_repeats_until_release_then_plays_on() {
         },
     ));
     let mut out = vec![[0.0; 2]; 1400];
-    voice.render(&client, 0, &mut out[..500]);
+    voice.render(&mut Scratch::allocate(), &client, 0, &mut out[..500]);
     voice.release();
-    voice.render(&client, 500, &mut out[500..]);
+    voice.render(&mut Scratch::allocate(), &client, 500, &mut out[500..]);
     let out: Vec<f32> = out.iter().map(|f| f[0]).collect();
     // Values are checked to 0.2%: the release fade scales them slightly.
     let near = |got: f32, want: f32| assert!((got - want).abs() <= want * 0.002, "{got} vs {want}");
@@ -425,11 +425,11 @@ fn trace_peak_is_isolated_from_existing_mix_and_resets_each_render() {
         Ahdsr::GATE,
     ));
     let mut block = [[1.0; 2]; 128];
-    voice.render(&client, 0, &mut block);
+    voice.render(&mut Scratch::allocate(), &client, 0, &mut block);
     let expected = 127.0 / 65_536.0;
     assert!((voice.last_peak() - expected).abs() < 1e-7);
     let mut next = [[0.0; 2]; 128];
-    voice.render(&client, 128, &mut next);
+    voice.render(&mut Scratch::allocate(), &client, 128, &mut next);
     assert!((voice.last_peak() - 255.0 / 65_536.0).abs() < 1e-7);
 }
 
@@ -444,7 +444,7 @@ fn offline_render_waits_for_the_interpolation_page_at_the_preload_boundary() {
     voice.set_offline_wait(true);
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let mut out = [[0.0; 2]; 128];
-    voice.render(&client, 0, &mut out);
+    voice.render(&mut Scratch::allocate(), &client, 0, &mut out);
     assert_eq!(voice.offline_wait_timeouts(), 0);
     assert_eq!(voice.missing_frames(), 0);
     for (n, frame) in out.iter().enumerate() {
@@ -484,7 +484,7 @@ fn offline_wait_reports_a_failed_page_as_missing() {
     voice.set_offline_wait(true);
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let mut out = [[0.0; 2]; 128];
-    voice.render(&client, 0, &mut out);
+    voice.render(&mut Scratch::allocate(), &client, 0, &mut out);
     assert!(voice.missing_frames() > 0);
     assert!(client.stats().read_errors > 0);
 }

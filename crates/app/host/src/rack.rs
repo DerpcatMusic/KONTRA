@@ -28,6 +28,7 @@ mod native;
 mod picks;
 mod recall;
 mod requests;
+mod trim;
 pub use audio::RackAudio;
 pub use command::Command;
 pub use hold::{HOLD_STEPS, Hold};
@@ -370,6 +371,9 @@ impl Rack {
         let slots = instrument.scripts.iter().map(|s| s.slot).collect();
         let waves = crate::ui::Waves::of(&instrument);
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+        // The translated program is gone: its pages go back to the system
+        // instead of staying resident as the allocator's free lists.
+        trim::release_freed_memory();
         // A store set to defer heads read them here, behind the part.
         if let Some(heads) = self.store.take_heads() {
             let lanes = std::thread::available_parallelism().map_or(4, |n| n.get() * 3);
@@ -497,6 +501,7 @@ impl Rack {
         let Some(view) = p.view.as_mut() else {
             return;
         };
+        p.named.touch();
         if let Some(set) = view.tap(widget, value) {
             let vars = &p.script.vars;
             p.modified |= set.iter().any(|&(slot, id, _)| saves(vars, slot, id));
@@ -540,6 +545,7 @@ impl Rack {
             return;
         };
         p.modified = true;
+        p.named.touch();
         let Some(view) = p.view.as_ref() else {
             return;
         };
@@ -631,7 +637,13 @@ impl Rack {
     /// Frees what the audio thread let go of and resends refused commands.
     /// Call it from the control thread now and then.
     pub fn tick(&mut self) {
-        while self.channels.retired.recv().is_some() {}
+        let mut dropped = false;
+        while self.channels.retired.recv().is_some() {
+            dropped = true;
+        }
+        if dropped {
+            trim::release_freed_memory();
+        }
         while self.channels.units.recv().is_some() {}
         while self.channels.sounds.recv().is_some() {}
         while self.channels.typed.recv().is_some() {}

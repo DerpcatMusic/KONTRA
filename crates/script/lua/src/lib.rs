@@ -27,6 +27,9 @@ mod ui;
 
 pub use ui::{Ui, Widget};
 
+// With `system-allocator` (the host's heap-profile example) the binary brings
+// its own measuring allocator and Luau uses the system heap.
+#[cfg(not(feature = "system-allocator"))]
 #[global_allocator]
 static ROUTED: alloc::Routed = alloc::Routed;
 

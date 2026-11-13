@@ -38,8 +38,10 @@ impl ZoneIndex {
         let listed = total <= MAX_LISTED;
         let mut flat = Vec::new();
         if listed {
-            for k in 0..128 {
-                starts[k + 1] += starts[k];
+            let mut run = 0;
+            for n in &mut starts {
+                run += *n;
+                *n = run;
             }
             flat = vec![0u32; total];
             let mut fill = starts;

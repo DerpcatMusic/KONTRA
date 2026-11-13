@@ -320,6 +320,30 @@ fn at_pedal_up_a_script_sees_the_keys_it_held_as_up() {
     assert_eq!(e.active_voices(), 0);
 }
 
+/// Kontakt runs `on release` at the key-up and again at pedal-up for each
+/// note the pedal held, after `on controller` (oracle, sine probe, Kontakt 8:
+/// "release,60,cc64=127" at the key-up, "release,60,cc64=0" at pedal-up).
+#[test]
+fn pedal_up_runs_on_release_again_for_the_notes_it_held() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(
+        &store,
+        Vec::new(),
+        "on init
+            declare $n
+        end on
+        on release
+            inc($n)
+            message($n & \",\" & %CC[64])
+        end on",
+    );
+    level(&mut e, &[cc(64, 127), on(60)]);
+    level(&mut e, &[off(60)]);
+    assert_eq!(e.last_message(), "1,127");
+    level(&mut e, &[cc(64, 0)]);
+    assert_eq!(e.last_message(), "2,0");
+}
+
 /// `%CC_TOUCHED` marks the controller that changed: Pacific releases its
 /// pedalled notes only when CC 64 is the one (it read 0 before, unanswered).
 #[test]
@@ -2656,6 +2680,7 @@ fn a_script_loads_a_library_response_into_a_convolution() {
             cuts: None,
             envelope: None,
             mix: None,
+            size: [1.0, 1.0],
         },
     )];
     plan.responses = vec![(
@@ -2760,6 +2785,7 @@ fn a_scripts_convolution_predelay_prepares_its_response_again() {
         cuts: None,
         envelope: None,
         mix: None,
+        size: [1.0, 1.0],
     };
     plan.impulse_laws = vec![("half".into(), law)];
     plan.responses = vec![(

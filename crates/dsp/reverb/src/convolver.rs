@@ -12,7 +12,7 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 const HEAD: usize = 64;
 /// Each stage's block size and where its stretch of the response ends;
 /// it starts where the one before ends. The last runs to the end.
-const STAGES: [(usize, usize); 4] = [(64, 512), (256, 2048), (1024, 8192), (8192, usize::MAX)];
+const STAGES: [(usize, usize); 4] = [(64, 512), (256, 2048), (1024, 8192), (2048, usize::MAX)];
 /// Inputs below this magnitude count as silence.
 const SILENT: f32 = 1e-10;
 
@@ -45,10 +45,19 @@ impl Split {
         self.im.fill(0.0);
     }
 
-    /// Adds `h · x`.
-    fn mac(&mut self, h: &Self, x: &Self) {
-        let acc = self.re.iter_mut().zip(&mut self.im);
-        let hx = h.re.iter().zip(&h.im).zip(x.re.iter().zip(&x.im));
+    /// Adds `h · x` over the bins in `r`.
+    fn mac(&mut self, h: &Self, x: &Self, r: std::ops::Range<usize>) {
+        let (Some(re), Some(im)) = (self.re.get_mut(r.clone()), self.im.get_mut(r.clone())) else {
+            return;
+        };
+        let (Some((hre, him)), Some((xre, xim))) = (
+            h.re.get(r.clone()).zip(h.im.get(r.clone())),
+            x.re.get(r.clone()).zip(x.im.get(r)),
+        ) else {
+            return;
+        };
+        let acc = re.iter_mut().zip(im);
+        let hx = hre.iter().zip(him).zip(xre.iter().zip(xim));
         for ((ar, ai), ((hr, hi), (xr, xi))) in acc.zip(hx) {
             *ar += hr * xr - hi * xi;
             *ai += hr * xi + hi * xr;
@@ -70,6 +79,9 @@ struct Stage {
     slots: Vec<Split>,
     slot: usize,
     acc: Split,
+    /// Bins of `acc` that already hold the older partitions' products: those
+    /// need no newer input, so they are summed as the block fills.
+    summed: usize,
     /// The transforms' side of `acc` and the slots.
     spec: Spectrum,
     fft_in: Vec<f32>,
@@ -120,6 +132,7 @@ impl Stage {
             slots: vec![Split::of(&fwd.make_output_vec()); count],
             slot: 0,
             acc: Split::of(&fwd.make_output_vec()),
+            summed: 0,
             spec: fwd.make_output_vec(),
             fft_in,
             fwd_scratch: scratch,
@@ -149,6 +162,7 @@ impl Stage {
                 *o += t;
             }
             (self.fill, done) = (to, done + take);
+            self.sum_to(self.acc.re.len() * self.fill / self.block);
             if self.fill == self.block {
                 self.fill = 0;
                 self.block_done();
@@ -156,13 +170,32 @@ impl Stage {
         }
     }
 
+    /// Sums the products of every partition older than the block being
+    /// filled (they read only finished blocks) for the bins below `upto`.
+    fn sum_to(&mut self, upto: usize) {
+        if upto <= self.summed {
+            return;
+        }
+        let n = self.slots.len();
+        let next = (self.slot + 1) % n;
+        for (p, h) in self.parts.iter().filter(|(p, _)| *p > 0) {
+            if let Some(x) = self.slots.get((next + n - p) % n) {
+                self.acc.mac(h, x, self.summed..upto);
+            }
+        }
+        self.summed = upto;
+    }
+
     /// Turns the completed block into the output for the next block.
-    // ponytail: a long stage does all its work on the frame its block
-    // completes; spread it over the block if that spike ever misses a deadline.
+    // ponytail: the older partitions' sum is spread over the block (above);
+    // the transforms and the newest partition still land on its last frame.
+    // The newest partition is added last, so a stage that has one sums in a
+    // different order than a single pass (rounding only).
     fn block_done(&mut self) {
         for (d, s) in self.fft_in.iter_mut().zip(&self.buf) {
             *d = *s;
         }
+        self.sum_to(self.acc.re.len());
         let n = self.slots.len();
         self.slot = (self.slot + 1) % n;
         let _ =
@@ -171,11 +204,10 @@ impl Stage {
         if let Some(x) = self.slots.get_mut(self.slot) {
             x.set(&self.spec);
         }
-
-        self.acc.clear();
-        for (p, h) in &self.parts {
-            if let Some(x) = self.slots.get((self.slot + n - p) % n) {
-                self.acc.mac(h, x);
+        let bins = self.acc.re.len();
+        for (p, h) in self.parts.iter().take(1).filter(|(p, _)| *p == 0) {
+            if let Some(x) = self.slots.get(self.slot) {
+                self.acc.mac(h, x, 0..bins);
             }
         }
         for (c, (re, im)) in self
@@ -205,12 +237,16 @@ impl Stage {
             *t = v * scale;
         }
 
+        self.acc.clear();
+        self.summed = 0;
         self.buf.rotate_left(self.block);
     }
 
     fn reset(&mut self) {
         self.fill = 0;
         self.slot = 0;
+        self.acc.clear();
+        self.summed = 0;
         self.buf.fill(0.0);
         self.tail.fill(0.0);
         for s in &mut self.slots {

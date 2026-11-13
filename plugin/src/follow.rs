@@ -1,5 +1,5 @@
 //! The header follows the instrument's own preset controls by name. After
-//! the player changed a part, a text its script began to show or a file it
+//! the player moved a part's control, a text its script began to show or a file it
 //! loaded that names exactly one preset of the part's instrument (a
 //! snapshot or user preset of its base, or the instrument file itself) is
 //! the preset that plays, unchanged. Names compare without case, runs of
@@ -43,7 +43,7 @@ pub fn follow(rack: &mut Rack, browser: &Browser) {
         let Some(p) = rack.parts().get(part).and_then(Option::as_ref) else {
             continue;
         };
-        if names.is_empty() || !p.modified {
+        if names.is_empty() {
             continue;
         }
         let (Some(path), Some(base)) = (p.path.as_deref(), p.source.as_deref()) else {
