@@ -3952,6 +3952,37 @@ fn an_lfo_rate_unit_switches_between_hz_and_note_counts() {
     assert_eq!(e.last_message(), "0|15|32.0|0");
 }
 
+/// A script switches a wavetable form's kind by its `$NI_WT_FORM_*` value
+/// (Conflux's shaper menus), and reads the kind back as set.
+#[test]
+fn a_wavetable_form_mode_switches_the_forms_kind() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].wavetable = Some(kontra_prepare::read(ir::Wavetable {
+        position: 0.0,
+        phase: 0.0,
+        warps: [ir::Warp::OFF; 2],
+    }));
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            @t := get_engine_par($ENGINE_PAR_WT_FORM_MODE, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_FORM_MODE, $NI_WT_FORM_SATURATE, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_FORM2_MODE, $NI_WT_FORM_BEND2P, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_FORM_MODE, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_FORM2_MODE, 0, -1, -1)
+            message(@t)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    assert_eq!(e.last_message(), "0|18|31");
+}
+
 /// A parameter of one effect type on a slot of another names nothing: the
 /// set is dropped, the read is 0 and the script runs on. The group index
 /// wins over a bus `<generic>` (Kontakt 8.13.1, ANALOG STRINGS: STEREO_PAN at

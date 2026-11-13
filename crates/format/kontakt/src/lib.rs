@@ -42,6 +42,7 @@ pub use engine_pars::{engine_pars, lfo_units, owner};
 pub use resources::LIMIT as RESOURCE_LIMIT;
 pub use resources::Resources;
 pub use reverb::{reverb, reverb_laws, reverb_networks};
+pub use wavetable::warp_modes;
 
 use std::fmt::Display;
 use std::path::{Path, PathBuf};

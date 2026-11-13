@@ -55,6 +55,13 @@ pub(crate) fn target(param: &str) -> Option<ir::TableValue> {
     })
 }
 
+/// The warp and shaper of each `$NI_WT_FORM_*` value, a script's form mode:
+/// the KSP values are the kinds below (LINEAR 0, SATURATE 18, WRAP 27).
+#[must_use]
+pub fn warp_modes() -> Vec<Option<(WarpShape, FormShaper)>> {
+    (0..=33).map(|k| shape(k).map(|s| (s, shaper(k)))).collect()
+}
+
 /// Kontakt's phase forms, numbered as its phase routine (`0x140567aa0`)
 /// switches on them: one less than the saved form.
 fn shape(kind: u32) -> Option<WarpShape> {
