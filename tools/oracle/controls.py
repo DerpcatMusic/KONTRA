@@ -310,6 +310,58 @@ def writes_per_step(report, steps):
     return out, len(cc102)
 
 
+EFFECT_FAMILIES = {"COMP", "LIM", "SCOMP", "FCOMP", "SEQ", "SK", "SKDLX", "TP", "IRC", "RV", "RV2", "DL", "CH",
+                   "FL", "PH", "RDL", "TDL", "PSYDL", "RAUM", "JMP", "EPP", "FREAK", "FLAIR", "PHASIS", "CHORAL",
+                   "KOLOR", "DIRT", "BITE", "BASSPRO", "TR", "WT", "STEREO", "GN", "SHAPE", "LP", "HP", "BP"}
+SLOT_GENERIC = {"EFFECT_BYPASS", "INSERT_EFFECT_OUTPUT_GAIN", "SEND_EFFECT_BYPASS", "SEND_EFFECT_OUTPUT_GAIN",
+                "SEND_EFFECT_DRY_LEVEL", "EFFECT_TYPE", "EFFECT_SUBTYPE"}
+
+
+def mechanism(writes):
+    """The engine mechanism a row drives, from its steps' writes: the parameter family (an effect's
+    own parameters as one, e.g. COMP_*) and where it acts (group, insert, send, main or bus chain),
+    most written first; a slot's bypass or output level counts only when nothing else is written.
+    A row with no engine writes drives script state; one that only loads groups, purge_group."""
+    if not writes:
+        return "script state"
+    def where(w):
+        if w[0] == "purge_group":
+            return "purge_group"
+        name = re.sub(r"_?\d+$", "", w[0].removeprefix("$ENGINE_PAR_"))
+        head = name.split("_")[0]
+        family = f"{head}_*" if head in EFFECT_FAMILIES and "_" in name else name
+        chain = "send" if name.startswith("SEND_EFFECT") else \
+            {0: "send", 1: "insert", -1: "insert", 2: "main"}.get(w[4], "bus")
+        return f"{family} @ {'group' if w[2] >= 0 else chain}"
+    counts = {}
+    for w in writes:
+        counts[where(w)] = counts.get(where(w), 0) + 1
+    own = {k: n for k, n in counts.items() if k.split(" @ ")[0] not in SLOT_GENERIC} or counts
+    return ", ".join(sorted(own, key=lambda k: (-own[k], k))[:2])
+
+
+def row_writes(rows, steps, writes):
+    """Each row's writes that its min and max steps set differently (all of them when none differ):
+    the parameters the row really moves, by row name."""
+    out = {}
+    for r in rows:
+        ks = {t: k for k, (sr, _, t) in enumerate(steps) if sr is r and t != "context"}
+        out[r["name"]] = moved(writes, ks)
+    return out
+
+
+def moved(writes, ks):
+    """The writes of steps `ks` ({tag: step}) whose value differs between the a and b steps."""
+    every = [w for k in ks.values() for w in writes[k]]
+    if "a" not in ks or "b" not in ks:
+        return every
+    a = {tuple(w[:1] + w[2:]): w[1] for w in writes[ks["a"]]}
+    b = {tuple(w[:1] + w[2:]): w[1] for w in writes[ks["b"]]}
+    diff = [w for w in writes[ks["b"]] if a.get(tuple(w[:1] + w[2:])) != w[1]]
+    diff += [w for w in writes[ks["a"]] if tuple(w[:1] + w[2:]) not in b]
+    return diff or every
+
+
 def probe(writes, context=()):
     """A script that replays step k's engine writes on CC 103·128 + CC 102 = k. Kontakt runs
     purge_group only in UI and persistence callbacks, so the context steps' purges (`context`:
@@ -370,6 +422,8 @@ def main():
     ap.add_argument("--plan", action="store_true", help="write the script and scenario, render nothing")
     ap.add_argument("--view", action="store_true", help="also take controls from our engine's UI model")
     ap.add_argument("--rescore", action="store_true", help="score OUTDIR's existing renders again")
+    ap.add_argument("--ours-only", action="store_true",
+                    help="no Kontakt (no licence in the oracle): judge each row on our pass A alone")
     args = ap.parse_args()
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -402,6 +456,8 @@ def main():
     (out / "probe").mkdir(exist_ok=True)
     (out / "probe" / f"{slot}.ksp").write_text(probe(writes, [k for k, s in enumerate(steps) if s[2] == "context"]))
     (out / "writes.json").write_text(json.dumps(writes))
+    if args.ours_only:
+        return ours_only(args, out, rows, steps, writes, context)
     if not args.rescore:
         play(binary, nki, out, out / "scenario.json", out / "probe", "b", oracle=True)
     native = sorted((out / "oracle").glob("inspect-*/native.wav"), key=lambda p: p.stat().st_mtime)
@@ -420,11 +476,44 @@ def main():
     (out / "controls.json").write_text(json.dumps({"nki": args.nki, "context": context, "lag_frames": lag,
                                                    "rows": rows}, indent=1))
     (out / "CONTROLS.md").write_text(markdown(rows, title, context))
-    nki = Path(args.nki)  # small and stable, one entry per control: feeds the progress page
+    verdicts(args, out, rows, row_writes(rows, steps, writes))
+    print(out / "CONTROLS.md")
+
+
+def verdicts(args, out, rows, by_row):
+    """verdicts.json: small and stable, one entry per control (library, patch, control, verdict,
+    reason, mechanism); controls_rank.py merges sessions into the ranking by mechanism."""
+    nki = Path(args.nki)
     (out / "verdicts.json").write_text(json.dumps([
         {"library": nki.parent.parent.name, "patch": nki.stem, "control": r["name"], "verdict": r["class"],
-         "reason": r.get("cause") or r["reason"]} for r in rows], indent=1))
-    print(out / "CONTROLS.md")
+         "reason": r.get("cause") or r["reason"], "mechanism": mechanism(by_row[r["name"]])}
+        for r in rows], indent=1))
+
+
+def ours_only(args, out, rows, steps, writes, context):
+    """Verdicts from our pass A alone: 'ours changes' when any feature moves 1 dB or more between the
+    row's min and max steps, else 'ours no change'. Kontakt is not compared."""
+    o = compare.load(out / "a.wav").astype(np.float64)
+    feats = [features(o[:, round((1.0 + k * PERIOD) * R):round((1.0 + (k + 1) * PERIOD) * R)])
+             for k in range(len(steps))]
+    by = {}
+    for k, (r, _, tag) in enumerate(steps):
+        if r is not None and tag in ("a", "b"):
+            by.setdefault(r["name"], {})[tag] = k
+    for r in rows:
+        r.pop("body", None)
+        idx = by.get(r["name"], {})
+        if not r["measure"] or "a" not in idx or "b" not in idx:
+            r["class"], r["reason"] = "not reachable", r["note"] or "not in this run (--only)"
+            continue
+        d = deltas(feats[idx["a"]], feats[idx["b"]], feats[idx["a"]])
+        moved = max(map(abs, d.values()))
+        r["class"] = "ours changes" if moved >= 1.0 else "ours no change"
+        r["reason"] = f"ours {top(d, 2)}; Kontakt not compared" if moved >= 1.0 else "ours under 1 dB; Kontakt not compared"
+        r["ours_delta"] = d
+    (out / "controls.json").write_text(json.dumps({"nki": args.nki, "context": context, "rows": rows}, indent=1))
+    verdicts(args, out, rows, row_writes(rows, steps, writes))
+    print(out / "verdicts.json")
 
 
 if __name__ == "__main__":
