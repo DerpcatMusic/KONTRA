@@ -218,6 +218,8 @@ pub struct Engine {
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
+    /// Notes a running callback changed; their voices refresh when it ends.
+    refresh_later: Vec<NoteRef>,
     /// Latest controller values on any channel, as scripts read them.
     cc_values: [u8; 130],
     /// Each key's last polyphonic aftertouch (`%POLY_AT`).
@@ -417,6 +419,7 @@ impl Engine {
             stop_waits: Vec::with_capacity(16),
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
+            refresh_later: Vec::with_capacity(64),
             cc_values: [0; 130],
             poly_at: [0; 128],
             timer_at: SampleTime(0),
