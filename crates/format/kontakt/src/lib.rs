@@ -77,11 +77,7 @@ pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
     load_known(path, &[])
 }
 
-/// [`load`], a snapshot's base found among `known` (the instruments the
-/// player has) when none is near it ([`preset`]).
-///
-/// # Errors
-/// As [`load`].
+/// As [`load`], resolving a snapshot's base against `known` when needed.
 pub fn load_known(path: &Path, known: &[std::path::PathBuf]) -> Result<ir::Instrument, Error> {
     if path
         .extension()
@@ -89,20 +85,11 @@ pub fn load_known(path: &Path, known: &[std::path::PathBuf]) -> Result<ir::Instr
     {
         return snapshot::load(path, known);
     }
-    load_timed(path).map(|(instrument, _, _)| instrument)
-}
-
-/// Reads an instrument and returns the time spent reading and translating it.
-///
-/// # Errors
-/// As [`load`]. Snapshot timing is not separated by this function.
-pub fn load_timed(
-    path: &Path,
-) -> Result<(ir::Instrument, std::time::Duration, std::time::Duration), Error> {
-    let start = std::time::Instant::now();
-    let (chunks, monolith, encrypted) = container::opened(path)?;
-    let read = start.elapsed();
-    let start = std::time::Instant::now();
-    let instrument = translate::instrument(path, &chunks, monolith, &[], encrypted, None)?;
-    Ok((instrument, read, start.elapsed()))
+    let (chunks, monolith, encrypted) =
+        kontra_format::timing::measure(kontra_format::timing::Stage::Read, || {
+            container::opened(path)
+        })?;
+    kontra_format::timing::measure(kontra_format::timing::Stage::Translate, || {
+        translate::instrument(path, &chunks, monolith, &[], encrypted, None)
+    })
 }

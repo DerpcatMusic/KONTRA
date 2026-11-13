@@ -55,18 +55,13 @@ pub fn read_timed(
     ),
     Box<dyn std::error::Error>,
 > {
-    if !kontra_format_uvi::is_uvi(path)
-        && path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
-    {
-        let (instrument, read, translate) = kontra_format_kontakt::load_timed(path)?;
-        Ok((instrument, read, Some(translate)))
-    } else {
-        let start = std::time::Instant::now();
-        let instrument = read(path)?;
-        Ok((instrument, start.elapsed(), None))
-    }
+    let start = std::time::Instant::now();
+    let (instrument, timings) = kontra_format::timing::collect(|| read(path));
+    Ok((
+        instrument?,
+        timings.read.unwrap_or_else(|| start.elapsed()),
+        timings.translate,
+    ))
 }
 
 /// [`read`], with the scripts' `saved` values (by instrument script) in
