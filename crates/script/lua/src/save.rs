@@ -20,6 +20,20 @@ pub(crate) fn state(lua: &Lua, out: &mut [u8]) -> Option<usize> {
     Some(len - w.len())
 }
 
+/// The prelude's oldest unwritten saved file (`__take_file`) into `out`:
+/// its bank path, a newline, then `return` and its table; the bytes written,
+/// or `None` with none left or when `out` is too small (it is dropped).
+pub(crate) fn file(lua: &Lua, out: &mut [u8]) -> Option<usize> {
+    let take = lua.globals().raw_get::<Function>("__take_file").ok()?;
+    let (path, value) = take.call::<(Option<mlua::LuaString>, Value)>(()).ok()?;
+    let len = out.len();
+    let mut w: &mut [u8] = out;
+    w.write_all(&path?.as_bytes()).ok()?;
+    w.write_all(b"\nreturn ").ok()?;
+    write(&mut w, &value, 0).ok()?;
+    Some(len - w.len())
+}
+
 fn write(w: &mut &mut [u8], v: &Value, depth: usize) -> std::io::Result<()> {
     match v {
         Value::Boolean(b) => write!(w, "{b}"),

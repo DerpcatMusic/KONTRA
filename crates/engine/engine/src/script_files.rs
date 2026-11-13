@@ -14,18 +14,35 @@ impl Engine {
     /// Queues `request` under a new async id and returns the id.
     pub(crate) fn request_file(&mut self, request: FileRequest) -> i32 {
         if self.files.len() >= FILES {
-            return self.start_async(Exit::Failed);
+            let id = self.next_async_id();
+            self.refused(&FileRequest { id, ..request });
+            return id;
         }
         let id = self.next_async_id();
         self.files.push(FileRequest { id, ..request });
         id
     }
 
+    /// `r` failed: `on async_complete` says so, and a pick reads cancelled.
+    fn refused(&mut self, r: &FileRequest) {
+        if r.len == 0 && self.picked.len() < FILES {
+            self.picked.push((r.slot, r.id, None));
+        }
+        self.queue_async(r.slot, r.id, Exit::Failed);
+    }
+
+    /// Slot `slot`'s pick `id`: Some(name), Some(None) when cancelled, None
+    /// while the editor still asks. An answer is read once.
+    pub(crate) fn take_picked(&mut self, slot: u8, id: i32) -> Option<Option<kontra_vm::Text>> {
+        let at = self.picked.iter().position(|p| (p.0, p.1) == (slot, id))?;
+        Some(self.picked.swap_remove(at).2)
+    }
+
     /// Hands every queued file request to `f`; one it refuses fails.
     pub fn drain_files(&mut self, mut f: impl FnMut(FileRequest) -> bool) {
         let mut files = std::mem::take(&mut self.files);
         for r in files.drain(..).filter(|&r| !f(r)) {
-            self.queue_async(r.slot, r.id, Exit::Failed);
+            self.refused(&r);
         }
         self.files = files;
     }
@@ -36,6 +53,14 @@ impl Engine {
     /// load landed or the save was written, `on async_complete` follows.
     pub fn file_done(&mut self, reply: &mut FileReply) {
         let r = reply.request;
+        // A pick of a name alone (no array): the script reads the answer.
+        if r.len == 0 {
+            if self.picked.len() < FILES {
+                let name = reply.loaded.as_ref().map(|_| r.path);
+                self.picked.push((r.slot, r.id, name));
+            }
+            return;
+        }
         let Some(vm) = self.vm_mut(r.slot) else {
             return self.queue_async(r.slot, r.id, Exit::Failed);
         };

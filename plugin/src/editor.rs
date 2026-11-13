@@ -71,6 +71,8 @@ pub struct Snapshot {
     stats: Stats,
     readout: Readout,
     report: Vec<String>,
+    /// A file a part's script asks the player to pick, by the part's row.
+    pick: Option<app::FilePick>,
 }
 
 impl Snapshot {
@@ -142,6 +144,14 @@ impl Snapshot {
                 })
             })
             .collect();
+        self.pick = rack.pick().and_then(|pick| {
+            let part = self.parts.iter().position(|v| v.slot == pick.part)?;
+            Some(app::FilePick {
+                part,
+                save: pick.save,
+                names: pick.names,
+            })
+        });
         self.level = meters.master[0].max(meters.master[1]);
         if let Some(s) = rack.stats() {
             self.readout.peak(&s, rack.rate());
@@ -192,6 +202,7 @@ impl Snapshot {
             self.level.to_bits(),
             self.readout.shown(),
             self.stats.voices,
+            self.pick.clone(),
         )
     }
 
@@ -298,6 +309,7 @@ impl Snapshot {
             cache_mb: r.cache_mb,
         };
         app.report.clone_from(&self.report);
+        app.pick.clone_from(&self.pick);
     }
 }
 
@@ -550,6 +562,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
         Action::Star(library, on) => browser.star(library, on),
         Action::Refresh => browser.rescan(),
         Action::RemoveFolder(n) => browser.remove_root(n),
+        Action::Picked(name) => rack.picked(name.as_deref()),
         Action::NewParts {
             next_channel,
             own_output,
@@ -828,6 +841,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                     | Action::Refresh
                     | Action::RemoveFolder(_)
                     | Action::NewParts { .. }
+                    | Action::Picked(_)
             ) {
                 p.shared.request(Request::Browse(action));
                 continue;

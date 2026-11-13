@@ -202,6 +202,14 @@ impl Vm {
         }
     }
 
+    /// As [`Machine::take_file`].
+    pub fn take_file(&mut self, out: &mut [u8]) -> Option<usize> {
+        match self {
+            Self::Code(_) => None,
+            Self::Foreign(m) => m.take_file(out),
+        }
+    }
+
     pub fn widget_text(&self, n: u32, out: &mut Text) -> bool {
         match self {
             Self::Code(_) => false,

@@ -17,6 +17,7 @@ pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan, ir};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model::UiModifiers;
+pub use picks::Pick;
 
 mod audio;
 mod command;
@@ -24,6 +25,7 @@ mod files;
 mod hold;
 mod named;
 mod native;
+mod picks;
 mod recall;
 mod requests;
 pub use audio::RackAudio;
@@ -186,6 +188,8 @@ pub struct Rack {
     generation: u64,
     /// Where scripts' array saves go ([`files`]); none writes nothing.
     saves: Option<PathBuf>,
+    /// Script file requests waiting for the player to pick ([`picks`]).
+    picks: std::collections::VecDeque<picks::Parked>,
     /// Whether anyone looks at the parts' interfaces.
     interfaces: Interfaces,
     /// Snapshot recalls whose plans are being made ([`native`]).
@@ -223,6 +227,7 @@ impl Rack {
             store,
             parts: (0..MAX_PARTS).map(|_| None).collect(),
             saves: None,
+            picks: std::collections::VecDeque::new(),
             pending: std::collections::VecDeque::new(),
             interfaces: Interfaces::Shown,
             generation: 0,
@@ -353,6 +358,12 @@ impl Rack {
     ) -> Result<(), Box<dyn std::error::Error>> {
         if part >= MAX_PARTS {
             return Err(format!("part {part} is past the rack's {MAX_PARTS}").into());
+        }
+        let mut instrument = instrument;
+        // The files its scripts saved come back as the bank's own.
+        let own = picks::script_files(self.saves.as_deref(), instrument.source_path.as_deref());
+        for s in (instrument.scripts.iter_mut()).filter(|s| s.dialect == ir::Dialect::Lua) {
+            s.data.extend(own.iter().cloned());
         }
         let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
         let source = instrument.source_path.clone();
@@ -655,10 +666,19 @@ impl Rack {
             (frame.part, frame.generation) = (n, p.script.generation);
             self.send(Command::Look(frame));
         }
-        while let Some(c) = self.channels.captured.recv() {
+        while let Some(mut c) = self.channels.captured.recv() {
             if let Some(Some(p)) = self.parts.get_mut(c.part)
                 && p.script.generation == c.generation
             {
+                let files = c.take_files();
+                let source = p.source.as_deref();
+                let failed = picks::write_script_files(self.saves.as_deref(), source, files);
+                p.diagnostics
+                    .extend(failed.into_iter().map(|detail| ir::Diagnostic {
+                        impact: ir::Impact::Cosmetic,
+                        feature: "preset".into(),
+                        detail,
+                    }));
                 p.script.asked = false;
                 crate::persist::landed(c, &mut p.script.latest, &mut p.script.spare);
             }

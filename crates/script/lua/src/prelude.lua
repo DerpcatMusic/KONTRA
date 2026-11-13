@@ -1163,9 +1163,26 @@ local function bank_path(path)
 end
 
 -- Script presets saved this session (saveState/saveData), by bank path.
--- ponytail: kept in the script, not on disk, so they last until the part
--- reloads; write them through the host's file queue when that matters.
+-- Each also goes out to the host (`__take_file`, read with the project's
+-- state), which writes it under KONTRA's saves for this instrument; the
+-- next load carries those files back as the bank's own.
 local stored = {}
+local outbox = {}
+
+local function keep(path, file)
+	local key = bank_path(path)
+	stored[key] = file
+	table.insert(outbox, key)
+end
+
+-- The oldest saved file the host has not written yet: its bank path and
+-- its table; nothing once all are out.
+function __take_file()
+	local key = table.remove(outbox, 1)
+	if key ~= nil then
+		return key, stored[key]
+	end
+end
 
 -- loadData(path, done): the JSON file's table. The program carries the
 -- bank's data files (the format reader), so this reads no disk; a file it
@@ -1230,27 +1247,42 @@ function saveState(path, done)
 			values[w.name] = saved_text(w)
 		end
 	end
-	stored[bank_path(path)] = { values = values, state = onSave and onSave() }
+	keep(path, { values = values, state = onSave and onSave() })
 	if type(done) == "function" then
 		done({ success = true })
 	end
 end
 
 function saveData(data, path, done)
-	stored[bank_path(path)] = { data = data }
+	keep(path, { data = data })
 	if type(done) == "function" then
 		done({ success = true })
 	end
 end
 
--- browseForFile(mode, title, initial, filter, done): no dialog. Each file
--- type has one slot, named after it; an open of a slot nothing saved is a
--- cancelled dialog, which calls nothing.
+-- Milliseconds between looks at the editor's answer to a pick.
+local PICK_PACE = 50
+
+-- browseForFile(mode, title, initial, filter, done): the editor asks the
+-- player for a file of the filter's type among those saved for this
+-- instrument; `done` gets its name. A cancelled pick calls nothing.
 function browseForFile(mode, _title, _initial, filter, done)
-	local path = "KONTRA" .. (tostring(filter or ""):match("%*(%.[%w_]+)") or "")
-	if type(done) == "function" and (mode == "save" or stored[bank_path(path)]) then
-		done({ result = path, success = true })
+	local ext = tostring(filter or ""):match("%*(%.[%w_]+)") or ""
+	local id = __host(Action.PickFile, mode == "save" and 1 or 0, ext)
+	if type(id) ~= "number" or id <= 0 or type(done) ~= "function" then
+		return
 	end
+	spawn(function()
+		while true do
+			local answer = __host(Action.PickedFile, id)
+			if type(answer) == "string" then
+				return done({ result = answer, success = true })
+			elseif answer ~= nil then
+				return
+			end
+			wait(PICK_PACE)
+		end
+	end)
 end
 
 function loadState(path, done)

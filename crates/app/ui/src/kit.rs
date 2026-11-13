@@ -463,7 +463,11 @@ pub fn menu(
     // never what lies under it.
     let tall = rows.len() as f64 * (CONTROL + 1.);
     let most = MENU_ROWS * (CONTROL + 1.);
-    let list = col(rows).gap(1).when(columns == 1, |e| e.w(TEXT * 16.));
+    // A list of words is as wide as its longest (about 0.6 em a letter),
+    // within 16 to 32 em: a long preset name reads whole.
+    let longest = items.iter().map(|i| i.chars().count()).max().unwrap_or(0);
+    let wide = (longest as f64 * TEXT * 0.6 + SPACE * 2.).clamp(TEXT * 16., TEXT * 32.);
+    let list = col(rows).gap(1).when(columns == 1, |e| e.w(wide));
     let list_id = format!("{id}-list");
     let list = match tall > most {
         true => col![list.scroll().h(most).id(list_id.clone())].h(most),
@@ -478,19 +482,19 @@ pub fn menu(
             _ => at,
         })
     };
-    let wide = columns.max(1);
+    let per_row = columns.max(1);
     let mut to = (step(ui.keys(id)) != 0).then(|| current.unwrap_or(0));
     for n in 0..items.len() {
         let by = step(ui.keys(format!("{id}-{n}")));
         if by != 0 {
-            let next = n.saturating_add_signed(by.saturating_mul(wide.cast_signed()));
+            let next = n.saturating_add_signed(by.saturating_mul(per_row.cast_signed()));
             to = Some(next.min(items.len().saturating_sub(1)));
         }
     }
     if let Some(n) = to {
         ui.focus(format!("{id}-{n}"));
         let row_h = CONTROL + 1.;
-        let top = (n / wide) as f64 * row_h;
+        let top = (n / per_row) as f64 * row_h;
         let at = ui.scroll(list_id.as_str())[1];
         let y = if top < at {
             top
