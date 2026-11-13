@@ -3,7 +3,7 @@
 
 use kontra_format::Notes;
 use kontra_ir as ir;
-use ni_file::kontakt::objects::{ExternalModArray32, Group, ModSource, ShaperCurve};
+use ni_file::kontakt::objects::{ExternalModArray32, Group, ModSource, ModTarget, ShaperCurve};
 
 use crate::laws;
 
@@ -54,6 +54,10 @@ pub(crate) fn external(
                 // KSP set_event_par_arr(id, $EVENT_PAR_MOD_VALUE_ID, v, index).
                 ModSource::Script(index) => u16::try_from(index).ok().map(ir::Source::Script),
                 ModSource::ReleaseTriggerCounter => Some(release_counter),
+                // "A random value between 0 and 1 (-1 and 1) for each received
+                // note" (Kontakt manual, external sources).
+                ModSource::RandomUnipolar => Some(ir::Source::Random { bipolar: false }),
+                ModSource::RandomBipolar => Some(ir::Source::Random { bipolar: true }),
                 _ => None,
             };
             for (target, t) in p.targets.iter().enumerate() {
@@ -65,7 +69,8 @@ pub(crate) fn external(
                 let raw = source;
                 let source = match (raw, t.shaper.as_ref().filter(|s| s.enabled)) {
                     (Some(s), Some(shaper)) => {
-                        let signed = s == ir::Source::PitchBend && signed_route(&t.param);
+                        let bipolar = [ir::Source::PitchBend, ir::Source::Random { bipolar: true }];
+                        let signed = bipolar.contains(&s) && signed_route(&t.param);
                         let result = shaped(&mut out.shapers, s, &shaper.curve, signed);
                         kontra_law::record(|| kontra_law::Application {
                             id: kontra_law::LawId("kontakt.mod_shaper.v1"),
@@ -91,6 +96,10 @@ pub(crate) fn external(
                         intensity: t.signed_intensity(),
                         curve: laws::volume(raw.unwrap_or(source)),
                         tau_ms: laws::route_tau_ms(t.lag_ms),
+                    }),
+                    (Some(source), "pan", None) => Some(ir::ModKind::Pan {
+                        source,
+                        amount: t.signed_intensity(),
                     }),
                     (Some(source), "pitch", None) => Some(ir::ModKind::Pitch {
                         source,
@@ -214,45 +223,17 @@ pub(crate) fn external(
                             _ => None,
                         })
                     }
-                    // Target 0x1a is in the additive family (FUN_140873040):
-                    // the knob moves by `signal·intensity`.
-                    (Some(source), "frequency", Some(at))
+                    (Some(source), param @ ("frequency" | "intensity"), Some(at))
                         if !matches!(source, ir::Source::HeldTime { .. }) =>
                     {
-                        timed_slots.iter().find_map(|&(n, of)| match of {
-                            ir::Source::Lfo(lfo) if n == usize::from(at) => {
-                                let result = laws::lfo_rate(source, lfo, t.signed_intensity());
-                                kontra_law::record(|| kontra_law::Application {
-                                    id: kontra_law::LawId("kontakt.lfo_rate_route.v1"),
-                                    location: format!(
-                                        "groups/{group_index}/routes/{n}/targets/{target}"
-                                    ),
-                                    input: format!(
-                                        "source={source:?}, lfo={lfo}, intensity={:?}",
-                                        t.signed_intensity()
-                                    ),
-                                    output: format!("{result:?}"),
-                                });
-                                Some(result)
-                            }
-                            _ => None,
-                        })
-                    }
-                    // Target 0x19 compiles (FUN_140873040, 0x144f1daa0) to
-                    // `$in * (1.0 - (1.0 - $signal) * $intensity)`; flag 4
-                    // picks a screen form (0x144f1daf0) no library uses yet.
-                    (Some(source), "intensity", Some(at))
-                        if t.unknown_flags & 4 == 0
-                            && !matches!(source, ir::Source::HeldTime { .. }) =>
-                    {
-                        timed_slots
-                            .iter()
-                            .find(|&&(n, _)| n == usize::from(at))
-                            .map(|&(_, of)| ir::ModKind::Intensity {
-                                source,
-                                of,
-                                depth: t.signed_intensity(),
-                            })
+                        let result = modulator_route(source, param, at, t, timed_slots);
+                        kontra_law::record(|| kontra_law::Application {
+                            id: kontra_law::LawId("kontakt.modulator_route.v1"),
+                            location: format!("groups/{group_index}/routes/{n}/targets/{target}"),
+                            input: format!("source={source:?}, param={param}, slot={at}"),
+                            output: format!("{result:?}"),
+                        });
+                        result
                     }
                     (Some(source), param, Some(insert)) => {
                         crate::drive::route(source, insert, param, t.signed_intensity())
@@ -301,6 +282,30 @@ pub(crate) fn external(
         }
     }
     Ok(())
+}
+
+/// A route to another modulator's knob, by the target's law whatever modulates it (FUN_140873040):
+/// an LFO's `frequency` (0x1a) moves by `signal·intensity`; `intensity` (0x19) scales by
+/// `1 − (1 − signal)·intensity` (0x144f1daa0; flag 4, a screen form, is unused).
+pub(crate) fn modulator_route(
+    source: ir::Source,
+    param: &str,
+    at: u8,
+    t: &ModTarget,
+    timed_slots: &[(usize, ir::Source)],
+) -> Option<ir::ModKind> {
+    let (_, of) = timed_slots.iter().find(|&&(n, _)| n == usize::from(at))?;
+    match (param, *of) {
+        ("frequency", ir::Source::Lfo(lfo)) => {
+            Some(laws::lfo_rate(source, lfo, t.signed_intensity()))
+        }
+        ("intensity", of) if t.unknown_flags & 4 == 0 => Some(ir::ModKind::Intensity {
+            source,
+            of,
+            depth: t.signed_intensity(),
+        }),
+        _ => None,
+    }
 }
 
 /// Whether a Kontakt target reads its source signed (-1..=1): every target
