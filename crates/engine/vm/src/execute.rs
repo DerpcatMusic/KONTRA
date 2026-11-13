@@ -440,6 +440,33 @@ pub(crate) fn execute(
                 }
                 pc += 2;
             }
+            Op::CmpTop { cmp, b } => {
+                let a = int(pop!());
+                push!(i64::from(compare(cmp, a.cmp(&src!(b)))));
+                pc += 1;
+            }
+            Op::CmpAnd { cmp } => {
+                let b = int(pop!());
+                let a = int(pop!());
+                let p = int(pop!());
+                push!(i64::from(p & i32::from(compare(cmp, a.cmp(&b)))));
+                pc += 1;
+            }
+            Op::CmpTopAnd { cmp, b } => {
+                let a = int(pop!());
+                let p = int(pop!());
+                push!(i64::from(p & i32::from(compare(cmp, a.cmp(&src!(b))))));
+                pc += 2;
+            }
+            Op::AndJump { to } => {
+                let b = int(pop!());
+                let a = int(pop!());
+                pc = if a & b == 0 { to } else { pc + 1 };
+            }
+            Op::AndTopJump { b, to } => {
+                let a = int(pop!());
+                pc = if a & src!(b) == 0 { to } else { pc + 2 };
+            }
             Op::CmpJump { cmp, to } => {
                 let b = int(pop!());
                 let a = int(pop!());
@@ -529,15 +556,19 @@ pub(crate) fn execute(
                     None => {
                         // A message changes nothing the loop can read.
                         c.hosted |= action != Action::Message;
-                        host.call(HostCall {
-                            action,
-                            context: c.context,
-                            ints: args,
-                            texts: c.texts.get(text_from..).unwrap_or_default(),
-                            cells,
-                            text_cells: texts,
-                            text_out: &mut text_out,
-                        })
+                        if let Some(v) = host.query(action, args) {
+                            HostValue::Int(v)
+                        } else {
+                            host.call(HostCall {
+                                action,
+                                context: c.context,
+                                ints: args,
+                                texts: c.texts.get(text_from..).unwrap_or_default(),
+                                cells,
+                                text_cells: texts,
+                                text_out: &mut text_out,
+                            })
+                        }
                     }
                 };
                 if let HostValue::Wait(micros) = value

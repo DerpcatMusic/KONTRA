@@ -183,6 +183,8 @@ pub struct Engine {
     /// Whether the plan has zones that play on release (a scan of every zone,
     /// so kept, not asked each block).
     release_zones: bool,
+    /// The host keys held down (bit = key) as of this ledger version.
+    keys_down: (u64, u128),
     /// Each zone's key range, packed: a note's start scans these, not the zones.
     zone_keys: Vec<(u8, u8)>,
     stream: StreamClient,
@@ -387,6 +389,7 @@ impl Engine {
             block_turns: 0,
             fuel: 0,
             release_zones,
+            keys_down: (u64::MAX, 0),
             zone_keys,
             stream,
             voices,
