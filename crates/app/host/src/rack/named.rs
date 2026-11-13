@@ -16,9 +16,10 @@ pub struct Named {
     /// Texts that began to show, and stems of files loaded, since the last
     /// [`Rack::take_named`].
     new: Vec<String>,
-    /// The player moved one of its controls since its preset was last
-    /// set: what it names now is the player's choice (a preset arrow that
-    /// is not itself saved), not a load's.
+    /// The player moved one of its controls since a preset was last
+    /// recalled into it: what it names now is the player's choice (a preset
+    /// arrow that is not itself saved), not a load's. A preset the header
+    /// followed leaves it set, so a quick second press is followed too.
     touched: bool,
 }
 
@@ -44,8 +45,8 @@ impl Named {
         self.touched = true;
     }
 
-    /// A preset was set: until the player moves a control again, what
-    /// the part names is its own.
+    /// A preset was recalled: until the player moves a control again,
+    /// what the part names is its own.
     pub(crate) fn settle(&mut self) {
         self.touched = false;
     }
