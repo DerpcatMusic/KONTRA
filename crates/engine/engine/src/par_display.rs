@@ -21,15 +21,22 @@ impl Engine {
             false => self.get_engine_par(n(0), n(1), n(2), n(3)),
         };
         // A stepped LFO's rate shows its count, one decimal (ANALOG, Kontakt
-        // 8.13.1: 0 .. 1 read 4609.0 .. 1.0). A free one's Hz is unmeasured.
+        // 8.13.1: 0 .. 1 read 4609.0 .. 1.0); a free one its Hz, padded
+        // (0, .5, 1 read " 0.01", "  1.5", "213.1").
         if let (Some(crate::EnginePar::Knob(k)), Some(raw)) = (par, raw) {
             let (group, slot) = if ext { (n(2), n(3)) } else { (n(1), n(2)) };
             let row = self.row(k, group, slot);
             let knob = self.script().and_then(|s| s.knobs.get(usize::from(row)));
-            if let Some((ir::KnobTarget::LfoSteps, law)) = knob {
-                let x = raw.clamp(0, 1_000_000) as f32 / 1e6;
-                let count = f64::from(law.eval(x).round().max(1.0));
-                return write(Readout::Signed(count), 0.0, out);
+            let x = raw.clamp(0, 1_000_000) as f32 / 1e6;
+            match knob {
+                Some((ir::KnobTarget::LfoSteps, law)) => {
+                    let count = f64::from(law.eval(x).round().max(1.0));
+                    return write(Readout::Signed(count), 0.0, out);
+                }
+                Some((ir::KnobTarget::LfoRate, law)) => {
+                    return write(Readout::Padded(f64::from(law.eval(x))), 0.0, out);
+                }
+                _ => {}
             }
         }
         // The reverb's time shows its law's seconds in ms (oracle 2026-10-29).

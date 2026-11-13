@@ -3941,6 +3941,8 @@ fn an_lfo_rate_unit_switches_between_hz_and_note_counts() {
             @t := @t & \"|\" & get_engine_par_disp($ENGINE_PAR_INTMOD_FREQUENCY, 0, 3, -1)
             set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY_UNIT, $NI_SYNC_UNIT_ABS, 0, 3, -1)
             @t := @t & \"|\" & get_engine_par($ENGINE_PAR_INTMOD_FREQUENCY_UNIT, 0, 3, -1)
+            set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 500000, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par_disp($ENGINE_PAR_INTMOD_FREQUENCY, 0, 3, -1)
             message(@t)
         end on",
         &[],
@@ -3949,7 +3951,8 @@ fn an_lfo_rate_unit_switches_between_hz_and_note_counts() {
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
     assert_eq!(e.unhandled_actions(), vec![]);
-    assert_eq!(e.last_message(), "0|15|32.0|0");
+    // The free text as Kontakt 8.13.1 prints it (ANALOG STRINGS: 0.5 reads "  1.5").
+    assert_eq!(e.last_message(), "0|15|32.0|0|  1.5");
 }
 
 /// A script switches a wavetable form's kind by its `$NI_WT_FORM_*` value
