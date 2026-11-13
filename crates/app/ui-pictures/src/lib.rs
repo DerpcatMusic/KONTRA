@@ -22,10 +22,12 @@ use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
 mod cache;
 mod canvas;
 mod discovery;
+mod metrics;
 mod outline;
 pub mod stock;
 mod vector;
 pub use canvas::canvas;
+pub use metrics::em_per_height;
 use mui::prelude::{Font, Image};
 pub use mui::scene::Vector;
 

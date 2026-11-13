@@ -355,6 +355,30 @@ mod tests {
         assert_eq!(m.widget(0).map(|w| w.visible), Some(false));
     }
 
+    /// A widget moved or sized after it is made draws there, as V Winds'
+    /// tuning layout moves its ADV PITCH BEND and USE MPE menus.
+    #[test]
+    fn a_widget_moved_after_it_is_made_draws_where_it_moved() {
+        let compiled = compile(
+            r#"
+            local m = Menu{"adv", {"NO", "YES"}, pos={250, 140}, size={70, 15}}
+            m.pos = {138.5, 140}
+            m.size = {46, 15}
+            local k = Knob{"k", 0, 0, 1}
+            k.bounds = {1, 2, 3, 4}
+            local t = Table{"t", 3, 0}
+        "#,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let rect = |i: usize| compiled.ui.widgets[i].rect;
+        assert_eq!(rect(0), [138.5, 140., 46., 15.]);
+        assert_eq!(rect(1), [1., 2., 3., 4.]);
+        assert_eq!(compiled.ui.widgets[1].sized, [true; 2]);
+        assert_eq!(rect(2), [0.; 4], "a table's size is its cell count");
+    }
+
     #[test]
     fn table_cells_keep_fractional_values_and_follow_script_writes() {
         let compiled = compile(r#"
