@@ -412,9 +412,26 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
                 height: h,
             }
         }
+        // It takes clicks on what it draws, not on the room around it (as
+        // SwiftUI hit-tests content), so a filling stack stays click-through.
         "on_drag_gesture" | "on_tap_gesture" => {
+            let start = bld.ui.widgets.len();
             place_layer(n, k - 1, r, inner_env, bld);
-            gesture(bld, m, args, r);
+            let drawn = (bld.ui.widgets.get(start..).unwrap_or_default().iter())
+                .filter(|w| !w.hidden)
+                .map(|w| w.rect)
+                .reduce(|a, b| {
+                    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                    let right = (a.x + a.width).max(b.x + b.width);
+                    let bottom = (a.y + a.height).max(b.y + b.height);
+                    ui::Rect {
+                        x,
+                        y,
+                        width: right - x,
+                        height: bottom - y,
+                    }
+                });
+            gesture(bld, m, args, drawn.unwrap_or(r));
             return;
         }
         "background" | "overlay" => {
