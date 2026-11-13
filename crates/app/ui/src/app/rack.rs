@@ -41,9 +41,10 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         SIDEBAR + 1.
     };
     let room = (app.width - browser - 2. * SPACE).max(0.);
-    // Fit one open face inside the rack viewport with its two header rows.
+    // Fit one open face inside the rack viewport with its two header rows,
+    // its rule and the foot below it, so the rack itself never scrolls.
     let height = ui.scene().and_then(|s| s.surface("rack")).map_or(0., |s| {
-        (s.frame.size.height - 2. * ROW - TIGHT - SPACE).max(0.)
+        (s.frame.size.height - 2. * ROW - TIGHT - SPACE - FOOT - 2.).max(0.)
     });
     let mut strips = Vec::new();
     for n in 0..app.parts.len() {
@@ -91,6 +92,8 @@ fn chip(progress: kontra_protocol::LoadSnapshot) -> El {
 
 /// A header row's height: both rows are one, so the artwork lines up.
 const ROW: f64 = CONTROL + 2. * TIGHT;
+/// The "Add an instrument" row under the parts.
+const FOOT: f64 = CONTROL + 2. * SPACE;
 /// The artwork behind a part's header, fading out over this width (v2's).
 const BANNER: f64 = crate::artwork::BANNER.0;
 
@@ -589,7 +592,7 @@ fn foot(ui: &mut Ui, app: &mut App) -> El {
     .align(Align::Center)
     .justify(Justify::Center)
     .pad(SPACE)
-    .h(CONTROL + 2. * SPACE)
+    .h(FOOT)
     .w(Len::Pct(100.))
     .when(over, |e| e.stroke(Role::Ink).stroke_width(1))
     .focusable()
