@@ -10,26 +10,6 @@ use super::{
 };
 
 impl<L: Library> Translator<'_, '_, L> {
-    /// A step envelope's `Smooth` is not applied to the routes carried from
-    /// it (`modulation::steps`): one source, reported once.
-    pub(super) fn step_smoothing(&mut self) {
-        let program = self.program;
-        for node in program
-            .descendants()
-            .filter(|n| n.has_tag_name("StepEnvelope"))
-        {
-            let carried = program.descendants().any(|c| {
-                self.carried.contains(&c.id()) && source_node(program, c).is_some_and(|n| n == node)
-            });
-            if carried && !flag(node, "Bypass") && num(node, "Smooth", 0.0).is_ok_and(|s| s > 1e-3)
-            {
-                let name = node.attribute("Name").unwrap_or_default();
-                self.notes
-                    .add(ir::Impact::Audible, "StepEnvelope Smooth", name);
-            }
-        }
-    }
-
     /// Active insert effects and aux sends this crate does not carry.
     pub(super) fn effects(&mut self) {
         for node in self.program.descendants().filter(|n| n.is_element()) {
