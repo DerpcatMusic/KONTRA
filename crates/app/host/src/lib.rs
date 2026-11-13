@@ -9,6 +9,7 @@ pub use kontra_face::perf_view;
 pub mod persist;
 pub mod presets;
 pub mod rack;
+pub mod relink;
 pub mod script;
 pub mod sound;
 pub mod state;

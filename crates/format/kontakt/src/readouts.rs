@@ -137,10 +137,18 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     ]);
     // The Convolution's knobs read what they set: the measured knob laws
     // (impulse.rs). ponytail: the print forms are unmeasured.
-    rows.extend(crate::impulse::script_knobs().into_iter().map(|(name, _, law)| {
-        let form = if name.contains("LENGTH") { Hundredths } else { Padded };
-        (name, law, form, none)
-    }));
+    rows.extend(
+        crate::impulse::script_knobs()
+            .into_iter()
+            .map(|(name, _, law)| {
+                let form = if name.contains("LENGTH") {
+                    Hundredths
+                } else {
+                    Padded
+                };
+                (name, law, form, none)
+            }),
+    );
     rows.into_iter()
         .map(|(name, law, form, ends)| (name, ir::Readout { law, form, ends }))
         .collect()

@@ -1861,7 +1861,11 @@ fn a_panic_in_the_render_is_one_silent_block_and_the_next_plays() {
     wav.extend(samples);
     std::fs::write(scratch.0.join("sine.wav"), wav).unwrap();
     let sfz = scratch.0.join("sine.sfz");
-    std::fs::write(&sfz, "<region> sample=sine.wav key=60 loop_mode=loop_continuous\n").unwrap();
+    std::fs::write(
+        &sfz,
+        "<region> sample=sine.wav key=60 loop_mode=loop_continuous\n",
+    )
+    .unwrap();
     let saved = Saved::new(vec![SavedPart {
         part: 0,
         path: sfz,
@@ -1881,7 +1885,10 @@ fn a_panic_in_the_render_is_one_silent_block_and_the_next_plays() {
     let (params, mut dsp) = activate(&saved.write());
     let peak = |audio: &[f32]| audio.iter().fold(0.0f32, |m, x| m.max(x.abs()));
     block(&params, &mut dsp, &[note(true, 60)]);
-    assert!(peak(&block(&params, &mut dsp, &[])) > 0.01, "the note plays");
+    assert!(
+        peak(&block(&params, &mut dsp, &[])) > 0.01,
+        "the note plays"
+    );
     // The next render panics: that block is silent, the host is not unwound
     // into, and the fault is flagged for the player.
     params.shared.inject_panic.store(true, Ordering::Release);

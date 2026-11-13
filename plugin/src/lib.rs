@@ -318,6 +318,8 @@ impl BackgroundTask for Tick {
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
         rack.know(browser);
+        // What the loads of this tick found missing comes after them.
+        let mut notices = Vec::new();
         // A state the host restored in this batch is what `saved` holds: a
         // load beside it must not write the rack over it.
         let restores = requests.iter().any(|r| matches!(r, Request::Restore(_)));
@@ -362,6 +364,8 @@ impl BackgroundTask for Tick {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
             }
         }
+        notices.extend(rack.take_notices());
+        report.extend(notices);
         match p.shared.folder.picked() {
             Some((folder::Wanted::Libraries, path)) => browser.add_root(path),
             Some((folder::Wanted::Snapshots, path)) => browser.set_kontakt(path),

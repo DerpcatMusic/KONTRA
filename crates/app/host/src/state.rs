@@ -203,13 +203,23 @@ impl Saved {
             ));
         }
         let mut seen = Vec::new();
-        saved.parts.retain(|p| p.part < MAX_PARTS && !seen.contains(&p.part) && {
-            seen.push(p.part);
-            true
+        saved.parts.retain(|p| {
+            p.part < MAX_PARTS && !seen.contains(&p.part) && {
+                seen.push(p.part);
+                true
+            }
         });
         for p in &mut saved.parts {
-            p.gain = if p.gain.is_finite() { p.gain.clamp(0.0, 16.0) } else { 1.0 };
-            p.pan = if p.pan.is_finite() { p.pan.clamp(-1.0, 1.0) } else { 0.0 };
+            p.gain = if p.gain.is_finite() {
+                p.gain.clamp(0.0, 16.0)
+            } else {
+                1.0
+            };
+            p.pan = if p.pan.is_finite() {
+                p.pan.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
             if p.channel > 16 {
                 p.channel = 0;
             }

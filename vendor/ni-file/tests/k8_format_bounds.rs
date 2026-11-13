@@ -1,7 +1,7 @@
 //! Owned serialized fixtures for bounded framing, not Kontakt 8 acceptance or DSP laws.
 use ni_file::kontakt::{
-    Chunk, KontaktChunks,
     objects::{GroupList, Program},
+    Chunk, KontaktChunks,
 };
 use std::io::Cursor;
 
@@ -74,7 +74,10 @@ fn bounded_program_rejects_envelope_suffix_through_chunk_set_consumer() {
         chunks.write(&mut serialized).unwrap();
         let parsed = KontaktChunks::read(Cursor::new(&serialized)).unwrap();
         let error = parsed.program().unwrap().unwrap_err().to_string();
-        assert!(error.contains(&format!("version 0x{version:04x}")), "{error}");
+        assert!(
+            error.contains(&format!("version 0x{version:04x}")),
+            "{error}"
+        );
         assert!(error.contains("2 trailing bytes"), "{error}");
         assert!(error.contains(&format!("body offset {at}")), "{error}");
         assert_raw_roundtrip(parsed.first().unwrap());
