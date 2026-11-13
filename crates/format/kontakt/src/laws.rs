@@ -498,6 +498,19 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
 const MIN_DAMPING: f32 = 0.01;
 
 #[rustfmt::skip]
+pub(crate) fn semitones(ratio: f32) -> f64 {
+    kontra_law::common::SEMITONE_RATIO.inverse_f64(f64::from(ratio.max(1e-6))).unwrap_or(0.0)
+}
+
+/// A stretching source's speed for knob 0, 0.05 .. 1 (Kontakt 8, v2 tools/kontakt-oracle/tm_sweep.py).
+#[rustfmt::skip]
+pub(crate) fn speed() -> ir::Law {
+    let y = [0., 0.115_737, 0.264_114, 0.431_853, 0.599_645, 0.748_098, 0.863_389, 0.940_286, 0.981_979, 0.997_732, 1.,
+        1.002_273, 1.018_304, 1.062_935, 1.154_730, 1.321_269, 1.609_518, 2.107_464, 2.992_968, 4.653_069, 8.0_f32];
+    ir::Law::Breakpoints((0u8..).zip(y).map(|(k, y)| (f32::from(k) / 20.0, y, 0.0)).collect())
+}
+
+#[rustfmt::skip]
 mod solid;
 
 /// The Solid G-EQ's four bands from its knobs (each 0..=1): LF gain and Hz,

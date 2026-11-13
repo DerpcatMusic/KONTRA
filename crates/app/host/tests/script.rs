@@ -3988,6 +3988,33 @@ fn a_wavetable_form_mode_switches_the_forms_kind() {
     assert_eq!(e.last_message(), "0|18|31");
 }
 
+/// A time-stretch speed reads in %, one decimal (Kontakt 8.13.1, Time
+/// Machine 2: .1, .5, 1 read "26.4", "100.0", "800.0").
+#[test]
+fn a_stretch_speed_reads_in_percent() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].speed = Some(1.0);
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            set_engine_par($ENGINE_PAR_SPEED, 100000, 0, -1, -1)
+            @t := get_engine_par_disp($ENGINE_PAR_SPEED, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_SPEED, 500000, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par_disp($ENGINE_PAR_SPEED, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_SPEED, 1000000, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par_disp($ENGINE_PAR_SPEED, 0, -1, -1)
+            message(@t)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    assert_eq!(e.last_message(), "26.4|100.0|800.0");
+}
+
 /// A parameter of one effect type on a slot of another names nothing: the
 /// set is dropped, the read is 0 and the script runs on. The group index
 /// wins over a bus `<generic>` (Kontakt 8.13.1, ANALOG STRINGS: STEREO_PAN at

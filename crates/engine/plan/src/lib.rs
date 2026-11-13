@@ -189,6 +189,9 @@ pub struct Group {
     /// Its zones play as wavetables, read so. A zone `set_zone_par` moves
     /// in gets its table built off the audio thread.
     pub wavetable: Option<kontra_voice::Read>,
+    /// The speed its voices start at when its source stretches time
+    /// ([`kontra_ir::Group::speed`]).
+    pub speed: Option<f32>,
     /// What it gives each of its zones.
     pub zones: ZoneRules,
 }
@@ -282,6 +285,7 @@ impl Group {
             release_trigger: false,
             bus: 0,
             wavetable: None,
+            speed: None,
             zones: ZoneRules::PLAIN,
         }
     }

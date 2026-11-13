@@ -104,6 +104,9 @@ impl Engine {
                 lag,
                 envelope: self.envelope(zone, &n),
                 fade: n.fade.filter(|_| attack),
+                speed: (self.groups.get(zone.group as usize))
+                    .and_then(|g| g.speed)
+                    .map_or(1.0, f64::from),
             };
             let now = self.now;
             let Some(i) = self.free_slot() else {
