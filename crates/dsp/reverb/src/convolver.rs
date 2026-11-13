@@ -12,7 +12,7 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 const HEAD: usize = 64;
 /// Each stage's block size and where its stretch of the response ends;
 /// it starts where the one before ends. The last runs to the end.
-const STAGES: [(usize, usize); 4] = [(64, 512), (256, 2048), (1024, 8192), (8192, usize::MAX)];
+const STAGES: [(usize, usize); 4] = [(64, 512), (256, 2048), (1024, 8192), (2048, usize::MAX)];
 /// Inputs below this magnitude count as silence.
 const SILENT: f32 = 1e-10;
 
