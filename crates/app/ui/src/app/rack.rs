@@ -21,7 +21,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             });
         }
     }
-    if app.parts.is_empty() {
+    if app.parts.is_empty() && app.loading != Some(super::Loading::New) {
         return col![
             spacer(),
             title("Pick an instrument"),
@@ -72,9 +72,12 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         strips.push(rule());
     }
     if app.loading == Some(super::Loading::New) {
-        let row = row![block(3, Len::Pct(100.)).fill(lift(3)).shrink(0), chip()]
-            .gap(SPACE)
-            .align(Align::Center);
+        let row = row![
+            block(3, Len::Pct(100.)).fill(lift(3)).shrink(0),
+            chip(app.load_progress)
+        ]
+        .gap(SPACE)
+        .align(Align::Center);
         strips.push(band(row, None, 0));
         strips.push(rule());
     }
@@ -83,13 +86,19 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 }
 
 /// v2's load chip: shown until the instrument plays.
-fn chip() -> El {
-    caption("Loading…")
+fn chip(progress: kontra_protocol::LoadSnapshot) -> El {
+    let label = format!(
+        "{} {} % · {} MB",
+        progress.stage.label(),
+        progress.percent,
+        progress.bytes / 1_000_000
+    );
+    caption(label.clone())
         .text_size(SMALL - 1.)
         .fill(secondary())
         .lines(1)
         .shrink(0)
-        .named("Loading")
+        .named(label)
 }
 
 /// A header row's height: both rows are one, so the artwork lines up.
@@ -257,6 +266,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .unwrap_or_default();
     let output = output(ui, app, n, id("output"), out);
     let loading = app.loading == Some(super::Loading::Part(n));
+    let progress = app.load_progress;
     let menu = &mut app.view.menu;
     let Some(p) = app.parts.get_mut(n) else {
         return spacer();
@@ -279,7 +289,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .grow(1)
         .tip(format!("{}\n{}", p.name, p.library));
     let name = match loading {
-        true => row![name, chip()]
+        true => row![name, chip(progress)]
             .gap(SPACE)
             .align(Align::Center)
             .grow(1)

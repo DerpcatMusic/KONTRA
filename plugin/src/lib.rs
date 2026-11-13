@@ -21,7 +21,7 @@ mod readout;
 mod tests;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 use std::time::Duration;
 
 use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
@@ -90,6 +90,7 @@ pub struct Shared {
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
     dirty: std::sync::atomic::AtomicBool,
+    progress: Arc<kontra_protocol::LoadProgress>,
     /// Loads asked for and loads carried out: the editor shows one loading
     /// while the first is ahead.
     asked: AtomicU64,
@@ -127,6 +128,9 @@ pub enum Request {
 impl Shared {
     pub fn request(&self, r: Request) {
         if r.loads() {
+            if !self.loading() {
+                self.progress.begin();
+            }
             self.asked.fetch_add(1, Ordering::AcqRel);
         }
         lock(&self.requests).push(r);
@@ -377,10 +381,11 @@ impl PluginLogic for Kontra {
         s.chunk = Vec::with_capacity(EVENTS);
         s.until_tick = 0;
         let rate = c.sample_rate.round() as u32;
-        let Ok(store) = Store::new(StoreConfig::DEFAULT) else {
+        let Ok(mut store) = Store::new(StoreConfig::DEFAULT) else {
             s.audio = None;
             return;
         };
+        store.set_progress(Arc::clone(&p.shared.progress));
         let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
         if let Some(saves) = kontra_host::rack::user_saves() {
             rack.set_saves(saves);

@@ -493,6 +493,12 @@ impl Source for NcwSource {
         (self.packing.header.channels <= 2).then_some(&self.packing)
     }
 
+    fn block_bytes(&self, blocks: Range<usize>) -> Option<u64> {
+        let (from, _) = self.group(blocks.start)?;
+        let (_, to) = self.group(blocks.end.checked_sub(1)?)?;
+        to.checked_sub(from).map(u64::from)
+    }
+
     fn read_blocks(&self, blocks: Range<usize>) -> io::Result<(Vec<u8>, Vec<u32>)> {
         let last = blocks.end.saturating_sub(1);
         let (Some((from, _)), Some((_, to))) = (self.group(blocks.start), self.group(last)) else {

@@ -41,6 +41,11 @@ pub trait Source: Send + Sync {
         None
     }
 
+    /// Number of encoded bytes in these blocks, when known without reading them.
+    fn block_bytes(&self, _blocks: Range<usize>) -> Option<u64> {
+        None
+    }
+
     /// Its preload is in memory: later reads stream through it in order.
     fn loaded(&self) {}
 

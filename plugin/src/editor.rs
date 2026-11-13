@@ -746,6 +746,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         crate::look::parts(&mut app, &slots, &mut waiting);
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
+        app.load_progress = p.shared.progress.snapshot();
         let response = kontra_ui::app::view(ui, &mut app);
         // A frame reads its input as it builds, so what a press or release
         // changes (a switch applied to the face, a row selected) shows in
@@ -878,11 +879,22 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         !instruments.is_empty() || !folders.is_empty()
     })
-    .changed(move || {
-        // Only events draw: a change the tick or the view marked, or a
-        // picture that arrived. Nothing polled (pictures pending, a load
-        // under way) asks for frames, so nothing stuck can spin them.
-        watched.shared.dirty.swap(false, Ordering::AcqRel) | kontra_ui::pictures::arrived()
+    .changed({
+        let previous = std::sync::atomic::AtomicU64::new(u64::MAX);
+        move || {
+            let progress = watched.shared.progress.snapshot();
+            let visible = ((progress.stage as u64) << 56)
+                | (u64::from(progress.percent) << 48)
+                | (progress.bytes / 1_000_000).min((1 << 48) - 1);
+            let changed =
+                watched.shared.loading() && previous.swap(visible, Ordering::Relaxed) != visible;
+            // Only events draw: a change the tick or the view marked, or a
+            // picture that arrived. Nothing polled (pictures pending, a load
+            // under way) asks for frames, so nothing stuck can spin them.
+            changed
+                | watched.shared.dirty.swap(false, Ordering::AcqRel)
+                | kontra_ui::pictures::arrived()
+        }
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
@@ -936,18 +948,23 @@ fn is_preset(path: &std::path::Path) -> bool {
 }
 
 /// Whether a dropped file is an instrument the rack loads: a Kontakt
-/// instrument or snapshot, or a UVI program inside its bank (`bank.ufs/Name.uvip`).
+/// instrument or snapshot, an SFZ file, or a UVI program in its bank.
 fn is_instrument(path: &std::path::Path) -> bool {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
-    matches!(ext.as_deref(), Some("nki" | "nksn" | "uvip"))
+    matches!(ext.as_deref(), Some("nki" | "nksn" | "uvip" | "sfz"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sfz_files_can_be_dropped_into_the_player() {
+        assert!(super::is_instrument(std::path::Path::new("instrument.SFZ")));
+    }
 
     #[test]
     fn the_keyboard_and_wheels_play_midi() {

@@ -31,9 +31,7 @@ pub struct Loaded {
     pub persist: Vec<crate::persist::Vars>,
 }
 
-/// Reads the instrument at `path` into the model: a UVI program when the path
-/// lies in a `.ufs` bank (`bank.ufs/Name.uvip`, see `kontra_format_uvi`), a
-/// Kontakt instrument otherwise.
+/// Reads an SFZ file, a UVI program inside a `.ufs` bank, or a Kontakt instrument.
 ///
 /// # Errors
 /// When the file is not an instrument this can read.
@@ -91,6 +89,12 @@ pub fn read_saved(
             out.name = name.to_string_lossy().into_owned();
         }
         return Ok(out);
+    }
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("sfz"))
+    {
+        return Ok(kontra_format_sfz::load(path)?);
     }
     if kontra_format_uvi::is_uvi(path) {
         // The load pass runs once per script, in order.
@@ -152,12 +156,18 @@ pub fn load(
 #[must_use]
 pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
     // Each file once, however many samples it holds.
+    if let Some(progress) = store.progress() {
+        progress.stage(kontra_protocol::LoadStage::Samples);
+    }
     let start = std::time::Instant::now();
     let files = kontra_stream::Files::new(instrument.samples.iter().map(|s| s.file.as_path()));
     let files_time = start.elapsed();
     let start = std::time::Instant::now();
     let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &|s| files.open(s));
     let prepare_time = start.elapsed();
+    if let Some(progress) = store.progress() {
+        progress.stage(kontra_protocol::LoadStage::Scripts);
+    }
     let scripts_start = std::time::Instant::now();
     let mut faces_time = std::time::Duration::ZERO;
     let mut faces = Vec::new();
