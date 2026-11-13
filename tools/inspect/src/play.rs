@@ -327,6 +327,10 @@ fn run_events(
             })
         })
         .collect();
+    if let Some(path) = std::env::var_os("KONTRA_INSPECT_DUMP") {
+        let text: String = block_times.iter().map(|t| format!("{} {}\n", t.1, t.0)).collect();
+        std::fs::write(path, text)?;
+    }
     let timing = block_timing(&block_times, block);
     // Load window: the first second. Play: everything after it.
     let (load_times, play_times): (Vec<_>, Vec<_>) =
