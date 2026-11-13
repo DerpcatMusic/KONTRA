@@ -3,8 +3,7 @@
 //! own widgets, and kept current: a control's change renders again only
 //! the component instances that read it, each back in its own room.
 //!
-//! Not copied: `Canvas` paths, `TextInput`, popovers. They lay out but
-//! draw nothing.
+//! Not copied: `TextInput`, popovers. They lay out but draw nothing.
 
 use kontra_ksp::ControlKind;
 use kontra_lua::nui::{self, Control};
@@ -43,6 +42,26 @@ impl Native {
 /// The name a tap area's widget carries, then its `start` and `complete`
 /// callbacks' numbers (0 for none).
 pub(super) const TAP: &str = "native_ui tap";
+
+/// The name a canvas's widget carries, then its `paint` callback's number.
+pub(super) const CANVAS: &str = "native_ui canvas";
+
+/// Paints the page's canvases from widget `first` on, each in its size.
+fn paint(page: &mut nui::Page, bld: &mut Builder<'_>, first: usize) {
+    let mut failed = None;
+    for w in bld.ui.widgets.iter_mut().skip(first) {
+        let Some(n) = (w.name.strip_prefix(CANVAS)).and_then(|n| n.trim().parse().ok()) else {
+            continue;
+        };
+        match page.paint(n, [w.rect.width, w.rect.height]) {
+            Ok(p) => w.kind = ui::Kind::Canvas(p),
+            Err(e) => failed = Some(e),
+        }
+    }
+    if let Some(e) = failed {
+        report(bld, &e);
+    }
+}
 
 /// The page's id of a control: its script name without the sigil.
 fn id(name: &str) -> &str {
@@ -143,7 +162,7 @@ pub(super) fn face(
         let root = page.render(&values)?;
         Ok((page, root))
     });
-    let (page, root) = match rendered {
+    let (mut page, root) = match rendered {
         Ok((page, Some(root))) => (page, root),
         Ok(_) => return None,
         Err(e) => {
@@ -158,6 +177,7 @@ pub(super) fn face(
     let first = bld.ui.widgets.len();
     bld.nui.clear();
     layout::lower(&root, size, bld);
+    paint(&mut page, bld, first);
     bld.ui.paint_order = Some((first..bld.ui.widgets.len()).map(ui::WidgetRef).collect());
     Some(Shown {
         page,
@@ -226,6 +246,7 @@ impl Shown {
             layout::splice(bld, self.first, self.size, path, node.as_ref());
         }
         self.slots = std::mem::take(&mut bld.nui);
+        paint(&mut self.page, bld, self.first);
         let all: Vec<_> = (self.first..bld.ui.widgets.len())
             .map(ui::WidgetRef)
             .collect();

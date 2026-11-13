@@ -670,7 +670,7 @@ pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
             w.kind,
             Kind::Slider { .. } | Kind::TextEdit | Kind::Table { .. }
         )
-        || matches!(w.kind, Kind::Shape(_))
+        || matches!(w.kind, Kind::Shape(_) | Kind::Canvas(_))
 }
 
 /// A KSP control with no picture, or one the library lacks; `false` for
@@ -788,6 +788,7 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
             Kind::Shape(shape) => {
                 d.extend(super::shape::fill(shape, page_width, (w, h), background))
             }
+            Kind::Canvas(ref p) => d.extend(kontra_ui_pictures::canvas(p, w / page_width)),
             _ => field(&mut d, FIELD),
         }
         d

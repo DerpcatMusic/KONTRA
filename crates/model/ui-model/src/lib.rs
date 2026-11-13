@@ -16,9 +16,11 @@
 
 use std::fmt;
 
+mod canvas;
 mod preset_name;
 mod scroll;
 mod value;
+pub use canvas::{Paint, Seg};
 pub use preset_name::preset_file_name;
 
 macro_rules! reference {
@@ -618,6 +620,8 @@ pub enum Kind {
     /// A shape a Kontakt 8 `native_ui` page draws, filled with
     /// `colors.background`.
     Shape(Shape),
+    /// What a Kontakt 8 `native_ui` page's painter drew, in page points.
+    Canvas(Vec<Paint>),
 }
 
 /// A [`Kind::Shape`]'s outline.
@@ -1095,7 +1099,7 @@ fn kontakt_paint_rank(kind: &Kind) -> u8 {
         Kind::Waveform => 2,
         Kind::Wavetable { .. } => 3,
         Kind::LevelMeter { .. } => 4,
-        Kind::Label | Kind::Image | Kind::Shape(_) => 5,
+        Kind::Label | Kind::Image | Kind::Shape(_) | Kind::Canvas(_) => 5,
         Kind::Knob { .. } => 6,
         Kind::Slider { .. } => 7,
         Kind::Switch => 8,
