@@ -51,7 +51,7 @@ use kontra_plan as plan;
 
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
-use kontra_voice::{KeyUp, Voice, VoiceStart};
+use kontra_voice::{KeyUp, Scratch, Voice, VoiceStart};
 
 pub use fx_types::{EffectRequest, Prepared};
 pub use inspect::{
@@ -195,6 +195,8 @@ pub struct Engine {
     notes: Ledger,
     behaviour: Behaviour,
     voices: Vec<Slot>,
+    /// The buffers every voice renders through, in turn.
+    voice_scratch: Scratch,
     buses: Vec<BusState>,
     /// Sustain pedal down, per MIDI channel.
     pedal: [bool; 16],
@@ -218,6 +220,8 @@ pub struct Engine {
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
+    /// Notes a running callback changed; their voices refresh when it ends.
+    refresh_later: Vec<NoteRef>,
     /// Latest controller values on any channel, as scripts read them.
     cc_values: [u8; 130],
     /// Each key's last polyphonic aftertouch (`%POLY_AT`).
@@ -245,6 +249,7 @@ pub struct Engine {
     /// generic) and their counts; fixed size, the first ones seen.
     unanswered_pars: Box<[([i32; 4], u32)]>,
     called: Box<[u32]>,
+    memo: modulators::Memo,
     /// The instrument's level, pan and tune (a script's group -1); level and
     /// pan move [`Self::output`], after every effect.
     instrument: Level,
@@ -396,6 +401,7 @@ impl Engine {
             zone_index,
             stream,
             voices,
+            voice_scratch: Scratch::allocate(),
             buses,
             pedal: [false; 16],
             stats: Stats::default(),
@@ -416,6 +422,7 @@ impl Engine {
             stop_waits: Vec::with_capacity(16),
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
+            refresh_later: Vec::with_capacity(64),
             cc_values: [0; 130],
             poly_at: [0; 128],
             timer_at: SampleTime(0),
@@ -429,6 +436,7 @@ impl Engine {
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             unanswered_pars: vec![([0; 4], 0); 64].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
+            memo: Default::default(),
             ui,
             ids: callbacks::Ids::START,
             instrument: Level::panned(ir::common::DB_GAIN.eval_unclamped(out.volume_db), out.pan),

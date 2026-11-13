@@ -630,6 +630,7 @@ fn a_comb_insert_runs_on_each_voice_and_rings_at_its_feedback() {
         kind: ir::EffectKind::Comb(ir::Comb {
             hz: 480.0,
             feedback: 0.5,
+            forward: false,
             octaves: 9.97,
         }),
         bypass: false,

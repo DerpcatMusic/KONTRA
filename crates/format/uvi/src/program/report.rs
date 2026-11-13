@@ -21,11 +21,16 @@ impl<L: Library> Translator<'_, '_, L> {
             let carried = program.descendants().any(|c| {
                 self.carried.contains(&c.id()) && source_node(program, c).is_some_and(|n| n == node)
             });
-            if carried && !flag(node, "Bypass") && num(node, "Smooth", 0.0).is_ok_and(|s| s > 1e-3)
+            // Smooth is applied (`modulation::steps`); a synced one is baked
+            // at 120 BPM, so it only drifts at another host tempo.
+            if carried
+                && !flag(node, "Bypass")
+                && flag(node, "SyncToHost")
+                && num(node, "Smooth", 0.0).is_ok_and(|s| s > 1e-3)
             {
                 let name = node.attribute("Name").unwrap_or_default();
                 self.notes
-                    .add(ir::Impact::Audible, "StepEnvelope Smooth", name);
+                    .add(ir::Impact::Cosmetic, "StepEnvelope Smooth at 120 BPM", name);
             }
         }
     }
@@ -38,6 +43,16 @@ impl<L: Library> Translator<'_, '_, L> {
             }
             let tag = node.tag_name().name();
             let parent = node.parent();
+            if tag == "XpanderFilter"
+                && (filters::carried(node) || filters::on_bus(node))
+                && num(node, "Algorithm", 0.0).is_ok_and(|a| a != 0.0)
+            {
+                self.notes.add(
+                    ir::Impact::Cosmetic,
+                    "XpanderFilter Algorithm",
+                    "played as Algorithm 0",
+                );
+            }
             // A keygroup's GainMatrix places its bundle members (`placement`).
             let placing = tag == "GainMatrix"
                 && parent

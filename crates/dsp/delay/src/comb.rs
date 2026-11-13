@@ -14,12 +14,17 @@ pub struct Comb {
     /// The delay in frames.
     delay: f32,
     feedback: f32,
+    /// A feed-forward comb: `y[n] = x[n] + g·x[n − D]`, the line holds input.
+    forward: bool,
 }
 
 impl Comb {
     #[must_use]
-    pub fn new(hz: f32, feedback: f32, rate: u32) -> Self {
-        let mut c = Self::default();
+    pub fn new(hz: f32, feedback: f32, forward: bool, rate: u32) -> Self {
+        let mut c = Self {
+            forward,
+            ..Self::default()
+        };
         c.set(hz, feedback, rate);
         c
     }
@@ -52,7 +57,7 @@ impl Comb {
                 *o = x + self.feedback * (p + (q - p) * frac);
             }
             if let Some(cell) = line.get_mut(self.at) {
-                *cell = out;
+                *cell = if self.forward { *frame } else { out };
             }
             self.at = (self.at + 1) % len;
             *frame = out;
@@ -70,10 +75,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_feed_forward_comb_echoes_once() {
+        let rate = 48_000;
+        let mut line = vec![[0.0; 2]; line_frames(rate, 20.0)];
+        let mut c = Comb::new(480.0, 0.5, true, rate);
+        let mut io = vec![[0.0; 2]; 400];
+        io[0] = [1.0, 1.0];
+        c.process(&mut io, &mut line);
+        assert!((io[100][0] - 0.5).abs() < 1e-5);
+        assert!(io[200][0].abs() < 1e-6);
+    }
+
+    #[test]
     fn an_impulse_rings_at_its_period_and_decays_by_the_feedback() {
         let rate = 48_000;
         let mut line = vec![[0.0; 2]; line_frames(rate, 20.0)];
-        let mut c = Comb::new(480.0, 0.5, rate);
+        let mut c = Comb::new(480.0, 0.5, false, rate);
         let mut io = vec![[0.0; 2]; 400];
         io[0] = [1.0, 1.0];
         c.process(&mut io, &mut line);

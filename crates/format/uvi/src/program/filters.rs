@@ -7,7 +7,7 @@
 //! native renders, crates/sampler-uvi/src/modulation.rs). Any source the
 //! shared routes carry moves it the same way, `s` bipolar for an LFO.
 //!
-//! An `XpanderFilter` on Algorithm 0 with the soft saturator
+//! An `XpanderFilter` on any Algorithm with the soft saturator
 //! (DistortionType 0) is the explicit ladder, its `Freq` on the same range:
 //! Mode 0..=11 picks the taps (low 1..4 poles, high 1..4, band 2 and 4,
 //! notch 2 and 4; the table filled by 0x140842a10), `Q` is the resonance
@@ -95,8 +95,9 @@ fn trim_curve(trim: f64) -> [f32; 2] {
 
 /// An `XpanderFilter` on the explicit ladder with the soft saturator.
 fn ladder_shape(node: Node) -> bool {
-    num(node, "Algorithm", 0.0) == Ok(0.0)
-        && num(node, "DistortionType", 0.0) == Ok(0.0)
+    // ponytail: Algorithm 1 (388 hits in Augmented Orchestra) plays as the
+    // explicit ladder, the nearest mode here; reported by `report::effects`.
+    num(node, "DistortionType", 0.0) == Ok(0.0)
         && num(node, "Mode", 3.0).is_ok_and(|m| (0.0..=11.0).contains(&m) && m.fract() == 0.0)
 }
 
@@ -104,7 +105,8 @@ fn ladder_shape(node: Node) -> bool {
 /// or `MS20` (as above) with no key tracking.
 pub(super) fn carried(node: Node) -> bool {
     let xpander = node.has_tag_name("XpanderFilter") && ladder_shape(node);
-    let comb = node.has_tag_name("CombFilter") && num(node, "Mode", 0.0) == Ok(0.0);
+    let comb = node.has_tag_name("CombFilter")
+        && num(node, "Mode", 0.0).is_ok_and(|m| m == 0.0 || m == 1.0);
     (node.has_tag_name("OnePole") || node.has_tag_name("MS20") || xpander || comb)
         && !flag(node, "Bypass")
         && !flag(node, "KeyTracking")
@@ -152,6 +154,7 @@ pub(super) fn effect(node: Node, slot: usize) -> ir::Effect {
             hz: (num(node, "Freq", 440.0).unwrap_or(440.0) as f32)
                 .clamp(ir::COMB_LOWEST_HZ, 20_000.0),
             feedback: (num(node, "Q", 0.0).unwrap_or(0.0) as f32).clamp(0.0, 0.999),
+            forward: num(node, "Mode", 0.0) == Ok(1.0),
             octaves: FREQ_OCTAVES,
         };
         return ir::Effect {

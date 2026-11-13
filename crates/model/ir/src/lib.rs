@@ -129,6 +129,10 @@ pub struct Impulse {
     /// The new left and right channels as `[from left, from right]`, after
     /// the envelope and before normalizing.
     pub mix: Option<[[f32; 2]; 2]>,
+    /// The early and late parts' lengths over their own (1 unchanged),
+    /// stretched without changing pitch; they part where [`ImpulseCuts`]'s
+    /// crossover does, else where the decay turns diffuse.
+    pub size: [f32; 2],
 }
 
 /// Scales a response's channel energy toward `energy`, by at most `max_gain`;
