@@ -162,6 +162,8 @@ fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size
         "Image" if !matches!(n.prop("resizable"), Some(Prop::Bool(true))) => {
             image(bld, n).and_then(|(_, s)| s).unwrap_or((0., 0.))
         }
+        // As big as its children; one that fills its room makes it fill too.
+        "ZStack" if children(n).iter().any(|c| fills(c)) => (0., 0.),
         "ZStack" | "ForEach" => children(n).iter().fold((0., 0.), |(w, h), c| {
             let (cw, ch) = measure(bld, c, c.mods.len(), room, env);
             (w.max(cw), h.max(ch))
@@ -169,6 +171,23 @@ fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size
         "HStack" => stack(bld, n, Axis::Across, room, env).1,
         "VStack" => stack(bld, n, Axis::Down, room, env).1,
         _ => (0., 0.),
+    }
+}
+
+/// Whether `n` fills whatever room it is offered, as SwiftUI's shapes and
+/// aligned views do; an absent child (`@{cond and …}`) does not.
+fn fills(n: &Node) -> bool {
+    for (m, _) in n.mods.iter().rev() {
+        match m.as_str() {
+            "align" => return true,
+            "frame" | "position" => return false,
+            _ => {}
+        }
+    }
+    match n.kind.as_str() {
+        "Rectangle" | "Ring" => true,
+        "ZStack" => children(n).iter().any(|c| fills(c)),
+        _ => false,
     }
 }
 
@@ -705,5 +724,53 @@ mod tests {
             .map(|w| (w.rect.x, w.rect.y))
             .collect();
         assert_eq!(at, [(150., 100.), (420., 280.)]);
+    }
+
+    /// A ZStack holding an aligned child fills its room (Conflux's empty FX
+    /// slot spreads its four rings to its corners); one holding an absent
+    /// child keeps its own size (a toggle's click area).
+    #[test]
+    fn a_zstack_fills_only_for_a_child_that_fills() {
+        let sized = node(
+            "Text",
+            vec![(
+                "frame",
+                vec![Prop::Table(vec![
+                    ("width".into(), Prop::Number(40.)),
+                    ("height".into(), Prop::Number(10.)),
+                ])],
+            )],
+            Vec::new(),
+        );
+        let aligned = node(
+            "Ring",
+            vec![("align", vec![Prop::Text("top left".into())])],
+            Vec::new(),
+        );
+        let absent = node("ZStack", Vec::new(), Vec::new());
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let mut size = |kids: Vec<Node>| {
+            let z = node("ZStack", Vec::new(), kids);
+            measure(
+                &mut bld,
+                &z,
+                0,
+                (300., 200.),
+                Env {
+                    font: 12.,
+                    color: [1.; 4],
+                    opacity: 1.,
+                },
+            )
+        };
+        assert_eq!(size(vec![sized.clone(), aligned]), (0., 0.));
+        assert_eq!(size(vec![sized, absent]), (40., 10.));
     }
 }
