@@ -271,7 +271,7 @@ impl Resolver {
                     for (archive, offset) in wanted.iter().skip(lane).step_by(lanes) {
                         if let Some(Some((file, _))) = archives.get(archive) {
                             // Only the page cache matters; a short or failed read is fine.
-                            let _ = std::os::unix::fs::FileExt::read_at(file, &mut header, *offset);
+                            let _ = read_at(file, &mut header, *offset);
                         }
                     }
                 });
@@ -403,4 +403,16 @@ fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
             _ => {}
         }
     }
+}
+
+/// Reads at `at` without moving the file's cursor, so lanes can share a file.
+#[cfg(unix)]
+fn read_at(file: &std::fs::File, out: &mut [u8], at: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, out, at)
+}
+
+/// Reads at `at` (Windows moves the cursor; header warming never uses it).
+#[cfg(windows)]
+fn read_at(file: &std::fs::File, out: &mut [u8], at: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, out, at)
 }
