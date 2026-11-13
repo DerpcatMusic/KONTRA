@@ -89,13 +89,17 @@ fn trim_curve(trim: f64) -> [f32; 2] {
     [lo[0] + f * (hi[0] - lo[0]), lo[1] + f * (hi[1] - lo[1])]
 }
 
+/// An `XpanderFilter` on the explicit ladder with the soft saturator.
+fn ladder_shape(node: Node) -> bool {
+    num(node, "Algorithm", 0.0) == Ok(0.0)
+        && num(node, "DistortionType", 0.0) == Ok(0.0)
+        && num(node, "Mode", 3.0).is_ok_and(|m| (0.0..=11.0).contains(&m) && m.fract() == 0.0)
+}
+
 /// A keygroup insert this crate carries: an active `OnePole`, `XpanderFilter`
 /// or `MS20` (as above) with no key tracking.
 pub(super) fn carried(node: Node) -> bool {
-    let xpander = node.has_tag_name("XpanderFilter")
-        && num(node, "Algorithm", 0.0) == Ok(0.0)
-        && num(node, "DistortionType", 0.0) == Ok(0.0)
-        && num(node, "Mode", 3.0).is_ok_and(|m| (0.0..=11.0).contains(&m) && m.fract() == 0.0);
+    let xpander = node.has_tag_name("XpanderFilter") && ladder_shape(node);
     (node.has_tag_name("OnePole") || node.has_tag_name("MS20") || xpander)
         && !flag(node, "Bypass")
         && !flag(node, "KeyTracking")
@@ -128,6 +132,61 @@ fn freq_routes<'a, 'i>(kg: Node<'a, 'i>) -> Vec<(u8, Node<'a, 'i>)> {
         .collect()
 }
 
+/// An insert on a bus (a layer, aux or chain) that is an explicit ladder: the
+/// same filter a keygroup runs.
+pub(super) fn on_bus(node: Node) -> bool {
+    node.has_tag_name("XpanderFilter") && ladder_shape(node) && !flag(node, "Bypass")
+}
+
+/// The filter at `node` (one `carried` or `on_bus` accepts), for slot `slot`.
+pub(super) fn effect(node: Node, slot: usize) -> ir::Effect {
+    let hz = num(node, "Freq", 20_000.0).unwrap_or(20_000.0) as f32;
+    let mode = num(node, "Mode", 0.0).unwrap_or(0.0);
+    let mut filter = ir::Filter {
+        pass: if mode == 1.0 {
+            ir::Pass::High
+        } else {
+            ir::Pass::Low
+        },
+        hz: hz.clamp(20.0, 20_000.0),
+        stages: 0,
+        ladder: None,
+        damping: [2.0; 3],
+        gain: 1.0,
+        octaves: FREQ_OCTAVES,
+        q_octaves: 0.0,
+    };
+    if node.has_tag_name("OnePole") {
+        filter.ladder = Some(ir::Ladder::OnePole);
+    }
+    if node.has_tag_name("XpanderFilter") {
+        let q = num(node, "Q", 0.0).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+        let drive = num(node, "Drive", 0.0).unwrap_or(0.0).clamp(-20.0, 20.0) as f32;
+        filter.ladder = Some(ir::Ladder::Explicit {
+            taps: mode as u8 + 1,
+            fat: num(node, "Fat", 1.0).unwrap_or(1.0).clamp(0.0, 1.0) as f32,
+        });
+        filter.damping = [2.0 * (1.0 - q); 3];
+        filter.gain = DB_GAIN.eval_unclamped(drive);
+    }
+    if node.has_tag_name("MS20") {
+        let q = num(node, "Q", 0.0).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+        filter.ladder = Some(ir::Ladder::SallenKey {
+            morph: num(node, "Morph", 1.0).unwrap_or(1.0).clamp(0.0, 1.0) as f32,
+            curve: trim_curve(num(node, "ResonanceTrim", 0.5).unwrap_or(0.5)),
+        });
+        filter.damping = [2.0 * (1.0 - q); 3];
+        filter.gain = num(node, "ReferenceVoltage", 1.0).unwrap_or(1.0).max(0.01) as f32;
+    }
+    super::provenance::record("uvi.filter.v1", node, &slot, &filter);
+    ir::Effect {
+        kind: ir::EffectKind::Filter(filter),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    }
+}
+
 /// A keygroup's inserts by slot (a slot not carried passes its input).
 pub(super) fn keygroup(kg: Node) -> Vec<Option<ir::Effect>> {
     let mut inserts = Vec::new();
@@ -141,51 +200,8 @@ pub(super) fn keygroup(kg: Node) -> Vec<Option<ir::Effect>> {
             inserts.push(None);
             continue;
         }
-        let hz = num(node, "Freq", 20_000.0).unwrap_or(20_000.0) as f32;
-        let mode = num(node, "Mode", 0.0).unwrap_or(0.0);
-        let mut filter = ir::Filter {
-            pass: if mode == 1.0 {
-                ir::Pass::High
-            } else {
-                ir::Pass::Low
-            },
-            hz: hz.clamp(20.0, 20_000.0),
-            stages: 0,
-            ladder: None,
-            damping: [2.0; 3],
-            gain: 1.0,
-            octaves: FREQ_OCTAVES,
-            q_octaves: 0.0,
-        };
-        if node.has_tag_name("OnePole") {
-            filter.ladder = Some(ir::Ladder::OnePole);
-        }
-        if node.has_tag_name("XpanderFilter") {
-            let q = num(node, "Q", 0.0).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
-            let drive = num(node, "Drive", 0.0).unwrap_or(0.0).clamp(-20.0, 20.0) as f32;
-            filter.ladder = Some(ir::Ladder::Explicit {
-                taps: mode as u8 + 1,
-                fat: num(node, "Fat", 1.0).unwrap_or(1.0).clamp(0.0, 1.0) as f32,
-            });
-            filter.damping = [2.0 * (1.0 - q); 3];
-            filter.gain = DB_GAIN.eval_unclamped(drive);
-        }
-        if node.has_tag_name("MS20") {
-            let q = num(node, "Q", 0.0).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
-            filter.ladder = Some(ir::Ladder::SallenKey {
-                morph: num(node, "Morph", 1.0).unwrap_or(1.0).clamp(0.0, 1.0) as f32,
-                curve: trim_curve(num(node, "ResonanceTrim", 0.5).unwrap_or(0.5)),
-            });
-            filter.damping = [2.0 * (1.0 - q); 3];
-            filter.gain = num(node, "ReferenceVoltage", 1.0).unwrap_or(1.0).max(0.01) as f32;
-        }
-        super::provenance::record("uvi.filter.v1", node, &inserts.len(), &filter);
-        inserts.push(Some(ir::Effect {
-            kind: ir::EffectKind::Filter(filter),
-            bypass: false,
-            output: 1.0,
-            dry: 0.0,
-        }));
+        let effect = effect(node, inserts.len());
+        inserts.push(Some(effect));
     }
     inserts
 }
