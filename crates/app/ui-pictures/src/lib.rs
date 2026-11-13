@@ -107,17 +107,28 @@ impl Pictures {
                     decoded.clear();
                     scale = job.scale;
                 }
+                // Decoded at its own pixels, `got` of them a picture pixel,
+                // then resampled to the device unless it is a picture font.
+                let finish = |(image, got): (Image, f32)| {
+                    if job.font {
+                        return Some(Arc::new(image));
+                    }
+                    let image = look(&image).unwrap_or(image);
+                    at(image, job.scale / got).map(Arc::new)
+                };
                 let image = if job.path.starts_with("@stock/") {
-                    stock::frame(&job.path, job.meta, job.frame).and_then(|image| {
-                        if job.font {
-                            Some(Arc::new(image))
-                        } else {
-                            let image = look(&image).unwrap_or(image);
-                            at_integer(image, job.scale).map(Arc::new)
-                        }
-                    })
+                    stock::frame(&job.path, job.meta, job.frame).and_then(|i| finish((i, 1.)))
                 } else {
-                    read(&job.path).and_then(|bytes| {
+                    // Above 1x, the library's double-size variant when it
+                    // ships one (`name@2x.png`).
+                    let double = (job.scale > 1. && !job.font)
+                        .then(|| doubled(&job.path).and_then(|p| read(&p)))
+                        .flatten();
+                    let (bytes, density) = match double {
+                        Some(bytes) => (Some(bytes), 2.),
+                        None => (read(&job.path), 1.),
+                    };
+                    bytes.and_then(|bytes| {
                         let mut h = std::hash::DefaultHasher::new();
                         bytes.hash(&mut h);
                         let axis = job.meta.axis == Orientation::Vertical;
@@ -125,12 +136,9 @@ impl Pictures {
                         decoded
                             .entry(h.finish())
                             .or_insert_with(|| {
-                                let image = decode(&bytes, job.meta, job.frame)?;
-                                if job.font {
-                                    return Some(Arc::new(image));
-                                }
-                                let image = look(&image).unwrap_or(image);
-                                at_integer(image, job.scale).map(Arc::new)
+                                let want = if job.font { 1. } else { job.scale / density };
+                                let (image, got) = decode(&bytes, job.meta, job.frame, want)?;
+                                finish((image, got * density))
                             })
                             .clone()
                     })
@@ -349,18 +357,20 @@ pub fn glyph(c: char) -> usize {
 /// Above this a PNG is not a UI picture (v2's bound).
 const LIMIT: usize = 32 << 20;
 
-/// Frame `n` of a PNG strip of `meta.frames` along `meta.axis`, as RGBA8.
-/// A vertical strip stops decoding at the frame's last row.
-fn decode(bytes: &[u8], meta: ImageMeta, n: u32) -> Option<Image> {
+/// Frame `n` of a PNG strip of `meta.frames` along `meta.axis`, as RGBA8,
+/// with how many of its pixels make a file pixel: 1, but an SVG is drawn as
+/// vectors at `scale`. A vertical strip stops decoding at the frame's last
+/// row.
+fn decode(bytes: &[u8], meta: ImageMeta, n: u32, scale: f32) -> Option<(Image, f32)> {
     if bytes.starts_with(&[0xff, 0xd8]) {
-        return jpeg(bytes);
+        return jpeg(bytes).map(|i| (i, 1.));
     }
     if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        return webp(bytes);
+        return webp(bytes).map(|i| (i, 1.));
     }
     let head = bytes.get(..bytes.len().min(256)).unwrap_or_default();
     if head.windows(4).any(|w| w == b"<svg") {
-        return svg(bytes);
+        return svg(bytes, scale).map(|i| (i, scale));
     }
     let mut decoder =
         png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: LIMIT });
@@ -424,7 +434,13 @@ fn decode(bytes: &[u8], meta: ImageMeta, n: u32) -> Option<Image> {
             }
         }
     }
-    Image::rgba(fw as u32, fh as u32, out)
+    Image::rgba(fw as u32, fh as u32, out).map(|i| (i, 1.))
+}
+
+/// `path` with `@2x` before its extension.
+fn doubled(path: &str) -> Option<String> {
+    let (stem, ext) = path.rsplit_once('.')?;
+    (!stem.ends_with("@2x") && !ext.contains('/')).then(|| format!("{stem}@2x.{ext}"))
 }
 
 /// `scale` up to the next quarter, between a quarter and four.
@@ -437,37 +453,14 @@ fn quarter(scale: f64) -> f32 {
     }
 }
 
-/// `image` at `scale`, unchanged at 1.
-fn at(image: Image, scale: f32) -> Option<Image> {
+/// `image` at `scale` through [`resample`], unchanged at 1: never
+/// nearest-neighbour, which turns a fractional scale into uneven blocks.
+pub fn at(image: Image, scale: f32) -> Option<Image> {
     if scale == 1. {
         return Some(image);
     }
     let size = |n: u32| ((f64::from(n) * f64::from(scale)).round() as u32).max(1);
     resample(&image, size(image.width), size(image.height))
-}
-
-/// Integer-enlarge pictures without interpolating; the painter downsamples
-/// them to the destination. Shrinking uses Catmull-Rom resampling.
-pub fn at_integer(image: Image, scale: f32) -> Option<Image> {
-    if scale <= 1. {
-        return at(image, scale);
-    }
-    let factor = scale.ceil() as u32;
-    let (w, h) = (
-        image.width.checked_mul(factor)?,
-        image.height.checked_mul(factor)?,
-    );
-    let pixels = image.rgba.as_chunks::<4>().0;
-    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
-    for y in 0..h {
-        let sy = u64::from(y) * u64::from(image.height) / u64::from(h);
-        for x in 0..w {
-            let sx = u64::from(x) * u64::from(image.width) / u64::from(w);
-            let index = usize::try_from(sy * u64::from(image.width) + sx).ok()?;
-            out.extend_from_slice(pixels.get(index)?);
-        }
-    }
-    Image::rgba(w, h, out)
 }
 
 /// `img` at `w` × `h` through a Catmull-Rom filter, widened when it
@@ -599,22 +592,21 @@ fn webp(bytes: &[u8]) -> Option<Image> {
     Image::rgba(w, h, px)
 }
 
-/// Rasters an SVG at twice its own size, so it stays sharp drawn at up to
-/// 200 %: Kontakt 8 `native_ui` icons are vector art.
-fn svg(bytes: &[u8]) -> Option<Image> {
+/// Rasters an SVG as vectors at `scale` device pixels a picture pixel:
+/// Kontakt 8 `native_ui` icons are vector art.
+fn svg(bytes: &[u8], scale: f32) -> Option<Image> {
     use resvg::{tiny_skia, usvg};
-    const OVERSAMPLE: f32 = 2.;
     let tree = usvg::Tree::from_data(bytes, &usvg::Options::default()).ok()?;
     let size = tree.size();
     let (w, h) = (
-        (size.width() * OVERSAMPLE).ceil() as u32,
-        (size.height() * OVERSAMPLE).ceil() as u32,
+        (size.width() * scale).ceil() as u32,
+        (size.height() * scale).ceil() as u32,
     );
     if (w as usize) * (h as usize) * 4 > LIMIT {
         return None;
     }
     let mut pixmap = tiny_skia::Pixmap::new(w.max(1), h.max(1))?;
-    let scale = tiny_skia::Transform::from_scale(OVERSAMPLE, OVERSAMPLE);
+    let scale = tiny_skia::Transform::from_scale(scale, scale);
     resvg::render(&tree, scale, &mut pixmap.as_mut());
     let px: Vec<u8> = pixmap
         .pixels()
@@ -632,10 +624,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_svg_rasters_at_twice_its_size() {
-        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"><rect width="4" height="3" fill="#ff0000"/></svg>"##;
-        let image = decode(svg, ImageMeta::default(), 0).expect("an svg");
-        assert_eq!((image.width, image.height), (8, 6));
+    fn an_svg_rasters_as_vectors_at_its_device_scale() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2"><rect width="4" height="2" fill="#ff0000"/></svg>"##;
+        let image = decode(svg, ImageMeta::default(), 0, 1.5).map(|(i, k)| (i.width, i.height, k));
+        assert_eq!(image, Some((6, 3, 1.5)));
     }
 
     /// A picture font cut at its red markers: 256 glyphs of their own
@@ -698,7 +690,7 @@ mod tests {
     #[test]
     fn a_jpeg_decodes_whole_as_a_still() {
         let bytes = include_bytes!("../tests/fixtures/cover.jpg");
-        let image = decode(bytes, ImageMeta::default(), 0);
+        let image = decode(bytes, ImageMeta::default(), 0, 1.).map(|(i, _)| i);
         let image = image
             .as_ref()
             .map(|i| (i.width, i.height, i.rgba.get(..4).map(<[u8]>::to_vec)));
@@ -741,7 +733,7 @@ mod tests {
             frames: 2,
             ..ImageMeta::default()
         };
-        let down = decode(&bytes, meta, 1);
+        let down = decode(&bytes, meta, 1, 1.).map(|(i, _)| i);
         assert_eq!(down.as_ref().map(|i| (i.width, i.height)), Some((2, 2)));
         assert_eq!(
             down.and_then(|i| i.rgba.get(..4).map(<[u8]>::to_vec)),
@@ -752,7 +744,7 @@ mod tests {
             ..meta
         };
         assert_eq!(
-            decode(&bytes, across, 1).map(|i| (i.width, i.height)),
+            decode(&bytes, across, 1, 1.).map(|(i, _)| (i.width, i.height)),
             Some((1, 4))
         );
     }
@@ -797,16 +789,27 @@ mod tests {
     }
 
     #[test]
-    fn picture_upscaling_preserves_source_pixels() {
-        let source = Image::rgba(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
-        let scaled = source.and_then(|image| at_integer(image, 1.5));
-        assert_eq!(
-            scaled.map(|image| image.rgba.to_vec()),
-            Some(vec![
-                255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255,
-                255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0,
-            ])
-        );
+    fn above_1x_the_double_size_variant_is_drawn() {
+        let one = png(1, 1, &[255, 0, 0, 255]);
+        let two = png(2, 2, &[0, 255, 0, 255].repeat(4));
+        let mut pictures = Pictures::new(Box::new(move |p| match p {
+            "k.png" => Some(one.clone()),
+            "k@2x.png" => Some(two.clone()),
+            _ => None,
+        }));
+        let mut at = |scale| {
+            for _ in 0..1000 {
+                pictures.poll();
+                let image = pictures.frame(AssetRef(0), "k.png", ImageMeta::default(), 0, scale);
+                if let Some(i) = image.filter(|i| f64::from(i.width) == scale.ceil()) {
+                    return i.rgba.get(..4).map(<[u8]>::to_vec);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            None
+        };
+        assert_eq!(at(2.), Some(vec![0, 255, 0, 255]));
+        assert_eq!(at(1.), Some(vec![255, 0, 0, 255]));
     }
 
     #[test]
