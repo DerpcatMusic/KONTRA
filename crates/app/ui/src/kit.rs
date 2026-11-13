@@ -551,8 +551,14 @@ pub fn dropdown(
         .focusable()
         .a11y(A11y::Button)
         .named(name.to_owned())
-        .tip(name.to_owned())
         .id(id.to_owned());
+    // The pointer rests on the button it opened: its tip would float over
+    // the menu.
+    let face = if shown {
+        face
+    } else {
+        face.tip(name.to_owned())
+    };
     let mut el = vec![interactive(face)];
     let mut picked = None;
     if shown {

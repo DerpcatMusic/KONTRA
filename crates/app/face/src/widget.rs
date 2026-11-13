@@ -13,6 +13,8 @@ pub(super) struct Decl<'a> {
     pub(super) cells: Cells,
     pub(super) id: i32,
     pub(super) look: ControlLook<'a>,
+    /// A text variable's text, as the script or the player left it.
+    pub(super) text: Option<&'a str>,
 }
 
 /// Points a knob's drag travels up to sweep its range (Kontakt 8, measured;
@@ -40,6 +42,7 @@ pub(super) fn widget(
         cells,
         id,
         look,
+        ..
     } = d;
     let (kind, cells, id, name) = (*control_kind, *cells, *id, *name);
     let param = |n: usize| params.get(n).copied();
