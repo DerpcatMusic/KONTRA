@@ -42,6 +42,21 @@ fn nka(path: &str) -> Option<&Path> {
     ext.eq_ignore_ascii_case("nka").then_some(path)
 }
 
+/// The file `request` names: its path, or, for a dialog KONTRA does not
+/// show (an empty path), the array's own file (`%perf` is `picked/perf.nka`).
+fn path_of(request: &FileRequest) -> std::borrow::Cow<'_, str> {
+    match request.path.as_str() {
+        "" => {
+            let name = request
+                .name
+                .as_str()
+                .trim_start_matches(['%', '!', '?', '~', '@', '$']);
+            format!("picked/{name}.nka").into()
+        }
+        path => path.into(),
+    }
+}
+
 /// Where a save of `path` goes under `saves`.
 fn saved(saves: Option<&Path>, path: &Path) -> Option<PathBuf> {
     let parts = path.components().filter_map(|c| match c {
@@ -77,7 +92,8 @@ fn bounded(path: &Path) -> Option<Vec<u8>> {
 /// Writes a save's values under `saves`; whether it could.
 fn write(saves: Option<&Path>, reply: &FileReply) -> bool {
     let r = reply.request;
-    let Some(at) = nka(r.path.as_str()).and_then(|p| saved(saves, p)) else {
+    let path = path_of(&r);
+    let Some(at) = nka(&path).and_then(|p| saved(saves, p)) else {
         return false;
     };
     let text = files::write(r.name.as_str(), r.kind, &reply.ints, &reply.texts);
@@ -142,7 +158,7 @@ fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
     }
     let mut ints = vec![0; if text { 0 } else { len }];
     let mut texts = vec![Text::EMPTY; if text { len } else { 0 }];
-    let bytes = read(saves, request.path.as_str());
+    let bytes = read(saves, &path_of(&request));
     let name = request.name.as_str();
     let filled =
         bytes.and_then(|b| files::fill(&b, name, (0, len), request.kind, &mut ints, &mut texts));
