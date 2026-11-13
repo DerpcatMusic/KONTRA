@@ -725,7 +725,13 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // Where the last load the editor asked for lands.
     let mut target = app::Loading::New;
     let mut buttons = None;
+    // Between builds: the frame before's paint and submit, and any idle wait.
+    let mut last: Option<std::time::Instant> = None;
     MuiEditor::new(params, kontra_ui::ui(), SIZE, move |ui, bridge| {
+        let start = std::time::Instant::now();
+        if let Some(t) = last.replace(start) {
+            crate::frames::note("between", start - t);
+        }
         // Opening: one tick here brings the copy a closed editor let lapse
         // up to date, though the host runs no audio to spawn one (a load
         // in progress shows on its own tick).
@@ -750,7 +756,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
         app.load_progress = p.shared.progress.snapshot();
-        let response = kontra_ui::app::view(ui, &mut app);
+        crate::frames::note("fill", start.elapsed());
+        let response = crate::frames::time("view", || kontra_ui::app::view(ui, &mut app));
         // A frame reads its input as it builds, so what a press or release
         // changes (a switch applied to the face, a row selected) shows in
         // the frame after it: ask for that one, or it waits for more input.
