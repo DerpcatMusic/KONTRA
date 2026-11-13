@@ -1763,3 +1763,73 @@ fn kontakts_user_snapshots_list_under_user_content() {
         .unwrap_or_default();
     assert_eq!(names, ["Instruments/Strings", "User Content/Strings/Mine"]);
 }
+
+/// Conflux's header Edit tab, a native page's tap: pressed and let go, the
+/// page shows its Edit page, as Kontakt does.
+#[test]
+fn conflux_edit_tab_switches_the_page() {
+    let Some(path) = library("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki") else {
+        return;
+    };
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+        preset: None,
+        modified: false,
+    }]);
+    let (params, mut dsp) = activate(&saved.write());
+    settle(&params, &mut dsp);
+    let shown = |params: &KontraParams| {
+        let guard = crate::lock(&params.shared.rack);
+        let view = guard.as_ref().unwrap().parts()[0]
+            .as_ref()
+            .unwrap()
+            .view
+            .as_ref()
+            .unwrap();
+        let tree = view.tree();
+        let taps: Vec<(usize, f64, f64)> = (tree.widgets.iter().enumerate())
+            .filter(|(_, w)| w.name.starts_with("native_ui tap") && !w.hidden)
+            .map(|(n, w)| (n, w.rect.x, w.rect.y))
+            .collect();
+        let visible = tree.widgets.iter().filter(|w| !w.hidden).count();
+        (taps, visible, tree.widgets.len())
+    };
+    let (taps, before, _) = shown(&params);
+    let mut header: Vec<_> = taps
+        .iter()
+        .filter(|t| t.2 < 60. && t.1 > 700.)
+        .copied()
+        .collect();
+    header.sort_by(|a, b| a.1.total_cmp(&b.1));
+    // The header's Play, Edit and Settings tabs, left to right.
+    let edit = header.get(1).expect("Play, Edit, Settings").0;
+    for value in [1., 0.] {
+        params
+            .shared
+            .request(crate::Request::Ui(crate::editor::Edit {
+                slot: Some(0),
+                action: kontra_ui::app::Action::Control {
+                    part: 0,
+                    widget: edit,
+                    value,
+                    cell: None,
+                    keys: Default::default(),
+                },
+            }));
+        settle(&params, &mut dsp);
+    }
+    settle(&params, &mut dsp);
+    let (_, after, _) = shown(&params);
+    assert_ne!(before, after, "the Edit tab changed nothing shown");
+}

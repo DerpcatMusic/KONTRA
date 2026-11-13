@@ -38,15 +38,32 @@ impl Engine {
         }
     }
 
-    /// Applies `f` to every addressed note, then refreshes the sounding ones.
+    /// Refreshes, in one pass over the voices, every note a callback wrote to.
+    pub(crate) fn flush_refresh(&mut self) {
+        if self.refresh_later.is_empty() {
+            return;
+        }
+        let notes = std::mem::take(&mut self.refresh_later);
+        self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| notes.contains(&n)));
+        self.refresh_later = notes;
+        self.refresh_later.clear();
+    }
+
+    /// Applies `f` to every addressed note, then refreshes the sounding ones
+    /// (at the end of the callback).
     fn each(&mut self, id: i32, mut f: impl FnMut(&mut Note)) {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
         for &note in &hits {
             if let Some(n) = self.notes.get_mut(note) {
                 f(n);
-                if n.started {
-                    self.refresh_note(note, None);
+                // The running callback's writes refresh once, when it ends.
+                if n.started && !self.refresh_later.contains(&note) {
+                    if self.refresh_later.len() < self.refresh_later.capacity() {
+                        self.refresh_later.push(note);
+                    } else {
+                        self.refresh_note(note, None);
+                    }
                 }
             }
         }
@@ -233,6 +250,14 @@ impl Engine {
 }
 
 impl HostApi for Engine {
+    fn groups(&self) -> i64 {
+        #[cfg(feature = "trace")]
+        if self.trace.is_some() {
+            return -1;
+        }
+        self.masks.groups as i64
+    }
+
     /// `num_groups` and `key_down`, answered without the call machinery. A
     /// traced engine records every call, so it takes the general path.
     fn query(&mut self, action: Action, ints: &[i64]) -> Option<i32> {
@@ -256,6 +281,15 @@ impl HostApi for Engine {
                 i32::from(
                     u32::try_from(key).is_ok_and(|k| k < 128 && self.keys_down.1 >> k & 1 == 1),
                 )
+            }
+            Action::EventNote | Action::EventVelocity | Action::EventId => {
+                let running = self.running.event;
+                let current = running.and_then(|r| self.notes.get(r));
+                match action {
+                    Action::EventNote => current.map_or(0, |n| i32::from(n.key)),
+                    Action::EventVelocity => current.map_or(0, |n| i32::from(n.velocity_byte)),
+                    _ => running.map_or(0, NoteRef::event_id),
+                }
             }
             _ => return None,
         };

@@ -50,6 +50,9 @@ pub struct Unit {
     /// A drive unit's settings now and at the next refresh, `left` frames
     /// away; it steps between them every [`TICK`] frames.
     pub ramp: Option<Ramp>,
+    /// The effect settings the unit last took, when no ramp moved it since:
+    /// the same again changes nothing, so a refresh skips it.
+    pub tuned: Option<ir::EffectKind>,
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +139,7 @@ pub fn template(group: &kontra_plan::Group, rate: u32) -> Arc<[Unit]> {
                 outer,
                 line,
                 ramp: None,
+                tuned: None,
             })
         })
         .collect()
@@ -250,7 +254,16 @@ fn drive(
 }
 
 pub fn tune_unit(u: &mut Unit, t: Tune<'_>, ramp: Option<Ramp>, rate: u32) {
+    let effect = match t {
+        Tune::Effect(e) => Some(*e),
+        _ => None,
+    };
+    let unchanged = ramp.is_none() && u.ramp.is_none() && effect.is_some() && u.tuned == effect;
     u.ramp = ramp;
+    if unchanged {
+        return;
+    }
+    u.tuned = effect.filter(|_| ramp.is_none());
     tune(&mut u.kind, &mut u.outer, t, rate);
 }
 
