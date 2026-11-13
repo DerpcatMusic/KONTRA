@@ -21,14 +21,16 @@ impl Script {
     #[must_use]
     pub fn restore(&self, saved: &[String]) -> Restore {
         restore(saved, |key| {
-            let var = self.variables.iter().find(|v| bare(&v.name) == key)?;
+            let var = self.variables.iter().find(|v| named(&v.name, key))?;
             Some(var.cells)
         })
     }
 }
 
-/// What `saved` writes into the variables `cells` finds by bare lowercase
-/// name (no type sigil), as [`Script::restore`] does.
+/// What `saved` writes into the variables `cells` finds by name, as
+/// [`Script::restore`] does: `cells` gets the saved name as written (so
+/// `$Tuning` finds `$Tuning`, not an earlier `%Tuning`), then, when that
+/// finds nothing, its bare lowercase name (no type sigil). See [`named`].
 #[must_use]
 pub fn restore(saved: &[String], cells: impl Fn(&str) -> Option<Cells>) -> Restore {
     let mut out = Restore::default();
@@ -37,7 +39,7 @@ pub fn restore(saved: &[String], cells: impl Fn(&str) -> Option<Cells>) -> Resto
             out.skipped.push(entry.clone());
             continue;
         };
-        let Some(var) = cells(&bare(name)) else {
+        let Some(var) = cells(name).or_else(|| cells(&bare(name))) else {
             out.skipped.push(name.to_owned());
             continue;
         };
@@ -67,6 +69,13 @@ pub fn restore(saved: &[String], cells: impl Fn(&str) -> Option<Cells>) -> Resto
     out.ints.sort_by_key(|&(cell, _)| cell);
     out.texts.sort_by_key(|&(cell, _)| cell);
     out
+}
+
+/// Whether variable `name` is the one a saved `key` names: the same name,
+/// any case, or, for a bare key, the same name without its sigil.
+#[must_use]
+pub fn named(name: &str, key: &str) -> bool {
+    name.eq_ignore_ascii_case(key) || bare(name) == key
 }
 
 /// A variable's name without its type sigil, lowercase.
@@ -136,5 +145,37 @@ mod tests {
         assert!(r.ints.contains(&(cell("~c"), 0.5f64.to_bits() as i64)));
         assert_eq!(r.texts, [(cell("@d"), "hello world".to_owned())]);
         assert_eq!(r.skipped, ["$gone"]);
+    }
+
+    /// Una Corda saves `$Tuning 0` and declares `%Tuning[128]` first: the
+    /// scalar must not land in the array (it zeroed the stretch tuning).
+    #[test]
+    fn a_saved_name_finds_its_own_sigil_first() {
+        let script = crate::compile(
+            "on init
+                declare %tuning[3]
+                declare $Tuning
+                make_persistent($Tuning)
+            end on",
+            &[],
+        )
+        .unwrap();
+        let base = |name: &str| match script.variables.iter().find(|v| &*v.name == name) {
+            Some(v) => match v.cells {
+                crate::Cells::Int { base, .. } => base,
+                other => panic!("{other:?}"),
+            },
+            None => panic!("{name}"),
+        };
+        let r = script.restore(&["$Tuning 1".to_owned(), "tuning 2".to_owned()]);
+        assert_eq!(
+            r.ints,
+            [
+                (base("%tuning"), 2),
+                (base("%tuning") + 1, 2),
+                (base("%tuning") + 2, 2),
+                (base("$Tuning"), 1)
+            ]
+        );
     }
 }
