@@ -46,13 +46,10 @@ pub enum Command {
     Hold(usize, Hold),
     /// Read a part's persistent script cells and send them back.
     Capture(Box<Capture>),
-    /// Recall saved values (by script slot) into `part`'s running scripts,
-    /// if the part is still that load; the box comes back to be freed.
-    Recall {
-        part: usize,
-        generation: u64,
-        saved: Box<[kontra_engine::Saved]>,
-    },
+    /// Lend `part`'s engine to the control thread to recall saved values
+    /// into, if the part is still that load: the box comes back holding it,
+    /// and the part is silent until it is installed again.
+    Recall(Box<Recalling>),
     /// Answer a part's file request ([`files`]), if the part is still
     /// that load; the box comes back.
     File {
@@ -99,4 +96,13 @@ pub enum Command {
         envelope: kontra_engine::Ahdsr,
         insert: Box<Option<(usize, ir::Effect)>>,
     },
+}
+
+/// A recall of saved values (by script slot) into a part's running
+/// scripts: the audio side puts the part's engine in it.
+pub struct Recalling {
+    pub part: usize,
+    pub generation: u64,
+    pub saved: Box<[kontra_engine::Saved]>,
+    pub engine: Option<Box<Engine>>,
 }

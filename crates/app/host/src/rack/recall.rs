@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::instrument::Preset;
 use kontra_engine::{Engine, Plan, Recall, Saved, ir};
 
+use super::command::Recalling;
 use super::{Command, Part, Rack, ScriptState};
 
 /// Puts the effect types and responses scripts loaded after `on init` into
@@ -80,12 +81,12 @@ impl Rack {
                 p.script.loaded = loaded;
                 p.script.latest = None;
                 let generation = p.script.generation;
-                let saved = saved.into_boxed_slice();
-                self.send(Command::Recall {
+                self.send(Command::Recall(Box::new(Recalling {
                     part,
                     generation,
-                    saved,
-                });
+                    saved: saved.into_boxed_slice(),
+                    engine: None,
+                })));
             }
             Recall::Restart => self.restart(part, &plan, saved, loaded),
         }
@@ -238,6 +239,35 @@ impl Rack {
         );
         let started = started(plan.clone(), &slots, saved, engine, face);
         self.restarted(part, started, loaded);
+    }
+
+    /// Recalls into the engine the audio side lent, here, and installs it
+    /// again with the plan its zone edits left; one whose part moved on
+    /// is dropped.
+    pub(super) fn recalled(&mut self, mut recalling: Recalling) {
+        let Some(mut engine) = recalling.engine.take() else {
+            return;
+        };
+        let part = recalling.part;
+        let ours = |p: &Part| p.script.generation == recalling.generation;
+        let Some(mut info) = self
+            .parts
+            .get_mut(part)
+            .filter(|p| p.as_ref().is_some_and(ours))
+            .and_then(Option::take)
+        else {
+            return;
+        };
+        engine.recall(std::mem::take(&mut recalling.saved));
+        super::requests::init_tables(&mut engine, &self.store.client());
+        info.plan = Some(Arc::clone(engine.plan()));
+        // The Sound tab edits from what the recall left, not from before it.
+        let revision = info.sounds.revision + 1;
+        info.sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
+        info.sounds.revision = revision;
+        // A capture still out answers the old load: ask the new one afresh.
+        info.script.asked = false;
+        self.install(part, engine, info);
     }
 
     /// `part` plays `started`, its scripts' values saved as `loaded`.
