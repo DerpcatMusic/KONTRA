@@ -122,13 +122,8 @@ pub struct Voice {
     env: Envelope,
     fade: Fade,
     life: Life,
-    scratch: Box<[[f32; 2]]>,
-    /// The frames a loop crossfade blends in.
-    partner: Box<[[f32; 2]]>,
     /// The codec block last decoded for the frames read and for the blend.
     decoded: [Box<kontra_stream::Decoded>; 2],
-    /// Interpolated frames before the envelope and gain.
-    raw: Box<[[f32; 2]]>,
     /// Cursor position of the note's release, once it came.
     released: Option<u64>,
     missing: u64,
@@ -141,8 +136,6 @@ pub struct Voice {
     heads: [f64; 2],
     /// Frames since the stretch began, which places its grains.
     grain: u64,
-    /// Head 0's frames while head 1 reads.
-    head: Box<[[f32; 2]]>,
     #[cfg(feature = "trace")]
     last_peak: f32,
     #[cfg(feature = "trace")]
@@ -151,8 +144,41 @@ pub struct Voice {
     offline_wait_timeouts: u64,
 }
 
+/// The buffers a voice renders through, one set for every voice an engine
+/// renders in turn: none holds anything between one chunk and the next.
+pub struct Scratch {
+    /// Source frames read before interpolation.
+    window: Box<[[f32; 2]]>,
+    /// The frames a loop crossfade blends in.
+    partner: Box<[[f32; 2]]>,
+    /// Interpolated frames before the envelope and gain.
+    raw: Box<[[f32; 2]]>,
+    /// Head 0's frames while head 1 reads.
+    head: Box<[[f32; 2]]>,
+}
+
+impl Scratch {
+    /// Allocates the buffers; call at prepare, never on the audio thread.
+    #[must_use]
+    pub fn new() -> Self {
+        let buffer = || vec![[0.0; 2]; SCRATCH].into_boxed_slice();
+        Self {
+            window: buffer(),
+            partner: buffer(),
+            raw: buffer(),
+            head: buffer(),
+        }
+    }
+}
+
+impl Default for Scratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Voice {
-    /// Allocates the voice's scratch; call at prepare, never on the audio thread.
+    /// Allocates the voice's state; call at prepare, never on the audio thread.
     #[must_use]
     pub fn allocate() -> Self {
         Self {
@@ -167,9 +193,6 @@ impl Voice {
             env: Envelope::new(Ahdsr::GATE),
             fade: Fade::NONE,
             life: Life::Held,
-            scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
-            partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
-            raw: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             decoded: [kontra_stream::Decoded::new(), kontra_stream::Decoded::new()],
             released: None,
             missing: 0,
@@ -177,7 +200,6 @@ impl Voice {
             speed: 1.0,
             heads: [0.0; 2],
             grain: 0,
-            head: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             #[cfg(feature = "trace")]
             last_peak: 0.0,
             #[cfg(feature = "trace")]
@@ -396,8 +418,14 @@ impl Voice {
 
     /// Mixes the next `out.len()` frames into `out`. `now` is the sample time of
     /// `out[0]`, the deadline for the pages this render asks the store for.
-    pub fn render(&mut self, client: &StreamClient, now: u64, out: &mut [[f32; 2]]) {
-        self.render_through(client, now, out, |_| {});
+    pub fn render(
+        &mut self,
+        scratch: &mut Scratch,
+        client: &StreamClient,
+        now: u64,
+        out: &mut [[f32; 2]],
+    ) {
+        self.render_through(scratch, client, now, out, |_| {});
     }
 
     /// As [`Self::render`], with `insert` run on the interpolated signal
@@ -405,6 +433,7 @@ impl Voice {
     /// most 512 frames.
     pub fn render_through(
         &mut self,
+        scratch: &mut Scratch,
         client: &StreamClient,
         now: u64,
         out: &mut [[f32; 2]],
@@ -481,15 +510,15 @@ impl Voice {
             }
             let filled = if let Some(table) = region.table.as_mut() {
                 let cursor = (self.at(0), self.step);
-                let raw = self.raw.get_mut(..n).unwrap_or_default();
+                let raw = scratch.raw.get_mut(..n).unwrap_or_default();
                 table.render(cursor, raw);
                 raw.len()
             } else if stretched {
-                self.read_stretched(client, &region, n)
+                self.read_stretched(scratch, client, &region, n)
             } else {
-                self.read_window(client, &region, n, (self.anchor, self.elapsed))
+                self.read_window(scratch, client, &region, n, (self.anchor, self.elapsed))
             };
-            let raw = self.raw.get_mut(..filled).unwrap_or_default();
+            let raw = scratch.raw.get_mut(..filled).unwrap_or_default();
             insert(raw);
             for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
                 self.lagged += (self.lag.gain - self.lagged) * self.lag.coef;
@@ -534,7 +563,13 @@ impl Voice {
     /// plays the note's start in full.
     // ponytail: a plain two-head overlap at a fixed 2048-frame grain, no
     // waveform alignment; Kontakt's stretch is smoother on sustained tones.
-    fn read_stretched(&mut self, client: &StreamClient, region: &Region, n: usize) -> usize {
+    fn read_stretched(
+        &mut self,
+        scratch: &mut Scratch,
+        client: &StreamClient,
+        region: &Region,
+        n: usize,
+    ) -> usize {
         let at = self.at(0);
         if self.grain % GRAIN == HALF_GRAIN {
             self.heads[0] = at;
@@ -542,13 +577,13 @@ impl Voice {
         if self.grain.is_multiple_of(GRAIN) {
             self.heads[1] = at;
         }
-        let a = self.read_window(client, region, n, (self.heads[0], 0));
-        if let (Some(head), Some(raw)) = (self.head.get_mut(..a), self.raw.get(..a)) {
+        let a = self.read_window(scratch, client, region, n, (self.heads[0], 0));
+        if let (Some(head), Some(raw)) = (scratch.head.get_mut(..a), scratch.raw.get(..a)) {
             head.copy_from_slice(raw);
         }
-        let filled = a.min(self.read_window(client, region, n, (self.heads[1], 0)));
+        let filled = a.min(self.read_window(scratch, client, region, n, (self.heads[1], 0)));
         let grain = self.grain;
-        let pairs = self.raw.iter_mut().zip(self.head.iter()).take(filled);
+        let pairs = scratch.raw.iter_mut().zip(scratch.head.iter()).take(filled);
         for (i, (b, a)) in pairs.enumerate() {
             let phase = ((grain + HALF_GRAIN + i as u64) % GRAIN) as f32 / GRAIN as f32;
             let w = 1.0 - (2.0 * phase - 1.0).abs();
@@ -567,6 +602,7 @@ impl Voice {
     /// returns how many it filled.
     fn read_window(
         &mut self,
+        scratch: &mut Scratch,
         client: &StreamClient,
         region: &Region,
         n: usize,
@@ -579,9 +615,9 @@ impl Voice {
         let at = |i: u64| base + (frames + i) as f64 * step;
         let lo = at(0).floor() as i64 - 1;
         let span = (at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
-        let partner = &mut self.partner;
+        let partner = &mut scratch.partner;
         let [main, blend_cache] = &mut self.decoded;
-        let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
+        let Some(window) = scratch.window.get_mut(..span.min(SCRATCH)) else {
             return 0;
         };
         #[cfg(feature = "trace")]
@@ -645,7 +681,7 @@ impl Voice {
         }
 
         let mut filled = 0;
-        for (i, frame) in self.raw.iter_mut().take(n).enumerate() {
+        for (i, frame) in scratch.raw.iter_mut().take(n).enumerate() {
             let x = at(i as u64) - lo as f64;
             let base = x.floor() as usize;
             let t = (x - base as f64) as f32;
