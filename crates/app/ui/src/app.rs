@@ -480,15 +480,14 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     Response { el, changed: out }
 }
 
-/// The line under the header fills as the instrument loads.
+/// The line under the header, lit while a load is under way; the load's
+/// row in the rack shows how far it is.
 fn loading_bar(app: &App) -> El {
     if app.loading.is_none() {
         return rule();
     }
-    row![block(Len::Pct(f64::from(app.load_progress.percent)), 3).fill(Role::Ink.alpha(0.7))]
-        .w(Len::Pct(100.))
-        .h(3)
-        .fill(Role::Ink.alpha(0.08))
+    block(Len::Pct(100.), 1)
+        .fill(Role::Ink.alpha(0.7))
         .shrink(0)
         .named("Loading")
 }

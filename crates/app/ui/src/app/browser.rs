@@ -318,12 +318,7 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 /// The chosen library's instruments, foldered by the path inside it.
 fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let loading = app.loading.is_some();
-    let load_label = format!(
-        "{} {} % · {} MB",
-        app.load_progress.stage.label(),
-        app.load_progress.percent,
-        app.load_progress.bytes / 1_000_000
-    );
+    let load_label = format!("{} %", app.load_progress.percent);
     let into = focused(&app.parts);
     let v = &mut app.view;
     let search = field(

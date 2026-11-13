@@ -240,6 +240,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         s.click("library-0")?;
         s.save("presets")?;
         s.click("preset-0")?;
+        s.app.loading = Some(app::Loading::New);
+        s.app.load_progress = kontra_protocol::LoadSnapshot {
+            stage: kontra_protocol::LoadStage::Samples,
+            percent: 76,
+            bytes: 152_000_000,
+            total: 283_000_000,
+        };
+        s.save("loading")?;
+        s.app.loading = None;
         s.app.parts = parts();
         s.save("rack")?;
         for menu in [

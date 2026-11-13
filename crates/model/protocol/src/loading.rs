@@ -32,6 +32,19 @@ pub struct LoadSnapshot {
     pub stage: LoadStage,
     pub percent: u8,
     pub bytes: u64,
+    /// Sample bytes this load plans to hold, once known.
+    pub total: u64,
+}
+
+impl std::fmt::Display for LoadSnapshot {
+    /// "Loading samples · 68 % · 120 of 283 MB".
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} · {} %", self.stage.label(), self.percent)?;
+        match self.total {
+            0 => Ok(()),
+            t => write!(f, " · {} of {} MB", self.bytes / 1_000_000, t / 1_000_000),
+        }
+    }
 }
 
 // Rounded mean shares of the five measured instrument loads. The split is an
@@ -85,13 +98,9 @@ impl LoadProgress {
         let percent = match stage {
             LoadStage::Reading => 0,
             LoadStage::Samples => {
-                let span = SAMPLES_END - READING_END;
-                READING_END
-                    + if total == 0 {
-                        0
-                    } else {
-                        (bytes.saturating_mul(u64::from(span)) / total).min(u64::from(span)) as u8
-                    }
+                let span = u64::from(SAMPLES_END - READING_END);
+                let done = bytes.saturating_mul(span).checked_div(total).unwrap_or(0);
+                READING_END + u8::try_from(done.min(span)).unwrap_or(0)
             }
             LoadStage::Scripts => SAMPLES_END,
             LoadStage::Interface => SCRIPTS_END,
@@ -100,6 +109,7 @@ impl LoadProgress {
             stage,
             percent,
             bytes,
+            total,
         }
     }
 }
