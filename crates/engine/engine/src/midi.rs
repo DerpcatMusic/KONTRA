@@ -70,8 +70,21 @@ impl Engine {
             if !down {
                 self.notes
                     .select(&mut hits, |n| n.pedal_held && n.host.channel == channel);
+                // Kontakt runs `on release` again at pedal-up for every note
+                // the pedal held, after `on controller` (oracle, sine probe,
+                // Kontakt 8, 2026-11-13); one that ignores it keeps playing.
                 for &note in &hits {
-                    self.release(note);
+                    if let Some(slot) = self.release_callbacks(note) {
+                        if let Some(n) = self.notes.get_mut(note) {
+                            n.pedal_held = false;
+                        }
+                        let script = self.plan.scripts.get(usize::from(slot));
+                        if script.is_some_and(|s| s.held_release_ends_children) {
+                            self.end_children(note);
+                        }
+                    } else {
+                        self.release(note);
+                    }
                 }
             }
         }
