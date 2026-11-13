@@ -249,6 +249,9 @@ impl Group {
                 | ir::ModKind::LfoRate {
                     source: input, lfo, ..
                 }
+                | ir::ModKind::LfoDivision {
+                    source: input, lfo, ..
+                }
                 | ir::ModKind::LfoHz {
                     source: input, lfo, ..
                 } if source == ir::Source::Lfo(lfo) => self.reads(input, cc),
@@ -608,6 +611,7 @@ pub fn source(kind: &ir::ModKind) -> Option<ir::Source> {
         | K::LfoPhase { source, .. }
         | K::LfoRate { source, .. }
         | K::LfoHz { source, .. }
+        | K::LfoDivision { source, .. }
         | K::Intensity { source, .. }
         | K::Wavetable { source, .. }
         | K::LoopShift { source, .. } => Some(source),

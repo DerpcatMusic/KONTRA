@@ -40,10 +40,6 @@ impl<L: Library> Translator<'_, '_, L> {
             .filter_map(|(insert, c)| {
                 let tag = c.parent()?.parent()?.tag_name().name();
                 let q = c.attribute("Destination") == Some("Q") && tag != "OnePole";
-                // A comb's Q is its loop gain: not a resonance route.
-                if q && tag == "CombFilter" {
-                    return None;
-                }
                 let mut r = if q {
                     modulation::factor(modulation::reach(program, c, (tag, "Q"))?, c)?
                 } else {

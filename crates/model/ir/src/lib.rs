@@ -267,6 +267,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_synced_rate_moves_along_the_note_ladder_and_stays_on_it() {
+        // 2/3 of a beat is place 18; four places on is 1/4 (place 22).
+        assert!((ladder_beats(0.666_666_7, 4.0) - 0.25).abs() < 1e-6);
+        assert_eq!(ladder_beats(2.0, -40.0), 128.0);
+        assert!((ladder_beats(1.0, 0.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn block_keystream_reads_in_any_piece_and_undoes_itself() {
         let plain: Vec<u8> = (0..1500u32).map(|i| (i * 7 + 3) as u8).collect();
         let key = Keystream::Blocks {
@@ -434,6 +442,28 @@ pub enum Clock {
     Voice,
     /// Runs from the engine's start, shared by every voice.
     Free,
+}
+
+/// Beats per cycle of a tempo-synced rate knob's 30 places, slowest first
+/// (a format's note values: 32 bars down to a 32nd triplet).
+pub const NOTE_LADDER: [f32; 30] = [
+    128.0, 64.0, 32.0, 28.0, 24.0, 20.0, 16.0, 12.0, 8.0, 6.0, 4.0, 3.0, 8.0 / 3.0, 2.0, 1.5,
+    4.0 / 3.0, 1.0, 0.75, 2.0 / 3.0, 0.5, 0.375, 1.0 / 3.0, 0.25, 0.1875, 1.0 / 6.0, 0.125,
+    0.093_75, 1.0 / 12.0, 0.0625, 1.0 / 24.0,
+];
+
+/// `beats` moved `shift` places along [`NOTE_LADDER`] from its nearest place,
+/// held on the ladder.
+#[must_use]
+pub fn ladder_beats(beats: f32, shift: f32) -> f32 {
+    let near = |b: f32| (b / beats.max(1e-6)).ln().abs();
+    let at = NOTE_LADDER
+        .iter()
+        .enumerate()
+        .min_by(|a, b| near(*a.1).total_cmp(&near(*b.1)))
+        .map_or(0, |(i, _)| i);
+    let to = (at as f32 + shift).round().clamp(0.0, 29.0) as usize;
+    NOTE_LADDER.get(to).copied().unwrap_or(beats)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
