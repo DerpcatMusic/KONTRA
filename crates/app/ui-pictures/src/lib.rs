@@ -510,14 +510,15 @@ fn quarter(scale: f64) -> f32 {
     }
 }
 
-/// `image` at `scale` through [`resample`], unchanged at 1: never
-/// nearest-neighbour, which turns a fractional scale into uneven blocks.
+/// A library picture at `scale`, unchanged at 1, through a linear filter:
+/// Kontakt 8 draws its pictures at 150 % bilinear (oracle fit on Areia's
+/// buttons: linear 5.6 and 7.2, Catmull-Rom 9.0 and 14.5, nearest 14.7 and 32.7).
 pub fn at(image: Image, scale: f32) -> Option<Image> {
     if scale == 1. {
         return Some(image);
     }
     let size = |n: u32| ((f64::from(n) * f64::from(scale)).round() as u32).max(1);
-    resample(&image, size(image.width), size(image.height))
+    filtered(&image, size(image.width), size(image.height), (linear, 1.))
 }
 
 /// The `size` pixels of `img` from `at`.
@@ -534,6 +535,11 @@ pub fn crop(img: &Image, (x, y): (u32, u32), (w, h): (u32, u32)) -> Option<Arc<I
 /// `img` at `w` × `h` through a Catmull-Rom filter, widened when it
 /// shrinks, in premultiplied alpha so an edge keeps its colour.
 pub fn resample(img: &Image, w: u32, h: u32) -> Option<Image> {
+    filtered(img, w, h, (catmull_rom, 2.))
+}
+
+/// `img` at `w` × `h` through `kernel` of `support` source pixels each way.
+fn filtered(img: &Image, w: u32, h: u32, kernel: (fn(f64) -> f64, f64)) -> Option<Image> {
     let (sw, sh) = (img.width as usize, img.height as usize);
     let (w, h) = (w as usize, h as usize);
     let src: Vec<[f32; 4]> = img
@@ -555,14 +561,14 @@ pub fn resample(img: &Image, w: u32, h: u32) -> Option<Image> {
         return None;
     }
     let mut across = Vec::with_capacity(w * sh);
-    let taps = weights(sw, w);
+    let taps = weights(sw, w, kernel);
     for row in src.chunks_exact(sw.max(1)) {
         for (lo, ws) in &taps {
             across.push(mix(row.iter().skip(*lo), ws));
         }
     }
     let mut out = Vec::with_capacity(w * h * 4);
-    for (lo, ws) in weights(sh, h) {
+    for (lo, ws) in weights(sh, h, kernel) {
         let rows: Vec<&[[f32; 4]]> = across
             .chunks_exact(w.max(1))
             .skip(lo)
@@ -591,17 +597,21 @@ fn mix<'a>(px: impl Iterator<Item = &'a [f32; 4]>, ws: &[f32]) -> [f32; 4] {
 
 /// For each of `to` samples across `from`: its first source sample and the
 /// weights from there.
-fn weights(from: usize, to: usize) -> Vec<(usize, Vec<f32>)> {
+fn weights(
+    from: usize,
+    to: usize,
+    (kernel, support): (fn(f64) -> f64, f64),
+) -> Vec<(usize, Vec<f32>)> {
     let ratio = to as f64 / from.max(1) as f64;
     let stretch = (1. / ratio).max(1.);
     let last = from.saturating_sub(1) as f64;
     (0..to)
         .map(|i| {
             let c = (i as f64 + 0.5) / ratio - 0.5;
-            let lo = (c - 2. * stretch).ceil().clamp(0., last);
-            let hi = (c + 2. * stretch).floor().clamp(lo, last);
+            let lo = (c - support * stretch).ceil().clamp(0., last);
+            let hi = (c + support * stretch).floor().clamp(lo, last);
             let mut ws: Vec<f32> = (lo as usize..=hi as usize)
-                .map(|s| catmull_rom((s as f64 - c) / stretch) as f32)
+                .map(|s| kernel((s as f64 - c) / stretch) as f32)
                 .collect();
             let sum: f32 = ws.iter().sum();
             if sum != 0. {
@@ -610,6 +620,10 @@ fn weights(from: usize, to: usize) -> Vec<(usize, Vec<f32>)> {
             (lo as usize, ws)
         })
         .collect()
+}
+
+fn linear(x: f64) -> f64 {
+    (1. - x.abs()).max(0.)
 }
 
 fn catmull_rom(x: f64) -> f64 {
