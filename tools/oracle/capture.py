@@ -118,6 +118,12 @@ def probe_lua(nkis):
     """Loads each NKI on MIDI channel k+1 and reports it. Returns at once: the audio device is
     selected afterwards through the GUI, which needs Kontakt's Lua thread to be idle."""
     rows = ",".join(lua_str(p) for p in nkis)
+    sources = ""
+    if os.environ.get("KONTRA_SCRIPT_SOURCE"):  # script n's source is DIR/n.ksp (kontra-inspect does the same)
+        for f in sorted(Path(os.environ["KONTRA_SCRIPT_SOURCE"]).glob("[0-9].ksp")):
+            sources += (f"local f = io.open({lua_str(dump.winpath(f.resolve()))}, 'rb') "
+                        f"local ok, e = pcall(Kontakt.set_instrument_script_source, idx, {f.stem}, f:read('a')) f:close() "
+                        f"say(string.format('{{\"script\":{f.stem},\"ok\":%s,\"error\":%q}}', tostring(ok), tostring(e))) ")
     return f"""
 ORACLE_ITEMS = {{{rows}}}
 local out = assert(io.open(ORACLE_OUT, "w"))
@@ -126,6 +132,7 @@ for i, path in ipairs(ORACLE_ITEMS) do
   local ok, idx = pcall(Kontakt.load_instrument, path)
   local good = ok and math.type(idx) == "integer"
   if good then pcall(Kontakt.set_instrument_midi_channel, idx, i + {slot.channel_block()[0]}) end
+  if good then {sources} end
   say(string.format('{{"ready":%d,"ok":%s,"error":%q}}', i, tostring(good), good and "" or tostring(idx)))
 end
 say('{{"done":true}}')

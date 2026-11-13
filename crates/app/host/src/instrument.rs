@@ -29,6 +29,9 @@ pub struct Loaded {
     pub pages: Vec<Option<kontra_lua::Ui>>,
     /// By script slot, its persistent variables ([`crate::persist`]).
     pub persist: Vec<crate::persist::Vars>,
+    /// By script slot, a KSP script's catalog names as compiled: the
+    /// engine-parameter id `SYMBOL_BASE + n` it passes is name n.
+    pub symbols: Vec<Box<[Box<str>]>>,
 }
 
 /// Reads the instrument at `path` into the model: a UVI program when the path
@@ -163,6 +166,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     let mut faces = Vec::new();
     let mut pages = Vec::new();
     let mut persist = Vec::new();
+    let mut symbols = Vec::new();
     diagnostics.extend(instrument.diagnostics);
     // ponytail: a slot that fails to compile is dropped, and the slots after
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
@@ -179,6 +183,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                     persist.push(crate::persist::Vars::lua(n, &compiled.ui));
                     pages.push(Some(std::mem::take(&mut compiled.ui)));
                     plan.scripts.push(crate::script::lua_plan(compiled));
+                    symbols.push(Box::default());
                     faces.push(None);
                 }
                 Err(e) => diagnostics.push(ir::Diagnostic {
@@ -214,6 +219,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                     });
                 }
                 plan.scripts.push(planned);
+                symbols.push(compiled.symbols.clone().into_boxed_slice());
                 let start = std::time::Instant::now();
                 faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
                 faces_time += start.elapsed();
@@ -254,6 +260,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         faces,
         pages,
         persist,
+        symbols,
     }
 }
 

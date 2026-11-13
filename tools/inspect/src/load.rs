@@ -79,13 +79,6 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let effects = json!({"inserts": format!("{:?}", instrument.inserts),
         "sends": format!("{:?}", instrument.sends), "main": format!("{:?}", instrument.main),
         "buses": format!("{:?}", instrument.buses), "slot_laws": format!("{:?}", instrument.slot_laws)});
-    // Each KSP script's catalog names: an engine-parameter id is a symbol
-    // of the script that passed it, so an address is named by every script
-    // that resolves its id to an engine parameter.
-    let symbols: Vec<kontra_ksp::Script> = (instrument.scripts.iter())
-        .filter(|s| s.dialect == kontra_engine::ir::Dialect::Ksp)
-        .filter_map(|s| kontra_ksp::compile(&s.source, &[]).ok())
-        .collect();
     let mut store = Store::new(StoreConfig::DEFAULT).context("creating sample store")?;
     let loaded = kontra_host::instrument::build(instrument, RATE, &mut store);
     let build_times = loaded.timings;
@@ -256,8 +249,12 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let unanswered = format!("{:?}", engine.unhandled_actions());
     let unanswered_pars: Vec<_> = (engine.unanswered_pars().into_iter())
         .map(|([par, group, slot, generic], calls)| {
-            let mut names: Vec<&str> = (symbols.iter())
-                .filter_map(|s| s.symbol(par))
+            // An engine-parameter id is a symbol of the script that passed
+            // it, so an address is named by every script that resolves its id
+            // to an engine parameter, as the engine compiled it.
+            let n = usize::try_from(par - kontra_ksp::SYMBOL_BASE).ok();
+            let mut names: Vec<&str> = (loaded.symbols.iter())
+                .filter_map(|s| s.get(n?).map(|n| &**n))
                 .filter(|n| n.starts_with("$ENGINE_PAR"))
                 .collect();
             names.dedup();
