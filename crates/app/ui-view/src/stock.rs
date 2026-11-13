@@ -398,8 +398,7 @@ fn field_words(
                             StockMetrics::Field => {
                                 (u16::from(p[3]) * 255 / FIELD_ATLAS_COVERAGE).min(255) as u8
                             }
-                            StockMetrics::Button12
-                            | StockMetrics::Pixel(_) => p[3],
+                            StockMetrics::Button12 | StockMetrics::Pixel(_) => p[3],
                         }) * u16::from(color.a))
                             / 255) as u8,
                     ]
@@ -413,9 +412,7 @@ fn field_words(
                     match metrics {
                         StockMetrics::Field => (h - height) / 2. - s,
                         StockMetrics::Button12 => (h - height) / 2.,
-                        StockMetrics::Pixel(Some(y)) => {
-                            f64::from(y) * s
-                        }
+                        StockMetrics::Pixel(Some(y)) => f64::from(y) * s,
                         StockMetrics::Pixel(None) => 0.,
                     },
                 ));
@@ -682,7 +679,11 @@ pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
 
 /// Kontakt's face for a script label with no picture: a flat grey, one
 /// pixel in on every side (Kontakt 8 oracle, a bare probe page).
-pub(super) fn label_face(tree: &Interface, w: &Widget, (width, height, s): (f64, f64, f64)) -> Option<El> {
+pub(super) fn label_face(
+    tree: &Interface,
+    w: &Widget,
+    (width, height, s): (f64, f64, f64),
+) -> Option<El> {
     (matches!(w.kind, Kind::Label) && !w.hide.background && unpictured(tree, w)).then(|| {
         block((width - 2. * s).max(0.), (height - 2. * s).max(0.))
             .radius(0.)
