@@ -374,7 +374,7 @@ impl Store {
         let progress = self.progress.as_deref();
         let next = AtomicU32::new(0);
         let workers = std::thread::available_parallelism()
-            .map_or(4, |n| n.get())
+            .map_or(4, |n| n.get() * 3) // reads wait on the disk: more lanes than cores
             .min(jobs.len().max(1));
         let read: Vec<Vec<RunRead>> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
