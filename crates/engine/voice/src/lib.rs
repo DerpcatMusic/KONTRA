@@ -584,7 +584,6 @@ impl Voice {
         let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
             return 0;
         };
-        window.fill([0.0; 2]);
         #[cfg(feature = "trace")]
         if self.offline_wait {
             region.runs(lo, window.len(), released, |_, run| {
@@ -603,8 +602,13 @@ impl Voice {
             }
         }
         let mut missing = 0;
+        // Runs tile the window from the first one's offset; each read writes
+        // all its frames, so only what no run covers needs zeroing.
+        let (mut first, mut end) = (window.len(), 0);
         region.runs(lo, window.len(), released, |offset, run| {
             let count = run.count;
+            first = first.min(offset);
+            end = end.max(offset + count);
             if let Some(dst) = window.get_mut(offset..offset + count) {
                 if run.descending {
                     missing += sample
@@ -633,6 +637,12 @@ impl Voice {
             }
         });
         self.missing += u64::from(missing);
+        if first >= end {
+            window.fill([0.0; 2]);
+        } else {
+            window.get_mut(..first).unwrap_or_default().fill([0.0; 2]);
+            window.get_mut(end..).unwrap_or_default().fill([0.0; 2]);
+        }
 
         let mut filled = 0;
         for (i, frame) in self.raw.iter_mut().take(n).enumerate() {
