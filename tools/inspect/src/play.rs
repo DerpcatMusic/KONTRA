@@ -108,7 +108,14 @@ fn run_events(
         })
         .collect();
     let stream = store.client();
-    let mut engine = Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 262144);
+    // KONTRA_INSPECT_LEAN=1: no trace, no per-block JSON: only the audio
+    // thread's own work, for timing and profiles.
+    let lean = std::env::var_os("KONTRA_INSPECT_LEAN").is_some();
+    let mut engine = if lean {
+        Engine::new(Arc::clone(&plan), stream.clone(), RATE)
+    } else {
+        Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 262144)
+    };
     engine.set_offline_wait(true);
     let mut at = 0u64;
     let mut next = 0usize;
@@ -129,6 +136,7 @@ fn run_events(
     let mut prior = [0f32; 2];
     let mut audio = [[0f32; 2]; BLOCK];
     let mut rendered = Vec::new();
+    let mut process_time = Duration::ZERO;
     while at < stop {
         let frames = usize::try_from((stop - at).min(BLOCK as u64))?;
         let until = at + frames as u64;
@@ -147,7 +155,9 @@ fn run_events(
         }
         let before = engine.stats().missing_frames;
         let stream_before = stream.stats();
+        let timer = std::time::Instant::now();
         engine.process(&mut audio[..frames], &timed);
+        process_time += timer.elapsed();
         stage_events.extend(
             engine
                 .trace_events()
@@ -182,7 +192,7 @@ fn run_events(
             }
         }
         at = until;
-        if cc_in_block || (at >= next_tail && at >= last_off) {
+        if !lean && (cc_in_block || (at >= next_tail && at >= last_off)) {
             let voices: Vec<_> = engine
                 .inspect_voices()
                 .map(|v| {
@@ -351,7 +361,7 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
 }
