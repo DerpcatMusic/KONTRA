@@ -112,18 +112,6 @@ fn env_in(env: Env, m: &str, args: &[Prop]) -> Env {
     }
 }
 
-/// Its outermost sizing modifier is `.align`: it takes the whole room its
-/// stack offers and sits where it says in it, not where the stack puts it.
-fn aligns(n: &Node) -> bool {
-    let sizing = ["align", "frame", "padding", "position"];
-    let outer = n
-        .mods
-        .iter()
-        .rev()
-        .find(|(m, _)| sizing.contains(&m.as_str()));
-    outer.is_some_and(|(m, _)| m == "align")
-}
-
 /// `n`'s children, those of a `ForEach` among them in its place.
 fn children(n: &Node) -> Vec<&Node> {
     n.children
@@ -156,6 +144,8 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
                 if ih > 0. { ih + t + b } else { 0. },
             )
         }
+        // It fills the room it is offered and sits where it says in it.
+        "align" => (0., 0.),
         _ => inner(room),
     }
 }
@@ -547,8 +537,7 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
             let a = alignment(text(n.prop("alignment")));
             for c in children(n) {
                 let size = or_room(measure(bld, c, c.mods.len(), (r.width, r.height), env), r);
-                let room = if aligns(c) { r } else { aligned(r, size, a) };
-                place(c, c.mods.len(), room, env, bld);
+                place(c, c.mods.len(), aligned(r, size, a), env, bld);
             }
             return;
         }
@@ -581,7 +570,7 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
                     (slot.width, slot.height),
                     env,
                 ));
-                let thick = if thick > 0. && !aligns(c) {
+                let thick = if thick > 0. {
                     thick
                 } else {
                     axis.across((r.width, r.height))
@@ -666,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stacked_child_sits_where_its_align_says_in_the_whole_stack() {
+    fn an_aligned_child_fills_its_room_and_sits_where_it_says() {
         let size = |w: f64, h: f64| {
             let named = vec![
                 ("width".into(), Prop::Number(w)),
@@ -676,9 +665,15 @@ mod tests {
         };
         let at = |words: &str| ("align", vec![Prop::Text(words.into())]);
         let panel = |words| node("Rectangle", vec![size(30., 20.), at(words)], Vec::new());
+        // A page framed at its top centre, as a whole panel is.
+        let framed = vec![
+            ("width".into(), Prop::Number(300.)),
+            ("height".into(), Prop::Number(200.)),
+            ("alignment".into(), Prop::Text("top center".into())),
+        ];
         let page = node(
             "ZStack",
-            Vec::new(),
+            vec![("frame", vec![Prop::Table(framed)])],
             vec![panel("top left"), panel("bottom right")],
         );
         let picture = |_: &str| None;
@@ -692,8 +687,8 @@ mod tests {
         lower(
             &page,
             ui::Size {
-                width: 300.,
-                height: 200.,
+                width: 600.,
+                height: 400.,
             },
             &mut bld,
         );
@@ -703,6 +698,6 @@ mod tests {
             .iter()
             .map(|w| (w.rect.x, w.rect.y))
             .collect();
-        assert_eq!(at, [(0., 0.), (270., 180.)]);
+        assert_eq!(at, [(150., 100.), (420., 280.)]);
     }
 }
