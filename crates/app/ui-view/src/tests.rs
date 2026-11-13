@@ -830,3 +830,65 @@ fn a_pixel_font_stem_at_150_percent_is_one_full_and_one_half_column() {
     assert!((share(1, 1) - 0.5).abs() < 1e-9);
     assert!((share(2, 1) - 1.).abs() < 1e-9);
 }
+
+/// At 125 %, 150 % and 200 % a picture at a whole logical place paints its
+/// device-scaled pixels as they are: its edges sit on whole pixels, so the
+/// renderer never filters it a second time at a half-pixel offset.
+#[test]
+fn a_picture_lands_on_whole_pixels_at_every_zoom() {
+    let row: Vec<u8> = (0..8)
+        .flat_map(|i| if i % 2 == 0 { [255; 4] } else { [0, 0, 0, 255] })
+        .collect();
+    for scale in [1.25, 1.5, 2.] {
+        let mut tree = Interface {
+            source: model::Source::Ksp { slot: 0 },
+            ..Interface::default()
+        };
+        let mut face = Page {
+            size: Size {
+                width: 12.,
+                height: 4.,
+            },
+            ..Page::default()
+        };
+        face.background.color = Some(Rgba::rgb(0));
+        tree.pages.push(face);
+        tree.assets.push(Asset {
+            path: "p.png".into(),
+            kind: AssetKind::Image(ImageMeta {
+                frames: 1,
+                size: Some(Size {
+                    width: 8.,
+                    height: 2.,
+                }),
+                ..ImageMeta::default()
+            }),
+        });
+        let mut label = Widget::new("$l", PageRef(0), Rect::new(1, 1, 8, 2), Kind::Label);
+        label.images.push(ImageUse::new(AssetRef(0), Role::Strip));
+        tree.widgets.push(label);
+        let file = png(8, 2, &row.repeat(2));
+        let mut pictures = Pictures::new(Box::new(move |p| (p == "p.png").then(|| file.clone())));
+        let mut ui = crate::ui();
+        settle(&mut ui, &tree, &mut pictures, scale);
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (scale, &[]));
+        let w = (12. * scale).ceil() as usize;
+        let px = paint(&mut ui, el, w as u16, (4. * scale).ceil() as u16);
+        let (x0, y) = ((scale).round() as usize, (1.5 * scale) as usize);
+        let want: Vec<u8> = Image::rgba(8, 2, row.repeat(2))
+            .and_then(|i| kontra_ui_pictures::at(i, scale as f32))
+            .map(|i| {
+                i.rgba
+                    .chunks(4)
+                    .take(i.width as usize)
+                    .map(|p| p[0])
+                    .collect()
+            })
+            .unwrap_or_default();
+        let got: Vec<u8> = (x0..x0 + want.len())
+            .map(|x| px.get(y * w + x).map_or(0, |p| p[0]))
+            .collect();
+        assert!(!want.is_empty());
+        assert_eq!(got, want, "at {scale}");
+    }
+}

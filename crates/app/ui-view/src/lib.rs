@@ -171,7 +171,9 @@ fn drawn_page(
                 width: f64::from(img.width),
                 height: f64::from(img.height),
             });
-            layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
+            layers.push(
+                image(&img, size.width * scale, size.height * scale).at(0., (y * scale).round()),
+            );
         }
     }
     // A scrolling region's content, by region; the page is `None`.
