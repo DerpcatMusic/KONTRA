@@ -101,6 +101,15 @@ pub enum ModKind {
         depth: f32,
         range_hz: [f32; 2],
     },
+    /// Moves the rate of the group's tempo-synced LFO `lfo` along the
+    /// note-value ladder ([`NOTE_LADDER`]) by `source × depth × 29` places
+    /// (rounded, held on the ladder), `source` live: the phase integrates the
+    /// moving rate.
+    LfoDivision {
+        source: Source,
+        lfo: u8,
+        depth: f32,
+    },
     /// Scales every route of the group's timed source `of` (an LFO or an
     /// envelope) by `1 − (1 − x)·depth`, `x` the live `source`, a bipolar one
     /// as `(x + 1)/2`.

@@ -597,6 +597,7 @@ impl Engine {
                     | ir::ModKind::LfoPhase { .. }
                     | ir::ModKind::LfoRate { .. }
                     | ir::ModKind::LfoHz { .. }
+                    | ir::ModKind::LfoDivision { .. }
                     | ir::ModKind::Send { .. }
                     | ir::ModKind::LoopShift { .. } => false,
                 })
