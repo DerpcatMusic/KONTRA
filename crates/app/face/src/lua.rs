@@ -229,6 +229,7 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
     out.tooltip.clone_from(&w.tooltip);
     out.opacity = w.alpha.clamp(0., 1.) as f32;
     out.menu_cycle = w.kind == "MultiStateButton";
+    out.viewport = (w.kind == "Viewport").then_some([0, 0]);
     out.colors.background = w.colours[0].as_deref().and_then(colour);
     out.colors.bar = w
         .slider_colour

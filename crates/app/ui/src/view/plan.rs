@@ -6,7 +6,7 @@ use kontra_ui_model::{
     self as model, ImageUse, Interface, Kind, PageRef, Role, WidgetRef, kontakt_picture_frame,
 };
 
-use super::{image_asset, knob_name, readout, stock, value};
+use super::{image_asset, knob_name, readout, stock};
 
 /// One page, including the source page's background and its visible controls.
 pub(super) struct Page<'a> {
@@ -63,7 +63,7 @@ pub(super) fn page<'a>(
         .filter_map(|index| {
             let raw = tree.page_rect(index);
             let w = tree.widgets.get(index.0)?;
-            if !tree.visible(index) || !on_page(raw) {
+            if !tree.visible(index) || (!on_page(raw) && tree.scroller(index).is_none()) {
                 return None;
             }
             let picture = |use_: &ImageUse| {
@@ -96,7 +96,7 @@ pub(super) fn page<'a>(
             let handle = handles.first().filter(|_| !bare).and_then(|u| picture(u));
             let picture = faces.first().filter(|_| !bare).and_then(|u| picture(u));
             let style = w.style.and_then(|s| tree.styles.get(s.0));
-            let position = position(w);
+            let position = w.position();
             let look = stock::Look::of(
                 tree,
                 w,
@@ -148,27 +148,12 @@ fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool) -> usize {
     }
     match (&w.kind, u.role) {
         (Kind::Knob { .. } | Kind::Slider { .. } | Kind::ValueEdit { .. }, Role::Strip) => {
-            (position(w) * frames.saturating_sub(1) as f64).round() as usize
+            (w.position() * frames.saturating_sub(1) as f64).round() as usize
         }
         (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
-            kontakt_picture_frame(value(w) != 0., held, false, frames)
+            kontakt_picture_frame(w.number() != 0., held, false, frames)
         }
         _ => 0,
-    }
-}
-
-/// Where `w`'s value lies in its range, 0..1; a switch is 0 or 1.
-fn position(w: &model::Widget) -> f64 {
-    match &w.kind {
-        Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => {
-            let span = range.max - range.min;
-            if span == 0. {
-                0.
-            } else {
-                ((value(w) - range.min) / span).clamp(0., 1.)
-            }
-        }
-        _ => f64::from(u8::from(value(w) != 0.)),
     }
 }
 

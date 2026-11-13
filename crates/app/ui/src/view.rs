@@ -123,6 +123,9 @@ fn drawn_page(
             layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
         }
     }
+    // A scrolling region's content, by region; the page is `None`.
+    let mut groups = std::collections::HashMap::from([(None, layers)]);
+    let mut regions = Vec::new();
     for item in plan.widgets {
         let n = item.index;
         let r = item.rect;
@@ -433,8 +436,31 @@ fn drawn_page(
         } else {
             el
         };
-        layers.push(el.at(r.x, r.y));
+        let host = tree.scroller(n);
+        let o = host.map_or(model::Rect::default(), |v| tree.page_rect(v));
+        let (x, y) = (r.x - o.x * scale, r.y - o.y * scale);
+        let group = groups.entry(host).or_insert_with(Vec::new);
+        group.push(el.at(x, y));
+        if wd.viewport.is_some() {
+            regions.push((n, host, group.len(), [x, y, r.width, r.height]));
+            group.push(block(0., 0.));
+        }
     }
+    // Innermost first, each into its slot: clipped, scrolled by wheel and bar.
+    for (v, host, at, [x, y, w, h]) in regions.into_iter().rev() {
+        let size = tree.content(v);
+        let content = stack(groups.remove(&Some(v)).unwrap_or_default());
+        let content = content.w(size.width * scale).h(size.height * scale);
+        let el = col![content]
+            .scroll()
+            .w(w)
+            .h(h)
+            .id(format!("kontra-v-{face}-{}", v.0));
+        if let Some(slot) = groups.get_mut(&host).and_then(|g| g.get_mut(at)) {
+            *slot = el.at(x, y);
+        }
+    }
+    let layers = groups.remove(&None).unwrap_or_default();
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
 }
 
@@ -505,15 +531,6 @@ fn wallpaper(
         .collect()
 }
 
-/// `w`'s value, or its initial one before the script sets it.
-fn value(w: &model::Widget) -> f64 {
-    match w.value {
-        Some(model::Value::Integer(v)) => f64::from(v),
-        Some(model::Value::Real(v)) => v,
-        _ => w.initial_value,
-    }
-}
-
 /// `w`'s value as its source shows it: the script's label, else the value
 /// over the display ratio with its unit.
 pub(crate) fn readout(w: &model::Widget, source: model::Source) -> String {
@@ -526,10 +543,10 @@ pub(crate) fn readout(w: &model::Widget, source: model::Source) -> String {
     match &w.kind {
         // Ratio 0 ($VALUE_EDIT_MODE_NOTE_NAMES) names the note.
         Kind::ValueEdit { display, .. } if display.ratio == 0. => {
-            crate::keyboard::note_name(value(w).clamp(0., 127.) as u8)
+            crate::keyboard::note_name(w.number().clamp(0., 127.) as u8)
         }
         Kind::Knob { display, .. } | Kind::ValueEdit { display, .. } => {
-            display.format_value(value(w), true, source)
+            display.format_value(w.number(), true, source)
         }
         _ => String::new(),
     }

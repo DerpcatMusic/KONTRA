@@ -74,25 +74,6 @@ pub(crate) fn takes_input(w: &model::Widget) -> bool {
         )
 }
 
-/// A widget's value as a number.
-pub fn value(w: &model::Widget) -> f64 {
-    match w.value {
-        Some(model::Value::Integer(v)) => f64::from(v),
-        Some(model::Value::Real(v)) => v,
-        _ => w.initial_value,
-    }
-}
-
-/// Cell `k` of a table's value.
-fn cell(w: &model::Widget, k: u32) -> Option<f64> {
-    let k = k as usize;
-    match &w.value {
-        Some(model::Value::Integers(v)) => v.get(k).map(|&v| f64::from(v)),
-        Some(model::Value::Reals(v)) => v.get(k).copied(),
-        _ => None,
-    }
-}
-
 /// Which way a continuous control drags, and how many view points sweep
 /// its range. A source that sets no [`model::Drag`] gets the renderer's: a
 /// slider sweeps in its own length along its orientation, anything else in
@@ -220,7 +201,7 @@ pub fn read(
             }
             continue;
         }
-        let now = value(w);
+        let now = w.number();
         let before = edits.len();
         let mut set = |v: f64| {
             if v != now {
@@ -387,7 +368,7 @@ fn cells(
                 first - step
             };
             let v = height(from.y + (pos.y - from.y) * k);
-            (cell(w, c) != Some(v)).then(|| edit(Set::Cell(c, v)))
+            (w.cell(c) != Some(v)).then(|| edit(Set::Cell(c, v)))
         })
         .collect()
 }
@@ -412,7 +393,7 @@ fn menu(
     }
     let shown: Vec<&model::MenuItem> = items.iter().filter(|i| i.visible).collect();
     let labels: Vec<&str> = shown.iter().map(|i| i.text.as_str()).collect();
-    let now = value(w) as i32;
+    let now = w.number() as i32;
     let current = shown.iter().position(|i| i.value == now);
     let menu = kit::menu(ui, &id, &labels, 1, current);
     if let Some(item) = menu.changed.and_then(|k| shown.get(k)) {
