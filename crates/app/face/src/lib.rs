@@ -272,12 +272,13 @@ impl Builder<'_> {
             styles.push(ui::TextStyle {
                 font: bitmap.map_or(ui::Font::Stock(font), ui::Font::Bitmap),
                 // Sizes that run each family as wide as Kontakt 8 draws it
-                // (oracle probe: one line in every font id at 100 %).
+                // (oracle probe: one line in every font id at 100 % and 150 %;
+                // 20, 21 and 23 measured on a bare page, as they draw grey).
                 size: factory.and_then(|(f, _)| match f {
                     1 | 5 | 7 | 19 | 20 => Some(12.6),
-                    16 | 17 => Some(12.5),
-                    22 | 24 => Some(11.5),
-                    12 | 13 | 14 | 18 | 25 => Some(11.),
+                    16 | 17 | 21 => Some(12.1),
+                    22..=24 => Some(11.5),
+                    12 | 13 | 14 | 18 | 25 => Some(10.9),
                     0 | 2 | 3 | 4 | 6 | 8 | 9 | 10 | 11 | 15 | 26 => Some(10.),
                     _ => None,
                 }),
