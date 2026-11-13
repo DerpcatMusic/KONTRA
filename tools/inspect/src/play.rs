@@ -144,6 +144,8 @@ fn run_events(
     let mut audio = vec![[0f32; 2]; block];
     // Each block's time in `Engine::process`, ns, with where it was.
     let mut block_times: Vec<(u64, u64, usize, [u64; 3])> = Vec::new();
+    // Monotonic start/end (ns) of each block with input, for `perf record -k CLOCK_MONOTONIC`.
+    let mut event_blocks: Vec<[u64; 2]> = Vec::new();
     let mut rendered = Vec::new();
     let mut process_time = Duration::ZERO;
     while at < stop {
@@ -165,6 +167,7 @@ fn run_events(
         let before = engine.stats().missing_frames;
         let stream_before = stream.stats();
         let script_before = engine.stats();
+        let mono_start = monotonic_ns();
         let timer = (std::time::Instant::now(), on_cpu());
         engine.process(&mut audio[..frames], &timed);
         let spent = timer.0.elapsed();
@@ -174,6 +177,9 @@ fn run_events(
         let cpu = on_cpu()
             .zip(timer.1)
             .map(|(end, start)| end.saturating_sub(start));
+        if !timed.is_empty() {
+            event_blocks.push([mono_start, monotonic_ns()]);
+        }
         block_times.push((
             cpu.unwrap_or_else(|| u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX)),
             at,
@@ -399,7 +405,7 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "block_timing":timing, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "block_timing":timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
 }
@@ -438,4 +444,15 @@ fn on_cpu() -> Option<u64> {
     ok.then(|| {
         u64::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0)
     })
+}
+
+/// `CLOCK_MONOTONIC`, ns: the clock `perf record -k CLOCK_MONOTONIC` stamps samples with.
+fn monotonic_ns() -> u64 {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `t` is a valid timespec the call fills in.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
+    u64::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0)
 }

@@ -105,9 +105,7 @@ impl Engine {
                 }
             }
             std::mem::swap(&mut self.plan, plan);
-            for (span, zone) in self.zone_keys.iter_mut().zip(&self.plan.zones) {
-                *span = (*zone.keys.start(), *zone.keys.end());
-            }
+            Arc::make_mut(&mut self.zone_index).refresh(&self.plan.zones);
             self.release_zones = self
                 .plan
                 .zones
