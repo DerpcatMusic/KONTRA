@@ -30,7 +30,15 @@ kontra-align = { path = "../align", optional = true }
 
 [features]
 align = ["dep:kontra-align"]
+heap-profile = ["kontra-lua/system-allocator"]
 
 [[example]]
 name = "align"
 required-features = ["align"]
+
+[[example]]
+name = "heap"
+required-features = ["heap-profile"]
+
+[dev-dependencies]
+backtrace = "0.3"

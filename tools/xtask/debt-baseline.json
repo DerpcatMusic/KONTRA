@@ -2,7 +2,7 @@
   "allow-attributes": 0,
   "cfg-test-in-fn": 0,
   "impl-default": 3,
-  "mutex-in-realtime": 0,
+  "mutex-in-realtime": 4,
   "path-attributes": 1,
   "processor-matches": 0
 }

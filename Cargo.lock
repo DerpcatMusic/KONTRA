@@ -2256,6 +2256,7 @@ dependencies = [
 name = "kontra-host"
 version = "0.0.0"
 dependencies = [
+ "backtrace",
  "dirs",
  "kontra-align",
  "kontra-engine",
