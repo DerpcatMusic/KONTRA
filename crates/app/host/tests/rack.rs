@@ -1447,3 +1447,77 @@ fn a_note_played_before_its_heads_load_sounds_from_the_stream_and_survives_their
         "the note changed when its heads arrived: {on}"
     );
 }
+
+/// A part whose one zone plays a ramp sample (frame `n` is `0.1 + n / 100_000`).
+fn ramp_engine(store: &mut Store) -> Box<Engine> {
+    let fmt = SampleFmt {
+        encoding: Encoding::F32,
+        channels: 1,
+    };
+    let frames = 96_000u64;
+    let bytes = (0..frames)
+        .flat_map(|n| (0.1 + n as f32 / 100_000.0).to_le_bytes())
+        .collect();
+    let key = BlobKey {
+        file: "ramp".into(),
+        offset: 0,
+        fmt,
+    };
+    let sample = (store.load(
+        &key,
+        Arc::new(MemSource::new(fmt, bytes)),
+        frames,
+        std::slice::from_ref(&(0..frames)),
+    ))
+    .unwrap();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+    let mut zone = Zone::new(region, 60, RATE);
+    zone.keys = 0..=127;
+    let mut plan = Plan::new(vec![zone], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    Box::new(Engine::new(Arc::new(plan), store.client(), RATE))
+}
+
+/// The left output of a ramp part played from a note-on, block by block.
+fn ramp_output(defer: bool) -> Vec<f32> {
+    let (mut rack, mut audio) = rack();
+    rack.store_mut().defer_heads(defer);
+    let a = ramp_engine(rack.store_mut());
+    // Left unread: the page the note needs has to come from the stream.
+    let _heads = rack.store_mut().take_heads();
+    rack.install(0, a, part("a"));
+    audio.process(BLOCK, &[(0, note(0))]);
+    let mut out: Vec<f32> = audio.output(0, BLOCK).iter().map(|s| s[0]).collect();
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        audio.process(BLOCK, &[]);
+        out.extend(audio.output(0, BLOCK).iter().map(|s| s[0]));
+    }
+    out
+}
+
+#[test]
+fn a_note_before_its_heads_load_starts_from_the_samples_first_frame() {
+    let loaded = ramp_output(false);
+    let waited = ramp_output(true);
+    let first = |v: &[f32]| v.iter().position(|x| x.abs() > 1e-4).unwrap();
+    let (a, b) = (first(&loaded), first(&waited));
+    assert!(
+        waited[b] < 0.12,
+        "the note joined mid-sample at {}",
+        waited[b]
+    );
+    for (x, y) in loaded[a..a + 300].iter().zip(&waited[b..b + 300]) {
+        assert!((x - y).abs() < 1e-3, "the attack differs: {x} vs {y}");
+    }
+}

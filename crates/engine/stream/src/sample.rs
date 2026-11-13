@@ -110,6 +110,8 @@ pub struct Sample {
     /// Each page is set once: at load, or later by [`crate::Heads`].
     pub(crate) pinned: Box<[OnceLock<Page>]>,
     pub(crate) streamed: Box<[AtomicU32]>,
+    /// Runs of heads a deferred load has yet to read ([`crate::Heads`]).
+    pub(crate) heads_due: AtomicU32,
 }
 
 /// What one [`Sample::read`] could not deliver.
@@ -134,6 +136,26 @@ impl Sample {
     #[must_use]
     pub fn is_pinned(&self, frame: u64) -> bool {
         (self.pinned.get(page_of(frame, self.shift))).is_some_and(|p| p.get().is_some())
+    }
+
+    /// Whether a deferred load still has heads of this sample to read.
+    #[must_use]
+    pub fn heads_pending(&self) -> bool {
+        self.heads_due.load(Ordering::Acquire) > 0
+    }
+
+    /// Whether every page under `first..first + frames` is in memory, pinned
+    /// or streamed in, so a read there is whole.
+    #[must_use]
+    pub fn is_resident(&self, first: u64, frames: u64) -> bool {
+        let end = first.saturating_add(frames).min(self.frames);
+        if first >= end {
+            return true;
+        }
+        (page_of(first, self.shift)..=page_of(end - 1, self.shift)).all(|page| {
+            self.pinned.get(page).is_some_and(|p| p.get().is_some())
+                || (self.streamed.get(page)).is_some_and(|e| e.load(Ordering::Acquire) >= RESIDENT)
+        })
     }
 
     /// Frames in each of this sample's pages.

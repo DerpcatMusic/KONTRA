@@ -214,7 +214,18 @@ fn load_samples(
             used.entry(z.sample).or_default().push((z, group.stream));
         }
     }
-    let used: Vec<_> = used.into_iter().collect();
+    let mut used: Vec<_> = used.into_iter().collect();
+    // The keys played most (middle C and two octaves either side) first, so
+    // deferred heads reach them first.
+    used.sort_by_key(|(_, zones)| {
+        (zones.iter())
+            .map(|(z, _)| {
+                let (lo, hi) = (*z.keys.start(), *z.keys.end());
+                lo.saturating_sub(72).max(48u8.saturating_sub(hi))
+            })
+            .min()
+            .unwrap_or(u8::MAX)
+    });
     // On fast storage a head of FAST_HEAD bytes per channel starts every
     // page on time; the law's own 60 KB is sized for spinning disks.
     let fast = (used.first())

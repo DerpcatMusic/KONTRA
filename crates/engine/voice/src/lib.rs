@@ -33,6 +33,9 @@ const GAIN_SMOOTH: f32 = 0.01;
 /// The fastest a stretching voice plays (the stretch law's top).
 const MAX_SPEED: f64 = 8.0;
 /// A stretching voice's grain, output frames (43 ms at 48 kHz).
+/// Output frames a note waits for the pages under its first block (about
+/// 50 ms at 48 kHz); then it starts from its first frame with what is there.
+const HEAD_WAIT: u32 = 2400;
 const GRAIN: u64 = 2048;
 const HALF_GRAIN: u64 = GRAIN / 2;
 
@@ -129,6 +132,8 @@ pub struct Voice {
     /// Cursor position of the note's release, once it came.
     released: Option<u64>,
     missing: u64,
+    /// Output frames this note has waited for its first pages.
+    waited: u32,
     /// See [`VoiceStart::speed`]; the cursor moves at `step · speed`.
     speed: f64,
     /// A stretching voice's two read heads, each a pitch-rate cursor that
@@ -168,6 +173,7 @@ impl Voice {
             decoded: [kontra_stream::Decoded::new(), kontra_stream::Decoded::new()],
             released: None,
             missing: 0,
+            waited: 0,
             speed: 1.0,
             heads: [0.0; 2],
             grain: 0,
@@ -203,6 +209,7 @@ impl Voice {
         }
         self.released = None;
         self.missing = 0;
+        self.waited = 0;
         self.speed = if start.speed.is_finite() {
             start.speed.clamp(0.0, MAX_SPEED)
         } else {
@@ -438,6 +445,26 @@ impl Voice {
             }
         });
 
+        // A note whose first pages are not in yet because their heads are still
+        // loading (a streaming miss keeps time instead) holds still, so its attack plays whole when they land instead of the note
+        // joining mid-sample; the requests above are already queued, due now.
+        if self.elapsed == 0 && !table && self.waited < HEAD_WAIT && sample.heads_pending() {
+            let block = (out.len() as f64 * step) as usize + 4;
+            let mut ready = true;
+            region.runs(from as i64, block, released, |_, run| {
+                let low = if run.descending {
+                    run.first + 1 - run.count as u64
+                } else {
+                    run.first
+                };
+                ready &= sample.is_resident(low, run.count as u64);
+            });
+            if !ready {
+                self.waited += out.len() as u32;
+                self.region = Some(region);
+                return;
+            }
+        }
         let mut done = 0;
         let mut alive = true;
         while done < out.len() && alive {
