@@ -23,6 +23,10 @@ pub struct Read {
     /// The level the table plays at, linear: 1 plays the cycles as their
     /// samples are.
     pub gain: f32,
+    /// How far apart the partials above the first lie, in fundamentals:
+    /// partial `n` plays at `f·(1 + (n − 1)·stretch)`, each at its level
+    /// (1 is harmonic).
+    pub stretch: f32,
     /// Applied in order.
     pub warps: [Warp; 2],
 }
@@ -185,6 +189,9 @@ pub struct Table {
     /// Where in `data` level `k` of cycle `c` lies, at `c * LEVELS + k`:
     /// its first frame and its length, a power of two.
     pub spans: std::sync::Arc<[(u32, u32)]>,
+    /// The levels a quarter cycle on (each harmonic's sine for its cosine),
+    /// laid out as `data`: what a stretched read shifts in frequency with.
+    pub quad: Option<std::sync::Arc<[i16]>>,
     pub read: Read,
 }
 
@@ -205,6 +212,7 @@ impl Table {
             data,
             scale,
             spans,
+            quad: None,
             read,
         })
     }
@@ -212,35 +220,50 @@ impl Table {
     /// Fills `out` from cursor `x` ([`PERIOD`] a cycle since the note
     /// began), moving `step` a frame, as Kontakt reads (`0x140cd55c0`):
     /// Hermite within the two levels about the period, blended, then the
-    /// two cycles about `position`; each form's shaper last.
+    /// two cycles about `position`; each form's shaper last. A stretched
+    /// read plays the table at `stretch` times the rate and shifts every
+    /// partial down by `1 − stretch` fundamentals (single sideband: the
+    /// read times a cosine less its quadrature times a sine), so the first
+    /// stays on pitch.
     pub(crate) fn render(&self, (x, step): (f64, f64), out: &mut [[f32; 2]]) {
         let at = f64::from(self.read.position.clamp(0.0, 1.0)) * (self.cycles - 1) as f64;
         let c0 = at as usize;
         let c1 = (c0 + 1).min(self.cycles - 1);
         let morph = at.fract() as f32;
         let [w1, w2] = self.read.warps;
-        let (l0, l1, blend) = level(PERIOD / (step * sync(w2)));
-        let cycle = |c: usize, q: f32| {
-            let a = self.hermite(c * LEVELS + l0, q);
-            a + (self.hermite(c * LEVELS + l1, q) - a) * blend
+        let stretch = f64::from(self.read.stretch);
+        let quad = self.quad.as_deref().filter(|_| stretch != 1.0);
+        let rate = if quad.is_some() { stretch } else { 1.0 };
+        let (l0, l1, blend) = level(PERIOD / (step * rate * sync(w2)));
+        let cycle = |data: &[i16], c: usize, q: f32| {
+            let a = self.hermite(data, c * LEVELS + l0, q);
+            a + (self.hermite(data, c * LEVELS + l1, q) - a) * blend
         };
-        for (i, frame) in out.iter_mut().enumerate() {
-            let cursor = x + i as f64 * step;
-            let p = ((cursor / PERIOD) + f64::from(self.read.phase)).fract() as f32;
-            let q = warp(w2, warp(w1, p));
-            let a = cycle(c0, q);
-            let s = if morph == 0.0 {
+        let read = |data: &[i16], q: f32| {
+            let a = cycle(data, c0, q);
+            if morph == 0.0 {
                 a
             } else {
-                a + (cycle(c1, q) - a) * morph
-            };
+                a + (cycle(data, c1, q) - a) * morph
+            }
+        };
+        for (i, frame) in out.iter_mut().enumerate() {
+            let cursor = (x + i as f64 * step) / PERIOD;
+            let p = (cursor * rate + f64::from(self.read.phase)).fract() as f32;
+            let q = warp(w2, warp(w1, p));
+            let mut s = read(&self.data, q);
+            if let Some(quad) = quad {
+                let (sin, cos) =
+                    (std::f64::consts::TAU * (cursor * (1.0 - stretch)).fract()).sin_cos();
+                s = s * cos as f32 - read(quad, q) * sin as f32;
+            }
             let s = shape(w2, p, shape(w1, p, s)) * self.read.gain;
             *frame = [s, s];
         }
     }
 
     /// The level at `span` read at phase `q`, wrapping within it.
-    fn hermite(&self, span: usize, q: f32) -> f32 {
+    fn hermite(&self, data: &[i16], span: usize, q: f32) -> f32 {
         let Some(&(first, len)) = self.spans.get(span) else {
             return 0.0;
         };
@@ -248,7 +271,7 @@ impl Table {
         let i = at as u32;
         let tap = |k: u32| {
             let at = first + (i.wrapping_add(k).wrapping_sub(1) & (len - 1));
-            f32::from(self.data.get(at as usize).copied().unwrap_or(0)) * self.scale
+            f32::from(data.get(at as usize).copied().unwrap_or(0)) * self.scale
         };
         crate::hermite(tap(0), tap(1), tap(2), tap(3), at.fract())
     }
@@ -407,6 +430,7 @@ mod tests {
             phase: 0.0,
             phase_random: 0.0,
             gain: 1.0,
+            stretch: 1.0,
             warps: [Warp::OFF; 2],
         };
         let spans: std::sync::Arc<[_]> = vec![(0, 8); LEVELS].into();
