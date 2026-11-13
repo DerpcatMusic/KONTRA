@@ -71,7 +71,37 @@ impl Action {
     #[must_use]
     #[inline]
     pub fn is_pure(self) -> bool {
-        matches!(self, Self::Abs | Self::Min | Self::Max | Self::InRange | Self::Sgn | Self::Signbit | Self::Round | Self::Floor | Self::Ceil | Self::Sqrt | Self::Cbrt | Self::Exp | Self::Exp2 | Self::Log | Self::Log2 | Self::Log10 | Self::Sin | Self::Cos | Self::Tan | Self::Asin | Self::Acos | Self::Atan | Self::Pow | Self::Msb | Self::Lsb | Self::Search | Self::Sort | Self::ArrayEqual)
+        matches!(
+            self,
+            Self::Abs
+                | Self::Min
+                | Self::Max
+                | Self::InRange
+                | Self::Sgn
+                | Self::Signbit
+                | Self::Round
+                | Self::Floor
+                | Self::Ceil
+                | Self::Sqrt
+                | Self::Cbrt
+                | Self::Exp
+                | Self::Exp2
+                | Self::Log
+                | Self::Log2
+                | Self::Log10
+                | Self::Sin
+                | Self::Cos
+                | Self::Tan
+                | Self::Asin
+                | Self::Acos
+                | Self::Atan
+                | Self::Pow
+                | Self::Msb
+                | Self::Lsb
+                | Self::Search
+                | Self::Sort
+                | Self::ArrayEqual
+        )
     }
 }
 

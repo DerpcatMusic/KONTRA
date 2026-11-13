@@ -52,7 +52,9 @@ pub(crate) fn eval(action: Action, ints: &[i64], cells: &mut [i64]) -> Option<Ho
             let (base, len, lo, hi) = (int(0), int(1), int(3), int(4));
             let needle = ints.get(2).copied().unwrap_or(0);
             let r = range(base, len, lo, hi);
-            let hay = cells.get(r.start..r.end.min(cells.len())).unwrap_or_default();
+            let hay = cells
+                .get(r.start..r.end.min(cells.len()))
+                .unwrap_or_default();
             let found = hay.iter().position(|&c| c == needle);
             HostValue::Int(found.map_or(-1, |at| (r.start + at) as i32 - base))
         }
@@ -100,7 +102,11 @@ mod tests {
     #[test]
     fn is_pure_matches_eval() {
         for &a in Action::all() {
-            assert_eq!(a.is_pure(), eval(a, &[0; 8], &mut [0; 16]).is_some(), "{a:?}");
+            assert_eq!(
+                a.is_pure(),
+                eval(a, &[0; 8], &mut [0; 16]).is_some(),
+                "{a:?}"
+            );
         }
     }
 

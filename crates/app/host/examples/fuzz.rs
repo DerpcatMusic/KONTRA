@@ -92,8 +92,9 @@ impl Rng {
 }
 
 fn fnv(text: &str) -> u64 {
-    text.bytes()
-        .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    })
 }
 
 /// Writes `value` at `at` if it fits.
@@ -118,7 +119,11 @@ impl Original {
     fn open(path: &Path) -> std::io::Result<Self> {
         let file = std::fs::File::open(path)?;
         let len = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
-        let bytes = if len > BIG_FILE { None } else { Some(std::fs::read(path)?) };
+        let bytes = if len > BIG_FILE {
+            None
+        } else {
+            Some(std::fs::read(path)?)
+        };
         Ok(Self { len, bytes, file })
     }
 
@@ -171,7 +176,11 @@ fn mutant(original: &Original, file: &str, index: u64) -> Mutant {
     };
     let kind = rng.below(7);
     // A big file takes only the in-place kinds.
-    let kind = if big && matches!(kind, 0 | 5 | 6) { 1 + rng.below(4) } else { kind };
+    let kind = if big && matches!(kind, 0 | 5 | 6) {
+        1 + rng.below(4)
+    } else {
+        kind
+    };
     let byte = |at: usize| original.byte(at);
     match kind {
         0 => Mutant::Whole(original.read(0, rng.below(len))),
@@ -291,11 +300,8 @@ fn run_instrument(path: &Path, store: &mut Store) {
     counter.fetch_add(1, Ordering::Relaxed);
     if let Ok(ir) = read {
         let loaded = instrument::build(ir, 48_000, store);
-        let engine = kontra_engine::Engine::new(
-            std::sync::Arc::new(loaded.plan),
-            store.client(),
-            48_000,
-        );
+        let engine =
+            kontra_engine::Engine::new(std::sync::Arc::new(loaded.plan), store.client(), 48_000);
         drop(engine);
     }
 }
@@ -456,8 +462,11 @@ fn child(file: &Path, start: u64, count: u64) -> Result<(), Box<dyn std::error::
 }
 
 fn scratch(file: &Path) -> PathBuf {
-    PathBuf::from("/data/dev/workspace/BuildScratch/kontra-fuzz")
-        .join(format!("{}-{:x}", std::process::id(), fnv(&file.to_string_lossy())))
+    PathBuf::from("/data/dev/workspace/BuildScratch/kontra-fuzz").join(format!(
+        "{}-{:x}",
+        std::process::id(),
+        fnv(&file.to_string_lossy())
+    ))
 }
 
 // ---- the parent: runs children, watches them ------------------------------
@@ -585,7 +594,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mutants = env("KONTRA_FUZZ_MUTANTS", 2000);
     let budget = Duration::from_secs(env("KONTRA_FUZZ_SECONDS", 240));
-    let jobs = usize::try_from(env("KONTRA_FUZZ_JOBS", 3)).unwrap_or(3).max(1);
+    let jobs = usize::try_from(env("KONTRA_FUZZ_JOBS", 3))
+        .unwrap_or(3)
+        .max(1);
     let files: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
     let queue = std::sync::Mutex::new(files.iter().collect::<Vec<_>>());
     let results = std::sync::Mutex::new(Vec::new());

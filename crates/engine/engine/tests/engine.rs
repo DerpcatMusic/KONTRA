@@ -477,7 +477,10 @@ fn a_note_expression_tunes_only_its_own_voice() {
     let mut run = |engine: &mut Engine, events: &[Timed<Event>]| {
         let shifted: Vec<_> = events
             .iter()
-            .map(|e| Timed { at: SampleTime(at), body: e.body })
+            .map(|e| Timed {
+                at: SampleTime(at),
+                body: e.body,
+            })
             .collect();
         let mut out = vec![[0.0; 2]; step];
         for (i, chunk) in out.chunks_mut(512).enumerate() {
@@ -498,7 +501,13 @@ fn a_note_expression_tunes_only_its_own_voice() {
     let tune = Timed {
         at: SampleTime(0),
         body: Event::Expression(
-            HostPattern { port: 0, channel: 0, key: 60, id: -1, clap: true },
+            HostPattern {
+                port: 0,
+                channel: 0,
+                key: 60,
+                id: -1,
+                clap: true,
+            },
             NoteExpression::Tune(12.0),
         ),
     };

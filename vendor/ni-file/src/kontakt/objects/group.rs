@@ -254,9 +254,10 @@ impl Group {
         if usize::from(new.bytes) != record.len() {
             return Err(Error::Static("Source record has trailing bytes"));
         }
-        self.0
-            .private_data
-            .splice(start..start + usize::from(old.bytes), record.iter().copied());
+        self.0.private_data.splice(
+            start..start + usize::from(old.bytes),
+            record.iter().copied(),
+        );
         Ok(())
     }
 

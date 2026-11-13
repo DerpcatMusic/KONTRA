@@ -6,9 +6,9 @@
 use std::io::Cursor;
 
 use crate::{
-    Error,
     kontakt::{Chunk, KontaktError, StructuredObject},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 /// Group/source parameters stored without a module slot byte: the native

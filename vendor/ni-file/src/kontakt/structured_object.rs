@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::io::{Cursor, SeekFrom};
 
-use crate::{Error, NIFileError, read_bytes::ReadBytesExt};
+use crate::{read_bytes::ReadBytesExt, Error, NIFileError};
 
 use super::chunk::Chunk;
 

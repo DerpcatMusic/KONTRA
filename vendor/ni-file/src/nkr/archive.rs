@@ -99,7 +99,11 @@ impl Archive {
     /// own order (by member header offset), never the index's hash order.
     /// Identical paths are last-wins.
     pub fn members(&self) -> impl Iterator<Item = &Entry> {
-        let mut all: Vec<&Entry> = self.entries.values().chain(self.case_variants.values()).collect();
+        let mut all: Vec<&Entry> = self
+            .entries
+            .values()
+            .chain(self.case_variants.values())
+            .collect();
         all.sort_by(|a, b| (a.header_offset, &a.name).cmp(&(b.header_offset, &b.name)));
         all.into_iter()
     }

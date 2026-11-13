@@ -21,6 +21,20 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         }
         tools.push(b.el);
     }
+    for (n, entry) in app.report.iter().enumerate() {
+        if entry.ends_with(", use it?") {
+            let b = button(
+                ui,
+                &format!("report-relink-{n}"),
+                "Use the found folder",
+                false,
+            );
+            if b.changed {
+                out.push(Action::Relink(entry.clone()));
+            }
+            tools.push(b.el);
+        }
+    }
     let v = &mut app.view;
     let search = field(
         ui,

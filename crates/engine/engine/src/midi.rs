@@ -33,7 +33,8 @@ impl Engine {
         }
         // Channel pressure: every note on the channel (MPE: its one note).
         if status & 0xF0 == 0xD0 {
-            self.behaviour.set_pressure(channel, (word >> 8) as u8 & 0x7F);
+            self.behaviour
+                .set_pressure(channel, (word >> 8) as u8 & 0x7F);
             let mut hits = std::mem::take(&mut self.hits);
             self.notes.select(&mut hits, |n| n.host.channel == channel);
             self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));

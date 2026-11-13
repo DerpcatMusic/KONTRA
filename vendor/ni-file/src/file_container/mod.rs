@@ -283,7 +283,9 @@ mod tests {
         ));
         for limit in [4, 5] {
             assert_eq!(
-                container.read_item(Cursor::new(&bytes), item, limit).unwrap(),
+                container
+                    .read_item(Cursor::new(&bytes), item, limit)
+                    .unwrap(),
                 b"wave"
             );
         }

@@ -946,7 +946,10 @@ mod tests {
         use std::io::Cursor;
         assert!(matches!(
             FM8Preset::read(Cursor::new([0; 8])),
-            Err(NIFileError::InvalidField { field: "FM8 magic", .. })
+            Err(NIFileError::InvalidField {
+                field: "FM8 magic",
+                ..
+            })
         ));
         for version in [0xD0u32, u32::MAX] {
             let mut bytes = u32::from_be_bytes(*FM8_MAGIC).to_le_bytes().to_vec();

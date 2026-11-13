@@ -30,6 +30,9 @@ pub struct Resources {
     key: Option<Arc<dyn LibraryKey>>,
     /// The key was looked up, found or not: it is looked up once.
     keyed: bool,
+    /// The `.nkr` archives present that could not be opened or read, with
+    /// why: their resources are missing, and the player is told.
+    pub unreadable: Vec<String>,
 }
 
 impl Resources {
@@ -54,6 +57,7 @@ impl Resources {
                 .filter(|p| p.is_dir() && !named(p, "Instruments") && !named(p, "Resources")),
         );
         let mut sources = Vec::new();
+        let mut unreadable = Vec::new();
         for place in places {
             for p in entries(&place) {
                 let ext = p
@@ -65,9 +69,14 @@ impl Resources {
                 } else if ext.as_deref() == Some("nkr") {
                     let archive = shared(&p)
                         .or_else(|| {
-                            let mut f = File::open(&p).ok()?;
-                            let index = Archive::read_index(&mut f).ok()?;
-                            Some((f, index))
+                            let read =
+                                File::open(&p).map_err(|e| e.to_string()).and_then(|mut f| {
+                                    let index =
+                                        Archive::read_index(&mut f).map_err(|e| e.to_string())?;
+                                    Ok((f, index))
+                                });
+                            read.map_err(|e| unreadable.push(format!("{}: {e}", p.display())))
+                                .ok()
                         })
                         .map(|(f, index)| Source::Nkr(f, index, p.clone()));
                     sources.extend(archive);
@@ -81,6 +90,7 @@ impl Resources {
             instrument: path,
             key: None,
             keyed: false,
+            unreadable,
         }
     }
 

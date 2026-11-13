@@ -79,7 +79,10 @@ mod tests {
         for tag in [1, 2, 255] {
             assert!(matches!(
                 SaveSettings::read(Cursor::new([tag])),
-                Err(Error::InvalidField { field: "SaveSettings structure tag", .. })
+                Err(Error::InvalidField {
+                    field: "SaveSettings structure tag",
+                    ..
+                })
             ));
         }
         assert!(SaveSettings::read(Cursor::new([])).is_err());
