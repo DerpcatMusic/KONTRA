@@ -227,10 +227,13 @@ fn load_samples(
             .unwrap_or(u8::MAX)
     });
     // On fast storage a head of FAST_HEAD bytes per channel starts every
-    // page on time; the law's own 60 KB is sized for spinning disks.
-    let fast = (used.first())
-        .and_then(|(index, _)| instrument.samples.get(*index))
-        .is_some_and(|s| kontra_stream::fast_storage(&s.file));
+    // page on time; the law's own 60 KB is sized for spinning disks. Each
+    // sample's file answers for itself: a library may keep archives on
+    // several drives.
+    let mut speeds: HashMap<std::path::PathBuf, bool> = HashMap::new();
+    let mut fast = |s: &ir::Sample| {
+        *(speeds.entry(s.file.clone())).or_insert_with(|| kontra_stream::fast_storage(&s.file))
+    };
     let opened = parallel(&used, |(index, _)| match instrument.samples.get(*index) {
         Some(sample) => open(sample),
         None => Err(io::Error::new(
@@ -255,6 +258,7 @@ fn load_samples(
         let Some(sample) = instrument.samples.get(*index) else {
             continue;
         };
+        let fast = fast(sample);
         requests.push(LoadRequest {
             key: BlobKey {
                 file: format!("{}#{}", sample.file.display(), sample.offset).into(),

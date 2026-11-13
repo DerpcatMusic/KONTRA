@@ -1,8 +1,26 @@
 //! Load time and memory of one instrument: what the store pins (the preload
 //! law's heads) against the whole process, for RAM work against Kontakt.
 //! `cargo run --release -p kontra-host --example memory -- <file>...`
+//! With `KONTRA_PLAY_SECONDS=60` it then plays chords for that many seconds
+//! of audio and reports the process again.
 
+use std::sync::Arc;
+
+use kontra_engine::{Engine, Event, HostNote, HostPattern, SampleTime, Timed};
 use kontra_stream::{Store, StoreConfig};
+
+/// `RssAnon` and `RssFile` in MB: heap and anonymous memory against mapped file pages.
+fn rss_split() -> (u64, u64) {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let kb = |key: &str| {
+        status
+            .lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    (kb("RssAnon:") / 1024, kb("RssFile:") / 1024)
+}
 
 fn rss_mb() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
@@ -52,7 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let io = io_mb();
         let (start, cpu) = (std::time::Instant::now(), cpu_s());
         let mut store = Store::new(StoreConfig::DEFAULT)?;
+        eprintln!("  rss after store {} MB", rss_mb().saturating_sub(before));
         let ir = kontra_host::instrument::read(path.as_ref())?;
+        eprintln!("  rss after read {} MB", rss_mb().saturating_sub(before));
         let (read, read_cpu) = (start.elapsed(), cpu_s() - cpu);
         let read_io = io_mb();
         let (samples, zones) = (
@@ -87,15 +107,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let loaded = kontra_host::instrument::build(ir, 48_000, &mut store);
         let pinned = store.pinned_bytes() as f64 / 1e6;
         println!(
-            "{}: read {:.2} s (cpu {:.2} s), load {:.2} s (cpu {:.2} s); {samples} samples, {zones} zones ({} planned); pinned {pinned:.1} MB; rss +{} MB",
+            "{}: read {:.2} s (cpu {:.2} s), load {:.2} s (cpu {:.2} s); {samples} samples, {zones} zones ({} planned); pinned {pinned:.1} MB; rss +{} MB (anon {}, file {})",
             loaded.name,
             read.as_secs_f64(),
             read_cpu,
             start.elapsed().as_secs_f64(),
             cpu_s() - cpu,
             loaded.plan.zones.len(),
-            rss_mb().saturating_sub(before)
+            rss_mb().saturating_sub(before),
+            rss_split().0,
+            rss_split().1
         );
+        if let Some(seconds) = std::env::var("KONTRA_PLAY_SECONDS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            let loaded_rss = rss_mb();
+            let mut engine = Engine::new(Arc::new(loaded.plan), store.client(), 48_000);
+            play(&mut engine, seconds);
+            println!(
+                "  after {seconds} s of chords: rss {} MB (+{} MB since load); {:?}",
+                rss_mb(),
+                rss_mb().saturating_sub(loaded_rss),
+                store.client().stats()
+            );
+        }
         let done = io_mb();
         println!(
             "  bytes read (calls / disk): format {} / {} MB, samples {} / {} MB",
@@ -106,4 +142,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     Ok(())
+}
+
+/// Four-note chords every half second, wandering over the keyboard, for
+/// `seconds` of audio, paced so the stream keeps up.
+fn play(engine: &mut Engine, seconds: u64) {
+    const BLOCK: u64 = 512;
+    let note = |key: i32| HostPattern {
+        port: 0,
+        channel: 0,
+        key,
+        id: -1,
+        clap: true,
+    };
+    let mut block = vec![[0.0f32; 2]; BLOCK as usize];
+    for start in (0..seconds * 48_000).step_by(BLOCK as usize) {
+        let mut input = Vec::new();
+        for n in 0..=(start + BLOCK) / 24_000 {
+            let (on, base) = (n * 24_000, 36 + (n * 7 % 49) as i32);
+            for key in [0, 4, 7, 12] {
+                let at = |t: u64| SampleTime(t);
+                let pattern = note(base + key);
+                let host = HostNote {
+                    port: 0,
+                    channel: 0,
+                    key: (base + key) as u8,
+                    id: -1,
+                    clap: true,
+                };
+                input.push(Timed {
+                    at: at(on),
+                    body: Event::NoteOn {
+                        note: host,
+                        velocity: 0.8,
+                        tune: 0.0,
+                    },
+                });
+                input.push(Timed {
+                    at: at(on + 20_000),
+                    body: Event::NoteOff(pattern),
+                });
+            }
+        }
+        // Only this block's events, in time order.
+        input.retain(|e| (start..start + BLOCK).contains(&e.at.0));
+        input.sort_by_key(|e| e.at.0);
+        engine.process(&mut block, &input);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
