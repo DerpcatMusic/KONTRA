@@ -21,9 +21,12 @@ pub(crate) struct Memo {
     envelope: [Slot; WARPS],
 }
 
+/// A source's value remembered at one age; `None` inside is "no value".
+type Aged = Option<(u64, Option<f32>)>;
+
 /// Up to two ages (now, and the next refresh) per source.
 #[derive(Default)]
-struct Slot([Cell<Option<(u64, Option<f32>)>>; 2]);
+struct Slot([Cell<Aged>; 2]);
 
 impl Memo {
     pub(crate) fn begin(&self) {
