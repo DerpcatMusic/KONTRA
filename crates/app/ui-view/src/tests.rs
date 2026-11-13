@@ -277,7 +277,7 @@ fn a_level_meter_lights_with_the_peak_and_idles_when_it_holds() {
     let mut ui = crate::ui();
     let mut pictures = Pictures::new(Box::new(|_| None));
     // Half lit on its channel (left); the right is dark.
-    let lit = |level| crate::meter::Shown {
+    let lit = |level| crate::Shown {
         level,
         ..Default::default()
     };
@@ -767,5 +767,5 @@ fn a_widget_in_a_scrolling_region_keeps_its_place_under_the_band() {
         );
     }
     let y = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame.y);
-    assert_eq!(y(&crate::input::surface(0, 1)), Some(14.));
+    assert_eq!(y(&surface(0, 1)), Some(14.));
 }

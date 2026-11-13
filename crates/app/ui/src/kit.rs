@@ -8,6 +8,7 @@ use std::ops::RangeInclusive;
 use mui::prelude::*;
 
 pub use crate::icon::{Icon, glyph};
+pub(crate) use kontra_ui_view::rect_path;
 
 use crate::theme::{
     CONTROL, INSET, SMALL, SPACE, TEXT, TIGHT, accent, hairline, lift, quick, secondary,
@@ -677,14 +678,6 @@ pub fn edges(top: f64, right: f64, bottom: f64, left: f64) -> mui::layout::Inset
         top,
         bottom,
     }
-}
-
-/// The rectangle from `(x0, y0)` to `(x1, y1)` as a closed path.
-pub(crate) fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
-    Path::polyline(
-        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| Point::new(x, y)),
-        true,
-    )
 }
 
 #[cfg(test)]

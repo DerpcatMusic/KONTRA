@@ -12,6 +12,7 @@ workspace = true
 kontra-protocol = { path = "../../model/protocol" }
 kontra-ui-model = { path = "../../model/ui-model" }
 kontra-ui-pictures = { path = "../ui-pictures" }
+kontra-ui-view = { path = "../ui-view" }
 mui = { workspace = true }
 
 [dev-dependencies]

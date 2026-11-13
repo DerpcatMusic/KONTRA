@@ -5,6 +5,8 @@
 //! tick is inferred: 25 ticks of overload make one second, and the value
 //! edit's measured arrow repeat waits the same 10 ticks (0.4 s).
 
+pub use kontra_ui_view::Shown;
+
 /// Kontakt's GUI tick, in seconds.
 pub const TICK: f64 = 0.04;
 const FALL: f64 = 0.4;
@@ -17,15 +19,6 @@ const CATCH_UP: u32 = 64;
 /// octaves down) to 0 dB.
 pub fn fraction(peak: f64) -> f64 {
     (1. + peak.clamp(1e-9, 1.).log2() / 9.).clamp(0., 1.)
-}
-
-/// One channel of a meter as it shows: the lit fraction, the peak line's,
-/// and whether the overload light is on.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Shown {
-    pub level: f64,
-    pub peak: f64,
-    pub over: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

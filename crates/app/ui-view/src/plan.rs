@@ -293,7 +293,7 @@ pub(super) fn glyphs(
 ) -> Vec<Glyph> {
     // Picture fonts are Kontakt's: a label starts at its top.
     let (align, top) = placed(words, style, widget, (height, line, scale), true);
-    let advance = |c| width_of(crate::pictures::glyph(c)).map_or(0., |w| f64::from(w) * scale);
+    let advance = |c| width_of(kontra_ui_pictures::glyph(c)).map_or(0., |w| f64::from(w) * scale);
     let mut result = Vec::new();
     for (n, row) in words.split('\n').enumerate() {
         let wide: f64 = row.chars().map(advance).sum();
@@ -303,7 +303,7 @@ pub(super) fn glyphs(
             model::Align::Right => width - 2. * scale - wide,
         };
         for c in row.chars() {
-            let index = crate::pictures::glyph(c);
+            let index = kontra_ui_pictures::glyph(c);
             let Some(w) = width_of(index) else { continue };
             let glyph_width = f64::from(w) * scale;
             result.push(Glyph {
@@ -410,7 +410,7 @@ pub(super) fn cuts(
 /// Whether a stock label fits inside the same inset used by the text fallback.
 pub(super) fn label_fits(
     text: &str,
-    glyphs: &crate::pictures::Glyphs,
+    glyphs: &kontra_ui_pictures::Glyphs,
     width: f64,
     scale: f64,
 ) -> bool {
@@ -421,7 +421,7 @@ pub(super) fn label_fits(
                 4.
             } else {
                 glyphs
-                    .get(crate::pictures::glyph(c))
+                    .get(kontra_ui_pictures::glyph(c))
                     .map_or(0., |g| f64::from(g.width))
             }
         })
