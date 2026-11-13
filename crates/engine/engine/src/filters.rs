@@ -131,7 +131,8 @@ impl Engine {
             };
             let before = slot.voice.missing_frames();
             if slot.rack.is_empty() {
-                slot.voice.render(&self.stream, self.now.0, mix);
+                slot.voice
+                    .render(&mut self.voice_scratch, &self.stream, self.now.0, mix);
             } else {
                 let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
                 let inserts = group
@@ -141,7 +142,7 @@ impl Engine {
                 let (rack, spare, rate) = (&mut slot.rack, &mut *self.scratch, self.rate);
                 let lines = &mut slot.comb_lines;
                 slot.voice
-                    .render_through(&self.stream, self.now.0, mix, |io| {
+                    .render_through(&mut self.voice_scratch, &self.stream, self.now.0, mix, |io| {
                         crate::voice_rack::process(rack, inserts, io, spare, lines, rate);
                     });
             }
