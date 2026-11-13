@@ -317,7 +317,7 @@ pub(super) fn label(
         size,
         Some(glyphs),
         style.color,
-        StockMetrics::Label12(text_y),
+        StockMetrics::Pixel(text_y),
     )
 }
 
@@ -325,7 +325,8 @@ pub(super) fn label(
 enum StockMetrics {
     Field,
     Button12,
-    Label12(Option<i32>),
+    /// The 9 px pixel font on a label: its cell from the label's top.
+    Pixel(Option<i32>),
 }
 
 fn field_words(
@@ -350,7 +351,8 @@ fn field_words(
         (if c == ' ' {
             match metrics {
                 StockMetrics::Field => f64::from(glyph.width),
-                StockMetrics::Button12 | StockMetrics::Label12(_) => 4.,
+                StockMetrics::Button12 => 4.,
+                StockMetrics::Pixel(_) => 3.,
             }
         } else {
             f64::from(glyph.width)
@@ -365,11 +367,12 @@ fn field_words(
         })
         .sum();
     let mut x = match align {
+        model::Align::Left if matches!(metrics, StockMetrics::Pixel(_)) => 5. * s,
         model::Align::Left => 7. * s,
         model::Align::Center => (w - width) / 2.,
         model::Align::Right => {
-            let inset = if matches!(metrics, StockMetrics::Label12(_)) {
-                7.
+            let inset = if matches!(metrics, StockMetrics::Pixel(_)) {
+                5.
             } else {
                 11.
             };
@@ -395,7 +398,7 @@ fn field_words(
                             StockMetrics::Field => {
                                 (u16::from(p[3]) * 255 / FIELD_ATLAS_COVERAGE).min(255) as u8
                             }
-                            StockMetrics::Button12 | StockMetrics::Label12(_) => p[3],
+                            StockMetrics::Button12 | StockMetrics::Pixel(_) => p[3],
                         }) * u16::from(color.a))
                             / 255) as u8,
                     ]
@@ -408,8 +411,9 @@ fn field_words(
                     x,
                     match metrics {
                         StockMetrics::Field => (h - height) / 2. - s,
-                        StockMetrics::Button12 | StockMetrics::Label12(None) => (h - height) / 2.,
-                        StockMetrics::Label12(Some(y)) => f64::from(y) * s,
+                        StockMetrics::Button12 => (h - height) / 2.,
+                        StockMetrics::Pixel(Some(y)) => f64::from(y) * s,
+                        StockMetrics::Pixel(None) => 0.,
                     },
                 ));
             }
@@ -671,6 +675,21 @@ pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
             Kind::Slider { .. } | Kind::TextEdit | Kind::Table { .. }
         )
         || matches!(w.kind, Kind::Shape(_) | Kind::Canvas(_))
+}
+
+/// Kontakt's face for a script label with no picture: a flat grey, one
+/// pixel in on every side (Kontakt 8 oracle, a bare probe page).
+pub(super) fn label_face(
+    tree: &Interface,
+    w: &Widget,
+    (width, height, s): (f64, f64, f64),
+) -> Option<El> {
+    (matches!(w.kind, Kind::Label) && !w.hide.background && unpictured(tree, w)).then(|| {
+        block((width - 2. * s).max(0.), (height - 2. * s).max(0.))
+            .radius(0.)
+            .fill(rgb(0x77_7671))
+            .at(s, s)
+    })
 }
 
 /// A KSP control with no picture, or one the library lacks; `false` for
