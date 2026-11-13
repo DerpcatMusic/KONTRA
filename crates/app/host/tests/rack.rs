@@ -1585,3 +1585,61 @@ fn a_note_before_its_heads_load_starts_from_the_samples_first_frame() {
         assert!((x - y).abs() < 1e-3, "the attack differs: {x} vs {y}");
     }
 }
+
+#[test]
+fn replacing_a_part_frees_the_old_instruments_samples() {
+    let (mut rack, mut audio) = rack();
+    let fmt = SampleFmt {
+        encoding: Encoding::F32,
+        channels: 1,
+    };
+    let key = BlobKey {
+        file: "old".into(),
+        offset: 0,
+        fmt,
+    };
+    let sample = rack
+        .store_mut()
+        .load(
+            &key,
+            Arc::new(MemSource::new(fmt, vec![0; 4 * 1000])),
+            1000,
+            std::slice::from_ref(&(0..1000)),
+        )
+        .unwrap();
+    let weak = Arc::downgrade(&sample);
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: 1000,
+        loops: Default::default(),
+        reverse: false,
+    };
+    let mut zone = Zone::new(region, 60, RATE);
+    zone.keys = 0..=127;
+    let plan = Arc::new(Plan::new(vec![zone], 4));
+    let old = Box::new(Engine::new(
+        Arc::clone(&plan),
+        rack.store_mut().client(),
+        RATE,
+    ));
+    let mut info = part("old");
+    info.plan = Some(plan);
+    rack.install(0, old, info);
+    audio.process(BLOCK, &[(0, note(0))]);
+    assert!(weak.upgrade().is_some());
+    // The next instrument takes the part; the old one retires and is dropped.
+    let next = engine(rack.store_mut(), 0.5);
+    rack.install(0, next, part("new"));
+    // It fades out first, then retires to the control side, which drops it.
+    for _ in 0..400 {
+        audio.process(BLOCK, &[]);
+        rack.tick();
+    }
+    assert!(
+        weak.upgrade().is_none(),
+        "the replaced instrument's sample is still held"
+    );
+}
