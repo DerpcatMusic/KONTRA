@@ -11,7 +11,7 @@ mod zone;
 
 use kontra_stream::{Mix, StreamClient};
 
-pub use envelope::{Ahdsr, EarlyKeyUp};
+pub use envelope::Ahdsr;
 pub use wavetable::{
     CYCLE, LEVELS, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP, Table, Warp, shape, warp,
 };
