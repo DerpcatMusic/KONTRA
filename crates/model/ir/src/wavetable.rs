@@ -15,12 +15,28 @@ pub struct Wavetable {
     /// The level the table plays at, linear: 1 plays the cycles as their
     /// samples are.
     pub gain: f32,
-    /// How far apart the partials above the first lie, in fundamentals:
-    /// partial `n` plays at `f·(1 + (n − 1)·stretch)`, each at its level
-    /// (1 is harmonic).
-    pub stretch: f32,
+    pub inharmonic: Inharmonic,
     /// Applied in order.
     pub warps: [Warp; 2],
+}
+
+/// How far apart the partials above the first lie, in fundamentals: partial
+/// `n` plays at `f·(1 + (n − 1)·s)`, each at its level, `s` geometric from
+/// `range.0` at amount 0 to `range.1` at 1; harmonic (`s` = 1) when off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Inharmonic {
+    pub on: bool,
+    /// 0..=1; routes and scripts move it.
+    pub amount: f32,
+    pub range: (f32, f32),
+}
+
+impl Inharmonic {
+    pub const OFF: Self = Self {
+        on: false,
+        amount: 0.5,
+        range: (1.0, 1.0),
+    };
 }
 
 /// A value of a [`Wavetable`] that routes and scripts move, each 0..=1.
@@ -29,6 +45,8 @@ pub enum TableValue {
     Position,
     /// The amount of warp n (0 or 1).
     Warp(u8),
+    /// [`Inharmonic::amount`].
+    Inharmonic,
 }
 
 /// One form: a bend of the read phase, then a shaper of what it read.

@@ -2,7 +2,7 @@
 
 use kontra_format::Notes;
 use kontra_ir::{self as ir, FormShaper, Side, Warp, WarpShape};
-use kontra_law::kontakt::inharmonic_stretch;
+use kontra_law::kontakt::INHARMONIC_RANGE;
 use ni_file::kontakt::objects::WavetableSource;
 
 /// The source's table, forms, start phase and inharmonic stretch. Its
@@ -28,6 +28,20 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         warp(source.form_type, source.form1),
         warp(source.form2_type, source.form2),
     ];
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.wavetable.v1"),
+        location: format!("groups/{group}/wavetable"),
+        input: format!(
+            "mod type={} wave={} amount={} tune={}, inharmonic={}:{}",
+            source.mod_type,
+            source.mod_wave,
+            source.mod_amount,
+            source.mod_tune,
+            source.inharmonic_enabled,
+            source.inharmonic
+        ),
+        output: String::new(),
+    });
     if source.mod_type != 0 {
         notes.add(ir::Impact::Audible, "wavetable modulation", group);
     }
@@ -36,7 +50,11 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         phase: source.phase,
         phase_random: source.phase_random.clamp(0.0, 1.0),
         gain: LEVEL,
-        stretch: inharmonic_stretch(source.inharmonic_enabled.then_some(source.inharmonic)),
+        inharmonic: ir::Inharmonic {
+            on: source.inharmonic_enabled,
+            amount: source.inharmonic.clamp(0.0, 1.0),
+            range: INHARMONIC_RANGE,
+        },
         warps,
     }
 }
@@ -54,6 +72,7 @@ pub(crate) fn target(param: &str) -> Option<ir::TableValue> {
         "wavetablePosition" => ir::TableValue::Position,
         "warpFactor" => ir::TableValue::Warp(0),
         "warpFactor2" => ir::TableValue::Warp(1),
+        "wavetableInharmonic" => ir::TableValue::Inharmonic,
         _ => return None,
     })
 }

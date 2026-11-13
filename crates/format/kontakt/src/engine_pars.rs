@@ -133,10 +133,10 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
         ("$ENGINE_PAR_INTMOD_RETRIGGER", P::LfoRetrigger),
         ("$ENGINE_PAR_INTMOD_FREQUENCY_UNIT", P::LfoUnit),
-        // Position and the form amounts are 0..=1 linear (readouts.rs shows
-        // 0..100); the voice clamps each with its routes to 0..=1
-        // (0x140b52133). The modulator and inharmonic are not carried yet:
-        // their text answers, a set is reported. The form modes are the
+        // Position, the form amounts and Inharm are 0..=1 linear (readouts.rs
+        // shows 0..100); the voice clamps each with its routes to 0..=1
+        // (0x140b52133). The modulator is not carried yet: its text answers,
+        // a set is reported. The form modes are the
         // `$NI_WT_FORM_*` kinds (wavetable::warp_modes); no mode has text.
         (
             "$ENGINE_PAR_WT_POSITION",
@@ -150,7 +150,11 @@ const FIXED: &[(&str, ir::EnginePar)] = {
             P::Wavetable(ir::TableValue::Warp(1)),
         ),
         ("$ENGINE_PAR_WT_MOD_AMOUNT", P::Shown),
-        ("$ENGINE_PAR_WT_INHARMONIC", P::Shown),
+        (
+            "$ENGINE_PAR_WT_INHARMONIC",
+            P::Wavetable(ir::TableValue::Inharmonic),
+        ),
+        ("$ENGINE_PAR_WT_INHARMONIC_MODE", P::InharmonicOn),
         ("$ENGINE_PAR_WT_MOD_TUNE", P::Shown),
         ("$ENGINE_PAR_RELEASE_TRIGGER", P::ReleaseTrigger),
         ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),
