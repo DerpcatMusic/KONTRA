@@ -3,7 +3,7 @@
 //! that went silent leave it.
 
 use crate::ledger::{Note, NoteRef, Origin};
-use crate::{Engine, Slot, Trigger};
+use crate::{Engine, Slot};
 use kontra_voice::{FadeCurve, FadeTarget};
 
 impl Engine {
@@ -157,11 +157,7 @@ impl Engine {
     /// still down stays alive while the plan has release triggers to play.
     pub(crate) fn end_silent_notes(&mut self) {
         // A held key stays a live event while something may still act on its release.
-        let release_triggers = self
-            .plan
-            .zones
-            .iter()
-            .any(|z| z.trigger == Trigger::Release)
+        let release_triggers = self.release_zones
             || self
                 .plan
                 .scripts

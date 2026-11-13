@@ -105,6 +105,14 @@ impl Engine {
                 }
             }
             std::mem::swap(&mut self.plan, plan);
+            for (span, zone) in self.zone_keys.iter_mut().zip(&self.plan.zones) {
+                *span = (*zone.keys.start(), *zone.keys.end());
+            }
+            self.release_zones = self
+                .plan
+                .zones
+                .iter()
+                .any(|z| z.trigger == crate::Trigger::Release);
         }
         for &(e, took) in edits {
             self.queue_async(e.script, e.id, Exit::from(same && took));

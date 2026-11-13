@@ -217,8 +217,7 @@ impl Engine {
 
     fn key_down(&self, key: i32) -> bool {
         self.notes
-            .count(|n| n.origin == Origin::Host && i32::from(n.host.key) == key && !n.is_up())
-            > 0
+            .any(|n| n.origin == Origin::Host && i32::from(n.host.key) == key && !n.is_up())
     }
 
     /// The value sent every event for "from script" modulator `index`; 0 until sent.
