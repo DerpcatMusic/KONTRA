@@ -1553,7 +1553,7 @@ fn an_effect_on_an_aux_no_send_reaches_is_latent() {
         </Keygroup></Keygroups>
       </Layer></Layers>
       <Auxs><AuxEffect Name="Aux3" Bypass="0" Gain="1" PreInsert="1">
-        <Inserts><CombFilter Name="InsertFX0" Bypass="0" Freq="40" Q="0.9"/></Inserts>
+        <Inserts><Chorus Name="InsertFX0" Bypass="0" Rate="1"/></Inserts>
       </AuxEffect></Auxs>
     </Program>"#
         )
@@ -1565,7 +1565,7 @@ fn an_effect_on_an_aux_no_send_reaches_is_latent() {
         let comb = out
             .diagnostics
             .iter()
-            .find(|d| d.feature == "insert CombFilter");
+            .find(|d| d.feature == "insert Chorus");
         assert_eq!(
             comb.map(|d| d.impact),
             Some(impact),
@@ -2176,5 +2176,51 @@ fn provenance_is_opt_in_and_keeps_actual_group_and_zone_results() {
         records
             .iter()
             .any(|r| r.id.0 == "uvi.zone_gain_pan_tune.v1" && r.output.contains("2.0"))
+    );
+}
+
+#[test]
+fn a_feedback_machine_runs_its_chain_and_mixes_it_with_its_input() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup>
+        <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+      </Keygroup></Keygroups></Layer></Layers>
+      <Auxs><AuxEffect Name="Aux3" Bypass="0" Gain="1" PreInsert="1">
+        <Inserts><FeedbackMachine Bypass="0" DelayTime="0.004" Feedback="0" Mix="0.25"><Chains>
+          <AuxEffect Name="Chain1" Bypass="0" Gain="1" Pan="0"><Inserts>
+            <Drive Bypass="0" DriveAmount="0.4" Mode="0"/>
+            <CombFilter Bypass="0" Mode="0" Freq="40" Q="0.9" KeyTracking="0"/>
+            <XpanderFilter Bypass="0" Freq="800" Q="0" Mode="8" DistortionType="0" Drive="-20" Fat="0" Algorithm="0"/>
+          </Inserts></AuxEffect>
+        </Chains></FeedbackMachine></Inserts>
+      </AuxEffect></Auxs>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let kinds: Vec<_> = out
+        .buses
+        .iter()
+        .flat_map(|b| b.inserts.iter().flatten().map(|e| e.kind))
+        .collect();
+    assert!(matches!(kinds[0], ir::EffectKind::Shaper(_)), "{kinds:?}");
+    assert!(matches!(kinds[1], ir::EffectKind::CombBank(_)), "{kinds:?}");
+    assert!(matches!(kinds[2], ir::EffectKind::Filter(_)), "{kinds:?}");
+    // The chain joins at the Mix, the input at the rest.
+    let levels: Vec<f32> = out
+        .buses
+        .iter()
+        .flat_map(|b| b.sends.iter().map(|s| s.level))
+        .filter(|l| *l < 1.0)
+        .collect();
+    assert!(
+        levels == [0.25, 0.75] || levels == [0.75, 0.25],
+        "{levels:?}"
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| !d.feature.starts_with("insert")),
+        "{:?}",
+        out.diagnostics
     );
 }

@@ -18,6 +18,7 @@ use roxmltree::Node;
 use super::delay::dual_delay;
 use super::digital_eq::{digital_eq, gain_scale};
 use super::reverb::spark_verb;
+mod inserts;
 mod moved;
 mod shaper;
 mod sweep;
@@ -78,9 +79,13 @@ pub(super) fn carried(node: Node) -> bool {
         "DiodeClipper",
         "Flanger",
         "Phasor",
+        "Drive",
+        "CombFilter",
+        "FeedbackMachine",
     ]
     .iter()
-    .any(|t| node.has_tag_name(*t));
+    .any(|t| node.has_tag_name(*t))
+        || super::filters::on_bus(node);
     if owner.has_tag_name("Keygroup") {
         return PER_VOICE.iter().any(|t| node.has_tag_name(*t));
     }
@@ -239,7 +244,8 @@ impl<L: Library> Translator<'_, '_, L> {
                 self.routed_eq(node, at)?;
                 continue;
             }
-            if !node.has_tag_name("EffectRack") || flag(node, "Bypass") {
+            let racked = node.has_tag_name("EffectRack") || node.has_tag_name("FeedbackMachine");
+            if !racked || flag(node, "Bypass") {
                 let slot = self.slot(node)?;
                 if let Some(b) = self.out.buses.get_mut(at) {
                     let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
@@ -250,6 +256,12 @@ impl<L: Library> Translator<'_, '_, L> {
                 }
                 continue;
             }
+            // A FeedbackMachine's `Mix` is its wet share; its input is the rest.
+            let wet = if node.has_tag_name("FeedbackMachine") {
+                self.feedback_machine(node)?
+            } else {
+                1.0
+            };
             let mut ends = Vec::new();
             // A bypassed chain is built silent: a script may enable it.
             for chain in children(node, "Chains", "AuxEffect") {
@@ -275,9 +287,13 @@ impl<L: Library> Translator<'_, '_, L> {
                 ends.push(end);
             }
             // The chains' gains are their faders: scripts move them.
+            let input = at;
             at = self.push(node);
             for end in ends {
-                self.feed(end, at, 1.0, true);
+                self.feed(end, at, wet, true);
+            }
+            if wet < 1.0 {
+                self.feed(input, at, 1.0 - wet, false);
             }
         }
         Ok(at)
@@ -421,6 +437,8 @@ impl<L: Library> Translator<'_, '_, L> {
             Some(phasor(Params::of(node), &mut self.notes)?)
         } else if node.has_tag_name("DiodeClipper") {
             Some(diode_clipper(node)?)
+        } else if let Some(e) = inserts::bus_effect(node, &mut self.notes)? {
+            Some(e)
         } else if node.has_tag_name("DualDelay") {
             Some(dual_delay(node, &mut self.notes)?)
         } else if node.has_tag_name("Convolver") || node.has_tag_name("SampledReverb") {
