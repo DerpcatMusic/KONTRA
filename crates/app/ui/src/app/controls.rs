@@ -4,7 +4,7 @@
 use kontra_ui_model::{Interface, Kind, PageRef};
 use mui::prelude::*;
 
-use crate::input::{Edit, takes_input, value};
+use crate::input::{Edit, takes_input};
 use crate::kit::{self, knob, latch};
 use crate::theme::{SPACE, TEXT, TIGHT, secondary};
 use crate::view::readout;
@@ -31,7 +31,7 @@ pub(super) fn view(
         }
         let id = format!("kontra-c-{face}-{}", n.0);
         let name = name::label(tree, n);
-        let now = value(w);
+        let now = w.number();
         let (picked, el) = match &w.kind {
             Kind::Knob { range, .. }
             | Kind::Slider { range, .. }
