@@ -451,11 +451,10 @@ fn drawn_page(
         let size = tree.content(v);
         let content = stack(groups.remove(&Some(v)).unwrap_or_default());
         let content = content.w(size.width * scale).h(size.height * scale);
-        let el = col![content]
-            .scroll()
-            .w(w)
-            .h(h)
-            .id(format!("kontra-v-{face}-{}", v.0));
+        let id = format!("kontra-v-{face}-{}", v.0);
+        let el = col![content].scroll().w(w).h(h).id(id.clone());
+        // It keeps the wheel at its ends too: never the rack's.
+        let el = col![el].w(w).h(h).captures_wheel().id(id + "-keep");
         if let Some(slot) = groups.get_mut(&host).and_then(|g| g.get_mut(at)) {
             *slot = el.at(x, y);
         }
