@@ -144,6 +144,8 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
                 if ih > 0. { ih + t + b } else { 0. },
             )
         }
+        // It fills the room it is offered and sits where it says in it.
+        "align" => (0., 0.),
         _ => inner(room),
     }
 }
@@ -635,4 +637,67 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
         _ => {}
     }
     bld.ui.widgets.push(w);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(kind: &str, mods: Vec<(&str, Vec<Prop>)>, children: Vec<Node>) -> Node {
+        Node {
+            kind: kind.into(),
+            props: vec![("color".into(), Prop::Color([255., 0., 0., 1.]))],
+            mods: mods.into_iter().map(|(m, a)| (m.into(), a)).collect(),
+            children,
+            instance: None,
+            reads: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_aligned_child_fills_its_room_and_sits_where_it_says() {
+        let size = |w: f64, h: f64| {
+            let named = vec![
+                ("width".into(), Prop::Number(w)),
+                ("height".into(), Prop::Number(h)),
+            ];
+            ("frame", vec![Prop::Table(named)])
+        };
+        let at = |words: &str| ("align", vec![Prop::Text(words.into())]);
+        let panel = |words| node("Rectangle", vec![size(30., 20.), at(words)], Vec::new());
+        // A page framed at its top centre, as a whole panel is.
+        let framed = vec![
+            ("width".into(), Prop::Number(300.)),
+            ("height".into(), Prop::Number(200.)),
+            ("alignment".into(), Prop::Text("top center".into())),
+        ];
+        let page = node(
+            "ZStack",
+            vec![("frame", vec![Prop::Table(framed)])],
+            vec![panel("top left"), panel("bottom right")],
+        );
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        lower(
+            &page,
+            ui::Size {
+                width: 600.,
+                height: 400.,
+            },
+            &mut bld,
+        );
+        let at: Vec<_> = bld
+            .ui
+            .widgets
+            .iter()
+            .map(|w| (w.rect.x, w.rect.y))
+            .collect();
+        assert_eq!(at, [(150., 100.), (420., 280.)]);
+    }
 }

@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 aes = "0.8"
 kontra-format = { path = "../common" }
+kontra-fastlz = { path = "../../base/fastlz" }
 kontra-ir = { path = "../../model/ir" }
 kontra-law = { path = "../../base/law" }
 kontra-params = { path = "../../model/params" }
