@@ -16,7 +16,6 @@ kontra-lua = { path = "../../crates/script/lua" }
 kontra-ui-model = { path = "../../crates/model/ui-model" }
 kontra-law = { path = "../../crates/base/law" }
 kontra-host = { path = "../../crates/app/host" }
-kontra-ksp = { path = "../../crates/script/ksp" }
 kontra-stream = { path = "../../crates/engine/stream" }
 serde_json = "1"
 rustfft = "6"
