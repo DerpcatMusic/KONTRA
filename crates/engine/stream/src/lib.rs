@@ -17,6 +17,6 @@ mod store;
 pub use file::{Files, decode, open};
 pub use fmt::{Encoding, MAX_CHANNELS, Mix, SampleFmt};
 pub use probe::fast_storage;
-pub use sample::{PAGE_FRAMES, Read, Sample, SampleId};
+pub use sample::{Decoded, PAGE_FRAMES, Read, Sample, SampleId};
 pub use source::{MemSource, Source};
 pub use store::{BlobKey, Heads, LoadRequest, Store, StoreConfig, StreamClient, StreamStats};

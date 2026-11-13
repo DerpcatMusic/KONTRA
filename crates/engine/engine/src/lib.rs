@@ -91,6 +91,12 @@ use script::{Kind, Running};
 
 use kontra_effects::MAX_SPAN;
 use kontra_effects::matrix as effects;
+/// Loop turns the resumed script callbacks may run in one block, a
+/// millisecond or less of a heavy script. A run that reaches it yields at its next
+/// loop turn and goes on at the next block, as the rest of a chain of waits
+/// does: a block never holds all of a script's chunked work.
+const BLOCK_SCRIPT_TURNS: u64 = 64;
+
 /// A voice ended early outside a voice group fades this long, a cut that never clicks.
 const FADE_SECONDS: f64 = 0.010;
 
@@ -168,6 +174,12 @@ pub struct Engine {
     zone_edits: Vec<ZoneEdit>,
     /// Per script slot, the edits refused because that queue was full.
     zone_refused: Box<[u32]>,
+    /// The block being rendered ends here; script turns run before it began.
+    block_end: SampleTime,
+    /// Loop turns resumed callbacks have run this block.
+    block_turns: u64,
+    /// Loop turns the next resumed script run may take before it yields.
+    fuel: u32,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -360,6 +372,9 @@ impl Engine {
             requests: Vec::with_capacity(fx_types::REQUESTS),
             zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
             zone_refused: vec![0; script_count].into(),
+            block_end: SampleTime(0),
+            block_turns: 0,
+            fuel: 0,
             stream,
             voices,
             buses,
@@ -482,6 +497,8 @@ impl Engine {
         }
         let start = self.now;
         let end = start.advance(Frames(u32::try_from(out.len()).unwrap_or(u32::MAX)));
+        self.block_end = end;
+        self.block_turns = 0;
         while self.now < end {
             // One frame runs at most a queue's worth of resumes: a script
             // chain of sub-frame waits goes on next frame, never spins here.
