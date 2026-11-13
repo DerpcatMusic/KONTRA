@@ -19,6 +19,7 @@ mod fade;
 pub(crate) mod files;
 mod filters;
 mod gains;
+mod ignored;
 mod lfo_routes;
 mod load;
 mod matrix;
@@ -124,6 +125,7 @@ pub(crate) fn unfinished<'a, L: Library>(
     // After the layers: they mark the matrix connections they carry.
     t.connections();
     t.step_smoothing();
+    ignored::report(program, &mut t.notes);
     if !t.out.scripts.is_empty() {
         let tree = t.tree();
         for script in &mut t.out.scripts {

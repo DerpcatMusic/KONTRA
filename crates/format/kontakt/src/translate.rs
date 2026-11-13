@@ -25,6 +25,71 @@ const LOOPS: u16 = 0x39;
 const INTERNAL_MODS: u16 = 0x3b;
 const SCRIPT: u16 = 6;
 const VOICE_GROUPS: u16 = 0x32;
+const START_CRITERIA: u16 = 0x38;
+/// The browser's preview data.
+const QUICK_BROWSE: u16 = 0x4e;
+/// Stored fields the translator maps, and those that are editor state only.
+const COSMETIC_PROGRAM: &[&str] = &[
+    "loading_flags",
+    "num_bytes_samples_total",
+    "library_id",
+    "fingerprint",
+    "cat_icon_idx",
+    "instrument_credits",
+    "instrument_author",
+    "instrument_url",
+    "instrument_cat1",
+    "instrument_cat2",
+    "instrument_cat3",
+    "resource_container_filename",
+    "wallpaper_filename",
+];
+const USED_GROUP: &[&str] = &[
+    "name",
+    "volume",
+    "pan",
+    "tune",
+    "key_tracking",
+    "release_trigger",
+    "rls_trig_counter",
+    "start_criteria",
+    "voice_group_index",
+    "muted",
+];
+const COSMETIC_GROUP: &[&str] = &["soloed"];
+const USED_ZONE: &[&str] = &[
+    "sample_start",
+    "sample_end",
+    "sample_start_mod_range",
+    "low_velocity",
+    "high_velocity",
+    "low_key",
+    "high_key",
+    "fade_low_velocity",
+    "fade_high_velocity",
+    "fade_low_key",
+    "fade_high_key",
+    "root_key",
+    "zone_volume",
+    "zone_pan",
+    "zone_tune",
+    "sample_present",
+    "filename_id",
+    "sample_rate",
+    "num_channels",
+    "num_frames",
+];
+// The sample header's own copies (`root_note`, `tuning`, format); the zone's
+// `root_key` and `zone_tune` carry what plays.
+const COSMETIC_ZONE: &[&str] = &[
+    "reserved1",
+    "reserved2",
+    "reserved3",
+    "reserved4",
+    "root_note",
+    "tuning",
+    "sample_data_type",
+];
 
 /// `saved`: a snapshot's persistent values per script slot, over the
 /// instrument's own.
@@ -43,6 +108,35 @@ pub(crate) fn instrument(
         .map_err(decode("program"))?;
     let params = program.params().map_err(decode("program parameters"))?;
     let mut notes = Notes::default();
+    notes.ignored_fields(
+        "program",
+        &params,
+        &[
+            "name",
+            "transpose",
+            "volume",
+            "pan",
+            "tune",
+            "dfd_channel_preload_size",
+        ],
+        COSMETIC_PROGRAM,
+    );
+    crate::ignored::chunks(
+        &mut notes,
+        "program",
+        &program.0,
+        &[
+            SCRIPT,
+            GROUP_LIST,
+            ZONE_LIST,
+            VOICE_GROUPS,
+            0x3a,
+            0x3d,
+            0x45,
+            0x4b,
+        ],
+        &[QUICK_BROWSE],
+    );
     let mut out = ir::Instrument {
         name: params.name.clone(),
         source_path: std::path::absolute(path).ok(),
@@ -260,6 +354,8 @@ pub(crate) fn instrument(
     // A zone's id is its place in the zone list, saved or not.
     for (zone_id, (zone, &group)) in (0u32..).zip(zones.zones().iter().zip(&zones.group_ids)) {
         let z = zone.params().map_err(decode("zone"))?;
+        notes.ignored_fields("zone", &z, USED_ZONE, COSMETIC_ZONE);
+        crate::ignored::chunks(&mut notes, "zone", &zone.0, &[LOOPS], &[QUICK_BROWSE]);
         if !z.sample_present || muted.get(group as usize).copied().unwrap_or(true) {
             continue;
         }
@@ -519,6 +615,14 @@ fn translate_group(
     notes: &mut Notes,
 ) -> Result<Translated, ni_file::Error> {
     let v = group.params()?;
+    notes.ignored_fields("group", &v, USED_GROUP, COSMETIC_GROUP);
+    crate::ignored::chunks(
+        notes,
+        "group",
+        &group.0,
+        &[INTERNAL_MODS, 0x3c, 0x3a, 0x45, 0x3d, 0x4b, START_CRITERIA],
+        &[],
+    );
     let stream_mode = group.source_identity().map_or(0, |s| s.mode);
     let mut out = ir::Group {
         name: v.name.clone(),
@@ -578,6 +682,15 @@ fn translate_group(
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
+            // [router open (editor state), bypass, retrigger, ?].
+            for (flag, what) in [(1, "bypass"), (2, "retrigger"), (3, "flag 3")] {
+                if p.unknown_flags.get(flag).is_some_and(|&b| b != 0) {
+                    notes.ignored(&format!("internal modulator {what}"), &p.name);
+                }
+            }
+            if p.unknown_id != 0 {
+                notes.ignored("internal modulator id", p.unknown_id);
+            }
             out.routes.push(ir::Routes {
                 slot: slot(n),
                 name: p.name.clone(),
