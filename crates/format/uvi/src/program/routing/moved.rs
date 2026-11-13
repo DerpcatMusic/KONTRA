@@ -44,7 +44,9 @@ impl<L: Library> Translator<'_, '_, L> {
     pub(super) fn moves(&mut self, node: Node, at: usize, insert: u8) -> Result<(), String> {
         let (params, build): (&[&'static str], Build) = match node.tag_name().name() {
             "Flanger" => (&["Mix", "Speed", "Feedback"], |p, _| flanger(p).map(Some)),
-            "Phasor" => (&["Depth", "Speed", "Feedback"], |p, n| phasor(p, n).map(Some)),
+            "Phasor" => (&["Depth", "Speed", "Feedback"], |p, n| {
+                phasor(p, n).map(Some)
+            }),
             "WaveShaper" => (&["Mix", "Amount"], wave_shaper),
             _ => return Ok(()),
         };
@@ -67,54 +69,60 @@ impl<L: Library> Translator<'_, '_, L> {
                     && c.attribute("Ratio").and_then(|r| r.parse::<f64>().ok()) != Some(0.0)
             });
             for c in live {
-            let Some(term) = matrix::term(program, c, Some(&mut lfos)) else {
-                continue;
-            };
-            let readable = matches!(
-                term.input.source,
-                ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::Lfo(_)
-            );
-            let Some(saved) = node.attribute(name).and_then(|v| v.parse().ok()) else {
-                continue;
-            };
-            if !readable || !term.factors.is_empty() {
-                continue;
-            }
-            // A synced oscillator's rate knob moves along the note ladder.
-            if let (ir::Source::Lfo(n), Some(lfo)) = (term.input.source, source_node(program, c))
-                && flag(lfo, "SyncToHost")
-                && !seen.contains(&lfo.id())
-            {
-                seen.push(lfo.id());
-                let rates = matrix::children(lfo)
-                    .filter(|r| r.attribute("Destination") == Some("Freq"))
-                    .collect::<Vec<_>>();
-                for r in rates {
-                    let t = matrix::term(program, r, Some(&mut lfos));
-                    if let Some(t) = t.filter(|t| {
-                        t.factors.is_empty()
-                            && matches!(
-                                t.input.source,
-                                ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::Lfo(_)
-                            )
-                    }) {
-                        let blend = ir::Blend { base: 0.0, terms: vec![t] };
-                        divisions.push((n, blend, r.id()));
+                let Some(term) = matrix::term(program, c, Some(&mut lfos)) else {
+                    continue;
+                };
+                let readable = matches!(
+                    term.input.source,
+                    ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::Lfo(_)
+                );
+                let Some(saved) = node.attribute(name).and_then(|v| v.parse().ok()) else {
+                    continue;
+                };
+                if !readable || !term.factors.is_empty() {
+                    continue;
+                }
+                // A synced oscillator's rate knob moves along the note ladder.
+                if let (ir::Source::Lfo(n), Some(lfo)) =
+                    (term.input.source, source_node(program, c))
+                    && flag(lfo, "SyncToHost")
+                    && !seen.contains(&lfo.id())
+                {
+                    seen.push(lfo.id());
+                    let rates = matrix::children(lfo)
+                        .filter(|r| r.attribute("Destination") == Some("Freq"))
+                        .collect::<Vec<_>>();
+                    for r in rates {
+                        let t = matrix::term(program, r, Some(&mut lfos));
+                        if let Some(t) = t.filter(|t| {
+                            t.factors.is_empty()
+                                && matches!(
+                                    t.input.source,
+                                    ir::Source::Controller(_)
+                                        | ir::Source::Script(_)
+                                        | ir::Source::Lfo(_)
+                                )
+                        }) {
+                            let blend = ir::Blend {
+                                base: 0.0,
+                                terms: vec![t],
+                            };
+                            divisions.push((n, blend, r.id()));
+                        }
                     }
                 }
-            }
-            let moved = (name, saved, term.amount, c.id());
-            match by_source.iter_mut().find(|(t, _)| *t == term.input) {
-                Some((_, m)) => match m.iter_mut().find(|x| x.0 == name) {
-                    // One source on one parameter twice: the ratios add.
-                    Some(x) => {
-                        x.2 += moved.2;
-                        extra.push(c.id());
-                    }
-                    None => m.push(moved),
-                },
-                None => by_source.push((term.input, vec![moved])),
-            }
+                let moved = (name, saved, term.amount, c.id());
+                match by_source.iter_mut().find(|(t, _)| *t == term.input) {
+                    Some((_, m)) => match m.iter_mut().find(|x| x.0 == name) {
+                        // One source on one parameter twice: the ratios add.
+                        Some(x) => {
+                            x.2 += moved.2;
+                            extra.push(c.id());
+                        }
+                        None => m.push(moved),
+                    },
+                    None => by_source.push((term.input, vec![moved])),
+                }
             }
         }
         for l in &mut lfos {
