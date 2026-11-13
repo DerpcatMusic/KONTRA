@@ -99,7 +99,7 @@ def main() -> int:
                                start_new_session=True)
     rec = keep = None
     try:
-        deadline = time.time() + 240
+        deadline = time.time() + float(os.environ.get("ORACLE_TIMEOUT", 240))
         while time.time() < deadline and not (raw.exists() and '"ready"' in raw.read_text(errors="replace")):
             dump.dismiss_dialogs(env)
             time.sleep(2)
