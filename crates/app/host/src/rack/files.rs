@@ -42,23 +42,8 @@ fn nka(path: &str) -> Option<&Path> {
     ext.eq_ignore_ascii_case("nka").then_some(path)
 }
 
-/// The file `request` names: its path, or, for a dialog KONTRA does not
-/// show (an empty path), the array's own file (`%perf` is `picked/perf.nka`).
-fn path_of(request: &FileRequest) -> std::borrow::Cow<'_, str> {
-    match request.path.as_str() {
-        "" => {
-            let name = request
-                .name
-                .as_str()
-                .trim_start_matches(['%', '!', '?', '~', '@', '$']);
-            format!("picked/{name}.nka").into()
-        }
-        path => path.into(),
-    }
-}
-
 /// Where a save of `path` goes under `saves`.
-fn saved(saves: Option<&Path>, path: &Path) -> Option<PathBuf> {
+pub(super) fn saved(saves: Option<&Path>, path: &Path) -> Option<PathBuf> {
     let parts = path.components().filter_map(|c| match c {
         Component::Normal(part) => Some(part),
         _ => None,
@@ -78,7 +63,7 @@ fn read(saves: Option<&Path>, path: &str) -> Option<Vec<u8>> {
 /// The bytes of a regular file no larger than any resource a script loads
 /// ([`kontra_format_kontakt::RESOURCE_LIMIT`]); nothing for a larger file,
 /// a device or a pipe, so a script cannot make the host read without end.
-fn bounded(path: &Path) -> Option<Vec<u8>> {
+pub(super) fn bounded(path: &Path) -> Option<Vec<u8>> {
     const LIMIT: u64 = kontra_format_kontakt::RESOURCE_LIMIT;
     if !std::fs::metadata(path).ok()?.is_file() {
         return None;
@@ -92,8 +77,7 @@ fn bounded(path: &Path) -> Option<Vec<u8>> {
 /// Writes a save's values under `saves`; whether it could.
 fn write(saves: Option<&Path>, reply: &FileReply) -> bool {
     let r = reply.request;
-    let path = path_of(&r);
-    let Some(at) = nka(&path).and_then(|p| saved(saves, p)) else {
+    let Some(at) = nka(r.path.as_str()).and_then(|p| saved(saves, p)) else {
         return false;
     };
     let text = files::write(r.name.as_str(), r.kind, &reply.ints, &reply.texts);
@@ -128,6 +112,18 @@ impl Rack {
             let Some(p) = live.filter(|p| p.script.generation == generation) else {
                 continue;
             };
+            // No path: the player picks the file in the editor first.
+            if request.path.as_str().is_empty() {
+                let names =
+                    super::picks::names(self.saves.as_deref(), p.source.as_deref(), &request);
+                self.picks.push_back(super::picks::Parked {
+                    part,
+                    generation,
+                    request,
+                    names,
+                });
+                continue;
+            }
             let reply = Box::new(answer(self.saves.as_deref(), request));
             // Only a load that read its file names a preset.
             if reply.loaded.is_some() {
@@ -143,7 +139,7 @@ impl Rack {
 }
 
 /// A load's values, filled from the file, or a save's reserved room.
-fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
+pub(super) fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
     let len = request.len as usize;
     let text = request.kind == ArrayKind::Text;
     let mut reply = FileReply {
@@ -158,7 +154,7 @@ fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
     }
     let mut ints = vec![0; if text { 0 } else { len }];
     let mut texts = vec![Text::EMPTY; if text { len } else { 0 }];
-    let bytes = read(saves, &path_of(&request));
+    let bytes = read(saves, request.path.as_str());
     let name = request.name.as_str();
     let filled =
         bytes.and_then(|b| files::fill(&b, name, (0, len), request.kind, &mut ints, &mut texts));

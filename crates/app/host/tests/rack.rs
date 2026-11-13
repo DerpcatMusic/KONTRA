@@ -1195,14 +1195,46 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     assert!(saved.contains(&"$result 11230000".to_owned()), "{saved:?}");
 }
 
-/// `save_array(%a, 0)` asks a dialog KONTRA does not show: the array has a
-/// file of its own under the saves, which `load_array(%a, 0)` reads back.
+/// Some blocks and ticks, for a script's waits and the control side.
+fn run(rack: &mut Rack, audio: &mut RackAudio, blocks: usize) {
+    for _ in 0..blocks {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
+}
+
+/// An instrument at `source` with one script.
+fn scripted(
+    source: &std::path::Path,
+    dialect: kontra_engine::ir::Dialect,
+    code: &str,
+) -> kontra_engine::ir::Instrument {
+    use kontra_engine::ir;
+    ir::Instrument {
+        source_path: Some(source.to_owned()),
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect,
+            source: code.to_owned(),
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    }
+}
+
+/// `save_array(%a, 0)` and `load_array(%a, 0)` ask for a file: the editor
+/// asks the player ([`Rack::pick`]) among the instrument's own saves, and
+/// the answer goes on as a save or load by path under them.
 #[test]
-fn an_array_saved_by_dialog_loads_back_from_its_own_file() {
+fn an_array_saved_by_dialog_loads_back_from_the_file_picked() {
     use kontra_engine::ir;
     let scratch = Scratch::new("array-dialog");
     let saves = scratch.0.join("saves");
-    let source = "on init
+    let source = scratch.0.join("lib/x.nki");
+    let code = "on init
             declare %perf[2] := (4, 5)
             declare $step
             declare $id
@@ -1220,32 +1252,64 @@ fn an_array_saved_by_dialog_loads_back_from_its_own_file() {
                 $result := $NI_ASYNC_EXIT_STATUS * 100 + %perf[0] * 10 + %perf[1]
             end if
             inc($step)
-        end on"
-        .to_owned();
-    let instrument = ir::Instrument {
-        scripts: vec![ir::Script {
-            name: "s".into(),
-            slot: 0,
-            dialect: ir::Dialect::Ksp,
-            source,
-            saved: Vec::new(),
-            data: Vec::new(),
-            links: Vec::new(),
-        }],
-        ..ir::Instrument::DEFAULT
-    };
+        end on";
     let (mut rack, mut audio) = rack();
     rack.set_saves(saves.clone());
-    rack.load_ir(0, instrument, None).unwrap();
+    rack.load_ir(0, scripted(&source, ir::Dialect::Ksp, code), None)
+        .unwrap();
     audio.process(BLOCK, &[(0, note(0))]);
-    for _ in 0..8 {
-        rack.tick();
-        audio.process(BLOCK, &[]);
-    }
+    run(&mut rack, &mut audio, 4);
+    let pick = rack.pick().expect("the save asks for a file");
+    assert!(pick.save && pick.names.is_empty(), "{pick:?}");
+    rack.picked(Some("Mine"));
+    run(&mut rack, &mut audio, 4);
+    let pick = rack.pick().expect("the load asks for a file");
+    assert_eq!((pick.save, pick.names), (false, vec!["Mine".to_owned()]));
+    rack.picked(Some("Mine"));
     let saved = saved_now(&mut rack, &mut audio);
-    let written = std::fs::read_to_string(saves.join("picked/perf.nka"));
+    let own = saves.join(source.strip_prefix("/").unwrap_or(&source));
+    let written = std::fs::read_to_string(own.join("Mine.nka"));
     assert_eq!(written.unwrap(), "%perf\n4\n5\n");
     assert!(saved.contains(&"$result 145".to_owned()), "{saved:?}");
+}
+
+/// A UVI script's own presets: `browseForFile` asks the editor, `saveState`
+/// is written under the instrument's saves, and a later load of the
+/// instrument reads it back as the bank's own file.
+#[test]
+fn a_script_preset_saved_to_disk_loads_after_a_reload() {
+    use kontra_engine::ir;
+    let scratch = Scratch::new("script-presets");
+    let saves = scratch.0.join("saves");
+    let source = scratch.0.join("lib/x.uvip");
+    let code = r#"
+        local air = Knob('air', 0, 0, 100)
+        function onNote(e)
+            browseForFile('save', 'Save', '', '*.VHFPreset', function(t)
+                air.value = 40
+                saveState(t.result)
+            end)
+        end"#;
+    let (mut rack, mut audio) = rack();
+    rack.set_saves(saves.clone());
+    rack.load_ir(0, scripted(&source, ir::Dialect::Lua, code), None)
+        .unwrap();
+    audio.process(BLOCK, &[(0, note(0))]);
+    run(&mut rack, &mut audio, 4);
+    let pick = rack.pick().expect("browseForFile asks for a file");
+    assert!(pick.save, "{pick:?}");
+    rack.picked(Some("Mine"));
+    run(&mut rack, &mut audio, 40);
+    let own = saves.join(source.strip_prefix("/").unwrap_or(&source));
+    let written = std::fs::read_to_string(own.join("Mine.VHFPreset")).expect("written");
+    assert!(written.contains(r#"["air"]=40"#), "{written}");
+    // Loaded again, the script opens the preset it saved.
+    let reload =
+        "local air = Knob('air', 0, 0, 100)\nfunction onInit() loadState('Mine.VHFPreset') end";
+    rack.load_ir(0, scripted(&source, ir::Dialect::Lua, reload), None)
+        .unwrap();
+    let saved = saved_now(&mut rack, &mut audio);
+    assert!(saved.iter().any(|e| e == "air=40"), "{saved:?}");
 }
 
 /// An install fades out the engine it replaces instead of cutting its

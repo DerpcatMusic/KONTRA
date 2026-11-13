@@ -75,6 +75,12 @@ pub trait Machine: Send {
     fn save_state(&mut self, _out: &mut [u8]) -> Option<usize> {
         None
     }
+    /// The oldest file the script saved for the host to write: its path,
+    /// a newline, then its contents, into `out`; its length, or `None` when
+    /// there is none (or it does not fit, and it is dropped).
+    fn take_file(&mut self, _out: &mut [u8]) -> Option<usize> {
+        None
+    }
     /// The interface the front end builds itself, as it stands now, in its
     /// own type; not real-time (the editor reads it once, after init).
     fn own_page(&self) -> Option<Box<dyn std::any::Any + Send>> {

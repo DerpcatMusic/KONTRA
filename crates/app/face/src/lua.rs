@@ -342,6 +342,9 @@ pub trait Page {
     /// The state script `slot` saves for a project, into `out` (a Lua
     /// script's `onSave`); its length.
     fn save_state(&mut self, slot: u8, out: &mut [u8]) -> Option<usize>;
+    /// The oldest file script `slot` saved for the host to write, into
+    /// `out` (its path, a newline, its contents); its length.
+    fn take_file(&mut self, slot: u8, out: &mut [u8]) -> Option<usize>;
 }
 
 impl Page for Engine {
@@ -355,6 +358,10 @@ impl Page for Engine {
 
     fn save_state(&mut self, slot: u8, out: &mut [u8]) -> Option<usize> {
         self.vm_mut(slot)?.save_state(out)
+    }
+
+    fn take_file(&mut self, slot: u8, out: &mut [u8]) -> Option<usize> {
+        self.vm_mut(slot)?.take_file(out)
     }
 }
 

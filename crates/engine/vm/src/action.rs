@@ -399,4 +399,10 @@ actions! {
     // (`1000 * samples / rate`): notes one frame apart read apart.
     // `EngineUptime` is the same clock in whole milliseconds.
     EngineMs,
+    // A file the player picks in the editor (UVI `browseForFile`): ints
+    // (save 1, open 0), text the file type (`.ext`); an async id.
+    PickFile,
+    // The pick with async id int 0: its file name as text once picked, 0
+    // when cancelled, nothing while the player is still choosing.
+    PickedFile,
 }

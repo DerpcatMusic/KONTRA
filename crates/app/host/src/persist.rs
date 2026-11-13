@@ -157,6 +157,9 @@ pub struct Capture {
     widget_values: Box<[Option<f64>]>,
     /// By Lua slot, room for its `onSave` state and how much it took.
     states: Box<[State]>,
+    /// By Lua slot, room for one file it saved (path, newline, contents),
+    /// for the control side to write ([`Capture::take_files`]).
+    files: Box<[State]>,
     /// By script slot, its change count ([`kontra_engine::Vm::runs`]) when
     /// last read, and whether this capture reads it.
     seen: Box<[Option<u32>]>,
@@ -237,10 +240,11 @@ impl Capture {
         let widgets: Box<[(u8, u32)]> = slotted()
             .flat_map(|(slot, v)| v.widgets.iter().map(move |&(_, n)| (slot, n)))
             .collect();
-        let states = slotted()
+        let states: Box<[State]> = slotted()
             .filter(|(_, v)| v.state)
             .map(|(slot, _)| (slot, vec![0; STATE].into(), None))
             .collect();
+        let files = states.clone();
         Box::new(Self {
             part,
             generation,
@@ -252,6 +256,7 @@ impl Capture {
             widget_values: vec![None; widgets.len()].into(),
             widgets,
             states,
+            files,
             seen: vec![None; slots.len()].into(),
             fresh: vec![false; slots.len()].into(),
             at: Cursor::Start,
@@ -341,10 +346,29 @@ impl Capture {
         for (slot, room, len) in self.states.iter_mut().filter(|s| fresh(s.0)) {
             *len = engine.save_state(*slot, room);
         }
+        // One saved file a read: a script saves one at a time.
+        for (slot, room, len) in self.files.iter_mut() {
+            *len = if fresh(*slot) {
+                engine.take_file(*slot, room)
+            } else {
+                None
+            };
+        }
         let widgets = self.widget_values.iter_mut().zip(self.widgets.iter());
         for (value, &(slot, n)) in widgets.filter(|(_, w)| fresh(w.0)) {
             *value = engine.widget(slot, n).map(|w| w.value);
         }
+    }
+
+    /// The files the scripts saved since the last read, as (bank path,
+    /// contents); each once.
+    pub(crate) fn take_files(&mut self) -> Vec<(String, String)> {
+        let files = self.files.iter_mut().filter_map(|(_, room, len)| {
+            let bytes = room.get(..len.take()?)?;
+            let (path, text) = std::str::from_utf8(bytes).ok()?.split_once('\n')?;
+            Some((path.to_owned(), text.to_owned()))
+        });
+        files.collect()
     }
 
     /// Asks only for what changed since `last`, this part's capture before,
