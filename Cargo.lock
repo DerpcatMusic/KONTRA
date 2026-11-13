@@ -2494,6 +2494,7 @@ dependencies = [
  "kontra-library",
  "kontra-ui-model",
  "mui",
+ "peniko",
  "png",
  "resvg",
  "sha2",
