@@ -139,6 +139,8 @@ type PinnedPages = HashMap<(BlobKey, usize), (Weak<[u8]>, bool)>;
 pub struct Store {
     shared: Arc<Shared>,
     /// Shared with [`Heads`], which fills it in as deferred pages arrive.
+    /// Locked only by the control thread and the head-loading threads, never
+    /// by the audio thread (voices read their pages through `Sample`).
     pinned: Arc<Mutex<PinnedPages>>,
     /// Whether loads leave their heads to [`Heads`].
     defer: bool,
