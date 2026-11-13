@@ -12,7 +12,7 @@ use kontra_ir as ir;
 use kontra_stream::{
     BlobKey, LoadRequest, MAX_CHANNELS, Mix, Sample, SampleFmt, Source, Store, StreamClient,
 };
-use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp};
+use kontra_voice::{Ahdsr, EarlyKeyUp, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp};
 
 use kontra_engine::{
     Atom, Bus, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone, ZoneRules, response,
@@ -545,6 +545,10 @@ fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
         release: frames(e.release).max(1),
         attack_shape: e.attack_shape,
         fall_shape: e.fall_shape,
+        early_key_up: match e.early_key_up {
+            ir::EarlyKeyUp::AtOnce => EarlyKeyUp::AtOnce,
+            ir::EarlyKeyUp::AfterAttack => EarlyKeyUp::AfterAttack,
+        },
     }
 }
 
