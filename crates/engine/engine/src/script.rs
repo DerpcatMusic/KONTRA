@@ -233,6 +233,38 @@ impl Engine {
 }
 
 impl HostApi for Engine {
+    /// `num_groups` and `key_down`, answered without the call machinery. A
+    /// traced engine records every call, so it takes the general path.
+    fn query(&mut self, action: Action, ints: &[i64]) -> Option<i32> {
+        #[cfg(feature = "trace")]
+        if self.trace.is_some() {
+            return None;
+        }
+        let value = match action {
+            Action::NumGroups => self.masks.groups as i32,
+            Action::KeyDown => {
+                if self.keys_down.0 != self.notes.version() {
+                    let mut mask = 0u128;
+                    for (_, n) in self.notes.live() {
+                        if n.origin == Origin::Host && !n.is_up() && n.host.key < 128 {
+                            mask |= 1 << n.host.key;
+                        }
+                    }
+                    self.keys_down = (self.notes.version(), mask);
+                }
+                let key = ints.first().map_or(-1, |&v| v as i32);
+                i32::from(
+                    u32::try_from(key).is_ok_and(|k| k < 128 && self.keys_down.1 >> k & 1 == 1),
+                )
+            }
+            _ => return None,
+        };
+        if let Some(n) = self.called.get_mut(usize::from(action.id())) {
+            *n += 1;
+        }
+        Some(value)
+    }
+
     fn call(&mut self, mut call: HostCall<'_>) -> HostValue {
         #[cfg(feature = "trace")]
         if let Some(trace) = &mut self.trace {

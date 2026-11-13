@@ -305,3 +305,46 @@ fn reals_compute_and_convert() {
     assert_eq!(vm.cell(0), Some(3));
     assert_eq!(vm.cell(1), Some(1));
 }
+
+/// Fused comparison and mask runs give the cells the plain ops give.
+#[test]
+fn fused_compare_and_mask_runs_match_the_plain_ops() {
+    // cell3 = 1 & (cell0 < 5); cell4 = (3 < cell0) cmp-and 6 ...; branches on `and`.
+    let code = vec![
+        Op::Int(6),
+        Op::Store(0),
+        Op::Int(1),
+        Op::Load(0),
+        Op::Int(5),
+        Op::ICmp(Cmp::Lt), // 1 cmp-top
+        Op::IAnd,
+        Op::Store(3), // 1 & 0 = 0
+        Op::Int(7),
+        Op::Load(0),
+        Op::Int(5),
+        Op::ICmp(Cmp::Gt),
+        Op::IAnd,
+        Op::Store(4), // 7 & 1 = 1
+        Op::Load(0),
+        Op::Int(2),
+        Op::IAnd,
+        Op::JumpIfZero(21),
+        Op::Int(9),
+        Op::Store(5),
+        Op::Exit,
+        Op::Int(8), // 21: not reached
+        Op::Store(5),
+        Op::Exit,
+    ];
+    let plain = program(code.clone());
+    let fused = program(kontra_vm::fuse(&code));
+    assert_ne!(plain.code, fused.code);
+    let (a, _) = run(&plain, &mut Host::default());
+    let (b, _) = run(&fused, &mut Host::default());
+    for cell in 0..8 {
+        assert_eq!(a.cell(cell), b.cell(cell), "cell {cell}");
+    }
+    assert_eq!(b.cell(3), Some(0));
+    assert_eq!(b.cell(4), Some(1));
+    assert_eq!(b.cell(5), Some(9));
+}

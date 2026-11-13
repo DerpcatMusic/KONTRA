@@ -291,6 +291,9 @@ struct Entry {
 /// Fixed capacity. Queries fill a caller's list up to its capacity and never allocate.
 pub struct Ledger {
     entries: Vec<Entry>,
+    /// Bumped by every call that may change a note: a cache of a query
+    /// over the notes is good while it is the same.
+    version: u64,
 }
 
 /// The most notes a ledger holds: an event id keeps 16 bits of the slot.
@@ -301,6 +304,7 @@ impl Ledger {
     /// event ids). Not real-time.
     pub fn new(capacity: usize) -> Self {
         Self {
+            version: 0,
             entries: (0..capacity.min(MAX_NOTES))
                 .map(|_| Entry {
                     generation: 0,
@@ -310,6 +314,12 @@ impl Ledger {
         }
     }
 
+    /// Changes whenever a note may have changed.
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     /// How many notes it holds at most.
     pub fn capacity(&self) -> usize {
         self.entries.len()
@@ -317,6 +327,7 @@ impl Ledger {
 
     /// Stores `note` in a free slot; `None` when every slot is taken.
     pub fn insert(&mut self, note: Note) -> Option<NoteRef> {
+        self.version += 1;
         let (index, entry) = self
             .entries
             .iter_mut()
@@ -351,6 +362,7 @@ impl Ledger {
 
     /// As [`Self::get`], to change it.
     pub fn get_mut(&mut self, r: NoteRef) -> Option<&mut Note> {
+        self.version += 1;
         self.entries
             .get_mut(r.index as usize)
             .filter(|e| e.generation == r.generation)?
@@ -360,6 +372,7 @@ impl Ledger {
 
     /// Ends the note `r` names and gives it back; `None` once it ended.
     pub fn remove(&mut self, r: NoteRef) -> Option<Note> {
+        self.version += 1;
         self.entries
             .get_mut(r.index as usize)
             .filter(|e| e.generation == r.generation)?
@@ -409,6 +422,7 @@ impl Ledger {
     /// Marks every live note released: a pending end of one then starts no
     /// release zones and runs no release callback.
     pub fn release_all(&mut self) {
+        self.version += 1;
         let notes = self.entries.iter_mut().filter_map(|e| e.note.as_mut());
         notes.for_each(|n| n.released = true);
     }
