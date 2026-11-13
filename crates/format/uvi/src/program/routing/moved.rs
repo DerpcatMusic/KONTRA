@@ -22,10 +22,11 @@ use super::sweep::{flanger, phasor};
 const POINTS: usize = 33;
 
 /// The levels and controls a moved parameter can change.
-const FIELDS: [ir::EffectParam; 3] = [
+const FIELDS: [ir::EffectParam; 4] = [
     ir::EffectParam::Output,
     ir::EffectParam::Dry,
     ir::EffectParam::ShaperAmount,
+    ir::EffectParam::ModRate,
 ];
 
 type Build = fn(Params, &mut Notes) -> Result<Option<ir::Effect>, String>;
@@ -38,14 +39,21 @@ impl<L: Library> Translator<'_, '_, L> {
     /// `node`, in slot `insert` of bus `at`.
     pub(super) fn moves(&mut self, node: Node, at: usize, insert: u8) -> Result<(), String> {
         let (params, build): (&[&'static str], Build) = match node.tag_name().name() {
-            "Flanger" => (&["Mix"], |p, _| flanger(p).map(Some)),
-            "Phasor" => (&["Depth"], |p, n| phasor(p, n).map(Some)),
+            "Flanger" => (&["Mix", "Speed"], |p, _| flanger(p).map(Some)),
+            "Phasor" => (&["Depth", "Speed"], |p, n| phasor(p, n).map(Some)),
             "WaveShaper" => (&["Mix", "Amount"], wave_shaper),
             _ => return Ok(()),
         };
         let program = self.program;
         // Each moved parameter's one live connection, by its source.
         let mut by_source: Vec<(ir::Transfer, Vec<Moved>)> = Vec::new();
+        // The bus's oscillators; a bus has no voice, so each runs free.
+        let mut lfos = self
+            .out
+            .buses
+            .get_mut(at)
+            .map(|b| std::mem::take(&mut b.lfos))
+            .unwrap_or_default();
         for &name in params {
             let mut live = matrix::children(node).filter(|c| {
                 c.attribute("Destination") == Some(name)
@@ -54,12 +62,12 @@ impl<L: Library> Translator<'_, '_, L> {
             let (Some(c), None) = (live.next(), live.next()) else {
                 continue;
             };
-            let Some(term) = matrix::term(program, c, None) else {
+            let Some(term) = matrix::term(program, c, Some(&mut lfos)) else {
                 continue;
             };
             let readable = matches!(
                 term.input.source,
-                ir::Source::Controller(_) | ir::Source::Script(_)
+                ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::Lfo(_)
             );
             let Some(saved) = node.attribute(name).and_then(|v| v.parse().ok()) else {
                 continue;
@@ -72,6 +80,12 @@ impl<L: Library> Translator<'_, '_, L> {
                 Some((_, m)) => m.push(moved),
                 None => by_source.push((term.input, vec![moved])),
             }
+        }
+        for l in &mut lfos {
+            l.clock = ir::Clock::Free;
+        }
+        if let Some(b) = self.out.buses.get_mut(at) {
+            b.lfos = lfos;
         }
         let scratch = &mut Notes::default();
         let Some(rest) = build(Params::of(node), scratch)? else {
