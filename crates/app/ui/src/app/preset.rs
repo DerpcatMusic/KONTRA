@@ -72,28 +72,37 @@ fn taken(presets: &[String], name: &str) -> bool {
     })
 }
 
-/// Each preset path as its own name, with as many of its folders before it
-/// (`V2 / Clarinet A`) as tell it from another of the same name.
+/// Each preset path as its name; a name another preset has too is followed
+/// by the nearest folder that tells them apart, without its extension
+/// (`Clarinet A (AClarinet_V2)`): the name first, as a narrow menu cuts the
+/// end.
 pub(super) fn names(presets: &[String]) -> Vec<String> {
-    let parts: Vec<Vec<&str>> = presets.iter().map(|p| p.split('/').collect()).collect();
-    let mut depth = vec![1; parts.len()];
-    let tail = |p: &[&str], d: usize| (p.get(p.len().saturating_sub(d)..).unwrap_or(p)).join(" / ");
-    loop {
-        let mut seen = std::collections::HashMap::new();
-        for (p, &d) in parts.iter().zip(&depth) {
-            *seen.entry(tail(p, d)).or_insert(0) += 1;
-        }
-        let mut grew = false;
-        for (p, d) in parts.iter().zip(&mut depth) {
-            if *d < p.len() && seen.get(&tail(p, *d)).is_some_and(|&n| n > 1) {
-                *d += 1;
-                grew = true;
-            }
-        }
-        if !grew {
-            return parts.iter().zip(&depth).map(|(p, &d)| tail(p, d)).collect();
-        }
+    let name = |p: &str| p.rsplit('/').next().unwrap_or(p);
+    let mut same: std::collections::HashMap<&str, Vec<Vec<&str>>> = Default::default();
+    for p in presets {
+        let folders = p.rsplit('/').skip(1).map(stem).collect();
+        same.entry(name(p)).or_default().push(folders);
     }
+    presets
+        .iter()
+        .map(|p| {
+            let others = same.get(name(p)).filter(|o| o.len() > 1);
+            let mine: Vec<&str> = p.rsplit('/').skip(1).map(stem).collect();
+            let apart = others
+                .and_then(|o| (0..mine.len()).find(|&d| o.iter().any(|f| f.get(d) != mine.get(d))));
+            match apart.and_then(|d| mine.get(d)) {
+                Some(folder) => format!("{} ({folder})", name(p)),
+                None => name(p).to_owned(),
+            }
+        })
+        .collect()
+}
+
+fn stem(folder: &str) -> &str {
+    std::path::Path::new(folder)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(folder)
 }
 
 /// The sheet `which` asks in: a name to save or rename to, or a delete to
@@ -152,20 +161,12 @@ mod tests {
     #[test]
     fn a_repeated_name_shows_the_folders_that_tell_it_apart() {
         let presets = [
-            "V1/Clarinet A",
-            "V2/Clarinet A",
-            "V2/Oboe",
-            "A/X/Y",
-            "B/X/Y",
+            "a/V1.ufs/P/Clarinet A",
+            "a/V2.ufs/P/Clarinet A",
+            "a/V2.ufs/P/Oboe",
         ];
         let presets = presets.map(str::to_owned);
-        let names = [
-            "V1 / Clarinet A",
-            "V2 / Clarinet A",
-            "Oboe",
-            "A / X / Y",
-            "B / X / Y",
-        ];
+        let names = ["Clarinet A (V1)", "Clarinet A (V2)", "Oboe"];
         assert_eq!(super::names(&presets), names);
     }
 }
