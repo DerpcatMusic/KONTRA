@@ -174,6 +174,8 @@ struct Coroutine {
     /// Its note event's polyphonic cells, in [`Instance::polys`].
     poly: usize,
     loop_count: u32,
+    /// Loop turns this run, whatever waits reset.
+    turns: u32,
     loop_hash: u64,
     /// A host call ran since the last stuck check: state outside the hash moved.
     hosted: bool,
@@ -194,6 +196,7 @@ pub struct Instance {
     /// Counts what may have written a cell (a run, a host's write),
     /// wrapping: unchanged, every cell is as it was.
     changes: u32,
+    last_turns: u32,
 }
 
 impl Instance {
@@ -213,6 +216,7 @@ impl Instance {
                 frames: Vec::with_capacity(program.max_depth.max(1)),
                 poly: usize::MAX,
                 loop_count: 0,
+                turns: 0,
                 loop_hash: 0,
                 hosted: false,
                 waits: 0,
@@ -240,6 +244,7 @@ impl Instance {
             starts: 0,
             faults: Faults::default(),
             changes: 0,
+            last_turns: 0,
         }
     }
 
@@ -369,6 +374,12 @@ impl Instance {
             .filter(|c| c.busy && c.generation == co.generation)
     }
 
+    /// Loop turns the last [`Vm::run`] made.
+    #[must_use]
+    pub fn last_turns(&self) -> u32 {
+        self.last_turns
+    }
+
     /// Runs a callback until it ends or waits.
     pub fn run(&mut self, program: &Program, co: CoId, host: &mut dyn HostApi) -> Step {
         let Self {
@@ -378,6 +389,7 @@ impl Instance {
             polys,
             faults,
             changes,
+            last_turns,
             ..
         } = self;
         let Some(c) = coroutines
@@ -390,7 +402,9 @@ impl Instance {
         let poly = polys
             .get_mut(c.poly)
             .map_or(&mut [][..], |p| &mut p.cells[..]);
+        c.turns = 0;
         let step = execute::execute(program, cells, texts, poly, c, faults, host);
+        *last_turns = c.turns;
         if step == Step::Done {
             c.busy = false;
             free_poly(polys, c.poly);
