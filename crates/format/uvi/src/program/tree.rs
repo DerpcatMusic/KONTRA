@@ -62,7 +62,25 @@ impl<L: Library> Translator<'_, '_, L> {
                 links.insert(c.id(), n);
             }
         }
-        let mut out = String::from("return ");
+        // The insert numbers' sets, shared: each number's controls and their
+        // values by the number, `{[name]={{code, x1, y1, ...}, ...}, ...}`.
+        let mut out = String::from("local K={");
+        for set in &self.knob_sets {
+            out.push('{');
+            for k in set {
+                out.push_str(&format!("[{}]={{", lua_string(&k.name)));
+                for (code, law) in &k.controls {
+                    out.push_str(&format!("{{{code}"));
+                    for (x, y) in law {
+                        out.push_str(&format!(",{x},{y}"));
+                    }
+                    out.push_str("},");
+                }
+                out.push_str("},");
+            }
+            out.push_str("},");
+        }
+        out.push_str("}\nreturn ");
         self.lua_node(self.program, &links, &mut out);
         // Close the program's table with what only it carries.
         out.pop();
@@ -103,18 +121,9 @@ impl<L: Library> Translator<'_, '_, L> {
         });
         if let Some((at, index, slot)) = fx {
             out.push_str(&format!(",fx={{{at},{index},{slot}}}"));
-            // Each number's control and its value by the number:
-            // `{code, x1, y1, x2, y2, ...}`.
-            if let Some(knobs) = self.knobs_of.get(&node.id()) {
-                out.push_str(",knobs={");
-                for k in knobs {
-                    out.push_str(&format!("[{}]={{{}", lua_string(&k.name), k.code));
-                    for (x, y) in &k.law {
-                        out.push_str(&format!(",{x},{y}"));
-                    }
-                    out.push_str("},");
-                }
-                out.push('}');
+            // What its numbers move: one of the shared sets ([`Self::tree`]).
+            if let Some(set) = self.knobs_of.get(&node.id()) {
+                out.push_str(&format!(",knobs=K[{}]", set + 1));
             }
         }
         if let Some(id) = matrix::live_macro(self.program, node) {
