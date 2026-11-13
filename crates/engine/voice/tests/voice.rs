@@ -441,7 +441,7 @@ fn offline_render_waits_for_the_interpolation_page_at_the_preload_boundary() {
     let mut region = ramp_region(&mut store, 4096, 1024).unwrap();
     region.start = 896;
     let mut voice = Voice::allocate();
-    voice.set_offline_wait(true);
+    voice.set_render_mode(kontra_voice::RenderMode::Offline);
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let mut out = [[0.0; 2]; 128];
     voice.render(&mut Scratch::allocate(), &client, 0, &mut out);
@@ -481,7 +481,7 @@ fn offline_wait_reports_a_failed_page_as_missing() {
         reverse: false,
     };
     let mut voice = Voice::allocate();
-    voice.set_offline_wait(true);
+    voice.set_render_mode(kontra_voice::RenderMode::Offline);
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let mut out = [[0.0; 2]; 128];
     voice.render(&mut Scratch::allocate(), &client, 0, &mut out);

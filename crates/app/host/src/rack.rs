@@ -13,7 +13,7 @@ use crate::persist::Capture;
 use crate::view::Interfaces;
 pub(crate) use files::DiskFiles;
 pub use files::user_saves;
-pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan, ir};
+pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan, RenderMode, ir};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model::UiModifiers;
