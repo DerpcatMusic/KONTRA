@@ -585,6 +585,14 @@ fn words_el(
         if font.is_some() && style.font == model::Font::Stock(23) {
             style.size = Some(12.);
         }
+        // A UVI size is the font's line height (JUCE's), not its em.
+        if let (model::Source::FalconLua, Some(em), Some(size)) = (
+            source,
+            font.and_then(kontra_ui_pictures::em_per_height),
+            style.size,
+        ) {
+            style.size = Some(size * em as f32);
+        }
         style
     });
     let geometry = plan::text(words, native_style.as_ref(), w, (height, scale), source);
