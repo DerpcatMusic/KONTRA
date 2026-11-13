@@ -911,7 +911,8 @@ mod tests {
         {params={DisplayName='Sustain',Gain='0'},bus=2,
          keygroups={{params={Gain='1'},group=3},{params={},group=nil},{params={},group=4}}}},
         auxs={{params={Name='Aux0',Gain='0.5'},bus=3,
-         inserts={{params={Name='InsertFX0',Bypass='1'},fx={1,3,0}},{params={Name='InsertFX1'}}}}}}";
+         inserts={{params={Name='InsertFX0',Bypass='1'},fx={1,3,0},knobs={Time={25,0,0,10,5}}},
+          {params={Name='InsertFX1'}},{params={Name='Rack',Bypass='1'},bus=5,dry=6}}}}}";
 
     fn run(source: &str, entry: u32) -> Log {
         let modules = [("__program.lua".to_string(), TREE.to_string())];
@@ -1008,6 +1009,25 @@ mod tests {
             gain.map(|(_, ints)| ints.clone()),
             Some(vec![1, 3, 0, 500_000])
         );
+        // A mapped number: Time 4 is control 25 at 2.0, straight between points.
+        let log = run(
+            "Program.auxs[1].inserts[1]:setParameter('Time', 4)",
+            Callbacks::INIT,
+        );
+        let field = log.0.iter().find(|(a, _)| *a == Action::EffectField);
+        let field = field.map(|(_, ints)| ints.clone());
+        assert_eq!(field, Some(vec![1, 3, 0, 25, 2000]));
+        // A rack's Bypass shuts its wet bus and opens its dry one.
+        let log = run(
+            "Program.auxs[1].inserts[3]:setParameter('Bypass', true)",
+            Callbacks::INIT,
+        );
+        let bus = |n: i64| {
+            let mut sets = log.0.iter();
+            let last = sets.rfind(|(a, ints)| *a == Action::BusVolume && ints.first() == Some(&n));
+            last.and_then(|(_, ints)| ints.get(1).copied())
+        };
+        assert_eq!((bus(5), bus(6)), (Some(-200_000), Some(0)));
     }
 
     #[test]

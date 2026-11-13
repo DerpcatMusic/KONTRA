@@ -473,8 +473,9 @@ end
 function Element.hasParameter(self, name)
 	return self.params[name] ~= nil
 end
--- An insert's `Bypass`, and a Gain insert's `Volume`, reach the effect the engine plays for it (`fx`:
--- where, group or bus, slot).
+-- An insert's `Bypass`, a Gain insert's `Volume` and the numbers its format
+-- mapped (`knobs`) reach the effect the engine plays for it (`fx`: where,
+-- group or bus, slot).
 function Element.setParameter(self, name, value)
 	self.params[name] = value
 	local fx = fields_of(self).fx
@@ -485,6 +486,25 @@ function Element.setParameter(self, name, value)
 		host_call("EffectBypass", fx[1], fx[2], fx[3], on and 1 or 0)
 	elseif name == "Volume" and type(value) == "number" then
 		host_call("EffectGain", fx[1], fx[2], fx[3], math.floor(value * 1e6 + 0.5))
+	end
+	-- Any other number the format mapped: `{control, x1, y1, ...}`, the
+	-- control's value by the number, straight between points.
+	local knob = (fields_of(self).knobs or EMPTY)[name]
+	local x = tonumber(value)
+	if knob and x and #knob >= 3 then
+		local y = knob[3]
+		if x >= knob[#knob - 1] then
+			y = knob[#knob]
+		else
+			for i = 4, #knob - 1, 2 do
+				if x < knob[i] then
+					local x0, y0, x1, y1 = knob[i - 2], knob[i - 1], knob[i], knob[i + 1]
+					y = x <= x0 and y0 or y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+					break
+				end
+			end
+		end
+		host_call("EffectField", fx[1], fx[2], fx[3], knob[1], math.floor(y * 1000 + 0.5))
 	end
 end
 
@@ -577,10 +597,12 @@ function element(node)
 		params = params,
 		group = node.group or false,
 		bus = node.bus or false,
+		dry = node.dry or false,
 		name = params.Name,
 		displayName = params.DisplayName,
 		mod = node.mod,
 		fx = node.fx,
+		knobs = node.knobs,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)
@@ -643,6 +665,10 @@ local function push_bus(e)
 	local off = e.params.Bypass or e.params.Mute
 	local db = off and -200 or decibels(e.params.Gain or 1)
 	host_call("BusVolume", e.bus, math.floor(db * 1000))
+	-- An effect rack's dry bus passes its input while it is bypassed.
+	if e.dry then
+		host_call("BusVolume", e.dry, off and 0 or -200000)
+	end
 end
 
 -- A keygroup's group level and pan, under its layer's mute and pan.
