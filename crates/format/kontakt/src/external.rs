@@ -69,10 +69,8 @@ pub(crate) fn external(
                 let raw = source;
                 let source = match (raw, t.shaper.as_ref().filter(|s| s.enabled)) {
                     (Some(s), Some(shaper)) => {
-                        let signed = matches!(
-                            s,
-                            ir::Source::PitchBend | ir::Source::Random { bipolar: true }
-                        ) && signed_route(&t.param);
+                        let bipolar = [ir::Source::PitchBend, ir::Source::Random { bipolar: true }];
+                        let signed = bipolar.contains(&s) && signed_route(&t.param);
                         let result = shaped(&mut out.shapers, s, &shaper.curve, signed);
                         kontra_law::record(|| kontra_law::Application {
                             id: kontra_law::LawId("kontakt.mod_shaper.v1"),
@@ -286,11 +284,9 @@ pub(crate) fn external(
     Ok(())
 }
 
-/// A route to another modulator's knob: `frequency` (target 0x1a, additive
-/// in FUN_140873040: the rate moves by `signal·intensity`) of an LFO, or
-/// `intensity` (target 0x19, compiled to `$in·(1 − (1 − $signal)·$intensity)`,
-/// 0x144f1daa0) of an LFO or envelope. The law is the target's, whatever
-/// modulates it; flag 4 picks a screen form (0x144f1daf0) no library uses yet.
+/// A route to another modulator's knob, by the target's law whatever modulates it (FUN_140873040):
+/// an LFO's `frequency` (0x1a) moves by `signal·intensity`; `intensity` (0x19) scales by
+/// `1 − (1 − signal)·intensity` (0x144f1daa0; flag 4, a screen form, is unused).
 pub(crate) fn modulator_route(
     source: ir::Source,
     param: &str,

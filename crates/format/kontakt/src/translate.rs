@@ -17,7 +17,7 @@ use crate::external::external;
 use crate::laws;
 use crate::resources::Resources;
 use crate::samples::Resolver;
-use crate::timed::timed;
+use crate::timed::{knob_route, knob_routes, timed};
 
 const GROUP_LIST: u16 = 0x33;
 const ZONE_LIST: u16 = 0x34;
@@ -579,6 +579,8 @@ fn translate_group(
     });
     // Each timed modulator's slot and the source it became.
     let mut timed_slots = Vec::new();
+    // Slots routed to another modulator's knob, resolved once every slot is translated.
+    let mut knobs = Vec::new();
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
@@ -648,10 +650,12 @@ fn translate_group(
                     }
                 }
             }
+            if p.targets.iter().any(knob_route) {
+                knobs.push((n, p));
+            }
         }
     }
-    let mods = group.0.find_first(INTERNAL_MODS);
-    crate::timed::modulator_routes(&mut out, mods, &timed_slots, notes)?;
+    knob_routes(&mut out, &knobs, &timed_slots, notes);
     external(
         group,
         group_index,

@@ -349,7 +349,7 @@ mod tests {
                 .count();
             assert!((900..1150).contains(&n), "quarter {quarter}: {n}");
         }
-        let low_rr = |i: u32| i.wrapping_mul(0x9E37_79B9) % 2 == 0;
+        let low_rr = |i: u32| i.wrapping_mul(0x9E37_79B9).is_multiple_of(2);
         let even = (0..4096u32)
             .filter(|&i| low_rr(i))
             .map(|i| units[i as usize])
