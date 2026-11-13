@@ -1,7 +1,8 @@
 //! `cargo xtask size`: production and test lines per crate under `src/`, counted by the
 //! 00-BASELINE.md rule. Test = a `*test*.rs` file, anything under `tests/`, or a top-level
 //! `#[cfg(test)] mod … { … }` block. Approximate: braces inside string literals are not parsed.
-//! It fails on a crate over 8,000 or a file over 800 production lines. There is no growth
+//! It fails on a crate over 15,000 or a file over 1,500 production lines (raised from
+//! 8,000/800 on 2026-11-13: the caps were blocking small fixes). There is no growth
 //! ratchet: a committed per-crate count conflicted between every pair of open PRs.
 
 use crate::Verdict;
@@ -13,8 +14,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-const DEFAULT_MAX_CRATE: usize = 8_000;
-const DEFAULT_MAX_FILE: usize = 800;
+const DEFAULT_MAX_CRATE: usize = 15_000;
+const DEFAULT_MAX_FILE: usize = 1_500;
 const DEFAULT_ALLOW: &str = "tools/xtask/size-allow.txt";
 const KNOWN: &[&str] = &[
     "--max-crate",

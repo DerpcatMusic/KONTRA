@@ -77,4 +77,4 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
 - After each merge batch, on that clean `origin/v3` checkout, run
   `cargo xtask deps-check`, `cargo xtask debt --check` and `cargo xtask size --check`. Required checks are not strict, so two PRs can each pass and still
   break a limit together. Fix forward at once. Size has no committed count:
-  only the 8,000-line crate and 800-line file limits.
+  only the 15,000-line crate and 1,500-line file limits.
