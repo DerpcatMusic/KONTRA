@@ -17,6 +17,8 @@
 use std::fmt;
 
 mod preset_name;
+mod scroll;
+mod value;
 pub use preset_name::preset_file_name;
 
 macro_rules! reference {
