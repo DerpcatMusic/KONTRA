@@ -23,19 +23,24 @@ local host_call = function(name, ...)
 	return __host(Action[name], ...)
 end
 
+-- UVI's event types are MIDI status bytes: scripts build events with
+-- `type = 176` (VWinds' hornScript3 logs `type=224` for a bend).
 Event = {
-	NoteOn = 1,
-	NoteOff = 2,
-	ControlChange = 3,
-	PitchBend = 4,
-	-- UVI's own names (its API's `afterTouch`/`polyAfterTouch`), and the
-	-- spellings this prelude used first.
-	AfterTouch = 5,
-	PolyAfterTouch = 6,
-	MidiAftertouch = 5,
-	PolyAftertouch = 6,
-	ProgramChange = 7,
+	NoteOn = 144,
+	NoteOff = 128,
+	ControlChange = 176,
+	PitchBend = 224,
+	AfterTouch = 208,
+	PolyAfterTouch = 160,
+	ProgramChange = 192,
+	-- The spellings this prelude used first.
+	MidiAftertouch = 208,
+	PolyAftertouch = 160,
 }
+
+-- Whether the running callback posted its event (`postEvent`): UVI keeps
+-- a bend or pressure a script's handler does not post.
+local posted = false
 
 -- Anything a script asks of an object this host does not model answers
 -- nothing instead of failing the script.
@@ -901,6 +906,7 @@ function releaseVoice(id)
 end
 
 function postEvent(e)
+	posted = true
 	if e.type == Event.NoteOn then
 		-- The incoming note was held back; this plays it, ending with it.
 		return host_call("PlayNote", e.note, e.velocity, 0, -1)
@@ -1015,6 +1021,11 @@ local initializing = false
 -- Entries by the engine's callback number: init, note, release, controller.
 __entries = {
 	[0] = function()
+		-- UVI calls onTransport when the host starts and stops.
+		if onTransport then
+			host_call("SetListener", 1, 1)
+			host_call("SetListener", 2, 1)
+		end
 		for _, call in ipairs(pending) do
 			__host(table.unpack(call, 1, call.n))
 		end
@@ -1081,7 +1092,39 @@ __entries = {
 		end
 		w:setValue(v, __FORCE)
 	end,
+	-- Polyphonic aftertouch on key `PolyAtNum`, or a note's own pressure.
+	[6] = function()
+		local note = host_call("PolyAtNum")
+		onPolyAfterTouch({
+			type = Event.PolyAfterTouch,
+			note = note,
+			value = host_call("PolyAt", note),
+			channel = 1,
+			input = 1,
+		})
+	end,
+	-- The host started (signal 1) or stopped its transport.
+	[5] = function()
+		onTransport(host_call("SignalType") == 1)
+	end,
 	[3] = function()
+		local cc = host_call("CcNum")
+		-- Pitch bend and channel pressure come as controllers 128 and 129;
+		-- one the handler does not post is kept from the instrument.
+		if cc == 128 or cc == 129 then
+			local handler = cc == 128 and onPitchBend or onAfterTouch
+			if handler == nil then return end
+			local e = cc == 128
+				and { type = Event.PitchBend, bend = host_call("Cc", 128) / 8192, channel = 1, input = 1 }
+				or { type = Event.AfterTouch, value = host_call("Cc", 129), channel = 1, input = 1 }
+			posted = false
+			handler(e)
+			if not posted then
+				host_call("IgnoreController")
+			end
+			return
+		end
+		if onController == nil then return end
 		onController({
 			type = Event.ControlChange,
 			controller = host_call("CcNum"),
