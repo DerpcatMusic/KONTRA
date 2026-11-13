@@ -12,7 +12,6 @@ mod dynamics;
 mod effects;
 mod engine_pars;
 mod external;
-mod fastlz;
 mod flair;
 mod impulse;
 mod laws;

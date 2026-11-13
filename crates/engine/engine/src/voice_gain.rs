@@ -300,6 +300,10 @@ impl Engine {
                     / 1_000_000.0,
             ),
             ir::Source::HeldTime { span_ms } => Some(kontra_plan::held_time(span_ms, note.held)),
+            ir::Source::Random { bipolar } => {
+                let u = note.draw.unit();
+                Some(if bipolar { 2.0 * u - 1.0 } else { u })
+            }
         }
     }
 
@@ -321,7 +325,10 @@ impl Engine {
             s => self.source(zone, s, note, age)?,
         };
         // An LFO spans the table as `(x + 1)/2`, and pitch bend a table.
-        let bend = t.source == ir::Source::PitchBend && !t.table.is_empty();
+        let bend = matches!(
+            t.source,
+            ir::Source::PitchBend | ir::Source::Random { bipolar: true }
+        ) && !t.table.is_empty();
         let x = if bend || matches!(t.source, ir::Source::Lfo(_)) {
             (x + 1.0) / 2.0
         } else {
@@ -345,7 +352,9 @@ impl Engine {
     pub(crate) fn unit(&self, zone: &Zone, s: ir::Source, note: &Note, age: Age) -> Option<f32> {
         let x = self.source(zone, s, note, age)?;
         Some(match s {
-            ir::Source::Lfo(_) | ir::Source::PitchBend => (x + 1.0) * 0.5,
+            ir::Source::Lfo(_) | ir::Source::PitchBend | ir::Source::Random { bipolar: true } => {
+                (x + 1.0) * 0.5
+            }
             _ => x,
         })
     }

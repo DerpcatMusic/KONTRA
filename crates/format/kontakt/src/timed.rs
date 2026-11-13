@@ -6,6 +6,9 @@ use ni_file::kontakt::objects::{InternalModParams, Modulator};
 
 use crate::laws;
 
+/// The bypass flag among a modulator's flags.
+const BYPASS: usize = 1;
+
 /// Records the selected law and its input and output when tracing is enabled.
 fn trace_timed(
     id: &'static str,
@@ -33,7 +36,6 @@ pub(crate) fn timed(
     unmapped: &mut Vec<u8>,
 ) {
     // The modulator's flags: [router open, bypass, retrigger, unknown].
-    const BYPASS: usize = 1;
     const RETRIGGER: usize = 2;
     let report = |notes: &mut Notes, unmapped: &mut Vec<u8>, what: &str| {
         for t in &p.targets {
@@ -171,6 +173,8 @@ pub(crate) fn timed(
             {
                 kind
             }
+            // Another modulator's knob: `knob_routes`, once every slot is translated.
+            _ if knob_route(t) => continue,
             _ => {
                 let to = if t.slot.is_some() { "module " } else { "" };
                 let feature = format!("internal modulator {what} -> {to}{}", t.param);
@@ -200,5 +204,41 @@ pub(crate) fn timed(
             bypass: p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0),
             kind,
         });
+    }
+}
+
+/// Whether a target is another modulator's `intensity` or `frequency`.
+pub(crate) fn knob_route(t: &ni_file::kontakt::objects::ModTarget) -> bool {
+    matches!(t.param.as_str(), "intensity" | "frequency") && t.slot.is_some()
+}
+
+/// Each slot's routes to another modulator's knob, now that every slot's source is known.
+pub(crate) fn knob_routes(
+    out: &mut ir::Group,
+    knobs: &[(usize, InternalModParams)],
+    timed_slots: &[(usize, ir::Source)],
+    notes: &mut Notes,
+) {
+    for (n, p) in knobs {
+        let Some(&(_, source)) = timed_slots.iter().find(|(s, _)| s == n) else {
+            continue;
+        };
+        for (target, t) in p.targets.iter().enumerate().filter(|(_, t)| knob_route(t)) {
+            let at = t.slot.unwrap_or(u8::MAX);
+            match crate::external::modulator_route(source, &t.param, at, t, timed_slots) {
+                Some(kind) => out.mods.push(ir::Mod {
+                    name: p.name.clone(),
+                    slot: u16::try_from(*n).unwrap_or(u16::MAX),
+                    target: u16::try_from(target).unwrap_or(u16::MAX),
+                    bypass: p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0),
+                    kind,
+                }),
+                None => notes.add(
+                    ir::Impact::Audible,
+                    "internal modulator -> module knob",
+                    &p.name,
+                ),
+            }
+        }
     }
 }

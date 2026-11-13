@@ -1,6 +1,6 @@
 //! What a group modulation moves and by how much.
 
-use crate::{EffectParam, Source};
+use crate::EffectParam;
 
 /// What a [`crate::Mod`] does.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -341,4 +341,54 @@ pub enum Attractor {
     Lorenz { sigma: f32, rho: f32, beta: f32 },
     /// `x' = −y − z`, `y' = x + a·y`, `z' = b + z(x − c)`.
     Rossler { a: f32, b: f32, c: f32 },
+}
+
+/// A per-note modulation source, 0..=1 unless noted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Velocity,
+    Controller(u8),
+    /// Controller `cc`, reading `start` (0..=127) until its first message
+    /// on the channel arrives.
+    ControllerFrom {
+        cc: u8,
+        start: u8,
+    },
+    /// The channel's pitch bend, −1..=1.
+    PitchBend,
+    /// The note's key over 127.
+    Key,
+    /// The group's [`Group::envelopes`](crate::Group::envelopes) entry.
+    Envelope(u8),
+    /// The group's [`Group::shapers`](crate::Group::shapers) entry: its source through its table.
+    Shaped(u8),
+    /// The group's [`Group::lfos`](crate::Group::lfos) entry, −1..=1.
+    Lfo(u8),
+    /// The group's [`Group::blends`](crate::Group::blends) entry.
+    Blend(u8),
+    /// Always 1.
+    Constant,
+    /// The value a script sent this note for "from script" modulator `id`,
+    /// −1..=1; 0 until sent.
+    Script(u16),
+    /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
+    /// key-up, so a release sample is quieter the longer its key was held.
+    HeldTime {
+        span_ms: u32,
+    },
+    /// A value drawn once per note and held: 0..=1, or −1..=1 when `bipolar`.
+    Random {
+        bipolar: bool,
+    },
+}
+
+impl Source {
+    /// The controller it reads, if any.
+    #[must_use]
+    pub fn controller(self) -> Option<u8> {
+        match self {
+            Self::Controller(cc) | Self::ControllerFrom { cc, .. } => Some(cc),
+            _ => None,
+        }
+    }
 }

@@ -3,7 +3,7 @@
 //! MIT-licensed reference (b1342dabcf5257ab303743c9332fe75e9147a011).
 
 /// Expands `input` into exactly `expected` bytes.
-pub(crate) fn expand(input: &[u8], expected: usize) -> Result<Vec<u8>, &'static str> {
+pub fn expand(input: &[u8], expected: usize) -> Result<Vec<u8>, &'static str> {
     let mut out = Vec::new();
     out.try_reserve_exact(expected)
         .map_err(|_| "preset too large")?;
