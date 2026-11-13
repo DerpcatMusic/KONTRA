@@ -1445,6 +1445,7 @@ fn a_script_moves_a_group_onto_a_bus() {
             enabled: true,
             mods: Vec::new(),
             blends: Vec::new(),
+            lfos: Vec::new(),
         });
         let script = kontra_ksp::compile(
             &format!(

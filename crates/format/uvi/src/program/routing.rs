@@ -356,7 +356,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 .iter()
                 .find(|(n, _)| n.attribute("Name") == Some(target) && !flag(*n, "Bypass"));
             if let Some(&(_, to)) = found {
-                let (level, factors) = self.send_level(send)?;
+                let (level, factors) = self.send_level(send, from)?;
                 self.feed(from, to, level, !flag(send, "PreFader"));
                 self.move_send(from, factors);
             }
@@ -369,13 +369,20 @@ impl<L: Library> Translator<'_, '_, L> {
     /// 0x141002450 gives it a MultiplicativeParameterModulation, vtable
     /// 0x141e37a50: the law at 0x141429a80). A macro folds in at its value;
     /// a source no bus reads (an LFO, an envelope) stays reported.
-    fn send_level(&mut self, send: Node) -> Result<(f64, Vec<ir::Factor>), String> {
+    fn send_level(&mut self, send: Node, from: usize) -> Result<(f64, Vec<ir::Factor>), String> {
         let program = self.program;
         let mut level = num(send, "Gain", 1.0)?;
         let mut factors = Vec::new();
+        // The sending bus's oscillators; a bus has no voice, so each runs free.
+        let mut lfos = self
+            .out
+            .buses
+            .get_mut(from)
+            .map(|b| std::mem::take(&mut b.lfos))
+            .unwrap_or_default();
         let gains = matrix::children(send).filter(|c| c.attribute("Destination") == Some("Gain"));
         for c in gains {
-            let Some(f) = matrix::factor(program, c, None) else {
+            let Some(f) = matrix::factor(program, c, Some(&mut lfos)) else {
                 continue;
             };
             match f.input.source {
@@ -390,6 +397,12 @@ impl<L: Library> Translator<'_, '_, L> {
                 _ => factors.push(f),
             }
             self.carried.insert(c.id());
+        }
+        for l in &mut lfos {
+            l.clock = ir::Clock::Free;
+        }
+        if let Some(b) = self.out.buses.get_mut(from) {
+            b.lfos = lfos;
         }
         Ok((level, factors))
     }

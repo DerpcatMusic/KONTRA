@@ -466,6 +466,8 @@ pub struct Bus {
     /// Routes moving its inserts ([`ir::Bus::mods`]) and the blends they read.
     pub mods: Vec<ir::ModKind>,
     pub blends: Vec<ir::Blend>,
+    /// Read by `Source::Lfo(n)` in those routes ([`ir::Bus::lfos`]).
+    pub lfos: Vec<ir::Lfo>,
 }
 
 pub use kontra_effects::Response;
@@ -557,6 +559,7 @@ impl Plan {
                 enabled: true,
                 mods: Vec::new(),
                 blends: Vec::new(),
+                lfos: Vec::new(),
             }],
             polyphony: Vec::new(),
             voice_groups: Vec::new(),
