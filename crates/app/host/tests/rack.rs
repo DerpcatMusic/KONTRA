@@ -1415,3 +1415,35 @@ fn a_callbacks_zone_edits_apply_together_off_audio_and_swap_in() {
     let [moved, _] = play(&mut audio, &[(0, at(72))]);
     assert!((moved - 1.0).abs() < 1e-3, "{moved}");
 }
+
+#[test]
+fn a_note_played_before_its_heads_load_sounds_from_the_stream_and_survives_their_arrival() {
+    let (mut rack, mut audio) = rack();
+    rack.store_mut().defer_heads(true);
+    let a = engine(rack.store_mut(), 0.5);
+    let heads = rack
+        .store_mut()
+        .take_heads()
+        .expect("the heads are deferred");
+    rack.install(0, a, part("a"));
+    // The note starts with no head in: it is silent until its pages stream in,
+    // never dropped.
+    audio.process(BLOCK, &[(0, note(0))]);
+    let mut sounded = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        audio.process(BLOCK, &[]);
+        if level(&audio, 0) > 0.1 {
+            sounded = true;
+            break;
+        }
+    }
+    assert!(sounded, "the note never sounded before its heads arrived");
+    heads.load(2);
+    // The same voice goes on at the same level once the heads are in.
+    let [on, _] = play(&mut audio, &[]);
+    assert!(
+        (on - 0.5).abs() < 0.05,
+        "the note changed when its heads arrived: {on}"
+    );
+}
