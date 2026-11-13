@@ -519,12 +519,16 @@ pub fn menu(
 }
 
 /// Opens or closes the popup `id` names on `hit`, and closes it on a click
-/// away or Escape; whether it is open. `open` holds the one open popup.
+/// away or Escape (seen whatever holds the focus, as a sheet sees it);
+/// whether it is open. `open` holds the one open popup.
 pub fn toggle(ui: &Ui, open: &mut Option<String>, id: &str, hit: bool) -> bool {
     let was = open.as_deref() == Some(id);
     if hit {
         *open = (!was).then(|| id.to_owned());
-    } else if was && ui.dismissed(&[id, &format!("{id}-popup")]) {
+    } else if was
+        && (ui.dismissed(&[id, &format!("{id}-popup")])
+            || ui.shortcuts().iter().any(|k| k.key == Key::Escape))
+    {
         *open = None;
     }
     open.as_deref() == Some(id)
