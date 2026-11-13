@@ -601,7 +601,9 @@ pub fn popup(anchor: &str, content: El) -> El {
 /// Returns whether it was closed this frame.
 pub fn sheet(ui: &mut Ui, id: &str, title_text: &str, content: El) -> Response {
     let close = icon_button(ui, format!("{id}-close"), Icon::Close, "Close", false);
-    let closed = close.changed || ui.keys(id).iter().any(|k| k.key == Key::Escape);
+    // MUI drops focus on Escape before it hands the keys out, so only the
+    // whole stream sees it: the sheet's own `keys` never would.
+    let closed = close.changed || ui.shortcuts().iter().any(|k| k.key == Key::Escape);
     let el = col![
         row![section(title_text), spacer(), close.el].align(Align::Center),
         rule(),
@@ -760,6 +762,39 @@ mod tests {
             at <= top && top < at + MENU_ROWS * (CONTROL + 1.),
             "{top} in view of {at}"
         );
+    }
+
+    /// Escape closes a sheet whatever holds the focus (here a field in it).
+    #[test]
+    fn escape_closes_a_sheet() {
+        let mut ui = Ui::default();
+        ui.focus("field");
+        let mut closed = false;
+        for n in 0..4 {
+            let r = sheet(
+                &mut ui,
+                "s",
+                "Settings",
+                block(20., 20.).focusable().id("field"),
+            );
+            closed |= r.changed;
+            let keys = match n {
+                1 => vec![KeyPress {
+                    key: Key::Escape,
+                    mods: Mods::default(),
+                }],
+                _ => Vec::new(),
+            };
+            let input = Input {
+                keys,
+                ..Default::default()
+            };
+            assert!(
+                ui.frame(r.el, Some(Size::new(900., 900.)), input, 1. / 60.)
+                    .is_ok()
+            );
+        }
+        assert!(closed);
     }
 
     #[test]
