@@ -270,6 +270,9 @@ impl Rack {
     /// When the file is not an instrument this can read, or `part` is past
     /// the rack.
     pub fn load(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(progress) = self.store.progress() {
+            progress.begin();
+        }
         // A preset of the instrument the part plays recalls into it,
         // without reading the instrument.
         if let Some(done) = self.load_preset(part, path) {
@@ -302,6 +305,9 @@ impl Rack {
         slot_types: &[(ir::RackAt, u8, u16)],
         slot_responses: &[(ir::RackAt, u8, String)],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(progress) = self.store.progress() {
+            progress.begin();
+        }
         let mut instrument = crate::instrument::read_saved(path, scripts, &self.known.1)?;
         for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
             script.saved.clone_from(saved);
@@ -353,6 +359,9 @@ impl Rack {
         let slots = instrument.scripts.iter().map(|s| s.slot).collect();
         let waves = crate::ui::Waves::of(&instrument);
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+        if let Some(progress) = self.store.progress() {
+            progress.stage(kontra_protocol::LoadStage::Interface);
+        }
         let saves = self.saves.clone();
         for s in loaded.plan.scripts.iter_mut().filter(|s| s.files.is_some()) {
             s.files = Some(Arc::new(DiskFiles {

@@ -371,3 +371,28 @@ fn the_samples_of_one_file_open_it_once() {
     }
     std::fs::remove_file(&path).unwrap();
 }
+
+#[test]
+fn load_progress_counts_pinned_bytes_for_new_and_reused_pages() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let progress = Arc::new(kontra_protocol::LoadProgress::default());
+    store.set_progress(Arc::clone(&progress));
+    let (key, source) = ramp(2 * PAGE_FRAMES);
+    progress.begin();
+    progress.stage(kontra_protocol::LoadStage::Samples);
+    let first = store
+        .load(&key, source.clone(), 2 * PAGE_FRAMES, &[0..2 * PAGE_FRAMES])
+        .unwrap();
+    let loaded = progress.snapshot();
+    assert_eq!(loaded.bytes, store.pinned_bytes());
+    assert_eq!(loaded.percent, 85);
+    progress.begin();
+    progress.stage(kontra_protocol::LoadStage::Samples);
+    let second = store
+        .load(&key, source, 2 * PAGE_FRAMES, &[0..2 * PAGE_FRAMES])
+        .unwrap();
+    let reused = progress.snapshot();
+    assert_eq!(reused.bytes, loaded.bytes);
+    assert_eq!(reused.percent, 85);
+    drop((first, second));
+}

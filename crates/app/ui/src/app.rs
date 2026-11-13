@@ -65,6 +65,8 @@ pub struct App {
     /// A load the host has been asked for and not finished.
     // ponytail: one load shown at a time; a list if loads queue up.
     pub loading: Option<Loading>,
+    /// Latest loader counters, independent of the rack lock.
+    pub load_progress: kontra_protocol::LoadSnapshot,
 }
 
 /// Where a load lands: a new part, or part `n` it replaces.
@@ -478,9 +480,8 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     Response { el, changed: out }
 }
 
-/// The line under the header, lit while a load is under way (v2's
-/// `src/ui/header.rs` `loading_bar`, without its sweep: a sweep needs a
-/// frame every display refresh for as long as the load runs).
+/// The line under the header, lit while a load is under way; the load's
+/// row in the rack shows how far it is.
 fn loading_bar(app: &App) -> El {
     if app.loading.is_none() {
         return rule();

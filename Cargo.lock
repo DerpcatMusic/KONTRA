@@ -2444,6 +2444,7 @@ dependencies = [
  "bytemuck",
  "crossbeam-queue",
  "kontra-ir",
+ "kontra-protocol",
  "ncw",
  "rustix 1.1.5",
  "symphonia",

@@ -12,6 +12,7 @@ workspace = true
 bytemuck = { version = "1", features = ["extern_crate_alloc", "zeroable_atomics"] }
 crossbeam-queue.workspace = true
 kontra-ir = { path = "../../model/ir" }
+kontra-protocol = { path = "../../model/protocol" }
 ncw = { path = "../../../vendor/ncw" }
 symphonia = { version = "0.5", default-features = false, features = ["flac"] }
 
