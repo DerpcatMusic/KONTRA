@@ -15,7 +15,7 @@ mod zones;
 
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
-pub use script::{Callbacks, CcLink, Controls, Holder, LookPars, Recall, Saved, ScriptPlan};
+pub use script::{Callbacks, CcLink, KnobModPlan, Controls, Holder, LookPars, Recall, Saved, ScriptPlan};
 pub use zones::{ZoneFacts, ZoneRules, zone_name};
 
 use std::ops::RangeInclusive;
@@ -527,6 +527,8 @@ pub struct Plan {
     pub slot_models: Vec<(ir::RackAt, u8, ir::KnobModel)>,
     /// The filter shapes [`EnginePar::EffectSubtype`] switches slots to.
     pub slot_shapes: ir::SlotShapes,
+    /// Controllers that move foreign scripts' controls.
+    pub knob_mods: Vec<KnobModPlan>,
     /// Slots loaded with a [`ir::SlotShapes::types`] entry ([`Plan::load_type`]).
     pub loaded: Vec<(ir::RackAt, u8, u16)>,
     /// Every zone as scripts find and read it (`find_zone`, `get_zone_par`).
@@ -586,6 +588,7 @@ impl Plan {
             slot_laws: Vec::new(),
             slot_models: Vec::new(),
             slot_shapes: ir::SlotShapes::NONE,
+            knob_mods: Vec::new(),
             loaded: Vec::new(),
             zone_facts: Vec::new(),
         }

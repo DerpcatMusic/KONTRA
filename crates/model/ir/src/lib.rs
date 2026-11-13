@@ -30,7 +30,7 @@ pub use effects::{
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
-pub use link::{CcLink, Linked};
+pub use link::{CcLink, KnobMod, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Source, Term, Transfer, Wave};
 pub use output::{Balance, Output, OutputControllers};
 pub use readout::{Form, Readout};
@@ -84,6 +84,8 @@ pub struct Instrument {
     pub slot_models: Vec<(RackAt, u8, KnobModel)>,
     /// The filter shapes a script may switch slots to.
     pub slot_shapes: SlotShapes,
+    /// Controllers that move a (Lua) script's knobs by name.
+    pub knob_mods: Vec<KnobMod>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -110,6 +112,7 @@ impl Instrument {
         slot_laws: Vec::new(),
         slot_models: Vec::new(),
         slot_shapes: SlotShapes::NONE,
+        knob_mods: Vec::new(),
         diagnostics: Vec::new(),
     };
 }

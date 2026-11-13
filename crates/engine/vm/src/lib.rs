@@ -49,6 +49,11 @@ pub trait Machine: Send {
     /// A coroutine that moves control `id` ([`Foreign::controls`]) to
     /// `value` and runs its callback, as [`Machine::start`].
     fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId>;
+    /// A coroutine that moves control `id` to `saved`'s place in its range
+    /// plus `ratio × m` (`m` 0..=1) and runs its callback when it changes.
+    fn control_mod(&mut self, _id: i32, _saved: f64, _ratio: f64, _m: f64, _context: u64) -> Option<CoId> {
+        None
+    }
     /// The editor moved widget `n` of the front end's own interface (one it
     /// builds itself, not from controls) to `value`: the next start of its
     /// widget entry applies it.

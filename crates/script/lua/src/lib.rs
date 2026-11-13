@@ -529,6 +529,15 @@ impl Machine for LuaMachine {
         self.take(thread, context)
     }
 
+    fn control_mod(&mut self, id: i32, saved: f64, ratio: f64, m: f64, context: u64) -> Option<CoId> {
+        let _run = probe::Run::start();
+        let _arena = self.arena.audio();
+        let lua = self.lua.as_ref()?;
+        let set = lua.globals().get::<Function>("__control_mod").ok()?;
+        let thread = lua.create_thread(set.bind((id, saved, ratio, m)).ok()?).ok()?;
+        self.take(thread, context)
+    }
+
     fn stage_widget(&mut self, n: u32, value: f64, cell: Option<u32>) {
         let _arena = self.arena.audio();
         if let Some(lua) = &self.lua {
@@ -693,6 +702,25 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("init");
         assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+    }
+
+    #[test]
+    fn a_controller_route_moves_a_knob_within_its_range_and_runs_changed() {
+        let tree = "return {params={},db=0,pan=0,layers={},modulations={}}";
+        let source = "local k = Knob('drive', 0, -20, 20)
+            k.changed = function(s)
+                if s.value ~= 10 and s.value ~= -20 then error('moved to ' .. s.value) end
+            end";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let compiled = compile(source, &modules, &[]).unwrap();
+        let mut m = compiled.machine();
+        // Saved -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
+        // (10), and a ratio of -1 from there holds at the bottom (-20).
+        for (saved, ratio, at) in [(-10.0, 0.5, 1.0), (-10.0, -1.0, 1.0)] {
+            let co = m.control_mod(0, saved, ratio, at, 0).expect("route");
+            assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        }
         assert_eq!(m.faults().bad_code, 0);
     }
 

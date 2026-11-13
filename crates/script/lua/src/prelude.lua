@@ -251,6 +251,22 @@ function __control(id, value)
 		c:setValue(value, force(c))
 	end
 end
+-- Control `id` moves to `saved`'s place in its range plus `ratio × m`, held
+-- within it (a format's connection onto a knob); its `changed` runs when the
+-- value moves.
+function __control_mod(id, saved, ratio, m)
+	local c = __controls[id + 1]
+	local lo, hi = tonumber(c and c.min), tonumber(c and c.max)
+	if not (lo and hi) or hi == lo then
+		return
+	end
+	local u = math.min(math.max((saved - lo) / (hi - lo) + ratio * m, 0), 1)
+	local v = lo + u * (hi - lo)
+	if c.integer then
+		v = math.floor(v + 0.5)
+	end
+	c:setValue(v)
+end
 -- The UI the script builds, for the editor: every widget in the order the
 -- script made it (its index there names it), the page's size, picture and
 -- colour, and whether it asked for a performance view.

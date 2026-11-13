@@ -192,6 +192,22 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 Ok(mut compiled) => {
                     persist.push(crate::persist::Vars::lua(n, &compiled.ui));
                     pages.push(Some(std::mem::take(&mut compiled.ui)));
+                    // Controllers a format routes to this script's knobs, by name.
+                    let slot = u8::try_from(plan.scripts.len()).unwrap_or(u8::MAX);
+                    for k in instrument.knob_mods.iter().filter(|k| k.script == n) {
+                        let found = kontra_engine::Foreign::controls(&compiled)
+                            .iter()
+                            .rposition(|c| *c == k.name);
+                        if let Some(id) = found.and_then(|i| i32::try_from(i).ok()) {
+                            plan.knob_mods.push(kontra_engine::KnobModPlan {
+                                slot,
+                                cc: k.cc,
+                                id,
+                                saved: k.saved,
+                                ratio: k.ratio,
+                            });
+                        }
+                    }
                     plan.scripts.push(crate::script::lua_plan(compiled));
                     symbols.push(Box::default());
                     faces.push(None);
