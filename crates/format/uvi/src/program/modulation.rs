@@ -665,6 +665,8 @@ pub(super) fn curve(node: Node, name: &str) -> Option<f32> {
 
 /// Table entries per step: a step's edge ramps over 1/16 of it.
 const ENTRIES_PER_STEP: usize = 16;
+/// With a `Smooth` the glide needs finer entries.
+const SMOOTH_ENTRIES: usize = 64;
 
 /// A `StepEnvelope` as a cycle of its `Levels`, each held for one step: a
 /// saw LFO (`1 − 2p` at phase `p`, read through a table as `(x + 1)/2`, so
@@ -673,9 +675,8 @@ const ENTRIES_PER_STEP: usize = 16;
 /// synced (`Freq` steps a second when not; 1/60 at 0x141e29edc), from the
 /// song position when `Retrigger` is 0 or from the note when 1. `None`
 /// for an interpolated envelope (`InterpolationMode` 1, a cubic) or an
-/// unknown retrigger. ponytail: `Smooth`, a one-pole reaching 2/3 of a step
-/// in `Smooth` s (`(1/3)^(1/(Smooth·rate))` a sample), is not applied; bake
-/// it into the table at the host tempo if steps sound too hard.
+/// unknown retrigger. `Smooth` is a one-pole reaching 2/3 of a step in
+/// `Smooth` s, baked into the table (see below).
 pub(super) fn steps(node: Node) -> Option<(ir::Lfo, Vec<f32>)> {
     if flag(node, "Bypass") || flag(node, "InterpolationMode") {
         return None;
@@ -705,21 +706,56 @@ pub(super) fn steps(node: Node) -> Option<(ir::Lfo, Vec<f32>)> {
     } else {
         ir::Rate::Hz(freq / n as f32)
     };
-    let last = ENTRIES_PER_STEP * n;
+    // `Smooth` seconds to reach 2/3 of a step (a one-pole, τ = Smooth/ln 3),
+    // in steps of the cycle: a synced step is `Freq` beats (taken at 120 BPM:
+    // the table cannot see the host tempo), an unsynced one `1/Freq` s.
+    // ponytail: the tempo is assumed; bake per tempo if a synced smooth drifts.
+    let smooth = num(node, "Smooth", 0.0)
+        .ok()
+        .map_or(0.0, |v| v.max(0.0) as f32);
+    let step_seconds = if flag(node, "SyncToHost") {
+        freq * 0.5
+    } else {
+        1.0 / freq
+    };
+    let tau = smooth / 3f32.ln() / step_seconds;
+    let per = if tau > 0.0 {
+        SMOOTH_ENTRIES
+    } else {
+        ENTRIES_PER_STEP
+    };
+    let last = per * n;
     // ponytail: as `multi`'s peaks, one table per step pattern.
     thread_local! {
         static TABLES: RefCell<HashMap<Vec<u32>, Vec<f32>>> = RefCell::new(HashMap::new());
     }
-    let key = levels.iter().map(|l| l.to_bits()).collect();
+    let mut key: Vec<u32> = levels.iter().map(|l| l.to_bits()).collect();
+    key.push(tau.to_bits());
     let table = TABLES.with_borrow_mut(|tables| {
         tables
             .entry(key)
             .or_insert_with(|| {
+                // The cycle forward: the held level, or the one-pole toward
+                // it (carried across steps; run twice to settle).
+                let k = 1.0 - (-1.0 / (tau.max(1e-6) * per as f32)).exp();
+                let mut at = levels.last().copied().unwrap_or(0.0);
+                let mut cycle = vec![0.0; last];
+                for round in 0..2 {
+                    for (e, out) in cycle.iter_mut().enumerate() {
+                        let held = levels.get(e / per).copied().unwrap_or(0.0);
+                        at = if tau > 0.0 {
+                            at + (held - at) * k
+                        } else {
+                            held
+                        };
+                        if round == 1 {
+                            *out = at;
+                        }
+                    }
+                }
+                // Entry j reads cycle position (last − j)/last; 0 wraps to 1.
                 (0..=last)
-                    .map(|j| {
-                        let step = (n * (last - j)).div_euclid(last) % n;
-                        levels.get(step).copied().unwrap_or(0.0)
-                    })
+                    .map(|j| cycle.get((last - j) % last).copied().unwrap_or(0.0))
                     .collect()
             })
             .clone()
