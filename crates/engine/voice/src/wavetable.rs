@@ -20,6 +20,9 @@ pub struct Read {
     /// How far past `phase` a note's start may fall, 0..=1: each note adds
     /// its random draw times this (1 starts anywhere, `phase` then moot).
     pub phase_random: f32,
+    /// The level the table plays at, linear: 1 plays the cycles as their
+    /// samples are.
+    pub gain: f32,
     /// Applied in order.
     pub warps: [Warp; 2],
 }
@@ -231,7 +234,7 @@ impl Table {
             } else {
                 a + (cycle(c1, q) - a) * morph
             };
-            let s = shape(w2, p, shape(w1, p, s));
+            let s = shape(w2, p, shape(w1, p, s)) * self.read.gain;
             *frame = [s, s];
         }
     }
@@ -403,6 +406,7 @@ mod tests {
             position: 0.0,
             phase: 0.0,
             phase_random: 0.0,
+            gain: 1.0,
             warps: [Warp::OFF; 2],
         };
         let spans: std::sync::Arc<[_]> = vec![(0, 8); LEVELS].into();

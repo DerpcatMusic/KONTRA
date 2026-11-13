@@ -12,6 +12,9 @@ pub struct Wavetable {
     /// How far past `phase` a note's start may fall, 0..=1: each note adds
     /// its random draw times this (1 starts anywhere, `phase` then moot).
     pub phase_random: f32,
+    /// The level the table plays at, linear: 1 plays the cycles as their
+    /// samples are.
+    pub gain: f32,
     /// Applied in order.
     pub warps: [Warp; 2],
 }

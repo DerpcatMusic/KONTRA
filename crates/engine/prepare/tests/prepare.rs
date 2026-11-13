@@ -164,6 +164,7 @@ fn a_zone_moved_into_a_wavetable_group_gets_its_table() {
         position: 0.0,
         phase: 0.0,
         phase_random: 0.0,
+        gain: 1.0,
         warps: [ir::Warp::OFF; 2],
     };
     let mut bank = zone(1);
@@ -234,6 +235,7 @@ fn a_moved_zones_table_follows_its_group() {
         position,
         phase: 0.0,
         phase_random: 0.0,
+        gain: 1.0,
         warps: [ir::Warp::OFF; 2],
     };
     let instrument = ir::Instrument {
@@ -306,6 +308,7 @@ fn a_velocity_route_moves_each_voices_table_position() {
                 position: 0.0,
                 phase: 0.0,
                 phase_random: 0.0,
+                gain: 1.0,
                 warps: [ir::Warp::OFF; 2],
             }),
             mods: vec![ir::Mod {

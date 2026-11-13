@@ -399,6 +399,7 @@ pub fn read(w: ir::Wavetable) -> Read {
         position: w.position,
         phase: w.phase,
         phase_random: w.phase_random,
+        gain: w.gain,
         warps: w.warps.map(warp),
     }
 }

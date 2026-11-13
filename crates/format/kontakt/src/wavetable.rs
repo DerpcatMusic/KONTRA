@@ -39,9 +39,15 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         position: source.position,
         phase: source.phase,
         phase_random: source.phase_random.clamp(0.0, 1.0),
+        gain: LEVEL,
         warps,
     }
 }
+
+/// Kontakt plays a wavetable group 6.9 dB below the same cycles in sampler
+/// mode, whatever their level: measured on an oracle probe, a 0.5 saw and a
+/// 0.25 sine, each −6.9 dB against ours at unity.
+const LEVEL: f32 = 0.45;
 
 /// The wavetable value a modulation target moves: Kontakt adds the routes
 /// to it in its 0..=1 units and clamps the sum every 32 frames
