@@ -70,13 +70,9 @@ impl<L: Library> Translator<'_, '_, L> {
     /// normalized 0..=1 parameter (default 0.5, LFO constructor [ref])
     /// over 0..=20 Hz (range [ref]), linear when unsynced;
     /// a connection adds `r·m` to it, held within the range.
-    /// ponytail: a synced `Freq` rounds to a beat division; its
-    /// connections stay uncarried (reported once each unless at ratio 0).
     fn rate_routes(&mut self, group: &mut ir::Group, lfo: Node, of: ir::Source) {
         let ir::Source::Lfo(n) = of else { return };
-        if flag(lfo, "SyncToHost") {
-            return;
-        }
+        let synced = flag(lfo, "SyncToHost");
         let owner = lfo.tag_name().name();
         let rates = lfo
             .children()
@@ -85,6 +81,16 @@ impl<L: Library> Translator<'_, '_, L> {
             .filter_map(|c| Some((c, route(self.program, c, (owner, "Freq"))?)))
             .collect::<Vec<_>>();
         for (c, r) in rates {
+            // A synced `Freq` is a place on the note ladder (the 30-way table
+            // at [ref]): the connection adds `r·m` to its 0..=1 knob.
+            if synced {
+                self.add_route(group, c, r, |source, depth| ir::ModKind::LfoDivision {
+                    source,
+                    lfo: n,
+                    depth,
+                });
+                continue;
+            }
             // A random wave runs at half the Hz (`modulation::shape`).
             let top = match group.lfos.get(usize::from(n)) {
                 Some(l) if l.wave == ir::Wave::Random => 10.0,

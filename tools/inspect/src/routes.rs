@@ -106,6 +106,11 @@ pub fn route(kind: ModKind) -> Value {
         } => {
             json!({"target":"lfo_hz", "source":source(s), "lfo":lfo, "depth":depth, "range_hz":range_hz})
         }
+        ModKind::LfoDivision {
+            source: s,
+            lfo,
+            depth,
+        } => json!({"target":"lfo_division", "source":source(s), "lfo":lfo, "depth":depth}),
         ModKind::Intensity {
             source: s,
             of,

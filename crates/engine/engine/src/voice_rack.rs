@@ -179,24 +179,35 @@ impl Engine {
         let ir::EffectKind::Comb(c) = effect.kind else {
             return None;
         };
-        let mut octaves = 0.0f32;
+        let (mut octaves, mut resonance) = (0.0f32, 1.0f32);
         for m in group.mods.iter().filter(|m| !m.bypass) {
-            if let ir::ModKind::Cutoff {
-                source,
-                insert: i,
-                depth,
-            } = m.kind
-                && i == insert
-            {
-                let input = self.routed(zone, source, note, age);
-                let value = input.unwrap_or(0.0) * depth;
-                #[cfg(feature = "trace")]
-                self.trace_route(zone, m, input, value, crate::RouteUnit::CutoffDepth);
-                octaves += value;
+            match m.kind {
+                ir::ModKind::Cutoff {
+                    source,
+                    insert: i,
+                    depth,
+                } if i == insert => {
+                    let input = self.routed(zone, source, note, age);
+                    let value = input.unwrap_or(0.0) * depth;
+                    #[cfg(feature = "trace")]
+                    self.trace_route(zone, m, input, value, crate::RouteUnit::CutoffDepth);
+                    octaves += value;
+                }
+                // `Q` is the loop gain: scaled as a ladder's resonance is.
+                ir::ModKind::Resonance {
+                    source,
+                    insert: i,
+                    depth,
+                } if i == insert => {
+                    let depth = depth * self.scale(zone, source, note, age);
+                    let x = self.unit(zone, source, note, age);
+                    resonance *= x.map_or(1.0, |x| ir::Curve::Signed.gain(depth, x));
+                }
+                _ => {}
             }
         }
         let hz = (c.hz * (c.octaves * octaves).exp2()).clamp(ir::COMB_LOWEST_HZ, 20_000.0);
-        Some((hz, c.feedback))
+        Some((hz, (c.feedback * resonance).clamp(0.0, 0.999)))
     }
 
     /// The effect in `insert` of `zone`'s group, its controls moved by their

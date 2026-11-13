@@ -202,18 +202,41 @@ impl Rack {
     pub fn follow(&mut self, live: &Live) {
         let dt = f64::from((live.seconds - self.last_seconds).max(0.0));
         self.last_seconds = live.seconds;
-        for ((l, cycles), t) in self
+        // Places each synced LFO's rate is moved along the note ladder.
+        let mut places = [0.0f32; kontra_plan::modulation::WARPS];
+        for m in &self.mods {
+            if let ir::ModKind::LfoDivision { source, lfo, depth } = *m
+                && let Some(p) = places.get_mut(usize::from(lfo))
+            {
+                let clock = Clock {
+                    lfos: &self.lfos,
+                    t: &self.lfo_t,
+                    offset: 0.0,
+                };
+                *p += live.read(source, &self.blends, clock).unwrap_or(0.0) * depth * 29.0;
+            }
+        }
+        for (((l, cycles), t), p) in self
             .lfos
             .iter()
             .zip(self.lfo_cycles.iter_mut())
             .zip(self.lfo_t.iter_mut())
+            .zip(places.into_iter().chain(std::iter::repeat(0.0)))
         {
-            let hz = kontra_plan::modulation::hz(l, live.tempo);
+            let moved = match l.rate {
+                ir::Rate::Beats(b) if p != 0.0 => ir::Lfo {
+                    rate: ir::Rate::Beats(ir::ladder_beats(b, p)),
+                    ..*l
+                },
+                _ => *l,
+            };
+            let hz = kontra_plan::modulation::hz(&moved, live.tempo);
+            let nominal = kontra_plan::modulation::hz(l, live.tempo);
             *t = match l.rate {
                 ir::Rate::Hz(_) => live.seconds,
                 _ => {
                     *cycles += f64::from(hz) * dt;
-                    (*cycles / f64::from(hz.max(1e-6))) as f32
+                    (*cycles / f64::from(nominal.max(1e-6))) as f32
                 }
             };
         }

@@ -13,7 +13,7 @@ use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::{Node, NodeId};
 
-use super::super::{Library, Translator, index_of, matrix};
+use super::super::{Library, Translator, flag, index_of, matrix, source_node};
 use super::Params;
 use super::shaper::wave_shaper;
 use super::sweep::{flanger, phasor};
@@ -52,6 +52,8 @@ impl<L: Library> Translator<'_, '_, L> {
         // Each moved parameter's one live connection, by its source.
         let mut by_source: Vec<(ir::Transfer, Vec<Moved>)> = Vec::new();
         let mut extra: Vec<NodeId> = Vec::new();
+        let mut seen: Vec<NodeId> = Vec::new();
+        let mut divisions: Vec<(u8, ir::Blend, NodeId)> = Vec::new();
         // The bus's oscillators; a bus has no voice, so each runs free.
         let mut lfos = self
             .out
@@ -78,6 +80,29 @@ impl<L: Library> Translator<'_, '_, L> {
             if !readable || !term.factors.is_empty() {
                 continue;
             }
+            // A synced oscillator's rate knob moves along the note ladder.
+            if let (ir::Source::Lfo(n), Some(lfo)) = (term.input.source, source_node(program, c))
+                && flag(lfo, "SyncToHost")
+                && !seen.contains(&lfo.id())
+            {
+                seen.push(lfo.id());
+                let rates = matrix::children(lfo)
+                    .filter(|r| r.attribute("Destination") == Some("Freq"))
+                    .collect::<Vec<_>>();
+                for r in rates {
+                    let t = matrix::term(program, r, Some(&mut lfos));
+                    if let Some(t) = t.filter(|t| {
+                        t.factors.is_empty()
+                            && matches!(
+                                t.input.source,
+                                ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::Lfo(_)
+                            )
+                    }) {
+                        let blend = ir::Blend { base: 0.0, terms: vec![t] };
+                        divisions.push((n, blend, r.id()));
+                    }
+                }
+            }
             let moved = (name, saved, term.amount, c.id());
             match by_source.iter_mut().find(|(t, _)| *t == term.input) {
                 Some((_, m)) => match m.iter_mut().find(|x| x.0 == name) {
@@ -97,6 +122,15 @@ impl<L: Library> Translator<'_, '_, L> {
         }
         if let Some(b) = self.out.buses.get_mut(at) {
             b.lfos = lfos;
+            for (lfo, blend, id) in divisions {
+                let source = ir::Source::Blend(index_of(&mut b.blends, blend));
+                b.mods.push(ir::ModKind::LfoDivision {
+                    source,
+                    lfo,
+                    depth: 1.0,
+                });
+                extra.push(id);
+            }
         }
         let scratch = &mut Notes::default();
         let Some(rest) = build(Params::of(node), scratch)? else {

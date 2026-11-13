@@ -174,7 +174,15 @@ impl Engine {
         };
         // Per LFO: Hz added, and its range once a route reaches it.
         let mut added = [(0.0, None); WARPS];
+        // Places each synced LFO's rate has moved along the note ladder.
+        let mut shifted = [0.0f32; WARPS];
         for m in g.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::LfoDivision { source, lfo, depth } = m.kind
+                && let Some(places) = shifted.get_mut(usize::from(lfo))
+            {
+                let input = self.source(zone, source, note, age);
+                *places += input.unwrap_or(0.0) * depth * 29.0;
+            }
             if let ir::ModKind::LfoHz {
                 source,
                 lfo,
@@ -191,9 +199,16 @@ impl Engine {
                 *range = Some([lo, hi.max(lo)]);
             }
         }
-        for ((w, (hz, range)), lfo) in warp.iter_mut().zip(added).zip(&g.lfos) {
+        for (((w, (hz, range)), lfo), places) in warp.iter_mut().zip(added).zip(&g.lfos).zip(shifted)
+        {
             if let (Some([lo, hi]), ir::Rate::Hz(f)) = (range, lfo.rate) {
                 *w = (*w + ((f + hz).clamp(lo, hi) - f) * span).rem_euclid(1.0);
+            }
+            if places != 0.0 && let ir::Rate::Beats(b) = lfo.rate {
+                let moved = ir::Lfo { rate: ir::Rate::Beats(ir::ladder_beats(b, places)), ..*lfo };
+                let extra = kontra_plan::modulation::hz(&moved, self.tempo)
+                    - kontra_plan::modulation::hz(lfo, self.tempo);
+                *w = (*w + extra * span).rem_euclid(1.0);
             }
         }
         warp
