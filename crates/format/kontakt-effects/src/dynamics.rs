@@ -8,7 +8,7 @@ use kontra_law::common::DB_GAIN;
 use kontra_law::kontakt::{FEEDBACK_KNEE, FEEDBACK_THRESHOLD};
 
 /// The record's effect and, when it sets something not carried, its name.
-pub(crate) fn effect(
+pub fn effect(
     module: u16,
     version: u16,
     public: &[u8],
@@ -63,7 +63,7 @@ fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
 /// move rebuilds the compressor from all six through [`feedback`], as the
 /// native setter derives each field from all of them (the input drives the
 /// threshold down and the make-up up; the ratio moves the knee).
-pub(crate) fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
+pub fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
     use ir::SlotKnob::{Attack, Input, Makeup, Mix, Ratio, Release};
     let (saved, link) = feedback_saved(public)?;
     let mut positions = saved.to_vec();
@@ -79,7 +79,7 @@ pub(crate) fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
 }
 
 /// The Feedback Compressor's KSP names, each a knob of [`feedback_model`].
-pub(crate) fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 6] {
+pub fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 6] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::{Attack, Input, Makeup, Mix, Ratio, Release};
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
