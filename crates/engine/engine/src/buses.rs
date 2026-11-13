@@ -44,7 +44,8 @@ impl BusState {
                 racks::Responses(&[], &[]),
                 &b.mods,
                 &b.blends,
-            ),
+            )
+            .with_lfos(&b.lfos),
             pan: b.pan,
             balance: kontra_dsp::core::Fader::new(rate, 0.0, 50.0),
             fader: kontra_dsp::core::Fader::new(rate, 3.7, 0.0),

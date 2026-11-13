@@ -8,6 +8,7 @@ use kontra_effects::summed as filters;
 use kontra_ir as ir;
 use kontra_ledger::ledger::{self, Ramp};
 use kontra_plan::Response;
+use kontra_plan::modulation::{Age, lfo};
 use kontra_time::SampleTime;
 
 use kontra_behaviour::Behaviour;
@@ -22,6 +23,8 @@ pub struct Rack {
     /// and each route's amount for this span.
     mods: Box<[ir::ModKind]>,
     blends: Box<[ir::Blend]>,
+    /// The oscillators `Source::Lfo` reads, free-running.
+    lfos: Box<[ir::Lfo]>,
     amounts: Box<[f32]>,
     /// Each slot's levels, gliding where its settings move.
     levels: Box<[Levels]>,
@@ -35,11 +38,14 @@ pub struct Live<'a> {
     pub behaviour: &'a Behaviour,
     pub scripts: &'a [Option<(u16, Ramp)>],
     pub now: SampleTime,
+    /// Seconds since the engine started, and the host tempo (free LFOs).
+    pub seconds: f32,
+    pub tempo: f32,
 }
 
 impl Live<'_> {
     /// Controllers and pitch bend come from the channel last played.
-    fn read(&self, source: ir::Source, blends: &[ir::Blend]) -> Option<f32> {
+    fn read(&self, source: ir::Source, blends: &[ir::Blend], lfos: &[ir::Lfo]) -> Option<f32> {
         let (b, channel) = (self.behaviour, self.behaviour.channel);
         Some(match source {
             ir::Source::Controller(cc) => f32::from(b.cc(channel, cc)) / 127.0,
@@ -52,13 +58,21 @@ impl Live<'_> {
                 ledger::ramp_at(self.scripts, i, self.now).unwrap_or(0) as f32 / 1_000_000.0
             }
             ir::Source::Constant => 1.0,
+            ir::Source::Lfo(n) => {
+                let age = Age {
+                    held: self.seconds,
+                    now: self.seconds,
+                    ..Age::START
+                };
+                lfo(lfos.get(usize::from(n))?, age, 0, self.tempo)
+            }
             ir::Source::Blend(n) => {
                 let b = blends.get(usize::from(n))?;
                 let mut sum = b.base;
                 for t in &b.terms {
-                    let mut x = t.amount * self.through(&t.input)?;
+                    let mut x = t.amount * self.through(&t.input, lfos)?;
                     for f in &t.factors {
-                        x *= f.at(self.through(&f.input)?);
+                        x *= f.at(self.through(&f.input, lfos)?);
                     }
                     sum += x;
                 }
@@ -70,9 +84,11 @@ impl Live<'_> {
 
     /// `t`'s source through its table; a bipolar source spans a table as
     /// `(x + 1)/2`. No blend: no recursion.
-    fn through(&self, t: &ir::Transfer) -> Option<f32> {
-        let x = self.read(t.source, &[])?;
-        let bipolar = matches!(t.source, ir::Source::PitchBend) && !t.table.is_empty();
+    fn through(&self, t: &ir::Transfer, lfos: &[ir::Lfo]) -> Option<f32> {
+        let x = self.read(t.source, &[], lfos)?;
+        // An LFO is always read on 0..=1; pitch bend only through a table.
+        let bipolar = matches!(t.source, ir::Source::Lfo(_))
+            || (matches!(t.source, ir::Source::PitchBend) && !t.table.is_empty());
         Some(t.apply(if bipolar { (x + 1.0) / 2.0 } else { x }))
     }
 }
@@ -100,6 +116,7 @@ impl Rack {
             dsp,
             mods: mods.into(),
             blends: blends.into(),
+            lfos: Box::default(),
             amounts: vec![0.0; mods.len()].into(),
             levels: vec![Levels::new(rate); slots.len()].into(),
             quiet: vec![0; slots.len()].into(),
@@ -107,13 +124,21 @@ impl Rack {
         }
     }
 
+    /// Sets the oscillators its routes read ([`ir::Bus::lfos`]).
+    #[must_use]
+    pub fn with_lfos(mut self, lfos: &[ir::Lfo]) -> Self {
+        self.lfos = lfos.into();
+        self
+    }
+
     /// Rebuilds its processors from its slots and routes. Not real-time.
     pub fn rebuild(&mut self, rate: u32, impulses: Responses<'_>) {
-        let (mods, blends) = (
+        let (mods, blends, lfos) = (
             std::mem::take(&mut self.mods),
             std::mem::take(&mut self.blends),
+            std::mem::take(&mut self.lfos),
         );
-        *self = Self::routed(&self.slots, rate, impulses, &mods, &blends);
+        *self = Self::routed(&self.slots, rate, impulses, &mods, &blends).with_lfos(&lfos);
     }
 
     /// Puts `effect` and its processor in slot `n`; the old pair comes back.
@@ -134,9 +159,11 @@ impl Rack {
         for (m, amount) in self.mods.iter().zip(self.amounts.iter_mut()) {
             *amount = match *m {
                 ir::ModKind::EffectParam { source, depth, .. } => {
-                    live.read(source, &self.blends).unwrap_or(0.0) * depth
+                    live.read(source, &self.blends, &self.lfos).unwrap_or(0.0) * depth
                 }
-                ir::ModKind::Send { source, .. } => live.read(source, &self.blends).unwrap_or(1.0),
+                ir::ModKind::Send { source, .. } => {
+                    live.read(source, &self.blends, &self.lfos).unwrap_or(1.0)
+                }
                 _ => continue,
             };
         }

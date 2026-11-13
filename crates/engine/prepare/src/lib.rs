@@ -118,6 +118,7 @@ pub fn prepare(
                 enabled: true,
                 mods: b.mods.clone(),
                 blends: b.blends.clone(),
+                lfos: b.lfos.clone(),
             })
             .collect();
     }

@@ -184,6 +184,7 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
         enabled: true,
         mods: Vec::new(),
         blends: Vec::new(),
+        lfos: Vec::new(),
     });
     let mut e = engine(&store, plan);
     let mut steps = Vec::new();
@@ -430,6 +431,7 @@ fn a_disabled_mic_bus_starts_no_voices() {
         enabled: true,
         mods: Vec::new(),
         blends: Vec::new(),
+        lfos: Vec::new(),
     });
     let mut e = engine(&store, plan);
     e.set_bus_enabled(1, false);
@@ -466,6 +468,7 @@ fn a_bus_sends_before_its_fader() {
         enabled: true,
         mods: Vec::new(),
         blends: Vec::new(),
+        lfos: Vec::new(),
     });
     plan.buses.push(Bus {
         name: "Aux".into(),
@@ -477,6 +480,7 @@ fn a_bus_sends_before_its_fader() {
         enabled: true,
         mods: Vec::new(),
         blends: Vec::new(),
+        lfos: Vec::new(),
     });
     let mut e = engine(&store, plan);
     assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.25));
@@ -517,6 +521,7 @@ fn a_controller_scales_a_send_level_live() {
         enabled: true,
         mods,
         blends,
+        lfos: Vec::new(),
     };
     let send = ir::BusSend {
         bus: 2,
@@ -535,6 +540,76 @@ fn a_controller_scales_a_send_level_live() {
     let mut e = engine(&store, plan);
     assert!(close(level(&mut e, &[cc(1, 0), on(60, 1.0)])[0], 0.125));
     assert!(close(level(&mut e, &[cc(1, 127)])[0], 0.5));
+}
+
+#[test]
+fn a_free_lfo_scales_a_send_level_live() {
+    use kontra_engine::ir;
+    // A square LFO at 1 Hz: high (read 1) the first half cycle, low (0) the
+    // second; the send runs at 1 − 0.75 + 0.75·x of the zone's 0.5.
+    for (phase, level_at) in [(0.0, 0.5), (0.5, 0.125)] {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+        plan.groups[0].bus = 1;
+        let factor = ir::Factor {
+            input: ir::Transfer {
+                source: ir::Source::Lfo(0),
+                table: Vec::new(),
+            },
+            depth: 0.75,
+        };
+        let blend = ir::Blend {
+            base: 0.0,
+            terms: vec![ir::Term {
+                input: ir::Transfer {
+                    source: ir::Source::Constant,
+                    table: Vec::new(),
+                },
+                amount: 1.0,
+                factors: vec![factor],
+            }],
+        };
+        let lfo = ir::Lfo {
+            wave: ir::Wave::Square { width: 0.5 },
+            rate: ir::Rate::Hz(1.0),
+            phase,
+            fade_ms: 0.0,
+            clock: ir::Clock::Free,
+        };
+        plan.buses.push(Bus {
+            name: "Bus".into(),
+            gain: 0.0,
+            pan: 0.0,
+            inserts: Vec::new(),
+            sends: vec![ir::BusSend {
+                bus: 2,
+                level: 1.0,
+                post_fader: false,
+            }],
+            to_main: true,
+            enabled: true,
+            mods: vec![ir::ModKind::Send {
+                source: ir::Source::Blend(0),
+                send: 0,
+            }],
+            blends: vec![blend],
+            lfos: vec![lfo],
+        });
+        plan.buses.push(Bus {
+            name: "Aux".into(),
+            gain: 1.0,
+            pan: 0.0,
+            inserts: Vec::new(),
+            sends: Vec::new(),
+            to_main: true,
+            enabled: true,
+            mods: Vec::new(),
+            blends: Vec::new(),
+            lfos: Vec::new(),
+        });
+        let mut e = engine(&store, plan);
+        assert!(close(level(&mut e, &[on(60, 1.0)])[0], level_at), "{phase}");
+    }
 }
 
 #[test]
@@ -2014,6 +2089,7 @@ fn a_controller_moves_a_bus_eq_band_while_it_plays() {
             unipolar: false,
         }],
         blends: Vec::new(),
+        lfos: Vec::new(),
     });
     let mut e = engine(&store, plan);
     let peak = |e: &mut Engine, events: &[Timed<Event>]| {

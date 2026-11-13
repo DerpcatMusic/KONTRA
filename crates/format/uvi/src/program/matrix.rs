@@ -398,7 +398,7 @@ pub(super) fn centres(connection: Node) -> bool {
 pub(super) fn transfer(
     program: Node,
     connection: Node,
-    lfos: Option<&mut Vec<ir::Lfo>>,
+    mut lfos: Option<&mut Vec<ir::Lfo>>,
 ) -> Option<ir::Transfer> {
     let table = mapper(connection)?;
     let name = connection.attribute("Source")?;
@@ -432,8 +432,19 @@ pub(super) fn transfer(
                 source: ir::Source::Constant,
                 table: vec![value],
             });
-        } else if let (Some((lfo, 1.0)), Some(lfos)) = (modulation::lfo(node), lfos) {
+        } else if let (Some((lfo, 1.0)), Some(lfos)) = (modulation::lfo(node), lfos.as_deref_mut())
+        {
             ir::Source::Lfo(index_of(lfos, lfo))
+        } else if let (true, Some((lfo, steps)), Some(lfos)) = (
+            node.has_tag_name("StepEnvelope") && table.is_empty(),
+            modulation::steps(node),
+            lfos,
+        ) {
+            // A step cycle: its saw LFO read through the levels as a table.
+            return Some(ir::Transfer {
+                source: ir::Source::Lfo(index_of(lfos, lfo)),
+                table: steps,
+            });
         } else if node.has_tag_name("LFO") || node.has_tag_name("MultiLFO") {
             // ponytail: an LFO not carried (VWinds' growl: a random wave whose
             // depth a script opens) is held at its rest, 0, read at the

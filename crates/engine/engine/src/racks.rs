@@ -86,6 +86,8 @@ impl Engine {
                     behaviour: &self.behaviour,
                     scripts: &self.script_mods,
                     now: self.now,
+                    seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
+                    tempo,
                 };
                 bus.rack.follow(&live);
                 bus.rack.process(mix, &mut self.taps, tempo);
