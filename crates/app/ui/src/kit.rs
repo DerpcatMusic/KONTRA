@@ -441,12 +441,17 @@ pub fn menu(
         .iter()
         .enumerate()
         .map(|(n, item)| {
-            let r = button(ui, format!("{id}-{n}"), item, current == Some(n));
+            let (cell, on) = (format!("{id}-{n}"), current == Some(n));
+            // A row of words reads to the menu's edge; a grid keeps cells.
+            let r = match columns {
+                1 => list_row(ui, cell, (item, ""), None, on),
+                _ => button(ui, cell, item, on),
+            };
             if r.changed {
                 picked = Some(n);
             }
             if columns == 1 {
-                r.el.justify(Justify::Start).w(Len::Pct(100.))
+                r.el
             } else {
                 r.el.w(TEXT * 3.)
             }
