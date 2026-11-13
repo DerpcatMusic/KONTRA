@@ -484,6 +484,15 @@ impl Store {
         self.defer = on;
     }
 
+    /// [`Store::load_many`] with every head read now, whatever [`Store::defer_heads`] says:
+    /// for samples read while the plan is built.
+    pub fn load_many_now(&mut self, requests: Vec<LoadRequest>) -> Vec<io::Result<Arc<Sample>>> {
+        let deferred = std::mem::replace(&mut self.defer, false);
+        let loaded = self.load_many(requests);
+        self.defer = deferred;
+        loaded
+    }
+
     /// The reads queued since the last call, if any.
     pub fn take_heads(&mut self) -> Option<Heads> {
         let jobs = std::mem::take(&mut self.deferred);

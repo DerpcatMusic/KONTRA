@@ -263,14 +263,29 @@ fn load_samples(
         slots.push(*index);
     }
     let mut loaded = vec![None; instrument.samples.len()];
-    for (index, result) in slots.into_iter().zip(store.load_many(requests)) {
-        match result {
-            Ok(s) => {
-                if let Some(slot) = loaded.get_mut(index) {
-                    *slot = Some(s);
+    // A wavetable zone's table is built from its frames right here, so those
+    // samples load whole now even when the store leaves heads for later.
+    let tabled: Vec<usize> = (instrument.groups.iter().filter(|g| g.wavetable.is_some()))
+        .flat_map(|g| g.zones.iter().map(|z| z.sample))
+        .collect();
+    let (now, later): (Vec<_>, Vec<_>) =
+        (slots.into_iter().zip(requests)).partition(|(index, _)| tabled.contains(index));
+    for (batch, whole) in [(now, true), (later, false)] {
+        let (indices, batch): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+        let results = if whole {
+            store.load_many_now(batch)
+        } else {
+            store.load_many(batch)
+        };
+        for (index, result) in indices.into_iter().zip(results) {
+            match result {
+                Ok(s) => {
+                    if let Some(slot) = loaded.get_mut(index) {
+                        *slot = Some(s);
+                    }
                 }
+                Err(e) => diagnostics.push(broken("sample-load", format!("sample {index}: {e}"))),
             }
-            Err(e) => diagnostics.push(broken("sample-load", format!("sample {index}: {e}"))),
         }
     }
     loaded
