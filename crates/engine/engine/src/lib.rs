@@ -95,7 +95,7 @@ use kontra_effects::matrix as effects;
 /// millisecond or less of a heavy script. A run that reaches it yields at its next
 /// loop turn and goes on at the next block, as the rest of a chain of waits
 /// does: a block never holds all of a script's chunked work.
-const BLOCK_SCRIPT_TURNS: u64 = 64;
+const BLOCK_SCRIPT_TURNS: u64 = 12;
 
 /// A voice ended early outside a voice group fades this long, a cut that never clicks.
 const FADE_SECONDS: f64 = 0.010;
@@ -180,6 +180,11 @@ pub struct Engine {
     block_turns: u64,
     /// Loop turns the next resumed script run may take before it yields.
     fuel: u32,
+    /// Whether the plan has zones that play on release (a scan of every zone,
+    /// so kept, not asked each block).
+    release_zones: bool,
+    /// Each zone's key range, packed: a note's start scans these, not the zones.
+    zone_keys: Vec<(u8, u8)>,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -352,6 +357,12 @@ impl Engine {
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
+        let zone_keys = plan
+            .zones
+            .iter()
+            .map(|z| (*z.keys.start(), *z.keys.end()))
+            .collect();
+        let release_zones = plan.zones.iter().any(|z| z.trigger == Trigger::Release);
         let mut engine = Self {
             #[cfg(feature = "trace")]
             trace: _trace_capacity.map(trace::Trace::new),
@@ -375,6 +386,8 @@ impl Engine {
             block_end: SampleTime(0),
             block_turns: 0,
             fuel: 0,
+            release_zones,
+            zone_keys,
             stream,
             voices,
             buses,

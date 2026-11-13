@@ -432,6 +432,13 @@ impl Ledger {
             .count()
     }
 
+    /// Whether any live note `keep` accepts exists; stops at the first.
+    pub fn any(&self, keep: impl Fn(&Note) -> bool) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.note.as_ref().is_some_and(&keep))
+    }
+
     /// Host notes the pattern addresses; script notes answer only to the script.
     pub fn matching(&self, pattern: HostPattern, out: &mut Vec<NoteRef>) {
         self.select(out, |n| n.origin == Origin::Host && pattern.matches(n.host));

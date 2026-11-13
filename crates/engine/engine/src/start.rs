@@ -29,7 +29,16 @@ impl Engine {
         if let Some(live) = self.notes.get_mut(note) {
             live.held = held_seconds;
         }
+        // A key's zones are a few of thousands: skip the rest off the packed
+        // key ranges, without reading their (664-byte) zones.
         for (index, zone) in plan.zones.iter().enumerate() {
+            if self
+                .zone_keys
+                .get(index)
+                .is_some_and(|&(low, high)| n.key < low || n.key > high)
+            {
+                continue;
+            }
             let selected = accept(zone.trigger)
                 && self.masks.allows(note.slot(), zone.group)
                 && self
