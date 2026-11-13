@@ -220,15 +220,15 @@ pub(super) fn text(
     words: &str,
     style: Option<&model::TextStyle>,
     widget: &model::Widget,
-    (height, scale): (f64, f64),
+    (height, scale, em): (f64, f64, f64),
     source: model::Source,
 ) -> Text {
     let size = style.and_then(|s| s.size).map_or(super::TEXT, f64::from) * scale;
     let multiline = words.contains('\n');
     let lua = matches!(source, model::Source::FalconLua);
-    let line = size * if multiline { 13. / 11. } else { 1.25 };
-    // A UVI (JUCE) line is the font's height: its size.
-    let line = if multiline && lua { size } else { line };
+    // Lines a UVI size apart (JUCE's font height, `size` at `em` per unit), Kontakt's 13/11.
+    let pitch = if lua { 1. / em } else { 13. / 11. };
+    let line = size * if multiline { pitch } else { 1.25 };
     let (align, top) = placed(words, style, widget, (height, line, scale), !lua);
     let label = matches!(widget.kind, model::Kind::Label);
     Text {
@@ -440,7 +440,7 @@ mod tests {
             model::Rect::new(0, 0, 50, 22),
             model::Kind::Label,
         );
-        let top = |source| text("Sordino", None, &label, (22., 1.), source).top;
+        let top = |source| text("Sordino", None, &label, (22., 1., 1.), source).top;
         assert_eq!(top(model::Source::Ksp { slot: 0 }), 0.);
         assert!(top(model::Source::FalconLua) > 0.);
         let mut button = label.clone();
@@ -450,7 +450,7 @@ mod tests {
                 "Go",
                 None,
                 &button,
-                (22., 1.),
+                (22., 1., 1.),
                 model::Source::Ksp { slot: 0 }
             )
             .top > 0.
@@ -494,8 +494,8 @@ mod tests {
         assert_eq!(frame(&[WidgetRef(0)]), Some(2));
     }
 
-    /// A UVI label's lines are its size apart (JUCE's font height); a
-    /// Kontakt one's keep Kontakt's measured 13/11.
+    /// A UVI label's lines are its authored size apart (JUCE's font
+    /// height); a Kontakt one's keep Kontakt's measured 13/11.
     #[test]
     fn a_uvi_label_pitches_its_lines_at_its_size() {
         let w = model::Widget::new(
@@ -510,8 +510,9 @@ mod tests {
             color: model::Rgba::default(),
             align: model::Align::Left,
         };
-        let line = |source| text("a\nb", Some(&style), &w, (60., 1.), source).line;
-        assert_eq!(line(model::Source::FalconLua), 22.);
+        // 22 at 0.8 em per unit of height: authored 27.5, as `words_el` gives it.
+        let line = |source| text("a\nb", Some(&style), &w, (60., 1., 0.8), source).line;
+        assert_eq!(line(model::Source::FalconLua), 27.5);
         assert_eq!(line(model::Source::Ksp { slot: 0 }), 26.);
     }
 }
