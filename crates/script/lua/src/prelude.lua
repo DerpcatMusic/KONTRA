@@ -487,11 +487,10 @@ function Element.setParameter(self, name, value)
 	elseif name == "Volume" and type(value) == "number" then
 		host_call("EffectGain", fx[1], fx[2], fx[3], math.floor(value * 1e6 + 0.5))
 	end
-	-- Any other number the format mapped: `{control, x1, y1, ...}`, the
-	-- control's value by the number, straight between points.
-	local knob = (fields_of(self).knobs or EMPTY)[name]
+	-- Any other number the format mapped: each control it moves,
+	-- `{control, x1, y1, ...}`, by the number, straight between points.
 	local x = tonumber(value)
-	if knob and x and #knob >= 3 then
+	for _, knob in ipairs(x and (fields_of(self).knobs or EMPTY)[name] or EMPTY) do
 		local y = knob[3]
 		if x >= knob[#knob - 1] then
 			y = knob[#knob]

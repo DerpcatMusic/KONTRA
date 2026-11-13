@@ -941,7 +941,7 @@ mod tests {
         {params={DisplayName='Sustain',Gain='0'},bus=2,
          keygroups={{params={Gain='1'},group=3},{params={},group=nil},{params={},group=4}}}},
         auxs={{params={Name='Aux0',Gain='0.5'},bus=3,
-         inserts={{params={Name='InsertFX0',Bypass='1'},fx={1,3,0},knobs={Time={25,0,0,10,5}}},
+         inserts={{params={Name='InsertFX0',Bypass='1'},fx={1,3,0},knobs={Time={{25,0,0,10,5}}}},
           {params={Name='InsertFX1'}},{params={Name='Rack',Bypass='1'},bus=5,dry=6}}}}}";
 
     fn run(source: &str, entry: u32) -> Log {
