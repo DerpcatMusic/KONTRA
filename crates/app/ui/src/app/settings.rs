@@ -20,7 +20,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         app.midi_thru = !app.midi_thru;
         out.push(Action::MidiThru(app.midi_thru));
     }
-    let labels: Vec<String> = SCALES.iter().map(|s| format!("{:.0}%", s * 100.)).collect();
+    let labels: Vec<String> = SCALES.iter().map(|s| format!("{s}%")).collect();
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
     let current = refs.get(app.view.scale).copied().unwrap_or("100%");
     let size = kit::dropdown(

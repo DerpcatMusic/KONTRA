@@ -312,8 +312,8 @@ pub struct View {
     pub face_look: FaceLook,
 }
 
-/// The editor sizes on offer.
-pub const SCALES: [f64; 4] = [1., 1.25, 1.5, 2.];
+/// The editor sizes on offer, in percent of its design size.
+pub const SCALES: [u32; 4] = [100, 125, 150, 200];
 
 /// A library's view sizes on offer: as wide as the rack (0, the default),
 /// or a fixed scale that scrolls when it is wider.
@@ -428,7 +428,8 @@ pub enum Action {
     },
     /// Stop scanning the browser's folder `n`.
     RemoveFolder(usize),
-    Scale(f64),
+    /// Draw the editor at this percent of its design size.
+    Scale(u32),
     CopyDiagnostics,
     ExportReport,
     LogFolder,

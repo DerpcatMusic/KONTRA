@@ -696,6 +696,9 @@ fn part_of(action: &Action) -> Option<usize> {
     }
 }
 
+/// The size the editor is designed at, in logical points.
+const SIZE: (u32, u32) = (1180, 780);
+
 pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     #[expect(
         clippy::expect_used,
@@ -722,7 +725,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // Where the last load the editor asked for lands.
     let mut target = app::Loading::New;
     let mut buttons = None;
-    MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
+    MuiEditor::new(params, kontra_ui::ui(), SIZE, move |ui, bridge| {
         // Opening: one tick here brings the copy a closed editor let lapse
         // up to date, though the host runs no audio to spawn one (a load
         // in progress shows on its own tick).
@@ -776,6 +779,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 // One more frame, so the chip shows before the load ends.
                 target = t;
                 p.shared.dirty.store(true, Ordering::Release);
+            }
+            if let Action::Scale(percent) = action {
+                // The tree scales to fit its window: a size is a window size.
+                let [w, h] = [SIZE.0, SIZE.1].map(|n| n * percent / 100);
+                let _ = bridge.context().is_some_and(|c| c.request_resize(w, h));
+                continue;
             }
             if let Action::Master(db) = action {
                 bridge.drag_gesture(P::Volume, db);
