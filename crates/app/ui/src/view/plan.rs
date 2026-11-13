@@ -233,7 +233,12 @@ pub(super) fn text(
         size,
         line,
         top: top.max(0.),
-        inset: if label { 7. } else { 2. } * scale,
+        // A UVI label is JUCE's, inset 5 by its border.
+        inset: match (label, lua) {
+            (true, true) => 5.,
+            (true, false) => 7.,
+            (false, _) => 2.,
+        } * scale,
         align,
         color: style.map(|s| s.color),
         multiline,
