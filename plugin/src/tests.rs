@@ -1833,3 +1833,68 @@ fn conflux_edit_tab_switches_the_page() {
     let (_, after, _) = shown(&params);
     assert_ne!(before, after, "the Edit tab changed nothing shown");
 }
+
+/// A bug in the render must cost one silent block and a message, never an
+/// unwind into the host; the next block plays on.
+#[test]
+fn a_panic_in_the_render_is_one_silent_block_and_the_next_plays() {
+    let scratch = Scratch::new("render-panic");
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    // One second of a 440 Hz sine, 16-bit mono at 48 kHz, played by one SFZ region.
+    let samples: Vec<u8> = (0..48_000)
+        .flat_map(|n| {
+            let x = (n as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin();
+            ((x * 20_000.0) as i16).to_le_bytes()
+        })
+        .collect();
+    let mut wav = Vec::new();
+    wav.extend(b"RIFF");
+    wav.extend((36 + samples.len() as u32).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend([1, 0, 1, 0]);
+    wav.extend(48_000u32.to_le_bytes());
+    wav.extend(96_000u32.to_le_bytes());
+    wav.extend([2, 0, 16, 0]);
+    wav.extend(b"data");
+    wav.extend((samples.len() as u32).to_le_bytes());
+    wav.extend(samples);
+    std::fs::write(scratch.0.join("sine.wav"), wav).unwrap();
+    let sfz = scratch.0.join("sine.sfz");
+    std::fs::write(&sfz, "<region> sample=sine.wav key=60 loop_mode=loop_continuous\n").unwrap();
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path: sfz,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+        preset: None,
+        modified: false,
+    }]);
+    let (params, mut dsp) = activate(&saved.write());
+    let peak = |audio: &[f32]| audio.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    block(&params, &mut dsp, &[note(true, 60)]);
+    assert!(peak(&block(&params, &mut dsp, &[])) > 0.01, "the note plays");
+    // The next render panics: that block is silent, the host is not unwound
+    // into, and the fault is flagged for the player.
+    params.shared.inject_panic.store(true, Ordering::Release);
+    let silent = block(&params, &mut dsp, &[]);
+    assert_eq!(peak(&silent), 0.0, "a panicking render is silence");
+    assert!(params.shared.fault.load(Ordering::Acquire));
+    // The tick tells the player once.
+    Tick.run(&params);
+    assert!(!params.shared.fault.load(Ordering::Acquire));
+    // And the note plays on in the next block.
+    let mut later = 0.0f32;
+    for _ in 0..4 {
+        later = later.max(peak(&block(&params, &mut dsp, &[])));
+    }
+    assert!(later > 0.01, "the render recovers after the fault");
+}

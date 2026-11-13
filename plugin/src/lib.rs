@@ -112,6 +112,9 @@ pub struct Shared {
     /// The audio thread caught a panic in the rack's render: the block went
     /// silent. The tick tells the player, once per fault.
     fault: AtomicBool,
+    /// Tests only: the next render panics, as a bug in it would.
+    #[cfg(test)]
+    inject_panic: AtomicBool,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -511,6 +514,11 @@ impl PluginLogic for Kontra {
             // into the host (catching costs nothing while nothing panics).
             let chunk_events = &s.chunk;
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                assert!(
+                    !p.shared.inject_panic.swap(false, Ordering::AcqRel),
+                    "injected render panic"
+                );
                 audio.process(len, chunk_events);
             }))
             .is_err()
