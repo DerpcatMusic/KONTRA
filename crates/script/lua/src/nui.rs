@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use kontra_ui_model::{Paint, Rgba, Seg};
 use mlua::{Function, Lua, Table, Value};
 
 const PRELUDE: &str = include_str!("nui/prelude.lua");
@@ -309,6 +310,49 @@ impl Page {
             .collect())
     }
 
+    /// Paints canvas `n` (its `paint` callback) in a `frame` (width,
+    /// height) large: what it drew, in its own points.
+    ///
+    /// # Errors
+    /// The page's runtime error, as Luau reports it.
+    pub fn paint(&mut self, n: u32, [w, h]: [f64; 2]) -> Result<Vec<Paint>, Diagnostic> {
+        let fail = |e: mlua::Error| Diagnostic {
+            module: "native_ui".into(),
+            line: None,
+            message: e.to_string(),
+        };
+        self.checkpoints.store(0, Ordering::Relaxed);
+        let paint: Function = self.lua.globals().get("__paint").map_err(fail)?;
+        let out: Table = paint.call((n, w, h)).map_err(fail)?;
+        let rgba = |t: &Table, k: &str| -> Option<Rgba> {
+            let c = t.get::<Table>(k).ok()?;
+            let ch =
+                |k: &str, max: f64| (c.get::<f64>(k).unwrap_or(0.) * max).clamp(0., 255.) as u8;
+            Some(Rgba {
+                r: ch("r", 1.),
+                g: ch("g", 1.),
+                b: ch("b", 1.),
+                a: ch("a", 255.),
+            })
+        };
+        Ok(out
+            .sequence_values::<Table>()
+            .flatten()
+            .map(|t| Paint {
+                path: (t.get::<Table>("path"))
+                    .map(|p| {
+                        p.sequence_values::<Table>()
+                            .flatten()
+                            .filter_map(seg)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                fill: rgba(&t, "fill"),
+                stroke: rgba(&t, "stroke").map(|c| (c, t.get::<f64>("width").unwrap_or(1.))),
+            })
+            .collect())
+    }
+
     /// Takes `params` (control name and value) and `controls` (their
     /// properties, which count as changed) and renders again only the
     /// component instances that read one that changed, or whose state
@@ -356,6 +400,19 @@ impl Page {
             })
             .collect())
     }
+}
+
+/// A path step the painter recorded: its op (M, L, C or Z), then its
+/// coordinates.
+fn seg(s: Table) -> Option<Seg> {
+    let v = |i: usize| s.get::<f64>(i + 2).unwrap_or(0.);
+    Some(match s.get::<String>(1).ok()?.as_str() {
+        "M" => Seg::Move([v(0), v(1)]),
+        "L" => Seg::Line([v(0), v(1)]),
+        "C" => Seg::Cubic([v(0), v(1), v(2), v(3), v(4), v(5)]),
+        "Z" => Seg::Close,
+        _ => return None,
+    })
 }
 
 fn node(v: &Value) -> Option<Node> {
@@ -604,6 +661,68 @@ mod tests {
         page.set_controls(std::slice::from_ref(&name)).unwrap();
         let tree = page.render(&[("Name".into(), 0.)]).unwrap().unwrap();
         assert_eq!(tree.prop("text"), Some(&Prop::Text("Cutoff".into())));
+    }
+
+    /// A canvas paints in the frame it is given: a path filled and
+    /// stroked, a dashed line as its dashes. What its painter reads renders
+    /// its instance again.
+    #[test]
+    fn a_canvas_paints_its_frame_and_renders_again_on_what_it_read() {
+        let mut page = page(&[(
+            "main.nui",
+            r#"local ui = require "native_ui"
+            local kontakt = require "kontakt"
+            return function()
+                local pb = kontakt.connect_parameter("PB")
+                return @ui.Canvas { paint = function(p, frame)
+                    p.stroke_style = ui.Color.white
+                    p.fill_style = ui.no_style
+                    p:move_to(0, frame.height * pb:value())
+                    p:cubic_to(1, 2, 3, 4, frame.width, 0)
+                    p:draw_path()
+                    p.dash_pattern = {4, 6}
+                    p:draw_line(0, 0, 20, 0)
+                end }
+            end"#,
+        )]);
+        let pb = Control {
+            name: "PB".into(),
+            ..Control::default()
+        };
+        page.set_controls(std::slice::from_ref(&pb)).unwrap();
+        let tree = page.render(&[("PB".into(), 0.5)]).unwrap().unwrap();
+        let Some(Prop::Callback(n)) = tree.prop("paint") else {
+            panic!("no paint callback");
+        };
+        let paints = page.paint(*n, [40., 10.]).unwrap();
+        let white = Rgba {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let curve = Paint {
+            path: vec![Seg::Move([0., 5.]), Seg::Cubic([1., 2., 3., 4., 40., 0.])],
+            fill: None,
+            stroke: Some((white, 1.)),
+        };
+        let dashes = [[0., 4.], [10., 14.]]
+            .iter()
+            .flat_map(|&[a, b]| [Seg::Move([a, 0.]), Seg::Line([b, 0.])])
+            .collect();
+        assert_eq!(
+            paints,
+            [
+                curve,
+                Paint {
+                    path: dashes,
+                    fill: None,
+                    stroke: Some((white, 1.))
+                }
+            ]
+        );
+        let again = page.update(&[("PB".into(), 1.)], &[]).unwrap();
+        assert_eq!(again.len(), 1, "the painter read PB");
     }
 
     /// Rounding gives 0, not -0: Kontakt's `math.ceil` returns integers.

@@ -20,10 +20,12 @@ use std::sync::{Arc, mpsc};
 use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
 
 mod cache;
+mod canvas;
 mod discovery;
 mod outline;
 pub mod stock;
 mod vector;
+pub use canvas::canvas;
 use mui::prelude::{Font, Image};
 pub use mui::scene::Vector;
 

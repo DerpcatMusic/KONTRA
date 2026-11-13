@@ -533,6 +533,7 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
         }
         "Text" | "TextInput" => ui::Kind::Label,
         "Image" => ui::Kind::Image,
+        "Canvas" => ui::Kind::Canvas(Vec::new()),
         "ZStack" | "ForEach" => {
             let a = alignment(text(n.prop("alignment")));
             for c in children(n) {
@@ -634,6 +635,10 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
             w.images
                 .push(ui::ImageUse::new(asset, ui::Role::Background));
         }
+        "Canvas" => match n.prop("paint") {
+            Some(Prop::Callback(c)) => w.name = format!("{} {c}", super::CANVAS),
+            _ => return,
+        },
         _ if w.colors.background.is_none() => return,
         _ => {}
     }

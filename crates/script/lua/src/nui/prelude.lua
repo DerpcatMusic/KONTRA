@@ -295,6 +295,89 @@ function __call(n, event)
 	return w
 end
 
+-- The scope each canvas's `paint` was given in, by callback number: it
+-- paints there, so what it reads renders its instance again.
+local scopes = {}
+
+-- A canvas's painter: what it draws, as paths for the host. `draw_path`
+-- fills, then strokes, and starts a new path; a dashed line is its dashes.
+local function painter()
+	local p = { line_width = 1, dash_pattern = {}, __out = {}, __path = {} }
+	local function color(c)
+		return type(c) == "table" and c.__color and c or nil
+	end
+	local function emit(path, fill)
+		p.__out[#p.__out + 1] = {
+			path = path,
+			fill = fill and color(p.fill_style) or nil,
+			stroke = color(p.stroke_style),
+			width = p.line_width,
+		}
+	end
+	function p:move_to(x, y)
+		self.__path[#self.__path + 1] = { "M", x, y }
+	end
+	function p:line_to(x, y)
+		self.__path[#self.__path + 1] = { "L", x, y }
+	end
+	function p:cubic_to(ax, ay, bx, by, x, y)
+		self.__path[#self.__path + 1] = { "C", ax, ay, bx, by, x, y }
+	end
+	function p:close_path()
+		self.__path[#self.__path + 1] = { "Z" }
+	end
+	function p:draw_path()
+		emit(self.__path, true)
+		self.__path = {}
+	end
+	function p:draw_line(x1, y1, x2, y2)
+		local dash, len = self.dash_pattern or {}, math.sqrt((x2 - x1) ^ 2 + (y2 - y1) ^ 2)
+		if #dash == 0 or len == 0 then
+			return emit({ { "M", x1, y1 }, { "L", x2, y2 } }, false)
+		end
+		local path, at, i, on = {}, 0, 1, true
+		while at < len do
+			local to = math.min(at + math.max(dash[i] or 0, 0.5), len)
+			if on then
+				local f, t = at / len, to / len
+				path[#path + 1] = { "M", x1 + (x2 - x1) * f, y1 + (y2 - y1) * f }
+				path[#path + 1] = { "L", x1 + (x2 - x1) * t, y1 + (y2 - y1) * t }
+			end
+			at, i, on = to, i % #dash + 1, not on
+		end
+		emit(path, false)
+	end
+	function p:draw_circle(x, y, r)
+		local k = r * 0.5523
+		emit({
+			{ "M", x + r, y },
+			{ "C", x + r, y + k, x + k, y + r, x, y + r },
+			{ "C", x - k, y + r, x - r, y + k, x - r, y },
+			{ "C", x - r, y - k, x - k, y - r, x, y - r },
+			{ "C", x + k, y - r, x + r, y - k, x + r, y },
+			{ "Z" },
+		}, true)
+	end
+	return p
+end
+
+-- Paints canvas `n` in a `w` by `h` frame: what it drew, as
+-- { path = { { op, coords... } }, fill, stroke, width } (op M, L, C or Z).
+function __paint(n, w, h)
+	local f = __callbacks[n]
+	if not f then
+		return {}
+	end
+	local p, saved = painter(), current
+	current = scopes[n] or current
+	local ok, err = pcall(f, p, { width = w, height = h })
+	current = saved
+	if not ok then
+		error(err, 0)
+	end
+	return p.__out
+end
+
 local expand
 
 -- A value a primitive draws with, its nodes expanded: a computed one
@@ -352,6 +435,10 @@ expand = function(v, path, context)
 			if type(k) == "string" and k ~= "content" and k ~= "data" then
 				out.props[k] = plain(x, path .. "." .. k, context, true)
 			end
+		end
+		local paint = f.__primitive == "Canvas" and out.props.paint
+		if type(paint) == "table" and paint.__callback then
+			scopes[paint.__callback] = current
 		end
 		local children = {}
 		if f.__primitive == "ForEach" then
@@ -435,7 +522,7 @@ end
 
 -- The entry's tree, from `root` (the entry module's value: a function).
 function __render(root)
-	__callbacks = {}
+	__callbacks, scopes = {}, {}
 	instances, stale = {}, {}
 	__dirty = false
 	return expand(__nui(root, {}), "", {})
