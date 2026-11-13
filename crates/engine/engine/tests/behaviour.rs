@@ -497,6 +497,7 @@ fn a_controller_scales_a_send_level_live() {
         input: ir::Transfer {
             source: ir::Source::Controller(1),
             table: Vec::new(),
+            ..Default::default()
         },
         depth: 0.75,
     };
@@ -506,6 +507,7 @@ fn a_controller_scales_a_send_level_live() {
             input: ir::Transfer {
                 source: ir::Source::Constant,
                 table: Vec::new(),
+                ..Default::default()
             },
             amount: 1.0,
             factors: vec![factor],
@@ -555,6 +557,7 @@ fn a_free_lfo_scales_a_send_level_live() {
         input: ir::Transfer {
             source: ir::Source::Lfo(0),
             table: Vec::new(),
+            ..Default::default()
         },
         depth: 0.75,
     };
@@ -564,6 +567,7 @@ fn a_free_lfo_scales_a_send_level_live() {
             input: ir::Transfer {
                 source: ir::Source::Constant,
                 table: Vec::new(),
+                ..Default::default()
             },
             amount: 1.0,
             factors: vec![factor],
@@ -745,6 +749,7 @@ fn a_mapped_bend_bends_pitch_by_its_table_as_is() {
     plan.groups[0].shapers = vec![ir::Transfer {
         source: ir::Source::PitchBend,
         table: vec![-1.0, 0.0, 1.0, 2.0],
+        ..Default::default()
     }];
     plan.groups[0].mods = vec![ir::Mod {
         name: String::new(),
@@ -874,6 +879,7 @@ fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
     plan.groups[0].shapers = vec![Transfer {
         source: Source::ControllerFrom { cc: 1, start: 127 },
         table: (0..128).map(|k| k as f32 / 254.0).collect(),
+        ..Default::default()
     }];
     plan.groups[0].mods = vec![Mod {
         name: String::new(),
@@ -910,6 +916,7 @@ fn a_blended_macro_moves_one_cell_of_a_sounding_voices_matrix() {
     let through = |source| Transfer {
         source,
         table: Vec::new(),
+        ..Default::default()
     };
     // Wheel × CC 2, read straight through: the left cell only.
     plan.groups[0].blends = vec![Blend {
@@ -2272,6 +2279,7 @@ fn shaped_release_counter_reads_the_key_held_time() {
     plan.groups[0].shapers = vec![ir::Transfer {
         source: ir::Source::HeldTime { span_ms: 1000 },
         table: vec![0.2, 1.0],
+        ..Default::default()
     }];
     plan.groups[0].mods = vec![ir::Mod {
         name: "held".into(),

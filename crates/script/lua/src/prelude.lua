@@ -207,6 +207,14 @@ local function table_widget(w, name, fields)
 		i = i and (i < 0 and math.ceil(i) or math.floor(i))
 		return i and i >= 1 and i <= size and i or nil
 	end
+	-- ponytail: Table:setRange moves the range the out-of-range read clamps
+	-- to; the stored values are not clamped (the AO step table's checkbox
+	-- switches between 0..1 and -1..1; unmeasured whether UVI clamps).
+	w.setRange = function(self, min, max)
+		lo, hi = tonumber(min) or lo, tonumber(max) or hi
+		self.min, self.max = lo, hi
+		own = math.min(math.max(own, math.min(lo, hi)), math.max(lo, hi))
+	end
 	w.setValue = function(self, index, v)
 		local i = at(index)
 		if i then

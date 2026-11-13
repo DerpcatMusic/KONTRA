@@ -326,6 +326,26 @@ impl Engine {
         age: Age,
         shaper: bool,
     ) -> Option<f32> {
+        // A smoothed step wave reads its own past, so the glide follows the
+        // tempo through the LFO's rate with no state.
+        if t.smooth_s > 0.0
+            && let ir::Source::Lfo(n) = t.source
+        {
+            let scale = if shaper {
+                self.scale(zone, t.source, note, age)
+            } else {
+                1.0
+            };
+            return t.smoothed(|back| {
+                let past = Age {
+                    held: age.held - back,
+                    now: age.now - back,
+                    ..age
+                };
+                let x = self.lfo_value(zone, n, note, past)? * scale;
+                Some(t.apply((x + 1.0) / 2.0))
+            });
+        }
         let x = match t.source {
             ir::Source::Shaped(_) => return None,
             ir::Source::Blend(_) if !shaper => return None,
