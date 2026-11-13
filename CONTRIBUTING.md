@@ -135,19 +135,20 @@ titled with the pull request's title and number and credited to its authors.
 
 ### Versions and releases
 
-Versions are `MAJOR.MINOR.PATCH`. Nobody picks them by hand:
+Versions are semver, `0.MINOR.PATCH` until 1.0. Nobody picks them by hand:
 `tools/version.py next` reads the titles merged since the last release. A
-`feat` raises MINOR; anything else raises PATCH. MAJOR is the engine
-generation and changes in `tools/version.py`.
+`feat` raises MINOR; anything else raises PATCH.
 
-The Release workflow runs once a day and on demand (Actions > Release > Run
-workflow). When something that ships has changed, it builds and tests every
-platform, signs and notarizes the macOS installer, tags the commit `vX.Y.Z`
-and publishes a release whose notes are the merged pull requests' release
-notes, each linked to its pull request and author
-(`tools/release/notes.py`). Releases stay published; the
-[releases page](https://github.com/DerpcatMusic/KONTRA/releases) is the
-changelog. Never move a published tag or replace its downloads.
+The Release workflow runs when the third pull request since the last release
+merges on `main`, and on demand (Actions > Release > Run workflow). It builds
+and tests every platform, signs and notarizes the macOS installer, tags the
+commit `vX.Y.Z` and publishes a release. Its notes are the merged pull
+requests' release notes, each linked to its pull request and author
+(`tools/release/notes.py`); `CHANGELOG.md` on every release lists every pull
+request and commit since the project began (`tools/release/changelog.py`).
+So the changelog writes itself from the pull request title and its
+`Release note:` line: write those for a musician. Never move a published tag
+or replace its downloads.
 
 Mac publication needs the `APPLE_*` signing secrets listed in
 `.github/workflows/release.yml`; without them the release fails and the

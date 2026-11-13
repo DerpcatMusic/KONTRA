@@ -23,7 +23,7 @@ def git(*args):
 
 def previous(head):
     result = subprocess.run(['git', 'describe', '--first-parent', '--tags', '--abbrev=0',
-                             '--match', 'v3.*', head + '^'], text=True, capture_output=True)
+                             '--match', 'v0.*', '--exclude', '*-*', head + '^'], text=True, capture_output=True)
     if result.returncode == 0:
         return result.stdout.strip()
     for candidate in ('v2-final', '7a8e28298'):
@@ -91,7 +91,8 @@ def render(entries, version=None, base=None):
     shown = sum(len(changes) for changes in groups.values())
     if version:
         count = len(entries)
-        since = f' since [{base.lstrip("v")}]({REPO}/releases/tag/{base})' if base and base.startswith('v') else ''
+        since = (f' since [{base.lstrip("v")}]({REPO}/releases/tag/{base})' if base and base.startswith('v0.')
+                 else ' since the current engine began')
         lines += [f'{count} change{"s" if count != 1 else ""}{since}, {shown} of them '
                   'something you can hear, see or measure. KONTRA is alpha software: '
                   'expect rough edges, and [tell us](' + REPO + '/issues/new/choose) what breaks.', '']
@@ -107,6 +108,7 @@ def render(entries, version=None, base=None):
                   '- **Windows and Linux:** download the ZIP below, extract it and run the install script inside.',
                   '- **macOS:** run the universal `.pkg` installer.',
                   '', 'KONTRA loads as a CLAP or VST3 plugin; rescan plugins in your DAW after installing.', '']
+        lines += ['Every pull request and commit since the project began: **CHANGELOG.md** below.', '']
         if base:
             lines += [f'**Full changelog:** [{base}...v{version}]({REPO}/compare/{base}...v{version})', '']
     return '\n'.join(lines)
