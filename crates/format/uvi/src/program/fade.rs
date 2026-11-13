@@ -45,7 +45,14 @@ pub(super) fn apply(kg: Node, group: &mut ir::Group) -> Result<(), String> {
             &(source, curve, low, high, low_fade, high_fade),
             &table,
         );
-        let shaped = index_of(&mut group.shapers, ir::Transfer { source, table });
+        let shaped = index_of(
+            &mut group.shapers,
+            ir::Transfer {
+                source,
+                table,
+                ..Default::default()
+            },
+        );
         group.mods.push(ir::Mod {
             name: String::new(),
             slot: u16::MAX,

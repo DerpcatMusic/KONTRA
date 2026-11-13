@@ -118,6 +118,15 @@ impl Live<'_> {
     /// `t`'s source through its table; a bipolar source spans a table as
     /// `(x + 1)/2`. No blend: no recursion.
     fn through(&self, t: &ir::Transfer, clock: Clock) -> Option<f32> {
+        if t.smooth_s > 0.0 && matches!(t.source, ir::Source::Lfo(_)) {
+            return t.smoothed(|back| {
+                let past = Clock {
+                    offset: clock.offset - back,
+                    ..clock
+                };
+                Some(t.apply((self.read(t.source, &[], past)? + 1.0) / 2.0))
+            });
+        }
         let x = self.read(t.source, &[], clock)?;
         // An LFO is always read on 0..=1; pitch bend only through a table.
         let bipolar = matches!(t.source, ir::Source::Lfo(_))

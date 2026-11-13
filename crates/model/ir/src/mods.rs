@@ -105,11 +105,7 @@ pub enum ModKind {
     /// note-value ladder ([`NOTE_LADDER`]) by `source × depth × 29` places
     /// (rounded, held on the ladder), `source` live: the phase integrates the
     /// moving rate.
-    LfoDivision {
-        source: Source,
-        lfo: u8,
-        depth: f32,
-    },
+    LfoDivision { source: Source, lfo: u8, depth: f32 },
     /// Scales every route of the group's timed source `of` (an LFO or an
     /// envelope) by `1 − (1 − x)·depth`, `x` the live `source`, a bipolar one
     /// as `(x + 1)/2`.
@@ -201,13 +197,41 @@ impl Factor {
 /// The output is used as is, in the domain the route that reads it consumes
 /// (a pitch or sample-start route reads -1..=1, a gain 0..=1): the engine
 /// converts no polarity, so a translator emits each table in its route's domain.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Transfer {
     pub source: Source,
     pub table: Vec<f32>,
+    /// Seconds of a one-pole after the table (0: none): the output reaches
+    /// `1 − e^−1` of a step in this long. Read for an LFO source, from the
+    /// LFO's own past, so it needs no state and follows the tempo.
+    pub smooth_s: f32,
 }
 
+/// Taps of [`Transfer::smoothed`] over five time constants.
+const SMOOTH_TAPS: usize = 20;
+
 impl Transfer {
+    /// The output smoothed by [`Self::smooth_s`]: `at(back)` is the table's
+    /// output `back` seconds ago, averaged under `e^(−back/τ)` (a one-pole's
+    /// impulse response) over five time constants.
+    pub fn smoothed(&self, mut at: impl FnMut(f32) -> Option<f32>) -> Option<f32> {
+        if self.smooth_s <= 0.0 {
+            return at(0.0);
+        }
+        let (mut sum, mut norm) = (0.0, 0.0);
+        for j in 0..SMOOTH_TAPS {
+            let back = 5.0 * self.smooth_s * j as f32 / (SMOOTH_TAPS - 1) as f32;
+            let end = if j == 0 || j == SMOOTH_TAPS - 1 {
+                0.5
+            } else {
+                1.0
+            };
+            let w = end * (-back / self.smooth_s).exp();
+            sum += w * at(back)?;
+            norm += w;
+        }
+        Some(sum / norm)
+    }
     /// The table's output for `x`, clamped to 0..=1; an empty table passes
     /// `x` through.
     #[must_use]
@@ -353,7 +377,7 @@ pub enum Attractor {
 }
 
 /// A per-note modulation source, 0..=1 unless noted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Velocity,
     Controller(u8),
@@ -376,6 +400,7 @@ pub enum Source {
     /// The group's [`Group::blends`](crate::Group::blends) entry.
     Blend(u8),
     /// Always 1.
+    #[default]
     Constant,
     /// The value a script sent this note for "from script" modulator `id`,
     /// −1..=1; 0 until sent.
