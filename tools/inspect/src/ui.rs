@@ -239,7 +239,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         .collect();
     let stream = store.client();
     let mut engine = Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 65536);
-    engine.set_offline_wait(true);
+    engine.set_render_mode(kontra_engine::RenderMode::Offline);
     engine.clear_trace();
     let at = engine.now();
     let note = Event::NoteOn {

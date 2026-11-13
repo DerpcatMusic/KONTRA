@@ -886,6 +886,26 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 continue;
             }
             let slot = part_of(&action).and_then(|n| slots.get(n).copied());
+            // A panel control moved: its host macro records the move,
+            // taking the next free one the first time.
+            if let (
+                Action::Control {
+                    part,
+                    widget,
+                    value,
+                    cell: None,
+                    ..
+                },
+                Some(slot),
+            ) = (&action, slot)
+            {
+                let face = app.parts.get(*part).and_then(|p| p.face.as_ref());
+                let w = face.and_then(|f| f.tree.widgets.get(*widget));
+                if let Some((id, value)) = w.and_then(|w| crate::macros::touch(&p, slot, w, *value))
+                {
+                    bridge.drag_gesture(id, value);
+                }
+            }
             p.shared.request(Request::Ui(Edit { slot, action }));
         }
         // Parts not loaded yet keep how they were saved.

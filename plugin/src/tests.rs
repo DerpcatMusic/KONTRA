@@ -1833,3 +1833,72 @@ fn conflux_edit_tab_switches_the_page() {
     let (_, after, _) = shown(&params);
     assert_ne!(before, after, "the Edit tab changed nothing shown");
 }
+
+/// A panel control the player moved takes a host macro, and the host's
+/// automation of that macro then moves the control: its script gets it.
+#[test]
+fn a_host_macro_learns_a_touched_control_and_drives_it() {
+    let Some(path) = library("Una Corda Library/Instruments/Una Corda Felt.nki") else {
+        return;
+    };
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+        preset: None,
+        modified: false,
+    }]);
+    let (params, mut dsp) = activate(&saved.write());
+    settle(&params, &mut dsp);
+    // A shown knob or slider of a persistent integer control, its range.
+    let found = {
+        let guard = crate::lock(&params.shared.rack);
+        let rack = guard.as_ref().unwrap();
+        let part = rack.parts()[0].as_ref().unwrap();
+        let view = part.view.as_ref().unwrap();
+        let vars = &part.script.vars[usize::from(view.slot)];
+        view.tree().widgets.iter().find_map(|w| {
+            let (min, max) = crate::macros::range(w)?;
+            let knob = matches!(
+                w.kind,
+                kontra_ui_model::Kind::Knob { .. } | kontra_ui_model::Kind::Slider { .. }
+            );
+            let var = vars
+                .vars
+                .iter()
+                .find(|v| v.control == w.source_id && v.len == 1 && !v.real && !v.text)?;
+            (knob && max - min >= 4.0 && !w.hidden)
+                .then(|| (w.clone(), var.name.to_string(), min, max))
+        })
+    };
+    let (widget, var, min, max) = found.expect("a persistent knob on Una Corda's panel");
+    // The player's touch: the first macro takes it.
+    let (id, _) = crate::macros::touch(&params, 0, &widget, min).expect("a free macro");
+    assert_eq!(id, crate::macros::FIRST);
+    // The host automates Macro 1 to three quarters of the control's range.
+    let to = (min + 0.75 * (max - min)).round();
+    let m = crate::macros::read(&params.macros.read().unwrap())[0]
+        .clone()
+        .unwrap();
+    crate::macros::param(&params, 0)
+        .unwrap()
+        .set_value(m.normalized(to));
+    settle(&params, &mut dsp);
+    settle(&params, &mut dsp);
+    params.capture();
+    let state = Saved::read(&params.saved.read().unwrap());
+    let values: Vec<&String> = state.parts[0].scripts.iter().flatten().collect();
+    assert!(
+        values.iter().any(|v| **v == format!("{var} {to}")),
+        "Macro 1 → {to} did not reach {var}: {values:?}"
+    );
+}

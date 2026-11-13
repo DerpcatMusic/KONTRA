@@ -118,7 +118,11 @@ fn run_events(
         Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 262144)
     };
     // Lean timing runs as the host does: no waiting for sample data inside a block.
-    engine.set_offline_wait(!lean);
+    engine.set_render_mode(if lean {
+        kontra_engine::RenderMode::Live
+    } else {
+        kontra_engine::RenderMode::Offline
+    });
     let mut at = 0u64;
     let mut next = 0usize;
     let mut next_tail = last_off;
@@ -343,15 +347,35 @@ fn run_events(
         let text: String = block_times
             .iter()
             .zip(&extras)
-            .map(|(t, e)| format!("{} {} {} {} {} {} {} {} {} {} {}\n", t.1, t.0, e.0, e.1, e.2, e.3, e.4.runs, e.4.run_ns, e.4.allocs, e.4.gc_steps, e.4.gc_ns))
+            .map(|(t, e)| {
+                format!(
+                    "{} {} {} {} {} {} {} {} {} {} {}\n",
+                    t.1,
+                    t.0,
+                    e.0,
+                    e.1,
+                    e.2,
+                    e.3,
+                    e.4.runs,
+                    e.4.run_ns,
+                    e.4.allocs,
+                    e.4.gc_steps,
+                    e.4.gc_ns
+                )
+            })
             .collect();
         std::fs::write(path, text)?;
     }
     let timing = block_timing(&block_times, block);
     // Load window: the first second. Play: everything after it.
-    let (load_times, play_times): (Vec<_>, Vec<_>) =
-        block_times.iter().copied().partition(|t| t.1 < u64::from(RATE));
-    let (load_timing, play_timing) = (block_timing(&load_times, block), block_timing(&play_times, block));
+    let (load_times, play_times): (Vec<_>, Vec<_>) = block_times
+        .iter()
+        .copied()
+        .partition(|t| t.1 < u64::from(RATE));
+    let (load_timing, play_timing) = (
+        block_timing(&load_times, block),
+        block_timing(&play_times, block),
+    );
     let stats = engine.stats();
     let wait_timeouts = engine.offline_wait_timeouts() + settle_timeouts;
     let stream_stats = stream.stats();
