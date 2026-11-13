@@ -136,8 +136,10 @@ titled with the pull request's title and number and credited to its authors.
 ### Versions and releases
 
 Versions are semver, `0.MINOR.PATCH` until 1.0. Nobody picks them by hand:
-`tools/version.py next` reads the titles merged since the last release. A
-`feat` raises MINOR; anything else raises PATCH.
+`tools/version.py next` reads the titles merged since the last release. Every
+release raises PATCH (0.6.1, 0.6.2, ...). Only a major feature raises MINOR:
+mark its title with `!` (`feat!: ...` or `feat(scope)!: ...`), and say so in
+the description.
 
 The Release workflow runs when the third pull request since the last release
 merges on `main`, and on demand (Actions > Release > Run workflow). It builds
