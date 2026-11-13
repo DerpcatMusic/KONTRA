@@ -100,6 +100,7 @@ pub fn prepare(
             release_trigger: g.trigger == ir::Trigger::Release,
             bus: g.bus,
             wavetable: g.wavetable.map(read),
+            speed: g.speed,
             zones,
         })
         .collect();
@@ -398,6 +399,8 @@ pub fn read(w: ir::Wavetable) -> Read {
     Read {
         position: w.position,
         phase: w.phase,
+        phase_random: w.phase_random,
+        gain: w.gain,
         warps: w.warps.map(warp),
     }
 }

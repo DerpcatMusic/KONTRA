@@ -239,6 +239,7 @@ impl Engine {
                 p.field_mut(&mut self.effect_mut(group, slot, generic)?.kind)
             }
             ir::KnobTarget::Slot(_) | ir::KnobTarget::Impulse(_) => None,
+            ir::KnobTarget::Speed => self.group_mut(group)?.speed.as_mut(),
             ir::KnobTarget::LfoRate
             | ir::KnobTarget::LfoSteps
             | ir::KnobTarget::LfoWidth

@@ -52,6 +52,11 @@ pub trait Wet: Send {
     /// a glide) move on as [`Wet::process`] would move them. `silence` is
     /// scratch. Only called on processors with a [`Wet::memory`].
     fn idle(&mut self, _silence: &mut [[f32; 2]]) {}
+    /// Whether its input gains are all 0, so its input reaches neither its
+    /// state nor its output: the slot hears it as silence.
+    fn deaf(&self) -> bool {
+        false
+    }
 }
 
 impl Wet for Convolver {
@@ -204,6 +209,10 @@ impl Wet for ModDelay {
 
     fn idle(&mut self, silence: &mut [[f32; 2]]) {
         ModDelay::idle(self, silence.len());
+    }
+
+    fn deaf(&self) -> bool {
+        ModDelay::deaf(self)
     }
 
     fn set(&mut self, kind: ir::EffectKind, tempo: f32) {

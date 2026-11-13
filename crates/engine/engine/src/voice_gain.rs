@@ -156,6 +156,7 @@ impl Engine {
     pub(crate) fn voice_read(&self, zone: &Zone, note: &Note, age: Age) -> Option<Read> {
         let g = self.groups.get(zone.group as usize)?;
         let mut read = g.wavetable?;
+        read.phase = (read.phase + note.draw.unit() * read.phase_random).fract();
         for m in g.mods.iter().filter(|m| !m.bypass) {
             if let ir::ModKind::Wavetable {
                 source,

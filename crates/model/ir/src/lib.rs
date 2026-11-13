@@ -324,6 +324,9 @@ pub struct Group {
     pub stream: Option<Stream>,
     /// Its zones are wavetables.
     pub wavetable: Option<Wavetable>,
+    /// Its source stretches time: voices play at this speed (1 as
+    /// recorded) at their own pitch. `None`: speed follows pitch.
+    pub speed: Option<f32>,
     /// Index into [`Instrument::voice_groups`].
     pub voice_group: Option<usize>,
     /// Effects on this group's voices, by slot.
@@ -373,6 +376,7 @@ impl Group {
         purged: false,
         stream: None,
         wavetable: None,
+        speed: None,
         voice_group: None,
         inserts: Vec::new(),
         envelopes: Vec::new(),
