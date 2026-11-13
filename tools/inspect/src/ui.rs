@@ -123,7 +123,7 @@ fn note_fields(
     note: &mut Note,
     names: &mut std::collections::HashMap<i64, String>,
 ) {
-    let mut key = |note: &Note, kind: String| {
+    let key = |note: &Note, kind: String| {
         let n = note
             .keys()
             .filter(|k| k.starts_with(&format!("{kind}#")))
