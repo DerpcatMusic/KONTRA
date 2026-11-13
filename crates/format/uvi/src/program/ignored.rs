@@ -52,7 +52,17 @@ const COSMETIC: &[&str] = &[
     "Expanded",
     "Selected",
     "Collapsed",
+    "Visible",
+    "PanelHeight",
+    // `Streaming` on the program decides streaming; the player's flag repeats it.
+    "AllowStreaming",
+    // Where the program was loaded from.
+    "ProgramPath",
 ];
+
+/// Elements whose attributes are script state (the saved values the script
+/// reads by name) or the editor's own, not something to translate.
+const SCRIPT_STATE: &[&str] = &["ScriptProcessor", "ScriptData", "Properties"];
 
 /// Whether a source quotes `name`, or (an attribute built as `Type{n}`)
 /// a literal starting with its name without trailing digits.
@@ -76,7 +86,13 @@ pub(super) fn report(program: Node, notes: &mut Notes) {
         }
         for a in node.attributes() {
             let (name, value) = (a.name(), a.value().trim());
-            if !(COSMETIC.contains(&name) || matches!(value, "" | "0") || quoted(name, true)) {
+            let stem = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '_');
+            let quiet = COSMETIC.contains(&stem)
+                || SCRIPT_STATE.contains(&tag)
+                || name.ends_with("Version")
+                || matches!(value, "" | "0")
+                || quoted(name, true);
+            if !quiet {
                 notes.ignored(&format!("{tag}.{name}"), value);
             }
         }

@@ -29,7 +29,9 @@ const START_CRITERIA: u16 = 0x38;
 /// The browser's preview data.
 const QUICK_BROWSE: u16 = 0x4e;
 /// Stored fields the translator maps, and those that are editor state only.
+// `unknown_tail` is the opaque public suffix every program stores.
 const COSMETIC_PROGRAM: &[&str] = &[
+    "unknown_tail",
     "loading_flags",
     "num_bytes_samples_total",
     "library_id",
@@ -55,6 +57,8 @@ const USED_GROUP: &[&str] = &[
     "start_criteria",
     "voice_group_index",
     "muted",
+    "fx_idx_amp_split_point",
+    "release_trigger_note_monophonic",
 ];
 const COSMETIC_GROUP: &[&str] = &["soloed"];
 const USED_ZONE: &[&str] = &[
@@ -81,7 +85,9 @@ const USED_ZONE: &[&str] = &[
 ];
 // The sample header's own copies (`root_note`, `tuning`, format); the zone's
 // `root_key` and `zone_tune` carry what plays.
+// `filename_prefix` is the sample's name prefix; the file table resolves the sample.
 const COSMETIC_ZONE: &[&str] = &[
+    "filename_prefix",
     "reserved1",
     "reserved2",
     "reserved3",
@@ -118,9 +124,27 @@ pub(crate) fn instrument(
             "pan",
             "tune",
             "dfd_channel_preload_size",
+            "low_key",
+            "high_key",
+            "low_velocity",
+            "high_velocity",
         ],
         COSMETIC_PROGRAM,
     );
+    // The programs' own playable range (a stored 0..127 / 1..127 is the whole keyboard).
+    if params.low_key != 0
+        || params.high_key != 127
+        || params.low_velocity > 1
+        || params.high_velocity != 127
+    {
+        notes.ignored(
+            "program key/velocity range",
+            format!(
+                "keys {}..{}, velocity {}..{}",
+                params.low_key, params.high_key, params.low_velocity, params.high_velocity
+            ),
+        );
+    }
     crate::ignored::chunks(
         &mut notes,
         "program",
@@ -616,6 +640,13 @@ fn translate_group(
 ) -> Result<Translated, ni_file::Error> {
     let v = group.params()?;
     notes.ignored_fields("group", &v, USED_GROUP, COSMETIC_GROUP);
+    // Defaults: the amp after all 8 insert slots, release notes monophonic.
+    if v.fx_idx_amp_split_point != 8 {
+        notes.ignored("group.fx_idx_amp_split_point", v.fx_idx_amp_split_point);
+    }
+    if v.release_trigger && v.release_trigger_note_monophonic {
+        notes.ignored("group.release_trigger_note_monophonic", "release group");
+    }
     crate::ignored::chunks(
         notes,
         "group",
@@ -682,15 +713,6 @@ fn translate_group(
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
-            // [router open (editor state), bypass, retrigger, ?].
-            for (flag, what) in [(1, "bypass"), (2, "retrigger"), (3, "flag 3")] {
-                if p.unknown_flags.get(flag).is_some_and(|&b| b != 0) {
-                    notes.ignored(&format!("internal modulator {what}"), &p.name);
-                }
-            }
-            if p.unknown_id != 0 {
-                notes.ignored("internal modulator id", p.unknown_id);
-            }
             out.routes.push(ir::Routes {
                 slot: slot(n),
                 name: p.name.clone(),
@@ -701,6 +723,27 @@ fn translate_group(
                 .targets
                 .iter()
                 .any(|t| t.param == "volume" && t.slot.is_none());
+            // [router open (editor state), bypass, retrigger, ?]; the timed
+            // modulators read them (`timed`), the amplitude envelope and the
+            // kinds not carried do not.
+            let amp_env = volume
+                && matches!(p.modulator, Modulator::Ahdsr(_))
+                && !out
+                    .mods
+                    .iter()
+                    .any(|m| matches!(m.kind, ir::ModKind::Envelope));
+            let reads_flags = matches!(p.modulator, Modulator::Flex(_) | Modulator::Lfo(_))
+                || (matches!(p.modulator, Modulator::Ahdsr(_)) && !amp_env);
+            if !reads_flags {
+                for (flag, what) in [(1, "bypass"), (2, "retrigger"), (3, "flag 3")] {
+                    if p.unknown_flags.get(flag).is_some_and(|&b| b != 0) {
+                        notes.ignored(&format!("internal modulator {what}"), &p.name);
+                    }
+                }
+            }
+            if p.unknown_id != 0 {
+                notes.ignored("internal modulator id", p.unknown_id);
+            }
             match &p.modulator {
                 // The first volume AHDSR is the amplitude envelope; others route
                 // as breakpoint envelopes (`timed`).
