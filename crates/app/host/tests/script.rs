@@ -3905,6 +3905,53 @@ fn lfo_and_wavetable_controls_read_as_kontakt_shows_them() {
     );
 }
 
+/// An LFO's rate unit switches it between free Hz and a note value
+/// (Conflux, Morphology, Shreddage set the unit, then the rate): the unit
+/// reads back as set, and a synced rate takes the count law.
+#[test]
+fn an_lfo_rate_unit_switches_between_hz_and_note_counts() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let g = &mut plan.groups[0];
+    g.lfos = vec![ir::Lfo {
+        wave: ir::Wave::Sine,
+        rate: ir::Rate::Hz(2.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: ir::Clock::Free,
+    }];
+    g.mods = vec![ir::Mod {
+        name: "LFO".into(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Pan {
+            source: ir::Source::Lfo(0),
+            amount: 0.0,
+        },
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            @t := get_engine_par($ENGINE_PAR_INTMOD_FREQUENCY_UNIT, 0, 3, -1)
+            set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY_UNIT, $NI_SYNC_UNIT_16TH, 0, 3, -1)
+            set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 500000, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_INTMOD_FREQUENCY_UNIT, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par_disp($ENGINE_PAR_INTMOD_FREQUENCY, 0, 3, -1)
+            set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY_UNIT, $NI_SYNC_UNIT_ABS, 0, 3, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_INTMOD_FREQUENCY_UNIT, 0, 3, -1)
+            message(@t)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    assert_eq!(e.last_message(), "0|15|32.0|0");
+}
+
 /// A parameter of one effect type on a slot of another names nothing: the
 /// set is dropped, the read is 0 and the script runs on. The group index
 /// wins over a bus `<generic>` (Kontakt 8.13.1, ANALOG STRINGS: STEREO_PAN at

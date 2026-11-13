@@ -40,6 +40,21 @@ pub fn engine_pars() -> Vec<ir::ScriptPar> {
 /// script runs on (`STEREO_PAN` addressed to a Lo-Fi slot, the group index
 /// winning over a bus `<generic>`; probe bus_group_override.lua,
 /// 2026-11-12). A name not listed is left to the slot's own check.
+/// The rate kind each `$NI_SYNC_UNIT_*` value picks (KSP reference: ABS 0,
+/// WHOLE 5 .. 256TH 21; 11 and 14 are unused): free Hz, or one count of the
+/// note value in quarter-note beats (−1: no unit).
+#[must_use]
+pub fn lfo_units() -> Vec<Option<ir::Rate>> {
+    const T: f32 = 2.0 / 3.0;
+    #[rustfmt::skip]
+    let beats = [0.0, -1.0, -1.0, -1.0, -1.0, 4.0, 4.0 * T, 2.0, 2.0 * T, 1.0, T, -1.0, 0.5, 0.5 * T,
+        -1.0, 0.25, 0.25 * T, 0.125, 0.125 * T, 0.0625, 0.0625 * T, 1.0 / 64.0];
+    #[rustfmt::skip]
+    let unit = |b: f32| if b > 0.0 { Some(ir::Rate::Steps { beats: b, count: 1.0 }) }
+        else { (b == 0.0).then_some(ir::Rate::Hz(1.0)) };
+    beats.into_iter().map(unit).collect()
+}
+
 #[must_use]
 pub fn owner(name: &str) -> Option<&'static str> {
     let name = name.to_ascii_uppercase();
@@ -117,6 +132,7 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_INTMOD_BYPASS", P::ModBypass),
         ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
         ("$ENGINE_PAR_INTMOD_RETRIGGER", P::LfoRetrigger),
+        ("$ENGINE_PAR_INTMOD_FREQUENCY_UNIT", P::LfoUnit),
         // Position and the form amounts are 0..=1 linear (readouts.rs shows
         // 0..100); the voice clamps each with its routes to 0..=1
         // (0x140b52133). The modulator and inharmonic are not carried yet:
