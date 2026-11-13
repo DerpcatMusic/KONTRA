@@ -308,6 +308,21 @@ impl Engine {
         if par == EnginePar::LfoRetrigger {
             return Some(i32::from(g.lfo(slot)?.clock == ir::Clock::Voice));
         }
+        if par == EnginePar::LfoUnit {
+            let rate = g.lfo(slot)?.rate;
+            let units = &self.script()?.lfo_units;
+            let same = |u: &Option<ir::Rate>| match (u, rate) {
+                (Some(ir::Rate::Hz(_)), ir::Rate::Hz(_)) => true,
+                (Some(ir::Rate::Steps { beats: a, .. }), ir::Rate::Steps { beats: b, .. }) => {
+                    (a - b).abs() < 1e-4
+                }
+                _ => false,
+            };
+            return units
+                .iter()
+                .position(same)
+                .and_then(|n| i32::try_from(n).ok());
+        }
         let x = match par {
             EnginePar::ModBypass => {
                 let m = g.mods.iter().find(|m| i32::from(m.slot) == slot)?;
@@ -400,6 +415,9 @@ impl Engine {
             return true;
         }
         let x = f64::from(value.clamp(0, 1_000_000)) / 1e6;
+        let unit = (par == EnginePar::LfoUnit)
+            .then(|| self.lfo_unit(value))
+            .flatten();
         let Some(g) = self.group_mut(group) else {
             return false;
         };
@@ -453,6 +471,13 @@ impl Engine {
                 .and_then(|r| crate::voice_gain::table_value(r, v))
                 .map(|r| *r = x as f32)
                 .is_some(),
+            EnginePar::LfoUnit => match (unit, g.lfo_mut(slot)) {
+                (Some(unit), Some(l)) => {
+                    l.rate = in_unit(l.rate, unit);
+                    true
+                }
+                _ => false,
+            },
             EnginePar::LfoFade => g.lfo_mut(slot).is_some_and(|l| {
                 l.fade_ms = STAGE_10S.eval_f64(x) as f32;
                 true
@@ -577,4 +602,35 @@ impl Engine {
 fn uncarried(g: &mut Group, slot: i32, target: i32) -> Option<&mut f32> {
     let r = g.routes.iter_mut().find(|r| i32::from(r.slot) == slot)?;
     r.depths.get_mut(usize::try_from(target.max(0)).ok()?)
+}
+
+impl Engine {
+    /// The rate kind unit value `value` picks, from the script's table.
+    fn lfo_unit(&self, value: i32) -> Option<ir::Rate> {
+        let units = &self.script()?.lfo_units;
+        units.get(usize::try_from(value).ok()?).copied().flatten()
+    }
+}
+
+/// `rate` moved to `unit`'s kind: free Hz keeps its Hz, a note value keeps
+/// its count; between kinds the period carries over at 120 BPM.
+// ponytail: the period converts at a fixed 120 BPM, not the host tempo; the
+// script sets the rate right after its unit, so the guess is not heard.
+fn in_unit(rate: ir::Rate, unit: ir::Rate) -> ir::Rate {
+    let seconds = match rate {
+        ir::Rate::Hz(hz) => 1.0 / hz.max(1e-3),
+        ir::Rate::Beats(beats) => beats * 0.5,
+        ir::Rate::Steps { beats, count } => beats * count * 0.5,
+    };
+    match (unit, rate) {
+        (ir::Rate::Hz(_), ir::Rate::Hz(_)) => rate,
+        (ir::Rate::Hz(_), _) => ir::Rate::Hz(1.0 / seconds),
+        (ir::Rate::Steps { beats, .. }, ir::Rate::Steps { count, .. }) => {
+            ir::Rate::Steps { beats, count }
+        }
+        (ir::Rate::Steps { beats, .. } | ir::Rate::Beats(beats), _) => ir::Rate::Steps {
+            beats,
+            count: (seconds / (beats * 0.5)).round().max(1.0),
+        },
+    }
 }

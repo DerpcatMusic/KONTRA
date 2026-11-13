@@ -78,6 +78,13 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let effects = json!({"inserts": format!("{:?}", instrument.inserts),
         "sends": format!("{:?}", instrument.sends), "main": format!("{:?}", instrument.main),
         "buses": format!("{:?}", instrument.buses), "slot_laws": format!("{:?}", instrument.slot_laws)});
+    // Each KSP script's catalog names: an engine-parameter id is a symbol
+    // of the script that passed it, so an address is named by every script
+    // that resolves its id to an engine parameter.
+    let symbols: Vec<kontra_ksp::Script> = (instrument.scripts.iter())
+        .filter(|s| s.dialect == kontra_engine::ir::Dialect::Ksp)
+        .filter_map(|s| kontra_ksp::compile(&s.source, &[]).ok())
+        .collect();
     let mut store = Store::new(StoreConfig::DEFAULT).context("creating sample store")?;
     let loaded = kontra_host::instrument::build(instrument, RATE, &mut store);
     let original_slots: Vec<_> = loaded.persist.iter().map(|vars| vars.script).collect();
@@ -235,9 +242,19 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         ]);
     }
     let unanswered = format!("{:?}", engine.unhandled_actions());
+    let unanswered_pars: Vec<_> = (engine.unanswered_pars().into_iter())
+        .map(|([par, group, slot, generic], calls)| {
+            let mut names: Vec<&str> = (symbols.iter())
+                .filter_map(|s| s.symbol(par))
+                .filter(|n| n.starts_with("$ENGINE_PAR"))
+                .collect();
+            names.dedup();
+            json!({"par": par, "names": names, "group": group, "slot": slot, "generic": generic, "calls": calls})
+        })
+        .collect();
     let faults = format!("{:?}", engine.script_faults());
     let summary = format!(
-        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  compiled callback/dispatch entries: {callback_summary}; referenced UI assets: {resolved_assets} resolved / {unresolved_assets} not resolved\n  recorded translator law applications: {}; other law provenance unavailable\n",
+        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; unanswered engine parameters: {}; script faults: {}\n  compiled callback/dispatch entries: {callback_summary}; referenced UI assets: {resolved_assets} resolved / {unresolved_assets} not resolved\n  recorded translator law applications: {}; other law provenance unavailable\n",
         loaded.name,
         samples.len(),
         groups.len(),
@@ -247,6 +264,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         ui.len(),
         diagnostics.len(),
         unanswered,
+        unanswered_pars.len(),
         faults,
         law_applications.len()
     );
@@ -254,7 +272,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         json!({"schema_version": 1, "command": "load", "instrument": path,
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
         "translated_zones": input_zones, "prepared_zones": zones, "unprepared_reasons": unprepared_reasons, "effects": effects, "slot_parameter_laws": parameter_laws, "scripts": scripts, "ui": ui,
-        "diagnostics": diagnostics, "init_unanswered": unanswered, "script_faults": faults,
+        "diagnostics": diagnostics, "init_unanswered": unanswered, "init_unanswered_pars": unanswered_pars, "script_faults": faults,
         "laws": null, "law_applications": law_applications.iter().map(|a| json!({"law_id":a.id.0, "location":a.location, "input":a.input, "output":a.output})).collect::<Vec<_>>(), "law_coverage":"partial: Kontakt group/zone gain-pan-tune, group envelopes/release counter, timed envelopes/LFO/flex gate/EQ, external volume/lag/EQ/LFO rate/shapers saved EQ/filters, compressor/limiter, time floor, stream and filter lookups; UVI keygroup/zone gain-pan-tune, amplitude/AHD envelopes, LFO shape, matrix cell, filter and key/velocity fades", "compiled_callback_count": callback_count, "script_mapping_available": mapping.is_some(), "unavailable": unavailable}}),
         summary,
     ))

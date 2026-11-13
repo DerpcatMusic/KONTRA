@@ -137,6 +137,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         view: crate::perf_view::find(data).map(|(name, _)| name.into()),
         reverb_laws: kontra_format_kontakt::reverb_laws(),
         reverb_networks: kontra_format_kontakt::reverb_networks().into(),
+        lfo_units: kontra_format_kontakt::lfo_units(),
         knobs: pars
             .iter()
             .filter_map(|p| match &p.drives {
@@ -412,6 +413,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             hi: 1.0,
         }),
         reverb_networks: Vec::new(),
+        lfo_units: Vec::new(),
         knobs: Vec::new(),
         data: Vec::new(),
         text_data: Vec::new(),

@@ -612,6 +612,7 @@ impl HostApi for Engine {
                     .flatten();
                 if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
+                    self.count_par([int(0), int(2), int(3), int(4)]);
                 }
                 HostValue::Int(match loaded {
                     Some(answer) => answer,
@@ -694,6 +695,11 @@ impl HostApi for Engine {
             }
             other => {
                 self.count_unhandled(other);
+                match other {
+                    Action::GetEngineParDisp => self.count_par([int(0), int(1), int(2), int(3)]),
+                    Action::GetEngineParDispExt => self.count_par([int(0), int(2), int(3), int(4)]),
+                    _ => {}
+                }
                 HostValue::Nothing
             }
         }
@@ -705,6 +711,19 @@ impl Engine {
     pub(crate) fn count_unhandled(&mut self, action: Action) {
         self.stats.actions_unhandled += 1;
         if let Some(n) = self.unhandled.get_mut(usize::from(action.id())) {
+            *n += 1;
+        }
+    }
+
+    /// Counts an engine-parameter address left unanswered (par, group, slot,
+    /// generic), in the first free entry when it is new; none when full.
+    fn count_par(&mut self, address: [i32; 4]) {
+        let entry = self
+            .unanswered_pars
+            .iter()
+            .position(|(a, n)| *n == 0 || *a == address);
+        if let Some((a, n)) = entry.and_then(|i| self.unanswered_pars.get_mut(i)) {
+            *a = address;
             *n += 1;
         }
     }

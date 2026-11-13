@@ -73,6 +73,20 @@ impl Engine {
         ranked(&self.unhandled)
     }
 
+    /// Engine-parameter addresses (par, group, slot, generic) that
+    /// `set_engine_par` or `get_engine_par_disp` left unanswered, most first.
+    #[must_use]
+    pub fn unanswered_pars(&self) -> Vec<([i32; 4], u32)> {
+        let mut out: Vec<_> = self
+            .unanswered_pars
+            .iter()
+            .filter(|(_, n)| *n > 0)
+            .copied()
+            .collect();
+        out.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        out
+    }
+
     /// Every script action called since load, most called first.
     #[must_use]
     pub fn action_calls(&self) -> Vec<(kontra_vm::Action, u32)> {

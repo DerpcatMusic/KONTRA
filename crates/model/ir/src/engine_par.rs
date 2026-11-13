@@ -52,6 +52,9 @@ pub enum EnginePar {
     Zone(ZonePar),
     /// Whether an LFO restarts with each voice (1) or runs free (0).
     LfoRetrigger,
+    /// An LFO's rate unit: the value indexes the script's unit table (free
+    /// Hz, or a note value whose count the rate knob then moves).
+    LfoUnit,
     /// A wavetable value, 0..=1 linear in the raw 0..=1e6.
     Wavetable(crate::TableValue),
     /// A control the engine does not carry yet: only the text of a value
