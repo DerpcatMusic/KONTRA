@@ -28,10 +28,7 @@ pub const SIGNED_CUBE: Law = Law::IntegerPower {
 
 /// An attack-curve knob (−1 concave ..= 1 convex) to an exponential segment shape (Kontakt
 /// AHDSR setup 0x140ae4958: `b = e^((1 − |c|)·ln 5·10⁵ − ln 2·10⁴)` rounded to f32, then
-/// `ln((1 + b)/b)` for a positive knob, `ln(b/(1 + b))` for a negative one). Convex is the
-/// curve that starts slowly: at +1 a 125 ms attack stays under −30 dB for its first half
-/// (measured in Kontakt 8.13 on a library that fades a recorded lead-in this way; with the
-/// signs the other way round the lead-in played as a first attack).
+/// `ln(b/(1 + b))` or `ln((1 + b)/b)`).
 pub const ATTACK_CURVE: Law = Law::Formula(FormulaId::AttackShape);
 
 /// A stage time `2·(base^x − 1)` ms: `exp(ln 2 + (ln(top + 2) − ln 2)·x) − 2`, the
