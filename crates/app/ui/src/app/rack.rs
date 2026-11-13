@@ -284,7 +284,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
             .min_w(0),
         false => name,
     };
-    let names = super::preset::names(presets);
+    let names = super::preset::names(&presets);
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let current = p.preset.filter(|&n| n < names.len());
     // v2's preset field beside the name: what plays, or what to pick; a
