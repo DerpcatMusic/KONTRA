@@ -19,7 +19,7 @@ fn hz(coefficient_over_w: f32) -> f32 {
 }
 
 /// The knobs, each 0..=1, as the engine's overdrive.
-pub(crate) fn skreamer(tone: f32, drive: f32, bass: f32, bright: f32, mix: f32) -> ir::EffectKind {
+pub fn skreamer(tone: f32, drive: f32, bass: f32, bright: f32, mix: f32) -> ir::EffectKind {
     let [tone, drive, bass, bright, mix] =
         [tone, drive, bass, bright, mix].map(|x| x.clamp(0.0, 1.0));
     ir::EffectKind::Overdrive(ir::Overdrive {
@@ -42,7 +42,7 @@ pub(crate) fn skreamer(tone: f32, drive: f32, bass: f32, bright: f32, mix: f32) 
 
 /// The saved record's knobs as a script moves them: every move rebuilds
 /// the overdrive from all five through [`skreamer`].
-pub(crate) fn model(public: &[u8]) -> Option<ir::KnobModel> {
+pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
     use ir::SlotKnob::{Knob, Mix};
     let saved = (0..5)
         .map(|i| {
@@ -66,7 +66,7 @@ pub(crate) fn model(public: &[u8]) -> Option<ir::KnobModel> {
 /// The KSP names of [`model`]'s knobs. Each is the record's field as set
 /// (bindings table `fx_dynamics_dist_tape.tsv`); Kontakt 8.13.1 displays
 /// each as 0..100 % in a straight line (sweep `sk-tp-sweep/sweep.tsv`).
-pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::{Knob, Mix};
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
