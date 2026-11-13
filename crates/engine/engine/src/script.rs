@@ -318,6 +318,14 @@ impl HostApi for Engine {
                 self.set_route_amount(int(0), int(1));
                 HostValue::Nothing
             }
+            Action::EffectBypass => {
+                self.set_effect_bypass(int(0), int(1), int(2), int(3) != 0);
+                HostValue::Nothing
+            }
+            Action::EffectGain => {
+                self.set_effect_gain(int(0), int(1), int(2), int(3) as f32 / 1e6);
+                HostValue::Nothing
+            }
             Action::BusVolume => {
                 let gain = match int(1) {
                     ..=-200_000 => 0.0,

@@ -30,7 +30,7 @@ mod ui;
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;
 
-const USAGE: &str = "usage: kontra-inspect law [NAME] | load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--fresh-state] [--oracle] [--json FILE]";
+const USAGE: &str = "usage: kontra-inspect law [NAME] | programs <bank.ufs> | load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--fresh-state] [--oracle] [--json FILE]";
 
 fn main() -> ExitCode {
     match run() {
@@ -47,6 +47,13 @@ fn run() -> Result<()> {
     let command = args.next().context(USAGE)?;
     if matches!(command.as_str(), "--help" | "-h") {
         println!("{USAGE}");
+        return Ok(());
+    }
+    if command == "programs" {
+        let bank = args.next().context(USAGE)?;
+        for program in kontra_format_uvi::programs(std::path::Path::new(&bank))? {
+            println!("{program}");
+        }
         return Ok(());
     }
     if command == "law" {

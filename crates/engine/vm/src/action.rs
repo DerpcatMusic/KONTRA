@@ -159,6 +159,12 @@ actions! {
     /// whose name holds the word `#key`, in its kind's unit (semitones,
     /// pan, octaves of depth, ...).
     RouteAmount,
+    /// An effect's bypass: `(where, index, slot, on)`, where 0 is group
+    /// `index`'s inserts, 1 bus `index`'s rack, 2 the instrument's inserts.
+    EffectBypass,
+    /// A gain effect's level: `(where, index, slot, millionths)`, placed as
+    /// for [`Action::EffectBypass`].
+    EffectGain,
     // Time.
     WaitTicks,
     WaitAsync,
