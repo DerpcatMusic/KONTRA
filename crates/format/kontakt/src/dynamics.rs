@@ -131,6 +131,7 @@ fn feedback([input, makeup, attack, release, ratio, mix]: [f32; 6], link: bool) 
         attack_ms: 1000.0 * (0.049_896_6 * attack + 0.000_103_4),
         release_ms: 1000.0 * (1.15 * release + 0.05),
         makeup_db: 50.0 * makeup - 40.0 + drive_db,
+        makeup_slope: 0.0,
         link,
         mix,
         detector: ir::Detector::Output,
