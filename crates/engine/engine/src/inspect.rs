@@ -208,7 +208,6 @@ impl Engine {
     }
 
     /// Enable blocking page waits in every voice for offline rendering only.
-    #[cfg(feature = "trace")]
     pub fn set_offline_wait(&mut self, enabled: bool) {
         for slot in &mut self.voices {
             slot.voice.set_offline_wait(enabled);

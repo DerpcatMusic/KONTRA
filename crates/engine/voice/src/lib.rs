@@ -138,9 +138,8 @@ pub struct Voice {
     grain: u64,
     #[cfg(feature = "trace")]
     last_peak: f32,
-    #[cfg(feature = "trace")]
+    /// A host's offline render: a read waits for its pages.
     offline_wait: bool,
-    #[cfg(feature = "trace")]
     offline_wait_timeouts: u64,
 }
 
@@ -196,9 +195,7 @@ impl Voice {
             grain: 0,
             #[cfg(feature = "trace")]
             last_peak: 0.0,
-            #[cfg(feature = "trace")]
             offline_wait: false,
-            #[cfg(feature = "trace")]
             offline_wait_timeouts: 0,
         }
     }
@@ -368,13 +365,11 @@ impl Voice {
     }
 
     /// Enable blocking page waits for an offline renderer; never call from a live host.
-    #[cfg(feature = "trace")]
     pub fn set_offline_wait(&mut self, enabled: bool) {
         self.offline_wait = enabled;
     }
 
     /// How many offline page waits timed out, including previous notes in this slot.
-    #[cfg(feature = "trace")]
     #[must_use]
     pub fn offline_wait_timeouts(&self) -> u64 {
         self.offline_wait_timeouts
@@ -614,7 +609,6 @@ impl Voice {
         let Some(window) = scratch.window.get_mut(..span.min(SCRATCH)) else {
             return 0;
         };
-        #[cfg(feature = "trace")]
         if self.offline_wait {
             region.runs(lo, window.len(), released, |_, run| {
                 let low = if run.descending {

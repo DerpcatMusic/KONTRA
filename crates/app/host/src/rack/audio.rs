@@ -74,6 +74,8 @@ pub struct RackAudio {
     /// The part whose capture is served first this block: it turns, so a
     /// busy part never keeps the budget from the others.
     capture_turn: usize,
+    /// The host renders offline: voices wait for their pages.
+    offline: bool,
     /// This block's time in the script callbacks a control or widget move
     /// ran: script work, as a note's callbacks, not the commands' own.
     ui_scripts_ns: u64,
@@ -110,7 +112,21 @@ impl RackAudio {
             span_ns: 0,
             capturing: (0..MAX_PARTS).map(|_| None).collect(),
             capture_turn: 0,
+            offline: false,
             ui_scripts_ns: 0,
+        }
+    }
+
+    /// Whether the host renders offline (a bounce, faster or slower than
+    /// real time): then a voice waits for the sample pages it reads, deferred
+    /// heads among them, instead of playing silence. Never live: it blocks.
+    pub fn set_offline(&mut self, on: bool) {
+        if self.offline == on {
+            return;
+        }
+        self.offline = on;
+        for p in self.parts.iter_mut().flatten() {
+            p.engine.set_offline_wait(on);
         }
     }
 
@@ -367,6 +383,8 @@ impl RackAudio {
                             let [a, b, c] = all;
                             (outgoing, gone) = ([a, b], c);
                         }
+                        let mut engine = engine;
+                        engine.set_offline_wait(self.offline);
                         *slot = Some(Playing {
                             engine,
                             mix,
