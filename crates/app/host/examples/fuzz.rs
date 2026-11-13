@@ -1,4 +1,4 @@
-//! Mutation fuzzing of the format readers: each real file is truncated, bit
+//! Mutation fuzzing of the format readers (`KONTRA_FUZZ_DECODED=1` for the decoded mode below): each real file is truncated, bit
 //! flipped and has length-like fields corrupted, and every mutant goes through
 //! the translator and prepare path (a sample file through the stream decoder).
 //! A child process runs the mutants so a hang (over 2 s), an allocation over
@@ -27,6 +27,27 @@ use kontra_stream::{BlobKey, PAGE_FRAMES, Store, StoreConfig};
 
 const BIG: usize = 1 << 30;
 const HANG: Duration = Duration::from_secs(2);
+
+/// `KONTRA_FUZZ_DECODED=1`: `.nki` and `.nkm` mutants are made in the
+/// decompressed chunk stream, past the compression layer that rejects most
+/// outer-byte mutants, and a hang is anything over 1 s more than the baseline.
+fn decoded_mode() -> bool {
+    std::env::var_os("KONTRA_FUZZ_DECODED").is_some()
+}
+
+fn hang() -> Duration {
+    if decoded_mode() {
+        Duration::from_secs(1)
+    } else {
+        HANG
+    }
+}
+
+fn is_preset(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("nki") || e.eq_ignore_ascii_case("nkm"))
+}
 /// A child gets longer to read the file and set up before its first mutant.
 const SETUP: Duration = Duration::from_secs(60);
 
@@ -34,6 +55,8 @@ static CURRENT: AtomicU64 = AtomicU64::new(0);
 /// Mutants the reader accepted, and refused: how deep the mutants get.
 static ACCEPTED: AtomicU64 = AtomicU64::new(0);
 static REFUSED: AtomicU64 = AtomicU64::new(0);
+static MEMBERS: AtomicU64 = AtomicU64::new(0);
+static MEMBERS_READ: AtomicU64 = AtomicU64::new(0);
 
 struct Limited;
 
@@ -110,6 +133,10 @@ const BIG_FILE: usize = 8 << 20;
 /// The file as mutants start from: all of it in memory, or for a big file
 /// just its length and a handle to read the few bytes an edit touches.
 struct Original {
+    /// For a decoded chunk stream: the byte ranges of the chunks' payloads,
+    /// the only places its mutants edit (a chunk's own id and length are
+    /// left alone, so a mutant is read as far as its payloads go wrong).
+    payloads: Vec<std::ops::Range<usize>>,
     len: usize,
     bytes: Option<Vec<u8>>,
     file: std::fs::File,
@@ -124,7 +151,12 @@ impl Original {
         } else {
             Some(std::fs::read(path)?)
         };
-        Ok(Self { len, bytes, file })
+        Ok(Self {
+            payloads: Vec::new(),
+            len,
+            bytes,
+            file,
+        })
     }
 
     fn big(&self) -> bool {
@@ -145,6 +177,27 @@ impl Original {
         self.read(at, 1).first().copied().unwrap_or(0)
     }
 
+    /// A stream already in memory (the decoded chunks of a preset).
+    fn decoded(path: &Path, bytes: Vec<u8>) -> std::io::Result<Self> {
+        // Chunks are `id: u16, length: u32, payload`, one after another.
+        let mut payloads = Vec::new();
+        let mut at = 0usize;
+        while let Some(head) = bytes.get(at..at + 6) {
+            let n = u32::from_le_bytes([head[2], head[3], head[4], head[5]]) as usize;
+            let end = (at + 6).saturating_add(n).min(bytes.len());
+            if end > at + 6 {
+                payloads.push(at + 6..end);
+            }
+            at = end;
+        }
+        Ok(Self {
+            payloads,
+            len: bytes.len(),
+            bytes: Some(bytes),
+            file: std::fs::File::open(path)?,
+        })
+    }
+
     fn whole(&self) -> Vec<u8> {
         self.bytes.clone().unwrap_or_default()
     }
@@ -163,8 +216,19 @@ fn mutant(original: &Original, file: &str, index: u64) -> Mutant {
     let big = original.big();
     // Length fields live near the front (and a big file's index at its end):
     // half the edits land in the first 256 bytes, or a big file's ends.
+    let total: usize = original.payloads.iter().map(|r| r.len()).sum();
     let spot = |rng: &mut Rng| {
-        if big {
+        if total > 0 {
+            // Anywhere inside a payload, evenly over all payload bytes.
+            let mut n = rng.below(total);
+            for r in &original.payloads {
+                if n < r.len() {
+                    return r.start + n;
+                }
+                n -= r.len();
+            }
+            0
+        } else if big {
             let end = rng.below(2) == 0;
             let at = rng.below(1 << 16);
             if end { len.saturating_sub(1 + at) } else { at }
@@ -175,8 +239,9 @@ fn mutant(original: &Original, file: &str, index: u64) -> Mutant {
         }
     };
     let kind = rng.below(7);
-    // A big file takes only the in-place kinds.
-    let kind = if big && matches!(kind, 0 | 5 | 6) {
+    // A big file takes only the in-place kinds; so does a chunk stream, whose
+    // top-level lengths stay true.
+    let kind = if (big || total > 0) && matches!(kind, 0 | 5 | 6) {
         1 + rng.below(4)
     } else {
         kind
@@ -185,7 +250,9 @@ fn mutant(original: &Original, file: &str, index: u64) -> Mutant {
     match kind {
         0 => Mutant::Whole(original.read(0, rng.below(len))),
         1 => {
-            let flips = (0..=rng.below(8))
+            // A chunk stream takes one or two flips: more is nearly always refused.
+            let most = if total > 0 { 2 } else { 8 };
+            let flips = (0..=rng.below(most))
                 .map(|_| {
                     let at = spot(&mut rng);
                     (at, vec![byte(at) ^ (1 << rng.below(8))])
@@ -217,7 +284,7 @@ fn mutant(original: &Original, file: &str, index: u64) -> Mutant {
         }
         4 => {
             let at = spot(&mut rng);
-            let span = 1 + rng.below(64);
+            let span = 1 + rng.below(if total > 0 { 8 } else { 64 });
             let fill = [0u8, 0xFF][rng.below(2)];
             Mutant::Patches(vec![(at, vec![fill; span])])
         }
@@ -341,6 +408,20 @@ fn run_nkr(path: &Path) {
     if let Some(dir) = path.parent() {
         let mut resources =
             kontra_format_kontakt::Resources::open(&dir.join("Instruments").join("x.nki"));
+        // The members the archive lists: a damaged member header or payload
+        // is only reached by asking for that member.
+        let names = resources.member_names();
+        let listed = names.len();
+        let mut read = 0;
+        for name in names.iter().take(24) {
+            let stored = name.replace(['|', '\\'], "/");
+            let short = stored
+                .rsplit_once("esources/")
+                .map_or(stored.as_str(), |(_, n)| n);
+            read += usize::from(resources.read(short).is_some());
+        }
+        MEMBERS.fetch_add(listed as u64, Ordering::Relaxed);
+        MEMBERS_READ.fetch_add(read as u64, Ordering::Relaxed);
         for name in ["data/x.nka", "wavetables/x.wav", "x"] {
             let _ = resources.read(name);
         }
@@ -365,7 +446,81 @@ fn run_one(kind: Kind, path: &Path, store: &mut Store) {
 
 // ---- the child: runs mutants of one file ----------------------------------
 
+/// Mutants of a preset's decoded chunk stream: each is read as the file's own
+/// instrument (its samples beside the real file, which is never written) and
+/// built. A refusal must say why: an empty message is reported as `E`.
+fn child_decoded(file: &Path, start: u64, count: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let (bytes, encrypted) = kontra_format_kontakt::decode(file)?;
+    let original = Original::decoded(file, bytes)?;
+    std::panic::set_hook(Box::new(|info| {
+        let text = format!("{info}").replace('\n', " | ");
+        println!("P {} {text}", CURRENT.load(Ordering::Relaxed));
+    }));
+    let mut store = Store::new(StoreConfig::DEFAULT)?;
+    store.defer_heads(true);
+    let name = file.to_string_lossy();
+    let mut run = |bytes: Vec<u8>, i: u64| {
+        let began = Instant::now();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match kontra_format_kontakt::load_chunks(file, bytes, encrypted) {
+                Ok(ir) => {
+                    ACCEPTED.fetch_add(1, Ordering::Relaxed);
+                    let loaded = instrument::build(ir, 48_000, &mut store);
+                    let plan = std::sync::Arc::new(loaded.plan);
+                    drop(kontra_engine::Engine::new(plan, store.client(), 48_000));
+                }
+                Err(e) => {
+                    REFUSED.fetch_add(1, Ordering::Relaxed);
+                    let why = e.to_string();
+                    if why.trim().is_empty() {
+                        println!("E {i}");
+                    }
+                    // The reason without the file's path or any number, to count alike.
+                    let why = why.replace(&*file.to_string_lossy(), "<file>");
+                    let why: String = why
+                        .chars()
+                        .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                        .take(100)
+                        .collect();
+                    println!("R {i} {why}");
+                }
+            }
+        }));
+        began.elapsed()
+    };
+    let began = run(original.whole(), u64::MAX);
+    println!("B {}", began.as_millis());
+    ACCEPTED.store(0, Ordering::Relaxed);
+    REFUSED.store(0, Ordering::Relaxed);
+    for i in start..start + count {
+        CURRENT.store(i, Ordering::Relaxed);
+        println!("S {i}");
+        let mut bytes = original.whole();
+        match mutant(&original, &name, i) {
+            Mutant::Whole(b) => bytes = b,
+            Mutant::Patches(patches) => {
+                for (at, value) in &patches {
+                    put(&mut bytes, *at, value);
+                }
+            }
+        }
+        let took = run(bytes, i);
+        if took > Duration::from_millis(500) {
+            println!("T {i} {}", took.as_millis());
+        }
+    }
+    println!(
+        "D accepted {} refused {}",
+        ACCEPTED.load(Ordering::Relaxed),
+        REFUSED.load(Ordering::Relaxed)
+    );
+    Ok(())
+}
+
 fn child(file: &Path, start: u64, count: u64) -> Result<(), Box<dyn std::error::Error>> {
+    if decoded_mode() && is_preset(file) {
+        return child_decoded(file, start, count);
+    }
     let Some(kind) = kind_of(file) else {
         return Err("unknown file kind".into());
     };
@@ -479,6 +634,12 @@ struct Findings {
     hangs: Vec<u64>,
     big: Vec<(u64, u64)>,
     crashes: Vec<u64>,
+    /// Mutants refused with no message.
+    unexplained: Vec<u64>,
+    accepted: u64,
+    refused: u64,
+    /// Why mutants were refused, with their counts.
+    reasons: BTreeMap<String, u64>,
 }
 
 fn fuzz_file(file: &Path, mutants: u64, budget: Duration) -> Findings {
@@ -526,7 +687,7 @@ fn fuzz_file(file: &Path, mutants: u64, budget: Duration) -> Findings {
                     let (tag, a, rest) = (parts.next(), parts.next(), parts.next());
                     let index = a.and_then(|a| a.parse::<u64>().ok());
                     match (tag, index) {
-                        (Some("B"), Some(ms)) => limit = HANG + Duration::from_millis(ms),
+                        (Some("B"), Some(ms)) => limit = hang() + Duration::from_millis(ms),
                         (Some("S"), Some(i)) => {
                             last = i;
                             found.mutants = found.mutants.max(i + 1);
@@ -540,7 +701,22 @@ fn fuzz_file(file: &Path, mutants: u64, budget: Duration) -> Findings {
                             let size = rest.and_then(|r| r.parse().ok()).unwrap_or(0);
                             found.big.push((i, size));
                         }
-                        (Some("D"), _) => done = true,
+                        (Some("E"), Some(i)) => found.unexplained.push(i),
+                        (Some("R"), Some(_)) => {
+                            *found
+                                .reasons
+                                .entry(rest.unwrap_or_default().to_owned())
+                                .or_insert(0) += 1;
+                        }
+                        (Some("D"), _) => {
+                            done = true;
+                            let nums: Vec<u64> =
+                                line.split(' ').filter_map(|w| w.parse().ok()).collect();
+                            if let [a, r] = nums.as_slice() {
+                                found.accepted += a;
+                                found.refused += r;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -619,6 +795,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     results.sort_by(|a, b| a.0.cmp(&b.0));
     let mut sites: BTreeMap<String, (u64, String)> = BTreeMap::new();
     let (mut run, mut panics, mut hangs, mut big, mut crashes) = (0, 0, 0, 0, 0);
+    let (mut accepted, mut refused, mut unexplained) = (0u64, 0u64, 0usize);
+    let mut reasons: BTreeMap<String, u64> = BTreeMap::new();
     for (file, f) in &results {
         let count: u64 = f.panics.values().map(|p| p.0).sum();
         println!(
@@ -652,11 +830,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for i in &f.crashes {
             println!("  CRASH {}#{i}", file.display());
         }
+        for i in &f.unexplained {
+            println!("  UNEXPLAINED REFUSAL {}#{i}", file.display());
+        }
+        for (why, n) in &f.reasons {
+            *reasons.entry(why.clone()).or_insert(0) += n;
+        }
+        accepted += f.accepted;
+        refused += f.refused;
+        unexplained += f.unexplained.len();
     }
     println!(
         "total: {run} mutants, {panics} panics at {} distinct sites, {hangs} hangs, {big} big allocs, {crashes} crashes",
         sites.len()
     );
+    if accepted + refused > 0 {
+        println!(
+            "reached build: {accepted} of {} ({:.0}%), refused {refused}, {unexplained} refused without a reason",
+            accepted + refused,
+            100.0 * accepted as f64 / (accepted + refused) as f64
+        );
+    }
+    let mut top: Vec<_> = reasons.iter().collect();
+    top.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+    for (why, n) in top.iter().take(12) {
+        println!("  refused {n:6} x {why}");
+    }
     for (site, (n, example)) in &sites {
         println!("  {n:5} x {site}   e.g. {example}");
     }
