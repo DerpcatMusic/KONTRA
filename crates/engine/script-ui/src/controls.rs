@@ -238,10 +238,10 @@ impl Store {
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         let (id, a, b) = (int(0), int(1), int(2));
         let n = c.index(id);
-        let look: LookPars = c.look;
+        let look: &LookPars = &c.look;
         // A menu selects its first entry as it gets it (Kontakt 8.13 oracle).
         let first = call.action == Action::AddMenuItem && self.menu(slot, n).is_empty();
-        if let Some(value) = self.call(slot, n, Some(&look), call) {
+        if let Some(value) = self.call(slot, n, Some(look), call) {
             if first && !self.menu(slot, n).is_empty() {
                 self.set_control_par(c, slot, call.cells, id, c.value_par, 0);
             }

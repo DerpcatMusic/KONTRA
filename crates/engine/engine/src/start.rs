@@ -29,16 +29,22 @@ impl Engine {
         if let Some(live) = self.notes.get_mut(note) {
             live.held = held_seconds;
         }
-        // A key's zones are a few of thousands: skip the rest off the packed
-        // key ranges, without reading their (664-byte) zones.
-        for (index, zone) in plan.zones.iter().enumerate() {
-            if self
-                .zone_keys
-                .get(index)
-                .is_some_and(|&(low, high)| n.key < low || n.key > high)
-            {
+        // A key's zones are a few of thousands: walk the key's list, or the
+        // packed key ranges when the plan's zones moved, never every zone.
+        let index_of = Arc::clone(&self.zone_index);
+        let listed = index_of.listed(n.key);
+        let count = listed.map_or(plan.zones.len(), <[u32]>::len);
+        for at in 0..count {
+            let index = match listed.and_then(|l| l.get(at)) {
+                Some(&zone) => zone as usize,
+                None => at,
+            };
+            if listed.is_none() && !index_of.holds(index, n.key) {
                 continue;
             }
+            let Some(zone) = plan.zones.get(index) else {
+                continue;
+            };
             let selected = accept(zone.trigger)
                 && self.masks.allows(note.slot(), zone.group)
                 && self
