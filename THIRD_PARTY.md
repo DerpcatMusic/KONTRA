@@ -165,7 +165,7 @@ and license texts with redistributed material. Linux and Windows nightlies
 consolidate the complete root notices, legal review, dependency notices, MOOSE
 rider and NOTICE, MUI and BUFFR texts, and font licenses in `LICENSES.txt`.
 The original paths identify sections of this file rather than separate files.
-The release asset `KONTRA-nightly-covered-source.zip` supplies the MPL dependency
+The release asset `KONTRA-covered-source.zip` supplies the MPL dependency
 source archives; `release-manifest.json` records their checksums. macOS retains
 its license bundle and covered source inside the universal installer. The patched
 `symphonia-format-riff` and `symphonia-bundle-flac` archives contain their

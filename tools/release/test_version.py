@@ -9,14 +9,13 @@ spec.loader.exec_module(version)
 
 class VersionTest(unittest.TestCase):
     def test_a_fix_raises_patch_and_a_feature_raises_minor(self):
-        self.assertEqual(version.bump('v3.0.4', ['fix(ui): menus scroll (#1)']), '3.0.5')
-        self.assertEqual(version.bump('v3.0.4', ['fix: a (#1)', 'feat(kontakt): snapshots (#2)']), '3.1.0')
-        self.assertEqual(version.bump('v3.1.9', ['feat!: new state format (#3)']), '3.2.0')
-        self.assertEqual(version.bump('v3.1.9', ['feature flags tidied (#4)']), '3.1.10')
+        self.assertEqual(version.bump('v0.4.4', ['fix(ui): menus scroll (#1)']), '0.4.5')
+        self.assertEqual(version.bump('v0.4.4', ['fix: a (#1)', 'feat(kontakt): snapshots (#2)']), '0.5.0')
+        self.assertEqual(version.bump('v0.5.9', ['feat!: new state format (#3)']), '0.6.0')
+        self.assertEqual(version.bump('v0.5.9', ['feature flags tidied (#4)']), '0.5.10')
 
-    def test_the_first_release_follows_the_dated_builds(self):
-        self.assertEqual(version.bump('v3.0.0-nightly.20261112.7735', ['fix: a (#1)']), '3.0.1')
-        self.assertEqual(version.bump(None, ['feat: a (#1)']), '3.1.0')
+    def test_the_first_release_is_0_4_0(self):
+        self.assertEqual(version.bump(None, ['feat: a (#1)']), '0.4.0')
 
 
 if __name__ == '__main__':
