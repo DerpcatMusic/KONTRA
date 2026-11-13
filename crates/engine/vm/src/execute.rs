@@ -21,6 +21,7 @@ pub(crate) fn execute(
     // push never branches on an empty stack); the top's slot is stale until
     // `flush!` writes it back.
     let (mut pc, mut sp) = (c.pc, c.sp);
+    let groups = host.groups();
     let stack = &mut c.stack[..];
     let room = stack.len().saturating_sub(1);
     let mut tos = stack.get(sp).copied().unwrap_or(0);
@@ -541,6 +542,11 @@ pub(crate) fn execute(
                 texts: text_args,
                 returns,
             } => {
+                if groups >= 0 && action == Action::NumGroups {
+                    c.hosted = true;
+                    push!(groups);
+                    continue;
+                }
                 let (ints, text_args) = (usize::from(ints), usize::from(text_args));
                 if sp < ints || c.texts.len() < text_args {
                     faults.bad_code += 1;

@@ -47,4 +47,10 @@ pub trait HostApi {
     fn query(&mut self, _action: Action, _ints: &[i64]) -> Option<i32> {
         None
     }
+
+    /// The group count when it is fixed and no call record is wanted: the VM
+    /// pushes it inline for `NumGroups`. Negative sends it to the host.
+    fn groups(&self) -> i64 {
+        -1
+    }
 }
