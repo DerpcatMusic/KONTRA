@@ -23,12 +23,38 @@ pub struct Read {
     /// The level the table plays at, linear: 1 plays the cycles as their
     /// samples are.
     pub gain: f32,
-    /// How far apart the partials above the first lie, in fundamentals:
-    /// partial `n` plays at `f·(1 + (n − 1)·stretch)`, each at its level
-    /// (1 is harmonic).
-    pub stretch: f32,
+    pub inharmonic: Inharmonic,
     /// Applied in order.
     pub warps: [Warp; 2],
+}
+
+/// How far apart the partials above the first lie, in fundamentals: partial
+/// `n` plays at `f·(1 + (n − 1)·s)`, each at its level, `s` geometric from
+/// `range.0` at amount 0 to `range.1` at 1; harmonic when off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Inharmonic {
+    pub on: bool,
+    pub amount: f32,
+    pub range: (f32, f32),
+}
+
+impl Inharmonic {
+    pub const OFF: Self = Self {
+        on: false,
+        amount: 0.5,
+        range: (1.0, 1.0),
+    };
+
+    /// `s`, 1 when off.
+    #[must_use]
+    pub fn stretch(self) -> f32 {
+        let (lo, hi) = self.range;
+        if self.on && lo > 0.0 {
+            lo * (hi / lo).powf(self.amount.clamp(0.0, 1.0))
+        } else {
+            1.0
+        }
+    }
 }
 
 /// One form by `amount`, 0..1: a bend of the read phase, then a shaper of
@@ -191,6 +217,7 @@ pub struct Table {
     pub spans: std::sync::Arc<[(u32, u32)]>,
     /// The levels a quarter cycle on (each harmonic's sine for its cosine),
     /// laid out as `data`: what a stretched read shifts in frequency with.
+    /// Every table has them, so a script may stretch any (~2 % memory).
     pub quad: Option<std::sync::Arc<[i16]>>,
     pub read: Read,
 }
@@ -231,7 +258,7 @@ impl Table {
         let c1 = (c0 + 1).min(self.cycles - 1);
         let morph = at.fract() as f32;
         let [w1, w2] = self.read.warps;
-        let stretch = f64::from(self.read.stretch);
+        let stretch = f64::from(self.read.inharmonic.stretch());
         let quad = self.quad.as_deref().filter(|_| stretch != 1.0);
         let rate = if quad.is_some() { stretch } else { 1.0 };
         let (l0, l1, blend) = level(PERIOD / (step * rate * sync(w2)));
@@ -430,7 +457,7 @@ mod tests {
             phase: 0.0,
             phase_random: 0.0,
             gain: 1.0,
-            stretch: 1.0,
+            inharmonic: Inharmonic::OFF,
             warps: [Warp::OFF; 2],
         };
         let spans: std::sync::Arc<[_]> = vec![(0, 8); LEVELS].into();

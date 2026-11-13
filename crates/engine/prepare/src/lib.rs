@@ -402,7 +402,11 @@ pub fn read(w: ir::Wavetable) -> Read {
         phase: w.phase,
         phase_random: w.phase_random,
         gain: w.gain,
-        stretch: w.stretch,
+        inharmonic: kontra_voice::Inharmonic {
+            on: w.inharmonic.on,
+            amount: w.inharmonic.amount,
+            range: w.inharmonic.range,
+        },
         warps: w.warps.map(warp),
     }
 }

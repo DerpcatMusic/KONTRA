@@ -2210,6 +2210,7 @@ dependencies = [
  "kontra-fastlz",
  "kontra-format",
  "kontra-ir",
+ "kontra-kontakt-effects",
  "kontra-law",
  "kontra-params",
  "ni-file",
@@ -2282,12 +2283,14 @@ dependencies = [
  "anyhow",
  "hound",
  "kontra-engine",
+ "kontra-format-uvi",
  "kontra-host",
  "kontra-ksp",
  "kontra-law",
  "kontra-lua",
  "kontra-stream",
  "kontra-ui-model",
+ "libc",
  "rustfft",
  "serde_json",
 ]
@@ -2298,6 +2301,14 @@ version = "0.0.0"
 dependencies = [
  "kontra-law",
  "kontra-params",
+]
+
+[[package]]
+name = "kontra-kontakt-effects"
+version = "0.0.0"
+dependencies = [
+ "kontra-ir",
+ "kontra-law",
 ]
 
 [[package]]

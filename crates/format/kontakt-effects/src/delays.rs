@@ -26,7 +26,7 @@ const PHASER_LOOP: f32 = 0.85;
 const QUARTER: f32 = 0.25;
 
 /// The record's effect, `None` when a field is missing or out of range.
-pub(crate) fn legacy(module: u16, version: u16, public: &[u8]) -> Option<ir::EffectKind> {
+pub fn legacy(module: u16, version: u16, public: &[u8]) -> Option<ir::EffectKind> {
     if !matches!(version, 0x50 | 0x51) {
         return None;
     }
@@ -47,7 +47,7 @@ pub(crate) fn legacy(module: u16, version: u16, public: &[u8]) -> Option<ir::Eff
 }
 
 /// The legacy Delay's saved time, feedback, pan, damping and unit.
-pub(crate) fn saved(version: u16, public: &[u8]) -> Option<[f32; 5]> {
+pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 5]> {
     if !matches!(version, 0x50 | 0x51) {
         return None;
     }
@@ -83,7 +83,7 @@ fn corner(c: f32) -> f32 {
 /// 0x140aa1130: `g = 0.98·feedback` scales the input as well as the loop, the
 /// right input by `1 − pan`; the loop keeps `(1 − pan)·g` and crosses
 /// `pan·g`; the read is low-passed by `1 − 0.7·damping`.
-pub(crate) fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir::Delay {
+pub fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir::Delay {
     let [feedback, pan, damping] = [feedback, pan, damping].map(|x| x.clamp(0.0, 1.0));
     let g = DELAY_LOOP * feedback;
     ir::Delay {

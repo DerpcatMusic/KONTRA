@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use roxmltree::{Node, NodeId};
 
+use super::routing::Fx;
 use super::{Library, Translator, flag, matrix};
 
 impl<L: Library> Translator<'_, '_, L> {
@@ -89,6 +90,16 @@ impl<L: Library> Translator<'_, '_, L> {
         }
         if let Some(bus) = self.bus_of.get(&node.id()) {
             out.push_str(&format!(",bus={bus}"));
+        }
+        // An insert's effect: `{0 keygroup's voices | 1 bus | 2 program, group
+        // or bus, slot}`.
+        let fx = self.fx_of.get(&node.id()).and_then(|&fx| match fx {
+            Fx::Voice(kg, slot) => Some((0, *self.made.get(&kg)?, slot)),
+            Fx::Bus(bus, slot) => Some((1, bus, slot)),
+            Fx::Instrument(slot) => Some((2, 0, slot)),
+        });
+        if let Some((at, index, slot)) = fx {
+            out.push_str(&format!(",fx={{{at},{index},{slot}}}"));
         }
         if let Some(id) = matrix::live_macro(self.program, node) {
             out.push_str(&format!(",mod={id}"));
