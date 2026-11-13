@@ -78,16 +78,6 @@ fn run_events(
             }
         }
     }
-    // Each KSP script's symbol names in id order: a traced action's argument
-    // `SYMBOL_BASE + n` (an engine parameter, say) is name n of its slot.
-    let script_symbols: Vec<Vec<String>> = (ir.scripts.iter())
-        .map(|s| match s.dialect {
-            kontra_engine::ir::Dialect::Ksp => kontra_ksp::compile(&s.source, &[])
-                .map(|c| c.symbols.iter().map(|n| n.to_string()).collect())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        })
-        .collect();
     let samples: Vec<_> = ir.samples.iter().map(|s| s.name.clone()).collect();
     let group_samples: Vec<Vec<usize>> = ir
         .groups
@@ -96,6 +86,9 @@ fn run_events(
         .collect();
     let mut store = Store::new(StoreConfig::DEFAULT).context("creating sample store")?;
     let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
+    // Each script slot's symbol names in id order, as the engine compiled
+    // them: a traced action's argument `SYMBOL_BASE + n` is name n.
+    let script_symbols = loaded.symbols.clone();
     let diagnostics: Vec<_> = loaded
         .diagnostics
         .iter()
