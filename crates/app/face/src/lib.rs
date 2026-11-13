@@ -393,10 +393,6 @@ fn decl<'a>(face: &'a Face, slot: u8, engine: &'a dyn Looks, key: Key) -> Option
         None => UNTOUCHED,
     };
     let cells = control.map_or(Cells::Const, |c| c.2);
-    let text = match cells {
-        Cells::Text { base, .. } => engine.script_text_in(slot, base as usize),
-        _ => None,
-    };
     Some(Decl {
         kind: view.map(|v| v.kind).or(control.map(|c| c.0.kind))?,
         params: view.map(|v| &*v.params).or(control.map(|c| &*c.0.params))?,
@@ -405,7 +401,7 @@ fn decl<'a>(face: &'a Face, slot: u8, engine: &'a dyn Looks, key: Key) -> Option
         cells,
         id: key.id,
         look,
-        text,
+        text: widget::text(engine, slot, cells),
     })
 }
 

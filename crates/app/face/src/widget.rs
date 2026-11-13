@@ -17,6 +17,14 @@ pub(super) struct Decl<'a> {
     pub(super) text: Option<&'a str>,
 }
 
+/// A text control's text, as the script or the player left it.
+pub(super) fn text(engine: &dyn Looks, slot: u8, cells: Cells) -> Option<&str> {
+    match cells {
+        Cells::Text { base, .. } => engine.script_text_in(slot, base as usize),
+        _ => None,
+    }
+}
+
 /// Points a knob's drag travels up to sweep its range (Kontakt 8, measured;
 /// scratch/laneJ/drag/FACTS.md).
 const KNOB_SWEEP: f64 = 350.;
