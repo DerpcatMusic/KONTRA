@@ -25,6 +25,7 @@ mod matrix;
 mod modulation;
 mod multi_peak;
 mod provenance;
+mod report;
 mod reverb;
 mod routing;
 mod tree;
@@ -658,90 +659,6 @@ impl<L: Library> Translator<'_, '_, L> {
             });
         }
     }
-
-    /// Active insert effects and aux sends this crate does not carry.
-    fn effects(&mut self) {
-        for node in self.program.descendants().filter(|n| n.is_element()) {
-            if flag(node, "Bypass") {
-                continue;
-            }
-            let tag = node.tag_name().name();
-            let parent = node.parent();
-            // A keygroup's GainMatrix places its bundle members (`placement`).
-            let placing = tag == "GainMatrix"
-                && parent
-                    .and_then(|p| p.parent())
-                    .is_some_and(|p| p.has_tag_name("Keygroup"));
-            if parent.is_some_and(|p| p.has_tag_name("Inserts"))
-                && !routing::carried(node)
-                && !filters::carried(node)
-                && !placing
-            {
-                self.notes.add(
-                    routing::impact(self.program, node),
-                    &format!("insert {tag}"),
-                    node.attribute("Name").unwrap_or_default(),
-                );
-            } else if tag == "BusRouter"
-                && !parent
-                    .and_then(|p| p.parent())
-                    .is_some_and(|p| p.has_tag_name("Layer"))
-                && num(node, "Gain", 1.0).is_ok_and(|g| g > 0.0)
-            {
-                self.notes.add(
-                    ir::Impact::Audible,
-                    "aux send",
-                    node.attribute("Destination").unwrap_or_default(),
-                );
-            }
-        }
-    }
-
-    /// Live modulation (LFOs, scripts, controllers) of gain, pan, pitch and the
-    /// matrix. The amplitude envelope is carried by [`Self::envelope`] and is skipped.
-    fn connections(&mut self) {
-        for connection in self
-            .program
-            .descendants()
-            .filter(|n| n.has_tag_name("SignalConnection"))
-        {
-            // What moves a bypassed module (or through a bypassed connection) is moot.
-            if connection.ancestors().any(|a| flag(a, "Bypass")) {
-                continue;
-            }
-            // At ratio 0 a connection moves nothing: what modulates its
-            // ratio scales it (matrix.rs), so 0 stays 0.
-            if num(connection, "Ratio", 1.0).is_ok_and(|r| r == 0.0) {
-                continue;
-            }
-            if modulation::script_route(self.program, connection).is_some()
-                || self.routed.contains_key(&connection.id())
-                || modulation::gain_route(self.program, connection).is_some()
-                || [PITCH, PAN]
-                    .into_iter()
-                    .any(|to| modulation::route(self.program, connection, to).is_some())
-            {
-                continue;
-            }
-            let dest = connection.attribute("Destination").unwrap_or_default();
-            let source = connection.attribute("Source").unwrap_or_default();
-            let envelope =
-                source_node(self.program, connection).is_some_and(|n| n.has_tag_name("DAHDSR"));
-            if dest == "Gain" && envelope && num(connection, "Ratio", 0.0).is_ok_and(|r| r == 1.0) {
-                continue;
-            }
-            if self.carried.contains(&connection.id()) {
-                continue;
-            }
-            let feature = if dest.starts_with("Gain_") {
-                "matrix cell modulation"
-            } else {
-                "modulation"
-            };
-            let impact = routing::impact(self.program, connection);
-            self.notes.add(impact, &format!("{feature} {dest}"), source);
-        }
-    }
 }
 
 /// The key and velocity range a keygroup's oscillators play, and the fades
@@ -769,6 +686,21 @@ fn source_node<'a, 'input>(
     scope
         .descendants()
         .find(|n| n.attribute("Name") == Some(name))
+}
+
+/// Whether `connection`'s source is a `ConstantModulation` a module above it
+/// holds (`./../../Macro 1`, the effect's own control sources).
+fn held_macro(connection: Node) -> bool {
+    let name = connection
+        .attribute("Source")
+        .filter(|s| s.starts_with("./"))
+        .and_then(|s| s.rsplit('/').next());
+    connection.ancestors().any(|a| {
+        a.children()
+            .filter(|c| c.has_tag_name("ControlSignalSources"))
+            .flat_map(|c| c.children())
+            .any(|m| m.has_tag_name("ConstantModulation") && m.attribute("Name") == name)
+    })
 }
 
 /// The owners and destinations [`modulation::route`] carries.
