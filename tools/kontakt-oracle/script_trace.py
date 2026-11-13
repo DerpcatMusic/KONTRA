@@ -7,7 +7,7 @@ Loads LIB.nki, puts a tracer KSP in the last free script slot and plays a phrase
 legato line, a repeated note (round robin), a pedalled pair, soft and loud notes, each
 keyswitch followed by KEY, then a mod-wheel sweep over a held KEY. Every note event that
 reaches the tracer (MIDI or script-made) logs time ms, key, velocity, source slot, zone,
-group and sample name to OUT_DIR/trace.nka. A zone of -1 is retried after 10 and 50 ms;
+group and sample name, then the count and first of its allowed groups, to OUT_DIR/trace.nka. A zone of -1 is retried after 10 and 50 ms;
 an event with no voice may still report an earlier event's zone (Kontakt 8). The key
 colours and names go to OUT_DIR/keys.nka.
 OUT_DIR/phrase.json is the same phrase for `kontra-inspect play --scenario`.
@@ -85,6 +85,9 @@ TRACER = """on init
   declare polyphonic $z
   declare polyphonic $id
   declare polyphonic $t
+  declare polyphonic $g
+  declare polyphonic $na
+  declare polyphonic $fa
   declare !keys[128]
   declare $k
   pgs_create_key(KTRACE, 1)
@@ -108,10 +111,22 @@ on note
     wait(50000)
     $z := get_event_par($id, $EVENT_PAR_ZONE_ID)
   end if
+  $na := 0
+  $fa := -1
+  $g := 0
+  while ($g < $NUM_GROUPS)
+    if (get_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, $g) = 1)
+      inc($na)
+      if ($fa = -1)
+        $fa := $g
+      end if
+    end if
+    inc($g)
+  end while
   if ($n < 2000)
     !log[$n] := $t & "," & $EVENT_NOTE & "," & $EVENT_VELOCITY & "," ...
       & get_event_par($id, $EVENT_PAR_SOURCE) & "," & $z & "," ...
-      & group_name(get_zone_par($z, $ZONE_PAR_GROUP)) & "," & get_sample($z, $NI_FILE_NAME)
+      & group_name(get_zone_par($z, $ZONE_PAR_GROUP)) & "," & get_sample($z, $NI_FILE_NAME) & "," & $na & "," & $fa
     inc($n)
     pgs_set_key_val(KTRACE, 0, $n)
   end if
