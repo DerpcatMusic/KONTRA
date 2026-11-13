@@ -50,7 +50,13 @@ const EVENTS: usize = 4096;
 const CHUNK: usize = 1024;
 
 #[derive(Params)]
-#[params(pre_save = "capture", post_load = "restore")]
+#[params(
+    pre_save = "capture",
+    post_load = "restore",
+    presentation = "macro_presentation",
+    presentation_revision = "macro_revision",
+    presentation_change = "macro_renamed"
+)]
 pub struct KontraParams {
     #[param(
         id = 0,
@@ -108,6 +114,10 @@ pub struct Shared {
     /// bits: the audio thread applies a host's in-block moves too.
     macro_values: [AtomicU64; macros::COUNT],
     /// What the audio side was last told each macro moves.
+    /// Bumped when a macro's host name changes ([`macros::renamed`]), and
+    /// the value the host was last asked to read the names at.
+    macro_names: AtomicU64,
+    macro_names_told: AtomicU64,
     macro_targets: Mutex<[Option<kontra_host::rack::MacroTarget>; macros::COUNT]>,
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
@@ -232,6 +242,30 @@ impl KontraParams {
         }
     }
 
+    /// A learnt macro's host name, "Part: Control".
+    fn macro_presentation(&self, id: u32) -> Option<moose::params::ParameterPresentation> {
+        let n = macros::index(id)?;
+        let text = self.macros.read().unwrap_or_else(PoisonError::into_inner);
+        let label = macros::read(&text).into_iter().nth(n)??.label;
+        (!label.is_empty()).then(|| moose::params::ParameterPresentation {
+            name: label,
+            ..Default::default()
+        })
+    }
+
+    fn macro_revision(&self) -> u64 {
+        self.shared.macro_names.load(Ordering::Acquire)
+    }
+
+    /// A macro's move asks the host to read the names again while one
+    /// changed since it last did: a learn's first move, or the next move
+    /// after a release. Atomics only: it runs on the audio thread too.
+    fn macro_renamed(&self, id: u32) -> bool {
+        let now = self.shared.macro_names.load(Ordering::Acquire);
+        macros::index(id).is_some()
+            && self.shared.macro_names_told.swap(now, Ordering::AcqRel) != now
+    }
+
     /// After the host loads a state: reload its parts on the next tick.
     fn restore(&self) {
         let json = self
@@ -240,6 +274,8 @@ impl KontraParams {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         self.shared.restored.fetch_add(1, Ordering::Release);
+        // The restored macros' names.
+        macros::renamed(self);
         let mut requests = lock(&self.shared.requests);
         requests.retain(|r| !matches!(r, Request::Restore(_)));
         // A damaged or foreign state loads an empty rack, and says so.

@@ -33,7 +33,7 @@ mod trim;
 pub use audio::RackAudio;
 pub use command::Command;
 pub use hold::{HOLD_STEPS, Hold};
-pub use macros::{MACROS, MacroTarget, STEPS, Scale};
+pub use macros::{Control, MACROS, MacroTarget, STEPS, Scale};
 
 /// A part's attack delays as auto-align measured them, by velocity range
 /// in rising order: its top velocity, then how late a first note and a

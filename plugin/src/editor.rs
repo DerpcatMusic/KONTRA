@@ -910,10 +910,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 Some(slot),
             ) = (&action, slot)
             {
-                let face = app.parts.get(*part).and_then(|p| p.face.as_ref());
+                let shown = app.parts.get(*part);
+                let title = shown.map_or("", |s| s.name.as_str());
+                let face = shown.and_then(|p| p.face.as_ref());
                 let w = face.and_then(|f| f.tree.widgets.get(*widget));
-                if let Some((id, value)) = w.and_then(|w| crate::macros::touch(&p, slot, w, *value))
-                {
+                let touched = w.and_then(|w| crate::macros::touch(&p, slot, title, w, *value));
+                if let Some((id, value)) = touched {
                     bridge.drag_gesture(id, value);
                 }
             }

@@ -11,40 +11,45 @@ pub const STEPS: usize = 16;
 pub struct MacroTarget {
     pub part: usize,
     pub slot: u8,
-    pub id: i32,
+    pub control: Control,
     pub scale: Scale,
 }
 
-/// How a macro's 0..1 becomes the control's script value.
+/// What a macro moves in its part's script.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Control {
+    /// A KSP control by UI id, its value the script's integer.
+    Integer(i32),
+    /// A KSP real control by UI id, its value the script's real bits.
+    Real(i32),
+    /// A Lua widget by number, its value as is.
+    Widget(u32),
+}
+
+/// How a macro's 0..1 spans the control's values.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Scale {
-    /// An integer control over min..max, rounded.
-    Int { min: f64, max: f64 },
-    /// A real control over min..max, as the script's real bits.
-    Real { min: f64, max: f64 },
+    /// Continuous over min..max.
+    Range { min: f64, max: f64 },
     /// A menu: the nearest of its item values.
     Steps { values: [i32; STEPS], len: u8 },
 }
 
 impl MacroTarget {
-    /// The control's script value at host value `normalized`.
+    /// The control's value at host value `normalized`.
     #[must_use]
-    pub fn value(&self, normalized: f64) -> i64 {
+    pub fn plain(&self, normalized: f64) -> f64 {
         let n = normalized.clamp(0.0, 1.0);
         match self.scale {
-            Scale::Int { min, max } => (min + n * (max - min)).round() as i64,
-            Scale::Real { min, max } => (min + n * (max - min)).to_bits() as i64,
+            Scale::Range { min, max } => min + n * (max - min),
             Scale::Steps { values, len } => {
                 let values = values.get(..usize::from(len)).unwrap_or_default();
                 let (lo, hi) = (values.iter())
                     .fold((i32::MAX, i32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
                 let v = f64::from(lo) + n * (f64::from(hi) - f64::from(lo));
-                let nearest = |a: &&i32, b: &&i32| {
-                    (f64::from(**a) - v)
-                        .abs()
-                        .total_cmp(&(f64::from(**b) - v).abs())
-                };
-                values.iter().min_by(nearest).map_or(0, |&v| i64::from(v))
+                let distance = |x: i32| (f64::from(x) - v).abs();
+                let nearest = |a: &&i32, b: &&i32| distance(**a).total_cmp(&distance(**b));
+                values.iter().min_by(nearest).map_or(0.0, |&v| f64::from(v))
             }
         }
     }
@@ -61,11 +66,11 @@ mod tests {
         let t = MacroTarget {
             part: 0,
             slot: 0,
-            id: 1,
+            control: Control::Integer(1),
             scale: Scale::Steps { values, len: 3 },
         };
-        assert_eq!(t.value(0.04), 0);
-        assert_eq!(t.value(0.4), 1);
-        assert_eq!(t.value(0.6), 10);
+        assert_eq!(t.plain(0.04), 0.0);
+        assert_eq!(t.plain(0.4), 1.0);
+        assert_eq!(t.plain(0.6), 10.0);
     }
 }
