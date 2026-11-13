@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use super::{RATE, scenario};
 
 const BLOCK: usize = 128;
+const MAX_BLOCK: usize = 4096;
 const TAIL_SECONDS: u64 = 20;
 
 pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, String)> {
@@ -116,7 +117,8 @@ fn run_events(
     } else {
         Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 262144)
     };
-    engine.set_offline_wait(true);
+    // Lean timing runs as the host does: no waiting for sample data inside a block.
+    engine.set_offline_wait(!lean);
     let mut at = 0u64;
     let mut next = 0usize;
     let mut next_tail = last_off;
@@ -134,11 +136,18 @@ fn run_events(
     let mut jump = 0f32;
     let mut clipped = 0u64;
     let mut prior = [0f32; 2];
-    let mut audio = [[0f32; 2]; BLOCK];
+    // KONTRA_INSPECT_BLOCK=N: the host's block size, frames (default 128).
+    let block = std::env::var("KONTRA_INSPECT_BLOCK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(BLOCK, |n| n.clamp(1, MAX_BLOCK));
+    let mut audio = vec![[0f32; 2]; block];
+    // Each block's time in `Engine::process`, ns, with where it was.
+    let mut block_times: Vec<(u64, u64, usize)> = Vec::new();
     let mut rendered = Vec::new();
     let mut process_time = Duration::ZERO;
     while at < stop {
-        let frames = usize::try_from((stop - at).min(BLOCK as u64))?;
+        let frames = usize::try_from((stop - at).min(block as u64))?;
         let until = at + frames as u64;
         let mut timed = Vec::new();
         let mut cc_in_block = false;
@@ -155,9 +164,20 @@ fn run_events(
         }
         let before = engine.stats().missing_frames;
         let stream_before = stream.stats();
-        let timer = std::time::Instant::now();
+        let timer = (std::time::Instant::now(), on_cpu());
         engine.process(&mut audio[..frames], &timed);
-        process_time += timer.elapsed();
+        let spent = timer.0.elapsed();
+        process_time += spent;
+        // Time on the CPU when the kernel reports it: a block the machine
+        // preempted is not a spike of ours.
+        let cpu = on_cpu()
+            .zip(timer.1)
+            .map(|(end, start)| end.saturating_sub(start));
+        block_times.push((
+            cpu.unwrap_or_else(|| u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX)),
+            at,
+            timed.len(),
+        ));
         stage_events.extend(
             engine
                 .trace_events()
@@ -289,6 +309,7 @@ fn run_events(
             })
         })
         .collect();
+    let timing = block_timing(&block_times, block);
     let stats = engine.stats();
     let wait_timeouts = engine.offline_wait_timeouts() + settle_timeouts;
     let stream_stats = stream.stats();
@@ -328,6 +349,14 @@ fn run_events(
         stats.missing_frames
     );
     summary.push_str(&super::routes::summary(&route_events));
+    summary.push_str(&format!(
+        "  block timing ({} frames, budget {:.0} us): p50 {:.0} us, p99 {:.0} us, max {:.0} us\n",
+        block,
+        timing["budget_us"].as_f64().unwrap_or(0.0),
+        timing["p50_us"].as_f64().unwrap_or(0.0),
+        timing["p99_us"].as_f64().unwrap_or(0.0),
+        timing["max_us"].as_f64().unwrap_or(0.0)
+    ));
     if let Some(reference) = &reference {
         let status = reference
             .get("status")
@@ -361,7 +390,40 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "block_timing":timing, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
+}
+
+/// Max, p50 and p99 of the per-block process time, and the five slowest blocks.
+fn block_timing(times: &[(u64, u64, usize)], block: usize) -> Value {
+    let mut sorted: Vec<u64> = times.iter().map(|t| t.0).collect();
+    sorted.sort_unstable();
+    let at = |q: f64| {
+        let i = ((sorted.len() as f64 * q).ceil() as usize).saturating_sub(1);
+        sorted.get(i).copied().unwrap_or(0) as f64 / 1e3
+    };
+    let mut worst: Vec<_> = times.to_vec();
+    worst.sort_unstable_by_key(|t| std::cmp::Reverse(t.0));
+    let top: Vec<_> = worst
+        .iter()
+        .take(5)
+        .map(|(ns, frame, events)| json!({"us":*ns as f64 / 1e3, "frame":frame, "events":events}))
+        .collect();
+    let budget = block as f64 / f64::from(RATE) * 1e6;
+    json!({"block_frames":block, "budget_us":budget, "blocks":times.len(),
+        "p50_us":at(0.5), "p99_us":at(0.99), "max_us":at(1.0), "top":top})
+}
+
+/// This thread's CPU time so far, ns (`CLOCK_THREAD_CPUTIME_ID`).
+fn on_cpu() -> Option<u64> {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `t` is a valid timespec the call fills in.
+    let ok = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0;
+    ok.then(|| {
+        u64::try_from(t.tv_sec).unwrap_or(0) * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0)
+    })
 }
