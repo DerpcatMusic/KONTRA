@@ -56,7 +56,7 @@ pub(super) fn table(program: Node, node: Node, inverted: bool) -> Option<Option<
             // A negative depth is a rising saw read backwards ([`modulation::shape`]).
             let flip = |v: f32| if inverted { 1.0 - v } else { v };
             let (lo, hi) = if d < 0.0 { (-d, 0.0) } else { (0.0, d) };
-            Timed::Steps(lfo, vec![flip(lo), flip(hi)])
+            Timed::Steps(lfo, vec![flip(lo), flip(hi)], 0.0)
         }));
     }
     let user = || {
@@ -79,6 +79,7 @@ pub(super) fn table(program: Node, node: Node, inverted: bool) -> Option<Option<
         let input = ir::Transfer {
             source: ir::Source::Constant,
             table: read.collect::<Option<_>>().filter(|_| n > 0)?,
+            ..Default::default()
         };
         let sign = if inverted { -1.0 } else { 1.0 };
         let (factors, depths) = depths(program, node)?;
@@ -158,6 +159,7 @@ pub(super) fn keyed(program: Node, connection: Node, route: Route) -> Option<Rou
             let t = ir::Transfer {
                 source: route.source,
                 table: Vec::new(),
+                ..Default::default()
             };
             (
                 None,
@@ -171,6 +173,7 @@ pub(super) fn keyed(program: Node, connection: Node, route: Route) -> Option<Rou
             let t = ir::Transfer {
                 source: ir::Source::Constant,
                 table: vec![-1.0, 1.0],
+                ..Default::default()
             };
             let (factors, depths) = depths(program, node)?;
             ids = depths;
@@ -210,6 +213,7 @@ pub(super) fn gain(mut b: Blend, r: f32) -> Blend {
         input: ir::Transfer {
             source: ir::Source::Constant,
             table: Vec::new(),
+            ..Default::default()
         },
         amount: b.base - lift,
         factors: Vec::new(),
