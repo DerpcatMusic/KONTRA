@@ -2305,6 +2305,30 @@ fn an_lfo_and_a_step_envelope_on_a_sends_gain_run_free_on_its_bus() {
 }
 
 #[test]
+fn a_step_envelopes_smooth_glides_between_its_steps() {
+    let step = |smooth: &str| {
+        let xml = format!(
+            r#"<StepEnvelope Name="S" Bypass="0" Freq="0.25" NumSteps="2" Levels="1 0" Retrigger="0" SyncToHost="1" Smooth="{smooth}"/>"#
+        );
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        modulation::steps(doc.root_element()).unwrap().1
+    };
+    let (held, glide) = (step("0"), step("0.0845"));
+    // Read at the first step's start: the held table is at its level, the
+    // smoothed one is still on its way up from the last step's 0.
+    let first = |t: &[f32]| t[t.len() - 1];
+    assert_eq!(first(&held), 1.0);
+    assert!(
+        first(&glide) < 0.9 && first(&glide) > 0.0,
+        "{}",
+        first(&glide)
+    );
+    // Late in the first step it has settled toward 1.
+    let late = |t: &[f32]| t[t.len() * 11 / 20];
+    assert!(late(&glide) > 0.8, "{}", late(&glide));
+}
+
+#[test]
 fn an_lfo_on_a_bus_flangers_mix_and_speed_moves_them_live() {
     let xml = r#"<Program Gain="1">
       <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup>

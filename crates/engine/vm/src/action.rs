@@ -69,8 +69,9 @@ impl Action {
 
     /// Whether the VM answers this action itself, without the host.
     #[must_use]
+    #[inline]
     pub fn is_pure(self) -> bool {
-        crate::pure::eval(self, &[0; 8], &mut [0; 16]).is_some()
+        matches!(self, Self::Abs | Self::Min | Self::Max | Self::InRange | Self::Sgn | Self::Signbit | Self::Round | Self::Floor | Self::Ceil | Self::Sqrt | Self::Cbrt | Self::Exp | Self::Exp2 | Self::Log | Self::Log2 | Self::Log10 | Self::Sin | Self::Cos | Self::Tan | Self::Asin | Self::Acos | Self::Atan | Self::Pow | Self::Msb | Self::Lsb | Self::Search | Self::Sort | Self::ArrayEqual)
     }
 }
 
@@ -399,4 +400,10 @@ actions! {
     // (`1000 * samples / rate`): notes one frame apart read apart.
     // `EngineUptime` is the same clock in whole milliseconds.
     EngineMs,
+    // A file the player picks in the editor (UVI `browseForFile`): ints
+    // (save 1, open 0), text the file type (`.ext`); an async id.
+    PickFile,
+    // The pick with async id int 0: its file name as text once picked, 0
+    // when cancelled, nothing while the player is still choosing.
+    PickedFile,
 }

@@ -460,10 +460,15 @@ impl Machine for LuaMachine {
         let resumed = lua.scope(|scope| {
             // Fixed arity, so a call allocates nothing: an action and up
             // to eight arguments, the trailing nils dropped.
-            let call = scope.create_function_mut(|_, (a, b, c, d, e, f, g, h, i): Args| {
+            let call = scope.create_function_mut(|lua, (a, b, c, d, e, f, g, h, i): Args| {
                 let args = [a, b, c, d, e, f, g, h, i];
                 let n = args.iter().rposition(|v| !v.is_nil()).map_or(0, |n| n + 1);
-                Ok(host_call(host, context, args.get(..n).unwrap_or_default()))
+                Ok(host_call(
+                    lua,
+                    host,
+                    context,
+                    args.get(..n).unwrap_or_default(),
+                ))
             })?;
             lua.globals().set("__host", call)?;
             let result = thread.resume::<Value>(());
@@ -566,6 +571,13 @@ impl Machine for LuaMachine {
         self.checkpoints.store(0, Ordering::Relaxed);
         save::state(self.lua.as_ref()?, out)
     }
+
+    fn take_file(&mut self, out: &mut [u8]) -> Option<usize> {
+        let _run = probe::Run::start();
+        let _arena = self.arena.audio();
+        self.checkpoints.store(0, Ordering::Relaxed);
+        save::file(self.lua.as_ref()?, out)
+    }
 }
 
 /// A Lua number, whichever way the state holds it.
@@ -591,7 +603,7 @@ type Args = (
     Value,
 );
 
-fn host_call(host: &mut dyn HostApi, context: u64, args: &[Value]) -> Value {
+fn host_call(lua: &Lua, host: &mut dyn HostApi, context: u64, args: &[Value]) -> Value {
     let Some(action) = args
         .first()
         .and_then(number)
@@ -635,7 +647,11 @@ fn host_call(host: &mut dyn HostApi, context: u64, args: &[Value]) -> Value {
         HostValue::Nothing => Value::Nil,
         HostValue::Int(i) => Value::Number(f64::from(i)),
         HostValue::Real(r) => Value::Number(r),
-        HostValue::Text | HostValue::Wait(_) => Value::Nil,
+        // A text answer becomes a Lua string (in the script's own heap).
+        HostValue::Text => lua
+            .create_string(text_out.as_str())
+            .map_or(Value::Nil, Value::String),
+        HostValue::Wait(_) => Value::Nil,
     }
 }
 
@@ -794,10 +810,11 @@ mod tests {
         assert_eq!(m.faults().bad_code, 0);
     }
 
-    /// VWinds' Save/Load menu: `browseForFile` then `saveState`, and later
-    /// `browseForFile` then `loadState` of the path it answered.
+    /// VWinds' Save/Load menu once the player picked a name: `saveState`
+    /// keeps the preset for `loadState` and hands it out once for the host
+    /// to write (`take_file`).
     #[test]
-    fn a_script_preset_saved_loads_back() {
+    fn a_script_preset_saved_loads_back_and_goes_out_once() {
         let source = r#"
             local air = Knob('air', 0, 0, 100)
             local panel = OnOffButton('panel', true)
@@ -805,16 +822,11 @@ mod tests {
             function onSave() return {presetText = text} end
             function onLoad(state) text = state.presetText end
             function onInit()
-                browseForFile('open', 'Load', '', '*.VHFPreset', function() error('nothing saved yet') end)
                 air.value = 40
-                browseForFile('save', 'Save', '', '*.VHFPreset', function(task)
-                    saveState(task.result, function(t) assert(t.success) end)
-                end)
+                saveState('Mine.VHFPreset', function(t) assert(t.success) end)
                 air.value, panel.value, text = 0, false, ''
                 local loaded = false
-                browseForFile('open', 'Load', '', '*.VHFPreset', function(task)
-                    loadState(task.result, function() loaded = true end)
-                end)
+                loadState('Mine.VHFPreset', function() loaded = true end)
                 assert(loaded and air.value == 40 and panel.value == true and text == 'mine')
             end"#;
         let mut m = compile(source, &[], &[]).unwrap().machine();
@@ -822,6 +834,12 @@ mod tests {
         let co = m.start(Callbacks::INIT, 0).expect("init");
         assert_eq!(m.run(co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
+        let mut room = [0u8; 4096];
+        let len = m.take_file(&mut room).expect("the saved preset goes out");
+        let file = std::str::from_utf8(&room[..len]).unwrap();
+        assert!(file.starts_with("Mine.VHFPreset\nreturn {"), "{file}");
+        assert!(file.contains(r#"["air"]=40"#), "{file}");
+        assert!(m.take_file(&mut room).is_none(), "once");
     }
 
     #[test]

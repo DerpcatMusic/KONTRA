@@ -344,6 +344,7 @@ impl Store {
                 .map(|(plan, r)| {
                     let (pages, runs) = plan?;
                     let sample = self.new_sample(&r, pages);
+                    sample.heads_due.store(runs.len() as u32, Ordering::Release);
                     for run in runs {
                         let job = (Arc::clone(&sample), Arc::clone(&r.source), run);
                         self.deferred.push(job);
@@ -468,6 +469,7 @@ impl Store {
             shift: self.shift(&r.key.fmt),
             source: Arc::clone(&r.source),
             streamed: (0..pages.len()).map(|_| AtomicU32::new(ABSENT)).collect(),
+            heads_due: AtomicU32::new(0),
             pinned: (pages.into_iter())
                 .map(|p| p.map_or_else(OnceLock::new, OnceLock::from))
                 .collect(),
@@ -482,6 +484,15 @@ impl Store {
     /// [`Store::take_heads`] and run them in the background.
     pub fn defer_heads(&mut self, on: bool) {
         self.defer = on;
+    }
+
+    /// [`Store::load_many`] with every head read now, whatever [`Store::defer_heads`] says:
+    /// for samples read while the plan is built.
+    pub fn load_many_now(&mut self, requests: Vec<LoadRequest>) -> Vec<io::Result<Arc<Sample>>> {
+        let deferred = std::mem::replace(&mut self.defer, false);
+        let loaded = self.load_many(requests);
+        self.defer = deferred;
+        loaded
     }
 
     /// The reads queued since the last call, if any.
@@ -557,6 +568,7 @@ impl Heads {
                                 let _ = cell.set(data);
                             }
                         }
+                        sample.heads_due.fetch_sub(1, Ordering::Release);
                     }
                 });
             }

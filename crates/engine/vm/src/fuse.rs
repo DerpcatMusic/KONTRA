@@ -103,6 +103,14 @@ fn fused(code: &[Op], start: usize) -> Option<Op> {
     if let (Some(a), Some(b), Some(bin)) = (src(0), src(1), bin(2)) {
         return Some(Op::Bin { bin, a, b });
     }
+    // b icmp iand, on the two values below
+    if let (Some(b), Some(Op::ICmp(cmp)), Some(Op::IAnd)) = (src(0), at(1), at(2)) {
+        return Some(Op::CmpTopAnd { cmp, b });
+    }
+    // b iand jz, on the value below
+    if let (Some(b), Some(Op::IAnd), Some(Op::JumpIfZero(to))) = (src(0), at(1), at(2)) {
+        return Some(Op::AndTopJump { b, to });
+    }
     // b cmp jz, on the value below
     if let (Some(b), Some((cmp, to))) = (src(0), branch(1)) {
         return Some(Op::BranchTop { cmp, b, to });
@@ -112,6 +120,14 @@ fn fused(code: &[Op], start: usize) -> Option<Op> {
         return Some(Op::LoadAtTop { base, len, bin, b });
     }
     match (at(0), at(1)) {
+        // b icmp, on the value below
+        (Some(op), Some(Op::ICmp(cmp))) if op.src().is_some() => {
+            Some(Op::CmpTop { cmp, b: op.src()? })
+        }
+        // icmp iand
+        (Some(Op::ICmp(cmp)), Some(Op::IAnd)) => Some(Op::CmpAnd { cmp }),
+        // iand jz
+        (Some(Op::IAnd), Some(Op::JumpIfZero(to))) => Some(Op::AndJump { to }),
         // b ⊕, on the value below
         (Some(op), Some(next)) if op.src().is_some() && next.bin().is_some() => Some(Op::BinTop {
             bin: next.bin()?,

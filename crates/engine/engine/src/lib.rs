@@ -40,6 +40,7 @@ mod voice_gain;
 mod voice_groups;
 mod voice_rack;
 mod zone_edits;
+mod zone_index;
 
 use std::sync::Arc;
 
@@ -185,8 +186,10 @@ pub struct Engine {
     /// Whether the plan has zones that play on release (a scan of every zone,
     /// so kept, not asked each block).
     release_zones: bool,
+    /// The host keys held down (bit = key) as of this ledger version.
+    keys_down: (u64, u128),
     /// Each zone's key range, packed: a note's start scans these, not the zones.
-    zone_keys: Vec<(u8, u8)>,
+    zone_index: Arc<zone_index::ZoneIndex>,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -233,6 +236,9 @@ pub struct Engine {
     reloaded: Vec<(u8, std::ops::Range<u32>, bool)>,
     /// Array files scripts asked to load or save, for the control side.
     files: Vec<kontra_plan::files::FileRequest>,
+    /// The editor's answers to picks (`PickFile`): slot, async id, and the
+    /// file name, none when cancelled; until the script reads them.
+    picked: Vec<(u8, i32, Option<kontra_vm::Text>)>,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
     /// The engine-parameter addresses behind those calls (par, group, slot,
@@ -360,11 +366,7 @@ impl Engine {
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
-        let zone_keys = plan
-            .zones
-            .iter()
-            .map(|z| (*z.keys.start(), *z.keys.end()))
-            .collect();
+        let zone_index = Arc::new(zone_index::ZoneIndex::new(&plan.zones));
         let release_zones = plan.zones.iter().any(|z| z.trigger == Trigger::Release);
         let mut engine = Self {
             #[cfg(feature = "trace")]
@@ -390,7 +392,8 @@ impl Engine {
             block_turns: 0,
             fuel: 0,
             release_zones,
-            zone_keys,
+            keys_down: (u64::MAX, 0),
+            zone_index,
             stream,
             voices,
             buses,
@@ -422,6 +425,7 @@ impl Engine {
             building: true,
             reloaded: Vec::new(),
             files: Vec::with_capacity(script_files::FILES),
+            picked: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             unanswered_pars: vec![([0; 4], 0); 64].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),

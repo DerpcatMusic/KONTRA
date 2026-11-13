@@ -402,10 +402,14 @@ impl Engine {
             if n.ignored || n.released {
                 continue;
             }
-            let held = self
-                .notes
-                .count(|n| n.started && !n.ignored && !n.is_up() && !n.pedal_held)
-                - 1;
+            // The count scans every note: only zones that start on it ask.
+            let held = if self.zone_index.uses_held() {
+                self.notes
+                    .count(|n| n.started && !n.ignored && !n.is_up() && !n.pedal_held)
+                    - 1
+            } else {
+                0
+            };
             let scripted = self.plan.release_zones == ReleaseZones::WithNote;
             self.start_zones(note, true, |trigger| match trigger {
                 Trigger::Attack => true,

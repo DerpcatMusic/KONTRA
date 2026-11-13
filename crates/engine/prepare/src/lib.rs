@@ -214,7 +214,18 @@ fn load_samples(
             used.entry(z.sample).or_default().push((z, group.stream));
         }
     }
-    let used: Vec<_> = used.into_iter().collect();
+    let mut used: Vec<_> = used.into_iter().collect();
+    // The keys played most (middle C and two octaves either side) first, so
+    // deferred heads reach them first.
+    used.sort_by_key(|(_, zones)| {
+        (zones.iter())
+            .map(|(z, _)| {
+                let (lo, hi) = (*z.keys.start(), *z.keys.end());
+                lo.saturating_sub(72).max(48u8.saturating_sub(hi))
+            })
+            .min()
+            .unwrap_or(u8::MAX)
+    });
     // On fast storage a head of FAST_HEAD bytes per channel starts every
     // page on time; the law's own 60 KB is sized for spinning disks.
     let fast = (used.first())
@@ -263,14 +274,29 @@ fn load_samples(
         slots.push(*index);
     }
     let mut loaded = vec![None; instrument.samples.len()];
-    for (index, result) in slots.into_iter().zip(store.load_many(requests)) {
-        match result {
-            Ok(s) => {
-                if let Some(slot) = loaded.get_mut(index) {
-                    *slot = Some(s);
+    // A wavetable zone's table is built from its frames right here, so those
+    // samples load whole now even when the store leaves heads for later.
+    let tabled: Vec<usize> = (instrument.groups.iter().filter(|g| g.wavetable.is_some()))
+        .flat_map(|g| g.zones.iter().map(|z| z.sample))
+        .collect();
+    let (now, later): (Vec<_>, Vec<_>) =
+        (slots.into_iter().zip(requests)).partition(|(index, _)| tabled.contains(index));
+    for (batch, whole) in [(now, true), (later, false)] {
+        let (indices, batch): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+        let results = if whole {
+            store.load_many_now(batch)
+        } else {
+            store.load_many(batch)
+        };
+        for (index, result) in indices.into_iter().zip(results) {
+            match result {
+                Ok(s) => {
+                    if let Some(slot) = loaded.get_mut(index) {
+                        *slot = Some(s);
+                    }
                 }
+                Err(e) => diagnostics.push(broken("sample-load", format!("sample {index}: {e}"))),
             }
-            Err(e) => diagnostics.push(broken("sample-load", format!("sample {index}: {e}"))),
         }
     }
     loaded
