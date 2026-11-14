@@ -112,12 +112,38 @@ fn env_in(env: Env, m: &str, args: &[Prop]) -> Env {
     }
 }
 
-/// `n`'s children, those of a `ForEach` among them in its place.
+/// A frame's size along each axis from its `min_`/`max_` bounds, SwiftUI's
+/// flexible frame: what it is offered held between the bounds, a missing
+/// one being the child's size. Offered nothing (zero), it takes its finite
+/// most, or what it is given when that is unbounded (Conflux's steppers
+/// are `max_width = 72` around text framed `max_width = math.huge`).
+/// Without bounds it is what it is offered, as before.
+fn flexible(args: &[Prop], room: Size, child: Size) -> [f64; 2] {
+    let axis = |offered: f64, child: f64, min: &str, max: &str| {
+        let (lo, hi) = (num(arg(args, min)), num(arg(args, max)));
+        if lo.is_none() && hi.is_none() {
+            return offered;
+        }
+        let hi = hi.unwrap_or(child).max(lo.unwrap_or(0.));
+        match offered {
+            o if o > 0. => o.clamp(lo.unwrap_or(child).min(hi), hi),
+            _ if hi.is_finite() => hi,
+            _ => 0.,
+        }
+    };
+    [
+        axis(room.0, child.0, "min_width", "max_width"),
+        axis(room.1, child.1, "min_height", "max_height"),
+    ]
+}
+
+/// `n`'s children, those of a `ForEach` among them in its place, however
+/// deep (Conflux's radio groups wrap a `ForEach` of buttons in another).
 fn children(n: &Node) -> Vec<&Node> {
     n.children
         .iter()
         .flat_map(|c| match c.kind.as_str() {
-            "ForEach" => c.children.iter().collect(),
+            "ForEach" => children(c),
             _ => vec![c],
         })
         .collect()
@@ -134,7 +160,8 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
         "frame" => {
             let (w, h) = (num(arg(args, "width")), num(arg(args, "height")));
             let (iw, ih) = inner((w.unwrap_or(room.0), h.unwrap_or(room.1)));
-            (w.unwrap_or(iw), h.unwrap_or(ih))
+            let [fw, fh] = flexible(args, (room.0, room.1), (iw, ih));
+            (w.unwrap_or(fw), h.unwrap_or(fh))
         }
         "padding" => {
             let [l, t, r, b] = pads(args);
@@ -437,8 +464,10 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
             return;
         }
         "frame" => {
-            let w = num(arg(args, "width")).unwrap_or(r.width);
-            let h = num(arg(args, "height")).unwrap_or(r.height);
+            let own = measure(bld, n, k - 1, (r.width, r.height), inner_env);
+            let [fw, fh] = flexible(args, (r.width, r.height), or_room(own, r));
+            let w = num(arg(args, "width")).unwrap_or(fw);
+            let h = num(arg(args, "height")).unwrap_or(fh);
             let room = aligned(r, (w, h), (0.5, 0.5));
             aligned(
                 room,
