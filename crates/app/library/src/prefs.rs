@@ -34,7 +34,7 @@ pub struct Prefs {
 }
 
 impl Prefs {
-    /// Stars or unstars the library at `dir`.
+    /// Stars or unstars the library at `dir`, or a preset by its path.
     pub fn star(&mut self, dir: &Path, on: bool) {
         self.starred.retain(|d| d != dir);
         if on {

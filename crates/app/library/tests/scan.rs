@@ -132,7 +132,8 @@ fn libraries_are_found_named_and_shelved() {
             dir.join("Winds.ufs/Oboe/Oboe.uvip")
         ]
     );
-    assert_eq!(winds.art, [dir.join("Winds.png")]);
+    // Its sidecar picture first, then the bank, which holds its own cover.
+    assert_eq!(winds.art, [dir.join("Winds.png"), dir.join("Winds.ufs")]);
     assert_eq!(
         catalog.of(&winds.presets[1]).map(|l| l.name.as_str()),
         Some("Winds")

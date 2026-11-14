@@ -92,6 +92,8 @@ pub struct Library {
     /// into the focused part on a double-click: snapshots, the player's own.
     pub recalls: Vec<usize>,
     pub starred: bool,
+    /// Its presets the player starred, as indices into `presets`.
+    pub favorites: Vec<usize>,
     /// Pictures that may be its cover, best first, as the host's cover
     /// store reads them; the first that decodes is shown.
     pub art: Vec<String>,
@@ -243,6 +245,15 @@ pub enum Tab {
     Report,
 }
 
+/// How the browser lays its libraries out: two to a row, small, so a
+/// dozen show at once, or one to a row, their pictures large.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Tiles {
+    #[default]
+    Grid,
+    Cards,
+}
+
 /// Which libraries the browser lists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Shelf {
@@ -261,6 +272,7 @@ pub struct View {
     pub split: f64,
     pub format: Format,
     pub shelf: Shelf,
+    pub tiles: Tiles,
     /// Libraries listed Z to A.
     pub descending: bool,
     pub search: String,
@@ -453,6 +465,8 @@ pub enum Action {
     Panic,
     MidiThru(bool),
     Star(usize, bool),
+    /// Star or unstar preset (library, preset).
+    StarPreset(usize, usize, bool),
     AddFolder,
     /// Choose Kontakt's user snapshot folder.
     ChooseSnapshotFolder,
