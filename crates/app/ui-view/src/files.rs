@@ -53,16 +53,25 @@ pub struct Column {
 #[must_use]
 pub fn columns(base: &str, path: &str, files: model::Files) -> Vec<Column> {
     let mut dir = PathBuf::from(base);
-    let rest = Path::new(path).strip_prefix(&dir).ok().map(Path::to_path_buf);
+    let rest = Path::new(path)
+        .strip_prefix(&dir)
+        .ok()
+        .map(Path::to_path_buf);
     let mut parts = rest.iter().flat_map(|r| r.components()).peekable();
     let mut out = Vec::new();
     loop {
         let entries = list(&dir, files);
-        let next = parts.next().map(|c| c.as_os_str().to_string_lossy().into_owned());
+        let next = parts
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned());
         let picked = next.and_then(|n| entries.iter().position(|e| e.name == n));
         let folder = picked.and_then(|i| entries.get(i)).filter(|e| e.folder);
         let open = folder.map(|e| dir.join(&e.name));
-        out.push(Column { dir, entries, picked });
+        out.push(Column {
+            dir,
+            entries,
+            picked,
+        });
         match open {
             Some(d) if out.len() < 32 => dir = d,
             _ => return out,
@@ -142,7 +151,8 @@ impl Layout {
             pitch,
             shift: (total - w).max(0.),
             sideways,
-            rows: (room / ROW).floor().max(0.) as usize,
+            // Within half a point: a snapped rect may lose a hair.
+            rows: ((room + 0.5) / ROW).floor().max(0.) as usize,
         }
     }
 
@@ -160,7 +170,12 @@ impl Layout {
         }
         let c = ((x + self.shift) / self.pitch).floor() as usize;
         let col = cols.get(c)?;
-        let list = self.pitch - if self.barred(col.entries.len()) { BAR } else { 0. };
+        let list = self.pitch
+            - if self.barred(col.entries.len()) {
+                BAR
+            } else {
+                0.
+            };
         if x + self.shift - c as f64 * self.pitch >= list {
             return None;
         }
@@ -222,7 +237,13 @@ pub(super) fn draw(
                 // ▸ at the right, 3 points across.
                 for k in 0..3 {
                     let k = f64::from(k);
-                    parts.push(fill(x0 + list - 9. + k, y + 5. + k, 1., 5. - 2. * k, 0xF6_F6F0));
+                    parts.push(fill(
+                        x0 + list - 9. + k,
+                        y + 5. + k,
+                        1.,
+                        5. - 2. * k,
+                        0xF6_F6F0,
+                    ));
                 }
             }
         }
@@ -239,7 +260,13 @@ pub(super) fn draw(
             parts.push(fill(bx + BAR - 1., t, 1., th, 0x69_6963));
             parts.push(fill(bx, t + th - 1., BAR - 1., 1., 0xBF_BEB5));
         } else {
-            parts.push(fill(x0 + list - 1., 0., 1., lay.rows as f64 * ROW, 0xD2_D2CE));
+            parts.push(fill(
+                x0 + list - 1.,
+                0.,
+                1.,
+                lay.rows as f64 * ROW,
+                0xD2_D2CE,
+            ));
         }
     }
     if lay.sideways {
@@ -254,10 +281,20 @@ pub(super) fn draw(
 
 /// A row's 12 point icon: a folder's outline; a file's light square with
 /// a note (MIDI) or a waveform (the others, and a selector without a type).
-fn icon(folder: bool, files: model::Files, (x, y): (f64, f64), fill: &dyn Fn(f64, f64, f64, f64, u32) -> El) -> El {
+fn icon(
+    folder: bool,
+    files: model::Files,
+    (x, y): (f64, f64),
+    fill: &dyn Fn(f64, f64, f64, f64, u32) -> El,
+) -> El {
     let mut p = Vec::new();
     if folder {
-        for (fx, fy, fw, fh) in [(0., 1., 12., 1.), (0., 10., 12., 1.), (0., 1., 1., 10.), (11., 1., 1., 10.)] {
+        for (fx, fy, fw, fh) in [
+            (0., 1., 12., 1.),
+            (0., 10., 12., 1.),
+            (0., 1., 1., 10.),
+            (11., 1., 1., 10.),
+        ] {
             p.push(fill(x + fx, y + fy, fw, fh, 0xF6_F6F0));
         }
         return stack(p);

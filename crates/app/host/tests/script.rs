@@ -5239,7 +5239,11 @@ fn a_picked_file_runs_the_selector_callback_with_its_names() {
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[]);
     let id: i32 = e.last_message().parse().unwrap();
-    e.set_picked(0, id, kontra_engine::Text::from_str_cut("/lib/midi/a.mid").0);
+    e.set_picked(
+        0,
+        id,
+        kontra_engine::Text::from_str_cut("/lib/midi/a.mid").0,
+    );
     e.set_click(0, id, [false; 3], 0);
     e.set_control(0, id, 0);
     assert_eq!(e.last_message(), "a|a.mid|/lib/midi/a.mid");

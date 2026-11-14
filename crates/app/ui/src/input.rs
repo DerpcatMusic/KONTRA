@@ -437,17 +437,19 @@ fn pad(
     let Some((_, c, start)) = g.xy.filter(|(p, ..)| *p == n.0) else {
         return Vec::new();
     };
+    // The source runs its callback once on the press and once on the
+    // release, moved or not (Kontakt 8 oracle, probe gate.ksp: a held
+    // press read 1 call, its release 2): an edit of the cursor's x cell
+    // as it stands, each.
+    let stands = || w.cell(2 * c).map(|v| edit(Set::Cell(2 * c, v)));
+    let mut out: Vec<Edit> = stands()
+        .filter(|_| r.pressed && w.reports_release)
+        .into_iter()
+        .collect();
     if r.released || !r.held {
         g.xy = None;
-        // The source runs its callback once on release, moved or not: one
-        // edit, of the cursor's x cell, as it stands.
-        return if r.released && w.reports_release {
-            (w.cell(2 * c).map(|v| edit(Set::Cell(2 * c, v))))
-                .into_iter()
-                .collect()
-        } else {
-            Vec::new()
-        };
+        out.extend(stands().filter(|_| r.released && w.reports_release));
+        return out;
     }
     let [_, _, cw, ch] = rect(c).unwrap_or([0., 0., xy::CURSOR, xy::CURSOR]);
     let corner = if mode >= 2 {
@@ -472,11 +474,13 @@ fn pad(
         )
     };
     let (x, y) = xy::value(corner, points, art(c));
-    [(2 * c, x), (2 * c + 1, y)]
-        .into_iter()
-        .filter(|&(cell, v)| w.cell(cell).is_some_and(|now| (now - v).abs() > 1e-9))
-        .map(|(cell, v)| edit(Set::Cell(cell, v)))
-        .collect()
+    out.extend(
+        [(2 * c, x), (2 * c + 1, y)]
+            .into_iter()
+            .filter(|&(cell, v)| w.cell(cell).is_some_and(|now| (now - v).abs() > 1e-9))
+            .map(|(cell, v)| edit(Set::Cell(cell, v))),
+    );
+    out
 }
 
 /// The open menu's popup, and the item picked from it.
@@ -599,7 +603,11 @@ fn browse(
             *top = (f64::from(*top) + rows).clamp(0., f64::from(last)) as u32;
         }
         // A selection the keys or a click moved stays in sight.
-        if let Some(p) = col.picked.filter(|_| moved).and_then(|p| u32::try_from(p).ok()) {
+        if let Some(p) = col
+            .picked
+            .filter(|_| moved)
+            .and_then(|p| u32::try_from(p).ok())
+        {
             let rows = u32::try_from(lay.rows.max(1)).unwrap_or(1);
             *top = (*top).min(p).max((p + 1).saturating_sub(rows));
         }

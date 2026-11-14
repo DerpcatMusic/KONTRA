@@ -367,7 +367,9 @@ fn drawn_page(
             _ => None,
         };
         let browse_key = browser.as_ref().map(|(cols, _, tops, _)| {
-            let open = cols.iter().map(|c| (Arc::as_ptr(&c.entries).cast::<()>() as usize, c.picked));
+            let open = cols
+                .iter()
+                .map(|c| (Arc::as_ptr(&c.entries).cast::<()>() as usize, c.picked));
             (open.collect::<Vec<_>>(), tops.clone())
         });
         // What the waveform raster draws: its look and its data's contents.

@@ -706,11 +706,10 @@ impl Rack {
             return;
         };
         let w = view.tree().widgets.get(widget);
-        let picker = w.is_some_and(|w| matches!(w.kind, kontra_ui_model::Kind::FileSelector { .. }));
+        let picker =
+            w.is_some_and(|w| matches!(w.kind, kontra_ui_model::Kind::FileSelector { .. }));
         let face = p.faces.get(usize::from(slot)).and_then(Option::as_ref);
-        let cell = face
-            .zip(w)
-            .and_then(|(f, w)| f.text_cell(&w.name));
+        let cell = face.zip(w).and_then(|(f, w)| f.text_cell(&w.name));
         if cell.is_none() && !picker {
             return;
         }
