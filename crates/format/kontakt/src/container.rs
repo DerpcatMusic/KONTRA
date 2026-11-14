@@ -11,6 +11,8 @@ use ni_file::kontakt::objects::BPatchHeader;
 use ni_file::nis::schema::{NISObject, PresetChunkItem, Repository};
 use ni_file::nis::{AppSpecificProperties, ItemContainer, ItemType};
 
+use kontra_ir as ir;
+
 use crate::Error;
 
 /// A preset larger than this is not a preset.
@@ -30,13 +32,33 @@ pub fn chunks(path: &Path) -> Result<KontaktChunks, Error> {
 pub(crate) fn opened(
     path: &Path,
 ) -> Result<(KontaktChunks, Option<NIFileContainer>, Option<bool>), Error> {
+    let (bytes, monolith, encrypted) = decoded(path)?;
+    let chunks = KontaktChunks::read(Cursor::new(bytes))
+        .map_err(|e| Error::new(path, "Kontakt chunks", e))?;
+    Ok((chunks, monolith, encrypted))
+}
+
+/// The chunk stream's bytes, the monolith table and whether it was encrypted.
+pub(crate) fn decoded(
+    path: &Path,
+) -> Result<(Vec<u8>, Option<NIFileContainer>, Option<bool>), Error> {
     let mut file = std::fs::File::open(path).map_err(|e| Error::new(path, "open", e))?;
     let mut monolith = None;
     let mut encrypted = None;
     let bytes = payload(&mut file, path, 0, &mut monolith, &mut encrypted)?;
+    Ok((bytes, monolith, encrypted))
+}
+
+/// The instrument of an already decoded chunk stream, as `path` names it
+/// (its samples resolve beside that file).
+pub(crate) fn from_bytes(
+    path: &Path,
+    bytes: Vec<u8>,
+    encrypted: Option<bool>,
+) -> Result<ir::Instrument, Error> {
     let chunks = KontaktChunks::read(Cursor::new(bytes))
         .map_err(|e| Error::new(path, "Kontakt chunks", e))?;
-    Ok((chunks, monolith, encrypted))
+    crate::translate::instrument(path, &chunks, None, &[], encrypted, None)
 }
 
 fn payload<R: Read + Seek>(

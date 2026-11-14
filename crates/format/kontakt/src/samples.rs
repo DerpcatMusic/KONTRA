@@ -117,6 +117,11 @@ impl Resolver {
             let Some(candidate) = self.bases.get(at).map(|b| lexical(&b.join(&name))) else {
                 break;
             };
+            // Where the player said the folder moved to, root or not.
+            let moved = kontra_format::moved(&candidate);
+            if moved != candidate && moved.is_file() {
+                return Ok(Some(whole(moved)));
+            }
             if !candidate.starts_with(&self.root) {
                 continue;
             }

@@ -22,6 +22,10 @@ pub struct ZoneFacts {
     pub end: u64,
     pub start_range: u64,
     pub rate: u32,
+    /// Its sample (`get_sample`, and what the music-information commands read).
+    pub source: Option<std::sync::Arc<ir::Sample>>,
+    /// Its loops, in play order (`get_loop_par`).
+    pub loops: Vec<ir::Loop>,
 }
 
 impl ZoneFacts {
