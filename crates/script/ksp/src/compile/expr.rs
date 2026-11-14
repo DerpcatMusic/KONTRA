@@ -506,6 +506,14 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::Int(ui_id(v)));
                     ints += 1;
                 }
+                Arg::W => {
+                    let (v, _) = self.named(e)?;
+                    let Home::Cell(cell) = self.var(v)?.home else {
+                        return Err(Error::new(e.span, "expected a number variable"));
+                    };
+                    self.emit(Op::Int(cell as i32));
+                    ints += 1;
+                }
                 Arg::A => {
                     // Files hold text arrays too; the other builtins compare numbers.
                     let files = matches!(

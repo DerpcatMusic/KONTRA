@@ -18,6 +18,21 @@ pub mod event {
     /// Every group; so does any group past the last.
     pub const ALL_GROUPS: i32 = -1;
 
+    /// MIDI object: the event the position marker is on (`$CURRENT_EVENT`).
+    pub const CURRENT: i32 = 0;
+    /// MIDI object: flag; the low bits are a track (`by_track`).
+    pub const BY_TRACK: i32 = 0x4000_0000;
+    /// MIDI object event parameters, as Kontakt 8.13 reads them
+    /// (probes/ksp/zone_and_detect.kspp).
+    pub const MIDI_CHANNEL: i32 = 11;
+    pub const MIDI_COMMAND: i32 = 12;
+    pub const MIDI_BYTE_1: i32 = 13;
+    pub const MIDI_BYTE_2: i32 = 14;
+    pub const POS: i32 = 21;
+    pub const TRACK_NR: i32 = 22;
+    pub const NOTE_LENGTH: i32 = 24;
+    pub const ID: i32 = 25;
+
     /// `0..=3` are free for the script.
     pub const CUSTOM_LAST: i32 = 3;
     pub const VOLUME: i32 = 4;
@@ -351,6 +366,23 @@ actions! {
     GetKeyrangeName,
     SetMapEditorEventColor,
     LoadKompleteUi,
+    GetSample,
+    SetSample,
+    SetNumUserZones,
+    GetZoneStatus,
+    GetSelZonesIdx,
+    GetLoopPar,
+    SetLoopPar,
+    SetMidi,
+    DetectKey,
+    DetectPitch,
+    DetectLoudness,
+    DetectPeak,
+    DetectRms,
+    DetectTempo,
+    DetectSampleType,
+    DetectDrumType,
+    DetectInstrumentType,
     // Diagnostics.
     Message,
     DisableLogging,

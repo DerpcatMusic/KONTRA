@@ -4,6 +4,7 @@
 
 mod engine_pars;
 pub mod files;
+pub mod midi_file;
 pub mod modulation;
 pub mod par_laws;
 pub mod par_values;

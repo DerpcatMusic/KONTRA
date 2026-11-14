@@ -29,6 +29,11 @@ pub fn real(name: &str) -> Option<f64> {
     match name {
         "~NI_MATH_PI" => Some(std::f64::consts::PI),
         "~NI_MATH_E" => Some(std::f64::consts::E),
+        // What a failed detection reads (unmeasured; the decibel ones sit far below any level).
+        "~NI_DETECT_PITCH_INVALID" | "~NI_DETECT_TEMPO_INVALID" => Some(-1.0),
+        "~NI_DETECT_LOUDNESS_INVALID" | "~NI_DETECT_PEAK_INVALID" | "~NI_DETECT_RMS_INVALID" => {
+            Some(-1000.0)
+        }
         _ => None,
     }
 }
