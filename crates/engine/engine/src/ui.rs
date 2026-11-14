@@ -45,6 +45,17 @@ impl Engine {
             .click(slot, self.control_index_in(slot, id), keys, cell);
     }
 
+    /// The user picked `path` in file selector `id` of script `slot`; then
+    /// [`Engine::set_control`] runs its callback.
+    pub fn set_picked(&mut self, slot: u8, id: i32, path: Text) {
+        let n = self.control_index_in(slot, id);
+        let scripts = &self.plan.scripts;
+        let par = scripts.get(usize::from(slot)).map(|s| s.controls.look.filepath);
+        if let Some(par) = par {
+            self.ui.pick_file(slot, n, par, path);
+        }
+    }
+
     /// Script `slot`'s control with UI id `id`, as the script left it.
     #[must_use]
     pub fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>> {

@@ -384,6 +384,7 @@ fn look(script: &Script) -> LookPars {
         wf_cursor: par("wf_cursor"),
         wf_prop_cursor: par("$UI_WF_PROP_PLAY_CURSOR"),
         wf_prop_flags: par("$UI_WF_PROP_FLAGS"),
+        filepath: par("$CONTROL_PAR_FILEPATH"),
         wallpaper: id("$INST_WALLPAPER_ID"),
         icon: id("$INST_ICON_ID"),
     }

@@ -137,6 +137,8 @@ pub struct LookPars {
     /// The `set_ui_wf_property` properties for the cursor and the flags.
     pub wf_prop_cursor: i32,
     pub wf_prop_flags: i32,
+    /// `$CONTROL_PAR_FILEPATH`: the file a file selector picked last.
+    pub filepath: i32,
     /// The UI ids that address the instrument's wallpaper and icon.
     pub wallpaper: i32,
     pub icon: i32,
@@ -393,6 +395,12 @@ impl Store {
         }
     }
 
+    /// The user picked `path` in file selector `n` of script `slot`: what
+    /// `$CONTROL_PAR_FILEPATH` and `fs_get_filename` read.
+    pub fn pick_file(&mut self, slot: u8, n: Option<usize>, par: i32, path: Text) {
+        self.set_text_par(slot, n, par, path, false);
+    }
+
     /// Sets text parameter `par` of control `n`; `line` appends a line.
     fn set_text_par(&mut self, slot: u8, n: Option<usize>, par: i32, text: Text, line: bool) {
         let Some(n) = n else {
@@ -515,6 +523,20 @@ impl Store {
         let item = |s: &Self| at.and_then(|i| s.menu(slot, n).get(i).copied());
         Some(match call.action {
             Action::GetFontId => HostValue::Int(self.font_id(slot, text)),
+            // The file a selector picked: 0 its name, 1 with its extension,
+            // 2 its whole path (KSP manual, fs_get_filename).
+            Action::FsGetFilename if look.is_some() => {
+                let par = look.map_or(0, |l| l.filepath);
+                let picked = n.and_then(|n| self.texts(slot, n).iter().find(|(p, _)| *p == par));
+                let path = picked.map_or("", |(_, t)| t.as_str());
+                let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+                let shown = match int(1) {
+                    2 => path,
+                    1 => file,
+                    _ => file.rsplit_once('.').map_or(file, |(name, _)| name),
+                };
+                out(Text::from_str_cut(shown).0)
+            }
             // Opens Kontakt's library browser tab: nothing here shows one.
             Action::ShowLibraryTab => HostValue::Nothing,
             // Kontakt names its outputs "Out 1", "Out 2", ... and -1 ""
