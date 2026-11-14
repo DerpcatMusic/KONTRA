@@ -73,6 +73,8 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             ),
             (w.normal.as_deref().map(|p| (p, 1)), ui::Role::Background),
             (w.pressed.as_deref().map(|p| (p, 1)), ui::Role::Pressed),
+            (w.over.as_deref().map(|p| (p, 1)), ui::Role::Hover),
+            (w.over_pressed.as_deref().map(|p| (p, 1)), ui::Role::HoverPressed),
             (w.handle.as_deref().map(|p| (p, 1)), ui::Role::Handle),
         ];
         let mut own = None;
@@ -321,9 +323,54 @@ fn value_of(kind: &ui::Kind, v: f64) -> Option<ui::Value> {
 /// A button draws its pressed picture while on, its normal one while off.
 fn swap(w: &mut ui::Widget) {
     let on = matches!(w.value, Some(ui::Value::Integer(v)) if v != 0);
-    if let Some(at) = (w.images.iter()).position(|i| (i.role == ui::Role::Pressed) == on) {
+    let hover = |r: ui::Role| matches!(r, ui::Role::Hover | ui::Role::HoverPressed);
+    if let Some(at) =
+        (w.images.iter()).position(|i| !hover(i.role) && (i.role == ui::Role::Pressed) == on)
+    {
         w.images.swap(0, at);
     }
+}
+
+/// Widget `n` shows the picture at `path` now (a script swapped its
+/// `image` at run time): its first background picture becomes that one,
+/// a new asset if no widget showed it yet; whether it changed.
+pub fn picture(tree: &mut ui::Interface, n: usize, path: &str) -> bool {
+    let Some(w) = tree.widgets.get(n) else {
+        return false;
+    };
+    let Some(at) = (w.images.iter()).position(|i| i.role == ui::Role::Background) else {
+        return false;
+    };
+    let old = (w.images.get(at)).and_then(|i| tree.assets.get(i.asset.0));
+    if old.is_some_and(|a| a.path == path) {
+        return false;
+    }
+    // Drawn as the picture it replaces was: stretched over the widget or not.
+    let stretch = match old.map(|a| &a.kind) {
+        Some(ui::AssetKind::Image(m)) => m.stretch,
+        _ => [true; 2],
+    };
+    let asset = match (tree.assets.iter()).position(|a| {
+        a.path == path && matches!(&a.kind, ui::AssetKind::Image(m) if m.frames == 1 && m.stretch == stretch)
+    }) {
+        Some(found) => found,
+        None => {
+            tree.assets.push(ui::Asset {
+                path: path.to_owned(),
+                kind: ui::AssetKind::Image(ui::ImageMeta {
+                    frames: 1,
+                    axis: ui::Orientation::Vertical,
+                    stretch,
+                    ..Default::default()
+                }),
+            });
+            tree.assets.len() - 1
+        }
+    };
+    if let Some(i) = tree.widgets.get_mut(n).and_then(|w| w.images.get_mut(at)) {
+        i.asset = ui::AssetRef(asset);
+    }
+    true
 }
 
 /// Brings widget `n` to `look` and `text`; whether it changed.
@@ -400,6 +447,8 @@ pub trait Page {
     fn widget(&self, slot: u8, n: u32) -> Option<WidgetLook>;
     /// Widget `n`'s text into `out`; false when it has none.
     fn widget_text(&self, slot: u8, n: u32, out: &mut Text) -> bool;
+    /// Widget `n`'s picture path into `out`; false when it has none.
+    fn widget_image(&self, slot: u8, n: u32, out: &mut Text) -> bool;
     /// The state script `slot` saves for a project, into `out` (a Lua
     /// script's `onSave`); its length.
     fn save_state(&mut self, slot: u8, out: &mut [u8]) -> Option<usize>;
@@ -415,6 +464,10 @@ impl Page for Engine {
 
     fn widget_text(&self, slot: u8, n: u32, out: &mut Text) -> bool {
         self.vm(slot).is_some_and(|vm| vm.widget_text(n, out))
+    }
+
+    fn widget_image(&self, slot: u8, n: u32, out: &mut Text) -> bool {
+        self.vm(slot).is_some_and(|vm| vm.widget_image(n, out))
     }
 
     fn save_state(&mut self, slot: u8, out: &mut [u8]) -> Option<usize> {

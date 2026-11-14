@@ -13,7 +13,7 @@ use mui::prelude::*;
 
 use crate::kit;
 use crate::theme::TEXT;
-pub use kontra_ui_view::{surface, takes_input};
+pub use kontra_ui_view::{hovers, surface, takes_input};
 
 /// One control set by the user, and the modifier keys held at the click
 /// (a script reads them as `$CONTROL_PAR_KEY_*`).
@@ -57,6 +57,10 @@ pub struct Gesture {
     files: Vec<(usize, String, Vec<u32>)>,
     /// The sub-menu levels a hierarchical menu has drilled into, by child.
     branch: Vec<usize>,
+    /// The hover areas the pointer is over, by their page rectangle: a
+    /// native page re-renders its views (new widgets, new callbacks) when
+    /// a hover sets its state, and the area stays the same one.
+    hovered: Vec<[i64; 4]>,
 }
 
 impl Gesture {
@@ -214,7 +218,17 @@ pub fn read(
 ) -> (Vec<Edit>, Option<El>) {
     let mut edits = Vec::new();
     let order = tree.draw_order(page);
+    let pointer = ui.pointer().pos;
+    let mut over = Vec::new();
     for (i, &n) in order.iter().enumerate() {
+        if let Some(w) = tree.widgets.get(n.0).filter(|w| hovers(w)) {
+            if tree.visible(n)
+                && let Some(edit) = hover(ui, surface(face, n.0), (n, w), scale, pointer, g, &mut over)
+            {
+                edits.push(edit);
+            }
+            continue;
+        }
         let Some(w) = tree.widgets.get(n.0).filter(|w| takes_input(w)) else {
             continue;
         };
@@ -388,9 +402,39 @@ pub fn read(
             _ => {}
         }
     }
+    g.hovered = over;
     let popup =
         menu(ui, face, tree, g, &mut edits).or_else(|| entry(ui, face, tree, g, &mut edits));
     (edits, popup)
+}
+
+/// Hover area `w` (number `n`) as the pointer at `pointer` finds it: kept
+/// in `over` while the pointer is on it, and an edit (1 on entering, 0 on
+/// leaving) when that changed since the last frame, which runs the page's
+/// own `enter` or `exit`.
+fn hover(
+    ui: &Ui,
+    id: String,
+    (n, w): (WidgetRef, &model::Widget),
+    scale: f64,
+    pointer: Option<Point>,
+    g: &Gesture,
+    over: &mut Vec<[i64; 4]>,
+) -> Option<Edit> {
+    let r = w.rect;
+    let key = [r.x, r.y, r.width, r.height].map(|v| (v * 16.).round() as i64);
+    let at = ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame);
+    let inside = pointer.zip(at).is_some_and(|(p, f)| {
+        p.x >= f.x && p.y >= f.y && p.x < f.x + r.width * scale && p.y < f.y + r.height * scale
+    });
+    if inside {
+        over.push(key);
+    }
+    (inside != g.hovered.contains(&key)).then(|| Edit {
+        widget: n,
+        to: Set::Value(if inside { 1. } else { 0. }),
+        keys: model::UiModifiers::default(),
+    })
 }
 
 /// The cells of a table the pointer crossed this frame, set to its height

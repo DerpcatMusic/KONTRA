@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use kontra_ui_model::{self as model, Interface, Kind, PageRef};
+use kontra_ui_model::{self as model, Interface, Kind, PageRef, Role};
 use mui::prelude::*;
 
 use kontra_ui_pictures::Pictures;
@@ -44,9 +44,16 @@ pub fn surface(face: usize, n: usize) -> String {
     format!("kontra-w-{face}-{n}")
 }
 
+/// Whether a widget is a hover area: set while the pointer is over it,
+/// taking no press (a native page's `on_hover_gesture`).
+pub fn hovers(w: &model::Widget) -> bool {
+    !w.intercepts_mouse && matches!(w.kind, Kind::Button { momentary: true })
+}
+
 /// Whether a widget of `kind` takes the pointer.
 pub fn takes_input(w: &model::Widget) -> bool {
     w.enabled
+        && w.intercepts_mouse
         && matches!(
             w.kind,
             Kind::Knob { .. }
@@ -125,27 +132,29 @@ fn drawn_page(
     (scale, level): (f64, &[[Shown; 2]]),
     bare: bool,
 ) -> (El, usize) {
-    // Pointer state is an input to the otherwise pure draw projection.
-    // Only source buttons and switches use Kontakt's held picture frame.
-    let pressed: Vec<_> = tree
-        .widgets
-        .iter()
-        .enumerate()
-        .filter_map(|(n, w)| {
-            if !matches!(
-                tree.source,
-                model::Source::Ksp { .. } | model::Source::PerformanceView
-            ) || !matches!(w.kind, Kind::Button { .. } | Kind::Switch)
-                || !tree.visible(model::WidgetRef(n))
-            {
-                return None;
-            }
-            let response = ui.get(surface(face, n));
-            (response.held && response.button == Some(Button::Primary))
-                .then_some(model::WidgetRef(n))
-        })
-        .collect();
-    let Some(plan) = plan::page(tree, page, bare, scale, &pressed) else {
+    // Pointer state is an input to the otherwise pure draw projection: a
+    // source button's or switch's held and hover frames (Kontakt's six-frame
+    // strips), and a picture the script shows under the pointer (UVI's
+    // `overImage`, `overPressedImage`).
+    let (mut pressed, mut hovered) = (Vec::new(), Vec::new());
+    for (n, w) in tree.widgets.iter().enumerate() {
+        let strip = matches!(
+            tree.source,
+            model::Source::Ksp { .. } | model::Source::PerformanceView
+        ) && matches!(w.kind, Kind::Button { .. } | Kind::Switch);
+        let art = (w.images.iter()).any(|i| matches!(i.role, Role::Hover | Role::HoverPressed));
+        if !(strip || art) || !tree.visible(model::WidgetRef(n)) {
+            continue;
+        }
+        let response = ui.get(surface(face, n));
+        if strip && response.held && response.button == Some(Button::Primary) {
+            pressed.push(model::WidgetRef(n));
+        }
+        if response.hovered {
+            hovered.push(model::WidgetRef(n));
+        }
+    }
+    let Some(plan) = plan::page(tree, page, bare, scale, (&pressed, &hovered)) else {
         return (block(0., 0.), 0);
     };
     let p = plan.source;
@@ -593,7 +602,11 @@ fn drawn_page(
         } else {
             el
         };
-        let el = if takes_input(wd) {
+        let el = if hovers(wd) {
+            // Marks where it is and takes no press: input reads the pointer
+            // against it (crate::input).
+            block(0., 0.).id(id)
+        } else if takes_input(wd) {
             let el = el
                 .id(id)
                 .focusable()
