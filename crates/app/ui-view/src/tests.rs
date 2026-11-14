@@ -845,3 +845,116 @@ fn only_a_script_label_draws_kontakts_bare_label_face() {
     label.source_id = Some(7);
     assert!(crate::stock::label_face(&tree, &label, (40., 12., 1.)).is_some());
 }
+
+/// At 125 %, 150 % and 200 % a picture at a whole logical place paints its
+/// device-scaled pixels as they are: its edges sit on whole pixels, so the
+/// renderer never filters it a second time at a half-pixel offset.
+#[test]
+fn a_picture_lands_on_whole_pixels_at_every_zoom() {
+    let row: Vec<u8> = (0..8)
+        .flat_map(|i| if i % 2 == 0 { [255; 4] } else { [0, 0, 0, 255] })
+        .collect();
+    for scale in [1.25, 1.5, 2.] {
+        let mut tree = Interface {
+            source: model::Source::Ksp { slot: 0 },
+            ..Interface::default()
+        };
+        let mut face = Page {
+            size: Size {
+                width: 12.,
+                height: 4.,
+            },
+            ..Page::default()
+        };
+        face.background.color = Some(Rgba::rgb(0));
+        tree.pages.push(face);
+        tree.assets.push(Asset {
+            path: "p.png".into(),
+            kind: AssetKind::Image(ImageMeta {
+                frames: 1,
+                size: Some(Size {
+                    width: 8.,
+                    height: 2.,
+                }),
+                ..ImageMeta::default()
+            }),
+        });
+        let mut label = Widget::new("$l", PageRef(0), Rect::new(1, 1, 8, 2), Kind::Label);
+        label.images.push(ImageUse::new(AssetRef(0), Role::Strip));
+        tree.widgets.push(label);
+        let file = png(8, 2, &row.repeat(2));
+        let mut pictures = Pictures::new(Box::new(move |p| (p == "p.png").then(|| file.clone())));
+        let mut ui = crate::ui();
+        settle(&mut ui, &tree, &mut pictures, scale);
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (scale, &[]));
+        let w = (12. * scale).ceil() as usize;
+        let px = paint(&mut ui, el, w as u16, (4. * scale).ceil() as u16);
+        let (x0, y) = ((scale).round() as usize, (1.5 * scale) as usize);
+        let want: Vec<u8> = Image::rgba(8, 2, row.repeat(2))
+            .and_then(|i| kontra_ui_pictures::at(i, scale as f32))
+            .map(|i| {
+                i.rgba
+                    .chunks(4)
+                    .take(i.width as usize)
+                    .map(|p| p[0])
+                    .collect()
+            })
+            .unwrap_or_default();
+        let got: Vec<u8> = (x0..x0 + want.len())
+            .map(|x| px.get(y * w + x).map_or(0, |p| p[0]))
+            .collect();
+        assert!(!want.is_empty());
+        assert_eq!(got, want, "at {scale}");
+    }
+}
+
+/// At 50 % (the smallest editor size) a pixel font's two pixels share one
+/// device pixel half and half: Kontakt's area law, read down as well as up.
+#[test]
+fn a_pixel_font_at_50_percent_averages_each_pair_of_pixels() {
+    let cols = crate::stock::area(4, 2, 0.5);
+    assert_eq!(cols, [vec![(0, 0.5), (1, 0.5)], vec![(2, 0.5), (3, 0.5)]]);
+}
+
+/// A stock XY pad as Kontakt 8 draws one (probe/xy.ksp at 100 %): the
+/// frame line 7 in, the active cursor filled, the other hollow, y up.
+#[test]
+fn a_stock_xy_pad_draws_its_frame_and_cursors_where_kontakt_does() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 200.,
+            height: 150.,
+        },
+        ..Page::default()
+    });
+    let mut pad = Widget::new(
+        "?xy",
+        PageRef(0),
+        Rect::new(0, 0, 200, 150),
+        Kind::Xy {
+            cursors: 2,
+            sensitivity: [None; 2],
+            mouse_mode: None,
+        },
+    );
+    pad.value = Some(model::Value::Reals(vec![0.2, 0.8, 0.8, 0.2]));
+    tree.widgets.push(pad);
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let px = paint(&mut ui, el, 200, 150);
+    let at = |x: usize, y: usize| px.get(y * 200 + x).map(|p| p[0]);
+    // Kontakt: the active cursor's square 38..50 by 28..40, filled #787878.
+    assert_eq!(at(44, 34), Some(0x78));
+    assert_eq!(at(38, 34), Some(0xFF));
+    // The frame line, and the field inside it.
+    assert_eq!(at(7, 75), Some(0xA6));
+    assert_eq!(at(100, 75), Some(0x3F));
+    // The second cursor (0.8, 0.2): its edge at 149, hollow inside.
+    assert_eq!(at(149, 115), Some(0xFF));
+    assert_eq!(at(155, 115), Some(0x3F));
+}
