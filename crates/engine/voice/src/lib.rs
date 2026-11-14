@@ -12,14 +12,13 @@ mod zone;
 
 use kontra_stream::{Mix, StreamClient};
 
-pub use envelope::Ahdsr;
+pub use envelope::{Ahdsr, Envelope};
 pub use wavetable::{
     CYCLE, Inharmonic, LEVELS, ModKind, ModOsc, Osc, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP,
     Quality, Table, Unit, Warp, shape, warp,
 };
 pub use zone::{Loop, Loops, Region};
 
-use envelope::Envelope;
 use fade::Fade;
 pub use fade::{FadeCurve, FadeTarget};
 
@@ -522,7 +521,7 @@ impl Voice {
             insert(raw);
             for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
                 self.lagged += (self.lag.gain - self.lagged) * self.lag.coef;
-                let level = self.env.next() * self.fade.next() * self.lagged;
+                let level = self.env.tick() * self.fade.next() * self.lagged;
                 for (g, target) in self
                     .gain
                     .as_flattened_mut()

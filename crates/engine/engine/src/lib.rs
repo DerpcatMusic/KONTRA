@@ -74,7 +74,7 @@ pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_script_ui::{ENTRY, FIRST_FONT};
 pub use kontra_time::SampleTime;
 pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
-pub use kontra_voice::{Ahdsr, Loop, Region, RenderMode};
+pub use kontra_voice::{Ahdsr, Envelope, Loop, Region, RenderMode};
 pub use ledger::NoteRef;
 pub use pgs::PgsBudget;
 pub use plan::{
