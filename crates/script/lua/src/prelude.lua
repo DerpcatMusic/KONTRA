@@ -1099,8 +1099,10 @@ function spawn(f, ...)
 	local co = coroutine.create(f)
 	local ok, waited = coroutine.resume(co, ...)
 	-- A coroutine that failed is queued too: resuming it counts the fault.
+	-- Its error text rides along: the fault the resume counts would only say
+	-- the coroutine is dead.
 	if not ok or coroutine.status(co) == "suspended" then
-		table.insert(__spawned, { co, ok and waited or 0 })
+		table.insert(__spawned, { co, ok and waited or 0, (not ok) and tostring(waited) or nil })
 	end
 end
 
