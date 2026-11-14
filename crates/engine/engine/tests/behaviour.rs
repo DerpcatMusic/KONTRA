@@ -538,6 +538,7 @@ fn a_voice_group_steals_by_its_rule_and_an_exclusive_set_silences_the_others() {
         prefer_released: true,
         fade_ms: 1.0,
         exclusive: Some(3),
+        per_note: false,
     };
     plan.voice_groups = vec![
         group(2, kontra_ir::Steal::Highest),
@@ -552,6 +553,37 @@ fn a_voice_group_steals_by_its_rule_and_an_exclusive_set_silences_the_others() {
     );
     level(&mut e, &[on(70, 1.0)]);
     assert!(close(level(&mut e, &[])[0], 0.8), "group 0 was excluded");
+}
+
+#[test]
+fn a_note_counting_voice_group_steals_every_voice_of_the_note_it_replaces() {
+    // A mono layer: key 60 sounds two zones, key 62 one. Counting voices
+    // (budget 1 note x 2 zones) would steal one of 60's and keep it sounding.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut keyed = |key: u8, level: f32| {
+        let mut z = zone(&mut store, level);
+        z.keys = key..=key;
+        z.voice_group = Some(0);
+        z
+    };
+    let zones = vec![keyed(60, 0.1), keyed(60, 0.2), keyed(62, 0.4)];
+    let mut plan = Plan::new(zones, 8);
+    plan.voice_groups = vec![kontra_ir::VoiceGroup {
+        voices: 1,
+        steal: kontra_ir::Steal::Oldest,
+        prefer_released: false,
+        fade_ms: 1.0,
+        exclusive: None,
+        per_note: true,
+    }];
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0)]);
+    assert!(close(level(&mut e, &[])[0], 0.3), "both of 60's zones");
+    level(&mut e, &[on(62, 1.0)]);
+    assert!(
+        close(level(&mut e, &[])[0], 0.4),
+        "only 62 sounds: 60 went whole"
+    );
 }
 
 #[test]

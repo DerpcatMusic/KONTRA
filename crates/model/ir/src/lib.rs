@@ -580,6 +580,9 @@ pub struct VoiceGroup {
     pub fade_ms: f32,
     /// Starting a voice fades every voice of the other voice groups in this set.
     pub exclusive: Option<u8>,
+    /// `voices` counts notes: a note past it takes every voice of the note
+    /// it steals, however many zones each sounds.
+    pub per_note: bool,
 }
 
 /// Which voice a full voice group gives up.

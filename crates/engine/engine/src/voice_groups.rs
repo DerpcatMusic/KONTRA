@@ -19,8 +19,9 @@ impl Engine {
         });
     }
 
-    /// Makes room for one more voice in voice group `vg`, before it starts.
-    pub(crate) fn limit_voice_group(&mut self, vg: u32) {
+    /// Makes room for one more voice of `note` in voice group `vg`, before
+    /// it starts.
+    pub(crate) fn limit_voice_group(&mut self, vg: u32, note: NoteRef) {
         let plan = self.plan.clone();
         let Some(group) = plan.voice_groups.get(vg as usize) else {
             return;
@@ -40,11 +41,31 @@ impl Engine {
                 other.is_some_and(|o| o.exclusive == Some(set))
             });
         }
-        let playing = self
-            .voices
-            .iter()
-            .filter(|s| voice_group(s) == Some(vg))
-            .count();
+        // Notes other than this one (its earlier zones are not rivals), or voices.
+        let playing = if group.per_note {
+            self.note_stamp = self.note_stamp.wrapping_add(1);
+            if self.note_stamp == 0 {
+                self.note_seen.fill(0);
+                self.note_stamp = 1;
+            }
+            let mut notes = 0;
+            for n in (self.voices.iter())
+                .filter(|s| voice_group(s) == Some(vg))
+                .filter_map(|s| s.note.filter(|&n| n != note))
+            {
+                if let Some(seen) = self.note_seen.get_mut(n.slot())
+                    && *seen != self.note_stamp
+                {
+                    *seen = self.note_stamp;
+                    notes += 1;
+                }
+            }
+            notes
+        } else {
+            (self.voices.iter())
+                .filter(|s| voice_group(s) == Some(vg))
+                .count()
+        };
         if playing < usize::from(group.voices) {
             return;
         }
@@ -58,6 +79,7 @@ impl Engine {
             .iter()
             .enumerate()
             .filter(|(_, s)| voice_group(s) == Some(vg))
+            .filter(|(_, s)| !group.per_note || s.note != Some(note))
             .min_by_key(|(_, s)| {
                 let order = match group.steal {
                     ir::Steal::Oldest => s.started.0 as i64,
@@ -68,8 +90,20 @@ impl Engine {
                 (!(group.prefer_released && s.voice.is_released()), order)
             })
             .map(|(i, _)| i);
-        if let Some(index) = victim {
-            self.steal(index, fade);
+        let Some(index) = victim else {
+            return;
+        };
+        // A counted note goes whole: every voice of it in the group.
+        let owner = self.voices.get(index).and_then(|s| s.note);
+        for i in 0..self.voices.len() {
+            let whole = group.per_note
+                && self
+                    .voices
+                    .get(i)
+                    .is_some_and(|s| s.note == owner && voice_group(s) == Some(vg));
+            if i == index || whole {
+                self.steal(i, fade);
+            }
         }
     }
 }
