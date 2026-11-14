@@ -77,11 +77,44 @@ pub struct Widget {
 
 /// The fields [`Widget`] reads by name; the rest are its `props`.
 const HANDLED: [&str; 38] = [
-    "kind", "name", "x", "y", "width", "height", "width_set", "height_set", "min", "max",
-    "default", "integer", "vertical", "text", "tooltip", "unit", "visible", "enabled", "alpha",
-    "persistent", "image", "normalImage", "pressedImage", "backgroundImage", "handleImage",
-    "stripImage", "stripSteps", "backgroundColour", "textColour", "fillColour", "sliderColour",
-    "drawInnerEdge", "fillStyle", "fontSize", "font", "align", "displayName", "items",
+    "kind",
+    "name",
+    "x",
+    "y",
+    "width",
+    "height",
+    "width_set",
+    "height_set",
+    "min",
+    "max",
+    "default",
+    "integer",
+    "vertical",
+    "text",
+    "tooltip",
+    "unit",
+    "visible",
+    "enabled",
+    "alpha",
+    "persistent",
+    "image",
+    "normalImage",
+    "pressedImage",
+    "backgroundImage",
+    "handleImage",
+    "stripImage",
+    "stripSteps",
+    "backgroundColour",
+    "textColour",
+    "fillColour",
+    "sliderColour",
+    "drawInnerEdge",
+    "fillStyle",
+    "fontSize",
+    "font",
+    "align",
+    "displayName",
+    "items",
 ];
 
 /// What a widget's `unit` shows: a `Unit` enumerator (0..=13, the order the
@@ -91,11 +124,13 @@ fn unit_symbol(unit: Option<String>) -> String {
         return String::new();
     };
     match unit.parse::<u32>() {
-        Ok(n) => ["", "%", "%", "s", "ms", "Hz", "dB", "dB", "Hz", "", "MB", "st", "ct", ""]
-            .get(n as usize)
-            .copied()
-            .unwrap_or_default()
-            .to_string(),
+        Ok(n) => [
+            "", "%", "%", "s", "ms", "Hz", "dB", "dB", "Hz", "", "MB", "st", "ct", "",
+        ]
+        .get(n as usize)
+        .copied()
+        .unwrap_or_default()
+        .to_string(),
         Err(_) => unit,
     }
 }
