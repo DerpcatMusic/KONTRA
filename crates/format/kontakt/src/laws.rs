@@ -14,19 +14,30 @@ use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeFlex, Lfo};
 /// (docs/re/engine/k-mod-envelopes.md).
 const FALL: f32 = -2.662_588;
 
-/// A volume AHDSR. Stored times are milliseconds; the sustain knob is cubic.
+/// A volume AHDSR. Stored times are milliseconds and the sustain a gain:
+/// Kontakt 8.13 plays a stored 0.25 at -12.0 dB (the cube is the KSP knob's
+/// law, `par_laws::CUBE`; scratch/laneDSP/b22/env_law.lua case 7).
 pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
     let seconds = |ms: f32| ms.max(0.0) / 1000.0;
     ir::Envelope {
         attack: seconds(e.attack_ms),
         hold: seconds(e.hold_ms),
         decay: seconds(e.decay_ms),
-        sustain: CUBE.eval(e.sustain),
+        sustain: e.sustain_level(),
         release: seconds(e.release_ms),
         attack_shape: ATTACK_CURVE.eval_unclamped(e.attack_curve),
         fall_shape: FALL,
+        lag: ENVELOPE_LAG_S,
     }
 }
+
+/// A Kontakt attack is silent for its first 33 frames at 48 kHz (exact
+/// zeros) and then runs its curve in the time left, so it is still full on
+/// time: a 10 ms attack leaves zero at frame 33 and is full at 480. A note
+/// without attack is full on its first frame, and a key-up releases at once
+/// (Kontakt 8.13, env_law.lua: attack curves -100..+100 %, 10 ms to 1 s;
+/// note-offs scatter 9-37 frames, so no release lag is read into them).
+pub(crate) const ENVELOPE_LAG_S: f32 = 33.0 / 48_000.0;
 
 /// A route's time constant from its saved lag: the lag is the time its gain
 /// takes to settle within 1%, so τ = lag / ln 100. Measured in Kontakt 8.13
@@ -723,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_sustain_preserves_the_saved_cubic_mapping() {
+    fn a_saved_sustain_is_a_gain() {
         for sustain in [-0.1_f32, 0.0, 0.43, 1.0, 1.2] {
             let saved = EnvelopeAhdsr {
                 attack_curve: 0.0,
@@ -735,7 +746,7 @@ mod tests {
                 unknown_flag: 0,
                 unknown_tail: Vec::new(),
             };
-            assert_eq!(envelope(&saved).sustain, sustain.clamp(0.0, 1.0).powi(3));
+            assert_eq!(envelope(&saved).sustain, sustain.clamp(0.0, 1.0));
         }
     }
 
