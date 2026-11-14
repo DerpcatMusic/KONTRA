@@ -566,7 +566,7 @@ pub fn place(rack: &mut Rack, browser: &Browser, part: usize) {
             (parts.iter().enumerate())
                 .any(|(n, p)| n != part && p.as_ref().is_some_and(|p| p.mix.channel == *c))
         };
-        mix.channel = (1..=16).find(|c| !taken(c)).unwrap_or(0);
+        mix.channel = (1..=64).find(|c| !taken(c)).unwrap_or(0);
     }
     if browser.prefs.own_output {
         mix.output = u8::try_from(part.min(crate::OUTPUTS - 1)).unwrap_or(0);
@@ -729,7 +729,7 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
     match edit.action {
         Action::Volume(_, db) => m.gain = db_to_linear(db as f32),
         Action::Pan(_, pan) => m.pan = pan as f32,
-        Action::Channel(_, c) => m.channel = c.min(16),
+        Action::Channel(_, c) => m.channel = c.min(64),
         // Output 0 lets the host pick, which is the first pair.
         Action::Output(_, o) => m.output = o.saturating_sub(1),
         Action::Solo(_, on) => return rack.set_solo_mute(slot, on, mute),
