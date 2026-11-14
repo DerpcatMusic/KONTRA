@@ -42,7 +42,13 @@ Event = {
 -- it: UVI keeps an event its handler does not post from the instrument,
 -- and a posted one reaches it as posted (changed fields and all).
 local hearing = nil
+local arrived = nil
 local posted = nil
+local posted_delta = 0
+-- Settles the heard event once: when its handler returns, or at the
+-- handler's first wait, while the engine still waits on the callback. A
+-- postEvent after that sends the event on its own.
+local decide
 
 -- Anything a script asks of an object this host does not model answers
 -- nothing instead of failing the script.
@@ -832,6 +838,7 @@ function sendScriptModulation2(id, from, to, ramp, voice)
 end
 
 function wait(ms)
+	if hearing ~= nil then decide() end
 	coroutine.yield(math.max(0, ms or 0) * 1000)
 end
 
@@ -907,16 +914,17 @@ function releaseVoice(id)
 	host_call("NoteOff", id)
 end
 
--- A controller-type event's value, sent to the instrument.
-local function send(e)
+-- A controller-type event's value, sent to the instrument `delta` ms on.
+local function send(e, delta)
+	local later = math.floor(math.max(0, delta or 0) * 1000)
 	if e.type == Event.ControlChange then
-		host_call("SetController", e.controller, e.value)
+		host_call("SetController", e.controller, e.value, later)
 	elseif e.type == Event.PitchBend then
-		host_call("SetController", 128, math.floor(e.bend * 8192 + 0.5))
+		host_call("SetController", 128, math.floor(e.bend * 8192 + 0.5), later)
 	elseif e.type == Event.AfterTouch then
-		host_call("SetController", 129, e.value)
+		host_call("SetController", 129, e.value, later)
 	elseif e.type == Event.PolyAfterTouch then
-		host_call("SetPolyAt", e.note, e.value)
+		host_call("SetPolyAt", e.note, e.value, later)
 	end
 end
 
@@ -924,14 +932,22 @@ end
 -- the instrument unless posted, replaced by the posted one if it changed.
 local function hear(handler, e)
 	if handler == nil then return end
-	local arrived = table.copy(e)
-	hearing, posted = e, nil
+	arrived, hearing, posted = table.copy(e), e, nil
 	handler(e)
-	local out = posted
+	if hearing == e then decide() end
+end
+
+decide = function()
+	local out, delta = posted, posted_delta
 	hearing, posted = nil, nil
 	if out == nil then
 		host_call("IgnoreController")
 		return
+	end
+	-- Posted later, or changed: the posted one stands in for it.
+	if delta > 0 then
+		host_call("IgnoreController")
+		return send(out, delta)
 	end
 	for k, v in pairs(out) do
 		if arrived[k] ~= v then
@@ -941,13 +957,12 @@ local function hear(handler, e)
 	end
 end
 
-function postEvent(e)
+function postEvent(e, delta)
 	if e == hearing then
-		posted = table.copy(e)
+		posted, posted_delta = table.copy(e), delta or 0
 		return
 	end
-	-- ponytail: a controller's `delta` is not honoured; it goes at once.
-	send(e)
+	send(e, delta)
 	if e.type == Event.NoteOn then
 		-- The incoming note was held back; this plays it, ending with it.
 		return host_call("PlayNote", e.note, e.velocity, 0, -1)

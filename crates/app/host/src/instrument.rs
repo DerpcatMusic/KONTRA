@@ -99,6 +99,17 @@ pub fn read_saved(
     {
         return Ok(kontra_format_sfz::load(path)?);
     }
+    if let Some((multi, slot)) = multi_slot(path) {
+        let (slots, failed) = kontra_format_kontakt::multi(multi, Some(slot))?;
+        let mut out = (slots.into_iter().next())
+            .ok_or_else(|| failed.join("; "))?
+            .instrument;
+        for (script, saved) in out.scripts.iter_mut().zip(saved) {
+            script.saved.clone_from(saved);
+        }
+        out.source_path = Some(path.to_owned());
+        return Ok(out);
+    }
     if kontra_format_uvi::is_uvi(path) {
         // The load pass runs once per script, in order.
         let next = std::cell::Cell::new(0);
@@ -125,6 +136,16 @@ pub struct Preset {
     pub saved: Vec<Vec<String>>,
     /// It saves the instrument's effects too: a recall rebuilds them.
     pub effects: bool,
+}
+
+/// A multi's slot as a path: `Multi.nkm/<slot>`, the slot counted from 0
+/// (so a project saves and reopens a multi's part by path).
+#[must_use]
+pub fn multi_slot(path: &Path) -> Option<(&Path, u16)> {
+    let multi = path
+        .parent()
+        .filter(|p| kontra_format_kontakt::is_multi(p))?;
+    Some((multi, path.file_name()?.to_str()?.parse().ok()?))
 }
 
 /// Whether `path` is a preset of an instrument in another file: the
