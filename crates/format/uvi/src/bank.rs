@@ -308,11 +308,12 @@ pub(crate) fn normalize(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize;
+    use super::{STILL, normalize, picture_rank};
 
     #[test]
     fn a_cover_comes_before_the_interface_background_and_strips_are_unnamed() {
-        assert_eq!(picture_rank("Artwork/ao_cover.png"), Some(0));
+        assert_eq!(picture_rank("Artwork/ao_cover@2x.png"), Some(0));
+        assert_eq!(picture_rank("Artwork/ao_cover.png"), Some(1));
         assert_eq!(picture_rank("artwork/back@2x.png"), Some(2));
         assert_eq!(picture_rank("artwork/back.png"), Some(3));
         assert_eq!(picture_rank("artwork/knob_50x50x129@2x.png"), Some(STILL));
