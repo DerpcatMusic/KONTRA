@@ -68,7 +68,7 @@ fn saturation(shape: f32, algorithm: i32, at: &str, notes: &mut Notes) -> Option
 }
 
 /// Mode 0 Tube, 1 Transistor; drive and damping 0..=1.
-fn distortion(mode: i32, drive: f32, damping: f32) -> Option<ir::EffectKind> {
+pub(crate) fn distortion(mode: i32, drive: f32, damping: f32) -> Option<ir::EffectKind> {
     let drive = drive.clamp(0.0, 1.0);
     let curve = match mode {
         0 => ir::DriveCurve::Tube(drive),

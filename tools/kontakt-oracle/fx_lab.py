@@ -4,7 +4,7 @@
     fx_lab.py render CHAIN STIMULUS OUT.npz  SETS.json     (run under tools/oracle/oracle-slot)
 
 CHAIN is a factory preset folder ("Effects/RDelay"), STIMULUS one of `impulse`, `tone` (5 s, 1 kHz, -12 dB),
-`levels`, `burst` (fxrig's stimuli) or `sweep` (a 5 s log sweep 20 Hz..20 kHz, -12 dB), SETS.json a list of
+`levels`, `burst` (fxrig's stimuli), `ramp` (1 kHz, amplitude 0..1 over 5 s), `clicks` or `sweep` (a 5 s log sweep 20 Hz..20 kHz, -12 dB), SETS.json a list of
 settings, each a list of [slot, "PAR", raw] (raw 0..1000000 for knobs). Instance 0 is the bypassed reference.
 OUT.npz holds `rate` and one float array per instance (`x0` = reference, `x1`...), each cut from its note's start to
 the slot's end, left channel and right (`y1`...).
@@ -62,6 +62,20 @@ LF:close()
 """
 
 
+def ramp_lua(path: Path) -> str:
+    """A 1 kHz sine whose amplitude rises linearly 0 -> 2.7 over 5 s (the instrument brings 1.0 to about 0.37 at the effect: the peak of each cycle is the input level)."""
+    n = int(SWEEP_LEN * 48000)
+    return f"""local LF = io.open({json.dumps(str(path))}, "wb")
+local NF = {n}
+LF:write("RIFF", string.pack("<I4", 36 + NF * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", NF * 8))
+for i = 0, NF - 1 do
+  local v = (i / NF) * 2.7 * math.sin(2 * math.pi * 1000 * i / 48000)
+  LF:write(string.pack("<ff", v, v))
+end
+LF:close()
+"""
+
+
 def ksp_for(chain_len, sets):
     call = lambda p, v, sl: f"  set_engine_par($ENGINE_PAR_{p}, {int(v)}, -1, {sl}, 1)"
     init = [call(p, v, sl) for sl, p, v in sets if p == "EFFECT_BYPASS"]
@@ -99,6 +113,10 @@ def render(chain, stimulus, sets_list, out):
         fxrig.SLOT = fxrig.STEADY_TONE_SLOT
         fxrig.steady_tone_lua = clicks_lua
         stimulus = "tone"
+    elif stimulus == "ramp":  # likewise
+        fxrig.SLOT = fxrig.STEADY_TONE_SLOT
+        fxrig.steady_tone_lua = ramp_lua
+        stimulus = "tone"
     elif stimulus == "levels":
         fxrig.SLOT = fxrig.LEVEL_LEAD + len(fxrig.LEVEL_STEPS_DB) * fxrig.LEVEL_SEG + 1.0
     elif stimulus == "burst":
@@ -108,6 +126,8 @@ def render(chain, stimulus, sets_list, out):
     fxrig.ksp_for = ksp_for
     fxrig.write_midi = write_midi
     fxrig.SLOT += PRE_NOTE
+    # An oracle slot owns a block of MIDI channels (16 // slots); instances beyond it came back silent or as copies.
+    fxrig.CHUNK = min(fxrig.CHUNK, fxrig.CHANNELS - 1)
     results = []
     for c0 in range(0, len(sets_list), fxrig.CHUNK):
         part = sets_list[c0:c0 + fxrig.CHUNK]
