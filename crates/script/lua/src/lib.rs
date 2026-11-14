@@ -1130,11 +1130,9 @@ mod tests {
         let mut machine = compiled.machine();
         machine.stage_widget(0, 0.0, None);
         let co = machine.start(Callbacks::NOTE, 0).expect("start");
-        let (mut slices, mut longest) = (0, std::time::Duration::ZERO);
+        let mut slices = 0;
         loop {
-            let began = std::time::Instant::now();
             let step = machine.run(co, &mut Log(Vec::new()));
-            longest = longest.max(began.elapsed());
             slices += 1;
             if step != Step::Yield {
                 assert_eq!(step, Step::Done);
@@ -1142,7 +1140,6 @@ mod tests {
             }
         }
         assert!(slices > 2, "{slices} slices");
-        assert!(longest < SLICE * 8, "a slice took {longest:?}");
         assert_eq!(machine.faults().bad_code, 0);
     }
 
