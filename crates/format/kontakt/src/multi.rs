@@ -30,6 +30,7 @@ const PROGRAM_LIST: u16 = 0x36;
 const FILE_TABLE: u16 = 0x4b;
 const OLD_FILE_TABLE: u16 = 0x3d;
 const SLOT_TABLE: u16 = 0x48;
+const SCRIPT: u16 = 0x06;
 
 /// One slot of a multi: where it sits and the instrument it holds.
 #[derive(Debug)]
@@ -59,11 +60,11 @@ pub fn slots(path: &Path, only: Option<u16>) -> Result<(Vec<Slot>, Vec<String>),
     let bank = Bank::try_from(bank).map_err(decode("bank"))?;
     let list = bank.slot_list().map_err(decode("slot list"))?;
     let table = (chunks.find_first(FILE_TABLE)).or_else(|| chunks.find_first(OLD_FILE_TABLE));
-    let table = bank.0.find_first(SLOT_TABLE);
-    let stride = table.map_or(0, |t| t.data.len() / 64);
+    let slot_table = bank.0.find_first(SLOT_TABLE);
+    let stride = slot_table.map_or(0, |t| t.data.len() / 64);
     let channel = |index: u16| -> u16 {
         let at = usize::from(index) * stride;
-        let bytes = table.and_then(|t| t.data.get(at..at + 2));
+        let bytes = slot_table.and_then(|t| t.data.get(at..at + 2));
         bytes
             .and_then(|b| b.try_into().ok())
             .map_or(0, u16::from_le_bytes)
@@ -113,6 +114,39 @@ fn output(private: &[u8]) -> u16 {
         .map_or(0, u16::from_le_bytes)
 }
 
+/// The multi script slots of the multi at `path` that hold a script, in
+/// slot order: KSP that sees the rack's MIDI before its instruments do
+/// (`on midi_in`).
+///
+/// # Errors
+/// When the file is not a multi this can read.
+pub fn scripts(path: &Path) -> Result<Vec<ir::Script>, Error> {
+    let (chunks, _, _) = container::opened(path)?;
+    let bank = chunks
+        .find_first(ni_file::kontakt::objects::KONTAKT_BANK_ID)
+        .ok_or_else(|| Error::new(path, "multi", "no bank"))?;
+    let bank = Bank::try_from(bank).map_err(|e| Error::new(path, "bank", e))?;
+    let mut out = Vec::new();
+    for (slot, chunk) in (bank.0.children.iter().filter(|c| c.id == SCRIPT)).enumerate() {
+        let script = ni_file::kontakt::objects::BParScript::try_from(chunk)
+            .and_then(|s| s.params())
+            .map_err(|e| Error::new(path, "multi script", e))?;
+        match script.text {
+            Some(text) if !script.bypass && !text.trim().is_empty() => out.push(ir::Script {
+                name: script.description.unwrap_or_default(),
+                slot,
+                dialect: ir::Dialect::Ksp,
+                source: text,
+                saved: script.persistent,
+                data: Vec::new(),
+                links: Vec::new(),
+            }),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
 /// Whether `path` names a multi.
 #[must_use]
 pub fn is_multi(path: &Path) -> bool {
@@ -148,12 +182,17 @@ mod tests {
         };
         let (slots, failed) = slots(Path::new(&path), None).unwrap();
         for s in &slots {
+            let found = (s.instrument.samples.iter()).filter(|x| x.file.exists()).count();
             println!(
-                "slot {}: {} groups, {} scripts",
+                "slot {}: {} groups, {} scripts, {found}/{} samples found, channel {} output {}",
                 s.index + 1,
                 s.instrument.groups.len(),
-                s.instrument.scripts.len()
+                s.instrument.scripts.len(),
+                s.instrument.samples.len(),
+                s.channel,
+                s.output
             );
+            assert_eq!(found, s.instrument.samples.len(), "slot {} lost samples", s.index + 1);
         }
         println!("failed: {failed:?}");
         assert!(!slots.is_empty());

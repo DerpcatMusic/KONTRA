@@ -40,6 +40,9 @@ pub enum Command {
         unit: Box<Option<Prepared>>,
     },
     Remove(usize),
+    /// The rack's multi script, which hears MIDI before any part; the one
+    /// it replaces is retired.
+    Multi(Option<Box<Engine>>),
     /// What host macro `n` moves at its frame ([`RackAudio::move_macro`]).
     ///
     /// [`RackAudio::move_macro`]: super::RackAudio::move_macro

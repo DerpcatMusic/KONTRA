@@ -180,3 +180,17 @@ fn a_multis_slots_keep_the_channel_output_volume_and_pan_kontakt_saved() {
         .collect();
     assert_eq!(levels, [(-60.0, -0.5), (0.0, 0.0), (35.0, 0.25)]);
 }
+
+/// The multi script Kontakt 8 saved in its first multi script slot.
+#[test]
+fn a_multis_own_script_is_read_from_its_bank() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/multi-script.nkm");
+    let scripts = kontra_format_kontakt::multi_scripts(&path).unwrap();
+    let got: Vec<_> = scripts.iter().map(|s| (s.slot, s.name.as_str())).collect();
+    assert_eq!(got, [(0, "Channel 1 to 2")]);
+    assert!(
+        scripts[0].source.contains("set_midi(1, $MIDI_COMMAND"),
+        "{}",
+        scripts[0].source
+    );
+}

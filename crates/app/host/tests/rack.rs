@@ -1890,3 +1890,36 @@ fn a_multi_fills_a_part_per_slot_and_reopens_from_a_project() {
     assert_eq!(second.restore(&saved), Vec::new());
     assert_eq!(paths(&second), loaded);
 }
+
+/// A multi script Kontakt 8 saved (native oracle, `probes/multi_script.lua`)
+/// moves channel 1 to channel 2 in `on midi_in`: a part on channel 2 then
+/// plays what arrives on channel 1, and a project keeps the multi.
+#[test]
+fn a_multi_script_hears_the_rack_first_and_reroutes_its_channels() {
+    let multi = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../format/kontakt/tests/data/multi-script.nkm");
+    let (mut rack, mut audio) = rack();
+    let b = engine(rack.store_mut(), 0.5);
+    rack.install(1, b, part("b"));
+    rack.set_mix(
+        1,
+        Mix {
+            channel: 2,
+            output: 1,
+            ..Mix::DEFAULT
+        },
+    );
+    let [_, alone] = play(&mut audio, &[(0, note(0))]);
+    assert!(
+        alone.abs() < 1e-4,
+        "channel 2 heard channel 1 with no multi script: {alone}"
+    );
+    rack.set_multi(Some(&multi));
+    assert!(rack.take_notices().is_empty());
+    let [_, routed] = play(&mut audio, &[(0, note(0))]);
+    assert!(
+        routed > 0.1,
+        "the multi script did not move channel 1 to 2: {routed}"
+    );
+    assert_eq!(rack.save().multi.as_deref(), Some(multi.as_path()));
+}

@@ -67,8 +67,8 @@ pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{
-    EnginePar, EnginePars, LoopPar, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, user_loops,
-    zone_name,
+    EnginePar, EnginePars, LoopPar, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file,
+    user_loops, zone_name,
 };
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_script_ui::{ENTRY, FIRST_FONT};

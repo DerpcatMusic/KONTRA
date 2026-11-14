@@ -20,6 +20,9 @@ pub const VERSION: u32 = 1;
 pub struct Saved {
     pub version: u32,
     pub parts: Vec<SavedPart>,
+    /// The multi whose multi script hears the rack's MIDI first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi: Option<PathBuf>,
 }
 
 /// One part: where it sits, the instrument it plays and how it sounds.
@@ -174,6 +177,7 @@ impl Saved {
         Self {
             version: VERSION,
             parts,
+            multi: None,
         }
     }
 
@@ -266,7 +270,10 @@ impl Rack {
                 })
             })
             .collect();
-        Saved::new(parts)
+        Saved {
+            multi: self.multi().map(std::path::Path::to_owned),
+            ..Saved::new(parts)
+        }
     }
 
     /// Makes the rack `saved`, part by part. A part already as saved stays
@@ -297,6 +304,7 @@ impl Rack {
         for part in loaded {
             self.remove(part);
         }
+        self.set_multi(saved.multi.as_deref());
         let mut failed = Vec::new();
         for p in saved.parts.iter().filter(|p| !kept.contains(&p.part)) {
             let (types, responses) = live_slots(&p.slot_types, &p.slot_responses);
