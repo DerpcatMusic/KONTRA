@@ -112,12 +112,38 @@ fn env_in(env: Env, m: &str, args: &[Prop]) -> Env {
     }
 }
 
-/// `n`'s children, those of a `ForEach` among them in its place.
+/// A frame's size along each axis from its `min_`/`max_` bounds, SwiftUI's
+/// flexible frame: what it is offered held between the bounds, a missing
+/// one being the child's size. Offered nothing (zero), it takes its finite
+/// most, or what it is given when that is unbounded (Conflux's steppers
+/// are `max_width = 72` around text framed `max_width = math.huge`).
+/// Without bounds on an axis it is `plain` there.
+fn flexible(args: &[Prop], room: Size, child: Size, plain: Size) -> [f64; 2] {
+    let axis = |offered: f64, child: f64, plain: f64, min: &str, max: &str| {
+        let (lo, hi) = (num(arg(args, min)), num(arg(args, max)));
+        if lo.is_none() && hi.is_none() {
+            return plain;
+        }
+        let hi = hi.unwrap_or(child).max(lo.unwrap_or(0.));
+        match offered {
+            o if o > 0. => o.clamp(lo.unwrap_or(child).min(hi), hi),
+            _ if hi.is_finite() => hi,
+            _ => 0.,
+        }
+    };
+    [
+        axis(room.0, child.0, plain.0, "min_width", "max_width"),
+        axis(room.1, child.1, plain.1, "min_height", "max_height"),
+    ]
+}
+
+/// `n`'s children, those of a `ForEach` among them in its place, however
+/// deep (Conflux's radio groups wrap a `ForEach` of buttons in another).
 fn children(n: &Node) -> Vec<&Node> {
     n.children
         .iter()
         .flat_map(|c| match c.kind.as_str() {
-            "ForEach" => c.children.iter().collect(),
+            "ForEach" => children(c),
             _ => vec![c],
         })
         .collect()
@@ -134,7 +160,8 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
         "frame" => {
             let (w, h) = (num(arg(args, "width")), num(arg(args, "height")));
             let (iw, ih) = inner((w.unwrap_or(room.0), h.unwrap_or(room.1)));
-            (w.unwrap_or(iw), h.unwrap_or(ih))
+            let [fw, fh] = flexible(args, (room.0, room.1), (iw, ih), (iw, ih));
+            (w.unwrap_or(fw), h.unwrap_or(fh))
         }
         "padding" => {
             let [l, t, r, b] = pads(args);
@@ -144,8 +171,10 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
                 if ih > 0. { ih + t + b } else { 0. },
             )
         }
-        // It fills the room it is offered and sits where it says in it.
-        "align" => (0., 0.),
+        // It fills the room it is offered and sits where it says in it;
+        // a positioned view too, as in SwiftUI (Conflux's Random meter is
+        // a track under a cloud of positioned dots).
+        "align" | "position" => (0., 0.),
         _ => inner(room),
     }
 }
@@ -181,27 +210,33 @@ fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size
 }
 
 /// Whether `n` fills the room it is offered: its outermost size-giving
-/// modifier is an `align` (offsets and looks keep their child's size).
+/// modifier is an `align` or a `position` (offsets and looks keep their
+/// child's size).
 fn fills(n: &Node) -> bool {
-    n.mods.iter().rev().map(|(m, _)| m.as_str()).find(|m| {
-        !matches!(
-            *m,
-            "offset"
-                | "opacity"
-                | "hidden"
-                | "foreground_color"
-                | "font_size"
-                | "bold"
-                | "background"
-                | "overlay"
-                | "rotation"
-                | "on_hover_gesture"
-                | "on_tap_gesture"
-                | "on_drag_gesture"
-                | "disabled"
-                | "popover"
-        )
-    }) == Some("align")
+    n.mods
+        .iter()
+        .rev()
+        .map(|(m, _)| m.as_str())
+        .find(|m| {
+            !matches!(
+                *m,
+                "offset"
+                    | "opacity"
+                    | "hidden"
+                    | "foreground_color"
+                    | "font_size"
+                    | "bold"
+                    | "background"
+                    | "overlay"
+                    | "rotation"
+                    | "on_hover_gesture"
+                    | "on_tap_gesture"
+                    | "on_drag_gesture"
+                    | "disabled"
+                    | "popover"
+            )
+        })
+        .is_some_and(|m| matches!(m, "align" | "position"))
 }
 
 fn words(n: &Node) -> String {
@@ -288,11 +323,10 @@ fn stack(bld: &mut Builder<'_>, n: &Node, axis: Axis, room: Size, env: Env) -> (
     } else {
         thick
     };
-    let length = if shares > 0 {
-        axis.along(room).max(fixed)
-    } else {
-        fixed
-    };
+    // One that shares out what is left takes what it is given, as a
+    // SwiftUI stack with a spacer does: Conflux's module header (toggle,
+    // spacer, title, spacer) spans its module, its toggle at the left.
+    let length = if shares > 0 { 0. } else { fixed };
     (lengths, axis.size(length, thick))
 }
 
@@ -434,8 +468,11 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
             return;
         }
         "frame" => {
-            let w = num(arg(args, "width")).unwrap_or(r.width);
-            let h = num(arg(args, "height")).unwrap_or(r.height);
+            let own = measure(bld, n, k - 1, (r.width, r.height), inner_env);
+            let own = or_room(own, r);
+            let [fw, fh] = flexible(args, (r.width, r.height), own, (r.width, r.height));
+            let w = num(arg(args, "width")).unwrap_or(fw);
+            let h = num(arg(args, "height")).unwrap_or(fh);
             let room = aligned(r, (w, h), (0.5, 0.5));
             aligned(
                 room,
@@ -485,10 +522,15 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
             place_layer(n, k - 1, r, inner_env, bld);
             return;
         }
+        // The other layer is offered the view's size and keeps its own,
+        // centred, as in SwiftUI (Conflux's fixed-size heading images sat
+        // stretched over their whole selector).
         "background" | "overlay" => {
             let other = |bld: &mut Builder<'_>| {
                 if let Some(Prop::Node(b)) = args.first() {
-                    place(b, b.mods.len(), r, env, bld);
+                    let own = measure(bld, b, b.mods.len(), (r.width, r.height), env);
+                    let at = aligned(r, or_room(own, r), (0.5, 0.5));
+                    place(b, b.mods.len(), at, env, bld);
                 }
             };
             if m == "background" {
@@ -1072,5 +1114,58 @@ mod tests {
         splice(&mut bld, 0, room, "p", Some(&opened));
         let over = bld.ui.widgets.iter().filter(|w| w.z == 1).count();
         assert_eq!(over, shown.len(), "a rebuild keeps the popover's layer");
+    }
+
+    /// Conflux's Random meter: a framed ZStack of a track rectangle and a
+    /// faded cloud of positioned dots; the track fills the frame.
+    #[test]
+    fn a_framed_track_under_a_faded_dot_cloud_fills_its_frame() {
+        let num = |k: &str, v: f64| (k.to_owned(), Prop::Number(v));
+        let frame = |w, h| {
+            (
+                "frame",
+                vec![Prop::Table(vec![num("width", w), num("height", h)])],
+            )
+        };
+        let dot = node(
+            "Rectangle",
+            vec![
+                frame(2., 2.),
+                (
+                    "position",
+                    vec![Prop::Table(vec![num("x", 1.), num("y", 30.)])],
+                ),
+            ],
+            Vec::new(),
+        );
+        let mut cloud = node(
+            "ZStack",
+            vec![("opacity", vec![Prop::Number(0.)])],
+            vec![node("ForEach", Vec::new(), vec![dot])],
+        );
+        cloud.props = vec![("alignment".into(), Prop::Text("center".into()))];
+        let track = node("Rectangle", Vec::new(), Vec::new());
+        let meter = node("ZStack", vec![frame(4., 40.)], vec![track, cloud]);
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let room = ui::Size {
+            width: 100.,
+            height: 100.,
+        };
+        lower(&meter, room, &mut bld);
+        let shapes: Vec<_> = (bld.ui.widgets.iter())
+            .map(|w| (w.rect.width, w.rect.height, w.colors.background))
+            .collect();
+        assert_eq!(
+            shapes.first().map(|s| (s.0, s.1)),
+            Some((4., 40.)),
+            "{shapes:?}"
+        );
     }
 }
