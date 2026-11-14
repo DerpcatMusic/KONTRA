@@ -47,6 +47,23 @@ const HEADROOM: usize = 8 << 20;
 /// Interrupt checkpoints (calls and loop back-edges) one run may take before
 /// it is stopped: a runaway loop must not hold the audio thread.
 const CHECKPOINTS: u32 = 10_000_000;
+/// How long one editor run may hold the audio thread before it yields to the
+/// next block: 0.5 ms, 19% of a 128-frame block at 48 kHz. Kontakt and UVI
+/// defer long UI work the same way: the rest runs a slice per block.
+const SLICE: std::time::Duration = std::time::Duration::from_micros(500);
+/// Safepoints between the checks of an editor run's deadline.
+const SLICE_STRIDE: u32 = 8;
+/// Past the deadline, between asks to yield: odd, so a loop with a fixed
+/// count of safepoints per turn does not keep landing on the same ones; every
+/// safepoint costs more in the hook than it finds (measured on the flute:
+/// slices of 5.9 ms median at 1, 2.9 ms at 3).
+const SLICE_RETRY_STRIDE: u32 = 3;
+thread_local! {
+    /// When the run in progress must yield (editor runs only).
+    static DEADLINE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    /// The interrupt asked the run to yield at its deadline.
+    static SLICED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// What a callback the editor started (a widget moved by a user, a route or a
 /// restore) and what it spawns may take: UVI runs these off its audio
@@ -301,7 +318,7 @@ fn sandbox() -> mlua::Result<(Lua, Arc<AtomicU32>, Arc<AtomicU32>)> {
     let limit = Arc::new(AtomicU32::new(LOAD_CHECKPOINTS));
     let current_limit = Arc::clone(&limit);
     lua.set_interrupt(move |lua| {
-        let used = count.fetch_add(interrupt::STRIDE, Ordering::Relaxed);
+        let used = count.fetch_add(interrupt::stride(), Ordering::Relaxed);
         if used > current_limit.load(Ordering::Relaxed) {
             // Where it was, innermost call first (a rare path: it allocates).
             let mut at = format!("script ran too long ({used} checkpoints), at");
@@ -315,6 +332,13 @@ fn sandbox() -> mlua::Result<(Lua, Arc<AtomicU32>, Arc<AtomicU32>)> {
                 }
             }
             return Err(mlua::Error::runtime(at));
+        }
+        // Past the deadline: ask to yield at the next safepoints until Luau can
+        // (it ignores the request where a C call or metamethod is on the stack).
+        if DEADLINE.with(std::cell::Cell::get).is_some_and(|d| std::time::Instant::now() >= d) {
+            SLICED.with(|s| s.set(true));
+            interrupt::set_stride(SLICE_RETRY_STRIDE);
+            return Ok(mlua::VmState::Yield);
         }
         Ok(mlua::VmState::Continue)
     });
@@ -391,6 +415,9 @@ struct Slot {
     /// Started by the editor, or spawned by a coroutine that was: it has
     /// [`UI_CHECKPOINTS`], not [`CHECKPOINTS`].
     ui: bool,
+    /// Checkpoints an editor run spent in the slices before this one, so a
+    /// runaway one still ends.
+    used: u32,
 }
 
 struct LuaMachine {
@@ -442,6 +469,7 @@ impl LuaMachine {
         slot.thread = Some(thread);
         slot.context = context;
         slot.ui = false;
+        slot.used = 0;
         Some(CoId::new(index, slot.generation))
     }
 
@@ -515,15 +543,18 @@ impl Machine for LuaMachine {
             return Step::Done;
         };
         let context = slot.context;
-        let ui = slot.ui;
+        let (ui, used) = (slot.ui, slot.used);
         let Some(thread) = slot.thread.clone() else {
             return Step::Done;
         };
         // Every resume, not only a start, may change the state: a task that
         // waited (a layer loading after `wait`) must be seen by the next save.
         self.runs = self.runs.wrapping_add(1);
-        let from = if ui { 0 } else { UI_CHECKPOINTS - CHECKPOINTS };
+        let from = if ui { used } else { UI_CHECKPOINTS - CHECKPOINTS };
         self.checkpoints.store(from, Ordering::Relaxed);
+        SLICED.with(|s| s.set(false));
+        DEADLINE.with(|d| d.set(ui.then(|| std::time::Instant::now() + SLICE)));
+        interrupt::set_stride(if ui { SLICE_STRIDE } else { interrupt::STRIDE });
         let resumed = lua.scope(|scope| {
             // Fixed arity, so a call allocates nothing: an action and up
             // to eight arguments, the trailing nils dropped.
@@ -542,8 +573,19 @@ impl Machine for LuaMachine {
             lua.globals().set("__host", Value::Nil)?;
             result
         });
+        DEADLINE.with(|d| d.set(None));
+        let sliced = SLICED.with(std::cell::Cell::take);
         self.collect_spawned(&lua, context, ui);
         let step = match (resumed, thread.status()) {
+            // The slice ran out and Luau yielded (a wait gives a number):
+            // the rest runs in the next block.
+            (Ok(Value::Nil), ThreadStatus::Resumable) if sliced => {
+                let spent = self.checkpoints.load(Ordering::Relaxed);
+                if let Some(slot) = self.slot(co) {
+                    slot.used = spent;
+                }
+                Step::Yield
+            }
             (Ok(waited), ThreadStatus::Resumable) => {
                 Step::Wait(number(&waited).unwrap_or(0.0).max(0.0) as u64)
             }
@@ -1074,6 +1116,33 @@ mod tests {
         machine.stage_widget(0, 0.0, None);
         let co = machine.start(Callbacks::NOTE, 0).expect("start");
         let _ = machine.run(co, &mut Log(Vec::new()));
+        assert_eq!(machine.faults().bad_code, 0);
+    }
+
+    #[test]
+    fn a_long_editor_run_yields_in_slices_and_finishes() {
+        // A loop with a fixed count of safepoints per turn (calls into
+        // `string`) must still be cut: the stride would phase-lock to a
+        // safepoint Luau cannot yield at.
+        let source = "function onNote(e) local s = 'a.b' for i = 1, 400000 do \
+                      local x = string.sub(s, 1, string.find(s, '%.') - 1) .. tostring(i) end end";
+        let compiled = compile(source, &[], &[]).expect("compiles");
+        let mut machine = compiled.machine();
+        machine.stage_widget(0, 0.0, None);
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        let (mut slices, mut longest) = (0, std::time::Duration::ZERO);
+        loop {
+            let began = std::time::Instant::now();
+            let step = machine.run(co, &mut Log(Vec::new()));
+            longest = longest.max(began.elapsed());
+            slices += 1;
+            if step != Step::Yield {
+                assert_eq!(step, Step::Done);
+                break;
+            }
+        }
+        assert!(slices > 2, "{slices} slices");
+        assert!(longest < SLICE * 8, "a slice took {longest:?}");
         assert_eq!(machine.faults().bad_code, 0);
     }
 

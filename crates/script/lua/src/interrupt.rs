@@ -22,6 +22,22 @@ static MLUA: OnceLock<Hook> = OnceLock::new();
 
 thread_local! {
     static TICKS: Cell<u32> = const { Cell::new(0) };
+    static EVERY: Cell<u32> = const { Cell::new(STRIDE) };
+}
+
+/// Safepoints per call of mlua's interrupt from now on. A run that must
+/// yield checks often at first (one host call can take tens of
+/// microseconds), then at every safepoint once its slice is spent: Luau can
+/// yield only at some of them (a loop edge, not inside a C call), and a loop
+/// with a fixed count of safepoints per turn would otherwise keep landing
+/// on the others.
+pub(crate) fn set_stride(every: u32) {
+    EVERY.with(|e| e.set(every.max(1)));
+}
+
+/// What each call of mlua's interrupt stands for now.
+pub(crate) fn stride() -> u32 {
+    EVERY.with(Cell::get)
 }
 
 unsafe extern "C-unwind" fn strided(state: *mut ffi::lua_State, gc: c_int) {
@@ -31,7 +47,7 @@ unsafe extern "C-unwind" fn strided(state: *mut ffi::lua_State, gc: c_int) {
     let due = TICKS.with(|t| {
         let n = t.get().wrapping_add(1);
         t.set(n);
-        n % STRIDE == 0
+        n % stride() == 0
     });
     if due && let Some(hook) = MLUA.get() {
         // SAFETY: mlua's own interrupt, called as Luau would call it.
