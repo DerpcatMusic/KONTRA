@@ -446,7 +446,22 @@ pub struct Waveform {
     pub peaks: Vec<[i8; 2]>,
     /// The sample's length, for the cursor.
     pub length_us: i64,
+    /// Drawn as the sample's line seen through (KSP `WF_VIS_MODE` X-ray).
+    pub xray: bool,
+    /// Per column of [`Waveform::peaks`], how many samples fall in each of
+    /// [`WAVE_BINS`] bands, top (+1) to bottom (-1): the X-ray's ink.
+    pub density: Vec<u16>,
+    /// A wavetable's frames, each [`FRAME_POINTS`] levels, ±127 full scale.
+    pub frames: Vec<Vec<i8>>,
+    /// Alphas the source set: background, wave, wave end, other frames,
+    /// their end (KSP `BG_ALPHA`, `WAVE_ALPHA`, ..., 0 to 255).
+    pub alpha: [Option<u8>; 5],
 }
+
+/// Bands a waveform column's samples are counted in.
+pub const WAVE_BINS: usize = 64;
+/// Points a wavetable frame is drawn through.
+pub const FRAME_POINTS: usize = 256;
 
 /// Exact authored WaveView display request. This does not assert that a
 /// sample provider, oscillator binding or native paint law is available.
@@ -537,6 +552,10 @@ pub struct Colors {
     pub wave: Option<Rgba>,
     pub wave_cursor: Option<Rgba>,
     pub slice_markers: Option<Rgba>,
+    /// A wave's gradient end, and a wavetable's other frames and their end.
+    pub wave_end: Option<Rgba>,
+    pub wavetable: Option<Rgba>,
+    pub wavetable_end: Option<Rgba>,
 }
 
 /// Table separator policy. An unknown native default colour remains unset.
@@ -610,10 +629,11 @@ pub enum Kind {
         mouse_mode: Option<i32>,
     },
     Waveform,
-    /// `view_mode`: the source's display mode, verbatim (KSP `WT_VIS_MODE`);
-    /// `parallax`: 3D depth offset in pixels (KSP `PARALLAX_X`/`_Y`).
+    /// `three_d`: every frame drawn, not only the current one (KSP
+    /// `WT_VIS_MODE` `$NI_WT_VIS_3D`); `parallax`: how far the frames step
+    /// apart across and down, millionths (KSP `PARALLAX_X`/`_Y`).
     Wavetable {
-        view_mode: Option<i32>,
+        three_d: bool,
         parallax: [i32; 2],
     },
     /// `channel`: the output channel it shows (0 left, 1 right; KSP

@@ -60,7 +60,22 @@ fn travel((width, height): (f64, f64), art: Option<(f64, f64)>) -> ((f64, f64), 
     }
 }
 
-/// Cursor `i`'s rect (x, y, width, height) in points from the pad's corner.
+/// Where cursor `i`'s rect's corner sits for its values, unrounded: the
+/// inverse of [`value`].
+#[must_use]
+pub fn corner(
+    w: &model::Widget,
+    i: u32,
+    size: (f64, f64),
+    art: Option<(f64, f64)>,
+) -> Option<(f64, f64)> {
+    let (x, y) = (w.cell(2 * i)?, w.cell(2 * i + 1)?);
+    let ((sx, sy), (ox, oy)) = travel(size, art);
+    Some((ox + x.clamp(0., 1.) * sx, oy + (1. - y.clamp(0., 1.)) * sy))
+}
+
+/// Cursor `i`'s rect (x, y, width, height) in points from the pad's corner,
+/// on whole points as it is drawn.
 #[must_use]
 pub fn rect(
     w: &model::Widget,
@@ -68,15 +83,9 @@ pub fn rect(
     size: (f64, f64),
     art: Option<(f64, f64)>,
 ) -> Option<[f64; 4]> {
-    let (x, y) = (w.cell(2 * i)?, w.cell(2 * i + 1)?);
-    let ((sx, sy), (ox, oy)) = travel(size, art);
+    let (x, y) = corner(w, i, size, art)?;
     let (cw, ch) = art.unwrap_or((CURSOR, CURSOR));
-    Some([
-        (ox + x.clamp(0., 1.) * sx).round(),
-        (oy + (1. - y.clamp(0., 1.)) * sy).round(),
-        cw,
-        ch,
-    ])
+    Some([x.round(), y.round(), cw, ch])
 }
 
 /// The value (x, y) of a cursor whose rect's corner is at `(px, py)`.
@@ -95,6 +104,8 @@ pub fn value((px, py): (f64, f64), size: (f64, f64), art: Option<(f64, f64)>) ->
 
 /// A cursor's picture: its inactive and active frames.
 pub(super) type Art = (Arc<Image>, Arc<Image>);
+/// A pictured cursor: its frames once decoded, and its size in points.
+pub(super) type Cursor = (Option<Art>, (f64, f64));
 
 /// The pad `w` drawn `width` by `height` points at scale `s`: the stock
 /// field when `field`, then its cursors (a picture and its size from
@@ -103,7 +114,7 @@ pub(super) fn draw(
     w: &model::Widget,
     (width, height, s): (f64, f64, f64),
     field: bool,
-    art: &dyn Fn(u32) -> Option<(Art, (f64, f64))>,
+    art: &dyn Fn(u32) -> Option<Cursor>,
 ) -> El {
     let model::Kind::Xy { cursors, .. } = w.kind else {
         return stack(Vec::<El>::new());
@@ -143,12 +154,15 @@ pub(super) fn draw(
             continue;
         };
         match pictured {
-            Some(((off, lit), _)) => parts.push(
+            Some((Some((off, lit)), _)) => parts.push(
                 block(px(x + cw) - px(x), px(y + ch) - px(y))
                     .radius(0.)
                     .fill(Fill::Image(if i == on { lit } else { off }, Fit::Fill))
                     .at(px(x), px(y)),
             ),
+            // Its picture still decoding (or failed): nothing, where the
+            // pointer still finds it.
+            Some((None, _)) => {}
             None if i == on => {
                 parts.push(fill(x, y, CURSOR, CURSOR, 0xFF_FFFF));
                 parts.push(fill(x + 1., y + 1., CURSOR - 2., CURSOR - 2., 0x78_7878));

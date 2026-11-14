@@ -413,14 +413,23 @@ fn pad(
             1 => Some(active),
             _ => Some((0..cursors).rev().find(|&i| inside(i)).unwrap_or(active)),
         };
-        g.xy = cursor.and_then(|c| Some((n.0, c, rect(c).map(|[x, y, ..]| (x, y))?)));
+        // From the unrounded corner, so a press that does not move edits nothing.
+        g.xy = cursor.and_then(|c| Some((n.0, c, xy::corner(w, c, points, art(c))?)));
     }
     let Some((_, c, start)) = g.xy.filter(|(p, ..)| *p == n.0) else {
         return Vec::new();
     };
     if r.released || !r.held {
         g.xy = None;
-        return Vec::new();
+        // The source runs its callback on release, moved or not.
+        return if r.released && w.reports_release {
+            [2 * c, 2 * c + 1]
+                .into_iter()
+                .filter_map(|cell| Some(edit(Set::Cell(cell, w.cell(cell)?))))
+                .collect()
+        } else {
+            Vec::new()
+        };
     }
     let [_, _, cw, ch] = rect(c).unwrap_or([0., 0., xy::CURSOR, xy::CURSOR]);
     let corner = if mode >= 2 {
@@ -434,10 +443,10 @@ fn pad(
         };
         (at.0 - half(cw), at.1 - half(ch))
     } else {
-        // ponytail: MOUSE_BEHAVIOUR_X/Y scale the travel as 1000 / value
-        // (1000, the default, is 1:1); the direction of a larger value is
-        // unprobed.
-        let scale = |s: Option<u32>| 1000. / f64::from(s.filter(|&s| s > 0).unwrap_or(1000));
+        // MOUSE_BEHAVIOUR_X/Y scale the travel by |value| / 1000, 1000 (the
+        // default) 1:1; a negative value moves the same way (Kontakt 8
+        // oracle, probe/wave.ksp: -1000 as 1000, 500 half, 2000 double).
+        let scale = |s: Option<u32>| f64::from(s.unwrap_or(1000)) / 1000.;
         let [sx, sy] = sensitivity.map(scale);
         (
             start.0 + r.drag_total.x / k * sx,

@@ -155,7 +155,9 @@ pub(super) fn widget(
         },
         ControlKind::Waveform => ui::Kind::Waveform,
         ControlKind::Wavetable => ui::Kind::Wavetable {
-            view_mode: p.int("$CONTROL_PAR_WT_VIS_MODE"),
+            three_d: p
+                .symbol("$CONTROL_PAR_WT_VIS_MODE")
+                .is_some_and(|s| s.eq_ignore_ascii_case("$NI_WT_VIS_3D")),
             parallax: ["$CONTROL_PAR_PARALLAX_X", "$CONTROL_PAR_PARALLAX_Y"]
                 .map(|n| p.int(n).unwrap_or(0)),
         },
@@ -211,6 +213,12 @@ pub(super) fn widget(
     w.default_axes = [width.is_none(), height.is_none()];
     w.source_id = (id >= 0).then_some(id);
     w.active_index = p.int("$CONTROL_PAR_ACTIVE_INDEX");
+    // A meter shows 0 to 1000000 unless the script narrows or inverts it.
+    let range = ["$CONTROL_PAR_RANGE_MIN", "$CONTROL_PAR_RANGE_MAX"].map(|n| p.int(n));
+    w.meter_range = (range != [None; 2]).then(|| {
+        let [min, max] = range;
+        [min.unwrap_or(0), max.unwrap_or(1_000_000)]
+    });
     w.value = match &w.kind {
         ui::Kind::Table { cells, .. } => Some(ui::Value::Integers(
             cells.iter().map(|n| n.round() as i32).collect(),
@@ -238,6 +246,22 @@ pub(super) fn widget(
             midi_start_note: 60,
             peaks: vec![],
             length_us: 0,
+            // Modes 2 (X-ray) and 3 (X-ray filled) draw alike (probe/wave.ksp).
+            xray: p.symbol("$CONTROL_PAR_WF_VIS_MODE").is_some_and(|s| {
+                ["$NI_WF_VIS_MODE_2", "$NI_WF_VIS_MODE_3"]
+                    .iter()
+                    .any(|m| s.eq_ignore_ascii_case(m))
+            }),
+            density: vec![],
+            frames: vec![],
+            alpha: [
+                "$CONTROL_PAR_BG_ALPHA",
+                "$CONTROL_PAR_WAVE_ALPHA",
+                "$CONTROL_PAR_WAVE_END_ALPHA",
+                "$CONTROL_PAR_WAVETABLE_ALPHA",
+                "$CONTROL_PAR_WAVETABLE_END_ALPHA",
+            ]
+            .map(|n| p.int(n).map(|a| a.clamp(0, 255) as u8)),
         });
     }
     w.z = p.int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);
@@ -338,10 +362,33 @@ pub(super) fn widget(
     // (KSP manual: "Set and center text in labels").
     let align = p.int("$CONTROL_PAR_TEXT_ALIGNMENT");
     let set = align.is_some();
-    let align = align.unwrap_or(i32::from(kind != ControlKind::Label));
-    if font.is_some() || set {
-        let font = font.unwrap_or(0);
-        w.style = Some(bld.style(font, align, engine.font(slot, font)));
+    // A text edit too, in font 0's glyphs but #181818 ink when unset
+    // (Kontakt 8 oracle, probe/wave.ksp).
+    let left = matches!(kind, ControlKind::Label | ControlKind::TextEdit);
+    let align = align.unwrap_or(i32::from(!left));
+    if font.is_some() || set || kind == ControlKind::TextEdit {
+        let style = bld.style(
+            font.unwrap_or(0),
+            align,
+            engine.font(slot, font.unwrap_or(0)),
+        );
+        w.style = Some(match (kind, font) {
+            (ControlKind::TextEdit, None) => {
+                let mut ink = bld.ui.styles.get(style.0).cloned();
+                if let Some(s) = ink.as_mut() {
+                    s.color = ui::Rgba::rgb(0x18_1818);
+                }
+                ink.map_or(style, |s| {
+                    let styles = &mut bld.ui.styles;
+                    let at = styles.iter().position(|t| *t == s).unwrap_or_else(|| {
+                        styles.push(s);
+                        styles.len() - 1
+                    });
+                    ui::StyleRef(at)
+                })
+            }
+            _ => style,
+        });
     }
     for (style, par) in w.state_styles.iter_mut().zip(STATE_FONTS) {
         *style = p

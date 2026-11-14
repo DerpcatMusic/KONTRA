@@ -958,3 +958,68 @@ fn a_stock_xy_pad_draws_its_frame_and_cursors_where_kontakt_does() {
     assert_eq!(at(149, 115), Some(0xFF));
     assert_eq!(at(155, 115), Some(0x3F));
 }
+
+/// A press on a cursor that does not move it edits nothing: its corner,
+/// unrounded, gives back its values (200 by 150 at 0.5, where the drawn
+/// corner rounds to 94, 69).
+#[test]
+fn an_xy_cursor_corner_gives_back_its_values() {
+    let mut pad = Widget::new(
+        "?xy",
+        PageRef(0),
+        Rect::new(0, 0, 200, 150),
+        Kind::Xy {
+            cursors: 1,
+            sensitivity: [None; 2],
+            mouse_mode: None,
+        },
+    );
+    pad.value = Some(model::Value::Reals(vec![0.5, 0.5]));
+    for art in [None, Some((2., 2.))] {
+        let corner = xy::corner(&pad, 0, (200., 150.), art);
+        let back = corner.map(|c| xy::value(c, (200., 150.), art));
+        assert!(back.is_some_and(|(x, y)| (x - 0.5).abs() < 1e-9 && (y - 0.5).abs() < 1e-9));
+    }
+}
+
+/// A meter's range narrows or inverts what it shows (`RANGE_MIN`/`MAX`,
+/// default 0 to 1000000; probe/wave.ksp).
+#[test]
+fn a_meter_range_narrows_and_inverts_its_display() {
+    assert!((crate::ranged(0.75, None) - 0.75).abs() < 1e-9);
+    assert!((crate::ranged(0.75, Some([0, 500_000])) - 1.5).abs() < 1e-9);
+    assert!((crate::ranged(0.75, Some([1_000_000, 0])) - 0.25).abs() < 1e-9);
+    assert!((crate::ranged(0.75, Some([500_000, 1_000_000])) - 0.5).abs() < 1e-9);
+}
+
+/// A waveform sits in the stock rim on a #3F3F3F field under its
+/// background at `BG_ALPHA`: red at 128 shows #9F1F1F (probe/wave.ksp).
+#[test]
+fn a_waveform_background_blends_over_its_field_at_its_alpha() {
+    let mut w = Widget::new("$w", PageRef(0), Rect::new(0, 0, 20, 10), Kind::Waveform);
+    w.colors.background = Some(Rgba::rgb(0xFF_0000));
+    let wave = model::Waveform {
+        zone: 0,
+        flags: 0,
+        cursor_us: 0,
+        table: vec![],
+        highlighted: None,
+        midi_start_note: 60,
+        peaks: vec![[0, 0]; 4],
+        length_us: 1,
+        xray: false,
+        density: vec![],
+        frames: vec![],
+        alpha: [Some(128), None, None, None, None],
+    };
+    let img = crate::wave::raster(&wave, crate::wave::Look::of(&w), (20, 10, 1.));
+    let px = |x: usize, y: usize| {
+        let i = (y * 20 + x) * 4;
+        img.as_ref()
+            .and_then(|img| img.rgba.get(i..i + 4))
+            .and_then(|p| <[u8; 4]>::try_from(p).ok())
+    };
+    assert_eq!(px(0, 0), Some([0x2C, 0x2C, 0x2C, 255]));
+    assert_eq!(px(1, 1), Some([0x39, 0x39, 0x39, 255]));
+    assert_eq!(px(3, 2), Some([0x9F, 0x1F, 0x1F, 255]));
+}

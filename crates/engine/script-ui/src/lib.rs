@@ -26,6 +26,8 @@ type Pars = Vec<(i32, i32)>;
 // list on the audio thread once; size by the parameter ids if a library does.
 const PARS: usize = 32;
 const TEXTS: usize = 4;
+/// Indexed string-array entries a control can hold (`entry_par` indices 0 to 30).
+const ENTRIES: usize = 31;
 
 /// Keys on the keyboard a script colours and names.
 const KEYS: usize = 128;
@@ -210,7 +212,11 @@ impl Store {
             waiting: controls.clone().map(|n| vec![u16::MAX; n].into()).collect(),
             texts: controls
                 .clone()
-                .map(|n| (0..n).map(|_| Vec::with_capacity(TEXTS)).collect())
+                .map(|n| {
+                    (0..n)
+                        .map(|_| Vec::with_capacity(TEXTS + ENTRIES))
+                        .collect()
+                })
                 .collect(),
             keys: vec![Key::UNTOUCHED; KEYS].into(),
             pressed_support: false,
@@ -819,4 +825,3 @@ mod tests {
         assert_eq!(call(&mut s, Action::GetKeyrangeName, &[50]).1.as_str(), "");
     }
 }
-
