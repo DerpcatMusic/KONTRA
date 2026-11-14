@@ -65,8 +65,9 @@ pub enum Event {
     NoteOffVelocity(HostPattern, f64),
     Choke(HostPattern),
     Expression(HostPattern, NoteExpression),
-    /// Original one-word System/MIDI1 or two-word MIDI2 packet.
-    /// The UMP group is independent of the physical host input port.
+    /// Original one-word System/MIDI1 or two-word MIDI2 packet. Its group
+    /// is the host input port it came in on (UMP groups are MIDI 2.0's
+    /// cables, as Kontakt's ports A to D are MIDI 1.0 cables).
     Ump([u32; 2]),
 }
 
@@ -80,6 +81,26 @@ impl Event {
                 | u32::from(data2 & 127),
             0,
         ])
+    }
+
+    /// The MIDI port (input cable) this event came in on: a note's, a
+    /// packet's group; None for a pattern on every port.
+    pub fn port(&self) -> Option<u8> {
+        match self {
+            Self::NoteOn { note, .. } => Some(note.port),
+            Self::NoteOff(p)
+            | Self::NoteOffVelocity(p, _)
+            | Self::Choke(p)
+            | Self::Expression(p, _) => u8::try_from(p.port).ok(),
+            Self::Ump([word, _]) => Some((word >> 24) as u8 & 15),
+        }
+    }
+
+    /// Kontakt's channel across ports, 0..=63 for ports A to D: 16 per
+    /// port (KSP `$MIDI_CHANNEL`). None as [`Self::channel`] is.
+    pub fn port_channel(&self) -> Option<u8> {
+        let channel = self.channel()?;
+        Some(self.port().unwrap_or(0).min(3) * 16 + channel)
     }
 
     /// The MIDI channel this event is addressed to; None for host-wide patterns.

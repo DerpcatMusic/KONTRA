@@ -182,7 +182,9 @@ mod tests {
         };
         let (slots, failed) = slots(Path::new(&path), None).unwrap();
         for s in &slots {
-            let found = (s.instrument.samples.iter()).filter(|x| x.file.exists()).count();
+            let found = (s.instrument.samples.iter())
+                .filter(|x| x.file.exists())
+                .count();
             println!(
                 "slot {}: {} groups, {} scripts, {found}/{} samples found, channel {} output {}",
                 s.index + 1,
@@ -192,7 +194,12 @@ mod tests {
                 s.channel,
                 s.output
             );
-            assert_eq!(found, s.instrument.samples.len(), "slot {} lost samples", s.index + 1);
+            assert_eq!(
+                found,
+                s.instrument.samples.len(),
+                "slot {} lost samples",
+                s.index + 1
+            );
         }
         println!("failed: {failed:?}");
         assert!(!slots.is_empty());

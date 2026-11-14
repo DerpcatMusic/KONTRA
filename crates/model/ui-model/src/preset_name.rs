@@ -18,8 +18,10 @@ pub fn preset_file_name(name: &str) -> Option<String> {
 
 /// The presets Kontakt's instrument header lists while `current` plays:
 /// the instrument and its snapshots, by index into `presets`. A snapshot
-/// belongs to the instrument its folder names (`Snapshots/<instrument>/`,
-/// Kontakt's user `<instrument>/`), any case. An instrument without
+/// belongs to the instrument its folder names: the one after `Snapshots`,
+/// however deep its category folders go (Conflux's
+/// `Snapshots/Conflux/Keys/`), else its own folder (Kontakt's user
+/// `<instrument>/`), any case. An instrument without
 /// snapshots, or nothing playing, lists them all.
 #[must_use]
 pub fn preset_family<P: AsRef<std::path::Path>>(
@@ -31,7 +33,14 @@ pub fn preset_family<P: AsRef<std::path::Path>>(
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
         let named = if snapshot {
-            p.parent()?.file_name()?
+            let mut folders = p.parent()?.iter();
+            let library = folders
+                .by_ref()
+                .any(|f| f.eq_ignore_ascii_case("snapshots"));
+            match folders.next() {
+                Some(instrument) if library => instrument,
+                _ => p.parent()?.file_name()?,
+            }
         } else {
             p.file_stem()?
         };
@@ -64,12 +73,13 @@ mod family_tests {
             "Snapshots/Cotton/Intimate.nksn",
             "/kontakt/felt/Mine.nksn",
             "Instruments/Lone.nki",
+            "Snapshots/Felt/Keys/Deep.nksn",
         ];
-        assert_eq!(preset_family(&presets, Some(0)), [0, 2, 4]);
+        assert_eq!(preset_family(&presets, Some(0)), [0, 2, 4, 6]);
         // From a snapshot too.
         assert_eq!(preset_family(&presets, Some(3)), [1, 3]);
         // No snapshots, or nothing playing: the whole library.
-        assert_eq!(preset_family(&presets, Some(5)).len(), 6);
-        assert_eq!(preset_family(&presets, None).len(), 6);
+        assert_eq!(preset_family(&presets, Some(5)).len(), 7);
+        assert_eq!(preset_family(&presets, None).len(), 7);
     }
 }

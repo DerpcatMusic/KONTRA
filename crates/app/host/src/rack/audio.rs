@@ -285,8 +285,7 @@ impl RackAudio {
             }
             let played = self.played.iter().map(|&body| (0, body));
             let room = self.events.capacity() - self.events.len();
-            let input = (input.iter().copied())
-                .filter(|(_, e)| channel == 0 || e.channel().is_none_or(|c| c + 1 == channel));
+            let input = (input.iter().copied()).filter(|(_, e)| listens(channel, e));
             self.events
                 .extend(played.chain(input).take(room).map(|(at, body)| Timed {
                     at: SampleTime(p.held.due(now.0 + u64::from(at), &body)),
@@ -791,4 +790,14 @@ const PANIC: [Event; 2] = [Event::Choke(wildcard(true)), Event::Choke(wildcard(f
 fn pan_gains(gain: f32, pan: f32) -> (f32, f32) {
     let pan = pan.clamp(-1.0, 1.0);
     (gain * (1.0 - pan).min(1.0), gain * (1.0 + pan).min(1.0))
+}
+
+/// Whether a part on Kontakt's `channel` (1..=64 across ports A to D, 0
+/// for all) hears `e`. A pattern on every port matches on its channel.
+fn listens(channel: u8, e: &Event) -> bool {
+    match (channel, e.channel()) {
+        (0, _) | (_, None) => true,
+        (_, Some(c)) if e.port().is_none() => (channel - 1) % 16 == c,
+        _ => e.port_channel().is_some_and(|c| c + 1 == channel),
+    }
 }

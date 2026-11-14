@@ -4499,6 +4499,120 @@ fn midi_in_drops_moves_and_adds_notes_before_the_engine() {
     assert_eq!(e.active_voices(), 3, "added");
 }
 
+/// KSP manual, `$MIDI_CHANNEL`: "Since Kontakt can handle four different
+/// MIDI ports, this number is in 0 ... 63 range". A note on port B's
+/// channel 1 reads 16 in `on note` and `on midi_in`, and a `set_midi` on
+/// 16 + 2 leaves on port B's channel 3.
+#[test]
+fn midi_channel_counts_across_ports() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 60)
+                set_midi(18, $MIDI_COMMAND, 64, $MIDI_BYTE_2)
+            end if
+        end on
+        on note
+            message($MIDI_CHANNEL & \",\" & $EVENT_NOTE)
+        end on",
+    );
+    let mut b = on(60);
+    if let Event::NoteOn { note, .. } = &mut b.body {
+        note.port = 1;
+    }
+    level(&mut e, &[b]);
+    // The note itself (B1) and the one `set_midi` sent on 18 (B3), in
+    // either order: both read across ports.
+    let said = e.last_message();
+    assert!(["16,60", "18,64"].contains(&said), "{said}");
+    assert_eq!(e.active_voices(), 2);
+}
+
+/// A host note-off on any port (CLAP wildcard, -1) that `on midi_in` leaves
+/// alone still ends a note held on port B.
+#[test]
+fn an_untouched_wildcard_note_off_ends_a_note_on_port_b() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(&store, vec![z], "on midi_in\nend on");
+    let mut b = on(60);
+    if let Event::NoteOn { note, .. } = &mut b.body {
+        note.port = 1;
+    }
+    level(&mut e, &[b]);
+    assert_eq!(e.active_voices(), 1);
+    let mut any = off(60);
+    if let Event::NoteOff(p) = &mut any.body {
+        p.port = -1;
+    }
+    assert_eq!(level(&mut e, &[any]), 0.0);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// A script transposing every note keeps a wildcard note-off wild: the
+/// note it moved up on port B still ends.
+#[test]
+fn a_transposed_wildcard_note_off_ends_a_note_on_port_b() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            if ($MIDI_COMMAND = $MIDI_COMMAND_NOTE_ON or $MIDI_COMMAND = $MIDI_COMMAND_NOTE_OFF)
+                ignore_midi
+                set_midi($MIDI_CHANNEL, $MIDI_COMMAND, $MIDI_BYTE_1 + 12, $MIDI_BYTE_2)
+            end if
+        end on",
+    );
+    let mut b = on(60);
+    if let Event::NoteOn { note, .. } = &mut b.body {
+        note.port = 1;
+    }
+    level(&mut e, &[b]);
+    assert_eq!(e.active_voices(), 1);
+    let mut any = off(60);
+    if let Event::NoteOff(p) = &mut any.body {
+        p.port = -1;
+    }
+    assert_eq!(level(&mut e, &[any]), 0.0);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// The same, transposed in place with `set_event_par`: the moved note-off
+/// keeps its wildcard port and ends the note held on port B.
+#[test]
+fn an_in_place_transposed_wildcard_note_off_ends_a_note_on_port_b() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            set_event_par($EVENT_ID, $EVENT_PAR_MIDI_BYTE_1, $MIDI_BYTE_1 + 12)
+        end on",
+    );
+    let mut b = on(60);
+    if let Event::NoteOn { note, .. } = &mut b.body {
+        note.port = 1;
+    }
+    level(&mut e, &[b]);
+    assert_eq!(e.active_voices(), 1);
+    let mut any = off(60);
+    if let Event::NoteOff(p) = &mut any.body {
+        p.port = -1;
+    }
+    assert_eq!(level(&mut e, &[any]), 0.0);
+    assert_eq!(e.active_voices(), 0);
+}
+
 /// `set_note_controller` runs `on note_controller` in the other script slots
 /// only, with the controller, note and value.
 #[test]

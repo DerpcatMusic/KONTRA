@@ -46,7 +46,9 @@ pub const OUTPUTS: usize = MAX_PARTS;
 /// How a part sounds in the rack.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mix {
-    /// MIDI channel 1..=16 it listens on, or 0 for every channel.
+    /// The channel it listens on, as Kontakt numbers them across its four
+    /// ports: 1..=16 port A's (A1..A16), 17..=32 port B's, to 64 (D16); 0
+    /// for every channel of every port.
     pub channel: u8,
     /// The stereo output pair it plays into, from 0.
     pub output: u8,
@@ -339,12 +341,11 @@ impl Rack {
             let own = path.join(slot.index.to_string());
             instrument.source_path = Some(own.clone());
             self.load_ir(at, instrument, Some(own))?;
-            // ponytail: one MIDI port here, so Kontakt's ports A to D fold
-            // onto channels 1 to 16; a port per input when the rack has them.
-            let channel = match slot.channel {
-                0 => 0,
-                c => u8::try_from((c - 1) % 16 + 1).unwrap_or(0),
-            };
+            // Kontakt's port and channel as they are: A1..D16 is 1..=64.
+            let channel = u8::try_from(slot.channel)
+                .ok()
+                .filter(|&c| c <= 64)
+                .unwrap_or(0);
             let output = u8::try_from(usize::from(slot.output).min(OUTPUTS - 1)).unwrap_or(0);
             let mix = self.parts.get(at).and_then(Option::as_ref).map(|p| p.mix);
             if let Some(mix) = mix {
