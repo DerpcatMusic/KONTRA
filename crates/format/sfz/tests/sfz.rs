@@ -329,11 +329,21 @@ fn group_numbers_become_voice_groups_with_their_limits_and_off_modes() {
         panic!("{:?}", inst.voice_groups)
     };
     assert!(open.release && open.voices == u16::MAX);
-    assert_eq!((closed.voices, closed.per_key, closed.quieter_only), (2, Some(1), false));
+    assert_eq!(
+        (closed.voices, closed.per_key, closed.quieter_only),
+        (2, Some(1), false)
+    );
     assert!(!closed.release && near(closed.fade_ms, 50.0));
     let groups: Vec<_> = (inst.groups.iter())
         .map(|g| (g.voice_group, g.off_by, g.polyphony))
         .collect();
-    assert_eq!(groups, [(Some(0), Some(1), None), (Some(1), None, None), (None, None, Some(3))]);
+    assert_eq!(
+        groups,
+        [
+            (Some(0), Some(1), None),
+            (Some(1), None, None),
+            (None, None, Some(3))
+        ]
+    );
     assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
 }

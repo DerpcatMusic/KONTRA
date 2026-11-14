@@ -38,7 +38,8 @@ impl Engine {
         };
         let stopped = slot.voice.end_by_release(now);
         #[cfg(feature = "trace")]
-        if let (true, Some(trace), Some(slot)) = (stopped, &mut self.trace, self.voices.get(index)) {
+        if let (true, Some(trace), Some(slot)) = (stopped, &mut self.trace, self.voices.get(index))
+        {
             crate::trace::voice(trace, self.now.0, index, slot, crate::VoiceEvent::Steal);
         }
         self.stats.voices_stolen += u64::from(stopped);
@@ -55,7 +56,9 @@ impl Engine {
     /// voice of voice group `vg` chokes (`off_by`), except the note's own.
     pub(crate) fn choke_by(&mut self, vg: u32, note: NoteRef) {
         for i in 0..self.voices.len() {
-            let Some(s) = self.voices.get(i) else { continue };
+            let Some(s) = self.voices.get(i) else {
+                continue;
+            };
             let Some(zone) = self.plan.zones.get(s.zone) else {
                 continue;
             };
@@ -151,7 +154,10 @@ impl Engine {
             return;
         };
         let rival = |e: &Self, s: &Slot| {
-            s.note.filter(|&n| n != note).and_then(|n| e.notes.get(n)).is_some_and(|n| n.key == key)
+            s.note
+                .filter(|&n| n != note)
+                .and_then(|n| e.notes.get(n))
+                .is_some_and(|n| n.key == key)
                 && e.voice_group_of(s) == Some(vg)
         };
         let mut playing = self.voices.iter().filter(|s| rival(self, s)).count();
