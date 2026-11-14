@@ -284,6 +284,7 @@ pub(crate) struct Reads {
     items: LuaString,
     revision: LuaString,
     alpha: LuaString,
+    display: LuaString,
 }
 
 impl Reads {
@@ -304,6 +305,7 @@ impl Reads {
             items: key("items")?,
             revision: key("__items_revision")?,
             alpha: key("alpha")?,
+            display: key("displayText")?,
         })
     }
 
@@ -373,16 +375,21 @@ impl Reads {
         true
     }
 
-    /// Widget `n`'s text: its own, or a menu's selected item's (a script
-    /// renames items, VWinds' `Name*` for the loaded preset).
+    /// Widget `n`'s text: what the script shows in place of its value
+    /// (`displayText`: Augmented Orchestra names its key ranges' notes),
+    /// its own, or a menu's selected item's (a script renames items,
+    /// VWinds' `Name*` for the loaded preset).
     pub(crate) fn text(&self, n: u32, out: &mut Text) -> bool {
         let Some(w) = self.table(n) else {
             return false;
         };
-        let text = match w.raw_get::<Value>(&self.text) {
+        let string = |k: &LuaString| match w.raw_get::<Value>(k) {
             Ok(Value::String(s)) => Some(s),
-            _ => self.item(&w),
+            _ => None,
         };
+        let text = (string(&self.display))
+            .or_else(|| string(&self.text))
+            .or_else(|| self.item(&w));
         let Some(s) = text else {
             return false;
         };

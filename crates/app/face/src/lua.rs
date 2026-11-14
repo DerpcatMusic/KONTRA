@@ -347,6 +347,15 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
             w.opacity,
         );
     let pictured = matches!(w.kind, ui::Kind::Button { .. }) && !w.images.is_empty();
+    // A value's `displayText` shows in place of its formatted value.
+    if matches!(w.kind, ui::Kind::ValueEdit { .. } | ui::Kind::Knob { .. }) {
+        let now = text.map(str::to_owned);
+        if now.is_some() && w.value_text != now {
+            w.value_text = now;
+            changed = true;
+        }
+        return changed;
+    }
     // A menu's text is its selected item's, which the script may rename.
     let shown = match (&mut w.kind, &w.value) {
         (ui::Kind::Menu { items }, Some(ui::Value::Integer(at))) => items
