@@ -1,4 +1,4 @@
-//! Saturation, Distortion, Lo-Fi, Skreamer and Tape Saturator onto the engine's waveshaper and
+//! Saturation, Distortion, Lo-Fi, Skreamer, Tape Saturator, DStortion and Supercharger GT onto the engine's waveshaper and
 //! reducer: their saved records (readers [ref],
 //! [ref], via v2 sampler-kontakt effects/mod.rs) and knob laws.
 //! Any rack: the engine runs them on each voice in a group rack and on the
@@ -10,9 +10,11 @@ use kontra_ir as ir;
 /// Lo-Fi's controls at or above this are off (native threshold 0x3f7fff58).
 const ACTIVE_BELOW: f32 = f32::from_bits(0x3f7f_ff58);
 
-/// Distortion's fixed DC blocker, a Butterworth high-pass (template copy
-/// [ref]; at this corner its 48 kHz coefficients match v2's to 2e-7).
-const DC_HZ: f32 = 14.96;
+/// Distortion's fixed DC blocker, a Butterworth high-pass at 36.8 Hz:
+/// Kontakt 8.13.1's Tube 0.5 sweep (2026-11-14) sits 7.0, 4.6, 2.4 and 1.0
+/// dB under a 14.96 Hz one (v2's corner, template copy [ref]) at 25,
+/// 31, 40 and 50 Hz, a 36.0 to 37.1 Hz Butterworth at each.
+const DC_HZ: f32 = 36.8;
 
 /// The record of module `id` as a drive effect, or none (then reported as
 /// not carried).
@@ -46,6 +48,33 @@ pub(crate) fn effect(
             f(16)?,
         )),
         0x42 => Some(crate::tape::tape(f(0)?, f(4)?, f(8)?)),
+        0x56 if version == 0x10 => {
+            if crate::dstortion::mono(public) {
+                notes.add(ir::Impact::Audible, "DStortion mono", at);
+            }
+            Some(crate::dstortion::dstortion(
+                f(0)?,
+                f(4)?,
+                f(8)?,
+                f(12)?,
+                f(16)?,
+                f(20)?,
+            ))
+        }
+        0x60 if version == 0x51 => {
+            let [trim, saturation, character, mix] = crate::supergt::saved(public)?;
+            notes.add(
+                ir::Impact::Audible,
+                "Supercharger GT modes and compressor (not read)",
+                at,
+            );
+            if mix < 1.0 {
+                notes.add(ir::Impact::Audible, "Supercharger GT mix", at);
+            }
+            Some(crate::supergt::supergt(
+                trim, saturation, character, 0.0, 0.0,
+            ))
+        }
         _ => None,
     }
 }

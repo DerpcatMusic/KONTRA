@@ -488,6 +488,8 @@ mod tests {
                 damping_hz: 8_000.0,
                 low_cut_hz: 0.0,
                 steep_low_cut: false,
+                body: &[],
+                triangle_s: None,
                 high_shelf: None,
                 spread_ms: 1.0,
                 rate: ir::Rate::Hz(0.9),

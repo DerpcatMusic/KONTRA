@@ -43,6 +43,13 @@ pub struct Settings {
     pub low_cut_hz: f32,
     /// The low cut is a second-order high-pass, Q ½, not the one-pole.
     pub steep_low_cut: bool,
+    /// Sections on the heads' sum, inside the loop after the low cut and
+    /// the shelf (a mode's own body: a tape's or a bucket brigade's tone);
+    /// the first four run.
+    pub body: &'static [kontra_law::Section],
+    /// A triangle LFO averaged over this many seconds (0: sharp corners)
+    /// instead of the sine; it falls first as the sine does.
+    pub triangle_s: Option<f32>,
     /// A high shelf on the heads, inside the loop.
     pub high_shelf: Option<Shelf>,
     /// How much shorter the left line runs and longer the right, ms.
@@ -124,6 +131,25 @@ fn triangle(cycles: f64) -> f32 {
     (4.0 * ((cycles + 0.25).rem_euclid(1.0) - 0.5).abs() - 1.0) as f32
 }
 
+/// [`triangle`] averaged over `window` cycles centred on `cycles`: the
+/// difference of its integral across the window, over the window.
+fn averaged_triangle(cycles: f64, window: f64) -> f32 {
+    if window < 1e-9 {
+        return triangle(cycles);
+    }
+    // The integral of the triangle from where it crosses 0 falling, one
+    // period long and back to 0 at its end (the triangle averages 0).
+    let integral = |c: f64| {
+        let u = (c + 0.25).rem_euclid(1.0);
+        if u <= 0.5 {
+            u - 2.0 * u * u
+        } else {
+            2.0 * (u - 0.5) * (u - 0.5) - u + 0.5
+        }
+    };
+    ((integral(cycles + 0.5 * window) - integral(cycles - 0.5 * window)) / window) as f32
+}
+
 /// Flushes a value that would decay into the subnormal range.
 fn flush(x: f32) -> f32 {
     if x.abs() < 1e-20 { 0.0 } else { x }
@@ -162,6 +188,7 @@ pub struct ModDelay {
     /// The steep low cut and the shelf, on the heads' sum.
     cut: Option<Biquad>,
     shelf: Option<Biquad>,
+    body: [Option<Biquad>; 4],
     /// The loudest value the last [`Self::process`] wrote into the ring.
     written: f32,
 }
@@ -188,6 +215,7 @@ impl ModDelay {
             hp: [[0.0; 2]; 2],
             cut: None,
             shelf: None,
+            body: Default::default(),
             written: 0.0,
         };
         d.set(s);
@@ -207,8 +235,13 @@ impl ModDelay {
         let tone = s
             .high_shelf
             .map(|t| shelf(t.hz, t.gain_db, t.slope, Side::High, rate));
+        let mut sections = s.body.iter().map(|&b| Biquad::analog(b, rate));
+        let body: [Option<Biquad>; 4] = std::array::from_fn(|_| sections.next());
         // A moved filter keeps its state, so a sweep never clicks.
-        for (old, new) in [(&mut self.cut, cut), (&mut self.shelf, tone)] {
+        let filters = [&mut self.cut, &mut self.shelf]
+            .into_iter()
+            .zip([cut, tone]);
+        for (old, new) in filters.chain(self.body.iter_mut().zip(body)) {
             match (old, new) {
                 (Some(old), Some(new)) => old.retune(&new),
                 (old, new) => *old = new,
@@ -285,7 +318,10 @@ impl ModDelay {
         };
         // The heads' filters hold state too, heard or not.
         let held = self.lp.iter().chain(&self.hp).flatten();
-        let filters = [&self.cut, &self.shelf].into_iter().flatten();
+        let filters = [&self.cut, &self.shelf]
+            .into_iter()
+            .chain(&self.body)
+            .flatten();
         let ringing = filters.into_iter().any(|f| !f.is_silent());
         self.written = match ringing {
             true => f32::INFINITY,
@@ -319,6 +355,8 @@ impl ModDelay {
         let spread = [-s.spread_ms * per_ms, s.spread_ms * per_ms];
         let step = f64::from(s.lfo_hz / self.rate);
         let offsets = [0.0, f64::from(s.phase)];
+        // The averaging window in cycles of the LFO.
+        let window = s.triangle_s.map(|t| f64::from(t.max(0.0) * s.lfo_hz));
         let mut d = [[[0f32; SPAN]; 2]; H];
         let mut nearest = f32::INFINITY;
         for f in 0..n {
@@ -330,7 +368,10 @@ impl ModDelay {
                     // adds a signed zero, which the read's floor of 2 hides.
                     let sway = match swing == 0.0 {
                         true => 0.0,
-                        false => swing * lfo(self.cycle + offset + ahead),
+                        false => {
+                            let at = self.cycle + offset + ahead;
+                            swing * window.map_or_else(|| lfo(at), |w| averaged_triangle(at, w))
+                        }
                     };
                     // As the read holds it: `max` maps NaN to the floor.
                     let v = (base + spread - sway).max(2.0).min(longest);
@@ -377,7 +418,12 @@ impl ModDelay {
                     }
                 }
             }
-            for filter in [&mut self.cut, &mut self.shelf].into_iter().flatten() {
+            let body = self.body.iter_mut();
+            for filter in [&mut self.cut, &mut self.shelf]
+                .into_iter()
+                .chain(body)
+                .flatten()
+            {
                 filter.process(std::slice::from_mut(&mut y));
             }
             let [a, b] = apply(s.input, *frame);
@@ -494,7 +540,7 @@ impl Phaser {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModDelay, Settings, fract, round, trunc};
+    use super::{ModDelay, Settings, averaged_triangle, fract, round, sine, triangle, trunc};
 
     #[test]
     fn a_delay_is_deaf_only_when_every_input_gain_is_zero() {
@@ -508,6 +554,8 @@ mod tests {
             damping_hz: f32::INFINITY,
             low_cut_hz: 0.0,
             steep_low_cut: false,
+            body: &[],
+            triangle_s: None,
             high_shelf: None,
             spread_ms: 0.0,
             lfo_hz: 1.0,
@@ -516,6 +564,26 @@ mod tests {
         assert!(ModDelay::new(s, 48_000, 50.0).deaf());
         s.input[1][0] = 0.5;
         assert!(!ModDelay::new(s, 48_000, 50.0).deaf());
+    }
+
+    #[test]
+    fn the_averaged_triangle_keeps_its_fundamental_by_the_window_sinc() {
+        // Over a whole cycle it averages to nothing; a narrow window is the triangle itself.
+        for c in [0.0, 0.1, 0.37, 0.8] {
+            assert!(averaged_triangle(c, 1.0).abs() < 1e-6);
+            assert!((averaged_triangle(c, 1e-6) - triangle(c)).abs() < 1e-4);
+        }
+        // Half a cycle: the fundamental scales by sinc(π/2) = 2/π (Replika Analogue's law).
+        let n = 4096;
+        let (fundamental, plain) = (0..n).fold((0.0, 0.0), |(f, p), i| {
+            let c = f64::from(i) / f64::from(n);
+            let s = -sine(c);
+            (
+                f + f64::from(averaged_triangle(c, 0.5)) * s,
+                p + f64::from(triangle(c)) * s,
+            )
+        });
+        assert!((fundamental / plain - 2.0 / std::f64::consts::PI).abs() < 1e-3);
     }
 
     #[test]

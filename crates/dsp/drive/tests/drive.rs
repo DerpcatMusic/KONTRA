@@ -32,26 +32,27 @@ fn the_curves_match_v1s_measured_transfer_vectors() {
         let got = f64::from(Curve::Soft(shape).transfer(x as f32));
         assert!((got - y).abs() < 2e-7, "soft {shape} at {x}: {got}");
     }
-    // v1's tube and power vectors at amount 1.
+    // v1's power vector at amount 1.
     let xs = [-0.25, -0.01, 0.0, 0.01, 0.25];
-    let tube = [
-        -0.109_394_263_170_87,
-        -1.511_801_183_946e-5,
-        0.0,
-        0.072_360_783_382_485,
-        0.857_976_493_794_69,
-    ];
     let power = [-0.25, -0.000_039_062_5, 0.0, 0.131_326_390_220_19, 0.25];
-    for ((x, t), p) in xs.into_iter().zip(tube).zip(power) {
-        assert!(
-            (f64::from(Curve::Tube(1.0).transfer(x)) - t).abs() < 2e-7,
-            "tube {x}"
-        );
+    for (x, p) in xs.into_iter().zip(power) {
         assert!(
             (f64::from(Curve::Power(1.0).transfer(x)) - p).abs() < 2e-7,
             "power {x}"
         );
     }
+    // Kontakt 8.13.1's Tube at DRIVE 0.5 (a fitted point either side, and
+    // the ceilings at full input), and DRIVE 0 passing the input.
+    for (drive, x, y) in [
+        (0.5, 0.5, 0.497),
+        (0.5, -0.5, -0.508),
+        (1.0, 1.0, 0.533),
+        (1.0, -1.0, -0.542),
+    ] {
+        let got = Curve::Tube(drive).transfer(x);
+        assert!((got - y).abs() < 0.01, "tube {drive} at {x}: {got}");
+    }
+    assert_eq!(Curve::Tube(0.0).transfer(0.3), 0.3);
     let half_pi = std::f32::consts::FRAC_PI_2;
     for (curve, y) in [
         (Curve::Sine(half_pi), (0.5 * half_pi).sin()),
