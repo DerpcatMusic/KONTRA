@@ -196,6 +196,14 @@ impl Browser {
         }
     }
 
+    /// Stars or unstars preset `preset` of library `library`.
+    pub fn star_preset(&mut self, library: usize, preset: usize, on: bool) {
+        if let Some(path) = self.preset(library, preset) {
+            self.prefs.star(&path, on);
+            self.changed();
+        }
+    }
+
     /// Remembers that the library folder `from` is now at `to`.
     pub fn relink(&mut self, from: PathBuf, to: PathBuf) {
         self.prefs.moved.retain(|(f, _)| *f != from);
