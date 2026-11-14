@@ -117,7 +117,11 @@ impl ModOsc {
         match self.unit {
             Unit::Semitones | Unit::Hz => {
                 let (lo, hi) = self.tune_range;
-                if lo > 0.0 { lo * (hi / lo).powf(x) } else { 1.0 }
+                if lo > 0.0 {
+                    lo * (hi / lo).powf(x)
+                } else {
+                    1.0
+                }
             }
             // n = round(1 + 15·|2x − 1|): a harmonic above the middle, 1/n below.
             Unit::Ratio => {
@@ -725,10 +729,18 @@ mod tests {
             (0.1, 1.0 / 13.0),
             (0.0, 1.0 / 16.0),
         ] {
-            assert!((r(x) - want).abs() < 1e-5, "ratio at {x}: {} vs {want}", r(x));
+            assert!(
+                (r(x) - want).abs() < 1e-5,
+                "ratio at {x}: {} vs {want}",
+                r(x)
+            );
         }
         let st = |x| osc(Unit::Semitones, x).ratio();
-        assert!((st(0.0) - 0.125).abs() < 1e-6 && (st(0.5) - 1.0).abs() < 1e-6 && (st(1.0) - 8.0).abs() < 1e-5);
+        assert!(
+            (st(0.0) - 0.125).abs() < 1e-6
+                && (st(0.5) - 1.0).abs() < 1e-6
+                && (st(1.0) - 8.0).abs() < 1e-5
+        );
         // 440 Hz and 1 kHz notes alike: a fixed frequency.
         for note in [440.0 / 48_000.0, 1_000.0 / 48_000.0] {
             for (x, hz) in [(0.25, 5.946), (0.5, 70.71), (0.75, 840.9), (1.0, 10_000.0)] {
@@ -745,12 +757,24 @@ mod tests {
     /// in the second.
     #[test]
     fn the_mod_oscillators_waves_are_kontakts() {
-        let wave = |w, p| ModOsc { wave: w, ..ModOsc::OFF }.wave_at(p);
+        let wave = |w, p| {
+            ModOsc {
+                wave: w,
+                ..ModOsc::OFF
+            }
+            .wave_at(p)
+        };
         assert!((wave(0, 0.25) - 1.0).abs() < 1e-12);
         for w in 0..=8 {
-            let peak = (0..1000).map(|i| wave(w, f64::from(i) / 1000.0).abs()).fold(0.0, f64::max);
+            let peak = (0..1000)
+                .map(|i| wave(w, f64::from(i) / 1000.0).abs())
+                .fold(0.0, f64::max);
             assert!((0.65..=1.01).contains(&peak), "wave {w} peaks at {peak}");
-            assert!(wave(w, 0.0).abs() < 0.02, "wave {w} starts at {}", wave(w, 0.0));
+            assert!(
+                wave(w, 0.0).abs() < 0.02,
+                "wave {w} starts at {}",
+                wave(w, 0.0)
+            );
         }
         assert!((wave(3, 0.25) - 1.0).abs() < 0.01);
         assert!((0..100).all(|i| wave(3, 0.5 + f64::from(i) / 200.0).abs() < 0.01));

@@ -471,7 +471,8 @@ impl HostApi for Engine {
                 let byte = |i| int(i).clamp(0, 255) as u8;
                 self.set_midi([
                     byte(1) & 0xF0,
-                    byte(0) & 0x0F,
+                    // KSP's channel counts across ports A–D, 0..=63.
+                    byte(0).min(63),
                     byte(2) & 0x7F,
                     byte(3) & 0x7F,
                 ]);
