@@ -802,7 +802,9 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
     };
     let (background, page_width) = (w.colors.background, w.rect.width);
     let bar = w.colors.bar;
-    let edges = w.table_inner_edge.map(|edge| edge.visible).unwrap_or(false);
+    // UVI draws a table's inner edges unless told not to (Augmented
+    // Orchestra's arpeggiator steps leave `drawInnerEdge` unset).
+    let edges = w.table_inner_edge.map_or(true, |edge| edge.visible);
     let zero = match &w.kind {
         Kind::Table { range, .. } => {
             ((0. - range.min) / (range.max - range.min).max(f64::EPSILON)).clamp(0., 1.)
@@ -849,22 +851,32 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
                 ));
             }
             Kind::Table { .. } if uvi => {
-                if let Some(c) = background {
-                    d.push(Draw::fill(rect(0., 0., w, h), Fill::from(super::color(c))));
-                }
                 let ink = bar.map_or(grey(VALUE), |c| Fill::from(super::color(c)));
                 let bw = w / bars.len().max(1) as f64;
                 let base = h * (1. - zero);
+                // An inner edge is a gap through the cell and its bar; without
+                // one, each bar overlaps the next a little, so 128 thin bars
+                // (VWinds' air curve) leave no seams.
+                let (gap, over) = if edges { (1., 0.) } else { (0., 0.5) };
+                let cell = (bw - gap).max(0.);
+                if let Some(c) = background {
+                    let fill = Fill::from(super::color(c));
+                    if edges {
+                        for n in 0..bars.len() {
+                            d.push(Draw::fill(rect(n as f64 * bw, 0., cell, h), fill.clone()));
+                        }
+                    } else {
+                        d.push(Draw::fill(rect(0., 0., w, h), fill));
+                    }
+                }
                 for (n, v) in bars.iter().enumerate() {
                     let y = h * (1. - v);
-                    let gap = if edges { 1. } else { 0. };
+                    // A bipolar step at zero still shows a line (the pan row).
+                    let least = if zero > 0. && zero < 1. { 1. } else { 0. };
+                    let tall = (base - y).abs().max(least);
+                    let top = if y < base { y } else { base.min(h - 1.) };
                     d.push(Draw::fill(
-                        rect(
-                            n as f64 * bw,
-                            y.min(base),
-                            (bw - gap).max(0.),
-                            (base - y).abs(),
-                        ),
+                        rect(n as f64 * bw, top.min(base), cell + over, tall),
                         ink.clone(),
                     ));
                 }

@@ -399,6 +399,8 @@ fn slot_effect(
             match id {
                 0x21 => *model = crate::skreamer::model(&public),
                 0x42 => *model = crate::tape::model(&public),
+                0x56 => *model = crate::dstortion::model(&public),
+                0x60 => *model = crate::supergt::model(&public),
                 _ => {}
             }
             crate::drive::effect(id, object.version, &public, at, notes)

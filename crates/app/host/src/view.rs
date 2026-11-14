@@ -138,10 +138,7 @@ impl View {
             let Some(look) = engine.widget(at, n) else {
                 continue;
             };
-            let label = tree
-                .widgets
-                .get(w)
-                .is_some_and(|w| w.kind == model::Kind::Label);
+            let label = tree.widgets.get(w).is_some_and(|w| worded(&w.kind));
             let words = label && engine.widget_text(at, n, &mut text);
             crate::ui::lua::apply(&mut tree, w, look, words.then(|| text.as_str()));
         }
@@ -374,7 +371,7 @@ impl LookFrame {
     /// (a script renames a menu's items).
     fn lua(slot: u8, tree: &model::Interface) -> Box<Self> {
         let labels = (tree.widgets.iter().enumerate())
-            .filter(|(_, w)| matches!(w.kind, model::Kind::Label | model::Kind::Menu { .. }))
+            .filter(|(_, w)| worded(&w.kind) || matches!(w.kind, model::Kind::Menu { .. }))
             .filter_map(|(n, _)| Some((u32::try_from(n).ok()?, false, Text::EMPTY)));
         Box::new(Self {
             part: 0,
@@ -607,6 +604,15 @@ impl LookFrame {
     pub(crate) fn unfilled(&mut self) {
         self.state = Filled::No;
     }
+}
+
+/// Whether a Lua widget shows words the script can change: a label's
+/// text, or a value's `displayText`.
+fn worded(kind: &model::Kind) -> bool {
+    matches!(
+        kind,
+        model::Kind::Label | model::Kind::ValueEdit { .. } | model::Kind::Knob { .. }
+    )
 }
 
 /// The widgets of a Lua page that can show or change what shows: those

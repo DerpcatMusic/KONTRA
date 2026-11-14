@@ -844,7 +844,8 @@ fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
     }
 }
 
-fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
+/// A group envelope in frames at `rate`.
+pub fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
     let frames = |seconds: f32| (f64::from(seconds.max(0.0)) * f64::from(rate)).round() as u32;
     Ahdsr {
         attack: frames(e.attack),
@@ -854,6 +855,7 @@ fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
         release: frames(e.release).max(1),
         attack_shape: e.attack_shape,
         fall_shape: e.fall_shape,
+        lag: frames(e.lag),
     }
 }
 

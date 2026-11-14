@@ -534,6 +534,9 @@ pub struct Envelope {
     pub attack_shape: f32,
     /// Decay and release shape, the same law.
     pub fall_shape: f32,
+    /// Seconds an attack stays silent before its curve runs in the rest of
+    /// the attack time; none without an attack.
+    pub lag: f32,
 }
 
 impl Envelope {
@@ -546,6 +549,7 @@ impl Envelope {
         release: 0.001_3,
         attack_shape: 0.0,
         fall_shape: 0.0,
+        lag: 0.0,
     };
 }
 

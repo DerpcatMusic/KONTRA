@@ -118,6 +118,8 @@ pub struct WidgetLook {
     /// A menu's item list revision: it moves when the script adds, renames
     /// or clears items.
     pub items: u32,
+    /// How opaque it draws, 0 to 1: a script fades panels in and out by it.
+    pub alpha: f32,
 }
 
 /// Compiled code a [`Machine`] runs; each engine makes its own machine.

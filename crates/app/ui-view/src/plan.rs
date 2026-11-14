@@ -201,10 +201,18 @@ pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
                 Some(model::Value::Integer(v)) => v,
                 _ => w.initial_value as i32,
             };
-            items
+            let text = items
                 .iter()
                 .find(|i| i.value == at)
-                .map_or(String::new(), |i| i.text.clone())
+                .map(|i| i.text.as_str());
+            // A sub-menu's item names its leaf, as UVI's closed menu does
+            // (Augmented Orchestra's IRs are "Spaces/Church/04 Chapelle").
+            let text = match (text, &w.menu_hierarchy) {
+                (Some(t), Some(_)) => t.rsplit('/').next(),
+                (t, None) => t,
+                (None, Some(_)) => None,
+            };
+            text.map_or(String::new(), str::to_owned)
         }
         _ => String::new(),
     }
