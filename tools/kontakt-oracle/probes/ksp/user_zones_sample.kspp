@@ -1,0 +1,71 @@
+# User zones in Kontakt 8.13 (run: ksp_probe.py <nki> this-file). Needs an instrument whose zone 0 holds a
+# sample (ANALOG STRINGS) and /data/dev/workspace/BuildScratch/oracle-mf/tone.wav (1 s, 44.1 kHz, mono,
+# 440 Hz; tools/kontakt-oracle/probes/ksp/user_zones.py in the PR makes it). set_* are synchronous in
+# on init and answer -1, so every law can be read in one go.
+S declare $z
+S declare $y
+S declare $r
+S set_num_user_zones(2)
+S $z := %NI_USER_ZONE_IDS[0]
+S $y := %NI_USER_ZONE_IDS[1]
+R id0 $z
+R id1 $y
+S $r := set_sample($z, "Z:/data/dev/workspace/BuildScratch/oracle-mf/tone.wav")
+R ret_set_sample $r
+R status_loaded get_zone_status($z)
+R len_us get_sample_length($z)
+R l_start get_zone_par($z, $ZONE_PAR_SAMPLE_START)
+R l_end get_zone_par($z, $ZONE_PAR_SAMPLE_END)
+R l_rate get_zone_par($z, $ZONE_PAR_SAMPLE_RATE)
+R l_root get_zone_par($z, $ZONE_PAR_ROOT_KEY)
+R l_mod_range get_zone_par($z, $ZONE_PAR_SAMPLE_MOD_RANGE)
+R l_bpm get_zone_par($z, $ZONE_PAR_BPM)
+S set_zone_par($z, $ZONE_PAR_SAMPLE_START, 1000)
+R start_1000 get_zone_par($z, $ZONE_PAR_SAMPLE_START)
+S set_zone_par($z, $ZONE_PAR_SAMPLE_END, 99999999)
+R end_big get_zone_par($z, $ZONE_PAR_SAMPLE_END)
+S set_zone_par($z, $ZONE_PAR_SAMPLE_END, 20000)
+R end_20000 get_zone_par($z, $ZONE_PAR_SAMPLE_END)
+S set_zone_par($z, $ZONE_PAR_SAMPLE_START, 30000)
+R start_past_end get_zone_par($z, $ZONE_PAR_SAMPLE_START)
+R end_after_start_past get_zone_par($z, $ZONE_PAR_SAMPLE_END)
+R len_us_after_bounds get_sample_length($z)
+S $r := set_loop_par($z, 0, $LOOP_PAR_MODE, 1)
+R ret_loop $r
+R loop_mode get_loop_par($z, 0, $LOOP_PAR_MODE)
+S set_loop_par($z, 0, $LOOP_PAR_START, 1000)
+S set_loop_par($z, 0, $LOOP_PAR_LENGTH, 5000)
+S set_loop_par($z, 0, $LOOP_PAR_XFADE, 100)
+S set_loop_par($z, 0, $LOOP_PAR_COUNT, 3)
+S set_loop_par($z, 0, $LOOP_PAR_TUNING, 50)
+R loop_start get_loop_par($z, 0, $LOOP_PAR_START)
+R loop_length get_loop_par($z, 0, $LOOP_PAR_LENGTH)
+R loop_xfade get_loop_par($z, 0, $LOOP_PAR_XFADE)
+R loop_count get_loop_par($z, 0, $LOOP_PAR_COUNT)
+R loop_tuning get_loop_par($z, 0, $LOOP_PAR_TUNING)
+S set_loop_par($z, 0, $LOOP_PAR_MODE, 7)
+R loop_mode_7 get_loop_par($z, 0, $LOOP_PAR_MODE)
+S set_loop_par($z, 0, $LOOP_PAR_LENGTH, 99999999)
+R loop_length_big get_loop_par($z, 0, $LOOP_PAR_LENGTH)
+S set_loop_par($z, 0, $LOOP_PAR_COUNT, 100000)
+R loop_count_big get_loop_par($z, 0, $LOOP_PAR_COUNT)
+S set_loop_par($z, 3, $LOOP_PAR_MODE, 1)
+R loop3_mode get_loop_par($z, 3, $LOOP_PAR_MODE)
+R loop1_mode_after_3 get_loop_par($z, 1, $LOOP_PAR_MODE)
+S $r := set_loop_par($z, 8, $LOOP_PAR_MODE, 1)
+R ret_loop_8 $r
+R loop8_mode get_loop_par($z, 8, $LOOP_PAR_MODE)
+S $r := set_loop_par(get_zone_id(0), 0, $LOOP_PAR_MODE, 5)
+R ret_loop_normal $r
+R loop_normal_after get_loop_par(get_zone_id(0), 0, $LOOP_PAR_MODE)
+S $r := set_sample(get_zone_id(0), "Z:/data/dev/workspace/BuildScratch/oracle-mf/tone.wav")
+R ret_set_sample_normal $r
+R len_normal_after get_sample_length(get_zone_id(0))
+S $r := set_sample($y, "Z:/data/dev/workspace/BuildScratch/oracle-mf/missing.wav")
+R ret_set_sample_missing $r
+R status_missing get_zone_status($y)
+S set_num_user_zones(3)
+R nz_second_call get_num_zones()
+R ids_len_second num_elements(%NI_USER_ZONE_IDS)
+R id0_second %NI_USER_ZONE_IDS[0]
+

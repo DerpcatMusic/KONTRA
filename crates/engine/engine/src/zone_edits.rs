@@ -9,19 +9,52 @@ use std::sync::Arc;
 use kontra_ir::ZonePar;
 
 use crate::queue::Exit;
+use kontra_vm::Text;
+
 use crate::{Action, Engine, Plan};
 
 /// Edits waiting for the host, at most (Conflux sets 297 per selection).
 pub(crate) const ZONE_EDITS: usize = 1024;
 
-/// One `set_zone_par` waiting for the host.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// What a waiting zone edit does.
+// The path is copied inline: the audio thread queues it and may not allocate.
+#[expect(clippy::large_enum_variant, reason = "queued on the audio thread: no Box")]
+#[derive(Clone, Copy, Debug)]
+pub enum Edit {
+    /// `set_zone_par`.
+    Par(ZonePar, i32),
+    /// `set_sample` on a user zone: the file to load.
+    Sample(Text),
+    /// `set_loop_par` on a user zone: loop index, parameter, value.
+    Loop(i32, i32, i32),
+}
+
+/// One `set_zone_par`, `set_sample` or `set_loop_par` waiting for the host.
+#[derive(Clone, Copy, Debug)]
 pub struct ZoneEdit {
     pub zone: u32,
-    pub par: ZonePar,
-    pub value: i32,
+    pub what: Edit,
     pub script: u8,
     pub id: i32,
+}
+
+impl ZoneEdit {
+    /// Applies the edit to `plan`; whether it took. A sample's file is read
+    /// here (its header), so call it off the audio thread. The user zone's
+    /// playing zone is built after, by `kontra_prepare::user_zones`.
+    pub fn apply(&self, plan: &mut Plan) -> bool {
+        match self.what {
+            Edit::Par(par, value) => plan.edit_zone(self.zone, par, value),
+            Edit::Loop(index, par, value) => plan.set_user_loop(self.zone, index, par, value),
+            Edit::Sample(path) => describe(path.as_str())
+                .is_some_and(|s| plan.set_user_sample(self.zone, Arc::new(s))),
+        }
+    }
+}
+
+/// The sample file `path` names, from its header.
+pub(crate) fn describe(path: &str) -> Option<crate::ir::Sample> {
+    kontra_stream::describe(std::path::Path::new(path)).ok()
 }
 
 /// A `purge_group(group, 1)` of a group nothing of is loaded, waiting for the
@@ -77,13 +110,10 @@ impl Engine {
     }
 
     pub(crate) fn set_zone_par(&mut self, zone: u32, par: ZonePar, value: i32) -> i32 {
-        let carried = matches!(
+        // Not settable: where a sample plays at, its tempo, the editor's selection.
+        let carried = !matches!(
             par,
-            ZonePar::Group
-                | ZonePar::LowKey
-                | ZonePar::HighKey
-                | ZonePar::LowVelocity
-                | ZonePar::HighVelocity
+            ZonePar::StartRange | ZonePar::SampleRate | ZonePar::Selected | ZonePar::Bpm
         );
         if !carried {
             self.count_unhandled(Action::SetZonePar);
@@ -102,23 +132,26 @@ impl Engine {
         if !carried {
             return self.start_async(Exit::Done);
         }
+        self.queue_zone_edit(zone, Edit::Par(par, value))
+    }
+
+    /// Queues `what` for the host: its async id. Every carried edit queues,
+    /// unchanged ones too: the plan here lags the edits awaiting a swap, so
+    /// comparing with it could drop the later of two edits that undo each
+    /// other.
+    pub(crate) fn queue_zone_edit(&mut self, zone: u32, what: Edit) -> i32 {
         let script = self.running.slot;
-        // Every carried edit queues, unchanged ones too: the plan here lags
-        // the edits awaiting a swap, so comparing with it could drop the
-        // later of two edits that undo each other.
         if self.zone_edits.len() >= ZONE_EDITS {
             self.refuse_zone_edit(script);
             return self.start_async(Exit::Failed);
         }
         let id = self.next_async_id();
-        let edit = ZoneEdit {
+        self.zone_edits.push(ZoneEdit {
             zone,
-            par,
-            value,
+            what,
             script,
             id,
-        };
-        self.zone_edits.push(edit);
+        });
         id
     }
 
@@ -148,10 +181,16 @@ impl Engine {
         let same = plan.zones.len() >= self.plan.zones.len();
         if same {
             let fade = self.fade_frames();
-            let group = |p: &Plan, zone: usize| p.zones.get(zone).map(|z| z.group);
+            // A voice whose zone changed group, or got another sample
+            // (`set_sample` on a user zone), stops.
+            let place = |p: &Plan, zone: usize| {
+                p.zones
+                    .get(zone)
+                    .map(|z| (z.group, Arc::as_ptr(&z.region.sample)))
+            };
             for i in 0..self.voices.len() {
                 let moved = self.voices.get(i).is_some_and(|s| {
-                    s.voice.is_active() && group(&self.plan, s.zone) != group(plan, s.zone)
+                    s.voice.is_active() && place(&self.plan, s.zone) != place(plan, s.zone)
                 });
                 if moved {
                     self.steal(i, fade);
