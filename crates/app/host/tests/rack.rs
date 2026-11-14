@@ -1783,3 +1783,85 @@ fn a_relinked_library_folder_is_remembered_by_the_next_session() {
     assert_eq!(browser.prefs.moved, [(from, to)]);
     let _clean = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_purged_group_loads_when_a_script_unpurges_it_and_plays_after() {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("unpurge");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.wav"), tone_wav()).unwrap();
+    std::fs::write(dir.join("b.wav"), tone_wav()).unwrap();
+    let sfz = dir.join("x.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=a.wav key=60\n<region> sample=b.wav key=62\n",
+    )
+    .unwrap();
+    let mut instrument = kontra_host::instrument::read(&sfz).unwrap();
+    // The second group is saved purged, and a button un-purges it.
+    let zone = instrument.groups[0].zones.pop().unwrap();
+    let mut second = instrument.groups[0].clone();
+    second.zones = vec![zone];
+    second.purged = true;
+    instrument.groups.push(second);
+    instrument.scripts = vec![ir::Script {
+        name: "s".into(),
+        slot: 0,
+        dialect: ir::Dialect::Ksp,
+        source: "on init
+            declare ui_button $go
+        end on
+        on ui_control ($go)
+            purge_group(1, 1)
+        end on"
+            .into(),
+        saved: Vec::new(),
+        data: Vec::new(),
+        links: Vec::new(),
+    }];
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, Some(sfz)).unwrap();
+    let loudest = |audio: &mut RackAudio, key: u8| {
+        // The sample's 0.1 s tail of the last note, gone.
+        for _ in 0..400 {
+            audio.process(BLOCK, &[]);
+        }
+        let on = Event::NoteOn {
+            note: HostNote {
+                port: 0,
+                channel: 0,
+                key,
+                id: -1,
+                clap: true,
+            },
+            velocity: 1.0,
+            tune: 0.0,
+        };
+        audio.process(BLOCK, &[(0, on)]);
+        let mut top = level(audio, 0).abs();
+        for _ in 0..8 {
+            audio.process(BLOCK, &[]);
+            top = top.max(level(audio, 0).abs());
+        }
+        top
+    };
+    assert!(loudest(&mut audio, 60) > 1e-4, "the resident group plays");
+    assert!(loudest(&mut audio, 62) < 1e-6, "a purged group is silent");
+    rack.control(0, 0, None, 1.0, Default::default());
+    // The group loads off the audio thread; the control side builds, the
+    // audio side swaps in, a thread reads heads.
+    let mut said = Vec::new();
+    for _ in 0..200 {
+        rack.tick();
+        said.extend(rack.take_notices());
+        audio.process(BLOCK, &[]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        said.iter().any(|s| s.contains("loading purged group")),
+        "{said:?}"
+    );
+    assert!(loudest(&mut audio, 62) > 1e-4, "the unpurged group plays");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -7,6 +7,7 @@
 
 mod browser;
 mod controls;
+mod find;
 mod mapping;
 mod mixer;
 mod part;
@@ -17,6 +18,7 @@ mod rack;
 mod report;
 mod settings;
 mod sound;
+mod tidy;
 
 pub use sound::{Envelope, Filter, Lower, Param, Pass, Sound};
 
@@ -90,6 +92,8 @@ pub struct Library {
     /// into the focused part on a double-click: snapshots, the player's own.
     pub recalls: Vec<usize>,
     pub starred: bool,
+    /// Its presets the player starred, as indices into `presets`.
+    pub favorites: Vec<usize>,
     /// Pictures that may be its cover, best first, as the host's cover
     /// store reads them; the first that decodes is shown.
     pub art: Vec<String>,
@@ -241,6 +245,15 @@ pub enum Tab {
     Report,
 }
 
+/// How the browser lays its libraries out: two to a row, small, so a
+/// dozen show at once, or one to a row, their pictures large.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Tiles {
+    #[default]
+    Grid,
+    Cards,
+}
+
 /// Which libraries the browser lists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Shelf {
@@ -259,12 +272,17 @@ pub struct View {
     pub split: f64,
     pub format: Format,
     pub shelf: Shelf,
+    pub tiles: Tiles,
     /// Libraries listed Z to A.
     pub descending: bool,
     pub search: String,
     /// The library whose presets the browser lists, and their search.
     pub library: Option<usize>,
     pub preset_search: String,
+    /// Each library's preset last picked, as (library, preset): opening the
+    /// library again shows it, scrolled into view once (`reveal`).
+    pub last: Vec<(usize, usize)>,
+    pub reveal: bool,
     /// Preset folders folded shut.
     pub folded: Vec<String>,
     pub sheet: Option<Sheet>,
@@ -313,8 +331,9 @@ pub struct View {
     /// The pitch wheel (springs back to 0) and the mod wheel, -1..1 and 0..1.
     pub pitch: f64,
     pub modulation: f64,
-    /// Which of [`SCALES`] the editor is drawn at.
-    pub scale: usize,
+    /// The editor's size in percent of its design size, one of [`SCALES`];
+    /// 0 is 100.
+    pub scale: u32,
     /// Which of [`FACE_SCALES`] a library's own view is drawn at.
     pub face_scale: usize,
     /// How a part that chose none draws its interface.
@@ -330,8 +349,10 @@ impl View {
     }
 }
 
-/// The editor sizes on offer, in percent of its design size.
-pub const SCALES: [u32; 4] = [100, 125, 150, 200];
+/// The editor sizes on offer, in percent of its design size. Below 100 for
+/// small screens: the whole editor scales down evenly (Kontakt 8 offers 60
+/// to 200 %, Serum 75 to 200 %; 50 % is the smallest whose text still reads).
+pub const SCALES: [u32; 7] = [50, 67, 75, 100, 125, 150, 200];
 
 /// A library's view sizes on offer: as wide as the rack (0, the default),
 /// or a fixed scale that scrolls when it is wider.
@@ -447,6 +468,8 @@ pub enum Action {
     Panic,
     MidiThru(bool),
     Star(usize, bool),
+    /// Star or unstar preset (library, preset).
+    StarPreset(usize, usize, bool),
     AddFolder,
     /// Choose Kontakt's user snapshot folder.
     ChooseSnapshotFolder,

@@ -53,7 +53,7 @@ impl Engine {
 
     /// Applies `f` to every addressed note, then refreshes the sounding ones
     /// (at the end of the callback).
-    fn each(&mut self, id: i32, mut f: impl FnMut(&mut Note)) {
+    pub(crate) fn each(&mut self, id: i32, mut f: impl FnMut(&mut Note)) {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
         for &note in &hits {
@@ -345,6 +345,12 @@ impl HostApi for Engine {
         if let Some(value) = self.runtime_call(&mut call) {
             return value;
         }
+        if let Some(value) = self.midi_call(&mut call) {
+            return value;
+        }
+        if let Some(value) = self.zone_call(&mut call) {
+            return value;
+        }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         if let Some(value) = self.transport_value(call.action, int(0)) {
             return value;
@@ -364,6 +370,11 @@ impl HostApi for Engine {
                 self.running.kind == Kind::Controller
                     && int(0) == i32::from(self.running.controller),
             ),
+            // `%CC[128]` is the bend, -8192..8191, on the last channel heard.
+            Action::Cc if int(0) == i32::from(crate::midi::VCC_PITCH_BEND) => {
+                let bend = self.behaviour.bend(self.behaviour.channel);
+                HostValue::Int((bend * 8192.0).round().clamp(-8192.0, 8191.0) as i32)
+            }
             Action::Cc => HostValue::Int(
                 usize::try_from(int(0))
                     .ok()
@@ -414,7 +425,7 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::IgnoreMidi => {
-                self.running.ignore_midi = true;
+                self.running.ignore_controller = true;
                 HostValue::Nothing
             }
             Action::SetMidi => {
@@ -629,7 +640,7 @@ impl HostApi for Engine {
                         i32::try_from(frames * 1_000_000 / u64::from(self.rate)).unwrap_or(i32::MAX)
                     }),
             ),
-            Action::NumZones | Action::GetNumZones => HostValue::Int(self.plan.zones.len() as i32),
+            Action::NumZones => HostValue::Int(self.plan.zones.len() as i32),
             // find_group answers 0 for an unknown name, get_group_idx $NI_NOT_FOUND.
             Action::FindGroup | Action::GetGroupIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
@@ -659,14 +670,17 @@ impl HostApi for Engine {
                 *call.text_out = Text::from_str_cut(name).0;
                 HostValue::Text
             }
-            // ponytail: answered at once, then on async_complete; the samples
-            // stay in memory until the host reloads without the group.
-            Action::PurgeGroup => {
-                if let Some(g) = self.groups.get_mut(int(0) as usize) {
-                    g.purged = int(1) == 0;
+            // ponytail: a purge answers at once (the samples stay in memory); an un-purge
+            // of a dormant group answers when the host has loaded it.
+            Action::PurgeGroup => match u32::try_from(int(0)) {
+                Ok(group) if int(1) != 0 => HostValue::Int(self.unpurge(group)),
+                _ => {
+                    if let Some(g) = self.groups.get_mut(int(0) as usize) {
+                        g.purged = true;
+                    }
+                    HostValue::Int(self.start_async(Exit::Done))
                 }
-                HostValue::Int(self.start_async(Exit::Done))
-            }
+            },
             Action::AsyncId => HostValue::Int(self.ids.async_done),
             Action::AsyncExitStatus => HostValue::Int(i32::from(self.ids.async_exit == Exit::Done)),
             // A command still running (an effect type loading off the audio
@@ -759,26 +773,13 @@ impl HostApi for Engine {
                     }
                 }
             }
-            Action::DetectKey
-            | Action::DetectPitch
-            | Action::DetectLoudness
-            | Action::DetectPeak
-            | Action::DetectRms
-            | Action::DetectTempo
-            | Action::DetectSampleType
-            | Action::DetectDrumType
-            | Action::DetectInstrumentType => HostValue::Int(self.detect(
-                call.action,
-                int(0),
-                usize::try_from(int(1)).unwrap_or(usize::MAX),
-                int(2) != 0,
-                call.cells,
-            )),
             // A polyphonic aftertouch message on the channel of the note running.
             Action::SetPolyAt => {
-                let channel = running.and_then(|r| self.notes.get(r)).map_or(0, |n| n.host.channel);
+                let channel = running
+                    .and_then(|r| self.notes.get(r))
+                    .map_or(0, |n| n.host.channel);
                 let at = |i| u8::try_from(int(i).clamp(0, 127)).unwrap_or(0);
-                self.poly_aftertouch(channel, at(0), at(1));
+                self.set_poly_at(channel, at(0), at(1));
                 HostValue::Nothing
             }
             Action::SetController => {
@@ -859,6 +860,8 @@ impl HostApi for Engine {
                     path: Text::EMPTY,
                     name: ext,
                     save: int(0) == 1,
+                    midi: None,
+                    detect: None,
                 };
                 HostValue::Int(self.request_file(request))
             }
@@ -929,12 +932,11 @@ mod tests {
 /// Which of `on midi_in`'s `[command, channel, data 1, data 2]` an event
 /// parameter id names.
 fn midi_par(par: i32) -> Option<usize> {
-    use kontra_vm::midi;
     match par {
-        midi::PAR_COMMAND => Some(0),
+        event::MIDI_COMMAND => Some(0),
         event::MIDI_CHANNEL => Some(1),
-        midi::PAR_BYTE_1 => Some(2),
-        midi::PAR_BYTE_2 => Some(3),
+        event::MIDI_BYTE_1 => Some(2),
+        event::MIDI_BYTE_2 => Some(3),
         _ => None,
     }
 }

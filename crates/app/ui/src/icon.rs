@@ -15,6 +15,7 @@ pub enum Icon {
     Sidebar,
     Search,
     Star,
+    Grid,
     Menu,
     Warning,
     Grip,
@@ -88,6 +89,9 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                     .collect();
                 vec![line(&points, true)]
             }
+            Icon::Grid => [(3., 3.), (9., 3.), (3., 9.), (9., 9.)]
+                .map(|(x, y)| line(&[(x, y), (x + 4., y), (x + 4., y + 4.), (x, y + 4.)], true))
+                .into(),
             Icon::Menu => [4.5, 8., 11.5]
                 .map(|y| line(&[(3., y), (13., y)], false))
                 .into(),

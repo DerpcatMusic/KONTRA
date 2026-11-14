@@ -8,28 +8,6 @@ use kontra_ir::{self as ir, ZonePar};
 
 use crate::{Atom, RrCounter, Trigger, Zone};
 
-/// What `detect_*` reads of a zone's sample, measured at load (the prepare
-/// crate's `analysis`). Types are indices into the manual's lists; `None` is
-/// the command's "invalid".
-#[derive(Clone, Debug, PartialEq)]
-pub struct Analysis {
-    pub peak_db: f64,
-    pub rms_db: f64,
-    pub loudness_lkfs: f64,
-    /// MIDI note, fractional.
-    pub pitch: Option<f64>,
-    pub tempo: Option<f64>,
-    /// 0..12 C..B major, 12..24 C..B minor.
-    pub key: Option<u8>,
-    /// Drum (true) or instrument.
-    pub is_drum: Option<bool>,
-    /// Kick, snare, closed hat, open hat, tom, cymbal, clap, shaker, drum percussion, other.
-    pub drum_type: Option<u8>,
-    /// Bass, bowed string, brass, flute, guitar, keyboard, mallet, organ, plucked
-    /// string, reed, synth, vocal.
-    pub instrument_type: Option<u8>,
-}
-
 /// One zone as scripts find and read it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ZoneFacts {
@@ -44,8 +22,10 @@ pub struct ZoneFacts {
     pub end: u64,
     pub start_range: u64,
     pub rate: u32,
-    /// Measured when a script uses `detect_*`.
-    pub analysis: Option<std::sync::Arc<Analysis>>,
+    /// Its sample (`get_sample`, and what the music-information commands read).
+    pub source: Option<std::sync::Arc<ir::Sample>>,
+    /// Its loops, in play order (`get_loop_par`).
+    pub loops: Vec<ir::Loop>,
 }
 
 impl ZoneFacts {

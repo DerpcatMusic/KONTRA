@@ -5,12 +5,14 @@
 //! Each script slot with `on midi_in` runs in slot order on every incoming
 //! note, note-off and channel message. It may change the message
 //! (`set_event_par($EVENT_PAR_MIDI_COMMAND / _BYTE_1 / _BYTE_2 / _CHANNEL)`),
-//! drop it (`ignore_midi`) and send more (`set_midi`, which skip the slots
+//! drop it (`ignore_midi`, the same flag `ignore_controller` sets, read as a
+//! [`Heard`]) and send more (`set_midi`, which skip the slots
 //! that already ran). What is left reaches the engine's own handlers.
 
 use kontra_events::{Event, HostNote, HostPattern};
 use kontra_vm::midi;
 
+use crate::midi::Heard;
 use crate::{Engine, Kind, Running};
 
 /// `set_midi` messages one callback may add before the rest are dropped.
@@ -93,7 +95,7 @@ impl Engine {
             };
             let ran = self.run_callback(slot, entry, running);
             m = ran.midi;
-            ignored |= ran.ignore_midi;
+            ignored |= Heard::of(&ran) != Heard::Passed;
             let made = std::mem::take(&mut self.midi_made);
             for &bytes in made.1.iter().take(made.0) {
                 apply(self, Self::event_from(bytes, &event));

@@ -14,4 +14,6 @@ pub mod script;
 pub mod sound;
 pub mod state;
 pub use kontra_face as ui;
+/// The picture a UVI bank shows in the browser.
+pub use kontra_format_uvi::cover as bank_cover;
 pub mod view;

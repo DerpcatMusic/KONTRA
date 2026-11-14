@@ -242,7 +242,7 @@ impl View {
         let w = self.tree().widgets.get(widget)?;
         let id = w.source_id?;
         let value = match w.value {
-            Some(model::Value::Real(_)) => value.to_bits() as i64,
+            Some(model::Value::Real(_) | model::Value::Reals(_)) => value.to_bits() as i64,
             _ => value.round() as i64,
         };
         Some((self.slot, id, value))

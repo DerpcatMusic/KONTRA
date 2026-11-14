@@ -22,9 +22,3 @@ pub const PITCH_BEND: u8 = 0xE0;
 pub const VL_STANDARD: i32 = 0;
 pub const VL_HQ: i32 = 1;
 pub const VL_DEFAULT: [i32; 2] = [32, 16];
-
-/// `$EVENT_PAR_MIDI_COMMAND`, `_BYTE_1` and `_BYTE_2`, which `set_event_par`
-/// and `get_event_par` read and write inside `on midi_in`.
-pub const PAR_COMMAND: i32 = 12;
-pub const PAR_BYTE_1: i32 = 13;
-pub const PAR_BYTE_2: i32 = 14;

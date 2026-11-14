@@ -31,12 +31,15 @@ pub struct Running {
     pub controller: u8,
     pub ignore_release: bool,
     pub ignore_controller: bool,
-    pub ignore_midi: bool,
     /// `on midi_in`: status nibble (0x80..0xE0), channel, data 1, data 2; a
     /// `note_controller` run keeps its note in `midi[2]`.
     pub midi: [u8; 4],
     /// `on note_controller`: the controller value (`$NC_VALUE`).
     pub value: i32,
+    /// The callback set the controller it runs for itself (or its key's
+    /// polyphonic aftertouch): with `ignore_controller`, that value stands
+    /// in for the one that arrived.
+    pub set_own: bool,
     /// The callback's type number scripts read, kept across waits.
     pub callback_type: u8,
     /// Unique per callback run, kept across waits.
@@ -63,9 +66,9 @@ impl Running {
         controller: 0,
         ignore_release: false,
         ignore_controller: false,
-        ignore_midi: false,
         midi: [0; 4],
         value: 0,
+        set_own: false,
         callback_type: 0,
         callback_id: 0,
         slot: 0,

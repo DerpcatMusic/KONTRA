@@ -513,16 +513,13 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::Int(ui_id(v)));
                     ints += 1;
                 }
-                Arg::O => {
+                Arg::W => {
                     let (v, _) = self.named(e)?;
-                    let var = self.var(v)?;
-                    let Home::Cell(cell) = var.home else {
+                    let Home::Cell(cell) = self.var(v)?.home else {
                         return Err(Error::new(e.span, "expected a number variable"));
                     };
-                    let real = var.ty == Ty::Real;
                     self.emit(Op::Int(cell as i32));
-                    self.emit(Op::Int(i32::from(real)));
-                    ints += 2;
+                    ints += 1;
                 }
                 Arg::A => {
                     // Files hold text arrays too; the other builtins compare numbers.

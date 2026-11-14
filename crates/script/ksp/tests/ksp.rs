@@ -604,11 +604,11 @@ fn redirect_output_takes_two_or_three_arguments() {
     assert_eq!(r.host.calls.len(), 2);
     assert_eq!(r.host.calls[0].0, Action::RedirectOutput);
     assert_eq!(r.host.calls[0].1[0], 1000);
-    assert_eq!(r.symbol(r.host.calls[0].1[1]), Some("$OUTPUT_TYPE_DEFAULT"));
+    assert_eq!(r.host.calls[0].1[1], 0, "$OUTPUT_TYPE_DEFAULT");
     assert_eq!(r.host.calls[0].1[2], 0, "the left-out index routes to 0");
     assert_eq!(r.host.calls[1].0, Action::RedirectOutput);
     assert_eq!(r.host.calls[1].1[0], 1000);
-    assert_eq!(r.symbol(r.host.calls[1].1[1]), Some("$OUTPUT_TYPE_BUS_OUT"));
+    assert_eq!(r.host.calls[1].1[1], 3, "$OUTPUT_TYPE_BUS_OUT");
     assert_eq!(r.host.calls[1].1[2], 3);
 }
 
@@ -758,4 +758,39 @@ fn an_array_loaded_in_init_is_persistent() {
     };
     assert_eq!(persistence("!names"), Persistence::Snapshot);
     assert_eq!(persistence("%later"), Persistence::None);
+}
+
+/// Every oracle probe (`tools/kontakt-oracle/probes/ksp/*.kspp`) compiles with
+/// our compiler first, so a typo costs no oracle run (`ksp_probe.py` runs them in Kontakt).
+#[test]
+fn every_oracle_probe_compiles() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../tools/kontakt-oracle/probes/ksp");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "kspp") {
+            continue;
+        }
+        let mut src = String::from("on init\n declare $v\n");
+        let mut extra = String::new();
+        for line in std::fs::read_to_string(&path).unwrap().lines() {
+            let line = line.trim();
+            match line.split_once(' ') {
+                Some(("S", rest)) => src += &format!(" {rest}\n"),
+                Some(("R", rest)) => {
+                    src += &format!(" $v := ({})\n", rest.split_once(' ').unwrap().1)
+                }
+                Some(("X", rest)) => extra += &format!("{rest}\n"),
+                _ => {}
+            }
+        }
+        src += "end on\n";
+        src += &extra;
+        if let Err(e) = kontra_ksp::compile(&src, &[]) {
+            panic!("{}: {e:?}", path.display());
+        }
+        seen += 1;
+    }
+    assert!(seen >= 2);
 }

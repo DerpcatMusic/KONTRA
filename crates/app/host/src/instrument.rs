@@ -127,6 +127,16 @@ pub struct Preset {
     pub effects: bool,
 }
 
+/// Whether `path` is a preset of an instrument in another file: the
+/// player's own, or a Kontakt snapshot.
+#[must_use]
+pub fn is_preset(path: &Path) -> bool {
+    crate::presets::ours(path)
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
+}
+
 /// The file at `path` as a [`Preset`] (a Kontakt snapshot), read without
 /// its base instrument, which is near it or else the one of `known` (the
 /// instruments the player has) it names; None for anything else, or a
