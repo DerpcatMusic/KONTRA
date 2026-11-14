@@ -317,12 +317,12 @@ impl Rack {
 
     /// A multi: each of its slots, in order, into `part` and the parts
     /// after it (as many as the rack holds), each by its slot's path
-    /// ([`crate::instrument::multi_slot`]).
+    /// ([`crate::instrument::multi_slot`]), listening on the slot's MIDI
+    /// channel and playing into its output. Its volume and pan are its
+    /// instrument's own.
     ///
     /// # Errors
     /// When the multi cannot be read, or none of its slots can.
-    // ponytail: a slot's own MIDI channel, volume and pan are not read; each
-    // part keeps its mix. Read them from the slot's program container.
     fn load_multi(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let (slots, failed) = kontra_format_kontakt::multi(path, None)?;
         if slots.is_empty() {
@@ -335,6 +335,24 @@ impl Rack {
             let own = path.join(slot.index.to_string());
             instrument.source_path = Some(own.clone());
             self.load_ir(at, instrument, Some(own))?;
+            // ponytail: one MIDI port here, so Kontakt's ports A to D fold
+            // onto channels 1 to 16; a port per input when the rack has them.
+            let channel = match slot.channel {
+                0 => 0,
+                c => u8::try_from((c - 1) % 16 + 1).unwrap_or(0),
+            };
+            let output = u8::try_from(usize::from(slot.output).min(OUTPUTS - 1)).unwrap_or(0);
+            let mix = self.parts.get(at).and_then(Option::as_ref).map(|p| p.mix);
+            if let Some(mix) = mix {
+                self.set_mix(
+                    at,
+                    Mix {
+                        channel,
+                        output,
+                        ..mix
+                    },
+                );
+            }
         }
         Ok(())
     }

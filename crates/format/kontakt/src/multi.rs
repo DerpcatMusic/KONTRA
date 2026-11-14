@@ -4,6 +4,17 @@
 //! each holds a program list whose programs are the slot's instrument, as an
 //! `.nki` stores it. Each slot's program is cut out as its own chunk and
 //! translated as an instrument, with the multi's file table beside it.
+//!
+//! Where a slot listens and plays (measured with the native oracle: a multi
+//! Kontakt 8 built with known channels, outputs, volumes and pans, saved and
+//! read back; `tools/kontakt-oracle/probes/multi_slots.lua`):
+//! - its MIDI channel is the first u16 of its entry in the bank's slot table
+//!   (chunk 0x48, 64 entries of 24 or 28 bytes by version): 0 is Omni, 1 to
+//!   64 channels 1 to 16 of ports A to D;
+//! - its output is the low u16 of the last u32 of its container's private
+//!   record (Kontakt's reader resolves it through the output table);
+//! - its volume and pan are its program's own (2^(dB/6) and percent/100),
+//!   which the instrument translation already reads.
 
 use std::io::Cursor;
 use std::path::Path;
@@ -18,6 +29,7 @@ const PROGRAM: u16 = 0x28;
 const PROGRAM_LIST: u16 = 0x36;
 const FILE_TABLE: u16 = 0x4b;
 const OLD_FILE_TABLE: u16 = 0x3d;
+const SLOT_TABLE: u16 = 0x48;
 
 /// One slot of a multi: where it sits and the instrument it holds.
 #[derive(Debug)]
@@ -25,6 +37,11 @@ pub struct Slot {
     /// Its place in the multi, 0 to 63.
     pub index: u16,
     pub instrument: ir::Instrument,
+    /// The MIDI channel it listens on: 0 for every channel, else 1 to 64
+    /// (channels 1 to 16 of ports A to D).
+    pub channel: u16,
+    /// The stereo output it plays into, from 0.
+    pub output: u16,
 }
 
 /// The slots of the multi at `path`, in slot order; with `only`, that slot
@@ -42,6 +59,15 @@ pub fn slots(path: &Path, only: Option<u16>) -> Result<(Vec<Slot>, Vec<String>),
     let bank = Bank::try_from(bank).map_err(decode("bank"))?;
     let list = bank.slot_list().map_err(decode("slot list"))?;
     let table = (chunks.find_first(FILE_TABLE)).or_else(|| chunks.find_first(OLD_FILE_TABLE));
+    let table = bank.0.find_first(SLOT_TABLE);
+    let stride = table.map_or(0, |t| t.data.len() / 64);
+    let channel = |index: u16| -> u16 {
+        let at = usize::from(index) * stride;
+        let bytes = table.and_then(|t| t.data.get(at..at + 2));
+        bytes
+            .and_then(|b| b.try_into().ok())
+            .map_or(0, u16::from_le_bytes)
+    };
     let mut indices: Vec<u16> = (list.slots.keys().copied())
         .filter(|i| only.is_none_or(|o| o == *i))
         .collect();
@@ -65,11 +91,26 @@ pub fn slots(path: &Path, only: Option<u16>) -> Result<(Vec<Slot>, Vec<String>),
         });
         let stream = KontaktChunks([Some(program), table].into_iter().flatten().collect());
         match translate::instrument(path, &stream, None, &[], encrypted, None) {
-            Ok(instrument) => slots.push(Slot { index, instrument }),
+            Ok(instrument) => slots.push(Slot {
+                index,
+                instrument,
+                channel: channel(index),
+                output: output(&container.0.private_data),
+            }),
             Err(e) => failed.push(format!("slot {}: {e}", index + 1)),
         }
     }
     Ok((slots, failed))
+}
+
+/// The output a slot's container names: the low half of its private
+/// record's last u32 (its high half is the output's channel count).
+fn output(private: &[u8]) -> u16 {
+    let n = private.len();
+    private
+        .get(n.saturating_sub(4)..n.saturating_sub(2))
+        .and_then(|b| b.try_into().ok())
+        .map_or(0, u16::from_le_bytes)
 }
 
 /// Whether `path` names a multi.
