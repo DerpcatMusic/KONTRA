@@ -201,7 +201,9 @@ actions! {
     /// `ir::EffectParam` code.
     EffectField,
     // Time.
-    WaitTicks,
+    /// Microseconds the transport takes for a number of MIDI ticks: `wait_ticks`
+    /// compiles to this and a `wait`.
+    TicksToMicros,
     WaitAsync,
     StopWait,
     ResetKspTimer,
@@ -346,6 +348,15 @@ actions! {
     SetKeyrange,
     RemoveKeyrange,
     SetPolyAt,
+    DetectKey,
+    DetectPitch,
+    DetectLoudness,
+    DetectPeak,
+    DetectRms,
+    DetectTempo,
+    DetectSampleType,
+    DetectDrumType,
+    DetectInstrumentType,
     GetKeyrangeMinNote,
     GetKeyrangeMaxNote,
     GetKeyrangeName,

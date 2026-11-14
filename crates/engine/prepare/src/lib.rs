@@ -7,6 +7,7 @@ use std::ops::{Range, RangeInclusive};
 use std::path::Path;
 use std::sync::Arc;
 
+mod analysis;
 mod levels;
 
 use kontra_ir as ir;
@@ -38,6 +39,10 @@ pub fn prepare(
     let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
     let mut polyphony = Vec::new();
     let mut facts = Vec::new();
+    // `detect_*` reads the samples' music information: measured here, once
+    // per sample, only for instruments whose scripts ask.
+    let detects = instrument.scripts.iter().any(|s| s.source.contains("detect_"));
+    let mut analysed: HashMap<usize, Option<Arc<kontra_engine::Analysis>>> = HashMap::new();
     let mut group_rules = Vec::with_capacity(instrument.groups.len());
     for (index, group) in instrument.groups.iter().enumerate() {
         let group_id = u32::try_from(index).unwrap_or(u32::MAX);
@@ -69,6 +74,17 @@ pub fn prepare(
                 end: z.end,
                 start_range: z.start_mod,
                 rate: source.rate,
+                analysis: if detects {
+                    analysed
+                        .entry(z.sample)
+                        .or_insert_with(|| {
+                            let (opened, fmt) = open(source).ok()?;
+                            analysis::analyse(&*opened, fmt, source.frames, source.rate).map(Arc::new)
+                        })
+                        .clone()
+                } else {
+                    None
+                },
             });
             let Some(Some(sample)) = loaded.get(z.sample) else {
                 continue;

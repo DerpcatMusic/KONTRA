@@ -26,6 +26,9 @@ pub enum Arg {
     A,
     /// A bare word or string naming a key, passed as text.
     K,
+    /// A number variable the command writes its result to: passed as its
+    /// cell and 1 when it is real, 0 when integer.
+    O,
 }
 
 /// What a builtin returns.
@@ -108,6 +111,7 @@ builtins! {
         Inc "inc" [I] 0 Void;
         Dec "dec" [I] 0 Void;
         Wait "wait" [I] 0 Void;
+        WaitTicks "wait_ticks" [I] 0 Void;
         IntToReal "int_to_real" [I] 0 Real;
         Real "real" [I] 0 Real;
         RealToInt "real_to_int" [R] 0 Int;
@@ -198,7 +202,6 @@ builtins! {
         // routes to output 0.
         RedirectOutput "redirect_output" [I I I] 1 Void;
         // Time.
-        WaitTicks "wait_ticks" [I] 0 Void;
         WaitAsync "wait_async" [I] 0 Void;
         StopWait "stop_wait" [I I] 0 Void;
         ResetKspTimer "reset_ksp_timer" [] 0 Void;
@@ -362,6 +365,15 @@ builtins! {
         SetKeyrange "set_keyrange" [I I S] 0 Void;
         RemoveKeyrange "remove_keyrange" [I] 0 Void;
         SetPolyAt "set_poly_at" [I I] 0 Void;
+        DetectKey "detect_key" [I O] 0 Int;
+        DetectPitch "detect_pitch" [I O] 0 Int;
+        DetectLoudness "detect_loudness" [I O] 0 Int;
+        DetectPeak "detect_peak" [I O] 0 Int;
+        DetectRms "detect_rms" [I O] 0 Int;
+        DetectTempo "detect_tempo" [I O] 0 Int;
+        DetectSampleType "detect_sample_type" [I O] 0 Int;
+        DetectDrumType "detect_drum_type" [I O] 0 Int;
+        DetectInstrumentType "detect_instrument_type" [I O] 0 Int;
         GetKeyrangeMinNote "get_keyrange_min_note" [I] 0 Int;
         GetKeyrangeMaxNote "get_keyrange_max_note" [I] 0 Int;
         GetKeyrangeName "get_keyrange_name" [I] 0 Text;

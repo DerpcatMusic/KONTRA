@@ -11,6 +11,7 @@
 mod admit;
 mod buses;
 mod callbacks;
+mod detect;
 mod controls;
 
 mod filters;
@@ -63,7 +64,7 @@ pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{
-    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, zone_name,
+    EnginePar, EnginePars, Recall, Saved, ZoneFacts, Analysis, ZoneRules, files, zone_name,
 };
 pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};

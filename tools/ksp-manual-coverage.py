@@ -115,7 +115,9 @@ for (kind, name), sec in items.items():
         got = "done" if ("par", name.lstrip("$").upper()) in status else "missing"
     else:
         bare = name.lstrip("$%~@!").upper()
-        got = "done" if ("fn", name.lstrip("$%~@!").lower()) in status or ("fn", name.lower()) in status \
+        bare_lc = name.lstrip("$%~@!").lower()
+        known_fn = any(("fn", p + bare_lc) in status for p in ("", "$", "%"))
+        got = "done" if known_fn \
             else "done" if bare in valued else "partial" if bare in vendor else "missing"
     if got == "done" and re.search(r"\b" + re.escape(key.lstrip("$%~@!")) + r"\b", test_text):
         got = "tested"

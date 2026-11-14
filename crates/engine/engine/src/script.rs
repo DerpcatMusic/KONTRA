@@ -713,6 +713,21 @@ impl HostApi for Engine {
                     }
                 }
             }
+            Action::DetectKey
+            | Action::DetectPitch
+            | Action::DetectLoudness
+            | Action::DetectPeak
+            | Action::DetectRms
+            | Action::DetectTempo
+            | Action::DetectSampleType
+            | Action::DetectDrumType
+            | Action::DetectInstrumentType => HostValue::Int(self.detect(
+                call.action,
+                int(0),
+                usize::try_from(int(1)).unwrap_or(usize::MAX),
+                int(2) != 0,
+                call.cells,
+            )),
             // A polyphonic aftertouch message on the channel of the note running.
             Action::SetPolyAt => {
                 let channel = running.and_then(|r| self.notes.get(r)).map_or(0, |n| n.host.channel);

@@ -38,6 +38,7 @@ fn engine(source: &str) -> (Engine, u32, i32) {
         end: 0,
         start_range: 0,
         rate: 48_000,
+        analysis: None,
     }];
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let store = Store::new(StoreConfig::DEFAULT).unwrap();

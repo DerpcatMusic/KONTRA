@@ -16,7 +16,7 @@ mod zones;
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
 pub use script::{Callbacks, CcLink, KnobModPlan, Controls, Holder, LookPars, Recall, Saved, ScriptPlan};
-pub use zones::{ZoneFacts, ZoneRules, zone_name};
+pub use zones::{Analysis, ZoneFacts, ZoneRules, zone_name};
 
 use std::ops::RangeInclusive;
 

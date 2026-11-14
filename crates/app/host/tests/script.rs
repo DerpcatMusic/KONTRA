@@ -3794,6 +3794,7 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
         end: 204_800,
         start_range: 204_800,
         rate: 44_100,
+        analysis: None,
     }];
     plan.inserts = vec![
         Some(ir::Effect {
