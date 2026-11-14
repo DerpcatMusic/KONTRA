@@ -462,6 +462,7 @@ builtins! {
         PolyAt "%POLY_AT" [I] 0 Int;
         GroupsSelected "%GROUPS_SELECTED" [I] 0 Int;
         GroupsAffected "%GROUPS_AFFECTED" [I] 0 Int;
+        UserZoneIds "%NI_USER_ZONE_IDS" [I] 0 Int;
         KeyDownOct "%KEY_DOWN_OCT" [I] 0 Int;
         EventParAt "%EVENT_PAR" [I] 0 Int;
         NoteDuration "%NOTE_DURATION" [I] 0 Int;
@@ -477,6 +478,8 @@ impl Builtin {
             Self::Cc | Self::CcTouched => 130,
             Self::KeyDownOct => 12,
             Self::GroupsSelected | Self::GroupsAffected => 4096,
+            // Most user zones an instrument may have (the manual).
+            Self::UserZoneIds => 1024,
             Self::EventParAt => 4,
             Self::NoteDuration => 128,
             _ => return None,

@@ -2,10 +2,9 @@
 //! (`get_sample`, `get_zone_status`, `get_loop_par`), the music-information
 //! `detect_*` commands, and `redirect_output`.
 //!
-//! KONTRA has no user zones (`set_num_user_zones` makes none), so every
-//! command that needs one (`set_sample`, `set_loop_par`) fails the way
-//! Kontakt's do for a zone that is not a user zone, and says so in the
-//! unhandled-action count.
+//! User zones (`set_num_user_zones`, `set_sample`, `set_loop_par`) live in the
+//! plan's zone facts; the host builds their playing zones off the audio
+//! thread (`kontra_prepare::user_zones`).
 
 use kontra_ir as ir;
 use kontra_plan::files::{DetectJob, FileReply, FileRequest};
@@ -14,6 +13,8 @@ use kontra_vm::{Action, HostCall, HostValue, Text};
 use crate::Engine;
 use crate::detect::{self, Audio, Kind};
 use crate::queue::Exit;
+use crate::zone_edits::Edit;
+use std::sync::Arc;
 
 /// Longest sample a detection reads: a minute at 48 kHz.
 const MAX_FRAMES: u64 = 48_000 * 60;
@@ -122,45 +123,81 @@ impl Engine {
                 i32::try_from(frames * 1_000_000 / u64::from(z.rate.max(1))).unwrap_or(i32::MAX)
             })),
             GetZoneStatus => {
-                let group = self.facts_of(int(0)).map(|z| z.group as usize);
-                // $NI_ZONE_STATUS_LOADED 1, _PURGED 2; a zone the instrument lacks
-                // reads purged (measured, probes/ksp/zone_and_detect.kspp).
+                let zone = self.facts_of(int(0));
+                let group = zone.map(|z| z.group as usize);
+                // $NI_ZONE_STATUS_EMPTY 0 (a user zone with no sample), _LOADED 1,
+                // _PURGED 2; a zone the instrument lacks reads purged (measured,
+                // probes/ksp/zone_and_detect.kspp).
                 HostValue::Int(match group {
                     None => 2,
+                    Some(_) if zone.is_some_and(|z| z.user && z.source.is_none()) => 0,
                     Some(g) if self.groups.get(g).is_some_and(|g| g.purged) => 2,
                     Some(_) => 1,
                 })
             }
-            GetLoopPar => {
-                let at = usize::try_from(int(1)).ok();
-                let l = self
-                    .facts_of(int(0))
-                    .and_then(|z| z.loops.get(at?))
-                    .copied();
-                // $LOOP_PAR_MODE reads 1 for a loop that exists (the mode laws are unmeasured).
-                HostValue::Int(l.map_or(0, |l| match int(2) {
-                    // $LOOP_PAR_MODE .. $LOOP_PAR_TUNING are 520 .. 525.
-                    520 => 1,
-                    521 => l.start as i32,
-                    522 => l.end.saturating_sub(l.start) as i32,
-                    523 => l.crossfade as i32,
-                    524 => l.count as i32,
-                    _ => 0,
-                }))
+            // -1 past the eighth loop; the modes of a saved loop are unmeasured.
+            GetLoopPar => HostValue::Int(
+                self.facts_of(int(0))
+                    .map_or(0, |z| z.loop_par(int(1), int(2))),
+            ),
+            // Only user zones take a sample or a loop; in `on init` they land at
+            // once (-1), elsewhere the host builds them and the async completes.
+            SetSample => {
+                let user = u32::try_from(int(0))
+                    .ok()
+                    .filter(|&z| self.facts_of(int(0)).is_some_and(|f| f.user && f.id == z));
+                let path = call
+                    .texts
+                    .first()
+                    .map_or(String::new(), |t| t.as_str().to_owned());
+                match (user, self.building) {
+                    (None, true) => HostValue::Int(-1),
+                    (None, false) => HostValue::Int(self.start_async(Exit::Failed)),
+                    (Some(z), true) => {
+                        if let Some(sample) = crate::zone_edits::describe(&path) {
+                            Arc::make_mut(&mut self.plan).set_user_sample(z, Arc::new(sample));
+                        }
+                        HostValue::Int(-1)
+                    }
+                    (Some(z), false) => HostValue::Int(
+                        self.queue_zone_edit(z, Edit::Sample(Text::from_str_cut(&path).0)),
+                    ),
+                }
             }
-            // Only user zones take a sample or a loop, and there are none.
-            SetSample | SetLoopPar => {
-                self.count_unhandled(call.action);
-                HostValue::Int(if self.building {
-                    -1
-                } else {
-                    self.start_async(Exit::Failed)
-                })
+            SetLoopPar => {
+                let user = u32::try_from(int(0))
+                    .ok()
+                    .filter(|&z| self.facts_of(int(0)).is_some_and(|f| f.user && f.id == z));
+                let what = Edit::Loop(int(1), int(2), int(3));
+                match (user, self.building) {
+                    (None, true) => HostValue::Int(-1),
+                    (None, false) => HostValue::Int(self.start_async(Exit::Failed)),
+                    (Some(z), true) => {
+                        if let Edit::Loop(i, p, v) = what {
+                            Arc::make_mut(&mut self.plan).set_user_loop(z, i, p, v);
+                        }
+                        HostValue::Int(-1)
+                    }
+                    (Some(z), false) => HostValue::Int(self.queue_zone_edit(z, what)),
+                }
             }
+            // Only `on init` makes user zones.
             SetNumUserZones => {
-                self.count_unhandled(call.action);
+                if self.building {
+                    let n = usize::try_from(int(0)).unwrap_or(0);
+                    Arc::make_mut(&mut self.plan).make_user_zones(n);
+                } else {
+                    self.count_unhandled(call.action);
+                }
                 HostValue::Nothing
             }
+            NumUserZones => HostValue::Int(self.plan.user_zone_ids().count() as i32),
+            UserZoneIds => HostValue::Int(
+                usize::try_from(int(0))
+                    .ok()
+                    .and_then(|i| self.plan.user_zone_ids().nth(i))
+                    .map_or(-1, |id| i32::try_from(id).unwrap_or(-1)),
+            ),
             // The Mapping Editor selects nothing here: the list is just its end mark.
             GetSelZonesIdx => {
                 if let Some(cell) = usize::try_from(int(0))

@@ -94,6 +94,17 @@ impl Resources {
         }
     }
 
+    /// The folder the library's resource container is saved in (a
+    /// `Resources` folder's parent, or the folder of the `.nkr` / `.nicnt`
+    /// holding it); `None` when the library has none.
+    #[must_use]
+    pub fn container_folder(&self) -> Option<PathBuf> {
+        let path = match self.sources.first()? {
+            Source::Loose(p) | Source::Nkr(_, _, p) | Source::Nicnt(_, _, p) => p,
+        };
+        path.parent().map(Path::to_path_buf)
+    }
+
     /// `Resources/<name>` (`data/x.nka`), matched without case; `None` if absent.
     pub fn read(&mut self, name: &str) -> Option<Vec<u8>> {
         let want = format!("/{}", name.to_lowercase());
