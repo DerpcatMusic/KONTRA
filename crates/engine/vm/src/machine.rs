@@ -76,10 +76,10 @@ impl Vm {
     }
 
     /// A foreign machine's control `id` moves by a route ([`Machine::control_mod`]).
-    pub fn control_mod(&mut self, id: i32, saved: f64, ratio: f64, m: f64, context: u64) -> Option<CoId> {
+    pub fn control_mod(&mut self, id: i32, saved: f64, scale: f64, m: f64, context: u64) -> Option<CoId> {
         match self {
             Self::Code(_) => None,
-            Self::Foreign(f) => f.control_mod(id, saved, ratio, m, context),
+            Self::Foreign(f) => f.control_mod(id, saved, scale, m, context),
         }
     }
 

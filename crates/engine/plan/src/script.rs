@@ -190,6 +190,7 @@ pub struct KnobModPlan {
     pub id: i32,
     pub saved: f32,
     pub source: kontra_ir::Source,
+    pub scale: bool,
 }
 
 pub use kontra_script_ui::{Controls, LookPars};

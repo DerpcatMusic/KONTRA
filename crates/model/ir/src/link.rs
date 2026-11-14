@@ -25,6 +25,9 @@ pub struct KnobMod {
     /// The knob's own value, which the route moves from.
     pub saved: f32,
     pub source: crate::Source,
+    /// The route scales the knob's place in its range by `1 + m` instead
+    /// of adding `m` to it (a multiplicative connection).
+    pub scale: bool,
 }
 
 /// The `n`th control of one kind its script declares (from 0).
