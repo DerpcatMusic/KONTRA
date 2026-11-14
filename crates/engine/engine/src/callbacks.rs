@@ -75,13 +75,62 @@ impl Engine {
         }
     }
 
-    /// A controller's route moved foreign script `slot`'s control `id`
+    /// Reads each route onto a script knob ([`kontra_plan::KnobModPlan`]) at
+    /// control rate, and moves the knob where the value changed.
+    pub(crate) fn follow_knobs(&mut self) {
+        let plan = Arc::clone(&self.plan);
+        if plan.knob_mods.is_empty() {
+            return;
+        }
+        let live = crate::racks::Live {
+            behaviour: &self.behaviour,
+            scripts: &self.script_mods,
+            now: self.now,
+            seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
+            tempo: self.tempo,
+        };
+        self.knobs.follow(&live);
+        // Routes onto one knob add (a multiplicative one scales its place
+        // in the range): the sums of what each reads now, held within the
+        // range once, run its `changed` once.
+        let reads: Vec<f32> = plan
+            .knob_mods
+            .iter()
+            .map(|k| self.knobs.read(&live, k.source).unwrap_or(0.0))
+            .collect();
+        let mut moved = Vec::new();
+        for (n, k) in plan.knob_mods.iter().enumerate() {
+            let same = |o: &&crate::KnobModPlan| (o.slot, o.id) == (k.slot, k.id);
+            if plan.knob_mods.iter().position(|o| same(&o)) != Some(n) {
+                continue;
+            }
+            let sum = |scale: bool| -> f32 {
+                (plan.knob_mods.iter().zip(&reads))
+                    .filter(|(o, _)| same(o) && o.scale == scale)
+                    .map(|(_, m)| m)
+                    .sum()
+            };
+            let (scale, add) = (sum(true), sum(false));
+            if let Some(last) = self.knob_last.get_mut(n)
+                && [scale, add] != *last
+            {
+                *last = [scale, add];
+                moved.push((k, scale, add));
+            }
+        }
+        for (k, scale, add) in moved {
+            let (saved, scale, add) = (f64::from(k.saved), f64::from(scale), f64::from(add));
+            self.set_control_mod(k.slot, k.id, saved, scale, add);
+        }
+    }
+
+    /// A route's value moved foreign script `slot`'s control `id`
     /// ([`kontra_plan::KnobModPlan`]); the machine runs its `changed` if the
     /// value moved.
-    pub fn set_control_mod(&mut self, slot: u8, id: i32, saved: f64, ratio: f64, m: f64) {
+    pub fn set_control_mod(&mut self, slot: u8, id: i32, saved: f64, scale: f64, m: f64) {
         let running = Running::new(Kind::UiControl, None);
         self.run_with(slot, running, |vm, context| {
-            vm.control_mod(id, saved, ratio, m, context)
+            vm.control_mod(id, saved, scale, m, context)
         });
     }
 

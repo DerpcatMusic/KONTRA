@@ -68,6 +68,36 @@ pub struct Widget {
     pub font_size: Option<f64>,
     pub font: Option<String>,
     pub align: Option<String>,
+    /// Every other text, number or boolean property the script set on it
+    /// (`displayName`, `interceptsMouseClicks`, `rectanglePlacement`, the
+    /// class's own colours and flags...), by name: what the editor reads
+    /// a class's attribute by without a field of its own.
+    pub props: Vec<(String, String)>,
+}
+
+/// The fields [`Widget`] reads by name; the rest are its `props`.
+const HANDLED: [&str; 38] = [
+    "kind", "name", "x", "y", "width", "height", "width_set", "height_set", "min", "max",
+    "default", "integer", "vertical", "text", "tooltip", "unit", "visible", "enabled", "alpha",
+    "persistent", "image", "normalImage", "pressedImage", "backgroundImage", "handleImage",
+    "stripImage", "stripSteps", "backgroundColour", "textColour", "fillColour", "sliderColour",
+    "drawInnerEdge", "fillStyle", "fontSize", "font", "align", "displayName", "items",
+];
+
+/// What a widget's `unit` shows: a `Unit` enumerator (0..=13, the order the
+/// reference lists them) as its symbol, any other text as it is.
+fn unit_symbol(unit: Option<String>) -> String {
+    let Some(unit) = unit else {
+        return String::new();
+    };
+    match unit.parse::<u32>() {
+        Ok(n) => ["", "%", "%", "s", "ms", "Hz", "dB", "dB", "Hz", "", "MB", "st", "ct", ""]
+            .get(n as usize)
+            .copied()
+            .unwrap_or_default()
+            .to_string(),
+        Err(_) => unit,
+    }
 }
 
 /// A Lua number or boolean, as a number.
@@ -121,7 +151,20 @@ pub(crate) fn read(lua: &Lua) -> Ui {
                 .filter(|t| !t.is_empty())
                 .or_else(|| text(w, "displayName"))
                 .unwrap_or_default();
+            let mut props: Vec<(String, String)> = w
+                .pairs::<String, Value>()
+                .flatten()
+                .filter(|(k, _)| !k.starts_with("__") && !HANDLED.contains(&k.as_str()))
+                .filter_map(|(k, v)| match v {
+                    Value::String(s) => Some((k, s.to_string_lossy())),
+                    Value::Boolean(b) => Some((k, b.to_string())),
+                    Value::Integer(_) | Value::Number(_) => Some((k, number(&v)?.to_string())),
+                    _ => None,
+                })
+                .collect();
+            props.sort();
             Widget {
+                props,
                 parent,
                 rect: ["x", "y", "width", "height"].map(|k| num(w, k).unwrap_or(0.)),
                 sized: [flag(w, "width_set", false), flag(w, "height_set", false)],
@@ -134,7 +177,7 @@ pub(crate) fn read(lua: &Lua) -> Ui {
                 items,
                 text: caption,
                 tooltip: text(w, "tooltip").unwrap_or_default(),
-                unit: text(w, "unit").unwrap_or_default(),
+                unit: unit_symbol(text(w, "unit")),
                 visible: flag(w, "visible", true),
                 enabled: flag(w, "enabled", true),
                 alpha: num(w, "alpha").unwrap_or(1.),

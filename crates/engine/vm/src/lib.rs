@@ -56,7 +56,7 @@ pub trait Machine: Send {
         &mut self,
         _id: i32,
         _saved: f64,
-        _ratio: f64,
+        _scale: f64,
         _m: f64,
         _context: u64,
     ) -> Option<CoId> {

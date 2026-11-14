@@ -89,15 +89,6 @@ impl Engine {
                 self.set_control(slot, link.id, link.value(value));
             }
         }
-        for k in plan.knob_mods.iter().filter(|k| k.cc == controller) {
-            self.set_control_mod(
-                k.slot,
-                k.id,
-                f64::from(k.saved),
-                f64::from(k.ratio),
-                f64::from(value) / 127.0,
-            );
-        }
         if self.run_controllers(controller) != Heard::Passed {
             return;
         }

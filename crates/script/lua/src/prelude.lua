@@ -80,8 +80,14 @@ local kinds = {
 	"Knob", "Slider", "NumBox", "Menu", "OnOffButton", "Button", "MultiStateButton",
 	"Label", "Image", "Panel", "Viewport", "Table", "WaveView", "AudioMeter", "XY",
 	"TextEditor", "MultiSlider", "ModulationEditor", "Waveform", "SVG", "Path", "DnDArea",
-	"StepModulation",
+	"StepModulation", "ParamKnob", "ParamSlider", "ParamOnOffButton", "ParamMenu", "ParamNumBox",
+	"ParameterValue", "FileSelector",
 }
+-- Per-kind set-up the widgets chunk (widgets.lua) registers, and what
+-- watches a program parameter (`ParameterValue`).
+__ui_init = {}
+local init = __ui_init
+local pressed = { Button = true, OnOffButton = true, MultiStateButton = true }
 local is_kind = {}
 for _, kind in ipairs(kinds) do
 	is_kind[kind] = true
@@ -93,11 +99,11 @@ local widget
 -- A widget's value lives in `__value`: assigning `w.value` runs its
 -- `changed`, as UVIWorkstation's setter does (VWinds' preset arrows set
 -- `menu.value` and rely on it), except from inside its own `changed`.
-local function run_changed(w)
+local function run_changed(w, mods)
 	local changed = rawget(w, "changed")
 	if type(changed) == "function" and not rawget(w, "__changing") then
 		rawset(w, "__changing", true)
-		local ok, err = pcall(changed, w)
+		local ok, err = pcall(changed, w, mods)
 		rawset(w, "__changing", nil)
 		if not ok then
 			error(err, 0)
@@ -122,6 +128,7 @@ local menu_methods = {
 	addItem = function(w, text)
 		table.insert(rawget(w, "items"), text)
 		items_changed(w)
+		return #rawget(w, "items")
 	end,
 	clear = function(w)
 		table.clear(rawget(w, "items"))
@@ -133,6 +140,7 @@ local menu_methods = {
 -- the fields themselves, so one moved or sized after it is made
 -- (`w.pos = {x, y}`, as V Winds does for its tuning layout) draws there.
 local geometry = { pos = true, position = true, size = true, bounds = true }
+local alias = { w = "width", h = "height" }
 local function place(w, key, v)
 	local n = function(i)
 		return tonumber(v[i])
@@ -152,7 +160,20 @@ end
 
 local widget_meta = {
 	__newindex = function(w, key, v)
-		if key == "value" then
+		if key == "length" and rawget(w, "__resize") then
+			w:__resize(v)
+		elseif alias[key] then
+			rawset(w, alias[key], v)
+			rawset(w, alias[key] .. "_set", true)
+		elseif key == "selected" then
+			w.value = v
+		elseif key == "value" and rawget(w, "__target") then
+			-- A bound widget mirrors its parameter; only a `ParameterValue` writes it.
+			if rawget(w, "kind") == "ParameterValue" then
+				local target = rawget(w, "__target")
+				target[1]:setParameter(target[2], v)
+			end
+		elseif key == "value" then
 			rawset(w, "__value", v)
 			run_changed(w)
 		elseif geometry[key] and type(v) == "table" then
@@ -162,8 +183,22 @@ local widget_meta = {
 		end
 	end,
 	__index = function(w, key)
-		if key == "value" then
+		if key == "value" or key == "selected" then
+			local target = rawget(w, "__target")
+			if target then
+				return target[1]:getParameter(target[2])
+			end
 			return rawget(w, "__value")
+		elseif alias[key] then
+			return rawget(w, alias[key])
+		elseif key == "displayName" or key == "tooltip" then
+			return rawget(w, "name")
+		elseif key == "length" and rawget(w, "items") then
+			return #rawget(w, "items")
+		elseif key == "length" and rawget(w, "__resize") then
+			return #rawget(w, "values")
+		elseif key == "bound" then
+			return rawget(w, "__target") ~= nil
 		elseif key == "pos" or key == "position" then
 			return { rawget(w, "x"), rawget(w, "y") }
 		elseif key == "size" then
@@ -212,7 +247,6 @@ local function table_widget(w, name, fields)
 	end
 	w.values = values
 	w.size = size
-	w.length = size
 	w.min, w.max, w.integer = tonumber(fields[4]) or 0, tonumber(fields[5]) or 1, fields[6] == true
 	-- UVIWorkstation 4.0.9: an index outside 1..size reads the widget's own
 	-- value, its default clamped to min..max (0x1410c0140, 0x1410ddbd0), and
@@ -222,7 +256,17 @@ local function table_widget(w, name, fields)
 	local function at(index)
 		local i = tonumber(index)
 		i = i and (i < 0 and math.ceil(i) or math.floor(i))
-		return i and i >= 1 and i <= size and i or nil
+		return i and i >= 1 and i <= #values and i or nil
+	end
+	-- `length = n` resizes it; entries added take the widget's default.
+	w.__resize = function(self, n)
+		n = math.max(0, math.floor(tonumber(n) or #values))
+		for i = #values + 1, n do
+			values[i] = tonumber(rawget(self, "default")) or tonumber(fields[3]) or 0
+		end
+		for i = #values, n + 1, -1 do
+			values[i] = nil
+		end
 	end
 	-- ponytail: Table:setRange moves the range the out-of-range read clamps
 	-- to; the stored values are not clamped (the AO step table's checkbox
@@ -232,10 +276,20 @@ local function table_widget(w, name, fields)
 		self.min, self.max = lo, hi
 		own = math.min(math.max(own, math.min(lo, hi)), math.max(lo, hi))
 	end
-	w.setValue = function(self, index, v)
+	w.setValue = function(self, index, v, call)
 		local i = at(index)
 		if i then
-			self.values[i] = v
+			values[i] = v
+			-- `changed(self, index)`, unless the script asked it not to.
+			local changed = rawget(self, "changed")
+			if call ~= false and type(changed) == "function" and not rawget(self, "__changing") then
+				rawset(self, "__changing", true)
+				local ok, err = pcall(changed, self, i)
+				rawset(self, "__changing", nil)
+				if not ok then
+					error(err, 0)
+				end
+			end
 		end
 	end
 	w.getValue = function(self, index)
@@ -268,16 +322,16 @@ function __control(id, value)
 		c:setValue(value, force(c))
 	end
 end
--- Control `id` moves to `saved`'s place in its range plus `ratio × m`, held
+-- Control `id` moves to `saved`'s place in its range times `1 + scale`, plus `m`, held
 -- within it (a format's connection onto a knob); its `changed` runs when the
 -- value moves.
-function __control_mod(id, saved, ratio, m)
+function __control_mod(id, saved, scale, m)
 	local c = __controls[id + 1]
 	local lo, hi = tonumber(c and c.min), tonumber(c and c.max)
 	if not (lo and hi) or hi == lo then
 		return
 	end
-	local u = math.min(math.max((saved - lo) / (hi - lo) + ratio * m, 0), 1)
+	local u = math.min(math.max((saved - lo) / (hi - lo) * (1 + scale) + m, 0), 1)
 	local v = lo + u * (hi - lo)
 	if c.integer then
 		v = math.floor(v + 0.5)
@@ -295,6 +349,9 @@ __ui = { widgets = {}, width = 720, height = 480 }
 -- "after restoring widgets values").
 __restore_errors = {}
 function __restore()
+	if __ui_built then
+		__ui_built()
+	end
 	local list = saved_widgets
 	saved_widgets = {}
 	for _, w in ipairs(list) do
@@ -312,13 +369,17 @@ end
 -- A widget, from `Kind(name, value, ...)` or `Kind{name, value, field=...}`.
 widget = function(kind, name, value, ...)
 	local fields = { name, value, ... }
-	if type(name) == "table" then
+	-- A bound widget is made from an element and a parameter name, not a field table.
+	if type(name) == "table" and getmetatable(name) == nil then
 		fields = name
 		name, value = fields[1], fields.value or fields[2]
 	end
+	if type(name) == "table" or type(name) == "userdata" then
+		name = nil
+	end
 	local rest = { fields[3] }
 	local items
-	if kind == "Menu" then
+	if kind == "Menu" or kind == "MultiStateButton" then
 		-- Menu(name, items, selected): the value is the item's index.
 		items = type(value) == "table" and value or {}
 		value = tonumber(rest[1]) or 1
@@ -335,6 +396,9 @@ widget = function(kind, name, value, ...)
 	-- Made with its value: no `changed` runs yet.
 	rawset(w, "__value", value)
 	w.items = items
+	if kind == "Slider" and rawget(w, "vertical") == nil then
+		rawset(w, "vertical", fields[6] == true)
+	end
 	if kind == "Knob" or kind == "Slider" or kind == "NumBox" then
 		-- `Knob(name, value, min, max, integer)`: the range by place too.
 		for at, key in ipairs({ "min", "max", "integer" }) do
@@ -343,11 +407,17 @@ widget = function(kind, name, value, ...)
 			end
 		end
 	end
-	if kind == "Image" and w.image == nil and type(name) == "string" then
+	if kind == "Image" and rawget(w, "image") == nil and type(name) == "string" then
 		-- `Image{path, ...}`: its first field is its picture.
 		w.image = name
 	end
+	if kind == "SVG" and rawget(w, "svg") == nil and type(name) == "string" then
+		w.svg = name
+	end
 	table.insert(__ui.widgets, w)
+	if init[kind] then
+		init[kind](w, fields)
+	end
 	if name ~= nil and __saved[name] ~= nil and kind ~= "Table" then
 		table.insert(saved_widgets, w)
 	end
@@ -372,7 +442,10 @@ widget = function(kind, name, value, ...)
 		local was = rawget(self, "__value")
 		rawset(self, "__value", v)
 		if run ~= false and (run == __FORCE or v ~= was) then
-			run_changed(self)
+			-- A click's modifier keys reach a button's `changed`; a script's
+			-- own move has none.
+			local click = run == __FORCE and pressed[kind]
+			run_changed(self, click and { altDown = false, commandDown = false, shiftDown = false } or nil)
 		end
 	end
 	w.getValue = function(self)
@@ -401,18 +474,32 @@ end
 setBackgroundColour = function(colour)
 	__ui.colour = colour
 end
--- Enumerations whose values only need to be distinct (`Unit.Seconds`).
-local function enum()
+-- UVIScript's enumerations, in the order its reference lists them
+-- (https://lua.uvi.net/class_mapper.html, class_unit.html); RectanglePlacement
+-- takes JUCE's flags, which UVI wraps. The rest only need distinct values.
+local function enum(names)
 	local next_value = 0
-	return setmetatable({}, {
+	local t = setmetatable({}, {
 		__index = function(t, key)
 			next_value = next_value + 1
 			rawset(t, key, next_value)
 			return next_value
 		end,
 	})
+	for i, name in ipairs(names or {}) do
+		rawset(t, name, i - 1)
+	end
+	return t
 end
-for _, name in ipairs({ "Unit", "Mapper", "DisplayType", "Justification", "MouseEvent", "Direction" }) do
+Mapper = enum({ "Linear", "Exponential", "QuinticRoot", "QuarticRoot", "CubeRoot", "SquareRoot", "Quadratic", "Cubic", "Quartic", "Quintic" })
+Unit = enum({ "Generic", "Percent", "PercentNormalized", "Seconds", "MilliSeconds", "Hertz", "Decibels", "LinearGain", "UviFilter", "Pan", "Megabyte", "SemiTones", "Cents", "MidiKey" })
+FileFormat = enum({ "All", "Audio", "MIDI" })
+RectanglePlacement = {
+	Left = 1, Right = 2, HorizontallyCentred = 4, Top = 8, Bottom = 16, VerticallyCentred = 32,
+	StretchToFit = 64, FillDestination = 128, OnlyReduceInSize = 256, OnlyIncreaseInSize = 512,
+	DoNotResize = 768, Centred = 36,
+}
+for _, name in ipairs({ "DisplayType", "Justification", "MouseEvent", "Direction" }) do
 	_G[name] = enum()
 end
 __API_VERSION__ = 23
@@ -518,7 +605,11 @@ end
 -- mapped (`knobs`) reach the effect the engine plays for it (`fx`: where,
 -- group or bus, slot).
 function Element.setParameter(self, name, value)
+	local was = self.params[name]
 	self.params[name] = value
+	if was ~= value and __watch then
+		__watch(self, name)
+	end
 	local fx = fields_of(self).fx
 	if not fx then
 		return
