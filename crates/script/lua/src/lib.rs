@@ -553,12 +553,12 @@ impl Machine for LuaMachine {
         };
         // Every resume, not only a start, may change the state: a task that
         // waited (a layer loading after `wait`) must be seen by the next save.
-        self.runs = self.runs.wrapping_add(1);
         // An editor run that already had a slice waits for a block with budget
         // left: the ones it shares the block with have used it.
         if ui && used > 0 && self.block_left.is_zero() {
             return Step::Yield;
         }
+        self.runs = self.runs.wrapping_add(1);
         let from = if ui { used } else { UI_CHECKPOINTS - CHECKPOINTS };
         self.checkpoints.store(from, Ordering::Relaxed);
         SLICED.with(|s| s.set(false));
