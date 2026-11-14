@@ -67,6 +67,8 @@ impl Engine {
             | Action::SetControlParStrArr
             | Action::WillNeverTerminate
             | Action::HideInstIcon
+            | Action::SetMapEditorEventColor
+            | Action::LoadKompleteUi
             | Action::DontUseMachineMode => HostValue::Nothing,
             // The host reads the script's performance view at load and
             // declares its controls (kontra-host ui.rs); a request for

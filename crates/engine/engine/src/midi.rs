@@ -137,7 +137,7 @@ impl Engine {
 
     /// A key's polyphonic aftertouch: kept for `%POLY_AT`, then each
     /// script's `on poly_at` runs with the key as `$POLY_AT_NUM`.
-    fn poly_aftertouch(&mut self, channel: u8, key: u8, value: u8) {
+    pub(crate) fn poly_aftertouch(&mut self, channel: u8, key: u8, value: u8) {
         if let Some(v) = self.poly_at.get_mut(usize::from(key)) {
             *v = value;
         }
