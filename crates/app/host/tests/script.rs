@@ -4393,6 +4393,71 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     assert!((level(&mut e, &[on(72)]) - 1.0).abs() < 1e-3);
 }
 
+/// `on midi_in` sees a note before the engine: it can drop it (`ignore_midi`),
+/// move it (`set_event_par`) and add notes (`set_midi`), and the engine plays
+/// what is left. Key 60 is dropped, 61 moves up an octave to 73, 62 gets a
+/// second note on 66.
+#[test]
+fn midi_in_drops_moves_and_adds_notes_before_the_engine() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 60)
+                ignore_midi
+            end if
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 61)
+                set_event_par(0, $EVENT_PAR_MIDI_BYTE_1, 73)
+            end if
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 62)
+                set_midi($MIDI_CHANNEL, $MIDI_COMMAND, 66, $MIDI_BYTE_2)
+            end if
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.active_voices(), 0, "dropped");
+    level(&mut e, &[on(61)]);
+    assert_eq!(e.active_voices(), 1, "moved");
+    level(&mut e, &[on(62)]);
+    assert_eq!(e.active_voices(), 3, "added");
+}
+
+/// `set_note_controller` runs `on note_controller` in the other script slots
+/// only, with the controller, note and value.
+#[test]
+fn note_controller_reaches_the_other_slots_only() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let sender = kontra_ksp::compile(
+        "on note
+            set_note_controller(1, $EVENT_NOTE, 77)
+        end on
+        on note_controller
+            message(\"self\")
+        end on",
+        &[],
+    )
+    .unwrap();
+    let receiver = kontra_ksp::compile(
+        "on note_controller
+            message($NC_NUM & \",\" & $NC_NOTE & \",\" & $NC_VALUE)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![z], 16);
+    plan.scripts = vec![
+        kontra_host::script::plan(&sender, &[], &[]),
+        kontra_host::script::plan(&receiver, &[], &[]),
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "1,60,77");
+}
+
 /// Pitch bend of `bend` (-1..1) on channel 1.
 fn bend(bend: f32) -> Timed<Event> {
     let raw = ((bend * 8192.0 + 8192.0).round() as u16).min(16383);
@@ -4516,6 +4581,41 @@ fn uvi_controllers_reach_the_instrument_only_as_posted() {
     );
     level(&mut e, &[cc(1, 100)]);
     assert_eq!(e.controller(1), Some(7), "a changed controller replaces");
+}
+
+/// UVI's `postEvent(e, delta)`: a controller posted `delta` ms on reaches
+/// the instrument then, sample-timed by the engine's queue.
+#[test]
+fn a_uvi_controller_posted_later_arrives_later() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = lua_engine(&mut store, "function onAfterTouch(e) postEvent(e, 200) end");
+    level(&mut e, &[pressure(80)]);
+    assert_eq!(e.controller(129), Some(0), "it went at once");
+    for _ in 0..4 {
+        level(&mut e, &[]);
+    }
+    assert_eq!(e.controller(129), Some(80), "it never arrived");
+}
+
+/// A handler that waits before posting: the event is kept at the wait (the
+/// engine cannot hold the controller), and what it posts after goes then.
+#[test]
+fn a_uvi_handler_that_waits_posts_its_event_after_the_wait() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = lua_engine(
+        &mut store,
+        "function onAfterTouch(e) wait(200); e.value = 20; postEvent(e) end",
+    );
+    level(&mut e, &[pressure(90)]);
+    assert_eq!(e.controller(129), Some(0), "it passed before the post");
+    for _ in 0..4 {
+        level(&mut e, &[]);
+    }
+    assert_eq!(
+        e.controller(129),
+        Some(20),
+        "the posted value never arrived"
+    );
 }
 
 /// KSP manual: `set_controller` sends `$VCC_PITCH_BEND` and `$VCC_MONO_AT`
@@ -4926,4 +5026,119 @@ fn midi_events_are_addressed_by_track_and_by_mark() {
         "{:?}",
         e.unhandled_actions()
     );
+}
+
+/// Census: runs every UVI program's scripts under `KONTRA_UVI_BANKS` (a
+/// folder searched for `.ufs` banks) and prints, per distinct script, what
+/// it does with CC 1, CC 64, pitch bend, aftertouch and poly aftertouch:
+/// passes it, keeps it back (no `postEvent`) or replaces it.
+#[test]
+#[ignore = "reads the UVI libraries on this machine"]
+fn uvi_controller_census() {
+    let Some(root) = std::env::var_os("KONTRA_UVI_BANKS") else {
+        return;
+    };
+    let mut banks = Vec::new();
+    let mut dirs = vec![std::path::PathBuf::from(root)];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("ufs"))
+            {
+                banks.push(path);
+            }
+        }
+    }
+    banks.sort();
+    let mut seen = std::collections::HashMap::<u64, usize>::new();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let probes: [(&str, Timed<Event>); 5] = [
+        ("cc1", cc(1, 90)),
+        ("cc64", cc(64, 127)),
+        ("bend", bend(0.5)),
+        ("at", pressure(70)),
+        (
+            "polyat",
+            Timed {
+                at: SampleTime(0),
+                body: Event::midi1(0xA0, 60, 70),
+            },
+        ),
+    ];
+    println!("banks: {}", banks.len());
+    for bank in &banks {
+        let programs = kontra_format_uvi::programs(bank).unwrap_or_default();
+        let name = bank.file_stem().unwrap().to_string_lossy();
+        println!("bank {name}: {} programs", programs.len());
+        let started = std::time::Instant::now();
+        for (n, program) in programs.into_iter().enumerate() {
+            if n % 100 == 99 {
+                println!("  ... {} programs", n + 1);
+            }
+            let Ok(instrument) = kontra_format_uvi::load(&bank.join(&program)) else {
+                println!("  {program}: does not load");
+                continue;
+            };
+            for script in &instrument.scripts {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                script.source.hash(&mut h);
+                // Its code: the source and the bank's Lua modules (a
+                // program's saved state and folder only set values).
+                let code = |n: &String| n.ends_with(".lua") && !n.starts_with("__");
+                for (n, bytes) in script.data.iter().filter(|(n, _)| code(n)) {
+                    (n, bytes.len()).hash(&mut h);
+                }
+                let key = h.finish();
+                if let Some(count) = seen.get_mut(&key) {
+                    *count += 1;
+                    continue;
+                }
+                seen.insert(key, 1);
+                let modules: Vec<(String, String)> = (script.data.iter())
+                    .map(|(n, b)| (n.clone(), String::from_utf8_lossy(b).into_owned()))
+                    .collect();
+                let compiled = match kontra_lua::compile(&script.source, &modules, &script.saved) {
+                    Ok(c) => c,
+                    Err(err) => {
+                        println!("  {program} [{}]: compile: {err}", script.name);
+                        continue;
+                    }
+                };
+                let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+                plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+                let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+                level(&mut e, &[]);
+                level(&mut e, &[on(60)]);
+                let mut row = Vec::new();
+                for (probe, event) in &probes {
+                    let before = e.stats();
+                    level(&mut e, &[*event]);
+                    let after = e.stats();
+                    let verdict = if after.controllers_replaced > before.controllers_replaced {
+                        "replaced"
+                    } else if after.controllers_ignored > before.controllers_ignored {
+                        "KEPT"
+                    } else {
+                        "pass"
+                    };
+                    row.push(format!("{probe}={verdict}"));
+                }
+                println!(
+                    "  {program} [{}] {key:016x}: {}",
+                    script.name,
+                    row.join(" ")
+                );
+            }
+        }
+        println!("  ({:.0} s)", started.elapsed().as_secs_f64());
+    }
+    println!("distinct scripts: {}", seen.len());
+    for (key, count) in &seen {
+        println!("script {key:016x}: {count} programs");
+    }
 }

@@ -8,6 +8,7 @@
 //! Nothing allocates after [`Instance::new`].
 
 mod action;
+pub mod midi;
 mod execute;
 mod fuse;
 mod host;

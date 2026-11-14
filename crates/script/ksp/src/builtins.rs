@@ -110,6 +110,7 @@ builtins! {
         Inc "inc" [I] 0 Void;
         Dec "dec" [I] 0 Void;
         Wait "wait" [I] 0 Void;
+        WaitTicks "wait_ticks" [I] 0 Void;
         IntToReal "int_to_real" [I] 0 Real;
         Real "real" [I] 0 Real;
         RealToInt "real_to_int" [R] 0 Int;
@@ -187,6 +188,8 @@ builtins! {
         EventStatus "event_status" [I] 0 Int;
         GetEventIds "get_event_ids" [A] 0 Void;
         IgnoreController "ignore_controller" [] 0 Void;
+        IgnoreMidi "ignore_midi" [] 0 Void;
+        SetMidi "set_midi" [I I I I] 0 Void;
         SetController "set_controller" [I I] 0 Void;
         SetNoteController "set_note_controller" [I I I] 0 Void;
         SetRpn "set_rpn" [I I] 0 Void;
@@ -200,7 +203,6 @@ builtins! {
         // routes to output 0.
         RedirectOutput "redirect_output" [I I I] 1 Void;
         // Time.
-        WaitTicks "wait_ticks" [I] 0 Void;
         WaitAsync "wait_async" [I] 0 Void;
         StopWait "stop_wait" [I I] 0 Void;
         ResetKspTimer "reset_ksp_timer" [] 0 Void;
@@ -378,7 +380,6 @@ builtins! {
         GetSelZonesIdx "get_sel_zones_idx" [A] 0 Void;
         GetLoopPar "get_loop_par" [I I I] 0 Int;
         SetLoopPar "set_loop_par" [I I I I] 0 Int;
-        SetMidi "set_midi" [I I I I] 0 Void;
         DetectKey "detect_key" [I W] 0 Int;
         DetectPitch "detect_pitch" [I W] 0 Int;
         DetectLoudness "detect_loudness" [I W] 0 Int;
@@ -408,6 +409,12 @@ builtins! {
         CcNum "$CC_NUM" [] 0 Int;
         PitchBend "$PITCH_BEND" [] 0 Int;
         PolyAtNum "$POLY_AT_NUM" [] 0 Int;
+        NcNum "$NC_NUM" [] 0 Int;
+        NcNote "$NC_NOTE" [] 0 Int;
+        NcValue "$NC_VALUE" [] 0 Int;
+        MidiCommand "$MIDI_COMMAND" [] 0 Int;
+        MidiByte1 "$MIDI_BYTE_1" [] 0 Int;
+        MidiByte2 "$MIDI_BYTE_2" [] 0 Int;
         RpnAddress "$RPN_ADDRESS" [] 0 Int;
         RpnValue "$RPN_VALUE" [] 0 Int;
         MidiChannel "$MIDI_CHANNEL" [] 0 Int;

@@ -23,6 +23,13 @@ pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
 }
 
 impl Engine {
+    /// `work` in `frames` from now, counted when the queue is full.
+    fn later(&mut self, frames: u64, work: Work) {
+        if !self.queue.push(SampleTime(self.now.0 + frames), work) {
+            self.stats.events_refused += 1;
+        }
+    }
+
     /// Fills `out` with the notes an event argument addresses.
     fn targets(&self, id: i32, out: &mut Vec<NoteRef>) {
         out.clear();
@@ -424,6 +431,32 @@ impl HostApi for Engine {
                 self.stats.messages += 1;
                 HostValue::Nothing
             }
+            Action::IgnoreMidi => {
+                self.running.ignore_controller = true;
+                HostValue::Nothing
+            }
+            Action::SetMidi => {
+                let byte = |i| int(i).clamp(0, 255) as u8;
+                self.set_midi([byte(1) & 0xF0, byte(0) & 0x0F, byte(2) & 0x7F, byte(3) & 0x7F]);
+                HostValue::Nothing
+            }
+            Action::SetNoteController => {
+                let from = self.running.slot;
+                self.note_controller(from, int(0), int(1), int(2));
+                HostValue::Nothing
+            }
+            // In `on midi_in` the message's own fields.
+            Action::SetEventPar if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() => {
+                if let Some(at) = midi_par(int(1)) {
+                    let max = if at == 3 || at == 2 { 127 } else { 255 };
+                    let v = int(2).clamp(0, max) as u8;
+                    self.running.midi[at] = if at == 0 { v & 0xF0 } else { v };
+                }
+                HostValue::Nothing
+            }
+            Action::GetEventPar if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() => {
+                HostValue::Int(midi_par(int(1)).map_or(0, |at| i32::from(self.running.midi[at])))
+            }
             Action::IgnoreController => {
                 self.running.ignore_controller = true;
                 HostValue::Nothing
@@ -492,10 +525,27 @@ impl HostApi for Engine {
                 self.set_group(int(0), int(3), int(2) != 0);
                 HostValue::Nothing
             }
-            Action::SetEventParArr if int(1) == event::MOD_VALUE => {
+            Action::SetEventParArr if int(1) == event::CUSTOM => {
+                if let Ok(index) = usize::try_from(int(3)) {
+                    self.each(int(0), |n| {
+                        if let Some(c) = n.custom.get_mut(index) {
+                            *c = int(2);
+                        }
+                    });
+                }
+                HostValue::Nothing
+            }
+            Action::GetEventParArr if int(1) == event::CUSTOM => {
+                let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
+                let index = usize::try_from(int(2)).ok();
+                HostValue::Int(note.zip(index).map_or(0, |(n, i)| n.custom.get(i).copied().unwrap_or(0)))
+            }
+            Action::SetEventParArr if matches!(int(1), event::MOD_VALUE | event::MOD_VALUE_EX) => {
                 if let Ok(index) = u16::try_from(int(3)) {
                     // An optional fifth argument ramps there over microseconds.
-                    let (value, now) = (int(2), self.now);
+                    // `_ID` clamps to ±1 000 000, `_EX_ID` does not.
+                    let value = if int(1) == event::MOD_VALUE { int(2).clamp(-1_000_000, 1_000_000) } else { int(2) };
+                    let now = self.now;
                     let frames =
                         u64::try_from(int(4)).unwrap_or(0) * u64::from(self.rate) / 1_000_000;
                     let from = self.script_mod(index);
@@ -519,7 +569,7 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
-            Action::GetEventParArr if int(1) == event::MOD_VALUE => {
+            Action::GetEventParArr if matches!(int(1), event::MOD_VALUE | event::MOD_VALUE_EX) => {
                 let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 let index = u16::try_from(int(2)).ok();
                 HostValue::Int(note.zip(index).map_or(0, |(n, i)| {
@@ -570,6 +620,9 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::CurrentScriptSlot => HostValue::Int(i32::from(self.running.slot)),
+            Action::MidiChannel if self.running.kind == Kind::MidiIn => {
+                HostValue::Int(i32::from(self.running.midi[1]))
+            }
             Action::MidiChannel => HostValue::Int(current.map_or(0, |n| i32::from(n.host.channel))),
             Action::NoteHeld => flag(current.is_some_and(|n| !n.is_up())),
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
@@ -733,11 +786,32 @@ impl HostApi for Engine {
                     .and_then(|r| self.notes.get(r))
                     .map_or(0, |n| n.host.channel);
                 let at = |i| u8::try_from(int(i).clamp(0, 127)).unwrap_or(0);
-                self.set_poly_at(channel, at(0), at(1));
+                let (key, value) = (at(0), at(1));
+                // A third argument delays it, in microseconds (UVI's `delta`).
+                match micros_to_frames(i64::from(int(2)), self.rate) {
+                    0 => self.set_poly_at(channel, key, value),
+                    frames => self.later(
+                        frames,
+                        Work::PolyAt {
+                            channel,
+                            key,
+                            value,
+                        },
+                    ),
+                }
                 HostValue::Nothing
             }
             Action::SetController => {
-                self.set_controller(int(0), int(1));
+                match (
+                    micros_to_frames(i64::from(int(2)), self.rate),
+                    u8::try_from(int(0)),
+                ) {
+                    (0, _) | (_, Err(_)) => self.set_controller(int(0), int(1)),
+                    (frames, Ok(controller)) => {
+                        let value = int(1).clamp(-8192, 8191) as i16;
+                        self.later(frames, Work::Controller { controller, value });
+                    }
+                }
                 HostValue::Nothing
             }
             // Mode 2 is the library's data folder, read at once (the next line
@@ -880,5 +954,17 @@ mod tests {
         assert_eq!(NoteRef::from_event_id(0), None);
         assert_eq!(NoteRef::from_event_id(-5), None);
         assert_eq!(NoteRef::from_event_id(17), None);
+    }
+}
+
+/// Which of `on midi_in`'s `[command, channel, data 1, data 2]` an event
+/// parameter id names.
+fn midi_par(par: i32) -> Option<usize> {
+    match par {
+        event::MIDI_COMMAND => Some(0),
+        event::MIDI_CHANNEL => Some(1),
+        event::MIDI_BYTE_1 => Some(2),
+        event::MIDI_BYTE_2 => Some(3),
+        _ => None,
     }
 }

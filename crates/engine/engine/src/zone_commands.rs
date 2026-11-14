@@ -4,8 +4,7 @@
 //!
 //! User zones (`set_num_user_zones`, `set_sample`, `set_loop_par`) live in the
 //! plan's zone facts; the host builds their playing zones off the audio
-//! thread (`kontra_prepare::user_zones`). The Multi script's `set_midi` and
-//! the type classifiers are counted as unhandled.
+//! thread (`kontra_prepare::user_zones`).
 
 use kontra_ir as ir;
 use kontra_plan::files::{DetectJob, FileReply, FileRequest};
@@ -47,7 +46,7 @@ pub fn detect_sample(sample: &ir::Sample, what: u8) -> Option<f64> {
         rate,
     };
     match kind {
-        Kind::Key => detect::key(&audio).map(f64::from),
+        Kind::Key => detect::key(&audio).map(|k| f64::from(detect::key_tag(k))),
         Kind::Pitch => detect::pitch(&audio),
         Kind::Loudness => detect::loudness(&audio),
         Kind::Peak => detect::peak(&audio),
@@ -60,7 +59,8 @@ pub fn detect_sample(sample: &ir::Sample, what: u8) -> Option<f64> {
 /// What a failed detection reads, as the constants `~NI_DETECT_*_INVALID`.
 fn invalid(what: u8) -> f64 {
     match kind_of(what) {
-        Kind::Key | Kind::Class => -1.0,
+        Kind::Key => f64::from(detect::KEY_INVALID),
+        Kind::Class => -1.0,
         Kind::Pitch | Kind::Tempo => -1.0,
         Kind::Loudness | Kind::Peak | Kind::Rms => -1000.0,
     }
@@ -189,10 +189,6 @@ impl Engine {
                 } else {
                     self.count_unhandled(call.action);
                 }
-                HostValue::Nothing
-            }
-            SetMidi => {
-                self.count_unhandled(call.action);
                 HostValue::Nothing
             }
             NumUserZones => HostValue::Int(self.plan.user_zone_ids().count() as i32),

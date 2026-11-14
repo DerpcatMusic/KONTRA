@@ -208,6 +208,9 @@ pub struct Callbacks {
     pub controller: Option<u32>,
     /// `on poly_at`, run for each polyphonic aftertouch message.
     pub poly_at: Option<u32>,
+    /// `on note_controller` and `on midi_in`.
+    pub note_controller: Option<u32>,
+    pub midi_in: Option<u32>,
     pub persistence_changed: Option<u32>,
     pub listener: Option<u32>,
     pub pgs_changed: Option<u32>,

@@ -66,7 +66,8 @@ pub struct Library {
     /// Its instruments and snapshots, sorted naturally by path. A UVI
     /// program is `bank.ufs/Folder/Name.uvip`.
     pub presets: Vec<PathBuf>,
-    /// How many multis (`.nkm`) it holds, not among `presets`.
+    /// How many multis (`.nkm`) it holds, among `presets`: one fills a
+    /// part for each of its slots.
     pub multis: usize,
     /// Pictures that may be its banner, best first: `wallpaper.png`, a
     /// library-browser picture, the `.nicnt`/`.nkr` (which holds pictures),
@@ -419,10 +420,7 @@ fn catalog(
         walk(&found.dir, &mut state, &mut presets, &mut art);
         art.sort_by_cached_key(|p| (art_rank(p), p.clone()));
     }
-    // A multi fills a rack, not a part: nothing plays one yet.
-    let multis = presets.len();
-    presets.retain(|p| ext(p) != "nkm");
-    let multis = multis - presets.len();
+    let multis = presets.iter().filter(|p| ext(p) == "nkm").count();
     if presets.is_empty() {
         return None;
     }
