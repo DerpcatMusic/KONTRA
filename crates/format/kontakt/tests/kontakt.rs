@@ -233,3 +233,96 @@ fn a_wavetable_group_keeps_its_saved_quality() {
         assert_eq!(table.quality, want, "{name}");
     }
 }
+
+/// Kontakt's own restore of a snapshot (`KONTRA_SNAPSHOT_ORACLE=<dir>`, the
+/// files `tools/kontakt-oracle/probes/snapshot_restore.lua` saves: for pair
+/// `n`, the instrument as loaded, `oracle.jsonl.<n>.base.nki`, and with the
+/// snapshot applied, `oracle.jsonl.<n>.nki`, each in `<dir>/<library>/
+/// Instruments/` beside links to the rest of its library) against KONTRA's reading of
+/// the same snapshot (`KONTRA_SNAPSHOTS`, the snapshot paths in pair
+/// order, `|`-separated): script values, groups' volume, pan and tune, and
+/// effects, each counted as equal or not.
+#[test]
+#[ignore = "reads native oracle output on this machine"]
+fn a_snapshot_restores_as_kontakt_restores_it() {
+    let (Some(dir), Ok(snapshots)) = (
+        std::env::var_os("KONTRA_SNAPSHOT_ORACLE"),
+        std::env::var("KONTRA_SNAPSHOTS"),
+    ) else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    for (n, snapshot) in (1..).zip(snapshots.split('|')) {
+        let ours = kontra_format_kontakt::load(Path::new(snapshot)).unwrap();
+        // Each library's saved files sit in a folder of their own (an
+        // encrypted library's instrument reads beside its `.nicnt`).
+        let read = |name: String| {
+            let found = std::fs::read_dir(dir).unwrap().flatten().find_map(|lib| {
+                let p = lib.path().join("Instruments").join(&name);
+                p.exists().then_some(p)
+            });
+            kontra_format_kontakt::load(&found.unwrap_or_else(|| dir.join(&name))).unwrap()
+        };
+        let kontakt = read(format!("oracle.jsonl.{n}.nki"));
+        let base = read(format!("oracle.jsonl.{n}.base.nki"));
+        let values = |i: &kontra_ir::Instrument| {
+            (i.scripts.iter())
+                .flat_map(|s| s.saved.iter().map(move |v| (s.slot, v.clone())))
+                .collect::<Vec<_>>()
+        };
+        let (ours_v, kontakt_v, base_v) = (values(&ours), values(&kontakt), values(&base));
+        let changed: Vec<_> = kontakt_v.iter().filter(|v| !base_v.contains(v)).collect();
+        let changed_ours = changed.iter().filter(|v| ours_v.contains(v)).count();
+        let differ: Vec<_> = kontakt_v.iter().filter(|v| !ours_v.contains(v)).collect();
+        let groups = |i: &kontra_ir::Instrument| {
+            (i.groups.iter())
+                .map(|g| {
+                    (
+                        g.volume_db.max(-200.0).round() as i32,
+                        (g.pan * 100.0).round() as i32,
+                        (g.tune * 100.0).round() as i32,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let (og, kg) = (groups(&ours), groups(&kontakt));
+        let groups_same = og.iter().zip(&kg).filter(|(a, b)| a == b).count();
+        // Kontakt's saved copy names its impulse responses relative to
+        // where Kontakt saved it, so a convolution reads as unknown there.
+        let wet = |s: String| {
+            let mut out = s.clone();
+            while let Some(at) = out.find("Convolution { impulse: ") {
+                let end = out[at..].find('}').map_or(out.len(), |e| at + e + 1);
+                out.replace_range(at..end, "OtherWet");
+            }
+            out
+        };
+        let effects = |i: &kontra_ir::Instrument| {
+            let mut all = vec![wet(format!("{:?}", (&i.inserts, &i.sends, &i.main)))];
+            all.extend(i.groups.iter().map(|g| wet(format!("{:?}", g.inserts))));
+            all
+        };
+        let (oe, ke) = (effects(&ours), effects(&kontakt));
+        let effects_same = oe.iter().zip(&ke).filter(|(a, b)| a == b).count();
+        println!(
+            "{snapshot}\n  values: {} saved by Kontakt, {} differ from ours; {} the snapshot changed, {changed_ours} of them ours too\n  groups: {groups_same} of {} same volume/pan/tune\n  effects: {effects_same} of {} racks same",
+            kontakt_v.len(),
+            differ.len(),
+            changed.len(),
+            kg.len(),
+            ke.len()
+        );
+        if std::env::var_os("KONTRA_SNAPSHOT_DETAIL").is_some() {
+            println!("    groups ours {:?}\n    kontakt {:?}\n    base {:?}", &og[..3], &kg[..3], &groups(&base)[..3]);
+            for (a, b) in oe.iter().zip(&ke).filter(|(a, b)| a != b).take(1) {
+                let at = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+                let near = |s: &str| s.chars().skip(at.saturating_sub(300)).take(500).collect::<String>();
+                println!("    effects ours …{}\n    kontakt …{}", near(a), near(b));
+            }
+        }
+        for v in differ.iter().take(8) {
+            let mine = (ours_v.iter()).find(|o| o.0 == v.0 && o.1.split(' ').next() == v.1.split(' ').next());
+            println!("    kontakt {v:?} ours {mine:?}");
+        }
+    }
+}
