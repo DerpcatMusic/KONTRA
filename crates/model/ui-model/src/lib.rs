@@ -747,8 +747,27 @@ impl Display {
                 "LinearGain" => (20. * value.log10(), "dB"),
                 "Pan" if value == 0. => return "Center".into(),
                 "SemiTones" => (value, "st"),
-                // shortcut: v1 leaves these units numeric; calibrate with native readouts before extending.
-                "" | "Generic" | "UviFilter" | "Pan" | "Megabyte" | "Cents" | "MidiKey" => {
+                // The reference: "switches to semitones above 100 cents".
+                "Cents" if value.abs() > 100. => (value / 100., "st"),
+                "Cents" => (value, "ct"),
+                "Megabyte" => (value, "MB"),
+                // "display int value into MIDI value (ex C3)": middle C is C3.
+                "MidiKey" => {
+                    const NAMES: [&str; 12] = [
+                        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+                    ];
+                    let key = value.round() as i32;
+                    return format!(
+                        "{}{}",
+                        NAMES
+                            .get(key.rem_euclid(12) as usize)
+                            .copied()
+                            .unwrap_or_default(),
+                        key.div_euclid(12) - 2
+                    );
+                }
+                // shortcut: the filter's own formatting is not calibrated against native readouts.
+                "" | "Generic" | "UviFilter" | "Pan" => {
                     return number(value, integer);
                 }
                 suffix => (value, suffix),
@@ -1480,6 +1499,24 @@ mod tests {
             Display::default().format_value(1.6, true, Source::FalconLua),
             "2"
         );
+    }
+
+    #[test]
+    fn falcon_units_read_as_the_reference_lists_them() {
+        let at = |unit: &str, v: f64| {
+            Display {
+                ratio: 0.,
+                unit: unit.into(),
+            }
+            .format_value(v, false, Source::FalconLua)
+        };
+        assert_eq!(at("Seconds", 0.25), "250 ms");
+        assert_eq!(at("Hertz", 2500.), "2.5 kHz");
+        assert_eq!(at("Cents", 50.), "50 ct");
+        assert_eq!(at("Cents", 250.), "2.5 st");
+        assert_eq!(at("Megabyte", 12.), "12 MB");
+        assert_eq!(at("MidiKey", 60.), "C3");
+        assert_eq!(at("MidiKey", 21.), "A-1");
     }
 
     fn image(path: &str, frames: u32) -> Asset {
