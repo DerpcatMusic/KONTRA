@@ -883,6 +883,9 @@ pub struct ImageUse {
     pub role: Role,
     /// A fixed frame (KSP `PICTURE_STATE`); `None` lets the value choose.
     pub frame: Option<u32>,
+    /// Which of the widget's parts it draws: an XY pad cursor's index; 0
+    /// for anything else.
+    pub part: u32,
 }
 
 impl ImageUse {
@@ -891,6 +894,7 @@ impl ImageUse {
             asset,
             role,
             frame: None,
+            part: 0,
         }
     }
 }

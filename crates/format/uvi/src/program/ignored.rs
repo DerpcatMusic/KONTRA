@@ -68,7 +68,10 @@ const SCRIPT_STATE: &[&str] = &["ScriptProcessor", "ScriptData", "Properties"];
 /// a literal starting with its name without trailing digits.
 fn quoted(name: &str, indexed: bool) -> bool {
     let needle = match indexed {
-        true => format!("\"{}", name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '_')),
+        true => format!(
+            "\"{}",
+            name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '_')
+        ),
         false => format!("\"{name}\""),
     };
     SOURCES.iter().any(|s| s.contains(&needle))
@@ -80,9 +83,14 @@ pub(super) fn report(program: Node, notes: &mut Notes) {
         let tag = node.tag_name().name();
         // A container's children are checked on their own, and a quoted
         // container's children are read as a list.
-        let listed = node.parent().is_some_and(|p| quoted(p.tag_name().name(), false));
+        let listed = node
+            .parent()
+            .is_some_and(|p| quoted(p.tag_name().name(), false));
         if !node.children().any(|c| c.is_element()) && !listed && !quoted(tag, false) {
-            notes.ignored(&format!("element {tag}"), node.attribute("Name").unwrap_or(""));
+            notes.ignored(
+                &format!("element {tag}"),
+                node.attribute("Name").unwrap_or(""),
+            );
         }
         for a in node.attributes() {
             let (name, value) = (a.name(), a.value().trim());
@@ -115,7 +123,10 @@ mod tests {
             }
         }
         let mut n = 0;
-        files(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/program"), &mut n);
+        files(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/program"),
+            &mut n,
+        );
         // tests.rs and this file are not read for names.
         assert_eq!(n, super::SOURCES.len() - 1 + 2);
     }

@@ -698,12 +698,18 @@ impl<L: Library> Translator<'_, '_, L> {
                 .and_then(|s| s.strip_prefix("@MIDI CC "))
                 .and_then(|n| n.trim().parse::<u8>().ok());
             let name = c.attribute("Destination").unwrap_or_default();
-            let saved = processor.attribute(name).and_then(|v| v.parse::<f32>().ok());
+            let saved = processor
+                .attribute(name)
+                .and_then(|v| v.parse::<f32>().ok());
             let ratio = num(c, "Ratio", 0.0).ok().map(|r| r as f32);
             let (Some(cc), Some(saved), Some(ratio)) = (cc, saved, ratio) else {
                 continue;
             };
-            if flag(c, "Bypass") || flag(c, "Inverted") || ratio == 0.0 || c.attribute("Mapper").is_some_and(|m| !m.is_empty()) {
+            if flag(c, "Bypass")
+                || flag(c, "Inverted")
+                || ratio == 0.0
+                || c.attribute("Mapper").is_some_and(|m| !m.is_empty())
+            {
                 continue;
             }
             self.out.knob_mods.push(ir::KnobMod {

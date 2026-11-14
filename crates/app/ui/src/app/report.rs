@@ -25,7 +25,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         if entry.ends_with(", use it?") {
             let b = button(
                 ui,
-                &format!("report-relink-{n}"),
+                format!("report-relink-{n}"),
                 "Use the found folder",
                 false,
             );

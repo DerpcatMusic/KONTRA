@@ -17,6 +17,7 @@ mod shape;
 mod stock;
 pub mod theme;
 mod wave;
+pub mod xy;
 
 use plan::caption;
 #[cfg(test)]
@@ -51,6 +52,7 @@ pub fn takes_input(w: &model::Widget) -> bool {
                 | Kind::Switch
                 | Kind::Menu { .. }
                 | Kind::Table { .. }
+                | Kind::Xy { .. }
                 | Kind::TextEdit
         )
 }
@@ -171,7 +173,9 @@ fn drawn_page(
                 width: f64::from(img.width),
                 height: f64::from(img.height),
             });
-            layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
+            layers.push(
+                image(&img, size.width * scale, size.height * scale).at(0., (y * scale).round()),
+            );
         }
     }
     // A scrolling region's content, by region; the page is `None`.
@@ -221,6 +225,25 @@ fn drawn_page(
                 p.size,
             ))
         });
+        // A pad's cursor pictures, by cursor: inactive and active frames.
+        let cursors: Vec<Option<(xy::Art, (f64, f64))>> = match wd.kind {
+            Kind::Xy { cursors, .. } if !bare => (0..cursors)
+                .map(|i| {
+                    let u = (wd.images.iter())
+                        .find(|u| u.role == model::Role::Handle && u.part == i)?;
+                    let (path, meta) = image_asset(tree, u.asset)?;
+                    let size = meta.size?;
+                    let lit = usize::from(meta.frames > 1);
+                    let off = pictures.frame(u.asset, path, meta, 0, device)?;
+                    let on = pictures.frame(u.asset, path, meta, lit, device)?;
+                    Some(((off, on), (size.width, size.height)))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let field = matches!(wd.kind, Kind::Xy { .. })
+            && item.picture.is_none()
+            && (bare || !wd.hide.background);
         let look = item.look;
         let stock_art = look
             .as_ref()
@@ -355,7 +378,16 @@ fn drawn_page(
                     .as_ref()
                     .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
             ),
-            wd.text_y,
+            (
+                wd.text_y,
+                wd.active_index,
+                (cursors.iter())
+                    .map(|c| {
+                        c.as_ref()
+                            .map(|((a, b), _)| (Arc::as_ptr(a) as usize, Arc::as_ptr(b) as usize))
+                    })
+                    .collect::<Vec<_>>(),
+            ),
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             (wd.opacity.to_bits(), wd.rotation.to_bits()),
         );
@@ -443,6 +475,10 @@ fn drawn_page(
                         .at(0., 0.),
                     );
                 }
+            }
+            if matches!(wd.kind, Kind::Xy { .. }) {
+                let art = |i: u32| cursors.get(i as usize).cloned().flatten();
+                parts.push(xy::draw(wd, (w / scale, h / scale, scale), field, &art).at(0., 0.));
             }
             if let Some(wave) =
                 (wd.waveform.as_ref()).and_then(|v| wave::draw(v, &wd.colors, (w, h, scale)))

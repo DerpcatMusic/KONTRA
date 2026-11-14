@@ -64,7 +64,6 @@ impl Engine {
             | Action::SetUiWfProperty
             | Action::AttachZone
             | Action::FsNavigate
-            | Action::SetControlParStrArr
             | Action::WillNeverTerminate
             | Action::HideInstIcon
             | Action::SetMapEditorEventColor

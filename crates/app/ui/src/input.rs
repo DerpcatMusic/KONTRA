@@ -46,6 +46,9 @@ pub struct Gesture {
     entry: Option<(usize, String, bool)>,
     /// The value edit whose arrow is held, its step, and when it steps next.
     arrow: Option<(usize, f64, f64)>,
+    /// The XY pad being dragged, its cursor, and where that cursor's
+    /// corner was at the press (points from the pad's corner).
+    xy: Option<(usize, u32, (f64, f64))>,
 }
 
 /// A held arrow steps again after this, then every [`REPEAT_STEP`]
@@ -178,6 +181,10 @@ pub fn read(
             if r.held {
                 edits.extend(cells(ui, &id, r.drag_delta, w, &edit));
             }
+            continue;
+        }
+        if matches!(w.kind, Kind::Xy { .. }) {
+            edits.extend(pad(ui, &id, &r, (tree, n), g, &edit));
             continue;
         }
         let now = w.number();
@@ -352,6 +359,96 @@ fn cells(
             let v = height(from.y + (pos.y - from.y) * k);
             (w.cell(c) != Some(v)).then(|| edit(Set::Cell(c, v)))
         })
+        .collect()
+}
+
+/// An XY pad's cursor moved by the pointer, as its `MOUSE_MODE` says
+/// (KSP manual, Control Parameters; 0 when unset, Kontakt 8 oracle):
+/// 0 drags the active cursor from a press on it, 1 from a press anywhere,
+/// both by the pointer's travel; 2 moves the cursor pressed (else the
+/// active one) to the pointer and keeps it there.
+fn pad(
+    ui: &Ui,
+    id: &str,
+    r: &mui::input::Response,
+    (tree, n): (&Interface, model::WidgetRef),
+    g: &mut Gesture,
+    edit: &dyn Fn(Set) -> Edit,
+) -> Vec<Edit> {
+    use kontra_ui_view::xy;
+    let Some(w) = tree.widgets.get(n.0) else {
+        return Vec::new();
+    };
+    let Kind::Xy {
+        cursors,
+        sensitivity,
+        mouse_mode,
+    } = w.kind
+    else {
+        return Vec::new();
+    };
+    let size = ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame.size);
+    let (Some(pos), Some(size)) = (ui.local(id), size) else {
+        return Vec::new();
+    };
+    let points = (w.rect.width, w.rect.height);
+    if points.0 <= 0. || size.width <= 0. {
+        return Vec::new();
+    }
+    // View units per point.
+    let k = size.width / points.0;
+    let at = (pos.x / k, pos.y / k);
+    let art = |i| xy::art_size(tree, w, i);
+    let rect = |i| xy::rect(w, i, points, art(i));
+    let inside = |i| {
+        rect(i).is_some_and(|[x, y, cw, ch]| {
+            (x..x + cw).contains(&at.0) && (y..y + ch).contains(&at.1)
+        })
+    };
+    let mode = mouse_mode.unwrap_or(0);
+    let active = xy::active(w).min(cursors.saturating_sub(1));
+    if r.pressed {
+        let cursor = match mode {
+            0 => inside(active).then_some(active),
+            1 => Some(active),
+            _ => Some((0..cursors).rev().find(|&i| inside(i)).unwrap_or(active)),
+        };
+        g.xy = cursor.and_then(|c| Some((n.0, c, rect(c).map(|[x, y, ..]| (x, y))?)));
+    }
+    let Some((_, c, start)) = g.xy.filter(|(p, ..)| *p == n.0) else {
+        return Vec::new();
+    };
+    if r.released || !r.held {
+        g.xy = None;
+        return Vec::new();
+    }
+    let [_, _, cw, ch] = rect(c).unwrap_or([0., 0., xy::CURSOR, xy::CURSOR]);
+    let corner = if mode >= 2 {
+        // The cursor's centre on the pointer: a stock square's is 6 in.
+        let half = |s: f64| {
+            if art(c).is_some() {
+                s / 2.
+            } else {
+                (s - 1.) / 2.
+            }
+        };
+        (at.0 - half(cw), at.1 - half(ch))
+    } else {
+        // ponytail: MOUSE_BEHAVIOUR_X/Y scale the travel as 1000 / value
+        // (1000, the default, is 1:1); the direction of a larger value is
+        // unprobed.
+        let scale = |s: Option<u32>| 1000. / f64::from(s.filter(|&s| s > 0).unwrap_or(1000));
+        let [sx, sy] = sensitivity.map(scale);
+        (
+            start.0 + r.drag_total.x / k * sx,
+            start.1 + r.drag_total.y / k * sy,
+        )
+    };
+    let (x, y) = xy::value(corner, points, art(c));
+    [(2 * c, x), (2 * c + 1, y)]
+        .into_iter()
+        .filter(|&(cell, v)| w.cell(cell).is_some_and(|now| (now - v).abs() > 1e-9))
+        .map(|(cell, v)| edit(Set::Cell(cell, v)))
         .collect()
 }
 
