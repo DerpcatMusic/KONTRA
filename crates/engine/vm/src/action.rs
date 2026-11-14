@@ -18,6 +18,21 @@ pub mod event {
     /// Every group; so does any group past the last.
     pub const ALL_GROUPS: i32 = -1;
 
+    /// MIDI object: the event the position marker is on (`$CURRENT_EVENT`).
+    pub const CURRENT: i32 = -2;
+    /// MIDI object: flag; the low bits are a track (`by_track`).
+    pub const BY_TRACK: i32 = 0x4000_0000;
+    /// MIDI object event parameters. The channel is measured in Kontakt 8.13;
+    /// the others are v2's, kept in one run (probes/ksp/mf_object.kspp).
+    pub const MIDI_CHANNEL: i32 = 11;
+    pub const MIDI_COMMAND: i32 = 17;
+    pub const MIDI_BYTE_1: i32 = 18;
+    pub const MIDI_BYTE_2: i32 = 19;
+    pub const POS: i32 = 20;
+    pub const NOTE_LENGTH: i32 = 21;
+    pub const ID: i32 = 22;
+    pub const TRACK_NR: i32 = 23;
+
     /// `0..=3` are free for the script.
     pub const CUSTOM_LAST: i32 = 3;
     pub const VOLUME: i32 = 4;

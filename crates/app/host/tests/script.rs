@@ -4342,3 +4342,75 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     assert!((level(&mut e, &[off(60), on(60)])).abs() < 1e-4);
     assert!((level(&mut e, &[on(72)]) - 1.0).abs() < 1e-3);
 }
+
+/// KSP manual (MIDI object): `mf_insert_file` in `on init` reads at once, a
+/// note off becomes the note's length, and the position marker walks the
+/// events in time order across tracks.
+#[test]
+fn a_midi_file_loads_in_init_and_the_marker_walks_its_events() {
+    use kontra_engine::midi_file::{Area, Event, Smf, write};
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let note = |pos, key, length| Event {
+        track: 0,
+        pos,
+        command: 0x90,
+        byte1: key,
+        byte2: 100,
+        length,
+        ..Event::default()
+    };
+    let cc = Event { track: 1, pos: 10, command: 0xB0, byte1: 7, byte2: 90, ..Event::default() };
+    let smf = Smf { events: vec![note(0, 60, 240), note(480, 62, 120), cc], division: 480, tracks: 2, area: Area::default() };
+    std::fs::write(dir.join("t.mid"), write(&smf).unwrap()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = format!(
+        "on init
+            declare $a
+            declare $b
+            declare $c
+            $a := mf_insert_file(\"{}/t.mid\", 0, 0, 0)
+            mf_get_first(-1)
+            $b := mf_get_id()
+            mf_get_next(-1)
+            $c := mf_get_pos()
+            message(mf_get_num_tracks() & \" \" & $b & \" \" & $c & \" \" & mf_get_length() & \" \" & mf_get_byte_one() & \" \" & mf_get_last_filename())
+        end on",
+        dir.display()
+    );
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine_with_files(&store, zones, &source);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "2 1 10 0 7 t.mid");
+    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+}
+
+/// KSP manual: events are inserted into a buffer of inactive ones (a full
+/// buffer inserts nothing), inserting lowers the buffer size and removing
+/// raises it.
+#[test]
+fn the_midi_object_inserts_into_its_buffer() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $a
+            declare $b
+            declare $c
+            declare $d
+            $a := mf_insert_event(0, 5, $MIDI_COMMAND_CC, 7, 100)
+            mf_set_buffer_size(2)
+            $a := mf_insert_event(0, 5, $MIDI_COMMAND_CC, 7, 100)
+            $b := mf_insert_event(0, 6, $MIDI_COMMAND_CC, 7, 99)
+            $c := mf_insert_event(0, 7, $MIDI_COMMAND_CC, 7, 98)
+            mf_set_event_par($b, $EVENT_PAR_0, 42)
+            mf_remove_event($a)
+            $d := mf_get_buffer_size()
+            message($a & \" \" & $b & \" \" & $c & \" \" & $d & \" \" & mf_get_event_par($b, $EVENT_PAR_0) & \" \" & mf_get_event_par($ALL_EVENTS, $EVENT_PAR_POS) & \" \" & mf_get_num_tracks())
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "1 2 -1 1 42 6 1");
+    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+}

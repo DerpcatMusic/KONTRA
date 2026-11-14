@@ -19,6 +19,7 @@ mod impulse_knobs;
 mod inspect;
 mod knobs;
 mod midi;
+mod midi_object;
 mod modulators;
 mod par_display;
 mod params;
@@ -63,7 +64,7 @@ pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{
-    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, zone_name,
+    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, zone_name,
 };
 pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
@@ -240,6 +241,8 @@ pub struct Engine {
     /// While `on init` runs at load, the cells `read_persistent_var`
     /// reloaded, by slot (texts flagged): the end-of-init restore skips them.
     reloaded: Vec<(u8, std::ops::Range<u32>, bool)>,
+    /// The MIDI object (`mf_*`).
+    midi: midi_object::Object,
     /// Array files scripts asked to load or save, for the control side.
     files: Vec<kontra_plan::files::FileRequest>,
     /// The editor's answers to picks (`PickFile`): slot, async id, and the
@@ -440,6 +443,7 @@ impl Engine {
             recalled: Box::new([]),
             building: true,
             reloaded: Vec::new(),
+            midi: midi_object::Object::default(),
             files: Vec::with_capacity(script_files::FILES),
             picked: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),

@@ -202,6 +202,7 @@ impl Rack {
                         ints: Vec::new(),
                         texts: Vec::new(),
                         written: None,
+                        midi: None,
                     },
                     _ => answer(self.saves.as_deref(), request),
                 }
@@ -213,6 +214,7 @@ impl Rack {
                 ints: Vec::new(),
                 texts: Vec::new(),
                 written: request.save.then_some(false),
+                midi: None,
             },
         };
         self.send(Command::File {

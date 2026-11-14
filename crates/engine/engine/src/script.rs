@@ -345,6 +345,9 @@ impl HostApi for Engine {
         if let Some(value) = self.runtime_call(&mut call) {
             return value;
         }
+        if let Some(value) = self.midi_call(&mut call) {
+            return value;
+        }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         if let Some(value) = self.transport_value(call.action, int(0)) {
             return value;
@@ -801,6 +804,7 @@ impl HostApi for Engine {
                     path: Text::EMPTY,
                     name: ext,
                     save: int(0) == 1,
+                    midi: None,
                 };
                 HostValue::Int(self.request_file(request))
             }
