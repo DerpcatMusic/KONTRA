@@ -292,11 +292,10 @@ fn stack(bld: &mut Builder<'_>, n: &Node, axis: Axis, room: Size, env: Env) -> (
     } else {
         thick
     };
-    let length = if shares > 0 {
-        axis.along(room).max(fixed)
-    } else {
-        fixed
-    };
+    // One that shares out what is left takes what it is given, as a
+    // SwiftUI stack with a spacer does: Conflux's module header (toggle,
+    // spacer, title, spacer) spans its module, its toggle at the left.
+    let length = if shares > 0 { 0. } else { fixed };
     (lengths, axis.size(length, thick))
 }
 
@@ -489,10 +488,15 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
             place_layer(n, k - 1, r, inner_env, bld);
             return;
         }
+        // The other layer is offered the view's size and keeps its own,
+        // centred, as in SwiftUI (Conflux's fixed-size heading images sat
+        // stretched over their whole selector).
         "background" | "overlay" => {
             let other = |bld: &mut Builder<'_>| {
                 if let Some(Prop::Node(b)) = args.first() {
-                    place(b, b.mods.len(), r, env, bld);
+                    let own = measure(bld, b, b.mods.len(), (r.width, r.height), env);
+                    let at = aligned(r, or_room(own, r), (0.5, 0.5));
+                    place(b, b.mods.len(), at, env, bld);
                 }
             };
             if m == "background" {
