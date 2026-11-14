@@ -38,9 +38,11 @@ Event = {
 	PolyAftertouch = 160,
 }
 
--- Whether the running callback posted its event (`postEvent`): UVI keeps
--- a bend or pressure a script's handler does not post.
-local posted = false
+-- The controller-type event a handler is hearing, and what it posted of
+-- it: UVI keeps an event its handler does not post from the instrument,
+-- and a posted one reaches it as posted (changed fields and all).
+local hearing = nil
+local posted = nil
 
 -- Anything a script asks of an object this host does not model answers
 -- nothing instead of failing the script.
@@ -905,8 +907,47 @@ function releaseVoice(id)
 	host_call("NoteOff", id)
 end
 
+-- A controller-type event's value, sent to the instrument.
+local function send(e)
+	if e.type == Event.ControlChange then
+		host_call("SetController", e.controller, e.value)
+	elseif e.type == Event.PitchBend then
+		host_call("SetController", 128, math.floor(e.bend * 8192 + 0.5))
+	elseif e.type == Event.AfterTouch then
+		host_call("SetController", 129, e.value)
+	elseif e.type == Event.PolyAfterTouch then
+		host_call("SetPolyAt", e.note, e.value)
+	end
+end
+
+-- Runs `handler` on the controller-type event `e` as it arrived: kept from
+-- the instrument unless posted, replaced by the posted one if it changed.
+local function hear(handler, e)
+	if handler == nil then return end
+	local arrived = table.copy(e)
+	hearing, posted = e, nil
+	handler(e)
+	local out = posted
+	hearing, posted = nil, nil
+	if out == nil then
+		host_call("IgnoreController")
+		return
+	end
+	for k, v in pairs(out) do
+		if arrived[k] ~= v then
+			host_call("IgnoreController")
+			return send(out)
+		end
+	end
+end
+
 function postEvent(e)
-	posted = true
+	if e == hearing then
+		posted = table.copy(e)
+		return
+	end
+	-- ponytail: a controller's `delta` is not honoured; it goes at once.
+	send(e)
 	if e.type == Event.NoteOn then
 		-- The incoming note was held back; this plays it, ending with it.
 		return host_call("PlayNote", e.note, e.velocity, 0, -1)
@@ -1095,7 +1136,7 @@ __entries = {
 	-- Polyphonic aftertouch on key `PolyAtNum`, or a note's own pressure.
 	[6] = function()
 		local note = host_call("PolyAtNum")
-		onPolyAfterTouch({
+		hear(onPolyAfterTouch, {
 			type = Event.PolyAfterTouch,
 			note = note,
 			value = host_call("PolyAt", note),
@@ -1109,28 +1150,14 @@ __entries = {
 	end,
 	[3] = function()
 		local cc = host_call("CcNum")
-		-- Pitch bend and channel pressure come as controllers 128 and 129;
-		-- one the handler does not post is kept from the instrument.
-		if cc == 128 or cc == 129 then
-			local handler = cc == 128 and onPitchBend or onAfterTouch
-			if handler == nil then return end
-			local e = cc == 128
-				and { type = Event.PitchBend, bend = host_call("Cc", 128) / 8192, channel = 1, input = 1 }
-				or { type = Event.AfterTouch, value = host_call("Cc", 129), channel = 1, input = 1 }
-			posted = false
-			handler(e)
-			if not posted then
-				host_call("IgnoreController")
-			end
-			return
+		-- Pitch bend and channel pressure come as controllers 128 and 129.
+		if cc == 128 then
+			hear(onPitchBend, { type = Event.PitchBend, bend = host_call("Cc", 128) / 8192, channel = 1, input = 1 })
+		elseif cc == 129 then
+			hear(onAfterTouch, { type = Event.AfterTouch, value = host_call("Cc", 129), channel = 1, input = 1 })
+		else
+			hear(onController, { type = Event.ControlChange, controller = cc, value = host_call("Cc", cc), channel = 1, input = 1 })
 		end
-		if onController == nil then return end
-		onController({
-			type = Event.ControlChange,
-			controller = host_call("CcNum"),
-			value = host_call("Cc", host_call("CcNum")),
-			channel = 1,
-		})
 	end,
 }
 
