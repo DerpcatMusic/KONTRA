@@ -1,0 +1,72 @@
+# The MIDI object in Kontakt 8.13 (run: ksp_probe.py <nki> this-file). Every name is in the KSP manual:
+# one unknown name fails the whole script.
+# Measured 2026-11-14 (ANALOG STRINGS): an insert with no buffer answers 0; the first id is 2 and ids
+# count up (3, ...); an inserted event's length reads -1; the buffer counts down on insert and up on
+# remove; mf_get_id is 0 with no event selected (past the end); first/next/last/prev/next_at/prev_at
+# order by position; by_track and by_marks address groups; mf_set_export_area answers the first
+# invalid event's id (3 after byte 1 = 200); mf_reset zeroes buffer and tracks.
+# OPEN: mf_get_mark($a, $MARK_1) read 0 right after mf_set_mark($a, $MARK_1, 1), though by_marks($MARK_1)
+# then addressed $a. KONTRA answers 1 (the manual: "returns 1 if it is marked").
+S declare $a
+S declare $b
+S declare $c
+S declare $d
+R tracks_empty mf_get_num_tracks()
+R buf_empty mf_get_buffer_size()
+S $a := mf_insert_event(0, 100, $MIDI_COMMAND_NOTE_ON, 60, 100)
+R insert_without_buffer $a
+S mf_set_buffer_size(10)
+R buf_after_set mf_get_buffer_size()
+S $a := mf_insert_event(0, 100, $MIDI_COMMAND_NOTE_ON, 60, 100)
+R id_first $a
+R buf_after_insert mf_get_buffer_size()
+S $b := mf_insert_event(2, 50, $MIDI_COMMAND_CC, 7, 90)
+R id_second $b
+R tracks_after_two mf_get_num_tracks()
+R pos_a mf_get_event_par($a, $EVENT_PAR_POS)
+R track_b mf_get_event_par($b, $EVENT_PAR_TRACK_NR)
+R cmd_a mf_get_event_par($a, $EVENT_PAR_MIDI_COMMAND)
+R byte1_a mf_get_event_par($a, $EVENT_PAR_MIDI_BYTE_1)
+R byte2_a mf_get_event_par($a, $EVENT_PAR_MIDI_BYTE_2)
+R chan_a mf_get_event_par($a, $EVENT_PAR_MIDI_CHANNEL)
+R len_a mf_get_event_par($a, $EVENT_PAR_NOTE_LENGTH)
+R idpar_a mf_get_event_par($a, $EVENT_PAR_ID)
+S mf_set_event_par($a, $EVENT_PAR_NOTE_LENGTH, 480)
+R len_set mf_get_event_par($a, $EVENT_PAR_NOTE_LENGTH)
+S mf_set_event_par($a, $EVENT_PAR_0, 77)
+R custom0_set mf_get_event_par($a, $EVENT_PAR_0)
+S mf_get_first(-1)
+R first_id mf_get_id()
+R first_pos mf_get_pos()
+S mf_get_next(-1)
+R next_id mf_get_id()
+S mf_get_next(-1)
+R next_past_end_id mf_get_id()
+S mf_get_last(-1)
+R last_id mf_get_id()
+S mf_get_prev(-1)
+R prev_id mf_get_id()
+S mf_get_next_at(-1, 60)
+R next_at_60_id mf_get_id()
+S mf_get_prev_at(-1, 60)
+R prev_at_60_id mf_get_id()
+S mf_get_first(2)
+R first_track2_id mf_get_id()
+S mf_set_mark($a, $MARK_1, 1)
+R mark_a mf_get_mark($a, $MARK_1)
+R mark_b mf_get_mark($b, $MARK_1)
+S mf_set_event_par(by_marks($MARK_1), $EVENT_PAR_POS, 123)
+R by_marks_pos_a mf_get_event_par($a, $EVENT_PAR_POS)
+R by_marks_pos_b mf_get_event_par($b, $EVENT_PAR_POS)
+S mf_set_event_par(by_track(2), $EVENT_PAR_POS, 321)
+R by_track_pos_b mf_get_event_par($b, $EVENT_PAR_POS)
+S mf_remove_event($a)
+R buf_after_remove mf_get_buffer_size()
+S $c := mf_set_export_area("area", -1, -1, -1, -1)
+R export_valid $c
+S mf_set_event_par($b, $EVENT_PAR_MIDI_BYTE_1, 200)
+S $c := mf_set_export_area("area", -1, -1, -1, -1)
+R export_invalid_event $c
+S $d := mf_reset()
+R buf_after_reset mf_get_buffer_size()
+R tracks_after_reset mf_get_num_tracks()

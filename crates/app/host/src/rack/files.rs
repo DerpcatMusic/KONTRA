@@ -35,11 +35,15 @@ pub fn user_saves() -> Option<PathBuf> {
     Some(dirs::data_dir()?.join("kontra/arrays"))
 }
 
-/// Only `.nka` files: a script names nothing else to read or write.
+/// Only array (`.nka`) and MIDI (`.mid`, `.midi`) files: a script names
+/// nothing else to read or write.
 fn nka(path: &str) -> Option<&Path> {
     let path = Path::new(path);
     let ext = path.extension()?;
-    ext.eq_ignore_ascii_case("nka").then_some(path)
+    ["nka", "mid", "midi"]
+        .iter()
+        .any(|e| ext.eq_ignore_ascii_case(e))
+        .then_some(path)
 }
 
 /// Where a save of `path` goes under `saves`.
@@ -80,11 +84,15 @@ fn write(saves: Option<&Path>, reply: &FileReply) -> bool {
     let Some(at) = nka(r.path.as_str()).and_then(|p| saved(saves, p)) else {
         return false;
     };
-    let text = files::write(r.name.as_str(), r.kind, &reply.ints, &reply.texts);
+    let bytes = match (&reply.midi, r.midi) {
+        (Some(smf), Some(_)) => kontra_engine::midi_file::write(smf),
+        (_, Some(_)) => None,
+        _ => Some(files::write(r.name.as_str(), r.kind, &reply.ints, &reply.texts).into_bytes()),
+    };
     let made = at
         .parent()
         .is_some_and(|dir| std::fs::create_dir_all(dir).is_ok());
-    made && std::fs::write(at, text).is_ok()
+    made && bytes.is_some_and(|b| std::fs::write(at, b).is_ok())
 }
 
 impl Rack {
@@ -112,6 +120,28 @@ impl Rack {
             let Some(p) = live.filter(|p| p.script.generation == generation) else {
                 continue;
             };
+            // A detection reads the zone's own sample, not a named file.
+            if let Some(job) = request.detect {
+                let sample = (p.plan.as_ref())
+                    .and_then(|plan| plan.zone_facts.iter().find(|z| z.id == job.zone))
+                    .and_then(|z| z.source.clone());
+                let detected = sample.and_then(|s| kontra_engine::detect_sample(&s, job.what));
+                let reply = Box::new(FileReply {
+                    request,
+                    loaded: None,
+                    ints: Vec::new(),
+                    texts: Vec::new(),
+                    written: None,
+                    midi: None,
+                    detected,
+                });
+                self.send(Command::File {
+                    part,
+                    generation,
+                    reply,
+                });
+                continue;
+            }
             // No path: the player picks the file in the editor first.
             if request.path.as_str().is_empty() {
                 let names =
@@ -148,8 +178,17 @@ pub(super) fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
         ints: Vec::with_capacity(if request.save && !text { len } else { 0 }),
         texts: Vec::with_capacity(if request.save && text { len } else { 0 }),
         written: None,
+        midi: None,
+        detected: None,
     };
     if request.save {
+        return reply;
+    }
+    if request.midi.is_some() {
+        let smf =
+            read(saves, request.path.as_str()).and_then(|b| kontra_engine::midi_file::read(&b));
+        reply.loaded = smf.as_ref().map(|_| (Vec::new(), Vec::new()));
+        reply.midi = smf;
         return reply;
     }
     let mut ints = vec![0; if text { 0 } else { len }];
