@@ -61,6 +61,32 @@ fn an_analog_strings_snapshot_is_its_instrument_with_its_saved_values() {
     assert_ne!(saved(&snap), saved(&base));
 }
 
+const MORPHOLOGY: &str = "/data/main/Libraries/Kontakt/Morphology Evolved [Zero-G] rutracker.org";
+
+/// A snapshot keeps its groups' volumes: Morphology's script picks one of
+/// 30 wavetable groups and leaves its level to the snapshot (Fizzy plays
+/// group 921, which the instrument itself keeps silent).
+#[test]
+fn a_snapshot_plays_its_groups_at_the_volumes_it_saved() {
+    let root = Path::new(MORPHOLOGY);
+    if !root.exists() {
+        return;
+    }
+    let snapshots = root.join("Snapshots/Morphology Evolved");
+    let base = kontra_format_kontakt::load(&root.join("Morphology Evolved.nki")).unwrap();
+    let volumes = |i: &kontra_ir::Instrument| {
+        (i.groups.iter())
+            .map(|g| g.volume_db.max(-200.0).round() as i32)
+            .collect::<Vec<_>>()
+    };
+    let default = kontra_format_kontakt::load(&snapshots.join("Default.nksn")).unwrap();
+    assert_eq!(volumes(&default), volumes(&base));
+    let fizzy = kontra_format_kontakt::load(&snapshots.join("Wavetables/Fizzy.nksn")).unwrap();
+    let audible = |i: &kontra_ir::Instrument, g: usize| i.groups[g].volume_db > -20.0;
+    assert!(audible(&fizzy, 921) && !audible(&base, 921));
+    assert!(!audible(&fizzy, 903) && audible(&base, 903));
+}
+
 /// The members of one archive list in its own order, the same on every
 /// read: a hash index's order changes per map, so a listing of
 /// `ir_samples` (a response's sample index) changed between two loads.
