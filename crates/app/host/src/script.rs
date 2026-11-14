@@ -337,6 +337,12 @@ fn controls(script: &Script) -> Controls {
         .map(|c| c.variable)
         .collect();
     menus.sort_unstable();
+    let mut kinds = vec![0; script.variables.len()];
+    for c in &script.controls {
+        if let Some(k) = kinds.get_mut(c.variable as usize) {
+            *k = c.kind as u8;
+        }
+    }
     Controls {
         first: FIRST_UI_ID,
         by_cell,
@@ -352,6 +358,13 @@ fn controls(script: &Script) -> Controls {
             "$CONTROL_PAR_KEY_SHIFT",
             "$CONTROL_PAR_KEY_ALT",
             "$CONTROL_PAR_KEY_CONTROL",
+        ]
+        .map(|name| symbol(script, name)),
+        kinds,
+        shape_pars: [
+            "$CONTROL_PAR_TYPE",
+            "$CONTROL_PAR_WIDTH",
+            "$CONTROL_PAR_HEIGHT",
         ]
         .map(|name| symbol(script, name)),
     }
@@ -380,8 +393,8 @@ fn look(script: &Script) -> LookPars {
         pos_x: par("$CONTROL_PAR_POS_X"),
         pos_y: par("$CONTROL_PAR_POS_Y"),
         hide: par("$CONTROL_PAR_HIDE"),
-        grid_x: par("grid_x"),
-        grid_y: par("grid_y"),
+        grid_x: par("$CONTROL_PAR_GRID_X"),
+        grid_y: par("$CONTROL_PAR_GRID_Y"),
         steps_shown: par("table_steps_shown"),
         meter: par("level_meter"),
         meter_group: par("level_meter_group"),

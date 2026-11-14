@@ -14,8 +14,9 @@ A manual item is a command heading (`name()`), a callback (`on name`) or a
 
   tested   KONTRA does it and a probe/case/test names it
   done     KONTRA does it (the VM lowers it or the engine answers a probe)
-  partial  the name compiles but nothing acts on it (an opaque constant, an
-           action the engine does not answer, a parameter KONTRA does not carry)
+  partial  the name compiles but nothing acts on it (an opaque constant no UI
+           code names, an action the engine does not answer, a parameter KONTRA
+           does not carry)
   missing  the compiler does not know the name
 
 Re-run after a change; `--tsv` prints the rows for the board instead.
@@ -112,7 +113,7 @@ valued = {l.split("\t")[0].lstrip("$").upper() for l in tsv.splitlines() if l an
 vendor = {l.strip().lstrip("$%~@!").upper() for l in (ROOT / "crates/script/ksp/data/vendor_constants.txt").read_text().splitlines() if l.strip() and l[0] != "#"}
 text = subprocess.run(
     ["grep", "-rIl", "-E", "ksp|KSP", "--include=*.rs", "--include=*.ksp", "--include=*.lua", "--include=*.py",
-     "crates/script/ksp/tests", "crates/app/host/tests", "tools/ksp-conformance", "tools/ui-probe"],
+     "crates/script/ksp/tests", "crates/app/host/tests", "tools/ksp-conformance", "tools/ui-probe", "tools/ksp-ui"],
     cwd=ROOT, capture_output=True, text=True).stdout.split()
 test_text = "\n".join((ROOT / f).read_text(errors="ignore") for f in text if (ROOT / f).is_file()).lower()
 
@@ -122,6 +123,14 @@ CB = {"init": "init", "note": "note", "release": "release", "controller": "contr
       "async_complete": "asynccomplete", "rpn": "rpn", "nrpn": "nrpn",
       "note_controller": "notecontroller", "midi_in": "midiin"}
 
+# What the UI runtime acts on by name: a control parameter or UI constant the face, the
+# renderer or the script UI store reads is done, though the engine's bare probe cannot answer it.
+ui_text = "\n".join(f.read_text(errors="ignore") for d in
+                    ("crates/app/face/src", "crates/app/ui/src", "crates/engine/script-ui/src", "crates/app/host/src")
+                    for f in sorted((ROOT / d).rglob("*.rs")))
+ui_actions = set(re.findall(r"Action::(\w+)", ui_text))
+ui_names = set(re.findall(r'"\$((?:CONTROL_PAR|UI_WF_PROP|UI_WAVEFORM|NI_MOUSE)[A-Z0-9_]*)"', ui_text))
+
 rows = []
 for (kind, name), sec in items.items():
     key = name.lower()
@@ -130,6 +139,9 @@ for (kind, name), sec in items.items():
         seen = used.get(key)
         st = seen[2] if seen else status.get(("fn", key))
         got = {"vm": "done", "answered": "done", "partial": "partial", "missing": "partial"}.get(st, "missing")
+        # A UI command the script UI store carries out is done though the engine does not answer it.
+        if got == "partial" and "".join(w.capitalize() for w in key.split("_")) in ui_actions:
+            got = "done"
     elif kind == "cb":
         got = "done" if ("cb", CB.get(name, "")) in {(k, v.lower()) for (k, v) in status if k == "cb"} or name in CB else "missing"
         if name not in CB:
@@ -143,7 +155,7 @@ for (kind, name), sec in items.items():
         bare = name.lstrip("$%~@!").upper()
         bare_lc = name.lstrip("$%~@!").lower()
         known_fn = any(("fn", p + bare_lc) in status for p in ("", "$", "%"))
-        got = "done" if known_fn \
+        got = "done" if known_fn or bare in ui_names \
             else "done" if bare in valued else "partial" if bare in vendor else "missing"
         if used.get(key, (0, 0, ""))[2] == "yes":
             got = "done"

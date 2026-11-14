@@ -1,0 +1,235 @@
+{ KSP UI probe suite, page data: written by tools/ksp-ui/gen.py }
+on init
+  make_perfview
+  set_ui_width_px(900)
+  set_ui_height_px(380)
+  declare !log[1024]
+  declare $n := 0
+  pgs_create_key(KLOG, 1)
+  declare ui_menu $dmenu
+  make_persistent($dmenu)
+  declare ui_table %tuni[16](3, 4, 100)
+  make_persistent(%tuni)
+  declare ui_table %tbip[12](2, 6, -100)
+  make_persistent(%tbip)
+  declare ui_xy ?pad[4]
+  make_persistent(?pad)
+  declare ui_level_meter $lm
+  declare ui_waveform $wf(6, 3)
+  declare ui_wavetable $wt
+  declare ui_file_selector $fsel
+  make_persistent($fsel)
+  declare ui_mouse_area $area
+  declare ui_label $under(1, 1)
+  declare ui_slider $keymods(0, 1000)
+  make_persistent($keymods)
+  set_control_par(get_ui_id($dmenu), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($dmenu), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id($dmenu), $CONTROL_PAR_WIDTH, 120)
+  set_control_par(get_ui_id($dmenu), $CONTROL_PAR_HEIGHT, 20)
+  add_menu_item($dmenu, "entry 0", 0)
+  add_menu_item($dmenu, "entry 1", 10)
+  add_menu_item($dmenu, "entry 2", 20)
+  add_menu_item($dmenu, "entry 3", 30)
+  add_menu_item($dmenu, "entry 4", 40)
+  add_menu_item($dmenu, "entry 5", 50)
+  set_menu_item_str(get_ui_id($dmenu), 1, "renamed")
+  set_menu_item_value(get_ui_id($dmenu), 2, 99)
+  set_menu_item_visibility(get_ui_id($dmenu), 3, 0)
+  set_control_par(get_ui_id($dmenu), $CONTROL_PAR_SELECTED_ITEM_IDX, 4)
+  !log[$n] := "init,menu.items," & get_control_par(get_ui_id($dmenu), $CONTROL_PAR_NUM_ITEMS)
+  inc($n)
+  !log[$n] := "init,menu.value2," & get_menu_item_value(get_ui_id($dmenu), 2)
+  inc($n)
+  !log[$n] := "init,menu.vis3," & get_menu_item_visibility(get_ui_id($dmenu), 3)
+  inc($n)
+  !log[$n] := "init,menu.sel," & get_control_par(get_ui_id($dmenu), $CONTROL_PAR_SELECTED_ITEM_IDX)
+  inc($n)
+  !log[$n] := "init,menu.value," & $dmenu
+  inc($n)
+  set_control_par(get_ui_id(%tuni), $CONTROL_PAR_POS_X, 150)
+  set_control_par(get_ui_id(%tuni), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id(%tuni), $CONTROL_PAR_WIDTH, 200)
+  set_control_par(get_ui_id(%tuni), $CONTROL_PAR_HEIGHT, 80)
+  set_control_par(get_ui_id(%tbip), $CONTROL_PAR_POS_X, 370)
+  set_control_par(get_ui_id(%tbip), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id(%tbip), $CONTROL_PAR_WIDTH, 200)
+  set_control_par(get_ui_id(%tbip), $CONTROL_PAR_HEIGHT, 80)
+  set_table_steps_shown(%tuni, 8)
+  %tuni[0] := 0
+  %tuni[1] := 6
+  %tuni[2] := 12
+  %tuni[3] := 18
+  %tuni[4] := 24
+  %tuni[5] := 30
+  %tuni[6] := 36
+  %tuni[7] := 42
+  %tuni[8] := 48
+  %tuni[9] := 54
+  %tuni[10] := 60
+  %tuni[11] := 66
+  %tuni[12] := 72
+  %tuni[13] := 78
+  %tuni[14] := 84
+  %tuni[15] := 90
+  %tbip[0] := -100
+  %tbip[1] := -83
+  %tbip[2] := -66
+  %tbip[3] := -49
+  %tbip[4] := -32
+  %tbip[5] := -15
+  %tbip[6] := 2
+  %tbip[7] := 19
+  %tbip[8] := 36
+  %tbip[9] := 53
+  %tbip[10] := 70
+  %tbip[11] := 87
+  set_control_par(get_ui_id(%tuni), $CONTROL_PAR_BAR_COLOR, 16746496)
+  set_control_par(get_ui_id(%tbip), $CONTROL_PAR_ZERO_LINE_COLOR, 65535)
+  set_control_par(get_ui_id(?pad), $CONTROL_PAR_POS_X, 590)
+  set_control_par(get_ui_id(?pad), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id(?pad), $CONTROL_PAR_WIDTH, 150)
+  set_control_par(get_ui_id(?pad), $CONTROL_PAR_HEIGHT, 150)
+  ?pad[0] := 0.25
+  ?pad[1] := 0.75
+  set_control_par_str_arr(get_ui_id(?pad), $CONTROL_PAR_CURSOR_PICTURE, "kp_cursor", 0)
+  set_control_par(get_ui_id(?pad), $CONTROL_PAR_MOUSE_MODE, 0)
+  set_control_par(get_ui_id($lm), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($lm), $CONTROL_PAR_POS_Y, 120)
+  set_control_par(get_ui_id($lm), $CONTROL_PAR_WIDTH, 20)
+  set_control_par(get_ui_id($lm), $CONTROL_PAR_HEIGHT, 120)
+  set_control_par(get_ui_id($lm), $CONTROL_PAR_VERTICAL, 1)
+  set_control_par(get_ui_id($lm), $CONTROL_PAR_OFF_COLOR, 2105376)
+  set_control_par(get_ui_id($lm), $CONTROL_PAR_ON_COLOR, 49152)
+  set_control_par(get_ui_id($lm), $CONTROL_PAR_OVERLOAD_COLOR, 16711680)
+  attach_level_meter(get_ui_id($lm), -1, -1, 0, -1)
+  set_control_par(get_ui_id($wf), $CONTROL_PAR_POS_X, 50)
+  set_control_par(get_ui_id($wf), $CONTROL_PAR_POS_Y, 120)
+  set_control_par(get_ui_id($wf), $CONTROL_PAR_WIDTH, 300)
+  set_control_par(get_ui_id($wf), $CONTROL_PAR_HEIGHT, 100)
+  set_ui_wf_property($wf, $UI_WF_PROP_PLAY_CURSOR, 0, 2000)
+  set_control_par(get_ui_id($wf), $CONTROL_PAR_WAVE_COLOR, 8965375)
+  set_control_par(get_ui_id($wf), $CONTROL_PAR_BG_COLOR, 1054752)
+  set_control_par(get_ui_id($wt), $CONTROL_PAR_POS_X, 370)
+  set_control_par(get_ui_id($wt), $CONTROL_PAR_POS_Y, 120)
+  set_control_par(get_ui_id($wt), $CONTROL_PAR_WIDTH, 200)
+  set_control_par(get_ui_id($wt), $CONTROL_PAR_HEIGHT, 100)
+  set_control_par(get_ui_id($wt), $CONTROL_PAR_WT_VIS_MODE, 1)
+  set_control_par(get_ui_id($fsel), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($fsel), $CONTROL_PAR_POS_Y, 260)
+  set_control_par(get_ui_id($fsel), $CONTROL_PAR_WIDTH, 300)
+  set_control_par(get_ui_id($fsel), $CONTROL_PAR_HEIGHT, 110)
+  set_control_par_str(get_ui_id($fsel), $CONTROL_PAR_BASEPATH, "Z:/data/dev/workspace/scratch/ksp-ui-trace")
+  set_control_par(get_ui_id($fsel), $CONTROL_PAR_FILE_TYPE, 1)
+  set_control_par(get_ui_id($area), $CONTROL_PAR_POS_X, 330)
+  set_control_par(get_ui_id($area), $CONTROL_PAR_POS_Y, 260)
+  set_control_par(get_ui_id($area), $CONTROL_PAR_WIDTH, 200)
+  set_control_par(get_ui_id($area), $CONTROL_PAR_HEIGHT, 100)
+  set_control_par(get_ui_id($area), $CONTROL_PAR_DND_ACCEPT_AUDIO, 1)
+  set_control_par(get_ui_id($area), $CONTROL_PAR_DND_ACCEPT_MIDI, 1)
+  set_control_par(get_ui_id($area), $CONTROL_PAR_DND_ACCEPT_ARRAY, 1)
+  set_control_par(get_ui_id($area), $CONTROL_PAR_RECEIVE_DRAG_EVENTS, 1)
+  set_control_par(get_ui_id($under), $CONTROL_PAR_POS_X, 330)
+  set_control_par(get_ui_id($under), $CONTROL_PAR_POS_Y, 260)
+  set_control_par(get_ui_id($under), $CONTROL_PAR_WIDTH, 200)
+  set_control_par(get_ui_id($under), $CONTROL_PAR_HEIGHT, 100)
+  set_text($under, "mouse area")
+  set_control_par(get_ui_id($keymods), $CONTROL_PAR_POS_X, 560)
+  set_control_par(get_ui_id($keymods), $CONTROL_PAR_POS_Y, 260)
+  set_control_par(get_ui_id($keymods), $CONTROL_PAR_WIDTH, 200)
+  set_control_par(get_ui_id($keymods), $CONTROL_PAR_HEIGHT, 20)
+  pgs_set_key_val(KLOG, 0, $n)
+end on
+
+function log_line
+  if ($n < 1023)
+    inc($n)
+  end if
+  pgs_set_key_val(KLOG, 0, $n)
+end function
+
+on ui_controls
+  !log[$n] := "ucs," & $NI_UI_ID
+  call log_line
+end on
+
+on persistence_changed
+  !log[$n] := "pc"
+  call log_line
+end on
+
+on pgs_changed
+  save_array_str(!log, "Z:/data/dev/workspace/scratch/ksp-ui-trace/data.nka")
+end on
+
+on ui_control ($dmenu)
+  !log[$n] := "uc,dmenu," & $dmenu & "," ...
+    & get_control_par(get_ui_id($dmenu), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($dmenu), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($dmenu), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control (%tuni)
+  !log[$n] := "uc,tuni," & %tuni[0] & "," ...
+    & get_control_par(get_ui_id(%tuni), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id(%tuni), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id(%tuni), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control (%tbip)
+  !log[$n] := "uc,tbip," & %tbip[0] & "," ...
+    & get_control_par(get_ui_id(%tbip), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id(%tbip), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id(%tbip), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control (?pad)
+  !log[$n] := "uc,pad," & ?pad[0] & "," & ?pad[1] & "," ...
+    & get_control_par(get_ui_id(?pad), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id(?pad), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id(?pad), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($wf)
+  !log[$n] := "uc,wf," & $wf & "," ...
+    & get_control_par(get_ui_id($wf), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($wf), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($wf), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($wt)
+  !log[$n] := "uc,wt," & $wt & "," ...
+    & get_control_par(get_ui_id($wt), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($wt), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($wt), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($fsel)
+  !log[$n] := "uc,fsel," & $fsel & "," ...
+    & get_control_par(get_ui_id($fsel), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($fsel), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($fsel), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($area)
+  !log[$n] := "uc,area," & $NI_MOUSE_EVENT_TYPE & "," & $NI_MOUSE_OVER_CONTROL & "," ...
+    & get_control_par(get_ui_id($area), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($area), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($area), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($keymods)
+  !log[$n] := "uc,keymods," & $keymods & "," ...
+    & get_control_par(get_ui_id($keymods), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($keymods), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($keymods), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on

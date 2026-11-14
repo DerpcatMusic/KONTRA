@@ -1,0 +1,24 @@
+drag 30 30 0 -40
+drag 30 30 0 -40 shift
+click 30 30 ctrl
+dclick 30 30
+click 290 19
+drag 240 19 40 0
+click 490 19
+click 710 19
+click 710 19
+click 50 109
+key Down
+key Return
+drag 520 109 0 -30
+drag 680 105 60 0
+click 40 205
+drag 40 205 20 5
+click 490 199
+click 710 199
+click 50 289
+click 270 289
+drag 270 289 20 0
+click 490 289
+type ab
+key Return

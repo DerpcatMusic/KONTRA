@@ -1,0 +1,9 @@
+click 60 209
+click 170 209
+click 280 209
+click 390 209
+drag 520 208 40 0
+drag 520 238 40 0 alt
+drag 520 268 40 0 ctrl
+click 680 70
+drag 40 40 0 -30
