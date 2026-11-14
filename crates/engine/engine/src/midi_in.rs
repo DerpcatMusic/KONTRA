@@ -25,7 +25,7 @@ impl Engine {
     /// `$MIDI_CHANNEL`).
     fn midi_bytes(event: &Event) -> Option<[u8; 4]> {
         let mut m = Self::port_bytes(event)?;
-        m[1] = event.port().unwrap_or(0).min(3) * 16 + m[1];
+        m[1] += event.port().unwrap_or(0).min(3) * 16;
         Some(m)
     }
 
