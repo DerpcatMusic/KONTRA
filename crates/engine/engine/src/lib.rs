@@ -12,14 +12,15 @@ mod admit;
 mod buses;
 mod callbacks;
 mod controls;
-
 mod detect;
+
 mod filters;
 mod fx_types;
 mod impulse_knobs;
 mod inspect;
 mod knobs;
 mod midi;
+mod midi_in;
 mod midi_object;
 mod modulators;
 mod par_display;
@@ -66,10 +67,11 @@ pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{
-    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, zone_name,
+    EnginePar, EnginePars, LoopPar, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, user_loops,
+    zone_name,
 };
-pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
+pub use kontra_script_ui::{ENTRY, FIRST_FONT};
 pub use kontra_time::SampleTime;
 pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
 pub use kontra_voice::{Ahdsr, Loop, Region, RenderMode};
@@ -85,7 +87,7 @@ pub use script::{Callbacks, CcLink, Controls, KnobModPlan, LookPars, ScriptPlan}
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
 pub use zone_commands::detect_sample;
-pub use zone_edits::{Unpurge, ZoneEdit};
+pub use zone_edits::{Edit, Unpurge, ZoneEdit};
 
 use buses::BusState;
 use group_masks::GroupMasks;
@@ -130,6 +132,10 @@ pub struct Stats {
     pub script_resumes: u64,
     /// Script loop turns run, a measure of the work a script did.
     pub script_turns: u64,
+    /// Controllers (and aftertouch) a script kept from the instrument, and
+    /// those it kept and set its own value for instead.
+    pub controllers_ignored: u64,
+    pub controllers_replaced: u64,
 }
 
 struct Slot {
@@ -232,6 +238,10 @@ pub struct Engine {
     cc_values: [u8; 130],
     /// Each key's last polyphonic aftertouch (`%POLY_AT`).
     poly_at: [u8; 128],
+    /// Time Machine Pro voice limits: standard, high quality.
+    voice_limits: [i32; 2],
+    /// What `set_midi` made in the running `on midi_in`: count and messages.
+    midi_made: (usize, [[u8; 4]; midi_in::MADE]),
     /// Where `$KSP_TIMER` counts from (`reset_ksp_timer`).
     timer_at: SampleTime,
     last_message: Text,
@@ -446,6 +456,8 @@ impl Engine {
             refresh_later: Vec::with_capacity(64),
             cc_values: [0; 130],
             poly_at: [0; 128],
+            voice_limits: kontra_vm::midi::VL_DEFAULT,
+            midi_made: (0, [[0; 4]; midi_in::MADE]),
             timer_at: SampleTime(0),
             last_message: Text::EMPTY,
             recall: Recall::Restart,
@@ -528,7 +540,7 @@ impl Engine {
             .count()
     }
 
-    /// The controller's current value (128 is aftertouch, 129 pitch bend).
+    /// The controller's current value (129 is channel pressure).
     #[must_use]
     pub fn controller(&self, cc: usize) -> Option<u8> {
         self.cc_values.get(cc).copied()
@@ -599,6 +611,14 @@ impl Engine {
             Work::Release(note) => return self.end_note(note),
             Work::ParentUp(note) => return self.parent_up(note),
             Work::PgsChanged => return self.run_pgs_changed(),
+            Work::Controller { controller, value } => {
+                return self.set_controller(i32::from(controller), i32::from(value));
+            }
+            Work::PolyAt {
+                channel,
+                key,
+                value,
+            } => return self.set_poly_at(channel, key, value),
             Work::Listen {
                 slot,
                 signal,
@@ -606,6 +626,13 @@ impl Engine {
             } => return self.listen(slot, signal, generation),
             Work::Async { slot, id, exit } => return self.async_complete(slot, id, exit),
         };
+        if let Some(event) = self.through_midi_in(event, &mut Self::apply) {
+            self.apply(event);
+        }
+    }
+
+    /// An event the scripts' `on midi_in` let through.
+    fn apply(&mut self, event: Event) {
         match event {
             Event::NoteOn {
                 note,
@@ -839,7 +866,8 @@ impl Engine {
         // The scripts run with the hit list back in place: they use it.
         self.hits = hits;
         for key in (0u8..).zip(keys).filter_map(|(key, k)| k.then_some(key)) {
-            self.run_poly_at(key);
+            // A note's own expression is the host's: it stands either way.
+            let _ = self.run_poly_at(key);
         }
     }
 }

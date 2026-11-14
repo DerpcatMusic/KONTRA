@@ -22,7 +22,10 @@ impl Engine {
         // Borrowed, matched without case: this may run on the audio thread.
         let stem = stem(name);
         let plan = Arc::clone(&self.plan);
-        let found = (plan.responses.iter()).position(|(n, _)| n.eq_ignore_ascii_case(stem))?;
+        let Some(found) = (plan.responses.iter()).position(|(n, _)| n.eq_ignore_ascii_case(stem))
+        else {
+            return self.load_ir_file(name, slot, generic);
+        };
         let (_, sample) = plan.responses.get(found)?;
         let (playing, law) = self.playing(slot, generic)?;
         if playing.map(usize::from) == Some(found) {
@@ -33,19 +36,46 @@ impl Engine {
             let index = u16::try_from(found).ok()?;
             return self.request_response(slot, generic, index, law);
         }
+        self.install_response(stem, sample, (slot, generic), law)
+    }
+
+    /// `load_ir_sample` of an absolute path (the manual's first form), in the
+    /// init callback only: the file is read here, on the control thread. After
+    /// init the audio thread cannot read it, and no response of that name is in
+    /// the plan, so it stays unanswered.
+    fn load_ir_file(&mut self, path: &str, slot: i32, generic: i32) -> Option<i32> {
+        if self.running.kind != crate::script::Kind::Init || !path.contains(['/', '\\']) {
+            return None;
+        }
+        let sample = crate::zone_edits::describe(path)?;
+        let (_, law) = self.playing(slot, generic)?;
+        self.init_impulses.retain(|p| (p.0, p.1) != (slot, generic));
+        // The whole path is the key: two folders may hold the same file name.
+        self.install_response(&path.to_lowercase(), &sample, (slot, generic), law)
+    }
+
+    /// Decodes `sample` as the response it replaces (once per key and law) and
+    /// points the slot's convolution at it. Init callback only.
+    fn install_response(
+        &mut self,
+        key: &str,
+        sample: &ir::Sample,
+        (slot, generic): (i32, i32),
+        law: ir::Impulse,
+    ) -> Option<i32> {
         let known =
-            (self.loaded.iter()).position(|(n, l, _)| n.eq_ignore_ascii_case(stem) && *l == law);
+            (self.loaded.iter()).position(|(n, l, _)| n.eq_ignore_ascii_case(key) && *l == law);
         let index = match known {
             Some(j) => j,
             None => {
                 let r = crate::response(sample, &law, self.rate).ok()?;
-                self.loaded.push((stem.to_lowercase(), law, r));
+                self.loaded.push((key.to_lowercase(), law, r));
                 // Room for loads after init, which must not allocate.
                 self.loaded.reserve(crate::fx_types::REQUESTS);
                 self.loaded.len() - 1
             }
         };
-        let index = u16::try_from(plan.impulses.len() + index).ok()?;
+        let index = u16::try_from(self.plan.impulses.len() + index).ok()?;
         if let Some(e) = self.effect_mut(-1, slot, generic) {
             e.kind = ir::EffectKind::Convolution { impulse: index };
         }

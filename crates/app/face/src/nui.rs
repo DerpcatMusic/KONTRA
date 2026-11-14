@@ -3,7 +3,7 @@
 //! own widgets, and kept current: a control's change renders again only
 //! the component instances that read it, each back in its own room.
 //!
-//! Not copied: `TextInput`, popovers. They lay out but draw nothing.
+//! Not copied: `TextInput`. It lays out but draws nothing.
 
 use kontra_ksp::ControlKind;
 use kontra_lua::nui::{self, Control};
@@ -178,7 +178,7 @@ pub(super) fn face(
     bld.nui.clear();
     layout::lower(&root, size, bld);
     paint(&mut page, bld, first);
-    bld.ui.paint_order = Some((first..bld.ui.widgets.len()).map(ui::WidgetRef).collect());
+    bld.ui.paint_order = Some(order(bld, first));
     Some(Shown {
         page,
         controls,
@@ -247,12 +247,18 @@ impl Shown {
         }
         self.slots = std::mem::take(&mut bld.nui);
         paint(&mut self.page, bld, self.first);
-        let all: Vec<_> = (self.first..bld.ui.widgets.len())
-            .map(ui::WidgetRef)
-            .collect();
+        let all = order(bld, self.first);
         bld.ui.paint_order = Some(all.clone());
         all
     }
+}
+
+/// The page's widgets from `first` on, back to front: in place order, an
+/// open popover's (`z` 1) over the rest.
+fn order(bld: &Builder<'_>, first: usize) -> Vec<ui::WidgetRef> {
+    let mut all: Vec<_> = (first..bld.ui.widgets.len()).map(ui::WidgetRef).collect();
+    all.sort_by_key(|w| bld.ui.widgets.get(w.0).map_or(0, |w| w.z));
+    all
 }
 
 /// Kontakt 8's instrument page when the script sets none.

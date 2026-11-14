@@ -1,0 +1,24 @@
+# User zones in Kontakt 8.13 (run: ksp_probe.py <nki> this-file). Needs an instrument whose zone 0 holds a
+# sample (ANALOG STRINGS) and /data/dev/workspace/BuildScratch/oracle-mf/tone.wav (1 s, 44.1 kHz, mono,
+# 440 Hz; tools/kontakt-oracle/probes/ksp/user_zones.py in the PR makes it). set_* are synchronous in
+# on init and answer -1, so every law can be read in one go.
+S declare $z
+S declare $y
+S set_num_user_zones(2)
+S $z := %NI_USER_ZONE_IDS[0]
+S $y := %NI_USER_ZONE_IDS[1]
+R d_low_key get_zone_par($z, $ZONE_PAR_LOW_KEY)
+R d_high_key get_zone_par($z, $ZONE_PAR_HIGH_KEY)
+R d_low_velo get_zone_par($z, $ZONE_PAR_LOW_VELO)
+R d_high_velo get_zone_par($z, $ZONE_PAR_HIGH_VELO)
+R d_root get_zone_par($z, $ZONE_PAR_ROOT_KEY)
+R d_group get_zone_par($z, $ZONE_PAR_GROUP)
+R d_volume get_zone_par($z, $ZONE_PAR_VOLUME)
+R d_pan get_zone_par($z, $ZONE_PAR_PAN)
+R d_tune get_zone_par($z, $ZONE_PAR_TUNE)
+R d_fade_low_key get_zone_par($z, $ZONE_PAR_FADE_LOW_KEY)
+R d_fade_high_key get_zone_par($z, $ZONE_PAR_FADE_HIGH_KEY)
+R d_fade_low_velo get_zone_par($z, $ZONE_PAR_FADE_LOW_VELO)
+R d_fade_high_velo get_zone_par($z, $ZONE_PAR_FADE_HIGH_VELO)
+R d_start get_zone_par($z, $ZONE_PAR_SAMPLE_START)
+R d_end get_zone_par($z, $ZONE_PAR_SAMPLE_END)

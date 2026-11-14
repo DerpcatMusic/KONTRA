@@ -8,6 +8,7 @@
 //! Nothing allocates after [`Instance::new`].
 
 mod action;
+pub mod midi;
 mod execute;
 mod fuse;
 mod host;
@@ -51,7 +52,14 @@ pub trait Machine: Send {
     fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId>;
     /// A coroutine that moves control `id` to `saved`'s place in its range
     /// plus `ratio × m` (`m` 0..=1) and runs its callback when it changes.
-    fn control_mod(&mut self, _id: i32, _saved: f64, _scale: f64, _m: f64, _context: u64) -> Option<CoId> {
+    fn control_mod(
+        &mut self,
+        _id: i32,
+        _saved: f64,
+        _scale: f64,
+        _m: f64,
+        _context: u64,
+    ) -> Option<CoId> {
         None
     }
     /// The editor moved widget `n` of the front end's own interface (one it

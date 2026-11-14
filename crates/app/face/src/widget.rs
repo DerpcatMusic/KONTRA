@@ -191,7 +191,15 @@ pub(super) fn widget(
         ControlKind::MouseArea => ui::Kind::MouseArea,
     };
     // Missing sizes stay 0: the renderer applies Kontakt's stock sizes.
-    let (width, height) = (p.int("$CONTROL_PAR_WIDTH"), p.int("$CONTROL_PAR_HEIGHT"));
+    // GRID_WIDTH and GRID_HEIGHT size in the grid's 92 by 21 cells
+    // (Kontakt 8 oracle, probe/grid.ksp: 3 by 2 cells read back 276 by 42).
+    let in_grid = |par: &str, cell: i32| p.int(par).map(|n| n * cell);
+    let width = p
+        .int("$CONTROL_PAR_WIDTH")
+        .or_else(|| in_grid("$CONTROL_PAR_GRID_WIDTH", 92));
+    let height = p
+        .int("$CONTROL_PAR_HEIGHT")
+        .or_else(|| in_grid("$CONTROL_PAR_GRID_HEIGHT", 21));
     let rect = ui::Rect::new(
         p.int("$CONTROL_PAR_POS_X").unwrap_or(0),
         p.int("$CONTROL_PAR_POS_Y").unwrap_or(0),
@@ -207,6 +215,16 @@ pub(super) fn widget(
         ui::Kind::Table { cells, .. } => Some(ui::Value::Integers(
             cells.iter().map(|n| n.round() as i32).collect(),
         )),
+        // A pad's cursors, x then y each, as the script's real array holds them.
+        ui::Kind::Xy { .. } => array.map(|(base, len)| {
+            ui::Value::Reals(
+                (base..base + len)
+                    .map(|c| {
+                        f64::from_bits(engine.script_cell_in(slot, c as usize).unwrap_or(0) as u64)
+                    })
+                    .collect(),
+            )
+        }),
         _ => look.value.map(|v| ui::Value::Integer(v as i32)),
     };
     if matches!(kind, ControlKind::Waveform | ControlKind::Wavetable) {
@@ -225,8 +243,13 @@ pub(super) fn widget(
     w.z = p.int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);
     let hide = p.int("$CONTROL_PAR_HIDE").unwrap_or(0);
     w.hidden = hide & HIDE_WHOLE_CONTROL != 0;
-    // move_control(x, y) places on Kontakt's grid; (0, 0) hides.
-    if let (Some(column), Some(row)) = (p.int("grid_x"), p.int("grid_y")) {
+    // move_control(x, y) places on Kontakt's grid; (0, 0) hides. GRID_X
+    // and GRID_Y are the same cells (probe/grid.ksp).
+    let grid = |moved: &str, par: &str| p.int(moved).or_else(|| p.int(par));
+    if let (Some(column), Some(row)) = (
+        grid("grid_x", "$CONTROL_PAR_GRID_X"),
+        grid("grid_y", "$CONTROL_PAR_GRID_Y"),
+    ) {
         match (u32::try_from(column), u32::try_from(row)) {
             (Ok(column @ 1..), Ok(row @ 1..)) => {
                 w.placement = ui::Placement::Grid { column, row };
@@ -350,6 +373,20 @@ pub(super) fn widget(
             .filter(|_| fixed)
             .and_then(|f| u32::try_from(f).ok());
         w.images.push(image);
+    }
+    // A pad's cursor pictures: each its own (`set_control_par_str_arr`);
+    // a plain `set_control_par_str` pictures the first cursor only, the
+    // rest keep the stock square (Kontakt 8 oracle, probe/xy2.ksp).
+    if let ui::Kind::Xy { cursors, .. } = w.kind {
+        for i in 0..cursors {
+            let own = p.entry("$CONTROL_PAR_CURSOR_PICTURE", i as i32);
+            let name = own.or_else(|| p.text("$CONTROL_PAR_CURSOR_PICTURE").filter(|_| i == 0));
+            if let Some(asset) = name.and_then(|n| bld.asset(n)) {
+                let mut cursor = ui::ImageUse::new(asset, ui::Role::Handle);
+                cursor.part = i;
+                w.images.push(cursor);
+            }
+        }
     }
     w
 }

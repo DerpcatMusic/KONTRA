@@ -29,6 +29,29 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
     opened(sample).map(|o| (o.source, o.fmt))
 }
 
+/// The sample a script names by path (`set_sample`): the whole file, its
+/// length and rate read from the header.
+///
+/// # Errors
+/// As [`open`].
+pub fn describe(path: &Path) -> io::Result<ir::Sample> {
+    let mut sample = ir::Sample {
+        name: path
+            .file_stem()
+            .map_or(String::new(), |s| s.to_string_lossy().into_owned()),
+        file: path.to_path_buf(),
+        offset: 0,
+        len: None,
+        channels: 0,
+        frames: 0,
+        rate: 0,
+        keystream: None,
+    };
+    let o = opened(&sample)?;
+    (sample.channels, sample.frames, sample.rate) = (o.fmt.channels, o.frames, o.rate);
+    Ok(sample)
+}
+
 /// The files an instrument's samples live in, each opened once: a monolith
 /// or bank holds thousands of samples, and each opening its own handle
 /// opened the file thousands of times per load and kept as many open.

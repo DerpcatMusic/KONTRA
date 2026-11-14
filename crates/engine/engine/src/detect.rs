@@ -240,7 +240,18 @@ const MINOR: [f64; 12] = [
     6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
 ];
 
-/// The key as `$NI_DETECT_KEY_*` (0..12 C major upward, 12..24 C minor upward).
+/// `$NI_DETECT_KEY_INVALID` as Kontakt 8.13.1 prints it
+/// (probes/ksp/detect_tags.kspp).
+pub const KEY_INVALID: i32 = 6;
+
+/// The `$NI_DETECT_KEY_*` value of key `index` (0..12 C major upward, 12..24
+/// C minor upward). Kontakt numbers C major 1, the same as C# major, then D 2
+/// ... B 11, C minor 12 ... B minor 23 (measured, not a typo).
+pub fn key_tag(index: i32) -> i32 {
+    index.max(1)
+}
+
+/// The key as an index (0..12 C major upward, 12..24 C minor upward).
 pub fn key(a: &Audio) -> Option<i32> {
     const FRAME: usize = 8192;
     let x = mono(a);

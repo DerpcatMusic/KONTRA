@@ -22,18 +22,24 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     let labels: Vec<String> = SCALES.iter().map(|s| format!("{s}%")).collect();
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let current = refs.get(app.view.scale).copied().unwrap_or("100%");
+    let percent = if app.view.scale == 0 {
+        100
+    } else {
+        app.view.scale
+    };
+    let at = SCALES.iter().position(|&s| s == percent);
+    let current = at.and_then(|n| refs.get(n)).copied().unwrap_or("100%");
     let size = kit::dropdown(
         ui,
         &mut app.view.menu,
         "scale",
         (None, current, "Editor size"),
         &refs,
-        Some(app.view.scale),
+        at,
     );
-    if let Some(n) = size.changed {
-        app.view.scale = n;
-        out.extend(SCALES.get(n).map(|&s| Action::Scale(s)));
+    if let Some(&s) = size.changed.and_then(|n| SCALES.get(n)) {
+        app.view.scale = s;
+        out.push(Action::Scale(s));
     }
     let faces = ["Fit", "100%", "150%", "200%"];
     let face = kit::dropdown(

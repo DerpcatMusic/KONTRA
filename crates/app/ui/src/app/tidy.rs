@@ -90,7 +90,63 @@ pub(super) fn presets(name: &str, presets: &[String]) -> Vec<Shown> {
         }
         at = end.max(at + 1);
     }
+    for s in &mut shown {
+        distinct(&mut s.crumbs);
+        s.name = unrepeated(&s.name, &s.crumbs);
+    }
     shown
+}
+
+/// `name` without leading words its folders already say:
+/// `Snapshots › Shreddage 3.5 E-Upright` lists `- E-Upright 3.5 INIT -` as
+/// `INIT`, and `06 Ensemble Patches` lists `01 Ensemble - Sustained` as
+/// `01 Sustained`. A leading number stays; the whole name when nothing
+/// would be left.
+fn unrepeated(name: &str, crumbs: &[String]) -> String {
+    let said: Vec<String> = (crumbs.iter())
+        .flat_map(|c| c.split(' ').map(key))
+        .filter(|k| !k.is_empty())
+        .collect();
+    let mut words = name.split(' ').filter(|w| !w.is_empty()).peekable();
+    let number = words.next_if(|w| w.chars().all(|c| c.is_ascii_digit()));
+    let mut dropped = false;
+    while let Some(w) = words.next_if(|w| key(w).is_empty() || said.contains(&key(w))) {
+        dropped |= !key(w).is_empty();
+    }
+    let separators = [' ', '-', '_', ':', '.', '–'];
+    let rest = words.collect::<Vec<_>>().join(" ");
+    let rest = rest.trim_matches(separators);
+    if !dropped || rest.is_empty() {
+        return name.trim_matches(separators).to_owned();
+    }
+    number.map_or_else(|| rest.to_owned(), |n| format!("{n} {rest}"))
+}
+
+/// Crumbs without one its neighbour repeats: `3 Trumpets › 3 Trumpets` is
+/// one crumb, and `Mutes › 3 Trumpets Mutes` keeps the fuller.
+fn distinct(crumbs: &mut Vec<String>) {
+    let mut at = 1;
+    while at < crumbs.len() {
+        let (a, b) = match (crumbs.get(at - 1), crumbs.get(at)) {
+            (Some(a), Some(b)) => (key(a), key(b)),
+            _ => break,
+        };
+        if b.contains(&a) {
+            crumbs.remove(at - 1);
+            at = at.saturating_sub(1).max(1);
+        } else if a.contains(&b) {
+            crumbs.remove(at);
+        } else {
+            at += 1;
+        }
+    }
+}
+
+/// A preset's name alone, as a list of several libraries' shows it: its
+/// file name without its library's name in front.
+pub(super) fn name<'a>(library_name: &str, path: &'a str) -> &'a str {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    unprefixed(file, &key(library(library_name)))
 }
 
 /// `name` without a leading library name `own` (as keyed) and the
@@ -192,6 +248,43 @@ mod tests {
             ("02 Brass", "Horns"),
         ];
         assert_eq!(rows, want.map(|(a, b)| (a.to_owned(), b.to_owned())));
+    }
+
+    #[test]
+    fn words_a_folder_already_says_go_from_its_names() {
+        let rows = shown(
+            "Shreddage 3 E-Upright",
+            &[
+                "Snapshots/Shreddage 3.5 E-Upright/- E-Upright 3.5 INIT -",
+                "Snapshots/Shreddage 3.5 E-Upright/E-Upright 3.5 - MWAH -",
+                "Snapshots/Shreddage 3.5 E-Upright/E-Upright 3.5 Aggressive Swirl",
+                "Instruments/Bass",
+            ],
+        );
+        let names: Vec<&str> = rows.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["INIT", "MWAH", "Aggressive Swirl", "Bass"]);
+        let rows = shown(
+            "Lib",
+            &[
+                "06 Ensemble Patches/01 Ensemble - Sustained",
+                "06 Ensemble Patches/03 Ensemble - Harmonics",
+                "07 Solo/Ensemble",
+            ],
+        );
+        let names: Vec<&str> = rows.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["01 Sustained", "03 Harmonics", "Ensemble"]);
+    }
+
+    #[test]
+    fn a_crumb_its_neighbour_repeats_goes() {
+        let mut crumbs = ["Brass", "3 Trumpets", "Mutes", "3 Trumpets Mutes"]
+            .map(String::from)
+            .to_vec();
+        distinct(&mut crumbs);
+        assert_eq!(crumbs, ["Brass", "3 Trumpets Mutes"]);
+        let mut crumbs = ["3 Trumpets", "3 Trumpets"].map(String::from).to_vec();
+        distinct(&mut crumbs);
+        assert_eq!(crumbs, ["3 Trumpets"]);
     }
 
     #[test]

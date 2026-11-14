@@ -63,6 +63,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Idle frames, then one knob moved per frame.
             let mut live = kontra_host::ui::Live::new(face, slot as u8, &engine, &|_| None)?;
             let mut block = vec![[0f32; 2]; 512];
+            // KONTRA_UI_TAP="x,y;x,y": the topmost tap area at each page
+            // point pressed and let go, in turn; KONTRA_UI_DUMP=1 then
+            // prints every visible widget back to front.
+            let taps = std::env::var("KONTRA_UI_TAP").unwrap_or_default();
+            for p in taps.split(';').filter(|p| !p.is_empty()) {
+                let (x, y) = p.split_once(',').unwrap_or_default();
+                let (x, y): (f64, f64) = (x.parse()?, y.parse()?);
+                let hit = live
+                    .tree
+                    .draw_order(kontra_ui_model::PageRef(0))
+                    .into_iter()
+                    .rev()
+                    .find(|w| {
+                        live.tree.widgets.get(w.0).is_some_and(|t| {
+                            let r = t.rect;
+                            live.tree.visible(*w)
+                                && t.name.starts_with("native_ui tap")
+                                && (r.x..r.x + r.width).contains(&x)
+                                && (r.y..r.y + r.height).contains(&y)
+                        })
+                    });
+                println!(
+                    "  tap {x},{y} -> {:?}",
+                    hit.and_then(|w| live.tree.widgets.get(w.0))
+                        .map(|w| (&w.name, w.rect))
+                );
+                for value in [1., 0.] {
+                    let set = hit.and_then(|w| live.tap(w.0, value)).unwrap_or_default();
+                    for (id, v) in set {
+                        engine.set_control(slot as u8, id, v);
+                    }
+                    for _ in 0..3 {
+                        engine.process(&mut block, &[]);
+                        live.refresh(face, slot as u8, &engine, &|_| None);
+                    }
+                }
+            }
+            if std::env::var_os("KONTRA_UI_DUMP").is_some() {
+                dump(&live.tree);
+            }
             let (mut idle, mut spent) = (0, std::time::Duration::ZERO);
             let mut last = None;
             for frame in 0..100 {
@@ -172,4 +212,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn dump(tree: &kontra_ui_model::Interface) {
+    for w in tree.draw_order(kontra_ui_model::PageRef(0)) {
+        if let Some(x) = tree.widgets.get(w.0).filter(|_| tree.visible(w)) {
+            let r = x.rect;
+            let kind = format!("{:?}", x.kind);
+            let kind = kind.split(['(', ' ', '{']).next().unwrap_or_default();
+            println!(
+                "  {:>4} z{} {kind:<8} {:>6.1} {:>6.1} {:>6.1} {:>6.1} {} {:?}",
+                w.0, x.z, r.x, r.y, r.width, r.height, x.name, x.text
+            );
+        }
+    }
 }

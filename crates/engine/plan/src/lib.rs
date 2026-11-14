@@ -19,7 +19,7 @@ pub use route::{held_time, route_source};
 pub use script::{
     Callbacks, CcLink, Controls, Holder, KnobModPlan, LookPars, Recall, Saved, ScriptPlan,
 };
-pub use zones::{ZoneFacts, ZoneRules, zone_name};
+pub use zones::{LoopPar, ZoneFacts, ZoneRules, user_loops, zone_name};
 
 use std::ops::RangeInclusive;
 
@@ -542,6 +542,10 @@ pub struct Plan {
     /// Saved-purged groups, nothing of them loaded: what a script's
     /// `purge_group(g, 1)` builds ([`Dormant`]).
     pub dormant: std::sync::Arc<Vec<Dormant>>,
+    /// The sample each user zone's playing [`Zone`] was built from; a
+    /// zone whose [`ZoneFacts::source`] differs is built again
+    /// (`kontra_prepare::user_zones`).
+    pub user_loaded: Vec<(u32, std::sync::Arc<ir::Sample>)>,
 }
 
 /// A purged group as saved: its zones and the samples they play, kept as the
@@ -614,6 +618,7 @@ impl Plan {
             loaded: Vec::new(),
             zone_facts: Vec::new(),
             dormant: std::sync::Arc::default(),
+            user_loaded: Vec::new(),
         }
     }
 }

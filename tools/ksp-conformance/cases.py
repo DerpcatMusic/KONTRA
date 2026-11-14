@@ -163,4 +163,11 @@ CASES = [
     ("diag_menu_add", "control", "declare ui_menu $m\n  add_menu_item($m, \"a\", 5)", ["0"]),
     ("diag_menu_count", "control", "declare ui_menu $m", ["get_num_menu_items($m)"]),
     ("diag_menu_count_after_add", "control", "declare ui_menu $m\n  add_menu_item($m, \"a\", 5)", ["get_num_menu_items($m)"]),
+    # --- manual commands (docs/ksp/MANUAL-COVERAGE.md): values KONTRA guesses until the oracle runs ---
+    ("manual_voice_limit_default", "manual", "", ["get_voice_limit($NI_VL_TMPRO_STANDARD)", "get_voice_limit($NI_VL_TMPRO_HQ)"]),
+    ("manual_voice_limit_set", "manual", "set_voice_limit($NI_VL_TMPRO_STANDARD, 11)", ["get_voice_limit($NI_VL_TMPRO_STANDARD)"]),
+    ("manual_keyrange_inside", "manual", "set_keyrange(36, 72, \"R\")", ["get_keyrange_min_note(50)", "get_keyrange_max_note(50)"]),
+    ("manual_keyrange_outside", "manual", "set_keyrange(36, 72, \"R\")", ["get_keyrange_min_note(20)", "get_keyrange_max_note(20)"]),
+    ("manual_keyrange_removed", "manual", "set_keyrange(36, 72, \"R\")\n  remove_keyrange(50)", ["get_keyrange_min_note(50)", "get_keyrange_max_note(40)"]),
+    ("manual_detect_constants", "manual", "", ["$NI_DETECT_KEY_INVALID", "$NI_DETECT_SAMPLE_TYPE_DRUM", "$NI_DETECT_DRUM_TYPE_KICK", "$NI_DETECT_INSTRUMENT_TYPE_BASS"]),
 ]
