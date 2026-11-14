@@ -81,7 +81,11 @@ impl Notes {
             let plain = name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
             let empty = matches!(value, "0" | "0.0" | "false" | "\"\"" | "[]" | "None" | "-1");
             if plain && !empty && ![used, cosmetic].iter().any(|l| l.contains(&name)) {
-                let shown = if value.ends_with(['[', '{', '(']) { "(nested)" } else { value };
+                let shown = if value.ends_with(['[', '{', '(']) {
+                    "(nested)"
+                } else {
+                    value
+                };
                 self.ignored(&format!("{level}.{name}"), shown);
             }
         }
@@ -138,7 +142,13 @@ mod tests {
     #[test]
     fn only_stored_unmapped_fields_are_reported() {
         let mut notes = Notes::default();
-        let r = Record { used: 1, spare: 7, zero: 0, ui: true, nested: vec![1] };
+        let r = Record {
+            used: 1,
+            spare: 7,
+            zero: 0,
+            ui: true,
+            nested: vec![1],
+        };
         assert!(r.ui && r.used + r.spare + r.zero == 8 && !r.nested.is_empty());
         notes.ignored_fields("rec", &r, &["used"], &["ui"]);
         notes.ignored_fields("rec", &r, &["used"], &["ui"]);

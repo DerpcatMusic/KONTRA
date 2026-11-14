@@ -1,0 +1,7 @@
+# Measured 2026-11-14: $GET_FOLDER_LIBRARY_DIR 1, _PATCH_DIR 2, _FACTORY_DIR 3, _RC_DIR 4 ($GET_FOLDER_INSTALL_DIR is not a manual name: it failed the script).
+# The paths themselves cannot be recorded; get_folder($GET_FOLDER_RC_DIR) is unanswered here (no resource container).
+# get_folder constants in Kontakt 8.13 (run: ksp_probe.py <nki> this-file).
+R c_library $GET_FOLDER_LIBRARY_DIR
+R c_patch $GET_FOLDER_PATCH_DIR
+R c_factory $GET_FOLDER_FACTORY_DIR
+R c_rc $GET_FOLDER_RC_DIR

@@ -628,5 +628,40 @@
   "id": "diag_menu_count_after_add",
   "category": "control",
   "results": 1
+ },
+ {
+  "id": "manual_voice_limit_default",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "manual_voice_limit_set",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "manual_keyrange_inside",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "manual_keyrange_outside",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "manual_keyrange_removed",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "manual_detect_constants__0",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "manual_detect_constants__1",
+  "category": "manual",
+  "results": 2
  }
 ]

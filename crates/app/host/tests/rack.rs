@@ -1865,3 +1865,28 @@ fn a_purged_group_loads_when_a_script_unpurges_it_and_plays_after() {
     assert!(loudest(&mut audio, 62) > 1e-4, "the unpurged group plays");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A real multi (`KONTRA_MULTI`) fills a part per slot, and a project
+/// saved with it reopens the same parts by path, with no library scan.
+#[test]
+#[ignore = "reads a Kontakt multi on this machine"]
+fn a_multi_fills_a_part_per_slot_and_reopens_from_a_project() {
+    let Some(multi) = std::env::var_os("KONTRA_MULTI") else {
+        return;
+    };
+    let multi = std::path::PathBuf::from(multi);
+    let (mut first, _audio) = rack();
+    first.load(0, &multi).unwrap();
+    let paths = |r: &Rack| -> Vec<(Option<std::path::PathBuf>, String)> {
+        (r.parts().iter().flatten())
+            .map(|p| (p.path.clone(), p.name.clone()))
+            .collect()
+    };
+    let loaded = paths(&first);
+    assert!(loaded.len() > 1, "{loaded:?}");
+    assert_eq!(loaded[1].0, Some(multi.join("1")));
+    let saved = kontra_host::state::Saved::parse(&first.save().write()).unwrap();
+    let (mut second, _audio) = rack();
+    assert_eq!(second.restore(&saved), Vec::new());
+    assert_eq!(paths(&second), loaded);
+}

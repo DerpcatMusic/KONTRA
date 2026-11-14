@@ -72,6 +72,7 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
             presets: vec!["Violins".into()],
             recalls: Vec::new(),
             starred: false,
+            favorites: Vec::new(),
             art: Vec::new(),
         }],
         ..App::default()
@@ -377,6 +378,7 @@ fn a_preset_dragged_onto_a_part_replaces_it_and_onto_free_space_adds_one() {
             presets: vec!["Violins".into(), "Violas".into()],
             recalls: Vec::new(),
             starred: false,
+            favorites: Vec::new(),
             art: Vec::new(),
         }],
         parts: vec![Part {
@@ -457,6 +459,7 @@ fn a_double_click_names_the_focused_part() {
             presets: vec!["Snapshots/Airy".into(), "Strings".into()],
             recalls: vec![0],
             starred: false,
+            favorites: Vec::new(),
             art: Vec::new(),
         }],
         parts: vec![Part {
@@ -514,6 +517,7 @@ fn the_presets_walk_and_load_by_keys() {
             presets: presets.iter().map(|p| format!("Instruments/{p}")).collect(),
             recalls: Vec::new(),
             starred: false,
+            favorites: Vec::new(),
             art: Vec::new(),
         }],
         ..App::default()

@@ -45,6 +45,11 @@ pub mod event {
     pub const ALLOW_GROUP: i32 = 10;
     /// With `*_arr`: the value for a "from script" modulator, ±1 000 000.
     pub const MOD_VALUE: i32 = 30;
+    /// `$EVENT_PAR_MOD_VALUE_EX_ID`: the same with no clamp (measured, see
+    /// constants.tsv).
+    pub const MOD_VALUE_EX: i32 = 34;
+    /// `$EVENT_PAR_CUSTOM` with `*_arr`: custom parameters 0..=15.
+    pub const CUSTOM: i32 = 28;
     /// Before the note starts: only zones in this slot start; -1 (the
     /// default) starts any.
     pub const ZONE_SLOT: i32 = 15;
@@ -184,6 +189,8 @@ actions! {
     EventStatus,
     GetEventIds,
     IgnoreController,
+    IgnoreMidi,
+    SetMidi,
     SetController,
     SetNoteController,
     SetRpn,
@@ -216,7 +223,9 @@ actions! {
     /// `ir::EffectParam` code.
     EffectField,
     // Time.
-    WaitTicks,
+    /// Microseconds the transport takes for a number of MIDI ticks: `wait_ticks`
+    /// compiles to this and a `wait`.
+    TicksToMicros,
     WaitAsync,
     StopWait,
     ResetKspTimer,
@@ -373,7 +382,6 @@ actions! {
     GetSelZonesIdx,
     GetLoopPar,
     SetLoopPar,
-    SetMidi,
     DetectKey,
     DetectPitch,
     DetectLoudness,
@@ -403,6 +411,12 @@ actions! {
     CcNum,
     PitchBend,
     PolyAtNum,
+    NcNum,
+    NcNote,
+    NcValue,
+    MidiCommand,
+    MidiByte1,
+    MidiByte2,
     RpnAddress,
     RpnValue,
     MidiChannel,
@@ -450,6 +464,8 @@ actions! {
     PolyAt,
     GroupsSelected,
     GroupsAffected,
+    UserZoneIds,
+    NumUserZones,
     KeyDownOct,
     EventParAt,
     // Appended rather than filed with their neighbours: an action's id is its
