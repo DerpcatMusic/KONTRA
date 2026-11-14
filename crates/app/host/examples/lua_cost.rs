@@ -3,7 +3,9 @@
 //! optional second thread compiling another program in a loop.
 //! `cargo run --release -p kontra-host --example lua_cost -- <program> [<contender>]`
 //! Plays 4-note chords, 4 blocks apart and held 8, for `KONTRA_BLOCKS` blocks
-//! (default 2000), as fast as it can (no real-time pacing).
+//! (default 2000), as fast as it can (no real-time pacing). `KONTRA_CC=<n>`
+//! also moves controller `n` every block, for the programs that tie it to a
+//! script knob.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
     });
 
+    let cc: Option<u32> = std::env::var("KONTRA_CC").ok().and_then(|c| c.parse().ok());
     let _ = probe::take();
     let keys = [48u8, 52, 55, 60, 50, 53, 57, 62, 47, 50, 55, 59];
     let mut rows: Vec<(u64, Probe)> = Vec::with_capacity(blocks);
@@ -107,6 +110,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     body: Event::NoteOff(off),
                 });
             }
+        }
+        if let Some(cc) = cc {
+            // MIDI 1.0 control change on channel 0, swept up and down.
+            let value = (b % 254).min(253 - b % 254) as u32;
+            events.push(Timed {
+                at: SampleTime(0),
+                body: Event::Ump([0x20B0_0000 | (cc & 0x7F) << 8 | value, 0]),
+            });
         }
         let t = std::time::Instant::now();
         engine.process(&mut out, &events);
