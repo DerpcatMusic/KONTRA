@@ -1284,7 +1284,12 @@ mod tests {
         let co = machine.start(Callbacks::NOTE, 0).expect("start");
         let began = std::time::Instant::now();
         let _ = machine.run(co, &mut Log(Vec::new()));
-        assert_eq!(machine.faults().bad_code, 0, "{}", machine.faults().last_error.as_str());
+        assert_eq!(
+            machine.faults().bad_code,
+            0,
+            "{}",
+            machine.faults().last_error.as_str()
+        );
         assert!(began.elapsed() < std::time::Duration::from_secs(2));
     }
 
