@@ -84,13 +84,16 @@ fn split(ui: &mut Ui, app: &mut App) -> El {
     .id(id)
 }
 
+/// A search hit's letters: the one blue in the browser, on graphite.
+const HIT: Color = Color::oklch(0.8, 0.13, 235.);
+
 /// `text` with the words of `query` it holds marked, so a search's hits
 /// stand out of the list.
 fn marked(text: &str, query: &str, size: f64, ink: Fill) -> El {
     let piece = |s: &str, hit: bool| {
         let t = body(s.to_owned()).text_size(size).lines(1).shrink(0);
         match hit {
-            true => t.fill(Role::Primary).text_weight(Weight::SEMIBOLD),
+            true => t.fill(HIT).text_weight(Weight::SEMIBOLD),
             false => t.fill(ink.clone()),
         }
     };
@@ -313,14 +316,21 @@ fn library_list(ui: &mut Ui, app: &mut App) -> El {
         .any(|k| k.key == Key::Down)
         .then_some(0);
     let mut typed = String::new();
+    // Enter or Right on a card opens it and moves the keys to its presets.
+    let mut into_presets = false;
     let mut covers = app.covers.as_mut();
     let mut rows = Vec::new();
     for (k, (&(n, l, hits), id)) in shown.iter().zip(&ids).enumerate() {
-        if ui.get(id.as_str()).activated() {
+        let r = ui.get(id.as_str());
+        if r.activated() {
             picked = Some(n);
+        }
+        if r.key_activated {
+            into_presets = true;
         }
         for key in ui.keys(id.as_str()) {
             match key.key {
+                Key::Right => (picked, into_presets) = (Some(n), true),
                 Key::Down => focus = Some(k + 1),
                 Key::Up => focus = k.checked_sub(1),
                 _ => {}
@@ -346,6 +356,9 @@ fn library_list(ui: &mut Ui, app: &mut App) -> El {
         let last = v.last.iter().find(|l| l.0 == n).copied();
         v.picked = last.or(v.picked.filter(|p| p.0 == n));
         v.reveal = true;
+    }
+    if into_presets {
+        ui.focus("preset-search");
     }
     col(rows).gap(1).scroll().id("library-list").min_h(0)
 }
@@ -568,7 +581,6 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                 let id = format!("preset-{n}");
                 if (ui.scene()).is_some_and(|s| s.surface(id.as_str()).is_some()) {
                     v.reveal = false;
-                    ui.focus(id);
                     let y = (row as f64 - 3.).max(0.) * CONTROL;
                     ui.set_scroll("preset-list", [0., y]);
                 }
@@ -630,8 +642,19 @@ fn folder_row(id: String, crumbs: &[String], count: usize, shut: bool) -> El {
     let chevron = if shut { Icon::Right } else { Icon::Down };
     let mut parts = vec![glyph(chevron, TEXT * 0.8, secondary())];
     if let Some((last, parents)) = crumbs.split_last() {
-        for p in parents {
-            parts.push(caption(p.clone()).fill(secondary()).lines(1).min_w(0));
+        // Deep paths keep their two nearest folders; the tooltip has all.
+        if parents.len() > 1 {
+            parts.push(caption("…").fill(secondary()).shrink(0));
+            parts.push(caption("›").fill(secondary()).shrink(0));
+        }
+        if let Some(p) = parents.last() {
+            parts.push(
+                caption(p.clone())
+                    .fill(secondary())
+                    .lines(1)
+                    .min_w(0)
+                    .shrink(3),
+            );
             parts.push(caption("›").fill(secondary()).shrink(0));
         }
         parts.push(
