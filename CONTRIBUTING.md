@@ -141,8 +141,8 @@ release raises PATCH (0.6.1, 0.6.2, ...). Only a major feature raises MINOR:
 mark its title with `!` (`feat!: ...` or `feat(scope)!: ...`), and say so in
 the description.
 
-The Release workflow runs when the third pull request since the last release
-merges on `main`, and on demand (Actions > Release > Run workflow). It builds
+The Release workflow runs twice a day (06:00 and 18:00 UTC) when pull requests
+merged on `main` since the last release, and on demand (Actions > Release > Run workflow). It builds
 and tests every platform, signs and notarizes the macOS installer, tags the
 commit `vX.Y.Z` and publishes a release. Its notes are the merged pull
 requests' release notes, each linked to its pull request and author

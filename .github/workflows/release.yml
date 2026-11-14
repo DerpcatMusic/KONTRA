@@ -1,14 +1,14 @@
 name: Release
 
-# A release every third pull request merged on main, and on demand (Actions >
-# Release > Run workflow). Each release gets the next version
+# A release twice a day (06:00 and 18:00 UTC) when pull requests merged since
+# the last one, and on demand (Actions > Release > Run workflow). Each release gets the next version
 # (tools/version.py), notes written from its pull requests
 # (tools/release/notes.py), the whole history as CHANGELOG.md
 # (tools/release/changelog.py) and stays published. Downloads use stable
 # names, so releases/latest/download/<name> always works.
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '0 6,18 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -46,10 +46,10 @@ jobs:
           fi
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
           git tag --points-at HEAD > head-tags.txt
-          # A merge releases once three pull requests wait since the last release.
+          # A scheduled run releases only when something merged since the last release.
           pending=$(python3 tools/version.py pending)
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$pending" -lt 3 ]; then
-            echo "$pending of 3 pull requests merged since $(python3 tools/version.py previous)"
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$pending" -lt 1 ]; then
+            echo "nothing merged since $(python3 tools/version.py previous)"
             echo 'released=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi

@@ -63,9 +63,9 @@ class Gates(unittest.TestCase):
 
     def test_release_uses_v3_verification(self):
         release = (ROOT / ".github/workflows/release.yml").read_text()
-        # A release every third merged pull request and on demand.
-        self.assertIn("  push:\n    branches: [main]", release)
-        self.assertIn('"$pending" -lt 3', release)
+        # A release twice a day when something merged, and on demand.
+        self.assertIn("  schedule:\n    - cron: '0 6,18 * * *'", release)
+        self.assertIn('"$pending" -lt 1', release)
         self.assertIn("  workflow_dispatch:", release)
         self.assertNotIn("gh release delete", release)
         self.assertIn("uses: ./.github/workflows/v3-verify.yml", release)
