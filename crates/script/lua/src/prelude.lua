@@ -757,6 +757,11 @@ function Element.setParameter(self, name, value)
 	elseif name == "Volume" and type(value) == "number" then
 		host_call("EffectGain", fx[1], fx[2], fx[3], math.floor(value * 1e6 + 0.5))
 	end
+	-- A number its response is prepared by: prepared again off the audio thread.
+	local knob = (fields_of(self).impulse or EMPTY)[name]
+	if knob and tonumber(value) then
+		host_call("ImpulseKnob", fx[1], fx[2], fx[3], knob, math.floor(tonumber(value) * 1e6 + 0.5))
+	end
 	-- Any other number the format mapped: each control it moves,
 	-- `{control, x1, y1, ...}`, by the number, straight between points.
 	local x = tonumber(value)
@@ -872,6 +877,7 @@ function element(node)
 		mod = node.mod,
 		fx = node.fx,
 		knobs = node.knobs,
+		impulse = node.impulse,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)
@@ -1262,11 +1268,20 @@ function loadSample(oscillator, path, done)
 	end
 end
 
--- ponytail: impulses are not loaded; the callback reports success so a
--- script that mutes while one loads (VWinds' room) unmutes.
+-- loadImpulse(insert, path, done): the bank's response `path` (found by its
+-- file name, as the program's own responses are listed) into the
+-- convolution the engine plays for `insert`. It is decoded off the audio
+-- thread and swapped in a few blocks later; the callback reports at once,
+-- so a script that mutes while one loads (VWinds' room) unmutes.
 function loadImpulse(insert, path, done)
+	local fx = type(insert) == "userdata" and fields_of(insert).fx
+	local ok = false
+	if fx and type(path) == "string" then
+		-- Before init the call waits in `pending`: it loads then.
+		ok = host_call("LoadImpulse", fx[1], fx[2], fx[3], path) ~= nil or not __host
+	end
 	if type(done) == "function" then
-		done({ success = true })
+		done({ success = ok })
 	end
 end
 

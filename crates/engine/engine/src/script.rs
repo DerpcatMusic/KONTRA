@@ -826,6 +826,23 @@ impl HostApi for Engine {
                     None => -1,
                 })
             }
+            Action::ImpulseKnob => {
+                let y = int(4) as f32 / 1e6;
+                if !self.set_placed_impulse_knob(int(0), int(1), int(2), int(3), y) {
+                    self.count_unhandled(Action::ImpulseKnob);
+                }
+                HostValue::Nothing
+            }
+            Action::LoadImpulse => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                match self.load_placed_impulse(name, int(0), int(1), int(2)) {
+                    Some(answer) => HostValue::Int(answer),
+                    None => {
+                        self.count_unhandled(Action::LoadImpulse);
+                        HostValue::Nothing
+                    }
+                }
+            }
             Action::LoadIrSample => {
                 let name = call.texts.first().map_or("", Text::as_str);
                 match self.load_ir_sample(name, int(0), int(1)) {
