@@ -4345,6 +4345,95 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     assert!((level(&mut e, &[on(72)]) - 1.0).abs() < 1e-3);
 }
 
+/// Pitch bend of `bend` (-1..1) on channel 1.
+fn bend(bend: f32) -> Timed<Event> {
+    let raw = ((bend * 8192.0 + 8192.0).round() as u16).min(16383);
+    Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xE0, (raw & 0x7F) as u8, (raw >> 7) as u8),
+    }
+}
+
+#[test]
+fn kontakt_hears_pitch_bend_and_channel_pressure_in_on_controller() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    // The manual: `on controller` runs for CC, pitch bend and channel
+    // pressure, which it reads at %CC[$VCC_PITCH_BEND] and %CC[$VCC_MONO_AT].
+    let mut e = engine(
+        &store,
+        zones,
+        "on controller
+            if ($CC_NUM = $VCC_PITCH_BEND and %CC[$VCC_PITCH_BEND] > 4000)
+                play_note(60, 100, 0, -1)
+            end if
+            if ($CC_NUM = $VCC_MONO_AT and %CC[$VCC_MONO_AT] = 99)
+                play_note(64, 100, 0, -1)
+            end if
+        end on",
+    );
+    assert_eq!(level(&mut e, &[]), 0.0);
+    let bent = level(&mut e, &[bend(0.75)]);
+    assert!(bent > 0.1, "on controller did not hear the bend: {bent}");
+    let pressed = level(
+        &mut e,
+        &[Timed {
+            at: SampleTime(0),
+            body: Event::midi1(0xD0, 99, 0),
+        }],
+    );
+    assert!(
+        pressed > bent + 0.1,
+        "on controller did not hear the pressure: {pressed}"
+    );
+}
+
+#[test]
+fn uvi_hears_transport_pitch_bend_and_aftertouch_in_their_callbacks() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    // UVI's own dispatch (its API's `_onTransport`, `_onPitchBend`,
+    // `_onAfterTouch`), with the fields its events carry.
+    let mut e = lua_engine(
+        &mut store,
+        "function onTransport(playing) if playing then playNote(60, 100) end end
+        function onPitchBend(e)
+            if e.type == Event.PitchBend and e.bend > 0.5 then playNote(64, 100) end
+            postEvent(e)
+        end
+        function onAfterTouch(e)
+            if e.type == Event.AfterTouch and e.value == 99 then playNote(67, 100) end
+        end
+        function onPolyAfterTouch(e)
+            if e.type == Event.PolyAfterTouch and e.note == 67 and e.value == 90 then playNote(72, 100) end
+        end",
+    );
+    assert_eq!(level(&mut e, &[]), 0.0);
+    e.set_transport(kontra_engine::Play::Running, 0.0, (4, 4));
+    let started = level(&mut e, &[]);
+    assert!(
+        started > 0.1,
+        "onTransport did not run at the start: {started}"
+    );
+    let bent = level(&mut e, &[bend(0.75)]);
+    assert!(bent > started + 0.1, "onPitchBend did not run: {bent}");
+    let pressed = level(
+        &mut e,
+        &[Timed {
+            at: SampleTime(0),
+            body: Event::midi1(0xD0, 99, 0),
+        }],
+    );
+    assert!(pressed > bent + 0.1, "onAfterTouch did not run: {pressed}");
+    let poly = level(
+        &mut e,
+        &[Timed {
+            at: SampleTime(0),
+            body: Event::midi1(0xA0, 67, 90),
+        }],
+    );
+    assert!(poly > pressed + 0.1, "onPolyAfterTouch did not run: {poly}");
+}
+
 /// KSP manual (MIDI object): `mf_insert_file` in `on init` reads at once, a
 /// note off becomes the note's length, and the position marker walks the
 /// events in time order across tracks.
