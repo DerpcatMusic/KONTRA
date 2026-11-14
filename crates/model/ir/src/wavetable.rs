@@ -34,6 +34,36 @@ pub struct ModOsc {
     pub tune_range: (f32, f32),
     /// The FM kinds' frequency swing at amount 1, Hz.
     pub fm_hz: f32,
+    /// Its wave: `$NI_WT_MOD_WAVE_*` 0 sine, 1 triangle, 2..=8 the TX waves.
+    pub wave: u8,
+    /// What `tune` is in.
+    pub unit: TuneUnit,
+}
+
+/// How a mod oscillator's tune reads (`$NI_WT_MOD_TUNE_UNIT_*`; the value is the discriminant).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TuneUnit {
+    /// −36..+36 semitones from the note, linear over the knob.
+    #[default]
+    Semitones,
+    /// A whole harmonic of the note above the middle, a whole subharmonic
+    /// below it: `n = round(1 + 15·|2x − 1|)`.
+    Ratio,
+    /// A fixed frequency whatever the note, `0.5·20000^x` Hz.
+    Hz,
+}
+
+impl TuneUnit {
+    /// The unit a script's `$NI_WT_MOD_TUNE_UNIT_*` value names.
+    #[must_use]
+    pub fn from_index(i: i32) -> Option<Self> {
+        Some(match i {
+            0 => Self::Semitones,
+            1 => Self::Ratio,
+            2 => Self::Hz,
+            _ => return None,
+        })
+    }
 }
 
 impl ModOsc {
@@ -43,6 +73,8 @@ impl ModOsc {
         tune: 0.5,
         tune_range: (1.0, 1.0),
         fm_hz: 0.0,
+        wave: 0,
+        unit: TuneUnit::Semitones,
     };
 }
 
@@ -99,6 +131,9 @@ pub enum TableValue {
     /// [`ModOsc::amount`] and [`ModOsc::tune`].
     ModAmount,
     ModTune,
+    /// [`Wavetable::phase`] and [`Wavetable::phase_random`].
+    Phase,
+    PhaseRandom,
 }
 
 /// One form: a bend of the read phase, then a shaper of what it read.

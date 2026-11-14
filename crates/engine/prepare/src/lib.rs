@@ -686,6 +686,12 @@ pub fn read(w: ir::Wavetable) -> Read {
             tune: w.modosc.tune,
             tune_range: w.modosc.tune_range,
             fm_hz: w.modosc.fm_hz,
+            wave: w.modosc.wave,
+            unit: match w.modosc.unit {
+                ir::TuneUnit::Semitones => kontra_voice::Unit::Semitones,
+                ir::TuneUnit::Ratio => kontra_voice::Unit::Ratio,
+                ir::TuneUnit::Hz => kontra_voice::Unit::Hz,
+            },
         },
         rate: 48_000.0,
         warps: w.warps.map(warp),

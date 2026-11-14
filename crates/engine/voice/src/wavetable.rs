@@ -46,7 +46,26 @@ pub struct ModOsc {
     pub tune: f32,
     pub tune_range: (f32, f32),
     pub fm_hz: f32,
+    /// `$NI_WT_MOD_WAVE_*`: 0 sine, 1 triangle, 2..=8 the TX waves.
+    pub wave: u8,
+    pub unit: Unit,
 }
+
+/// What a mod oscillator's tune is in (`kontra_ir::TuneUnit`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Unit {
+    #[default]
+    Semitones,
+    Ratio,
+    Hz,
+}
+
+/// Fixed-frequency tune: `HZ_LOW · (HZ_HIGH / HZ_LOW)^x` (Kontakt 8.13.1: 5.9, 70.7, 840.9, 10 000 Hz
+/// at x = ¼, ½, ¾, 1).
+const HZ_LOW: f32 = 0.5;
+const HZ_HIGH: f32 = 10_000.0;
+/// Ratio tune: whole harmonics up to this many above the middle, subharmonics below.
+const RATIO_REACH: f32 = 15.0;
 
 impl ModOsc {
     pub const OFF: Self = Self {
@@ -55,17 +74,59 @@ impl ModOsc {
         tune: 0.5,
         tune_range: (1.0, 1.0),
         fm_hz: 0.0,
+        wave: 0,
+        unit: Unit::Semitones,
     };
 
-    /// Its frequency over the note's.
+    /// Its frequency over the note's, for the units that follow the note;
+    /// a fixed-Hz tune has none (see [`ModOsc::cycles`]).
     #[must_use]
     pub fn ratio(self) -> f32 {
-        let (lo, hi) = self.tune_range;
-        if lo > 0.0 {
-            lo * (hi / lo).powf(self.tune.clamp(0.0, 1.0))
-        } else {
-            1.0
+        let x = self.tune.clamp(0.0, 1.0);
+        match self.unit {
+            Unit::Semitones | Unit::Hz => {
+                let (lo, hi) = self.tune_range;
+                if lo > 0.0 { lo * (hi / lo).powf(x) } else { 1.0 }
+            }
+            // n = round(1 + 15·|2x − 1|): a harmonic above the middle, 1/n below.
+            Unit::Ratio => {
+                let n = (1.0 + RATIO_REACH * (2.0 * x - 1.0).abs()).round();
+                if x < 0.5 { 1.0 / n } else { n }
+            }
         }
+    }
+
+    /// Cycles it turns per output frame, when the note turns `note` (cycles
+    /// per frame) at host rate `rate`.
+    #[must_use]
+    pub fn cycles(self, note: f64, rate: f64) -> f64 {
+        match self.unit {
+            Unit::Hz => {
+                let x = f64::from(self.tune.clamp(0.0, 1.0));
+                f64::from(HZ_LOW) * (f64::from(HZ_HIGH / HZ_LOW)).powf(x) / rate
+            }
+            _ => note * f64::from(self.ratio()),
+        }
+    }
+
+    /// Its wave at `phase` (cycles, 0..1), peak 1 for the sine.
+    #[must_use]
+    pub fn wave_at(self, phase: f64) -> f64 {
+        let Some(table) = usize::from(self.wave)
+            .checked_sub(1)
+            .and_then(|w| crate::mod_waves::WAVES.get(w))
+        else {
+            return (std::f64::consts::TAU * phase).sin();
+        };
+        let at = phase.rem_euclid(1.0) * crate::mod_waves::STEPS as f64;
+        let i = at as usize;
+        let at_step = |k: usize| {
+            table
+                .get(k % crate::mod_waves::STEPS)
+                .map_or(0.0, |&v| f64::from(v) / 32767.0)
+        };
+        let f = at.fract();
+        at_step(i) + (at_step(i + 1) - at_step(i)) * f
     }
 }
 
@@ -348,13 +409,13 @@ impl Table {
         let a = osc.amount.clamp(0.0, 1.0);
         let a64 = f64::from(a);
         let cycles = step / PERIOD * rate;
-        let mod_step = cycles * f64::from(osc.ratio());
+        let mod_step = osc.cycles(cycles, f64::from(self.read.rate.max(1.0)));
         let hz = f64::from(osc.fm_hz) / f64::from(self.read.rate.max(1.0));
         let gain = self.read.gain;
         let mut st = self.osc;
         for (i, frame) in out.iter_mut().enumerate() {
             let cursor = (x + i as f64 * step) / PERIOD;
-            let m = (std::f64::consts::TAU * st.phase).sin();
+            let m = osc.wave_at(st.phase);
             let y = f64::from(st.last);
             let pm = match osc.kind {
                 ModKind::Pm => a64 * m,
@@ -574,5 +635,71 @@ mod tests {
         assert!(Table::new((vec![0; 8].into(), 1.0), spans.clone(), read).is_some());
         assert!(Table::new((vec![0; 4].into(), 1.0), spans, read).is_none());
         assert!(Table::new((vec![0; 8].into(), 1.0), vec![(0, 8); 3].into(), read).is_none());
+    }
+
+    fn osc(unit: Unit, tune: f32) -> ModOsc {
+        ModOsc {
+            unit,
+            tune,
+            tune_range: (0.125, 8.0),
+            ..ModOsc::OFF
+        }
+    }
+
+    /// Kontakt 8.13.1, tools/kontakt-oracle/wt_mod_waves.py: semitones are
+    /// −36..+36 over the knob; ratio steps whole harmonics (510000 reads 1,
+    /// 520000 2, 540000 2, 600000 4, 900000 13, 480000 ½, 250000 ⅑, 0 1/16);
+    /// Hz is 0.5·20000^x whatever the note.
+    #[test]
+    fn a_mod_oscillators_tune_reads_in_its_unit() {
+        let r = |x| osc(Unit::Ratio, x).ratio();
+        for (x, want) in [
+            (0.5, 1.0),
+            (0.51, 1.0),
+            (0.52, 2.0),
+            (0.54, 2.0),
+            (0.6, 4.0),
+            (0.75, 9.0),
+            (0.9, 13.0),
+            (1.0, 16.0),
+            (0.48, 0.5),
+            (0.4, 0.25),
+            (0.25, 1.0 / 9.0),
+            (0.1, 1.0 / 13.0),
+            (0.0, 1.0 / 16.0),
+        ] {
+            assert!((r(x) - want).abs() < 1e-5, "ratio at {x}: {} vs {want}", r(x));
+        }
+        let st = |x| osc(Unit::Semitones, x).ratio();
+        assert!((st(0.0) - 0.125).abs() < 1e-6 && (st(0.5) - 1.0).abs() < 1e-6 && (st(1.0) - 8.0).abs() < 1e-5);
+        // 440 Hz and 1 kHz notes alike: a fixed frequency.
+        for note in [440.0 / 48_000.0, 1_000.0 / 48_000.0] {
+            for (x, hz) in [(0.25, 5.946), (0.5, 70.71), (0.75, 840.9), (1.0, 10_000.0)] {
+                let got = osc(Unit::Hz, x).cycles(note, 48_000.0) * 48_000.0;
+                assert!((got - hz).abs() < 0.01 * hz, "{got} Hz at {x}, want {hz}");
+            }
+        }
+        // A following unit moves with the note.
+        assert!((osc(Unit::Ratio, 0.6).cycles(0.01, 48_000.0) - 0.04).abs() < 1e-9);
+    }
+
+    /// The waves are the sine, then Kontakt's own eight (peak 1 of the sine's):
+    /// TX3 is the sine's positive half in the first half of the cycle and silent
+    /// in the second.
+    #[test]
+    fn the_mod_oscillators_waves_are_kontakts() {
+        let wave = |w, p| ModOsc { wave: w, ..ModOsc::OFF }.wave_at(p);
+        assert!((wave(0, 0.25) - 1.0).abs() < 1e-12);
+        for w in 0..=8 {
+            let peak = (0..1000).map(|i| wave(w, f64::from(i) / 1000.0).abs()).fold(0.0, f64::max);
+            assert!((0.65..=1.01).contains(&peak), "wave {w} peaks at {peak}");
+            assert!(wave(w, 0.0).abs() < 0.02, "wave {w} starts at {}", wave(w, 0.0));
+        }
+        assert!((wave(3, 0.25) - 1.0).abs() < 0.01);
+        assert!((0..100).all(|i| wave(3, 0.5 + f64::from(i) / 200.0).abs() < 0.01));
+        // The triangle is the rounded one, 0.70 of the sine's peak.
+        assert!((wave(1, 0.25) - 0.7).abs() < 0.02);
+        // Past TX8 plays the sine.
+        assert!((wave(12, 0.25) - 1.0).abs() < 1e-12);
     }
 }
