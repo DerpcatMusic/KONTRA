@@ -220,3 +220,16 @@ fn a_multis_own_script_is_read_from_its_bank() {
         scripts[0].source
     );
 }
+
+/// A wavetable group plays the quality it saved: 1..=4 are LOFI..BEST (Kontakt 8.13.1 saved the same patch
+/// at each `$NI_WT_QUALITY_*`), and a patch that set none saves 3, HIGH, the default.
+#[test]
+fn a_wavetable_group_keeps_its_saved_quality() {
+    use kontra_ir::Quality::{Best, High, Lofi, Medium};
+    for (name, want) in [("lofi", Lofi), ("medium", Medium), ("high", High), ("best", Best), ("none", High)] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/data/wt-quality-{name}.nki"));
+        let i = kontra_format_kontakt::load(&path).unwrap();
+        let table = i.groups[0].wavetable.as_ref().unwrap();
+        assert_eq!(table.quality, want, "{name}");
+    }
+}

@@ -402,3 +402,26 @@ fn a_stretched_table_moves_its_partials() {
     assert!((third / first - 0.5).abs() < 0.01, "{third} / {first}");
     assert!(octave < 0.01 * first, "{octave}");
 }
+
+/// A group's saved quality reaches its voices' read; nothing is swapped for the default.
+#[test]
+fn a_wavetables_quality_reaches_the_read() {
+    use kontra_voice::Quality as V;
+    let read = |quality| {
+        kontra_prepare::read(ir::Wavetable {
+            position: 0.0,
+            phase: 0.0,
+            phase_random: 0.0,
+            gain: 1.0,
+            inharmonic: ir::Inharmonic::OFF,
+            modosc: ir::ModOsc::OFF,
+            quality,
+            warps: [ir::Warp::OFF; 2],
+        })
+        .quality
+    };
+    assert_eq!(read(ir::Quality::Lofi), V::Lofi);
+    assert_eq!(read(ir::Quality::Medium), V::Medium);
+    assert_eq!(read(ir::Quality::High), V::High);
+    assert_eq!(read(ir::Quality::Best), V::Best);
+}
