@@ -279,9 +279,9 @@ fn frames(
 ) {
     let (w, h) = (c.w as f64, c.h as f64);
     let n = wave.frames.len();
-    // ponytail: the current frame is the first; the group's wavetable
-    // position (and its modulation) is not read yet.
-    let current = 0;
+    // ponytail: the group's set position; its modulation and script moves
+    // need the engine's live position (unprobed in Kontakt).
+    let current = wave.frame.min(n.saturating_sub(1));
     let p = parallax.map(|v| if three_d { f64::from(v) / 1e6 } else { 0. });
     let (bw, bh) = (w / (1. + p[0].abs()), h / (1. + p[1].abs()));
     let (tx, ty) = (w - bw, h - bh);
@@ -331,7 +331,8 @@ fn frames(
     });
 }
 
-/// `cycle` as a one-point line through a box at `at` of `size`, inked by
+/// `cycle` as a one-point line through a box at `at` of `size`, from and
+/// back to its centre line (oracle probe/wave.ksp panels 2 and 5), inked by
 /// `paint` along it (0 at its left, 1 at its right).
 fn line(
     c: &mut Canvas,
@@ -360,7 +361,12 @@ fn line(
             continue;
         }
         let (ya, yb) = (y_at(u0), y_at(u1));
-        let (top, bottom) = (ya.min(yb) - half, ya.max(yb) + half);
+        // The line leaves and rejoins the box's centre line at its ends: a
+        // cycle that starts or ends off zero shows a vertical there.
+        let end = u0 <= 0. || u1 >= 1.;
+        let (lo, hi) = (ya.min(yb), ya.max(yb));
+        let (lo, hi) = if end { (lo.min(mid), hi.max(mid)) } else { (lo, hi) };
+        let (top, bottom) = (lo - half, hi + half);
         let (ink, a) = paint((u0 + u1) / 2.);
         for y in top.floor().max(0.) as usize..(bottom.ceil() as usize).min(c.h) {
             let cover = (bottom.min(y as f64 + 1.) - top.max(y as f64)).clamp(0., 1.);

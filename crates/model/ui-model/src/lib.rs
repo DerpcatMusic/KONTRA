@@ -453,6 +453,8 @@ pub struct Waveform {
     pub density: Vec<u16>,
     /// A wavetable's frames, each [`FRAME_POINTS`] levels, ±127 full scale.
     pub frames: Vec<Vec<i8>>,
+    /// The frame the table plays: its group's position, nearest frame.
+    pub frame: usize,
     /// Alphas the source set: background, wave, wave end, other frames,
     /// their end (KSP `BG_ALPHA`, `WAVE_ALPHA`, ..., 0 to 255).
     pub alpha: [Option<u8>; 5],

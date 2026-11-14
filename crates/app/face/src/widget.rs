@@ -254,6 +254,7 @@ pub(super) fn widget(
             }),
             density: vec![],
             frames: vec![],
+            frame: 0,
             alpha: [
                 "$CONTROL_PAR_BG_ALPHA",
                 "$CONTROL_PAR_WAVE_ALPHA",

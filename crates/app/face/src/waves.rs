@@ -25,12 +25,15 @@ struct Read {
     length_us: i64,
     density: Arc<[u16]>,
     frames: Arc<[Vec<i8>]>,
+    /// The frame its group's table position plays.
+    frame: usize,
 }
 
 /// The instrument's zone samples by zone number, and those read so far.
 #[derive(Clone, Debug, Default)]
 pub struct Waves {
-    zones: Arc<[(u32, ir::Sample)]>,
+    /// Each zone's sample, and its group's table position (0 ..= 1).
+    zones: Arc<[(u32, ir::Sample, f32)]>,
     read: HashMap<u32, Option<Read>>,
 }
 
@@ -39,8 +42,11 @@ impl Waves {
     #[must_use]
     pub fn of(instrument: &ir::Instrument) -> Self {
         let zones = (instrument.groups.iter())
-            .flat_map(|g| &g.zones)
-            .filter_map(|z| Some((z.id, instrument.samples.get(z.sample)?.clone())))
+            .flat_map(|g| {
+                let at = g.wavetable.map_or(0., |t| t.position);
+                g.zones.iter().map(move |z| (z, at))
+            })
+            .filter_map(|(z, at)| Some((z.id, instrument.samples.get(z.sample)?.clone(), at)))
             .collect();
         Self {
             zones,
@@ -64,8 +70,8 @@ impl Waves {
             };
             let zones = &self.zones;
             let read = self.read.entry(zone).or_insert_with(|| {
-                let (_, sample) = zones.iter().find(|(id, _)| *id == zone)?;
-                peaks(sample)
+                let (_, sample, at) = zones.iter().find(|(id, ..)| *id == zone)?;
+                peaks(sample, *at)
             });
             if let Some(read) = read {
                 if *wave.peaks != *read.peaks {
@@ -77,6 +83,7 @@ impl Waves {
                 if table && *wave.frames != *read.frames {
                     wave.frames = read.frames.to_vec();
                 }
+                wave.frame = read.frame;
                 wave.length_us = read.length_us;
             }
         }
@@ -86,8 +93,9 @@ impl Waves {
 /// `sample` as [`COLUMNS`] columns of its channels' lowest and highest
 /// level and of how its (channel-mixed) samples spread down
 /// [`model::WAVE_BINS`] bands, its length in microseconds, and its
-/// [`FRAME`]-sample frames at [`model::FRAME_POINTS`] points each.
-fn peaks(sample: &ir::Sample) -> Option<Read> {
+/// [`FRAME`]-sample frames at [`model::FRAME_POINTS`] points each, the
+/// one at table position `at` (0 ..= 1) playing.
+fn peaks(sample: &ir::Sample, at: f32) -> Option<Read> {
     let (rate, frames) = kontra_stream::decode(sample, MAX_FRAMES).ok()?;
     let per = frames.len().div_ceil(COLUMNS).max(1);
     let level = |x: f32| (x.clamp(-1., 1.) * 127.).round() as i8;
@@ -112,7 +120,7 @@ fn peaks(sample: &ir::Sample) -> Option<Read> {
         .collect();
     let points = model::FRAME_POINTS;
     // Whole frames only: a sample shorter than one has none.
-    let cycles = (frames.as_chunks::<FRAME>().0.iter())
+    let cycles: Arc<[Vec<i8>]> = (frames.as_chunks::<FRAME>().0.iter())
         .map(|cycle| {
             (0..points)
                 .map(|i| cycle.get(i * FRAME / points).map_or(0, |f| level(mono(f))))
@@ -124,6 +132,7 @@ fn peaks(sample: &ir::Sample) -> Option<Read> {
         peaks,
         length_us: length as i64,
         density: density.into(),
+        frame: (f64::from(at.clamp(0., 1.)) * cycles.len().saturating_sub(1) as f64).round() as usize,
         frames: cycles,
     })
 }

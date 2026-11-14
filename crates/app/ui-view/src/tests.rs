@@ -1010,6 +1010,7 @@ fn a_waveform_background_blends_over_its_field_at_its_alpha() {
         xray: false,
         density: vec![],
         frames: vec![],
+        frame: 0,
         alpha: [Some(128), None, None, None, None],
     };
     let img = crate::wave::raster(&wave, crate::wave::Look::of(&w), (20, 10, 1.));

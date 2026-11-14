@@ -507,7 +507,7 @@ fn drawn_page(
                 let wl = wave::Look::of(wd);
                 let px = |v: f64| (v / scale * device).round() as usize;
                 let (pw, ph) = (px(w), px(h));
-                let key = (v.zone, v.peaks.len(), v.density.len(), v.frames.len());
+                let key = (v.zone, v.peaks.len(), v.density.len(), v.frames.len(), v.frame);
                 let key = (key, v.xray, v.alpha, wl, pw, ph, device.to_bits());
                 let id = format!("kontra-wave-{face}-{}", n.0);
                 let pic = ui.memo(id, key, |_| match wave::raster(v, wl, (pw, ph, device)) {
