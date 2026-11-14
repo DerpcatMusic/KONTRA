@@ -309,11 +309,15 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
             .min_w(0),
         false => name,
     };
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    // Kontakt's instrument header: the instrument and its snapshots.
+    let family = kontra_ui_model::preset_family(&presets, p.preset);
+    let listed: Vec<&str> = (family.iter())
+        .filter_map(|&n| names.get(n).map(String::as_str))
+        .collect();
     let current = p.preset.filter(|&n| n < names.len());
     // v2's preset field beside the name: what plays, or what to pick; a
     // star once the player changed it, as UVI marks an edited preset.
-    let named = current.and_then(|c| names.get(c).copied());
+    let named = current.and_then(|c| names.get(c)).map(String::as_str);
     let starred;
     let shown = match (named, p.modified) {
         (Some(name), true) => {
@@ -323,15 +327,16 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         (Some(name), false) => name,
         (None, _) => "Select preset…",
     };
+    let picked = current.and_then(|c| family.iter().position(|&n| n == c));
     let preset = kit::dropdown(
         ui,
         menu,
         &id("preset"),
         (None, shown, &format!("Preset: {shown}")),
-        &names,
-        current,
+        &listed,
+        picked,
     );
-    if let Some(preset) = preset.changed {
+    if let Some(preset) = preset.changed.and_then(|k| family.get(k).copied()) {
         out.push(Action::Switch { part: n, preset });
     }
     // The player's own presets: save, rename, delete, in the More menu.

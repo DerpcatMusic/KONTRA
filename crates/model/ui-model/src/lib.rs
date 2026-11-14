@@ -21,7 +21,7 @@ mod preset_name;
 mod scroll;
 mod value;
 pub use canvas::{Paint, Seg};
-pub use preset_name::preset_file_name;
+pub use preset_name::{preset_family, preset_file_name};
 
 macro_rules! reference {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(
