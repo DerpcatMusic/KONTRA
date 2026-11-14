@@ -21,8 +21,10 @@ type Hook = unsafe extern "C-unwind" fn(*mut ffi::lua_State, c_int);
 static MLUA: OnceLock<Hook> = OnceLock::new();
 
 thread_local! {
-    static TICKS: Cell<u32> = const { Cell::new(0) };
+    /// Safepoints until the next call of mlua's interrupt.
+    static LEFT: Cell<u32> = const { Cell::new(STRIDE) };
     static EVERY: Cell<u32> = const { Cell::new(STRIDE) };
+    static PAST: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Safepoints per call of mlua's interrupt from now on. A run that must
@@ -33,6 +35,19 @@ thread_local! {
 /// on the others.
 pub(crate) fn set_stride(every: u32) {
     EVERY.with(|e| e.set(every.max(1)));
+    LEFT.with(|l| l.set(every.max(1)));
+}
+
+/// The run's slice is spent: from now on only the safepoints Luau can yield
+/// at reach mlua's interrupt. The pattern matcher (`string.find`, `gmatch`)
+/// fires the interrupt at every step, inside a C call that cannot yield; a
+/// long match is hundreds of thousands of refused requests, and each one that
+/// ran the callback cost more than the match itself.
+pub(crate) fn set_past(past: bool) {
+    PAST.with(|p| p.set(past));
+    if past {
+        LEFT.with(|l| l.set(1));
+    }
 }
 
 /// What each call of mlua's interrupt stands for now.
@@ -44,12 +59,20 @@ unsafe extern "C-unwind" fn strided(state: *mut ffi::lua_State, gc: c_int) {
     if gc >= 0 {
         crate::probe::gc_edge();
     }
-    let due = TICKS.with(|t| {
-        let n = t.get().wrapping_add(1);
-        t.set(n);
-        n % stride() == 0
-    });
-    if due && let Some(hook) = MLUA.get() {
+    // The pattern matcher fires this at every step: the common case is one
+    // counter, down by one.
+    let left = LEFT.with(Cell::get);
+    if left > 1 {
+        LEFT.with(|l| l.set(left - 1));
+        return;
+    }
+    let past = PAST.with(Cell::get);
+    // SAFETY: `state` is the running thread, as Luau passes it.
+    if past && unsafe { ffi::lua_isyieldable(state) } == 0 {
+        return;
+    }
+    LEFT.with(|l| l.set(if past { 1 } else { stride() }));
+    if let Some(hook) = MLUA.get() {
         // SAFETY: mlua's own interrupt, called as Luau would call it.
         unsafe { hook(state, gc) };
     }
