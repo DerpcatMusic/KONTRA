@@ -28,6 +28,8 @@ for line in pathlib.Path(sys.argv[2]).read_text().splitlines():
     kind, name, st = line.split("\t")
     status[(kind, name.lower() if kind != "par" else name.lstrip("$").upper())] = st
 
+# Names the manual misspells in its own examples (real ones are listed beside them).
+TYPOS = {"$EVENT_PAR_MIDI_CHANNNEL", "$CUSTOM_EVENT_PAR_4", "$NI_VL_TMRPO_HQ"}
 SECTIONS = ["General Commands", "Array Commands", "Engine Parameter Commands", "Event Commands",
             "Group Commands", "Keyboard Commands", "Load/Save Commands", "MIDI Object Commands",
             "Music Information Retrieval", "Time-Related Commands", "User Interface Commands",
@@ -64,7 +66,7 @@ for i, line in enumerate(manual):
         items.setdefault(("fn", m[1]), sec)
     elif m := var.match(line):
         name = m[1]
-        if name.endswith(("_", "#")):  # a family prefix, not a name
+        if name.endswith(("_", "#")) or name in TYPOS:  # a family prefix, or a typo in the manual
             continue
         up = name.upper()
         if "ENGINE_PAR" in up:
@@ -99,7 +101,8 @@ test_text = "\n".join((ROOT / f).read_text(errors="ignore") for f in text if (RO
 CB = {"init": "init", "note": "note", "release": "release", "controller": "controller", "poly_at": "polyat",
       "ui_control": "uicontrol", "ui_controls": "uicontrols", "ui_update": "uiupdate", "listener": "listener",
       "pgs_changed": "pgschanged", "persistence_changed": "persistencechanged",
-      "async_complete": "asynccomplete", "rpn": "rpn", "nrpn": "nrpn"}
+      "async_complete": "asynccomplete", "rpn": "rpn", "nrpn": "nrpn",
+      "note_controller": "notecontroller", "midi_in": "midiin"}
 
 rows = []
 for (kind, name), sec in items.items():
@@ -115,7 +118,9 @@ for (kind, name), sec in items.items():
         got = "done" if ("par", name.lstrip("$").upper()) in status else "missing"
     else:
         bare = name.lstrip("$%~@!").upper()
-        got = "done" if ("fn", name.lstrip("$%~@!").lower()) in status or ("fn", name.lower()) in status \
+        bare_lc = name.lstrip("$%~@!").lower()
+        known_fn = any(("fn", p + bare_lc) in status for p in ("", "$", "%"))
+        got = "done" if known_fn \
             else "done" if bare in valued else "partial" if bare in vendor else "missing"
     if got == "done" and re.search(r"\b" + re.escape(key.lstrip("$%~@!")) + r"\b", test_text):
         got = "tested"

@@ -266,7 +266,7 @@ impl Engine {
 }
 
 impl Heard {
-    fn of(ran: &Running) -> Self {
+    pub(crate) fn of(ran: &Running) -> Self {
         match (ran.ignore_controller, ran.set_own) {
             (false, _) => Self::Passed,
             (true, false) => Self::Ignored,

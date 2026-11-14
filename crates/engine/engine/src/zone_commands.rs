@@ -45,7 +45,7 @@ pub fn detect_sample(sample: &ir::Sample, what: u8) -> Option<f64> {
         rate,
     };
     match kind {
-        Kind::Key => detect::key(&audio).map(f64::from),
+        Kind::Key => detect::key(&audio).map(|k| f64::from(detect::key_tag(k))),
         Kind::Pitch => detect::pitch(&audio),
         Kind::Loudness => detect::loudness(&audio),
         Kind::Peak => detect::peak(&audio),
@@ -58,7 +58,8 @@ pub fn detect_sample(sample: &ir::Sample, what: u8) -> Option<f64> {
 /// What a failed detection reads, as the constants `~NI_DETECT_*_INVALID`.
 fn invalid(what: u8) -> f64 {
     match kind_of(what) {
-        Kind::Key | Kind::Class => -1.0,
+        Kind::Key => f64::from(detect::KEY_INVALID),
+        Kind::Class => -1.0,
         Kind::Pitch | Kind::Tempo => -1.0,
         Kind::Loudness | Kind::Peak | Kind::Rms => -1000.0,
     }
@@ -156,7 +157,7 @@ impl Engine {
                     self.start_async(Exit::Failed)
                 })
             }
-            SetNumUserZones | SetMidi => {
+            SetNumUserZones => {
                 self.count_unhandled(call.action);
                 HostValue::Nothing
             }
