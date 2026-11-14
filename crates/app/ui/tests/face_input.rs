@@ -383,3 +383,27 @@ fn a_momentary_button_rebuilt_while_held_reports_its_release() {
         "{release:?}"
     );
 }
+
+/// A pad that reports its release runs its callback once, not once per
+/// cell it holds: a press and release that do not move send one edit.
+#[test]
+fn an_xy_pad_reports_its_release_once() {
+    let mut f = Face::new();
+    let mut pad = Widget::new(
+        "?pad",
+        PageRef(0),
+        Rect::new(220, 150, 100, 100),
+        Kind::Xy {
+            cursors: 1,
+            sensitivity: [None; 2],
+            mouse_mode: Some(1),
+        },
+    );
+    pad.value = Some(model::Value::Reals(vec![0.5, 0.5]));
+    pad.reports_release = true;
+    f.tree.widgets.push(pad);
+    let n = f.tree.widgets.len() - 1;
+    f.frame(Input::default());
+    let edits = f.click(&input::surface(0, n), Mods::default());
+    assert_eq!(edits.len(), 1, "{edits:?}");
+}
