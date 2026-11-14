@@ -2441,3 +2441,37 @@ fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
     let table = &out.knob_blends[usize::from(t)].terms[0].input.table;
     assert!((table[0] + 1.0).abs() < 1e-6 && table[32].abs() < 1e-6, "{table:?}");
 }
+
+#[test]
+fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
+    // VWinds' sustain layer: 2 notes of a keygroup sounding 2 zones (a
+    // bundle); a Mono Portamento layer: 1 note, its glide reported.
+    let xml = r#"<Program Gain="1">
+      <Layers>
+        <Layer Gain="1" Pan="0" CustomPolyphony="2" PlayMode="0"><Keygroups>
+          <Keygroup><Oscillators><SamplePlayer SamplePath="./a.wav*./b.wav*"/></Oscillators></Keygroup>
+        </Keygroups></Layer>
+        <Layer Gain="1" Pan="0" CustomPolyphony="0" PlayMode="3" DisplayName="Lead"><Keygroups>
+          <Keygroup><Oscillators><SamplePlayer SamplePath="./c.wav"/></Oscillators></Keygroup>
+        </Keygroups></Layer>
+        <Layer Gain="1" Pan="0" CustomPolyphony="0" PlayMode="0"><Keygroups>
+          <Keygroup><Oscillators><SamplePlayer SamplePath="./d.wav"/></Oscillators></Keygroup>
+        </Keygroups></Layer>
+      </Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let limits: Vec<_> = out
+        .groups
+        .iter()
+        .map(|g| g.voice_group.map(|v| out.voice_groups[v].voices))
+        .collect();
+    assert_eq!(limits, [Some(4), Some(1), None]);
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.feature.contains("portamento") && d.detail.contains("Lead")),
+        "{:?}",
+        out.diagnostics
+    );
+}

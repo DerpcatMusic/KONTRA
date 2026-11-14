@@ -104,6 +104,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "  {modded} zones with S.Mod, sum S.Mod {start_mod} frames, sum sample frames x channels {frames}"
             );
         }
+        if std::env::var_os("KONTRA_GAPS").is_some() {
+            // What the instrument carries besides its zones: scripts and their data.
+            let data: usize = (ir.scripts.iter())
+                .map(|s| s.source.len() + s.data.iter().map(|(_, d)| d.len()).sum::<usize>())
+                .sum();
+            println!("  {} scripts, {:.1} MB of script source and data", ir.scripts.len(), data as f64 / 1e6);
+            let g = &ir.groups;
+            let sum = |f: &dyn Fn(&kontra_engine::ir::Group) -> usize| g.iter().map(f).sum::<usize>();
+            println!(
+                "  {} groups: inserts {} (Effect {} B), mods {} (Mod {} B), routes {} (targets {}), lfos {}, envelopes {} (points {}), shaper bytes {}, blends {}, start {}",
+                g.len(),
+                sum(&|g| g.inserts.len()),
+                std::mem::size_of::<Option<kontra_engine::ir::Effect>>(),
+                sum(&|g| g.mods.len()),
+                std::mem::size_of::<kontra_engine::ir::Mod>(),
+                sum(&|g| g.routes.len()),
+                sum(&|g| g.routes.iter().map(|r| r.names.len()).sum::<usize>()),
+                sum(&|g| g.lfos.len()),
+                sum(&|g| g.envelopes.len()),
+                sum(&|g| g.envelopes.iter().map(|e| e.points.len()).sum::<usize>()),
+                sum(&|g| g.shapers.iter().map(|t| t.table.len() * 4).sum::<usize>()),
+                sum(&|g| g.blends.len()),
+                sum(&|g| g.start.len()),
+            );
+        }
         let loaded = kontra_host::instrument::build(ir, 48_000, &mut store);
         let pinned = store.pinned_bytes() as f64 / 1e6;
         println!(
@@ -118,6 +143,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             rss_split().0,
             rss_split().1
         );
+        if std::env::var_os("KONTRA_GAPS").is_some() {
+            gaps(&loaded);
+        }
         if let Some(seconds) = std::env::var("KONTRA_PLAY_SECONDS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -142,6 +170,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     Ok(())
+}
+
+/// Peak resident memory of the process, MB.
+fn peak_mb() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    (status.lines())
+        .find(|l| l.starts_with("VmHWM:"))
+        .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .unwrap_or(0)
+        / 1024
+}
+
+/// What did not load: the loader's diagnostics by impact and feature, then
+/// what the scripts' `on init` left unanswered (an engine runs it).
+fn gaps(loaded: &kontra_host::instrument::Loaded) {
+    let mut by: std::collections::BTreeMap<(std::cmp::Reverse<kontra_engine::ir::Impact>, &str), (usize, &str)> =
+        Default::default();
+    for d in &loaded.diagnostics {
+        let e = by
+            .entry((std::cmp::Reverse(d.impact), d.feature.as_str()))
+            .or_insert((0, d.detail.as_str()));
+        e.0 += 1;
+    }
+    println!("  peak rss {} MB; diagnostics {}", peak_mb(), loaded.diagnostics.len());
+    for ((impact, feature), (n, detail)) in &by {
+        let detail: String = detail.chars().take(140).collect::<String>().replace('\n', " / ");
+        println!("  GAP\t{:?}\t{feature}\t{n}\t{detail}", impact.0);
+    }
+    let store = Store::new(StoreConfig::DEFAULT).expect("store");
+    let engine = Engine::new(Arc::new(loaded.plan.clone()), store.client(), 48_000);
+    for (action, n) in engine.unhandled_actions() {
+        println!("  UNANSWERED\t{action:?}\t{n}");
+    }
 }
 
 /// Four-note chords every half second, wandering over the keyboard, for
