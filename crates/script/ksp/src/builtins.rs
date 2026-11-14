@@ -361,6 +361,7 @@ builtins! {
         GetKeyTriggerstate "get_key_triggerstate" [I] 0 Int;
         SetKeyrange "set_keyrange" [I I S] 0 Void;
         RemoveKeyrange "remove_keyrange" [I] 0 Void;
+        SetPolyAt "set_poly_at" [I I] 0 Void;
         GetKeyrangeMinNote "get_keyrange_min_note" [I] 0 Int;
         GetKeyrangeMaxNote "get_keyrange_max_note" [I] 0 Int;
         GetKeyrangeName "get_keyrange_name" [I] 0 Text;

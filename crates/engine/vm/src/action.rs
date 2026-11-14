@@ -345,6 +345,7 @@ actions! {
     GetKeyTriggerstate,
     SetKeyrange,
     RemoveKeyrange,
+    SetPolyAt,
     GetKeyrangeMinNote,
     GetKeyrangeMaxNote,
     GetKeyrangeName,
