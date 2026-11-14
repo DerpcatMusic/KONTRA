@@ -43,7 +43,16 @@ pub struct Controls {
     /// The parameter ids that read whether Shift, Alt and Ctrl were held at
     /// the control's last click; `i32::MIN` when the script never names one.
     pub key_pars: [i32; 3],
+    /// By UI id, each control's `$NI_CONTROL_TYPE_*` (0: a variable that is
+    /// no control), what `$CONTROL_PAR_TYPE` reads.
+    pub kinds: Vec<u8>,
+    /// The parameter ids of `$CONTROL_PAR_TYPE`, `_WIDTH` and `_HEIGHT`.
+    pub shape_pars: [i32; 3],
 }
+
+/// The size a control reads before its script sets one: every type answers
+/// 87 x 18 (Kontakt 8 oracle, `tools/ksp-ui` widgets page), a knob too.
+const DEFAULT_SIZE: [i32; 2] = [87, 18];
 
 impl Controls {
     /// The control whose value lives in `cell`.
@@ -55,6 +64,20 @@ impl Controls {
 }
 
 impl Controls {
+    /// What parameter `par` of control `n` reads before the script sets it.
+    fn unset(&self, n: usize, par: i32) -> i32 {
+        let kind = self.kinds.get(n).copied().unwrap_or(0);
+        match self
+            .shape_pars
+            .iter()
+            .position(|&p| p == par && p != i32::MIN)
+        {
+            Some(0) => i32::from(kind),
+            Some(at) if kind != 0 => DEFAULT_SIZE.get(at - 1).copied().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     /// Index of the control with UI id `id`.
     #[must_use]
     pub fn index(&self, id: i32) -> Option<usize> {
@@ -124,7 +147,7 @@ impl Store {
             Some((_, Some(cell))) => cells.get(cell).map_or(0, |&v| v as i32),
             Some((n, None)) => (self.pars(slot, n).iter())
                 .find(|(p, _)| *p == par)
-                .map_or(0, |&(_, v)| v),
+                .map_or_else(|| c.unset(n, par), |&(_, v)| v),
             None => 0,
         }
     }
@@ -280,7 +303,16 @@ impl Store {
             Action::AttachZone => &[(look.wf_zone, a), (look.wf_flags, b)],
             Action::SetUiWfProperty if a == look.wf_prop_cursor => &[(look.wf_cursor, int(3))],
             Action::SetUiWfProperty if a == look.wf_prop_flags => &[(look.wf_flags, int(3))],
-            Action::MoveControl => &[(look.grid_x, a), (look.grid_y, b)],
+            // The position reads back on Kontakt's grid without the first
+            // cell's corner, -1 when (0, 0) hides it (Kontakt 8 oracle,
+            // `tools/ksp-ui` geometry page: (3, 2) reads 184, 21).
+            // ponytail: one of x, y at 0 reads -1 too; only (0, 0) probed.
+            Action::MoveControl => &[
+                (look.grid_x, a),
+                (look.grid_y, b),
+                (look.pos_x, grid_pos(a, 92)),
+                (look.pos_y, grid_pos(b, 21)),
+            ],
             Action::MoveControlPx => &[(look.pos_x, a), (look.pos_y, b)],
             _ => return None,
         };
@@ -288,5 +320,14 @@ impl Store {
             self.set_control_par(c, slot, call.cells, id, par, value);
         }
         Some(HostValue::Nothing)
+    }
+}
+
+/// Where grid cell `cell` (from 1) of `pitch` reads; -1 off the grid.
+fn grid_pos(cell: i32, pitch: i32) -> i32 {
+    if cell >= 1 {
+        (cell - 1).saturating_mul(pitch)
+    } else {
+        -1
     }
 }

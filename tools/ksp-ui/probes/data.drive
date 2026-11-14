@@ -1,0 +1,17 @@
+click 70 20
+key Down
+key Down
+key Return
+drag 160 50 150 0
+drag 380 20 0 60
+click 660 80
+drag 660 80 40 40
+drag 660 80 -30 0 shift
+click 430 300
+dclick 430 300
+drag 430 300 50 30
+drag 600 270 60 0
+drag 600 270 60 0 shift
+drag 600 270 60 0 alt
+drag 600 270 60 0 ctrl
+click 100 300

@@ -25,15 +25,20 @@ pub(super) fn text(engine: &dyn Looks, slot: u8, cells: Cells) -> Option<&str> {
     }
 }
 
-/// Points a knob's drag travels up to sweep its range (Kontakt 8, measured;
-/// scratch/laneJ/drag/FACTS.md).
-const KNOB_SWEEP: f64 = 350.;
-/// Points a slider without `MOUSE_BEHAVIOUR` travels to sweep its range (same).
-const SLIDER_SWEEP: f64 = 172.;
+/// The oracle's screen pixels per page point: the drag facts below were
+/// measured at its 144 DPI. A drag sweeps the same page points at every
+/// zoom (Kontakt 8, `tools/ksp-ui` widgets page driven at 100 % and 150 %:
+/// a knob, a slider and a value edit land on the same values).
+const MEASURED_AT: f64 = 1.5;
+/// Points a knob's drag travels up to sweep its range (Kontakt 8: 350 px at
+/// 150 %, scratch/laneJ/drag/FACTS.md).
+const KNOB_SWEEP: f64 = 350. / MEASURED_AT;
+/// Points a slider without `MOUSE_BEHAVIOUR` travels to sweep its range (172 px).
+const SLIDER_SWEEP: f64 = 172. / MEASURED_AT;
 /// The `MOUSE_BEHAVIOUR` that sweeps a slider in its picture's length (manual).
 const BEHAVIOUR_PER_LENGTH: f64 = 1000.;
-/// Points a value edit's drag travels per unit (same measurement).
-const VALUE_EDIT_PER_UNIT: f64 = 4.;
+/// Points a value edit's drag travels per unit (4 px).
+const VALUE_EDIT_PER_UNIT: f64 = 4. / MEASURED_AT;
 
 pub(super) fn widget(
     bld: &mut Builder<'_>,
@@ -178,16 +183,17 @@ pub(super) fn widget(
         },
         ControlKind::FileSelector => ui::Kind::FileSelector {
             base_path: p.text("$CONTROL_PAR_BASEPATH").map(Into::into),
-            // $NI_FILE_TYPE_MIDI, _AUDIO, _ARRAY.
+            // $NI_FILE_TYPE_MIDI (2), _ARRAY (3), _AUDIO (4).
             files: match p.int("$CONTROL_PAR_FILE_TYPE") {
-                Some(0) => ui::Files::Midi,
-                Some(1) => ui::Files::Audio,
-                Some(2) => ui::Files::Data,
+                Some(2) => ui::Files::Midi,
+                Some(3) => ui::Files::Data,
+                Some(4) => ui::Files::Audio,
                 _ => ui::Files::Any,
             },
             column_width: p
                 .int("$CONTROL_PAR_COLUMN_WIDTH")
                 .and_then(|n| u32::try_from(n).ok()),
+            tops: Vec::new(),
         },
         ControlKind::TextEdit => ui::Kind::TextEdit,
         ControlKind::MouseArea => ui::Kind::MouseArea,
@@ -268,13 +274,10 @@ pub(super) fn widget(
     w.z = p.int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);
     let hide = p.int("$CONTROL_PAR_HIDE").unwrap_or(0);
     w.hidden = hide & HIDE_WHOLE_CONTROL != 0;
-    // move_control(x, y) places on Kontakt's grid; (0, 0) hides. GRID_X
-    // and GRID_Y are the same cells (probe/grid.ksp).
-    let grid = |moved: &str, par: &str| p.int(moved).or_else(|| p.int(par));
-    if let (Some(column), Some(row)) = (
-        grid("grid_x", "$CONTROL_PAR_GRID_X"),
-        grid("grid_y", "$CONTROL_PAR_GRID_Y"),
-    ) {
+    // move_control(x, y) places on Kontakt's grid; (0, 0) hides. It sets
+    // the GRID_X and GRID_Y cells (probe/grid.ksp).
+    if let (Some(column), Some(row)) = (p.int("$CONTROL_PAR_GRID_X"), p.int("$CONTROL_PAR_GRID_Y"))
+    {
         match (u32::try_from(column), u32::try_from(row)) {
             (Ok(column @ 1..), Ok(row @ 1..)) => {
                 w.placement = ui::Placement::Grid { column, row };
@@ -294,10 +297,11 @@ pub(super) fn widget(
     w.activate_on_press = matches!(kind, ControlKind::Switch);
     w.value_y = p.int("$CONTROL_PAR_VALUEPOS_Y");
     w.value_text = p.text("$CONTROL_PAR_LABEL").map(Into::into);
-    // Kontakt 8's drags, measured (scratch/laneJ/drag/FACTS.md): a knob
-    // sweeps in 350 points up, ignoring MOUSE_BEHAVIOUR; a slider in 172,
-    // or 1000 / |MOUSE_BEHAVIOUR| of its picture along the sign's axis; a
-    // value edit 4 points a unit, up. Each runs its callback again on release.
+    // Kontakt 8's drags, measured in 150 % screen pixels and held in page
+    // points (the constants above): a knob sweeps in 350 px up, ignoring
+    // MOUSE_BEHAVIOUR; a slider in 172 px, or 1000 / |MOUSE_BEHAVIOUR| of its
+    // picture along the sign's axis; a value edit 4 px a unit, up. Each runs
+    // its callback again on release.
     // ponytail: 172 measured on the stock skin only; a picture may scale it.
     let behaviour = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").filter(|&m| m != 0);
     let sweep = match kind {
@@ -348,6 +352,10 @@ pub(super) fn widget(
             .filter(|t| !t.is_empty())
     {
         w.text = text.into();
+    }
+    // A file selector shows the file `FILEPATH` names, or the last picked.
+    if kind == ControlKind::FileSelector {
+        w.text = p.text("$CONTROL_PAR_FILEPATH").unwrap_or_default().into();
     }
     w.tooltip = p.text("$CONTROL_PAR_HELP").unwrap_or_default().into();
     w.automation = ui::Automation {

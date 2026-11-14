@@ -691,8 +691,9 @@ impl Rack {
         }
     }
 
-    /// The user typed `text` into text edit `widget` of `part`'s interface:
-    /// its variable reads it, then its callbacks run.
+    /// The user typed `text` into text edit `widget` of `part`'s interface,
+    /// or picked file `text` in file selector `widget`: its variable or
+    /// `$CONTROL_PAR_FILEPATH` reads it, then its callbacks run.
     pub fn control_text(&mut self, part: usize, widget: usize, text: &str) {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
@@ -705,11 +706,14 @@ impl Rack {
         let Some((slot, id, _)) = view.control(widget, 0.) else {
             return;
         };
-        let name = view.tree().widgets.get(widget).map(|w| w.name.as_str());
+        let w = view.tree().widgets.get(widget);
+        let picker =
+            w.is_some_and(|w| matches!(w.kind, kontra_ui_model::Kind::FileSelector { .. }));
         let face = p.faces.get(usize::from(slot)).and_then(Option::as_ref);
-        let Some(cell) = face.zip(name).and_then(|(f, name)| f.text_cell(name)) else {
+        let cell = face.zip(w).and_then(|(f, w)| f.text_cell(&w.name));
+        if cell.is_none() && !picker {
             return;
-        };
+        }
         let text = Box::new(kontra_engine::Text::from_str_cut(text).0);
         self.send(Command::ControlText {
             part,
