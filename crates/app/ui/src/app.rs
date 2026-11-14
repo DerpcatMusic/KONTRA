@@ -7,6 +7,7 @@
 
 mod browser;
 mod controls;
+mod find;
 mod mapping;
 mod mixer;
 mod part;
@@ -17,6 +18,7 @@ mod rack;
 mod report;
 mod settings;
 mod sound;
+mod tidy;
 
 pub use sound::{Envelope, Filter, Lower, Param, Pass, Sound};
 
@@ -265,6 +267,10 @@ pub struct View {
     /// The library whose presets the browser lists, and their search.
     pub library: Option<usize>,
     pub preset_search: String,
+    /// Each library's preset last picked, as (library, preset): opening the
+    /// library again shows it, scrolled into view once (`reveal`).
+    pub last: Vec<(usize, usize)>,
+    pub reveal: bool,
     /// Preset folders folded shut.
     pub folded: Vec<String>,
     pub sheet: Option<Sheet>,
