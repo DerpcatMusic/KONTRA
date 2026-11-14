@@ -22,6 +22,14 @@ KONTRA is a plugin that plays Kontakt and UVI / Falcon sample libraries, aiming 
 
 A new release most days · CLAP and VST3 · [All releases and what changed in each](https://github.com/DerpcatMusic/KONTRA/releases)
 
+**NixOS:** the Linux download cannot find the system's graphics libraries there, so its editor stays blank. Build it with Nix instead; the plugin then finds them on its own:
+
+```sh
+nix build github:DerpcatMusic/KONTRA
+```
+
+`result/lib/clap/KONTRA.clap` and `result/lib/vst3/KONTRA.vst3` are the plugins. To install it with the system, add the flake as an input and `inputs.kontra.packages.x86_64-linux.default` to `environment.systemPackages`; DAWs then find the plugins under `/run/current-system/sw/lib/clap` and `.../lib/vst3`.
+
 **Alpha software.** It loads and plays many Kontakt and UVI libraries, some of them closely, none of them perfectly yet. Expect wrong sounds, dead controls and changes between releases; it is not yet a replacement for Kontakt or Falcon.
 
 ## Where it stands
