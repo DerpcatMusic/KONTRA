@@ -756,7 +756,10 @@ impl Display {
                     let key = value.round() as i32;
                     return format!(
                         "{}{}",
-                        NAMES[key.rem_euclid(12) as usize],
+                        NAMES
+                            .get(key.rem_euclid(12) as usize)
+                            .copied()
+                            .unwrap_or_default(),
                         key.div_euclid(12) - 2
                     );
                 }
