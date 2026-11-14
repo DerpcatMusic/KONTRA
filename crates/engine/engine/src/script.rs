@@ -820,6 +820,16 @@ impl HostApi for Engine {
                     None => -1,
                 })
             }
+            Action::LoadImpulse => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                match self.load_placed_impulse(name, int(0), int(1), int(2)) {
+                    Some(answer) => HostValue::Int(answer),
+                    None => {
+                        self.count_unhandled(Action::LoadImpulse);
+                        HostValue::Nothing
+                    }
+                }
+            }
             Action::LoadIrSample => {
                 let name = call.texts.first().map_or("", Text::as_str);
                 match self.load_ir_sample(name, int(0), int(1)) {

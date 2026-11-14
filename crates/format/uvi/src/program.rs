@@ -46,6 +46,15 @@ pub(crate) trait Library {
     fn data(&self) -> Vec<(String, Option<Vec<u8>>)> {
         Vec::new()
     }
+    /// The member path of the sample `reference` names.
+    fn path_of(&self, _program_dir: &str, _reference: &str) -> Option<String> {
+        None
+    }
+    /// Every audio member under `folder` (a member path's folder, any
+    /// depth), by member path.
+    fn audio_under(&self, _folder: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Kontakt's streamed head per channel and its grain, the law the other
@@ -124,6 +133,7 @@ pub(crate) fn unfinished<'a, L: Library>(
     t.script_routes();
     // After the layers: they mark the matrix connections they carry.
     t.connections();
+    t.responses();
     ignored::report(program, &mut t.notes);
     if !t.out.scripts.is_empty() {
         let tree = t.tree();

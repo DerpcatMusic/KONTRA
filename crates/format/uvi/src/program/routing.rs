@@ -658,6 +658,76 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 }
 
+impl<L: Library> Translator<'_, '_, L> {
+    /// The responses a script's `loadImpulse` may name, as
+    /// [`ir::Instrument::responses`]: every audio file in the response
+    /// folder of one the program's convolvers play. That folder is the
+    /// highest one above the played response that holds none of the zones'
+    /// samples: VWinds' `Samples/IRs` (69 seats × 4 microphone pairs in
+    /// `VirtSpace3`, rooms in `FalconIRs`, mutes beside them), Augmented
+    /// Orchestra's `IRs` (its menu's nested rooms). Located, not read: the
+    /// host decodes one when a script loads it. Only when a script calls
+    /// `loadImpulse`.
+    pub(super) fn responses(&mut self) {
+        let loads = self.out.scripts.iter().any(|s| {
+            s.source.contains("loadImpulse")
+                || s.data.iter().any(|(name, bytes)| {
+                    name.ends_with(".lua") && bytes.windows(11).any(|w| w == b"loadImpulse")
+                })
+        });
+        if !loads {
+            return;
+        }
+        let played: Vec<String> = self
+            .program
+            .descendants()
+            .filter(|n| n.has_tag_name("Convolver") || n.has_tag_name("SampledReverb"))
+            .filter_map(|n| self.library.path_of(self.program_dir, n.attribute("SamplePath")?))
+            .collect();
+        let responses: std::collections::HashSet<usize> =
+            self.out.impulses.iter().map(|i| i.sample).collect();
+        let zones: std::collections::HashSet<String> = (self.out.samples.iter().enumerate())
+            .filter(|(i, _)| !responses.contains(i))
+            .map(|(_, s)| s.name.to_lowercase())
+            .collect();
+        let mut folders = std::collections::BTreeSet::new();
+        for path in &played {
+            let mut folder = parent(path);
+            while let Some(up) = folder.and_then(parent) {
+                let holds_zones = (self.library.audio_under(up).iter())
+                    .any(|p| zones.contains(&p.to_lowercase()));
+                if holds_zones {
+                    break;
+                }
+                folder = Some(up);
+            }
+            folders.extend(folder.map(str::to_owned));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for folder in folders {
+            for path in self.library.audio_under(&folder) {
+                if !seen.insert(path.to_lowercase()) {
+                    continue;
+                }
+                let Ok(sample) = self.sample(&path) else {
+                    continue;
+                };
+                // The engine matches a load by its file name without the
+                // extension (`load_ir_sample`'s law).
+                let file = path.rsplit('/').next().unwrap_or(&path);
+                let stem = file.rsplit_once('.').map_or(file, |(s, _)| s).to_lowercase();
+                let index = self.sample_index(sample);
+                self.out.responses.push((stem, index));
+            }
+        }
+    }
+}
+
+/// The folder of a member path; `None` at the bank's root.
+fn parent(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(f, _)| f).filter(|f| !f.is_empty())
+}
+
 /// A sampled reverb's wet level when its response is not normalized: UVI's
 /// SampledReverbState audio path scales the convolved signal by 0.1 (−20 dB)
 /// unless NormalizePower is set (0x14103a07f, 0.1 at 0x141cfa9ec), before

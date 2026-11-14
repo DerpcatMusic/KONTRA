@@ -490,4 +490,8 @@ actions! {
     // The pick with async id int 0: its file name as text once picked, 0
     // when cancelled, nothing while the player is still choosing.
     PickedFile,
+    // A library response into a placed convolution (UVI `loadImpulse`):
+    // ints `(where, index, slot)` as for `EffectBypass`, text the file. The
+    // engine finds it by name as `LoadIrSample` does.
+    LoadImpulse,
 }

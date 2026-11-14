@@ -210,8 +210,9 @@ fn render(
     stream: &kontra_stream::StreamClient,
     events: &[Timed<Event>],
     mut keep: impl FnMut(&Engine),
-) -> (f64, bool) {
+) -> (f64, bool, Vec<[f32; 2]>) {
     let mut samples = [[0.0f32; 2]; BLOCK];
+    let mut frames = Vec::with_capacity(BLOCK * BLOCKS);
     let mut energy = 0.0f64;
     let mut settled = true;
     for block in 0..BLOCKS {
@@ -233,13 +234,36 @@ fn render(
         for sample in samples.iter().flatten() {
             energy += f64::from(*sample).powi(2);
         }
+        frames.extend_from_slice(&samples);
         let mut requests = Vec::new();
         engine.drain_requests(|r| requests.push(r));
         for request in requests {
             engine.install(Prepared::new(request, Some(plan), RATE));
         }
     }
-    ((energy / (BLOCK * BLOCKS * 2) as f64).sqrt(), settled)
+    ((energy / (BLOCK * BLOCKS * 2) as f64).sqrt(), settled, frames)
+}
+
+/// How far render `b` is from render `a`, dB relative to `a`'s energy:
+/// level, spectrum, stereo image and timing all show (−inf when equal).
+fn difference_db(a: &[[f32; 2]], b: &[[f32; 2]]) -> f64 {
+    let (mut diff, mut base) = (0.0f64, 0.0f64);
+    for (x, y) in a.iter().zip(b) {
+        for c in 0..2 {
+            base += f64::from(x[c]).powi(2);
+            diff += f64::from(x[c] - y[c]).powi(2);
+        }
+    }
+    if diff == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    10.0 * (diff / base.max(1e-30)).log10()
+}
+
+/// Left and right RMS of a render.
+fn sides(frames: &[[f32; 2]]) -> [f64; 2] {
+    let n = frames.len().max(1) as f64;
+    [0, 1].map(|c| (frames.iter().map(|f| f64::from(f[c]).powi(2)).sum::<f64>() / n).sqrt())
 }
 
 pub fn run(path: &Path) -> Result<(Json, String)> {
@@ -293,7 +317,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         },
         Timed { at, body: note },
     ];
-    let (_, mut settled) = render(&mut engine, &plan, &stream, &events, |_| {});
+    let (_, mut settled, _) = render(&mut engine, &plan, &stream, &events, |_| {});
     engine.clear_trace();
     let mut controls = Vec::new();
     let list_only = std::env::var_os("KONTRA_INSPECT_UI_LIST").is_some();
@@ -402,17 +426,17 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     let at = engine.now();
                     let mut acts = Note::new();
                     let mut names = std::collections::HashMap::new();
-                    let (rms, ready) = render(
+                    let (rms, ready, wave) = render(
                         engine,
                         &plan,
                         &stream,
                         &[Timed { at, body: off }, Timed { at, body: note }],
                         |engine| note_fields(engine, &plan, &zone_samples, &mut acts, &mut names),
                     );
-                    (rms, acts, ready)
+                    (rms, acts, ready, wave)
                 };
-                let (_, first, ready_first) = fresh(&mut engine);
-                let (prior_rms, base, ready) = fresh(&mut engine);
+                let (_, first, ready_first, wave_first) = fresh(&mut engine);
+                let (prior_rms, base, ready, wave_base) = fresh(&mut engine);
                 settled &= ready_first && ready;
                 engine.clear_trace();
                 let panel = |engine: &Engine| -> Vec<String> {
@@ -467,7 +491,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     .collect();
                 engine.clear_trace();
                 let dropped_control = engine.trace_dropped() - dropped_before;
-                let (rms, ready) = render(&mut engine, &plan, &stream, &[], |engine| {
+                let (rms, ready, _) = render(&mut engine, &plan, &stream, &[], |engine| {
                     events.extend(
                         (engine.trace_events().iter())
                             .map(|e| super::trace_output::event(e, &plan, &zone_samples, RATE)),
@@ -543,12 +567,23 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 }
                 // And one after the move: a difference the noise does not
                 // explain is the move reaching the next note.
-                let (_, next, ready_next) = fresh(&mut engine);
-                let (_, again, ready_again) = fresh(&mut engine);
+                let (_, next, ready_next, wave_next) = fresh(&mut engine);
+                let (_, again, ready_again, wave_again) = fresh(&mut engine);
+                // A fresh note after the move against one before it, with
+                // what two renders on either side differ by as the floor
+                // (humanizing, round robins): the move is heard when the
+                // change stands clear of both.
+                let floor = difference_db(&wave_first, &wave_base)
+                    .max(difference_db(&wave_next, &wave_again));
+                let change = difference_db(&wave_base, &wave_next);
+                let finite = |x: f64| if x.is_finite() { json!(x) } else { json!(null) };
+                let sound = json!({"change_db":finite(change),"floor_db":finite(floor),
+                    "heard": change.is_finite() && (!floor.is_finite() || change > floor + 6.0),
+                    "lr_rms_before":sides(&wave_base),"lr_rms_after":sides(&wave_next)});
                 settled &= ready_next && ready_again;
                 let note_changed = note_diff(&first, &base, &next, &again);
                 moves.push(json!({"value":value,"move_us":move_us,"worst_block_lua_wall_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_wall_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
-                    "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
+                    "output":{"before_rms":prior_rms,"after_rms":rms},"sound":sound, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));
             }
