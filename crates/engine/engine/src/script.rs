@@ -703,12 +703,8 @@ impl HostApi for Engine {
             // of a dormant group answers when the host has loaded it.
             Action::PurgeGroup => match u32::try_from(int(0)) {
                 Ok(group) if int(1) != 0 => HostValue::Int(self.unpurge(group)),
-                _ => {
-                    if let Some(g) = self.groups.get_mut(int(0) as usize) {
-                        g.purged = true;
-                    }
-                    HostValue::Int(self.start_async(Exit::Done))
-                }
+                Ok(group) => HostValue::Int(self.purge(group)),
+                Err(_) => HostValue::Int(self.start_async(Exit::Done)),
             },
             Action::AsyncId => HostValue::Int(self.ids.async_done),
             Action::AsyncExitStatus => HostValue::Int(i32::from(self.ids.async_exit == Exit::Done)),
