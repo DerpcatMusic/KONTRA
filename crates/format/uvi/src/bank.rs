@@ -145,6 +145,58 @@ impl Bank {
     }
 }
 
+impl Bank {
+    /// The bank's cover: its own cover or splash picture, else its
+    /// interface's background, else its largest still picture (not a
+    /// control strip); the larger variant (`@2x`) first.
+    pub(crate) fn cover(&self) -> Option<Vec<u8>> {
+        let mut pictures: Vec<(usize, &Member)> = (self.directory.files.iter())
+            .filter_map(|m| Some((picture_rank(m.path.as_deref()?)?, m)))
+            .collect();
+        pictures.sort_by_key(|(rank, m)| (*rank, std::cmp::Reverse(m.size)));
+        let (named, rest): (Vec<_>, Vec<_>) = pictures.into_iter().partition(|(r, _)| *r < STILL);
+        let named = named.into_iter().find_map(|(_, m)| self.read(m).ok());
+        // ponytail: reads the largest few whole to see their size; a header
+        // read if a bank's pictures are huge.
+        named.or_else(|| {
+            (rest.into_iter().take(8))
+                .filter_map(|(_, m)| self.read(m).ok())
+                .find(|b| png_size(b).is_some_and(|(w, h)| w >= 300 && w * 3 >= h && h * 4 >= w))
+        })
+    }
+}
+
+/// Where a picture member stands as a bank's cover, best first; `STILL`
+/// and after are unnamed pictures, tried by their shape.
+const STILL: usize = 4;
+
+fn picture_rank(path: &str) -> Option<usize> {
+    let file = path.rsplit('/').next()?.to_ascii_lowercase();
+    let (stem, ext) = file.rsplit_once('.')?;
+    if !matches!(ext, "png" | "jpg" | "jpeg") {
+        return None;
+    }
+    let (stem, big) = match stem.strip_suffix("@2x") {
+        Some(stem) => (stem, 0),
+        None => (stem, 1),
+    };
+    let named = if stem.contains("cover") || stem.contains("splash") {
+        0
+    } else if stem.starts_with("back") || stem.contains("background") || stem == "bg" {
+        2
+    } else {
+        STILL
+    };
+    Some(named + big * usize::from(named < STILL))
+}
+
+/// A PNG's width and height from its header.
+fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let be = |at: usize| Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    (bytes.get(..8) == Some(b"\x89PNG\r\n\x1a\n")).then_some(())?;
+    Some((be(16)?, be(20)?))
+}
+
 impl crate::program::Library for Bank {
     fn modules(&self) -> Vec<(String, Vec<u8>)> {
         self.directory
@@ -257,6 +309,15 @@ pub(crate) fn normalize(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::normalize;
+
+    #[test]
+    fn a_cover_comes_before_the_interface_background_and_strips_are_unnamed() {
+        assert_eq!(picture_rank("Artwork/ao_cover.png"), Some(0));
+        assert_eq!(picture_rank("artwork/back@2x.png"), Some(2));
+        assert_eq!(picture_rank("artwork/back.png"), Some(3));
+        assert_eq!(picture_rank("artwork/knob_50x50x129@2x.png"), Some(STILL));
+        assert_eq!(picture_rank("Programs/a.lua"), None);
+    }
 
     #[test]
     fn bank_paths_collapse_without_climbing_above_the_root() {

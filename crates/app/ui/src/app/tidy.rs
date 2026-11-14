@@ -90,7 +90,37 @@ pub(super) fn presets(name: &str, presets: &[String]) -> Vec<Shown> {
         }
         at = end.max(at + 1);
     }
+    for s in &mut shown {
+        distinct(&mut s.crumbs);
+    }
     shown
+}
+
+/// Crumbs without one its neighbour repeats: `3 Trumpets › 3 Trumpets` is
+/// one crumb, and `Mutes › 3 Trumpets Mutes` keeps the fuller.
+fn distinct(crumbs: &mut Vec<String>) {
+    let mut at = 1;
+    while at < crumbs.len() {
+        let (a, b) = match (crumbs.get(at - 1), crumbs.get(at)) {
+            (Some(a), Some(b)) => (key(a), key(b)),
+            _ => break,
+        };
+        if b.contains(&a) {
+            crumbs.remove(at - 1);
+            at = at.saturating_sub(1).max(1);
+        } else if a.contains(&b) {
+            crumbs.remove(at);
+        } else {
+            at += 1;
+        }
+    }
+}
+
+/// A preset's name alone, as a list of several libraries' shows it: its
+/// file name without its library's name in front.
+pub(super) fn name<'a>(library_name: &str, path: &'a str) -> &'a str {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    unprefixed(file, &key(library(library_name)))
 }
 
 /// `name` without a leading library name `own` (as keyed) and the
@@ -192,6 +222,18 @@ mod tests {
             ("02 Brass", "Horns"),
         ];
         assert_eq!(rows, want.map(|(a, b)| (a.to_owned(), b.to_owned())));
+    }
+
+    #[test]
+    fn a_crumb_its_neighbour_repeats_goes() {
+        let mut crumbs = ["Brass", "3 Trumpets", "Mutes", "3 Trumpets Mutes"]
+            .map(String::from)
+            .to_vec();
+        distinct(&mut crumbs);
+        assert_eq!(crumbs, ["Brass", "3 Trumpets Mutes"]);
+        let mut crumbs = ["3 Trumpets", "3 Trumpets"].map(String::from).to_vec();
+        distinct(&mut crumbs);
+        assert_eq!(crumbs, ["3 Trumpets"]);
     }
 
     #[test]

@@ -70,8 +70,9 @@ pub struct Library {
     pub multis: usize,
     /// Pictures that may be its banner, best first: `wallpaper.png`, a
     /// library-browser picture, the `.nicnt`/`.nkr` (which holds pictures),
-    /// then any picture named cover, artwork, banner, logo or background,
-    /// then the rest. A bank's are its `.png`/`.jpg` sidecars. Decoding and
+    /// a UVI bank (which does too), then any picture named cover, artwork,
+    /// banner, logo or background, then the rest. A bank's are its
+    /// `.png`/`.jpg` sidecars, then the bank itself. Decoding and
     /// the size check are the viewer's.
     pub art: Vec<PathBuf>,
 }
@@ -406,6 +407,7 @@ fn catalog(
                 .map(|e| found.dir.with_extension(e))
                 .filter(|p| p.is_file()),
         );
+        art.push(found.dir.clone());
     } else {
         let mut state = Walk {
             nested,
@@ -509,13 +511,16 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
             }
             match ext(&path).as_str() {
                 "nki" | "nkm" | "nksn" | "uvip" => presets.push(path),
-                "ufs" => bank_presets(
-                    &path,
-                    &mut *state.cache,
-                    state.programs,
-                    &mut *state.issues,
-                    presets,
-                ),
+                "ufs" => {
+                    bank_presets(
+                        &path,
+                        &mut *state.cache,
+                        state.programs,
+                        &mut *state.issues,
+                        presets,
+                    );
+                    art.push(path);
+                }
                 "png" | "jpg" | "jpeg" | "nicnt" | "nkr" => art.push(path),
                 _ => {}
             }
@@ -544,6 +549,7 @@ fn art_rank(path: &Path) -> usize {
         _ if name.contains("libbrowser") => 1,
         "nicnt" => 2,
         "nkr" => 3,
+        "ufs" => 4,
         _ => {
             5 + ["cover", "artwork", "banner", "logo", "background"]
                 .iter()
