@@ -29,8 +29,9 @@ pub(crate) struct Replika {
     pub feedback: f32,
     pub low_cut: f32,
     pub high_cut: f32,
-    /// The modulation's depth; its law is unmeasured.
+    /// The modulation's depth and rate knobs (Modern: a sine, ±8 ms·depth at 0.1·100^rate Hz).
     pub depth: f32,
+    pub rate: f32,
     pub stereo: bool,
     pub pingpong: bool,
     pub flip: bool,
@@ -50,6 +51,7 @@ pub(crate) const INIT: Replika = Replika {
     low_cut: 0.0,
     high_cut: 0.95,
     depth: 0.0,
+    rate: 0.1,
     stereo: true,
     pingpong: false,
     flip: false,
@@ -77,6 +79,7 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
         low_cut: f(12)?,
         high_cut: f(16)?,
         depth: f(36)?,
+        rate: f(40)?,
         stereo: flag(44)?,
         pingpong: flag(46)?,
         beats: Some(f(47)?).filter(|&b| b >= 0.0),
@@ -90,7 +93,7 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
 /// What the Modern mode does that is not run, for the gap log.
 pub(crate) fn lost(r: Replika) -> impl Iterator<Item = &'static str> {
     [
-        (r.depth > 0.0, "Replika modulation"),
+        (r.depth > 0.0 && r.mode != 0, "Replika modulation"),
         (r.beats.is_some(), "Replika tempo sync"),
         (!r.stereo && !r.pingpong, "Replika mono mode"),
         (r.pingpong && r.flip, "Replika ping-pong flip"),
@@ -98,6 +101,12 @@ pub(crate) fn lost(r: Replika) -> impl Iterator<Item = &'static str> {
     .into_iter()
     .filter_map(|(on, what)| on.then_some(what))
 }
+
+/// The Modern mode's delay swing at full depth, ms either side (Kontakt 8.13.1, 1 kHz tone through DEPTH 0.25, 0.5 and
+/// 1 at RATE 0.5: the wet signal's phase swings 4.00, 8.00 and 16.00 ms peak to peak; the same at RATE 0.2).
+const MODERN_DEPTH_MS: f32 = 8.0;
+/// The Modern mode's LFO rate at RATE 0, Hz: 0.1·100^RATE (RATE 0.5 measured 1.000 Hz, RATE 0.8 3.98 Hz).
+const MODERN_RATE_HZ: f32 = 0.1;
 
 /// The HIGHCUT shelf's corner by knob (measured every 0.1; open at 1).
 const HIGH_CUT_HZ: [f32; 11] = [
@@ -131,7 +140,7 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
             Some(beats) => ir::DelayTime::Beats(r.ms.max(0.0) * beats),
             None => ir::DelayTime::Ms(r.ms.max(0.0)),
         },
-        depth_ms: 0.0,
+        depth_ms: MODERN_DEPTH_MS * r.depth.clamp(0.0, 1.0),
         second_head: false,
         input,
         feedback,
@@ -154,7 +163,7 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
             gain_db: if x < 1.0 { -10.0 } else { 0.0 },
         }),
         spread_ms,
-        rate: ir::Rate::Hz(0.0),
+        rate: ir::Rate::Hz(MODERN_RATE_HZ * 100f32.powf(r.rate.clamp(0.0, 1.0))),
         phase: 0.0,
     })
 }
@@ -235,5 +244,24 @@ mod tests {
             ([0.5, 0.5], [1.0, 0.0], 0.0)
         );
         assert_eq!(delay(Replika { mode: 2, ..INIT }), None);
+    }
+
+    #[test]
+    fn modern_modulation_is_a_sine_of_8_ms_at_a_log_rate() {
+        // Kontakt 8.13.1: DEPTH 0.25 / 0.5 / 1 swing the wet phase 4 / 8 / 16 ms peak to peak; RATE 0.5 runs
+        // 1.000 Hz and 0.8 3.98 Hz (docs/re/engine/fx-measured/replika-modes.md).
+        let d = |depth, rate| {
+            delay(Replika {
+                depth,
+                rate,
+                ..INIT
+            })
+            .expect("modern")
+        };
+        assert_eq!(d(0.5, 0.5).depth_ms, 4.0);
+        assert_eq!(d(1.0, 0.5).depth_ms, 8.0);
+        assert!(matches!(d(1.0, 0.5).rate, ir::Rate::Hz(hz) if (hz - 1.0).abs() < 1e-5));
+        assert!(matches!(d(1.0, 0.8).rate, ir::Rate::Hz(hz) if (hz - 3.981).abs() < 1e-3));
+        assert_eq!(d(0.0, 0.5).depth_ms, 0.0);
     }
 }

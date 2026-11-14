@@ -18,3 +18,6 @@ kontra-law = { path = "../../base/law" }
 kontra-params = { path = "../../model/params" }
 ni-file = { path = "../../../vendor/ni-file" }
 thiserror.workspace = true
+
+[dev-dependencies]
+kontra-effects = { path = "../../engine/effects" }
