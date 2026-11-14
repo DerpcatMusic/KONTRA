@@ -197,11 +197,15 @@ fn a_choke_group_fades_the_open_hat() {
     let mut open = zone(&mut store, 0.5);
     open.keys = 46..=46;
     open.group = 1;
-    open.off_by = Some(2);
+    open.voice_group = Some(0);
+    open.off_by = Some(1);
     let mut closed = zone(&mut store, 0.25);
     closed.keys = 42..=42;
     closed.group = 2;
-    let mut e = engine(&store, Plan::new(vec![open, closed], 8));
+    closed.voice_group = Some(1);
+    let mut plan = Plan::new(vec![open, closed], 8);
+    plan.voice_groups = vec![kontra_ir::VoiceGroup::DEFAULT; 2];
+    let mut e = engine(&store, plan);
     assert!(close(level(&mut e, &[on(46, 1.0)])[0], 0.5));
     level(&mut e, &[on(42, 1.0)]);
     level(&mut e, &[]);
@@ -224,6 +228,29 @@ fn group_polyphony_keeps_only_the_newest_voice() {
     level(&mut e, &[]);
     assert!(close(level(&mut e, &[])[0], 0.5), "one voice, not two");
     assert_eq!(e.playing_voices(), 1);
+}
+
+#[test]
+fn a_key_limit_with_self_mask_stops_only_quieter_voices_of_the_key() {
+    // SFZ note_polyphony=1 with note_selfmask=on: a louder repeat stops the
+    // key's earlier voice, a softer one plays alongside the louder.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.voice_group = Some(0);
+    let mut plan = Plan::new(vec![z], 8);
+    plan.voice_groups = vec![kontra_ir::VoiceGroup {
+        per_key: Some(1),
+        quieter_only: true,
+        ..kontra_ir::VoiceGroup::DEFAULT
+    }];
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 0.5)]);
+    level(&mut e, &[on(60, 1.0)]);
+    assert_eq!(e.playing_voices(), 1, "the softer voice gave way");
+    level(&mut e, &[on(60, 0.25)]);
+    assert_eq!(e.playing_voices(), 2, "the louder voice stays");
+    level(&mut e, &[on(62, 1.0)]);
+    assert_eq!(e.playing_voices(), 3, "another key is not counted");
 }
 
 #[test]
@@ -541,6 +568,7 @@ fn a_voice_group_steals_by_its_rule_and_an_exclusive_set_silences_the_others() {
         per_note: false,
         legato: false,
         returns: false,
+        ..kontra_ir::VoiceGroup::DEFAULT
     };
     plan.voice_groups = vec![
         group(2, kontra_ir::Steal::Highest),
@@ -579,6 +607,7 @@ fn a_note_counting_voice_group_steals_every_voice_of_the_note_it_replaces() {
         per_note: true,
         legato: false,
         returns: false,
+        ..kontra_ir::VoiceGroup::DEFAULT
     }];
     let mut e = engine(&store, plan);
     level(&mut e, &[on(60, 1.0)]);
@@ -1025,6 +1054,7 @@ fn mono_plan(store: &mut Store, legato: bool) -> Plan {
         per_note: true,
         legato,
         returns: true,
+        ..kontra_ir::VoiceGroup::DEFAULT
     }];
     plan
 }

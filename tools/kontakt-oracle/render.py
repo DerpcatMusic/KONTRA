@@ -89,7 +89,9 @@ def main() -> int:
     raw = dump.WORK / "oracle.jsonl"
     raw.unlink(missing_ok=True)
     script = dump.WORK / "oracle.lua"
-    script.write_text("ORACLE_INPUTS = {}\nORACLE_OUT = " + dump.lua_str(dump.winpath(raw)) + "\n" + lua.read_text())
+    # ORACLE_CHANNEL: the 1-based MIDI channel of this slot's block, for probes that bind to it.
+    script.write_text("ORACLE_INPUTS = {}\nORACLE_CHANNEL = " + str(slot.channel_block()[0] + 1) + "\nORACLE_OUT = "
+                      + dump.lua_str(dump.winpath(raw)) + "\n" + lua.read_text())
     xvfb = subprocess.Popen(["Xvfb", dump.DISPLAY, "-screen", "0", "1600x1000x24"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     env = slot.wine_env(dict(os.environ, DISPLAY=dump.DISPLAY, WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b",

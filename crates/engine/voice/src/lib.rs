@@ -267,6 +267,17 @@ impl Voice {
         };
     }
 
+    /// Ends it through its envelope's release at engine frame `now` (a voice
+    /// stopped by a rule that releases): it no longer counts as playing.
+    /// `true` when this first sets it ending.
+    pub fn end_by_release(&mut self, now: u64) -> bool {
+        let first = !self.is_ending();
+        let at = self.released_at().unwrap_or(now);
+        self.release();
+        self.life = Life::Ending(Some(at));
+        first
+    }
+
     /// Fades over `frames` to `target`; ending (a stolen or choked voice)
     /// is click-free, and a fade already ending it ends at the sooner.
     /// `true` when this fade first sets it ending.
