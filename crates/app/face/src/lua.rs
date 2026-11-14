@@ -181,7 +181,10 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
         },
         "NumBox" | "ParamNumBox" => ui::Kind::ValueEdit {
             range,
-            display: ui::Display::default(),
+            display: ui::Display {
+                unit: w.unit.clone(),
+                ..Default::default()
+            },
             arrows: false,
         },
         "Button" => ui::Kind::Button { momentary: true },

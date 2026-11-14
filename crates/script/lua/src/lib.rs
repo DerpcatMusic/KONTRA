@@ -463,7 +463,7 @@ impl LuaMachine {
                 // A coroutine that failed as it was spawned is dead: it says
                 // why, and is not queued to be resumed (which would only
                 // report "non-resumable" over the real error).
-                if let Ok(Some(text)) = pair.get::<Option<mlua::String>>(3)
+                if let Ok(Some(text)) = pair.get::<Option<mlua::LuaString>>(3)
                     && let Ok(text) = text.to_str()
                 {
                     use std::fmt::Write;
@@ -1069,10 +1069,10 @@ mod tests {
         let faults = machine.faults();
         assert_eq!(faults.bad_code, 1);
         assert!(faults.last_error.as_str().contains("ran too long"));
-        // The same work from the editor (a control the user moved) fits.
+        // The same work from the editor (a widget the user moved) fits.
         let mut machine = compiled.machine();
+        machine.stage_widget(0, 0.0, None);
         let co = machine.start(Callbacks::NOTE, 0).expect("start");
-        machine.slot(co).expect("slot").ui = true;
         let _ = machine.run(co, &mut Log(Vec::new()));
         assert_eq!(machine.faults().bad_code, 0);
     }

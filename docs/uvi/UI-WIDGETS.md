@@ -138,3 +138,26 @@ The path form of `Element|string` (a string naming an element) is not resolved: 
 Closed in this change: the `Param*` family and `ParameterValue`, `Button:push`, `ModifierKeys`, `Table.length` and the Table `changed(self, index)`, `Knob`/`Slider`/`NumBox:setRange`, `Slider` vertical, `Image`/`SVG`/`XY` constructors, the `w`/`h`/`length`/`selected`/`displayName` aliases, `paramId`, the `Mapper`, `Unit`, `RectanglePlacement` and `FileFormat` enumerations, `setHeight`, `moveControl`, `resetKeyColour`, `MultiStateButton` as an item widget, `Menu:addItem`'s return, and every other documented attribute reading back what a script set.
 
 Left, all on the editor side except where marked: the `Mapper` drag laws, the `Unit` formatting, `displayText`, `interceptsMouseClicks`, picture placement, Lottie, SVG, `WaveView`, `XY`, `FileSelector`, drag and drop (editor and engine), editable and linked labels, sub-menus, popup styling, hover pictures, live following of bound widgets, the `Element|string` path form, and host automation of `exported` widgets. Each is a renderer or host feature, listed so the next change picks them by number of corpus scripts that use them.
+
+## Which gaps matter: use across the 660 programs (2026-11-14)
+
+Constructor sites counted in every script of the 26 banks (`Name{...}`), weighted by the programs of the bank that carries the script (all 660 programs load the bank scripts):
+
+| Class | Sites | Programs | Editor status |
+|---|---|---|---|
+| Slider | 909 | 660 | partial (thumb/track colours, popup, mapper law) |
+| Button | 860 | 660 | partial (hover pictures, on/off colours) |
+| Menu | 774 | 660 | partial (no `a/b` sub-menus) |
+| OnOffButton | 671 | 660 | partial |
+| Knob | 647 | 660 | partial (mapper law, unit formatting) |
+| Image | 416 | 660 | partial (placement, hover) |
+| Panel | 395 | 660 | implemented |
+| NumBox | 325 | 660 | partial (unit now shown; mapper law, formatting) |
+| Table | 275 | 660 | implemented |
+| Label | 135 | 660 | partial (not editable) |
+| AudioMeter | 52 | 660 | partial (not the named element or bus) |
+| Viewport | 28 | 660 | partial (scroll bar colours) |
+| WaveView | 15 | 25 | only a version probe (`visible=false`, set to nil, VWinds `checkFalcon302`): nothing to draw |
+| SVG, XY, DnDArea, FileSelector | 0 | 0 | unused by any carried library: not built (YAGNI) |
+
+So the renderer work that pays is in the common classes (the mapper law and the unit formatting on Knob, Slider and NumBox; sub-menus on Menu; the named element or bus on AudioMeter), not in WaveView, XY or SVG.
