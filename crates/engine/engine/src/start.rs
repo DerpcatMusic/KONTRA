@@ -65,6 +65,8 @@ impl Engine {
             {
                 continue;
             }
+            // Before the limits steal the note it may slide from.
+            let slide = self.slide_for(zone.group, note, n.key);
             self.choke_by(zone.group, note);
             self.limit_group(zone.group);
             if let Some(vg) = zone.voice_group {
@@ -114,7 +116,11 @@ impl Engine {
             let (step, bend) = self.step(zone, &n, onset);
             let start = VoiceStart {
                 region,
-                step: voice_gain::bent(self.plan.route_pitch, step, bend.instant + bend.semitones),
+                step: voice_gain::bent(
+                    self.plan.route_pitch,
+                    step,
+                    bend.instant + bend.semitones + slide.map_or(0.0, |s| s.offset(self.now.0)),
+                ),
                 gain,
                 lag,
                 envelope: self.envelope(zone, &n),
@@ -196,6 +202,10 @@ impl Engine {
             slot.warp = [0.0; modulators::WARPS];
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
             slot.stretch = stretch;
+            slot.slide = slide;
+            if slide.is_some() {
+                self.set_pitch(i, step, bend.instant + bend.semitones);
+            }
             #[cfg(feature = "trace")]
             slot.pending_trace_cc.set(0);
             #[cfg(feature = "trace")]

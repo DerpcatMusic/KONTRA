@@ -352,6 +352,8 @@ pub struct Group {
     pub speed: Option<f32>,
     /// Index into [`Instrument::voice_groups`].
     pub voice_group: Option<usize>,
+    /// Its notes slide in pitch from the note before (portamento).
+    pub glide: Option<Glide>,
     /// Effects on this group's voices, by slot.
     pub inserts: Vec<Option<Effect>>,
     /// Shapes [`Source::Envelope`] reads, by index.
@@ -401,6 +403,7 @@ impl Group {
         wavetable: None,
         speed: None,
         voice_group: None,
+        glide: None,
         inserts: Vec::new(),
         envelopes: Vec::new(),
         lfos: Vec::new(),
@@ -580,6 +583,47 @@ pub struct VoiceGroup {
     pub fade_ms: f32,
     /// Starting a voice fades every voice of the other voice groups in this set.
     pub exclusive: Option<u8>,
+}
+
+/// Portamento: a new note's voices start at the pitch the previous note of
+/// their `scope` had reached and slide to their own, linearly in semitones,
+/// shaped by `curve`. A script's tuning (`change_tune` loops) adds on top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glide {
+    /// Groups with the same scope share the previous note (a layer, or the
+    /// whole instrument).
+    pub scope: u16,
+    /// The share of the interval the slide starts from: 1 the whole of it.
+    pub depth: f32,
+    /// How long the slide takes, or with `per_octave` how long it takes
+    /// per 12 semitones of interval.
+    pub seconds: f32,
+    pub per_octave: bool,
+    /// Only while another note of the group is held; otherwise from the
+    /// last note played, held or not.
+    pub legato: bool,
+    /// The slide's bend: 0 straight; the fraction covered at phase `p` is
+    /// `p^(2^-curve)`, so positive leaves the old pitch fast.
+    pub curve: f32,
+}
+
+impl Glide {
+    /// The fraction of the interval covered at phase `p` (0..=1).
+    #[must_use]
+    pub fn covered(self, p: f32) -> f32 {
+        let p = p.clamp(0.0, 1.0);
+        if self.curve == 0.0 { p } else { p.powf((-self.curve).exp2()) }
+    }
+
+    /// How long a slide over `semitones` takes, seconds.
+    #[must_use]
+    pub fn duration(self, semitones: f32) -> f32 {
+        if self.per_octave {
+            self.seconds * semitones.abs() / 12.0
+        } else {
+            self.seconds
+        }
+    }
 }
 
 /// Which voice a full voice group gives up.

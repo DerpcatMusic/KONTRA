@@ -16,6 +16,7 @@ mod detect;
 
 mod filters;
 mod fx_types;
+mod glide;
 mod impulse_knobs;
 mod inspect;
 mod knobs;
@@ -160,6 +161,8 @@ struct Slot {
     chaos: [modulators::Chaos; modulators::WARPS],
     /// Its envelopes' attack stretch, fixed at note-on ([`modulators::Age::stretch`]).
     stretch: [f32; modulators::WARPS],
+    /// Its portamento, while it slides ([`glide::Slide`]).
+    slide: Option<glide::Slide>,
     #[cfg(feature = "trace")]
     pending_trace_cc: std::cell::Cell<u128>,
 }
@@ -296,6 +299,8 @@ pub struct Engine {
     /// the order asked.
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
+    /// Each portamento scope's latest note ([`glide`]).
+    glides: [glide::Latest; glide::SCOPES],
     /// What each group's routes reshape, by group.
     reshaped: Box<[reshaped::Reshaped]>,
     /// The routes each script `#key` names.
@@ -376,6 +381,7 @@ impl Engine {
                 warp: [0.0; modulators::WARPS],
                 chaos: [modulators::CHAOS_START; modulators::WARPS],
                 stretch: [1.0; modulators::WARPS],
+                slide: None,
                 #[cfg(feature = "trace")]
                 pending_trace_cc: std::cell::Cell::new(0),
             })
@@ -451,6 +457,7 @@ impl Engine {
             ),
             reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
+            glides: [glide::Latest::default(); glide::SCOPES],
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
             forward: Vec::with_capacity(capacity),
