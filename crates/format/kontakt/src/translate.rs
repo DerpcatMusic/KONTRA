@@ -256,7 +256,7 @@ pub(crate) fn instrument(
         let fx = saved.map(|s| {
             g.volume_db = db(s.volume);
             g.pan = s.pan.clamp(-1.0, 1.0);
-            g.tune = laws::semitones(s.tune) + base.tune;
+            g.tune = f64::from(s.tune) * 12.0 + base.tune;
             s.fx
         });
         g.inserts = crate::effects::group(group, fx, index, &mut impulses, &mut notes, &mut slots);
