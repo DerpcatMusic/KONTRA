@@ -16,7 +16,8 @@ use kontra_stream::{
 use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp};
 
 use kontra_engine::{
-    Atom, Bus, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone, ZoneRules, response,
+    Atom, Bus, Dormant, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone, ZoneRules,
+    response,
 };
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
@@ -39,6 +40,7 @@ pub fn prepare(
     let mut polyphony = Vec::new();
     let mut facts = Vec::new();
     let mut group_rules = Vec::with_capacity(instrument.groups.len());
+    let mut dormant = Vec::new();
     for (index, group) in instrument.groups.iter().enumerate() {
         let group_id = u32::try_from(index).unwrap_or(u32::MAX);
         if let Some(voices) = group.polyphony {
@@ -70,6 +72,10 @@ pub fn prepare(
                 start_range: z.start_mod,
                 rate: source.rate,
             });
+            // A purged group loads nothing: a script's un-purge builds it.
+            if group.purged {
+                continue;
+            }
             let Some(Some(sample)) = loaded.get(z.sample) else {
                 continue;
             };
@@ -77,9 +83,13 @@ pub fn prepare(
             zone.member = u16::try_from(member).unwrap_or(u16::MAX);
             zones.push(zone);
         }
+        if group.purged && !group.zones.is_empty() {
+            dormant.push(dormant_of(instrument, group, group_id));
+        }
         group_rules.push(rules);
     }
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
+    plan.dormant = Arc::new(dormant);
     plan.zone_facts = facts;
     plan.groups = (instrument.groups.iter().zip(group_rules))
         .map(|(g, zones)| Group {
@@ -199,6 +209,76 @@ pub fn effects(
             plan.responses.push((name.clone(), s.clone()));
         }
     }
+}
+
+/// `group` as a purge keeps it: its zones, the samples they play renumbered
+/// from 0.
+fn dormant_of(instrument: &ir::Instrument, group: &ir::Group, id: u32) -> Dormant {
+    let mut source = group.clone();
+    let mut samples = Vec::new();
+    let mut local: HashMap<usize, usize> = HashMap::new();
+    for z in &mut source.zones {
+        let Some(s) = instrument.samples.get(z.sample) else {
+            continue;
+        };
+        z.sample = *local.entry(z.sample).or_insert_with(|| {
+            samples.push(s.clone());
+            samples.len() - 1
+        });
+    }
+    Dormant {
+        group: id,
+        source,
+        samples,
+    }
+}
+
+/// `plan` with purged group `group` loaded and its zones appended (indices of
+/// the zones already there stay), the loads' diagnostics, and how many
+/// samples it loaded. `None` when the group is not dormant. Samples open and
+/// read on the calling thread: call it off the audio thread; with
+/// [`Store::defer_heads`] on, the heads come after ([`Store::take_heads`]).
+pub fn wake(
+    plan: &Plan,
+    group: u32,
+    store: &mut Store,
+    open: &Open<'_>,
+) -> Option<(Plan, Vec<ir::Diagnostic>, usize)> {
+    let d = plan.dormant.iter().find(|d| d.group == group)?;
+    let mut source = d.source.clone();
+    source.purged = false;
+    let instrument = ir::Instrument {
+        groups: vec![source],
+        samples: d.samples.clone(),
+        ..ir::Instrument::DEFAULT
+    };
+    let mut diagnostics = Vec::new();
+    let loaded = load_samples(&instrument, store, open, &mut diagnostics);
+    let client = store.client();
+    let [source] = instrument.groups.as_slice() else {
+        return None;
+    };
+    let rules = rules(source, &plan.switches);
+    let mut out = plan.clone();
+    for (member, z) in source.zones.iter().enumerate() {
+        let (Some(from), Some(Some(sample))) =
+            (instrument.samples.get(z.sample), loaded.get(z.sample))
+        else {
+            continue;
+        };
+        let mut zone = zone((source, group, &rules), z, from, sample, &client);
+        zone.member = u16::try_from(member).unwrap_or(u16::MAX);
+        out.zones.push(zone);
+    }
+    out.dormant = Arc::new(
+        plan.dormant
+            .iter()
+            .filter(|d| d.group != group)
+            .cloned()
+            .collect(),
+    );
+    let count = loaded.iter().flatten().count();
+    Some((out, diagnostics, count))
 }
 
 /// Loads each sample a resident zone plays, pinning the union of its zones'
