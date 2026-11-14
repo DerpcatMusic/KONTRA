@@ -183,16 +183,17 @@ pub(super) fn widget(
         },
         ControlKind::FileSelector => ui::Kind::FileSelector {
             base_path: p.text("$CONTROL_PAR_BASEPATH").map(Into::into),
-            // $NI_FILE_TYPE_MIDI, _AUDIO, _ARRAY.
+            // $NI_FILE_TYPE_MIDI (2), _ARRAY (3), _AUDIO (4).
             files: match p.int("$CONTROL_PAR_FILE_TYPE") {
-                Some(0) => ui::Files::Midi,
-                Some(1) => ui::Files::Audio,
-                Some(2) => ui::Files::Data,
+                Some(2) => ui::Files::Midi,
+                Some(3) => ui::Files::Data,
+                Some(4) => ui::Files::Audio,
                 _ => ui::Files::Any,
             },
             column_width: p
                 .int("$CONTROL_PAR_COLUMN_WIDTH")
                 .and_then(|n| u32::try_from(n).ok()),
+            tops: Vec::new(),
         },
         ControlKind::TextEdit => ui::Kind::TextEdit,
         ControlKind::MouseArea => ui::Kind::MouseArea,
@@ -351,6 +352,10 @@ pub(super) fn widget(
             .filter(|t| !t.is_empty())
     {
         w.text = text.into();
+    }
+    // A file selector shows the file `FILEPATH` names, or the last picked.
+    if kind == ControlKind::FileSelector {
+        w.text = p.text("$CONTROL_PAR_FILEPATH").unwrap_or_default().into();
     }
     w.tooltip = p.text("$CONTROL_PAR_HELP").unwrap_or_default().into();
     w.automation = ui::Automation {
