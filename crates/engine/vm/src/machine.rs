@@ -180,6 +180,13 @@ impl Vm {
 
     /// What may have changed its state, wrapping: unchanged, its cells,
     /// widgets and saved state are as they were. the interpreter's change count, or
+    /// [`Machine::begin_block`]; the interpreter has no slices.
+    pub fn begin_block(&mut self) {
+        if let Self::Foreign(m) = self {
+            m.begin_block();
+        }
+    }
+
     /// [`Machine::runs`].
     #[must_use]
     pub fn runs(&self) -> u32 {
