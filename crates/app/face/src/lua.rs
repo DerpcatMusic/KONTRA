@@ -19,30 +19,32 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
         performance: page.performance,
         ..Default::default()
     };
-    let mut asset = |tree: &mut ui::Interface, path: &str, frames: u32| {
-        let at = *assets.entry((path.to_owned(), frames)).or_insert_with(|| {
-            let mut meta = picture(path).unwrap_or_default();
-            // A strip's frames stack down; each is drawn at the widget's size.
-            meta.frames = frames;
-            meta.axis = ui::Orientation::Vertical;
-            meta.size = meta.size.map(|s| ui::Size {
-                width: s.width,
-                height: (s.height / f64::from(frames)).floor(),
+    let mut asset = |tree: &mut ui::Interface, path: &str, frames: u32, stretch: bool| {
+        let at = *assets
+            .entry((path.to_owned(), frames, stretch))
+            .or_insert_with(|| {
+                let mut meta = picture(path).unwrap_or_default();
+                // A strip's frames stack down; each is drawn at the widget's size.
+                meta.frames = frames;
+                meta.axis = ui::Orientation::Vertical;
+                meta.size = meta.size.map(|s| ui::Size {
+                    width: s.width,
+                    height: (s.height / f64::from(frames)).floor(),
+                });
+                meta.stretch = [stretch; 2];
+                tree.assets.push(ui::Asset {
+                    path: path.to_owned(),
+                    kind: ui::AssetKind::Image(meta),
+                });
+                tree.assets.len() - 1
             });
-            meta.stretch = [true; 2];
-            tree.assets.push(ui::Asset {
-                path: path.to_owned(),
-                kind: ui::AssetKind::Image(meta),
-            });
-            tree.assets.len() - 1
-        });
         let size = match tree.assets.get(at).map(|a| &a.kind) {
             Some(ui::AssetKind::Image(m)) => m.size,
             _ => None,
         };
         (ui::AssetRef(at), size)
     };
-    let background = page.background.as_deref().map(|p| asset(&mut tree, p, 1).0);
+    let background = (page.background.as_deref()).map(|p| asset(&mut tree, p, 1, true).0);
     tree.pages.push(ui::Page {
         name: "Performance".into(),
         size: ui::Size {
@@ -74,9 +76,12 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             (w.handle.as_deref().map(|p| (p, 1)), ui::Role::Handle),
         ];
         let mut own = None;
+        // A panel's background sits at its own size from its top left
+        // (Augmented Orchestra's 153x100 filter art in a 120 high panel).
+        let stretch = w.kind != "Panel";
         for (path, role) in roles {
             if let Some((path, frames)) = path {
-                let (at, size) = asset(&mut tree, path, frames);
+                let (at, size) = asset(&mut tree, path, frames, stretch);
                 // A handle is smaller than the track it moves along.
                 own = own.or(size.filter(|_| role != ui::Role::Handle));
                 out.images.push(ui::ImageUse::new(at, role));
@@ -331,10 +336,12 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
         w.hidden,
         w.enabled,
         w.images.first().copied(),
+        w.opacity,
     );
     w.value = value_of(&w.kind, look.value).or(w.value.take());
     w.hidden = !look.visible;
     w.enabled = look.enabled;
+    w.opacity = look.alpha;
     swap(w);
     let mut changed = before
         != (
@@ -342,8 +349,18 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
             w.hidden,
             w.enabled,
             w.images.first().copied(),
+            w.opacity,
         );
     let pictured = matches!(w.kind, ui::Kind::Button { .. }) && !w.images.is_empty();
+    // A value's `displayText` shows in place of its formatted value.
+    if matches!(w.kind, ui::Kind::ValueEdit { .. } | ui::Kind::Knob { .. }) {
+        let now = text.map(str::to_owned);
+        if now.is_some() && w.value_text != now {
+            w.value_text = now;
+            changed = true;
+        }
+        return changed;
+    }
     // A menu's text is its selected item's, which the script may rename.
     let shown = match (&mut w.kind, &w.value) {
         (ui::Kind::Menu { items }, Some(ui::Value::Integer(at))) => items
@@ -516,6 +533,7 @@ mod tests {
             visible: true,
             enabled: true,
             items: 0,
+            alpha: 1.,
         };
         assert!(apply(&mut tree, 2, on, None));
         assert_eq!(shown(&tree), ui::Role::Pressed);
@@ -546,6 +564,7 @@ mod tests {
             visible: true,
             enabled: true,
             items: 0,
+            alpha: 1.,
         };
         assert!(!apply(&mut tree, 0, look, Some("Main")));
         assert_eq!(tree.widgets[0].text, "");

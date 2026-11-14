@@ -312,6 +312,10 @@ local widget_meta = {
 			return #rawget(w, "items")
 		elseif key == "length" and rawget(w, "__resize") then
 			return #rawget(w, "values")
+		elseif key == "length" then
+			-- Only lists have one: Augmented Orchestra tells menus from
+			-- knobs by `w.length ~= nil` and hides the menus.
+			return nil
 		elseif key == "bound" then
 			return rawget(w, "__target") ~= nil
 		elseif key == "pos" or key == "position" then
