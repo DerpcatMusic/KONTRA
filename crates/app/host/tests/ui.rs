@@ -480,3 +480,18 @@ fn waveform_text_lines_custom_ids_and_messages_reach_the_tree() {
     assert_eq!(widget(&ui, "$echo").text, "12");
     assert_eq!(ui.message, "Loading done");
 }
+
+/// `get_ui_wf_property` reads back what `set_ui_wf_property` stored.
+#[test]
+fn a_waveform_property_reads_back_as_set() {
+    let ui = tree(
+        "on init
+            make_perfview
+            declare ui_waveform $wave (5, 4)
+            set_ui_wf_property($wave, $UI_WF_PROP_PLAY_CURSOR, 0, 250000)
+            declare ui_label $echo (1, 1)
+            set_text($echo, get_ui_wf_property($wave, $UI_WF_PROP_PLAY_CURSOR, 0))
+        end on",
+    );
+    assert_eq!(widget(&ui, "$echo").text, "250000");
+}

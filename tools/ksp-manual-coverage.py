@@ -2,7 +2,12 @@
 """KSP manual coverage: every symbol the manual documents against what KONTRA does.
 
     cargo run --release -p kontra-host --example ksp_status > /tmp/ksp-status.tsv
-    tools/ksp-manual-coverage.py MANUAL.txt /tmp/ksp-status.tsv > docs/ksp/MANUAL-COVERAGE.md
+    cargo run --release -p kontra-host --example coverage -- /tmp/corpus.md <library dir>...
+    tools/ksp-manual-coverage.py MANUAL.txt /tmp/ksp-status.tsv /tmp/corpus.md > docs/ksp/MANUAL-COVERAGE.md
+
+With the corpus report (the third argument) a command or name the libraries' scripts really call takes the
+status those calls got (a UI command the engine's bare probe cannot answer is answered in the UI tree), and
+the open rows rank by how many libraries, then scripts, call them.
 
 A manual item is a command heading (`name()`), a callback (`on name`) or a
 `$`/`%` name that opens a line or a bullet. Status per item:
@@ -27,6 +32,19 @@ status = {}
 for line in pathlib.Path(sys.argv[2]).read_text().splitlines():
     kind, name, st = line.split("\t")
     status[(kind, name.lower() if kind != "par" else name.lstrip("$").upper())] = st
+
+# What the libraries' scripts call, from the coverage example's report: name -> (libraries, scripts, status).
+used = {}
+if len(sys.argv) > 3 and not sys.argv[3].startswith("--"):
+    for line in pathlib.Path(sys.argv[3]).read_text().splitlines():
+        cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
+        if not line.startswith("| `"):
+            continue
+        if len(cells) == 6 and cells[1] in ("vm", "answered", "partial", "missing"):  # actions
+            for n in cells[0].split(", "):
+                used[n.lower()] = (int(cells[2]), int(cells[3]), cells[1])
+        elif len(cells) == 4 and cells[1] in ("yes", "no"):  # catalog names
+            used[cells[0].lower()] = (int(cells[2]), int(cells[3]), cells[1])
 
 # Names the manual misspells in its own examples (real ones are listed beside them).
 TYPOS = {"$EVENT_PAR_MIDI_CHANNNEL", "$CUSTOM_EVENT_PAR_4", "$NI_VL_TMRPO_HQ"}
@@ -110,6 +128,9 @@ for (kind, name), sec in items.items():
     if kind == "fn":
         st = status.get(("fn", key))
         got = {"vm": "done", "answered": "done", "missing": "partial"}.get(st, "missing")
+        seen = used.get(key)
+        if seen and seen[2] in ("vm", "answered"):
+            got = "done"
     elif kind == "cb":
         got = "done" if ("cb", CB.get(name, "")) in {(k, v.lower()) for (k, v) in status if k == "cb"} or name in CB else "missing"
         if name not in CB:
@@ -117,12 +138,16 @@ for (kind, name), sec in items.items():
     elif kind == "par" or name.upper().startswith("$ZONE_PAR"):
         # $ZONE_PAR_* are engine parameters of the zone commands: ksp_status lists the carried ones.
         got = "done" if ("par", name.lstrip("$").upper()) in status else "missing" if kind == "par" else "partial"
+        if used.get(key, (0, 0, ""))[2] == "yes":
+            got = "done"
     else:
         bare = name.lstrip("$%~@!").upper()
         bare_lc = name.lstrip("$%~@!").lower()
         known_fn = any(("fn", p + bare_lc) in status for p in ("", "$", "%"))
         got = "done" if known_fn \
             else "done" if bare in valued else "partial" if bare in vendor else "missing"
+        if used.get(key, (0, 0, ""))[2] == "yes":
+            got = "done"
     if got == "done" and re.search(r"\b" + re.escape(key.lstrip("$%~@!")) + r"\b", test_text):
         got = "tested"
     rows.append((kind, name, sec, got))
@@ -144,8 +169,16 @@ label = {"fn": "commands", "cb": "callbacks", "par": "$ENGINE_PAR_*", "evpar": "
          "uipar": "$CONTROL_PAR_*/$ZONE_PAR_*", "var": "built-in variables", "sym": "other names"}
 for kind, c in by.items():
     out.append(f"| {label[kind]} | {sum(c.values())} | {c['tested']} | {c['done']} | {c['partial']} | {c['missing']} |")
-out += ["", "## Not yet done", "", "| Kind | Name | Manual section | Status |", "|---|---|---|---|"]
-for kind, name, sec, st in rows:
-    if st in ("partial", "missing"):
-        out.append(f"| {label[kind]} | `{name}` | {sec} | {st} |")
+out += ["", "## Not yet done", ""]
+if used:
+    out += ["Ranked by the libraries, then scripts, that call them (0 where no script does).", "",
+            "| Kind | Name | Manual section | Status | Libraries | Scripts |", "|---|---|---|---|---:|---:|"]
+else:
+    out += ["| Kind | Name | Manual section | Status |", "|---|---|---|---|"]
+open_rows = [r for r in rows if r[3] in ("partial", "missing")]
+use_of = lambda r: used.get(r[1].lower(), (0, 0, ""))[:2]
+open_rows.sort(key=lambda r: (-use_of(r)[0], -use_of(r)[1]))
+for kind, name, sec, st in open_rows:
+    extra = f" {use_of((kind, name))[0]} | {use_of((kind, name))[1]} |" if used else ""
+    out.append(f"| {label[kind]} | `{name}` | {sec} | {st} |{extra}")
 print("\n".join(out))
