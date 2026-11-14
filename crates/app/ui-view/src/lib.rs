@@ -75,6 +75,10 @@ pub fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
     )
 }
 
+/// The smallest text, in device pixels, a library's words draw at once the
+/// window is scaled below their size.
+const TEXT_FLOOR: f64 = 8.;
+
 /// Text size where the source sets none, in source pixels.
 const TEXT: f64 = 11.;
 
@@ -225,8 +229,10 @@ fn drawn_page(
                 p.size,
             ))
         });
-        // A pad's cursor pictures, by cursor: inactive and active frames.
-        let cursors: Vec<Option<(xy::Art, (f64, f64))>> = match wd.kind {
+        // A pad's cursor pictures, by cursor: inactive and active frames
+        // (none while they decode, or if they fail), and the size the
+        // pointer hits (xy::art_size) whether they show or not.
+        let cursors: Vec<Option<xy::Cursor>> = match wd.kind {
             Kind::Xy { cursors, .. } if !bare => (0..cursors)
                 .map(|i| {
                     let u = (wd.images.iter())
@@ -234,9 +240,9 @@ fn drawn_page(
                     let (path, meta) = image_asset(tree, u.asset)?;
                     let size = meta.size?;
                     let lit = usize::from(meta.frames > 1);
-                    let off = pictures.frame(u.asset, path, meta, 0, device)?;
-                    let on = pictures.frame(u.asset, path, meta, lit, device)?;
-                    Some(((off, on), (size.width, size.height)))
+                    let off = pictures.frame(u.asset, path, meta, 0, device);
+                    let on = pictures.frame(u.asset, path, meta, lit, device);
+                    Some((off.zip(on), (size.width, size.height)))
                 })
                 .collect(),
             _ => Vec::new(),
@@ -299,7 +305,7 @@ fn drawn_page(
             match atlas {
                 Some((id, path))
                     if matches!(tree.source, model::Source::Ksp { .. })
-                        && matches!(wd.kind, Kind::Label) =>
+                        && matches!(wd.kind, Kind::Label | Kind::TextEdit) =>
                 {
                     pictures.font(model::AssetRef(id), path)
                 }
@@ -358,8 +364,18 @@ fn drawn_page(
                     }
                     _ => None,
                 },
-                wd.colors.background,
-                wd.colors.bar,
+                (
+                    wd.colors.background,
+                    wd.colors.off,
+                    wd.colors.on,
+                    wd.colors.peak,
+                ),
+                (
+                    wd.colors.bar,
+                    wd.colors.overload,
+                    wd.colors.wave,
+                    wd.meter_range,
+                ),
                 wd.table_inner_edge.map(|edge| edge.visible),
                 wd.hide.background,
                 bare,
@@ -383,15 +399,17 @@ fn drawn_page(
                 wd.active_index,
                 (cursors.iter())
                     .map(|c| {
-                        c.as_ref()
-                            .map(|((a, b), _)| (Arc::as_ptr(a) as usize, Arc::as_ptr(b) as usize))
+                        c.as_ref().map(|(art, _)| {
+                            art.as_ref()
+                                .map(|(a, b)| (Arc::as_ptr(a) as usize, Arc::as_ptr(b) as usize))
+                        })
                     })
                     .collect::<Vec<_>>(),
             ),
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             (wd.opacity.to_bits(), wd.rotation.to_bits()),
         );
-        let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |_| {
+        let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |ui| {
             built += 1;
             let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
@@ -446,7 +464,7 @@ fn drawn_page(
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
             } else if !words.is_empty() {
                 if let (Some(glyphs), Some(style)) = (&stock_glyphs, style)
-                    && matches!(wd.kind, Kind::Label)
+                    && matches!(wd.kind, Kind::Label | Kind::TextEdit)
                     && !words.contains('\n')
                     && words
                         .chars()
@@ -468,7 +486,7 @@ fn drawn_page(
                             style,
                             wd,
                             (w, h),
-                            scale,
+                            (scale, device),
                             outline.as_ref(),
                             tree.source,
                         )
@@ -480,13 +498,26 @@ fn drawn_page(
                 let art = |i: u32| cursors.get(i as usize).cloned().flatten();
                 parts.push(xy::draw(wd, (w / scale, h / scale, scale), field, &art).at(0., 0.));
             }
-            if let Some(wave) =
-                (wd.waveform.as_ref()).and_then(|v| wave::draw(v, &wd.colors, (w, h, scale)))
-            {
-                parts.push(wave.at(0., 0.));
+            if let Some(v) = wd.waveform.as_ref() {
+                // Rasterised once per size and look; the cursor rides over it.
+                let wl = wave::Look::of(wd);
+                let px = |v: f64| (v / scale * device).round() as usize;
+                let (pw, ph) = (px(w), px(h));
+                let key = (v.zone, v.peaks.len(), v.density.len(), v.frames.len());
+                let key = (key, v.xray, v.alpha, wl, pw, ph, device.to_bits());
+                let id = format!("kontra-wave-{face}-{}", n.0);
+                let pic = ui.memo(id, key, |_| match wave::raster(v, wl, (pw, ph, device)) {
+                    Some(img) => block(w, h).radius(0.).fill(Fill::Image(img, Fit::Fill)),
+                    None => stack(Vec::<El>::new()),
+                });
+                parts.push(pic.at(0., 0.));
+                // A wavetable shows no play cursor (probe/wave.ksp).
+                if matches!(wd.kind, Kind::Waveform) {
+                    parts.extend(wave::cursor(v, &wd.colors, (w, h, scale)));
+                }
             }
             if let Some((o, t)) = lit {
-                parts.push(meter(&wd.colors, o, t, (w, h, scale)).at(0., 0.));
+                parts.push(meter(&wd.colors, o, t, wd.meter_range, (w, h, scale)).at(0., 0.));
             }
             let (w, h) = look.as_ref().map_or((w, h), |look| {
                 parts.extend(look.draw(
@@ -536,7 +567,12 @@ fn drawn_page(
         let o = host.map_or(model::Rect::default(), |v| tree.page_rect(v));
         // A region's own place carries the band above the page, as `r` does.
         let lift = f64::from(host.map_or(0, |_| p.background.above));
-        let (x, y) = (r.x - o.x * scale, r.y - (o.y + lift) * scale);
+        // Less the region's own snapped corner (plan::snapped), so its
+        // children stay on the whole pixels they were snapped to.
+        let (x, y) = (
+            r.x - (o.x * scale).round(),
+            r.y - ((o.y + lift) * scale).round(),
+        );
         let group = groups.entry(host).or_insert_with(Vec::new);
         group.push(el.at(x, y));
         if wd.viewport.is_some() {
@@ -571,39 +607,85 @@ fn lit(s: Shown) -> (f64, f64, bool) {
     (step(s.level), step(s.peak), s.over)
 }
 
-/// A level meter lit to `t`: its OFF colour behind, its ON colour lit (its
-/// OVERLOAD colour while that is lit), from the bottom when vertical, from
-/// the left otherwise; a one-pixel line in its PEAK colour at the held peak.
-/// A script that sets no PEAK or OVERLOAD colour shows neither.
+/// The overload light at a meter's far end, in points.
+const METER_LIGHT: f64 = 3.;
+/// The lighter of the stripes a meter's unlit run alternates with OFF.
+const METER_STRIPE: u32 = 0x5E_5E5E;
+
+/// Where `t` (0 to 1 of the meter's default 0 to 1000000) shows on a meter
+/// of `range` (`RANGE_MIN`, `RANGE_MAX`; max below min inverts it).
+// ponytail: the range applies after the ballistics, so an inverted meter's
+// peak line holds the level's, not the inverted display's.
+pub(crate) fn ranged(t: f64, range: Option<[i32; 2]>) -> f64 {
+    match range {
+        Some([min, max]) if min != max => {
+            (t * 1e6 - f64::from(min)) / (f64::from(max) - f64::from(min))
+        }
+        _ => t,
+    }
+}
+
+/// A level meter lit to `t` on `range`, as Kontakt 8 draws one (oracle,
+/// probe/wave.ksp at 100 %): from the bottom when vertical, from the left
+/// otherwise, in its ON colour; its unlit run in 1 px stripes of its OFF
+/// colour and #5E5E5E; the last 3 px an overload light, OFF until the level
+/// runs past the range's end or clips (then its OVERLOAD colour, red when
+/// unset); a 1 px line in its PEAK colour, if set, at the held peak.
 fn meter(
     c: &model::Colors,
     o: model::Orientation,
     (t, peak, over): (f64, f64, bool),
+    range: Option<[i32; 2]>,
     (w, h, s): (f64, f64, f64),
 ) -> El {
-    let off = c
-        .off
-        .or(c.background)
-        .map_or(Color::srgb(0.1, 0.1, 0.1), color);
-    let on = (c.overload.filter(|_| over))
-        .or(c.on)
-        .or(c.bar)
-        .map_or(Color::srgb(0.45, 0.8, 0.45), color);
-    let span = |t: f64| match o {
-        model::Orientation::Vertical => (0., h * (1. - t), w, h * t),
-        model::Orientation::Horizontal => (0., 0., w * t, h),
+    let vertical = matches!(o, model::Orientation::Vertical);
+    let off = c.off.map_or(Color::srgb(0.1, 0.1, 0.1), color);
+    // ponytail: BG_COLOR as the lighter stripe is unprobed (#5E5E5E unset).
+    let stripe = color(c.background.unwrap_or(model::Rgba::rgb(METER_STRIPE)));
+    let on = c.on.or(c.bar).map_or(Color::srgb(0.45, 0.8, 0.45), color);
+    let shown = ranged(t, range);
+    let light = if over || shown > 1. {
+        color(c.overload.unwrap_or(model::Rgba::rgb(0xFF_0000)))
+    } else {
+        off
     };
-    let fill = |(x, y, w, h): (f64, f64, f64, f64), c: Color| {
-        block(w, h).radius(0.).fill(Fill::from(c)).at(x, y)
+    // Along the meter, in points from its top (vertical) or left edge.
+    let long = if vertical { h } else { w } / s;
+    let bar = (long - METER_LIGHT).max(0.);
+    let lit = (bar * shown.clamp(0., 1.)).round();
+    let mut runs: Vec<(f64, f64, Color)> = Vec::new();
+    let (lit_from, unlit) = if vertical {
+        runs.push((0., METER_LIGHT.min(long), light));
+        (long - lit, (METER_LIGHT.min(long), long - lit))
+    } else {
+        runs.push((bar, long, light));
+        (0., (lit, bar))
     };
-    let mut parts = vec![fill((0., 0., w, h), off), fill(span(t), on)];
-    if let Some(ink) = c.peak.filter(|_| peak > 0.) {
-        let line = match o {
-            model::Orientation::Vertical => (0., (h * (1. - peak)).min(h - s), w, s),
-            model::Orientation::Horizontal => ((w * peak - s).max(0.), 0., s, h),
-        };
-        parts.push(fill(line, color(ink)));
+    runs.push((lit_from, lit_from + lit, on));
+    let mut at = unlit.0;
+    while at < unlit.1 {
+        let ink = if at as i64 % 2 == 1 { stripe } else { off };
+        runs.push((at, (at + 1.).min(unlit.1), ink));
+        at += 1.;
     }
+    if let Some(ink) = c.peak.filter(|_| peak > 0.) {
+        let p = (bar * ranged(peak, range).clamp(0., 1.)).round();
+        let line = if vertical { long - p } else { p - 1. }.clamp(0., (long - 1.).max(0.));
+        runs.push((line, line + 1., color(ink)));
+    }
+    let px = |v: f64| (v * s).round();
+    let parts: Vec<El> = runs
+        .into_iter()
+        .filter(|&(a, b, _)| b > a)
+        .map(|(a, b, ink)| {
+            let el = block(0., 0.).radius(0.).fill(Fill::from(ink));
+            if vertical {
+                el.w(w).h(px(b) - px(a)).at(0., px(a))
+            } else {
+                el.w(px(b) - px(a)).h(h).at(px(a), 0.)
+            }
+        })
+        .collect();
     stack(parts).w(w).h(h)
 }
 
@@ -693,7 +775,7 @@ fn words_el(
     style: Option<&model::TextStyle>,
     w: &model::Widget,
     (width, height): (f64, f64),
-    scale: f64,
+    (scale, device): (f64, f64),
     font: Option<&Font>,
     source: model::Source,
 ) -> El {
@@ -720,6 +802,14 @@ fn words_el(
     };
     let geometry = plan::text(words, native_style.as_ref(), w, (height, scale, em), source);
     let size = geometry.size;
+    // Device pixels per view unit.
+    let px = if scale > 0. { device / scale } else { 1. };
+    // Below TEXT_FLOOR device pixels (a window scaled down), words grow
+    // back to it where they still fit their own room, else keep their size
+    // (compared at 50 % on Conflux and Areia against an unconditional floor,
+    // which ran neighbours together, and whole-pixel sizes, which read no
+    // better: PluginArtifacts/KONTRA/ui-parity/batch-20261114/floor).
+    let grown = |size: f64| (size * px).max(TEXT_FLOOR) / px;
     let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
     let align = geometry.align;
     let line = geometry.line;
@@ -769,34 +859,41 @@ fn words_el(
     }
     // Kontakt's factory faces run narrower than ours: a label sized for
     // them steps down to fit rather than cut its words (v1 `TextFont::fit`).
-    let said = |k: f64| {
-        let el = weigh(
-            text(words.to_owned())
-                .text_size(size * k)
-                .fill(Fill::from(ink)),
-        );
+    let sized = |size: f64| {
+        let el = weigh(text(words.to_owned()).text_size(size).fill(Fill::from(ink)));
         match font {
             Some(font) => el.font(font.clone()),
             None => el,
         }
     };
+    let said = |k: f64| sized(size * k);
+    let small = size * px < TEXT_FLOOR;
+    let line = if small {
+        line.max(grown(size) * 1.25)
+    } else {
+        line
+    };
     // A candidate that wraps is taller than the line, so it loses.
-    let el = row([fits([
+    let mut steps: Vec<El> = Vec::new();
+    if small {
+        steps.extend([1., 0.9, 0.8].map(|k| sized(grown(size * k))));
+    }
+    steps.extend([
         said(1.),
         said(0.9),
         said(0.8),
         said(0.75).lines(1).min_w(0.),
-    ])
-    .h(line)])
-    .align(Align::Center)
-    .justify(match align {
-        model::Align::Left => Justify::Start,
-        model::Align::Center => Justify::Center,
-        model::Align::Right => Justify::End,
-    })
-    .w((width - inset.0 - inset.1).max(0.))
-    .h(line)
-    .at(inset.0, top);
+    ]);
+    let el = row([fits(steps).h(line)])
+        .align(Align::Center)
+        .justify(match align {
+            model::Align::Left => Justify::Start,
+            model::Align::Center => Justify::Center,
+            model::Align::Right => Justify::End,
+        })
+        .w((width - inset.0 - inset.1).max(0.))
+        .h(line)
+        .at(inset.0, top);
     stack([el]).w(width).h(height).radius(0.).clip()
 }
 

@@ -310,6 +310,8 @@ pub(crate) struct Slot {
     /// The parameters it read, and whether it is still being placed.
     reads: Vec<String>,
     open: bool,
+    /// The layer its widgets draw on: 1 inside a popover's content.
+    z: i32,
 }
 
 /// Places layer `k` of `n` in `r`, appending what it draws; a whole
@@ -328,6 +330,7 @@ pub(super) fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder
         inner: 0,
         reads: n.reads.clone(),
         open: true,
+        z: 0,
     });
     place_layer(n, k, r, env, bld);
     let (end, inner) = (bld.ui.widgets.len(), bld.nui.len() - at - 1);
@@ -365,7 +368,16 @@ pub(super) fn splice(
     let after = bld.nui.split_off(i + 1 + old.inner);
     bld.nui.truncate(i);
     match node {
-        Some(n) => place(n, n.mods.len(), old.rect, old.env, bld),
+        Some(n) => {
+            place(n, n.mods.len(), old.rect, old.env, bld);
+            // Rebuilt on the layer it was on (a popover's content stays over the page).
+            for w in bld.ui.widgets.iter_mut().skip(old.start) {
+                w.z = old.z;
+            }
+            for s in bld.nui.iter_mut().skip(i) {
+                s.z = old.z;
+            }
+        }
         None => bld.nui.push(Slot {
             end: old.start,
             inner: 0,
@@ -455,9 +467,12 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
             }
         }
         "popover" => {
+            let first = bld.ui.widgets.len();
             place(n, k - 1, r, inner_env, bld);
-            // Anchored to what it wraps, centred in its room as that is.
-            let anchor = aligned(r, size(bld, r), (0.5, 0.5));
+            // Anchored to where what it wraps was placed (its own align and
+            // offset included); measured and centred if it drew nothing.
+            let anchor = bounds(bld.ui.widgets.iter().skip(first).map(|w| w.rect))
+                .unwrap_or_else(|| aligned(r, size(bld, r), (0.5, 0.5)));
             popover(bld, args, anchor, env);
             return;
         }
@@ -505,36 +520,7 @@ fn popover(bld: &mut Builder<'_>, args: &[Prop], a: ui::Rect, env: Env) {
         .pages
         .first()
         .map_or((970., 600.), |p| (p.size.width, p.size.height));
-    let start = bld.ui.widgets.len();
-    if text(arg(args, "auto_close_when")) != Some("never")
-        && let Some(Prop::Callback(close)) = arg(args, "on_auto_close")
-    {
-        // Four strips around the anchor catch a press outside it.
-        let (x1, y1) = (a.x + a.width, a.y + a.height);
-        let strips = [
-            (0., 0., page.0, a.y),
-            (0., y1, page.0, page.1 - y1),
-            (0., a.y, a.x, a.height),
-            (x1, a.y, page.0 - x1, a.height),
-        ];
-        for (x, y, width, height) in strips {
-            if width > 0. && height > 0. {
-                let mut w = ui::Widget::new(
-                    format!("{} {close} 0", super::TAP),
-                    ui::PageRef(0),
-                    ui::Rect {
-                        x,
-                        y,
-                        width,
-                        height,
-                    },
-                    ui::Kind::Button { momentary: true },
-                );
-                w.opacity = 0.;
-                bld.ui.widgets.push(w);
-            }
-        }
-    }
+    let (start, slots) = (bld.ui.widgets.len(), bld.nui.len());
     let (w, h) = or_room(
         measure(bld, content, content.mods.len(), page, env),
         ui::Rect {
@@ -544,6 +530,9 @@ fn popover(bld: &mut Builder<'_>, args: &[Prop], a: ui::Rect, env: Env) {
             height: a.height,
         },
     );
+    // No larger than the page.
+    // ponytail: content taller than the page is cut, not scrolled.
+    let (w, h) = (w.min(page.0), h.min(page.1));
     let gap = num(arg(args, "spacing")).unwrap_or(0.);
     let (ax, ay) = alignment(text(arg(args, "alignment")));
     let along_x = a.x + (a.width - w) * ax;
@@ -555,23 +544,96 @@ fn popover(bld: &mut Builder<'_>, args: &[Prop], a: ui::Rect, env: Env) {
         _ => (along_x, a.y - gap - h),
     };
     // Kept on the page, as a popover is.
-    let x = x.min(page.0 - w).max(0.);
-    let y = y.min(page.1 - h).max(0.);
-    place(
-        content,
-        content.mods.len(),
-        ui::Rect {
-            x,
-            y,
-            width: w,
-            height: h,
-        },
-        env,
-        bld,
-    );
+    let c = ui::Rect {
+        x: x.min(page.0 - w).max(0.),
+        y: y.min(page.1 - h).max(0.),
+        width: w,
+        height: h,
+    };
+    if text(arg(args, "auto_close_when")) != Some("never")
+        && let Some(Prop::Callback(close)) = arg(args, "on_auto_close")
+    {
+        // A press anywhere but on the anchor or the content closes it.
+        for r in outside(page, [a, c]) {
+            let mut w = ui::Widget::new(
+                format!("{} {close} 0", super::TAP),
+                ui::PageRef(0),
+                r,
+                ui::Kind::Button { momentary: true },
+            );
+            w.opacity = 0.;
+            bld.ui.widgets.push(w);
+        }
+    }
+    place(content, content.mods.len(), c, env, bld);
     for w in bld.ui.widgets.iter_mut().skip(start) {
         w.z = 1;
     }
+    for s in bld.nui.iter_mut().skip(slots) {
+        s.z = 1;
+    }
+}
+
+/// The smallest rect around `rects`, if any has area.
+fn bounds(rects: impl Iterator<Item = ui::Rect>) -> Option<ui::Rect> {
+    rects
+        .filter(|r| r.width > 0. && r.height > 0.)
+        .map(|r| (r.x, r.y, r.x + r.width, r.y + r.height))
+        .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+        .map(|(x0, y0, x1, y1)| ui::Rect {
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        })
+}
+
+/// The page of `size` less `holes`, as rows of rects: the grid their
+/// edges cut, each row's free cells joined.
+fn outside(size: (f64, f64), holes: [ui::Rect; 2]) -> Vec<ui::Rect> {
+    let cuts = |edges: [f64; 4], end: f64| {
+        let mut v: Vec<f64> = [0., end]
+            .into_iter()
+            .chain(edges.into_iter().map(|e| e.clamp(0., end)))
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v.dedup();
+        v
+    };
+    let [p, q] = holes;
+    let xs = cuts([p.x, p.x + p.width, q.x, q.x + q.width], size.0);
+    let ys = cuts([p.y, p.y + p.height, q.y, q.y + q.height], size.1);
+    let inside = |r: &ui::Rect, x: f64, y: f64| {
+        (r.x..r.x + r.width).contains(&x) && (r.y..r.y + r.height).contains(&y)
+    };
+    let span = |x0: f64, y0: f64, x1: f64, y1: f64| ui::Rect {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    };
+    let mut out = Vec::new();
+    for row in ys.windows(2) {
+        let &[y0, y1] = row else { continue };
+        let mut run: Option<f64> = None;
+        for col in xs.windows(2) {
+            let &[x0, x1] = col else { continue };
+            let (mx, my) = ((x0 + x1) / 2., (y0 + y1) / 2.);
+            let free = !holes.iter().any(|h| inside(h, mx, my));
+            match (free, run) {
+                (true, None) => run = Some(x0),
+                (false, Some(from)) => {
+                    out.push(span(from, y0, x0, y1));
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+        if let (Some(from), Some(&end)) = (run, xs.last()) {
+            out.push(span(from, y0, end, y1));
+        }
+    }
+    out
 }
 
 /// The control a drag in the instance being placed moves: the innermost
@@ -967,6 +1029,26 @@ mod tests {
                 .iter()
                 .any(|(n, r)| *n == "Rectangle" && (r.x, r.y, r.width) == (30., 57., 40.))
         );
-        assert_eq!(shown.iter().filter(|(n, _)| n.ends_with(" 9 0")).count(), 4);
+        // The close areas cover the page but the anchor and the content:
+        // a press on either never closes it.
+        let content = ui::Rect::new(30, 57, 40, 30);
+        let anchor = ui::Rect::new(40, 45, 20, 10);
+        let strips: Vec<_> = (shown.iter())
+            .filter(|(n, _)| n.ends_with(" 9 0"))
+            .map(|(_, r)| *r)
+            .collect();
+        let overlaps = |a: &ui::Rect, b: &ui::Rect| {
+            a.x < b.x + b.width
+                && b.x < a.x + a.width
+                && a.y < b.y + b.height
+                && b.y < a.y + a.height
+        };
+        assert!(
+            !strips
+                .iter()
+                .any(|s| overlaps(s, &content) || overlaps(s, &anchor))
+        );
+        let area: f64 = strips.iter().map(|r| r.width * r.height).sum();
+        assert!((area + 40. * 30. + 20. * 10. - 970. * 600.).abs() < 1e-6);
     }
 }

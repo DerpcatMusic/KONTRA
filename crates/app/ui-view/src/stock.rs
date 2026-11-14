@@ -743,10 +743,8 @@ pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
         && (bare
             || unpictured(tree, w)
             || (matches!(tree.source, Source::FalconLua) && matches!(w.kind, Kind::Table { .. })))
-        && matches!(
-            w.kind,
-            Kind::Slider { .. } | Kind::TextEdit | Kind::Table { .. }
-        )
+        // A text edit draws no field: its words sit on the page (probe/wave.ksp).
+        && matches!(w.kind, Kind::Slider { .. } | Kind::Table { .. })
         || matches!(w.kind, Kind::Shape(_) | Kind::Canvas(_))
 }
 
