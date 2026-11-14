@@ -51,8 +51,13 @@ fn measure(
     (seen.allocs as f64 / f64::from(EVENTS * ROUNDS), best)
 }
 
+/// Runs `co` to its end; a control may yield at its slice and go on.
 fn run(machine: &mut Box<dyn Machine>, co: Option<kontra_vm::CoId>) {
-    assert_eq!(co.map(|co| machine.run(co, &mut Host)), Some(Step::Done));
+    let mut step = co.map(|co| machine.run(co, &mut Host));
+    while let (Some(Step::Yield), Some(co)) = (step, co) {
+        step = Some(machine.run(co, &mut Host));
+    }
+    assert_eq!(step, Some(Step::Done));
 }
 
 /// Runs the script's init, then times each kind of event.
