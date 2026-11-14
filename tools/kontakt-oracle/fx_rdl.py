@@ -72,30 +72,60 @@ def click_delays(ref, x, rate, delay_ms, period_ms=25.0, skip=20):
     return np.array(out)
 
 
-def delay_track(x, rate, f0=1000.0, a=0.6, b=4.6):
-    """Delay (ms) against time of a steady tone from its analytic phase."""
-    i = int(np.argmax(np.abs(x) > 1e-4))
-    seg = x[i + int(a * rate): i + int(b * rate)]
+def wet_track(ref, x, rate, f0=1000.0, a=0.4, b=4.4):
+    """(delay ms, instantaneous frequency Hz, amplitude) of the wet part of a steady f0 tone through a modulated
+    delay. The dry path is the steady f0 line: it is cut from the spectrum (bins within 0.3 Hz of f0), what is left is
+    the wet signal, whose analytic phase against an ideal f0 tone gives the delay, delay(t) = -dphi / (2 pi f0) (the
+    constant part meaningless, mod 1/f0), and whose phase slope gives the pitch the modulation draws."""
+    i0 = int(np.argmax(np.abs(ref) > 1e-4))
+    seg = x[i0 + int(a * rate): i0 + int(b * rate)]
     n = len(seg)
     fr = np.fft.fftfreq(n, 1 / rate)
+    keep = (np.abs(fr) > f0 - 120) & (np.abs(fr) < f0 + 120) & (np.abs(np.abs(fr) - f0) > 0.3)
     h = np.zeros(n)
     h[0], h[1:n // 2], h[n // 2] = 1, 2, 1
-    an = np.fft.ifft(np.fft.fft(seg) * h * ((np.abs(fr) > 0.7 * f0) & (np.abs(fr) < 1.3 * f0)))
+    an = np.fft.ifft(np.fft.fft(seg * np.hanning(n)) * h * keep)
     ph = np.unwrap(np.angle(an)) - 2 * np.pi * f0 * np.arange(n) / rate
     tau = -(ph - ph.mean()) / (2 * np.pi * f0) * 1000.0
-    return tau[3000:-3000]
+    inst = f0 + np.gradient(ph) * rate / (2 * np.pi)
+    c = slice(n // 8, -n // 8)
+    return tau[c], inst[c], np.abs(an)[c], (a + np.arange(n) / rate)[c]
+
+
+def lfo_start(tau, t, f):
+    """Seconds of LFO run the engine's delay LFO (delay +A sin(2 pi f t): it grows first) needs before t = 0 to match
+    tau(t); the caller gives t on its own clock."""
+    m = np.stack([np.sin(2 * np.pi * f * t), np.cos(2 * np.pi * f * t), np.ones_like(t)], 1)
+    a, b, _ = np.linalg.lstsq(m, tau, rcond=None)[0]
+    return (np.arctan2(b, a) / (2 * np.pi * f)) % (1 / f)
 
 
 def mod_stats(tau, rate):
+    """(peak-to-peak ms, dominant rate Hz) of a delay track."""
     t = tau - tau.mean()
     spec = np.abs(np.fft.rfft(t * np.hanning(len(t))))
     fr = np.fft.rfftfreq(len(t), 1 / rate)
-    m = (fr > 0.1) & (fr < 40)
+    m = (fr > 0.05) & (fr < 30)
     return float(tau.max() - tau.min()), float(fr[m][np.argmax(spec[m])])
 
 
+def energy_by_ms(ref, x, rate, win_ms=10.0, floor_db=-90.0):
+    """(ms, dB re the dry impulse) of every 10 ms frame of x - ref that is above floor_db: where the effect's energy sits."""
+    n0 = min(len(x), len(ref))
+    w = x[:n0] - ref[:n0]
+    t0 = int(np.argmax(np.abs(ref) > 0.5 * np.abs(ref).max()))
+    p = int(win_ms / 1000 * rate)
+    top = np.abs(ref).max()
+    out = []
+    for j in range(0, n0 - t0 - p, p):
+        e = 10 * np.log10(np.sum(w[t0 + j:t0 + j + p] ** 2) / top ** 2 + 1e-30)
+        if e > floor_db:
+            out.append((j / rate * 1000, e))
+    return out
+
+
 if __name__ == "__main__":
-    mode, path = sys.argv[1:3]  # modes: echoes, sweep PATH DELAY_MS, clicks PATH DELAY_MS
+    mode, path = sys.argv[1:3]  # modes: echoes, mod, energy, sweep PATH DELAY_MS, clicks PATH DELAY_MS
     rate, z = load(path)
     n = len([k for k in z.files if k.startswith("x")])
     for k in range(1, n):
@@ -107,6 +137,15 @@ if __name__ == "__main__":
         elif mode == "sweep":
             r = sweep_response(z["x0"], z[f"x{k}"], rate, float(sys.argv[3]))
             print(k, " ".join(f"{f}:{v:+.1f}" for f, v in zip(PROBES, r)))
+        elif mode == "mod":
+            tau, inst, amp, _ = wet_track(z["x0"], z[f"x{k}"], rate)
+            ptp, f = mod_stats(tau, rate)
+            lo, hi = np.percentile(inst, [2, 98])
+            print(k, f"delay swing {ptp:.2f} ms  rate {f:.2f} Hz  pitch {lo - 1000:+.1f}..{hi - 1000:+.1f} Hz  wet amp {amp.mean():.3f}")
+        elif mode == "energy":
+            e = energy_by_ms(z["x0"], z[f"x{k}"], rate)
+            tot = 10 * np.log10(sum(10 ** (v / 10) for _, v in e) + 1e-30)
+            print(k, f"total {tot:.1f} dB;", " ".join(f"{t:.0f}:{v:.0f}" for t, v in e[:40]))
         elif mode == "clicks":
             d = click_delays(z["x0"], z[f"x{k}"], rate, float(sys.argv[3]))
             spec = np.abs(np.fft.rfft(d - d.mean()))
