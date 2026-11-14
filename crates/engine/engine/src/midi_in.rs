@@ -122,6 +122,16 @@ impl Engine {
         Some(Self::event_from(m, &event))
     }
 
+    /// A multi script's turn at `event`: its `on midi_in` runs, and what it
+    /// lets through or sends (`set_midi`) goes to `out`, for the rack's
+    /// parts. The engine itself plays none of it.
+    pub fn midi_in(&mut self, event: Event, out: &mut dyn FnMut(Event)) {
+        let mut made = |_: &mut Self, e: Event| out(e);
+        if let Some(e) = self.through_midi_in(event, &mut made) {
+            out(e);
+        }
+    }
+
     /// `set_midi` from the running `on midi_in`.
     pub(crate) fn set_midi(&mut self, bytes: [u8; 4]) {
         let (n, made) = &mut self.midi_made;
