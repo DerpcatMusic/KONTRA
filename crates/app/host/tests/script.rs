@@ -4528,7 +4528,7 @@ fn midi_channel_counts_across_ports() {
     // The note itself (B1) and the one `set_midi` sent on 18 (B3), in
     // either order: both read across ports.
     let said = e.last_message();
-    assert!(["16,60", "18,64"].contains(&said.as_str()), "{said}");
+    assert!(["16,60", "18,64"].contains(&said), "{said}");
     assert_eq!(e.active_voices(), 2);
 }
 
