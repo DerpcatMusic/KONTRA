@@ -4031,6 +4031,48 @@ fn a_wavetable_form_mode_switches_the_forms_kind() {
     assert_eq!(e.last_message(), "0|18|31");
 }
 
+/// A script sets the wavetable modulator's wave and tune unit (Conflux's
+/// wave and Semi/Ratio/Hz menus) and the table phase, and reads them back;
+/// a wave or unit that names nothing is dropped.
+#[test]
+fn a_wavetable_modulator_wave_and_unit_are_set_and_read_back() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].wavetable = Some(kontra_prepare::read(ir::Wavetable {
+        position: 0.0,
+        phase: 0.0,
+        phase_random: 0.0,
+        gain: 1.0,
+        inharmonic: ir::Inharmonic::OFF,
+        modosc: ir::ModOsc::OFF,
+        warps: [ir::Warp::OFF; 2],
+    }));
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            set_engine_par($ENGINE_PAR_WT_MOD_WAVE, 3, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, $NI_WT_MOD_TUNE_UNIT_HZ, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_PHASE, 250000, 0, -1, -1)
+            @t := get_engine_par($ENGINE_PAR_WT_MOD_WAVE, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_PHASE, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_MOD_WAVE, 9, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 3, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_WAVE, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 0, -1, -1)
+            message(@t)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // Only the two sets that name nothing (wave 9, unit 3) are refused.
+    assert_eq!(e.unhandled_actions().iter().map(|a| a.1).sum::<u32>(), 2);
+    assert_eq!(e.last_message(), "3|2|250000|3|2");
+}
+
 /// A time-stretch speed reads in %, one decimal (Kontakt 8.13.1, Time
 /// Machine 2: .1, .5, 1 read "26.4", "100.0", "800.0").
 #[test]

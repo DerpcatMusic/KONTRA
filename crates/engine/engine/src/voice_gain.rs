@@ -4,7 +4,7 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
-use ir::TableValue::{Inharmonic, ModAmount, ModTune, Position, Warp};
+use ir::TableValue::{Inharmonic, ModAmount, ModTune, Phase, PhaseRandom, Position, Warp};
 use kontra_stream::Mix;
 use kontra_voice::{Ahdsr, Gain, Lag, Read};
 
@@ -697,5 +697,7 @@ pub(crate) fn table_value(read: &mut Read, v: ir::TableValue) -> Option<&mut f32
         Inharmonic => Some(&mut read.inharmonic.amount),
         ModAmount => Some(&mut read.modosc.amount),
         ModTune => Some(&mut read.modosc.tune),
+        Phase => Some(&mut read.phase),
+        PhaseRandom => Some(&mut read.phase_random),
     }
 }
