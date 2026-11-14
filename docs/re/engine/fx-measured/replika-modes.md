@@ -75,11 +75,32 @@ TAPEAGE 0 and 1 and 0.5 at 0.25, 0.07-0.17 dB for Vintage). With FEEDBACK 0.5 th
 the loop: Analogue and Vintage at 1.2 x FEEDBACK as Modern (+1.4 dB at 200 Hz, -6.2 at 4 kHz for Analogue, against
 +1.6 and -6.1 predicted), Tape at 1.0 x FEEDBACK (+0.4, +3.5, +3.0 dB at 80, 300, 1k against +0.4, +3.4, +3.0).
 
-Open: Analogue's steep stopband (Kontakt -58 dB at 16 kHz, the fit -27 dB; 5- and 6-section fits did worse in the
-passband); its 1 kHz level is 1.8 dB higher with a steady tone than in the sweep (both at -20.6 dBFS, with and without
-DEPTH), while its amplitude moves 4-13 % with the LFO, which points at a body that follows the bucket brigade's clock;
-the modes' harmonics (Analogue's 2nd at -40 dB, Vintage's 3rd at -55 dB) and Tape's noise floor (-50 to -58 dB near the
-tone); Diffusion.
+## Saturation and noise, wet only (1 kHz ramp to full scale and a steady -20.6 dBFS tone, FEEDBACK 0)
+
+Each mode bends what it writes into its line; `fx_curve.py` fits that curve to the ramp (rms error 0.0009, 0.0001 and
+0.0012 of full scale for Analogue, Vintage, Tape), and the engine's delay carries it as `shape` on the line's input,
+the body's 1 kHz gain divided out.
+
+| Type | curve at -1 / +1 | 2nd / 3rd harmonic, ramp at -22 dB / -2 dB | noise re the tone, 100-700 Hz, at -19 / -13 / -7 / -2 dB |
+|---|---|---|---|
+| Analogue | -0.97 / +0.85 (asymmetric) | -41 / -32, -63 / -28 dB | -60, -63, -66, -70 |
+| Vintage | -0.51 / +0.51 | none, -58 / -16 dB | none (below -92) |
+| Tape (TAPEAGE 0.25) | -0.72 / +0.72 | -80 / -83, -69 / -26 dB | -56, -55, -56, -58 |
+
+- The noise is heard only under sound: the tail after a tone holds -124 dB (Analogue) and -102 dB (Tape). Analogue's
+  grows as the square root of the level, as a bucket brigade's compander's does; Tape's with the level. Both are white
+  where they are written, the body shapes them (Analogue's falls about 40 dB from 1 kHz to 12-20 kHz). The engine writes white
+  noise of `level x rms^power` of the line's input over 10 ms: Analogue 1.84e-3, power 1/2; Tape 8.2e-3, power 1.
+- RDL_NOISE and RDL_SATURATION at 0 move none of it (Analogue and Tape render as the preset within 1.4 dB at every
+  harmonic and the noise).
+- Analogue plays a steady 1 kHz tone 0.4 dB over its input, against -1.3 dB at 1 kHz in the sweep (both -20.6 dBFS, no
+  drift over 12 s, the same at TIME 100, 200 and 400 ms within 0.6 dB), so no time-invariant body plays both; the curve
+  follows the tone (its small-signal slope 1.19). TIME does not move the steep cut much (-8.2 to -13.5 dB at 10 kHz at
+  400 and 100 ms), so the body does not follow the bucket brigade's clock.
+
+Open: Analogue's sweep (1.5 dB over it everywhere, from the tone/sweep split above) and its stopband (Kontakt -46 dB at
+12 kHz and -58 dB at 16 kHz, the body -27 dB at 16 kHz); Tape's sidebands within 100 Hz of a tone, 11 dB over its noise
+floor (a random flutter); Diffusion.
 
 ## Gate: engine against the oracle, wet only
 
@@ -93,14 +114,17 @@ out: its first instance starts badly in every session, whatever its setting.
 |---|---|---|
 | Modern DEPTH 1, RATE 0.1 / 0.2 / 0.3 | 0.08 / 0.08 each | 1.05 / 0.10, 0.92 / 0.10, 0.63 / 0.10 |
 | Modern RATE 0.5, DEPTH 0.1 / 0.5 / 0.75 | 0.09 / 0.09 each | 0.12 / 0.09, 0.10 / 0.09, 0.09 / 0.09 |
-| Vintage RATE 0.5 / 0.8, DEPTH 1; DEPTH 0.5 | 24.6, 25.7, 12.2 (the 3rd harmonic at 3.2 kHz, 200 Hz) | 0.15 / 0.06, 0.15 / 0.05, 0.12 / 0.05 |
-| Tape FLUTTER 0.3 / 0.6 / 1 | 10.0, 14.6, 16.1 (its noise near the tone) | 0.12 / 0.07, 0.15 / 0.07, 0.23 / 0.09 |
-| Analogue RATE 0.1-1, DEPTH 0.25-1 | 15.7-41.7 (the 2nd harmonic at 2 kHz) | 2.0-6.7 / 1.8 (level, see Open) |
+| Vintage tone, DEPTH 0 (was 24.6 at DEPTH 1 without the curve) | 1.32 / 0.94 | 0.05 / 0.05 |
+| Tape tone, DEPTH 0 (was 10.0-16.1 without the noise) | 3.01 / 2.13 (sidebands within 100 Hz) | 0.06 / 0.03 |
+| Analogue tone, DEPTH 0 (was 15.7-41.7 and 2.0-6.7 / 1.8 frames) | 1.72 / 0.97 | 0.18 / 0.14 |
+| Ramps to full scale: Analogue / Vintage / Tape | 32.7 (above 10 kHz, the stopband) / 13.2, 0.69 / 0.26, 1.99 / 0.67 | 10.1 / 0.72, 4.5 / 0.41, 35.9 / 1.65 |
+| Analogue sweeps at TIME 100 / 400 / 200 ms | 26.5, 23.6, 20.5 (16 kHz) | 37-60 / 4.1-8.9 |
 | Analogue sweep | 23.7 (16 kHz stopband) | 36.8 / 3.9 |
 | Tape sweep TAPEAGE 0.25 / 1 | 1.47 / 0.47, 1.43 / 0.49 | 12.5 / 1.5, 8.5 / 1.4 |
 | Vintage sweep QUALITY 1 / 0 | 1.14 / 0.39, 5.22 / 1.12 (16 kHz) | 19.0 / 1.3, 22.0 / 4.5 |
 | Tape, Vintage sweeps at FEEDBACK 0.5; Modern at 0 | 2.67 / 0.73, 1.63 / 0.49, 1.50 / 0.31 | 7.4 / 1.8, 15.7 / 2.7, 2.2 / 0.4 |
 
-Modern meets the gate everywhere (the start phase fitted). Vintage and Tape meet it on the 10 ms frames of a tone;
-their tone bands miss on what the model does not make (harmonics, noise) and their sweeps reach 1-1.5 dB with
-frame maxima where a sweep's echo passes the body's slopes. Analogue does not meet it (see Open).
+Modern meets the gate everywhere (the start phase fitted). Vintage, Tape and Analogue meet it on the 10 ms frames of a
+tone; with their curves and noise Vintage's tone bands meet it too (1.3 dB at most), Analogue's reach 1.7 dB and
+Tape's 3.0 dB (its sidebands). The sweeps reach 1-1.5 dB (Tape, Vintage) with frame maxima where a sweep's echo passes
+the body's slopes; Analogue's sweeps do not meet it (see Open).

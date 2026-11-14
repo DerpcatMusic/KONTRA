@@ -44,6 +44,8 @@ pub(super) fn flanger(p: Params) -> Result<ir::Effect, String> {
         steep_low_cut: false,
         body: &[],
         triangle_s: None,
+        shape: &[],
+        noise: [0.0; 2],
         high_shelf: None,
         spread_ms: 0.0,
         rate: rate(p, f32::INFINITY)?,

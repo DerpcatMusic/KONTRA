@@ -47,10 +47,11 @@ fn model(effect: &str, keys: &HashMap<&str, f32>) -> Option<(ir::EffectKind, f32
                 k("trim", 0.5),
                 k("sat", 0.5),
                 k("char", 0.0),
+                k("mix", 1.0),
                 k("satmode", 0.0),
                 k("charmode", 0.0),
             ),
-            0.0,
+            1.0 - k("mix", 1.0),
         )),
         "distortion" => Some((
             crate::drive::distortion(k("type", 0.0) as i32, k("drive", 0.0), k("damp", 0.0))?,

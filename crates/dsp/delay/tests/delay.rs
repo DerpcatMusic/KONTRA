@@ -20,6 +20,8 @@ fn echo() -> Settings {
         steep_low_cut: false,
         body: &[],
         triangle_s: None,
+        shape: &[],
+        noise: [0.0; 2],
         high_shelf: None,
         spread_ms: 0.0,
         lfo_hz: 0.0,
@@ -162,6 +164,8 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         steep_low_cut: false,
         body: &[],
         triangle_s: None,
+        shape: &[],
+        noise: [0.0; 2],
         high_shelf: None,
         spread_ms: 0.0,
         lfo_hz: 1.5,
@@ -191,6 +195,8 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         steep_low_cut: false,
         body: &[],
         triangle_s: None,
+        shape: &[],
+        noise: [0.0; 2],
         high_shelf: None,
         spread_ms: 0.0,
         lfo_hz: 0.8,
@@ -323,6 +329,8 @@ fn reference_render() -> Vec<[f32; 2]> {
         steep_low_cut: true,
         body: &[],
         triangle_s: None,
+        shape: &[],
+        noise: [0.0; 2],
         lfo_hz: 0.7,
         phase: 0.4,
         ..echo()
@@ -419,5 +427,36 @@ fn delay_speed() {
     eprintln!(
         "delay: {ns:.1} ns per effect frame, {:.1} us per 512-frame block",
         ns * 0.512
+    );
+}
+
+#[test]
+fn the_line_bends_what_it_writes_and_its_noise_rides_on_sound() {
+    static HALF: [f32; 3] = [-0.5, 0.0, 0.5];
+    let s = Settings {
+        feedback: diagonal(0.0),
+        shape: &HALF,
+        noise: [0.01, 1.0],
+        ..echo()
+    };
+    let mut d = ModDelay::new(s, RATE, 50.0);
+    let mut silent = vec![[0.0; 2]; 4800];
+    d.process(&mut silent);
+    assert!(silent.iter().all(|f| *f == [0.0; 2]));
+    let mut tone: Vec<_> = (0..9600)
+        .map(|i| [0.8 * (i as f32 * 0.13).sin(); 2])
+        .collect();
+    let input = tone.clone();
+    d.process(&mut tone);
+    // 480 frames on: the input at half, plus a little noise.
+    let late = &tone[2400..9000];
+    let (mut err, mut peak) = (0f32, 0f32);
+    for (y, x) in late.iter().zip(&input[1920..]) {
+        err = err.max((y[0] - 0.5 * x[0]).abs());
+        peak = peak.max(y[0].abs());
+    }
+    assert!(
+        (peak - 0.4).abs() < 0.03 && err > 1e-4 && err < 0.05,
+        "{peak} {err}"
     );
 }
