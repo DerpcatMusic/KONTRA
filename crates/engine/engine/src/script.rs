@@ -613,14 +613,17 @@ impl HostApi for Engine {
                 *call.text_out = Text::from_str_cut(name).0;
                 HostValue::Text
             }
-            // ponytail: answered at once, then on async_complete; the samples
-            // stay in memory until the host reloads without the group.
-            Action::PurgeGroup => {
-                if let Some(g) = self.groups.get_mut(int(0) as usize) {
-                    g.purged = int(1) == 0;
+            // ponytail: a purge answers at once (the samples stay in memory); an un-purge
+            // of a dormant group answers when the host has loaded it.
+            Action::PurgeGroup => match u32::try_from(int(0)) {
+                Ok(group) if int(1) != 0 => HostValue::Int(self.unpurge(group)),
+                _ => {
+                    if let Some(g) = self.groups.get_mut(int(0) as usize) {
+                        g.purged = true;
+                    }
+                    HostValue::Int(self.start_async(Exit::Done))
                 }
-                HostValue::Int(self.start_async(Exit::Done))
-            }
+            },
             Action::AsyncId => HostValue::Int(self.ids.async_done),
             Action::AsyncExitStatus => HostValue::Int(i32::from(self.ids.async_exit == Exit::Done)),
             // A command still running (an effect type loading off the audio

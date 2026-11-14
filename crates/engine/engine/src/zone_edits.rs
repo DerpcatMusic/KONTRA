@@ -24,7 +24,58 @@ pub struct ZoneEdit {
     pub id: i32,
 }
 
+/// A `purge_group(group, 1)` of a group nothing of is loaded, waiting for the
+/// host to load it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unpurge {
+    pub group: u32,
+    pub script: u8,
+    pub id: i32,
+}
+
 impl Engine {
+    /// Un-purges `group`: at once when it is loaded (KSP `purge_group`);
+    /// when it is dormant ([`Plan::dormant`]) the host loads it and the
+    /// async id completes then, so the first note after it plays the group.
+    pub(crate) fn unpurge(&mut self, group: u32) -> i32 {
+        let dormant = self.plan.dormant.iter().any(|d| d.group == group);
+        if !dormant || self.building {
+            if let Some(g) = self.groups.get_mut(group as usize) {
+                g.purged = false;
+            }
+            return self.start_async(Exit::Done);
+        }
+        if self.unpurges.len() >= 16 {
+            return self.start_async(Exit::Failed);
+        }
+        let id = self.next_async_id();
+        let script = self.running.slot;
+        self.unpurges.push(Unpurge { group, script, id });
+        id
+    }
+
+    /// Hands each waiting un-purge to `f`; one it cannot take fails its
+    /// async. Audio thread, between blocks.
+    pub fn drain_unpurges(&mut self, mut f: impl FnMut(Unpurge) -> bool) {
+        let mut n = 0;
+        while let Some(&u) = self.unpurges.get(n) {
+            if !f(u) {
+                self.queue_async(u.script, u.id, Exit::Failed);
+            }
+            n += 1;
+        }
+        self.unpurges.clear();
+    }
+
+    /// The host loaded `group` (or could not): it plays from the next note
+    /// and the script's async completes.
+    pub fn unpurged(&mut self, u: Unpurge, took: bool) {
+        if took && let Some(g) = self.groups.get_mut(u.group as usize) {
+            g.purged = false;
+        }
+        self.queue_async(u.script, u.id, Exit::from(took));
+    }
+
     pub(crate) fn set_zone_par(&mut self, zone: u32, par: ZonePar, value: i32) -> i32 {
         let carried = matches!(
             par,
@@ -92,7 +143,9 @@ impl Engine {
     /// plays on. A plan whose zones differ in number is refused and stays in
     /// `plan`. No allocation.
     pub fn swap_plan(&mut self, plan: &mut Arc<Plan>, edits: &[(ZoneEdit, bool)]) {
-        let same = plan.zones.len() == self.plan.zones.len();
+        // Zones only ever join at the end (a group loaded), so every index a
+        // voice holds still names its zone.
+        let same = plan.zones.len() >= self.plan.zones.len();
         if same {
             let fade = self.fade_frames();
             let group = |p: &Plan, zone: usize| p.zones.get(zone).map(|z| z.group);

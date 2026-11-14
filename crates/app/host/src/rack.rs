@@ -5,7 +5,7 @@
 //! so no lock is reachable from audio.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use kontra_engine::{EffectRequest, Engine, Prepared};
 
@@ -83,6 +83,8 @@ pub struct Channels {
     pub filed: Ring<(usize, u64, Box<kontra_engine::files::FileReply>)>,
     /// Zone edits scripts made, and plans swapped out to free here.
     pub zones: requests::ZoneRings,
+    /// Purged groups scripts asked to load: (part, its load, request).
+    pub unpurges: Ring<(usize, u64, kontra_engine::Unpurge)>,
     /// Effect units swapped out, to free on the control side.
     pub units: Ring<Box<Option<Prepared>>>,
     /// Sound edits' emptied boxes ([`Command::Sound`]), to free here.
@@ -208,6 +210,12 @@ pub struct Rack {
     offers: Vec<crate::relink::Offer>,
     /// What loading said, for the report ([`Rack::take_notices`]).
     notices: Vec<String>,
+    /// Purged groups whose heads are being read off the control thread:
+    /// each is sent back when its reads are in.
+    woken: (
+        mpsc::Sender<requests::Woken>,
+        mpsc::Receiver<requests::Woken>,
+    ),
 }
 
 impl Rack {
@@ -224,6 +232,7 @@ impl Rack {
             units: Ring::new(16 * MAX_PARTS),
             sounds: Ring::new(256),
             zones: requests::ZoneRings::new(MAX_PARTS),
+            unpurges: Ring::new(16 * MAX_PARTS),
             files: Ring::new(16 * MAX_PARTS),
             filed: Ring::new(16 * MAX_PARTS),
             looks: Ring::new(2 * MAX_PARTS),
@@ -248,6 +257,7 @@ impl Rack {
             roots: Vec::new(),
             offers: Vec::new(),
             notices: Vec::new(),
+            woken: mpsc::channel(),
         };
         (rack, audio)
     }

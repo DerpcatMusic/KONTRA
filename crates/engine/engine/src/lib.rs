@@ -73,15 +73,15 @@ pub use kontra_voice::{Ahdsr, Loop, Region, RenderMode};
 pub use ledger::NoteRef;
 pub use pgs::PgsBudget;
 pub use plan::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
+    Atom, Bus, Control, Crossfade, Dormant, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
     RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
-pub use script::{Callbacks, CcLink, KnobModPlan, Controls, LookPars, ScriptPlan};
+pub use script::{Callbacks, CcLink, Controls, KnobModPlan, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
-pub use zone_edits::ZoneEdit;
+pub use zone_edits::{Unpurge, ZoneEdit};
 
 use buses::BusState;
 use group_masks::GroupMasks;
@@ -175,6 +175,8 @@ pub struct Engine {
     requests: Vec<fx_types::EffectRequest>,
     /// `set_zone_par` calls waiting for the host (zone_edits.rs).
     zone_edits: Vec<ZoneEdit>,
+    /// `purge_group(g, 1)` of dormant groups waiting for the host (zone_edits.rs).
+    unpurges: Vec<Unpurge>,
     /// Per script slot, the edits refused because that queue was full.
     zone_refused: Box<[u32]>,
     /// The block being rendered ends here; script turns run before it began.
@@ -392,6 +394,7 @@ impl Engine {
             init_impulses: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
             zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
+            unpurges: Vec::with_capacity(16),
             zone_refused: vec![0; script_count].into(),
             block_end: SampleTime(0),
             block_turns: 0,
