@@ -42,8 +42,13 @@ Event = {
 -- it: UVI keeps an event its handler does not post from the instrument,
 -- and a posted one reaches it as posted (changed fields and all).
 local hearing = nil
+local arrived = nil
 local posted = nil
 local posted_delta = 0
+-- Settles the heard event once: when its handler returns, or at the
+-- handler's first wait, while the engine still waits on the callback. A
+-- postEvent after that sends the event on its own.
+local decide
 
 -- Anything a script asks of an object this host does not model answers
 -- nothing instead of failing the script.
@@ -833,6 +838,7 @@ function sendScriptModulation2(id, from, to, ramp, voice)
 end
 
 function wait(ms)
+	if hearing ~= nil then decide() end
 	coroutine.yield(math.max(0, ms or 0) * 1000)
 end
 
@@ -926,9 +932,12 @@ end
 -- the instrument unless posted, replaced by the posted one if it changed.
 local function hear(handler, e)
 	if handler == nil then return end
-	local arrived = table.copy(e)
-	hearing, posted = e, nil
+	arrived, hearing, posted = table.copy(e), e, nil
 	handler(e)
+	if hearing == e then decide() end
+end
+
+decide = function()
 	local out, delta = posted, posted_delta
 	hearing, posted = nil, nil
 	if out == nil then

@@ -4484,6 +4484,27 @@ fn a_uvi_controller_posted_later_arrives_later() {
     assert_eq!(e.controller(129), Some(80), "it never arrived");
 }
 
+/// A handler that waits before posting: the event is kept at the wait (the
+/// engine cannot hold the controller), and what it posts after goes then.
+#[test]
+fn a_uvi_handler_that_waits_posts_its_event_after_the_wait() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = lua_engine(
+        &mut store,
+        "function onAfterTouch(e) wait(200); e.value = 20; postEvent(e) end",
+    );
+    level(&mut e, &[pressure(90)]);
+    assert_eq!(e.controller(129), Some(0), "it passed before the post");
+    for _ in 0..4 {
+        level(&mut e, &[]);
+    }
+    assert_eq!(
+        e.controller(129),
+        Some(20),
+        "the posted value never arrived"
+    );
+}
+
 /// KSP manual: `set_controller` sends `$VCC_PITCH_BEND` and `$VCC_MONO_AT`
 /// too, and `ignore_controller` with it transforms what arrived.
 #[test]
