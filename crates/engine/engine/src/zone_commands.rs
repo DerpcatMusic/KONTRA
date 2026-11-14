@@ -122,9 +122,10 @@ impl Engine {
             })),
             GetZoneStatus => {
                 let group = self.facts_of(int(0)).map(|z| z.group as usize);
-                // $NI_ZONE_STATUS_LOADED 1, _PURGED 2; -1 for a zone the instrument lacks.
+                // $NI_ZONE_STATUS_LOADED 1, _PURGED 2; a zone the instrument lacks
+                // reads purged (measured, probes/ksp/zone_and_detect.kspp).
                 HostValue::Int(match group {
-                    None => -1,
+                    None => 2,
                     Some(g) if self.groups.get(g).is_some_and(|g| g.purged) => 2,
                     Some(_) => 1,
                 })
@@ -137,11 +138,12 @@ impl Engine {
                     .copied();
                 // $LOOP_PAR_MODE reads 1 for a loop that exists (the mode laws are unmeasured).
                 HostValue::Int(l.map_or(0, |l| match int(2) {
-                    0 => 1,
-                    1 => l.start as i32,
-                    2 => l.end.saturating_sub(l.start) as i32,
-                    3 => l.crossfade as i32,
-                    4 => l.count as i32,
+                    // $LOOP_PAR_MODE .. $LOOP_PAR_TUNING are 520 .. 525.
+                    520 => 1,
+                    521 => l.start as i32,
+                    522 => l.end.saturating_sub(l.start) as i32,
+                    523 => l.crossfade as i32,
+                    524 => l.count as i32,
                     _ => 0,
                 }))
             }
