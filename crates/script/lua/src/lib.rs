@@ -34,6 +34,8 @@ pub use ui::{Ui, Widget};
 static ROUTED: alloc::Routed = alloc::Routed;
 
 const PRELUDE: &str = include_str!("prelude.lua");
+/// The UI widget classes beyond the generic widget (`widgets.lua`).
+const WIDGETS: &str = include_str!("widgets.lua");
 /// Luau heap per script. Augmented Orchestra's scripts, once they see their
 /// modulation connections, build about 88 MB (V Strings Pizzicato 2: 61 MB
 /// without them). ponytail: a cap, not a GC budget; past the spike's 0.5 ms
@@ -356,6 +358,7 @@ fn state(
     })?;
     globals.set("__file", file)?;
     lua.load(PRELUDE).set_name("prelude").exec()?;
+    lua.load(WIDGETS).set_name("widgets").exec()?;
     lua.load(source).set_name("script").exec()?;
     globals.get::<Function>("__restore")?.call::<()>(())?;
     limit.store(CHECKPOINTS, Ordering::Relaxed);
@@ -546,7 +549,7 @@ impl Machine for LuaMachine {
         &mut self,
         id: i32,
         saved: f64,
-        ratio: f64,
+        scale: f64,
         m: f64,
         context: u64,
     ) -> Option<CoId> {
@@ -555,7 +558,7 @@ impl Machine for LuaMachine {
         let lua = self.lua.as_ref()?;
         let set = lua.globals().get::<Function>("__control_mod").ok()?;
         let thread = lua
-            .create_thread(set.bind((id, saved, ratio, m)).ok()?)
+            .create_thread(set.bind((id, saved, scale, m)).ok()?)
             .ok()?;
         self.take(thread, context)
     }
@@ -729,21 +732,27 @@ mod tests {
 
     #[test]
     fn a_controller_route_moves_a_knob_within_its_range_and_runs_changed() {
-        let tree = "return {params={},db=0,pan=0,layers={},modulations={}}";
-        let source = "local k = Knob('drive', 0, -20, 20)
-            k.changed = function(s)
-                if s.value ~= 10 and s.value ~= -20 then error('moved to ' .. s.value) end
-            end";
+        let tree = "return {params={},db=0,pan=0,layers={},modulations={
+            {params={Name='Macro 7',Value='0',Bipolar='0'},mod=32768}}}";
+        let source = "local m = Program.modulations['Macro 7']
+            local k = Knob('drive', 0, -20, 20)
+            k.changed = function(s) m:setParameter('Value', s.value) end";
         let modules = [("__program.lua".to_string(), tree.to_string())];
         let compiled = compile(source, &modules, &[]).unwrap();
         let mut m = compiled.machine();
         // Saved -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
         // (10), and a ratio of -1 from there holds at the bottom (-20).
-        for (saved, ratio, at) in [(-10.0, 0.5, 1.0), (-10.0, -1.0, 1.0)] {
-            let co = m.control_mod(0, saved, ratio, at, 0).expect("route");
-            assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        let mut log = Log(Vec::new());
+        for (saved, scale, at) in [(-10.0, 0.0, 0.5), (-10.0, 0.0, -1.0)] {
+            let co = m.control_mod(1, saved, scale, at, 0).expect("route");
+            assert_eq!(m.run(co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0);
+        let sent: Vec<i64> = (log.0.iter())
+            .filter(|(a, _)| *a == Action::SetEventParArr)
+            .map(|(_, ints)| ints[2] / 1_000_000)
+            .collect();
+        assert_eq!(sent, [10, -20]);
     }
 
     #[test]

@@ -680,10 +680,12 @@ impl<L: Library> Translator<'_, '_, L> {
         }
     }
 
-    /// The controllers the processor's connections move its script's knobs
-    /// by (`Destination` is the knob's name, its saved value an attribute):
-    /// the knob moves from that value by `Ratio` of its range per unit of the
-    /// controller, held within it, and runs its `changed`.
+    /// The routes the processor's connections make onto its script's knobs
+    /// (`Destination` is the knob's name, its saved value an attribute): the
+    /// knob moves from that value by the source through its mapper at `Ratio`,
+    /// held within its range, and runs its `changed`. The source is read by
+    /// the engine at control rate: a controller, a script's value, or a free
+    /// LFO, inverted or mapped.
     fn knob_mods(&mut self, processor: Node) {
         let script = self.out.scripts.len().saturating_sub(1);
         let connections = processor
@@ -693,31 +695,57 @@ impl<L: Library> Translator<'_, '_, L> {
             .filter(|c| c.has_tag_name("SignalConnection"))
             .collect::<Vec<_>>();
         for c in connections {
-            let cc = c
-                .attribute("Source")
-                .and_then(|s| s.strip_prefix("@MIDI CC "))
-                .and_then(|n| n.trim().parse::<u8>().ok());
             let name = c.attribute("Destination").unwrap_or_default();
-            let saved = processor
+            let Some(saved) = processor
                 .attribute(name)
-                .and_then(|v| v.parse::<f32>().ok());
-            let ratio = num(c, "Ratio", 0.0).ok().map(|r| r as f32);
-            let (Some(cc), Some(saved), Some(ratio)) = (cc, saved, ratio) else {
+                .and_then(|v| v.parse::<f32>().ok())
+            else {
                 continue;
             };
-            if flag(c, "Bypass")
-                || flag(c, "Inverted")
-                || ratio == 0.0
-                || c.attribute("Mapper").is_some_and(|m| !m.is_empty())
-            {
+            if flag(c, "Bypass") || num(c, "Ratio", 0.0).ok() == Some(0.0) {
                 continue;
             }
+            let mut lfos = std::mem::take(&mut self.out.knob_lfos);
+            // A multiplicative connection scales the knob's place in its range.
+            let scale = flag(c, "ConnectionMode");
+            let term = if scale {
+                matrix::knob_scale(self.program, c, Some(&mut lfos)).map(|input| ir::Term {
+                    input,
+                    amount: 1.0,
+                    factors: Vec::new(),
+                })
+            } else {
+                matrix::term(self.program, c, Some(&mut lfos))
+            };
+            let term = term.filter(|t| {
+                t.factors.is_empty()
+                    && matches!(
+                        t.input.source,
+                        ir::Source::Controller(_)
+                            | ir::Source::ControllerFrom { .. }
+                            | ir::Source::Script(_)
+                            | ir::Source::PitchBend
+                            | ir::Source::Lfo(_)
+                    )
+            });
+            for l in &mut lfos {
+                l.clock = ir::Clock::Free;
+            }
+            self.out.knob_lfos = lfos;
+            let Some(term) = term else {
+                continue;
+            };
+            let blend = ir::Blend {
+                base: 0.0,
+                terms: vec![term],
+            };
+            let source = ir::Source::Blend(index_of(&mut self.out.knob_blends, blend));
             self.out.knob_mods.push(ir::KnobMod {
                 script,
-                cc,
                 name: name.into(),
                 saved,
-                ratio,
+                source,
+                scale,
             });
             self.carried.insert(c.id());
         }

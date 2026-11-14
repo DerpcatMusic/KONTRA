@@ -402,10 +402,12 @@ fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
             }
         ]
     );
-    // Algorithm 1 (the zero-delay ladder) plays as the explicit ladder.
-    assert!(g.inserts[1].is_some());
-    let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
-    assert_eq!(features, ["XpanderFilter Algorithm"], "{features:?}");
+    // Algorithm II is the zero-delay ladder, with nothing left unsaid.
+    let Some(ir::EffectKind::Filter(z)) = g.inserts[1].map(|e| e.kind) else {
+        panic!("{:?}", g.inserts);
+    };
+    assert_eq!(z.ladder, Some(ir::Ladder::ZeroDelay(4)));
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
 }
 
 #[test]
@@ -2399,4 +2401,43 @@ fn a_keygroup_comb_runs_per_voice_with_its_freq_routed() {
         "{:?}",
         out.diagnostics
     );
+}
+
+#[test]
+fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
+    let xml = r#"<Program Gain="1">
+      <ControlSignalSources>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" WaveFormType="0" Freq="2" Depth="1" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0" RiseTime="0"/>
+      </ControlSignalSources>
+      <Scripts><ScriptProcessor Name="EventProcessor0" Bypass="0" API_version="21" Rate="0.25" Tone="0.5">
+        <script><![CDATA[--]]></script>
+        <Connections>
+          <SignalConnection Ratio="0.5" Source="$Program/LFO 1" Destination="Rate" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          <SignalConnection Ratio="1" Source="@MIDI CC 1" Destination="Tone" Mapper="" ConnectionMode="0" Bypass="0" Inverted="1"/>
+          <SignalConnection Ratio="1" Source="@MIDI CC 2" Destination="Tone" Mapper="" ConnectionMode="1" Bypass="0" Inverted="0"/>
+        </Connections>
+      </ScriptProcessor></Scripts>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup LowKey="0" HighKey="127"/></Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let [rate, tone, scaled] = &out.knob_mods[..] else {
+        panic!("{:?}", out.knob_mods)
+    };
+    assert_eq!((rate.name.as_str(), rate.saved), ("Rate", 0.25));
+    assert_eq!((tone.name.as_str(), tone.saved), ("Tone", 0.5));
+    assert_eq!(out.knob_lfos.len(), 1);
+    let ir::Source::Blend(t) = tone.source else {
+        panic!("{:?}", tone.source)
+    };
+    let term = &out.knob_blends[usize::from(t)].terms[0];
+    assert_eq!(term.input.source, ir::Source::Controller(1));
+    assert_eq!(term.input.table, vec![1.0, 0.0]);
+    // A multiplicative one scales the place by `1 − 1 + x`: `f − 1 = x − 1`.
+    assert!(scaled.scale && !tone.scale);
+    let ir::Source::Blend(t) = scaled.source else {
+        panic!("{:?}", scaled.source)
+    };
+    let table = &out.knob_blends[usize::from(t)].terms[0].input.table;
+    assert!((table[0] + 1.0).abs() < 1e-6 && table[32].abs() < 1e-6, "{table:?}");
 }

@@ -162,14 +162,14 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
         step: w.integer.then_some(1.),
     };
     let kind = match w.kind.as_str() {
-        "Knob" => ui::Kind::Knob {
+        "Knob" | "ParamKnob" => ui::Kind::Knob {
             range,
             display: ui::Display {
                 unit: w.unit.clone(),
                 ..Default::default()
             },
         },
-        "Slider" => ui::Kind::Slider {
+        "Slider" | "ParamSlider" => ui::Kind::Slider {
             range,
             // `Slider{name, value, min, max, integer, vertical}` sets it by
             // place, which the prelude does not keep: a tall slider is vertical.
@@ -179,14 +179,14 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
                 ui::Orientation::Horizontal
             },
         },
-        "NumBox" => ui::Kind::ValueEdit {
+        "NumBox" | "ParamNumBox" => ui::Kind::ValueEdit {
             range,
             display: ui::Display::default(),
             arrows: false,
         },
         "Button" => ui::Kind::Button { momentary: true },
-        "OnOffButton" => ui::Kind::Button { momentary: false },
-        "Menu" | "MultiStateButton" => ui::Kind::Menu {
+        "OnOffButton" | "ParamOnOffButton" => ui::Kind::Button { momentary: false },
+        "Menu" | "MultiStateButton" | "ParamMenu" => ui::Kind::Menu {
             items: (1..)
                 .zip(&w.items)
                 .map(|(value, text)| ui::MenuItem {
