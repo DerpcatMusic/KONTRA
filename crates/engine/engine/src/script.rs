@@ -23,6 +23,32 @@ pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
 }
 
 impl Engine {
+    /// One field of the wall clock (`$NI_DATE_*`, `$NI_TIME_*`), UTC.
+    fn wall_field(&self, action: Action) -> i32 {
+        let secs = self.wall_start
+            + i64::try_from(self.now.0 / u64::from(self.rate.max(1))).unwrap_or(0);
+        let (days, of_day) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+        // Civil date from days since 1970-01-01 (Hinnant's days_from_civil, inverted).
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        let v = match action {
+            Action::DateYear => year,
+            Action::DateMonth => month,
+            Action::DateDay => day,
+            Action::TimeHour => of_day / 3_600,
+            Action::TimeMinute => of_day % 3_600 / 60,
+            _ => of_day % 60,
+        };
+        i32::try_from(v).unwrap_or(0)
+    }
+
     /// `work` in `frames` from now, counted when the queue is full.
     fn later(&mut self, frames: u64, work: Work) {
         if !self.queue.push(SampleTime(self.now.0 + frames), work) {
@@ -394,6 +420,12 @@ impl HostApi for Engine {
             }
             Action::EngineMs => HostValue::Real(self.now.0 as f64 * 1000.0 / f64::from(self.rate)),
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
+            Action::DateYear
+            | Action::DateMonth
+            | Action::DateDay
+            | Action::TimeHour
+            | Action::TimeMinute
+            | Action::TimeSecond => HostValue::Int(self.wall_field(call.action)),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),
             Action::GroupVolume | Action::GroupPan | Action::GroupTune => {
                 self.set_group_level(call.action, int(0), int(1));
@@ -703,12 +735,8 @@ impl HostApi for Engine {
             // of a dormant group answers when the host has loaded it.
             Action::PurgeGroup => match u32::try_from(int(0)) {
                 Ok(group) if int(1) != 0 => HostValue::Int(self.unpurge(group)),
-                _ => {
-                    if let Some(g) = self.groups.get_mut(int(0) as usize) {
-                        g.purged = true;
-                    }
-                    HostValue::Int(self.start_async(Exit::Done))
-                }
+                Ok(group) => HostValue::Int(self.purge(group)),
+                Err(_) => HostValue::Int(self.start_async(Exit::Done)),
             },
             Action::AsyncId => HostValue::Int(self.ids.async_done),
             Action::AsyncExitStatus => HostValue::Int(i32::from(self.ids.async_exit == Exit::Done)),

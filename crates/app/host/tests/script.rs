@@ -2746,8 +2746,11 @@ fn a_script_loads_a_library_response_into_a_convolution() {
 
     // The manual's first form: an absolute path, read in init.
     let copy = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half_copy.wav");
-    std::fs::copy(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half.wav"), &copy)
-        .unwrap();
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half.wav"),
+        &copy,
+    )
+    .unwrap();
     let by_path = kontra_ksp::compile(
         &format!(
             "on init
@@ -4010,6 +4013,7 @@ fn a_wavetable_form_mode_switches_the_forms_kind() {
         gain: 1.0,
         inharmonic: ir::Inharmonic::OFF,
         modosc: ir::ModOsc::OFF,
+        quality: ir::Quality::High,
         warps: [ir::Warp::OFF; 2],
     }));
     let script = kontra_ksp::compile(
@@ -4029,6 +4033,79 @@ fn a_wavetable_form_mode_switches_the_forms_kind() {
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
     assert_eq!(e.unhandled_actions(), vec![]);
     assert_eq!(e.last_message(), "0|18|31");
+}
+
+/// A script sets the wavetable modulator's wave and tune unit (Conflux's
+/// wave and Semi/Ratio/Hz menus) and the table phase, and reads them back;
+/// a wave or unit that names nothing is dropped.
+#[test]
+fn a_wavetable_modulator_wave_and_unit_are_set_and_read_back() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].wavetable = Some(kontra_prepare::read(ir::Wavetable {
+        position: 0.0,
+        phase: 0.0,
+        phase_random: 0.0,
+        gain: 1.0,
+        inharmonic: ir::Inharmonic::OFF,
+        modosc: ir::ModOsc::OFF,
+        quality: ir::Quality::High,
+        warps: [ir::Warp::OFF; 2],
+    }));
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            set_engine_par($ENGINE_PAR_WT_MOD_WAVE, 3, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, $NI_WT_MOD_TUNE_UNIT_HZ, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_PHASE, 250000, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_QUALITY, $NI_WT_QUALITY_BEST, 0, -1, -1)
+            @t := get_engine_par($ENGINE_PAR_WT_MOD_WAVE, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_PHASE, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_MOD_WAVE, 9, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 3, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_WAVE, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_QUALITY, 0, -1, -1)
+            message(@t)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // Only the two sets that name nothing (wave 9, unit 3) are refused.
+    assert_eq!(e.unhandled_actions().iter().map(|a| a.1).sum::<u32>(), 2);
+    assert_eq!(e.last_message(), "3|2|250000|3|2|3");
+}
+
+/// `$NI_DATE_*` and `$NI_TIME_*` read the clock in the manual's ranges, and
+/// `$NUM_GROUPS` the groups.
+#[test]
+fn the_date_and_time_variables_read_the_clock() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            @t := $NI_DATE_YEAR & \"|\" & $NI_DATE_MONTH & \"|\" & $NI_DATE_DAY
+            @t := @t & \"|\" & $NI_TIME_HOUR & \"|\" & $NI_TIME_MINUTE & \"|\" & $NI_TIME_SECOND
+            @t := @t & \"|\" & $NUM_GROUPS
+            message(@t)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    let m = e.last_message();
+    let v: Vec<i32> = m.split('|').map(|n| n.parse().unwrap()).collect();
+    assert!(v[0] >= 2026, "{m}");
+    assert!((1..=12).contains(&v[1]) && (1..=31).contains(&v[2]), "{m}");
+    assert!(v[3] < 24 && v[4] < 60 && v[5] < 60, "{m}");
+    assert_eq!(v[6], 1);
 }
 
 /// A time-stretch speed reads in %, one decimal (Kontakt 8.13.1, Time
@@ -4381,10 +4458,7 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     assert_eq!(edits.len(), 3);
     assert!(!e.last_message().starts_with("done"));
     let mut plan = Plan::clone(e.plan());
-    let done: Vec<_> = edits
-        .iter()
-        .map(|x| (*x, x.apply(&mut plan)))
-        .collect();
+    let done: Vec<_> = edits.iter().map(|x| (*x, x.apply(&mut plan))).collect();
     e.swap_plan(&mut Arc::new(plan), &done);
     // The held voice's zone changed group: it fades out.
     assert!(level(&mut e, &[]).abs() < 1e-4);

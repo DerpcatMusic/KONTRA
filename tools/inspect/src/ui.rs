@@ -406,6 +406,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 let before_missing = engine.stats().missing_frames;
                 engine.clear_trace();
                 let dropped_before = engine.trace_dropped();
+                let moved_at = std::time::Instant::now();
                 if lua {
                     if let Ok(id) = u32::try_from(id) {
                         engine.set_widget(slot_id, id, value, None);
@@ -421,6 +422,8 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     };
                     engine.set_control(slot_id, id, v);
                 }
+                // The move runs on the audio thread: what it costs one block.
+                let move_us = moved_at.elapsed().as_secs_f64() * 1e6;
                 let mut events: Vec<_> = engine
                     .trace_events()
                     .iter()
@@ -512,7 +515,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 let (_, again, ready_again) = fresh(&mut engine);
                 settled &= ready_next && ready_again;
                 let note_changed = note_diff(&first, &base, &next, &again);
-                moves.push(json!({"value":value,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
+                moves.push(json!({"value":value,"move_us":move_us,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));

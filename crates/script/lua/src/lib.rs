@@ -34,6 +34,8 @@ pub use ui::{Ui, Widget};
 static ROUTED: alloc::Routed = alloc::Routed;
 
 const PRELUDE: &str = include_str!("prelude.lua");
+/// The UI widget classes beyond the generic widget (`widgets.lua`).
+const WIDGETS: &str = include_str!("widgets.lua");
 /// Luau heap per script. Augmented Orchestra's scripts, once they see their
 /// modulation connections, build about 88 MB (V Strings Pizzicato 2: 61 MB
 /// without them). ponytail: a cap, not a GC budget; past the spike's 0.5 ms
@@ -45,6 +47,13 @@ const HEADROOM: usize = 8 << 20;
 /// Interrupt checkpoints (calls and loop back-edges) one run may take before
 /// it is stopped: a runaway loop must not hold the audio thread.
 const CHECKPOINTS: u32 = 10_000_000;
+
+/// What a callback the editor started (a widget moved by a user, a route or a
+/// restore) and what it spawns may take: UVI runs these off its audio
+/// thread, and VWinds' flute style switch walks every keygroup of the
+/// program (about 40 million checkpoints). A musical callback starts its
+/// count that far in, so its limit stays [`CHECKPOINTS`].
+const UI_CHECKPOINTS: u32 = 400_000_000;
 /// Loading and restoring widgets runs off the audio thread and can traverse
 /// large instrument trees; it is bounded independently of callbacks.
 const LOAD_CHECKPOINTS: u32 = 100_000_000;
@@ -253,6 +262,7 @@ impl Foreign for Compiled {
             spawned: Vec::with_capacity(COROUTINES),
             faults: Faults::default(),
             runs: 0,
+            widget_run: false,
             arena,
         };
         drop(load);
@@ -290,11 +300,21 @@ fn sandbox() -> mlua::Result<(Lua, Arc<AtomicU32>, Arc<AtomicU32>)> {
     let count = Arc::clone(&checkpoints);
     let limit = Arc::new(AtomicU32::new(LOAD_CHECKPOINTS));
     let current_limit = Arc::clone(&limit);
-    lua.set_interrupt(move |_| {
-        if count.fetch_add(interrupt::STRIDE, Ordering::Relaxed)
-            > current_limit.load(Ordering::Relaxed)
-        {
-            return Err(mlua::Error::runtime("script ran too long"));
+    lua.set_interrupt(move |lua| {
+        let used = count.fetch_add(interrupt::STRIDE, Ordering::Relaxed);
+        if used > current_limit.load(Ordering::Relaxed) {
+            // Where it was, innermost call first (a rare path: it allocates).
+            let mut at = format!("script ran too long ({used} checkpoints), at");
+            for level in 0..6 {
+                let here = lua.inspect_stack(level, |d| {
+                    let chunk = d.source().short_src.map(|s| s.to_string());
+                    (chunk, d.current_line())
+                });
+                if let Some((chunk, Some(line))) = here {
+                    at.push_str(&format!(" {}:{line}", chunk.unwrap_or_default()));
+                }
+            }
+            return Err(mlua::Error::runtime(at));
         }
         Ok(mlua::VmState::Continue)
     });
@@ -356,9 +376,10 @@ fn state(
     })?;
     globals.set("__file", file)?;
     lua.load(PRELUDE).set_name("prelude").exec()?;
+    lua.load(WIDGETS).set_name("widgets").exec()?;
     lua.load(source).set_name("script").exec()?;
     globals.get::<Function>("__restore")?.call::<()>(())?;
-    limit.store(CHECKPOINTS, Ordering::Relaxed);
+    limit.store(UI_CHECKPOINTS, Ordering::Relaxed);
     Ok((lua, checkpoints))
 }
 
@@ -367,6 +388,9 @@ struct Slot {
     thread: Option<Thread>,
     generation: u16,
     context: u64,
+    /// Started by the editor, or spawned by a coroutine that was: it has
+    /// [`UI_CHECKPOINTS`], not [`CHECKPOINTS`].
+    ui: bool,
 }
 
 struct LuaMachine {
@@ -381,6 +405,8 @@ struct LuaMachine {
     faults: Faults,
     /// Runs of a callback or task, each resume one ([`Machine::runs`]).
     runs: u32,
+    /// The next start is a widget the editor moved.
+    widget_run: bool,
     /// The state's arena; declared last, so it is given back after the state.
     arena: alloc::Claim,
 }
@@ -395,6 +421,7 @@ impl LuaMachine {
             spawned: Vec::new(),
             faults: Faults::default(),
             runs: 0,
+            widget_run: false,
             arena,
         }
     }
@@ -414,6 +441,7 @@ impl LuaMachine {
         slot.generation = slot.generation.wrapping_add(1);
         slot.thread = Some(thread);
         slot.context = context;
+        slot.ui = false;
         Some(CoId::new(index, slot.generation))
     }
 
@@ -424,18 +452,35 @@ impl LuaMachine {
     }
 
     /// Moves the coroutines `spawn` queued during the run into slots.
-    fn collect_spawned(&mut self, lua: &Lua, context: u64) {
+    fn collect_spawned(&mut self, lua: &Lua, context: u64, ui: bool) {
         let Ok(queued) = lua.globals().get::<Table>("__spawned") else {
             return;
         };
         let pairs: Vec<(Thread, f64)> = queued
             .sequence_values::<Table>()
             .flatten()
-            .filter_map(|pair| Some((pair.get(1).ok()?, pair.get(2).ok()?)))
+            .filter_map(|pair| {
+                // A coroutine that failed as it was spawned is dead: it says
+                // why, and is not queued to be resumed (which would only
+                // report "non-resumable" over the real error).
+                if let Ok(Some(text)) = pair.get::<Option<mlua::LuaString>>(3)
+                    && let Ok(text) = text.to_str()
+                {
+                    use std::fmt::Write;
+                    self.faults.bad_code += 1;
+                    self.faults.last_error.clear();
+                    let _ = self.faults.last_error.write_str(&text);
+                    return None;
+                }
+                Some((pair.get(1).ok()?, pair.get(2).ok()?))
+            })
             .collect();
         let _ = queued.clear();
         for (thread, micros) in pairs {
             if let Some(co) = self.take(thread, context) {
+                if let Some(slot) = self.slot(co) {
+                    slot.ui = ui;
+                }
                 self.spawned.push((co, micros.max(0.0) as u64));
             }
         }
@@ -453,7 +498,11 @@ impl Machine for LuaMachine {
             .and_then(|t| t.get::<Function>(entry))
             .ok()?;
         let thread = lua.create_thread(callback).ok()?;
-        self.take(thread, context)
+        let co = self.take(thread, context)?;
+        // A widget the editor moved is the same kind of run as a control.
+        let staged = std::mem::take(&mut self.widget_run);
+        self.slot(co)?.ui = staged;
+        Some(co)
     }
 
     fn run(&mut self, co: CoId, host: &mut dyn HostApi) -> Step {
@@ -466,13 +515,15 @@ impl Machine for LuaMachine {
             return Step::Done;
         };
         let context = slot.context;
+        let ui = slot.ui;
         let Some(thread) = slot.thread.clone() else {
             return Step::Done;
         };
         // Every resume, not only a start, may change the state: a task that
         // waited (a layer loading after `wait`) must be seen by the next save.
         self.runs = self.runs.wrapping_add(1);
-        self.checkpoints.store(0, Ordering::Relaxed);
+        let from = if ui { 0 } else { UI_CHECKPOINTS - CHECKPOINTS };
+        self.checkpoints.store(from, Ordering::Relaxed);
         let resumed = lua.scope(|scope| {
             // Fixed arity, so a call allocates nothing: an action and up
             // to eight arguments, the trailing nils dropped.
@@ -491,14 +542,19 @@ impl Machine for LuaMachine {
             lua.globals().set("__host", Value::Nil)?;
             result
         });
-        self.collect_spawned(&lua, context);
+        self.collect_spawned(&lua, context, ui);
         let step = match (resumed, thread.status()) {
             (Ok(waited), ThreadStatus::Resumable) => {
                 Step::Wait(number(&waited).unwrap_or(0.0).max(0.0) as u64)
             }
             (Ok(_), _) => Step::Done,
-            (Err(_), _) => {
+            (Err(e), _) => {
                 self.faults.bad_code += 1;
+                // The latest: a move's own fault says what it hit, not the first
+                // of the session.
+                use std::fmt::Write;
+                self.faults.last_error.clear();
+                let _ = write!(self.faults.last_error, "{e}");
                 Step::Done
             }
         };
@@ -539,14 +595,16 @@ impl Machine for LuaMachine {
         let lua = self.lua.as_ref()?;
         let set = lua.globals().get::<Function>("__control").ok()?;
         let thread = lua.create_thread(set.bind((id, value)).ok()?).ok()?;
-        self.take(thread, context)
+        let co = self.take(thread, context)?;
+        self.slot(co)?.ui = true;
+        Some(co)
     }
 
     fn control_mod(
         &mut self,
         id: i32,
         saved: f64,
-        ratio: f64,
+        scale: f64,
         m: f64,
         context: u64,
     ) -> Option<CoId> {
@@ -555,13 +613,16 @@ impl Machine for LuaMachine {
         let lua = self.lua.as_ref()?;
         let set = lua.globals().get::<Function>("__control_mod").ok()?;
         let thread = lua
-            .create_thread(set.bind((id, saved, ratio, m)).ok()?)
+            .create_thread(set.bind((id, saved, scale, m)).ok()?)
             .ok()?;
-        self.take(thread, context)
+        let co = self.take(thread, context)?;
+        self.slot(co)?.ui = true;
+        Some(co)
     }
 
     fn stage_widget(&mut self, n: u32, value: f64, cell: Option<u32>) {
         let _arena = self.arena.audio();
+        self.widget_run = true;
         if let Some(lua) = &self.lua {
             let g = lua.globals();
             // The prelude's widget entry reads these when it starts.
@@ -729,21 +790,27 @@ mod tests {
 
     #[test]
     fn a_controller_route_moves_a_knob_within_its_range_and_runs_changed() {
-        let tree = "return {params={},db=0,pan=0,layers={},modulations={}}";
-        let source = "local k = Knob('drive', 0, -20, 20)
-            k.changed = function(s)
-                if s.value ~= 10 and s.value ~= -20 then error('moved to ' .. s.value) end
-            end";
+        let tree = "return {params={},db=0,pan=0,layers={},modulations={
+            {params={Name='Macro 7',Value='0',Bipolar='0'},mod=32768}}}";
+        let source = "local m = Program.modulations['Macro 7']
+            local k = Knob('drive', 0, -20, 20)
+            k.changed = function(s) m:setParameter('Value', s.value) end";
         let modules = [("__program.lua".to_string(), tree.to_string())];
         let compiled = compile(source, &modules, &[]).unwrap();
         let mut m = compiled.machine();
         // Saved -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
         // (10), and a ratio of -1 from there holds at the bottom (-20).
-        for (saved, ratio, at) in [(-10.0, 0.5, 1.0), (-10.0, -1.0, 1.0)] {
-            let co = m.control_mod(0, saved, ratio, at, 0).expect("route");
-            assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        let mut log = Log(Vec::new());
+        for (saved, scale, at) in [(-10.0, 0.0, 0.5), (-10.0, 0.0, -1.0)] {
+            let co = m.control_mod(1, saved, scale, at, 0).expect("route");
+            assert_eq!(m.run(co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0);
+        let sent: Vec<i64> = (log.0.iter())
+            .filter(|(a, _)| *a == Action::SetEventParArr)
+            .map(|(_, ints)| ints[2] / 1_000_000)
+            .collect();
+        assert_eq!(sent, [10, -20]);
     }
 
     #[test]
@@ -988,6 +1055,26 @@ mod tests {
             machine.faults().bad_code > 0,
             "callback must retain its smaller limit"
         );
+    }
+
+    #[test]
+    fn an_editor_run_has_a_larger_budget_and_a_fault_keeps_its_text() {
+        let source = "function onNote(e) for i = 1, 12000000 do end end\n\
+                      function onWidget() for i = 1, 12000000 do end end";
+        let compiled = compile(source, &[], &[]).expect("compiles");
+        // A musical callback of that length faults, and says why and where.
+        let mut machine = compiled.machine();
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        let _ = machine.run(co, &mut Log(Vec::new()));
+        let faults = machine.faults();
+        assert_eq!(faults.bad_code, 1);
+        assert!(faults.last_error.as_str().contains("ran too long"));
+        // The same work from the editor (a widget the user moved) fits.
+        let mut machine = compiled.machine();
+        machine.stage_widget(0, 0.0, None);
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        let _ = machine.run(co, &mut Log(Vec::new()));
+        assert_eq!(machine.faults().bad_code, 0);
     }
 
     #[test]

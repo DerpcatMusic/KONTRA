@@ -138,6 +138,30 @@ pub(super) fn factor(
     })
 }
 
+/// A multiplicative connection onto a script knob as a table of `f − 1`, `f`
+/// the factor (0x141429a80) the knob's place in its range is scaled by: its
+/// source through its mapper at its ratio. None for a source not carried.
+pub(super) fn knob_scale(
+    program: Node,
+    connection: Node,
+    lfos: Option<&mut Vec<ir::Lfo>>,
+) -> Option<ir::Transfer> {
+    let depth = held_ratio(program, connection)?.clamp(-1.0, 1.0);
+    let input = read_through(program, connection, lfos)?;
+    let factor = ir::Factor {
+        input: input.clone(),
+        depth,
+    };
+    let table = (0..33)
+        .map(|k| factor.at(input.apply(k as f32 / 32.0)) - 1.0)
+        .collect();
+    Some(ir::Transfer {
+        source: input.source,
+        table,
+        ..Default::default()
+    })
+}
+
 /// `connection`'s [`transfer`], an inverted one read at `1 − x`: UVI flips
 /// a unipolar source before its mapper (0x14142ac00: `1 − x`), a bipolar
 /// one to `−x`, which its mapper reads at `(1 − x)/2`: its table reversed

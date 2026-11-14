@@ -54,6 +54,10 @@ pub struct RackAudio {
     /// [`FADE`] in frames.
     fade: u32,
     events: Vec<Timed<Event>>,
+    /// The multi script's engine (no zones), and the events it passed on
+    /// this block; a fixed capacity.
+    multi: Option<Box<Engine>>,
+    routed: Vec<(u32, Event)>,
     master: f32,
     tempo: Option<f32>,
     /// Frames per second.
@@ -102,6 +106,8 @@ impl RackAudio {
             tail: vec![[0.0; 2]; block].into_boxed_slice(),
             fade: (FADE * f64::from(rate)).max(1.0) as u32,
             events: Vec::with_capacity(4096),
+            multi: None,
+            routed: Vec::with_capacity(4096),
             master: 1.0,
             tempo: None,
             rate: f64::from(rate.max(1)),
@@ -234,6 +240,26 @@ impl RackAudio {
             }
         }
         let mut stats = Stats::default();
+        // A multi script hears every event first; what it passes or sends
+        // is what the parts hear.
+        let mut routed = std::mem::take(&mut self.routed);
+        let input = match self.multi.as_deref_mut() {
+            Some(multi) => {
+                routed.clear();
+                for &(at, event) in input {
+                    multi.midi_in(event, &mut |e| {
+                        if routed.len() < routed.capacity() {
+                            routed.push((at, e));
+                        }
+                    });
+                }
+                if let Some(scratch) = self.scratch.get_mut(..frames) {
+                    multi.process(scratch, &[]);
+                }
+                routed.as_slice()
+            }
+            None => input,
+        };
         for (n, slot) in self.parts.iter_mut().enumerate() {
             let Some(p) = slot else {
                 continue;
@@ -351,6 +377,7 @@ impl RackAudio {
                 o[1] += b * self.master;
             }
         }
+        self.routed = routed;
         self.panic = false;
         self.played.clear();
         // The song moved on: the next call (a later part of the host's
@@ -532,6 +559,11 @@ impl RackAudio {
                 Command::Remove(part) => {
                     let old = self.parts.get_mut(part).and_then(Option::take);
                     self.retire(old);
+                }
+                Command::Multi(engine) => {
+                    if let Some(old) = std::mem::replace(&mut self.multi, engine) {
+                        self.retire_engine(old);
+                    }
                 }
                 Command::Mix(part, mix) => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {

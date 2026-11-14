@@ -7,10 +7,12 @@ use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 /// Whether the engine or the UI tree understands catalog name `name`
 /// (every other one is an opaque symbol nothing acts on), for coverage
-/// Names the engine reads without a table: list ids, the modifier keys a
+/// Names the engine reads without a table: a control's custom id, list ids, the modifier keys a
 /// click held, a text line added through a parameter, and the log kinds
 /// `disable_logging` takes (KONTRA shows no script log).
-const CARRIED: [&str; 9] = [
+const CARRIED: [&str; 10] = [
+    // Stored as set and read back (Conflux's effect menus).
+    "$CONTROL_PAR_CUSTOM_ID",
     "$CONTROL_PAR_NUM_ITEMS",
     "$CONTROL_PAR_SELECTED_ITEM_IDX",
     "$CONTROL_PAR_KEY_SHIFT",
@@ -390,6 +392,10 @@ fn look(script: &Script) -> LookPars {
 /// The value a catalog constant has in `script`; `i32::MIN` (matches nothing)
 /// when the script never names it.
 fn symbol(script: &Script, name: &str) -> i32 {
+    // A measured constant is its number in every script; only an opaque name is an id.
+    if let Some(value) = kontra_ksp::constant(name) {
+        return value;
+    }
     script
         .symbols
         .iter()

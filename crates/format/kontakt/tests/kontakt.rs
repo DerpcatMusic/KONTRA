@@ -61,6 +61,32 @@ fn an_analog_strings_snapshot_is_its_instrument_with_its_saved_values() {
     assert_ne!(saved(&snap), saved(&base));
 }
 
+const MORPHOLOGY: &str = "/data/main/Libraries/Kontakt/Morphology Evolved [Zero-G] rutracker.org";
+
+/// A snapshot keeps its groups' volumes: Morphology's script picks one of
+/// 30 wavetable groups and leaves its level to the snapshot (Fizzy plays
+/// group 921, which the instrument itself keeps silent).
+#[test]
+fn a_snapshot_plays_its_groups_at_the_volumes_it_saved() {
+    let root = Path::new(MORPHOLOGY);
+    if !root.exists() {
+        return;
+    }
+    let snapshots = root.join("Snapshots/Morphology Evolved");
+    let base = kontra_format_kontakt::load(&root.join("Morphology Evolved.nki")).unwrap();
+    let volumes = |i: &kontra_ir::Instrument| {
+        (i.groups.iter())
+            .map(|g| g.volume_db.max(-200.0).round() as i32)
+            .collect::<Vec<_>>()
+    };
+    let default = kontra_format_kontakt::load(&snapshots.join("Default.nksn")).unwrap();
+    assert_eq!(volumes(&default), volumes(&base));
+    let fizzy = kontra_format_kontakt::load(&snapshots.join("Wavetables/Fizzy.nksn")).unwrap();
+    let audible = |i: &kontra_ir::Instrument, g: usize| i.groups[g].volume_db > -20.0;
+    assert!(audible(&fizzy, 921) && !audible(&base, 921));
+    assert!(!audible(&fizzy, 903) && audible(&base, 903));
+}
+
 /// The members of one archive list in its own order, the same on every
 /// read: a hash index's order changes per map, so a listing of
 /// `ir_samples` (a response's sample index) changed between two loads.
@@ -156,4 +182,54 @@ fn a_user_snapshot_binds_to_its_instrument_by_name() {
     };
     let original = kontra_format_kontakt::load(factory).unwrap();
     assert_eq!(set(&loaded.unwrap()), set(&original));
+}
+
+/// A multi Kontakt 8 saved (native oracle, `probes/multi_slots.lua`): three
+/// empty instruments set to MIDI channels Omni, 3 and 18, outputs 0, 1 and
+/// 0, -6, 0 and +3.5 dB, pans -50, 0 and 25 %.
+#[test]
+fn a_multis_slots_keep_the_channel_output_volume_and_pan_kontakt_saved() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/three-slots.nkm");
+    let (slots, failed) = kontra_format_kontakt::multi(&path, None).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    let got: Vec<_> = (slots.iter())
+        .map(|s| (s.index, s.channel, s.output))
+        .collect();
+    assert_eq!(got, [(0, 0, 0), (1, 3, 1), (2, 18, 0)]);
+    let levels: Vec<_> = (slots.iter())
+        .map(|s| {
+            (
+                (s.instrument.output.volume_db * 10.0).round(),
+                s.instrument.output.pan,
+            )
+        })
+        .collect();
+    assert_eq!(levels, [(-60.0, -0.5), (0.0, 0.0), (35.0, 0.25)]);
+}
+
+/// The multi script Kontakt 8 saved in its first multi script slot.
+#[test]
+fn a_multis_own_script_is_read_from_its_bank() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/multi-script.nkm");
+    let scripts = kontra_format_kontakt::multi_scripts(&path).unwrap();
+    let got: Vec<_> = scripts.iter().map(|s| (s.slot, s.name.as_str())).collect();
+    assert_eq!(got, [(0, "Channel 1 to 2")]);
+    assert!(
+        scripts[0].source.contains("set_midi(1, $MIDI_COMMAND"),
+        "{}",
+        scripts[0].source
+    );
+}
+
+/// A wavetable group plays the quality it saved: 1..=4 are LOFI..BEST (Kontakt 8.13.1 saved the same patch
+/// at each `$NI_WT_QUALITY_*`), and a patch that set none saves 3, HIGH, the default.
+#[test]
+fn a_wavetable_group_keeps_its_saved_quality() {
+    use kontra_ir::Quality::{Best, High, Lofi, Medium};
+    for (name, want) in [("lofi", Lofi), ("medium", Medium), ("high", High), ("best", Best), ("none", High)] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/data/wt-quality-{name}.nki"));
+        let i = kontra_format_kontakt::load(&path).unwrap();
+        let table = i.groups[0].wavetable.as_ref().unwrap();
+        assert_eq!(table.quality, want, "{name}");
+    }
 }
