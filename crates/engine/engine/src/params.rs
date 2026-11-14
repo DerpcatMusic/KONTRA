@@ -348,6 +348,14 @@ impl Engine {
         if par == EnginePar::ModOscWave {
             return Some(i32::from(g.wavetable?.modosc.wave));
         }
+        if par == EnginePar::WtQuality {
+            return Some(match g.wavetable?.quality {
+                kontra_voice::Quality::Lofi => 0,
+                kontra_voice::Quality::Medium => 1,
+                kontra_voice::Quality::High => 2,
+                kontra_voice::Quality::Best => 3,
+            });
+        }
         if par == EnginePar::ModOscUnit {
             return Some(match g.wavetable?.modosc.unit {
                 kontra_voice::Unit::Semitones => 0,
@@ -587,6 +595,19 @@ impl Engine {
                 .as_mut()
                 .zip(u8::try_from(value).ok().filter(|&w| w <= 8))
                 .map(|(t, w)| t.modosc.wave = w)
+                .is_some(),
+            EnginePar::WtQuality => g
+                .wavetable
+                .as_mut()
+                .zip(ir::Quality::from_index(value))
+                .map(|(t, q)| {
+                    t.quality = match q {
+                        ir::Quality::Lofi => kontra_voice::Quality::Lofi,
+                        ir::Quality::Medium => kontra_voice::Quality::Medium,
+                        ir::Quality::High => kontra_voice::Quality::High,
+                        ir::Quality::Best => kontra_voice::Quality::Best,
+                    }
+                })
                 .is_some(),
             EnginePar::ModOscUnit => g
                 .wavetable

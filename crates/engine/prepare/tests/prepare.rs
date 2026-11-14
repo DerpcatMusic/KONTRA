@@ -171,6 +171,7 @@ fn a_zone_moved_into_a_wavetable_group_gets_its_table() {
         gain: 1.0,
         inharmonic: ir::Inharmonic::OFF,
         modosc: ir::ModOsc::OFF,
+        quality: ir::Quality::High,
         warps: [ir::Warp::OFF; 2],
     };
     let mut bank = zone(1);
@@ -244,6 +245,7 @@ fn a_moved_zones_table_follows_its_group() {
         gain: 1.0,
         inharmonic: ir::Inharmonic::OFF,
         modosc: ir::ModOsc::OFF,
+        quality: ir::Quality::High,
         warps: [ir::Warp::OFF; 2],
     };
     let instrument = ir::Instrument {
@@ -319,6 +321,7 @@ fn a_velocity_route_moves_each_voices_table_position() {
                 gain: 1.0,
                 inharmonic: ir::Inharmonic::OFF,
                 modosc: ir::ModOsc::OFF,
+                quality: ir::Quality::High,
                 warps: [ir::Warp::OFF; 2],
             }),
             mods: vec![ir::Mod {
@@ -376,6 +379,7 @@ fn a_stretched_table_moves_its_partials() {
                 phase_random: 0.0,
                 gain: 1.0,
                 modosc: ir::ModOsc::OFF,
+                quality: ir::Quality::High,
                 inharmonic: ir::Inharmonic {
                     on: true,
                     amount: 1.0,

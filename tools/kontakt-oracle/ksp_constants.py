@@ -61,10 +61,10 @@ def probe(cases, halves, digits):
         src.append("end on")
         lua.append(f"local src{slot} = [[\n" + "\n".join(src) + "\n]]")
         lua.append(f"pcall(kt.set_instrument_script_source, i, {slot}, src{slot})")
-    lua += ["local t0 = os.time()", "repeat until os.time() - t0 >= 30",
+    lua += ["local t0 = os.time()", "repeat until os.time() - t0 >= 12",
             f"for g = 0, {groups - 1} do",
             '  log(string.format(\'{"g":%d,"u":%.2f}\', g, kt.get_group_tune(i, g) / 0.36))',
-            "end", "out:close()"]
+            "end", 'log(\'{"done":true}\')', "out:close()"]
     return "\n".join(lua) + "\n"
 
 

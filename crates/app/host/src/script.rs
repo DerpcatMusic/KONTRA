@@ -390,6 +390,10 @@ fn look(script: &Script) -> LookPars {
 /// The value a catalog constant has in `script`; `i32::MIN` (matches nothing)
 /// when the script never names it.
 fn symbol(script: &Script, name: &str) -> i32 {
+    // A measured constant is its number in every script; only an opaque name is an id.
+    if let Some(value) = kontra_ksp::constant(name) {
+        return value;
+    }
     script
         .symbols
         .iter()
