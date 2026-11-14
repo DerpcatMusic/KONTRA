@@ -50,6 +50,13 @@ pub struct Settings {
     /// A triangle LFO averaged over this many seconds (0: sharp corners)
     /// instead of the sine; it falls first as the sine does.
     pub triangle_s: Option<f32>,
+    /// A curve on what is written into the lines: points evenly over
+    /// −1..=1, held beyond; empty for none.
+    pub shape: &'static [f32],
+    /// Noise written into the lines with what is shaped: white, its rms
+    /// `level·rms^power` of the line's input (rms over 10 ms); level 0 for
+    /// none (a bucket brigade's or tape's noise, heard only under sound).
+    pub noise: [f32; 2],
     /// A high shelf on the heads, inside the loop.
     pub high_shelf: Option<Shelf>,
     /// How much shorter the left line runs and longer the right, ms.
@@ -191,6 +198,10 @@ pub struct ModDelay {
     body: [Option<Biquad>; 4],
     /// The loudest value the last [`Self::process`] wrote into the ring.
     written: f32,
+    /// Each line input's mean square (over 10 ms) and the noise's state.
+    power: [f32; 2],
+    seed: u32,
+    smooth: f32,
 }
 
 impl ModDelay {
@@ -217,6 +228,9 @@ impl ModDelay {
             shelf: None,
             body: Default::default(),
             written: 0.0,
+            power: [0.0; 2],
+            seed: 0x9e37_79b9,
+            smooth: 1.0 - (-1.0 / (0.01 * rate)).exp(),
         };
         d.set(s);
         d
@@ -428,7 +442,21 @@ impl ModDelay {
             }
             let [a, b] = apply(s.input, *frame);
             let [c, d] = apply(s.feedback, y);
-            let line = [a + c, b + d].map(flush);
+            let mut line = [a + c, b + d];
+            let [level, power] = s.noise;
+            for (v, p) in line.iter_mut().zip(&mut self.power) {
+                *v = shaped(s.shape, *v);
+                if level > 0.0 {
+                    *p = flush(*p + (*v * *v - *p) * self.smooth);
+                    // xorshift32: uniform in −1..1, rms 1/√3.
+                    self.seed ^= self.seed << 13;
+                    self.seed ^= self.seed >> 17;
+                    self.seed ^= self.seed << 5;
+                    let white = self.seed as f32 * (2.0 / u32::MAX as f32) - 1.0;
+                    *v += white * 3f32.sqrt() * level * p.powf(0.5 * power);
+                }
+                *v = flush(*v);
+            }
             written = line.iter().fold(written, |m, v| m.max(v.abs()));
             if let Some(slot) = self.ring.get_mut(self.at) {
                 *slot = line;
@@ -449,6 +477,20 @@ impl ModDelay {
     pub fn written(&self) -> f32 {
         self.written
     }
+}
+
+/// `x` through `points` spread evenly over −1..=1 (held beyond); `x` itself
+/// when there are fewer than two.
+fn shaped(points: &[f32], x: f32) -> f32 {
+    let spans = points.len().saturating_sub(1);
+    if spans == 0 {
+        return x;
+    }
+    let at = (x.clamp(-1.0, 1.0) + 1.0) * 0.5 * spans as f32;
+    let i = (at as usize).min(spans - 1);
+    let a = points.get(i).copied().unwrap_or(x);
+    let b = points.get(i + 1).copied().unwrap_or(a);
+    a + (b - a) * (at - i as f32)
 }
 
 /// The most allpasses a [`Phaser`] runs.
@@ -556,6 +598,8 @@ mod tests {
             steep_low_cut: false,
             body: &[],
             triangle_s: None,
+            shape: &[],
+            noise: [0.0; 2],
             high_shelf: None,
             spread_ms: 0.0,
             lfo_hz: 1.0,

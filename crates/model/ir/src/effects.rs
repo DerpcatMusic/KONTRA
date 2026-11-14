@@ -115,6 +115,14 @@ pub struct Delay {
     /// A triangle LFO averaged over this many seconds (0: sharp corners)
     /// instead of the sine; it falls first as the sine does.
     pub triangle_s: Option<f32>,
+    /// A curve on what is written into the lines (the input and the
+    /// feedback): points evenly over −1..=1, read with linear interpolation
+    /// and held beyond; empty for none (a mode's tape or bucket brigade
+    /// saturation).
+    pub shape: &'static [f32],
+    /// Noise written into the lines after the curve: white, its rms
+    /// `level·rms^power` of the line's input over 10 ms; level 0 for none.
+    pub noise: [f32; 2],
     /// A high shelf on the heads, inside the loop (`q` its slope).
     pub high_shelf: Option<crate::Bell>,
     /// How much shorter the left line runs and longer the right, ms.

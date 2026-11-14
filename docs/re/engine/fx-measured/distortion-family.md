@@ -61,28 +61,59 @@ all but one case); their bands miss between the harmonics.
 
 ## Supercharger GT (`Effects/Supercharger GT`), modelled
 
-`crates/format/kontakt-effects/src/supergt.rs`: `(C/T) tanh(s T x / C)` with ceiling C and slope s per SAT_MODE and
-SATURATION, fitted per ramp (`fx_curve.py`, then tanh, 0.2-2 % of full scale):
+### Where the modes are saved
 
-| SAT_MODE | SATURATION 0 | 0.25 | 0.5 | 1 |
-|---|---|---|---|---|
-| Mild | C 0.652, s 0.95 | 0.677, 1.22 | 0.249, 1.64 | 0.114, 1.82 |
-| Moderate | (Mild's) | 0.415, 1.38 | 0.107, 2.10 | 0.0515, 1.58 |
-| Hot | (Mild's) | 0.170, 1.06 | 0.0649, 1.43 | 0.0203, 0.65 |
+Three oracle saves each of one instrument that differ only in SAT_MODE, CHAR_MODE or HPF_MODE (0, 1, 2, set by
+`set_engine_par` and `save_instrument`, `probe_fx.py` with `PROBE_KEEP`), byte-diffed. The v0x51 record is 45 bytes:
+floats TRIM, SATURATION, COMPRESS, CHARACTER, MIX, ATTACK, RELEASE at 0..24, then i32 HPF_MODE at 28, SAT_MODE at 32 and
+CHAR_MODE at 36, each saved as `2 - mode`; an i32 2 at 40 and a byte 0 at 44 did not move. The INIT record is TRIM 0.5,
+SATURATION 0, COMPRESS 0, CHARACTER 0, MIX 1, ATTACK 0.3667, RELEASE 0.4444, every mode 0.
 
-TRIM is a gain T of 58.4 dB x (TRIM - 0.5) in and out (TRIM 1 brings Moderate's 0.107 to 0.0037; TRIM 0 leaves a slope
-of 1.9 to a hard clip at 1.0, not carried). CHARACTER moves a tone whose dB is linear in it (0.5 sits midway in two
-modes): a fixed base (+0.55 dB, +0.8 dB at 67 Hz, +5 dB above 16.6 kHz) and per CHAR_MODE a low shelf, a peak and a high
-shelf. Where SAT_MODE, CHAR_MODE and HPF_MODE are saved is not known: scripts set them; a saved instrument plays Mild.
+### The saturator, measured curves
 
-| Case | band max / rms dB | settled frame max / rms dB |
-|---|---|---|
-| sweeps at -60 dB, CHARACTER 0, 1 in each CHAR_MODE, 0.5 | 0.53-1.69 / 0.42-0.81 | 13.7-30.2 / 0.95-1.83 |
-| sweeps, HPF_MODE 1 / 2 (not carried) | 1.27, 2.77 | 20.2 / 1.47, 16.9 / 2.73 |
-| ramps, every SAT_MODE at SATURATION 0.25-1, TRIM 0 / 1 | 4.9-40 (harmonics) | 13.8-56 / 1.0-4.0 |
+`crates/format/kontakt-effects/src/supergt.rs`: per SAT_MODE the curve at SATURATION 0, 0.25, 0.5, 0.75 and 1, each
+fitted by `fx_curve.py` to a 1 kHz ramp to full scale (rms error 0.0001 of full scale or less, odd within 0.003),
+stored as its positive half at the saturator's input (the base tone's 1 kHz gain, 1.0695, divided out), blended linearly
+between settings (`DriveCurve::Blend`). TRIM is a gain T of 58.4 dB x (TRIM - 0.5) in and out. Hot at SATURATION 0 is
+not Mild's (ceiling 0.32 against 0.63), as the first pass had assumed. MIX crossfades the dry input back in (the slot's
+dry level).
 
-The tone meets the band gate within 1.7 dB; the saturator's frames are 1-2.3 dB off (tanh's knee against the
-measured curves; Hot at SATURATION 1 4 dB), so the next step is the measured curves as tables, blended as Tube's are.
+| SAT_MODE | ceiling at SATURATION 0 / 0.25 / 0.5 / 0.75 / 1 |
+|---|---|
+| Mild | 0.63 / 0.69 / 0.25 / 0.17 / 0.11 |
+| Moderate | 0.62 / 0.41 / 0.11 / 0.077 / 0.054 |
+| Hot | 0.32 / 0.18 / 0.065 / 0.038 / 0.020 |
+
+The tone: a fixed base (+0.55 dB, +0.8 dB at 67 Hz, +5 dB above 16.6 kHz) and per CHAR_MODE a low shelf, a peak and a
+high shelf at CHARACTER 1, whose dB is linear in CHARACTER (0.5 sits midway in two modes).
+
+### What a static curve cannot be (measured, not carried)
+
+- At SATURATION 0 (every mode), and at 0.25 in Mild and Hot, part of the loss is a clean gain: at full input Kontakt's
+  3rd harmonic is -58 to -77 dB under the tone where the curve gives -20 to -39 dB. From 0.5 up the harmonics match
+  within 1 dB (3rd to 9th).
+- COMPRESS is a compressor, not a curve: at 0.5 the output holds -20 to -19 dB for a 1 kHz tone rising 18 dB, the
+  3rd harmonic at -62 to -64 dB; at 1, -21 dB with the 3rd at -57 to -39 dB.
+- HPF_MODE is level-dependent, so it sits in that compressor's detector: against mode 0 the level falls by 1.5 dB
+  (mode 1) and 3.0 dB (mode 2) on a -20.6 dBFS sweep but rises by 2.0 and 1.5 dB on a -60 dB sweep, flat to within
+  0.4 dB from 63 Hz to 10 kHz.
+- After a loud input stops, Kontakt's output holds near the curve's ceiling for 30 ms and falls to -50 dB over the
+  next 100 ms (Hot, SATURATION 1); something before its saturator rings, which the model's base tone does not.
+
+The translator reports a record with COMPRESS above 0 or HPF_MODE not 0 (`Supercharger GT compressor`).
+
+### Gate (ramps to full scale, every SAT_MODE x SATURATION; session slot 1 left out)
+
+| Case | band max / rms dB | frames under sound, p90 / rms dB | settled frames incl. the tail, max / rms dB |
+|---|---|---|---|
+| Mild 0 / 0.25 / 0.5 / 0.75 / 1 | 37.6, 22.1, 17.2, 18.7, 18.9 / 4.6-10.9 | 0.70, 0.66, 0.28, 0.21, 0.19 / 0.14-0.46 | 16-31 / 0.89-1.90 |
+| Moderate 0 / 0.25 / 0.5 / 0.75 / 1 | 23.8, 11.0, 3.7, 10.0, 14.2 / 1.2-6.9 | 0.68, 0.45, 0.14, 0.40, 1.01 / 0.10-0.99 | 17-37 / 0.91-2.56 |
+| Hot 0 / 0.25 / 0.5 / 0.75 / 1 | 24.9, 27.1, 23.6, 27.8, 35.0 / 8.9-12.2 | 1.14, 1.17, 0.72, 0.64, 0.94 / 0.80-1.58 | 18-58 / 1.42-4.20 |
+| sweep -20.6 dBFS / -60 dB, HPF_MODE 0 | 0.19 / 0.05, 3.12 / 0.66 | 0.23, 3.67 | 5.5 / 0.42, 26 / 2.1 |
+
+Frames under sound (from 30 ms after the input starts to where it ends) meet the 1 dB gate in 12 of 15 settings
+(Hot 0 and 0.25 and Moderate 1 reach 1.0-1.2 dB at p90); the band misses are the harmonics above (the clean gain at
+SATURATION 0) and the ramp's high harmonics, and the frame maxima are the tail after the input stops.
 
 ### Peaks from the first pass, SATURATION 0.5 unless noted
 

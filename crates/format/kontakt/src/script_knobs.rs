@@ -583,6 +583,17 @@ pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
 // ponytail: the link byte has no engine parameter to read back; linked.
 pub(crate) const BUS_COMP_INIT: [f32; 6] = [0.5, 0.2, 0.5, 0.5, 0.5, 1.0];
 
+/// Fresh Tape Saturator, DStortion and Supercharger GT records as their
+/// INIT presets save them (Kontakt 8.13.1 oracle saves, 2026-11-14).
+#[rustfmt::skip]
+static TAPE_INIT: [u8; 13] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x80, 0x3f, 0x00];
+#[rustfmt::skip]
+static DSTORTION_INIT: [u8; 25] = [0x04, 0x56, 0xce, 0x3e, 0x00, 0x00, 0xc0, 0x3e, 0x29, 0x5c, 0x2f, 0x3f, 0x8d, 0x97, 0x0e, 0x3f, 0xe1, 0x7a, 0x34, 0x3f, 0x6d, 0xe7, 0xfb, 0x3e, 0x01];
+#[rustfmt::skip]
+static SUPERGT_INIT: [u8; 45] = [0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0xbc, 0xbb, 0xbb, 0x3e, 0x39, 0x8e, 0xe3, 0x3e, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00];
+/// The INIT Compressor: mode 0, −3 dB, ratio 1, 50 ms, 299.9 ms, linked.
+const COMPRESSOR_INIT: [f32; 4] = [-3.0, 1.0, 50.0, 299.9];
+
 pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     let unit = |kind| ir::Effect {
         kind,
@@ -675,6 +686,44 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     types.push(crate::flair::slot_type());
     types.push(crate::raum::slot_type());
     types.push(crate::wowflutter::slot_type());
+    // Script-loaded units, fresh as their INIT presets.
+    let fresh = |id: u16, version: u16, public: &[u8]| {
+        crate::drive::effect(
+            id,
+            version,
+            public,
+            "",
+            &mut kontra_format::Notes::default(),
+        )
+        .map(unit)
+    };
+    let [t, r, a, rel] = COMPRESSOR_INIT;
+    let compressor = Some(unit(ir::EffectKind::Compressor(crate::laws::compressor(
+        0, t, r, a, rel, true,
+    ))));
+    types.push(ty(
+        2,
+        false,
+        0,
+        compressor,
+        compressor_knobs(0, COMPRESSOR_INIT, true).into(),
+    ));
+    for (id, module, version, public, model) in [
+        (
+            26,
+            0x42,
+            0x10,
+            &TAPE_INIT[..],
+            crate::tape::model as fn(&[u8]) -> _,
+        ),
+        (36, 0x56, 0x10, &DSTORTION_INIT[..], crate::dstortion::model),
+        (46, 0x60, 0x51, &SUPERGT_INIT[..], crate::supergt::model),
+    ] {
+        types.push(ir::SlotType {
+            model: model(public),
+            ..ty(id, false, 0, fresh(module, version, public), [].into())
+        });
+    }
     types
 }
 
@@ -935,7 +984,7 @@ mod tests {
     #[test]
     fn the_saved_type_indices_never_move() {
         #[rustfmt::skip]
-        const PINNED: [(i32, bool); 53] = [
+        const PINNED: [(i32, bool); 57] = [
             (29, false), (39, false), (11, false), (40, false), (0, false), (7, false),
             (24, true), (19, true), (13, true), (14, true), (15, true),
             (100, true), (101, true), (102, true), (103, true), (104, true), (105, true),
@@ -955,9 +1004,26 @@ mod tests {
             (42, false),
             (51, false),
             (56, false),
+            (2, false),
+            (26, false),
+            (36, false),
+            (46, false),
         ];
         let types: Vec<_> = slot_types().iter().map(|t| (t.id, t.subtype)).collect();
         assert_eq!(types, PINNED);
+    }
+
+    #[test]
+    fn a_script_loads_the_compressor_tape_saturator_dstortion_and_supergt() {
+        let types = slot_types();
+        for (id, modelled) in [(2, false), (26, true), (36, true), (46, true)] {
+            let t = types.iter().find(|t| t.id == id && !t.subtype).unwrap();
+            assert!(
+                t.effect
+                    .is_some_and(|e| !matches!(e.kind, ir::EffectKind::Other))
+            );
+            assert_eq!(t.model.is_some(), modelled, "{id}");
+        }
     }
 
     #[test]

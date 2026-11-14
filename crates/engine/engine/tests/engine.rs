@@ -406,6 +406,8 @@ fn idle_costs_a_fraction_of_a_voice_and_voices_add_up_linearly() {
             steep_low_cut: false,
             body: &[],
             triangle_s: None,
+            shape: &[],
+            noise: [0.0; 2],
             high_shelf: None,
             spread_ms: 1.0,
             rate: kontra_engine::ir::Rate::Hz(0.9),

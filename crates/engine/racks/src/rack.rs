@@ -490,6 +490,8 @@ mod tests {
                 steep_low_cut: false,
                 body: &[],
                 triangle_s: None,
+                shape: &[],
+                noise: [0.0; 2],
                 high_shelf: None,
                 spread_ms: 1.0,
                 rate: ir::Rate::Hz(0.9),
