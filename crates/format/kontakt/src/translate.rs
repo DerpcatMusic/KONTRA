@@ -808,6 +808,29 @@ fn translate_group(
                     };
                     timed_slots.extend(made.map(|s| (n, s)));
                 }
+                Modulator::Glide(g)
+                    if let Some(t) = p
+                        .targets
+                        .iter()
+                        .find(|t| t.param == "pitch" && t.slot.is_none()) =>
+                {
+                    let law = laws::glide(g, t.signed_intensity());
+                    kontra_law::record(|| kontra_law::Application {
+                        id: kontra_law::LawId("kontakt.glide.v1"),
+                        location: format!("groups/{group_index}/glide"),
+                        input: format!("{g:?}"),
+                        output: format!("{law:?}"),
+                    });
+                    out.glide = Some(law);
+                    for t in p
+                        .targets
+                        .iter()
+                        .filter(|t| t.param != "pitch" || t.slot.is_some())
+                    {
+                        let feature = format!("internal modulator glide -> {}", t.param);
+                        notes.add(ir::Impact::Audible, &feature, &p.name);
+                    }
+                }
                 m => {
                     let kind = match m {
                         Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => "timed",
