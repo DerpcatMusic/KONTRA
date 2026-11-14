@@ -40,6 +40,8 @@ pub fn prepare(
     let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
     let mut polyphony = Vec::new();
     let mut facts = Vec::new();
+    // `detect_*` reads the samples' music information: measured here, once
+    // per sample, only for instruments whose scripts ask.
     let mut group_rules = Vec::with_capacity(instrument.groups.len());
     let mut dormant = Vec::new();
     for (index, group) in instrument.groups.iter().enumerate() {

@@ -348,6 +348,13 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Wait);
                 return Ok(None);
             }
+            Builtin::WaitTicks => {
+                let got = self.expr(arg(0)?)?;
+                self.convert(got, Ty::Int, span)?;
+                self.host(Action::TicksToMicros, 1, 0, Returns::Int);
+                self.emit(Op::Wait);
+                return Ok(None);
+            }
             Builtin::IntToReal | Builtin::Real => {
                 let got = self.expr(arg(0)?)?;
                 self.convert(got, Ty::Int, span)?;

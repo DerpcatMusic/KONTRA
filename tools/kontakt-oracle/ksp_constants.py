@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Checks every value in crates/script/ksp/data/constants.tsv against real Kontakt.
 
-ksp_constants.py <instrument.nki> <work dir>
+ksp_constants.py <instrument.nki> <work dir> [names.txt]
+
+With names.txt (one `$NAME` per line) the table is skipped: each name is measured
+from scratch (printed as `name -7 -> value`, or `unknown to Kontakt`).
 
 Each constant is compared in a script (`if ($NAME = value)`) that writes the answer into a
 group's tune (+1 / -1 units of 0.36 st). A name Kontakt does not know fails its whole script,
@@ -20,6 +23,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+MARKER = 460  # first of two groups that show a script half ran
 TSV = os.path.join(HERE, "../../crates/script/ksp/data/constants.tsv")
 HEAD = [
     "local kt = Kontakt",
@@ -40,13 +44,16 @@ def probe(cases, halves, digits):
     lua, groups = list(HEAD), 0
     for slot, (lo, hi) in enumerate(halves):
         src = ["on init", "  declare $v"]
+        if digits:
+            # A half that does not compile never runs: its marker group stays 0.
+            src.append(tune(505000, MARKER + slot))
         for k in range(lo, hi):
             name, value = cases[k]
             if digits:
                 src.append(f"  $v := {name}")
                 for d in range(5):
                     src.append(tune(f"500000 + 5000 * (($v / {100 ** d}) mod 100)", 5 * k + d))
-                groups = max(groups, 5 * k + 5)
+                groups = max(groups, 5 * k + 5, MARKER + 2)
             else:
                 src += [f"  if ({name} = {value})", "  " + tune(505000, k), "  else",
                         "  " + tune(495000, k), "  end if"]
@@ -54,7 +61,7 @@ def probe(cases, halves, digits):
         src.append("end on")
         lua.append(f"local src{slot} = [[\n" + "\n".join(src) + "\n]]")
         lua.append(f"pcall(kt.set_instrument_script_source, i, {slot}, src{slot})")
-    lua += ["local t0 = os.time()", "repeat until os.time() - t0 >= 8",
+    lua += ["local t0 = os.time()", "repeat until os.time() - t0 >= 30",
             f"for g = 0, {groups - 1} do",
             '  log(string.format(\'{"g":%d,"u":%.2f}\', g, kt.get_group_tune(i, g) / 0.36))',
             "end", "out:close()"]
@@ -65,7 +72,7 @@ def run(nki, work, name, lua):
     path = os.path.join(work, name)
     with open(path + ".lua", "w") as f:
         f.write(lua)
-    env = dict(os.environ, ORACLE_LUA=path + ".lua", ORACLE_TIMEOUT="500")
+    env = dict(os.environ, ORACLE_LUA=path + ".lua", ORACLE_TIMEOUT="150")
     subprocess.run(["../oracle/oracle-slot", "python3", "dump.py", path + ".jsonl", nki],
                    cwd=HERE, env=env, check=False)
     units = {}
@@ -77,8 +84,45 @@ def run(nki, work, name, lua):
     return units
 
 
+def measure(nki, work, rows, n=[0]):
+    """Reads each name's value in five base-100 digits; a name whose digits do not
+    come back (unknown to Kontakt, or in a script that failed) is retried in halves
+    until it is alone. Returns {name: value or None (unknown)}."""
+    found = {}
+    for start in range(0, len(rows), 24):
+        chunk = rows[start:start + 24]
+        half = len(chunk) // 2
+        halves = [(0, half), (half, len(chunk))] if half else [(0, len(chunk)), (0, 0)]
+        units = run(nki, work, f"digits{n[0]}", probe(chunk, halves, True))
+        n[0] += 1
+        later = []
+        for k, (name, _) in enumerate(chunk):
+            got = [units.get(5 * k + d) for d in range(5)]
+            ran = units.get(MARKER + (0 if k < max(half, 1) else 1)) == 1
+            if None in got or not ran:
+                later.append((name, _))
+            else:
+                found[name] = sum(g * 100 ** d for d, g in enumerate(got))
+        if later and len(later) < len(chunk):
+            found.update(measure(nki, work, later, n))
+        elif later and len(later) == 1:
+            found[later[0][0]] = None
+        elif later:
+            # no progress: the whole chunk failed; split it
+            mid = len(later) // 2
+            found.update(measure(nki, work, later[:mid], n))
+            found.update(measure(nki, work, later[mid:], n))
+    return found
+
+
 def main():
     nki, work = sys.argv[1], sys.argv[2]
+    if len(sys.argv) > 3:
+        with open(sys.argv[3]) as f:
+            rows = [(n.strip(), -7) for n in f if n.strip()]
+        for name, value in measure(nki, work, rows).items():
+            print(f"{name}\t-7 -> {value}" if value is not None else f"{name}\tunknown to Kontakt", flush=True)
+        return
     rows = []
     with open(TSV) as f:
         for line in f:

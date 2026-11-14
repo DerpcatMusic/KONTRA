@@ -19,6 +19,15 @@ impl Engine {
                     .and_then(|k| self.poly_at.get(k))
                     .map_or(0, |&v| i32::from(v)),
             ),
+            Action::NcNum => HostValue::Int(match self.running.kind {
+                Kind::NoteController => i32::from(self.running.controller),
+                _ => 0,
+            }),
+            Action::NcNote => HostValue::Int(i32::from(self.running.midi[2])),
+            Action::NcValue => HostValue::Int(self.running.value),
+            Action::MidiCommand => HostValue::Int(i32::from(self.running.midi[0])),
+            Action::MidiByte1 => HostValue::Int(i32::from(self.running.midi[2])),
+            Action::MidiByte2 => HostValue::Int(i32::from(self.running.midi[3])),
             // Kept across a wait (the resumed callback is still poly_at's).
             Action::PolyAtNum => {
                 let key = match self.running.kind {
@@ -108,7 +117,19 @@ impl Engine {
             },
             // Time Machine Pro's own voice pools: KONTRA's stretch draws on
             // the engine's voices, so the change is done at once.
-            Action::SetVoiceLimit => HostValue::Int(self.start_async(Exit::Done)),
+            Action::SetVoiceLimit => {
+                let slot = usize::from(int(0) == kontra_vm::midi::VL_HQ);
+                if let Some(limit) = self.voice_limits.get_mut(slot) {
+                    *limit = int(1).max(1);
+                }
+                HostValue::Int(self.start_async(Exit::Done))
+            }
+            Action::GetVoiceLimit => HostValue::Int(
+                self.voice_limits
+                    .get(usize::from(int(0) == kontra_vm::midi::VL_HQ))
+                    .copied()
+                    .unwrap_or(0),
+            ),
             // No file is picked in a browser KONTRA does not show.
             Action::FsGetFilename => {
                 *call.text_out = Text::EMPTY;
