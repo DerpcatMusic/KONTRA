@@ -71,7 +71,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (start, cpu) = (std::time::Instant::now(), cpu_s());
         let mut store = Store::new(StoreConfig::DEFAULT)?;
         eprintln!("  rss after store {} MB", rss_mb().saturating_sub(before));
-        let ir = kontra_host::instrument::read(path.as_ref())?;
+        // KONTRA_TRANSLATE_ONLY=1: print the translator's diagnostics, then
+        // the next file (a fast corpus sweep for one feature).
+        let ir = match kontra_host::instrument::read(path.as_ref()) {
+            Ok(ir) => ir,
+            Err(e) if std::env::var_os("KONTRA_TRANSLATE_ONLY").is_some() => {
+                println!("{path}\tERROR\t{e}");
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if std::env::var_os("KONTRA_TRANSLATE_ONLY").is_some() {
+            for d in &ir.diagnostics {
+                println!("{path}\t{:?}\t{}\t{}", d.impact, d.feature, d.detail);
+            }
+            continue;
+        }
         eprintln!("  rss after read {} MB", rss_mb().saturating_sub(before));
         let (read, read_cpu) = (start.elapsed(), cpu_s() - cpu);
         let read_io = io_mb();

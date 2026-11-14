@@ -470,6 +470,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         rides.sort_by_key(|r| r.0);
     }
+    // KONTRA_PHRASE=60:0:1.2,67:1:1.2: notes beside the main one, each
+    // key:start:length in seconds; overlapping ones play legato.
+    for note in std::env::var("KONTRA_PHRASE").unwrap_or_default().split(',') {
+        let v: Vec<&str> = note.split(':').collect();
+        let (Some(k), Some(at), Some(len)) = (
+            v.first().and_then(|k| k.parse::<u8>().ok()),
+            v.get(1).and_then(|a| a.parse::<f32>().ok()),
+            v.get(2).and_then(|l| l.parse::<f32>().ok()),
+        ) else {
+            continue;
+        };
+        let frame = |s: f32| (s * RATE as f32) as usize;
+        let on = Event::NoteOn {
+            note: HostNote { key: k, ..host },
+            velocity: velocity.into(),
+            tune: 0.0,
+        };
+        let off = Event::NoteOff(HostPattern {
+            key: i32::from(k),
+            ..pattern
+        });
+        rides.extend([(frame(at).max(1), on), (frame(at + len), off)]);
+    }
+    rides.sort_by_key(|r| r.0);
     let mut first: Vec<Timed<Event>> = (rides.iter().filter(|r| r.0 == 0))
         .map(|&(_, body)| Timed {
             at: SampleTime(0),

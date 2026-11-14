@@ -23,6 +23,7 @@ mod knobs;
 mod midi;
 mod midi_in;
 mod midi_object;
+mod mono;
 mod modulators;
 mod par_display;
 mod params;
@@ -301,6 +302,11 @@ pub struct Engine {
     groups: Box<[Group]>,
     /// Each portamento scope's latest note ([`glide`]).
     glides: [glide::Latest; glide::SCOPES],
+    /// Each mono voice group's line ([`mono`]), by voice group.
+    lines: Box<[mono::Line]>,
+    /// While set, notes start only their zones in this voice group (a
+    /// line's older key coming back).
+    only_voice_group: Option<u32>,
     /// A stamp per ledger slot: the notes a note-counting voice group
     /// has seen in its current count (voice_groups.rs). Sized at build.
     note_seen: Box<[u32]>,
@@ -462,6 +468,8 @@ impl Engine {
             reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
             glides: [glide::Latest::default(); glide::SCOPES],
+            lines: vec![mono::Line::default(); mono::LINES].into(),
+            only_voice_group: None,
             note_seen: vec![0; capacity].into(),
             note_stamp: 0,
             running: Running::IDLE,
@@ -810,6 +818,7 @@ impl Engine {
         }
         n.released = true;
         n.pedal_held = false;
+        self.mono_release(note);
         for slot in self
             .voices
             .iter_mut()

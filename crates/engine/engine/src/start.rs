@@ -54,6 +54,7 @@ impl Engine {
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
                 && (n.zone_slot < 0 || n.zone_slot == i32::from(zone.slot))
+                && (self.only_voice_group).is_none_or(|v| zone.voice_group == Some(v))
                 && self
                     .buses
                     .get(plan::bus(&self.groups, zone))
@@ -67,6 +68,11 @@ impl Engine {
             }
             // Before the limits steal the note it may slide from.
             let slide = self.slide_for(zone.group, note, n.key);
+            if let Some(vg) = zone.voice_group
+                && self.mono_line(vg, note, slide)
+            {
+                continue;
+            }
             self.choke_by(zone.group, note);
             self.limit_group(zone.group);
             if let Some(vg) = zone.voice_group {

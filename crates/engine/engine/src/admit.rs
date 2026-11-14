@@ -182,6 +182,8 @@ impl Engine {
                 // and its event while a callback for it waits ($EVENT_NOTE
                 // after a `wait` in `on release`).
                 && !self.has_callback(note)
+                // and while a mono line may bring its key back.
+                && !self.waits_in_line(note)
                 && let Some(n) = self.notes.remove(note)
             {
                 self.ended.push(n.host);

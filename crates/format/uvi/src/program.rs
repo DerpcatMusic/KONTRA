@@ -291,6 +291,8 @@ impl<L: Library> Translator<'_, '_, L> {
             fade_ms: 10.0,
             exclusive: None,
             per_note: true,
+            legato: false,
+            returns: false,
         });
         Ok(Some(self.out.voice_groups.len() - 1))
     }

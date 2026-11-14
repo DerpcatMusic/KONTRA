@@ -54,9 +54,10 @@ impl Engine {
         let now = self.now.0;
         let key = f32::from(key);
         // Where the previous note sounds now, mid-slide or not.
+        let sliding = latest.slide.filter(|_| law.resume);
         let from = latest
             .note
-            .map(|_| latest.key + latest.slide.map_or(0.0, |s| s.offset(now)));
+            .map(|_| latest.key + sliding.map_or(0.0, |s| s.offset(now)));
         let joined = !law.legato || self.holds_other(scope, note);
         let slide = from
             .filter(|_| joined)
@@ -124,7 +125,8 @@ mod tests {
         scope: 0,
         depth: 1.0,
         seconds: 1.0,
-        per_octave: false,
+        per_semitone: false,
+        resume: true,
         legato: false,
         curve: 0.0,
     };
@@ -144,8 +146,9 @@ mod tests {
     }
 
     #[test]
-    fn a_bent_slide_keeps_its_ends_and_leaves_fast_when_positive() {
-        let law = ir::Glide { curve: 1.0, ..LAW };
+    fn a_bent_slide_keeps_its_ends_and_covers_its_half_way_share() {
+        // Curve 0.5: a quarter of the interval at half time (slow, then fast).
+        let law = ir::Glide { curve: 0.5, ..LAW };
         let s = Slide {
             from: 12.0,
             start: 0,
@@ -153,8 +156,14 @@ mod tests {
             law,
         };
         assert_eq!(s.offset(0), 12.0);
-        assert!(s.offset(50) < 6.0, "{}", s.offset(50));
+        assert!((s.offset(50) - 9.0).abs() < 1e-4, "{}", s.offset(50));
         assert_eq!(s.offset(100), 0.0);
-        assert_eq!(ir::Glide { per_octave: true, ..LAW }.duration(-24.0), 2.0);
+        // A constant rate: 0.03 s a semitone, so an octave takes 0.36 s.
+        let rate = ir::Glide {
+            per_semitone: true,
+            seconds: 0.03,
+            ..LAW
+        };
+        assert!((rate.duration(-12.0) - 0.36).abs() < 1e-6);
     }
 }
