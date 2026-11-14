@@ -64,9 +64,22 @@ fn restore(
     let want = saved_in(path);
     // An array the file saved shorter than the script now declares keeps
     // its saved cells and the declared rest: the saved ones count.
+    // A UVI widget's `name=value` is a float: the same number to its f32
+    // precision holds, however it is written (`6.3656972e-07`).
+    let same_number = |a: &str, b: &str| {
+        let (Some((an, av)), Some((bn, bv))) = (a.split_once('='), b.split_once('=')) else {
+            return false;
+        };
+        match (av.parse::<f64>(), bv.parse::<f64>()) {
+            (Ok(x), Ok(y)) => an == bn && (x - y).abs() <= 1e-5 * x.abs().max(1.0),
+            _ => false,
+        }
+    };
     let holds = |v: &String| {
         (held.iter()).any(|h| {
-            h == v || h.starts_with(v.as_str()) && h.as_bytes().get(v.len()) == Some(&b' ')
+            h == v
+                || h.starts_with(v.as_str()) && h.as_bytes().get(v.len()) == Some(&b' ')
+                || same_number(h, v)
         })
     };
     let off: Vec<String> = (want.iter()).filter(|v| !holds(v)).cloned().collect();
