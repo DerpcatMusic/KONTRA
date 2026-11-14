@@ -70,9 +70,9 @@ pub struct Library {
     pub multis: usize,
     /// Pictures that may be its banner, best first: `wallpaper.png`, a
     /// library-browser picture, the `.nicnt`/`.nkr` (which holds pictures),
-    /// a UVI bank (which does too), then any picture named cover, artwork,
-    /// banner, logo or background, then the rest. A bank's are its
-    /// `.png`/`.jpg` sidecars, then the bank itself. Decoding and
+    /// then any picture named cover, artwork, banner, logo or background,
+    /// then a UVI bank (which picks its own), then the rest. A lone bank's
+    /// are its `.png`/`.jpg` sidecars, then the bank itself. Decoding and
     /// the size check are the viewer's.
     pub art: Vec<PathBuf>,
 }
@@ -417,6 +417,7 @@ fn catalog(
             issues,
         };
         walk(&found.dir, &mut state, &mut presets, &mut art);
+        art.sort_by_cached_key(|p| (art_rank(p), p.clone()));
     }
     // A multi fills a rack, not a part: nothing plays one yet.
     let multis = presets.len();
@@ -429,7 +430,6 @@ fn catalog(
         let inside = p.strip_prefix(&found.dir).unwrap_or(p);
         (natural(&inside.to_string_lossy()), p.clone())
     });
-    art.sort_by_cached_key(|p| (art_rank(p), p.clone()));
     let stem = if bank {
         found
             .dir
@@ -549,12 +549,14 @@ fn art_rank(path: &Path) -> usize {
         _ if name.contains("libbrowser") => 1,
         "nicnt" => 2,
         "nkr" => 3,
-        "ufs" => 4,
+        // A bank chooses its own cover: after pictures named for the part,
+        // before loose ones that may be anything.
+        "ufs" => 10,
         _ => {
             5 + ["cover", "artwork", "banner", "logo", "background"]
                 .iter()
                 .position(|word| name.contains(word))
-                .unwrap_or(5)
+                .unwrap_or(6)
         }
     }
 }
