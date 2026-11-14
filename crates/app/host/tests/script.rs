@@ -4394,7 +4394,7 @@ fn a_midi_file_loads_in_init_and_the_marker_walks_its_events() {
     let zones = vec![zone(&mut store, 0.5, 0)];
     let mut e = engine_with_files(&store, zones, &source);
     level(&mut e, &[]);
-    assert_eq!(e.last_message(), "2 1 10 0 7 t.mid");
+    assert_eq!(e.last_message(), "2 2 10 0 7 t.mid");
     assert!(
         e.unhandled_actions().is_empty(),
         "{:?}",
@@ -4429,7 +4429,7 @@ fn the_midi_object_inserts_into_its_buffer() {
         end on",
     );
     level(&mut e, &[]);
-    assert_eq!(e.last_message(), "1 2 -1 1 42 6 1");
+    assert_eq!(e.last_message(), "2 3 0 1 42 6 1");
     assert!(
         e.unhandled_actions().is_empty(),
         "{:?}",
@@ -4578,4 +4578,30 @@ fn a_script_maps_zone_indices_to_ids_and_reads_lengths() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "0 -1 1000000 1");
+}
+
+/// KSP manual (`by_track`, `by_marks`): both name a group of the MIDI object's
+/// events for `mf_set_event_par` and `mf_get_event_par`.
+#[test]
+fn midi_events_are_addressed_by_track_and_by_mark() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $a
+            declare $b
+            mf_set_buffer_size(4)
+            $a := mf_insert_event(0, 100, $MIDI_COMMAND_NOTE_ON, 60, 100)
+            $b := mf_insert_event(2, 50, $MIDI_COMMAND_CC, 7, 90)
+            mf_set_mark($a, $MARK_1, 1)
+            mf_set_event_par(by_marks($MARK_1), $EVENT_PAR_POS, 123)
+            mf_set_event_par(by_track(2), $EVENT_PAR_POS, 321)
+            message(mf_get_event_par($a, $EVENT_PAR_POS) & \" \" & mf_get_event_par($b, $EVENT_PAR_POS) & \" \" & mf_get_event_par($a, $EVENT_PAR_NOTE_LENGTH))
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "123 321 -1");
+    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
 }

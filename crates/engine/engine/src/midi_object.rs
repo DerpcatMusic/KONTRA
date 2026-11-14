@@ -38,7 +38,8 @@ impl MidiObject {
             events: Vec::new(),
             selected: None,
             buffer: 0,
-            next_id: 1,
+            // Measured: the first event of a fresh object has id 2 (Kontakt 8.13, probes/ksp/mf_object.kspp).
+            next_id: 2,
             tracks: 0,
             division: 960,
             areas: vec![(Area::WHOLE, Text::EMPTY)],
@@ -133,8 +134,9 @@ impl MidiObject {
     }
 
     fn insert(&mut self, [track, pos, command, byte1, byte2]: [i32; 5]) -> i32 {
+        // Measured: a full (or never sized) buffer inserts nothing and answers 0.
         if self.buffer == 0 {
-            return -1;
+            return 0;
         }
         let id = self.next_id;
         self.next_id += 1;
@@ -146,6 +148,8 @@ impl MidiObject {
             command,
             byte1,
             byte2,
+            // Measured: an inserted event's length reads -1 until a script sets one.
+            length: -1,
             ..Event::default()
         });
         self.tracks = self.tracks.max(track.saturating_add(1));
@@ -302,13 +306,14 @@ impl Engine {
             HostValue::Nothing
         };
         Some(match call.action {
+            ByTrack => HostValue::Int(event::BY_TRACK | (int(0) & !event::BY_TRACK)),
             MfGetFirst => step(m, Move::First, int(0)),
             MfGetLast => step(m, Move::Last, int(0)),
             MfGetNext => step(m, Move::Next, int(0)),
             MfGetPrev => step(m, Move::Prev, int(0)),
             MfGetNextAt => step(m, Move::NextAt(int(1)), int(0)),
             MfGetPrevAt => step(m, Move::PrevAt(int(1)), int(0)),
-            MfGetId => HostValue::Int(m.selected.unwrap_or(-1)),
+            MfGetId => HostValue::Int(m.selected.unwrap_or(0)),
             MfGetCommand => HostValue::Int(current(m, event::MIDI_COMMAND)),
             MfGetByteOne => HostValue::Int(current(m, event::MIDI_BYTE_1)),
             MfGetByteTwo => HostValue::Int(current(m, event::MIDI_BYTE_2)),

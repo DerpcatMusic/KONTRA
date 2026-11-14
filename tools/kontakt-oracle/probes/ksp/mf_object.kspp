@@ -1,6 +1,12 @@
-# The MIDI object in Kontakt 8 (run: ksp_probe.py <nki> this-file). Every name is in the KSP manual:
-# one unknown name fails the whole script. What KONTRA assumed and this settles is marked "?".
-# ? $EVENT_PAR_MIDI_COMMAND..$EVENT_PAR_TRACK_NR, $CURRENT_EVENT, ids from 1, the buffer rules.
+# The MIDI object in Kontakt 8.13 (run: ksp_probe.py <nki> this-file). Every name is in the KSP manual:
+# one unknown name fails the whole script.
+# Measured 2026-11-14 (ANALOG STRINGS): an insert with no buffer answers 0; the first id is 2 and ids
+# count up (3, ...); an inserted event's length reads -1; the buffer counts down on insert and up on
+# remove; mf_get_id is 0 with no event selected (past the end); first/next/last/prev/next_at/prev_at
+# order by position; by_track and by_marks address groups; mf_set_export_area answers the first
+# invalid event's id (3 after byte 1 = 200); mf_reset zeroes buffer and tracks.
+# OPEN: mf_get_mark($a, $MARK_1) read 0 right after mf_set_mark($a, $MARK_1, 1), though by_marks($MARK_1)
+# then addressed $a. KONTRA answers 1 (the manual: "returns 1 if it is marked").
 S declare $a
 S declare $b
 S declare $c
