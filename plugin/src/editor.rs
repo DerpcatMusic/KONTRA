@@ -636,7 +636,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
             // Through what the header lists: the instrument and its
             // snapshots, or the whole library.
             let family = (browser.catalog.libraries.get(library))
-                .map(|l| kontra_ui_model::preset_family(&l.presets, Some(preset)))
+                .map(|l| kontra_ui_model::preset_family(&l.dir, &l.presets, Some(preset)))
                 .unwrap_or_default();
             let (count, at) = (family.len(), family.iter().position(|&n| n == preset));
             let Some(at) = at else {

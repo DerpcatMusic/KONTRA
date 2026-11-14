@@ -15,6 +15,16 @@ pub struct HostNote {
     pub clap: bool,
 }
 
+impl HostNote {
+    /// Kontakt's channel across ports, 0..=63 for ports A to D (KSP
+    /// `$MIDI_CHANNEL`): what a note's controllers, bend and pedal are
+    /// kept by.
+    #[must_use]
+    pub fn port_channel(self) -> u8 {
+        self.port.min(3) * 16 + (self.channel & 15)
+    }
+}
+
 /// Each -1 axis is a host wildcard. Invalid axes never match an owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostPattern {

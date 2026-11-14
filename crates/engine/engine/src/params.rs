@@ -736,7 +736,7 @@ impl Engine {
 
     /// `set_controller`: the script moves a controller (0 to 127), the
     /// pitch bend (`$VCC_PITCH_BEND`, -8192 to 8191) or the channel pressure
-    /// (`$VCC_MONO_AT`) as if it had arrived, on every channel.
+    /// (`$VCC_MONO_AT`) as if it had arrived, on every port and channel.
     pub(crate) fn set_controller(&mut self, controller: i32, value: i32) {
         let Ok(cc) = u8::try_from(controller) else {
             return;
@@ -746,7 +746,7 @@ impl Engine {
         }
         if cc == crate::midi::VCC_PITCH_BEND {
             let bend = value.clamp(-8192, 8191) as f32 / 8192.0;
-            for channel in 0..16 {
+            for channel in (0u8..).take(kontra_behaviour::CHANNELS) {
                 self.behaviour.set_bend(channel, bend);
             }
             self.refresh_all(None);
@@ -759,12 +759,12 @@ impl Engine {
             *v = value;
         }
         if cc == crate::midi::VCC_MONO_AT {
-            for channel in 0..16 {
+            for channel in (0u8..).take(kontra_behaviour::CHANNELS) {
                 self.behaviour.set_pressure(channel, value);
             }
             self.refresh_all(None);
         } else if cc < 128 {
-            for channel in 0..16 {
+            for channel in (0u8..).take(kontra_behaviour::CHANNELS) {
                 self.behaviour.set_cc(channel, cc, value);
             }
             self.refresh_all(Some(cc));

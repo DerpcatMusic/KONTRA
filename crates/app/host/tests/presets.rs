@@ -43,60 +43,96 @@ fn settle(rack: &mut Rack, audio: &mut RackAudio) {
     rack.tick();
 }
 
-/// The script values `path` saves, as its reader gives them.
-fn saved_in(path: &Path) -> Vec<String> {
-    let file = kontra_host::instrument::read_saved(path, &[], &[]).unwrap();
-    (file.scripts.iter())
-        .flat_map(|s| s.saved.iter().cloned())
-        .collect()
+/// Values a restore leaves different by design, by library and saved
+/// name, and why. Any other difference fails the survey.
+const EXPECTED: &[(&str, &[&str], &str)] = &[
+    (
+        "Conflux",
+        &[
+            "$MAX_KEY",
+            "$portamento",
+            "$portamento_knob",
+            "$mono",
+            "$legato",
+            "$mono_mode_knob",
+            "$glide_abs",
+            "$glide_rel",
+            "$porta_combi_knob",
+            "$auto",
+        ],
+        "its Mono & Glide script takes these from the PGS keys the main script sets after the snapshot's values land",
+    ),
+    (
+        "Conflux",
+        &["!gui__fx__param_labels", "!gui__fx__param_shortnames"],
+        "label tables its `on init` refills for the effects it loads, over the saved strings",
+    ),
+];
+
+/// A saved value's name: Kontakt's `name value`, UVI's `name=value`.
+fn name_of(saved: &str) -> &str {
+    saved.split([' ', '=']).next().unwrap_or(saved)
 }
 
-/// What `path`, applied to part 0, leaves the part holding that its file
-/// saved differently: (missing or changed values, how many it saved).
+/// Whether `held` holds what `saved` saved.
+fn holds(held: &str, saved: &str) -> bool {
+    // An array the file saved shorter than the script now declares keeps
+    // its saved cells and the declared rest: the saved ones count.
+    let prefix = held.starts_with(saved) && held.as_bytes().get(saved.len()) == Some(&b' ');
+    // A UVI widget saves its value as an f32, written in either notation
+    // (`6.3656972e-07`, `6.365697e-7`): the same f32 once parsed, exactly.
+    let same_f32 = match (held.split_once('='), saved.split_once('=')) {
+        (Some((hn, hv)), Some((sn, sv))) => {
+            hn == sn && matches!((hv.parse::<f32>(), sv.parse::<f32>()), (Ok(x), Ok(y)) if x == y)
+        }
+        _ => false,
+    };
+    held == saved || prefix || same_f32
+}
+
+/// One saved value the restored part holds differently.
+struct Off {
+    slot: usize,
+    saved: String,
+    held: Option<String>,
+}
+
+/// What `path`, applied to part 0, leaves its script slots holding that
+/// its file saved differently, each slot against its own: (those values,
+/// how many it saved).
 fn restore(
     rack: &mut Rack,
     audio: &mut RackAudio,
     path: &Path,
-) -> Result<(Vec<String>, usize), String> {
+) -> Result<(Vec<Off>, usize), String> {
     rack.load(0, path).map_err(|e| e.to_string())?;
     settle(rack, audio);
-    let held = rack.saved_scripts(0).concat();
-    let want = saved_in(path);
-    // An array the file saved shorter than the script now declares keeps
-    // its saved cells and the declared rest: the saved ones count.
-    // A UVI widget's `name=value` is a float: the same number to its f32
-    // precision holds, however it is written (`6.3656972e-07`).
-    let same_number = |a: &str, b: &str| {
-        let (Some((an, av)), Some((bn, bv))) = (a.split_once('='), b.split_once('=')) else {
-            return false;
-        };
-        match (av.parse::<f64>(), bv.parse::<f64>()) {
-            (Ok(x), Ok(y)) => an == bn && (x - y).abs() <= 1e-5 * x.abs().max(1.0),
-            _ => false,
-        }
-    };
-    let holds = |v: &String| {
-        (held.iter()).any(|h| {
-            h == v
-                || h.starts_with(v.as_str()) && h.as_bytes().get(v.len()) == Some(&b' ')
-                || same_number(h, v)
-        })
-    };
-    let off: Vec<String> = (want.iter()).filter(|v| !holds(v)).cloned().collect();
-    if std::env::var_os("KONTRA_PRESET_DETAIL").is_some() {
-        for v in &off {
-            // Kontakt's `name value`, UVI's `name=value`.
-            let name_of = |s: &str| s.split([' ', '=']).next().map(str::to_owned);
-            let name = name_of(v);
-            let ours = held.iter().find(|h| name_of(h) == name);
-            println!(
-                "    file {:.160}\n    held {:.160}",
-                v,
-                ours.map_or("(none)", String::as_str)
-            );
+    let held = rack.saved_scripts(0);
+    let file = kontra_host::instrument::read_saved(path, &[], &[]).map_err(|e| e.to_string())?;
+    if held.len() != file.scripts.len() {
+        return Err(format!(
+            "{} script slots held, {} saved",
+            held.len(),
+            file.scripts.len()
+        ));
+    }
+    let mut off = Vec::new();
+    let mut count = 0;
+    for (script, held) in file.scripts.iter().zip(&held) {
+        count += script.saved.len();
+        for v in script
+            .saved
+            .iter()
+            .filter(|v| !held.iter().any(|h| holds(h, v)))
+        {
+            off.push(Off {
+                slot: script.slot,
+                saved: v.clone(),
+                held: held.iter().find(|h| name_of(h) == name_of(v)).cloned(),
+            });
         }
     }
-    Ok((off, want.len()))
+    Ok((off, count))
 }
 
 /// `KONTRA_PRESET_LIBRARIES`: library folders (a UVI bank's folder too),
@@ -112,6 +148,7 @@ fn every_preset_lists_under_its_instrument_and_restores_its_values() {
         .ok()
         .and_then(|l| l.parse().ok())
         .unwrap_or(usize::MAX);
+    let detail = std::env::var_os("KONTRA_PRESET_DETAIL").is_some();
     let mut failures = Vec::new();
     for dir in dirs.split('|').map(PathBuf::from) {
         for library in catalog(&dir).libraries {
@@ -122,35 +159,46 @@ fn every_preset_lists_under_its_instrument_and_restores_its_values() {
             let instruments: Vec<usize> = (0..presets.len())
                 .filter(|&n| !has_ext(&presets[n], "nksn") && !has_ext(&presets[n], "nkm"))
                 .collect();
-            let mut claimed = 0;
-            let mut groups = Vec::new();
-            for &n in &instruments {
-                let family = kontra_ui_model::preset_family(presets, Some(n));
-                let own: Vec<usize> = family
-                    .iter()
-                    .copied()
-                    .filter(|&k| k != n && has_ext(&presets[k], "nksn"))
-                    .collect();
-                claimed += own.len();
-                groups.push((n, own));
+            let owner = |n: usize| kontra_ui_model::preset_owner(&library.dir, &presets[n]);
+            // Each snapshot under the first instrument it names, once.
+            let mut groups: Vec<(usize, Vec<usize>)> =
+                instruments.iter().map(|&n| (n, Vec::new())).collect();
+            let mut unclaimed = 0;
+            for k in (0..presets.len()).filter(|&k| has_ext(&presets[k], "nksn")) {
+                let mine = owner(k);
+                match (groups.iter_mut()).find(|(n, _)| mine.is_some() && owner(*n) == mine) {
+                    Some((_, own)) => own.push(k),
+                    None => unclaimed += 1,
+                }
             }
             let snapshots = (presets.iter()).filter(|p| has_ext(p, "nksn")).count();
             println!(
-                "{}: {} presets, {} instruments, {snapshots} snapshots ({claimed} under their instrument), {multis} multis",
+                "{}: {} presets, {} instruments, {snapshots} snapshots ({} under their instrument), {multis} multis",
                 library.name,
                 presets.len(),
-                instruments.len()
+                instruments.len(),
+                snapshots - unclaimed,
             );
-            if claimed != snapshots {
+            if unclaimed > 0 {
                 failures.push(format!(
-                    "{}: {} snapshots under no instrument",
-                    library.name,
-                    snapshots - claimed
+                    "{}: {unclaimed} snapshots under no instrument",
+                    library.name
                 ));
+            }
+            // The header lists each instrument with exactly its own.
+            for (n, own) in &groups {
+                let family = kontra_ui_model::preset_family(&library.dir, presets, Some(*n));
+                let listed = (family.iter()).filter(|&&k| has_ext(&presets[k], "nksn"));
+                if !own.is_empty() && !listed.eq(own.iter()) {
+                    failures.push(format!(
+                        "{}: the header lists other snapshots",
+                        presets[*n].display()
+                    ));
+                }
             }
             // Restoring: snapshots over their loaded instrument, the
             // rest (UVI programs, instruments, multis) each on its own.
-            let (mut read, mut left, mut values, mut off_total) = (0, 0, 0, 0);
+            let (mut read, mut left, mut values, mut off_total, mut explained) = (0, 0, 0, 0, 0);
             for (n, own) in &groups {
                 let (mut rack, mut audio) = rack();
                 let instrument = &presets[*n];
@@ -171,14 +219,33 @@ fn every_preset_lists_under_its_instrument_and_restores_its_values() {
                     match restore(&mut rack, &mut audio, path) {
                         Ok((off, saved)) => {
                             values += saved;
-                            off_total += off.len();
-                            if !off.is_empty() {
-                                println!(
-                                    "  {}: {} of {saved} values differ: {:?}",
+                            let expected = |o: &&Off| {
+                                (EXPECTED.iter()).any(|(lib, names, _)| {
+                                    library.name.contains(lib) && names.contains(&name_of(&o.saved))
+                                })
+                            };
+                            let (known, unexplained): (Vec<&Off>, Vec<&Off>) =
+                                off.iter().partition(expected);
+                            explained += known.len();
+                            off_total += unexplained.len();
+                            for o in &unexplained {
+                                failures.push(format!(
+                                    "{} slot {}: saved {:.120}, held {:.120}",
                                     path.display(),
-                                    off.len(),
-                                    &off[..off.len().min(6)]
-                                );
+                                    o.slot,
+                                    o.saved,
+                                    o.held.as_deref().unwrap_or("(none)")
+                                ));
+                            }
+                            if detail {
+                                for o in &known {
+                                    println!(
+                                        "    expected, slot {}: saved {:.120}, held {:.120}",
+                                        o.slot,
+                                        o.saved,
+                                        o.held.as_deref().unwrap_or("(none)")
+                                    );
+                                }
                             }
                         }
                         Err(e) => failures.push(format!("{}: {e}", path.display())),
@@ -198,7 +265,7 @@ fn every_preset_lists_under_its_instrument_and_restores_its_values() {
             }
             left += multis.saturating_sub(limit);
             println!(
-                "  read {read}, left out {left}; {values} saved values, {off_total} not held after restore"
+                "  read {read}, left out {left}; {values} saved values, {explained} differ as expected, {off_total} unexplained"
             );
         }
     }
