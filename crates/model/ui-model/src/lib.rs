@@ -647,11 +647,14 @@ pub enum Kind {
         bus: Option<u8>,
     },
     /// `base_path`: the folder it opens at (KSP `BASEPATH`); `files`: what it lists;
-    /// `column_width`: list column width in pixels.
+    /// `column_width`: list column width in pixels; `tops`: the first row
+    /// each open column shows (the player's scrolling). The selected path
+    /// is the widget's text.
     FileSelector {
         base_path: Option<String>,
         files: Files,
         column_width: Option<u32>,
+        tops: Vec<u32>,
     },
     TextEdit,
     /// A static picture (Lua `Image`); KSP pictures on labels are [`Kind::Label`].
@@ -765,6 +768,8 @@ impl Display {
 /// Which files a file selector lists (KSP `FILE_TYPE`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Files {
+    /// No `FILE_TYPE`: Kontakt 8 lists MIDI files, drawn with the audio icon
+    /// (oracle probe fs3.ksp).
     #[default]
     Any,
     Audio,

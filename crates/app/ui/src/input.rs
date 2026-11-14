@@ -31,8 +31,11 @@ pub enum Set {
     Value(f64),
     /// One zero-based cell of a table.
     Cell(u32, f64),
-    /// A text edit's text.
+    /// A text edit's text, or the file a file selector picked.
     Text(String),
+    /// A file selector's browsing: the path it shows selected and each open
+    /// column's first row. The page's own; the host never hears it.
+    Browse(String, Vec<u32>),
 }
 
 /// A page's gesture in flight: the control pressed and its value then, the
@@ -49,6 +52,9 @@ pub struct Gesture {
     /// The XY pad being dragged, its cursor, and where that cursor's
     /// corner was at the press (points from the pad's corner).
     xy: Option<(usize, u32, (f64, f64))>,
+    /// Each file selector browsed so far: the path it shows selected and
+    /// each open column's first row, kept over the face's rebuilds.
+    files: Vec<(usize, String, Vec<u32>)>,
 }
 
 impl Gesture {
@@ -193,6 +199,10 @@ pub fn read(
         }
         if matches!(w.kind, Kind::Xy { .. }) {
             edits.extend(pad(ui, &id, &r, (tree, n), g, &edit));
+            continue;
+        }
+        if matches!(w.kind, Kind::FileSelector { .. }) {
+            edits.extend(browse(ui, &id, &r, (w, n.0), scale, g, &edit));
             continue;
         }
         let now = w.number();
@@ -503,15 +513,120 @@ fn menu(
     Some(menu.el)
 }
 
-/// Opens typed entry on control `n` (surface `id`), starting from `text`
-/// selected whole, so what the user types replaces it.
+/// A file selector under the pointer and the keys (Kontakt 8 oracle,
+/// probes fs3.ksp and fs4.ksp): a click selects a row, and a folder's opens
+/// its column; a double-click or Return on a file picks it, which runs the
+/// callback; Up and Down move the selection in the deepest column; the
+/// wheel scrolls the column under the pointer (Kontakt's ignores it).
+fn browse(
+    ui: &mut Ui,
+    id: &str,
+    r: &mui::input::Response,
+    (w, n): (&model::Widget, usize),
+    scale: f64,
+    g: &mut Gesture,
+    edit: &dyn Fn(Set) -> Edit,
+) -> Vec<Edit> {
+    use kontra_ui_view::files;
+    let Kind::FileSelector {
+        base_path,
+        files: listed,
+        column_width,
+        ..
+    } = &w.kind
+    else {
+        return Vec::new();
+    };
+    let kept = g.files.iter().find(|(m, ..)| *m == n);
+    let (mut path, mut tops) = kept.map_or_else(
+        || (w.text.clone(), Vec::new()),
+        |(_, p, t)| (p.clone(), t.clone()),
+    );
+    let base = base_path.as_deref().unwrap_or("");
+    let frame = ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame.size);
+    let Some(frame) = frame.filter(|_| scale > 0.) else {
+        return Vec::new();
+    };
+    let size = (frame.width / scale, frame.height / scale);
+    let pos = ui.local(id).map(|p| (p.x / scale, p.y / scale));
+    let mut cols = files::columns(base, &path, *listed);
+    let mut lay = files::Layout::of(&cols, *column_width, size);
+    let full = |c: &files::Column, i: usize| {
+        (c.entries.get(i)).map(|e| (c.dir.join(&e.name).to_string_lossy().into_owned(), e.folder))
+    };
+    let mut picked = None;
+    let mut moved = false;
+    let hit = pos.and_then(|p| lay.hit(&cols, &tops, p));
+    let at = hit.and_then(|(c, i)| full(cols.get(c)?, i));
+    if let Some((p, folder)) = at.filter(|_| r.clicked || ui.double_click(id)) {
+        if ui.double_click(id) && !folder {
+            picked = Some(p.clone());
+        }
+        moved = p != path;
+        path = p;
+    }
+    let deepest = cols.iter().rposition(|c| c.picked.is_some());
+    for k in ui.keys(id) {
+        let col = deepest.and_then(|c| cols.get(c));
+        let now = col.and_then(|c| c.picked);
+        let to = match k.key {
+            Key::Up => now.map(|i| i.saturating_sub(1)),
+            Key::Down => now.map(|i| i + 1),
+            Key::Enter => {
+                let at = col.zip(now).and_then(|(c, i)| full(c, i));
+                picked = at.filter(|(_, folder)| !folder).map(|(p, _)| p).or(picked);
+                None
+            }
+            _ => None,
+        };
+        if let Some((p, _)) = col.zip(to).and_then(|(c, i)| full(c, i)) {
+            moved = p != path;
+            path = p;
+        }
+    }
+    if moved {
+        cols = files::columns(base, &path, *listed);
+        lay = files::Layout::of(&cols, *column_width, size);
+    }
+    tops.resize(cols.len(), 0);
+    let wheel = ui.wheel(id);
+    let under = pos.map(|(x, _)| ((x + lay.shift) / lay.pitch).floor().max(0.) as usize);
+    for (c, (col, top)) in cols.iter().zip(tops.iter_mut()).enumerate() {
+        let last = lay.last_top(col.entries.len());
+        if let Some(wy) = wheel.map(|v| v.y).filter(|_| under == Some(c)) {
+            let rows = (wy / files::ROW).round();
+            let rows = if rows == 0. { wy.signum() } else { rows };
+            *top = (f64::from(*top) + rows).clamp(0., f64::from(last)) as u32;
+        }
+        // A selection the keys or a click moved stays in sight.
+        if let Some(p) = col.picked.filter(|_| moved).and_then(|p| u32::try_from(p).ok()) {
+            let rows = u32::try_from(lay.rows.max(1)).unwrap_or(1);
+            *top = (*top).min(p).max((p + 1).saturating_sub(rows));
+        }
+        *top = (*top).min(last);
+    }
+    match g.files.iter_mut().find(|(m, ..)| *m == n) {
+        Some(kept) => *kept = (n, path.clone(), tops.clone()),
+        None => g.files.push((n, path.clone(), tops.clone())),
+    }
+    let mut out = vec![edit(Set::Browse(path, tops))];
+    out.extend(picked.map(|p| edit(Set::Text(p))));
+    out
+}
+
+/// Opens typed entry on control `n` (surface `id`), starting from `text`:
+/// a value edit's selected whole, so what the user types replaces it; a
+/// text edit's with the caret at its end, as Kontakt 8 opens one (oracle
+/// probe fs3.ksp: a click then "x" turned "abc" into "abcx").
 fn type_into(ui: &mut Ui, g: &mut Gesture, n: usize, id: &str, text: String) {
     ui.focus(format!("{id}-entry"));
     g.entry = Some((n, text, false));
 }
 
 /// What is being typed into a value edit (a number in its shown units) or
-/// a text edit: Enter sets it, Escape or a click elsewhere drops it.
+/// a text edit: Enter sets it and Escape drops it. A click elsewhere drops
+/// a value edit's but sets a text edit's (Kontakt 8 oracle, probe fs3.ksp:
+/// "abc" then a click away ran the callback with "abc").
 fn entry(
     ui: &mut Ui,
     face: usize,
@@ -523,20 +638,23 @@ fn entry(
     let w = tree.widgets.get(m)?;
     let id = surface(face, m);
     let field = format!("{id}-entry");
-    if ui.dismissed(&[&id, &format!("{id}-popup")])
-        || ui.keys(field.as_str()).iter().any(|k| k.key == Key::Escape)
-    {
+    let words = matches!(w.kind, Kind::TextEdit);
+    let away = ui.dismissed(&[&id, &format!("{id}-popup")]);
+    if (away && !words) || ui.keys(field.as_str()).iter().any(|k| k.key == Key::Escape) {
         return None;
     }
-    if !selected {
-        let all = SemanticAction::set_selection(field.as_str(), 0, text.chars().count());
-        selected = ui.request_action(all);
-    }
-    let typed = text_edit(ui, field.as_str(), &mut text, TextOpts::default());
-    if !typed.changed.submitted {
-        g.entry = Some((m, text, selected));
-        // In a row: the popup names its content, and the field keeps its own id.
-        return Some(kit::popup(&id, row![typed.el.w(TEXT * 6.)]));
+    if !away {
+        if !selected {
+            let len = text.chars().count();
+            let from = if words { len } else { 0 };
+            selected = ui.request_action(SemanticAction::set_selection(field.as_str(), from, len));
+        }
+        let typed = text_edit(ui, field.as_str(), &mut text, TextOpts::default());
+        if !typed.changed.submitted {
+            g.entry = Some((m, text, selected));
+            // In a row: the popup names its content, and the field keeps its own id.
+            return Some(kit::popup(&id, row![typed.el.w(TEXT * 6.)]));
+        }
     }
     ui.blur();
     let set = |to| Edit {
@@ -568,6 +686,12 @@ pub fn apply(tree: &mut Interface, edits: &[Edit]) {
         };
         match (&e.to, &mut w.value) {
             (Set::Text(text), _) => w.text.clone_from(text),
+            (Set::Browse(path, shown), _) => {
+                w.text.clone_from(path);
+                if let Kind::FileSelector { tops, .. } = &mut w.kind {
+                    tops.clone_from(shown);
+                }
+            }
             (&Set::Cell(k, v), Some(model::Value::Integers(cells))) => {
                 if let Some(c) = cells.get_mut(k as usize) {
                     *c = v.round() as i32;

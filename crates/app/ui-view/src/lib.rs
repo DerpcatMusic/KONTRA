@@ -12,6 +12,7 @@ use mui::prelude::*;
 
 use kontra_ui_pictures::Pictures;
 
+pub mod files;
 mod plan;
 mod shape;
 mod stock;
@@ -57,6 +58,7 @@ pub fn takes_input(w: &model::Widget) -> bool {
                 | Kind::Table { .. }
                 | Kind::Xy { .. }
                 | Kind::TextEdit
+                | Kind::FileSelector { .. }
         )
 }
 
@@ -349,6 +351,25 @@ fn drawn_page(
         } else {
             words
         };
+        // A file selector's open columns, read from disk, and where they sit.
+        let browser = match &wd.kind {
+            Kind::FileSelector {
+                base_path,
+                files: listed,
+                column_width,
+                tops,
+            } => {
+                let cols = files::columns(base_path.as_deref().unwrap_or(""), &wd.text, *listed);
+                let size = (r.width / scale, r.height / scale);
+                let lay = files::Layout::of(&cols, *column_width, size);
+                Some((cols, *listed, tops.clone(), lay))
+            }
+            _ => None,
+        };
+        let browse_key = browser.as_ref().map(|(cols, _, tops, _)| {
+            let open = cols.iter().map(|c| (Arc::as_ptr(&c.entries).cast::<()>() as usize, c.picked));
+            (open.collect::<Vec<_>>(), tops.clone())
+        });
         // What the waveform raster draws: its look and its data's contents.
         let wave_key = wd.waveform.as_ref().map(|v| {
             use std::hash::{Hash, Hasher};
@@ -414,6 +435,7 @@ fn drawn_page(
             (
                 wd.text_y,
                 wd.active_index,
+                browse_key,
                 (cursors.iter())
                     .map(|c| {
                         c.as_ref().map(|(art, _)| {
@@ -510,6 +532,10 @@ fn drawn_page(
                         .at(0., 0.),
                     );
                 }
+            }
+            if let Some((cols, listed, tops, lay)) = &browser {
+                let at = (w / scale, h / scale, scale);
+                parts.push(files::draw(cols, *listed, tops, *lay, at).at(0., 0.));
             }
             if matches!(wd.kind, Kind::Xy { .. }) {
                 let art = |i: u32| cursors.get(i as usize).cloned().flatten();

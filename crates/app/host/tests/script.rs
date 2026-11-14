@@ -5216,3 +5216,31 @@ fn uvi_controller_census() {
         println!("script {key:016x}: {count} programs");
     }
 }
+
+/// A file a selector picks runs its callback, where `fs_get_filename`
+/// reads its name, its name with extension and its whole path (KSP
+/// manual; Kontakt 8 oracle probe fs4.ksp: a double-click on a.mid read
+/// "a" and ".../fs2/a.mid").
+#[test]
+fn a_picked_file_runs_the_selector_callback_with_its_names() {
+    let source = "on init
+            declare ui_file_selector $f
+            message(get_ui_id($f))
+        end on
+        on ui_control($f)
+            declare $id
+            $id := get_ui_id($f)
+            message(fs_get_filename($id, 0) & \"|\" & fs_get_filename($id, 1) & \"|\" & fs_get_filename($id, 2))
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_picked(0, id, kontra_engine::Text::from_str_cut("/lib/midi/a.mid").0);
+    e.set_click(0, id, [false; 3], 0);
+    e.set_control(0, id, 0);
+    assert_eq!(e.last_message(), "a|a.mid|/lib/midi/a.mid");
+}

@@ -407,3 +407,52 @@ fn an_xy_pad_reports_its_release_once() {
     let edits = f.click(&input::surface(0, n), Mods::default());
     assert_eq!(edits.len(), 1, "{edits:?}");
 }
+
+/// A file selector lists its folders then the files its type takes; a
+/// click selects a row and opens a folder's column, and a second click on
+/// a file (a double-click) picks it (Kontakt 8 oracle, probes fs3/fs4.ksp).
+#[test]
+fn a_file_selector_selects_on_a_click_and_picks_on_a_double_click() {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("fs-pick");
+    std::fs::create_dir_all(base.join("sub")).unwrap();
+    for f in ["a.mid", "b.wav", "sub/x.mid"] {
+        std::fs::write(base.join(f), b"").unwrap();
+    }
+    let mut f = Face::new();
+    f.tree.widgets.push(Widget::new(
+        "$files",
+        PageRef(0),
+        Rect::new(100, 200, 300, 85),
+        Kind::FileSelector {
+            base_path: Some(base.to_string_lossy().into_owned()),
+            files: model::Files::Any,
+            column_width: None,
+            tops: Vec::new(),
+        },
+    ));
+    let n = f.tree.widgets.len() - 1;
+    f.frame(Input::default());
+    let id = input::surface(0, n);
+    let (x, y) = f
+        .ui
+        .scene()
+        .and_then(|s| s.surface(id.as_str()))
+        .map_or((0., 0.), |s| (s.frame.x, s.frame.y));
+    let row = |r: f64| Point::new(x + 40., y + 8. + 17. * r);
+    let a = base.join("a.mid").to_string_lossy().into_owned();
+    let mut first = f.pointer(row(1.), true, Mods::default());
+    first.extend(f.pointer(row(1.), false, Mods::default()));
+    first.extend(f.frame(Input::default()));
+    assert!(first.iter().any(|e| e.to == Set::Browse(a.clone(), vec![0])), "{first:?}");
+    assert!(!first.iter().any(|e| matches!(e.to, Set::Text(_))), "{first:?}");
+    let mut second = f.pointer(row(1.), true, Mods::default());
+    second.extend(f.pointer(row(1.), false, Mods::default()));
+    second.extend(f.frame(Input::default()));
+    assert!(second.iter().any(|e| e.to == Set::Text(a.clone())), "{second:?}");
+    // b.wav is not listed: row 2 is empty, and the folder opens a column.
+    let mut sub = f.pointer(row(0.), true, Mods::default());
+    sub.extend(f.pointer(row(0.), false, Mods::default()));
+    sub.extend(f.frame(Input::default()));
+    let folder = base.join("sub").to_string_lossy().into_owned();
+    assert!(sub.iter().any(|e| e.to == Set::Browse(folder.clone(), vec![0, 0])), "{sub:?}");
+}

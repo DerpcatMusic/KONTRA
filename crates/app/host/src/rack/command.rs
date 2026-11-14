@@ -89,12 +89,13 @@ pub enum Command {
         keys: UiModifiers,
     },
     /// The user typed `text` into text edit `id` of `part`'s script `slot`,
-    /// whose variable's text lives in `cell`.
+    /// whose variable's text lives in `cell`; with no cell, picked file
+    /// `text` in file selector `id`.
     ControlText {
         part: usize,
         slot: u8,
         id: i32,
-        cell: u32,
+        cell: Option<u32>,
         text: Box<kontra_engine::Text>,
     },
     /// The user moved widget `n` of script `slot`'s own page to `value`.
