@@ -166,6 +166,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .collect(),
         source_folder: None,
         library_folder: None,
+        rc_folder: None,
         factory_folder: None,
         text_data: data
             .iter()
@@ -436,6 +437,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         text_data: Vec::new(),
         source_folder: None,
         library_folder: None,
+        rc_folder: None,
         factory_folder: None,
         restore: Vec::new(),
         restore_texts: Vec::new(),

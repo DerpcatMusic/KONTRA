@@ -73,7 +73,11 @@ impl ZoneFacts {
             ZonePar::SampleEnd => frames(self.end),
             ZonePar::StartRange => frames(self.start_range),
             ZonePar::SampleRate => i32::try_from(self.rate).unwrap_or(i32::MAX),
-            ZonePar::Selected | ZonePar::Bpm => 0,
+            ZonePar::Selected => 0,
+            ZonePar::Bpm => match (&self.source, self.user) {
+                (Some(s), true) => guess_bpm(s.frames, s.rate),
+                _ => 0,
+            },
             ZonePar::Volume => self.volume,
             ZonePar::Pan => self.pan,
             ZonePar::Tune => self.tune,
@@ -375,6 +379,29 @@ impl crate::Plan {
     }
 }
 
+/// The tempo ×1000 Kontakt 8.13 reads (`$ZONE_PAR_BPM`) for a user sample of
+/// `frames` at `rate`: it assumes 4, 8, 16, … beats and takes the fewest whose
+/// tempo reaches 70 BPM (probes/ksp/user_bpm.kspp and user_bpm_edges.kspp: 22 lengths,
+/// 0.25 s to 16 s; 68.6 is refused, 70.6 taken). Its float arithmetic reads one
+/// thousandth low at 80 and 160 BPM (3, 6, 12 and 1.5 s): matched, not explained.
+#[must_use]
+pub fn guess_bpm(frames: u64, rate: u32) -> i32 {
+    if frames == 0 || rate == 0 {
+        return 0;
+    }
+    let (frames, rate) = (frames as u128, u128::from(rate));
+    let mut beats = 4u128;
+    // milli-BPM = beats · 60000 · rate / frames
+    while beats * 60_000 * rate < 70_000 * frames && beats < 1 << 20 {
+        beats *= 2;
+    }
+    let mut milli = beats * 60_000 * rate / frames;
+    if beats * rate * 3 == 4 * frames || beats * rate * 3 == 8 * frames {
+        milli -= 1;
+    }
+    i32::try_from(milli).unwrap_or(i32::MAX)
+}
+
 /// Most user zones an instrument can have (the manual).
 pub const MAX_USER_ZONES: usize = 1024;
 
@@ -468,5 +495,33 @@ mod tests {
         );
         assert_eq!(super::zone_name("a\\b\\Buzz Cut.ncw"), "Buzz Cut");
         assert_eq!(super::zone_name("plain"), "plain");
+    }
+}
+
+#[cfg(test)]
+mod bpm_tests {
+    use super::guess_bpm;
+
+    /// Kontakt 8.13 readings for a 44.1 kHz sample of each length in seconds.
+    #[test]
+    fn the_tempo_guess_matches_kontakts_readings() {
+        let secs = |s: f64| guess_bpm((s * 44_100.0).round() as u64, 44_100);
+        for (len, bpm) in [
+            (0.25, 960_000),
+            (1.0, 240_000),
+            (2.0, 120_000),
+            (3.0, 79_999),
+            (4.0, 120_000),
+            (12.0, 79_999),
+            (16.0, 120_000),
+            (1.5, 159_999),
+            (1.9, 126_315),
+            (3.05, 78_688),
+            (3.4, 70_588),
+            (5.0, 96_000),
+            (7.0, 137_142),
+        ] {
+            assert_eq!(secs(len), bpm, "{len} s");
+        }
     }
 }

@@ -5,8 +5,8 @@
 #  defaults: every parameter 0 but ROOT_KEY 36. Setting: volume clamps +-3600 (0.01 dB), pan +-1000, root 0..127,
 #       keys 0..127; a high key set below the low key takes the low key down with it; fades clamp to the range width;
 #       a group that does not exist is refused. Tune reads 150 for 150 (cents) but 6204 / i32::MIN for +-2e6 (clamp unmeasured).
-#  set_sample (init, 1 s mono 44.1 kHz): answers -1, status LOADED, length 1000000 us, start 0, end 44100 frames, rate 44100, BPM 240000
-#       (a tempo guess: KONTRA answers 0). Sample end/start clamp to the sample; a start past the end sits 4 frames below it.
+#  set_sample (init, 1 s mono 44.1 kHz): answers -1, status LOADED, length 1000000 us, start 0, end 44100 frames, rate 44100, BPM 240000 (law: user_bpm.kspp)
+#       Sample end/start clamp to the sample; a start past the end sits 4 frames below it.
 #       On a saved zone set_sample and set_loop_par do nothing.
 #  loops: 8 (0..7) per zone, independent; mode 0..4 read back, others leave the mode; start past the sample reads 0; length
 #       ends at the sample's end; xfade and count are not clamped; tuning clamps +-14400; loop 8 reads -1.

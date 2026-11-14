@@ -163,6 +163,7 @@ fn note_controller_and_ui_callbacks_do_not_allocate_for_pgs() {
         text_data: vec![],
         source_folder: None,
         library_folder: None,
+        rc_folder: None,
         factory_folder: None,
         restore: vec![],
         restore_texts: vec![],

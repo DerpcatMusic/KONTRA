@@ -451,6 +451,7 @@ actions! {
     GroupsSelected,
     GroupsAffected,
     UserZoneIds,
+    NumUserZones,
     KeyDownOct,
     EventParAt,
     // Appended rather than filed with their neighbours: an action's id is its

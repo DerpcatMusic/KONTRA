@@ -2743,6 +2743,27 @@ fn a_script_loads_a_library_response_into_a_convolution() {
     assert!((l - 0.25).abs() < 1e-3, "{l}");
     assert_eq!(e.last_message(), "1 1");
     assert_eq!(e.stats().actions_unhandled, 0);
+
+    // The manual's first form: an absolute path, read in init.
+    let copy = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half_copy.wav");
+    std::fs::copy(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half.wav"), &copy)
+        .unwrap();
+    let by_path = kontra_ksp::compile(
+        &format!(
+            "on init
+                load_ir_sample(\"{}\", 0, $NI_INSERT_BUS)
+            end on",
+            copy.to_string_lossy().replace('\\', "/")
+        ),
+        &[],
+    )
+    .unwrap();
+    let mut direct = Plan::clone(&resumed);
+    direct.scripts = vec![kontra_host::script::plan(&by_path, &[], &[])];
+    let mut e = Engine::new(Arc::new(direct), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.25).abs() < 1e-3, "{l}");
+    assert_eq!(e.stats().actions_unhandled, 0);
 }
 
 /// A script's `IRC_*` knobs prepare the slot's own response again: at
@@ -3307,6 +3328,27 @@ fn get_folder_factory_returns_prepared_path_or_empty() {
         let mut plan = Plan::new(vec![], 4);
         let mut script_plan = kontra_host::script::plan(&script, &[], &[]);
         script_plan.factory_folder = folder.map(|f| kontra_engine::Text::from_str_cut(f).0);
+        plan.scripts.push(script_plan);
+        let engine = Engine::new(Arc::new(plan), store.client(), RATE);
+        assert_eq!(engine.last_message(), expected);
+        assert_eq!(engine.stats().actions_unhandled, 0);
+    }
+}
+
+/// `$GET_FOLDER_RC_DIR` is the folder of the library's resource container, and
+/// empty without one (the manual).
+#[test]
+fn get_folder_rc_returns_the_container_folder_or_empty() {
+    let script = kontra_ksp::compile(
+        "on init\n message(get_folder($GET_FOLDER_RC_DIR))\nend on",
+        &[],
+    )
+    .unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    for (folder, expected) in [(Some("/lib/"), "/lib/"), (None, "")] {
+        let mut plan = Plan::new(vec![], 4);
+        let mut script_plan = kontra_host::script::plan(&script, &[], &[]);
+        script_plan.rc_folder = folder.map(|f| kontra_engine::Text::from_str_cut(f).0);
         plan.scripts.push(script_plan);
         let engine = Engine::new(Arc::new(plan), store.client(), RATE);
         assert_eq!(engine.last_message(), expected);
@@ -4753,7 +4795,7 @@ fn a_user_zone_takes_parameters_a_sample_and_a_loop_in_init() {
                 set_loop_par($z, 0, $LOOP_PAR_START, 1000)
                 set_loop_par($z, 0, $LOOP_PAR_LENGTH, 99999999)
                 set_loop_par($z, 3, $LOOP_PAR_MODE, 1)
-                message($z & \" \" & $y & \" \" & get_num_zones() & \" \" & get_zone_status($z) & \" \" & get_zone_status($y) & \" \" & get_zone_par($z, $ZONE_PAR_VOLUME) & \" \" & get_zone_par($z, $ZONE_PAR_PAN) & \" \" & get_zone_par($z, $ZONE_PAR_TUNE) & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_END) & \" \" & get_loop_par($z, 0, $LOOP_PAR_LENGTH) & \" \" & get_loop_par($z, 1, $LOOP_PAR_MODE) & \" \" & get_loop_par($z, 8, $LOOP_PAR_MODE) & \" \" & get_sample_length($z) & \" \" & get_sample($z, $NI_FILE_NAME))
+                message($z & \" \" & $y & \" \" & get_num_zones() & \" \" & get_zone_status($z) & \" \" & get_zone_status($y) & \" \" & get_zone_par($z, $ZONE_PAR_VOLUME) & \" \" & get_zone_par($z, $ZONE_PAR_PAN) & \" \" & get_zone_par($z, $ZONE_PAR_TUNE) & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_END) & \" \" & get_loop_par($z, 0, $LOOP_PAR_LENGTH) & \" \" & get_loop_par($z, 1, $LOOP_PAR_MODE) & \" \" & get_loop_par($z, 8, $LOOP_PAR_MODE) & \" \" & get_sample_length($z) & \" \" & get_sample($z, $NI_FILE_NAME) & \" \" & num_elements(%NI_USER_ZONE_IDS))
                 set_sample(0, \"{path}\")
                 set_loop_par(0, 0, $LOOP_PAR_MODE, 5)
             end on",
@@ -4762,7 +4804,7 @@ fn a_user_zone_takes_parameters_a_sample_and_a_loop_in_init() {
     );
     assert_eq!(
         e.last_message(),
-        "1 2 3 1 0 3600 -1000 150 44100 43100 0 -1 1000000 tone440"
+        "1 2 3 1 0 3600 -1000 150 44100 43100 0 -1 1000000 tone440 2"
     );
     assert_eq!(e.plan().user_zone_ids().collect::<Vec<_>>(), [1, 2]);
     // The saved zone is not a user zone: set_sample and set_loop_par leave it be.

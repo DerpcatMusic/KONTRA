@@ -242,6 +242,13 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 planned.source_folder =
                     crate::script::source_folder(instrument.source_path.as_deref());
                 planned.library_folder = crate::script::folder(instrument.library_path.as_deref());
+                // The resource container's folder, looked up only for a script that asks.
+                if script.source.contains("GET_FOLDER_RC_DIR") {
+                    planned.rc_folder = instrument.source_path.as_deref().and_then(|p| {
+                        let found = kontra_format_kontakt::Resources::open(p).container_folder();
+                        crate::script::folder(found.as_deref())
+                    });
+                }
                 planned.files = Some(std::sync::Arc::new(crate::rack::DiskFiles::default()));
                 planned.factory_folder = *factory_folder.get_or_insert_with(|| {
                     factory_folder_of(kontra_library::kontakt::candidates())

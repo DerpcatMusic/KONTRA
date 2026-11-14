@@ -195,6 +195,7 @@ impl Engine {
                 self.count_unhandled(call.action);
                 HostValue::Nothing
             }
+            NumUserZones => HostValue::Int(self.plan.user_zone_ids().count() as i32),
             UserZoneIds => HostValue::Int(
                 usize::try_from(int(0))
                     .ok()
