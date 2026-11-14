@@ -8,11 +8,11 @@
 //! Nothing allocates after [`Instance::new`].
 
 mod action;
-pub mod midi;
 mod execute;
 mod fuse;
 mod host;
 mod machine;
+pub mod midi;
 mod poly;
 mod program;
 mod pure;
@@ -160,10 +160,11 @@ pub struct Faults {
 
 /// The first error's text in a fixed buffer, so recording it on the audio
 /// thread allocates nothing; a longer message is cut.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct FaultText {
     len: u8,
-    bytes: [u8; Self::CAPACITY],
+    // Eight rows: arrays of up to 32 derive `Default`.
+    bytes: [[u8; 30]; 8],
 }
 
 impl FaultText {
@@ -171,6 +172,7 @@ impl FaultText {
 
     pub fn as_str(&self) -> &str {
         self.bytes
+            .as_flattened()
             .get(..usize::from(self.len))
             .and_then(|b| std::str::from_utf8(b).ok())
             .unwrap_or_default()
@@ -182,15 +184,6 @@ impl FaultText {
 
     pub fn clear(&mut self) {
         self.len = 0;
-    }
-}
-
-impl Default for FaultText {
-    fn default() -> Self {
-        Self {
-            len: 0,
-            bytes: [0; Self::CAPACITY],
-        }
     }
 }
 
@@ -209,7 +202,10 @@ impl std::fmt::Write for FaultText {
             take -= 1;
         }
         let at = usize::from(self.len);
-        if let (Some(to), Some(from)) = (self.bytes.get_mut(at..at + take), s.as_bytes().get(..take)) {
+        if let (Some(to), Some(from)) = (
+            self.bytes.as_flattened_mut().get_mut(at..at + take),
+            s.as_bytes().get(..take),
+        ) {
             to.copy_from_slice(from);
             self.len += take as u8;
         }

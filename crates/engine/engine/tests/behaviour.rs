@@ -2763,13 +2763,13 @@ fn an_envelope_timing_its_own_attack_renders() {
 
 /// A foreign machine that records the knob moves it is given.
 #[derive(Debug)]
-struct Knobbed(Arc<std::sync::Mutex<Vec<(i32, f64, f64, f64)>>>);
+struct Knobbed(std::sync::mpsc::Sender<(i32, f64, f64, f64)>);
 
-struct KnobMachine(Arc<std::sync::Mutex<Vec<(i32, f64, f64, f64)>>>);
+struct KnobMachine(std::sync::mpsc::Sender<(i32, f64, f64, f64)>);
 
 impl kontra_vm::Foreign for Knobbed {
     fn machine(&self) -> Box<dyn kontra_vm::Machine> {
-        Box::new(KnobMachine(Arc::clone(&self.0)))
+        Box::new(KnobMachine(self.0.clone()))
     }
     fn controls(&self) -> &[String] {
         &[]
@@ -2804,9 +2804,7 @@ impl kontra_vm::Machine for KnobMachine {
         m: f64,
         _: u64,
     ) -> Option<kontra_vm::CoId> {
-        if let Ok(mut moves) = self.0.lock() {
-            moves.push((id, saved, scale, m));
-        }
+        let _ = self.0.send((id, saved, scale, m));
         None
     }
 }
@@ -2818,7 +2816,7 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
     use kontra_engine::{Callbacks, Controls, EnginePars, KnobModPlan, Program, ScriptPlan};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
-    let moves = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (sender, moves) = std::sync::mpsc::channel();
     plan.scripts.push(ScriptPlan {
         program: Program::default(),
         callbacks: Callbacks::default(),
@@ -2841,7 +2839,7 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
         warp_modes: vec![],
         mod_kinds: vec![],
         knobs: vec![],
-        foreign: Some(Arc::new(Knobbed(Arc::clone(&moves)))),
+        foreign: Some(Arc::new(Knobbed(sender))),
         files: None,
         arrays: Vec::new(),
         hears_own_releases: false,
@@ -2874,16 +2872,19 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
         knob(8, 3, false),
     ];
     let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
-    let at = |moves: &Arc<std::sync::Mutex<Vec<_>>>| moves.lock().unwrap().len();
+    let mut all: Vec<(i32, f64, f64, f64)> = Vec::new();
+    let mut at = |all: &mut Vec<_>| {
+        all.extend(moves.try_iter());
+        all.len()
+    };
     // Everything at rest still tells each knob where its routes put it, once.
     level(&mut engine, &[]);
-    assert_eq!(at(&moves), 2, "one move per knob, not per route");
+    assert_eq!(at(&mut all), 2, "one move per knob, not per route");
     level(&mut engine, &[]);
-    assert_eq!(at(&moves), 2, "nothing moved");
+    assert_eq!(at(&mut all), 2, "nothing moved");
     // Two additive controllers on one knob: one move, their sum.
     level(&mut engine, &[cc(1, 127), cc(2, 127)]);
-    let all = moves.lock().unwrap().clone();
-    assert_eq!(all.len(), 3);
+    assert_eq!(at(&mut all), 3);
     let (id, saved, scale, add) = all[2];
     assert_eq!((id, saved), (7, 0.25));
     assert!(
@@ -2892,8 +2893,7 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
     );
     // The multiplicative controller moves the same knob's scale alone.
     level(&mut engine, &[cc(3, 127)]);
-    let all = moves.lock().unwrap().clone();
-    assert_eq!(all.len(), 4);
+    assert_eq!(at(&mut all), 4);
     let (id, _, scale, add) = all[3];
     assert_eq!(id, 7);
     assert!(
