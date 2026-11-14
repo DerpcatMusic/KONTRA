@@ -226,8 +226,15 @@ fn a_multis_own_script_is_read_from_its_bank() {
 #[test]
 fn a_wavetable_group_keeps_its_saved_quality() {
     use kontra_ir::Quality::{Best, High, Lofi, Medium};
-    for (name, want) in [("lofi", Lofi), ("medium", Medium), ("high", High), ("best", Best), ("none", High)] {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/data/wt-quality-{name}.nki"));
+    for (name, want) in [
+        ("lofi", Lofi),
+        ("medium", Medium),
+        ("high", High),
+        ("best", Best),
+        ("none", High),
+    ] {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/data/wt-quality-{name}.nki"));
         let i = kontra_format_kontakt::load(&path).unwrap();
         let table = i.groups[0].wavetable.as_ref().unwrap();
         assert_eq!(table.quality, want, "{name}");
@@ -313,15 +320,26 @@ fn a_snapshot_restores_as_kontakt_restores_it() {
             ke.len()
         );
         if std::env::var_os("KONTRA_SNAPSHOT_DETAIL").is_some() {
-            println!("    groups ours {:?}\n    kontakt {:?}\n    base {:?}", &og[..3], &kg[..3], &groups(&base)[..3]);
+            println!(
+                "    groups ours {:?}\n    kontakt {:?}\n    base {:?}",
+                &og[..3],
+                &kg[..3],
+                &groups(&base)[..3]
+            );
             for (a, b) in oe.iter().zip(&ke).filter(|(a, b)| a != b).take(1) {
                 let at = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
-                let near = |s: &str| s.chars().skip(at.saturating_sub(300)).take(500).collect::<String>();
+                let near = |s: &str| {
+                    s.chars()
+                        .skip(at.saturating_sub(300))
+                        .take(500)
+                        .collect::<String>()
+                };
                 println!("    effects ours …{}\n    kontakt …{}", near(a), near(b));
             }
         }
         for v in differ.iter().take(8) {
-            let mine = (ours_v.iter()).find(|o| o.0 == v.0 && o.1.split(' ').next() == v.1.split(' ').next());
+            let mine = (ours_v.iter())
+                .find(|o| o.0 == v.0 && o.1.split(' ').next() == v.1.split(' ').next());
             println!("    kontakt {v:?} ours {mine:?}");
         }
     }

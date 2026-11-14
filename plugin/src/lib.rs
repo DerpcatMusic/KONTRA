@@ -71,24 +71,12 @@ pub struct KontraParams {
     /// reports the latest part's attack delay as the plugin's latency.
     #[param(id = 1, name = "Auto-align", default = false)]
     pub align: BoolParam,
-    /// Host automation of panel controls, each assigned when the player
-    /// first moves one ([`macros`]).
-    #[param(id = 2, name = "Macro 1", range = "linear(0, 1)", default = 0.0)]
-    pub macro_1: FloatParam,
-    #[param(id = 3, name = "Macro 2", range = "linear(0, 1)", default = 0.0)]
-    pub macro_2: FloatParam,
-    #[param(id = 4, name = "Macro 3", range = "linear(0, 1)", default = 0.0)]
-    pub macro_3: FloatParam,
-    #[param(id = 5, name = "Macro 4", range = "linear(0, 1)", default = 0.0)]
-    pub macro_4: FloatParam,
-    #[param(id = 6, name = "Macro 5", range = "linear(0, 1)", default = 0.0)]
-    pub macro_5: FloatParam,
-    #[param(id = 7, name = "Macro 6", range = "linear(0, 1)", default = 0.0)]
-    pub macro_6: FloatParam,
-    #[param(id = 8, name = "Macro 7", range = "linear(0, 1)", default = 0.0)]
-    pub macro_7: FloatParam,
-    #[param(id = 9, name = "Macro 8", range = "linear(0, 1)", default = 0.0)]
-    pub macro_8: FloatParam,
+    /// Host automation slots, Kontakt's: a script's control takes the slot
+    /// its `AUTOMATION_ID` names, and a control the player moves takes a
+    /// free one ([`macros`]). Slot n is host id 2 + n, so sessions saved
+    /// with the earlier eight macros keep theirs.
+    #[param(id = 2, name = "#{i:03}", range = "linear(0, 1)", default = 0.0)]
+    pub slots: [FloatParam; 128],
     /// The rack as JSON ([`Saved`]): parts, presets, mix.
     #[persist = "rack"]
     pub saved: RwLock<String>,
@@ -112,16 +100,16 @@ pub struct Shared {
     rack: Mutex<Option<Rack>>,
     /// Each macro's host value as last applied to its control, as f64
     /// bits: the audio thread applies a host's in-block moves too.
-    macro_values: [AtomicU64; macros::COUNT],
+    macro_values: macros::PerSlot<AtomicU64>,
     /// When the editor last moved each macro ([`macros::touch`]), in
     /// [`macros::now`] milliseconds.
-    macro_touched: [AtomicU64; macros::COUNT],
+    macro_touched: macros::PerSlot<AtomicU64>,
     /// What the audio side was last told each macro moves.
     /// Bumped when a macro's host name changes ([`macros::renamed`]), and
     /// the value the host was last asked to read the names at.
     macro_names: AtomicU64,
     macro_names_told: AtomicU64,
-    macro_targets: Mutex<[Option<kontra_host::rack::MacroTarget>; macros::COUNT]>,
+    macro_targets: Mutex<macros::PerSlot<Option<kontra_host::rack::MacroTarget>>>,
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
@@ -449,6 +437,16 @@ impl BackgroundTask for Tick {
                 let part = rack.parts().get(n).and_then(Option::as_ref);
                 part.map(|p| macros::instrument(p.path.as_deref()))
             });
+            // A script's controls with automation ids take their slots.
+            macros::declare(
+                p,
+                (rack.parts().iter().enumerate()).filter_map(|(n, part)| {
+                    let part = part.as_ref()?;
+                    let widgets = part.view.as_ref()?.tree().widgets.as_slice();
+                    let path = macros::instrument(part.path.as_deref());
+                    Some((n, part.name.as_str(), path, widgets))
+                }),
+            );
         }
         macros::send_targets(p, rack);
         for (part, name, value) in macros::moved(p) {

@@ -335,7 +335,10 @@ fn sandbox() -> mlua::Result<(Lua, Arc<AtomicU32>, Arc<AtomicU32>)> {
         }
         // Past the deadline: ask to yield at the next safepoints until Luau can
         // (it ignores the request where a C call or metamethod is on the stack).
-        if DEADLINE.with(std::cell::Cell::get).is_some_and(|d| std::time::Instant::now() >= d) {
+        if DEADLINE
+            .with(std::cell::Cell::get)
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
             SLICED.with(|s| s.set(true));
             interrupt::set_stride(SLICE_RETRY_STRIDE);
             return Ok(mlua::VmState::Yield);
@@ -550,7 +553,11 @@ impl Machine for LuaMachine {
         // Every resume, not only a start, may change the state: a task that
         // waited (a layer loading after `wait`) must be seen by the next save.
         self.runs = self.runs.wrapping_add(1);
-        let from = if ui { used } else { UI_CHECKPOINTS - CHECKPOINTS };
+        let from = if ui {
+            used
+        } else {
+            UI_CHECKPOINTS - CHECKPOINTS
+        };
         self.checkpoints.store(from, Ordering::Relaxed);
         SLICED.with(|s| s.set(false));
         DEADLINE.with(|d| d.set(ui.then(|| std::time::Instant::now() + SLICE)));
