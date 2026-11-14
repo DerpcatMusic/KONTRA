@@ -21,6 +21,9 @@ use crate::{Engine, MAX_SPAN, group_racks};
 use crate::racks::Rack;
 pub(crate) use kontra_racks::chain::{Chain, on_bus};
 
+/// The most private chains one instrument builds for its shared groups.
+const PRIVATE_CHAINS: usize = 256;
+
 impl Engine {
     /// One chain per distinct (sections, bus) the zones' groups carry, less
     /// the inserts that run per voice.
@@ -95,13 +98,19 @@ impl Engine {
                 }
             }
         }
-        // Each group on a shared chain (or none) gets its private one.
+        // Each group on a shared chain (or none) gets its private one, up to
+        // PRIVATE_CHAINS per instrument (about 2.5 KB each).
+        // ponytail: groups past the cap keep the shared chain and a write
+        // after init to them is not heard; a pool taken on first write if a
+        // library needs more.
+        let mut left = PRIVATE_CHAINS;
         self.group_private = (0..self.groups.len())
             .map(|g| {
                 let sections = shared.get(g).filter(|s| !s.is_empty())?;
                 if self.group_split.get(g).copied().flatten().is_some() {
                     return None;
                 }
+                left = left.checked_sub(1)?;
                 let bus = self.groups.get(g).map_or(0, |g| g.bus);
                 let mut chain = Chain::new(bus, sections.clone(), None, rate);
                 chain.private = true;
