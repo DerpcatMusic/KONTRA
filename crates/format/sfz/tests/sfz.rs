@@ -303,7 +303,10 @@ fn unknown_opcodes_are_collected_not_fatal() {
 fn missing_sample_is_reported_and_kept() {
     let dir = scratch("missing");
     let inst = parse("<region> sample=gone.wav\n", &dir);
-    let report = inst.diagnostics.iter().find(|d| d.feature == "sample file");
+    let report = inst
+        .diagnostics
+        .iter()
+        .find(|d| d.feature == "samples not found");
     assert_eq!(report.map(|d| d.impact), Some(Impact::Broken));
     assert_eq!(inst.samples.first().map(|s| s.frames), Some(0));
     assert_eq!(inst.groups.first().map(|g| g.zones.len()), Some(1));

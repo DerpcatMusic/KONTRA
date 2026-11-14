@@ -2,9 +2,10 @@
 //! group-level settings, samples by file. What the IR cannot carry is a
 //! diagnostic (06-FORMATS.md).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use kontra_format::Notes;
 use kontra_ir as ir;
 
 use crate::laws;
@@ -333,7 +334,7 @@ impl Build {
     /// The sample file's index and frame count. A file that cannot be read is
     /// reported and kept with zero frames, so the zone stays visible in the IR.
     fn sample(&mut self, name: &str, dir: &Path) -> (usize, u64) {
-        let file = dir.join(name);
+        let file = kontra_format::moved(&dir.join(name));
         if let Some(&index) = self.sample_index.get(&file) {
             let frames = self.samples.get(index).map_or(0, |s| s.frames);
             return (index, frames);
@@ -343,6 +344,10 @@ impl Build {
                 let spec = reader.spec();
                 let channels = u8::try_from(spec.channels).unwrap_or(0);
                 (channels, spec.sample_rate, u64::from(reader.duration()))
+            }
+            Err(hound::Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.notes.add_missing(&file);
+                (0, 0, 0)
             }
             Err(e) => {
                 self.notes.add(
@@ -459,30 +464,4 @@ fn frames(value: f64) -> u64 {
 
 fn whole(value: f64) -> u32 {
     value.clamp(0.0, f64::from(u32::MAX)) as u32
-}
-
-/// Diagnostics folded by feature: one entry with a count and the first detail.
-#[derive(Default)]
-struct Notes(BTreeMap<(ir::Impact, String), (usize, String)>);
-
-impl Notes {
-    fn add(&mut self, impact: ir::Impact, feature: &str, detail: impl ToString) {
-        let entry = self
-            .0
-            .entry((impact, feature.into()))
-            .or_insert((0, detail.to_string()));
-        entry.0 += 1;
-    }
-
-    fn finish(self) -> Vec<ir::Diagnostic> {
-        self.0
-            .into_iter()
-            .rev()
-            .map(|((impact, feature), (count, first))| ir::Diagnostic {
-                impact,
-                detail: format!("{count}× (first: {first})"),
-                feature,
-            })
-            .collect()
-    }
 }

@@ -1735,26 +1735,14 @@ fn a_moved_library_is_said_once_offered_found_and_plays_once_taken() {
     std::fs::create_dir_all(&found).unwrap();
     std::fs::create_dir_all(dir.join("inst")).unwrap();
     std::fs::write(found.join("a.wav"), tone_wav()).unwrap();
-    // An instrument read where its samples are, then pointed at the folder
-    // they were in before it moved (SFZ reads headers while translating, so
-    // it cannot be moved on disk and still carry its frame counts).
-    let good = dir.join("found/deep/x.sfz");
-    std::fs::write(&good, "<region> sample=Lib/a.wav key=60\n").unwrap();
-    let old = dir.join("inst/Lib");
-    let moved_away = || {
-        let mut i = kontra_host::instrument::read(&good).unwrap();
-        for s in &mut i.samples {
-            s.file = old.join("a.wav");
-        }
-        i
-    };
-    let sfz = good.clone();
+    let sfz = dir.join("inst/x.sfz");
+    std::fs::write(&sfz, "<region> sample=Lib/a.wav key=60\n").unwrap();
 
     let (mut rack, mut audio) = rack();
     let mut browser = kontra_host::browser::Browser::open(Some(&dir.join("config")), None);
     browser.add_root(dir.join("found"));
     rack.know(&browser);
-    rack.load_ir(0, moved_away(), Some(sfz)).unwrap();
+    rack.load(0, &sfz).unwrap();
     // Missing: said once in plain text, and the part plays on without it.
     let said = rack.take_notices();
     assert!(said[0].contains("1 sample not found in "), "{said:?}");
@@ -1769,7 +1757,7 @@ fn a_moved_library_is_said_once_offered_found_and_plays_once_taken() {
     let o = rack.take_offer(&offer).unwrap();
     browser.relink(o.from, o.to);
     rack.know(&browser);
-    rack.load_ir(o.part, moved_away(), Some(o.path)).unwrap();
+    rack.load(o.part, &o.path).unwrap();
     assert!(rack.take_notices().is_empty());
     assert_eq!(browser.prefs.moved.len(), 1);
     let d = &rack.parts()[0].as_ref().unwrap().diagnostics;

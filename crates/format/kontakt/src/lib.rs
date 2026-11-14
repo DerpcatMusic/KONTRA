@@ -13,6 +13,7 @@ mod drive;
 mod effects;
 mod engine_pars;
 mod external;
+mod ignored;
 mod impulse;
 mod laws;
 mod links;
@@ -73,6 +74,29 @@ impl Error {
 /// is missing or unreadable is a diagnostic, not an error.
 pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
     load_known(path, &[])
+}
+
+/// A preset file's chunk stream, decompressed and decrypted, and whether it
+/// was encrypted: what [`load_chunks`] takes back, so a test can damage the
+/// stream inside its compression.
+///
+/// # Errors
+/// As [`load`].
+pub fn decode(path: &Path) -> Result<(Vec<u8>, Option<bool>), Error> {
+    container::decoded(path).map(|(bytes, _, encrypted)| (bytes, encrypted))
+}
+
+/// The instrument of a chunk stream [`decode`] gave (damaged or not), its
+/// samples resolving beside `path`.
+///
+/// # Errors
+/// As [`load`].
+pub fn load_chunks(
+    path: &Path,
+    bytes: Vec<u8>,
+    encrypted: Option<bool>,
+) -> Result<ir::Instrument, Error> {
+    container::from_bytes(path, bytes, encrypted)
 }
 
 /// As [`load`], resolving a snapshot's base against `known` when needed.
