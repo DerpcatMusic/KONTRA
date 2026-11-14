@@ -4,8 +4,8 @@
 //! holds the same values and a test keeps the two equal).
 
 /// `$NI_CB_TYPE_NOTE_CONTROLLER` and `$NI_CB_TYPE_MIDI_IN`.
-pub const CB_NOTE_CONTROLLER: u8 = 9;
-pub const CB_MIDI_IN: u8 = 10;
+pub const CB_NOTE_CONTROLLER: u8 = 16;
+pub const CB_MIDI_IN: u8 = 9;
 
 /// `$MIDI_COMMAND_*`.
 pub const NOTE_OFF: u8 = 0x80;

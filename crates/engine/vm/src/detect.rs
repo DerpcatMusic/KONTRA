@@ -4,12 +4,12 @@
 //! keeps the two equal). Lists run in the manual's order from their first tag.
 
 /// A tag no command writes but means "detection failed".
-pub const KEY_INVALID: i32 = 0;
-pub const SAMPLE_INVALID: i32 = 0;
-pub const SAMPLE_INSTRUMENT: i32 = 1;
-pub const SAMPLE_DRUM: i32 = 2;
-pub const DRUM_INVALID: i32 = 0;
-pub const INSTRUMENT_INVALID: i32 = 0;
+pub const KEY_INVALID: i32 = -1;
+pub const SAMPLE_INVALID: i32 = -1;
+pub const SAMPLE_INSTRUMENT: i32 = 0;
+pub const SAMPLE_DRUM: i32 = 1;
+pub const DRUM_INVALID: i32 = -1;
+pub const INSTRUMENT_INVALID: i32 = -1;
 
 /// What the real-valued commands give when detection fails
 /// (`~NI_DETECT_*_INVALID`; unprobed: tools/ksp-conformance cases).
@@ -20,9 +20,9 @@ pub const INVALID_RMS: f64 = -1.0;
 pub const INVALID_TEMPO: f64 = -1.0;
 
 /// First tag of each list; `index` 0.. counts from the manual's first entry.
-const KEY_FIRST: i32 = 1;
-const DRUM_FIRST: i32 = 1;
-const INSTRUMENT_FIRST: i32 = 1;
+const KEY_FIRST: i32 = 0;
+const DRUM_FIRST: i32 = 0;
+const INSTRUMENT_FIRST: i32 = 0;
 
 /// Tag of key `index`: 0..12 C..B major, 12..24 C..B minor.
 #[must_use]

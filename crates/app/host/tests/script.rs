@@ -4390,7 +4390,7 @@ fn detect_commands_read_the_analysis() {
             detect_key(7, $key)
             detect_sample_type(7, $kind)
             message(real_to_int(~p * 10.0) & \" \" & real_to_int(~pk) & \" \" ...
-                & real_to_int(~t) & \" \" & ($key > 0) & \" \" & ($kind > 0) & \" \" & $r)
+                & real_to_int(~t) & \" \" & ($key > 0) & \" \" & ($kind = 0) & \" \" & $r)
         end on",
         &[],
     )

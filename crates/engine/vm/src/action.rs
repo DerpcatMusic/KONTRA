@@ -30,9 +30,9 @@ pub mod event {
     pub const ALLOW_GROUP: i32 = 10;
     /// With `*_arr`: the value for a "from script" modulator, ±1 000 000.
     pub const MOD_VALUE: i32 = 30;
-    /// `$EVENT_PAR_MOD_VALUE_EX_ID`: the same with no clamp (placeholder
-    /// until the oracle run; see constants.tsv).
-    pub const MOD_VALUE_EX: i32 = 31;
+    /// `$EVENT_PAR_MOD_VALUE_EX_ID`: the same with no clamp (measured, see
+    /// constants.tsv).
+    pub const MOD_VALUE_EX: i32 = 34;
     /// `$EVENT_PAR_CUSTOM` with `*_arr`: custom parameters 0..=15.
     pub const CUSTOM: i32 = 28;
     /// Before the note starts: only zones in this slot start; -1 (the
