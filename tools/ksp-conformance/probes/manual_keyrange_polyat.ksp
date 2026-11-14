@@ -1,0 +1,20 @@
+{ Oracle probe for the manual commands added with docs/ksp/MANUAL-COVERAGE.md.
+  Not yet run in Kontakt: the three "unprobed" answers are KONTRA's guess for a
+  note outside every range (-1, -1, ""). Paste into a script slot and read the
+  status bar; record the answers in the doc comment of Action::GetKeyrange*. }
+on init
+  declare $i
+  while ($i < 128)
+    remove_keyrange($i)
+    inc($i)
+  end while
+  set_keyrange(36, 72, "Middle Range")
+  message(get_keyrange_min_note(50) & "," & get_keyrange_max_note(50) & "," & get_keyrange_name(50))
+  message(get_keyrange_min_note(20) & "," & get_keyrange_max_note(20) & "," & get_keyrange_name(20))
+end on
+on persistence_changed
+  set_poly_at(60, 99)
+end on
+on poly_at
+  message("poly_at " & $POLY_AT_NUM & "=" & %POLY_AT[$POLY_AT_NUM])
+end on
