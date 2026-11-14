@@ -82,6 +82,10 @@ impl Engine {
                     slot.bend[1] = bend.semitones;
                     slot.voice
                         .set_step(voice_gain::bent(law, step, bend.instant + slot.bend[0]));
+                    if slot.slide.is_some() {
+                        let semitones = bend.instant + slot.bend[0];
+                        self.set_pitch(i, step, semitones);
+                    }
                 }
             }
         }

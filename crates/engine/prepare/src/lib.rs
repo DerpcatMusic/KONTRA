@@ -128,6 +128,7 @@ pub fn prepare(
             bus: g.bus,
             wavetable: g.wavetable.map(read),
             speed: g.speed,
+            glide: g.glide,
             zones,
         })
         .collect();

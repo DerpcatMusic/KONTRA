@@ -7,7 +7,7 @@ use kontra_law::kontakt::{
     EQ_PEAK_DB, FILTER_NOTE_HZ, FLEX_SHAPE, LADDER_GAIN, LEGACY_CUTOFF_HZ, LEGACY_RESONANCE_LOSS,
     LEGACY_RESONANCE_Q, UNIT_FIFTH,
 };
-use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeFlex, Lfo};
+use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeFlex, Glide, Lfo};
 
 /// Kontakt's decay and release: the kernel runs its state from 1.075 down to
 /// 0.075, a ratio of 3/43, so the stage is silent exactly at its time
@@ -28,6 +28,33 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         attack_shape: ATTACK_CURVE.eval_unclamped(e.attack_curve),
         fall_shape: FALL,
         lag: ENVELOPE_LAG_S,
+    }
+}
+
+/// A Glide modulator on the source's pitch, at `depth` (its signed intensity).
+/// Measured in Kontakt 8.13 (oracle, tools/kontakt-oracle/probes/glide.lua: a
+/// 261.6 Hz sine, notes 4 and 12 semitones apart, YIN pitch track):
+/// - the pitch moves linearly in semitones (within 0.02 st of a line);
+/// - Time mode (stored 2) takes the stored milliseconds whatever the interval
+///   (1224 ms stored: 1208 ms over 12 st, 1238 ms over 4 st; 47.5, 142.3 and
+///   418.7 ms likewise within 4%);
+/// - Speed mode (stored 1) takes them per semitone (142.3 ms: 140–144 ms a
+///   semitone over 4 and 12; 418.7 ms: 413–423);
+/// - it starts from the previous note's key even when that key is up (0.5 s
+///   after its release) or its own glide is unfinished, never from the pitch
+///   reached; the first note does not glide.
+///
+/// One instrument shares one previous note: scope 0. ponytail: intensities
+/// below 100% are taken as a linear share of the interval, unmeasured.
+pub(crate) fn glide(g: &Glide, depth: f32) -> ir::Glide {
+    ir::Glide {
+        scope: 0,
+        depth,
+        seconds: g.values[0].max(0.0) / 1000.0,
+        per_semitone: g.mode == 1,
+        legato: false,
+        resume: false,
+        curve: 0.0,
     }
 }
 

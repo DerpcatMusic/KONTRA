@@ -244,6 +244,24 @@ impl crate::program::Library for Bank {
         self.open_sample(member)
             .map_err(|e| format!("{reference}: {e:#}"))
     }
+
+    fn path_of(&self, program_dir: &str, reference: &str) -> Option<String> {
+        self.directory.files.get(self.resolve(program_dir, reference)?)?.path.clone()
+    }
+
+    fn audio_under(&self, folder: &str) -> Vec<String> {
+        let prefix = format!("{}/", folder.to_lowercase());
+        let audio = [".wav", ".flac", ".aif", ".aiff"];
+        self.directory
+            .files
+            .iter()
+            .filter_map(|m| m.path.clone())
+            .filter(|p| {
+                let p = p.to_lowercase();
+                p.starts_with(&prefix) && audio.iter().any(|e| p.ends_with(e))
+            })
+            .collect()
+    }
 }
 
 impl Bank {

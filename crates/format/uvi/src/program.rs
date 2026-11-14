@@ -46,6 +46,15 @@ pub(crate) trait Library {
     fn data(&self) -> Vec<(String, Option<Vec<u8>>)> {
         Vec::new()
     }
+    /// The member path of the sample `reference` names.
+    fn path_of(&self, _program_dir: &str, _reference: &str) -> Option<String> {
+        None
+    }
+    /// Every audio member under `folder` (a member path's folder, any
+    /// depth), by member path.
+    fn audio_under(&self, _folder: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Kontakt's streamed head per channel and its grain, the law the other
@@ -106,6 +115,7 @@ pub(crate) fn unfinished<'a, L: Library>(
         carried: HashSet::new(),
         routed: HashMap::new(),
         units: HashMap::new(),
+        glide_scopes: 0,
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
             pan: num(program, "Pan", 0.0)?.clamp(-1.0, 1.0) as f32,
@@ -124,6 +134,7 @@ pub(crate) fn unfinished<'a, L: Library>(
     t.script_routes();
     // After the layers: they mark the matrix connections they carry.
     t.connections();
+    t.responses();
     ignored::report(program, &mut t.notes);
     if !t.out.scripts.is_empty() {
         let tree = t.tree();
@@ -218,6 +229,8 @@ struct Translator<'a, 'input, L> {
     routed: HashMap<roxmltree::NodeId, usize>,
     /// Each route key's amount per unit of ratio.
     units: HashMap<usize, f32>,
+    /// Glide scopes handed out: one per gliding layer.
+    glide_scopes: u16,
 }
 
 impl<L: Library> Translator<'_, '_, L> {
@@ -250,49 +263,75 @@ impl<L: Library> Translator<'_, '_, L> {
             return Ok(());
         }
         let keys = (midi_or(layer, "LowKey", 0), midi_or(layer, "HighKey", 127));
-        let voice_group = self.layer_polyphony(layer)?;
+        let (voice_group, glide) = self.layer_polyphony(layer)?;
         for keygroup in layer.descendants().filter(|n| n.has_tag_name("Keygroup")) {
             let before = self.out.groups.len();
             self.keygroup(keygroup, (1.0, pan), keys)?;
             if let Some(group) = self.out.groups.get_mut(before) {
                 group.bus = bus;
                 group.voice_group = voice_group;
+                group.glide = glide;
                 self.made.insert(keygroup.id(), before);
             }
         }
         Ok(())
     }
 
-    /// A layer's own note limit (`CustomPolyphony`, 0 = the program's): its
-    /// notes share one voice group counting that many notes; a new note past
-    /// it takes every voice of the oldest, however many zones each sounds.
-    /// VWinds' sustain layers hold 2, so a third note ends the first. A mono
-    /// `PlayMode` (0 Poly, 1 Poly Portamento, 2 Mono Retrigger, 3 Mono
-    /// Portamento, 4 Mono Portamento Slide, from UVIWorkstation's enum
-    /// strings) holds one; the portamento glide itself is not carried yet.
-    fn layer_polyphony(&mut self, layer: Node) -> Result<Option<usize>, String> {
+    /// A layer's own note limit, mono line and glide (docs/engine/voices.md),
+    /// from UVIWorkstation's layer play law (the unpacked binary, around
+    /// 0x140f1d047, 0x140f1f2fe and the `uvi::Portamento` methods at
+    /// 0x1413897b0..0x141389bc0):
+    /// - `CustomPolyphony` (0: the program's) counts notes; VWinds' sustain
+    ///   layers hold 2. A note past it takes every voice of the oldest.
+    /// - `PlayMode` 0 Poly, 1 Poly Portamento (each note slides from the last
+    ///   key played, held or not), 2 Mono Retrigger (a new voice each note;
+    ///   releasing it brings back an older key still down), 3 Mono
+    ///   Portamento (a legato note takes over the voice and slides it), 4
+    ///   Mono Portamento Slide (as 3, and a detached note slides too, from
+    ///   where the last slide had got).
+    /// - `PortamentoTime` seconds, or per semitone with `PortamentoMode` 1;
+    ///   `PortamentoCurve` -1..=1, the exponential segment of [`ir::Glide`].
+    /// - A stolen voice fades linearly over 10 ms (0.01 × rate at every kill
+    ///   site, 0x141cfa9dc).
+    fn layer_polyphony(
+        &mut self,
+        layer: Node,
+    ) -> Result<(Option<usize>, Option<ir::Glide>), String> {
         let mode = num(layer, "PlayMode", 0.0)? as u8;
-        if matches!(mode, 1 | 3 | 4) {
-            let name = layer.attribute("DisplayName").unwrap_or("layer");
-            self.notes.add(ir::Impact::Audible, "portamento glide (Layer.PlayMode)", name);
+        let mono = matches!(mode, 2..=4);
+        let glide = matches!(mode, 1 | 3 | 4).then(|| -> Result<_, String> {
+            Ok(ir::Glide {
+                scope: self.glide_scopes,
+                depth: 1.0,
+                seconds: num(layer, "PortamentoTime", 0.03)?.max(0.0) as f32,
+                per_semitone: num(layer, "PortamentoMode", 0.0)? != 0.0,
+                legato: mode == 3,
+                resume: mode != 1,
+                curve: num(layer, "PortamentoCurve", 0.0)?.clamp(-1.0, 1.0) as f32,
+            })
+        });
+        let glide = glide.transpose()?;
+        if glide.is_some() {
+            self.glide_scopes = self.glide_scopes.saturating_add(1);
         }
-        let notes = match mode {
-            2..=4 => 1,
-            _ => num(layer, "CustomPolyphony", 0.0)?.clamp(0.0, 256.0) as u16,
+        let notes = match mono {
+            true => 1,
+            false => num(layer, "CustomPolyphony", 0.0)?.clamp(0.0, 256.0) as u16,
         };
         if notes == 0 {
-            return Ok(None);
+            return Ok((None, glide));
         }
         self.out.voice_groups.push(ir::VoiceGroup {
             voices: notes,
             steal: ir::Steal::Oldest,
             prefer_released: false,
-            // ponytail: UVI's steal fade is unmeasured; Kontakt's default.
             fade_ms: 10.0,
             exclusive: None,
             per_note: true,
+            legato: matches!(mode, 3 | 4),
+            returns: mono,
         });
-        Ok(Some(self.out.voice_groups.len() - 1))
+        Ok((Some(self.out.voice_groups.len() - 1), glide))
     }
 
     fn keygroup(

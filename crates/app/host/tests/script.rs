@@ -2681,6 +2681,7 @@ fn a_script_loads_a_library_response_into_a_convolution() {
             envelope: None,
             mix: None,
             size: [1.0, 1.0],
+            length: 1.0,
         },
     )];
     plan.responses = vec![(
@@ -2810,6 +2811,7 @@ fn a_scripts_convolution_predelay_prepares_its_response_again() {
         envelope: None,
         mix: None,
         size: [1.0, 1.0],
+        length: 1.0,
     };
     plan.impulse_laws = vec![("half".into(), law)];
     plan.responses = vec![(
@@ -4569,6 +4571,34 @@ fn a_transposed_wildcard_note_off_ends_a_note_on_port_b() {
                 ignore_midi
                 set_midi($MIDI_CHANNEL, $MIDI_COMMAND, $MIDI_BYTE_1 + 12, $MIDI_BYTE_2)
             end if
+        end on",
+    );
+    let mut b = on(60);
+    if let Event::NoteOn { note, .. } = &mut b.body {
+        note.port = 1;
+    }
+    level(&mut e, &[b]);
+    assert_eq!(e.active_voices(), 1);
+    let mut any = off(60);
+    if let Event::NoteOff(p) = &mut any.body {
+        p.port = -1;
+    }
+    assert_eq!(level(&mut e, &[any]), 0.0);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// The same, transposed in place with `set_event_par`: the moved note-off
+/// keeps its wildcard port and ends the note held on port B.
+#[test]
+fn an_in_place_transposed_wildcard_note_off_ends_a_note_on_port_b() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            set_event_par($EVENT_ID, $EVENT_PAR_MIDI_BYTE_1, $MIDI_BYTE_1 + 12)
         end on",
     );
     let mut b = on(60);

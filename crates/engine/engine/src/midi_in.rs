@@ -127,7 +127,7 @@ impl Engine {
             ignored |= Heard::of(&ran) != Heard::Passed;
             let made = std::mem::take(&mut self.midi_made);
             for &bytes in made.1.iter().take(made.0) {
-                apply(self, Self::event_from(bytes, &event));
+                apply(self, Self::rebuilt(bytes, heard, &event));
             }
             if ignored {
                 return None;
@@ -135,11 +135,25 @@ impl Engine {
         }
         // Untouched, the host's event goes on as sent: a note-off on any
         // port (wildcard) still ends notes held on ports B–D.
-        Some(if m == heard {
-            event
-        } else {
-            Self::event_from(m, &event)
-        })
+        if m == heard {
+            return Some(event);
+        }
+        Some(Self::rebuilt(m, heard, &event))
+    }
+
+    /// The event `m` makes from `like` (heard as `heard`). A note-off on any
+    /// port (wildcard) that a script moved but kept on its channel stays on
+    /// any port, so the moved note still ends on ports B–D.
+    fn rebuilt(m: [u8; 4], heard: [u8; 4], like: &Event) -> Event {
+        let mut out = Self::event_from(m, like);
+        if let (Event::NoteOff(was) | Event::NoteOffVelocity(was, _), Event::NoteOff(now)) =
+            (like, &mut out)
+            && was.port < 0
+            && m[1] == heard[1]
+        {
+            now.port = was.port;
+        }
+        out
     }
 
     /// A multi script's turn at `event`: its `on midi_in` runs, and what it

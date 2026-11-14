@@ -471,7 +471,8 @@ impl HostApi for Engine {
                 let byte = |i| int(i).clamp(0, 255) as u8;
                 self.set_midi([
                     byte(1) & 0xF0,
-                    byte(0) & 0x0F,
+                    // KSP's channel counts across ports A–D, 0..=63.
+                    byte(0).min(63),
                     byte(2) & 0x7F,
                     byte(3) & 0x7F,
                 ]);
@@ -822,6 +823,23 @@ impl HostApi for Engine {
                     }
                     None => -1,
                 })
+            }
+            Action::ImpulseKnob => {
+                let y = int(4) as f32 / 1e6;
+                if !self.set_placed_impulse_knob(int(0), int(1), int(2), int(3), y) {
+                    self.count_unhandled(Action::ImpulseKnob);
+                }
+                HostValue::Nothing
+            }
+            Action::LoadImpulse => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                match self.load_placed_impulse(name, int(0), int(1), int(2)) {
+                    Some(answer) => HostValue::Int(answer),
+                    None => {
+                        self.count_unhandled(Action::LoadImpulse);
+                        HostValue::Nothing
+                    }
+                }
             }
             Action::LoadIrSample => {
                 let name = call.texts.first().map_or("", Text::as_str);

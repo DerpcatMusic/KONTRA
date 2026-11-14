@@ -40,7 +40,8 @@ pub use reverb::{
 };
 pub use route_names::RouteNames;
 pub use wavetable::{
-    FormShaper, Inharmonic, ModOsc, ModOscKind, Quality, Side, TableValue, TuneUnit, Warp, WarpShape, Wavetable,
+    FormShaper, Inharmonic, ModOsc, ModOscKind, Quality, Side, TableValue, TuneUnit, Warp,
+    WarpShape, Wavetable,
 };
 
 #[derive(Clone, Debug)]
@@ -142,6 +143,10 @@ pub struct Impulse {
     /// stretched without changing pitch; they part where [`ImpulseCuts`]'s
     /// crossover does, else where the decay turns diffuse.
     pub size: [f32; 2],
+    /// The share of the response kept (1 the whole of it, untouched): below
+    /// 1 its first `max(2, length·frames)` frames, faded to silence by the
+    /// raised cosine `(1 + cos(π·i/(n + 1)))/2`, before [`Self::mix`].
+    pub length: f32,
 }
 
 /// Scales a response's channel energy toward `energy`, by at most `max_gain`;
@@ -352,6 +357,8 @@ pub struct Group {
     pub speed: Option<f32>,
     /// Index into [`Instrument::voice_groups`].
     pub voice_group: Option<usize>,
+    /// Its notes slide in pitch from the note before (portamento).
+    pub glide: Option<Glide>,
     /// Effects on this group's voices, by slot.
     pub inserts: Vec<Option<Effect>>,
     /// Shapes [`Source::Envelope`] reads, by index.
@@ -401,6 +408,7 @@ impl Group {
         wavetable: None,
         speed: None,
         voice_group: None,
+        glide: None,
         inserts: Vec::new(),
         envelopes: Vec::new(),
         lfos: Vec::new(),
@@ -587,6 +595,67 @@ pub struct VoiceGroup {
     /// `voices` counts notes: a note past it takes every voice of the note
     /// it steals, however many zones each sounds.
     pub per_note: bool,
+    /// One note at a time (`voices` 1, `per_note`): a new note while the
+    /// group's note is held takes over its voices, which keep playing and
+    /// move to the new pitch (sliding with the group's glide), instead of
+    /// starting its own.
+    pub legato: bool,
+    /// Last-note priority: releasing the group's note while an older key of
+    /// it is still down brings that note back (its voices taken back when
+    /// `legato`, started again otherwise).
+    pub returns: bool,
+}
+
+/// Portamento: a new note's voices start at the pitch the previous note of
+/// their `scope` sounded and slide to their own, in semitones along `curve`.
+/// A script's tuning (`change_tune` loops) adds on top. docs/engine/voices.md.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glide {
+    /// Groups with the same scope share the previous note (a layer, or the
+    /// whole instrument).
+    pub scope: u16,
+    /// The share of the interval the slide starts from: 1 the whole of it.
+    pub depth: f32,
+    /// How long the slide takes, or with `per_semitone` how long it takes
+    /// for each semitone of the interval (a constant rate).
+    pub seconds: f32,
+    pub per_semitone: bool,
+    /// Only while another note of the scope is held; otherwise from the
+    /// last note played, held or not.
+    pub legato: bool,
+    /// A slide cut short by the next note hands on the pitch it had reached;
+    /// otherwise the next starts from the previous note's own pitch.
+    pub resume: bool,
+    /// -1..=1, 0 straight: the share of the interval covered half way
+    /// through is `(1 - curve)/2`, along an exponential segment, so a
+    /// positive curve leaves the old pitch slowly and arrives fast.
+    pub curve: f32,
+}
+
+impl Glide {
+    /// The share of the interval covered at phase `p` (0..=1): with `k` the
+    /// share at half time and `r = (1 - k)/k`, `(r^(2p) - 1)/(r^2 - 1)`.
+    #[must_use]
+    pub fn covered(self, p: f32) -> f32 {
+        let p = p.clamp(0.0, 1.0);
+        let k = (0.5 * (1.0 - self.curve)).clamp(1e-4, 0.9999);
+        let r = (1.0 - k) / k;
+        if (r - 1.0).abs() < 1e-6 {
+            p
+        } else {
+            (r.powf(2.0 * p) - 1.0) / (r * r - 1.0)
+        }
+    }
+
+    /// How long a slide over `semitones` takes, seconds.
+    #[must_use]
+    pub fn duration(self, semitones: f32) -> f32 {
+        if self.per_semitone {
+            self.seconds * semitones.abs()
+        } else {
+            self.seconds
+        }
+    }
 }
 
 /// Which voice a full voice group gives up.

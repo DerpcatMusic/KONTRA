@@ -2439,19 +2439,22 @@ fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
         panic!("{:?}", scaled.source)
     };
     let table = &out.knob_blends[usize::from(t)].terms[0].input.table;
-    assert!((table[0] + 1.0).abs() < 1e-6 && table[32].abs() < 1e-6, "{table:?}");
+    assert!(
+        (table[0] + 1.0).abs() < 1e-6 && table[32].abs() < 1e-6,
+        "{table:?}"
+    );
 }
 
 #[test]
 fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
     // VWinds' sustain layer: 2 notes, its keygroup sounding 2 zones (a
-    // bundle); a Mono Portamento layer: 1 note, its glide reported.
+    // bundle); a Mono Portamento layer: a legato line that glides.
     let xml = r#"<Program Gain="1">
       <Layers>
         <Layer Gain="1" Pan="0" CustomPolyphony="2" PlayMode="0"><Keygroups>
           <Keygroup><Oscillators><SamplePlayer SamplePath="./*a.wav*b.wav"/></Oscillators></Keygroup>
         </Keygroups></Layer>
-        <Layer Gain="1" Pan="0" CustomPolyphony="0" PlayMode="3" DisplayName="Lead"><Keygroups>
+        <Layer Gain="1" Pan="0" CustomPolyphony="0" PlayMode="3" DisplayName="Lead" PortamentoTime="4.8317227" PortamentoMode="1" PortamentoCurve="0.5"><Keygroups>
           <Keygroup><Oscillators><SamplePlayer SamplePath="./c.wav"/></Oscillators></Keygroup>
         </Keygroups></Layer>
         <Layer Gain="1" Pan="0" CustomPolyphony="0" PlayMode="0"><Keygroups>
@@ -2470,10 +2473,24 @@ fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
     assert!(out.voice_groups.iter().all(|v| v.per_note));
     // The bundle's keygroup sounds both members for a note.
     assert_eq!(out.groups[0].zones.len(), 2, "{:?}", out.groups[0].zones);
+    let lead = &out.voice_groups[1];
+    assert!(lead.legato && lead.returns && !out.voice_groups[0].legato);
+    assert_eq!(
+        out.groups[1].glide,
+        Some(ir::Glide {
+            scope: 0,
+            depth: 1.0,
+            seconds: 4.831_722_7,
+            per_semitone: true,
+            legato: true,
+            resume: true,
+            curve: 0.5,
+        })
+    );
+    assert_eq!(out.groups[0].glide, None);
     assert!(
-        out.diagnostics
-            .iter()
-            .any(|d| d.feature.contains("portamento") && d.detail.contains("Lead")),
+        !out.diagnostics.iter().any(|d| d.feature.contains("Portamento")
+            || d.feature.contains("PlayMode")),
         "{:?}",
         out.diagnostics
     );

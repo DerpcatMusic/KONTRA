@@ -195,6 +195,8 @@ pub struct Group {
     /// The speed its voices start at when its source stretches time
     /// ([`kontra_ir::Group::speed`]).
     pub speed: Option<f32>,
+    /// Its notes' portamento ([`kontra_ir::Group::glide`]).
+    pub glide: Option<ir::Glide>,
     /// What it gives each of its zones.
     pub zones: ZoneRules,
 }
@@ -292,6 +294,7 @@ impl Group {
             bus: 0,
             wavetable: None,
             speed: None,
+            glide: None,
             zones: ZoneRules::PLAIN,
         }
     }

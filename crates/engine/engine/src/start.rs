@@ -54,6 +54,7 @@ impl Engine {
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
                 && (n.zone_slot < 0 || n.zone_slot == i32::from(zone.slot))
+                && (self.only_voice_group).is_none_or(|v| zone.voice_group == Some(v))
                 && self
                     .buses
                     .get(plan::bus(&self.groups, zone))
@@ -62,6 +63,13 @@ impl Engine {
                 || !self
                     .behaviour
                     .starts(zone, n.host.port_channel(), n.key, n.draw, step)
+            {
+                continue;
+            }
+            // Before the limits steal the note it may slide from.
+            let slide = self.slide_for(zone.group, note, n.key);
+            if let Some(vg) = zone.voice_group
+                && self.mono_line(vg, note, slide)
             {
                 continue;
             }
@@ -114,7 +122,11 @@ impl Engine {
             let (step, bend) = self.step(zone, &n, onset);
             let start = VoiceStart {
                 region,
-                step: voice_gain::bent(self.plan.route_pitch, step, bend.instant + bend.semitones),
+                step: voice_gain::bent(
+                    self.plan.route_pitch,
+                    step,
+                    bend.instant + bend.semitones + slide.map_or(0.0, |s| s.offset(self.now.0)),
+                ),
                 gain,
                 lag,
                 envelope: self.envelope(zone, &n),
@@ -196,8 +208,12 @@ impl Engine {
             slot.warp = [0.0; modulators::WARPS];
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
             slot.stretch = stretch;
+            slot.slide = slide;
             #[cfg(feature = "trace")]
             slot.pending_trace_cc.set(0);
+            if slide.is_some() {
+                self.set_pitch(i, step, bend.instant + bend.semitones);
+            }
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {
                 trace.routes.begin_onset(index);

@@ -379,6 +379,8 @@ pub enum ImpulseKnob {
     Size {
         late: bool,
     },
+    /// The share of the response kept ([`crate::Impulse::length`]).
+    Length,
 }
 
 impl ImpulseKnob {
@@ -387,6 +389,7 @@ impl ImpulseKnob {
     pub fn field_mut(self, law: &mut crate::Impulse) -> &mut f32 {
         match self {
             Self::PredelayMs => &mut law.predelay_ms,
+            Self::Length => &mut law.length,
             Self::Size { late } => {
                 let [early, late_part] = &mut law.size;
                 if late { late_part } else { early }

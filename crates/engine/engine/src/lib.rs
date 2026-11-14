@@ -16,12 +16,14 @@ mod detect;
 
 mod filters;
 mod fx_types;
+mod glide;
 mod impulse_knobs;
 mod inspect;
 mod knobs;
 mod midi;
 mod midi_in;
 mod midi_object;
+mod mono;
 mod modulators;
 mod par_display;
 mod params;
@@ -160,6 +162,8 @@ struct Slot {
     chaos: [modulators::Chaos; modulators::WARPS],
     /// Its envelopes' attack stretch, fixed at note-on ([`modulators::Age::stretch`]).
     stretch: [f32; modulators::WARPS],
+    /// Its portamento, while it slides ([`glide::Slide`]).
+    slide: Option<glide::Slide>,
     #[cfg(feature = "trace")]
     pending_trace_cc: std::cell::Cell<u128>,
 }
@@ -296,6 +300,13 @@ pub struct Engine {
     /// the order asked.
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
+    /// Each portamento scope's latest note ([`glide`]).
+    glides: [glide::Latest; glide::SCOPES],
+    /// Each mono voice group's line ([`mono`]), by voice group.
+    lines: Box<[mono::Line]>,
+    /// While set, notes start only their zones in this voice group (a
+    /// line's older key coming back).
+    only_voice_group: Option<u32>,
     /// A stamp per ledger slot: the notes a note-counting voice group
     /// has seen in its current count (voice_groups.rs). Sized at build.
     note_seen: Box<[u32]>,
@@ -380,6 +391,7 @@ impl Engine {
                 warp: [0.0; modulators::WARPS],
                 chaos: [modulators::CHAOS_START; modulators::WARPS],
                 stretch: [1.0; modulators::WARPS],
+                slide: None,
                 #[cfg(feature = "trace")]
                 pending_trace_cc: std::cell::Cell::new(0),
             })
@@ -455,6 +467,9 @@ impl Engine {
             ),
             reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
+            glides: [glide::Latest::default(); glide::SCOPES],
+            lines: vec![mono::Line::default(); mono::LINES].into(),
+            only_voice_group: None,
             note_seen: vec![0; capacity].into(),
             note_stamp: 0,
             running: Running::IDLE,
@@ -804,6 +819,7 @@ impl Engine {
         }
         n.released = true;
         n.pedal_held = false;
+        self.mono_release(note);
         for slot in self
             .voices
             .iter_mut()
