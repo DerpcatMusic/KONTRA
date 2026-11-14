@@ -575,8 +575,20 @@ impl Store {
                 }
                 HostValue::Nothing
             }
-            Action::GetControlParStr => {
-                let par = int(1);
+            // One entry of a string array parameter (a ui_xy's cursor
+            // pictures), kept as its own text parameter ([`entry_par`]).
+            Action::SetControlParStrArr => {
+                let par = entry_par(int(1), int(2));
+                if par >= 0 {
+                    self.set_text_par(slot, n, par, text, false);
+                }
+                HostValue::Nothing
+            }
+            Action::GetControlParStrArr | Action::GetControlParStr => {
+                let par = match call.action {
+                    Action::GetControlParStrArr => entry_par(int(1), int(2)),
+                    _ => int(1),
+                };
                 let found = n
                     .and_then(|n| self.texts(slot, n).iter().find(|(p, _)| *p == par))
                     .map_or(Text::EMPTY, |&(_, t)| t);
@@ -641,8 +653,12 @@ impl Store {
                     .iter()
                     .find(|r| (i32::from(r.low)..=i32::from(r.high)).contains(&k));
                 match call.action {
-                    Action::GetKeyrangeMinNote => HostValue::Int(range.map_or(-1, |r| i32::from(r.low))),
-                    Action::GetKeyrangeMaxNote => HostValue::Int(range.map_or(-1, |r| i32::from(r.high))),
+                    Action::GetKeyrangeMinNote => {
+                        HostValue::Int(range.map_or(-1, |r| i32::from(r.low)))
+                    }
+                    Action::GetKeyrangeMaxNote => {
+                        HostValue::Int(range.map_or(-1, |r| i32::from(r.high)))
+                    }
                     _ => out(range.map_or(Text::EMPTY, |r| r.name)),
                 }
             }
@@ -683,6 +699,21 @@ impl Store {
         })
     }
 }
+
+/// Where entry `index` of string array parameter `par` is kept among a
+/// control's texts: past every parameter id, by its index. Entries 0 to
+/// 30 (a ui_xy has at most 16 cursors); any other is not kept.
+#[must_use]
+pub const fn entry_par(par: i32, index: i32) -> i32 {
+    if index < 0 || index > 30 {
+        return -1;
+    }
+    par + (index + 1) * ENTRY
+}
+
+/// The stride of [`entry_par`]: above every parameter id (symbols start
+/// at `1 << 24`).
+pub const ENTRY: i32 = 1 << 26;
 
 #[cfg(test)]
 mod tests {
@@ -779,9 +810,13 @@ mod tests {
         assert_eq!(edge(&mut s, Action::GetKeyrangeMinNote, 50), 36);
         assert_eq!(edge(&mut s, Action::GetKeyrangeMaxNote, 50), 72);
         assert_eq!(edge(&mut s, Action::GetKeyrangeMinNote, 20), -1);
-        assert_eq!(call(&mut s, Action::GetKeyrangeName, &[50]).1.as_str(), "Mid");
+        assert_eq!(
+            call(&mut s, Action::GetKeyrangeName, &[50]).1.as_str(),
+            "Mid"
+        );
         call(&mut s, Action::RemoveKeyrange, &[60]);
         assert_eq!(edge(&mut s, Action::GetKeyrangeMaxNote, 50), -1);
         assert_eq!(call(&mut s, Action::GetKeyrangeName, &[50]).1.as_str(), "");
     }
 }
+

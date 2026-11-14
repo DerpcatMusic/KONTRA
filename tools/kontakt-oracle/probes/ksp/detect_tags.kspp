@@ -1,0 +1,16 @@
+# The two $NI_DETECT_KEY_* tags that read oddly through a plain recorded read (C major 1, invalid 6) and the
+# same constants through arithmetic, a variable and a comparison, in Kontakt 8.13 (run: ksp_probe.py <nki> this-file).
+# The other $NI_DETECT_* tags are in constants.tsv (tools/kontakt-oracle/ksp_constants.py).
+S declare $a
+R c_major $NI_DETECT_KEY_C_MAJOR
+R csharp_major $NI_DETECT_KEY_CSHARP_MAJOR
+R d_major $NI_DETECT_KEY_D_MAJOR
+R c_major_plus_100 $NI_DETECT_KEY_C_MAJOR + 100
+S $a := $NI_DETECT_KEY_C_MAJOR
+R c_major_via_var $a
+R invalid $NI_DETECT_KEY_INVALID
+R invalid_plus_100 $NI_DETECT_KEY_INVALID + 100
+S $a := $NI_DETECT_KEY_INVALID
+R invalid_via_var $a
+R midi_byte_1 $EVENT_PAR_MIDI_BYTE_1
+R midi_byte_2 $EVENT_PAR_MIDI_BYTE_2

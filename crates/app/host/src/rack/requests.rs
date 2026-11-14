@@ -50,6 +50,45 @@ impl Rack {
         self.effect_requests();
         self.zone_edits();
         self.unpurges();
+        self.user_zones();
+    }
+
+    /// User zones whose sample a script set (in `on init`, or by a
+    /// `set_sample` already applied): built here, off the audio thread, and
+    /// swapped in between blocks.
+    fn user_zones(&mut self) {
+        for part in 0..self.parts.len() {
+            let Some(Some(p)) = self.parts.get_mut(part) else {
+                continue;
+            };
+            let Some(plan) = p.plan.as_deref().filter(|p| !p.user_facts().is_empty()) else {
+                continue;
+            };
+            let Some((grown, diagnostics)) =
+                kontra_prepare::user_zones(plan, &mut self.store, &|s| kontra_stream::open(s))
+            else {
+                continue;
+            };
+            let name = p.name.clone();
+            self.notices.extend(
+                diagnostics
+                    .iter()
+                    .map(|d| format!("part {} ({name}): {}: {}", part + 1, d.feature, d.detail)),
+            );
+            p.diagnostics.extend(diagnostics);
+            let generation = p.script.generation;
+            let plan = Arc::new(grown);
+            p.plan = Some(Arc::clone(&plan));
+            let swap = Box::new(ZoneSwap {
+                plan,
+                edits: Box::default(),
+            });
+            self.send(Command::Zones {
+                part,
+                generation,
+                swap,
+            });
+        }
     }
 
     /// Purged groups scripts asked for: their samples load here, the zones
@@ -211,7 +250,14 @@ impl Rack {
                 continue;
             };
             for (e, took) in &mut edits {
-                *took = plan.edit_zone(e.zone, e.par, e.value);
+                *took = e.apply(&mut plan);
+            }
+            // A user zone that got a sample plays it from this swap.
+            if let Some((grown, diagnostics)) =
+                kontra_prepare::user_zones(&plan, &mut self.store, &|s| kontra_stream::open(s))
+            {
+                plan = grown;
+                p.diagnostics.extend(diagnostics);
             }
             // A zone moved into a wavetable group plays its table.
             let plan =

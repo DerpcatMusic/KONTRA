@@ -696,7 +696,10 @@ impl<L: Library> Translator<'_, '_, L> {
             .collect::<Vec<_>>();
         for c in connections {
             let name = c.attribute("Destination").unwrap_or_default();
-            let Some(saved) = processor.attribute(name).and_then(|v| v.parse::<f32>().ok()) else {
+            let Some(saved) = processor
+                .attribute(name)
+                .and_then(|v| v.parse::<f32>().ok())
+            else {
                 continue;
             };
             if flag(c, "Bypass") || num(c, "Ratio", 0.0).ok() == Some(0.0) {

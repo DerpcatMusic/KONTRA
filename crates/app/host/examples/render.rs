@@ -724,7 +724,7 @@ fn install_requests(engine: &mut Engine, plan: &Plan, client: &kontra_stream::St
         let started = std::time::Instant::now();
         let mut plan = Plan::clone(engine.plan());
         let done: Vec<_> = (edits.iter())
-            .map(|e| (*e, plan.edit_zone(e.zone, e.par, e.value)))
+            .map(|e| (*e, e.apply(&mut plan)))
             .collect();
         let plan = kontra_prepare::tables(&plan, client).unwrap_or(plan);
         let built = started.elapsed();

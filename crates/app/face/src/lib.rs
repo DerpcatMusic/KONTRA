@@ -155,6 +155,11 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_WT_ZONE",
     "$CONTROL_PAR_PARALLAX_X",
     "$CONTROL_PAR_PARALLAX_Y",
+    "$CONTROL_PAR_CURSOR_PICTURE",
+    "$CONTROL_PAR_GRID_X",
+    "$CONTROL_PAR_GRID_Y",
+    "$CONTROL_PAR_GRID_WIDTH",
+    "$CONTROL_PAR_GRID_HEIGHT",
     "grid_x",
     "grid_y",
     "table_steps_shown",
@@ -188,6 +193,8 @@ pub fn mapped(par: &str) -> bool {
 struct Props<'a> {
     ints: HashMap<&'a str, i32>,
     texts: HashMap<&'a str, &'a str>,
+    /// `set_control_par_str_arr` entries: (parameter, index, text).
+    entries: Vec<(&'a str, i32, &'a str)>,
 }
 
 impl Props<'_> {
@@ -196,6 +203,14 @@ impl Props<'_> {
     }
     fn text(&self, name: &str) -> Option<&str> {
         self.texts.get(name).copied()
+    }
+    /// Entry `index` of string array parameter `name`.
+    fn entry(&self, name: &str, index: i32) -> Option<&str> {
+        let found = self
+            .entries
+            .iter()
+            .find(|&&(n, i, _)| n == name && i == index);
+        found.map(|&(_, _, t)| t)
     }
 }
 
@@ -806,6 +821,13 @@ fn props<'a>(face: &'a Face, d: &'a Decl<'a>) -> Props<'a> {
                     .iter()
                     .filter_map(|(par, t)| Some((face.par_name(*par)?, t.as_str()))),
             )
+            .collect(),
+        entries: (look.texts.iter())
+            .filter(|(par, _)| *par >= kontra_engine::ENTRY)
+            .filter_map(|(par, t)| {
+                let (index, par) = (par / kontra_engine::ENTRY - 1, par % kontra_engine::ENTRY);
+                Some((face.par_name(par)?, index, t.as_str()))
+            })
             .collect(),
     }
 }

@@ -99,6 +99,17 @@ pub fn read_saved(
     {
         return Ok(kontra_format_sfz::load(path)?);
     }
+    if let Some((multi, slot)) = multi_slot(path) {
+        let (slots, failed) = kontra_format_kontakt::multi(multi, Some(slot))?;
+        let mut out = (slots.into_iter().next())
+            .ok_or_else(|| failed.join("; "))?
+            .instrument;
+        for (script, saved) in out.scripts.iter_mut().zip(saved) {
+            script.saved.clone_from(saved);
+        }
+        out.source_path = Some(path.to_owned());
+        return Ok(out);
+    }
     if kontra_format_uvi::is_uvi(path) {
         // The load pass runs once per script, in order.
         let next = std::cell::Cell::new(0);
@@ -125,6 +136,26 @@ pub struct Preset {
     pub saved: Vec<Vec<String>>,
     /// It saves the instrument's effects too: a recall rebuilds them.
     pub effects: bool,
+}
+
+/// A multi's slot as a path: `Multi.nkm/<slot>`, the slot counted from 0
+/// (so a project saves and reopens a multi's part by path).
+#[must_use]
+pub fn multi_slot(path: &Path) -> Option<(&Path, u16)> {
+    let multi = path
+        .parent()
+        .filter(|p| kontra_format_kontakt::is_multi(p))?;
+    Some((multi, path.file_name()?.to_str()?.parse().ok()?))
+}
+
+/// Whether `path` is a preset of an instrument in another file: the
+/// player's own, or a Kontakt snapshot.
+#[must_use]
+pub fn is_preset(path: &Path) -> bool {
+    crate::presets::ours(path)
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
 }
 
 /// The file at `path` as a [`Preset`] (a Kontakt snapshot), read without
@@ -240,6 +271,13 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 planned.source_folder =
                     crate::script::source_folder(instrument.source_path.as_deref());
                 planned.library_folder = crate::script::folder(instrument.library_path.as_deref());
+                // The resource container's folder, looked up only for a script that asks.
+                if script.source.contains("GET_FOLDER_RC_DIR") {
+                    planned.rc_folder = instrument.source_path.as_deref().and_then(|p| {
+                        let found = kontra_format_kontakt::Resources::open(p).container_folder();
+                        crate::script::folder(found.as_deref())
+                    });
+                }
                 planned.files = Some(std::sync::Arc::new(crate::rack::DiskFiles::default()));
                 planned.factory_folder = *factory_folder.get_or_insert_with(|| {
                     factory_folder_of(kontra_library::kontakt::candidates())
