@@ -19,8 +19,8 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
         performance: page.performance,
         ..Default::default()
     };
-    let mut asset = |tree: &mut ui::Interface, path: &str, frames: u32| {
-        let at = *assets.entry((path.to_owned(), frames)).or_insert_with(|| {
+    let mut asset = |tree: &mut ui::Interface, path: &str, frames: u32, stretch: bool| {
+        let at = *assets.entry((path.to_owned(), frames, stretch)).or_insert_with(|| {
             let mut meta = picture(path).unwrap_or_default();
             // A strip's frames stack down; each is drawn at the widget's size.
             meta.frames = frames;
@@ -29,7 +29,7 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
                 width: s.width,
                 height: (s.height / f64::from(frames)).floor(),
             });
-            meta.stretch = [true; 2];
+            meta.stretch = [stretch; 2];
             tree.assets.push(ui::Asset {
                 path: path.to_owned(),
                 kind: ui::AssetKind::Image(meta),
@@ -42,7 +42,7 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
         };
         (ui::AssetRef(at), size)
     };
-    let background = page.background.as_deref().map(|p| asset(&mut tree, p, 1).0);
+    let background = (page.background.as_deref()).map(|p| asset(&mut tree, p, 1, true).0);
     tree.pages.push(ui::Page {
         name: "Performance".into(),
         size: ui::Size {
@@ -74,9 +74,12 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             (w.handle.as_deref().map(|p| (p, 1)), ui::Role::Handle),
         ];
         let mut own = None;
+        // A panel's background sits at its own size from its top left
+        // (Augmented Orchestra's 153x100 filter art in a 120 high panel).
+        let stretch = w.kind != "Panel";
         for (path, role) in roles {
             if let Some((path, frames)) = path {
-                let (at, size) = asset(&mut tree, path, frames);
+                let (at, size) = asset(&mut tree, path, frames, stretch);
                 // A handle is smaller than the track it moves along.
                 own = own.or(size.filter(|_| role != ui::Role::Handle));
                 out.images.push(ui::ImageUse::new(at, role));
