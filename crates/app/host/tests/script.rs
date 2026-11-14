@@ -4470,6 +4470,20 @@ fn uvi_controllers_reach_the_instrument_only_as_posted() {
     assert_eq!(e.controller(1), Some(7), "a changed controller replaces");
 }
 
+/// UVI's `postEvent(e, delta)`: a controller posted `delta` ms on reaches
+/// the instrument then, sample-timed by the engine's queue.
+#[test]
+fn a_uvi_controller_posted_later_arrives_later() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = lua_engine(&mut store, "function onAfterTouch(e) postEvent(e, 200) end");
+    level(&mut e, &[pressure(80)]);
+    assert_eq!(e.controller(129), Some(0), "it went at once");
+    for _ in 0..4 {
+        level(&mut e, &[]);
+    }
+    assert_eq!(e.controller(129), Some(80), "it never arrived");
+}
+
 /// KSP manual: `set_controller` sends `$VCC_PITCH_BEND` and `$VCC_MONO_AT`
 /// too, and `ignore_controller` with it transforms what arrived.
 #[test]
@@ -4764,4 +4778,116 @@ fn midi_events_are_addressed_by_track_and_by_mark() {
         "{:?}",
         e.unhandled_actions()
     );
+}
+
+/// Census: runs every UVI program's scripts under `KONTRA_UVI_BANKS` (a
+/// folder searched for `.ufs` banks) and prints, per distinct script, what
+/// it does with CC 1, CC 64, pitch bend, aftertouch and poly aftertouch:
+/// passes it, keeps it back (no `postEvent`) or replaces it.
+#[test]
+#[ignore = "reads the UVI libraries on this machine"]
+fn uvi_controller_census() {
+    let Some(root) = std::env::var_os("KONTRA_UVI_BANKS") else {
+        return;
+    };
+    let mut banks = Vec::new();
+    let mut dirs = vec![std::path::PathBuf::from(root)];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("ufs"))
+            {
+                banks.push(path);
+            }
+        }
+    }
+    banks.sort();
+    let mut seen = std::collections::HashMap::<u64, usize>::new();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let probes: [(&str, Timed<Event>); 5] = [
+        ("cc1", cc(1, 90)),
+        ("cc64", cc(64, 127)),
+        ("bend", bend(0.5)),
+        ("at", pressure(70)),
+        (
+            "polyat",
+            Timed {
+                at: SampleTime(0),
+                body: Event::midi1(0xA0, 60, 70),
+            },
+        ),
+    ];
+    println!("banks: {}", banks.len());
+    for bank in &banks {
+        let programs = kontra_format_uvi::programs(bank).unwrap_or_default();
+        let name = bank.file_stem().unwrap().to_string_lossy();
+        println!("bank {name}: {} programs", programs.len());
+        let started = std::time::Instant::now();
+        for program in programs {
+            let Ok(instrument) = kontra_format_uvi::load(&bank.join(&program)) else {
+                println!("  {program}: does not load");
+                continue;
+            };
+            for script in &instrument.scripts {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                script.source.hash(&mut h);
+                // Its code: the source and the bank's Lua modules (a
+                // program's saved state and folder only set values).
+                let code = |n: &String| n.ends_with(".lua") && !n.starts_with("__");
+                for (n, bytes) in script.data.iter().filter(|(n, _)| code(n)) {
+                    (n, bytes.len()).hash(&mut h);
+                }
+                let key = h.finish();
+                if let Some(count) = seen.get_mut(&key) {
+                    *count += 1;
+                    continue;
+                }
+                seen.insert(key, 1);
+                let modules: Vec<(String, String)> = (script.data.iter())
+                    .map(|(n, b)| (n.clone(), String::from_utf8_lossy(b).into_owned()))
+                    .collect();
+                let compiled = match kontra_lua::compile(&script.source, &modules, &script.saved) {
+                    Ok(c) => c,
+                    Err(err) => {
+                        println!("  {program} [{}]: compile: {err}", script.name);
+                        continue;
+                    }
+                };
+                let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+                plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+                let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+                level(&mut e, &[]);
+                level(&mut e, &[on(60)]);
+                let mut row = Vec::new();
+                for (probe, event) in &probes {
+                    let before = e.stats();
+                    level(&mut e, &[*event]);
+                    let after = e.stats();
+                    let verdict = if after.controllers_replaced > before.controllers_replaced {
+                        "replaced"
+                    } else if after.controllers_ignored > before.controllers_ignored {
+                        "KEPT"
+                    } else {
+                        "pass"
+                    };
+                    row.push(format!("{probe}={verdict}"));
+                }
+                println!(
+                    "  {program} [{}] {key:016x}: {}",
+                    script.name,
+                    row.join(" ")
+                );
+            }
+        }
+        println!("  ({:.0} s)", started.elapsed().as_secs_f64());
+    }
+    println!("distinct scripts: {}", seen.len());
+    for (key, count) in &seen {
+        println!("script {key:016x}: {count} programs");
+    }
 }

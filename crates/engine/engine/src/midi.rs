@@ -152,7 +152,7 @@ impl Engine {
             };
             let heard = Heard::of(&self.run_callback(slot, entry, running));
             if heard != Heard::Passed {
-                return heard;
+                return self.count(heard);
             }
         }
         Heard::Passed
@@ -234,7 +234,7 @@ impl Engine {
                 };
                 let heard = Heard::of(&self.run_callback(slot, entry, running));
                 if heard != Heard::Passed {
-                    return heard;
+                    return self.count(heard);
                 }
             }
         }
@@ -252,6 +252,17 @@ pub(crate) enum Heard {
     /// A script kept it and set its own value instead (Kontakt's
     /// `ignore_controller` with `set_controller`, UVI's changed event posted).
     Replaced,
+}
+
+impl Engine {
+    fn count(&mut self, heard: Heard) -> Heard {
+        match heard {
+            Heard::Ignored => self.stats.controllers_ignored += 1,
+            Heard::Replaced => self.stats.controllers_replaced += 1,
+            Heard::Passed => {}
+        }
+        heard
+    }
 }
 
 impl Heard {
