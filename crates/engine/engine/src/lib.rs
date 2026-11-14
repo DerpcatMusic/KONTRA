@@ -20,6 +20,8 @@ mod inspect;
 mod knobs;
 mod midi;
 mod midi_object;
+mod detect;
+mod zone_commands;
 mod modulators;
 mod par_display;
 mod params;
@@ -63,6 +65,7 @@ pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
+pub use zone_commands::detect_sample;
 pub use kontra_plan::{
     EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, zone_name,
 };

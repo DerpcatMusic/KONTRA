@@ -53,7 +53,7 @@ impl Engine {
 
     /// Applies `f` to every addressed note, then refreshes the sounding ones
     /// (at the end of the callback).
-    fn each(&mut self, id: i32, mut f: impl FnMut(&mut Note)) {
+    pub(crate) fn each(&mut self, id: i32, mut f: impl FnMut(&mut Note)) {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
         for &note in &hits {
@@ -346,6 +346,9 @@ impl HostApi for Engine {
             return value;
         }
         if let Some(value) = self.midi_call(&mut call) {
+            return value;
+        }
+        if let Some(value) = self.zone_call(&mut call) {
             return value;
         }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
@@ -805,6 +808,7 @@ impl HostApi for Engine {
                     name: ext,
                     save: int(0) == 1,
                     midi: None,
+                    detect: None,
                 };
                 HostValue::Int(self.request_file(request))
             }

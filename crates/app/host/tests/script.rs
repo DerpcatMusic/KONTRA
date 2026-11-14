@@ -3794,6 +3794,8 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
         end: 204_800,
         start_range: 204_800,
         rate: 44_100,
+        source: None,
+        loops: Vec::new(),
     }];
     plan.inserts = vec![
         Some(ir::Effect {
@@ -4412,5 +4414,114 @@ fn the_midi_object_inserts_into_its_buffer() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "1 2 -1 1 42 6 1");
+    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+}
+
+/// A zone whose facts carry a one-second 440 Hz mono WAV, for the zone and
+/// detection commands.
+fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
+    use kontra_engine::{ZoneFacts, ir};
+    let (rate, frames) = (44_100u32, 44_100u32);
+    let mut wav = b"RIFF".to_vec();
+    wav.extend((36 + frames * 2).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend([1, 0, 1, 0]);
+    wav.extend(rate.to_le_bytes());
+    wav.extend((rate * 2).to_le_bytes());
+    wav.extend([2, 0, 16, 0]);
+    wav.extend(b"data");
+    wav.extend((frames * 2).to_le_bytes());
+    for i in 0..frames {
+        let v = (f64::from(i) * 440.0 * std::f64::consts::TAU / f64::from(rate)).sin() * 16_000.0;
+        wav.extend((v as i16).to_le_bytes());
+    }
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("tone440.wav");
+    std::fs::write(&file, wav).unwrap();
+    let sample = ir::Sample {
+        name: "tone440".into(),
+        file,
+        offset: 0,
+        len: None,
+        channels: 1,
+        frames: u64::from(frames),
+        rate,
+        keystream: None,
+    };
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let mut plan = Plan::new(vec![zone(store, 0.5, 0)], 16);
+    plan.groups = vec![kontra_engine::Group::standard()];
+    plan.zone_facts = vec![ZoneFacts {
+        id: 0,
+        name: "tone440".into(),
+        group: 0,
+        keys: 0..=127,
+        velocities: 1..=127,
+        root: 69,
+        start: 0,
+        end: u64::from(frames),
+        start_range: 0,
+        rate,
+        source: Some(Arc::new(sample)),
+        loops: vec![ir::Loop { start: 100, end: 600, crossfade: 20, count: 3, ..Default::default() }],
+    }];
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    Engine::new(Arc::new(plan), store.client(), RATE)
+}
+
+/// KSP manual (Zone Commands): `get_sample` names a zone's file, `get_zone_status`
+/// its state and `get_loop_par` a loop's numbers.
+#[test]
+fn a_script_reads_a_zones_sample_status_and_loop() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine_with_tone_zone(
+        &mut store,
+        "on init
+            message(get_sample(0, $NI_FILE_NAME) & \" \" & get_sample(0, $NI_FILE_EXTENSION) & \" \" & get_zone_status(0) & \" \" & get_zone_status(9) & \" \" & get_loop_par(0, 0, $LOOP_PAR_LENGTH) & \" \" & get_loop_par(0, 0, $LOOP_PAR_COUNT) & \" \" & get_loop_par(0, 1, $LOOP_PAR_START))
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "tone440 wav 1 -1 500 3 0");
+    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+}
+
+/// KSP manual (Music Information Retrieval): in `on init` a detection sets its
+/// variable at once; the pitch of a 440 Hz tone is MIDI note 69 and its peak is its level.
+#[test]
+fn detections_measure_a_zones_sample_in_init() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine_with_tone_zone(
+        &mut store,
+        "on init
+            declare ~pitch
+            declare ~peak
+            declare $key
+            declare $kind
+            detect_pitch(0, ~pitch)
+            detect_peak(0, ~peak)
+            detect_key(0, $key)
+            detect_sample_type(0, $kind)
+            message(real_to_int(~pitch * 10.0) & \" \" & real_to_int(~peak) & \" \" & $kind)
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "690 -6 -1");
+}
+
+/// KSP manual (`redirect_output`): a note's output follows its own redirect,
+/// not its group's; it compiles and runs without an unhandled action.
+#[test]
+fn a_note_can_be_redirected_to_a_bus() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note
+            redirect_output($EVENT_ID, $OUTPUT_TYPE_BUS_OUT, 0)
+            redirect_output($EVENT_ID, $OUTPUT_TYPE_DEFAULT)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
     assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
 }
