@@ -2743,6 +2743,27 @@ fn a_script_loads_a_library_response_into_a_convolution() {
     assert!((l - 0.25).abs() < 1e-3, "{l}");
     assert_eq!(e.last_message(), "1 1");
     assert_eq!(e.stats().actions_unhandled, 0);
+
+    // The manual's first form: an absolute path, read in init.
+    let copy = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half_copy.wav");
+    std::fs::copy(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half.wav"), &copy)
+        .unwrap();
+    let by_path = kontra_ksp::compile(
+        &format!(
+            "on init
+                load_ir_sample(\"{}\", 0, $NI_INSERT_BUS)
+            end on",
+            copy.to_string_lossy().replace('\\', "/")
+        ),
+        &[],
+    )
+    .unwrap();
+    let mut direct = Plan::clone(&resumed);
+    direct.scripts = vec![kontra_host::script::plan(&by_path, &[], &[])];
+    let mut e = Engine::new(Arc::new(direct), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.25).abs() < 1e-3, "{l}");
+    assert_eq!(e.stats().actions_unhandled, 0);
 }
 
 /// A script's `IRC_*` knobs prepare the slot's own response again: at
@@ -3314,6 +3335,27 @@ fn get_folder_factory_returns_prepared_path_or_empty() {
     }
 }
 
+/// `$GET_FOLDER_RC_DIR` is the folder of the library's resource container, and
+/// empty without one (the manual).
+#[test]
+fn get_folder_rc_returns_the_container_folder_or_empty() {
+    let script = kontra_ksp::compile(
+        "on init\n message(get_folder($GET_FOLDER_RC_DIR))\nend on",
+        &[],
+    )
+    .unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    for (folder, expected) in [(Some("/lib/"), "/lib/"), (None, "")] {
+        let mut plan = Plan::new(vec![], 4);
+        let mut script_plan = kontra_host::script::plan(&script, &[], &[]);
+        script_plan.rc_folder = folder.map(|f| kontra_engine::Text::from_str_cut(f).0);
+        plan.scripts.push(script_plan);
+        let engine = Engine::new(Arc::new(plan), store.client(), RATE);
+        assert_eq!(engine.last_message(), expected);
+        assert_eq!(engine.stats().actions_unhandled, 0);
+    }
+}
+
 /// `fade_out` without stopping leaves the voice playing silent until
 /// `fade_in` brings it back (the manual's stutter), and `fade_in` on a new
 /// note starts its voices from silence.
@@ -3796,6 +3838,12 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
         rate: 44_100,
         source: None,
         loops: Vec::new(),
+        user: false,
+        volume: 0,
+        pan: 0,
+        tune: 0,
+        fades: [0; 4],
+        loop_pars: Default::default(),
     }];
     plan.inserts = vec![
         Some(ir::Effect {
@@ -4335,7 +4383,7 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     let mut plan = Plan::clone(e.plan());
     let done: Vec<_> = edits
         .iter()
-        .map(|x| (*x, plan.edit_zone(x.zone, x.par, x.value)))
+        .map(|x| (*x, x.apply(&mut plan)))
         .collect();
     e.swap_plan(&mut Arc::new(plan), &done);
     // The held voice's zone changed group: it fades out.
@@ -4343,6 +4391,71 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     assert!(e.last_message().starts_with("done"), "{}", e.last_message());
     assert!((level(&mut e, &[off(60), on(60)])).abs() < 1e-4);
     assert!((level(&mut e, &[on(72)]) - 1.0).abs() < 1e-3);
+}
+
+/// `on midi_in` sees a note before the engine: it can drop it (`ignore_midi`),
+/// move it (`set_event_par`) and add notes (`set_midi`), and the engine plays
+/// what is left. Key 60 is dropped, 61 moves up an octave to 73, 62 gets a
+/// second note on 66.
+#[test]
+fn midi_in_drops_moves_and_adds_notes_before_the_engine() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 60)
+                ignore_midi
+            end if
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 61)
+                set_event_par(0, $EVENT_PAR_MIDI_BYTE_1, 73)
+            end if
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 62)
+                set_midi($MIDI_CHANNEL, $MIDI_COMMAND, 66, $MIDI_BYTE_2)
+            end if
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.active_voices(), 0, "dropped");
+    level(&mut e, &[on(61)]);
+    assert_eq!(e.active_voices(), 1, "moved");
+    level(&mut e, &[on(62)]);
+    assert_eq!(e.active_voices(), 3, "added");
+}
+
+/// `set_note_controller` runs `on note_controller` in the other script slots
+/// only, with the controller, note and value.
+#[test]
+fn note_controller_reaches_the_other_slots_only() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let sender = kontra_ksp::compile(
+        "on note
+            set_note_controller(1, $EVENT_NOTE, 77)
+        end on
+        on note_controller
+            message(\"self\")
+        end on",
+        &[],
+    )
+    .unwrap();
+    let receiver = kontra_ksp::compile(
+        "on note_controller
+            message($NC_NUM & \",\" & $NC_NOTE & \",\" & $NC_VALUE)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![z], 16);
+    plan.scripts = vec![
+        kontra_host::script::plan(&sender, &[], &[]),
+        kontra_host::script::plan(&receiver, &[], &[]),
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "1,60,77");
 }
 
 /// Pitch bend of `bend` (-1..1) on channel 1.
@@ -4681,6 +4794,12 @@ fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
             count: 3,
             ..Default::default()
         }],
+        user: false,
+        volume: 0,
+        pan: 0,
+        tune: 0,
+        fades: [0; 4],
+        loop_pars: Default::default(),
     }];
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     Engine::new(Arc::new(plan), store.client(), RATE)
@@ -4727,6 +4846,114 @@ fn detections_measure_a_zones_sample_in_init() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "690 -6 -1");
+}
+
+/// The path of the tone `engine_with_tone_zone` writes, for a script to load.
+fn tone_path() -> String {
+    std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("tone440.wav")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Puts the engine's user zones' samples in, as the host does between ticks.
+fn attach_user_zones(e: &mut Engine, store: &mut Store, edits: &[kontra_engine::ZoneEdit]) {
+    let mut plan = Plan::clone(e.plan());
+    let done: Vec<_> = edits.iter().map(|x| (*x, x.apply(&mut plan))).collect();
+    if let Some((grown, _)) = kontra_prepare::user_zones(&plan, store, &|s| kontra_stream::open(s))
+    {
+        plan = grown;
+    }
+    e.swap_plan(&mut Arc::new(plan), &done);
+}
+
+/// KSP manual (Zone Commands, user zones): `set_num_user_zones` makes zones
+/// after the saved ones (ids in `%NI_USER_ZONE_IDS`), `set_zone_par` clamps as
+/// Kontakt does, `set_sample` in `on init` loads at once and the zone plays.
+#[test]
+fn a_user_zone_takes_parameters_a_sample_and_a_loop_in_init() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine_with_tone_zone(
+        &mut store,
+        &format!(
+            "on init
+                declare $z
+                declare $y
+                set_num_user_zones(2)
+                $z := %NI_USER_ZONE_IDS[0]
+                $y := %NI_USER_ZONE_IDS[1]
+                message(get_zone_status($z) & \" \" & get_zone_par($z, $ZONE_PAR_ROOT_KEY))
+                set_zone_par($z, $ZONE_PAR_HIGH_KEY, 127)
+                set_zone_par($z, $ZONE_PAR_LOW_VELO, 1)
+                set_zone_par($z, $ZONE_PAR_HIGH_VELO, 127)
+                set_zone_par($z, $ZONE_PAR_VOLUME, 99999)
+                set_zone_par($z, $ZONE_PAR_PAN, -99999)
+                set_zone_par($z, $ZONE_PAR_ROOT_KEY, 69)
+                set_zone_par($z, $ZONE_PAR_TUNE, 150)
+                set_sample($z, \"{path}\")
+                set_loop_par($z, 0, $LOOP_PAR_MODE, 1)
+                set_loop_par($z, 0, $LOOP_PAR_START, 1000)
+                set_loop_par($z, 0, $LOOP_PAR_LENGTH, 99999999)
+                set_loop_par($z, 3, $LOOP_PAR_MODE, 1)
+                message($z & \" \" & $y & \" \" & get_num_zones() & \" \" & get_zone_status($z) & \" \" & get_zone_status($y) & \" \" & get_zone_par($z, $ZONE_PAR_VOLUME) & \" \" & get_zone_par($z, $ZONE_PAR_PAN) & \" \" & get_zone_par($z, $ZONE_PAR_TUNE) & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_END) & \" \" & get_loop_par($z, 0, $LOOP_PAR_LENGTH) & \" \" & get_loop_par($z, 1, $LOOP_PAR_MODE) & \" \" & get_loop_par($z, 8, $LOOP_PAR_MODE) & \" \" & get_sample_length($z) & \" \" & get_sample($z, $NI_FILE_NAME) & \" \" & num_elements(%NI_USER_ZONE_IDS))
+                set_sample(0, \"{path}\")
+                set_loop_par(0, 0, $LOOP_PAR_MODE, 5)
+            end on",
+            path = tone_path()
+        ),
+    );
+    assert_eq!(
+        e.last_message(),
+        "1 2 3 1 0 3600 -1000 150 44100 43100 0 -1 1000000 tone440 2"
+    );
+    assert_eq!(e.plan().user_zone_ids().collect::<Vec<_>>(), [1, 2]);
+    // The saved zone is not a user zone: set_sample and set_loop_par leave it be.
+    assert_eq!(e.plan().zone_facts.first().map(|z| z.loops.len()), Some(1));
+    // The host builds the zone that plays the sample.
+    attach_user_zones(&mut e, &mut store, &[]);
+    assert!(e.plan().zones.iter().any(|z| z.id == 1));
+}
+
+/// KSP manual (`set_sample`): outside `on init` it returns an async id; the
+/// host loads the file and `on async_complete` follows.
+#[test]
+fn set_sample_outside_init_completes_when_the_host_loads_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine_with_tone_zone(
+        &mut store,
+        &format!(
+            "on init
+                declare $id
+                declare $z
+                set_num_user_zones(1)
+                $z := %NI_USER_ZONE_IDS[0]
+                set_zone_par($z, $ZONE_PAR_HIGH_KEY, 127)
+                set_zone_par($z, $ZONE_PAR_LOW_VELO, 1)
+                set_zone_par($z, $ZONE_PAR_HIGH_VELO, 127)
+            end on
+            on note
+                if ($EVENT_NOTE = 61)
+                    ignore_event($EVENT_ID)
+                    $id := set_sample($z, \"{path}\")
+                end if
+            end on
+            on async_complete
+                message(\"done \" & ($NI_ASYNC_ID = $id) & \" \" & $NI_ASYNC_EXIT_STATUS & \" \" & get_zone_status($z) & \" \" & get_sample_length($z))
+            end on",
+            path = tone_path()
+        ),
+    );
+    level(&mut e, &[on(61)]);
+    let mut edits = Vec::new();
+    e.drain_zone_edits(|edit| {
+        edits.push(edit);
+        true
+    });
+    assert_eq!(edits.len(), 1);
+    attach_user_zones(&mut e, &mut store, &edits);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "done 1 1 1 1000000");
+    assert!(e.plan().zones.iter().any(|z| z.id == 1));
 }
 
 /// KSP manual (`redirect_output`): a note's output follows its own redirect,

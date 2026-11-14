@@ -100,6 +100,8 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             release: entry(CallbackKind::Release),
             controller: entry(CallbackKind::Controller),
             poly_at: entry(CallbackKind::PolyAt),
+            note_controller: entry(CallbackKind::NoteController),
+            midi_in: entry(CallbackKind::MidiIn),
             persistence_changed: entry(CallbackKind::PersistenceChanged),
             listener: entry(CallbackKind::Listener),
             pgs_changed: entry(CallbackKind::PgsChanged),
@@ -166,6 +168,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .collect(),
         source_folder: None,
         library_folder: None,
+        rc_folder: None,
         factory_folder: None,
         text_data: data
             .iter()
@@ -409,6 +412,8 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             release: entry(defined.release, kontra_lua::Callbacks::RELEASE),
             controller: entry(defined.controller, kontra_lua::Callbacks::CONTROLLER),
             poly_at: entry(defined.poly_at, kontra_lua::Callbacks::POLY_AT),
+            note_controller: None,
+            midi_in: None,
             persistence_changed: None,
             listener: entry(defined.transport, kontra_lua::Callbacks::TRANSPORT),
             pgs_changed: None,
@@ -436,6 +441,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         text_data: Vec::new(),
         source_folder: None,
         library_folder: None,
+        rc_folder: None,
         factory_folder: None,
         restore: Vec::new(),
         restore_texts: Vec::new(),

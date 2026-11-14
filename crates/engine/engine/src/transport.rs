@@ -118,6 +118,7 @@ impl Engine {
             Action::SignatureDenom => HostValue::Int(i32::from(denom)),
             Action::Bpm | Action::Tempo => int(f64::from(self.tempo)),
             Action::MsToTicks => int(f64::from(arg) / quarter * PPQ),
+            Action::TicksToMicros => int(f64::from(arg) / PPQ * quarter),
             Action::TicksToMs => int(f64::from(arg) / PPQ * quarter),
             // The manual: a bar's duration is 0 while the clock stands.
             Action::DurationBar if !t.playing => HostValue::Int(0),

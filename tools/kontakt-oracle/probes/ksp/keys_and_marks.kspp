@@ -1,7 +1,6 @@
 # The detect key tags and the MIDI mark commands in Kontakt 8.13 (run: ksp_probe.py <nki> this-file).
-# Measured 2026-11-14: C# major 1, D 2 ... B major 11, C minor 12 ... B minor 23 (KONTRA: 0..23 from C major).
-# ANOMALY, unexplained, read the same in two runs: $NI_DETECT_KEY_C_MAJOR reads 1 (as C# major) and
-# $NI_DETECT_KEY_INVALID reads 6; KONTRA keeps 0 and -1. ids continue after mf_reset (2, then 3); a CC
+# Measured 2026-11-14: C major 1, C# major 1, D 2 ... B major 11, C minor 12 ... B minor 23, INVALID 6 (detect_tags.kspp reads
+# them again by arithmetic and a variable); KONTRA numbers them as Kontakt prints. ids continue after mf_reset (2, then 3); a CC
 # event's length reads -1; by_marks($MARK_1) reads -2147483646 and by_track(2) -4 (KONTRA's own tags).
 # OPEN: mf_get_mark answered 0 for an id, $ALL_EVENTS and $CURRENT_EVENT right after mf_set_mark(.., 1),
 # while by_marks($MARK_2) addressed the event and cleared again with status 0.

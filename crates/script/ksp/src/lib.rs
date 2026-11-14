@@ -114,11 +114,13 @@ pub enum CallbackKind {
     AsyncComplete,
     Rpn,
     Nrpn,
+    NoteController,
+    MidiIn,
 }
 
 impl CallbackKind {
     /// Every callback, for coverage reports.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Init,
         Self::Note,
         Self::Release,
@@ -133,6 +135,8 @@ impl CallbackKind {
         Self::AsyncComplete,
         Self::Rpn,
         Self::Nrpn,
+        Self::NoteController,
+        Self::MidiIn,
     ];
 }
 

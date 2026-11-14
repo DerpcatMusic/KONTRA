@@ -1,0 +1,45 @@
+# Is the first R label of a probe read wrongly? keys_and_marks.kspp read $NI_DETECT_KEY_C_MAJOR as 1
+# (first label, groups 0..4) and $NI_DETECT_KEY_INVALID as 6 (25th). Here each sits at other positions,
+# next to labels with known values. mf_get_mark is read in on init and later, in on persistence_changed
+# (it wrote group tunes of the `later` label; 7777 means that callback never ran).
+S declare $a
+R dummy_zero 0
+R dummy_five 5
+R c_major $NI_DETECT_KEY_C_MAJOR
+R csharp_major $NI_DETECT_KEY_CSHARP_MAJOR
+R invalid $NI_DETECT_KEY_INVALID
+R c_minor $NI_DETECT_KEY_C_MINOR
+R b_minor $NI_DETECT_KEY_B_MINOR
+R c_major_again $NI_DETECT_KEY_C_MAJOR
+R invalid_again $NI_DETECT_KEY_INVALID
+R minus_one -1
+S mf_set_buffer_size(4)
+S $a := mf_insert_event(1, 10, $MIDI_COMMAND_CC, 7, 90)
+S mf_set_mark($a, $MARK_2, 1)
+R mark_in_init mf_get_mark($a, $MARK_2)
+R mark_all_in_init mf_get_mark($ALL_EVENTS, $MARK_2)
+R mark_current_in_init mf_get_mark($CURRENT_EVENT, $MARK_2)
+R mark_by_marks_in_init by_marks($MARK_2)
+R later 7777
+R later_all 7777
+R later_by_marks 7777
+X on persistence_changed
+X   $v := mf_get_mark($a, $MARK_2) + 1000000
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 1) mod 100), 70, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 100) mod 100), 71, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 10000) mod 100), 72, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 1000000) mod 100), 73, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 100000000) mod 100), 74, -1, -1)
+X   $v := mf_get_mark($ALL_EVENTS, $MARK_2) + 1000000
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 1) mod 100), 75, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 100) mod 100), 76, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 10000) mod 100), 77, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 1000000) mod 100), 78, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 100000000) mod 100), 79, -1, -1)
+X   $v := by_marks($MARK_2) + 1000000
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 1) mod 100), 80, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 100) mod 100), 81, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 10000) mod 100), 82, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 1000000) mod 100), 83, -1, -1)
+X   set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / 100000000) mod 100), 84, -1, -1)
+X end on
