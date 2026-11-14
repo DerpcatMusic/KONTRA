@@ -35,11 +35,38 @@ pub struct Preset {
 
 /// What a snapshot saves of the instrument besides its scripts: the
 /// program's racks (instrument insert, send, main and bus chunks, as the
-/// program holds them) and each group's insert effects, by group. The
-/// translator reads them in place of the base's, by the same reader.
+/// program holds them) and each group's state, by group. The translator
+/// reads them in place of the base's, by the same reader.
 pub(crate) struct Native {
     pub racks: Vec<Chunk>,
-    pub groups: Vec<Option<BParamArrayBParFX8>>,
+    pub groups: Vec<Option<Group>>,
+}
+
+/// A group as a snapshot saves it: its insert effects and its volume, pan
+/// and tune, as the group's own params hold them (the first three floats
+/// of its public data; a factory snapshot of the instrument's own state
+/// matches the instrument's on all 933 groups of Morphology Evolved).
+pub(crate) struct Group {
+    pub fx: BParamArrayBParFX8,
+    pub volume: f32,
+    pub pan: f32,
+    pub tune: f32,
+}
+
+impl Group {
+    fn of(g: ni_file::kontakt::objects::GroupSnapshot) -> Self {
+        let float = |at: usize| {
+            (g.public_data.get(at..at + 4))
+                .and_then(|b| b.try_into().ok())
+                .map_or(0.0, f32::from_le_bytes)
+        };
+        Self {
+            volume: float(0),
+            pan: float(4),
+            tune: float(8),
+            fx: g.fx,
+        }
+    }
 }
 
 impl Native {
@@ -52,7 +79,7 @@ impl Native {
             return Ok(None);
         }
         let groups = (state.group_snapshots()?.into_iter())
-            .map(|(_, g)| Some(g.fx))
+            .map(|(_, g)| Some(Group::of(g)))
             .collect();
         Ok(Some(Self {
             racks: state.effect_children,
