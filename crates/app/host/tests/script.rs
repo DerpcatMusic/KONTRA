@@ -2746,8 +2746,11 @@ fn a_script_loads_a_library_response_into_a_convolution() {
 
     // The manual's first form: an absolute path, read in init.
     let copy = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half_copy.wav");
-    std::fs::copy(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half.wav"), &copy)
-        .unwrap();
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half.wav"),
+        &copy,
+    )
+    .unwrap();
     let by_path = kontra_ksp::compile(
         &format!(
             "on init
@@ -4381,10 +4384,7 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     assert_eq!(edits.len(), 3);
     assert!(!e.last_message().starts_with("done"));
     let mut plan = Plan::clone(e.plan());
-    let done: Vec<_> = edits
-        .iter()
-        .map(|x| (*x, x.apply(&mut plan)))
-        .collect();
+    let done: Vec<_> = edits.iter().map(|x| (*x, x.apply(&mut plan))).collect();
     e.swap_plan(&mut Arc::new(plan), &done);
     // The held voice's zone changed group: it fades out.
     assert!(level(&mut e, &[]).abs() < 1e-4);

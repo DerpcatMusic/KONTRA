@@ -1786,6 +1786,20 @@ fn a_relinked_library_folder_is_remembered_by_the_next_session() {
 
 #[test]
 fn a_purged_group_loads_when_a_script_unpurges_it_and_plays_after() {
+    // By a control later, and while the instrument loads (Morphology's
+    // snapshots pick their sample group in `on persistence_changed`).
+    unpurged_plays(Unpurged::ByControl);
+    unpurged_plays(Unpurged::AtLoad);
+}
+
+/// When the script un-purges the purged group.
+#[derive(PartialEq)]
+enum Unpurged {
+    ByControl,
+    AtLoad,
+}
+
+fn unpurged_plays(when: Unpurged) {
     use kontra_engine::ir;
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("unpurge");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1809,13 +1823,21 @@ fn a_purged_group_loads_when_a_script_unpurges_it_and_plays_after() {
         name: "s".into(),
         slot: 0,
         dialect: ir::Dialect::Ksp,
-        source: "on init
-            declare ui_button $go
-        end on
-        on ui_control ($go)
-            purge_group(1, 1)
-        end on"
-            .into(),
+        source: if when == Unpurged::ByControl {
+            "on init
+                declare ui_button $go
+            end on
+            on ui_control ($go)
+                purge_group(1, 1)
+            end on"
+        } else {
+            "on init
+            end on
+            on persistence_changed
+                purge_group(1, 1)
+            end on"
+        }
+        .into(),
         saved: Vec::new(),
         data: Vec::new(),
         links: Vec::new(),
@@ -1847,8 +1869,10 @@ fn a_purged_group_loads_when_a_script_unpurges_it_and_plays_after() {
         top
     };
     assert!(loudest(&mut audio, 60) > 1e-4, "the resident group plays");
-    assert!(loudest(&mut audio, 62) < 1e-6, "a purged group is silent");
-    rack.control(0, 0, None, 1.0, Default::default());
+    if when == Unpurged::ByControl {
+        assert!(loudest(&mut audio, 62) < 1e-6, "a purged group is silent");
+        rack.control(0, 0, None, 1.0, Default::default());
+    }
     // The group loads off the audio thread; the control side builds, the
     // audio side swaps in, a thread reads heads.
     let mut said = Vec::new();
