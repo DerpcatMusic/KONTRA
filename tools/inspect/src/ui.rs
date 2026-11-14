@@ -11,6 +11,22 @@ use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model::{Interface, Kind, Value, Widget};
 use serde_json::{Value as Json, json};
 
+/// Trace events a move keeps of each kind in the report
+/// (`KONTRA_INSPECT_KEEP_EVENTS`, default 64).
+fn kept_events() -> usize {
+    std::env::var("KONTRA_INSPECT_KEEP_EVENTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64)
+}
+
+/// This process's resident memory, so a sweep shows whether moves leak.
+fn rss_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
 use super::RATE;
 
 const BLOCK: usize = 128;
@@ -204,6 +220,32 @@ fn thread_cpu_ns() -> u64 {
     }
 }
 
+/// Each script action called so far, by name: (calls, calls left unanswered).
+fn calls(engine: &Engine) -> std::collections::BTreeMap<String, (u32, u32)> {
+    let mut out = std::collections::BTreeMap::new();
+    for (a, n) in engine.action_calls() {
+        out.entry(format!("{a:?}")).or_insert((0, 0)).0 = n;
+    }
+    for (a, n) in engine.unhandled_actions() {
+        out.entry(format!("{a:?}")).or_insert((0, 0)).1 = n;
+    }
+    out
+}
+
+/// What a phase added to the running counts of [`calls`].
+fn phase(
+    before: &std::collections::BTreeMap<String, (u32, u32)>,
+    after: &std::collections::BTreeMap<String, (u32, u32)>,
+) -> Json {
+    (after.iter())
+        .filter_map(|(name, &(c, u))| {
+            let (c0, u0) = before.get(name).copied().unwrap_or_default();
+            (c > c0 || u > u0).then(|| (name.clone(), json!([c - c0, u.saturating_sub(u0)])))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
 fn render(
     engine: &mut Engine,
     plan: &Plan,
@@ -238,6 +280,18 @@ fn render(
         for request in requests {
             engine.install(Prepared::new(request, Some(plan), RATE));
         }
+        // `set_zone_par` edits, applied together off audio as the host does.
+        let mut edits = Vec::new();
+        engine.drain_zone_edits(|e| {
+            edits.push(e);
+            true
+        });
+        if !edits.is_empty() {
+            let mut next = Plan::clone(engine.plan());
+            let done: Vec<_> = (edits.iter()).map(|e| (*e, e.apply(&mut next))).collect();
+            let next = kontra_prepare::tables(&next, stream).unwrap_or(next);
+            engine.swap_plan(&mut Arc::new(next), &done);
+        }
     }
     ((energy / (BLOCK * BLOCKS * 2) as f64).sqrt(), settled)
 }
@@ -245,6 +299,21 @@ fn render(
 pub fn run(path: &Path) -> Result<(Json, String)> {
     let instrument = kontra_host::instrument::read(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    // KONTRA_INSPECT_DUMP=DIR: each script's source and the modules it loads.
+    if let Some(dir) = std::env::var_os("KONTRA_INSPECT_DUMP").map(std::path::PathBuf::from) {
+        for script in &instrument.scripts {
+            let dir = dir.join(format!("{}-{}", script.slot, script.name.replace('/', "_")));
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join("source"), &script.source)?;
+            for (name, bytes) in &script.data {
+                let file = dir.join(name.trim_start_matches('/'));
+                if let Some(parent) = file.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(file, bytes)?;
+            }
+        }
+    }
     let samples: Vec<_> = instrument.samples.iter().map(|s| s.name.clone()).collect();
     let members: Vec<Vec<usize>> = instrument
         .groups
@@ -293,7 +362,18 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         },
         Timed { at, body: note },
     ];
-    let (_, mut settled) = render(&mut engine, &plan, &stream, &events, |_| {});
+    // The script's init runs in the first blocks, before any event.
+    let (_, mut settled) = render(&mut engine, &plan, &stream, &[], |_| {});
+    let at_load = calls(&engine);
+    let events: Vec<_> = (events.iter())
+        .map(|e| Timed {
+            at: engine.now(),
+            body: e.body,
+        })
+        .collect();
+    let (_, ready) = render(&mut engine, &plan, &stream, &events, |_| {});
+    settled &= ready;
+    let at_note = calls(&engine);
     engine.clear_trace();
     let mut controls = Vec::new();
     let list_only = std::env::var_os("KONTRA_INSPECT_UI_LIST").is_some();
@@ -488,6 +568,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 }
                 let after = cells(&engine, &plan);
                 let after_panel = panel(&engine);
+                // The value the control holds after the move: a script may
+                // clamp or reset it, or the move may not land.
+                let landed = (tree(&loaded, &engine, slot).ok().flatten())
+                    .and_then(|t| t.widgets.into_iter().find(|w| w.source_id == Some(id)))
+                    .and_then(|w| w.value)
+                    .map(|v| format!("{v:?}"));
                 // Other widgets whose state the move changed (shown, value,
                 // text): a panel switch or a linked control.
                 let panel_changed: Vec<_> = (before_panel.iter().zip(&after_panel).enumerate())
@@ -547,7 +633,13 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 let (_, again, ready_again) = fresh(&mut engine);
                 settled &= ready_next && ready_again;
                 let note_changed = note_diff(&first, &base, &next, &again);
-                moves.push(json!({"value":value,"move_us":move_us,"worst_block_lua_wall_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_wall_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
+                // A move's first events only: a VWinds move runs ~150 script
+                // callbacks, and keeping all of a 1200-move sweep's held 20 GB.
+                let stage_total = events.len();
+                let route_total = route_events.len();
+                events.truncate(kept_events());
+                route_events.truncate(kept_events());
+                moves.push(json!({"value":value,"landed":landed,"move_us":move_us,"worst_block_lua_wall_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_wall_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"stage_events_total":stage_total,"route_events":route_events,"route_events_total":route_total,"rss_kb":rss_kb(),
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));
@@ -555,6 +647,25 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
             controls.push(json!({"slot":slot,"widget":widget_index,"name":widget.name,"kind":format!("{:?}",widget.kind),"hidden":widget.hidden,"enabled":widget.enabled,"moves":moves}));
         }
     }
+    let at_end = calls(&engine);
+    let phases = json!({
+        "load": phase(&Default::default(), &at_load),
+        "note": phase(&at_load, &at_note),
+        "ui": phase(&at_note, &at_end),
+        // Named by the scripts that resolve the id, as `load` does.
+        "unanswered_pars": (engine.unanswered_pars().iter())
+            .map(|(p, n)| {
+                let i = usize::try_from(p[0] - kontra_ksp::SYMBOL_BASE).ok();
+                let mut names: Vec<&str> = (loaded.symbols.iter())
+                    .filter_map(|s| s.get(i?).map(|n| &**n))
+                    .filter(|n| n.starts_with("$ENGINE_PAR"))
+                    .collect();
+                names.dedup();
+                json!([p, n, names])
+            })
+            .collect::<Vec<_>>(),
+        "faults": format!("{:?}", engine.script_faults()),
+    });
     let stats = engine.stats();
     let stream_stats = stream.stats();
     let complete = model_errors.is_empty()
@@ -601,7 +712,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         format!("{summary}  zone edits refused: {}\n", refused.join(", "))
     };
     Ok((
-        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"sampled":{"per_slot":sample,"time_capped":capped},"trace_truncated":truncated,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
+        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"calls":phases,"sampled":{"per_slot":sample,"time_capped":capped},"trace_truncated":truncated,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
         summary,
     ))
 }
