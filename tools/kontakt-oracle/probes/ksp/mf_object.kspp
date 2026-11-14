@@ -1,0 +1,85 @@
+# The MIDI object's behaviour in Kontakt 8 (run: ksp_probe.py <nki> this-file).
+S declare $a
+S declare $b
+S declare $c
+S declare $d
+R tracks_empty mf_get_num_tracks
+R buf_empty mf_get_buffer_size
+S $a := mf_insert_event(0, 100, $MIDI_COMMAND_NOTE_ON, 60, 100)
+R insert_without_buffer $a
+S mf_set_buffer_size(10)
+R buf_after_set mf_get_buffer_size
+S $a := mf_insert_event(0, 100, $MIDI_COMMAND_NOTE_ON, 60, 100)
+R id_first $a
+R buf_after_insert mf_get_buffer_size
+S $b := mf_insert_event(2, 50, $MIDI_COMMAND_CC, 7, 90)
+R id_second $b
+R tracks_after_two mf_get_num_tracks
+R pos_a mf_get_event_par($a, $EVENT_PAR_POS)
+R track_b mf_get_event_par($b, $EVENT_PAR_TRACK_NR)
+R cmd_a mf_get_event_par($a, $EVENT_PAR_MIDI_COMMAND)
+R byte1_a mf_get_event_par($a, $EVENT_PAR_MIDI_BYTE_1)
+R byte2_a mf_get_event_par($a, $EVENT_PAR_MIDI_BYTE_2)
+R chan_a mf_get_event_par($a, $EVENT_PAR_MIDI_CHANNEL)
+R len_a mf_get_event_par($a, $EVENT_PAR_NOTE_LENGTH)
+R idpar_a mf_get_event_par($a, $EVENT_PAR_ID)
+R custom0_a mf_get_event_par($a, $EVENT_PAR_0)
+S mf_set_event_par($a, $EVENT_PAR_NOTE_LENGTH, 480)
+R len_set mf_get_event_par($a, $EVENT_PAR_NOTE_LENGTH)
+S mf_set_event_par($a, $EVENT_PAR_MIDI_CHANNEL, 5)
+R chan_set mf_get_event_par($a, $EVENT_PAR_MIDI_CHANNEL)
+S mf_set_event_par($a, $EVENT_PAR_0, 77)
+R custom0_set mf_get_event_par($a, $EVENT_PAR_0)
+S $c := mf_get_first(-1)
+R first_ret $c
+R first_id mf_get_id
+S $c := mf_get_next(-1)
+R next_ret $c
+R next_id mf_get_id
+S $c := mf_get_next(-1)
+R next_past_end_ret $c
+R next_past_end_id mf_get_id
+S $c := mf_get_last(-1)
+R last_id mf_get_id
+S $c := mf_get_prev(-1)
+R prev_id mf_get_id
+S $c := mf_get_first(2)
+R first_track2_id mf_get_id
+S $c := mf_get_first(7)
+R first_track7_ret $c
+R first_track7_id mf_get_id
+S $c := mf_get_next_at(-1, 60)
+R next_at_60_id mf_get_id
+S $c := mf_get_prev_at(-1, 100)
+R prev_at_100_id mf_get_id
+S mf_set_mark($a, $MARK_1, 1)
+R mark_a mf_get_mark($a, $MARK_1)
+R mark_b mf_get_mark($b, $MARK_1)
+R mark_a_2 mf_get_mark($a, $MARK_2)
+R by_marks_pos mf_get_event_par(by_marks($MARK_1), $EVENT_PAR_POS)
+R by_track_pos mf_get_event_par(by_track(2), $EVENT_PAR_POS)
+S mf_set_event_par($ALL_EVENTS, $EVENT_PAR_POS, 1000)
+R all_pos_a mf_get_event_par($a, $EVENT_PAR_POS)
+R all_pos_b mf_get_event_par($b, $EVENT_PAR_POS)
+R current_pos mf_get_event_par($CURRENT_EVENT, $EVENT_PAR_POS)
+S mf_remove_event($b)
+R buf_after_remove mf_get_buffer_size
+R tracks_after_remove mf_get_num_tracks
+R removed_pos mf_get_event_par($b, $EVENT_PAR_POS)
+S $d := mf_set_export_area("probe", -1, -1, -1, -1)
+R export_valid $d
+S $d := mf_insert_event(0, 5, $MIDI_COMMAND_NOTE_ON, 200, 100)
+R insert_bad_byte $d
+S mf_reset
+R buf_after_reset mf_get_buffer_size
+R tracks_after_reset mf_get_num_tracks
+S $a := mf_insert_event(0, 1, $MIDI_COMMAND_NOTE_ON, 60, 100)
+R insert_after_reset $a
+S mf_set_buffer_size(3)
+S $a := mf_insert_event(0, 1, $MIDI_COMMAND_NOTE_ON, 60, 100)
+R id_after_reset $a
+S $b := mf_insert_event(0, 2, $MIDI_COMMAND_NOTE_ON, 61, 100)
+S $c := mf_insert_event(0, 3, $MIDI_COMMAND_NOTE_ON, 62, 100)
+S $d := mf_insert_event(0, 4, $MIDI_COMMAND_NOTE_ON, 63, 100)
+R insert_when_full $d
+R buf_full mf_get_buffer_size
