@@ -1593,6 +1593,33 @@ mod tests {
     }
 
     #[test]
+    fn load_impulse_asks_the_host_for_the_inserts_convolution() {
+        // VWinds' seats: `loadImpulse(virtSpaceInsert1.inserts[1], path, cb)`.
+        let source = "local ok
+            loadImpulse(Program.auxs[1].inserts[1], '../Samples/IRs/Seat_14.flac',
+                function(task) ok = task.success end)
+            assert(ok == true)";
+        let log = run(source, Callbacks::INIT);
+        let call = log.0.iter().find(|(a, _)| *a == Action::LoadImpulse);
+        assert_eq!(call.map(|(_, ints)| ints.clone()), Some(vec![1, 3, 0]));
+    }
+
+    #[test]
+    fn a_sampled_reverbs_time_prepares_its_response_again() {
+        // VWinds' room size: `virtSpaceInsert1.inserts[1]:setParameter("Time", v)`.
+        let tree = "return {params={},db=0,pan=0,layers={},auxs={{params={},bus=2,
+            inserts={{params={Name='Room',Time='1'},fx={1,2,0},impulse={Time=1,PreDelay=2}}}}}}";
+        let source = "Program.auxs[1].inserts[1]:setParameter('Time', 0.4)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let call = log.0.iter().find(|(a, _)| *a == Action::ImpulseKnob);
+        assert_eq!(call.map(|(_, i)| i.clone()), Some(vec![1, 2, 0, 1, 400_000]));
+    }
+
+    #[test]
     fn an_inserts_bypass_reaches_its_effect() {
         // AO's Space switch: `Program.auxs[1].inserts[1]:setParameter("Bypass", ...)`.
         let sent = |source: &str| {

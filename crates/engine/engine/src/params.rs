@@ -181,12 +181,46 @@ impl Engine {
     }
 
     fn placed_effect(&mut self, at: i32, index: i32, slot: i32) -> Option<&mut ir::Effect> {
-        let (group, generic) = match at {
-            0 => (index, -1),
-            1 => (-1, (BUS_OFFSET - 1).saturating_add(index)),
-            _ => (-1, 1),
-        };
+        let (group, generic) = placed(at, index);
         self.effect_mut(group, slot, generic)
+    }
+
+    /// [`kontra_vm::Action::LoadImpulse`]: the library response `name` into
+    /// the placed convolution, as [`Engine::load_ir_sample`] loads one. A
+    /// group's inserts run per voice: `None`, as `load_ir_sample` answers.
+    /// [`kontra_vm::Action::ImpulseKnob`]: knob `code` (1 the share of the
+    /// response kept, 2 predelay in ms) of the placed convolution at `y`.
+    /// False when it cannot be prepared again.
+    pub(crate) fn set_placed_impulse_knob(
+        &mut self,
+        at: i32,
+        index: i32,
+        slot: i32,
+        code: i32,
+        y: f32,
+    ) -> bool {
+        let (knob, y) = match code {
+            1 => (ir::ImpulseKnob::Length, y.clamp(0.0, 1.0)),
+            2 => (ir::ImpulseKnob::PredelayMs, y.clamp(0.0, 1000.0)),
+            _ => return false,
+        };
+        match placed(at, index) {
+            (-1, generic) => self.set_impulse_knob(knob, y, slot, generic),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn load_placed_impulse(
+        &mut self,
+        name: &str,
+        at: i32,
+        index: i32,
+        slot: i32,
+    ) -> Option<i32> {
+        match placed(at, index) {
+            (-1, generic) => self.load_ir_sample(name, slot, generic),
+            _ => None,
+        }
     }
 
     /// A group's level, or the instrument's (group -1, generic -1). Buses
@@ -812,5 +846,15 @@ fn in_unit(rate: ir::Rate, unit: ir::Rate) -> ir::Rate {
             beats,
             count: (seconds / (beats * 0.5)).round().max(1.0),
         },
+    }
+}
+
+/// A placed effect's `(group, generic)`: 0 is group `index`'s inserts, 1 bus
+/// `index`'s rack, 2 the instrument's inserts.
+fn placed(at: i32, index: i32) -> (i32, i32) {
+    match at {
+        0 => (index, -1),
+        1 => (-1, (BUS_OFFSET - 1).saturating_add(index)),
+        _ => (-1, 1),
     }
 }
