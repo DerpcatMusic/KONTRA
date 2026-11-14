@@ -26,12 +26,15 @@ use plan::cuts;
 pub use theme::{NOTO_SANS, ui};
 
 /// One channel of a meter as it shows: the lit fraction, the peak line's,
-/// and whether the overload light is on.
+/// and whether the overload light is on; and the same ballistics mirrored
+/// (falls at once, rises slowly, holds its lowest) for an inverted range.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Shown {
     pub level: f64,
     pub peak: f64,
     pub over: bool,
+    pub low: f64,
+    pub trough: f64,
 }
 
 /// The id of widget `n`'s surface on face `face` (a rack part): every
@@ -197,7 +200,8 @@ fn drawn_page(
             } => {
                 let from = level.get(bus.map_or(0, |b| usize::from(b) + 1));
                 let shown = from.and_then(|l| l.get(usize::from(c)));
-                Some((orientation, lit(shown.copied().unwrap_or_default())))
+                let inverted = wd.meter_range.is_some_and(|[min, max]| max < min);
+                Some((orientation, lit(shown.copied().unwrap_or_default(), inverted)))
             }
             _ => None,
         };
@@ -602,9 +606,16 @@ fn drawn_page(
 // ponytail: a group, insert or main FX meter (gain reduction) reads the
 // part's output; a group sum or a compressor's reduction when a library
 // needs one (Morphology's group meters).
-fn lit(s: Shown) -> (f64, f64, bool) {
+/// Kontakt runs a meter's ballistics on what it shows, after its range
+/// (probe/wave.ksp: an inverted meter's line holds above its bar), so an
+/// inverted one shows the mirrored level and its trough.
+fn lit(s: Shown, inverted: bool) -> (f64, f64, bool) {
     let step = |x: f64| (x * 100.).round() / 100.;
-    (step(s.level), step(s.peak), s.over)
+    if inverted {
+        (step(s.low), step(s.trough), s.over)
+    } else {
+        (step(s.level), step(s.peak), s.over)
+    }
 }
 
 /// The overload light at a meter's far end, in points.
@@ -614,8 +625,6 @@ const METER_STRIPE: u32 = 0x5E_5E5E;
 
 /// Where `t` (0 to 1 of the meter's default 0 to 1000000) shows on a meter
 /// of `range` (`RANGE_MIN`, `RANGE_MAX`; max below min inverts it).
-// ponytail: the range applies after the ballistics, so an inverted meter's
-// peak line holds the level's, not the inverted display's.
 pub(crate) fn ranged(t: f64, range: Option<[i32; 2]>) -> f64 {
     match range {
         Some([min, max]) if min != max => {
