@@ -4827,7 +4827,10 @@ fn uvi_controller_census() {
         let name = bank.file_stem().unwrap().to_string_lossy();
         println!("bank {name}: {} programs", programs.len());
         let started = std::time::Instant::now();
-        for program in programs {
+        for (n, program) in programs.into_iter().enumerate() {
+            if n % 100 == 99 {
+                println!("  ... {} programs", n + 1);
+            }
             let Ok(instrument) = kontra_format_uvi::load(&bank.join(&program)) else {
                 println!("  {program}: does not load");
                 continue;
