@@ -1,8 +1,14 @@
-//! Host automation of library panel controls: a fixed pool of host
-//! parameters (Macro 1..N). The first time the player moves a panel
-//! control it takes the next free macro (learn by touching) and the host
-//! records its moves; the host's automation of a macro then moves that
-//! control, and its script runs its callback as for the player's move.
+//! Host automation of library panel controls: Kontakt's automation slots,
+//! a fixed pool of host parameters (#000..#127). A script's control with an
+//! automation id (KSP `$CONTROL_PAR_AUTOMATION_ID`) takes that slot when
+//! its instrument loads, named by `$CONTROL_PAR_AUTOMATION_NAME`; a taken
+//! slot or an id past the pool unwinds to the next free one, as Kontakt's
+//! "Unwind automation IDs" does for a second instrument. Any other panel
+//! control takes the next free slot the first time the player moves it
+//! (learn by touching), unless its script forbids automation
+//! (`$CONTROL_PAR_ALLOW_AUTOMATION` 0). The host's automation of a slot
+//! moves its control, and its script runs its callback as for the
+//! player's move.
 //! Assignments save with the plugin's state (`KontraParams::macros`), one
 //! per line, tab-separated: macro, rack slot, min, max, menu item values
 //! (comma-separated, empty for none), widget name, instrument path (empty
@@ -19,8 +25,35 @@ use moose::prelude::*;
 
 use crate::KontraParams;
 
-/// Host parameters in the pool.
-pub const COUNT: usize = 8;
+/// Host parameters in the pool: `KontraParams::slots`. Kontakt has 2048;
+/// the libraries' scripts use ids below 80.
+pub const COUNT: usize = kontra_host::rack::MACROS;
+
+/// One `T` per slot.
+pub struct PerSlot<T>([T; COUNT]);
+
+impl<T: Default> Default for PerSlot<T> {
+    fn default() -> Self {
+        Self(std::array::from_fn(|_| T::default()))
+    }
+}
+
+impl<T> std::ops::Deref for PerSlot<T> {
+    type Target = [T; COUNT];
+    fn deref(&self) -> &[T; COUNT] {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for PerSlot<T> {
+    fn deref_mut(&mut self) -> &mut [T; COUNT] {
+        &mut self.0
+    }
+}
+
+fn none() -> [Option<Macro>; COUNT] {
+    std::array::from_fn(|_| None)
+}
 
 /// A macro's control: a rack part's widget by name, and its range.
 #[derive(Clone, Debug, PartialEq)]
@@ -86,7 +119,7 @@ fn span(w: &Widget) -> Option<(f64, f64, Vec<f64>)> {
 /// The assignments `text` saved, by macro.
 #[must_use]
 pub fn read(text: &str) -> [Option<Macro>; COUNT] {
-    let mut out: [Option<Macro>; COUNT] = Default::default();
+    let mut out = none();
     for line in text.lines() {
         let mut f = line.split('\t');
         let mut num = || f.next().and_then(|s| s.parse::<f64>().ok());
@@ -148,6 +181,9 @@ pub fn touch(
     w: &Widget,
     plain: f64,
 ) -> Option<(u32, f64)> {
+    if !w.automation.allowed {
+        return None;
+    }
     let (min, max, steps) = span(w)?;
     let mut text = p
         .macros
@@ -233,17 +269,7 @@ pub fn id(n: usize) -> u32 {
 pub const FIRST: u32 = 2;
 
 pub(crate) fn param(p: &KontraParams, n: usize) -> Option<&FloatParam> {
-    Some(match n {
-        0 => &p.macro_1,
-        1 => &p.macro_2,
-        2 => &p.macro_3,
-        3 => &p.macro_4,
-        4 => &p.macro_5,
-        5 => &p.macro_6,
-        6 => &p.macro_7,
-        7 => &p.macro_8,
-        _ => return None,
-    })
+    p.slots.get(n)
 }
 
 /// The macro host id `id` is, if one.
@@ -341,6 +367,61 @@ pub fn release(p: &KontraParams, instrument: impl Fn(usize) -> Option<String>) {
     }
 }
 
+/// Gives each script control with an automation id its slot: the one the id
+/// names, or the next free one when that is taken or past the pool.
+/// `parts` are the rack's loaded parts as (part, title, instrument, its
+/// panel's widgets); call after [`release`], while no load is pending.
+pub fn declare<'a>(
+    p: &KontraParams,
+    parts: impl IntoIterator<Item = (usize, &'a str, String, &'a [Widget])>,
+) {
+    let mut text = p
+        .macros
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut macros = read(&text);
+    let mut changed = false;
+    for (part, title, path, widgets) in parts {
+        for w in widgets {
+            let (Some(id), true) = (w.automation.id, w.automation.allowed) else {
+                continue;
+            };
+            let Some((min, max, steps)) = span(w) else {
+                continue;
+            };
+            let mine = |m: &Option<Macro>| {
+                m.as_ref()
+                    .is_some_and(|m| m.part == part && m.widget == w.name)
+            };
+            if macros.iter().any(mine) {
+                continue;
+            }
+            let wanted = usize::try_from(id).ok().filter(|&n| n < COUNT);
+            let free = wanted
+                .filter(|&n| macros.get(n).is_some_and(Option::is_none))
+                .or_else(|| macros.iter().position(Option::is_none));
+            let Some(slot) = free.and_then(|n| macros.get_mut(n)) else {
+                continue;
+            };
+            let name = w.automation.name.as_deref().filter(|n| !n.is_empty());
+            *slot = Some(Macro {
+                part,
+                widget: w.name.clone(),
+                min,
+                max,
+                steps,
+                path: path.clone(),
+                label: name.map_or_else(|| label(title, &w.name), clean),
+            });
+            changed = true;
+        }
+    }
+    if changed {
+        *text = write(&macros);
+        renamed(p);
+    }
+}
+
 /// A macro's host name changed: the host reads the names again on the
 /// next macro move.
 pub fn renamed(p: &KontraParams) {
@@ -357,7 +438,12 @@ fn label(title: &str, widget: &str) -> String {
     } else {
         format!("{title}: {control}")
     };
-    label.replace(['\t', '\n'], " ")
+    clean(&label)
+}
+
+/// `name` fit for a saved line.
+fn clean(name: &str) -> String {
+    name.replace(['\t', '\n'], " ")
 }
 
 /// A loaded part's instrument as [`release`] keeps it: its path, empty for
@@ -378,7 +464,7 @@ pub fn moved(p: &KontraParams) -> Vec<(usize, String, f64)> {
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
     let mut out = Vec::new();
-    for (n, (m, last)) in macros.iter().zip(&p.shared.macro_values).enumerate() {
+    for (n, (m, last)) in macros.iter().zip(p.shared.macro_values.iter()).enumerate() {
         let (Some(m), Some(param)) = (m, param(p, n)) else {
             continue;
         };
@@ -397,7 +483,7 @@ mod tests {
 
     #[test]
     fn assignments_read_back_as_written() {
-        let mut macros: [Option<Macro>; COUNT] = Default::default();
+        let mut macros = none();
         macros[2] = Some(Macro {
             part: 1,
             widget: "$reverb amount".into(),
@@ -427,5 +513,70 @@ mod tests {
         let menu = macros[4].as_ref().unwrap();
         assert_eq!(menu.plain(0.4), 1.0);
         assert_eq!(menu.plain(0.6), 10.0);
+    }
+
+    fn knob(name: &str, id: Option<u32>, host: Option<&str>) -> Widget {
+        use kontra_ui_model::{Display, PageRef, Range, Rect};
+        let range = Range {
+            max: 127.0,
+            ..Range::default()
+        };
+        let display = Display::default();
+        let mut w = Widget::new(
+            name,
+            PageRef(0),
+            Rect::new(0, 0, 40, 40),
+            Kind::Knob { range, display },
+        );
+        w.automation.id = id;
+        w.automation.name = host.map(Into::into);
+        w
+    }
+
+    #[test]
+    fn a_scripts_automation_ids_take_their_slots_and_unwind_when_taken() {
+        let p = KontraParams::new();
+        let a = [
+            knob("$dyn", Some(10), Some("Dynamics")),
+            knob("$vib", Some(200), None),
+            knob("$free", None, None),
+        ];
+        let b = [knob("$dyn", Some(10), Some("Dynamics"))];
+        let parts = || {
+            [
+                (0, "Areia", "/a.nki".to_owned(), &a[..]),
+                (1, "Areia", "/a.nki".to_owned(), &b[..]),
+            ]
+        };
+        declare(&p, parts());
+        let text = p.macros.read().unwrap().clone();
+        let m = read(&text);
+        let at = |n: usize| {
+            m[n].as_ref()
+                .map(|m| (m.part, m.widget.as_str(), m.label.as_str()))
+        };
+        // Kontakt's slot and name; the second instrument's same id and the
+        // id past the pool unwind to the free ones.
+        assert_eq!(at(10), Some((0, "$dyn", "Dynamics")));
+        assert_eq!(at(0), Some((0, "$vib", "Areia: vib")));
+        assert_eq!(at(1), Some((1, "$dyn", "Dynamics")));
+        assert_eq!(
+            m.iter().flatten().count(),
+            3,
+            "a control without an id waits for a touch"
+        );
+        // Declared again on the next tick: nothing moves.
+        declare(&p, parts());
+        assert_eq!(*p.macros.read().unwrap(), text);
+        // The host sees the slot's name and drives its control.
+        assert_eq!(id(10), 12);
+        assert_eq!(
+            p.param_infos().iter().find(|i| i.id == 12).map(|i| i.name),
+            Some("#010")
+        );
+        // A control its script keeps from the host takes no slot.
+        let mut kept = knob("$kept", None, None);
+        kept.automation.allowed = false;
+        assert_eq!(touch(&p, 0, "Areia", &kept, 1.0), None);
     }
 }
