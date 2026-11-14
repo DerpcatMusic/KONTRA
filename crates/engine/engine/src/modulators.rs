@@ -97,7 +97,9 @@ impl Engine {
             let Some(zone) = plan.zones.get(slot.zone) else {
                 continue;
             };
-            let gliding = slot.bend[0] != slot.bend[1] || slot.pan[0] != slot.pan[1];
+            let gliding = slot.bend[0] != slot.bend[1]
+                || slot.pan[0] != slot.pan[1]
+                || slot.slide.is_some();
             let timed = ramping
                 || gliding
                 || self
@@ -162,6 +164,9 @@ impl Engine {
                 slot.chaos = chaos;
                 slot.voice
                     .set_step(voice_gain::bent(law, step, bend.instant + at));
+                if slot.slide.is_some() {
+                    self.set_pitch(i, step, bend.instant + at);
+                }
             }
         }
     }

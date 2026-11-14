@@ -124,6 +124,8 @@ pub struct Voice {
     anchor: f64,
     elapsed: u64,
     step: f64,
+    /// How the step moves from the anchor on (a glide), frame by frame.
+    ramp: Ramp,
     gain: Gain,
     target: Gain,
     lagged: f32,
@@ -188,6 +190,7 @@ impl Voice {
             anchor: 0.0,
             elapsed: 0,
             step: 1.0,
+            ramp: Ramp::NONE,
             gain: [[0.0; 2]; 2],
             target: [[0.0; 2]; 2],
             lagged: 1.0,
@@ -216,6 +219,7 @@ impl Voice {
         self.anchor = 0.0;
         self.elapsed = 0;
         self.step = clamp_step(start.step);
+        self.ramp = Ramp::NONE;
         self.gain = start.gain;
         self.target = start.gain;
         self.lagged = start.lag.gain;
@@ -311,6 +315,20 @@ impl Voice {
         self.anchor = self.at(0);
         self.elapsed = 0;
         self.step = clamp_step(step);
+        self.ramp = Ramp::NONE;
+    }
+
+    /// Changes pitch from the next frame to `from`, moving it linearly frame
+    /// by frame to `to` over `frames` frames and holding there: a glide is
+    /// smooth within a control step, not a stair of them.
+    pub fn set_step_ramp(&mut self, from: f64, to: f64, frames: u32) {
+        self.set_step(from);
+        if frames > 0 {
+            self.ramp = Ramp {
+                per_frame: (clamp_step(to) - self.step) / f64::from(frames),
+                frames: u64::from(frames),
+            };
+        }
     }
 
     /// Changes gain, smoothed over a few milliseconds.
@@ -394,7 +412,7 @@ impl Voice {
     /// Source frames per output frame at the current pitch.
     #[must_use]
     pub fn step(&self) -> f64 {
-        self.step
+        self.ramp.step_at(self.step, self.elapsed)
     }
 
     /// Frames played so far, in source frames from the region start.
@@ -412,7 +430,7 @@ impl Voice {
 
     /// Cursor position `ahead` output frames from now.
     fn at(&self, ahead: u64) -> f64 {
-        self.anchor + (self.elapsed + ahead) as f64 * self.step * self.speed
+        self.anchor + self.ramp.travel(self.step, self.elapsed + ahead) * self.speed
     }
 
     /// Mixes the next `out.len()` frames into `out`. `now` is the sample time of
@@ -447,7 +465,7 @@ impl Voice {
         };
         let sample = &region.sample;
         let released = self.released;
-        let step = self.step * self.speed;
+        let step = self.step() * self.speed;
         // A stretching voice's heads trail or lead the cursor by up to a grain.
         let from = if self.speed == 1.0 {
             self.at(0)
@@ -499,7 +517,7 @@ impl Voice {
             let fit = if table {
                 SCRATCH
             } else {
-                (((SCRATCH - 4) as f64 / self.step).floor() as usize).max(1)
+                (((SCRATCH - 4) as f64 / self.ramp.peak(self.step)).floor() as usize).max(1)
             };
             let mut n = fit.min(out.len() - done);
             let stretched = self.speed != 1.0;
@@ -508,14 +526,15 @@ impl Voice {
                 n = n.min((HALF_GRAIN - self.grain % HALF_GRAIN) as usize);
             }
             let filled = if let Some(table) = region.table.as_mut() {
-                let cursor = (self.at(0), self.step);
+                let cursor = (self.at(0), self.step());
                 let raw = scratch.raw.get_mut(..n).unwrap_or_default();
                 table.render(cursor, raw);
                 raw.len()
             } else if stretched {
                 self.read_stretched(scratch, client, &region, n)
             } else {
-                self.read_window(scratch, client, &region, n, (self.anchor, self.elapsed))
+                let cursor = (self.anchor, self.elapsed, self.step);
+                self.read_window(scratch, client, &region, n, cursor, self.ramp)
             };
             let raw = scratch.raw.get_mut(..filled).unwrap_or_default();
             insert(raw);
@@ -576,11 +595,19 @@ impl Voice {
         if self.grain.is_multiple_of(GRAIN) {
             self.heads[1] = at;
         }
-        let a = self.read_window(scratch, client, region, n, (self.heads[0], 0));
+        let step = self.step();
+        let a = self.read_window(scratch, client, region, n, (self.heads[0], 0, step), Ramp::NONE);
         if let (Some(head), Some(raw)) = (scratch.head.get_mut(..a), scratch.raw.get(..a)) {
             head.copy_from_slice(raw);
         }
-        let filled = a.min(self.read_window(scratch, client, region, n, (self.heads[1], 0)));
+        let filled = a.min(self.read_window(
+            scratch,
+            client,
+            region,
+            n,
+            (self.heads[1], 0, step),
+            Ramp::NONE,
+        ));
         let grain = self.grain;
         let pairs = scratch.raw.iter_mut().zip(scratch.head.iter()).take(filled);
         for (i, (b, a)) in pairs.enumerate() {
@@ -589,29 +616,30 @@ impl Voice {
             *b = [w * a[0] + (1.0 - w) * b[0], w * a[1] + (1.0 - w) * b[1]];
         }
         for h in &mut self.heads {
-            *h += n as f64 * self.step;
+            *h += n as f64 * step;
         }
         self.grain += n as u64;
         filled
     }
 
     /// Reads the region about a cursor at the pitch's step, frame `i` at
-    /// `base + (frames + i) · step` (one product, so every host block size
-    /// lands on the same positions), and interpolates `n` frames into `raw`;
-    /// returns how many it filled.
+    /// `base + travel(frames + i)` (a closed form from the anchor, so every
+    /// host block size lands on the same positions), and interpolates `n`
+    /// frames into `raw`; returns how many it filled.
     fn read_window(
         &mut self,
         scratch: &mut Scratch,
         client: &StreamClient,
         region: &Region,
         n: usize,
-        (base, frames): (f64, u64),
+        (base, frames, first_step): (f64, u64, f64),
+        ramp: Ramp,
     ) -> usize {
         let sample = &region.sample;
         let mix = region.mix.as_ref();
         let released = self.released;
-        let step = self.step;
-        let at = |i: u64| base + (frames + i) as f64 * step;
+        let step = ramp.step_at(first_step, frames);
+        let at = |i: u64| base + ramp.travel(first_step, frames + i);
         let lo = at(0).floor() as i64 - 1;
         let span = (at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
         let partner = &mut scratch.partner;
@@ -693,6 +721,39 @@ impl Voice {
             filled += 1;
         }
         filled
+    }
+}
+
+/// A step that rises by `per_frame` each output frame for `frames` frames
+/// from the anchor, then holds: a glide's piece between two control steps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ramp {
+    per_frame: f64,
+    frames: u64,
+}
+
+impl Ramp {
+    const NONE: Self = Self {
+        per_frame: 0.0,
+        frames: 0,
+    };
+
+    /// The step of output frame `k` after the anchor.
+    fn step_at(self, step: f64, k: u64) -> f64 {
+        step + self.per_frame * k.min(self.frames) as f64
+    }
+
+    /// Source frames the first `k` output frames after the anchor cover:
+    /// the sum of their steps, in closed form.
+    fn travel(self, step: f64, k: u64) -> f64 {
+        let r = k.min(self.frames) as f64;
+        let held = k.saturating_sub(self.frames) as f64;
+        step * k as f64 + self.per_frame * (r * (r - 1.0) / 2.0 + held * self.frames as f64)
+    }
+
+    /// The largest step it reaches.
+    fn peak(self, step: f64) -> f64 {
+        step.max(self.step_at(step, self.frames))
     }
 }
 

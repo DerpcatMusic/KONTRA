@@ -551,6 +551,8 @@ fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&Vo
                     fade_ms: 10.0,
                     exclusive: None,
                     per_note: false,
+                    legato: false,
+                    returns: false,
                 },
                 |l| voice_group(&l.voice_limit),
             ));
@@ -574,6 +576,8 @@ fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
         fade_ms: v.ms_fade_time.max(0) as f32,
         exclusive: u8::try_from(v.exclusion_group).ok().filter(|&s| s < 16),
         per_note: false,
+        legato: false,
+        returns: false,
     }
 }
 
@@ -803,6 +807,29 @@ fn translate_group(
                         None
                     };
                     timed_slots.extend(made.map(|s| (n, s)));
+                }
+                Modulator::Glide(g)
+                    if let Some(t) = p
+                        .targets
+                        .iter()
+                        .find(|t| t.param == "pitch" && t.slot.is_none()) =>
+                {
+                    let law = laws::glide(g, t.signed_intensity());
+                    kontra_law::record(|| kontra_law::Application {
+                        id: kontra_law::LawId("kontakt.glide.v1"),
+                        location: format!("groups/{group_index}/glide"),
+                        input: format!("{g:?}"),
+                        output: format!("{law:?}"),
+                    });
+                    out.glide = Some(law);
+                    for t in p
+                        .targets
+                        .iter()
+                        .filter(|t| t.param != "pitch" || t.slot.is_some())
+                    {
+                        let feature = format!("internal modulator glide -> {}", t.param);
+                        notes.add(ir::Impact::Audible, &feature, &p.name);
+                    }
                 }
                 m => {
                     let kind = match m {

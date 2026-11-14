@@ -241,6 +241,27 @@ fn a_wavetable_group_keeps_its_saved_quality() {
     }
 }
 
+/// A Glide modulator on the source's pitch, saved by Kontakt 8.13 from the
+/// probe that measured it (tools/kontakt-oracle/probes/glide.lua): Time mode,
+/// 1224.2 ms, full intensity. Kontakt glided 12 semitones in 1208 ms and 4 in
+/// 1238 ms, linearly, from the previous key (docs/engine/voices.md).
+#[test]
+fn a_saved_glide_modulator_is_a_timed_linear_glide_from_the_previous_key() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/glide-time.nki");
+    let i = kontra_format_kontakt::load(&path).unwrap();
+    let g = i.groups[0].glide.expect("glide");
+    assert!((g.seconds - 1.2242).abs() < 1e-3, "{g:?}");
+    assert_eq!(
+        (g.per_semitone, g.legato, g.resume, g.depth, g.curve),
+        (false, false, false, 1.0, 0.0)
+    );
+    assert!(
+        !i.diagnostics.iter().any(|d| d.feature.contains("glide")),
+        "{:?}",
+        i.diagnostics
+    );
+}
+
 /// Kontakt's own restore of a snapshot (`KONTRA_SNAPSHOT_ORACLE=<dir>`, the
 /// files `tools/kontakt-oracle/probes/snapshot_restore.lua` saves: for pair
 /// `n`, the instrument as loaded, `oracle.jsonl.<n>.base.nki`, and with the
