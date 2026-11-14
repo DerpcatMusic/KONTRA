@@ -550,6 +550,7 @@ fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&Vo
                     prefer_released: true,
                     fade_ms: 10.0,
                     exclusive: None,
+                    per_note: false,
                 },
                 |l| voice_group(&l.voice_limit),
             ));
@@ -572,6 +573,7 @@ fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
         prefer_released: v.prefer_released,
         fade_ms: v.ms_fade_time.max(0) as f32,
         exclusive: u8::try_from(v.exclusion_group).ok().filter(|&s| s < 16),
+        per_note: false,
     }
 }
 

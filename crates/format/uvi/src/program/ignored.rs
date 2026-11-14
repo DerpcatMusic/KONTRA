@@ -78,7 +78,15 @@ fn quoted(name: &str, indexed: bool) -> bool {
 }
 
 /// Reports each element and attribute under `program` no source quotes.
+/// A program repeats a few hundred names over thousands of elements, so each
+/// name is searched for once.
 pub(super) fn report(program: Node, notes: &mut Notes) {
+    let mut known = std::collections::HashMap::new();
+    let mut quoted = |name: &str, indexed: bool| {
+        *known
+            .entry((name.to_owned(), indexed))
+            .or_insert_with(|| quoted(name, indexed))
+    };
     for node in program.descendants().filter(Node::is_element) {
         let tag = node.tag_name().name();
         // A container's children are checked on their own, and a quoted

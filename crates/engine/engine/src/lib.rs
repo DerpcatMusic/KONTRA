@@ -301,6 +301,10 @@ pub struct Engine {
     groups: Box<[Group]>,
     /// Each portamento scope's latest note ([`glide`]).
     glides: [glide::Latest; glide::SCOPES],
+    /// A stamp per ledger slot: the notes a note-counting voice group
+    /// has seen in its current count (voice_groups.rs). Sized at build.
+    note_seen: Box<[u32]>,
+    note_stamp: u32,
     /// What each group's routes reshape, by group.
     reshaped: Box<[reshaped::Reshaped]>,
     /// The routes each script `#key` names.
@@ -458,6 +462,8 @@ impl Engine {
             reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
             glides: [glide::Latest::default(); glide::SCOPES],
+            note_seen: vec![0; capacity].into(),
+            note_stamp: 0,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
             forward: Vec::with_capacity(capacity),
