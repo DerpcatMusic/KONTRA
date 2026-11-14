@@ -4554,6 +4554,37 @@ fn an_untouched_wildcard_note_off_ends_a_note_on_port_b() {
     assert_eq!(e.active_voices(), 0);
 }
 
+/// A script transposing every note keeps a wildcard note-off wild: the
+/// note it moved up on port B still ends.
+#[test]
+fn a_transposed_wildcard_note_off_ends_a_note_on_port_b() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            if ($MIDI_COMMAND = $MIDI_COMMAND_NOTE_ON or $MIDI_COMMAND = $MIDI_COMMAND_NOTE_OFF)
+                ignore_midi
+                set_midi($MIDI_CHANNEL, $MIDI_COMMAND, $MIDI_BYTE_1 + 12, $MIDI_BYTE_2)
+            end if
+        end on",
+    );
+    let mut b = on(60);
+    if let Event::NoteOn { note, .. } = &mut b.body {
+        note.port = 1;
+    }
+    level(&mut e, &[b]);
+    assert_eq!(e.active_voices(), 1);
+    let mut any = off(60);
+    if let Event::NoteOff(p) = &mut any.body {
+        p.port = -1;
+    }
+    assert_eq!(level(&mut e, &[any]), 0.0);
+    assert_eq!(e.active_voices(), 0);
+}
+
 /// `set_note_controller` runs `on note_controller` in the other script slots
 /// only, with the controller, note and value.
 #[test]
