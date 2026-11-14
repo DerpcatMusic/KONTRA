@@ -7,6 +7,7 @@ mod clipper;
 mod crush;
 mod overdrive;
 mod shaper;
+mod tube;
 
 pub use clipper::{Circuit, Clipper};
 pub use crush::{Crush, Reduction};

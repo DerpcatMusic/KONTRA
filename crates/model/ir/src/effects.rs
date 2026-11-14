@@ -108,6 +108,13 @@ pub struct Delay {
     pub low_cut_hz: f32,
     /// The low cut is a second-order high-pass, Q ½, not the one-pole.
     pub steep_low_cut: bool,
+    /// Sections on the heads' sum, inside the loop after the low cut and
+    /// the shelf (a mode's own body: a tape's or a bucket brigade's tone);
+    /// the first four run.
+    pub body: &'static [crate::Section],
+    /// A triangle LFO averaged over this many seconds (0: sharp corners)
+    /// instead of the sine; it falls first as the sine does.
+    pub triangle_s: Option<f32>,
     /// A high shelf on the heads, inside the loop (`q` its slope).
     pub high_shelf: Option<crate::Bell>,
     /// How much shorter the left line runs and longer the right, ms.

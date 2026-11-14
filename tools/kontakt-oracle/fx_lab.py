@@ -4,7 +4,8 @@
     fx_lab.py render CHAIN STIMULUS OUT.npz  SETS.json     (run under tools/oracle/oracle-slot)
 
 CHAIN is a factory preset folder ("Effects/RDelay"), STIMULUS one of `impulse`, `tone` (5 s, 1 kHz, -12 dB),
-`levels`, `burst` (fxrig's stimuli), `ramp` (1 kHz, amplitude 0..1 over 5 s), `clicks` or `sweep` (a 5 s log sweep 20 Hz..20 kHz, -12 dB), SETS.json a list of
+`levels`, `burst` (fxrig's stimuli), `ramp` (1 kHz, amplitude 0..1 over 5 s), `clicks`, `sweep`, or one of STIMULI (`long`: 12 s
+of 1 kHz at -12 dB; `ramplo`: the ramp to 0.02; `sweeplo`: the sweep at -60 dB) (a 5 s log sweep 20 Hz..20 kHz, -12 dB), SETS.json a list of
 settings, each a list of [slot, "PAR", raw] (raw 0..1000000 for knobs). Instance 0 is the bypassed reference.
 OUT.npz holds `rate` and one float array per instance (`x0` = reference, `x1`...), each cut from its note's start to
 the slot's end, left channel and right (`y1`...).
@@ -76,6 +77,31 @@ LF:close()
 """
 
 
+def stim_lua(seconds, expr):
+    """Lua writing a stereo float WAV of `seconds` whose sample i is the Lua expression `expr` (t = i / 48000)."""
+    n = int(seconds * 48000)
+    return lambda path: f"""local LF = io.open({json.dumps(str(path))}, "wb")
+local NF = {n}
+LF:write("RIFF", string.pack("<I4", 36 + NF * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", NF * 8))
+local k = math.log(1000.0) / {SWEEP_LEN}
+for i = 0, NF - 1 do
+  local t = i / 48000
+  local v = {expr}
+  LF:write(string.pack("<ff", v, v))
+end
+LF:close()
+"""
+
+
+# More stimuli, each (seconds, Lua sample expression). The instrument brings a WAV peak of 1.0 to about 0.37 at the
+# effect (-8.6 dB), so `ramp` reaches about 1.0 there and `ramplo` about 0.02.
+STIMULI = {
+    "long": (12.0, "0.25 * math.sin(2 * math.pi * 1000 * t)"),
+    "ramplo": (SWEEP_LEN, f"(t / {SWEEP_LEN}) * 0.054 * math.sin(2 * math.pi * 1000 * t)"),
+    "sweeplo": (SWEEP_LEN, "0.001 * math.sin(2 * math.pi * 20 * (math.exp(k * t) - 1) / k)"),
+}
+
+
 def ksp_for(chain_len, sets):
     call = lambda p, v, sl: f"  set_engine_par($ENGINE_PAR_{p}, {int(v)}, -1, {sl}, 1)"
     init = [call(p, v, sl) for sl, p, v in sets if p == "EFFECT_BYPASS"]
@@ -116,6 +142,11 @@ def render(chain, stimulus, sets_list, out):
     elif stimulus == "ramp":  # likewise
         fxrig.SLOT = fxrig.STEADY_TONE_SLOT
         fxrig.steady_tone_lua = ramp_lua
+        stimulus = "tone"
+    elif stimulus in STIMULI:
+        seconds, expr = STIMULI[stimulus]
+        fxrig.SLOT = seconds + 2.0
+        fxrig.steady_tone_lua = stim_lua(seconds, expr)
         stimulus = "tone"
     elif stimulus == "levels":
         fxrig.SLOT = fxrig.LEVEL_LEAD + len(fxrig.LEVEL_STEPS_DB) * fxrig.LEVEL_SEG + 1.0

@@ -70,6 +70,8 @@ pub(super) fn dual_delay(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
             damping_hz: num(node, "HighCut", 20_000.0)? as f32,
             low_cut_hz: num(node, "LowCut", 0.0)?.max(0.0) as f32,
             steep_low_cut: false,
+            body: &[],
+            triangle_s: None,
             high_shelf: None,
             spread_ms: 0.0,
             rate: ir::Rate::Hz(num(node, "ModRate", 1.0)? as f32),

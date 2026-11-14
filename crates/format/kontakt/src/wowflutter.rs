@@ -36,6 +36,8 @@ pub(crate) fn wow_flutter(p: [f32; 5]) -> ir::Delay {
         damping_hz: 18_000.0 * (3_000.0f32 / 18_000.0).powf(age),
         low_cut_hz: 0.0,
         steep_low_cut: false,
+        body: &[],
+        triangle_s: None,
         high_shelf: None,
         spread_ms: 0.0,
         rate: ir::Rate::Hz(hz),
