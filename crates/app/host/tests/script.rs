@@ -4499,6 +4499,39 @@ fn midi_in_drops_moves_and_adds_notes_before_the_engine() {
     assert_eq!(e.active_voices(), 3, "added");
 }
 
+/// KSP manual, `$MIDI_CHANNEL`: "Since Kontakt can handle four different
+/// MIDI ports, this number is in 0 ... 63 range". A note on port B's
+/// channel 1 reads 16 in `on note` and `on midi_in`, and a `set_midi` on
+/// 16 + 2 leaves on port B's channel 3.
+#[test]
+fn midi_channel_counts_across_ports() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 60)
+                set_midi(18, $MIDI_COMMAND, 64, $MIDI_BYTE_2)
+            end if
+        end on
+        on note
+            message($MIDI_CHANNEL & \",\" & $EVENT_NOTE)
+        end on",
+    );
+    let mut b = on(60);
+    if let Event::NoteOn { note, .. } = &mut b.body {
+        note.port = 1;
+    }
+    level(&mut e, &[b]);
+    // The note itself (B1) and the one `set_midi` sent on 18 (B3), in
+    // either order: both read across ports.
+    let said = e.last_message();
+    assert!(["16,60", "18,64"].contains(&said.as_str()), "{said}");
+    assert_eq!(e.active_voices(), 2);
+}
+
 /// `set_note_controller` runs `on note_controller` in the other script slots
 /// only, with the controller, note and value.
 #[test]

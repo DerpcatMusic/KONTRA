@@ -421,7 +421,7 @@ local saved_widgets = {}
 -- tree makes it, then each named widget as the script does.
 __controls = {}
 -- `setValue`'s second argument for a move that runs `changed` even when the
--- value stays (a user's edit, a restore).
+-- value stays (a user's edit).
 __FORCE = {}
 local function force(w)
 	return w.kind ~= "Table" and __FORCE or nil
@@ -458,10 +458,15 @@ end
 -- colour, and whether it asked for a performance view.
 __ui = { widgets = {}, width = 720, height = 480 }
 
--- After the script's body: each persistent widget takes its saved value and
--- runs its `changed`, before `onLoad` (lua.uvi.net, Widget::persistent:
--- "Persistent widgets will call their changed function on reload"; onLoad:
--- "after restoring widgets values").
+-- After the script's body: each persistent widget takes its saved value and,
+-- when that moves it from what the body left, runs its `changed`, before
+-- `onLoad` (lua.uvi.net, Widget::persistent: "Persistent widgets will call
+-- their changed function on reload"; onLoad: "after restoring widgets
+-- values"). A value the body already set does not run it again, as JUCE's
+-- controls under UVI notify only a change: Augmented Orchestra's twenty LFO
+-- shape buttons each select themselves in `changed`, so running every one
+-- left the last selected (shape 20 over the saved 1, and its LFO preset over
+-- the program's), where every factory preset UVI saved keeps the first.
 __restore_errors = {}
 function __restore()
 	if __ui_built then
@@ -473,7 +478,7 @@ function __restore()
 		-- Each `changed` runs on its own: one that fails (VWinds' `dynamics`
 		-- names a Macro 7 its Bb Clarinet lacks) leaves the rest restored.
 		if w.persistent ~= false then
-			local ok, err = pcall(w.setValue, w, restored(w.name, w.value), force(w))
+			local ok, err = pcall(w.setValue, w, restored(w.name, w.value))
 			if not ok then
 				table.insert(__restore_errors, tostring(w.name) .. ": " .. tostring(err))
 			end
@@ -551,8 +556,8 @@ widget = function(kind, name, value, ...)
 	end
 	-- A script's setValue runs `changed` only when the value changes, as
 	-- JUCE's controls under UVI do: W Strings Harmonic's linked arpeggiator
-	-- buttons set each other and recursed without end. A user's move and a
-	-- restore always run it (`__FORCE`).
+	-- buttons set each other and recursed without end. A user's move always
+	-- runs it (`__FORCE`); a restore, when it moves the widget.
 	w.setValue = function(self, v, run)
 		local was = rawget(self, "__value")
 		rawset(self, "__value", v)
@@ -1535,7 +1540,7 @@ local function land(file, done, pace)
 			end
 			ok, err = pcall(run_changed, w)
 		elseif text ~= nil and w.persistent ~= false then
-			ok, err = pcall(w.setValue, w, parsed(text, w.value), force(w))
+			ok, err = pcall(w.setValue, w, parsed(text, w.value))
 		end
 		if not ok then
 			print("loadState " .. tostring(w.name) .. ": " .. tostring(err))

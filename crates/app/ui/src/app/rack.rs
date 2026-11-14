@@ -350,8 +350,9 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
             out.push(Action::Step { part: n, by });
         }
     }
+    // Kontakt's channels across its ports: Omni, then A1..A16 to D16.
     let channels: Vec<String> = std::iter::once("Omni".to_owned())
-        .chain((1..=16).map(|c: u8| c.to_string()))
+        .chain((0..64u8).map(|c| format!("{}{}", char::from(b'A' + c / 16), c % 16 + 1)))
         .collect();
     let refs: Vec<&str> = channels.iter().map(String::as_str).collect();
     let ch = kit::dropdown(

@@ -677,7 +677,10 @@ impl HostApi for Engine {
             Action::MidiChannel if self.running.kind == Kind::MidiIn => {
                 HostValue::Int(i32::from(self.running.midi[1]))
             }
-            Action::MidiChannel => HostValue::Int(current.map_or(0, |n| i32::from(n.host.channel))),
+            // Across Kontakt's ports A to D: 0..=63.
+            Action::MidiChannel => HostValue::Int(current.map_or(0, |n| {
+                i32::from(n.host.port.min(3)) * 16 + i32::from(n.host.channel)
+            })),
             Action::NoteHeld => flag(current.is_some_and(|n| !n.is_up())),
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
                 HostValue::Int(self.active_voices() as i32)

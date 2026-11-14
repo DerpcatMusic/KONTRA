@@ -57,7 +57,9 @@ pub fn event(e: &moose::prelude::Event) -> Option<Event> {
         _ => {
             let [a, b, ..] = encode_ump_channel_voice_1(&e.body)
                 .or_else(|| encode_ump_channel_voice_2(&e.body))?;
-            Event::Ump([a, b])
+            // The port rides as the packet's group.
+            let group = u32::from(port & 15) << 24;
+            Event::Ump([a & !(15 << 24) | group, b])
         }
     })
 }
