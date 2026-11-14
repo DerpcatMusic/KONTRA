@@ -157,3 +157,40 @@ fn a_user_snapshot_binds_to_its_instrument_by_name() {
     let original = kontra_format_kontakt::load(factory).unwrap();
     assert_eq!(set(&loaded.unwrap()), set(&original));
 }
+
+/// A multi Kontakt 8 saved (native oracle, `probes/multi_slots.lua`): three
+/// empty instruments set to MIDI channels Omni, 3 and 18, outputs 0, 1 and
+/// 0, -6, 0 and +3.5 dB, pans -50, 0 and 25 %.
+#[test]
+fn a_multis_slots_keep_the_channel_output_volume_and_pan_kontakt_saved() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/three-slots.nkm");
+    let (slots, failed) = kontra_format_kontakt::multi(&path, None).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    let got: Vec<_> = (slots.iter())
+        .map(|s| (s.index, s.channel, s.output))
+        .collect();
+    assert_eq!(got, [(0, 0, 0), (1, 3, 1), (2, 18, 0)]);
+    let levels: Vec<_> = (slots.iter())
+        .map(|s| {
+            (
+                (s.instrument.output.volume_db * 10.0).round(),
+                s.instrument.output.pan,
+            )
+        })
+        .collect();
+    assert_eq!(levels, [(-60.0, -0.5), (0.0, 0.0), (35.0, 0.25)]);
+}
+
+/// The multi script Kontakt 8 saved in its first multi script slot.
+#[test]
+fn a_multis_own_script_is_read_from_its_bank() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/multi-script.nkm");
+    let scripts = kontra_format_kontakt::multi_scripts(&path).unwrap();
+    let got: Vec<_> = scripts.iter().map(|s| (s.slot, s.name.as_str())).collect();
+    assert_eq!(got, [(0, "Channel 1 to 2")]);
+    assert!(
+        scripts[0].source.contains("set_midi(1, $MIDI_COMMAND"),
+        "{}",
+        scripts[0].source
+    );
+}

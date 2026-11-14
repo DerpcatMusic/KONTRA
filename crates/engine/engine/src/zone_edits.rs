@@ -18,7 +18,10 @@ pub(crate) const ZONE_EDITS: usize = 1024;
 
 /// What a waiting zone edit does.
 // The path is copied inline: the audio thread queues it and may not allocate.
-#[expect(clippy::large_enum_variant, reason = "queued on the audio thread: no Box")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "queued on the audio thread: no Box"
+)]
 #[derive(Clone, Copy, Debug)]
 pub enum Edit {
     /// `set_zone_par`.

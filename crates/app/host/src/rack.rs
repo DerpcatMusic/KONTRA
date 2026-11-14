@@ -202,6 +202,8 @@ pub struct Rack {
     /// The instruments the player has, by the catalog generation they are
     /// of: a snapshot kept apart from its library binds to one by name.
     known: (u64, Vec<PathBuf>),
+    /// The multi whose multi script hears the rack's MIDI first.
+    multi: Option<PathBuf>,
     /// Library folders the player moved ([`crate::relink`]), and the folders
     /// to look for them in.
     moved: Vec<(PathBuf, PathBuf)>,
@@ -253,6 +255,7 @@ impl Rack {
             generation: 0,
             native: Vec::new(),
             known: (0, Vec::new()),
+            multi: None,
             moved: Vec::new(),
             roots: Vec::new(),
             offers: Vec::new(),
@@ -317,17 +320,18 @@ impl Rack {
 
     /// A multi: each of its slots, in order, into `part` and the parts
     /// after it (as many as the rack holds), each by its slot's path
-    /// ([`crate::instrument::multi_slot`]).
+    /// ([`crate::instrument::multi_slot`]), listening on the slot's MIDI
+    /// channel and playing into its output. Its volume and pan are its
+    /// instrument's own.
     ///
     /// # Errors
     /// When the multi cannot be read, or none of its slots can.
-    // ponytail: a slot's own MIDI channel, volume and pan are not read; each
-    // part keeps its mix. Read them from the slot's program container.
     fn load_multi(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let (slots, failed) = kontra_format_kontakt::multi(path, None)?;
         if slots.is_empty() {
             return Err(failed.join("; ").into());
         }
+        self.set_multi(Some(path));
         self.notices
             .extend(failed.iter().map(|f| format!("{}: {f}", path.display())));
         for (at, slot) in (part..MAX_PARTS).zip(slots) {
@@ -335,8 +339,67 @@ impl Rack {
             let own = path.join(slot.index.to_string());
             instrument.source_path = Some(own.clone());
             self.load_ir(at, instrument, Some(own))?;
+            // ponytail: one MIDI port here, so Kontakt's ports A to D fold
+            // onto channels 1 to 16; a port per input when the rack has them.
+            let channel = match slot.channel {
+                0 => 0,
+                c => u8::try_from((c - 1) % 16 + 1).unwrap_or(0),
+            };
+            let output = u8::try_from(usize::from(slot.output).min(OUTPUTS - 1)).unwrap_or(0);
+            let mix = self.parts.get(at).and_then(Option::as_ref).map(|p| p.mix);
+            if let Some(mix) = mix {
+                self.set_mix(
+                    at,
+                    Mix {
+                        channel,
+                        output,
+                        ..mix
+                    },
+                );
+            }
         }
         Ok(())
+    }
+
+    /// The multi whose multi script hears the rack's MIDI first.
+    #[must_use]
+    pub fn multi(&self) -> Option<&Path> {
+        self.multi.as_deref()
+    }
+
+    /// The multi at `path` puts its multi script in front of the rack's
+    /// parts (none clears it): its `on init` runs here, its `on midi_in` on
+    /// the audio side, on every event before a part hears it.
+    pub fn set_multi(&mut self, path: Option<&Path>) {
+        if self.multi.as_deref() == path {
+            return;
+        }
+        self.multi = path.map(Path::to_owned);
+        let scripts = match path.map(kontra_format_kontakt::multi_scripts) {
+            Some(Ok(scripts)) => scripts,
+            Some(Err(e)) => {
+                self.notices.push(format!("multi script: {e}"));
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        let engine = (!scripts.is_empty()).then(|| {
+            let instrument = ir::Instrument {
+                name: "Multi script".into(),
+                scripts,
+                ..ir::Instrument::DEFAULT
+            };
+            let loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+            self.notices.extend(
+                (loaded.diagnostics.iter())
+                    .filter(|d| d.impact == ir::Impact::Broken)
+                    .map(|d| format!("multi script: {}: {}", d.feature, d.detail)),
+            );
+            let mut engine = Engine::new(Arc::new(loaded.plan), self.store.client(), self.rate);
+            requests::init_tables(&mut engine, &self.store.client());
+            Box::new(engine)
+        });
+        self.send(Command::Multi(engine));
     }
 
     /// Takes the instruments of `browser`'s catalog as the ones a snapshot

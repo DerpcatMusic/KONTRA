@@ -60,9 +60,7 @@ fn engine(source: &str) -> (Engine, u32, i32) {
 /// host does.
 fn swap(e: &mut Engine, edits: &[ZoneEdit]) {
     let mut plan = Plan::clone(e.plan());
-    let done: Vec<_> = (edits.iter())
-        .map(|x| (*x, x.apply(&mut plan)))
-        .collect();
+    let done: Vec<_> = (edits.iter()).map(|x| (*x, x.apply(&mut plan))).collect();
     e.swap_plan(&mut Arc::new(plan), &done);
 }
 
