@@ -283,6 +283,7 @@ pub(crate) struct Reads {
     values: LuaString,
     items: LuaString,
     revision: LuaString,
+    alpha: LuaString,
 }
 
 impl Reads {
@@ -302,6 +303,7 @@ impl Reads {
             values: key("values")?,
             items: key("items")?,
             revision: key("__items_revision")?,
+            alpha: key("alpha")?,
         })
     }
 
@@ -330,6 +332,9 @@ impl Reads {
             items: (w.raw_get::<Value>(&self.revision).ok().as_ref())
                 .and_then(number)
                 .map_or(0, |r| r as u32),
+            alpha: (w.raw_get::<Value>(&self.alpha).ok().as_ref())
+                .and_then(number)
+                .map_or(1., |a| a.clamp(0., 1.) as f32),
         })
     }
 

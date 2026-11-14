@@ -331,10 +331,12 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
         w.hidden,
         w.enabled,
         w.images.first().copied(),
+        w.opacity,
     );
     w.value = value_of(&w.kind, look.value).or(w.value.take());
     w.hidden = !look.visible;
     w.enabled = look.enabled;
+    w.opacity = look.alpha;
     swap(w);
     let mut changed = before
         != (
@@ -342,6 +344,7 @@ pub fn apply(tree: &mut ui::Interface, n: usize, look: WidgetLook, text: Option<
             w.hidden,
             w.enabled,
             w.images.first().copied(),
+            w.opacity,
         );
     let pictured = matches!(w.kind, ui::Kind::Button { .. }) && !w.images.is_empty();
     // A menu's text is its selected item's, which the script may rename.
@@ -516,6 +519,7 @@ mod tests {
             visible: true,
             enabled: true,
             items: 0,
+            alpha: 1.,
         };
         assert!(apply(&mut tree, 2, on, None));
         assert_eq!(shown(&tree), ui::Role::Pressed);
@@ -546,6 +550,7 @@ mod tests {
             visible: true,
             enabled: true,
             items: 0,
+            alpha: 1.,
         };
         assert!(!apply(&mut tree, 0, look, Some("Main")));
         assert_eq!(tree.widgets[0].text, "");

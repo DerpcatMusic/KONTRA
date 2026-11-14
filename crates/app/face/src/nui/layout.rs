@@ -117,12 +117,12 @@ fn env_in(env: Env, m: &str, args: &[Prop]) -> Env {
 /// one being the child's size. Offered nothing (zero), it takes its finite
 /// most, or what it is given when that is unbounded (Conflux's steppers
 /// are `max_width = 72` around text framed `max_width = math.huge`).
-/// Without bounds it is what it is offered, as before.
-fn flexible(args: &[Prop], room: Size, child: Size) -> [f64; 2] {
-    let axis = |offered: f64, child: f64, min: &str, max: &str| {
+/// Without bounds on an axis it is `plain` there.
+fn flexible(args: &[Prop], room: Size, child: Size, plain: Size) -> [f64; 2] {
+    let axis = |offered: f64, child: f64, plain: f64, min: &str, max: &str| {
         let (lo, hi) = (num(arg(args, min)), num(arg(args, max)));
         if lo.is_none() && hi.is_none() {
-            return offered;
+            return plain;
         }
         let hi = hi.unwrap_or(child).max(lo.unwrap_or(0.));
         match offered {
@@ -132,8 +132,8 @@ fn flexible(args: &[Prop], room: Size, child: Size) -> [f64; 2] {
         }
     };
     [
-        axis(room.0, child.0, "min_width", "max_width"),
-        axis(room.1, child.1, "min_height", "max_height"),
+        axis(room.0, child.0, plain.0, "min_width", "max_width"),
+        axis(room.1, child.1, plain.1, "min_height", "max_height"),
     ]
 }
 
@@ -160,7 +160,7 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
         "frame" => {
             let (w, h) = (num(arg(args, "width")), num(arg(args, "height")));
             let (iw, ih) = inner((w.unwrap_or(room.0), h.unwrap_or(room.1)));
-            let [fw, fh] = flexible(args, (room.0, room.1), (iw, ih));
+            let [fw, fh] = flexible(args, (room.0, room.1), (iw, ih), (iw, ih));
             (w.unwrap_or(fw), h.unwrap_or(fh))
         }
         "padding" => {
@@ -465,7 +465,8 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
         }
         "frame" => {
             let own = measure(bld, n, k - 1, (r.width, r.height), inner_env);
-            let [fw, fh] = flexible(args, (r.width, r.height), or_room(own, r));
+            let own = or_room(own, r);
+            let [fw, fh] = flexible(args, (r.width, r.height), own, (r.width, r.height));
             let w = num(arg(args, "width")).unwrap_or(fw);
             let h = num(arg(args, "height")).unwrap_or(fh);
             let room = aligned(r, (w, h), (0.5, 0.5));
