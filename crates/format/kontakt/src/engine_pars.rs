@@ -156,6 +156,7 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_WT_MOD_TYPE", P::ModOscKind),
         ("$ENGINE_PAR_WT_MOD_WAVE", P::ModOscWave),
         ("$ENGINE_PAR_WT_MOD_TUNE_UNIT", P::ModOscUnit),
+        ("$ENGINE_PAR_WT_QUALITY", P::WtQuality),
         ("$ENGINE_PAR_WT_PHASE", P::Wavetable(ir::TableValue::Phase)),
         ("$ENGINE_PAR_WT_PHASE_RAND", P::Wavetable(ir::TableValue::PhaseRandom)),
         // Modules KONTRA has no processor for: the knob's text answers, a

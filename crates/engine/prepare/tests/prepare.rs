@@ -171,6 +171,7 @@ fn a_zone_moved_into_a_wavetable_group_gets_its_table() {
         gain: 1.0,
         inharmonic: ir::Inharmonic::OFF,
         modosc: ir::ModOsc::OFF,
+        quality: ir::Quality::High,
         warps: [ir::Warp::OFF; 2],
     };
     let mut bank = zone(1);
@@ -244,6 +245,7 @@ fn a_moved_zones_table_follows_its_group() {
         gain: 1.0,
         inharmonic: ir::Inharmonic::OFF,
         modosc: ir::ModOsc::OFF,
+        quality: ir::Quality::High,
         warps: [ir::Warp::OFF; 2],
     };
     let instrument = ir::Instrument {
@@ -319,6 +321,7 @@ fn a_velocity_route_moves_each_voices_table_position() {
                 gain: 1.0,
                 inharmonic: ir::Inharmonic::OFF,
                 modosc: ir::ModOsc::OFF,
+                quality: ir::Quality::High,
                 warps: [ir::Warp::OFF; 2],
             }),
             mods: vec![ir::Mod {
@@ -376,6 +379,7 @@ fn a_stretched_table_moves_its_partials() {
                 phase_random: 0.0,
                 gain: 1.0,
                 modosc: ir::ModOsc::OFF,
+                quality: ir::Quality::High,
                 inharmonic: ir::Inharmonic {
                     on: true,
                     amount: 1.0,
@@ -397,4 +401,27 @@ fn a_stretched_table_moves_its_partials() {
     let (first, octave, third) = (level(&out, 440.0), level(&out, 880.0), level(&out, 1320.0));
     assert!((third / first - 0.5).abs() < 0.01, "{third} / {first}");
     assert!(octave < 0.01 * first, "{octave}");
+}
+
+/// A group's saved quality reaches its voices' read; nothing is swapped for the default.
+#[test]
+fn a_wavetables_quality_reaches_the_read() {
+    use kontra_voice::Quality as V;
+    let read = |quality| {
+        kontra_prepare::read(ir::Wavetable {
+            position: 0.0,
+            phase: 0.0,
+            phase_random: 0.0,
+            gain: 1.0,
+            inharmonic: ir::Inharmonic::OFF,
+            modosc: ir::ModOsc::OFF,
+            quality,
+            warps: [ir::Warp::OFF; 2],
+        })
+        .quality
+    };
+    assert_eq!(read(ir::Quality::Lofi), V::Lofi);
+    assert_eq!(read(ir::Quality::Medium), V::Medium);
+    assert_eq!(read(ir::Quality::High), V::High);
+    assert_eq!(read(ir::Quality::Best), V::Best);
 }

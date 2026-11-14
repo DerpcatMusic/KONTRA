@@ -694,6 +694,12 @@ pub fn read(w: ir::Wavetable) -> Read {
             },
         },
         rate: 48_000.0,
+        quality: match w.quality {
+            ir::Quality::Lofi => kontra_voice::Quality::Lofi,
+            ir::Quality::Medium => kontra_voice::Quality::Medium,
+            ir::Quality::High => kontra_voice::Quality::High,
+            ir::Quality::Best => kontra_voice::Quality::Best,
+        },
         warps: w.warps.map(warp),
     }
 }

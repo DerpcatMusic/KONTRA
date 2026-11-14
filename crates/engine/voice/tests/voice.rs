@@ -385,6 +385,8 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
             inharmonic: kontra_voice::Inharmonic::OFF,
             modosc: kontra_voice::ModOsc::OFF,
             rate: 48_000.0,
+            // MEDIUM reads the table as it is: HIGH filters and delays it.
+            quality: kontra_voice::Quality::Medium,
             warps: [Warp::OFF; 2],
         };
         let region = Region {
