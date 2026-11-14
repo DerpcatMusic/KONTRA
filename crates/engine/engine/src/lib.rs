@@ -11,8 +11,8 @@
 mod admit;
 mod buses;
 mod callbacks;
-mod detect;
 mod controls;
+mod detect;
 
 mod filters;
 mod fx_types;
