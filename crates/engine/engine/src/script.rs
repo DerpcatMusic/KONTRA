@@ -437,7 +437,12 @@ impl HostApi for Engine {
             }
             Action::SetMidi => {
                 let byte = |i| int(i).clamp(0, 255) as u8;
-                self.set_midi([byte(1) & 0xF0, byte(0) & 0x0F, byte(2) & 0x7F, byte(3) & 0x7F]);
+                self.set_midi([
+                    byte(1) & 0xF0,
+                    byte(0) & 0x0F,
+                    byte(2) & 0x7F,
+                    byte(3) & 0x7F,
+                ]);
                 HostValue::Nothing
             }
             Action::SetNoteController => {
@@ -446,16 +451,26 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             // In `on midi_in` the message's own fields.
-            Action::SetEventPar if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() => {
+            Action::SetEventPar
+                if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() =>
+            {
                 if let Some(at) = midi_par(int(1)) {
                     let max = if at == 3 || at == 2 { 127 } else { 255 };
                     let v = int(2).clamp(0, max) as u8;
-                    self.running.midi[at] = if at == 0 { v & 0xF0 } else { v };
+                    if let Some(byte) = self.running.midi.get_mut(at) {
+                        *byte = if at == 0 { v & 0xF0 } else { v };
+                    }
                 }
                 HostValue::Nothing
             }
-            Action::GetEventPar if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() => {
-                HostValue::Int(midi_par(int(1)).map_or(0, |at| i32::from(self.running.midi[at])))
+            Action::GetEventPar
+                if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() =>
+            {
+                HostValue::Int(
+                    midi_par(int(1))
+                        .and_then(|at| self.running.midi.get(at))
+                        .map_or(0, |&b| i32::from(b)),
+                )
             }
             Action::IgnoreController => {
                 self.running.ignore_controller = true;
@@ -538,13 +553,20 @@ impl HostApi for Engine {
             Action::GetEventParArr if int(1) == event::CUSTOM => {
                 let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 let index = usize::try_from(int(2)).ok();
-                HostValue::Int(note.zip(index).map_or(0, |(n, i)| n.custom.get(i).copied().unwrap_or(0)))
+                HostValue::Int(
+                    note.zip(index)
+                        .map_or(0, |(n, i)| n.custom.get(i).copied().unwrap_or(0)),
+                )
             }
             Action::SetEventParArr if matches!(int(1), event::MOD_VALUE | event::MOD_VALUE_EX) => {
                 if let Ok(index) = u16::try_from(int(3)) {
                     // An optional fifth argument ramps there over microseconds.
                     // `_ID` clamps to ±1 000 000, `_EX_ID` does not.
-                    let value = if int(1) == event::MOD_VALUE { int(2).clamp(-1_000_000, 1_000_000) } else { int(2) };
+                    let value = if int(1) == event::MOD_VALUE {
+                        int(2).clamp(-1_000_000, 1_000_000)
+                    } else {
+                        int(2)
+                    };
                     let now = self.now;
                     let frames =
                         u64::try_from(int(4)).unwrap_or(0) * u64::from(self.rate) / 1_000_000;

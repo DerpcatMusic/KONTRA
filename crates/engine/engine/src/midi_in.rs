@@ -36,7 +36,12 @@ impl Engine {
             }
             Event::Ump([word, _]) if word >> 28 == 0x2 => {
                 let status = (word >> 16) as u8;
-                Some([status & 0xF0, status & 0x0F, (word >> 8) as u8 & 0x7F, word as u8 & 0x7F])
+                Some([
+                    status & 0xF0,
+                    status & 0x0F,
+                    (word >> 8) as u8 & 0x7F,
+                    word as u8 & 0x7F,
+                ])
             }
             _ => None,
         }
@@ -54,7 +59,13 @@ impl Engine {
                 note: HostNote {
                     channel,
                     key: d1,
-                    ..note_like.unwrap_or(HostNote { port: 0, channel, key: d1, id: -1, clap: false })
+                    ..note_like.unwrap_or(HostNote {
+                        port: 0,
+                        channel,
+                        key: d1,
+                        id: -1,
+                        clap: false,
+                    })
                 },
                 velocity: f64::from(d2) / 127.0,
                 tune: match like {
@@ -78,7 +89,11 @@ impl Engine {
 
     /// Runs the scripts' `on midi_in` on `event`; `None` when one ignored it.
     /// What `set_midi` made is handed to `apply` after the scripts ran.
-    pub(crate) fn through_midi_in(&mut self, event: Event, apply: &mut dyn FnMut(&mut Self, Event)) -> Option<Event> {
+    pub(crate) fn through_midi_in(
+        &mut self,
+        event: Event,
+        apply: &mut dyn FnMut(&mut Self, Event),
+    ) -> Option<Event> {
         let Some(mut m) = Self::midi_bytes(&event) else {
             return Some(event);
         };
