@@ -52,6 +52,9 @@ impl Engine {
     /// the room is reserved) for the control side to write. Then, once the
     /// load landed or the save was written, `on async_complete` follows.
     pub fn file_done(&mut self, reply: &mut FileReply) {
+        if self.midi_file_done(reply) || self.detect_done(reply) {
+            return;
+        }
         let r = reply.request;
         // A pick of a name alone (no array): the script reads the answer.
         if r.len == 0 {

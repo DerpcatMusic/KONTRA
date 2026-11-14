@@ -189,7 +189,11 @@ impl Engine {
             .filter(|(_, s)| s.voice.is_active())
         {
             let zone = self.plan.zones.get(slot.zone);
-            let bus = zone.map_or(0, |z| crate::plan::bus(&self.groups, z));
+            let redirect = (slot.note.and_then(|n| self.notes.get(n))).and_then(|n| n.redirect);
+            let bus = redirect
+                .map(usize::from)
+                .filter(|&b| b < self.buses.len())
+                .unwrap_or_else(|| zone.map_or(0, |z| crate::plan::bus(&self.groups, z)));
             let chain =
                 zone.and_then(|z| self.group_chain.get(z.group as usize).copied().flatten());
             let chain = chain.and_then(|c| on_bus(&self.chains, usize::from(c), bus));
