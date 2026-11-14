@@ -51,6 +51,14 @@ pub struct Gesture {
     xy: Option<(usize, u32, (f64, f64))>,
 }
 
+impl Gesture {
+    /// Whether a control is still pressed: dragged, or its arrow held.
+    #[must_use]
+    pub fn held(&self) -> bool {
+        self.press.is_some() || self.xy.is_some() || self.arrow.is_some()
+    }
+}
+
 /// A held arrow steps again after this, then every [`REPEAT_STEP`]
 /// (Kontakt 8.13, measured: 12 steps in about 2 s).
 const REPEAT_DELAY: f64 = 0.4;

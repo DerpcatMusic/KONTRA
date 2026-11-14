@@ -40,7 +40,7 @@ pub use reverb::{
 };
 pub use route_names::RouteNames;
 pub use wavetable::{
-    FormShaper, Inharmonic, ModOsc, ModOscKind, Side, TableValue, Warp, WarpShape, Wavetable,
+    FormShaper, Inharmonic, ModOsc, ModOscKind, Side, TableValue, TuneUnit, Warp, WarpShape, Wavetable,
 };
 
 #[derive(Clone, Debug)]
