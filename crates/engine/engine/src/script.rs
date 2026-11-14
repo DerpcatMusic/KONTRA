@@ -589,7 +589,7 @@ impl HostApi for Engine {
                         i32::try_from(frames * 1_000_000 / u64::from(self.rate)).unwrap_or(i32::MAX)
                     }),
             ),
-            Action::NumZones | Action::GetNumZones => HostValue::Int(self.plan.zones.len() as i32),
+            Action::NumZones => HostValue::Int(self.plan.zones.len() as i32),
             // find_group answers 0 for an unknown name, get_group_idx $NI_NOT_FOUND.
             Action::FindGroup | Action::GetGroupIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
@@ -724,7 +724,9 @@ impl HostApi for Engine {
             }
             // A polyphonic aftertouch message on the channel of the note running.
             Action::SetPolyAt => {
-                let channel = running.and_then(|r| self.notes.get(r)).map_or(0, |n| n.host.channel);
+                let channel = running
+                    .and_then(|r| self.notes.get(r))
+                    .map_or(0, |n| n.host.channel);
                 let at = |i| u8::try_from(int(i).clamp(0, 127)).unwrap_or(0);
                 self.poly_aftertouch(channel, at(0), at(1));
                 HostValue::Nothing

@@ -1,0 +1,51 @@
+# Zone, sample, loop and detect constants/behaviour in Kontakt 8 (run: ksp_probe.py <nki> this-file).
+# KONTRA's values follow the manual's lists and array sizes; this settles them. Needs an instrument
+# whose zone 0 holds a sample (ANALOG STRINGS).
+S declare $a
+R zone_id_0 get_zone_id(0)
+R zone_id_past_end get_zone_id(100000)
+R num_zones get_num_zones()
+R status_zone0 get_zone_status(get_zone_id(0))
+R status_missing get_zone_status(99999)
+R status_empty $NI_ZONE_STATUS_EMPTY
+R status_loaded $NI_ZONE_STATUS_LOADED
+R status_purged $NI_ZONE_STATUS_PURGED
+R status_ignored $NI_ZONE_STATUS_IGNORED
+R loop_mode get_loop_par(get_zone_id(0), 0, $LOOP_PAR_MODE)
+R loop_start get_loop_par(get_zone_id(0), 0, $LOOP_PAR_START)
+R loop_length get_loop_par(get_zone_id(0), 0, $LOOP_PAR_LENGTH)
+R loop_par_mode $LOOP_PAR_MODE
+R loop_par_start $LOOP_PAR_START
+R loop_par_length $LOOP_PAR_LENGTH
+R loop_par_xfade $LOOP_PAR_XFADE
+R loop_par_count $LOOP_PAR_COUNT
+R loop_par_tuning $LOOP_PAR_TUNING
+R file_name $NI_FILE_NAME
+R file_full_path $NI_FILE_FULL_PATH
+R file_full_path_os $NI_FILE_FULL_PATH_OS
+R file_extension $NI_FILE_EXTENSION
+R sample_length_us get_sample_length(get_zone_id(0))
+R key_c_major $NI_DETECT_KEY_C_MAJOR
+R key_b_minor $NI_DETECT_KEY_B_MINOR
+R key_invalid $NI_DETECT_KEY_INVALID
+R drum_kick $NI_DETECT_DRUM_TYPE_KICK
+R drum_other $NI_DETECT_DRUM_TYPE_PERC_OTHER
+R drum_invalid $NI_DETECT_DRUM_TYPE_INVALID
+R inst_bass $NI_DETECT_INSTRUMENT_TYPE_BASS
+R inst_vocal $NI_DETECT_INSTRUMENT_TYPE_VOCAL
+R inst_invalid $NI_DETECT_INSTRUMENT_TYPE_INVALID
+R type_inst $NI_DETECT_SAMPLE_TYPE_INSTRUMENT
+R type_drum $NI_DETECT_SAMPLE_TYPE_DRUM
+R type_invalid $NI_DETECT_SAMPLE_TYPE_INVALID
+R out_default $OUTPUT_TYPE_DEFAULT
+R out_master $OUTPUT_TYPE_MASTER_OUT
+R out_aux $OUTPUT_TYPE_AUX_OUT
+R out_bus $OUTPUT_TYPE_BUS_OUT
+R mf_event_par_command $EVENT_PAR_MIDI_COMMAND
+R mf_event_par_byte1 $EVENT_PAR_MIDI_BYTE_1
+R mf_event_par_byte2 $EVENT_PAR_MIDI_BYTE_2
+R mf_event_par_pos $EVENT_PAR_POS
+R mf_event_par_length $EVENT_PAR_NOTE_LENGTH
+R mf_event_par_id $EVENT_PAR_ID
+R mf_event_par_track $EVENT_PAR_TRACK_NR
+R current_event $CURRENT_EVENT

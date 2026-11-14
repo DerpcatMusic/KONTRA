@@ -43,15 +43,17 @@ pub struct Area {
     pub tracks: (i32, i32),
 }
 
-impl Default for Area {
-    fn default() -> Self {
-        Self { pos: (-1, -1), tracks: (-1, -1) }
-    }
+impl Area {
+    /// The object's whole extent.
+    pub const WHOLE: Self = Self {
+        pos: (-1, -1),
+        tracks: (-1, -1),
+    };
 }
 
 /// A file's events (ids unset: the object numbers them), its tick
 /// resolution and track count.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Smf {
     pub events: Vec<Event>,
     pub division: u16,
@@ -71,7 +73,7 @@ impl<'a> Cursor<'a> {
         Some(head)
     }
     fn byte(&mut self) -> Option<u8> {
-        self.take(1).map(|b| b[0])
+        self.take(1)?.first().copied()
     }
     fn be32(&mut self) -> Option<usize> {
         Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?) as usize)
@@ -104,7 +106,7 @@ pub fn read(bytes: &[u8]) -> Option<Smf> {
     if format > 1 || tracks == 0 || division == 0 || division & 0x8000 != 0 {
         return None;
     }
-    let mut events = Vec::new();
+    let mut events: Vec<Event> = Vec::new();
     for track in 0..i32::from(tracks) {
         (file.take(4)? == b"MTrk").then_some(())?;
         let len = file.be32()?;
@@ -131,11 +133,11 @@ pub fn read(bytes: &[u8]) -> Option<Smf> {
                     if (b1 | b2) & 128 != 0 {
                         return None;
                     }
-                    let held = &mut held[(channel * 128) as usize + usize::from(b1)];
+                    let held = held.get_mut((channel * 128) as usize + usize::from(b1))?;
                     if command == 0x80 || command == 0x90 && b2 == 0 {
-                        if !held.is_empty() {
-                            let i = held.remove(0);
-                            let e: &mut Event = &mut events[i];
+                        if !held.is_empty()
+                            && let Some(e) = events.get_mut(held.remove(0))
+                        {
                             e.length = at - e.pos;
                         }
                         continue;
@@ -172,14 +174,16 @@ pub fn read(bytes: &[u8]) -> Option<Smf> {
         }
         // Unfinished notes end with the track.
         for i in held.into_iter().flatten() {
-            events[i].length = (tick as i32 - events[i].pos).max(0);
+            if let Some(e) = events.get_mut(i) {
+                e.length = (tick as i32 - e.pos).max(0);
+            }
         }
     }
     Some(Smf {
         events,
         division,
         tracks: i32::from(tracks),
-        area: Area::default(),
+        area: Area::WHOLE,
     })
 }
 
@@ -201,9 +205,18 @@ pub fn write(smf: &Smf) -> Option<Vec<u8>> {
         (a.min(b), a.max(b))
     };
     let first_pos = events.iter().map(|e| e.pos).min().unwrap_or(0);
-    let last_pos = events.iter().map(|e| e.pos.saturating_add(e.length)).max().unwrap_or(0);
+    let last_pos = events
+        .iter()
+        .map(|e| e.pos.saturating_add(e.length))
+        .max()
+        .unwrap_or(0);
     let (p0, p1) = edge(area.pos.0, area.pos.1, first_pos, last_pos);
-    let (t0, t1) = edge(area.tracks.0, area.tracks.1, 0, smf.tracks.saturating_sub(1).max(0));
+    let (t0, t1) = edge(
+        area.tracks.0,
+        area.tracks.1,
+        0,
+        smf.tracks.saturating_sub(1).max(0),
+    );
     let count = u16::try_from(t1 - t0 + 1).ok().filter(|&n| n > 0)?;
     let mut out = b"MThd\0\0\0\x06\0\x01".to_vec();
     out.extend((count).to_be_bytes());
@@ -211,24 +224,46 @@ pub fn write(smf: &Smf) -> Option<Vec<u8>> {
     for track in t0..=t1 {
         // (tick, off first, id) keeps a note's off before the next note on.
         let mut messages: Vec<(i32, bool, i32, [u8; 3], usize)> = Vec::new();
-        for e in events.iter().filter(|e| e.track == track && (p0..=p1).contains(&e.pos)) {
+        for e in events
+            .iter()
+            .filter(|e| e.track == track && (p0..=p1).contains(&e.pos))
+        {
             if !e.valid() {
                 return None;
             }
             let status = (e.command | e.channel) as u8;
-            let size = if matches!(e.command, 0xC0 | 0xD0) { 2 } else { 3 };
-            messages.push((e.pos - p0, false, e.id, [status, e.byte1 as u8, e.byte2 as u8], size));
+            let size = if matches!(e.command, 0xC0 | 0xD0) {
+                2
+            } else {
+                3
+            };
+            messages.push((
+                e.pos - p0,
+                false,
+                e.id,
+                [status, e.byte1 as u8, e.byte2 as u8],
+                size,
+            ));
             if e.command == 0x90 {
                 let off = e.pos.checked_add(e.length)? - p0;
-                messages.push((off, true, e.id, [0x80 | e.channel as u8, e.byte1 as u8, 0], 3));
+                messages.push((
+                    off,
+                    true,
+                    e.id,
+                    [0x80 | e.channel as u8, e.byte1 as u8, 0],
+                    3,
+                ));
             }
         }
         messages.sort_by_key(|m| (m.0, !m.1, m.2));
         let mut data = Vec::new();
         let mut last = 0;
         for (tick, _, _, bytes, size) in messages {
-            put_vlq(&mut data, u32::try_from(tick - last).ok().filter(|&d| d < 1 << 28)?);
-            data.extend(&bytes[..size]);
+            put_vlq(
+                &mut data,
+                u32::try_from(tick - last).ok().filter(|&d| d < 1 << 28)?,
+            );
+            data.extend(bytes.get(..size)?);
             last = tick;
         }
         data.extend([0, 0xFF, 0x2F, 0]);
@@ -244,33 +279,79 @@ mod tests {
     use super::*;
 
     fn note(track: i32, pos: i32, key: i32, length: i32) -> Event {
-        Event { track, pos, command: 0x90, byte1: key, byte2: 100, length, ..Event::default() }
+        Event {
+            track,
+            pos,
+            command: 0x90,
+            byte1: key,
+            byte2: 100,
+            length,
+            ..Event::default()
+        }
     }
 
     #[test]
     fn a_written_file_reads_back_with_its_note_lengths() {
         let events = vec![
-            Event { id: 1, ..note(0, 0, 60, 240) },
-            Event { id: 2, ..note(0, 480, 62, 120) },
-            Event { id: 3, track: 1, pos: 10, command: 0xB0, byte1: 7, byte2: 90, ..Event::default() },
+            Event {
+                id: 1,
+                ..note(0, 0, 60, 240)
+            },
+            Event {
+                id: 2,
+                ..note(0, 480, 62, 120)
+            },
+            Event {
+                id: 3,
+                track: 1,
+                pos: 10,
+                command: 0xB0,
+                byte1: 7,
+                byte2: 90,
+                ..Event::default()
+            },
         ];
-        let smf = Smf { events, division: 480, tracks: 2, area: Area::default() };
+        let smf = Smf {
+            events,
+            division: 480,
+            tracks: 2,
+            area: Area::WHOLE,
+        };
         let bytes = write(&smf).expect("valid events");
         let back = read(&bytes).expect("our own file");
         assert_eq!((back.division, back.tracks), (480, 2));
-        let mut got: Vec<_> = back.events.iter().map(|e| (e.track, e.pos, e.command, e.byte1, e.length)).collect();
+        let mut got: Vec<_> = back
+            .events
+            .iter()
+            .map(|e| (e.track, e.pos, e.command, e.byte1, e.length))
+            .collect();
         got.sort_unstable();
-        assert_eq!(got, [(0, 0, 0x90, 60, 240), (0, 480, 0x90, 62, 120), (1, 10, 0xB0, 7, 0)]);
+        assert_eq!(
+            got,
+            [
+                (0, 0, 0x90, 60, 240),
+                (0, 480, 0x90, 62, 120),
+                (1, 10, 0xB0, 7, 0)
+            ]
+        );
     }
 
     #[test]
     fn an_area_clips_and_an_invalid_event_fails_the_write() {
-        let mut smf = Smf { events: vec![note(0, 0, 60, 10), note(0, 100, 61, 10)], division: 96, tracks: 1, area: Area { pos: (50, -1), tracks: (-1, -1) } };
+        let mut smf = Smf {
+            events: vec![note(0, 0, 60, 10), note(0, 100, 61, 10)],
+            division: 96,
+            tracks: 1,
+            area: Area {
+                pos: (50, -1),
+                tracks: (-1, -1),
+            },
+        };
         let back = read(&write(&smf).unwrap()).unwrap();
         // The file starts at the area's start.
         assert_eq!((back.events.len(), back.events[0].pos), (1, 50));
         smf.events[0].byte1 = 200;
-        smf.area = Area::default();
+        smf.area = Area::WHOLE;
         assert!(write(&smf).is_none());
     }
 

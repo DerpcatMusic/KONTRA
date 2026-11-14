@@ -28,13 +28,12 @@ pub(crate) struct MidiObject {
     tracks: i32,
     division: u16,
     /// Export area 0 is the edit buffer `save_midi_file` writes.
-    areas: Vec<Area>,
-    area_names: Vec<Text>,
+    areas: Vec<(Area, Text)>,
     filename: Text,
 }
 
-impl Default for MidiObject {
-    fn default() -> Self {
+impl MidiObject {
+    pub(crate) fn new() -> Self {
         Self {
             events: Vec::new(),
             selected: None,
@@ -42,8 +41,7 @@ impl Default for MidiObject {
             next_id: 1,
             tracks: 0,
             division: 960,
-            areas: vec![Area::default()],
-            area_names: vec![Text::EMPTY],
+            areas: vec![(Area::WHOLE, Text::EMPTY)],
             filename: Text::EMPTY,
         }
     }
@@ -62,7 +60,7 @@ enum Move {
 
 fn get(e: &Event, par: i32) -> i32 {
     match par {
-        0..=3 => e.custom[par as usize],
+        0..=3 => e.custom.get(par as usize).copied().unwrap_or(0),
         event::MIDI_CHANNEL => e.channel,
         event::MIDI_COMMAND => e.command,
         event::MIDI_BYTE_1 => e.byte1,
@@ -77,7 +75,11 @@ fn get(e: &Event, par: i32) -> i32 {
 
 fn set(e: &mut Event, par: i32, value: i32) {
     match par {
-        0..=3 => e.custom[par as usize] = value,
+        0..=3 => {
+            if let Some(c) = e.custom.get_mut(par as usize) {
+                *c = value;
+            }
+        }
         event::MIDI_CHANNEL => e.channel = value,
         event::MIDI_COMMAND => e.command = value,
         event::MIDI_BYTE_1 => e.byte1 = value,
@@ -110,13 +112,20 @@ impl MidiObject {
     /// Moves the marker among the events of `track` (-1: all) in time order.
     fn step(&mut self, how: Move, track: i32) {
         let key = |e: &Event| (e.pos, e.id);
-        let here = self.selected.and_then(|id| self.events.iter().find(|e| e.id == id)).map(key);
+        let here = self
+            .selected
+            .and_then(|id| self.events.iter().find(|e| e.id == id))
+            .map(key);
         let hits = self.events.iter().filter(|e| track < 0 || e.track == track);
         let found = match how {
             Move::First => hits.min_by_key(|e| key(e)),
             Move::Last => hits.max_by_key(|e| key(e)),
-            Move::Next => hits.filter(|e| here.is_some_and(|h| key(e) > h)).min_by_key(|e| key(e)),
-            Move::Prev => hits.filter(|e| here.is_some_and(|h| key(e) < h)).max_by_key(|e| key(e)),
+            Move::Next => hits
+                .filter(|e| here.is_some_and(|h| key(e) > h))
+                .min_by_key(|e| key(e)),
+            Move::Prev => hits
+                .filter(|e| here.is_some_and(|h| key(e) < h))
+                .max_by_key(|e| key(e)),
             Move::NextAt(at) => hits.filter(|e| e.pos > at).min_by_key(|e| key(e)),
             Move::PrevAt(at) => hits.filter(|e| e.pos < at).max_by_key(|e| key(e)),
         };
@@ -130,7 +139,15 @@ impl MidiObject {
         let id = self.next_id;
         self.next_id += 1;
         self.buffer -= 1;
-        self.events.push(Event { id, track, pos, command, byte1, byte2, ..Event::default() });
+        self.events.push(Event {
+            id,
+            track,
+            pos,
+            command,
+            byte1,
+            byte2,
+            ..Event::default()
+        });
         self.tracks = self.tracks.max(track.saturating_add(1));
         id
     }
@@ -138,36 +155,59 @@ impl MidiObject {
     fn remove(&mut self, selector: i32) {
         let before = self.events.len();
         let this = &*self;
-        let keep: Vec<bool> = this.events.iter().map(|e| !this.names(selector, e)).collect();
+        let keep: Vec<bool> = this
+            .events
+            .iter()
+            .map(|e| !this.names(selector, e))
+            .collect();
         let mut keep = keep.into_iter();
         self.events.retain(|_| keep.next().unwrap_or(true));
         self.buffer += before - self.events.len();
-        if self.selected.is_some_and(|id| !self.events.iter().any(|e| e.id == id)) {
+        if self
+            .selected
+            .is_some_and(|id| !self.events.iter().any(|e| e.id == id))
+        {
             self.selected = None;
         }
     }
 
     fn reset(&mut self) {
-        *self = Self { areas: std::mem::take(&mut self.areas), area_names: std::mem::take(&mut self.area_names), next_id: self.next_id, ..Self::default() };
+        *self = Self {
+            areas: std::mem::take(&mut self.areas),
+            next_id: self.next_id,
+            ..Self::new()
+        };
     }
 
     /// Takes a read file in: `mode` 0 replaces every event, 1 only those
     /// inside the span the file covers on a track, 2 merges.
     fn insert_file(&mut self, smf: Smf, [track_by, pos_by, mode]: [i32; 3], name: Text) -> bool {
         let shift = |e: &Event| (e.track.checked_add(track_by), e.pos.checked_add(pos_by));
-        if smf.events.iter().any(|e| shift(e).0.is_none() || shift(e).1.is_none()) {
+        if smf
+            .events
+            .iter()
+            .any(|e| shift(e).0.is_none() || shift(e).1.is_none())
+        {
             return false;
         }
         // Per track the file covers: its first and last tick, shifted.
         let mut spans: Vec<(i32, i32, i32)> = Vec::new();
         for e in &smf.events {
-            let (track, from, to) = (e.track + track_by, e.pos + pos_by, e.pos + pos_by + e.length);
+            let (track, from, to) = (
+                e.track + track_by,
+                e.pos + pos_by,
+                e.pos + pos_by + e.length,
+            );
             match spans.iter_mut().find(|s| s.0 == track) {
                 Some(s) => (s.1, s.2) = (s.1.min(from), s.2.max(to)),
                 None => spans.push((track, from, to)),
             }
         }
-        let overlaps = |e: &Event| spans.iter().any(|s| s.0 == e.track && (s.1..=s.2).contains(&e.pos));
+        let overlaps = |e: &Event| {
+            spans
+                .iter()
+                .any(|s| s.0 == e.track && (s.1..=s.2).contains(&e.pos))
+        };
         match mode {
             0 => self.events.clear(),
             1 => self.events.retain(|e| !overlaps(e)),
@@ -180,28 +220,52 @@ impl MidiObject {
         for e in smf.events {
             let id = self.next_id;
             self.next_id += 1;
-            self.events.push(Event { id, track: e.track + track_by, pos: e.pos + pos_by, ..e });
+            self.events.push(Event {
+                id,
+                track: e.track + track_by,
+                pos: e.pos + pos_by,
+                ..e
+            });
         }
         self.selected = None;
         self.filename = name;
         self.division = smf.division;
         let tracks = smf.tracks.saturating_add(track_by);
-        self.tracks = if mode == 0 { tracks } else { self.tracks.max(tracks) };
+        self.tracks = if mode == 0 {
+            tracks
+        } else {
+            self.tracks.max(tracks)
+        };
         true
     }
 
     /// The object as an export: events, resolution and area 0.
     fn export(&self) -> Smf {
-        Smf { events: self.events.clone(), division: self.division, tracks: self.tracks, area: self.areas[0] }
+        Smf {
+            events: self.events.clone(),
+            division: self.division,
+            tracks: self.tracks,
+            area: self.areas.first().map_or(Area::WHOLE, |a| a.0),
+        }
     }
 
     /// `mf_set_export_area`: area 0 becomes the given span; the answer is 0,
     /// or the id of the first event in it that is not valid MIDI.
     fn set_area(&mut self, name: Text, area: Area) -> i32 {
-        let ordered = |(a, b): (i32, i32)| if a >= 0 && b >= 0 && a > b { (b, a) } else { (a, b) };
-        let area = Area { pos: ordered(area.pos), tracks: ordered(area.tracks) };
-        self.areas[0] = area;
-        self.area_names[0] = name;
+        let ordered = |(a, b): (i32, i32)| {
+            if a >= 0 && b >= 0 && a > b {
+                (b, a)
+            } else {
+                (a, b)
+            }
+        };
+        let area = Area {
+            pos: ordered(area.pos),
+            tracks: ordered(area.tracks),
+        };
+        if let Some(first) = self.areas.first_mut() {
+            *first = (area, name);
+        }
         let within = |v: i32, (a, b): (i32, i32)| (a < 0 || v >= a) && (b < 0 || v <= b);
         self.events
             .iter()
@@ -221,11 +285,20 @@ impl Engine {
             m.step(how, track);
             HostValue::Nothing
         };
-        let current = |m: &MidiObject, par| m.first_named(event::CURRENT).map_or(0, |e| get(e, par));
+        let current =
+            |m: &MidiObject, par| m.first_named(event::CURRENT).map_or(0, |e| get(e, par));
         let edit = |m: &mut MidiObject, selector, par, value| {
             let this = &*m;
-            let hit: Vec<bool> = this.events.iter().map(|e| this.names(selector, e)).collect();
-            m.events.iter_mut().zip(hit).filter(|(_, h)| *h).for_each(|(e, _)| set(e, par, value));
+            let hit: Vec<bool> = this
+                .events
+                .iter()
+                .map(|e| this.names(selector, e))
+                .collect();
+            m.events
+                .iter_mut()
+                .zip(hit)
+                .filter(|(_, h)| *h)
+                .for_each(|(e, _)| set(e, par, value));
             HostValue::Nothing
         };
         Some(match call.action {
@@ -260,7 +333,8 @@ impl Engine {
                 HostValue::Nothing
             }
             MfGetMark => HostValue::Int(i32::from(
-                m.first_named(int(0)).is_some_and(|e| e.marks & int(1) as u32 != 0),
+                m.first_named(int(0))
+                    .is_some_and(|e| e.marks & int(1) as u32 != 0),
             )),
             MfSetMark => {
                 let (mark, on) = (int(1) as u32, int(2) != 0);
@@ -273,18 +347,24 @@ impl Engine {
             }
             MfSetExportArea => {
                 let name = call.texts.first().copied().unwrap_or(Text::EMPTY);
-                let area = Area { pos: (int(0), int(1)), tracks: (int(2), int(3)) };
+                let area = Area {
+                    pos: (int(0), int(1)),
+                    tracks: (int(2), int(3)),
+                };
                 HostValue::Int(m.set_area(name, area))
             }
             MfSetNumExportAreas => {
                 let n = usize::try_from(int(0)).unwrap_or(0).clamp(1, AREAS);
-                m.areas.resize(n, Area::default());
-                m.area_names.resize(n, Text::EMPTY);
+                m.areas.resize(n, (Area::WHOLE, Text::EMPTY));
                 HostValue::Nothing
             }
             MfCopyExportArea => {
-                if let Some(i) = usize::try_from(int(0)).ok().filter(|&i| i < m.areas.len()) {
-                    (m.areas[i], m.area_names[i]) = (m.areas[0], m.area_names[0]);
+                let edit = m.areas.first().copied();
+                let slot = usize::try_from(int(0))
+                    .ok()
+                    .and_then(|i| m.areas.get_mut(i));
+                if let (Some(edit), Some(slot)) = (edit, slot) {
+                    *slot = edit;
                 }
                 HostValue::Nothing
             }
@@ -310,7 +390,11 @@ impl Engine {
                 let path = call.texts.first().copied().unwrap_or(Text::EMPTY);
                 let save = call.action == SaveMidiFile;
                 // The older load_midi_file replaces everything, like mode 0.
-                let args = if call.action == MfInsertFile { [int(0), int(1), int(2)] } else { [0; 3] };
+                let args = if call.action == MfInsertFile {
+                    [int(0), int(1), int(2)]
+                } else {
+                    [0; 3]
+                };
                 return Some(HostValue::Int(self.midi_file(path, args, save)));
             }
             _ => return None,

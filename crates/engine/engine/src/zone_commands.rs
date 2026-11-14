@@ -40,7 +40,10 @@ pub fn detect_sample(sample: &ir::Sample, what: u8) -> Option<f64> {
         return None;
     }
     let (rate, frames) = kontra_stream::decode(sample, MAX_FRAMES).ok()?;
-    let audio = Audio { frames: &frames, rate };
+    let audio = Audio {
+        frames: &frames,
+        rate,
+    };
     match kind {
         Kind::Key => detect::key(&audio).map(f64::from),
         Kind::Pitch => detect::pitch(&audio),
@@ -82,18 +85,41 @@ impl Engine {
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         Some(match call.action {
             GetSample => {
-                let path = self.facts_of(int(0)).and_then(|z| z.source.as_ref()).map(|s| s.file.clone());
+                let path = self
+                    .facts_of(int(0))
+                    .and_then(|z| z.source.as_ref())
+                    .map(|s| s.file.clone());
                 let text = path.map_or(String::new(), |p| match int(1) {
                     // $NI_FILE_NAME: without folder or extension.
-                    0 => p.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned()),
+                    0 => p
+                        .file_stem()
+                        .map_or(String::new(), |s| s.to_string_lossy().into_owned()),
                     // $NI_FILE_FULL_PATH uses forward slashes, the _OS one the system's.
                     1 => p.to_string_lossy().replace('\\', "/"),
                     2 => p.to_string_lossy().into_owned(),
-                    _ => p.extension().map_or(String::new(), |e| e.to_string_lossy().into_owned()),
+                    _ => p
+                        .extension()
+                        .map_or(String::new(), |e| e.to_string_lossy().into_owned()),
                 });
                 *call.text_out = Text::from_str_cut(&text).0;
                 HostValue::Text
             }
+            // The zone at an index of the instrument's list; -1 past its end.
+            GetZoneId => HostValue::Int(
+                usize::try_from(int(0))
+                    .ok()
+                    .and_then(|i| self.plan.zone_facts.get(i))
+                    .map_or(-1, |z| i32::try_from(z.id).unwrap_or(-1)),
+            ),
+            // Every zone the instrument saved, played or not.
+            GetNumZones => {
+                HostValue::Int(self.plan.zone_facts.len().max(self.plan.zones.len()) as i32)
+            }
+            // The whole sample, microseconds; -1 for a zone the instrument lacks.
+            GetSampleLength => HostValue::Int(self.facts_of(int(0)).map_or(-1, |z| {
+                let frames = z.source.as_ref().map_or(z.end, |s| s.frames);
+                i32::try_from(frames * 1_000_000 / u64::from(z.rate.max(1))).unwrap_or(i32::MAX)
+            })),
             GetZoneStatus => {
                 let group = self.facts_of(int(0)).map(|z| z.group as usize);
                 // $NI_ZONE_STATUS_LOADED 1, _PURGED 2; -1 for a zone the instrument lacks.
@@ -105,7 +131,10 @@ impl Engine {
             }
             GetLoopPar => {
                 let at = usize::try_from(int(1)).ok();
-                let l = self.facts_of(int(0)).and_then(|z| z.loops.get(at?)).copied();
+                let l = self
+                    .facts_of(int(0))
+                    .and_then(|z| z.loops.get(at?))
+                    .copied();
                 // $LOOP_PAR_MODE reads 1 for a loop that exists (the mode laws are unmeasured).
                 HostValue::Int(l.map_or(0, |l| match int(2) {
                     0 => 1,
@@ -119,7 +148,11 @@ impl Engine {
             // Only user zones take a sample or a loop, and there are none.
             SetSample | SetLoopPar => {
                 self.count_unhandled(call.action);
-                HostValue::Int(if self.building { -1 } else { self.start_async(Exit::Failed) })
+                HostValue::Int(if self.building {
+                    -1
+                } else {
+                    self.start_async(Exit::Failed)
+                })
             }
             SetNumUserZones | SetMidi => {
                 self.count_unhandled(call.action);
@@ -127,7 +160,10 @@ impl Engine {
             }
             // The Mapping Editor selects nothing here: the list is just its end mark.
             GetSelZonesIdx => {
-                if let Some(cell) = usize::try_from(int(0)).ok().and_then(|b| call.cells.get_mut(b)) {
+                if let Some(cell) = usize::try_from(int(0))
+                    .ok()
+                    .and_then(|b| call.cells.get_mut(b))
+                {
                     *cell = -1;
                 }
                 HostValue::Nothing
@@ -172,7 +208,11 @@ impl Engine {
                     name: Text::EMPTY,
                     save: false,
                     midi: None,
-                    detect: Some(DetectJob { zone: z, what, cell }),
+                    detect: Some(DetectJob {
+                        zone: z,
+                        what,
+                        cell,
+                    }),
                 };
                 HostValue::Int(self.request_file(request))
             }
@@ -182,11 +222,16 @@ impl Engine {
                 let (kind, index) = (int(1), int(2));
                 let buses = self.buses.len();
                 let to = match kind {
-                    3 => usize::try_from(index).ok().map(|n| n + 1).filter(|&b| b < buses),
+                    3 => usize::try_from(index)
+                        .ok()
+                        .map(|n| n + 1)
+                        .filter(|&b| b < buses),
                     1 | 2 => Some(0),
                     _ => None,
                 };
-                self.each(int(0), |n| n.redirect = to.and_then(|b| u8::try_from(b).ok()));
+                self.each(int(0), |n| {
+                    n.redirect = to.and_then(|b| u8::try_from(b).ok())
+                });
                 HostValue::Nothing
             }
             _ => return None,
