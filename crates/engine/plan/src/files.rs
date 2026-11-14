@@ -106,6 +106,18 @@ pub struct FileRequest {
     /// A MIDI file, not an array: `[track offset, position offset, mode]` of
     /// `mf_insert_file` (a save writes the object's export area).
     pub midi: Option<[i32; 3]>,
+    /// A `detect_*` of a zone's sample, not a file.
+    pub detect: Option<DetectJob>,
+}
+
+/// A music-information measurement the control side runs on a zone's sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DetectJob {
+    pub zone: u32,
+    /// Which one: 0 key, 1 pitch, 2 loudness, 3 peak, 4 rms, 5 tempo, 6 a type.
+    pub what: u8,
+    /// The script variable that takes the result.
+    pub cell: u32,
 }
 
 /// The control side's answer to a [`FileRequest`]: a load's values (None
@@ -121,6 +133,8 @@ pub struct FileReply {
     pub written: Option<bool>,
     /// A MIDI load's parsed file, or the object's events for a MIDI save.
     pub midi: Option<crate::midi_file::Smf>,
+    /// A detection's value; None when it failed.
+    pub detected: Option<f64>,
 }
 
 impl crate::ScriptPlan {
@@ -150,6 +164,7 @@ impl crate::ScriptPlan {
             name,
             save,
             midi: None,
+            detect: None,
         }
     }
 

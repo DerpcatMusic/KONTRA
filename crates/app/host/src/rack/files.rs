@@ -120,6 +120,28 @@ impl Rack {
             let Some(p) = live.filter(|p| p.script.generation == generation) else {
                 continue;
             };
+            // A detection reads the zone's own sample, not a named file.
+            if let Some(job) = request.detect {
+                let sample = (p.plan.as_ref())
+                    .and_then(|plan| plan.zone_facts.iter().find(|z| z.id == job.zone))
+                    .and_then(|z| z.source.clone());
+                let detected = sample.and_then(|s| kontra_engine::detect_sample(&s, job.what));
+                let reply = Box::new(FileReply {
+                    request,
+                    loaded: None,
+                    ints: Vec::new(),
+                    texts: Vec::new(),
+                    written: None,
+                    midi: None,
+                    detected,
+                });
+                self.send(Command::File {
+                    part,
+                    generation,
+                    reply,
+                });
+                continue;
+            }
             // No path: the player picks the file in the editor first.
             if request.path.as_str().is_empty() {
                 let names =
@@ -157,6 +179,7 @@ pub(super) fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
         texts: Vec::with_capacity(if request.save && text { len } else { 0 }),
         written: None,
         midi: None,
+        detected: None,
     };
     if request.save {
         return reply;

@@ -34,6 +34,7 @@ pub fn prepare(
 ) -> (Plan, Vec<ir::Diagnostic>) {
     let mut diagnostics = Vec::new();
     let loaded = load_samples(instrument, store, open, &mut diagnostics);
+    let shared: Vec<Arc<ir::Sample>> = instrument.samples.iter().cloned().map(Arc::new).collect();
     let client = store.client();
     let mut zones = Vec::new();
     let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
@@ -71,6 +72,8 @@ pub fn prepare(
                 end: z.end,
                 start_range: z.start_mod,
                 rate: source.rate,
+                source: shared.get(z.sample).cloned(),
+                loops: z.loops.clone(),
             });
             // A purged group loads nothing: a script's un-purge builds it.
             if group.purged {

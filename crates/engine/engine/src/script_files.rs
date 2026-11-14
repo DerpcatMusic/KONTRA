@@ -52,7 +52,7 @@ impl Engine {
     /// the room is reserved) for the control side to write. Then, once the
     /// load landed or the save was written, `on async_complete` follows.
     pub fn file_done(&mut self, reply: &mut FileReply) {
-        if self.midi_file_done(reply) {
+        if self.midi_file_done(reply) || self.detect_done(reply) {
             return;
         }
         let r = reply.request;

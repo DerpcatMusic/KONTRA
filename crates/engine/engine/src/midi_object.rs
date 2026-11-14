@@ -340,6 +340,7 @@ impl Engine {
             name,
             save,
             midi: Some(args),
+            detect: None,
         };
         self.request_file(request)
     }
