@@ -12,6 +12,7 @@ mod admit;
 mod buses;
 mod callbacks;
 mod controls;
+mod detect;
 
 mod filters;
 mod fx_types;
@@ -19,6 +20,8 @@ mod impulse_knobs;
 mod inspect;
 mod knobs;
 mod midi;
+mod midi_in;
+mod midi_object;
 mod modulators;
 mod par_display;
 mod params;
@@ -29,6 +32,7 @@ mod refresh;
 mod reshaped;
 mod runtime;
 mod script_files;
+mod zone_commands;
 
 mod script;
 mod start;
@@ -63,25 +67,27 @@ pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{
-    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, zone_name,
+    EnginePar, EnginePars, LoopPar, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file,
+    user_loops, zone_name,
 };
-pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
+pub use kontra_script_ui::{ENTRY, FIRST_FONT};
 pub use kontra_time::SampleTime;
 pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
 pub use kontra_voice::{Ahdsr, Loop, Region, RenderMode};
 pub use ledger::NoteRef;
 pub use pgs::PgsBudget;
 pub use plan::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
+    Atom, Bus, Control, Crossfade, Dormant, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
     RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
-pub use script::{Callbacks, CcLink, KnobModPlan, Controls, LookPars, ScriptPlan};
+pub use script::{Callbacks, CcLink, Controls, KnobModPlan, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
-pub use zone_edits::ZoneEdit;
+pub use zone_commands::detect_sample;
+pub use zone_edits::{Edit, Unpurge, ZoneEdit};
 
 use buses::BusState;
 use group_masks::GroupMasks;
@@ -126,6 +132,10 @@ pub struct Stats {
     pub script_resumes: u64,
     /// Script loop turns run, a measure of the work a script did.
     pub script_turns: u64,
+    /// Controllers (and aftertouch) a script kept from the instrument, and
+    /// those it kept and set its own value for instead.
+    pub controllers_ignored: u64,
+    pub controllers_replaced: u64,
 }
 
 struct Slot {
@@ -175,6 +185,8 @@ pub struct Engine {
     requests: Vec<fx_types::EffectRequest>,
     /// `set_zone_par` calls waiting for the host (zone_edits.rs).
     zone_edits: Vec<ZoneEdit>,
+    /// `purge_group(g, 1)` of dormant groups waiting for the host (zone_edits.rs).
+    unpurges: Vec<Unpurge>,
     /// Per script slot, the edits refused because that queue was full.
     zone_refused: Box<[u32]>,
     /// The block being rendered ends here; script turns run before it began.
@@ -226,6 +238,10 @@ pub struct Engine {
     cc_values: [u8; 130],
     /// Each key's last polyphonic aftertouch (`%POLY_AT`).
     poly_at: [u8; 128],
+    /// Time Machine Pro voice limits: standard, high quality.
+    voice_limits: [i32; 2],
+    /// What `set_midi` made in the running `on midi_in`: count and messages.
+    midi_made: (usize, [[u8; 4]; midi_in::MADE]),
     /// Where `$KSP_TIMER` counts from (`reset_ksp_timer`).
     timer_at: SampleTime,
     last_message: Text,
@@ -238,6 +254,8 @@ pub struct Engine {
     /// While `on init` runs at load, the cells `read_persistent_var`
     /// reloaded, by slot (texts flagged): the end-of-init restore skips them.
     reloaded: Vec<(u8, std::ops::Range<u32>, bool)>,
+    /// The MIDI object (`mf_*`).
+    midi: midi_object::Object,
     /// Array files scripts asked to load or save, for the control side.
     files: Vec<kontra_plan::files::FileRequest>,
     /// The editor's answers to picks (`PickFile`): slot, async id, and the
@@ -260,11 +278,19 @@ pub struct Engine {
     output: kontra_dsp::core::Fader,
     /// The instrument insert rack, on the final mix.
     rack: racks::Rack,
+    /// Reads the routes onto script knobs ([`kontra_plan::KnobModPlan`]), and
+    /// each one's last value.
+    knobs: racks::Rack,
+    knob_last: Box<[[f32; 2]]>,
     /// One single-slot rack per send slot, its input, then the main rack.
     sends: Box<[racks::Rack]>,
     taps: Box<[Box<[[f32; 2]]>]>,
     main: racks::Rack,
     ids: callbacks::Ids,
+    /// Seconds since the Unix epoch when the engine was made: the clock
+    /// `$NI_DATE_*` and `$NI_TIME_*` read, advanced by the frames rendered.
+    // ponytail: UTC, read once off the audio thread; local time needs the host's offset.
+    wall_start: i64,
     ui: kontra_script_ui::Store,
     /// The picture names scripts asked a font id for, by script slot, in
     /// the order asked.
@@ -281,6 +307,12 @@ pub struct Engine {
     /// group's, so `set_zone_par` moving it needs no rebuild).
     chains: Vec<filters::Chain>,
     group_chain: Box<[Option<u16>]>,
+    /// Per group on a shared chain, the private chain it takes once a write
+    /// moves its inserts (filters.rs).
+    group_private: Box<[Option<u16>]>,
+    /// Per group, whether its inserts were written since the last span.
+    group_moved: Box<[bool]>,
+    groups_moved: bool,
     /// Per group, the inserts that run on each voice.
     voice_units: Box<[Arc<[voice_rack::Unit]>]>,
     /// Per group, the first slot its summed voices run (group_racks.rs).
@@ -322,6 +354,8 @@ impl Engine {
             .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into())
             .collect();
         let main = racks::Rack::new(&plan.main, rate, &[]);
+        let knobs = racks::Rack::reader(&plan.knob_blends, &plan.knob_lfos, rate);
+        let knob_last = vec![[f32::NAN; 2]; plan.knob_mods.len()].into();
         // A voice that ends early (stolen, choked or faded by a script)
         // fades for FADE_SECONDS in a spare slot. A chord on a full pool
         // steals one voice per note at once, up to the whole limit, so with
@@ -392,6 +426,7 @@ impl Engine {
             init_impulses: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
             zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
+            unpurges: Vec::with_capacity(16),
             zone_refused: vec![0; script_count].into(),
             block_end: SampleTime(0),
             block_turns: 0,
@@ -425,12 +460,15 @@ impl Engine {
             refresh_later: Vec::with_capacity(64),
             cc_values: [0; 130],
             poly_at: [0; 128],
+            voice_limits: kontra_vm::midi::VL_DEFAULT,
+            midi_made: (0, [[0; 4]; midi_in::MADE]),
             timer_at: SampleTime(0),
             last_message: Text::EMPTY,
             recall: Recall::Restart,
             recalled: Box::new([]),
             building: true,
             reloaded: Vec::new(),
+            midi: midi_object::Object::new(),
             files: Vec::with_capacity(script_files::FILES),
             picked: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
@@ -439,6 +477,9 @@ impl Engine {
             memo: Default::default(),
             ui,
             ids: callbacks::Ids::START,
+            wall_start: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
             instrument: Level::panned(ir::common::DB_GAIN.eval_unclamped(out.volume_db), out.pan),
             expression: 1.0,
             balance: out.balance,
@@ -447,8 +488,13 @@ impl Engine {
             sends,
             taps,
             main,
+            knobs,
+            knob_last,
             chains: Vec::new(),
             group_chain: Box::new([]),
+            group_private: Box::new([]),
+            group_moved: Box::new([]),
+            groups_moved: false,
             voice_units: Box::new([]),
             group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
@@ -501,7 +547,7 @@ impl Engine {
             .count()
     }
 
-    /// The controller's current value (128 is aftertouch, 129 pitch bend).
+    /// The controller's current value (129 is channel pressure).
     #[must_use]
     pub fn controller(&self, cc: usize) -> Option<u8> {
         self.cc_values.get(cc).copied()
@@ -559,6 +605,7 @@ impl Engine {
             if let Some(span) = out.get_mut(from..from + len) {
                 self.mix_out(span);
             }
+            self.follow_knobs();
             self.now = until;
         }
         self.end_silent_notes();
@@ -571,6 +618,14 @@ impl Engine {
             Work::Release(note) => return self.end_note(note),
             Work::ParentUp(note) => return self.parent_up(note),
             Work::PgsChanged => return self.run_pgs_changed(),
+            Work::Controller { controller, value } => {
+                return self.set_controller(i32::from(controller), i32::from(value));
+            }
+            Work::PolyAt {
+                channel,
+                key,
+                value,
+            } => return self.set_poly_at(channel, key, value),
             Work::Listen {
                 slot,
                 signal,
@@ -578,6 +633,13 @@ impl Engine {
             } => return self.listen(slot, signal, generation),
             Work::Async { slot, id, exit } => return self.async_complete(slot, id, exit),
         };
+        if let Some(event) = self.through_midi_in(event, &mut Self::apply) {
+            self.apply(event);
+        }
+    }
+
+    /// An event the scripts' `on midi_in` let through.
+    fn apply(&mut self, event: Event) {
         match event {
             Event::NoteOn {
                 note,
@@ -811,7 +873,8 @@ impl Engine {
         // The scripts run with the hit list back in place: they use it.
         self.hits = hits;
         for key in (0u8..).zip(keys).filter_map(|(key, k)| k.then_some(key)) {
-            self.run_poly_at(key);
+            // A note's own expression is the host's: it stands either way.
+            let _ = self.run_poly_at(key);
         }
     }
 }

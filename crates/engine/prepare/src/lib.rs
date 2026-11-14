@@ -16,7 +16,8 @@ use kontra_stream::{
 use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp};
 
 use kontra_engine::{
-    Atom, Bus, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone, ZoneRules, response,
+    Atom, Bus, Dormant, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone, ZoneRules,
+    response,
 };
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
@@ -33,12 +34,16 @@ pub fn prepare(
 ) -> (Plan, Vec<ir::Diagnostic>) {
     let mut diagnostics = Vec::new();
     let loaded = load_samples(instrument, store, open, &mut diagnostics);
+    let shared: Vec<Arc<ir::Sample>> = instrument.samples.iter().cloned().map(Arc::new).collect();
     let client = store.client();
     let mut zones = Vec::new();
     let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
     let mut polyphony = Vec::new();
     let mut facts = Vec::new();
+    // `detect_*` reads the samples' music information: measured here, once
+    // per sample, only for instruments whose scripts ask.
     let mut group_rules = Vec::with_capacity(instrument.groups.len());
+    let mut dormant = Vec::new();
     for (index, group) in instrument.groups.iter().enumerate() {
         let group_id = u32::try_from(index).unwrap_or(u32::MAX);
         if let Some(voices) = group.polyphony {
@@ -69,7 +74,24 @@ pub fn prepare(
                 end: z.end,
                 start_range: z.start_mod,
                 rate: source.rate,
+                source: shared.get(z.sample).cloned(),
+                loops: z.loops.clone(),
+                user: false,
+                volume: (z.volume_db * 100.0).round() as i32,
+                pan: (z.pan * 1000.0).round() as i32,
+                tune: (z.tune * 100.0).round() as i32,
+                fades: [
+                    i32::from(z.key_fade.0),
+                    i32::from(z.key_fade.1),
+                    i32::from(z.velocity_fade.0),
+                    i32::from(z.velocity_fade.1),
+                ],
+                loop_pars: Default::default(),
             });
+            // A purged group loads nothing: a script's un-purge builds it.
+            if group.purged {
+                continue;
+            }
             let Some(Some(sample)) = loaded.get(z.sample) else {
                 continue;
             };
@@ -77,9 +99,13 @@ pub fn prepare(
             zone.member = u16::try_from(member).unwrap_or(u16::MAX);
             zones.push(zone);
         }
+        if group.purged && !group.zones.is_empty() {
+            dormant.push(dormant_of(instrument, group, group_id));
+        }
         group_rules.push(rules);
     }
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
+    plan.dormant = Arc::new(dormant);
     plan.zone_facts = facts;
     plan.groups = (instrument.groups.iter().zip(group_rules))
         .map(|(g, zones)| Group {
@@ -199,6 +225,163 @@ pub fn effects(
             plan.responses.push((name.clone(), s.clone()));
         }
     }
+}
+
+/// `group` as a purge keeps it: its zones, the samples they play renumbered
+/// from 0.
+fn dormant_of(instrument: &ir::Instrument, group: &ir::Group, id: u32) -> Dormant {
+    let mut source = group.clone();
+    let mut samples = Vec::new();
+    let mut local: HashMap<usize, usize> = HashMap::new();
+    for z in &mut source.zones {
+        let Some(s) = instrument.samples.get(z.sample) else {
+            continue;
+        };
+        z.sample = *local.entry(z.sample).or_insert_with(|| {
+            samples.push(s.clone());
+            samples.len() - 1
+        });
+    }
+    Dormant {
+        group: id,
+        source,
+        samples,
+    }
+}
+
+/// `plan` with purged group `group` loaded and its zones appended (indices of
+/// the zones already there stay), the loads' diagnostics, and how many
+/// samples it loaded. `None` when the group is not dormant. Samples open and
+/// read on the calling thread: call it off the audio thread; with
+/// [`Store::defer_heads`] on, the heads come after ([`Store::take_heads`]).
+pub fn wake(
+    plan: &Plan,
+    group: u32,
+    store: &mut Store,
+    open: &Open<'_>,
+) -> Option<(Plan, Vec<ir::Diagnostic>, usize)> {
+    let d = plan.dormant.iter().find(|d| d.group == group)?;
+    let mut source = d.source.clone();
+    source.purged = false;
+    let instrument = ir::Instrument {
+        groups: vec![source],
+        samples: d.samples.clone(),
+        ..ir::Instrument::DEFAULT
+    };
+    let mut diagnostics = Vec::new();
+    let loaded = load_samples(&instrument, store, open, &mut diagnostics);
+    let client = store.client();
+    let [source] = instrument.groups.as_slice() else {
+        return None;
+    };
+    let rules = rules(source, &plan.switches);
+    let mut out = plan.clone();
+    for (member, z) in source.zones.iter().enumerate() {
+        let (Some(from), Some(Some(sample))) =
+            (instrument.samples.get(z.sample), loaded.get(z.sample))
+        else {
+            continue;
+        };
+        let mut zone = zone((source, group, &rules), z, from, sample, &client);
+        zone.member = u16::try_from(member).unwrap_or(u16::MAX);
+        out.zones.push(zone);
+    }
+    out.dormant = Arc::new(
+        plan.dormant
+            .iter()
+            .filter(|d| d.group != group)
+            .cloned()
+            .collect(),
+    );
+    let count = loaded.iter().flatten().count();
+    Some((out, diagnostics, count))
+}
+
+/// The plan with every user zone whose sample changed built as a playing
+/// zone (`set_sample`; a zone keeps its place in the plan when its sample is
+/// replaced), the loads' diagnostics. `None` when no user zone is due.
+/// Samples open and read on the calling thread: off the audio thread.
+pub fn user_zones(
+    plan: &Plan,
+    store: &mut Store,
+    open: &Open<'_>,
+) -> Option<(Plan, Vec<ir::Diagnostic>)> {
+    let due: Vec<&kontra_engine::ZoneFacts> = (plan.user_facts().iter())
+        .filter(|f| {
+            f.source.as_ref().is_some_and(|s| {
+                !(plan.user_loaded.iter()).any(|(id, l)| *id == f.id && Arc::ptr_eq(l, s))
+            })
+        })
+        .collect();
+    if due.is_empty() {
+        return None;
+    }
+    let byte = |v: i32| u8::try_from(v).unwrap_or(u8::MAX);
+    let zones: Vec<ir::Zone> = due
+        .iter()
+        .enumerate()
+        .map(|(sample, f)| ir::Zone {
+            id: f.id,
+            sample,
+            keys: f.keys.clone(),
+            velocities: f.velocities.clone(),
+            velocity_fade: (byte(f.fades[2]), byte(f.fades[3])),
+            key_fade: (byte(f.fades[0]), byte(f.fades[1])),
+            root: f.root,
+            tune: f64::from(f.tune) / 100.0,
+            volume_db: f.volume as f32 / 100.0,
+            pan: f.pan as f32 / 1000.0,
+            start: f.start,
+            end: f.end,
+            start_mod: 0,
+            loops: Vec::new(),
+            reverse: false,
+            mix: Vec::new(),
+            slot: 0,
+        })
+        .collect();
+    let instrument = ir::Instrument {
+        groups: vec![ir::Group {
+            zones,
+            ..ir::Group::DEFAULT
+        }],
+        samples: due
+            .iter()
+            .filter_map(|f| f.source.as_deref().cloned())
+            .collect(),
+        ..ir::Instrument::DEFAULT
+    };
+    let mut diagnostics = Vec::new();
+    let loaded = load_samples(&instrument, store, open, &mut diagnostics);
+    let client = store.client();
+    let mut out = plan.clone();
+    let [group] = instrument.groups.as_slice() else {
+        return None;
+    };
+    for (i, (f, z)) in due.iter().zip(&group.zones).enumerate() {
+        let (Some(from), Some(Some(sample))) = (instrument.samples.get(i), loaded.get(i)) else {
+            continue;
+        };
+        let rules =
+            (out.groups.get(f.group as usize)).map_or(ZoneRules::PLAIN, |g| g.zones.clone());
+        let mut zone = zone(
+            (&ir::Group::DEFAULT, f.group, &rules),
+            z,
+            from,
+            sample,
+            &client,
+        );
+        zone.region.loops = kontra_engine::user_loops(f);
+        match out.zones.iter_mut().find(|p| p.id == f.id) {
+            Some(slot) => *slot = zone,
+            None => out.zones.push(zone),
+        }
+        out.user_loaded.retain(|(id, _)| *id != f.id);
+        if let Some(s) = &f.source {
+            out.user_loaded.push((f.id, Arc::clone(s)));
+        }
+    }
+    Some((out, diagnostics))
 }
 
 /// Loads each sample a resident zone plays, pinning the union of its zones'
@@ -503,8 +686,20 @@ pub fn read(w: ir::Wavetable) -> Read {
             tune: w.modosc.tune,
             tune_range: w.modosc.tune_range,
             fm_hz: w.modosc.fm_hz,
+            wave: w.modosc.wave,
+            unit: match w.modosc.unit {
+                ir::TuneUnit::Semitones => kontra_voice::Unit::Semitones,
+                ir::TuneUnit::Ratio => kontra_voice::Unit::Ratio,
+                ir::TuneUnit::Hz => kontra_voice::Unit::Hz,
+            },
         },
         rate: 48_000.0,
+        quality: match w.quality {
+            ir::Quality::Lofi => kontra_voice::Quality::Lofi,
+            ir::Quality::Medium => kontra_voice::Quality::Medium,
+            ir::Quality::High => kontra_voice::Quality::High,
+            ir::Quality::Best => kontra_voice::Quality::Best,
+        },
         warps: w.warps.map(warp),
     }
 }

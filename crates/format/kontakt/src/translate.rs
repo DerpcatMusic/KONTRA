@@ -252,7 +252,13 @@ pub(crate) fn instrument(
         let t = translate_group(group, index, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
-        let fx = group_fx.get_mut(index).and_then(Option::take);
+        let saved = group_fx.get_mut(index).and_then(Option::take);
+        let fx = saved.map(|s| {
+            g.volume_db = db(s.volume);
+            g.pan = s.pan.clamp(-1.0, 1.0);
+            g.tune = laws::semitones(s.tune) + base.tune;
+            s.fx
+        });
         g.inserts = crate::effects::group(group, fx, index, &mut impulses, &mut notes, &mut slots);
         crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
         // ponytail: a filter a modulator moves passes unfiltered until filters

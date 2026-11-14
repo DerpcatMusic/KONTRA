@@ -1,0 +1,52 @@
+# User zones in Kontakt 8.13 (run: ksp_probe.py <nki> this-file). Needs an instrument whose zone 0 holds a
+# sample (ANALOG STRINGS) and /data/dev/workspace/BuildScratch/oracle-mf/tone.wav (1 s, 44.1 kHz, mono,
+# 440 Hz; tools/kontakt-oracle/probes/ksp/user_zones.py in the PR makes it). set_* are synchronous in
+# on init and answer -1, so every law can be read in one go.
+S declare $z
+S declare $y
+S declare $r
+S set_num_user_zones(2)
+S $z := %NI_USER_ZONE_IDS[0]
+S $y := %NI_USER_ZONE_IDS[1]
+S $r := set_zone_par($y, $ZONE_PAR_VOLUME, 2000000)
+R ret_set_par $r
+R vol_big get_zone_par($y, $ZONE_PAR_VOLUME)
+S set_zone_par($y, $ZONE_PAR_VOLUME, -2000000)
+R vol_small get_zone_par($y, $ZONE_PAR_VOLUME)
+S set_zone_par($y, $ZONE_PAR_VOLUME, 6000)
+R vol_6000 get_zone_par($y, $ZONE_PAR_VOLUME)
+S set_zone_par($y, $ZONE_PAR_VOLUME, 6)
+R vol_6 get_zone_par($y, $ZONE_PAR_VOLUME)
+S set_zone_par($y, $ZONE_PAR_PAN, 2000000)
+R pan_big get_zone_par($y, $ZONE_PAR_PAN)
+S set_zone_par($y, $ZONE_PAR_PAN, -2000000)
+R pan_small get_zone_par($y, $ZONE_PAR_PAN)
+S set_zone_par($y, $ZONE_PAR_PAN, 500)
+R pan_500 get_zone_par($y, $ZONE_PAR_PAN)
+S set_zone_par($y, $ZONE_PAR_TUNE, 2000000)
+R tune_big get_zone_par($y, $ZONE_PAR_TUNE)
+S set_zone_par($y, $ZONE_PAR_TUNE, -2000000)
+R tune_small get_zone_par($y, $ZONE_PAR_TUNE)
+S set_zone_par($y, $ZONE_PAR_TUNE, 150)
+R tune_150 get_zone_par($y, $ZONE_PAR_TUNE)
+S set_zone_par($y, $ZONE_PAR_ROOT_KEY, 200)
+R root_big get_zone_par($y, $ZONE_PAR_ROOT_KEY)
+S set_zone_par($y, $ZONE_PAR_ROOT_KEY, -5)
+R root_small get_zone_par($y, $ZONE_PAR_ROOT_KEY)
+S set_zone_par($y, $ZONE_PAR_ROOT_KEY, 60)
+R root_60 get_zone_par($y, $ZONE_PAR_ROOT_KEY)
+S set_zone_par($y, $ZONE_PAR_HIGH_KEY, 200)
+R high_key_big get_zone_par($y, $ZONE_PAR_HIGH_KEY)
+S set_zone_par($y, $ZONE_PAR_HIGH_KEY, 127)
+S set_zone_par($y, $ZONE_PAR_LOW_KEY, 100)
+S set_zone_par($y, $ZONE_PAR_HIGH_KEY, 50)
+R low_after_high_below get_zone_par($y, $ZONE_PAR_LOW_KEY)
+R high_below_low get_zone_par($y, $ZONE_PAR_HIGH_KEY)
+S set_zone_par($y, $ZONE_PAR_LOW_VELO, 100)
+S set_zone_par($y, $ZONE_PAR_HIGH_VELO, 50)
+R low_velo_after get_zone_par($y, $ZONE_PAR_LOW_VELO)
+R high_velo_below get_zone_par($y, $ZONE_PAR_HIGH_VELO)
+S set_zone_par($y, $ZONE_PAR_FADE_LOW_KEY, 5000)
+R fade_lk_big get_zone_par($y, $ZONE_PAR_FADE_LOW_KEY)
+S set_zone_par($y, $ZONE_PAR_FADE_HIGH_VELO, 7)
+R fade_hv_7 get_zone_par($y, $ZONE_PAR_FADE_HIGH_VELO)

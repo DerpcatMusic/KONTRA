@@ -61,6 +61,17 @@ pub enum Work {
     ParentUp(NoteRef),
     /// Script slots run `on pgs_changed`.
     PgsChanged,
+    /// A script's controller (128 the bend, 129 the pressure), sent later.
+    Controller {
+        controller: u8,
+        value: i16,
+    },
+    /// A script's polyphonic aftertouch on a key, sent later.
+    PolyAt {
+        channel: u8,
+        key: u8,
+        value: u8,
+    },
     /// A script slot's listener timer fires, if it is still that generation.
     Listen {
         slot: u8,

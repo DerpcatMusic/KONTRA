@@ -23,6 +23,14 @@ pub enum Command {
         generation: u64,
         swap: Box<requests::ZoneSwap>,
     },
+    /// A purged group's samples are in: it plays from the next note, and
+    /// the script's async completes (`took`: it loaded).
+    Unpurged {
+        part: usize,
+        generation: u64,
+        unpurge: kontra_engine::Unpurge,
+        took: bool,
+    },
     /// Put the effect unit a script asked for into `part`'s slot, if the
     /// part is still the load that asked; the box comes back holding what
     /// it replaced, so audio frees nothing.
@@ -32,6 +40,9 @@ pub enum Command {
         unit: Box<Option<Prepared>>,
     },
     Remove(usize),
+    /// The rack's multi script, which hears MIDI before any part; the one
+    /// it replaces is retired.
+    Multi(Option<Box<Engine>>),
     /// What host macro `n` moves at its frame ([`RackAudio::move_macro`]).
     ///
     /// [`RackAudio::move_macro`]: super::RackAudio::move_macro

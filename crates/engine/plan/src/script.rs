@@ -20,6 +20,9 @@ pub struct ScriptPlan {
     pub source_folder: Option<Text>,
     /// Absolute library folder, when known.
     pub library_folder: Option<Text>,
+    /// The folder of the library's resource container (`$GET_FOLDER_RC_DIR`);
+    /// none reads as an empty path, as the manual says.
+    pub rc_folder: Option<Text>,
     /// The installed sampler's factory data folder, when one was found.
     pub factory_folder: Option<Text>,
     /// Saved values written after `on init`, before `on persistence_changed`;
@@ -74,6 +77,7 @@ impl ScriptPlan {
             2 => self.source_folder,
             // No installation: scripts read an empty path, as the manual allows.
             3 => Some(self.factory_folder.unwrap_or(Text::EMPTY)),
+            4 => Some(self.rc_folder.unwrap_or(Text::EMPTY)),
             _ => None,
         }
     }
@@ -187,10 +191,10 @@ impl CcLink {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KnobModPlan {
     pub slot: u8,
-    pub cc: u8,
     pub id: i32,
     pub saved: f32,
-    pub ratio: f32,
+    pub source: kontra_ir::Source,
+    pub scale: bool,
 }
 
 pub use kontra_script_ui::{Controls, LookPars};
@@ -204,6 +208,9 @@ pub struct Callbacks {
     pub controller: Option<u32>,
     /// `on poly_at`, run for each polyphonic aftertouch message.
     pub poly_at: Option<u32>,
+    /// `on note_controller` and `on midi_in`.
+    pub note_controller: Option<u32>,
+    pub midi_in: Option<u32>,
     pub persistence_changed: Option<u32>,
     pub listener: Option<u32>,
     pub pgs_changed: Option<u32>,

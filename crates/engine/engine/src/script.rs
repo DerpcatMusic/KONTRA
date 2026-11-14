@@ -23,6 +23,39 @@ pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
 }
 
 impl Engine {
+    /// One field of the wall clock (`$NI_DATE_*`, `$NI_TIME_*`), UTC.
+    fn wall_field(&self, action: Action) -> i32 {
+        let secs = self.wall_start
+            + i64::try_from(self.now.0 / u64::from(self.rate.max(1))).unwrap_or(0);
+        let (days, of_day) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+        // Civil date from days since 1970-01-01 (Hinnant's days_from_civil, inverted).
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        let v = match action {
+            Action::DateYear => year,
+            Action::DateMonth => month,
+            Action::DateDay => day,
+            Action::TimeHour => of_day / 3_600,
+            Action::TimeMinute => of_day % 3_600 / 60,
+            _ => of_day % 60,
+        };
+        i32::try_from(v).unwrap_or(0)
+    }
+
+    /// `work` in `frames` from now, counted when the queue is full.
+    fn later(&mut self, frames: u64, work: Work) {
+        if !self.queue.push(SampleTime(self.now.0 + frames), work) {
+            self.stats.events_refused += 1;
+        }
+    }
+
     /// Fills `out` with the notes an event argument addresses.
     fn targets(&self, id: i32, out: &mut Vec<NoteRef>) {
         out.clear();
@@ -53,7 +86,7 @@ impl Engine {
 
     /// Applies `f` to every addressed note, then refreshes the sounding ones
     /// (at the end of the callback).
-    fn each(&mut self, id: i32, mut f: impl FnMut(&mut Note)) {
+    pub(crate) fn each(&mut self, id: i32, mut f: impl FnMut(&mut Note)) {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
         for &note in &hits {
@@ -345,6 +378,12 @@ impl HostApi for Engine {
         if let Some(value) = self.runtime_call(&mut call) {
             return value;
         }
+        if let Some(value) = self.midi_call(&mut call) {
+            return value;
+        }
+        if let Some(value) = self.zone_call(&mut call) {
+            return value;
+        }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         if let Some(value) = self.transport_value(call.action, int(0)) {
             return value;
@@ -364,6 +403,11 @@ impl HostApi for Engine {
                 self.running.kind == Kind::Controller
                     && int(0) == i32::from(self.running.controller),
             ),
+            // `%CC[128]` is the bend, -8192..8191, on the last channel heard.
+            Action::Cc if int(0) == i32::from(crate::midi::VCC_PITCH_BEND) => {
+                let bend = self.behaviour.bend(self.behaviour.channel);
+                HostValue::Int((bend * 8192.0).round().clamp(-8192.0, 8191.0) as i32)
+            }
             Action::Cc => HostValue::Int(
                 usize::try_from(int(0))
                     .ok()
@@ -376,6 +420,12 @@ impl HostApi for Engine {
             }
             Action::EngineMs => HostValue::Real(self.now.0 as f64 * 1000.0 / f64::from(self.rate)),
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
+            Action::DateYear
+            | Action::DateMonth
+            | Action::DateDay
+            | Action::TimeHour
+            | Action::TimeMinute
+            | Action::TimeSecond => HostValue::Int(self.wall_field(call.action)),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),
             Action::GroupVolume | Action::GroupPan | Action::GroupTune => {
                 self.set_group_level(call.action, int(0), int(1));
@@ -412,6 +462,47 @@ impl HostApi for Engine {
                 self.last_message = call.texts.first().copied().unwrap_or(Text::EMPTY);
                 self.stats.messages += 1;
                 HostValue::Nothing
+            }
+            Action::IgnoreMidi => {
+                self.running.ignore_controller = true;
+                HostValue::Nothing
+            }
+            Action::SetMidi => {
+                let byte = |i| int(i).clamp(0, 255) as u8;
+                self.set_midi([
+                    byte(1) & 0xF0,
+                    byte(0) & 0x0F,
+                    byte(2) & 0x7F,
+                    byte(3) & 0x7F,
+                ]);
+                HostValue::Nothing
+            }
+            Action::SetNoteController => {
+                let from = self.running.slot;
+                self.note_controller(from, int(0), int(1), int(2));
+                HostValue::Nothing
+            }
+            // In `on midi_in` the message's own fields.
+            Action::SetEventPar
+                if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() =>
+            {
+                if let Some(at) = midi_par(int(1)) {
+                    let max = if at == 3 || at == 2 { 127 } else { 255 };
+                    let v = int(2).clamp(0, max) as u8;
+                    if let Some(byte) = self.running.midi.get_mut(at) {
+                        *byte = if at == 0 { v & 0xF0 } else { v };
+                    }
+                }
+                HostValue::Nothing
+            }
+            Action::GetEventPar
+                if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() =>
+            {
+                HostValue::Int(
+                    midi_par(int(1))
+                        .and_then(|at| self.running.midi.get(at))
+                        .map_or(0, |&b| i32::from(b)),
+                )
             }
             Action::IgnoreController => {
                 self.running.ignore_controller = true;
@@ -481,10 +572,34 @@ impl HostApi for Engine {
                 self.set_group(int(0), int(3), int(2) != 0);
                 HostValue::Nothing
             }
-            Action::SetEventParArr if int(1) == event::MOD_VALUE => {
+            Action::SetEventParArr if int(1) == event::CUSTOM => {
+                if let Ok(index) = usize::try_from(int(3)) {
+                    self.each(int(0), |n| {
+                        if let Some(c) = n.custom.get_mut(index) {
+                            *c = int(2);
+                        }
+                    });
+                }
+                HostValue::Nothing
+            }
+            Action::GetEventParArr if int(1) == event::CUSTOM => {
+                let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
+                let index = usize::try_from(int(2)).ok();
+                HostValue::Int(
+                    note.zip(index)
+                        .map_or(0, |(n, i)| n.custom.get(i).copied().unwrap_or(0)),
+                )
+            }
+            Action::SetEventParArr if matches!(int(1), event::MOD_VALUE | event::MOD_VALUE_EX) => {
                 if let Ok(index) = u16::try_from(int(3)) {
                     // An optional fifth argument ramps there over microseconds.
-                    let (value, now) = (int(2), self.now);
+                    // `_ID` clamps to ±1 000 000, `_EX_ID` does not.
+                    let value = if int(1) == event::MOD_VALUE {
+                        int(2).clamp(-1_000_000, 1_000_000)
+                    } else {
+                        int(2)
+                    };
+                    let now = self.now;
                     let frames =
                         u64::try_from(int(4)).unwrap_or(0) * u64::from(self.rate) / 1_000_000;
                     let from = self.script_mod(index);
@@ -508,7 +623,7 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
-            Action::GetEventParArr if int(1) == event::MOD_VALUE => {
+            Action::GetEventParArr if matches!(int(1), event::MOD_VALUE | event::MOD_VALUE_EX) => {
                 let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 let index = u16::try_from(int(2)).ok();
                 HostValue::Int(note.zip(index).map_or(0, |(n, i)| {
@@ -559,6 +674,9 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::CurrentScriptSlot => HostValue::Int(i32::from(self.running.slot)),
+            Action::MidiChannel if self.running.kind == Kind::MidiIn => {
+                HostValue::Int(i32::from(self.running.midi[1]))
+            }
             Action::MidiChannel => HostValue::Int(current.map_or(0, |n| i32::from(n.host.channel))),
             Action::NoteHeld => flag(current.is_some_and(|n| !n.is_up())),
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
@@ -583,7 +701,7 @@ impl HostApi for Engine {
                         i32::try_from(frames * 1_000_000 / u64::from(self.rate)).unwrap_or(i32::MAX)
                     }),
             ),
-            Action::NumZones | Action::GetNumZones => HostValue::Int(self.plan.zones.len() as i32),
+            Action::NumZones => HostValue::Int(self.plan.zones.len() as i32),
             // find_group answers 0 for an unknown name, get_group_idx $NI_NOT_FOUND.
             Action::FindGroup | Action::GetGroupIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
@@ -613,14 +731,13 @@ impl HostApi for Engine {
                 *call.text_out = Text::from_str_cut(name).0;
                 HostValue::Text
             }
-            // ponytail: answered at once, then on async_complete; the samples
-            // stay in memory until the host reloads without the group.
-            Action::PurgeGroup => {
-                if let Some(g) = self.groups.get_mut(int(0) as usize) {
-                    g.purged = int(1) == 0;
-                }
-                HostValue::Int(self.start_async(Exit::Done))
-            }
+            // ponytail: a purge answers at once (the samples stay in memory); an un-purge
+            // of a dormant group answers when the host has loaded it.
+            Action::PurgeGroup => match u32::try_from(int(0)) {
+                Ok(group) if int(1) != 0 => HostValue::Int(self.unpurge(group)),
+                Ok(group) => HostValue::Int(self.purge(group)),
+                Err(_) => HostValue::Int(self.start_async(Exit::Done)),
+            },
             Action::AsyncId => HostValue::Int(self.ids.async_done),
             Action::AsyncExitStatus => HostValue::Int(i32::from(self.ids.async_exit == Exit::Done)),
             // A command still running (an effect type loading off the audio
@@ -713,8 +830,38 @@ impl HostApi for Engine {
                     }
                 }
             }
+            // A polyphonic aftertouch message on the channel of the note running.
+            Action::SetPolyAt => {
+                let channel = running
+                    .and_then(|r| self.notes.get(r))
+                    .map_or(0, |n| n.host.channel);
+                let at = |i| u8::try_from(int(i).clamp(0, 127)).unwrap_or(0);
+                let (key, value) = (at(0), at(1));
+                // A third argument delays it, in microseconds (UVI's `delta`).
+                match micros_to_frames(i64::from(int(2)), self.rate) {
+                    0 => self.set_poly_at(channel, key, value),
+                    frames => self.later(
+                        frames,
+                        Work::PolyAt {
+                            channel,
+                            key,
+                            value,
+                        },
+                    ),
+                }
+                HostValue::Nothing
+            }
             Action::SetController => {
-                self.set_controller(int(0), int(1));
+                match (
+                    micros_to_frames(i64::from(int(2)), self.rate),
+                    u8::try_from(int(0)),
+                ) {
+                    (0, _) | (_, Err(_)) => self.set_controller(int(0), int(1)),
+                    (frames, Ok(controller)) => {
+                        let value = int(1).clamp(-8192, 8191) as i16;
+                        self.later(frames, Work::Controller { controller, value });
+                    }
+                }
                 HostValue::Nothing
             }
             // Mode 2 is the library's data folder, read at once (the next line
@@ -791,6 +938,8 @@ impl HostApi for Engine {
                     path: Text::EMPTY,
                     name: ext,
                     save: int(0) == 1,
+                    midi: None,
+                    detect: None,
                 };
                 HostValue::Int(self.request_file(request))
             }
@@ -855,5 +1004,17 @@ mod tests {
         assert_eq!(NoteRef::from_event_id(0), None);
         assert_eq!(NoteRef::from_event_id(-5), None);
         assert_eq!(NoteRef::from_event_id(17), None);
+    }
+}
+
+/// Which of `on midi_in`'s `[command, channel, data 1, data 2]` an event
+/// parameter id names.
+fn midi_par(par: i32) -> Option<usize> {
+    match par {
+        event::MIDI_COMMAND => Some(0),
+        event::MIDI_CHANNEL => Some(1),
+        event::MIDI_BYTE_1 => Some(2),
+        event::MIDI_BYTE_2 => Some(3),
+        _ => None,
     }
 }

@@ -66,12 +66,14 @@ pub struct Library {
     /// Its instruments and snapshots, sorted naturally by path. A UVI
     /// program is `bank.ufs/Folder/Name.uvip`.
     pub presets: Vec<PathBuf>,
-    /// How many multis (`.nkm`) it holds, not among `presets`.
+    /// How many multis (`.nkm`) it holds, among `presets`: one fills a
+    /// part for each of its slots.
     pub multis: usize,
     /// Pictures that may be its banner, best first: `wallpaper.png`, a
     /// library-browser picture, the `.nicnt`/`.nkr` (which holds pictures),
     /// then any picture named cover, artwork, banner, logo or background,
-    /// then the rest. A bank's are its `.png`/`.jpg` sidecars. Decoding and
+    /// then a UVI bank (which picks its own), then the rest. A lone bank's
+    /// are its `.png`/`.jpg` sidecars, then the bank itself. Decoding and
     /// the size check are the viewer's.
     pub art: Vec<PathBuf>,
 }
@@ -406,6 +408,7 @@ fn catalog(
                 .map(|e| found.dir.with_extension(e))
                 .filter(|p| p.is_file()),
         );
+        art.push(found.dir.clone());
     } else {
         let mut state = Walk {
             nested,
@@ -415,11 +418,9 @@ fn catalog(
             issues,
         };
         walk(&found.dir, &mut state, &mut presets, &mut art);
+        art.sort_by_cached_key(|p| (art_rank(p), p.clone()));
     }
-    // A multi fills a rack, not a part: nothing plays one yet.
-    let multis = presets.len();
-    presets.retain(|p| ext(p) != "nkm");
-    let multis = multis - presets.len();
+    let multis = presets.iter().filter(|p| ext(p) == "nkm").count();
     if presets.is_empty() {
         return None;
     }
@@ -427,7 +428,6 @@ fn catalog(
         let inside = p.strip_prefix(&found.dir).unwrap_or(p);
         (natural(&inside.to_string_lossy()), p.clone())
     });
-    art.sort_by_cached_key(|p| (art_rank(p), p.clone()));
     let stem = if bank {
         found
             .dir
@@ -509,13 +509,16 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
             }
             match ext(&path).as_str() {
                 "nki" | "nkm" | "nksn" | "uvip" => presets.push(path),
-                "ufs" => bank_presets(
-                    &path,
-                    &mut *state.cache,
-                    state.programs,
-                    &mut *state.issues,
-                    presets,
-                ),
+                "ufs" => {
+                    bank_presets(
+                        &path,
+                        &mut *state.cache,
+                        state.programs,
+                        &mut *state.issues,
+                        presets,
+                    );
+                    art.push(path);
+                }
                 "png" | "jpg" | "jpeg" | "nicnt" | "nkr" => art.push(path),
                 _ => {}
             }
@@ -544,11 +547,14 @@ fn art_rank(path: &Path) -> usize {
         _ if name.contains("libbrowser") => 1,
         "nicnt" => 2,
         "nkr" => 3,
+        // A bank chooses its own cover: after pictures named for the part,
+        // before loose ones that may be anything.
+        "ufs" => 10,
         _ => {
             5 + ["cover", "artwork", "banner", "logo", "background"]
                 .iter()
                 .position(|word| name.contains(word))
-                .unwrap_or(5)
+                .unwrap_or(6)
         }
     }
 }

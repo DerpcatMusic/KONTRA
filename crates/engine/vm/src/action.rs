@@ -18,6 +18,21 @@ pub mod event {
     /// Every group; so does any group past the last.
     pub const ALL_GROUPS: i32 = -1;
 
+    /// MIDI object: the event the position marker is on (`$CURRENT_EVENT`).
+    pub const CURRENT: i32 = 0;
+    /// MIDI object: flag; the low bits are a track (`by_track`).
+    pub const BY_TRACK: i32 = 0x4000_0000;
+    /// MIDI object event parameters, as Kontakt 8.13 reads them
+    /// (probes/ksp/zone_and_detect.kspp).
+    pub const MIDI_CHANNEL: i32 = 11;
+    pub const MIDI_COMMAND: i32 = 12;
+    pub const MIDI_BYTE_1: i32 = 13;
+    pub const MIDI_BYTE_2: i32 = 14;
+    pub const POS: i32 = 21;
+    pub const TRACK_NR: i32 = 22;
+    pub const NOTE_LENGTH: i32 = 24;
+    pub const ID: i32 = 25;
+
     /// `0..=3` are free for the script.
     pub const CUSTOM_LAST: i32 = 3;
     pub const VOLUME: i32 = 4;
@@ -30,6 +45,11 @@ pub mod event {
     pub const ALLOW_GROUP: i32 = 10;
     /// With `*_arr`: the value for a "from script" modulator, ±1 000 000.
     pub const MOD_VALUE: i32 = 30;
+    /// `$EVENT_PAR_MOD_VALUE_EX_ID`: the same with no clamp (measured, see
+    /// constants.tsv).
+    pub const MOD_VALUE_EX: i32 = 34;
+    /// `$EVENT_PAR_CUSTOM` with `*_arr`: custom parameters 0..=15.
+    pub const CUSTOM: i32 = 28;
     /// Before the note starts: only zones in this slot start; -1 (the
     /// default) starts any.
     pub const ZONE_SLOT: i32 = 15;
@@ -169,6 +189,8 @@ actions! {
     EventStatus,
     GetEventIds,
     IgnoreController,
+    IgnoreMidi,
+    SetMidi,
     SetController,
     SetNoteController,
     SetRpn,
@@ -201,7 +223,9 @@ actions! {
     /// `ir::EffectParam` code.
     EffectField,
     // Time.
-    WaitTicks,
+    /// Microseconds the transport takes for a number of MIDI ticks: `wait_ticks`
+    /// compiles to this and a `wait`.
+    TicksToMicros,
     WaitAsync,
     StopWait,
     ResetKspTimer,
@@ -345,6 +369,28 @@ actions! {
     GetKeyTriggerstate,
     SetKeyrange,
     RemoveKeyrange,
+    SetPolyAt,
+    GetKeyrangeMinNote,
+    GetKeyrangeMaxNote,
+    GetKeyrangeName,
+    SetMapEditorEventColor,
+    LoadKompleteUi,
+    GetSample,
+    SetSample,
+    SetNumUserZones,
+    GetZoneStatus,
+    GetSelZonesIdx,
+    GetLoopPar,
+    SetLoopPar,
+    DetectKey,
+    DetectPitch,
+    DetectLoudness,
+    DetectPeak,
+    DetectRms,
+    DetectTempo,
+    DetectSampleType,
+    DetectDrumType,
+    DetectInstrumentType,
     // Diagnostics.
     Message,
     DisableLogging,
@@ -365,6 +411,12 @@ actions! {
     CcNum,
     PitchBend,
     PolyAtNum,
+    NcNum,
+    NcNote,
+    NcValue,
+    MidiCommand,
+    MidiByte1,
+    MidiByte2,
     RpnAddress,
     RpnValue,
     MidiChannel,
@@ -412,6 +464,8 @@ actions! {
     PolyAt,
     GroupsSelected,
     GroupsAffected,
+    UserZoneIds,
+    NumUserZones,
     KeyDownOct,
     EventParAt,
     // Appended rather than filed with their neighbours: an action's id is its

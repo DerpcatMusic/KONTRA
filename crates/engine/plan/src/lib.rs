@@ -4,6 +4,7 @@
 
 mod engine_pars;
 pub mod files;
+pub mod midi_file;
 pub mod modulation;
 pub mod par_laws;
 pub mod par_values;
@@ -15,8 +16,10 @@ mod zones;
 
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
-pub use script::{Callbacks, CcLink, KnobModPlan, Controls, Holder, LookPars, Recall, Saved, ScriptPlan};
-pub use zones::{ZoneFacts, ZoneRules, zone_name};
+pub use script::{
+    Callbacks, CcLink, Controls, Holder, KnobModPlan, LookPars, Recall, Saved, ScriptPlan,
+};
+pub use zones::{LoopPar, ZoneFacts, ZoneRules, user_loops, zone_name};
 
 use std::ops::RangeInclusive;
 
@@ -529,10 +532,31 @@ pub struct Plan {
     pub slot_shapes: ir::SlotShapes,
     /// Controllers that move foreign scripts' controls.
     pub knob_mods: Vec<KnobModPlan>,
+    /// What [`KnobModPlan::source`] reads ([`ir::Instrument::knob_blends`]).
+    pub knob_blends: Vec<ir::Blend>,
+    pub knob_lfos: Vec<ir::Lfo>,
     /// Slots loaded with a [`ir::SlotShapes::types`] entry ([`Plan::load_type`]).
     pub loaded: Vec<(ir::RackAt, u8, u16)>,
     /// Every zone as scripts find and read it (`find_zone`, `get_zone_par`).
     pub zone_facts: Vec<ZoneFacts>,
+    /// Saved-purged groups, nothing of them loaded: what a script's
+    /// `purge_group(g, 1)` builds ([`Dormant`]).
+    pub dormant: std::sync::Arc<Vec<Dormant>>,
+    /// The sample each user zone's playing [`Zone`] was built from; a
+    /// zone whose [`ZoneFacts::source`] differs is built again
+    /// (`kontra_prepare::user_zones`).
+    pub user_loaded: Vec<(u32, std::sync::Arc<ir::Sample>)>,
+}
+
+/// A purged group as saved: its zones and the samples they play, kept as the
+/// instrument described them (sample indices local to `samples`) until the
+/// host loads them, off the audio thread, and appends the zones to the plan.
+#[derive(Clone, Debug)]
+pub struct Dormant {
+    /// Its index in [`Plan::groups`].
+    pub group: u32,
+    pub source: ir::Group,
+    pub samples: Vec<ir::Sample>,
 }
 
 impl Plan {
@@ -589,8 +613,12 @@ impl Plan {
             slot_models: Vec::new(),
             slot_shapes: ir::SlotShapes::NONE,
             knob_mods: Vec::new(),
+            knob_blends: Vec::new(),
+            knob_lfos: Vec::new(),
             loaded: Vec::new(),
             zone_facts: Vec::new(),
+            dormant: std::sync::Arc::default(),
+            user_loaded: Vec::new(),
         }
     }
 }

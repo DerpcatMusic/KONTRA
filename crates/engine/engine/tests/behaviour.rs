@@ -1082,6 +1082,43 @@ fn a_controller_opens_a_voice_filter() {
     assert!((open - 0.1).abs() < 0.01, "open {open}");
 }
 
+#[test]
+fn a_write_after_init_opens_a_shared_group_filter_while_the_note_sounds() {
+    use kontra_engine::ir::{Effect, EffectKind, Filter, Pass};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    // No route moves it, so its voices share one chain on the group's sum.
+    let filter = |hz| Effect {
+        kind: EffectKind::Filter(Filter {
+            pass: Pass::Low,
+            hz,
+            stages: 2,
+            ladder: None,
+            damping: [1.85, 0.77, 0.0],
+            gain: 1.0,
+            octaves: 0.0,
+            q_octaves: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    plan.groups[0].inserts = vec![Some(filter(100.0))];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let peak = |e: &mut Engine, events: &[Timed<Event>]| {
+        let mut out = vec![[0.0f32; 2]; 4800];
+        e.process(&mut out, events);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    peak(&mut e, &[on(60, 1.0)]);
+    let closed = peak(&mut e, &[]);
+    let envelope = e.group_sounds()[0].0;
+    e.set_group_sound(0, envelope, Some((0, filter(20_000.0))));
+    let open = peak(&mut e, &[]);
+    assert!(closed < 0.001, "closed {closed}");
+    assert!((open - 0.1).abs() < 0.01, "open {open}");
+}
+
 /// A group with one EQ insert, `eq`, and the given routes.
 fn eq_group(
     region: Region,
@@ -2568,6 +2605,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         text_data: vec![],
         source_folder: None,
         library_folder: None,
+        rc_folder: None,
         factory_folder: None,
         restore: vec![],
         restore_texts: vec![],
@@ -2721,4 +2759,145 @@ fn an_envelope_timing_its_own_attack_renders() {
     // shortens the rise to nothing: the bend is at the top at once.
     let bend = bends_at(&mut e, 10, &[60])[0];
     assert!((bend - 12.0).abs() < 0.1, "{bend}");
+}
+
+/// A foreign machine that records the knob moves it is given.
+#[derive(Debug)]
+struct Knobbed(std::sync::mpsc::Sender<(i32, f64, f64, f64)>);
+
+struct KnobMachine(std::sync::mpsc::Sender<(i32, f64, f64, f64)>);
+
+impl kontra_vm::Foreign for Knobbed {
+    fn machine(&self) -> Box<dyn kontra_vm::Machine> {
+        Box::new(KnobMachine(self.0.clone()))
+    }
+    fn controls(&self) -> &[String] {
+        &[]
+    }
+}
+
+impl kontra_vm::Machine for KnobMachine {
+    fn start(&mut self, _: u32, _: u64) -> Option<kontra_vm::CoId> {
+        None
+    }
+    fn run(&mut self, _: kontra_vm::CoId, _: &mut dyn kontra_vm::HostApi) -> kontra_vm::Step {
+        kontra_vm::Step::Done
+    }
+    fn cancel(&mut self, _: kontra_vm::CoId) {}
+    fn context(&self, _: kontra_vm::CoId) -> Option<u64> {
+        None
+    }
+    fn spawned(&mut self) -> Option<(kontra_vm::CoId, u64)> {
+        None
+    }
+    fn faults(&self) -> kontra_vm::Faults {
+        kontra_vm::Faults::default()
+    }
+    fn control(&mut self, _: i32, _: f64, _: u64) -> Option<kontra_vm::CoId> {
+        None
+    }
+    fn control_mod(
+        &mut self,
+        id: i32,
+        saved: f64,
+        scale: f64,
+        m: f64,
+        _: u64,
+    ) -> Option<kontra_vm::CoId> {
+        let _ = self.0.send((id, saved, scale, m));
+        None
+    }
+}
+
+/// Routes onto one script knob add (a multiplicative one apart), the knob
+/// moves once per change of the sums and not while they hold still.
+#[test]
+fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
+    use kontra_engine::{Callbacks, Controls, EnginePars, KnobModPlan, Program, ScriptPlan};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    let (sender, moves) = std::sync::mpsc::channel();
+    plan.scripts.push(ScriptPlan {
+        program: Program::default(),
+        callbacks: Callbacks::default(),
+        coroutines: 4,
+        data: vec![],
+        text_data: vec![],
+        source_folder: None,
+        library_folder: None,
+        rc_folder: None,
+        factory_folder: None,
+        restore: vec![],
+        restore_texts: vec![],
+        controls: Controls::default(),
+        engine_pars: EnginePars::default(),
+        view: None,
+        links: vec![],
+        reverb_laws: ir::ReverbControls::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
+        reverb_networks: vec![],
+        lfo_units: vec![],
+        warp_modes: vec![],
+        mod_kinds: vec![],
+        knobs: vec![],
+        foreign: Some(Arc::new(Knobbed(sender))),
+        files: None,
+        arrays: Vec::new(),
+        hears_own_releases: false,
+        held_release_ends_children: false,
+    });
+    let blend = |cc: u8, amount: f32| ir::Blend {
+        base: 0.0,
+        terms: vec![ir::Term {
+            input: ir::Transfer {
+                source: ir::Source::Controller(cc),
+                ..Default::default()
+            },
+            amount,
+            factors: vec![],
+        }],
+    };
+    // Controllers 1 and 2 add onto knob 7; 3 scales knob 7; 4 moves knob 8.
+    plan.knob_blends = vec![blend(1, 1.0), blend(2, 1.0), blend(3, 1.0), blend(4, 1.0)];
+    let knob = |id, source, scale| KnobModPlan {
+        slot: 0,
+        id,
+        saved: 0.25,
+        source: ir::Source::Blend(source),
+        scale,
+    };
+    plan.knob_mods = vec![
+        knob(7, 0, false),
+        knob(7, 1, false),
+        knob(7, 2, true),
+        knob(8, 3, false),
+    ];
+    let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut all: Vec<(i32, f64, f64, f64)> = Vec::new();
+    let mut at = |all: &mut Vec<_>| {
+        all.extend(moves.try_iter());
+        all.len()
+    };
+    // Everything at rest still tells each knob where its routes put it, once.
+    level(&mut engine, &[]);
+    assert_eq!(at(&mut all), 2, "one move per knob, not per route");
+    level(&mut engine, &[]);
+    assert_eq!(at(&mut all), 2, "nothing moved");
+    // Two additive controllers on one knob: one move, their sum.
+    level(&mut engine, &[cc(1, 127), cc(2, 127)]);
+    assert_eq!(at(&mut all), 3);
+    let (id, saved, scale, add) = all[2];
+    assert_eq!((id, saved), (7, 0.25));
+    assert!(
+        (add - 2.0).abs() < 1e-3 && scale.abs() < 1e-3,
+        "{scale} {add}"
+    );
+    // The multiplicative controller moves the same knob's scale alone.
+    level(&mut engine, &[cc(3, 127)]);
+    assert_eq!(at(&mut all), 4);
+    let (id, _, scale, add) = all[3];
+    assert_eq!(id, 7);
+    assert!(
+        (scale - 1.0).abs() < 1e-3 && (add - 2.0).abs() < 1e-3,
+        "{scale} {add}"
+    );
 }

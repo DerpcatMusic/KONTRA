@@ -1,0 +1,16 @@
+# User zones in Kontakt 8.13 (run: ksp_probe.py <nki> this-file). Needs an instrument whose zone 0 holds a
+# sample (ANALOG STRINGS) and /data/dev/workspace/BuildScratch/oracle-mf/tone.wav (1 s, 44.1 kHz, mono,
+# 440 Hz; tools/kontakt-oracle/probes/ksp/user_zones.py in the PR makes it). set_* are synchronous in
+# on init and answer -1, so every law can be read in one go.
+S declare $z
+S declare $y
+S declare $r
+S set_num_user_zones(2)
+S $z := %NI_USER_ZONE_IDS[0]
+S $y := %NI_USER_ZONE_IDS[1]
+S set_zone_par($y, $ZONE_PAR_GROUP, 1)
+R group_1 get_zone_par($y, $ZONE_PAR_GROUP)
+S set_zone_par($y, $ZONE_PAR_GROUP, 100000)
+R group_big get_zone_par($y, $ZONE_PAR_GROUP)
+S set_zone_par($y, $ZONE_PAR_GROUP, -1)
+R group_neg get_zone_par($y, $ZONE_PAR_GROUP)

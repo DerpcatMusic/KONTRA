@@ -348,6 +348,13 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Wait);
                 return Ok(None);
             }
+            Builtin::WaitTicks => {
+                let got = self.expr(arg(0)?)?;
+                self.convert(got, Ty::Int, span)?;
+                self.host(Action::TicksToMicros, 1, 0, Returns::Int);
+                self.emit(Op::Wait);
+                return Ok(None);
+            }
             Builtin::IntToReal | Builtin::Real => {
                 let got = self.expr(arg(0)?)?;
                 self.convert(got, Ty::Int, span)?;
@@ -396,6 +403,13 @@ impl<'a> Compiler<'a> {
                 let ExprKind::Var(name, None) = &e.kind else {
                     return Err(Error::new(e.span, "expected an array"));
                 };
+                // The user zones' count is the engine's to say.
+                if self.lookup(name, e.span).is_err()
+                    && Builtin::from_name(name) == Some(Builtin::UserZoneIds)
+                {
+                    self.host(Action::NumUserZones, 0, 0, Returns::Int);
+                    return Ok(Some(Ty::Int));
+                }
                 let len = match self.lookup(name, e.span) {
                     Ok(v) => self.var(v)?.array().map(|(_, len)| len),
                     Err(_) => Builtin::from_name(name).and_then(Builtin::array_len),
@@ -504,6 +518,14 @@ impl<'a> Compiler<'a> {
                     // passed and the engine finds no control for it.
                     let (v, _) = self.named(e)?;
                     self.emit(Op::Int(ui_id(v)));
+                    ints += 1;
+                }
+                Arg::W => {
+                    let (v, _) = self.named(e)?;
+                    let Home::Cell(cell) = self.var(v)?.home else {
+                        return Err(Error::new(e.span, "expected a number variable"));
+                    };
+                    self.emit(Op::Int(cell as i32));
                     ints += 1;
                 }
                 Arg::A => {

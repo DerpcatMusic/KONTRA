@@ -154,8 +154,11 @@ const FIXED: &[(&str, ir::EnginePar)] = {
             P::Wavetable(ir::TableValue::ModAmount),
         ),
         ("$ENGINE_PAR_WT_MOD_TYPE", P::ModOscKind),
-        ("$ENGINE_PAR_WT_MOD_WAVE", P::Shown),
-        ("$ENGINE_PAR_WT_MOD_TUNE_UNIT", P::Shown),
+        ("$ENGINE_PAR_WT_MOD_WAVE", P::ModOscWave),
+        ("$ENGINE_PAR_WT_MOD_TUNE_UNIT", P::ModOscUnit),
+        ("$ENGINE_PAR_WT_QUALITY", P::WtQuality),
+        ("$ENGINE_PAR_WT_PHASE", P::Wavetable(ir::TableValue::Phase)),
+        ("$ENGINE_PAR_WT_PHASE_RAND", P::Wavetable(ir::TableValue::PhaseRandom)),
         // Modules KONTRA has no processor for: the knob's text answers, a
         // set is reported.
         ("$ENGINE_PAR_CH_DEPTH", P::Shown),
@@ -206,7 +209,7 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_VOLUME", P::Volume),
         ("$ENGINE_PAR_PAN", P::Pan),
         ("$ENGINE_PAR_TUNE", P::Tune),
-        // get_zone_par's; the fades, volume, pan, tune and BPM are not read.
+        // get_zone_par's and set_zone_par's.
         ("$ZONE_PAR_LOW_KEY", P::Zone(Z::LowKey)),
         ("$ZONE_PAR_HIGH_KEY", P::Zone(Z::HighKey)),
         ("$ZONE_PAR_LOW_VELO", P::Zone(Z::LowVelocity)),
@@ -218,6 +221,14 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ZONE_PAR_SAMPLE_MOD_RANGE", P::Zone(Z::StartRange)),
         ("$ZONE_PAR_SAMPLE_RATE", P::Zone(Z::SampleRate)),
         ("$ZONE_PAR_SELECTED", P::Zone(Z::Selected)),
+        ("$ZONE_PAR_VOLUME", P::Zone(Z::Volume)),
+        ("$ZONE_PAR_PAN", P::Zone(Z::Pan)),
+        ("$ZONE_PAR_TUNE", P::Zone(Z::Tune)),
+        ("$ZONE_PAR_FADE_LOW_KEY", P::Zone(Z::FadeLowKey)),
+        ("$ZONE_PAR_FADE_HIGH_KEY", P::Zone(Z::FadeHighKey)),
+        ("$ZONE_PAR_FADE_LOW_VELO", P::Zone(Z::FadeLowVelocity)),
+        ("$ZONE_PAR_FADE_HIGH_VELO", P::Zone(Z::FadeHighVelocity)),
+        ("$ZONE_PAR_BPM", P::Zone(Z::Bpm)),
     ]
 };
 

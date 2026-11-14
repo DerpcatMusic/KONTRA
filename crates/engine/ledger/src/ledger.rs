@@ -109,7 +109,7 @@ pub struct Note {
     /// Sample start offset a script asked for, microseconds.
     pub offset: u32,
     /// `EVENT_PAR_0..3`, free for the script.
-    pub custom: [i32; 4],
+    pub custom: [i32; 16],
     /// The zone slot the note starts; -1 for any.
     pub zone_slot: i32,
     /// "From script" modulator values, `(index, value)`, ±1 000 000.
@@ -122,6 +122,8 @@ pub struct Note {
     pub pass: u8,
     /// Event marks (`set_event_mark`), one bit each.
     pub marks: u32,
+    /// The plan bus a script redirected the note to (`redirect_output`).
+    pub redirect: Option<u8>,
     /// Seconds the key had been held when the note's zones last started:
     /// the release-trigger counter's input.
     pub held: f32,
@@ -156,12 +158,13 @@ impl Note {
             script_volume: 0,
             script_pan: 0,
             offset: 0,
-            custom: [0; 4],
+            custom: [0; 16],
             zone_slot: -1,
             mod_values: [None; 4],
             first: 0,
             pass: 0,
             marks: 0,
+            redirect: None,
             held: 0.0,
         }
     }

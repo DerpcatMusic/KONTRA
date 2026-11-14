@@ -2330,3 +2330,47 @@ fn a_project_with_a_kontakt_and_a_uvi_part_reopens_as_it_was_saved() {
         );
     }
 }
+
+#[test]
+fn a_part_playing_a_snapshot_reopens_with_it_without_a_library_scan() {
+    let Some(snapshot) = library("ANALOG STRINGS/Snapshots/ANALOG STRINGS/Factory/Blown Fuse.nksn")
+    else {
+        return;
+    };
+    // No library roots: nothing is scanned, the snapshot finds its base.
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params.shared.request(crate::Request::Load {
+        part: Some(0),
+        path: snapshot.clone(),
+    });
+    settle(&params, &mut dsp);
+    let playing = |params: &KontraParams| {
+        let rack = crate::lock(&params.shared.rack);
+        let p = rack.as_ref()?.parts()[0].as_ref()?;
+        Some((p.path.clone()?, p.name.clone()))
+    };
+    let (path, name) = playing(&params).expect("the snapshot did not load");
+    assert_eq!(path, snapshot);
+    params.capture();
+    let saved = Saved::read(&params.saved.read().unwrap());
+    let part = &saved.parts[0];
+    assert!(
+        part.path.extension().is_some_and(|e| e == "nki"),
+        "the base is not saved: {part:?}"
+    );
+    assert_eq!(part.preset.as_deref(), Some(snapshot.as_path()));
+
+    let (again, mut again_dsp) = reopen(&params);
+    settle(&again, &mut again_dsp);
+    assert_eq!(
+        playing(&again),
+        Some((snapshot, name)),
+        "the snapshot did not come back"
+    );
+    again.capture();
+    let now = Saved::read(&again.saved.read().unwrap());
+    assert_eq!(
+        now.parts[0].scripts, part.scripts,
+        "its script values changed"
+    );
+}

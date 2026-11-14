@@ -17,6 +17,8 @@ mod ignored;
 mod impulse;
 mod laws;
 mod links;
+mod multi;
+pub use multi::{Slot, is_multi, scripts as multi_scripts, slots as multi};
 mod provenance;
 mod raum;
 mod readouts;

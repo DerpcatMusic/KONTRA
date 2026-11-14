@@ -5,7 +5,7 @@
 use kontra_ir as ir;
 
 use crate::plan::{Group, Holder, addressed};
-use crate::{Engine, EnginePar, Level};
+use crate::{Engine, EnginePar, Kind, Level};
 use kontra_plan::par_laws::{
     CUBE, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S, attack_shape, attack_x,
     routed_envelope, routed_index, setting, stage_point, stage_setting,
@@ -90,7 +90,10 @@ impl Engine {
     ) -> Option<&mut Option<ir::Effect>> {
         let rack = match (usize::try_from(group), generic) {
             // A group's slot: `<generic>` is for instrument effects only (KSP manual).
-            (Ok(g), _) => &mut self.groups.get_mut(g)?.inserts[..],
+            (Ok(g), _) => {
+                self.group_written(g);
+                &mut self.groups.get_mut(g)?.inserts[..]
+            }
             // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
             // Kontakt takes generic -1 as the insert rack too (Una Corda's
             // transient and stereo knobs; measured, controls.py 2026-11-12).
@@ -342,6 +345,24 @@ impl Engine {
             let kinds = &self.script()?.mod_kinds;
             return i32::try_from(kinds.iter().position(|k| *k == Some(kind))?).ok();
         }
+        if par == EnginePar::ModOscWave {
+            return Some(i32::from(g.wavetable?.modosc.wave));
+        }
+        if par == EnginePar::WtQuality {
+            return Some(match g.wavetable?.quality {
+                kontra_voice::Quality::Lofi => 0,
+                kontra_voice::Quality::Medium => 1,
+                kontra_voice::Quality::High => 2,
+                kontra_voice::Quality::Best => 3,
+            });
+        }
+        if par == EnginePar::ModOscUnit {
+            return Some(match g.wavetable?.modosc.unit {
+                kontra_voice::Unit::Semitones => 0,
+                kontra_voice::Unit::Ratio => 1,
+                kontra_voice::Unit::Hz => 2,
+            });
+        }
         if let EnginePar::WarpMode(n) = par {
             let w = g.wavetable?.warps.get(usize::from(n)).copied()?;
             let modes = &self.script()?.warp_modes;
@@ -568,6 +589,38 @@ impl Engine {
                 .zip(kind)
                 .map(|(t, k)| t.modosc.kind = k)
                 .is_some(),
+            // A value outside the lists is dropped, like a form mode's.
+            EnginePar::ModOscWave => g
+                .wavetable
+                .as_mut()
+                .zip(u8::try_from(value).ok().filter(|&w| w <= 8))
+                .map(|(t, w)| t.modosc.wave = w)
+                .is_some(),
+            EnginePar::WtQuality => g
+                .wavetable
+                .as_mut()
+                .zip(ir::Quality::from_index(value))
+                .map(|(t, q)| {
+                    t.quality = match q {
+                        ir::Quality::Lofi => kontra_voice::Quality::Lofi,
+                        ir::Quality::Medium => kontra_voice::Quality::Medium,
+                        ir::Quality::High => kontra_voice::Quality::High,
+                        ir::Quality::Best => kontra_voice::Quality::Best,
+                    }
+                })
+                .is_some(),
+            EnginePar::ModOscUnit => g
+                .wavetable
+                .as_mut()
+                .zip(ir::TuneUnit::from_index(value))
+                .map(|(t, u)| {
+                    t.modosc.unit = match u {
+                        ir::TuneUnit::Semitones => kontra_voice::Unit::Semitones,
+                        ir::TuneUnit::Ratio => kontra_voice::Unit::Ratio,
+                        ir::TuneUnit::Hz => kontra_voice::Unit::Hz,
+                    }
+                })
+                .is_some(),
             EnginePar::WarpMode(n) => g
                 .wavetable
                 .as_mut()
@@ -681,16 +734,36 @@ impl Engine {
         true
     }
 
-    /// `set_controller`: the script moves a controller as if it had arrived.
+    /// `set_controller`: the script moves a controller (0 to 127), the
+    /// pitch bend (`$VCC_PITCH_BEND`, -8192 to 8191) or the channel pressure
+    /// (`$VCC_MONO_AT`) as if it had arrived, on every channel.
     pub(crate) fn set_controller(&mut self, controller: i32, value: i32) {
-        let (Ok(cc), Ok(value)) = (u8::try_from(controller), u8::try_from(value.clamp(0, 127)))
-        else {
+        let Ok(cc) = u8::try_from(controller) else {
+            return;
+        };
+        if self.running.kind == Kind::Controller && self.running.controller == cc {
+            self.running.set_own = true;
+        }
+        if cc == crate::midi::VCC_PITCH_BEND {
+            let bend = value.clamp(-8192, 8191) as f32 / 8192.0;
+            for channel in 0..16 {
+                self.behaviour.set_bend(channel, bend);
+            }
+            self.refresh_all(None);
+            return;
+        }
+        let Ok(value) = u8::try_from(value.clamp(0, 127)) else {
             return;
         };
         if let Some(v) = self.cc_values.get_mut(usize::from(cc)) {
             *v = value;
         }
-        if cc < 128 {
+        if cc == crate::midi::VCC_MONO_AT {
+            for channel in 0..16 {
+                self.behaviour.set_pressure(channel, value);
+            }
+            self.refresh_all(None);
+        } else if cc < 128 {
             for channel in 0..16 {
                 self.behaviour.set_cc(channel, cc, value);
             }

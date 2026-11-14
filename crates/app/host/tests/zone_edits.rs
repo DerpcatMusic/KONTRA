@@ -38,6 +38,14 @@ fn engine(source: &str) -> (Engine, u32, i32) {
         end: 0,
         start_range: 0,
         rate: 48_000,
+        source: None,
+        loops: Vec::new(),
+        user: false,
+        volume: 0,
+        pan: 0,
+        tune: 0,
+        fades: [0; 4],
+        loop_pars: Default::default(),
     }];
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -52,9 +60,7 @@ fn engine(source: &str) -> (Engine, u32, i32) {
 /// host does.
 fn swap(e: &mut Engine, edits: &[ZoneEdit]) {
     let mut plan = Plan::clone(e.plan());
-    let done: Vec<_> = (edits.iter())
-        .map(|x| (*x, plan.edit_zone(x.zone, x.par, x.value)))
-        .collect();
+    let done: Vec<_> = (edits.iter()).map(|x| (*x, x.apply(&mut plan))).collect();
     e.swap_plan(&mut Arc::new(plan), &done);
 }
 

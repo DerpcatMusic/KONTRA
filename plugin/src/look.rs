@@ -65,7 +65,14 @@ pub fn apply(app: &mut App, s: &SavedView) {
         keys_hidden: s.keys_hidden,
         mixer_wide: s.mixer_wide,
         octave: s.octave,
-        scale: usize::from(s.scale),
+        // Saved as percent; 1 to 3 are the steps 125 to 200 % of before.
+        scale: match s.scale {
+            n @ 1..=3 => [125, 150, 200]
+                .get(usize::from(n) - 1)
+                .copied()
+                .unwrap_or(100),
+            n => u32::from(n),
+        },
         face_scale: usize::from(s.face_scale),
         format: pick(&FORMATS, s.format),
         shelf: pick(&SHELVES, s.shelf),
@@ -101,7 +108,7 @@ mod tests {
         app.view.tab = Tab::Mixer;
         app.view.browser_hidden = true;
         app.view.octave = -1;
-        app.view.scale = 2;
+        app.view.scale = 75;
         app.view.split = 0.3;
         app.view.face_look = FaceLook::Vector;
         app.parts = vec![kontra_ui::app::Part {
@@ -117,7 +124,7 @@ mod tests {
             (again.view.tab, again.view.browser_hidden),
             (Tab::Mixer, true)
         );
-        assert_eq!((again.view.octave, again.view.scale), (-1, 2));
+        assert_eq!((again.view.octave, again.view.scale), (-1, 75));
         assert!((again.view.split - 0.3).abs() < 1e-6, "the browser's split");
         assert_eq!(again.view.face_look, FaceLook::Vector);
         let mut waiting = saved.parts.clone();

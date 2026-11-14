@@ -66,6 +66,12 @@ pub enum EnginePar {
     /// A wavetable's mod oscillator kind: the value indexes the script's
     /// kind table.
     ModOscKind,
+    /// A wavetable's mod oscillator wave: `$NI_WT_MOD_WAVE_*`, 0..=8.
+    ModOscWave,
+    /// What its tune reads in ([`crate::TuneUnit`]).
+    ModOscUnit,
+    /// `$ENGINE_PAR_WT_QUALITY`.
+    WtQuality,
     /// A control the engine does not carry yet: only the text of a value
     /// the script passes answers (`get_engine_par_disp_ext`); a set or a
     /// read is reported as unhandled.
@@ -89,6 +95,16 @@ pub enum ZonePar {
     SampleRate,
     /// Whether it is selected in an editor (KONTRA has none: never).
     Selected,
+    Volume,
+    Pan,
+    Tune,
+    /// Fade lengths in keys / velocity steps at each edge of the range.
+    FadeLowKey,
+    FadeHighKey,
+    FadeLowVelocity,
+    FadeHighVelocity,
+    /// The sample's tempo times 1000.
+    Bpm,
 }
 
 /// What one script parameter name drives.

@@ -195,7 +195,32 @@ pub fn touch(
     if let Some(last) = p.shared.macro_values.get(n) {
         last.store(value.to_bits(), Ordering::Relaxed);
     }
+    if let Some(at) = p.shared.macro_touched.get(n) {
+        at.store(now(), Ordering::Relaxed);
+    }
     Some((id(n), value))
+}
+
+/// How long after the editor moves a macro the host's moves of it are
+/// taken for echoes of the editor's and dropped, in milliseconds.
+const HELD_MS: u64 = 250;
+
+static EPOCH: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
+/// Milliseconds since the plugin first asked, for [`touch`] and [`held`].
+pub fn now() -> u64 {
+    u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Whether the editor moved macro `n` within the last [`HELD_MS`]: the
+/// player's hand owns it, not the host's automation.
+pub fn held(p: &KontraParams, n: usize) -> bool {
+    p.shared
+        .macro_touched
+        .get(n)
+        .map(|at| at.load(Ordering::Relaxed))
+        .is_some_and(|at| at != 0 && now().saturating_sub(at) < HELD_MS)
 }
 
 /// The host id of macro `n`.

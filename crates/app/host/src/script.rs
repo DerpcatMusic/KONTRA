@@ -7,10 +7,12 @@ use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 /// Whether the engine or the UI tree understands catalog name `name`
 /// (every other one is an opaque symbol nothing acts on), for coverage
-/// Names the engine reads without a table: list ids, the modifier keys a
+/// Names the engine reads without a table: a control's custom id, list ids, the modifier keys a
 /// click held, a text line added through a parameter, and the log kinds
 /// `disable_logging` takes (KONTRA shows no script log).
-const CARRIED: [&str; 9] = [
+const CARRIED: [&str; 10] = [
+    // Stored as set and read back (Conflux's effect menus).
+    "$CONTROL_PAR_CUSTOM_ID",
     "$CONTROL_PAR_NUM_ITEMS",
     "$CONTROL_PAR_SELECTED_ITEM_IDX",
     "$CONTROL_PAR_KEY_SHIFT",
@@ -100,6 +102,8 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             release: entry(CallbackKind::Release),
             controller: entry(CallbackKind::Controller),
             poly_at: entry(CallbackKind::PolyAt),
+            note_controller: entry(CallbackKind::NoteController),
+            midi_in: entry(CallbackKind::MidiIn),
             persistence_changed: entry(CallbackKind::PersistenceChanged),
             listener: entry(CallbackKind::Listener),
             pgs_changed: entry(CallbackKind::PgsChanged),
@@ -166,6 +170,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .collect(),
         source_folder: None,
         library_folder: None,
+        rc_folder: None,
         factory_folder: None,
         text_data: data
             .iter()
@@ -387,6 +392,10 @@ fn look(script: &Script) -> LookPars {
 /// The value a catalog constant has in `script`; `i32::MIN` (matches nothing)
 /// when the script never names it.
 fn symbol(script: &Script, name: &str) -> i32 {
+    // A measured constant is its number in every script; only an opaque name is an id.
+    if let Some(value) = kontra_ksp::constant(name) {
+        return value;
+    }
     script
         .symbols
         .iter()
@@ -408,9 +417,11 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             note: entry(defined.note, kontra_lua::Callbacks::NOTE),
             release: entry(defined.release, kontra_lua::Callbacks::RELEASE),
             controller: entry(defined.controller, kontra_lua::Callbacks::CONTROLLER),
-            poly_at: None,
+            poly_at: entry(defined.poly_at, kontra_lua::Callbacks::POLY_AT),
+            note_controller: None,
+            midi_in: None,
             persistence_changed: None,
-            listener: None,
+            listener: entry(defined.transport, kontra_lua::Callbacks::TRANSPORT),
             pgs_changed: None,
             ui_controls: None,
             ui_update: None,
@@ -436,6 +447,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         text_data: Vec::new(),
         source_folder: None,
         library_folder: None,
+        rc_folder: None,
         factory_folder: None,
         restore: Vec::new(),
         restore_texts: Vec::new(),

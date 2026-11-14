@@ -253,6 +253,14 @@ impl Store {
             }
             return Some(value);
         }
+        if call.action == Action::GetUiWfProperty {
+            // What `set_ui_wf_property` stored; a property KONTRA does not keep reads 0.
+            let par = [(look.wf_prop_cursor, look.wf_cursor), (look.wf_prop_flags, look.wf_flags)]
+                .into_iter()
+                .find_map(|(prop, par)| (prop == a).then_some(par));
+            let value = par.map_or(0, |par| self.control_par(c, slot, call.cells, id, par));
+            return Some(HostValue::Int(value));
+        }
         let pars: &[(i32, i32)] = match call.action {
             Action::SetKnobUnit => &[(look.unit, a)],
             Action::SetKnobDefval => &[(look.default, a)],

@@ -119,13 +119,37 @@ impl Live<'_> {
     /// `(x + 1)/2`. No blend: no recursion.
     fn through(&self, t: &ir::Transfer, clock: Clock) -> Option<f32> {
         if t.smooth_s > 0.0 && matches!(t.source, ir::Source::Lfo(_)) {
-            return t.smoothed(|back| {
+            let smoothed = |back| {
                 let past = Clock {
                     offset: clock.offset - back,
                     ..clock
                 };
                 Some(t.apply((self.read(t.source, &[], past)? + 1.0) / 2.0))
-            });
+            };
+            // Every rack that reads the same wave and table at the same time
+            // reads the same value (a voice's rack, a bus's): evaluate once.
+            if let ir::Source::Lfo(n) = t.source
+                && let Some(l) = clock.lfos.get(usize::from(n))
+            {
+                let at =
+                    clock.t.get(usize::from(n)).copied().unwrap_or(self.seconds) + clock.offset;
+                let age = Age {
+                    held: at,
+                    now: at,
+                    ..Age::START
+                };
+                // A rack scales by nothing: a NaN pattern no voice's scale can be,
+                // so a voice at scale 0 (or 1) never shares this key.
+                return kontra_plan::modulation::smoothed_shared(
+                    t,
+                    l,
+                    age,
+                    self.tempo,
+                    u32::MAX,
+                    || t.smoothed(smoothed),
+                );
+            }
+            return t.smoothed(smoothed);
         }
         let x = self.read(t.source, &[], clock)?;
         // An LFO is always read on 0..=1; pitch bend only through a table.
@@ -173,6 +197,17 @@ impl Rack {
             quiet: vec![0; slots.len()].into(),
             rate,
         }
+    }
+
+    /// A rack with no slots that only reads `blends` and `lfos`: [`Self::follow`]
+    /// then [`Self::read`] give a route's value at control rate.
+    pub fn reader(blends: &[ir::Blend], lfos: &[ir::Lfo], rate: u32) -> Self {
+        Self::routed(&[], rate, Responses(&[], &[]), &[], blends).with_lfos(lfos)
+    }
+
+    /// `source` as of the last [`Self::follow`].
+    pub fn read(&self, live: &Live, source: ir::Source) -> Option<f32> {
+        live.read(source, &self.blends, self.clock(0.0))
     }
 
     /// Sets the oscillators its routes read ([`ir::Bus::lfos`]).

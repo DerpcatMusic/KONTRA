@@ -1783,3 +1783,167 @@ fn a_relinked_library_folder_is_remembered_by_the_next_session() {
     assert_eq!(browser.prefs.moved, [(from, to)]);
     let _clean = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_purged_group_loads_when_a_script_unpurges_it_and_plays_after() {
+    // By a control later, and while the instrument loads (Morphology's
+    // snapshots pick their sample group in `on persistence_changed`).
+    unpurged_plays(Unpurged::ByControl);
+    unpurged_plays(Unpurged::AtLoad);
+}
+
+/// When the script un-purges the purged group.
+#[derive(PartialEq)]
+enum Unpurged {
+    ByControl,
+    AtLoad,
+}
+
+fn unpurged_plays(when: Unpurged) {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("unpurge");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.wav"), tone_wav()).unwrap();
+    std::fs::write(dir.join("b.wav"), tone_wav()).unwrap();
+    let sfz = dir.join("x.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=a.wav key=60\n<region> sample=b.wav key=62\n",
+    )
+    .unwrap();
+    let mut instrument = kontra_host::instrument::read(&sfz).unwrap();
+    // The second group is saved purged, and a button un-purges it.
+    let zone = instrument.groups[0].zones.pop().unwrap();
+    let mut second = instrument.groups[0].clone();
+    second.zones = vec![zone];
+    second.purged = true;
+    instrument.groups.push(second);
+    instrument.scripts = vec![ir::Script {
+        name: "s".into(),
+        slot: 0,
+        dialect: ir::Dialect::Ksp,
+        source: if when == Unpurged::ByControl {
+            "on init
+                declare ui_button $go
+            end on
+            on ui_control ($go)
+                purge_group(1, 1)
+            end on"
+        } else {
+            "on init
+            end on
+            on persistence_changed
+                purge_group(1, 1)
+            end on"
+        }
+        .into(),
+        saved: Vec::new(),
+        data: Vec::new(),
+        links: Vec::new(),
+    }];
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, Some(sfz)).unwrap();
+    let loudest = |audio: &mut RackAudio, key: u8| {
+        // The sample's 0.1 s tail of the last note, gone.
+        for _ in 0..400 {
+            audio.process(BLOCK, &[]);
+        }
+        let on = Event::NoteOn {
+            note: HostNote {
+                port: 0,
+                channel: 0,
+                key,
+                id: -1,
+                clap: true,
+            },
+            velocity: 1.0,
+            tune: 0.0,
+        };
+        audio.process(BLOCK, &[(0, on)]);
+        let mut top = level(audio, 0).abs();
+        for _ in 0..8 {
+            audio.process(BLOCK, &[]);
+            top = top.max(level(audio, 0).abs());
+        }
+        top
+    };
+    assert!(loudest(&mut audio, 60) > 1e-4, "the resident group plays");
+    if when == Unpurged::ByControl {
+        assert!(loudest(&mut audio, 62) < 1e-6, "a purged group is silent");
+        rack.control(0, 0, None, 1.0, Default::default());
+    }
+    // The group loads off the audio thread; the control side builds, the
+    // audio side swaps in, a thread reads heads.
+    let mut said = Vec::new();
+    for _ in 0..200 {
+        rack.tick();
+        said.extend(rack.take_notices());
+        audio.process(BLOCK, &[]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        said.iter().any(|s| s.contains("loading purged group")),
+        "{said:?}"
+    );
+    assert!(loudest(&mut audio, 62) > 1e-4, "the unpurged group plays");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A real multi (`KONTRA_MULTI`) fills a part per slot, and a project
+/// saved with it reopens the same parts by path, with no library scan.
+#[test]
+#[ignore = "reads a Kontakt multi on this machine"]
+fn a_multi_fills_a_part_per_slot_and_reopens_from_a_project() {
+    let Some(multi) = std::env::var_os("KONTRA_MULTI") else {
+        return;
+    };
+    let multi = std::path::PathBuf::from(multi);
+    let (mut first, _audio) = rack();
+    first.load(0, &multi).unwrap();
+    let paths = |r: &Rack| -> Vec<(Option<std::path::PathBuf>, String)> {
+        (r.parts().iter().flatten())
+            .map(|p| (p.path.clone(), p.name.clone()))
+            .collect()
+    };
+    let loaded = paths(&first);
+    assert!(loaded.len() > 1, "{loaded:?}");
+    assert_eq!(loaded[1].0, Some(multi.join("1")));
+    let saved = kontra_host::state::Saved::parse(&first.save().write()).unwrap();
+    let (mut second, _audio) = rack();
+    assert_eq!(second.restore(&saved), Vec::new());
+    assert_eq!(paths(&second), loaded);
+}
+
+/// A multi script Kontakt 8 saved (native oracle, `probes/multi_script.lua`)
+/// moves channel 1 to channel 2 in `on midi_in`: a part on channel 2 then
+/// plays what arrives on channel 1, and a project keeps the multi.
+#[test]
+fn a_multi_script_hears_the_rack_first_and_reroutes_its_channels() {
+    let multi = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../format/kontakt/tests/data/multi-script.nkm");
+    let (mut rack, mut audio) = rack();
+    let b = engine(rack.store_mut(), 0.5);
+    rack.install(1, b, part("b"));
+    rack.set_mix(
+        1,
+        Mix {
+            channel: 2,
+            output: 1,
+            ..Mix::DEFAULT
+        },
+    );
+    let [_, alone] = play(&mut audio, &[(0, note(0))]);
+    assert!(
+        alone.abs() < 1e-4,
+        "channel 2 heard channel 1 with no multi script: {alone}"
+    );
+    rack.set_multi(Some(&multi));
+    assert!(rack.take_notices().is_empty());
+    let [_, routed] = play(&mut audio, &[(0, note(0))]);
+    assert!(
+        routed > 0.1,
+        "the multi script did not move channel 1 to 2: {routed}"
+    );
+    assert_eq!(rack.save().multi.as_deref(), Some(multi.as_path()));
+}
