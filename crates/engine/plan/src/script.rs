@@ -191,10 +191,10 @@ impl CcLink {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KnobModPlan {
     pub slot: u8,
-    pub cc: u8,
     pub id: i32,
     pub saved: f32,
-    pub ratio: f32,
+    pub source: kontra_ir::Source,
+    pub scale: bool,
 }
 
 pub use kontra_script_ui::{Controls, LookPars};

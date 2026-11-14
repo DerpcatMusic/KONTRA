@@ -7,7 +7,7 @@ use crate::{CoId, Faults, Foreign, HostApi, Instance, Machine, Program, Step, Te
 
 /// One script slot's machine.
 pub enum Vm {
-    Code(Instance),
+    Code(Box<Instance>),
     Foreign(Box<dyn Machine>),
 }
 
@@ -17,7 +17,7 @@ impl Vm {
     pub fn new(program: &Program, coroutines: usize, foreign: Option<&Arc<dyn Foreign>>) -> Self {
         match foreign {
             Some(code) => Self::Foreign(code.machine()),
-            None => Self::Code(Instance::new(program, coroutines.max(1))),
+            None => Self::Code(Box::new(Instance::new(program, coroutines.max(1)))),
         }
     }
 
@@ -80,13 +80,13 @@ impl Vm {
         &mut self,
         id: i32,
         saved: f64,
-        ratio: f64,
+        scale: f64,
         m: f64,
         context: u64,
     ) -> Option<CoId> {
         match self {
             Self::Code(_) => None,
-            Self::Foreign(f) => f.control_mod(id, saved, ratio, m, context),
+            Self::Foreign(f) => f.control_mod(id, saved, scale, m, context),
         }
     }
 
