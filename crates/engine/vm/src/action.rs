@@ -345,6 +345,11 @@ actions! {
     GetKeyTriggerstate,
     SetKeyrange,
     RemoveKeyrange,
+    GetKeyrangeMinNote,
+    GetKeyrangeMaxNote,
+    GetKeyrangeName,
+    SetMapEditorEventColor,
+    LoadKompleteUi,
     // Diagnostics.
     Message,
     DisableLogging,
