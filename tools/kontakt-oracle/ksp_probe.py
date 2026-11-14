@@ -15,7 +15,10 @@ Each recorded value is written into the tune of five groups (five base-100 digit
 value + 1 000 000, so negatives work), read back with `get_group_tune`, and printed as
 `label<TAB>value`. Run under tools/oracle/oracle-slot like ksp_constants.py (this tool calls it
 itself). The instrument needs enough groups (ANALOG STRINGS has 483, so 96 results).
-Results, once a law is decided, go in the probe's header comment and in the code that uses them.
+An unknown name (not in the KSP manual, or new in a later Kontakt) fails the whole script and every
+value reads -1000000: use manual names only. `cargo test -p kontra-ksp every_oracle_probe_compiles`
+compiles every probe with our compiler first, which catches typos. Results, once a law is decided, go
+in the probe's header comment and in the code that uses them.
 """
 
 import json

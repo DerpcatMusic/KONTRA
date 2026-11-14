@@ -4361,8 +4361,20 @@ fn a_midi_file_loads_in_init_and_the_marker_walks_its_events() {
         length,
         ..Event::default()
     };
-    let cc = Event { track: 1, pos: 10, command: 0xB0, byte1: 7, byte2: 90, ..Event::default() };
-    let smf = Smf { events: vec![note(0, 60, 240), note(480, 62, 120), cc], division: 480, tracks: 2, area: Area::default() };
+    let cc = Event {
+        track: 1,
+        pos: 10,
+        command: 0xB0,
+        byte1: 7,
+        byte2: 90,
+        ..Event::default()
+    };
+    let smf = Smf {
+        events: vec![note(0, 60, 240), note(480, 62, 120), cc],
+        division: 480,
+        tracks: 2,
+        area: Area::WHOLE,
+    };
     std::fs::write(dir.join("t.mid"), write(&smf).unwrap()).unwrap();
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let source = format!(
@@ -4383,7 +4395,11 @@ fn a_midi_file_loads_in_init_and_the_marker_walks_its_events() {
     let mut e = engine_with_files(&store, zones, &source);
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "2 1 10 0 7 t.mid");
-    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
 }
 
 /// KSP manual: events are inserted into a buffer of inactive ones (a full
@@ -4414,7 +4430,11 @@ fn the_midi_object_inserts_into_its_buffer() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "1 2 -1 1 42 6 1");
-    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
 }
 
 /// A zone whose facts carry a one-second 440 Hz mono WAV, for the zone and
@@ -4463,7 +4483,13 @@ fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
         start_range: 0,
         rate,
         source: Some(Arc::new(sample)),
-        loops: vec![ir::Loop { start: 100, end: 600, crossfade: 20, count: 3, ..Default::default() }],
+        loops: vec![ir::Loop {
+            start: 100,
+            end: 600,
+            crossfade: 20,
+            count: 3,
+            ..Default::default()
+        }],
     }];
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     Engine::new(Arc::new(plan), store.client(), RATE)
@@ -4482,7 +4508,11 @@ fn a_script_reads_a_zones_sample_status_and_loop() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "tone440 wav 1 -1 500 3 0");
-    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
 }
 
 /// KSP manual (Music Information Retrieval): in `on init` a detection sets its
@@ -4523,5 +4553,29 @@ fn a_note_can_be_redirected_to_a_bus() {
         end on",
     );
     level(&mut e, &[on(60)]);
-    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
+}
+
+/// KSP manual (Zone Commands): `get_zone_id` maps an index to the zone's id,
+/// `get_sample_length` reads the sample's microseconds, `get_num_zones` counts
+/// every zone saved; `make_instr_persistent` compiles beside `make_persistent`.
+#[test]
+fn a_script_maps_zone_indices_to_ids_and_reads_lengths() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine_with_tone_zone(
+        &mut store,
+        "on init
+            declare $kept
+            declare $both
+            make_instr_persistent($kept)
+            make_persistent($both)
+            message(get_zone_id(0) & \" \" & get_zone_id(1) & \" \" & get_sample_length(0) & \" \" & get_num_zones())
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "0 -1 1000000 1");
 }

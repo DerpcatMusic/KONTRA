@@ -13,6 +13,7 @@ mod buses;
 mod callbacks;
 mod controls;
 
+mod detect;
 mod filters;
 mod fx_types;
 mod impulse_knobs;
@@ -20,8 +21,6 @@ mod inspect;
 mod knobs;
 mod midi;
 mod midi_object;
-mod detect;
-mod zone_commands;
 mod modulators;
 mod par_display;
 mod params;
@@ -32,6 +31,7 @@ mod refresh;
 mod reshaped;
 mod runtime;
 mod script_files;
+mod zone_commands;
 
 mod script;
 mod start;
@@ -65,7 +65,6 @@ pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
-pub use zone_commands::detect_sample;
 pub use kontra_plan::{
     EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, zone_name,
 };
@@ -85,6 +84,7 @@ pub use script::{Callbacks, CcLink, Controls, KnobModPlan, LookPars, ScriptPlan}
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
+pub use zone_commands::detect_sample;
 pub use zone_edits::{Unpurge, ZoneEdit};
 
 use buses::BusState;
@@ -446,7 +446,7 @@ impl Engine {
             recalled: Box::new([]),
             building: true,
             reloaded: Vec::new(),
-            midi: midi_object::Object::default(),
+            midi: midi_object::Object::new(),
             files: Vec::with_capacity(script_files::FILES),
             picked: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),

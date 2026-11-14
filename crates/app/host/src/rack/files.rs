@@ -185,7 +185,8 @@ pub(super) fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
         return reply;
     }
     if request.midi.is_some() {
-        let smf = read(saves, request.path.as_str()).and_then(|b| kontra_engine::midi_file::read(&b));
+        let smf =
+            read(saves, request.path.as_str()).and_then(|b| kontra_engine::midi_file::read(&b));
         reply.loaded = smf.as_ref().map(|_| (Vec::new(), Vec::new()));
         reply.midi = smf;
         return reply;
