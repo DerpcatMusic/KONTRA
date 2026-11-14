@@ -15,8 +15,9 @@ const CHUNK_ID: u16 = 0x0D;
 const ENVELOPE_ID: u16 = 0x07;
 /// Category stored after the name: 2 wraps the modulator in an 0x07
 /// envelope wrapper; 1 stores it directly (an 0x08 LFO object in ANALOG
-/// STRINGS). External assignments store 1 or 2 there too.
-const CATEGORIES: [u32; 2] = [1, 2];
+/// STRINGS); 5 stores a Glide (0x0B) directly (a Glide saved by Kontakt 8.13).
+/// External assignments store 1 or 2 there too.
+const CATEGORIES: [u32; 3] = [1, 2, 5];
 
 /// # InternalMod
 ///

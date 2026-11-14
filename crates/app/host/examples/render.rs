@@ -208,6 +208,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    // KONTRA_GLIDES=1 prints each group's glide and voice groups.
+    if std::env::var_os("KONTRA_GLIDES").is_some() {
+        for (n, g) in loaded.plan.groups.iter().enumerate() {
+            if let Some(glide) = g.glide {
+                println!("group {n} {:?} glide {glide:?}", g.name);
+            }
+        }
+        for (n, vg) in loaded.plan.voice_groups.iter().enumerate() {
+            println!("voice group {n} {vg:?}");
+        }
+    }
     if let Ok(zone) = std::env::var("KONTRA_ZONE") {
         let plan = &loaded.plan;
         let z = zone.parse::<usize>().ok().and_then(|z| plan.zones.get(z));
@@ -260,7 +271,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r.loops
         );
     }
-    let plan = Arc::new(loaded.plan);
+    // KONTRA_ONLY_GLIDE=1 plays only the groups that glide (a clean pitch track).
+    let mut plan = loaded.plan;
+    if std::env::var_os("KONTRA_ONLY_GLIDE").is_some() {
+        for g in &mut plan.groups {
+            g.purged |= g.glide.is_none();
+        }
+    }
+    let plan = Arc::new(plan);
     let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
     if let Some(p) = kontra_prepare::tables(engine.plan(), &stream) {
         engine.swap_plan(&mut Arc::new(p), &[]);
@@ -470,6 +488,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         rides.sort_by_key(|r| r.0);
     }
+    // KONTRA_PHRASE=60:0:1.2,67:1:1.2: notes beside the main one, each
+    // key:start:length in seconds; overlapping ones play legato.
+    for note in std::env::var("KONTRA_PHRASE")
+        .unwrap_or_default()
+        .split(',')
+    {
+        let v: Vec<&str> = note.split(':').collect();
+        let (Some(k), Some(at), Some(len)) = (
+            v.first().and_then(|k| k.parse::<u8>().ok()),
+            v.get(1).and_then(|a| a.parse::<f32>().ok()),
+            v.get(2).and_then(|l| l.parse::<f32>().ok()),
+        ) else {
+            continue;
+        };
+        let frame = |s: f32| (s * RATE as f32) as usize;
+        let on = Event::NoteOn {
+            note: HostNote { key: k, ..host },
+            velocity: velocity.into(),
+            tune: 0.0,
+        };
+        let off = Event::NoteOff(HostPattern {
+            key: i32::from(k),
+            ..pattern
+        });
+        rides.extend([(frame(at).max(1), on), (frame(at + len), off)]);
+    }
+    rides.sort_by_key(|r| r.0);
     let mut first: Vec<Timed<Event>> = (rides.iter().filter(|r| r.0 == 0))
         .map(|&(_, body)| Timed {
             at: SampleTime(0),
@@ -548,6 +593,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  block {n} after a control's edits: {us:.1} µs");
         }
         install_requests(&mut engine, &plan, &stream);
+        // KONTRA_POSITIONS=1: each voice's source position after every block
+        // (`pos  seconds  zone  frames`); the slope is its pitch, for sounds
+        // too noisy to pitch-track.
+        if std::env::var_os("KONTRA_POSITIONS").is_some() {
+            let t = (n + 1) as f64 * 512.0 / f64::from(RATE);
+            for (zone, at, _) in engine.voices() {
+                println!("pos\t{t:.5}\t{zone}\t{at:.3}");
+            }
+        }
         if n == 0 || n == 3 * RATE as usize / 512 {
             let during: Vec<_> = engine
                 .action_calls()
