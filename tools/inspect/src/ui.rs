@@ -266,8 +266,16 @@ fn render_for(
             engine.install(Prepared::new(request, Some(plan), RATE));
         }
     }
-    ((energy / (BLOCK * blocks * 2) as f64).sqrt(), settled, frames)
+    (
+        (energy / (BLOCK * blocks * 2) as f64).sqrt(),
+        settled,
+        frames,
+    )
 }
+
+/// Blocks a move gets before the next note: a script that waits before
+/// it acts (a fade out, `wait(150)`, then the room's new `Time`) has acted.
+const SETTLE_BLOCKS: usize = 240;
 
 /// Blocks a fresh note renders: 320 ms, long enough for a room's early
 /// reflections and a 2048-point spectrum.
@@ -283,25 +291,37 @@ fn print(frames: &[[f32; 2]]) -> (Vec<f64>, f64) {
         .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / (N - 1) as f64).cos())
         .collect();
     let fft = FftPlanner::<f64>::new().plan_fft_forward(N);
-    let centers = [62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0];
+    let centers = [
+        62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+    ];
     let mut sums = vec![0.0f64; centers.len() * 2];
     let mut buf = vec![Complex::new(0.0, 0.0); N];
     for chunk in frames.chunks_exact(N / 2).collect::<Vec<_>>().windows(2) {
         for c in 0..2 {
             for (i, (b, w)) in buf.iter_mut().zip(&window).enumerate() {
-                let f = if i < N / 2 { chunk[0][i] } else { chunk[1][i - N / 2] };
+                let f = if i < N / 2 {
+                    chunk[0][i]
+                } else {
+                    chunk[1][i - N / 2]
+                };
                 *b = Complex::new(f64::from(f[c]) * w, 0.0);
             }
             fft.process(&mut buf);
             for (i, bin) in buf.iter().enumerate().take(N / 2).skip(1) {
                 let hz = i as f64 * f64::from(RATE) / N as f64;
-                if let Some(k) = centers.iter().position(|&m| hz >= m / 2f64.sqrt() && hz < m * 2f64.sqrt()) {
+                if let Some(k) = centers
+                    .iter()
+                    .position(|&m| hz >= m / 2f64.sqrt() && hz < m * 2f64.sqrt())
+                {
                     sums[c * centers.len() + k] += bin.norm_sqr();
                 }
             }
         }
     }
-    let db = sums.iter().map(|&p| 10.0 * (p.max(1e-20)).log10() - 60.0).collect();
+    let db = sums
+        .iter()
+        .map(|&p| 10.0 * (p.max(1e-20)).log10() - 60.0)
+        .collect();
     let (mut lr, mut ll, mut rr) = (0.0f64, 0.0f64, 0.0f64);
     for f in frames {
         let (l, r) = (f64::from(f[0]), f64::from(f[1]));
@@ -521,7 +541,18 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                         |engine| note_fields(engine, &plan, &zone_samples, &mut acts, &mut names),
                         FRESH_BLOCKS,
                     );
-                    (rms, acts, ready, wave)
+                    // Then its release: a room's length, a reverb's decay
+                    // and a release time live in the tail.
+                    let at = engine.now();
+                    let (_, done, tail) = render_for(
+                        engine,
+                        &plan,
+                        &stream,
+                        &[Timed { at, body: off }],
+                        |_| {},
+                        FRESH_BLOCKS,
+                    );
+                    (rms, acts, ready && done, (wave, tail))
                 };
                 let (_, first, ready_first, wave_first) = fresh(&mut engine);
                 let (prior_rms, base, ready, wave_base) = fresh(&mut engine);
@@ -579,16 +610,23 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     .collect();
                 engine.clear_trace();
                 let dropped_control = engine.trace_dropped() - dropped_before;
-                let (rms, ready, _) = render(&mut engine, &plan, &stream, &[], |engine| {
-                    events.extend(
-                        (engine.trace_events().iter())
-                            .map(|e| super::trace_output::event(e, &plan, &zone_samples, RATE)),
-                    );
-                    route_events.extend(
-                        (engine.trace_route_values())
-                            .map(|v| super::trace_output::route(&v, &plan, &zone_samples)),
-                    );
-                });
+                let (rms, ready, _) = render_for(
+                    &mut engine,
+                    &plan,
+                    &stream,
+                    &[],
+                    |engine| {
+                        events
+                            .extend((engine.trace_events().iter()).map(|e| {
+                                super::trace_output::event(e, &plan, &zone_samples, RATE)
+                            }));
+                        route_events.extend(
+                            (engine.trace_route_values())
+                                .map(|v| super::trace_output::route(&v, &plan, &zone_samples)),
+                        );
+                    },
+                    SETTLE_BLOCKS,
+                );
                 settled &= ready;
                 let dropped_render = engine.trace_dropped() - dropped_before - dropped_control;
                 if dropped_control + dropped_render > 0 {
@@ -661,23 +699,49 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 // what two renders on either side differ by as the floor
                 // (humanizing, round robins): the move is heard when the
                 // change stands clear of both.
-                let prints = [&wave_first, &wave_base, &wave_next, &wave_again].map(|w| print(w));
+                let prints =
+                    [&wave_first, &wave_base, &wave_next, &wave_again].map(|(head, tail)| {
+                        let (mut bands, correlation) = print(head);
+                        bands.extend(print(tail).0);
+                        (bands, correlation)
+                    });
                 let floor = print_distance(&prints[0], &prints[1])
                     .max(print_distance(&prints[2], &prints[3]));
                 let change = print_distance(&prints[1], &prints[2])
                     .min(print_distance(&prints[0], &prints[3]));
                 let finite = |x: f64| if x.is_finite() { json!(x) } else { json!(null) };
                 let sound = json!({"change_db":finite(change),"floor_db":finite(floor),
-                    "waveform_change_db":finite(difference_db(&wave_base, &wave_next)),
+                    "waveform_change_db":finite(difference_db(&wave_base.0, &wave_next.0)),
                     "heard": change > 2.0 * floor + 0.5,
                     "correlation":[prints[1].1, prints[2].1],
-                    "lr_rms_before":sides(&wave_base),"lr_rms_after":sides(&wave_next)});
+                    "lr_rms_before":sides(&wave_base.0),"lr_rms_after":sides(&wave_next.0)});
                 settled &= ready_next && ready_again;
                 let note_changed = note_diff(&first, &base, &next, &again);
                 moves.push(json!({"value":value,"move_us":move_us,"worst_block_lua_wall_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_wall_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":if lean { json!([]) } else { json!(events) },"route_events":if lean { json!([]) } else { json!(route_events) },
                     "output":{"before_rms":prior_rms,"after_rms":rms},"sound":sound, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));
+            }
+            // Back where the preset had it: the next control moves from the
+            // preset's state, not from wherever this one was left (a muted
+            // room would hide every room control after it).
+            if let (Some(id), false) = (widget.source_id, moves.is_empty()) {
+                let start = widget.number();
+                if lua {
+                    if let Ok(id) = u32::try_from(id) {
+                        engine.set_widget(slot_id, id, start, None);
+                    }
+                } else {
+                    let v = if matches!(widget.value, Some(Value::Real(_))) {
+                        start.to_bits() as i64
+                    } else {
+                        start.round() as i64
+                    };
+                    engine.set_control(slot_id, id, v);
+                }
+                let (_, ready, _) =
+                    render_for(&mut engine, &plan, &stream, &[], |_| {}, SETTLE_BLOCKS);
+                settled &= ready;
             }
             controls.push(json!({"slot":slot,"widget":widget_index,"name":widget.name,"kind":format!("{:?}",widget.kind),"hidden":widget.hidden,"enabled":widget.enabled,"moves":moves}));
         }
