@@ -62,17 +62,17 @@ pub(crate) fn effect(
             ))
         }
         0x60 if version == 0x51 => {
-            let [trim, saturation, character, mix] = crate::supergt::saved(public)?;
-            notes.add(
-                ir::Impact::Audible,
-                "Supercharger GT modes and compressor (not read)",
-                at,
-            );
-            if mix < 1.0 {
-                notes.add(ir::Impact::Audible, "Supercharger GT mix", at);
+            let [trim, saturation, character, mix, sat_mode, char_mode] =
+                crate::supergt::saved(public)?;
+            if f(8)? > 0.0 || i(28)? != 2 {
+                notes.add(
+                    ir::Impact::Audible,
+                    "Supercharger GT compressor (COMPRESS, HPF_MODE)",
+                    at,
+                );
             }
             Some(crate::supergt::supergt(
-                trim, saturation, character, 0.0, 0.0,
+                trim, saturation, character, mix, sat_mode, char_mode,
             ))
         }
         _ => None,

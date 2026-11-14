@@ -38,6 +38,8 @@ pub(crate) fn wow_flutter(p: [f32; 5]) -> ir::Delay {
         steep_low_cut: false,
         body: &[],
         triangle_s: None,
+        shape: &[],
+        noise: [0.0; 2],
         high_shelf: None,
         spread_ms: 0.0,
         rate: ir::Rate::Hz(hz),

@@ -28,6 +28,15 @@ pub enum Curve {
     /// interpolation, scaled back by `1 / (d·slope at 0)` so small signals
     /// pass at unity.
     Table { drive: f32, points: &'static [f32] },
+    /// Two measured odd curves, each spread evenly over inputs 0..=1 (held
+    /// beyond), `t` of the way from `lower` to `upper`, read at `d·|x|` and
+    /// scaled back by `1/d`: a gain of `d` in and out.
+    Blend {
+        drive: f32,
+        lower: &'static [f32],
+        upper: &'static [f32],
+        t: f32,
+    },
 }
 
 impl Curve {
@@ -42,7 +51,8 @@ impl Curve {
             | Self::Tanh(x)
             | Self::Atan(x)
             | Self::Saturate(x)
-            | Self::Table { drive: x, .. } => x,
+            | Self::Table { drive: x, .. }
+            | Self::Blend { drive: x, .. } => x,
         }
     }
 }

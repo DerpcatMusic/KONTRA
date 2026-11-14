@@ -428,6 +428,8 @@ fn slot_effect(
         output: if eq { 1.0 } else { params.output_gain },
         dry: if parallel || effect.id == 0x13 {
             params.dry_level
+        } else if effect.id == 0x60 && object.version == 0x51 {
+            crate::supergt::mix_dry(&public, params.output_gain)
         } else {
             0.0
         },
