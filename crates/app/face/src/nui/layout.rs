@@ -162,14 +162,45 @@ fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size
         "Image" if !matches!(n.prop("resizable"), Some(Prop::Bool(true))) => {
             image(bld, n).and_then(|(_, s)| s).unwrap_or((0., 0.))
         }
-        "ZStack" | "ForEach" => children(n).iter().fold((0., 0.), |(w, h), c| {
-            let (cw, ch) = measure(bld, c, c.mods.len(), room, env);
-            (w.max(cw), h.max(ch))
-        }),
+        // As big as its biggest child, but flexible along an axis where an
+        // aligned child is (it fills its room): Conflux's source row aligns
+        // its two selectors left and right of the knob in one ZStack.
+        "ZStack" | "ForEach" => {
+            let mut flex = false;
+            let size = children(n).iter().fold((0f64, 0f64), |(w, h), c| {
+                let (cw, ch) = measure(bld, c, c.mods.len(), room, env);
+                flex |= fills(c);
+                (w.max(cw), h.max(ch))
+            });
+            if flex { (0., 0.) } else { size }
+        }
         "HStack" => stack(bld, n, Axis::Across, room, env).1,
         "VStack" => stack(bld, n, Axis::Down, room, env).1,
         _ => (0., 0.),
     }
+}
+
+/// Whether `n` fills the room it is offered: its outermost size-giving
+/// modifier is an `align` (offsets and looks keep their child's size).
+fn fills(n: &Node) -> bool {
+    n.mods.iter().rev().map(|(m, _)| m.as_str()).find(|m| {
+        !matches!(
+            *m,
+            "offset"
+                | "opacity"
+                | "hidden"
+                | "foreground_color"
+                | "font_size"
+                | "bold"
+                | "background"
+                | "overlay"
+                | "rotation"
+                | "on_hover_gesture"
+                | "on_tap_gesture"
+                | "on_drag_gesture"
+                | "disabled"
+        )
+    }) == Some("align")
 }
 
 fn words(n: &Node) -> String {
@@ -214,8 +245,20 @@ fn stack(bld: &mut Builder<'_>, n: &Node, axis: Axis, room: Size, env: Env) -> (
         .map(|c| measure(bld, c, c.mods.len(), axis.size(0., axis.across(room)), env))
         .collect();
     let gaps = spacing * kids.len().saturating_sub(1) as f64;
-    let flexible = |s: &Size| axis.along(*s) <= 0.;
-    let shares = sizes.iter().filter(|s| flexible(s)).count();
+    // What is left goes to the children that fill their room; a spacer
+    // takes a share only when none does (Conflux's slot content fills its
+    // module above the spacer under it).
+    let fills = kids
+        .iter()
+        .zip(&sizes)
+        .any(|(c, s)| axis.along(*s) <= 0. && c.kind != "Spacer");
+    let grows: Vec<bool> = kids
+        .iter()
+        .zip(&sizes)
+        .map(|(c, s)| axis.along(*s) <= 0. && (!fills || c.kind != "Spacer"))
+        .collect();
+    let flexible = |i: usize| grows.get(i).copied().unwrap_or(false);
+    let shares = grows.iter().filter(|g| **g).count();
     let fixed: f64 = sizes.iter().map(|s| axis.along(*s)).sum::<f64>() + gaps;
     let share = if shares == 0 {
         0.
@@ -224,9 +267,26 @@ fn stack(bld: &mut Builder<'_>, n: &Node, axis: Axis, room: Size, env: Env) -> (
     };
     let lengths: Vec<f64> = sizes
         .iter()
-        .map(|s| if flexible(s) { share } else { axis.along(*s) })
+        .enumerate()
+        .map(|(i, s)| {
+            if flexible(i) {
+                share
+            } else {
+                axis.along(*s).max(0.)
+            }
+        })
         .collect();
+    // A child that fills across (a shape, a ZStack of aligned children)
+    // takes the room's whole width: Conflux's wide FX slot is a framed
+    // VStack as wide as its frame, not as its header.
     let thick = sizes.iter().map(|s| axis.across(*s)).fold(0., f64::max);
+    let thick = if kids.iter().zip(&sizes).any(|(c, s)| {
+        axis.across(*s) <= 0. && !matches!(c.kind.as_str(), "Spacer" | "Text" | "TextInput")
+    }) {
+        thick.max(axis.across(room))
+    } else {
+        thick
+    };
     let length = if shares > 0 {
         axis.along(room).max(fixed)
     } else {
@@ -705,5 +765,53 @@ mod tests {
             .map(|w| (w.rect.x, w.rect.y))
             .collect();
         assert_eq!(at, [(150., 100.), (420., 280.)]);
+    }
+
+    /// Conflux's module slot: a framed VStack of a header text, content
+    /// that is a ZStack of aligned panels, and a spacer under it.
+    #[test]
+    fn a_framed_slot_gives_its_aligned_content_its_whole_width_and_the_leftover() {
+        let num = |k: &str, v: f64| (k.to_owned(), Prop::Number(v));
+        let at = |words: &str| ("align", vec![Prop::Text(words.into())]);
+        let small = (
+            "frame",
+            vec![Prop::Table(vec![num("width", 30.), num("height", 20.)])],
+        );
+        let panel = |words| node("Rectangle", vec![small.clone(), at(words)], Vec::new());
+        let mut header = node("Text", Vec::new(), Vec::new());
+        header.props = vec![("text".into(), Prop::Text("FX".into()))];
+        let content = node(
+            "ZStack",
+            Vec::new(),
+            vec![panel("top left"), panel("bottom right")],
+        );
+        let slot = node(
+            "VStack",
+            vec![(
+                "frame",
+                vec![Prop::Table(vec![num("width", 228.), num("height", 208.)])],
+            )],
+            vec![header, content, node("Spacer", Vec::new(), Vec::new())],
+        );
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let room = ui::Size {
+            width: 228.,
+            height: 208.,
+        };
+        lower(&slot, room, &mut bld);
+        let panels: Vec<_> = (bld.ui.widgets.iter())
+            .filter(|w| matches!(w.kind, ui::Kind::Shape(_)))
+            .map(|w| (w.rect.x, w.rect.y + w.rect.height))
+            .collect();
+        // Left and right edges of the frame, and the content takes all the
+        // height under the header: the spacer gets none.
+        assert_eq!(panels, [(0., panels[0].1), (198., 208.)]);
     }
 }

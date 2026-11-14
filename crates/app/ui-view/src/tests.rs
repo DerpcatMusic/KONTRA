@@ -830,3 +830,18 @@ fn a_pixel_font_stem_at_150_percent_is_one_full_and_one_half_column() {
     assert!((share(1, 1) - 0.5).abs() < 1e-9);
     assert!((share(2, 1) - 1.).abs() < 1e-9);
 }
+
+/// Kontakt's grey bare-label face is a script `ui_label`'s only: a
+/// native_ui text on a KSP page (no UI id) draws none (Conflux's tabs and
+/// captions turned into grey boxes, #1507).
+#[test]
+fn only_a_script_label_draws_kontakts_bare_label_face() {
+    let tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    let mut label = Widget::new("Edit", PageRef(0), Rect::new(0, 0, 40, 12), Kind::Label);
+    assert!(crate::stock::label_face(&tree, &label, (40., 12., 1.)).is_none());
+    label.source_id = Some(7);
+    assert!(crate::stock::label_face(&tree, &label, (40., 12., 1.)).is_some());
+}
