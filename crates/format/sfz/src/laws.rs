@@ -92,6 +92,15 @@ pub fn velocity_track(percent: f64) -> Option<ir::Mod> {
     })
 }
 
+/// A group number's voice rules before its opcodes (sfizz's defaults): no
+/// limit, the oldest voice first with released ones counted alike, and a
+/// stopped voice gone in `off_mode=fast`'s 6 ms.
+pub const VOICE_GROUP: ir::VoiceGroup = ir::VoiceGroup {
+    prefer_released: false,
+    fade_ms: 6.0,
+    ..ir::VoiceGroup::DEFAULT
+};
+
 /// `trigger` (sfzformat.com). `release_key` is a release trigger.
 pub fn trigger(name: &str) -> Option<ir::Trigger> {
     match name {

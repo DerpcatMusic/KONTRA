@@ -5,8 +5,10 @@ shapes. The engine plays them on the audio thread without allocating.
 
 | IR | What it says | Engine |
 |---|---|---|
-| `Group.polyphony`, `Plan.voices` | most voices a group / the instrument holds | `admit.rs` |
-| `ir::VoiceGroup` | a shared budget: `voices`, `steal`, `prefer_released`, `fade_ms`, `exclusive`, `per_note`, `legato`, `returns` | `voice_groups.rs`, `mono.rs` |
+| `Group.polyphony` | most voices a group holds | `lib.rs` `limit_group` |
+| `Instrument.voices`, `.steal`, `.steal_released_first`, `.steal_fade_ms` | the instrument's limit and how it makes room | `admit.rs` `free_slot` |
+| `ir::VoiceGroup` | a shared budget: `voices`, `steal`, `prefer_released`, `fade_ms`, `exclusive`, `per_note`, `per_key`, `quieter_only`, `release`, `legato`, `returns` | `voice_groups.rs`, `mono.rs` |
+| `Group.off_by` | the voice group whose new voices stop this group's (choke) | `voice_groups.rs` `choke_by` |
 | `ir::Glide` | how a note's pitch arrives from the previous one: `scope`, `depth`, `seconds`, `per_semitone`, `legato`, `resume`, `curve` | `glide.rs` |
 | scripts | `change_tune`, pitch-bend routes with lag | the script VM, routes |
 
@@ -21,6 +23,24 @@ instead would let a mono layer with uneven zone counts keep two notes
 sounding (#1560's CodeRabbit finding). Ownership is a stamp per note, so
 there is no allocation. `exclusive` chokes the other voice groups of its set
 (hi-hat open/closed).
+
+One steal order (`steal_order`) and one way to stop (`stop_by`) serve every
+limit: the instrument's (its rule is a `VoiceGroup` built from the
+instrument's fields), a voice group's, an exclusive set and a choke. A rule
+stops a voice by fading it over `fade_ms`, or with `release` through its
+own release envelope. Either way it stops counting at once.
+
+- **`per_key`:** at most that many voices of one key in the group, other
+  notes' voices counted. Past it the oldest stop, or with `quieter_only`
+  only those started no louder than the new note, quietest first. A softer
+  repeat then sounds beside a louder one.
+- **`off_by`** names a voice group, not a group. A format that splits one
+  choke number over several groups (SFZ regions with different settings)
+  still chokes all of them. Each choked voice stops by its own voice group's
+  rule.
+
+Not modelled: stealing the quietest voice (sfizz's envelope-and-age stealer).
+No format measured here needs it: Kontakt's "any" takes the oldest.
 
 ## Mono lines: legato and last-note priority
 
@@ -136,8 +156,49 @@ Not measured:
 - One unexplained miss: once in 24 transitions Kontakt did not glide (Speed
   142.3 ms, 72 → 60).
 
+**Voice groups and the instrument limit.** Measured in Kontakt 8.13 with
+`tools/kontakt-oracle/probes/voice_limits.lua`: one instrument per case,
+four voices, keys +1, +0, +4 and +2 held and then +3, each key on its own
+frequency.
+
+- Oldest, newest, highest and lowest take the voice they name. "Any" takes
+  the oldest, not the quietest (a velocity-1 newest note survived).
+- `prefer_released` on: a released voice still sounding goes first. Off:
+  the oldest held voice goes and the released one keeps releasing. Released
+  voices count toward the limit either way.
+- The steal fade is linear in amplitude: about half at half time, silent
+  at `fade_ms` (300 and 1000 ms tested).
+- An exclusive group cuts the other group about 20 ms after the new note.
+- **The instrument limit** (Instrument Options: Max Voices, the stealing
+  mode and fadeout) behaves the same, mode for mode. It is stored as the
+  first voice limit of chunk 0x32 (`VoiceGroups.voice_limit`: kill mode
+  @31, voices @34, fade @38). The translator now reads it (it was a
+  hard-coded 256).
+
 Scripted glides (`change_tune` steps from KSP, pitch-bend routes with lag)
 stay script-driven. They need nothing from `ir::Glide`.
+
+### SFZ
+
+Mapped as sfizz plays it (`VoiceManager.cpp`, `Voice.cpp`, `Region.cpp`):
+
+| opcode | IR |
+|---|---|
+| `group=N` | voice group N, made only when N has a rule or is an `off_by` target |
+| `polyphony` with `group` | `VoiceGroup.voices` of N; without `group` the region's own limit, `Group.polyphony` |
+| `note_polyphony` | `VoiceGroup.per_key` |
+| `note_selfmask` (default on) | `quieter_only` (sfizz steals voices of velocity ≤ the new one, lowest velocity first) |
+| `off_by=M` | `Group.off_by` = voice group M |
+| `off_mode=fast` (default) | a 6 ms fade |
+| `off_mode=normal` | `release`: the region's own release envelope |
+| `off_mode=time`, `off_time` | a fade of `off_time` |
+| `trigger=first` / `legato` | `Trigger::First` (no other key held) / `Legato` (another held), as sfizz's active-note count |
+
+sfizz counts voices not yet stopped, released ones too, oldest first, so an
+SFZ voice group has `prefer_released` off. Opcodes are per region in sfizz
+but per group number here: the last region's value wins, as sfizz's
+`setGroupPolyphony` does. A header's `polyphony` without `group` (sfizz's
+set polyphony) becomes the polyphony of each group of settings under it.
 
 ## Survey, and what won
 

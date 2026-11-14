@@ -311,3 +311,29 @@ fn missing_sample_is_reported_and_kept() {
     assert_eq!(inst.samples.first().map(|s| s.frames), Some(0));
     assert_eq!(inst.groups.first().map(|g| g.zones.len()), Some(1));
 }
+
+#[test]
+fn group_numbers_become_voice_groups_with_their_limits_and_off_modes() {
+    let dir = scratch("voice_groups");
+    wav(&dir.join("a.wav"), 1000).expect("wav");
+    // An open hat (group 1, choked by 2, released when choked), a closed hat
+    // (group 2, two voices, one per key, selfmask off, 50 ms off), and an
+    // ungrouped region whose polyphony stays its own.
+    let text = "\
+<region> sample=a.wav key=46 group=1 off_by=2 off_mode=normal
+<region> sample=a.wav key=42 group=2 polyphony=2 note_polyphony=1 note_selfmask=off off_time=0.05
+<region> sample=a.wav key=60 polyphony=3
+";
+    let inst = parse(text, &dir);
+    let [open, closed] = inst.voice_groups.as_slice() else {
+        panic!("{:?}", inst.voice_groups)
+    };
+    assert!(open.release && open.voices == u16::MAX);
+    assert_eq!((closed.voices, closed.per_key, closed.quieter_only), (2, Some(1), false));
+    assert!(!closed.release && near(closed.fade_ms, 50.0));
+    let groups: Vec<_> = (inst.groups.iter())
+        .map(|g| (g.voice_group, g.off_by, g.polyphony))
+        .collect();
+    assert_eq!(groups, [(Some(0), Some(1), None), (Some(1), None, None), (None, None, Some(3))]);
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+}
