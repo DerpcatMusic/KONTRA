@@ -427,6 +427,8 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
         steep_low_cut: d.steep_low_cut,
         body: d.body,
         triangle_s: d.triangle_s,
+        shape: d.shape,
+        noise: d.noise,
         high_shelf: d
             .high_shelf
             .filter(|b| b.gain_db != 0.0)
@@ -668,6 +670,17 @@ pub fn curve(c: ir::DriveCurve) -> drive::Curve {
         ir::DriveCurve::Atan(x) => drive::Curve::Atan(x),
         ir::DriveCurve::Saturate(x) => drive::Curve::Saturate(x),
         ir::DriveCurve::Table { drive, points } => drive::Curve::Table { drive, points },
+        ir::DriveCurve::Blend {
+            drive,
+            lower,
+            upper,
+            t,
+        } => drive::Curve::Blend {
+            drive,
+            lower,
+            upper,
+            t,
+        },
     }
 }
 

@@ -19,6 +19,7 @@ RATE = 48000
 K = 48
 WINDOW = 96
 KNOTS = np.linspace(-1, 1, 2 * K + 1)
+MAX_LAG = 500  # ms: a delay's echo (TIME) plus the oracle's start jitter
 THETA = np.linspace(0, 2 * np.pi, 256, endpoint=False)
 
 
@@ -46,8 +47,8 @@ def peaks(npz, k):
     ex, ey = envelope(x), envelope(y)
     n = min(len(ex), len(ey))
     dx, dy = np.diff(ex[:n]), np.diff(ey[:n])
-    c = [np.dot(dx[max(0, -l):n - 1 - max(0, l)], dy[max(0, l):n - 1 - max(0, -l)]) for l in range(-150, 151)]
-    lag = (int(np.argmax(c)) - 150) * 48
+    c = [np.dot(dx[max(0, -l):n - 1 - max(0, l)], dy[max(0, l):n - 1 - max(0, -l)]) for l in range(-MAX_LAG, MAX_LAG + 1)]
+    lag = (int(np.argmax(c)) - MAX_LAG) * 48
     on = int(np.argmax(np.abs(x) > 1e-4))
     rows = []
     for s in range(on + int(0.25 * RATE), on + int(4.95 * RATE), WINDOW):

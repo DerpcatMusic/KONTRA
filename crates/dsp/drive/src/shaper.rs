@@ -45,6 +45,15 @@ pub enum Curve {
     /// (held at the last point beyond 1) with linear interpolation, scaled
     /// by `1 / (d·slope at 0)` so small signals pass at unity.
     Table { drive: f32, points: &'static [f32] },
+    /// Two measured odd curves, each spread evenly over inputs 0..=1 (held
+    /// beyond), `t` of the way from `lower` to `upper`, read at `d·|x|` and
+    /// scaled back by `1/d`.
+    Blend {
+        drive: f32,
+        lower: &'static [f32],
+        upper: &'static [f32],
+        t: f32,
+    },
 }
 
 impl Curve {
@@ -113,6 +122,23 @@ enum Prepared {
         makeup: f32,
         points: &'static [f32],
     },
+    Blend {
+        /// The drive times the spans between points.
+        scale: f32,
+        inverse: f32,
+        lower: &'static [f32],
+        upper: &'static [f32],
+        t: f32,
+    },
+}
+
+/// `points` (evenly over 0..=1) at `at` spans in, held at the last.
+fn read(points: &[f32], at: f32) -> f32 {
+    let at = at.min(points.len().saturating_sub(1) as f32);
+    let i = at as usize;
+    let a = points.get(i).copied().unwrap_or_default();
+    let b = points.get(i + 1).copied().unwrap_or(a);
+    (b - a) * (at - i as f32) + a
 }
 
 impl Prepared {
@@ -151,6 +177,19 @@ impl Prepared {
                     points,
                 }
             }
+            Curve::Blend { drive, .. } if drive.is_nan() || drive <= 0.0 => Self::Identity,
+            Curve::Blend {
+                drive,
+                lower,
+                upper,
+                t,
+            } => Self::Blend {
+                scale: drive * lower.len().saturating_sub(1) as f32,
+                inverse: 1.0 / drive,
+                lower,
+                upper,
+                t: t.clamp(0.0, 1.0),
+            },
             Curve::Power(d) if d.is_nan() || d <= 0.0 => Self::Identity,
             Curve::Power(d) => {
                 let d = d.min(1.0);
@@ -189,12 +228,17 @@ impl Prepared {
                 scale,
                 makeup,
                 points,
+            } => read(points, scale * x.abs()).copysign(x) * makeup,
+            Self::Blend {
+                scale,
+                inverse,
+                lower,
+                upper,
+                t,
             } => {
-                let at = (scale * x.abs()).min(points.len().saturating_sub(1) as f32);
-                let i = at as usize;
-                let a = points.get(i).copied().unwrap_or_default();
-                let b = points.get(i + 1).copied().unwrap_or(a);
-                ((b - a) * (at - i as f32) + a).copysign(x) * makeup
+                let at = scale * x.abs();
+                let a = read(lower, at);
+                ((read(upper, at) - a) * t + a).copysign(x) * inverse
             }
             Self::Tube { lower, upper, t } => crate::tube::tube(x, lower, upper, t),
             Self::Power {
