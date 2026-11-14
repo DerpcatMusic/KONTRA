@@ -337,10 +337,9 @@ impl Engine {
                 m.remove(int(0));
                 HostValue::Nothing
             }
-            MfGetMark => HostValue::Int(i32::from(
-                m.first_named(int(0))
-                    .is_some_and(|e| e.marks & int(1) as u32 != 0),
-            )),
+            // Kontakt 8.13 answers 0 for every id, even right after the mark
+            // was set and while by_marks finds the event (probes/ksp/keys_recheck.kspp).
+            MfGetMark => HostValue::Int(0),
             MfSetMark => {
                 let (mark, on) = (int(1) as u32, int(2) != 0);
                 let this = &*m;
