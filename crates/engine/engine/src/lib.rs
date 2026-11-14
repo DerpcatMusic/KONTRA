@@ -66,7 +66,8 @@ pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{
-    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, zone_name,
+    EnginePar, EnginePars, LoopPar, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, user_loops,
+    zone_name,
 };
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_script_ui::{ENTRY, FIRST_FONT};
@@ -85,7 +86,7 @@ pub use script::{Callbacks, CcLink, Controls, KnobModPlan, LookPars, ScriptPlan}
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
 pub use zone_commands::detect_sample;
-pub use zone_edits::{Unpurge, ZoneEdit};
+pub use zone_edits::{Edit, Unpurge, ZoneEdit};
 
 use buses::BusState;
 use group_masks::GroupMasks;

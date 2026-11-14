@@ -111,8 +111,9 @@ for (kind, name), sec in items.items():
         got = "done" if ("cb", CB.get(name, "")) in {(k, v.lower()) for (k, v) in status if k == "cb"} or name in CB else "missing"
         if name not in CB:
             got = "missing"
-    elif kind == "par":
-        got = "done" if ("par", name.lstrip("$").upper()) in status else "missing"
+    elif kind == "par" or name.upper().startswith("$ZONE_PAR"):
+        # $ZONE_PAR_* are engine parameters of the zone commands: ksp_status lists the carried ones.
+        got = "done" if ("par", name.lstrip("$").upper()) in status else "missing" if kind == "par" else "partial"
     else:
         bare = name.lstrip("$%~@!").upper()
         got = "done" if ("fn", name.lstrip("$%~@!").lower()) in status or ("fn", name.lower()) in status \

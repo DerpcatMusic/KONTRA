@@ -1,0 +1,31 @@
+# MEASURED 2026-11-14 (Kontakt 8.13, ANALOG STRINGS; split over user_zones*.kspp and loop_modes.kspp, one probe
+# of 100 labels exceeds the 96 group tunes and returns nothing):
+#  ids: first user id = last saved id + 1 (181963), consecutive; get_num_zones +n; num_elements(%NI_USER_ZONE_IDS) = n
+#       (KONTRA: 1024, the static array length); a second set_num_user_zones(3) REPLACES them (same first id).
+#  defaults: every parameter 0 but ROOT_KEY 36. Setting: volume clamps +-3600 (0.01 dB), pan +-1000, root 0..127,
+#       keys 0..127; a high key set below the low key takes the low key down with it; fades clamp to the range width;
+#       a group that does not exist is refused. Tune reads 150 for 150 (cents) but 6204 / i32::MIN for +-2e6 (clamp unmeasured).
+#  set_sample (init, 1 s mono 44.1 kHz): answers -1, status LOADED, length 1000000 us, start 0, end 44100 frames, rate 44100, BPM 240000
+#       (a tempo guess: KONTRA answers 0). Sample end/start clamp to the sample; a start past the end sits 4 frames below it.
+#       On a saved zone set_sample and set_loop_par do nothing.
+#  loops: 8 (0..7) per zone, independent; mode 0..4 read back, others leave the mode; start past the sample reads 0; length
+#       ends at the sample's end; xfade and count are not clamped; tuning clamps +-14400; loop 8 reads -1.
+#  UNMEASURED: the probe user_zones_empty.kspp (status/length/loop/rate/selected/bpm/mod_range of an EMPTY user zone) returned
+#       nothing, one of those reads stops the script; KONTRA answers 0 for each and status EMPTY (0, the manual's constant).
+# User zones in Kontakt 8.13 (run: ksp_probe.py <nki> this-file). Needs an instrument whose zone 0 holds a
+# sample (ANALOG STRINGS) and /data/dev/workspace/BuildScratch/oracle-mf/tone.wav (1 s, 44.1 kHz, mono,
+# 440 Hz; tools/kontakt-oracle/probes/ksp/user_zones.py in the PR makes it). set_* are synchronous in
+# on init and answer -1, so every law can be read in one go.
+S declare $z
+S declare $y
+R last_id_before get_zone_id(get_num_zones() - 1)
+R nz_before get_num_zones()
+S set_num_user_zones(2)
+S $z := %NI_USER_ZONE_IDS[0]
+S $y := %NI_USER_ZONE_IDS[1]
+R last_id_after get_zone_id(get_num_zones() - 1)
+R id0 $z
+R id1 $y
+R nz_after get_num_zones()
+R ids_len num_elements(%NI_USER_ZONE_IDS)
+R zone0_id get_zone_id(0)
