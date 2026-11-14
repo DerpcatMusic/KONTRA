@@ -893,3 +893,83 @@ fn an_envelope_pitch_route_rises_holds_and_releases() {
         "released to the bottom: {after}"
     );
 }
+
+/// Source frames the newest voice moves per output frame over `frames`,
+/// rendered in blocks of `block`.
+fn advance(e: &mut Engine, frames: usize, block: usize) -> f64 {
+    let at = |e: &Engine| e.voices().map(|(_, p, _)| p).fold(f64::MIN, f64::max);
+    let from = at(e);
+    let mut out = vec![[0.0; 2]; block];
+    for _ in 0..frames / block {
+        e.process(&mut out, &[]);
+    }
+    (at(e) - from) / frames as f64
+}
+
+fn glide_plan(store: &mut Store, legato: bool) -> Plan {
+    let mut z = zone(store, 0.5);
+    z.keys = 0..=127;
+    let mut plan = Plan::new(vec![z], 8);
+    plan.groups[0].glide = Some(ir::Glide {
+        scope: 0,
+        depth: 1.0,
+        seconds: 0.1,
+        per_octave: false,
+        legato,
+        curve: 0.0,
+    });
+    plan
+}
+
+#[test]
+fn a_glide_starts_on_the_last_note_and_slides_linearly_in_semitones_to_its_own() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = glide_plan(&mut store, false);
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[off(60)]);
+    advance(&mut e, 4096, 256); // the released note ends
+    assert_eq!(e.voices().count(), 0);
+    level(&mut e, &[on(72, 1.0)]);
+    // 0.1 s = 4800 frames from the note-on block: an octave below at the
+    // start, half way (in semitones) at 2400, the note's own from 4800.
+    let first = advance(&mut e, 256, 256); // 256..512
+    assert!(first > 1.0 && first < 1.1, "{first}");
+    advance(&mut e, 1536, 256);
+    let middle = advance(&mut e, 768, 256); // 2048..2816, about 2400
+    assert!((middle - 2f64.powf(0.5)).abs() < 0.03, "{middle}");
+    advance(&mut e, 2048, 256);
+    let landed = advance(&mut e, 256, 256);
+    assert!((landed - 2.0).abs() < 1e-9, "{landed}");
+}
+
+#[test]
+fn a_glide_moves_every_frame_the_same_whatever_the_block_size() {
+    let run = |block: usize| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let plan = glide_plan(&mut store, true);
+    let mut e = engine(&store, plan);
+        level(&mut e, &[on(60, 1.0)]);
+        level(&mut e, &[on(67, 1.0)]);
+        (0..12).map(|_| advance(&mut e, 384, block)).collect::<Vec<_>>()
+    };
+    let (coarse, fine) = (run(384), run(32));
+    for (a, b) in coarse.iter().zip(&fine) {
+        assert!((a - b).abs() < 1e-9, "{coarse:?} {fine:?}");
+    }
+    // Rising through the slide, not in 256-frame stairs.
+    assert!(coarse.windows(2).all(|w| w[1] >= w[0]), "{coarse:?}");
+}
+
+#[test]
+fn a_legato_glide_needs_a_held_key() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = glide_plan(&mut store, true);
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[off(60)]);
+    advance(&mut e, 4096, 256);
+    level(&mut e, &[on(72, 1.0)]);
+    let detached = advance(&mut e, 256, 256);
+    assert!((detached - 2.0).abs() < 1e-9, "no slide: {detached}");
+}
