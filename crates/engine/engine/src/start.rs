@@ -209,11 +209,11 @@ impl Engine {
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
             slot.stretch = stretch;
             slot.slide = slide;
+            #[cfg(feature = "trace")]
+            slot.pending_trace_cc.set(0);
             if slide.is_some() {
                 self.set_pitch(i, step, bend.instant + bend.semitones);
             }
-            #[cfg(feature = "trace")]
-            slot.pending_trace_cc.set(0);
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {
                 trace.routes.begin_onset(index);
