@@ -285,8 +285,7 @@ impl RackAudio {
             }
             let played = self.played.iter().map(|&body| (0, body));
             let room = self.events.capacity() - self.events.len();
-            let input = (input.iter().copied())
-                .filter(|(_, e)| listens(channel, e));
+            let input = (input.iter().copied()).filter(|(_, e)| listens(channel, e));
             self.events
                 .extend(played.chain(input).take(room).map(|(at, body)| Timed {
                     at: SampleTime(p.held.due(now.0 + u64::from(at), &body)),

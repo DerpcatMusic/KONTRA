@@ -342,7 +342,10 @@ impl Rack {
             instrument.source_path = Some(own.clone());
             self.load_ir(at, instrument, Some(own))?;
             // Kontakt's port and channel as they are: A1..D16 is 1..=64.
-            let channel = u8::try_from(slot.channel).ok().filter(|&c| c <= 64).unwrap_or(0);
+            let channel = u8::try_from(slot.channel)
+                .ok()
+                .filter(|&c| c <= 64)
+                .unwrap_or(0);
             let output = u8::try_from(usize::from(slot.output).min(OUTPUTS - 1)).unwrap_or(0);
             let mix = self.parts.get(at).and_then(Option::as_ref).map(|p| p.mix);
             if let Some(mix) = mix {

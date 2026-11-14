@@ -10,7 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let i = kontra_format_kontakt::load(std::path::Path::new(&file))?;
     std::fs::create_dir_all(&dir)?;
     for s in &i.scripts {
-        let out = std::path::Path::new(&dir).join(format!("{} {}.ksp", s.slot, s.name.replace('/', "_")));
+        let out =
+            std::path::Path::new(&dir).join(format!("{} {}.ksp", s.slot, s.name.replace('/', "_")));
         std::fs::write(&out, &s.source)?;
         std::fs::write(out.with_extension("saved"), s.saved.join("\n"))?;
         println!("{}", out.display());

@@ -24,8 +24,13 @@ fn catalog(dir: &Path) -> Catalog {
         single: true,
     }];
     let programs = |b: &Path| kontra_format_uvi::programs(b).map_err(|e| e.to_string());
-    kontra_library::scan(&roots, &Progress::default(), &mut Cache::default(), &programs)
-        .expect("not canceled")
+    kontra_library::scan(
+        &roots,
+        &Progress::default(),
+        &mut Cache::default(),
+        &programs,
+    )
+    .expect("not canceled")
 }
 
 /// Ticks and blocks enough for a recall's round trip and the scripts'
@@ -41,12 +46,18 @@ fn settle(rack: &mut Rack, audio: &mut RackAudio) {
 /// The script values `path` saves, as its reader gives them.
 fn saved_in(path: &Path) -> Vec<String> {
     let file = kontra_host::instrument::read_saved(path, &[], &[]).unwrap();
-    (file.scripts.iter()).flat_map(|s| s.saved.iter().cloned()).collect()
+    (file.scripts.iter())
+        .flat_map(|s| s.saved.iter().cloned())
+        .collect()
 }
 
 /// What `path`, applied to part 0, leaves the part holding that its file
 /// saved differently: (missing or changed values, how many it saved).
-fn restore(rack: &mut Rack, audio: &mut RackAudio, path: &Path) -> Result<(Vec<String>, usize), String> {
+fn restore(
+    rack: &mut Rack,
+    audio: &mut RackAudio,
+    path: &Path,
+) -> Result<(Vec<String>, usize), String> {
     rack.load(0, path).map_err(|e| e.to_string())?;
     settle(rack, audio);
     let held = rack.saved_scripts(0).concat();
@@ -54,7 +65,9 @@ fn restore(rack: &mut Rack, audio: &mut RackAudio, path: &Path) -> Result<(Vec<S
     // An array the file saved shorter than the script now declares keeps
     // its saved cells and the declared rest: the saved ones count.
     let holds = |v: &String| {
-        (held.iter()).any(|h| h == v || h.starts_with(v.as_str()) && h.as_bytes().get(v.len()) == Some(&b' '))
+        (held.iter()).any(|h| {
+            h == v || h.starts_with(v.as_str()) && h.as_bytes().get(v.len()) == Some(&b' ')
+        })
     };
     let off: Vec<String> = (want.iter()).filter(|v| !holds(v)).cloned().collect();
     if std::env::var_os("KONTRA_PRESET_DETAIL").is_some() {
@@ -63,7 +76,11 @@ fn restore(rack: &mut Rack, audio: &mut RackAudio, path: &Path) -> Result<(Vec<S
             let name_of = |s: &str| s.split([' ', '=']).next().map(str::to_owned);
             let name = name_of(v);
             let ours = held.iter().find(|h| name_of(h) == name);
-            println!("    file {:.160}\n    held {:.160}", v, ours.map_or("(none)", String::as_str));
+            println!(
+                "    file {:.160}\n    held {:.160}",
+                v,
+                ours.map_or("(none)", String::as_str)
+            );
         }
     }
     Ok((off, want.len()))
@@ -112,7 +129,11 @@ fn every_preset_lists_under_its_instrument_and_restores_its_values() {
                 instruments.len()
             );
             if claimed != snapshots {
-                failures.push(format!("{}: {} snapshots under no instrument", library.name, snapshots - claimed));
+                failures.push(format!(
+                    "{}: {} snapshots under no instrument",
+                    library.name,
+                    snapshots - claimed
+                ));
             }
             // Restoring: snapshots over their loaded instrument, the
             // rest (UVI programs, instruments, multis) each on its own.
@@ -139,7 +160,12 @@ fn every_preset_lists_under_its_instrument_and_restores_its_values() {
                             values += saved;
                             off_total += off.len();
                             if !off.is_empty() {
-                                println!("  {}: {} of {saved} values differ: {:?}", path.display(), off.len(), &off[..off.len().min(6)]);
+                                println!(
+                                    "  {}: {} of {saved} values differ: {:?}",
+                                    path.display(),
+                                    off.len(),
+                                    &off[..off.len().min(6)]
+                                );
                             }
                         }
                         Err(e) => failures.push(format!("{}: {e}", path.display())),
@@ -158,7 +184,9 @@ fn every_preset_lists_under_its_instrument_and_restores_its_values() {
                 }
             }
             left += multis.saturating_sub(limit);
-            println!("  read {read}, left out {left}; {values} saved values, {off_total} not held after restore");
+            println!(
+                "  read {read}, left out {left}; {values} saved values, {off_total} not held after restore"
+            );
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
