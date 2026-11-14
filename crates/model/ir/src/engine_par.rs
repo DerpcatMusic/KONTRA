@@ -89,6 +89,16 @@ pub enum ZonePar {
     SampleRate,
     /// Whether it is selected in an editor (KONTRA has none: never).
     Selected,
+    Volume,
+    Pan,
+    Tune,
+    /// Fade lengths in keys / velocity steps at each edge of the range.
+    FadeLowKey,
+    FadeHighKey,
+    FadeLowVelocity,
+    FadeHighVelocity,
+    /// The sample's tempo times 1000.
+    Bpm,
 }
 
 /// What one script parameter name drives.
