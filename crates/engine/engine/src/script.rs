@@ -733,7 +733,7 @@ impl HostApi for Engine {
                     .and_then(|r| self.notes.get(r))
                     .map_or(0, |n| n.host.channel);
                 let at = |i| u8::try_from(int(i).clamp(0, 127)).unwrap_or(0);
-                self.poly_aftertouch(channel, at(0), at(1));
+                self.set_poly_at(channel, at(0), at(1));
                 HostValue::Nothing
             }
             Action::SetController => {

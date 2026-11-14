@@ -364,14 +364,11 @@ impl Engine {
             // The wave is the group's unless a note-on route moved it: voices
             // that play the same wave read the same smoothed value.
             return match self.moved_lfo(zone, n, note, age) {
-                Some(lfo) => modulators::smoothed_shared(
-                    t,
-                    &lfo,
-                    age,
-                    self.tempo,
-                    scale.to_bits(),
-                    || t.smoothed(smoothed),
-                ),
+                Some(lfo) => {
+                    modulators::smoothed_shared(t, &lfo, age, self.tempo, scale.to_bits(), || {
+                        t.smoothed(smoothed)
+                    })
+                }
                 None => t.smoothed(smoothed),
             };
         }
