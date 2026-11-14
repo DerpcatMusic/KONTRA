@@ -409,6 +409,9 @@ pub(crate) fn libraries(browser: &Browser) -> Vec<app::Library> {
                 )
                 .collect(),
             starred: browser.prefs.starred(&l.dir),
+            favorites: (l.presets.iter().enumerate())
+                .filter_map(|(n, p)| browser.prefs.starred(p).then_some(n))
+                .collect(),
             art: art(&l.art),
         })
         .collect()
@@ -419,7 +422,8 @@ pub(crate) fn libraries(browser: &Browser) -> Vec<app::Library> {
 const HELD: [&str; 2] = [".LibBrowser.png", "MST_artwork.png"];
 
 /// The cover keys of a library's ranked pictures and containers: a PNG's
-/// path, or a container's path, a NUL, and the picture's name inside it.
+/// path, or a container's path, a NUL, and the picture's name inside it
+/// (none for a UVI bank, which picks its own).
 /// Any container reads the whole library's, so only the first is asked.
 pub(crate) fn art(paths: &[PathBuf]) -> Vec<String> {
     let mut keys = Vec::new();
@@ -433,6 +437,8 @@ pub(crate) fn art(paths: &[PathBuf]) -> Vec<String> {
                 held = true;
                 keys.extend(HELD.iter().map(|n| format!("{name}\0{n}")));
             }
+            // A bank chooses its own cover when read (an empty name).
+            Some("ufs") => keys.push(format!("{name}\0")),
             _ => {}
         }
     }
@@ -442,6 +448,7 @@ pub(crate) fn art(paths: &[PathBuf]) -> Vec<String> {
 /// The bytes of the cover picture `key` names (see [`art`]).
 pub(crate) fn cover(key: &str) -> Option<Vec<u8>> {
     match key.split_once('\0') {
+        Some((bank, "")) => kontra_host::bank_cover(Path::new(bank)),
         Some((container, name)) => Library::open(Path::new(container)).read(name),
         None => {
             let file = std::fs::File::open(key).ok()?;
@@ -559,6 +566,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
             }
         }
         Action::Star(library, on) => browser.star(library, on),
+        Action::StarPreset(library, preset, on) => browser.star_preset(library, preset, on),
         Action::Refresh => browser.rescan(),
         Action::Relink(line) => {
             if let Some(o) = rack.take_offer(&line) {
@@ -861,6 +869,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             if matches!(
                 action,
                 Action::Star(..)
+                    | Action::StarPreset(..)
                     | Action::Refresh
                     | Action::Relink(_)
                     | Action::RemoveFolder(_)

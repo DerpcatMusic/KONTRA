@@ -114,6 +114,14 @@ impl Resources {
     }
 }
 
+/// The picture that stands for the bank at `path` in a browser: its cover
+/// or splash, else its interface's background, else its largest still
+/// picture; none when it cannot open or holds none.
+#[must_use]
+pub fn cover(path: &Path) -> Option<Vec<u8>> {
+    bank::Bank::open(path).ok()?.cover()
+}
+
 /// The bank a path lies in, and the member inside it (empty: the bank itself).
 fn split(path: &Path) -> Option<(PathBuf, String)> {
     let bank = path
