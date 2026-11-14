@@ -18,7 +18,10 @@ pub(crate) const ZONE_EDITS: usize = 1024;
 
 /// What a waiting zone edit does.
 // The path is copied inline: the audio thread queues it and may not allocate.
-#[expect(clippy::large_enum_variant, reason = "queued on the audio thread: no Box")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "queued on the audio thread: no Box"
+)]
 #[derive(Clone, Copy, Debug)]
 pub enum Edit {
     /// `set_zone_par`.
@@ -57,17 +60,14 @@ pub(crate) fn describe(path: &str) -> Option<crate::ir::Sample> {
     kontra_stream::describe(std::path::Path::new(path)).ok()
 }
 
-/// The [`Unpurge::id`] of a load no script waits on (one asked for while
-/// the engine was built).
-const NO_WAIT: i32 = -1;
-
 /// A `purge_group(group, 1)` of a group nothing of is loaded, waiting for the
 /// host to load it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unpurge {
     pub group: u32,
-    pub script: u8,
-    pub id: i32,
+    /// The script and async id waiting on the load; none for one asked for
+    /// while the engine was built (a snapshot picking its sounds).
+    pub waiter: Option<(u8, i32)>,
 }
 
 impl Engine {
@@ -82,10 +82,13 @@ impl Engine {
             }
             // Built from `on init` or a restore (a snapshot picks its
             // sounds there): nothing of a dormant group is loaded yet, so
-            // the host still loads it; no script waits on that.
-            if dormant {
-                let script = self.running.slot;
-                self.unpurges.push(Unpurge { group, script, id: NO_WAIT });
+            // the host still loads it, once; no script waits on that.
+            let asked = self.unpurges.iter().any(|u| u.group == group);
+            if dormant && !asked {
+                self.unpurges.push(Unpurge {
+                    group,
+                    waiter: None,
+                });
             }
             return self.start_async(Exit::Done);
         }
@@ -93,9 +96,22 @@ impl Engine {
             return self.start_async(Exit::Failed);
         }
         let id = self.next_async_id();
-        let script = self.running.slot;
-        self.unpurges.push(Unpurge { group, script, id });
+        let waiter = Some((self.running.slot, id));
+        self.unpurges.push(Unpurge { group, waiter });
         id
+    }
+
+    /// Purges `group` (KSP `purge_group(g, 0)`). While the engine is built
+    /// a load asked for earlier goes too: the script's last word stands.
+    pub(crate) fn purge(&mut self, group: u32) -> i32 {
+        if let Some(g) = self.groups.get_mut(group as usize) {
+            g.purged = true;
+        }
+        if self.building {
+            self.unpurges
+                .retain(|u| u.group != group || u.waiter.is_some());
+        }
+        self.start_async(Exit::Done)
     }
 
     /// Hands each waiting un-purge to `f`; one it cannot take fails its
@@ -107,24 +123,28 @@ impl Engine {
             if f(u) {
                 return false;
             }
-            if u.id == NO_WAIT {
-                return true;
+            match u.waiter {
+                None => true,
+                Some((script, id)) => {
+                    self.queue_async(script, id, Exit::Failed);
+                    false
+                }
             }
-            self.queue_async(u.script, u.id, Exit::Failed);
-            false
         });
         self.unpurges = waiting;
     }
 
     /// The host loaded `group` (or could not): it plays from the next note
-    /// and the script's async completes.
+    /// and the script's async completes. A load no script waited on leaves
+    /// the purge flag as the script last set it.
     pub fn unpurged(&mut self, u: Unpurge, took: bool) {
+        let Some((script, id)) = u.waiter else {
+            return;
+        };
         if took && let Some(g) = self.groups.get_mut(u.group as usize) {
             g.purged = false;
         }
-        if u.id != NO_WAIT {
-            self.queue_async(u.script, u.id, Exit::from(took));
-        }
+        self.queue_async(script, id, Exit::from(took));
     }
 
     pub(crate) fn set_zone_par(&mut self, zone: u32, par: ZonePar, value: i32) -> i32 {
