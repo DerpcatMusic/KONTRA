@@ -542,12 +542,21 @@ impl Machine for LuaMachine {
         self.take(thread, context)
     }
 
-    fn control_mod(&mut self, id: i32, saved: f64, ratio: f64, m: f64, context: u64) -> Option<CoId> {
+    fn control_mod(
+        &mut self,
+        id: i32,
+        saved: f64,
+        ratio: f64,
+        m: f64,
+        context: u64,
+    ) -> Option<CoId> {
         let _run = probe::Run::start();
         let _arena = self.arena.audio();
         let lua = self.lua.as_ref()?;
         let set = lua.globals().get::<Function>("__control_mod").ok()?;
-        let thread = lua.create_thread(set.bind((id, saved, ratio, m)).ok()?).ok()?;
+        let thread = lua
+            .create_thread(set.bind((id, saved, ratio, m)).ok()?)
+            .ok()?;
         self.take(thread, context)
     }
 

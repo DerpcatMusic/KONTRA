@@ -115,12 +115,7 @@ pub(super) fn page<'a>(
             Some(Widget {
                 index,
                 source: w,
-                rect: model::Rect {
-                    x: raw.x * scale,
-                    y: (raw.y + above) * scale,
-                    width: raw.width * scale,
-                    height: raw.height * scale,
-                },
+                rect: snapped(raw.x, raw.y + above, raw.width, raw.height, scale),
                 picture,
                 handle,
                 style,
@@ -438,6 +433,19 @@ pub(super) fn label_fits(
         })
         .sum();
     advance * scale <= (width - 2. * inset * scale).max(0.)
+}
+
+/// A control's place in device pixels, its edges on whole pixels, so a
+/// picture resampled to the device lands on the grid instead of being
+/// filtered a second time at a half-pixel offset.
+fn snapped(x: f64, y: f64, width: f64, height: f64, scale: f64) -> model::Rect {
+    let (x0, y0) = ((x * scale).round(), (y * scale).round());
+    model::Rect {
+        x: x0,
+        y: y0,
+        width: ((x + width) * scale).round() - x0,
+        height: ((y + height) * scale).round() - y0,
+    }
 }
 
 #[cfg(test)]

@@ -14,7 +14,9 @@ const GRID_ROW_HEIGHT: u32 = 68;
 fn default_size(kind: &Kind) -> (u32, u32) {
     match kind {
         Kind::Knob { .. } => (85, 52),
-        Kind::Table { .. } | Kind::Xy { .. } | Kind::MouseArea => (92, 92),
+        Kind::Table { .. } | Kind::MouseArea => (92, 92),
+        // Drawn 87 by 30 (it reports 87 by 18; Kontakt 8 oracle, probe/xy.ksp).
+        Kind::Xy { .. } => (87, 30),
         Kind::Waveform | Kind::Wavetable { .. } => (184, 92),
         Kind::FileSelector { .. } => (184, 184),
         Kind::LevelMeter {
@@ -80,7 +82,9 @@ pub fn resolve(tree: &mut Interface, changed: impl IntoIterator<Item = usize>) {
                 AssetKind::Image(m) => m.size.map(|s| (s, m.stretch)),
                 AssetKind::BitmapFont | AssetKind::TrueTypeFont => None,
             });
-        if let Some((size, stretch)) = meta {
+        // An XY pad keeps its own size over a smaller picture: its cursors
+        // travel the whole pad (Kontakt 8 oracle, probe/xy2.ksp).
+        if let Some((size, stretch)) = meta.filter(|_| !matches!(w.kind, Kind::Xy { .. })) {
             if !stretch[0] && !label_bounds[0] {
                 w.rect.width = size.width;
             }
