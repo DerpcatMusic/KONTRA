@@ -4,6 +4,11 @@ use std::sync::Arc;
 
 use crate::{Engine, Kind, Running, SustainPedal};
 
+/// The controller numbers scripts hear pitch bend and channel pressure as
+/// (Kontakt's `$VCC_PITCH_BEND` and `$VCC_MONO_AT`).
+pub(crate) const VCC_PITCH_BEND: u8 = 128;
+pub(crate) const VCC_MONO_AT: u8 = 129;
+
 impl Engine {
     /// MIDI 1.0 channel messages: controllers feed behaviour (ranges, live
     /// crossfades) and the sustain pedal. Notes arrive as [`Event::NoteOn`].
@@ -13,14 +18,21 @@ impl Engine {
         }
         let status = (word >> 16) as u8;
         let channel = status & 0x0F;
-        if matches!(status & 0xF0, 0xB0 | 0xE0) {
+        if matches!(status & 0xF0, 0xB0 | 0xD0 | 0xE0) {
             self.behaviour.channel = channel;
         }
         if status & 0xF0 == 0xE0 {
             // 14 bits: LSB in data 1, MSB in data 2; 8192 is centre.
             let raw = (word & 0x7F) << 7 | (word >> 8 & 0x7F);
             let bend = (raw as f32 - 8192.0) / 8192.0;
+            let before = self.behaviour.bend(channel);
             self.behaviour.set_bend(channel, bend.max(-1.0));
+            // Scripts hear it first, as controller 128 (Kontakt's
+            // `$VCC_PITCH_BEND`, UVI's `onPitchBend`); one may keep it.
+            if self.run_controllers(VCC_PITCH_BEND) {
+                self.behaviour.set_bend(channel, before);
+                return;
+            }
             let mut hits = std::mem::take(&mut self.hits);
             self.notes.select(&mut hits, |n| n.host.channel == channel);
             self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
@@ -33,8 +45,21 @@ impl Engine {
         }
         // Channel pressure: every note on the channel (MPE: its one note).
         if status & 0xF0 == 0xD0 {
-            self.behaviour
-                .set_pressure(channel, (word >> 8) as u8 & 0x7F);
+            let value = (word >> 8) as u8 & 0x7F;
+            let before = self.cc_values.get(usize::from(VCC_MONO_AT)).copied();
+            if let Some(v) = self.cc_values.get_mut(usize::from(VCC_MONO_AT)) {
+                *v = value;
+            }
+            // Controller 129 (`$VCC_MONO_AT`, UVI's `onAfterTouch`).
+            if self.run_controllers(VCC_MONO_AT) {
+                if let (Some(v), Some(before)) =
+                    (self.cc_values.get_mut(usize::from(VCC_MONO_AT)), before)
+                {
+                    *v = before;
+                }
+                return;
+            }
+            self.behaviour.set_pressure(channel, value);
             let mut hits = std::mem::take(&mut self.hits);
             self.notes.select(&mut hits, |n| n.host.channel == channel);
             self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
@@ -64,17 +89,8 @@ impl Engine {
                 f64::from(value) / 127.0,
             );
         }
-        for (slot, script) in (0u8..).zip(&plan.scripts) {
-            let Some(entry) = script.callbacks.controller else {
-                continue;
-            };
-            let running = Running {
-                controller,
-                ..Running::new(Kind::Controller, None)
-            };
-            if self.run_callback(slot, entry, running).ignore_controller {
-                return;
-            }
+        if self.run_controllers(controller) {
+            return;
         }
         self.behaviour.set_cc(channel, controller, value);
         self.output_controller(controller, value);
@@ -111,6 +127,25 @@ impl Engine {
             slot.note.is_some_and(|n| hits.contains(&n))
         });
         self.hits = hits;
+    }
+
+    /// Each script's `on controller` for `controller`; true when one
+    /// ignored it.
+    fn run_controllers(&mut self, controller: u8) -> bool {
+        let plan = Arc::clone(&self.plan);
+        for (slot, script) in (0u8..).zip(&plan.scripts) {
+            let Some(entry) = script.callbacks.controller else {
+                continue;
+            };
+            let running = Running {
+                controller,
+                ..Running::new(Kind::Controller, None)
+            };
+            if self.run_callback(slot, entry, running).ignore_controller {
+                return true;
+            }
+        }
+        false
     }
 
     /// The output's controllers set the instrument's fader and pan.

@@ -370,6 +370,11 @@ impl HostApi for Engine {
                 self.running.kind == Kind::Controller
                     && int(0) == i32::from(self.running.controller),
             ),
+            // `%CC[128]` is the bend, -8192..8191, on the last channel heard.
+            Action::Cc if int(0) == i32::from(crate::midi::VCC_PITCH_BEND) => {
+                let bend = self.behaviour.bend(self.behaviour.channel);
+                HostValue::Int((bend * 8192.0).round().clamp(-8192.0, 8191.0) as i32)
+            }
             Action::Cc => HostValue::Int(
                 usize::try_from(int(0))
                     .ok()

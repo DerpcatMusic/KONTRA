@@ -58,6 +58,10 @@ pub struct Callbacks {
     pub note: bool,
     pub release: bool,
     pub controller: bool,
+    /// `onTransport`: the host started or stopped.
+    pub transport: bool,
+    /// `onPolyAfterTouch`.
+    pub poly_at: bool,
 }
 
 impl Callbacks {
@@ -67,6 +71,10 @@ impl Callbacks {
     pub const CONTROLLER: u32 = 3;
     /// The editor moved one of the script's widgets.
     pub const WIDGET: u32 = 4;
+    /// The host's transport started or stopped.
+    pub const TRANSPORT: u32 = 5;
+    /// Polyphonic aftertouch.
+    pub const POLY_AT: u32 = 6;
 }
 
 /// A script that loaded once: its source, the modules `require` finds, and
@@ -112,7 +120,12 @@ pub fn compile(
         init: true,
         note: defined("onNote"),
         release: defined("onRelease"),
-        controller: defined("onController"),
+        // Pitch bend and channel pressure reach scripts as controllers.
+        controller: ["onController", "onPitchBend", "onAfterTouch"]
+            .into_iter()
+            .any(defined),
+        transport: defined("onTransport"),
+        poly_at: defined("onPolyAfterTouch"),
     };
     let controls = lua
         .globals()
