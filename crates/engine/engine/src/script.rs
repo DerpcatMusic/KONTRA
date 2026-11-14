@@ -23,6 +23,13 @@ pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
 }
 
 impl Engine {
+    /// `work` in `frames` from now, counted when the queue is full.
+    fn later(&mut self, frames: u64, work: Work) {
+        if !self.queue.push(SampleTime(self.now.0 + frames), work) {
+            self.stats.events_refused += 1;
+        }
+    }
+
     /// Fills `out` with the notes an event argument addresses.
     fn targets(&self, id: i32, out: &mut Vec<NoteRef>) {
         out.clear();
@@ -733,11 +740,32 @@ impl HostApi for Engine {
                     .and_then(|r| self.notes.get(r))
                     .map_or(0, |n| n.host.channel);
                 let at = |i| u8::try_from(int(i).clamp(0, 127)).unwrap_or(0);
-                self.set_poly_at(channel, at(0), at(1));
+                let (key, value) = (at(0), at(1));
+                // A third argument delays it, in microseconds (UVI's `delta`).
+                match micros_to_frames(i64::from(int(2)), self.rate) {
+                    0 => self.set_poly_at(channel, key, value),
+                    frames => self.later(
+                        frames,
+                        Work::PolyAt {
+                            channel,
+                            key,
+                            value,
+                        },
+                    ),
+                }
                 HostValue::Nothing
             }
             Action::SetController => {
-                self.set_controller(int(0), int(1));
+                match (
+                    micros_to_frames(i64::from(int(2)), self.rate),
+                    u8::try_from(int(0)),
+                ) {
+                    (0, _) | (_, Err(_)) => self.set_controller(int(0), int(1)),
+                    (frames, Ok(controller)) => {
+                        let value = int(1).clamp(-8192, 8191) as i16;
+                        self.later(frames, Work::Controller { controller, value });
+                    }
+                }
                 HostValue::Nothing
             }
             // Mode 2 is the library's data folder, read at once (the next line

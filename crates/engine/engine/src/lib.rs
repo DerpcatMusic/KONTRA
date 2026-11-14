@@ -130,6 +130,10 @@ pub struct Stats {
     pub script_resumes: u64,
     /// Script loop turns run, a measure of the work a script did.
     pub script_turns: u64,
+    /// Controllers (and aftertouch) a script kept from the instrument, and
+    /// those it kept and set its own value for instead.
+    pub controllers_ignored: u64,
+    pub controllers_replaced: u64,
 }
 
 struct Slot {
@@ -590,6 +594,14 @@ impl Engine {
             Work::Release(note) => return self.end_note(note),
             Work::ParentUp(note) => return self.parent_up(note),
             Work::PgsChanged => return self.run_pgs_changed(),
+            Work::Controller { controller, value } => {
+                return self.set_controller(i32::from(controller), i32::from(value));
+            }
+            Work::PolyAt {
+                channel,
+                key,
+                value,
+            } => return self.set_poly_at(channel, key, value),
             Work::Listen {
                 slot,
                 signal,
