@@ -738,6 +738,11 @@ function Element.setParameter(self, name, value)
 	elseif name == "Volume" and type(value) == "number" then
 		host_call("EffectGain", fx[1], fx[2], fx[3], math.floor(value * 1e6 + 0.5))
 	end
+	-- A number its response is prepared by: prepared again off the audio thread.
+	local knob = (fields_of(self).impulse or EMPTY)[name]
+	if knob and tonumber(value) then
+		host_call("ImpulseKnob", fx[1], fx[2], fx[3], knob, math.floor(tonumber(value) * 1e6 + 0.5))
+	end
 	-- Any other number the format mapped: each control it moves,
 	-- `{control, x1, y1, ...}`, by the number, straight between points.
 	local x = tonumber(value)
@@ -853,6 +858,7 @@ function element(node)
 		mod = node.mod,
 		fx = node.fx,
 		knobs = node.knobs,
+		impulse = node.impulse,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)

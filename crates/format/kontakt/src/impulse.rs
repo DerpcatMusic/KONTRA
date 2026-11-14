@@ -162,6 +162,7 @@ impl<'a> Impulses<'a> {
             // Kontakt stretches with zplane's Élastique (0x1419b3450,
             // offline into the response); ours overlap-adds grains.
             size: [size(3), size(6)],
+            length: 1.0,
         });
         u16::try_from(self.out.len() - 1).ok()
     }

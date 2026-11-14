@@ -142,6 +142,10 @@ pub struct Impulse {
     /// stretched without changing pitch; they part where [`ImpulseCuts`]'s
     /// crossover does, else where the decay turns diffuse.
     pub size: [f32; 2],
+    /// The share of the response kept (1 the whole of it, untouched): below
+    /// 1 its first `max(2, length·frames)` frames, faded to silence by the
+    /// raised cosine `(1 + cos(π·i/(n + 1)))/2`, before [`Self::mix`].
+    pub length: f32,
 }
 
 /// Scales a response's channel energy toward `energy`, by at most `max_gain`;

@@ -650,9 +650,11 @@ impl<L: Library> Translator<'_, '_, L> {
                 0.0
             },
             cuts: None,
-            envelope: (time < 1.0 || flag(node, "UseWindowAtOriginalSize")).then(|| fade(time)),
+            // The window over the whole response: only when asked for.
+            envelope: (time >= 1.0 && flag(node, "UseWindowAtOriginalSize")).then(|| fade(time)),
             mix: (width != 0.0 && stereo).then(|| widen(width)),
             size: [1.0, 1.0],
+            length: time,
         });
         Ok(u16::try_from(self.out.impulses.len() - 1).ok())
     }
@@ -748,8 +750,11 @@ const POWER: ir::Normalize = ir::Normalize {
 
 /// A sampled reverb's `Time` window: UVI keeps `time` of the response and
 /// fades it by a half cosine, `(cos(πn/(N+1)) + 1)/2` over the kept `N`
-/// frames (0x141532fe0, π at 0x141cfab4c). Six linear knots trace the
-/// cosine within 2%; the rest is silent.
+/// frames (0x141532fe0, π at 0x141cfab4c; skipped when `N` is the whole
+/// response unless UseWindowAtOriginalSize, 0x1415332a8). The engine applies
+/// it exactly as [`ir::Impulse::length`], which a script's `Time` moves at
+/// run time; these knots (six trace the cosine within 2%, the rest silent)
+/// are only the whole-length window UseWindowAtOriginalSize asks for.
 fn fade(time: f32) -> [[f32; 2]; 8] {
     let mut knots = [[1.0, SILENT]; 8];
     for (k, knot) in knots.iter_mut().take(7).enumerate() {

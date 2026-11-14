@@ -494,4 +494,8 @@ actions! {
     // ints `(where, index, slot)` as for `EffectBypass`, text the file. The
     // engine finds it by name as `LoadIrSample` does.
     LoadImpulse,
+    // A placed convolution's response prepared again: ints `(where, index,
+    // slot)` as for `EffectBypass`, the knob (1 the share of the response
+    // kept, 2 predelay in ms) and its value in millionths.
+    ImpulseKnob,
 }
