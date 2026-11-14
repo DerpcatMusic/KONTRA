@@ -2873,7 +2873,7 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
     ];
     let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
     let mut all: Vec<(i32, f64, f64, f64)> = Vec::new();
-    let mut at = |all: &mut Vec<_>| {
+    let at = |all: &mut Vec<_>| {
         all.extend(moves.try_iter());
         all.len()
     };

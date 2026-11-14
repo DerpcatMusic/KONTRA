@@ -100,7 +100,7 @@ impl Face {
 
 /// `$CONTROL_PAR_*_COLOR` properties by colour slot.
 type ColorSlot = fn(&mut ui::Colors) -> &mut Option<ui::Rgba>;
-const COLORS: [(&str, ColorSlot); 10] = [
+const COLORS: [(&str, ColorSlot); 13] = [
     ("$CONTROL_PAR_BG_COLOR", |c| &mut c.background),
     ("$CONTROL_PAR_ON_COLOR", |c| &mut c.on),
     ("$CONTROL_PAR_OFF_COLOR", |c| &mut c.off),
@@ -111,6 +111,9 @@ const COLORS: [(&str, ColorSlot); 10] = [
     ("$CONTROL_PAR_WAVE_COLOR", |c| &mut c.wave),
     ("$CONTROL_PAR_WAVE_CURSOR_COLOR", |c| &mut c.wave_cursor),
     ("$CONTROL_PAR_SLICEMARKERS_COLOR", |c| &mut c.slice_markers),
+    ("$CONTROL_PAR_WAVE_END_COLOR", |c| &mut c.wave_end),
+    ("$CONTROL_PAR_WAVETABLE_COLOR", |c| &mut c.wavetable),
+    ("$CONTROL_PAR_WAVETABLE_END_COLOR", |c| &mut c.wavetable_end),
 ];
 
 /// The parameters the tree carries; any other a script set is reported.
@@ -156,6 +159,14 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_PARALLAX_X",
     "$CONTROL_PAR_PARALLAX_Y",
     "$CONTROL_PAR_CURSOR_PICTURE",
+    "$CONTROL_PAR_RANGE_MIN",
+    "$CONTROL_PAR_WF_VIS_MODE",
+    "$CONTROL_PAR_BG_ALPHA",
+    "$CONTROL_PAR_WAVE_ALPHA",
+    "$CONTROL_PAR_WAVE_END_ALPHA",
+    "$CONTROL_PAR_WAVETABLE_ALPHA",
+    "$CONTROL_PAR_WAVETABLE_END_ALPHA",
+    "$CONTROL_PAR_RANGE_MAX",
     "$CONTROL_PAR_GRID_X",
     "$CONTROL_PAR_GRID_Y",
     "$CONTROL_PAR_GRID_WIDTH",
@@ -195,6 +206,8 @@ struct Props<'a> {
     texts: HashMap<&'a str, &'a str>,
     /// `set_control_par_str_arr` entries: (parameter, index, text).
     entries: Vec<(&'a str, i32, &'a str)>,
+    /// The script, for the names behind symbol values.
+    face: &'a Face,
 }
 
 impl Props<'_> {
@@ -203,6 +216,10 @@ impl Props<'_> {
     }
     fn text(&self, name: &str) -> Option<&str> {
         self.texts.get(name).copied()
+    }
+    /// The catalog constant parameter `name` was set to (`$NI_WT_VIS_3D`).
+    fn symbol(&self, name: &str) -> Option<&str> {
+        self.face.par_name(self.int(name)?)
     }
     /// Entry `index` of string array parameter `name`.
     fn entry(&self, name: &str, index: i32) -> Option<&str> {
@@ -829,5 +846,6 @@ fn props<'a>(face: &'a Face, d: &'a Decl<'a>) -> Props<'a> {
                 Some((face.par_name(par)?, index, t.as_str()))
             })
             .collect(),
+        face,
     }
 }

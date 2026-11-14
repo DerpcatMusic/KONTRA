@@ -404,7 +404,9 @@ impl Engine {
             })
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
-        let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
+        let ui = kontra_script_ui::Store::new(
+            (plan.scripts.iter()).map(|s| (s.controls.cells.len(), s.controls.entries.as_slice())),
+        );
         let zone_index = Arc::new(zone_index::ZoneIndex::new(&plan.zones));
         let release_zones = plan.zones.iter().any(|z| z.trigger == Trigger::Release);
         let mut engine = Self {

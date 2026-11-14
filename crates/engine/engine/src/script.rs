@@ -25,8 +25,8 @@ pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
 impl Engine {
     /// One field of the wall clock (`$NI_DATE_*`, `$NI_TIME_*`), UTC.
     fn wall_field(&self, action: Action) -> i32 {
-        let secs = self.wall_start
-            + i64::try_from(self.now.0 / u64::from(self.rate.max(1))).unwrap_or(0);
+        let secs =
+            self.wall_start + i64::try_from(self.now.0 / u64::from(self.rate.max(1))).unwrap_or(0);
         let (days, of_day) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
         // Civil date from days since 1970-01-01 (Hinnant's days_from_civil, inverted).
         let z = days + 719_468;
@@ -995,18 +995,6 @@ impl Engine {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn event_ids_round_trip_and_reject_garbage() {
-        assert_eq!(NoteRef::from_event_id(0), None);
-        assert_eq!(NoteRef::from_event_id(-5), None);
-        assert_eq!(NoteRef::from_event_id(17), None);
-    }
-}
-
 /// Which of `on midi_in`'s `[command, channel, data 1, data 2]` an event
 /// parameter id names.
 fn midi_par(par: i32) -> Option<usize> {
@@ -1016,5 +1004,17 @@ fn midi_par(par: i32) -> Option<usize> {
         event::MIDI_BYTE_1 => Some(2),
         event::MIDI_BYTE_2 => Some(3),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_ids_round_trip_and_reject_garbage() {
+        assert_eq!(NoteRef::from_event_id(0), None);
+        assert_eq!(NoteRef::from_event_id(-5), None);
+        assert_eq!(NoteRef::from_event_id(17), None);
     }
 }

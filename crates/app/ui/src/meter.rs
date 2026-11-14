@@ -25,6 +25,8 @@ pub fn fraction(peak: f64) -> f64 {
 struct Channel {
     shown: Shown,
     held: u32,
+    /// Ticks the mirrored trough holds.
+    held_low: u32,
     over: u32,
     /// The highest peak since the last tick.
     pending: f64,
@@ -49,6 +51,24 @@ impl Channel {
             self.held = PEAK_HOLD;
         } else {
             self.held -= 1;
+        }
+        // Mirrored for an inverted meter: falls at once, rises 0.4 of the gap.
+        let low = self.shown.low;
+        self.shown.low = if target <= low {
+            target
+        } else {
+            let risen = low + (target - low) * FALL;
+            if target - risen < 0.001 {
+                target
+            } else {
+                risen
+            }
+        };
+        if self.shown.low < self.shown.trough || self.held_low == 0 {
+            self.shown.trough = self.shown.low;
+            self.held_low = PEAK_HOLD;
+        } else {
+            self.held_low -= 1;
         }
         self.over = if self.pending >= 1. {
             OVER_HOLD
@@ -132,5 +152,23 @@ mod tests {
         assert!(!frame(0., &mut m).over, "overload holds 25 ticks");
         let (_, moving) = m.update(&[[0., 0.]], t + 10.);
         assert!(!moving, "silence settles");
+    }
+
+    #[test]
+    fn an_inverted_meter_runs_the_ballistics_mirrored() {
+        let mut m = Meters::default();
+        let mut t = 10.;
+        let mut frame = |peak: f64, m: &mut Meters| {
+            t += TICK;
+            m.update(&[[peak, 0.]], t).0[0][0]
+        };
+        frame(0., &mut m);
+        // Rises 0.4 of the gap a tick, falls at once, holds its lowest.
+        let up = frame(1., &mut m);
+        assert!((up.low - 0.4).abs() < 1e-9 && up.level == 1.);
+        let down = frame(0., &mut m);
+        assert_eq!((down.low, down.trough), (0., 0.));
+        let back = frame(1., &mut m);
+        assert!((back.low - 0.4).abs() < 1e-9 && back.trough <= back.low);
     }
 }
