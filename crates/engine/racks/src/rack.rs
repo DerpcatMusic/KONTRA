@@ -131,15 +131,23 @@ impl Live<'_> {
             if let ir::Source::Lfo(n) = t.source
                 && let Some(l) = clock.lfos.get(usize::from(n))
             {
-                let at = clock.t.get(usize::from(n)).copied().unwrap_or(self.seconds) + clock.offset;
+                let at =
+                    clock.t.get(usize::from(n)).copied().unwrap_or(self.seconds) + clock.offset;
                 let age = Age {
                     held: at,
                     now: at,
                     ..Age::START
                 };
-                return kontra_plan::modulation::smoothed_shared(t, l, age, self.tempo, 0, || {
-                    t.smoothed(smoothed)
-                });
+                // A rack scales by nothing: a NaN pattern no voice's scale can be,
+                // so a voice at scale 0 (or 1) never shares this key.
+                return kontra_plan::modulation::smoothed_shared(
+                    t,
+                    l,
+                    age,
+                    self.tempo,
+                    u32::MAX,
+                    || t.smoothed(smoothed),
+                );
             }
             return t.smoothed(smoothed);
         }
