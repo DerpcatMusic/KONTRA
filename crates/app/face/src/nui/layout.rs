@@ -144,8 +144,10 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
                 if ih > 0. { ih + t + b } else { 0. },
             )
         }
-        // It fills the room it is offered and sits where it says in it.
-        "align" => (0., 0.),
+        // It fills the room it is offered and sits where it says in it;
+        // a positioned view too, as in SwiftUI (Conflux's Random meter is
+        // a track under a cloud of positioned dots).
+        "align" | "position" => (0., 0.),
         _ => inner(room),
     }
 }
@@ -181,7 +183,8 @@ fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size
 }
 
 /// Whether `n` fills the room it is offered: its outermost size-giving
-/// modifier is an `align` (offsets and looks keep their child's size).
+/// modifier is an `align` or a `position` (offsets and looks keep their
+/// child's size).
 fn fills(n: &Node) -> bool {
     n.mods.iter().rev().map(|(m, _)| m.as_str()).find(|m| {
         !matches!(
@@ -201,7 +204,8 @@ fn fills(n: &Node) -> bool {
                 | "disabled"
                 | "popover"
         )
-    }) == Some("align")
+    })
+    .is_some_and(|m| matches!(m, "align" | "position"))
 }
 
 fn words(n: &Node) -> String {
@@ -1072,5 +1076,49 @@ mod tests {
         splice(&mut bld, 0, room, "p", Some(&opened));
         let over = bld.ui.widgets.iter().filter(|w| w.z == 1).count();
         assert_eq!(over, shown.len(), "a rebuild keeps the popover's layer");
+    }
+
+    /// Conflux's Random meter: a framed ZStack of a track rectangle and a
+    /// faded cloud of positioned dots; the track fills the frame.
+    #[test]
+    fn a_framed_track_under_a_faded_dot_cloud_fills_its_frame() {
+        let num = |k: &str, v: f64| (k.to_owned(), Prop::Number(v));
+        let frame = |w, h| {
+            (
+                "frame",
+                vec![Prop::Table(vec![num("width", w), num("height", h)])],
+            )
+        };
+        let dot = node(
+            "Rectangle",
+            vec![
+                frame(2., 2.),
+                ("position", vec![Prop::Table(vec![num("x", 1.), num("y", 30.)])]),
+            ],
+            Vec::new(),
+        );
+        let mut cloud = node("ZStack", vec![("opacity", vec![Prop::Number(0.)])], vec![
+            node("ForEach", Vec::new(), vec![dot]),
+        ]);
+        cloud.props = vec![("alignment".into(), Prop::Text("center".into()))];
+        let track = node("Rectangle", Vec::new(), Vec::new());
+        let meter = node("ZStack", vec![frame(4., 40.)], vec![track, cloud]);
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let room = ui::Size {
+            width: 100.,
+            height: 100.,
+        };
+        lower(&meter, room, &mut bld);
+        let shapes: Vec<_> = (bld.ui.widgets.iter())
+            .map(|w| (w.rect.width, w.rect.height, w.colors.background))
+            .collect();
+        assert_eq!(shapes.first().map(|s| (s.0, s.1)), Some((4., 40.)), "{shapes:?}");
     }
 }
