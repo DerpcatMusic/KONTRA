@@ -110,6 +110,7 @@ impl Engine {
         let Some(mut m) = Self::midi_bytes(&event) else {
             return Some(event);
         };
+        let heard = m;
         let plan = std::sync::Arc::clone(&self.plan);
         let mut ignored = false;
         for (slot, script) in (0u8..).zip(&plan.scripts) {
@@ -132,7 +133,13 @@ impl Engine {
                 return None;
             }
         }
-        Some(Self::event_from(m, &event))
+        // Untouched, the host's event goes on as sent: a note-off on any
+        // port (wildcard) still ends notes held on ports B–D.
+        Some(if m == heard {
+            event
+        } else {
+            Self::event_from(m, &event)
+        })
     }
 
     /// A multi script's turn at `event`: its `on midi_in` runs, and what it

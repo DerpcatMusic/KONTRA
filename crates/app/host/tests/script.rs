@@ -4532,6 +4532,28 @@ fn midi_channel_counts_across_ports() {
     assert_eq!(e.active_voices(), 2);
 }
 
+/// A host note-off on any port (CLAP wildcard, -1) that `on midi_in` leaves
+/// alone still ends a note held on port B.
+#[test]
+fn an_untouched_wildcard_note_off_ends_a_note_on_port_b() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(&store, vec![z], "on midi_in\nend on");
+    let mut b = on(60);
+    if let Event::NoteOn { note, .. } = &mut b.body {
+        note.port = 1;
+    }
+    level(&mut e, &[b]);
+    assert_eq!(e.active_voices(), 1);
+    let mut any = off(60);
+    if let Event::NoteOff(p) = &mut any.body {
+        p.port = -1;
+    }
+    assert_eq!(level(&mut e, &[any]), 0.0);
+    assert_eq!(e.active_voices(), 0);
+}
+
 /// `set_note_controller` runs `on note_controller` in the other script slots
 /// only, with the controller, note and value.
 #[test]
