@@ -74,12 +74,9 @@ impl Engine {
     /// Un-purges `group`: at once when it is loaded (KSP `purge_group`);
     /// when it is dormant ([`Plan::dormant`]) the host loads it and the
     /// async id completes then, so the first note after it plays the group.
-    /// An un-purge while the engine is built (`on init`, a snapshot's
-    /// `on persistence_changed`) waits the same way: the host loads it once
-    /// the part plays.
     pub(crate) fn unpurge(&mut self, group: u32) -> i32 {
         let dormant = self.plan.dormant.iter().any(|d| d.group == group);
-        if !dormant {
+        if !dormant || self.building {
             if let Some(g) = self.groups.get_mut(group as usize) {
                 g.purged = false;
             }
