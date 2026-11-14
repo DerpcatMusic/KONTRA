@@ -103,6 +103,9 @@ pub struct FileRequest {
     /// The array's name, the file's first line.
     pub name: Text,
     pub save: bool,
+    /// A MIDI file, not an array: `[track offset, position offset, mode]` of
+    /// `mf_insert_file` (a save writes the object's export area).
+    pub midi: Option<[i32; 3]>,
 }
 
 /// The control side's answer to a [`FileRequest`]: a load's values (None
@@ -116,6 +119,8 @@ pub struct FileReply {
     pub texts: Vec<Text>,
     /// A save's values once the control side wrote them: whether it could.
     pub written: Option<bool>,
+    /// A MIDI load's parsed file, or the object's events for a MIDI save.
+    pub midi: Option<crate::midi_file::Smf>,
 }
 
 impl crate::ScriptPlan {
@@ -144,7 +149,15 @@ impl crate::ScriptPlan {
             path,
             name,
             save,
+            midi: None,
         }
+    }
+
+    /// The bytes of the file at `path`, read at once (while the engine is
+    /// built, off the audio thread).
+    #[must_use]
+    pub fn read_file(&self, path: &str) -> Option<Vec<u8>> {
+        self.files.as_ref()?.read(path)
     }
 
     /// Loads `request`'s file into the cells at once (while the engine is
