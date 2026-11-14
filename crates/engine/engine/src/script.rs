@@ -413,6 +413,32 @@ impl HostApi for Engine {
                 self.stats.messages += 1;
                 HostValue::Nothing
             }
+            Action::IgnoreMidi => {
+                self.running.ignore_midi = true;
+                HostValue::Nothing
+            }
+            Action::SetMidi => {
+                let byte = |i| int(i).clamp(0, 255) as u8;
+                self.set_midi([byte(1) & 0xF0, byte(0) & 0x0F, byte(2) & 0x7F, byte(3) & 0x7F]);
+                HostValue::Nothing
+            }
+            Action::SetNoteController => {
+                let from = self.running.slot;
+                self.note_controller(from, int(0), int(1), int(2));
+                HostValue::Nothing
+            }
+            // In `on midi_in` the message's own fields.
+            Action::SetEventPar if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() => {
+                if let Some(at) = midi_par(int(1)) {
+                    let max = if at == 3 || at == 2 { 127 } else { 255 };
+                    let v = int(2).clamp(0, max) as u8;
+                    self.running.midi[at] = if at == 0 { v & 0xF0 } else { v };
+                }
+                HostValue::Nothing
+            }
+            Action::GetEventPar if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() => {
+                HostValue::Int(midi_par(int(1)).map_or(0, |at| i32::from(self.running.midi[at])))
+            }
             Action::IgnoreController => {
                 self.running.ignore_controller = true;
                 HostValue::Nothing
@@ -559,6 +585,9 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::CurrentScriptSlot => HostValue::Int(i32::from(self.running.slot)),
+            Action::MidiChannel if self.running.kind == Kind::MidiIn => {
+                HostValue::Int(i32::from(self.running.midi[1]))
+            }
             Action::MidiChannel => HostValue::Int(current.map_or(0, |n| i32::from(n.host.channel))),
             Action::NoteHeld => flag(current.is_some_and(|n| !n.is_up())),
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
@@ -877,5 +906,18 @@ mod tests {
         assert_eq!(NoteRef::from_event_id(0), None);
         assert_eq!(NoteRef::from_event_id(-5), None);
         assert_eq!(NoteRef::from_event_id(17), None);
+    }
+}
+
+/// Which of `on midi_in`'s `[command, channel, data 1, data 2]` an event
+/// parameter id names.
+fn midi_par(par: i32) -> Option<usize> {
+    use kontra_vm::midi;
+    match par {
+        midi::PAR_COMMAND => Some(0),
+        event::MIDI_CHANNEL => Some(1),
+        midi::PAR_BYTE_1 => Some(2),
+        midi::PAR_BYTE_2 => Some(3),
+        _ => None,
     }
 }

@@ -19,6 +19,15 @@ impl Engine {
                     .and_then(|k| self.poly_at.get(k))
                     .map_or(0, |&v| i32::from(v)),
             ),
+            Action::NcNum => HostValue::Int(match self.running.kind {
+                Kind::NoteController => i32::from(self.running.controller),
+                _ => 0,
+            }),
+            Action::NcNote => HostValue::Int(i32::from(self.running.midi[2])),
+            Action::NcValue => HostValue::Int(self.running.value),
+            Action::MidiCommand => HostValue::Int(i32::from(self.running.midi[0])),
+            Action::MidiByte1 => HostValue::Int(i32::from(self.running.midi[2])),
+            Action::MidiByte2 => HostValue::Int(i32::from(self.running.midi[3])),
             // Kept across a wait (the resumed callback is still poly_at's).
             Action::PolyAtNum => {
                 let key = match self.running.kind {

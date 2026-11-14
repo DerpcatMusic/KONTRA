@@ -4402,3 +4402,68 @@ fn detect_commands_read_the_analysis() {
     // sample type are valid tags; init answers -1.
     assert_eq!(e.last_message(), "605 -6 -1 1 1 -1");
 }
+
+/// `on midi_in` sees a note before the engine: it can drop it (`ignore_midi`),
+/// move it (`set_event_par`) and add notes (`set_midi`), and the engine plays
+/// what is left. Key 60 is dropped, 61 moves up an octave to 73, 62 gets a
+/// second note on 66.
+#[test]
+fn midi_in_drops_moves_and_adds_notes_before_the_engine() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 0..=127;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on midi_in
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 60)
+                ignore_midi
+            end if
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 61)
+                set_event_par(0, $EVENT_PAR_MIDI_BYTE_1, 73)
+            end if
+            if ($MIDI_BYTE_2 > 0 and $MIDI_BYTE_1 = 62)
+                set_midi($MIDI_CHANNEL, $MIDI_COMMAND, 66, $MIDI_BYTE_2)
+            end if
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.active_voices(), 0, "dropped");
+    level(&mut e, &[on(61)]);
+    assert_eq!(e.active_voices(), 1, "moved");
+    level(&mut e, &[on(62)]);
+    assert_eq!(e.active_voices(), 3, "added");
+}
+
+/// `set_note_controller` runs `on note_controller` in the other script slots
+/// only, with the controller, note and value.
+#[test]
+fn note_controller_reaches_the_other_slots_only() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let sender = kontra_ksp::compile(
+        "on note
+            set_note_controller(1, $EVENT_NOTE, 77)
+        end on
+        on note_controller
+            message(\"self\")
+        end on",
+        &[],
+    )
+    .unwrap();
+    let receiver = kontra_ksp::compile(
+        "on note_controller
+            message($NC_NUM & \",\" & $NC_NOTE & \",\" & $NC_VALUE)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![z], 16);
+    plan.scripts = vec![
+        kontra_host::script::plan(&sender, &[], &[]),
+        kontra_host::script::plan(&receiver, &[], &[]),
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "1,60,77");
+}

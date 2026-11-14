@@ -9,6 +9,7 @@
 
 mod action;
 pub mod detect;
+pub mod midi;
 mod execute;
 mod fuse;
 mod host;

@@ -300,6 +300,8 @@ fn callback_kind(name: &str) -> Option<CallbackKind> {
         "async_complete" => CallbackKind::AsyncComplete,
         "rpn" => CallbackKind::Rpn,
         "nrpn" => CallbackKind::Nrpn,
+        "note_controller" => CallbackKind::NoteController,
+        "midi_in" => CallbackKind::MidiIn,
         _ => return None,
     })
 }

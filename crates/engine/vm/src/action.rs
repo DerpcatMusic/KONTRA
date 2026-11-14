@@ -38,6 +38,8 @@ pub mod event {
     /// Read only: the number of the zone its first voice plays (its format's
     /// numbering), -1 before a voice starts.
     pub const ZONE_ID: i32 = 1027;
+    /// `$EVENT_PAR_MIDI_CHANNEL`: in `on midi_in`, the message's channel.
+    pub const MIDI_CHANNEL: i32 = 11;
 }
 
 macro_rules! actions {
@@ -169,6 +171,8 @@ actions! {
     EventStatus,
     GetEventIds,
     IgnoreController,
+    IgnoreMidi,
+    SetMidi,
     SetController,
     SetNoteController,
     SetRpn,
@@ -382,6 +386,12 @@ actions! {
     CcNum,
     PitchBend,
     PolyAtNum,
+    NcNum,
+    NcNote,
+    NcValue,
+    MidiCommand,
+    MidiByte1,
+    MidiByte2,
     RpnAddress,
     RpnValue,
     MidiChannel,

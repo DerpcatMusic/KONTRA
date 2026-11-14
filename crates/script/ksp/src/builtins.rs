@@ -189,6 +189,8 @@ builtins! {
         EventStatus "event_status" [I] 0 Int;
         GetEventIds "get_event_ids" [A] 0 Void;
         IgnoreController "ignore_controller" [] 0 Void;
+        IgnoreMidi "ignore_midi" [] 0 Void;
+        SetMidi "set_midi" [I I I I] 0 Void;
         SetController "set_controller" [I I] 0 Void;
         SetNoteController "set_note_controller" [I I I] 0 Void;
         SetRpn "set_rpn" [I I] 0 Void;
@@ -399,6 +401,12 @@ builtins! {
         CcNum "$CC_NUM" [] 0 Int;
         PitchBend "$PITCH_BEND" [] 0 Int;
         PolyAtNum "$POLY_AT_NUM" [] 0 Int;
+        NcNum "$NC_NUM" [] 0 Int;
+        NcNote "$NC_NOTE" [] 0 Int;
+        NcValue "$NC_VALUE" [] 0 Int;
+        MidiCommand "$MIDI_COMMAND" [] 0 Int;
+        MidiByte1 "$MIDI_BYTE_1" [] 0 Int;
+        MidiByte2 "$MIDI_BYTE_2" [] 0 Int;
         RpnAddress "$RPN_ADDRESS" [] 0 Int;
         RpnValue "$RPN_VALUE" [] 0 Int;
         MidiChannel "$MIDI_CHANNEL" [] 0 Int;
