@@ -287,6 +287,10 @@ pub struct Engine {
     taps: Box<[Box<[[f32; 2]]>]>,
     main: racks::Rack,
     ids: callbacks::Ids,
+    /// Seconds since the Unix epoch when the engine was made: the clock
+    /// `$NI_DATE_*` and `$NI_TIME_*` read, advanced by the frames rendered.
+    // ponytail: UTC, read once off the audio thread; local time needs the host's offset.
+    wall_start: i64,
     ui: kontra_script_ui::Store,
     /// The picture names scripts asked a font id for, by script slot, in
     /// the order asked.
@@ -473,6 +477,9 @@ impl Engine {
             memo: Default::default(),
             ui,
             ids: callbacks::Ids::START,
+            wall_start: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
             instrument: Level::panned(ir::common::DB_GAIN.eval_unclamped(out.volume_db), out.pan),
             expression: 1.0,
             balance: out.balance,

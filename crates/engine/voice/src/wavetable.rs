@@ -33,8 +33,39 @@ pub struct Read {
     pub modosc: ModOsc,
     /// The host's rate, Hz: what the mod oscillator's Hz swing is read at.
     pub rate: f32,
+    /// How the table is read (`$NI_WT_QUALITY_*`).
+    pub quality: Quality,
     /// Applied in order.
     pub warps: [Warp; 2],
+}
+
+/// How faithfully the table is read, `$NI_WT_QUALITY_*` in order.
+///
+/// Measured in Kontakt 8.13.1 (a 1..1023-harmonic sawtooth at keys 60, 84, 96,
+/// `tools/kontakt-oracle/wt_quality.py`): MEDIUM reads as ours does (flat to
+/// the top, the same alias floor); LOFI aliases 5..13 dB more (a coarser,
+/// unblended level read linearly); HIGH and BEST lose the top end, whatever
+/// the note: -0.2 / -0.9 / -3.8 dB (HIGH) and 0 / -0.3 / -3.6 dB (BEST) at
+/// 4.2 / 8.4 / 16.7 kHz. Those two are a five-tap filter fitted to the three
+/// points, not a model of how Kontakt gets there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Quality {
+    Lofi,
+    Medium,
+    #[default]
+    High,
+    Best,
+}
+
+impl Quality {
+    /// The output filter's outer taps `(a, c)`: `[c, a, 1 - 2a - 2c, a, c]`.
+    fn fir(self) -> Option<(f32, f32)> {
+        match self {
+            Self::High => Some((0.120_806, -0.010_462)),
+            Self::Best => Some((0.137_987, -0.036_672)),
+            Self::Lofi | Self::Medium => None,
+        }
+    }
 }
 
 /// A sine oscillator at `ratio()` times the note that moves the table's
@@ -151,6 +182,8 @@ pub struct Osc {
     phase: f64,
     offset: f64,
     last: f32,
+    /// The last four frames out, which the HIGH and BEST filter reads.
+    tail: [f32; 4],
 }
 
 /// How far apart the partials above the first lie, in fundamentals: partial
@@ -392,7 +425,17 @@ impl Table {
         let stretch = f64::from(self.read.inharmonic.stretch());
         let quad = self.quad.as_deref().filter(|_| stretch != 1.0);
         let rate = if quad.is_some() { stretch } else { 1.0 };
-        let (l0, l1, blend) = level(PERIOD / (step * rate * sync(w2)));
+        let lofi = self.read.quality == Quality::Lofi;
+        let (l0, l1, blend) = {
+            let (a, b, blend) = level(PERIOD / (step * rate * sync(w2)));
+            // LOFI plays the level above the period's two, unblended.
+            if lofi {
+                let l = a.saturating_sub(1);
+                (l, l, 0.0)
+            } else {
+                (a, b, blend)
+            }
+        };
         let cycle = |data: &[i16], c: usize, q: f32| {
             let a = self.hermite(data, c * LEVELS + l0, q);
             a + (self.hermite(data, c * LEVELS + l1, q) - a) * blend
@@ -412,6 +455,7 @@ impl Table {
         let mod_step = osc.cycles(cycles, f64::from(self.read.rate.max(1.0)));
         let hz = f64::from(osc.fm_hz) / f64::from(self.read.rate.max(1.0));
         let gain = self.read.gain;
+        let fir = self.read.quality.fir();
         let mut st = self.osc;
         for (i, frame) in out.iter_mut().enumerate() {
             let cursor = (x + i as f64 * step) / PERIOD;
@@ -453,6 +497,14 @@ impl Table {
                 _ => 0.0,
             };
             st.phase = (st.phase + mod_step + by).rem_euclid(1.0);
+            let s = match fir {
+                Some((a, c)) => {
+                    let [x1, x2, x3, x4] = st.tail;
+                    st.tail = [s, x1, x2, x3];
+                    c * (s + x4) + a * (x1 + x3) + (1.0 - 2.0 * (a + c)) * x2
+                }
+                None => s,
+            };
             *frame = [s, s];
         }
         self.osc = st;
@@ -469,6 +521,10 @@ impl Table {
             let at = first + (i.wrapping_add(k).wrapping_sub(1) & (len - 1));
             f32::from(data.get(at as usize).copied().unwrap_or(0)) * self.scale
         };
+        if self.read.quality == Quality::Lofi {
+            let (a, b) = (tap(1), tap(2));
+            return a + (b - a) * at.fract();
+        }
         crate::hermite(tap(0), tap(1), tap(2), tap(3), at.fract())
     }
 }
@@ -629,6 +685,7 @@ mod tests {
             inharmonic: Inharmonic::OFF,
             modosc: ModOsc::OFF,
             rate: 48_000.0,
+            quality: Default::default(),
             warps: [Warp::OFF; 2],
         };
         let spans: std::sync::Arc<[_]> = vec![(0, 8); LEVELS].into();

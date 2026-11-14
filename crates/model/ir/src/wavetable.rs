@@ -17,8 +17,34 @@ pub struct Wavetable {
     pub gain: f32,
     pub inharmonic: Inharmonic,
     pub modosc: ModOsc,
+    /// How the table is read (`$NI_WT_QUALITY_*`).
+    pub quality: Quality,
     /// Applied in order.
     pub warps: [Warp; 2],
+}
+
+/// How faithfully a table is read (`$NI_WT_QUALITY_*`; the value is the discriminant).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Quality {
+    Lofi,
+    Medium,
+    #[default]
+    High,
+    Best,
+}
+
+impl Quality {
+    /// The quality a script's `$NI_WT_QUALITY_*` value names.
+    #[must_use]
+    pub fn from_index(i: i32) -> Option<Self> {
+        Some(match i {
+            0 => Self::Lofi,
+            1 => Self::Medium,
+            2 => Self::High,
+            3 => Self::Best,
+            _ => return None,
+        })
+    }
 }
 
 /// A second oscillator, a sine, that moves the table's read or joins its

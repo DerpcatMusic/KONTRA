@@ -69,6 +69,9 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
             wave: wave_of(source.mod_type),
             unit: ir::TuneUnit::Semitones,
         },
+        // The record holds 1..=4, taken as LOFI..BEST (the default group saves 3, High).
+        quality: ir::Quality::from_index(i32::try_from(source.quality).unwrap_or(0) - 1)
+            .unwrap_or_default(),
         warps,
     }
 }

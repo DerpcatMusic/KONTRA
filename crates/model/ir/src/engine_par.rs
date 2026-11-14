@@ -70,6 +70,8 @@ pub enum EnginePar {
     ModOscWave,
     /// What its tune reads in ([`crate::TuneUnit`]).
     ModOscUnit,
+    /// `$ENGINE_PAR_WT_QUALITY`.
+    WtQuality,
     /// A control the engine does not carry yet: only the text of a value
     /// the script passes answers (`get_engine_par_disp_ext`); a set or a
     /// read is reported as unhandled.

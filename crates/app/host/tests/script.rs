@@ -4013,6 +4013,7 @@ fn a_wavetable_form_mode_switches_the_forms_kind() {
         gain: 1.0,
         inharmonic: ir::Inharmonic::OFF,
         modosc: ir::ModOsc::OFF,
+        quality: ir::Quality::High,
         warps: [ir::Warp::OFF; 2],
     }));
     let script = kontra_ksp::compile(
@@ -4049,6 +4050,7 @@ fn a_wavetable_modulator_wave_and_unit_are_set_and_read_back() {
         gain: 1.0,
         inharmonic: ir::Inharmonic::OFF,
         modosc: ir::ModOsc::OFF,
+        quality: ir::Quality::High,
         warps: [ir::Warp::OFF; 2],
     }));
     let script = kontra_ksp::compile(
@@ -4057,6 +4059,7 @@ fn a_wavetable_modulator_wave_and_unit_are_set_and_read_back() {
             set_engine_par($ENGINE_PAR_WT_MOD_WAVE, 3, 0, -1, -1)
             set_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, $NI_WT_MOD_TUNE_UNIT_HZ, 0, -1, -1)
             set_engine_par($ENGINE_PAR_WT_PHASE, 250000, 0, -1, -1)
+            set_engine_par($ENGINE_PAR_WT_QUALITY, $NI_WT_QUALITY_BEST, 0, -1, -1)
             @t := get_engine_par($ENGINE_PAR_WT_MOD_WAVE, 0, -1, -1)
             @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 0, -1, -1)
             @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_PHASE, 0, -1, -1)
@@ -4064,6 +4067,7 @@ fn a_wavetable_modulator_wave_and_unit_are_set_and_read_back() {
             set_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 3, 0, -1, -1)
             @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_WAVE, 0, -1, -1)
             @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_MOD_TUNE_UNIT, 0, -1, -1)
+            @t := @t & \"|\" & get_engine_par($ENGINE_PAR_WT_QUALITY, 0, -1, -1)
             message(@t)
         end on",
         &[],
@@ -4073,7 +4077,35 @@ fn a_wavetable_modulator_wave_and_unit_are_set_and_read_back() {
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
     // Only the two sets that name nothing (wave 9, unit 3) are refused.
     assert_eq!(e.unhandled_actions().iter().map(|a| a.1).sum::<u32>(), 2);
-    assert_eq!(e.last_message(), "3|2|250000|3|2");
+    assert_eq!(e.last_message(), "3|2|250000|3|2|3");
+}
+
+/// `$NI_DATE_*` and `$NI_TIME_*` read the clock in the manual's ranges, and
+/// `$NUM_GROUPS` the groups.
+#[test]
+fn the_date_and_time_variables_read_the_clock() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            @t := $NI_DATE_YEAR & \"|\" & $NI_DATE_MONTH & \"|\" & $NI_DATE_DAY
+            @t := @t & \"|\" & $NI_TIME_HOUR & \"|\" & $NI_TIME_MINUTE & \"|\" & $NI_TIME_SECOND
+            @t := @t & \"|\" & $NUM_GROUPS
+            message(@t)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    let m = e.last_message();
+    let v: Vec<i32> = m.split('|').map(|n| n.parse().unwrap()).collect();
+    assert!(v[0] >= 2026, "{m}");
+    assert!((1..=12).contains(&v[1]) && (1..=31).contains(&v[2]), "{m}");
+    assert!(v[3] < 24 && v[4] < 60 && v[5] < 60, "{m}");
+    assert_eq!(v[6], 1);
 }
 
 /// A time-stretch speed reads in %, one decimal (Kontakt 8.13.1, Time
