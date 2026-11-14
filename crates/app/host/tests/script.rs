@@ -4507,7 +4507,7 @@ fn a_script_reads_a_zones_sample_status_and_loop() {
         end on",
     );
     level(&mut e, &[]);
-    assert_eq!(e.last_message(), "tone440 wav 1 -1 500 3 0");
+    assert_eq!(e.last_message(), "tone440 wav 1 2 500 3 0");
     assert!(
         e.unhandled_actions().is_empty(),
         "{:?}",
