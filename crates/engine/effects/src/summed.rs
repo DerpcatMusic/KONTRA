@@ -58,6 +58,10 @@ impl VoiceEq {
             f.process(io);
         }
     }
+
+    pub fn is_silent(&self) -> bool {
+        self.biquads.iter().all(Biquad::is_silent)
+    }
 }
 
 /// A section's runner: biquads in series, a formant's parallel bands, or a
@@ -67,6 +71,7 @@ pub enum Stage {
     // Boxed: its glide state is six times a biquad; built at load.
     Formant(Box<Formant>),
     Running(Box<Svf>),
+    Eq(Box<VoiceEq>),
 }
 
 impl Stage {
@@ -75,7 +80,82 @@ impl Stage {
             Self::Biquad(b) => b.is_silent(),
             Self::Formant(f) => f.is_silent(),
             Self::Running(f) => f.is_silent(),
+            Self::Eq(q) => q.is_silent(),
         }
+    }
+
+    pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        match self {
+            Self::Biquad(b) => b.process(io),
+            Self::Formant(f) => f.process(io),
+            Self::Running(f) => f.process(io),
+            Self::Eq(q) => q.process(io),
+        }
+    }
+}
+
+/// One insert as a stage that follows its settings in place, as a voice's
+/// unit does: a filter as its state-variable form (equal to [`stages`]' at a
+/// fixed cutoff), an EQ as its four bands, a formant; `None` for other kinds.
+pub fn live_stage(kind: &ir::EffectKind, rate: u32) -> Option<Stage> {
+    Some(match kind {
+        ir::EffectKind::Filter(f) => {
+            let mut svf = Svf::new(shape(f));
+            svf.set_cutoff(f.hz, rate);
+            // A later switch into an explicit ladder takes this box.
+            svf.keep_spare();
+            Stage::Running(Box::new(svf))
+        }
+        ir::EffectKind::Eq(bells) => Stage::Eq(Box::new(VoiceEq::new(*bells, rate))),
+        ir::EffectKind::Formant(f) => Stage::Formant(Box::new(Formant::new(vowels(*f), rate))),
+        _ => return None,
+    })
+}
+
+/// Moves a [`live_stage`] to `kind`'s settings, keeping its state; false
+/// when `kind` is another type than the stage runs.
+pub fn retune(stage: &mut Stage, kind: &ir::EffectKind, rate: u32) -> bool {
+    match (stage, kind) {
+        (Stage::Running(s), ir::EffectKind::Filter(f)) => s.retune(shape(f), rate),
+        (Stage::Eq(q), ir::EffectKind::Eq(bells)) => {
+            q.retune(*bells, rate);
+            true
+        }
+        (Stage::Formant(v), ir::EffectKind::Formant(f)) => {
+            v.set(vowels(*f), rate);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Whether an insert runs as a summed stage at all.
+pub fn summed(e: &ir::Effect) -> bool {
+    matches!(
+        e.kind,
+        ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_)
+    )
+}
+
+/// Whether a summed insert is heard: not bypassed, and an EQ only while a
+/// band cuts or boosts.
+pub fn sounds(e: &ir::Effect) -> bool {
+    !e.bypass
+        && match e.kind {
+            ir::EffectKind::Eq(bands) => bands.iter().any(|b| b.gain_db != 0.0),
+            _ => true,
+        }
+}
+
+fn vowels(f: ir::Formant) -> Vowels {
+    Vowels {
+        talk: f.talk,
+        sharp: f.sharp,
+        size: f.size,
+        set: match f.set {
+            ir::VowelSet::First => VowelSet::First,
+            ir::VowelSet::Second => VowelSet::Second,
+        },
     }
 }
 
@@ -106,16 +186,7 @@ pub fn stages(sections: &[ir::EffectKind], rate: u32) -> Box<[Stage]> {
                 );
             }
             ir::EffectKind::Formant(f) => {
-                let v = Vowels {
-                    talk: f.talk,
-                    sharp: f.sharp,
-                    size: f.size,
-                    set: match f.set {
-                        ir::VowelSet::First => VowelSet::First,
-                        ir::VowelSet::Second => VowelSet::Second,
-                    },
-                };
-                out.push(Stage::Formant(Box::new(Formant::new(v, rate))));
+                out.push(Stage::Formant(Box::new(Formant::new(vowels(*f), rate))));
             }
             _ => {}
         }
@@ -147,10 +218,6 @@ pub fn shape(f: &ir::Filter) -> Shape {
 
 pub fn run(stages: &mut [Stage], io: &mut [[f32; 2]]) {
     for stage in stages {
-        match stage {
-            Stage::Biquad(b) => b.process(io),
-            Stage::Formant(f) => f.process(io),
-            Stage::Running(f) => f.process(io),
-        }
+        stage.process(io);
     }
 }

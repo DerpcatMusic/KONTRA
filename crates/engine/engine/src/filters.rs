@@ -4,20 +4,25 @@
 //! chain, run once per span instead of once per voice. Bus and instrument
 //! racks filter their own sums.
 //!
-//! ponytail: settings are fixed at load (after the init callback). Inserts
-//! a route moves, and those up to a group's last drive effect, run on each
-//! voice instead (voice_rack.rs).
+//! A script, UI or editor write after init moves a group's inserts: at the
+//! next span the group's own chain follows it in place, and a group on a
+//! shared chain moves to its private chain (built at load) and follows there,
+//! so groups nothing moves keep sharing. Inserts a route moves, and those up
+//! to a group's last drive effect, run on each voice instead (voice_rack.rs).
 
 use std::sync::Arc;
 
 use kontra_ir as ir;
 
-pub(crate) use kontra_effects::summed::{Stage, run, sections};
+use kontra_effects::summed::{sounds, summed};
 
 use crate::{Engine, MAX_SPAN, group_racks};
 
 use crate::racks::Rack;
 pub(crate) use kontra_racks::chain::{Chain, on_bus};
+
+/// The most private chains one instrument builds for its shared groups.
+const PRIVATE_CHAINS: usize = 256;
 
 impl Engine {
     /// One chain per distinct (sections, bus) the zones' groups carry, less
@@ -30,21 +35,20 @@ impl Engine {
             .zip(&self.voice_units)
             .map(|(g, units)| group_racks::split(g, units))
             .collect();
-        let shared: Vec<Vec<ir::EffectKind>> = self
+        let shared: Vec<Vec<(u8, ir::Effect)>> = self
             .groups
             .iter()
             .zip(&self.voice_units)
             .zip(&self.group_split)
             .map(|((g, units), split)| {
-                let mut inserts = g.inserts.clone();
-                for u in units.iter() {
-                    if let Some(slot) = inserts.get_mut(usize::from(u.insert)) {
-                        *slot = None;
-                    }
-                }
-                // The group's rack runs these.
-                inserts.truncate(split.unwrap_or(usize::MAX));
-                sections(&inserts)
+                let per_voice = |n: usize| units.iter().any(|u| usize::from(u.insert) == n);
+                (g.inserts.iter().enumerate())
+                    // The group's rack runs those from the split on.
+                    .take(split.unwrap_or(usize::MAX))
+                    .filter(|&(n, _)| !per_voice(n))
+                    .filter_map(|(n, e)| Some((u8::try_from(n).ok()?, (*e)?)))
+                    .filter(|(_, e)| summed(e))
+                    .collect()
             })
             .collect();
         let mut chains: Vec<Chain> = Vec::new();
@@ -54,7 +58,7 @@ impl Engine {
             .map(|g| {
                 let sections = shared.get(g)?.clone();
                 let split = self.group_split.get(g).copied().flatten();
-                if sections.is_empty() && split.is_none() {
+                if !sections.iter().any(|(_, e)| sounds(e)) && split.is_none() {
                     return None;
                 }
                 let bus = self.groups.get(g).map_or(0, |g| g.bus);
@@ -94,7 +98,76 @@ impl Engine {
                 }
             }
         }
+        // Each group on a shared chain (or none) gets its private one, up to
+        // PRIVATE_CHAINS per instrument (about 2.5 KB each).
+        // ponytail: groups past the cap keep the shared chain and a write
+        // after init to them is not heard; a pool taken on first write if a
+        // library needs more.
+        let mut left = PRIVATE_CHAINS;
+        self.group_private = (0..self.groups.len())
+            .map(|g| {
+                let sections = shared.get(g).filter(|s| !s.is_empty())?;
+                if self.group_split.get(g).copied().flatten().is_some() {
+                    return None;
+                }
+                left = left.checked_sub(1)?;
+                let bus = self.groups.get(g).map_or(0, |g| g.bus);
+                let mut chain = Chain::new(bus, sections.clone(), None, rate);
+                chain.private = true;
+                chains.push(chain);
+                u16::try_from(chains.len() - 1).ok()
+            })
+            .collect();
+        self.group_moved = vec![false; self.groups.len()].into();
         self.chains = chains;
+    }
+
+    /// Marks group `g`'s inserts as written: the next span's chains follow.
+    pub(crate) fn group_written(&mut self, g: usize) {
+        if let Some(moved) = self.group_moved.get_mut(g) {
+            *moved = true;
+            self.groups_moved = true;
+        }
+    }
+
+    /// The chains of each group written since the last span follow its
+    /// inserts: its own chain (and twins) in place; a group on a shared chain
+    /// whose inserts no longer match moves to its private chain first.
+    fn follow_groups(&mut self) {
+        if !std::mem::take(&mut self.groups_moved) {
+            return;
+        }
+        let rate = self.rate;
+        for (g, moved) in self.group_moved.iter_mut().enumerate() {
+            if !std::mem::take(moved) {
+                continue;
+            }
+            let Some(group) = self.groups.get(g) else {
+                continue;
+            };
+            let inserts = &group.inserts[..];
+            if self.group_split.get(g).copied().flatten().is_some() {
+                for chain in self.chains.iter_mut().filter(|c| c.owner() == Some(g)) {
+                    chain.follow(inserts, rate);
+                }
+                continue;
+            }
+            let Some(private) = self.group_private.get(g).copied().flatten() else {
+                continue;
+            };
+            let Some(on) = self.group_chain.get_mut(g) else {
+                continue;
+            };
+            let Some(chain) = self.chains.get_mut(usize::from(private)) else {
+                continue;
+            };
+            // Until taken, the private chain holds the shared one's settings.
+            if *on != Some(private) && chain.matches(inserts) {
+                continue;
+            }
+            *on = Some(private);
+            chain.follow(inserts, rate);
+        }
     }
 
     /// Renders every voice into its chain or bus mix, then the chains.
@@ -103,6 +176,7 @@ impl Engine {
             self.refresh_timed();
             self.rearm_timers();
         }
+        self.follow_groups();
         for bus in &mut self.buses {
             if let Some(mix) = bus.mix.get_mut(..len) {
                 mix.fill([0.0; 2]);
@@ -121,6 +195,9 @@ impl Engine {
             let chain = chain.and_then(|c| on_bus(&self.chains, usize::from(c), bus));
             let mix = match chain.and_then(|c| self.chains.get_mut(c)) {
                 Some(chain) => {
+                    if chain.private {
+                        chain.bus = bus;
+                    }
                     chain.live = true;
                     chain.mix.get_mut(..len)
                 }
@@ -177,11 +254,10 @@ impl Engine {
                 continue;
             }
             chain.live = false;
+            chain.run(len);
             let Some(mix) = chain.mix.get_mut(..len) else {
                 continue;
             };
-            run(&mut chain.filters, mix);
-            chain.ringing = !chain.filters.iter().all(Stage::is_silent);
             if let Some((g, rack)) = &mut chain.group {
                 // A script may have changed the group's slots since.
                 if let Some(group) = self.groups.get(*g) {
