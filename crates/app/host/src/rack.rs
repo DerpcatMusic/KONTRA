@@ -308,8 +308,35 @@ impl Rack {
         if let Some(done) = self.load_preset(part, path) {
             return done;
         }
+        if kontra_format_kontakt::is_multi(path) {
+            return self.load_multi(part, path);
+        }
         let instrument = crate::instrument::read_saved(path, &[], &self.known.1)?;
         self.load_ir(part, instrument, Some(path.to_owned()))
+    }
+
+    /// A multi: each of its slots, in order, into `part` and the parts
+    /// after it (as many as the rack holds), each by its slot's path
+    /// ([`crate::instrument::multi_slot`]).
+    ///
+    /// # Errors
+    /// When the multi cannot be read, or none of its slots can.
+    // ponytail: a slot's own MIDI channel, volume and pan are not read; each
+    // part keeps its mix. Read them from the slot's program container.
+    fn load_multi(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let (slots, failed) = kontra_format_kontakt::multi(path, None)?;
+        if slots.is_empty() {
+            return Err(failed.join("; ").into());
+        }
+        self.notices
+            .extend(failed.iter().map(|f| format!("{}: {f}", path.display())));
+        for (at, slot) in (part..MAX_PARTS).zip(slots) {
+            let mut instrument = slot.instrument;
+            let own = path.join(slot.index.to_string());
+            instrument.source_path = Some(own.clone());
+            self.load_ir(at, instrument, Some(own))?;
+        }
+        Ok(())
     }
 
     /// Takes the instruments of `browser`'s catalog as the ones a snapshot
