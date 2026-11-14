@@ -275,3 +275,22 @@ fn every_preset_lists_under_its_instrument_and_restores_its_values() {
 fn has_ext(p: &Path, ext: &str) -> bool {
     p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
+
+#[test]
+fn a_restored_value_holds_exactly_its_saved_one() {
+    // The same f32, however it is written; one f32 step off is a difference.
+    assert!(holds("gain=6.3656972e-07", "gain=6.365697e-7"));
+    assert!(!holds("gain=-1", "gain=-0.99999899"));
+    assert!(!holds("pan=0.5", "gain=0.5"));
+    // An array saved shorter than it is now declared.
+    assert!(holds("%table 1 2 3 0", "%table 1 2 3"));
+    assert!(!holds("%table 1 2 30", "%table 1 2 3"));
+    assert_eq!(name_of("$mono 1"), "$mono");
+    assert_eq!(name_of("gain=0.5"), "gain");
+    // Every named exception says why.
+    assert!(
+        EXPECTED
+            .iter()
+            .all(|(_, names, why)| !names.is_empty() && !why.is_empty())
+    );
+}
