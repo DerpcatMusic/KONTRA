@@ -547,13 +547,26 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
         let felt = presets[preset].clone();
         (presets, felt)
     };
-    let count = presets.len();
+    // As Kontakt's instrument header: the arrows step through the
+    // instrument and its snapshots (the whole library for one without).
+    let after = |at: usize| {
+        let family = kontra_ui_model::preset_family(&presets, Some(at));
+        assert!(family.len() > 1);
+        let k = family.iter().position(|&n| n == at).unwrap();
+        (family[(k + 1) % family.len()], *family.last().unwrap())
+    };
+    let next = after(preset).0;
+    assert!(
+        presets[next].to_string_lossy().contains("Felt"),
+        "{:?}",
+        presets[next]
+    );
     browse(kontra_ui::app::Action::Step { part: 0, by: 1 });
-    assert_eq!(path(&params), Some(presets[(preset + 1) % count].clone()));
+    assert_eq!(path(&params), Some(presets[next].clone()));
     // The header names the preset by its path, whatever its instrument's
     // own name (a snapshot recalled in place keeps the load).
     let shown = format!("{:?}", *crate::lock(&params.shared.view));
-    let want = format!("preset: Some({})", (preset + 1) % count);
+    let want = format!("preset: Some({next})");
     assert!(shown.contains(&want), "the header's preset: {shown:.300}");
     browse(kontra_ui::app::Action::Step { part: 0, by: -1 });
     assert_eq!(path(&params), Some(felt.clone()), "back");
@@ -561,7 +574,7 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     browse(kontra_ui::app::Action::Step { part: 0, by: -1 });
     assert_eq!(
         path(&params),
-        presets.last().cloned(),
+        Some(presets[after(0).1].clone()),
         "wraps below the first"
     );
     browse(kontra_ui::app::Action::Switch { part: 0, preset });
@@ -595,7 +608,7 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     );
     assert_ne!(scripts(&params), base, "the snapshot changed nothing");
     browse(kontra_ui::app::Action::Step { part: 0, by: 1 });
-    assert_eq!(path(&params), Some(presets[(snap + 1) % count].clone()));
+    assert_eq!(path(&params), Some(presets[after(snap).0].clone()));
     browse(kontra_ui::app::Action::Switch { part: 0, preset });
     users_own_preset(&params, library, preset);
     // With the settings on, a second part takes its own channel and output.

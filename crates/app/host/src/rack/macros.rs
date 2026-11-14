@@ -2,7 +2,7 @@
 //! macro drives, and how the host's 0..1 maps onto the control's value.
 
 /// Host macros the audio side keeps a target for.
-pub const MACROS: usize = 8;
+pub const MACROS: usize = 128;
 /// Menu item values a target keeps; a bigger menu stays on the tick.
 pub const STEPS: usize = 16;
 

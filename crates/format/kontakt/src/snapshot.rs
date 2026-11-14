@@ -43,9 +43,11 @@ pub(crate) struct Native {
 }
 
 /// A group as a snapshot saves it: its insert effects and its volume, pan
-/// and tune, as the group's own params hold them (the first three floats
-/// of its public data; a factory snapshot of the instrument's own state
-/// matches the instrument's on all 933 groups of Morphology Evolved).
+/// and tune, the first three floats of its public data. Volume and pan are
+/// as the group's own params hold them (a factory snapshot of the
+/// instrument's own state matches the instrument's on all 933 groups of
+/// Morphology Evolved); tune is in octaves, not a ratio (ANALOG STRINGS'
+/// 9001 Punch saves -2.0 for a group Kontakt then plays 24 semitones down).
 pub(crate) struct Group {
     pub fx: BParamArrayBParFX8,
     pub volume: f32,

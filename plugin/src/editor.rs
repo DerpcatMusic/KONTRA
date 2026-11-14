@@ -633,24 +633,24 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
             let Some((library, preset)) = found else {
                 return;
             };
-            let count = browser
-                .catalog
-                .libraries
-                .get(library)
-                .map_or(0, |l| l.presets.len());
-            if count == 0 {
+            // Through what the header lists: the instrument and its
+            // snapshots, or the whole library.
+            let family = (browser.catalog.libraries.get(library))
+                .map(|l| kontra_ui_model::preset_family(&l.presets, Some(preset)))
+                .unwrap_or_default();
+            let (count, at) = (family.len(), family.iter().position(|&n| n == preset));
+            let Some(at) = at else {
                 return;
-            }
+            };
             let step = by.unsigned_abs() as usize % count;
             // A full turn (or a one-preset library) stays: no reload.
             if step == 0 {
                 return;
             }
-            let preset = if by < 0 {
-                preset + count - step
-            } else {
-                preset + step
-            } % count;
+            let at = if by < 0 { at + count - step } else { at + step } % count;
+            let Some(&preset) = family.get(at) else {
+                return;
+            };
             let switch = Action::Switch { part, preset };
             browse(rack, browser, switch, report);
         }
