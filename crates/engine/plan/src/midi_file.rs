@@ -31,7 +31,7 @@ impl Event {
             && (0..128).contains(&self.byte2)
             && self.track >= 0
             && self.pos >= 0
-            && self.length >= 0
+            && self.length >= -1
     }
 }
 
@@ -245,7 +245,7 @@ pub fn write(smf: &Smf) -> Option<Vec<u8>> {
                 size,
             ));
             if e.command == 0x90 {
-                let off = e.pos.checked_add(e.length)? - p0;
+                let off = e.pos.checked_add(e.length.max(0))? - p0;
                 messages.push((
                     off,
                     true,
