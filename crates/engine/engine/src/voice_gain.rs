@@ -202,6 +202,16 @@ impl Engine {
 
     /// LFO `n`'s value for this note at `age` (see [`Self::source`]).
     fn lfo_value(&self, zone: &Zone, n: u8, note: &Note, age: Age) -> Option<f32> {
+        let lfo = self.moved_lfo(zone, n, note, age)?;
+        if let ir::Wave::Chaos { .. } = lfo.wave {
+            return age.chaos.get(usize::from(n)).copied();
+        }
+        Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
+    }
+
+    /// LFO `n` as this note plays it: its group's, with the note-on routes
+    /// on phase and rate and the live phase warp applied.
+    fn moved_lfo(&self, zone: &Zone, n: u8, note: &Note, age: Age) -> Option<ir::Lfo> {
         let group = || self.groups.get(zone.group as usize);
         let g = group()?;
         let mut lfo = *g.lfos.get(usize::from(n))?;
@@ -245,11 +255,8 @@ impl Engine {
                 _ => {}
             }
         }
-        if let ir::Wave::Chaos { .. } = lfo.wave {
-            return age.chaos.get(usize::from(n)).copied();
-        }
         lfo.phase += age.warp.get(usize::from(n)).copied().unwrap_or(0.0);
-        Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
+        Some(lfo)
     }
 
     fn envelope_value(&self, zone: &Zone, n: u8, age: Age) -> Option<f32> {
@@ -345,7 +352,7 @@ impl Engine {
             } else {
                 1.0
             };
-            return t.smoothed(|back| {
+            let smoothed = |back| {
                 let past = Age {
                     held: age.held - back,
                     now: age.now - back,
@@ -353,7 +360,20 @@ impl Engine {
                 };
                 let x = self.lfo_value(zone, n, note, past)? * scale;
                 Some(t.apply((x + 1.0) / 2.0))
-            });
+            };
+            // The wave is the group's unless a note-on route moved it: voices
+            // that play the same wave read the same smoothed value.
+            return match self.moved_lfo(zone, n, note, age) {
+                Some(lfo) => modulators::smoothed_shared(
+                    t,
+                    &lfo,
+                    age,
+                    self.tempo,
+                    scale.to_bits(),
+                    || t.smoothed(smoothed),
+                ),
+                None => t.smoothed(smoothed),
+            };
         }
         let x = match t.source {
             ir::Source::Shaped(_) => return None,
