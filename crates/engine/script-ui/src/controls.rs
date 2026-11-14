@@ -29,6 +29,9 @@ pub struct Controls {
     /// By UI id, the steps of each control whose value is an int array (a
     /// table's): `set_control_par_arr` writes them from its cell on.
     pub steps: Vec<u32>,
+    /// By UI id, the string-array entries a control may hold (a ui_xy's
+    /// cursor pictures, one per cursor); 0 for most.
+    pub entries: Vec<u32>,
     /// (value cell, control) for every control with a value cell, sorted by
     /// cell: a save finds each cell's control in log time instead of
     /// scanning every control per cell (Areia: seconds on the audio thread).

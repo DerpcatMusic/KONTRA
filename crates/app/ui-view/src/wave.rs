@@ -46,6 +46,9 @@ fn rgb(c: u32) -> Ink {
     ink(model::Rgba::rgb(c))
 }
 
+/// The most device pixels a display rasterises at (2 Mpx: 48 MB of canvas).
+const MAX_PIXELS: usize = 2_000_000;
+
 /// An opaque picture in device pixels, painted over.
 struct Canvas {
     w: usize,
@@ -127,6 +130,13 @@ pub(super) fn raster(
 ) -> Option<Arc<Image>> {
     if w == 0 || h == 0 {
         return None;
+    }
+    // A huge display draws at a lower resolution and is stretched to its
+    // box: the canvas never outgrows [`MAX_PIXELS`].
+    if w.saturating_mul(h) > MAX_PIXELS {
+        let k = ((w as f64 * h as f64) / MAX_PIXELS as f64).sqrt();
+        let fit = |n: usize| ((n as f64 / k).floor() as usize).max(1);
+        return raster(wave, look, (fit(w), fit(h), s / k));
     }
     let alpha = |i: usize, or: f64| {
         (wave.alpha.get(i).copied().flatten()).map_or(or, |a| f64::from(a) / 255.)
@@ -348,10 +358,11 @@ fn line(
     }
     let mid = by + bh / 2.;
     let amp = 0.9 * bh / 2.;
+    let last = (m - 1) as f64;
+    let v = |i: usize| f64::from(cycle.get(i.min(m - 1)).copied().unwrap_or(0)) / 127.;
     let y_at = |u: f64| {
-        let f = (u.clamp(0., 1.) * (m - 1) as f64).min((m - 1) as f64);
+        let f = (u.clamp(0., 1.) * last).min(last);
         let (i, frac) = (f.floor() as usize, f.fract());
-        let v = |i: usize| f64::from(cycle.get(i.min(m - 1)).copied().unwrap_or(0)) / 127.;
         mid - (v(i) * (1. - frac) + v(i + 1) * frac) * amp
     };
     let half = s / 2.;
@@ -364,7 +375,13 @@ fn line(
         // The line leaves and rejoins the box's centre line at its ends: a
         // cycle that starts or ends off zero shows a vertical there.
         let end = u0 <= 0. || u1 >= 1.;
-        let (lo, hi) = (ya.min(yb), ya.max(yb));
+        // Every point inside the column counts: a spike between two pixel
+        // edges still shows.
+        let inside = (u0.max(0.) * last).ceil() as usize..=(u1.min(1.) * last).floor() as usize;
+        let (lo, hi) = inside.fold((ya.min(yb), ya.max(yb)), |(lo, hi), i| {
+            let y = mid - v(i) * amp;
+            (lo.min(y), hi.max(y))
+        });
         let (lo, hi) = if end { (lo.min(mid), hi.max(mid)) } else { (lo, hi) };
         let (top, bottom) = (lo - half, hi + half);
         let (ink, a) = paint((u0 + u1) / 2.);

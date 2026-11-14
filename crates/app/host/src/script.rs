@@ -304,7 +304,16 @@ fn controls(script: &Script) -> Controls {
     let value_par = symbol(script, CONTROL_VALUE);
     let mut cells = vec![None; script.variables.len()];
     let mut steps = vec![0; script.variables.len()];
+    let mut entries = vec![0; script.variables.len()];
     for c in &script.controls {
+        // A pad's cursors are x/y pairs of its real array.
+        if let (ControlKind::Xy, Some(Cells::Real { len, .. }), Some(e)) = (
+            c.kind,
+            script.variables.get(c.variable as usize).map(|v| v.cells),
+            entries.get_mut(c.variable as usize),
+        ) {
+            *e = len / 2;
+        }
         let (value, len) = match script.variables.get(c.variable as usize).map(|v| v.cells) {
             Some(Cells::Int { base, len }) => (Some(base), len),
             Some(Cells::Real { base, .. }) => (Some(base), 0),
@@ -337,6 +346,7 @@ fn controls(script: &Script) -> Controls {
         selected_item_par: symbol(script, "$CONTROL_PAR_SELECTED_ITEM_IDX"),
         cells,
         steps,
+        entries,
         look: look(script),
         key_pars: [
             "$CONTROL_PAR_KEY_SHIFT",

@@ -346,6 +346,13 @@ fn drawn_page(
         } else {
             words
         };
+        // What the waveform raster draws: its look and its data's contents.
+        let wave_key = wd.waveform.as_ref().map(|v| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (&v.peaks, &v.density, &v.frames).hash(&mut h);
+            (h.finish(), v.frame, v.xray, v.alpha, wave::Look::of(wd))
+        });
         let deps = (
             lit.map(|(o, (t, peak, over))| (o as u8, t.to_bits(), peak.to_bits(), over)),
             [r.x, r.y, r.width, r.height, scale, device].map(f64::to_bits),
@@ -383,7 +390,7 @@ fn drawn_page(
                 wd.table_inner_edge.map(|edge| edge.visible),
                 wd.hide.background,
                 bare,
-                (wd.waveform.as_ref()).map(|v| (v.cursor_us, v.length_us, v.peaks.clone())),
+                ((wd.waveform.as_ref()).map(|v| (v.cursor_us, v.length_us)), wave_key),
             ),
             glyphs
                 .as_ref()
@@ -507,8 +514,7 @@ fn drawn_page(
                 let wl = wave::Look::of(wd);
                 let px = |v: f64| (v / scale * device).round() as usize;
                 let (pw, ph) = (px(w), px(h));
-                let key = (v.zone, v.peaks.len(), v.density.len(), v.frames.len(), v.frame);
-                let key = (key, v.xray, v.alpha, wl, pw, ph, device.to_bits());
+                let key = (wave_key, pw, ph, device.to_bits());
                 let id = format!("kontra-wave-{face}-{}", n.0);
                 let pic = ui.memo(id, key, |_| match wave::raster(v, wl, (pw, ph, device)) {
                     Some(img) => block(w, h).radius(0.).fill(Fill::Image(img, Fit::Fill)),

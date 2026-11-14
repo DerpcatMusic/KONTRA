@@ -429,11 +429,11 @@ fn pad(
     };
     if r.released || !r.held {
         g.xy = None;
-        // The source runs its callback on release, moved or not.
+        // The source runs its callback once on release, moved or not: one
+        // edit, of the cursor's x cell, as it stands.
         return if r.released && w.reports_release {
-            [2 * c, 2 * c + 1]
+            (w.cell(2 * c).map(|v| edit(Set::Cell(2 * c, v))))
                 .into_iter()
-                .filter_map(|cell| Some(edit(Set::Cell(cell, w.cell(cell)?))))
                 .collect()
         } else {
             Vec::new()

@@ -1024,3 +1024,52 @@ fn a_waveform_background_blends_over_its_field_at_its_alpha() {
     assert_eq!(px(1, 1), Some([0x39, 0x39, 0x39, 255]));
     assert_eq!(px(3, 2), Some([0x9F, 0x1F, 0x1F, 255]));
 }
+
+/// A wavetable frame drawn narrower than its points still shows a spike
+/// that falls between two pixel edges, and a huge display rasterises
+/// within its budget, stretched to its box.
+#[test]
+fn a_wavetable_keeps_its_spikes_and_its_raster_is_bounded() {
+    let w = Widget::new(
+        "$t",
+        PageRef(0),
+        Rect::new(0, 0, 64, 40),
+        Kind::Wavetable {
+            three_d: false,
+            parallax: [0, 0],
+        },
+    );
+    let mut cycle = vec![0i8; 256];
+    if let Some(p) = cycle.get_mut(66) {
+        *p = 127;
+    }
+    let wave = model::Waveform {
+        zone: 0,
+        flags: 0,
+        cursor_us: -1,
+        table: vec![],
+        highlighted: None,
+        midi_start_note: 60,
+        peaks: vec![],
+        length_us: 1,
+        xray: false,
+        density: vec![],
+        frames: vec![cycle],
+        frame: 0,
+        alpha: [None; 5],
+    };
+    let look = crate::wave::Look::of(&w);
+    let img = crate::wave::raster(&wave, look, (64, 40, 1.));
+    // Point 66 of 255 lands in column 16; the top 0.9 of the half height
+    // is lit there.
+    let lit = |x: usize, y: usize| {
+        let i = (y * 64 + x) * 4;
+        img.as_ref()
+            .and_then(|img| img.rgba.get(i))
+            .is_some_and(|&r| r > 0x80)
+    };
+    assert!((3..8).any(|y| lit(16, y)), "the spike shows");
+    let big = crate::wave::raster(&wave, look, (10_000, 10_000, 1.));
+    let size = big.as_ref().map(|i| i.rgba.len() / 4);
+    assert!(size.is_some_and(|n| n <= 2_000_000), "{size:?}");
+}

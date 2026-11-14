@@ -199,8 +199,10 @@ pub struct ControlLook<'a> {
 pub const FIRST_FONT: i32 = 26;
 
 impl Store {
-    /// Empty stores for scripts with these control counts.
-    pub fn new(controls: impl Iterator<Item = usize> + Clone) -> Self {
+    /// Empty stores for scripts with these control counts, and by control
+    /// the string-array entries each may hold ([`Controls::entries`]).
+    pub fn new<'a>(scripts: impl Iterator<Item = (usize, &'a [u32])> + Clone) -> Self {
+        let controls = scripts.clone().map(|(n, _)| n);
         Self {
             pars: controls
                 .clone()
@@ -212,11 +214,13 @@ impl Store {
                 .collect(),
             selected: controls.clone().map(|n| vec![0; n].into()).collect(),
             waiting: controls.clone().map(|n| vec![u16::MAX; n].into()).collect(),
-            texts: controls
-                .clone()
-                .map(|n| {
+            texts: scripts
+                .map(|(n, entries)| {
                     (0..n)
-                        .map(|_| Vec::with_capacity(TEXTS + ENTRIES))
+                        .map(|c| {
+                            let extra = entries.get(c).map_or(0, |&e| e as usize);
+                            Vec::with_capacity(TEXTS + extra.min(ENTRIES))
+                        })
                         .collect()
                 })
                 .collect(),
@@ -798,7 +802,7 @@ mod tests {
             ),
         ];
         for (steps, want) in cases {
-            let mut s = Store::new([1].into_iter());
+            let mut s = Store::new([(1, &[][..])].into_iter());
             for &(action, ints) in *steps {
                 assert_eq!(call(&mut s, action, ints), Some(HostValue::Nothing));
             }
@@ -829,7 +833,7 @@ mod tests {
             let got = s.call(0, None, None, &mut c);
             (got, out)
         };
-        let mut s = Store::new([1].into_iter());
+        let mut s = Store::new([(1, &[][..])].into_iter());
         call(&mut s, Action::SetKeyrange, &[36, 72]);
         let edge = |s: &mut Store, action, note| match call(s, action, &[note]).0 {
             Some(HostValue::Int(v)) => v,

@@ -370,12 +370,13 @@ pub(super) fn splice(
     match node {
         Some(n) => {
             place(n, n.mods.len(), old.rect, old.env, bld);
-            // Rebuilt on the layer it was on (a popover's content stays over the page).
+            // Rebuilt on the layer it was on (a popover's content stays over
+            // the page), or higher where the rebuild opened a popover.
             for w in bld.ui.widgets.iter_mut().skip(old.start) {
-                w.z = old.z;
+                w.z = w.z.max(old.z);
             }
             for s in bld.nui.iter_mut().skip(i) {
-                s.z = old.z;
+                s.z = s.z.max(old.z);
             }
         }
         None => bld.nui.push(Slot {
@@ -1050,5 +1051,26 @@ mod tests {
         );
         let area: f64 = strips.iter().map(|r| r.width * r.height).sum();
         assert!((area + 40. * 30. + 20. * 10. - 970. * 600.).abs() < 1e-6);
+        // An instance on the page (layer 0) rebuilt into an open popover:
+        // the popover keeps its layer over the page.
+        let mut shut = popover(false);
+        shut.instance = Some("p".into());
+        let mut opened = popover(true);
+        opened.instance = Some("p".into());
+        let room = ui::Size {
+            width: 100.,
+            height: 100.,
+        };
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        lower(&shut, room, &mut bld);
+        splice(&mut bld, 0, room, "p", Some(&opened));
+        let over = bld.ui.widgets.iter().filter(|w| w.z == 1).count();
+        assert_eq!(over, shown.len(), "a rebuild keeps the popover's layer");
     }
 }
