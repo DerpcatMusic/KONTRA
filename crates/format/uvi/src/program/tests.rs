@@ -2414,13 +2414,14 @@ fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
         <Connections>
           <SignalConnection Ratio="0.5" Source="$Program/LFO 1" Destination="Rate" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
           <SignalConnection Ratio="1" Source="@MIDI CC 1" Destination="Tone" Mapper="" ConnectionMode="0" Bypass="0" Inverted="1"/>
+          <SignalConnection Ratio="1" Source="@MIDI CC 2" Destination="Tone" Mapper="" ConnectionMode="1" Bypass="0" Inverted="0"/>
         </Connections>
       </ScriptProcessor></Scripts>
       <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup LowKey="0" HighKey="127"/></Keygroups></Layer></Layers>
     </Program>"#;
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-    let [rate, tone] = &out.knob_mods[..] else {
+    let [rate, tone, scaled] = &out.knob_mods[..] else {
         panic!("{:?}", out.knob_mods)
     };
     assert_eq!((rate.name.as_str(), rate.saved), ("Rate", 0.25));
@@ -2432,4 +2433,11 @@ fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
     let term = &out.knob_blends[usize::from(t)].terms[0];
     assert_eq!(term.input.source, ir::Source::Controller(1));
     assert_eq!(term.input.table, vec![1.0, 0.0]);
+    // A multiplicative one scales the place by `1 − 1 + x`: `f − 1 = x − 1`.
+    assert!(scaled.scale && !tone.scale);
+    let ir::Source::Blend(t) = scaled.source else {
+        panic!("{:?}", scaled.source)
+    };
+    let table = &out.knob_blends[usize::from(t)].terms[0].input.table;
+    assert!((table[0] + 1.0).abs() < 1e-6 && table[32].abs() < 1e-6, "{table:?}");
 }

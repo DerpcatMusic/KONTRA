@@ -251,16 +251,16 @@ function __control(id, value)
 		c:setValue(value, force(c))
 	end
 end
--- Control `id` moves to `saved`'s place in its range plus `ratio × m`, held
+-- Control `id` moves to `saved`'s place in its range times `1 + scale`, plus `m`, held
 -- within it (a format's connection onto a knob); its `changed` runs when the
 -- value moves.
-function __control_mod(id, saved, ratio, m)
+function __control_mod(id, saved, scale, m)
 	local c = __controls[id + 1]
 	local lo, hi = tonumber(c and c.min), tonumber(c and c.max)
 	if not (lo and hi) or hi == lo then
 		return
 	end
-	local u = math.min(math.max((saved - lo) / (hi - lo) + ratio * m, 0), 1)
+	local u = math.min(math.max((saved - lo) / (hi - lo) * (1 + scale) + m, 0), 1)
 	local v = lo + u * (hi - lo)
 	if c.integer then
 		v = math.floor(v + 0.5)

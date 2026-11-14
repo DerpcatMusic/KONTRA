@@ -206,6 +206,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                                 id,
                                 saved: k.saved,
                                 source: k.source,
+                                scale: k.scale,
                             });
                         } else {
                             diagnostics.push(ir::Diagnostic {

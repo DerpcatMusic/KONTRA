@@ -90,8 +90,9 @@ impl Engine {
             tempo: self.tempo,
         };
         self.knobs.follow(&live);
-        // Routes onto one knob add: the sum of what each reads now, held
-        // within the knob's range once, runs its `changed` once.
+        // Routes onto one knob add (a multiplicative one scales its place
+        // in the range): the sums of what each reads now, held within the
+        // range once, run its `changed` once.
         let reads: Vec<f32> = plan
             .knob_mods
             .iter()
@@ -103,31 +104,32 @@ impl Engine {
             if plan.knob_mods.iter().position(|o| same(&o)) != Some(n) {
                 continue;
             }
-            let sum: f32 = plan
-                .knob_mods
-                .iter()
-                .zip(&reads)
-                .filter(|(o, _)| same(o))
-                .map(|(_, m)| m)
-                .sum();
+            let sum = |scale: bool| -> f32 {
+                (plan.knob_mods.iter().zip(&reads))
+                    .filter(|(o, _)| same(o) && o.scale == scale)
+                    .map(|(_, m)| m)
+                    .sum()
+            };
+            let (scale, add) = (sum(true), sum(false));
             if let Some(last) = self.knob_last.get_mut(n)
-                && sum != *last
+                && [scale, add] != *last
             {
-                *last = sum;
-                moved.push((k, sum));
+                *last = [scale, add];
+                moved.push((k, scale, add));
             }
         }
-        for (k, m) in moved {
-            self.set_control_mod(k.slot, k.id, f64::from(k.saved), 1.0, f64::from(m));
+        for (k, scale, add) in moved {
+            let (saved, scale, add) = (f64::from(k.saved), f64::from(scale), f64::from(add));
+            self.set_control_mod(k.slot, k.id, saved, scale, add);
         }
     }
 
     /// A route's value moved foreign script `slot`'s control `id`
     /// ([`kontra_plan::KnobModPlan`]); the machine runs its `changed` if the
     /// value moved.
-    pub fn set_control_mod(&mut self, slot: u8, id: i32, saved: f64, ratio: f64, m: f64) {
+    pub fn set_control_mod(&mut self, slot: u8, id: i32, saved: f64, scale: f64, m: f64) {
         let running = Running::new(Kind::UiControl, None);
-        self.run_with(slot, running, |vm, context| vm.control_mod(id, saved, ratio, m, context));
+        self.run_with(slot, running, |vm, context| vm.control_mod(id, saved, scale, m, context));
     }
 
     /// The UI or the host moved control `id` (its UI id) of script `slot` to

@@ -529,12 +529,12 @@ impl Machine for LuaMachine {
         self.take(thread, context)
     }
 
-    fn control_mod(&mut self, id: i32, saved: f64, ratio: f64, m: f64, context: u64) -> Option<CoId> {
+    fn control_mod(&mut self, id: i32, saved: f64, scale: f64, m: f64, context: u64) -> Option<CoId> {
         let _run = probe::Run::start();
         let _arena = self.arena.audio();
         let lua = self.lua.as_ref()?;
         let set = lua.globals().get::<Function>("__control_mod").ok()?;
-        let thread = lua.create_thread(set.bind((id, saved, ratio, m)).ok()?).ok()?;
+        let thread = lua.create_thread(set.bind((id, saved, scale, m)).ok()?).ok()?;
         self.take(thread, context)
     }
 
@@ -718,8 +718,8 @@ mod tests {
         // Saved -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
         // (10), and a ratio of -1 from there holds at the bottom (-20).
         let mut log = Log(Vec::new());
-        for (saved, ratio, at) in [(-10.0, 0.5, 1.0), (-10.0, -1.0, 1.0)] {
-            let co = m.control_mod(1, saved, ratio, at, 0).expect("route");
+        for (saved, scale, at) in [(-10.0, 0.0, 0.5), (-10.0, 0.0, -1.0)] {
+            let co = m.control_mod(1, saved, scale, at, 0).expect("route");
             assert_eq!(m.run(co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0);

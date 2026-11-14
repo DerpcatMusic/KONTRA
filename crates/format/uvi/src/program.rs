@@ -701,7 +701,18 @@ impl<L: Library> Translator<'_, '_, L> {
                 continue;
             }
             let mut lfos = std::mem::take(&mut self.out.knob_lfos);
-            let term = matrix::term(self.program, c, Some(&mut lfos)).filter(|t| {
+            // A multiplicative connection scales the knob's place in its range.
+            let scale = flag(c, "ConnectionMode");
+            let term = if scale {
+                matrix::knob_scale(self.program, c, Some(&mut lfos)).map(|input| ir::Term {
+                    input,
+                    amount: 1.0,
+                    factors: Vec::new(),
+                })
+            } else {
+                matrix::term(self.program, c, Some(&mut lfos))
+            };
+            let term = term.filter(|t| {
                 t.factors.is_empty()
                     && matches!(
                         t.input.source,
@@ -729,6 +740,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 name: name.into(),
                 saved,
                 source,
+                scale,
             });
             self.carried.insert(c.id());
         }
