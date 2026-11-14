@@ -213,14 +213,31 @@ pub fn read(
     g: &mut Gesture,
 ) -> (Vec<Edit>, Option<El>) {
     let mut edits = Vec::new();
-    for n in tree.draw_order(page) {
+    let order = tree.draw_order(page);
+    for (i, &n) in order.iter().enumerate() {
         let Some(w) = tree.widgets.get(n.0).filter(|w| takes_input(w)) else {
             continue;
         };
         if !tree.visible(n) {
             continue;
         }
-        let id = surface(face, n.0);
+        // A native page's view with both a drag and a tap gesture lowers to
+        // its control and, right over it, a momentary tap area (face::nui):
+        // the area takes the pointer, so the control reads its drag and
+        // wheel there, and the area still runs the page's own press and
+        // release callbacks (Conflux's Bend springs back to 0 on release).
+        let grip = range(&w.kind)
+            .and(order.get(i + 1))
+            .filter(|m| {
+                tree.visible(**m)
+                    && tree.widgets.get(m.0).is_some_and(|t| {
+                        takes_input(t)
+                            && matches!(t.kind, Kind::Button { momentary: true })
+                            && t.rect == w.rect
+                    })
+            })
+            .map_or(n.0, |m| m.0);
+        let id = surface(face, grip);
         let r = ui.get(id.clone());
         // Menus and value edits don't report keys (KSP manual, KEY_SHIFT).
         let keys = match w.kind {
