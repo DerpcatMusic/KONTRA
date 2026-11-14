@@ -49,6 +49,8 @@ impl<L: Library> Translator<'_, '_, L> {
             attack_shape: shape("AttackCurve"),
             fall_shape: fall,
             lag: 0.0,
+            floor: 0.0,
+            depth: 1.0,
         };
         super::provenance::record("uvi.amp_envelope.v1", env, &source, &result);
         Ok(Some(result))

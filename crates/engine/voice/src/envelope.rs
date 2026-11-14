@@ -22,6 +22,9 @@ pub struct Ahdsr {
     pub fall_shape: f32,
     /// Silent frames at the start of an attack, taken out of its length.
     pub lag: u32,
+    /// The gain is `floor + depth·level` while the envelope runs.
+    pub floor: f32,
+    pub depth: f32,
 }
 
 impl Ahdsr {
@@ -35,6 +38,8 @@ impl Ahdsr {
         attack_shape: 0.0,
         fall_shape: 0.0,
         lag: 0,
+        floor: 0.0,
+        depth: 1.0,
     };
 }
 
@@ -146,8 +151,18 @@ impl Envelope {
         self.stage == Stage::Off
     }
 
-    /// The gain for the next frame.
+    /// The gain for the next frame: `floor + depth·level`, silent once off.
     pub fn tick(&mut self) -> f32 {
+        let s = self.settings;
+        let level = self.step();
+        if self.stage == Stage::Off {
+            return 0.0;
+        }
+        s.floor + s.depth * level
+    }
+
+    /// The next frame's envelope level.
+    fn step(&mut self) -> f32 {
         let s = self.settings;
         if self.wait > 0 && self.stage != Stage::Release {
             self.wait -= 1;
