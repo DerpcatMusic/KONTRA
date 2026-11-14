@@ -113,6 +113,9 @@ pub struct Shared {
     /// Each macro's host value as last applied to its control, as f64
     /// bits: the audio thread applies a host's in-block moves too.
     macro_values: [AtomicU64; macros::COUNT],
+    /// When the editor last moved each macro ([`macros::touch`]), in
+    /// [`macros::now`] milliseconds.
+    macro_touched: [AtomicU64; macros::COUNT],
     /// What the audio side was last told each macro moves.
     /// Bumped when a macro's host name changes ([`macros::renamed`]), and
     /// the value the host was last asked to read the names at.
@@ -122,6 +125,10 @@ pub struct Shared {
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
+    /// The editor's edits asked for and carried out, in order: the
+    /// editor's copy says how many it shows ([`editor::Snapshot::applied`]).
+    ui_sent: AtomicU64,
+    ui_applied: AtomicU64,
     /// Opened on the first tick, so a plugin made and dropped by a host
     /// scanning plug-ins never scans libraries.
     browser: Mutex<Option<kontra_host::browser::Browser>>,
@@ -173,6 +180,10 @@ pub enum Request {
 
 impl Shared {
     pub fn request(&self, r: Request) {
+        if let Request::Ui(edit) = r {
+            self.request_ui(edit);
+            return;
+        }
         if r.loads() {
             if !self.loading() {
                 self.progress.begin();
@@ -180,6 +191,15 @@ impl Shared {
             self.asked.fetch_add(1, Ordering::AcqRel);
         }
         lock(&self.requests).push(r);
+    }
+
+    /// Asks for the editor's `edit`; its number in order, which the
+    /// editor's copy of the rack shows once it is carried out.
+    pub fn request_ui(&self, edit: editor::Edit) -> u64 {
+        let mut requests = lock(&self.requests);
+        let seq = self.ui_sent.fetch_add(1, Ordering::AcqRel) + 1;
+        requests.push(Request::Ui(edit));
+        seq
     }
 
     /// Whether a load asked for is not carried out yet.
@@ -400,7 +420,10 @@ impl BackgroundTask for Tick {
                     p.shared.restoring.store(false, Ordering::Release);
                 }
                 Request::Notice(message) => report.push(message),
-                Request::Ui(edit) => editor::apply(rack, edit),
+                Request::Ui(edit) => {
+                    editor::apply(rack, edit);
+                    p.shared.ui_applied.fetch_add(1, Ordering::AcqRel);
+                }
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
             }
@@ -440,6 +463,7 @@ impl BackgroundTask for Tick {
         frames::time("tick", || rack.tick());
         follow::follow(rack, browser);
         let mut view = lock(&p.shared.view);
+        view.applied = p.shared.ui_applied.load(Ordering::Acquire);
         // A closed editor's copy only keeps the report; it catches up on
         // the first tick after the editor opens.
         let refreshed = match interfaces {
@@ -610,6 +634,9 @@ impl PluginLogic for Kontra {
         while start < frames {
             while let Some(&(_, change)) = moves.next_if(|m| m.0 as usize <= start) {
                 match change {
+                    // A host's echo of the editor's own move (one from
+                    // before the latest) would pull the control back.
+                    Change::Macro(n, _) if macros::held(p, n) => {}
                     Change::Macro(n, value) => {
                         if audio.move_macro(n, value)
                             && let Some(last) = p.shared.macro_values.get(n)

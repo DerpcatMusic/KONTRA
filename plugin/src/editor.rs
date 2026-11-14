@@ -3,9 +3,11 @@
 //! waits on a load, and it hands what the user does back as [`Edit`]s for
 //! the tick to carry out.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use kontra_host::browser::Browser;
 use kontra_host::rack::{Event, HostNote, HostPattern, Mix, Rack};
@@ -13,6 +15,7 @@ use kontra_host::state::SavedView;
 use kontra_host::ui::Library;
 use kontra_protocol::Stats;
 use kontra_ui::app::{self, Action, App, Face, Part};
+use kontra_ui::input::{self, Set};
 use kontra_ui::{Pictures, layout};
 use kontra_ui_model::Interface;
 use moose::mui::MuiEditor;
@@ -56,6 +59,61 @@ struct PartView {
     level: Vec<[f32; 2]>,
 }
 
+/// How long a library control the player moved keeps the editor's value
+/// over the rack's copy: the copy shows a move once the script has run on
+/// it, a block or more after the tick that sent it.
+const HOLD: Duration = Duration::from_millis(250);
+
+/// The editor's own edits, which the rack's copy may not show yet.
+#[derive(Default)]
+pub(crate) struct Mine {
+    /// By rack slot: the last edit sent ([`crate::Shared::request_ui`]).
+    sent: HashMap<usize, u64>,
+    /// By rack slot: the library controls the player moved, and when.
+    touched: HashMap<usize, Vec<(Instant, input::Edit)>>,
+}
+
+impl Mine {
+    /// Notes `action`, sent to rack `slot` as edit `seq`.
+    fn note(&mut self, slot: usize, seq: u64, action: &Action, now: Instant) {
+        self.sent.insert(slot, seq);
+        let (widget, to) = match action {
+            Action::Control {
+                widget,
+                cell: Some(k),
+                value,
+                ..
+            } => (*widget, Set::Cell(*k, *value)),
+            Action::Control { widget, value, .. } => (*widget, Set::Value(*value)),
+            Action::ControlText { widget, text, .. } => (*widget, Set::Text(text.clone())),
+            _ => return,
+        };
+        let edit = input::Edit {
+            widget: kontra_ui_model::WidgetRef(widget),
+            to,
+            keys: Default::default(),
+        };
+        let mine = self.touched.entry(slot).or_default();
+        let same = |e: &input::Edit| {
+            e.widget == edit.widget
+                && match (&e.to, &edit.to) {
+                    (Set::Cell(a, _), Set::Cell(b, _)) => a == b,
+                    (a, b) => std::mem::discriminant(a) == std::mem::discriminant(b),
+                }
+        };
+        mine.retain(|(at, e)| now.duration_since(*at) < HOLD && !same(e));
+        mine.push((now, edit));
+    }
+
+    /// The edits to rack `slot`'s face still held at `now`.
+    fn held(&self, slot: usize, now: Instant) -> Vec<input::Edit> {
+        (self.touched.get(&slot).into_iter().flatten())
+            .filter(|(at, _)| now.duration_since(*at) < HOLD)
+            .map(|(_, e)| e.clone())
+            .collect()
+    }
+}
+
 /// The rack as the editor last saw it.
 #[derive(Debug, Default)]
 pub struct Snapshot {
@@ -73,6 +131,9 @@ pub struct Snapshot {
     report: Vec<String>,
     /// A file a part's script asks the player to pick, by the part's row.
     pick: Option<app::FilePick>,
+    /// How many of the editor's edits ([`crate::Shared::request_ui`]) the
+    /// rack had carried out when this copy was taken.
+    pub(crate) applied: u64,
 }
 
 impl Snapshot {
@@ -206,8 +267,12 @@ impl Snapshot {
     }
 
     /// Fills `app` for a frame, keeping each part's own view state; `shown`
-    /// is which load of each part the editor's faces are of.
-    fn fill(&self, app: &mut App, shown: &mut Shown) {
+    /// is which load of each part the editor's faces are of. `mine` is what
+    /// the editor sent: a part's mix this copy predates, and a library
+    /// control moved within [`HOLD`], keep what the editor drew, so a drag
+    /// never springs back to a value from before its own moves.
+    fn fill(&self, app: &mut App, shown: &mut Shown, mine: &Mine, now: Instant) {
+        let sent = &mine.sent;
         if shown.browser != self.libraries.0 {
             let fresh = self.libraries.1.as_ref();
             // A load or a star changes the list, not its art: the covers
@@ -237,24 +302,34 @@ impl Snapshot {
         } = shown;
         let heard = std::mem::take(sounds_shown);
         let mut old = std::mem::take(&mut app.parts);
+        // The editor is ahead of this copy on a part it edited since the
+        // copy was taken (same load, its face on screen).
+        let ahead: Vec<bool> = (self.parts.iter().enumerate())
+            .map(|(n, p)| {
+                sent.get(&p.slot).is_some_and(|&s| s > self.applied)
+                    && shown.get(n).is_some_and(|s| s.0 == p.generation)
+                    && old.get(n).is_some()
+            })
+            .collect();
         let parts = self.parts.iter().enumerate().map(|(n, p)| {
+            let held = ahead.get(n).copied().unwrap_or(false);
             let mut old = old.get_mut(n);
             let (open, tab, look) = old
                 .as_ref()
                 .map_or((true, Default::default(), None), |old| {
                     (old.open, old.tab, old.look)
                 });
-            let now = (p.generation, p.revision);
+            let at = (p.generation, p.revision);
             let sound_now = (p.generation, p.sounds.0);
             // The editor's own edit shows at once; the rack's copy once it moved.
             let sounds = match old.as_mut() {
                 Some(old) if heard.get(n) == Some(&sound_now) => std::mem::take(&mut old.sounds),
                 _ => p.sounds.1.as_ref().clone(),
             };
-            let face = match old {
-                Some(old) if shown.get(n) == Some(&now) => old.face.take(),
+            let face = match old.as_mut() {
+                Some(old) if shown.get(n) == Some(&at) => old.face.take(),
                 // The script changed its look: a new tree, the same pictures.
-                Some(old) if shown.get(n).is_some_and(|s| s.0 == now.0) => {
+                Some(old) if shown.get(n).is_some_and(|s| s.0 == at.0) => {
                     let tree = p.tree.as_deref();
                     old.face.take().zip(tree).map(|(mut f, tree)| {
                         f.tree = resolved(tree);
@@ -263,19 +338,38 @@ impl Snapshot {
                 }
                 _ => p.tree.as_deref().map(|tree| face(tree, p.source.clone())),
             };
+            // The controls the player is moving show where the player put
+            // them until the script has had them.
+            let mut face = face;
+            if let Some(f) = face.as_mut() {
+                input::apply(&mut f.tree, &mine.held(p.slot, now));
+            }
+            let own = |f: fn(&Part) -> f64, theirs: f64| match &old {
+                Some(old) if held => f(old),
+                _ => theirs,
+            };
+            let (mix_held, old_mix) = match &old {
+                Some(old) if held => (true, (old.channel, old.output, old.solo, old.mute)),
+                _ => (false, Default::default()),
+            };
+            let (channel, output, solo, mute) = if mix_held {
+                old_mix
+            } else {
+                (p.mix.channel, p.mix.output + 1, p.solo, p.mute)
+            };
             Part {
                 face,
                 name: p.name.clone(),
                 library: p.library.clone(),
                 preset: p.preset,
                 modified: p.modified,
-                channel: p.mix.channel,
-                output: p.mix.output + 1,
-                volume: f64::from(linear_to_db(p.mix.gain)),
-                pan: f64::from(p.mix.pan),
+                channel,
+                output,
+                volume: own(|o| o.volume, f64::from(linear_to_db(p.mix.gain))),
+                pan: own(|o| o.pan, f64::from(p.mix.pan)),
                 level: p.level.iter().map(|l| l.map(f64::from)).collect(),
-                solo: p.solo,
-                mute: p.mute,
+                solo,
+                mute,
                 keys: (0, 127),
                 open,
                 tab,
@@ -759,6 +853,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // Where the last load the editor asked for lands.
     let mut target = app::Loading::New;
     let mut buttons = None;
+    // What the editor sent the rack ([`Snapshot::fill`]).
+    let mut mine = Mine::default();
     // Between builds: the frame before's paint and submit, and any idle wait.
     let mut last: Option<std::time::Instant> = None;
     // Escape reaches the host when no field is focused; noted here, it
@@ -790,7 +886,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         let slots: Vec<usize> = {
             let view = lock(&p.shared.view);
-            view.fill(&mut app, &mut shown);
+            view.fill(&mut app, &mut shown, &mine, Instant::now());
             view.parts.iter().map(|v| v.slot).collect()
         };
         crate::look::parts(&mut app, &slots, &mut waiting);
@@ -933,7 +1029,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                     dragging = Some((id, value));
                 }
             }
-            p.shared.request(Request::Ui(Edit { slot, action }));
+            let noted = slot.map(|s| (s, action.clone()));
+            let seq = p.shared.request_ui(Edit { slot, action });
+            if let Some((slot, action)) = noted {
+                mine.note(slot, seq, &action, Instant::now());
+            }
         }
         let pressed = (app.parts.iter()).any(|s| s.face.as_ref().is_some_and(|f| f.gesture.held()));
         match dragging {
@@ -1057,6 +1157,83 @@ fn is_instrument(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A drag's frames come faster than the rack's copy: a copy taken
+    /// before the editor's last edit keeps the editor's value, and the
+    /// rack's shows once the copy has carried that edit out.
+    #[test]
+    fn a_drag_never_springs_back_to_an_older_copy() {
+        let part = |gain: f32| PartView {
+            slot: 0,
+            generation: 1,
+            path: None,
+            source: None,
+            tree: None,
+            revision: 0,
+            sounds: Default::default(),
+            name: String::new(),
+            library: String::new(),
+            preset: None,
+            modified: false,
+            mix: kontra_host::rack::Mix {
+                channel: 0,
+                output: 0,
+                gain,
+                pan: 0.,
+                silent: false,
+            },
+            solo: false,
+            mute: false,
+            level: Vec::new(),
+        };
+        let mut view = Snapshot {
+            parts: vec![part(1.)],
+            ..Snapshot::default()
+        };
+        let (mut app, mut shown) = (App::default(), Shown::default());
+        let t = Instant::now();
+        view.fill(&mut app, &mut shown, &Mine::default(), t);
+        let drawn = |app: &App| app.parts.first().map(|p| p.volume.round());
+        assert_eq!(drawn(&app), Some(0.));
+        // The editor dragged to +6 dB and sent it as edit 1.
+        if let Some(p) = app.parts.first_mut() {
+            p.volume = 6.;
+        }
+        let mine = Mine {
+            sent: HashMap::from([(0, 1)]),
+            ..Mine::default()
+        };
+        view.fill(&mut app, &mut shown, &mine, t);
+        assert_eq!(drawn(&app), Some(6.), "the copy predates the edit");
+        view.applied = 1;
+        view.parts = vec![part(db_to_linear(6.))];
+        view.fill(&mut app, &mut shown, &mine, t);
+        assert_eq!(drawn(&app), Some(6.));
+        view.parts = vec![part(db_to_linear(-3.))];
+        view.fill(&mut app, &mut shown, &mine, t);
+        assert_eq!(drawn(&app), Some(-3.), "the rack's own change shows");
+    }
+
+    /// A library control the player moves keeps its last move over the
+    /// rack's copy for [`HOLD`], one entry per control.
+    #[test]
+    fn a_moved_control_holds_its_last_move() {
+        let (mut mine, t) = (Mine::default(), Instant::now());
+        let moved = |value| Action::Control {
+            part: 0,
+            widget: 3,
+            cell: None,
+            value,
+            keys: Default::default(),
+        };
+        mine.note(2, 1, &moved(0.4), t);
+        mine.note(2, 2, &moved(0.5), t);
+        let held = mine.held(2, t + Duration::from_millis(100));
+        assert_eq!(held.len(), 1);
+        assert!(held.iter().all(|e| e.to == Set::Value(0.5)));
+        assert!(mine.held(2, t + HOLD).is_empty());
+        assert!(mine.held(1, t).is_empty());
+    }
 
     #[test]
     fn sfz_files_can_be_dropped_into_the_player() {
