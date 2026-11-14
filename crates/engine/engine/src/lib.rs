@@ -283,6 +283,12 @@ pub struct Engine {
     /// group's, so `set_zone_par` moving it needs no rebuild).
     chains: Vec<filters::Chain>,
     group_chain: Box<[Option<u16>]>,
+    /// Per group on a shared chain, the private chain it takes once a write
+    /// moves its inserts (filters.rs).
+    group_private: Box<[Option<u16>]>,
+    /// Per group, whether its inserts were written since the last span.
+    group_moved: Box<[bool]>,
+    groups_moved: bool,
     /// Per group, the inserts that run on each voice.
     voice_units: Box<[Arc<[voice_rack::Unit]>]>,
     /// Per group, the first slot its summed voices run (group_racks.rs).
@@ -452,6 +458,9 @@ impl Engine {
             main,
             chains: Vec::new(),
             group_chain: Box::new([]),
+            group_private: Box::new([]),
+            group_moved: Box::new([]),
+            groups_moved: false,
             voice_units: Box::new([]),
             group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
