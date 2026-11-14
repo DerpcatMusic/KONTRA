@@ -751,6 +751,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let mut shown = Shown::default();
     let mut look = SavedView::default();
     let mut waiting = Vec::new();
+    // The host macro of the panel control being dragged, and its value: its
+    // gesture stays open until the press ends, or the host would play its
+    // own older value back between moves and the control would jump.
+    let mut dragging: Option<(u32, f64)> = None;
     let mut restored = None;
     // Where the last load the editor asked for lands.
     let mut target = app::Loading::New;
@@ -926,9 +930,15 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 let touched = w.and_then(|w| crate::macros::touch(&p, slot, title, w, *value));
                 if let Some((id, value)) = touched {
                     bridge.drag_gesture(id, value);
+                    dragging = Some((id, value));
                 }
             }
             p.shared.request(Request::Ui(Edit { slot, action }));
+        }
+        let pressed = (app.parts.iter()).any(|s| s.face.as_ref().is_some_and(|f| f.gesture.held()));
+        match dragging {
+            Some((id, value)) if pressed => bridge.drag_gesture(id, value),
+            _ => dragging = None,
         }
         // Parts not loaded yet keep how they were saved.
         let mut now = crate::look::saved(&app, &slots);
