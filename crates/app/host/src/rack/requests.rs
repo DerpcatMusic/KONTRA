@@ -16,6 +16,13 @@ pub struct ZoneSwap {
     pub edits: Box<[(ZoneEdit, bool)]>,
 }
 
+/// A purged group whose heads were read.
+pub struct Woken {
+    pub part: usize,
+    pub generation: u64,
+    pub unpurge: kontra_engine::Unpurge,
+}
+
 /// A part's (index, load) edits since the last tick, each with whether it took.
 type Batch = (usize, u64, Vec<(ZoneEdit, bool)>);
 
@@ -42,6 +49,106 @@ impl Rack {
     pub(super) fn script_requests(&mut self) {
         self.effect_requests();
         self.zone_edits();
+        self.unpurges();
+    }
+
+    /// Purged groups scripts asked for: their samples load here, the zones
+    /// join the part's plan between blocks, and the group plays once its
+    /// heads are read (a thread reads them; the audio side never waits).
+    fn unpurges(&mut self) {
+        while let Some((part, generation, u)) = self.channels.unpurges.recv() {
+            let Some(Some(p)) = self.parts.get_mut(part) else {
+                continue;
+            };
+            let Some(plan) = p
+                .plan
+                .as_deref()
+                .filter(|_| p.script.generation == generation)
+            else {
+                continue;
+            };
+            let samples: Vec<_> = (plan.dormant.iter())
+                .filter(|d| d.group == u.group)
+                .flat_map(|d| d.samples.iter())
+                .collect();
+            let files = kontra_stream::Files::new(samples.iter().map(|s| s.file.as_path()));
+            let waked = kontra_prepare::wake(plan, u.group, &mut self.store, &|s| files.open(s));
+            let Some((grown, diagnostics, count)) = waked else {
+                // Already loaded by an earlier ask: nothing more to read.
+                self.send(Command::Unpurged {
+                    part,
+                    generation,
+                    unpurge: u,
+                    took: true,
+                });
+                continue;
+            };
+            let name = grown
+                .groups
+                .get(u.group as usize)
+                .map_or("", |g| g.name.as_str());
+            self.notices.push(format!(
+                "part {} ({}): loading purged group {name} ({count} samples)",
+                part + 1,
+                p.name
+            ));
+            self.notices.extend(diagnostics.iter().map(|d| {
+                format!(
+                    "part {} ({}): {}: {}",
+                    part + 1,
+                    p.name,
+                    d.feature,
+                    d.detail
+                )
+            }));
+            p.diagnostics.extend(diagnostics);
+            let grown = Arc::new(grown);
+            p.plan = Some(Arc::clone(&grown));
+            let swap = Box::new(ZoneSwap {
+                plan: grown,
+                edits: Box::default(),
+            });
+            self.send(Command::Zones {
+                part,
+                generation,
+                swap,
+            });
+            let done = self.woken.0.clone();
+            let heads = self.store.take_heads();
+            let lanes = std::thread::available_parallelism().map_or(4, |n| n.get() * 3);
+            let read = move || {
+                if let Some(heads) = heads {
+                    heads.load(lanes);
+                }
+                let _ = done.send(Woken {
+                    part,
+                    generation,
+                    unpurge: u,
+                });
+            };
+            // A failed spawn leaves the heads to stream on demand: the group
+            // still plays.
+            if std::thread::Builder::new()
+                .name("kontra-unpurge".into())
+                .spawn(read)
+                .is_err()
+            {
+                self.send(Command::Unpurged {
+                    part,
+                    generation,
+                    unpurge: u,
+                    took: true,
+                });
+            }
+        }
+        while let Ok(w) = self.woken.1.try_recv() {
+            self.send(Command::Unpurged {
+                part: w.part,
+                generation: w.generation,
+                unpurge: w.unpurge,
+                took: true,
+            });
+        }
     }
 
     /// Effect types scripts loaded.

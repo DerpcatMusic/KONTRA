@@ -13,12 +13,14 @@ mod buses;
 mod callbacks;
 mod controls;
 
+mod detect;
 mod filters;
 mod fx_types;
 mod impulse_knobs;
 mod inspect;
 mod knobs;
 mod midi;
+mod midi_object;
 mod modulators;
 mod par_display;
 mod params;
@@ -29,6 +31,7 @@ mod refresh;
 mod reshaped;
 mod runtime;
 mod script_files;
+mod zone_commands;
 
 mod script;
 mod start;
@@ -63,7 +66,7 @@ pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{
-    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, zone_name,
+    EnginePar, EnginePars, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file, zone_name,
 };
 pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
@@ -73,15 +76,16 @@ pub use kontra_voice::{Ahdsr, Loop, Region, RenderMode};
 pub use ledger::NoteRef;
 pub use pgs::PgsBudget;
 pub use plan::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
+    Atom, Bus, Control, Crossfade, Dormant, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
     RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
-pub use script::{Callbacks, CcLink, KnobModPlan, Controls, LookPars, ScriptPlan};
+pub use script::{Callbacks, CcLink, Controls, KnobModPlan, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
-pub use zone_edits::ZoneEdit;
+pub use zone_commands::detect_sample;
+pub use zone_edits::{Unpurge, ZoneEdit};
 
 use buses::BusState;
 use group_masks::GroupMasks;
@@ -175,6 +179,8 @@ pub struct Engine {
     requests: Vec<fx_types::EffectRequest>,
     /// `set_zone_par` calls waiting for the host (zone_edits.rs).
     zone_edits: Vec<ZoneEdit>,
+    /// `purge_group(g, 1)` of dormant groups waiting for the host (zone_edits.rs).
+    unpurges: Vec<Unpurge>,
     /// Per script slot, the edits refused because that queue was full.
     zone_refused: Box<[u32]>,
     /// The block being rendered ends here; script turns run before it began.
@@ -238,6 +244,8 @@ pub struct Engine {
     /// While `on init` runs at load, the cells `read_persistent_var`
     /// reloaded, by slot (texts flagged): the end-of-init restore skips them.
     reloaded: Vec<(u8, std::ops::Range<u32>, bool)>,
+    /// The MIDI object (`mf_*`).
+    midi: midi_object::Object,
     /// Array files scripts asked to load or save, for the control side.
     files: Vec<kontra_plan::files::FileRequest>,
     /// The editor's answers to picks (`PickFile`): slot, async id, and the
@@ -285,6 +293,12 @@ pub struct Engine {
     /// group's, so `set_zone_par` moving it needs no rebuild).
     chains: Vec<filters::Chain>,
     group_chain: Box<[Option<u16>]>,
+    /// Per group on a shared chain, the private chain it takes once a write
+    /// moves its inserts (filters.rs).
+    group_private: Box<[Option<u16>]>,
+    /// Per group, whether its inserts were written since the last span.
+    group_moved: Box<[bool]>,
+    groups_moved: bool,
     /// Per group, the inserts that run on each voice.
     voice_units: Box<[Arc<[voice_rack::Unit]>]>,
     /// Per group, the first slot its summed voices run (group_racks.rs).
@@ -398,6 +412,7 @@ impl Engine {
             init_impulses: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
             zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
+            unpurges: Vec::with_capacity(16),
             zone_refused: vec![0; script_count].into(),
             block_end: SampleTime(0),
             block_turns: 0,
@@ -437,6 +452,7 @@ impl Engine {
             recalled: Box::new([]),
             building: true,
             reloaded: Vec::new(),
+            midi: midi_object::Object::new(),
             files: Vec::with_capacity(script_files::FILES),
             picked: Vec::with_capacity(script_files::FILES),
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
@@ -457,6 +473,9 @@ impl Engine {
             knob_last,
             chains: Vec::new(),
             group_chain: Box::new([]),
+            group_private: Box::new([]),
+            group_moved: Box::new([]),
+            groups_moved: false,
             voice_units: Box::new([]),
             group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),

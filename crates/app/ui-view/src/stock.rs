@@ -757,12 +757,17 @@ pub(super) fn label_face(
     w: &Widget,
     (width, height, s): (f64, f64, f64),
 ) -> Option<El> {
-    (matches!(w.kind, Kind::Label) && !w.hide.background && unpictured(tree, w)).then(|| {
-        block((width - 2. * s).max(0.), (height - 2. * s).max(0.))
-            .radius(0.)
-            .fill(rgb(0x77_7671))
-            .at(s, s)
-    })
+    // Only a script's own `ui_label` (it has a `get_ui_id`): a native_ui
+    // text on the same page draws no face (Conflux's tabs and captions).
+    let scripted = w.source_id.is_some();
+    (matches!(w.kind, Kind::Label) && scripted && !w.hide.background && unpictured(tree, w)).then(
+        || {
+            block((width - 2. * s).max(0.), (height - 2. * s).max(0.))
+                .radius(0.)
+                .fill(rgb(0x77_7671))
+                .at(s, s)
+        },
+    )
 }
 
 /// A KSP control with no picture, or one the library lacks; `false` for

@@ -90,7 +90,10 @@ impl Engine {
     ) -> Option<&mut Option<ir::Effect>> {
         let rack = match (usize::try_from(group), generic) {
             // A group's slot: `<generic>` is for instrument effects only (KSP manual).
-            (Ok(g), _) => &mut self.groups.get_mut(g)?.inserts[..],
+            (Ok(g), _) => {
+                self.group_written(g);
+                &mut self.groups.get_mut(g)?.inserts[..]
+            }
             // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
             // Kontakt takes generic -1 as the insert rack too (Una Corda's
             // transient and stereo knobs; measured, controls.py 2026-11-12).

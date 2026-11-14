@@ -26,6 +26,8 @@ pub enum Arg {
     A,
     /// A bare word or string naming a key, passed as text.
     K,
+    /// A number variable the command sets, passed as its cell.
+    W,
 }
 
 /// What a builtin returns.
@@ -361,6 +363,31 @@ builtins! {
         GetKeyTriggerstate "get_key_triggerstate" [I] 0 Int;
         SetKeyrange "set_keyrange" [I I S] 0 Void;
         RemoveKeyrange "remove_keyrange" [I] 0 Void;
+        SetPolyAt "set_poly_at" [I I] 0 Void;
+        GetKeyrangeMinNote "get_keyrange_min_note" [I] 0 Int;
+        GetKeyrangeMaxNote "get_keyrange_max_note" [I] 0 Int;
+        GetKeyrangeName "get_keyrange_name" [I] 0 Text;
+        SetMapEditorEventColor "set_map_editor_event_color" [I] 0 Void;
+        LoadKompleteUi "load_komplete_ui" [] 0 Void;
+        // Zone, sample and music-information commands (KSP manual: Zone Commands,
+        // Music Information Retrieval). A `W` argument is a variable the command sets.
+        GetSample "get_sample" [I I] 0 Text;
+        SetSample "set_sample" [I S] 0 Int;
+        SetNumUserZones "set_num_user_zones" [I] 0 Void;
+        GetZoneStatus "get_zone_status" [I] 0 Int;
+        GetSelZonesIdx "get_sel_zones_idx" [A] 0 Void;
+        GetLoopPar "get_loop_par" [I I I] 0 Int;
+        SetLoopPar "set_loop_par" [I I I I] 0 Int;
+        SetMidi "set_midi" [I I I I] 0 Void;
+        DetectKey "detect_key" [I W] 0 Int;
+        DetectPitch "detect_pitch" [I W] 0 Int;
+        DetectLoudness "detect_loudness" [I W] 0 Int;
+        DetectPeak "detect_peak" [I W] 0 Int;
+        DetectRms "detect_rms" [I W] 0 Int;
+        DetectTempo "detect_tempo" [I W] 0 Int;
+        DetectSampleType "detect_sample_type" [I W] 0 Int;
+        DetectDrumType "detect_drum_type" [I W] 0 Int;
+        DetectInstrumentType "detect_instrument_type" [I W] 0 Int;
         // Diagnostics.
         Message "message" [S] 0 Void;
         DisableLogging "disable_logging" [I] 0 Void;

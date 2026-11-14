@@ -1082,6 +1082,43 @@ fn a_controller_opens_a_voice_filter() {
     assert!((open - 0.1).abs() < 0.01, "open {open}");
 }
 
+#[test]
+fn a_write_after_init_opens_a_shared_group_filter_while_the_note_sounds() {
+    use kontra_engine::ir::{Effect, EffectKind, Filter, Pass};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    // No route moves it, so its voices share one chain on the group's sum.
+    let filter = |hz| Effect {
+        kind: EffectKind::Filter(Filter {
+            pass: Pass::Low,
+            hz,
+            stages: 2,
+            ladder: None,
+            damping: [1.85, 0.77, 0.0],
+            gain: 1.0,
+            octaves: 0.0,
+            q_octaves: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    plan.groups[0].inserts = vec![Some(filter(100.0))];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let peak = |e: &mut Engine, events: &[Timed<Event>]| {
+        let mut out = vec![[0.0f32; 2]; 4800];
+        e.process(&mut out, events);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    peak(&mut e, &[on(60, 1.0)]);
+    let closed = peak(&mut e, &[]);
+    let envelope = e.group_sounds()[0].0;
+    e.set_group_sound(0, envelope, Some((0, filter(20_000.0))));
+    let open = peak(&mut e, &[]);
+    assert!(closed < 0.001, "closed {closed}");
+    assert!((open - 0.1).abs() < 0.01, "open {open}");
+}
+
 /// A group with one EQ insert, `eq`, and the given routes.
 fn eq_group(
     region: Region,

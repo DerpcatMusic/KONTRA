@@ -67,7 +67,7 @@ impl Memo {
 }
 
 pub(crate) use kontra_plan::modulation::{
-    Age, CHAOS_START, Chaos, WARPS, chaos_step, lfo, stretched,
+    Age, CHAOS_START, Chaos, WARPS, chaos_step, lfo, smoothed_shared, stretched,
 };
 
 impl Engine {

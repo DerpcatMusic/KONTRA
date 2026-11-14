@@ -123,6 +123,7 @@ impl Engine {
             && let Some(at) = g.inserts.get_mut(slot)
         {
             *at = Some(effect);
+            self.group_written(group);
         }
         self.refresh_all(None);
     }

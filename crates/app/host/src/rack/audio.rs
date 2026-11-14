@@ -311,6 +311,9 @@ impl RackAudio {
             let edits = &self.channels.zones.edits;
             p.engine
                 .drain_zone_edits(|e| edits.send((n, generation, e)).is_ok());
+            let asks = &self.channels.unpurges;
+            p.engine
+                .drain_unpurges(|u| asks.send((n, generation, u)).is_ok());
             let files = &self.channels.files;
             p.engine
                 .drain_files(|r| files.send((n, generation, r)).is_ok());
@@ -462,6 +465,18 @@ impl RackAudio {
                         // Checked for room first; if it ever fails, it frees here.
                         self.dropped += 1;
                         drop(swap);
+                    }
+                }
+                Command::Unpurged {
+                    part,
+                    generation,
+                    unpurge,
+                    took,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part)
+                        && p.generation == generation
+                    {
+                        p.engine.unpurged(unpurge, took);
                     }
                 }
                 Command::Effect {

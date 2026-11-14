@@ -1,0 +1,56 @@
+# The detect key tags and the MIDI mark commands in Kontakt 8.13 (run: ksp_probe.py <nki> this-file).
+# Measured 2026-11-14: C# major 1, D 2 ... B major 11, C minor 12 ... B minor 23 (KONTRA: 0..23 from C major).
+# ANOMALY, unexplained, read the same in two runs: $NI_DETECT_KEY_C_MAJOR reads 1 (as C# major) and
+# $NI_DETECT_KEY_INVALID reads 6; KONTRA keeps 0 and -1. ids continue after mf_reset (2, then 3); a CC
+# event's length reads -1; by_marks($MARK_1) reads -2147483646 and by_track(2) -4 (KONTRA's own tags).
+# OPEN: mf_get_mark answered 0 for an id, $ALL_EVENTS and $CURRENT_EVENT right after mf_set_mark(.., 1),
+# while by_marks($MARK_2) addressed the event and cleared again with status 0.
+S declare $a
+R k_c_major $NI_DETECT_KEY_C_MAJOR
+R k_csharp_major $NI_DETECT_KEY_CSHARP_MAJOR
+R k_d_major $NI_DETECT_KEY_D_MAJOR
+R k_dsharp_major $NI_DETECT_KEY_DSHARP_MAJOR
+R k_e_major $NI_DETECT_KEY_E_MAJOR
+R k_f_major $NI_DETECT_KEY_F_MAJOR
+R k_fsharp_major $NI_DETECT_KEY_FSHARP_MAJOR
+R k_g_major $NI_DETECT_KEY_G_MAJOR
+R k_gsharp_major $NI_DETECT_KEY_GSHARP_MAJOR
+R k_a_major $NI_DETECT_KEY_A_MAJOR
+R k_asharp_major $NI_DETECT_KEY_ASHARP_MAJOR
+R k_b_major $NI_DETECT_KEY_B_MAJOR
+R k_c_minor $NI_DETECT_KEY_C_MINOR
+R k_csharp_minor $NI_DETECT_KEY_CSHARP_MINOR
+R k_d_minor $NI_DETECT_KEY_D_MINOR
+R k_dsharp_minor $NI_DETECT_KEY_DSHARP_MINOR
+R k_e_minor $NI_DETECT_KEY_E_MINOR
+R k_f_minor $NI_DETECT_KEY_F_MINOR
+R k_fsharp_minor $NI_DETECT_KEY_FSHARP_MINOR
+R k_g_minor $NI_DETECT_KEY_G_MINOR
+R k_gsharp_minor $NI_DETECT_KEY_GSHARP_MINOR
+R k_a_minor $NI_DETECT_KEY_A_MINOR
+R k_asharp_minor $NI_DETECT_KEY_ASHARP_MINOR
+R k_b_minor $NI_DETECT_KEY_B_MINOR
+R k_invalid $NI_DETECT_KEY_INVALID
+R mark_1 $MARK_1
+R mark_2 $MARK_2
+R by_marks_1 by_marks($MARK_1)
+R by_track_2 by_track(2)
+S mf_set_buffer_size(4)
+S $a := mf_insert_event(1, 10, $MIDI_COMMAND_CC, 7, 90)
+R id_fresh $a
+S mf_set_mark($a, $MARK_2, 1)
+R get_mark_id mf_get_mark($a, $MARK_2)
+R get_mark_all mf_get_mark($ALL_EVENTS, $MARK_2)
+R get_mark_other mf_get_mark($a, $MARK_1)
+S mf_get_first(-1)
+R get_mark_current mf_get_mark($CURRENT_EVENT, $MARK_2)
+S mf_set_event_par(by_marks($MARK_2), $EVENT_PAR_POS, 55)
+R by_marks_hit mf_get_event_par($a, $EVENT_PAR_POS)
+S mf_set_mark($a, $MARK_2, 0)
+S mf_set_event_par(by_marks($MARK_2), $EVENT_PAR_POS, 66)
+R by_marks_after_clear mf_get_event_par($a, $EVENT_PAR_POS)
+R len_cc mf_get_event_par($a, $EVENT_PAR_NOTE_LENGTH)
+S mf_reset()
+S mf_set_buffer_size(2)
+S $a := mf_insert_event(0, 1, $MIDI_COMMAND_CC, 7, 90)
+R id_after_reset $a
