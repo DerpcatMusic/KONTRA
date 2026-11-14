@@ -68,7 +68,7 @@ impl Engine {
             self.choke_by(zone.group, note);
             self.limit_group(zone.group);
             if let Some(vg) = zone.voice_group {
-                self.limit_voice_group(vg);
+                self.limit_voice_group(vg, note);
             }
             let factor = if zone.trigger == Trigger::Release {
                 crate::ir::common::DB_GAIN.eval_unclamped(-zone.release_decay_db * held_seconds)

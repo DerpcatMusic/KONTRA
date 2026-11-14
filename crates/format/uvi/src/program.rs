@@ -250,15 +250,49 @@ impl<L: Library> Translator<'_, '_, L> {
             return Ok(());
         }
         let keys = (midi_or(layer, "LowKey", 0), midi_or(layer, "HighKey", 127));
+        let voice_group = self.layer_polyphony(layer)?;
         for keygroup in layer.descendants().filter(|n| n.has_tag_name("Keygroup")) {
             let before = self.out.groups.len();
             self.keygroup(keygroup, (1.0, pan), keys)?;
             if let Some(group) = self.out.groups.get_mut(before) {
                 group.bus = bus;
+                group.voice_group = voice_group;
                 self.made.insert(keygroup.id(), before);
             }
         }
         Ok(())
+    }
+
+    /// A layer's own note limit (`CustomPolyphony`, 0 = the program's): its
+    /// notes share one voice group counting that many notes; a new note past
+    /// it takes every voice of the oldest, however many zones each sounds.
+    /// VWinds' sustain layers hold 2, so a third note ends the first. A mono
+    /// `PlayMode` (0 Poly, 1 Poly Portamento, 2 Mono Retrigger, 3 Mono
+    /// Portamento, 4 Mono Portamento Slide, from UVIWorkstation's enum
+    /// strings) holds one; the portamento glide itself is not carried yet.
+    fn layer_polyphony(&mut self, layer: Node) -> Result<Option<usize>, String> {
+        let mode = num(layer, "PlayMode", 0.0)? as u8;
+        if matches!(mode, 1 | 3 | 4) {
+            let name = layer.attribute("DisplayName").unwrap_or("layer");
+            self.notes.add(ir::Impact::Audible, "portamento glide (Layer.PlayMode)", name);
+        }
+        let notes = match mode {
+            2..=4 => 1,
+            _ => num(layer, "CustomPolyphony", 0.0)?.clamp(0.0, 256.0) as u16,
+        };
+        if notes == 0 {
+            return Ok(None);
+        }
+        self.out.voice_groups.push(ir::VoiceGroup {
+            voices: notes,
+            steal: ir::Steal::Oldest,
+            prefer_released: false,
+            // ponytail: UVI's steal fade is unmeasured; Kontakt's default.
+            fade_ms: 10.0,
+            exclusive: None,
+            per_note: true,
+        });
+        Ok(Some(self.out.voice_groups.len() - 1))
     }
 
     fn keygroup(

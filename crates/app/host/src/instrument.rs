@@ -283,12 +283,25 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                     factory_folder_of(kontra_library::kontakt::candidates())
                 });
                 planned.links = crate::script::links(&compiled, &script.links);
-                if planned.links.len() < script.links.len() {
-                    diagnostics.push(ir::Diagnostic {
-                        impact: ir::Impact::Audible,
-                        feature: "MIDI automation of a missing script control".into(),
-                        detail: script.name.clone(),
-                    });
+                // A link to a control the script never declares moves nothing
+                // in Kontakt either: one left from an older script (Conflux's
+                // GUI: CC 122 to a switch it lacks). One to a declared control
+                // that we could not range is ours to fix.
+                let absent = (script.links.iter())
+                    .filter(|l| crate::script::linked(&compiled, l).is_none())
+                    .count();
+                let unranged = script.links.len() - planned.links.len() - absent;
+                for (n, impact, feature) in [
+                    (absent, ir::Impact::Cosmetic, "MIDI automation of a missing script control"),
+                    (unranged, ir::Impact::Audible, "MIDI automation of an unranged script control"),
+                ] {
+                    if n > 0 {
+                        diagnostics.push(ir::Diagnostic {
+                            impact,
+                            feature: feature.into(),
+                            detail: script.name.clone(),
+                        });
+                    }
                 }
                 plan.scripts.push(planned);
                 symbols.push(compiled.symbols.clone().into_boxed_slice());

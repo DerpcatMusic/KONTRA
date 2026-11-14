@@ -209,25 +209,35 @@ pub(crate) fn folder(path: Option<&std::path::Path>) -> Option<Text> {
     (!cut).then_some(text)
 }
 
+/// The control a saved MIDI link names: the `n`th knob, slider or switch
+/// the script declares, if it declares that many.
+pub fn linked<'a>(
+    script: &'a Script,
+    l: &kontra_engine::ir::CcLink,
+) -> Option<&'a kontra_ksp::Control> {
+    use kontra_engine::ir::Linked;
+    let (kind, n) = match l.control {
+        Linked::Knob(n) => (ControlKind::Knob, n),
+        Linked::Slider(n) => (ControlKind::Slider, n),
+        Linked::Switch(n) => (ControlKind::Switch, n),
+    };
+    script
+        .controls
+        .iter()
+        .filter(|c| c.kind == kind)
+        .nth(usize::from(n))
+}
+
 /// `links` as the engine applies them: each on its control's UI id and
 /// declared range (a switch's is 0..=1); a link to a control the script
 /// lacks is dropped.
 #[must_use]
 pub fn links(script: &Script, links: &[kontra_engine::ir::CcLink]) -> Vec<kontra_engine::CcLink> {
-    use kontra_engine::ir::Linked;
     links
         .iter()
         .filter_map(|l| {
-            let (kind, n) = match l.control {
-                Linked::Knob(n) => (ControlKind::Knob, n),
-                Linked::Slider(n) => (ControlKind::Slider, n),
-                Linked::Switch(n) => (ControlKind::Switch, n),
-            };
-            let c = script
-                .controls
-                .iter()
-                .filter(|c| c.kind == kind)
-                .nth(usize::from(n))?;
+            let c = linked(script, l)?;
+            let kind = c.kind;
             let (lo, hi) = match (kind, c.params.as_slice()) {
                 (ControlKind::Switch, _) => (0, 1),
                 (_, [lo, hi, ..]) => (i64::from(*lo), i64::from(*hi)),

@@ -842,6 +842,12 @@ pub(super) const PART_BALANCE: ir::Balance = ir::Balance::Cosine;
 /// all of them (VWinds' Alto Flute 2: 8 voices, a note's 10 sustain zones
 /// beside its chiff, air and key click); here each zone is a voice.
 pub(super) fn voices(program: Node) -> Result<u16, String> {
+    let widest = f64::from(zones_per_note(program));
+    Ok((num(program, "Polyphony", 64.0)? * widest).clamp(1.0, 1024.0) as u16)
+}
+
+/// The most zones one keygroup under `node` sounds for a note.
+fn zones_per_note(node: Node) -> u16 {
     let zones = |p: Node| {
         p.attribute("SamplePath")
             .map_or(1, |s| s.split('*').count().max(2) - 1)
@@ -852,11 +858,9 @@ pub(super) fn voices(program: Node) -> Result<u16, String> {
             .map(zones)
             .sum::<usize>()
     };
-    let oscillators = program
-        .descendants()
-        .filter(|n| n.has_tag_name("Oscillators"));
-    let widest = oscillators.map(players).max().unwrap_or(1).max(1) as f64;
-    Ok((num(program, "Polyphony", 64.0)? * widest).clamp(1.0, 1024.0) as u16)
+    let oscillators = node.descendants().filter(|n| n.has_tag_name("Oscillators"));
+    let widest = oscillators.map(players).max().unwrap_or(1);
+    u16::try_from(widest.clamp(1, 1024)).unwrap_or(1024)
 }
 
 #[cfg(test)]
