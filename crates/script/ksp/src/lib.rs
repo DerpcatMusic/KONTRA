@@ -148,9 +148,12 @@ pub struct Callback {
     pub entry: u32,
 }
 
+/// A UI control type, numbered as `$NI_CONTROL_TYPE_*` (what
+/// `$CONTROL_PAR_TYPE` reads).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ControlKind {
-    Button,
+    Button = 1,
     Knob,
     Menu,
     ValueEdit,

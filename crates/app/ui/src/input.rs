@@ -1,8 +1,8 @@
 //! A library's own controls under the pointer and the keys, one model for
 //! every format: a continuous control drags from where it was pressed along
 //! the axis and sweep its translator set ([`model::Drag`]; Shift is fine),
-//! the wheel and the arrow keys step it, Ctrl or Cmd with a click puts back
-//! its default, a double click on a value edit types a number; a button or
+//! the wheel and the arrow keys step it, Ctrl or Cmd with a press puts back
+//! its default (a drag goes on from it), a double click on a value edit types a number; a button or
 //! switch flips at the edge its source asks; a table sets the cells the
 //! pointer crosses; a menu floats its items. What the user asked comes back
 //! as [`Edit`]s for the host to write into the engine; the caller shows them
@@ -274,13 +274,21 @@ pub fn read(
                 _ => {}
             }
             if r.pressed && arrow.is_none() {
-                g.press = Some((n.0, now));
+                // Ctrl puts back the default, and a drag goes on from there
+                // (Kontakt 8 oracle, `tools/ksp-ui` geometry page: a
+                // ctrl-drag moves a slider as far as a plain one).
+                let start = if reset {
+                    snap(range, range.default)
+                } else {
+                    now
+                };
+                g.press = Some((n.0, start));
                 if reset {
-                    set(snap(range, range.default));
+                    set(start);
                 }
             }
             match g.press {
-                Some((p, start)) if p == n.0 && r.held && !reset => {
+                Some((p, start)) if p == n.0 && r.held => {
                     // Sub-pixel: the pointer's travel is a float, so a
                     // high-resolution mouse or trackpad moves it finely.
                     let fine = if r.press_mods.shift { 0.1 } else { 1. };

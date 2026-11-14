@@ -1,0 +1,290 @@
+{ KSP UI probe suite, page geometry: written by tools/ksp-ui/gen.py }
+on init
+  make_perfview
+  set_ui_width_px(900)
+  set_ui_height_px(380)
+  declare !log[1024]
+  declare $n := 0
+  pgs_create_key(KLOG, 1)
+  declare ui_knob $k0(0, 100, 1)
+  make_persistent($k0)
+  declare ui_knob $k1(0, 100, 1)
+  make_persistent($k1)
+  declare ui_knob $k2(0, 100, 1)
+  make_persistent($k2)
+  declare ui_knob $k3(0, 100, 1)
+  make_persistent($k3)
+  declare ui_switch $s0
+  make_persistent($s0)
+  declare ui_switch $s1
+  make_persistent($s1)
+  declare ui_switch $s2
+  make_persistent($s2)
+  declare ui_switch $s3
+  make_persistent($s3)
+  declare ui_slider $sl0(0, 100)
+  make_persistent($sl0)
+  declare ui_slider $sl1(0, 100)
+  make_persistent($sl1)
+  declare ui_slider $sl2(0, 100)
+  make_persistent($sl2)
+  declare ui_panel $pa
+  declare ui_panel $pb
+  declare ui_button $inner
+  make_persistent($inner)
+  declare ui_label $z0(1, 1)
+  declare ui_label $z1(1, 1)
+  set_control_par(get_ui_id($k0), $CONTROL_PAR_POS_X, 20)
+  set_control_par(get_ui_id($k0), $CONTROL_PAR_POS_Y, 20)
+  move_control($k1, 3, 2)
+  move_control_px($k2, 300, 20)
+  move_control($k3, 0, 0)
+  set_control_par(get_ui_id($s0), $CONTROL_PAR_POS_X, 20)
+  set_control_par(get_ui_id($s0), $CONTROL_PAR_POS_Y, 200)
+  set_control_par(get_ui_id($s0), $CONTROL_PAR_WIDTH, 100)
+  set_control_par(get_ui_id($s0), $CONTROL_PAR_HEIGHT, 18)
+  set_text($s0, "s0")
+  set_control_par(get_ui_id($s1), $CONTROL_PAR_POS_X, 130)
+  set_control_par(get_ui_id($s1), $CONTROL_PAR_POS_Y, 200)
+  set_control_par(get_ui_id($s1), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($s1), $CONTROL_PAR_HEIGHT, 24)
+  set_text($s1, "s1")
+  set_control_par(get_ui_id($s2), $CONTROL_PAR_POS_X, 240)
+  set_control_par(get_ui_id($s2), $CONTROL_PAR_POS_Y, 200)
+  set_control_par(get_ui_id($s2), $CONTROL_PAR_WIDTH, 60)
+  set_control_par(get_ui_id($s2), $CONTROL_PAR_HEIGHT, 30)
+  set_text($s2, "s2")
+  set_control_par(get_ui_id($s3), $CONTROL_PAR_POS_X, 350)
+  set_control_par(get_ui_id($s3), $CONTROL_PAR_POS_Y, 200)
+  set_control_par(get_ui_id($s3), $CONTROL_PAR_WIDTH, 40)
+  set_control_par(get_ui_id($s3), $CONTROL_PAR_HEIGHT, 36)
+  set_text($s3, "s3")
+  hide_part($s1, $HIDE_PART_BG)
+  hide_part($s2, $HIDE_PART_TITLE)
+  set_control_par(get_ui_id($s3), $CONTROL_PAR_HIDE, 128)
+  set_control_par(get_ui_id($sl0), $CONTROL_PAR_POS_X, 500)
+  set_control_par(get_ui_id($sl0), $CONTROL_PAR_POS_Y, 200)
+  set_control_par(get_ui_id($sl0), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($sl0), $CONTROL_PAR_HEIGHT, 16)
+  set_control_par(get_ui_id($sl1), $CONTROL_PAR_POS_X, 500)
+  set_control_par(get_ui_id($sl1), $CONTROL_PAR_POS_Y, 230)
+  set_control_par(get_ui_id($sl1), $CONTROL_PAR_WIDTH, 120)
+  set_control_par(get_ui_id($sl1), $CONTROL_PAR_HEIGHT, 16)
+  set_control_par(get_ui_id($sl2), $CONTROL_PAR_POS_X, 500)
+  set_control_par(get_ui_id($sl2), $CONTROL_PAR_POS_Y, 260)
+  set_control_par(get_ui_id($sl2), $CONTROL_PAR_WIDTH, 160)
+  set_control_par(get_ui_id($sl2), $CONTROL_PAR_HEIGHT, 16)
+  set_control_par(get_ui_id($pa), $CONTROL_PAR_POS_X, 600)
+  set_control_par(get_ui_id($pa), $CONTROL_PAR_POS_Y, 20)
+  set_control_par(get_ui_id($pb), $CONTROL_PAR_POS_X, 30)
+  set_control_par(get_ui_id($pb), $CONTROL_PAR_POS_Y, 30)
+  set_control_par(get_ui_id($pb), $CONTROL_PAR_PARENT_PANEL, get_ui_id($pa))
+  set_control_par(get_ui_id($inner), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($inner), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id($inner), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($inner), $CONTROL_PAR_HEIGHT, 20)
+  set_control_par(get_ui_id($inner), $CONTROL_PAR_PARENT_PANEL, get_ui_id($pb))
+  set_text($inner, "in panel")
+  set_control_par(get_ui_id($z0), $CONTROL_PAR_POS_X, 20)
+  set_control_par(get_ui_id($z0), $CONTROL_PAR_POS_Y, 300)
+  set_control_par(get_ui_id($z0), $CONTROL_PAR_WIDTH, 120)
+  set_control_par(get_ui_id($z0), $CONTROL_PAR_HEIGHT, 40)
+  set_control_par(get_ui_id($z1), $CONTROL_PAR_POS_X, 60)
+  set_control_par(get_ui_id($z1), $CONTROL_PAR_POS_Y, 315)
+  set_control_par(get_ui_id($z1), $CONTROL_PAR_WIDTH, 120)
+  set_control_par(get_ui_id($z1), $CONTROL_PAR_HEIGHT, 40)
+  set_control_par(get_ui_id($z0), $CONTROL_PAR_Z_LAYER, 1)
+  set_control_par(get_ui_id($z1), $CONTROL_PAR_Z_LAYER, 0)
+  set_text($z0, "z0")
+  set_text($z1, "z1")
+  !log[$n] := "init,k0.x," & get_control_par(get_ui_id($k0), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,k0.y," & get_control_par(get_ui_id($k0), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,k1.x," & get_control_par(get_ui_id($k1), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,k1.y," & get_control_par(get_ui_id($k1), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,k2.x," & get_control_par(get_ui_id($k2), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,k2.y," & get_control_par(get_ui_id($k2), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,k3.x," & get_control_par(get_ui_id($k3), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,k3.y," & get_control_par(get_ui_id($k3), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,s0.x," & get_control_par(get_ui_id($s0), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,s0.y," & get_control_par(get_ui_id($s0), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,s1.x," & get_control_par(get_ui_id($s1), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,s1.y," & get_control_par(get_ui_id($s1), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,s2.x," & get_control_par(get_ui_id($s2), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,s2.y," & get_control_par(get_ui_id($s2), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,s3.x," & get_control_par(get_ui_id($s3), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,s3.y," & get_control_par(get_ui_id($s3), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,sl0.x," & get_control_par(get_ui_id($sl0), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,sl0.y," & get_control_par(get_ui_id($sl0), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,sl1.x," & get_control_par(get_ui_id($sl1), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,sl1.y," & get_control_par(get_ui_id($sl1), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,sl2.x," & get_control_par(get_ui_id($sl2), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,sl2.y," & get_control_par(get_ui_id($sl2), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,pa.x," & get_control_par(get_ui_id($pa), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,pa.y," & get_control_par(get_ui_id($pa), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,pb.x," & get_control_par(get_ui_id($pb), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,pb.y," & get_control_par(get_ui_id($pb), $CONTROL_PAR_POS_Y)
+  inc($n)
+  !log[$n] := "init,inner.x," & get_control_par(get_ui_id($inner), $CONTROL_PAR_POS_X)
+  inc($n)
+  !log[$n] := "init,inner.y," & get_control_par(get_ui_id($inner), $CONTROL_PAR_POS_Y)
+  inc($n)
+  pgs_set_key_val(KLOG, 0, $n)
+end on
+
+function log_line
+  if ($n < 1023)
+    inc($n)
+  end if
+  pgs_set_key_val(KLOG, 0, $n)
+end function
+
+on ui_controls
+  !log[$n] := "ucs," & $NI_UI_ID
+  call log_line
+end on
+
+on persistence_changed
+  !log[$n] := "pc"
+  call log_line
+end on
+
+on pgs_changed
+  save_array_str(!log, "Z:/data/dev/workspace/scratch/ksp-ui-trace/geometry.nka")
+end on
+
+on ui_control ($k0)
+  !log[$n] := "uc,k0," & $k0 & "," ...
+    & get_control_par(get_ui_id($k0), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($k0), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($k0), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($k1)
+  !log[$n] := "uc,k1," & $k1 & "," ...
+    & get_control_par(get_ui_id($k1), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($k1), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($k1), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($k2)
+  !log[$n] := "uc,k2," & $k2 & "," ...
+    & get_control_par(get_ui_id($k2), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($k2), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($k2), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($k3)
+  !log[$n] := "uc,k3," & $k3 & "," ...
+    & get_control_par(get_ui_id($k3), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($k3), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($k3), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($s0)
+  !log[$n] := "uc,s0," & $s0 & "," ...
+    & get_control_par(get_ui_id($s0), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($s0), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($s0), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($s1)
+  !log[$n] := "uc,s1," & $s1 & "," ...
+    & get_control_par(get_ui_id($s1), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($s1), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($s1), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($s2)
+  !log[$n] := "uc,s2," & $s2 & "," ...
+    & get_control_par(get_ui_id($s2), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($s2), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($s2), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($s3)
+  !log[$n] := "uc,s3," & $s3 & "," ...
+    & get_control_par(get_ui_id($s3), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($s3), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($s3), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($sl0)
+  !log[$n] := "uc,sl0," & $sl0 & "," ...
+    & get_control_par(get_ui_id($sl0), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($sl0), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($sl0), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($sl1)
+  !log[$n] := "uc,sl1," & $sl1 & "," ...
+    & get_control_par(get_ui_id($sl1), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($sl1), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($sl1), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($sl2)
+  !log[$n] := "uc,sl2," & $sl2 & "," ...
+    & get_control_par(get_ui_id($sl2), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($sl2), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($sl2), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($pa)
+  !log[$n] := "uc,pa," & $pa & "," ...
+    & get_control_par(get_ui_id($pa), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($pa), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($pa), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($pb)
+  !log[$n] := "uc,pb," & $pb & "," ...
+    & get_control_par(get_ui_id($pb), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($pb), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($pb), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($inner)
+  !log[$n] := "uc,inner," & $inner & "," ...
+    & get_control_par(get_ui_id($inner), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($inner), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($inner), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on

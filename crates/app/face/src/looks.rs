@@ -55,8 +55,9 @@ impl Looks for Engine {
 }
 
 /// The parameters the UI-look builtins set, after the script's own symbols:
-/// a script that names one shares its id; `move_control`'s grid and the
-/// table's shown steps have no constant, so always get their own.
+/// a script that names one shares its id (`move_control` sets the
+/// `$CONTROL_PAR_GRID_X`/`_Y` cells); the table's shown steps have no
+/// constant, so always get their own.
 pub const LOOK: [&str; 19] = [
     "$CONTROL_PAR_TEXT",
     "$CONTROL_PAR_LABEL",
@@ -66,8 +67,8 @@ pub const LOOK: [&str; 19] = [
     "$CONTROL_PAR_POS_X",
     "$CONTROL_PAR_POS_Y",
     "$CONTROL_PAR_HIDE",
-    "grid_x",
-    "grid_y",
+    "$CONTROL_PAR_GRID_X",
+    "$CONTROL_PAR_GRID_Y",
     "table_steps_shown",
     "level_meter",
     "level_meter_group",

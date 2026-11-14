@@ -171,8 +171,6 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_GRID_Y",
     "$CONTROL_PAR_GRID_WIDTH",
     "$CONTROL_PAR_GRID_HEIGHT",
-    "grid_x",
-    "grid_y",
     "table_steps_shown",
     "level_meter",
     "level_meter_group",
