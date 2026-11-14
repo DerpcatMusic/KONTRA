@@ -284,8 +284,11 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 });
                 planned.links = crate::script::links(&compiled, &script.links);
                 if planned.links.len() < script.links.len() {
+                    // The script declares no such control, so Kontakt has
+                    // nothing to move either: a link left from an older
+                    // script (Conflux's GUI: CC 122 to a switch it lacks).
                     diagnostics.push(ir::Diagnostic {
-                        impact: ir::Impact::Audible,
+                        impact: ir::Impact::Cosmetic,
                         feature: "MIDI automation of a missing script control".into(),
                         detail: script.name.clone(),
                     });
