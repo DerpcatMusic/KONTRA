@@ -21,8 +21,15 @@ pub(crate) const MADE: usize = 16;
 impl Engine {
     /// `event` as MIDI bytes `[status nibble, channel, data 1, data 2]`, when
     /// `on midi_in` sees it: notes with an exact key and channel, and channel
-    /// messages.
+    /// messages. The channel counts across ports, 0..=63 (KSP
+    /// `$MIDI_CHANNEL`).
     fn midi_bytes(event: &Event) -> Option<[u8; 4]> {
+        let mut m = Self::port_bytes(event)?;
+        m[1] += event.port().unwrap_or(0).min(3) * 16;
+        Some(m)
+    }
+
+    fn port_bytes(event: &Event) -> Option<[u8; 4]> {
         match *event {
             Event::NoteOn { note, velocity, .. } => Some([
                 midi::NOTE_ON,
@@ -49,7 +56,9 @@ impl Engine {
 
     /// The event for `m`, keeping the host's note identity when `like` was a note.
     fn event_from(m: [u8; 4], like: &Event) -> Event {
-        let [cmd, channel, d1, d2] = m;
+        let [cmd, across, d1, d2] = m;
+        // Kontakt's channel across ports back to a port and its channel.
+        let (port, channel) = (across / 16 % 4, across % 16);
         let note_like = match like {
             Event::NoteOn { note, .. } => Some(*note),
             _ => None,
@@ -57,10 +66,11 @@ impl Engine {
         match cmd {
             midi::NOTE_ON if d2 > 0 => Event::NoteOn {
                 note: HostNote {
+                    port,
                     channel,
                     key: d1,
                     ..note_like.unwrap_or(HostNote {
-                        port: 0,
+                        port,
                         channel,
                         key: d1,
                         id: -1,
@@ -74,7 +84,7 @@ impl Engine {
                 },
             },
             midi::NOTE_ON | midi::NOTE_OFF => Event::NoteOff(HostPattern {
-                port: -1,
+                port: i32::from(port),
                 channel: i32::from(channel),
                 key: i32::from(d1),
                 id: match like {
@@ -83,7 +93,10 @@ impl Engine {
                 },
                 clap: false,
             }),
-            _ => Event::midi1(cmd | channel, d1, d2),
+            _ => match Event::midi1(cmd | channel, d1, d2) {
+                Event::Ump([word, extra]) => Event::Ump([word | u32::from(port) << 24, extra]),
+                other => other,
+            },
         }
     }
 
@@ -97,6 +110,7 @@ impl Engine {
         let Some(mut m) = Self::midi_bytes(&event) else {
             return Some(event);
         };
+        let heard = m;
         let plan = std::sync::Arc::clone(&self.plan);
         let mut ignored = false;
         for (slot, script) in (0u8..).zip(&plan.scripts) {
@@ -119,7 +133,13 @@ impl Engine {
                 return None;
             }
         }
-        Some(Self::event_from(m, &event))
+        // Untouched, the host's event goes on as sent: a note-off on any
+        // port (wildcard) still ends notes held on ports B–D.
+        Some(if m == heard {
+            event
+        } else {
+            Self::event_from(m, &event)
+        })
     }
 
     /// A multi script's turn at `event`: its `on midi_in` runs, and what it

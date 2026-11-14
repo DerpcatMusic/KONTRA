@@ -225,7 +225,7 @@ impl Saved {
             } else {
                 0.0
             };
-            if p.channel > 16 {
+            if p.channel > 64 {
                 p.channel = 0;
             }
             p.output = p.output.min(MAX_PARTS as u8 - 1);

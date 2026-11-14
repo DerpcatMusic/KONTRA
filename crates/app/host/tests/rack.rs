@@ -145,6 +145,52 @@ fn parts_listen_on_their_channel_and_play_into_their_output() {
     assert!(l0 > 0.05, "part a silent: {l0}");
 }
 
+/// Kontakt's ports A to D: a part on B1 (17) hears channel 1 of port B
+/// only, a part on A1 port A's, and the port rides on a controller's packet
+/// too.
+#[test]
+fn parts_listen_on_their_port_and_channel_a1_to_d16() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.25);
+    let b = engine(rack.store_mut(), 0.5);
+    rack.install(0, a, part("a"));
+    rack.install(1, b, part("b"));
+    for (n, channel) in [(0, 1), (1, 17)] {
+        let output = n as u8;
+        rack.set_mix(
+            n,
+            Mix {
+                channel,
+                output,
+                ..Mix::DEFAULT
+            },
+        );
+    }
+    let on_port = |port: u8| match note(0) {
+        Event::NoteOn {
+            note,
+            velocity,
+            tune,
+        } => Event::NoteOn {
+            note: HostNote { port, ..note },
+            velocity,
+            tune,
+        },
+        other => other,
+    };
+    let [l0, l1] = play(&mut audio, &[(0, on_port(1))]);
+    assert!(l0.abs() < 1e-4, "A1 heard port B: {l0}");
+    assert!(l1 > 0.1, "B1 silent: {l1}");
+    let [l0, _] = play(&mut audio, &[(0, on_port(0))]);
+    assert!(l0 > 0.05, "A1 silent on port A: {l0}");
+    let cc = Event::midi1(0xB0, 7, 100);
+    let Event::Ump([word, extra]) = cc else {
+        unreachable!()
+    };
+    let on_b = Event::Ump([word | 1 << 24, extra]);
+    assert_eq!((on_b.port(), on_b.port_channel()), (Some(1), Some(16)));
+}
+
 #[test]
 fn master_solo_and_panic_reach_the_audio_side() {
     let (mut rack, mut audio) = rack();

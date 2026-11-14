@@ -13,4 +13,6 @@ fourcc = "Knt3"
 vst3_subcategory = "Sampler"
 
 midi_input = true
+# Kontakt's ports A to D: a part listens on A1..D16.
+midi_input_ports = 4
 midi_output = false
