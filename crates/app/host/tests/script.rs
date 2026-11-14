@@ -4343,3 +4343,62 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     assert!((level(&mut e, &[off(60), on(60)])).abs() < 1e-4);
     assert!((level(&mut e, &[on(72)]) - 1.0).abs() < 1e-3);
 }
+
+/// `detect_*` writes what the load-time analysis measured into the script's
+/// variable (an integer or a real one), and `wait_ticks` waits the transport's
+/// time for its ticks.
+#[test]
+fn detect_commands_read_the_analysis() {
+    use kontra_engine::{Analysis, ZoneFacts};
+    use std::sync::Arc as A;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.zone_facts = vec![ZoneFacts {
+        id: 7,
+        name: "z".into(),
+        group: 0,
+        keys: 0..=127,
+        velocities: 1..=127,
+        root: 60,
+        start: 0,
+        end: 0,
+        start_range: 0,
+        rate: 48_000,
+        analysis: Some(A::new(Analysis {
+            peak_db: -6.0,
+            rms_db: -20.0,
+            loudness_lkfs: -23.0,
+            pitch: Some(60.5),
+            tempo: None,
+            key: Some(12),
+            is_drum: Some(false),
+            drum_type: None,
+            instrument_type: Some(0),
+        })),
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            declare ~p
+            declare ~pk
+            declare ~t
+            declare $key
+            declare $kind
+            declare $r
+            $r := detect_pitch(7, ~p)
+            detect_peak(7, ~pk)
+            detect_tempo(7, ~t)
+            detect_key(7, $key)
+            detect_sample_type(7, $kind)
+            message(real_to_int(~p * 10.0) & \" \" & real_to_int(~pk) & \" \" ...
+                & real_to_int(~t) & \" \" & ($key > 0) & \" \" & ($kind > 0) & \" \" & $r)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    // pitch 60.5 -> 605; peak -6; tempo "invalid" is the unprobed -1; key and
+    // sample type are valid tags; init answers -1.
+    assert_eq!(e.last_message(), "605 -6 -1 1 1 -1");
+}
