@@ -45,6 +45,25 @@ impl Engine {
                 _ => {}
             }
         }
+        // A wavetable mod oscillator's tune shows in its unit: semitones as
+        // the table says, a fixed frequency in Hz and a ratio as the number
+        // (the Hz/ratio print forms are unmeasured, ponytail).
+        if let (Some(crate::EnginePar::Wavetable(ir::TableValue::ModTune)), Some(raw)) = (par, raw) {
+            let group = if ext { n(2) } else { n(1) };
+            let mut osc = usize::try_from(group)
+                .ok()
+                .and_then(|g| self.groups.get(g))
+                .and_then(|g| g.wavetable)
+                .map(|t| t.modosc);
+            if let Some(o) = osc.as_mut().filter(|o| o.unit != kontra_voice::Unit::Semitones) {
+                o.tune = raw.clamp(0, 1_000_000) as f32 / 1e6;
+                let shown = match o.unit {
+                    kontra_voice::Unit::Hz => o.cycles(0.0, 1.0),
+                    _ => f64::from(o.ratio()),
+                };
+                return write(Readout::Padded(shown), 0.0, out);
+            }
+        }
         // The reverb's time shows its law's seconds in ms (oracle 2026-10-29).
         if let Some((ir::ReverbPar::Seconds, s)) =
             par.zip(raw).and_then(|(p, r)| self.reverb_value(p, r))

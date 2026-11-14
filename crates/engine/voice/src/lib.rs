@@ -6,6 +6,7 @@
 
 mod envelope;
 mod fade;
+mod mod_waves;
 mod wavetable;
 mod zone;
 
@@ -14,7 +15,7 @@ use kontra_stream::{Mix, StreamClient};
 pub use envelope::Ahdsr;
 pub use wavetable::{
     CYCLE, Inharmonic, LEVELS, ModKind, ModOsc, Osc, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP,
-    Table, Warp, shape, warp,
+    Table, Unit, Warp, shape, warp,
 };
 pub use zone::{Loop, Loops, Region};
 

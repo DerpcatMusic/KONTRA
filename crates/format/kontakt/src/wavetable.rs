@@ -44,7 +44,8 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
     });
     // The reader's names are swapped: `mod_wave` holds the type and
     // `mod_type` the wave (probes saved with type FM1/FM2 and wave sine read
-    // wave=1/2, type=0); the tune is in octaves (+5 st reads 0.41666).
+    // wave=1/2, type=0); the tune is in octaves (+5 st reads 0.41666). The
+    // record has no tune unit: a saved tune reads in semitones.
     let kind = mod_kind(source.mod_wave);
     if kind.is_none() {
         notes.add(ir::Impact::Audible, "wavetable modulation", group);
@@ -65,9 +66,18 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
             tune: ((12.0 * source.mod_tune + 36.0) / 72.0).clamp(0.0, 1.0),
             tune_range: MOD_TUNE_RANGE,
             fm_hz: MOD_FM_HZ,
+            wave: wave_of(source.mod_type),
+            unit: ir::TuneUnit::Semitones,
         },
         warps,
     }
+}
+
+/// The mod oscillator wave a saved id names: `$NI_WT_MOD_WAVE_*` 0..=8 (sine,
+/// triangle, TX2..TX8); the record allows up to 12, which Kontakt's own list
+/// does not name: they play as the sine.
+fn wave_of(id: u32) -> u8 {
+    u8::try_from(id).ok().filter(|&w| w <= 8).unwrap_or(0)
 }
 
 /// Kontakt plays a wavetable group 6.9 dB below the same cycles in sampler
