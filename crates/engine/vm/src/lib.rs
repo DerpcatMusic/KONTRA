@@ -154,8 +154,8 @@ pub struct Faults {
     pub first_out_of_range: Option<(u32, bool, i32)>,
     /// Where the first division by zero was, as a code position.
     pub first_divide_by_zero: Option<u32>,
-    /// What the first script error said, with its line (a foreign machine's).
-    pub first_error: FaultText,
+    /// What the latest script error said, with its line (a foreign machine's).
+    pub last_error: FaultText,
 }
 
 /// The first error's text in a fixed buffer, so recording it on the audio
@@ -178,6 +178,10 @@ impl FaultText {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
     }
 }
 
