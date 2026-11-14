@@ -939,7 +939,9 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         response.el
     })
-    .resizable((900, 600))
+    // Down to the smallest step (50 %): below its design size the whole
+    // editor scales down evenly to the window, as it scales up above it.
+    .resizable((SIZE.0 / 2, SIZE.1 / 2))
     .wheel_policy(wheel)
     .on_key(move |_, k| {
         use moose::mui::mui::host::NativeKey;

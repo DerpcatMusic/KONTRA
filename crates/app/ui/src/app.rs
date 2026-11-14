@@ -331,8 +331,9 @@ pub struct View {
     /// The pitch wheel (springs back to 0) and the mod wheel, -1..1 and 0..1.
     pub pitch: f64,
     pub modulation: f64,
-    /// Which of [`SCALES`] the editor is drawn at.
-    pub scale: usize,
+    /// The editor's size in percent of its design size, one of [`SCALES`];
+    /// 0 is 100.
+    pub scale: u32,
     /// Which of [`FACE_SCALES`] a library's own view is drawn at.
     pub face_scale: usize,
     /// How a part that chose none draws its interface.
@@ -348,8 +349,10 @@ impl View {
     }
 }
 
-/// The editor sizes on offer, in percent of its design size.
-pub const SCALES: [u32; 4] = [100, 125, 150, 200];
+/// The editor sizes on offer, in percent of its design size. Below 100 for
+/// small screens: the whole editor scales down evenly (Kontakt 8 offers 60
+/// to 200 %, Serum 75 to 200 %; 50 % is the smallest whose text still reads).
+pub const SCALES: [u32; 7] = [50, 67, 75, 100, 125, 150, 200];
 
 /// A library's view sizes on offer: as wide as the rack (0, the default),
 /// or a fixed scale that scrolls when it is wider.
