@@ -126,11 +126,10 @@ rows = []
 for (kind, name), sec in items.items():
     key = name.lower()
     if kind == "fn":
-        st = status.get(("fn", key))
-        got = {"vm": "done", "answered": "done", "missing": "partial"}.get(st, "missing")
+        # Real library calls decide; the bare probe speaks only for a command no script calls.
         seen = used.get(key)
-        if seen and seen[2] in ("vm", "answered"):
-            got = "done"
+        st = seen[2] if seen else status.get(("fn", key))
+        got = {"vm": "done", "answered": "done", "partial": "partial", "missing": "partial"}.get(st, "missing")
     elif kind == "cb":
         got = "done" if ("cb", CB.get(name, "")) in {(k, v.lower()) for (k, v) in status if k == "cb"} or name in CB else "missing"
         if name not in CB:
