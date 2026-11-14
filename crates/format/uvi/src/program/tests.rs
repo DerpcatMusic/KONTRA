@@ -2439,8 +2439,5 @@ fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
         panic!("{:?}", scaled.source)
     };
     let table = &out.knob_blends[usize::from(t)].terms[0].input.table;
-    assert!(
-        (table[0] + 1.0).abs() < 1e-6 && table[32].abs() < 1e-6,
-        "{table:?}"
-    );
+    assert!((table[0] + 1.0).abs() < 1e-6 && table[32].abs() < 1e-6, "{table:?}");
 }

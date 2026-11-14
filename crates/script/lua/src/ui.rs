@@ -117,15 +117,30 @@ const HANDLED: [&str; 38] = [
     "items",
 ];
 
-/// What a widget's `unit` shows: a `Unit` enumerator (0..=13, the order the
-/// reference lists them) as its symbol, any other text as it is.
+/// What a widget's `unit` is: a `Unit` enumerator (0..=13, the order the
+/// reference lists them) as its name, which the display formats by (the
+/// value's scale and the switch between s/ms, Hz/kHz, ct/st are the
+/// display's); any other text as it is.
 fn unit_symbol(unit: Option<String>) -> String {
     let Some(unit) = unit else {
         return String::new();
     };
     match unit.parse::<u32>() {
         Ok(n) => [
-            "", "%", "%", "s", "ms", "Hz", "dB", "dB", "Hz", "", "MB", "st", "ct", "",
+            "Generic",
+            "Percent",
+            "PercentNormalized",
+            "Seconds",
+            "MilliSeconds",
+            "Hertz",
+            "Decibels",
+            "LinearGain",
+            "UviFilter",
+            "Pan",
+            "Megabyte",
+            "SemiTones",
+            "Cents",
+            "MidiKey",
         ]
         .get(n as usize)
         .copied()

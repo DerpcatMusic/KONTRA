@@ -51,13 +51,10 @@ const CHECKPOINTS: u32 = 10_000_000;
 /// next block: 0.5 ms, 19% of a 128-frame block at 48 kHz. Kontakt and UVI
 /// defer long UI work the same way: the rest runs a slice per block.
 const SLICE: std::time::Duration = std::time::Duration::from_micros(500);
+/// The least a run gets whatever the block has left: it must get somewhere.
+const MIN_SLICE: std::time::Duration = std::time::Duration::from_micros(100);
 /// Safepoints between the checks of an editor run's deadline.
 const SLICE_STRIDE: u32 = 8;
-/// Past the deadline, between asks to yield: odd, so a loop with a fixed
-/// count of safepoints per turn does not keep landing on the same ones; every
-/// safepoint costs more in the hook than it finds (measured on the flute:
-/// slices of 5.9 ms median at 1, 2.9 ms at 3).
-const SLICE_RETRY_STRIDE: u32 = 3;
 thread_local! {
     /// When the run in progress must yield (editor runs only).
     static DEADLINE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
@@ -280,6 +277,7 @@ impl Foreign for Compiled {
             faults: Faults::default(),
             runs: 0,
             widget_run: false,
+            block_left: SLICE,
             arena,
         };
         drop(load);
@@ -333,15 +331,18 @@ fn sandbox() -> mlua::Result<(Lua, Arc<AtomicU32>, Arc<AtomicU32>)> {
             }
             return Err(mlua::Error::runtime(at));
         }
-        // Past the deadline: ask to yield at the next safepoints until Luau can
-        // (it ignores the request where a C call or metamethod is on the stack).
+        // Past the deadline: ask to yield at the next safepoint Luau can yield
+        // at. Elsewhere (inside a C call) the count above still runs, and the
+        // yield is not asked for: Luau refuses it.
         if DEADLINE
             .with(std::cell::Cell::get)
             .is_some_and(|d| std::time::Instant::now() >= d)
         {
-            SLICED.with(|s| s.set(true));
-            interrupt::set_stride(SLICE_RETRY_STRIDE);
-            return Ok(mlua::VmState::Yield);
+            interrupt::set_past(true);
+            if interrupt::can_yield() {
+                SLICED.with(|s| s.set(true));
+                return Ok(mlua::VmState::Yield);
+            }
         }
         Ok(mlua::VmState::Continue)
     });
@@ -410,6 +411,17 @@ fn state(
     Ok((lua, checkpoints))
 }
 
+/// Ends a run's slice mode when it drops, however the run ends.
+struct RunMode;
+
+impl Drop for RunMode {
+    fn drop(&mut self) {
+        DEADLINE.with(|d| d.set(None));
+        interrupt::set_past(false);
+        interrupt::set_stride(interrupt::STRIDE);
+    }
+}
+
 #[derive(Default)]
 struct Slot {
     thread: Option<Thread>,
@@ -437,6 +449,8 @@ struct LuaMachine {
     runs: u32,
     /// The next start is a widget the editor moved.
     widget_run: bool,
+    /// What editor runs may still use of this block: [`SLICE`] for all of them.
+    block_left: std::time::Duration,
     /// The state's arena; declared last, so it is given back after the state.
     arena: alloc::Claim,
 }
@@ -452,6 +466,7 @@ impl LuaMachine {
             faults: Faults::default(),
             runs: 0,
             widget_run: false,
+            block_left: SLICE,
             arena,
         }
     }
@@ -511,6 +526,9 @@ impl LuaMachine {
             if let Some(co) = self.take(thread, context) {
                 if let Some(slot) = self.slot(co) {
                     slot.ui = ui;
+                    // It has run (inline, in `spawn`): the rest waits for a block
+                    // with budget like any resumed run.
+                    slot.used = u32::from(ui);
                 }
                 self.spawned.push((co, micros.max(0.0) as u64));
             }
@@ -552,15 +570,27 @@ impl Machine for LuaMachine {
         };
         // Every resume, not only a start, may change the state: a task that
         // waited (a layer loading after `wait`) must be seen by the next save.
+        // An editor run that already had a slice waits for a block with budget
+        // left: the ones it shares the block with have used it.
+        if ui && used > 0 && self.block_left.is_zero() {
+            return Step::Yield;
+        }
         self.runs = self.runs.wrapping_add(1);
-        let from = if ui {
+        let from = if ui && used > 1 {
             used
+        } else if ui {
+            0
         } else {
             UI_CHECKPOINTS - CHECKPOINTS
         };
         self.checkpoints.store(from, Ordering::Relaxed);
         SLICED.with(|s| s.set(false));
-        DEADLINE.with(|d| d.set(ui.then(|| std::time::Instant::now() + SLICE)));
+        let began = std::time::Instant::now();
+        DEADLINE.with(|d| d.set(ui.then(|| began + self.block_left.max(MIN_SLICE))));
+        // The run's mode ends with it, on every exit: a synchronous callback
+        // after it (onSave) must not inherit the slice's deadline or `past`.
+        let _mode = RunMode;
+        interrupt::set_past(false);
         interrupt::set_stride(if ui { SLICE_STRIDE } else { interrupt::STRIDE });
         let resumed = lua.scope(|scope| {
             // Fixed arity, so a call allocates nothing: an action and up
@@ -580,6 +610,9 @@ impl Machine for LuaMachine {
             lua.globals().set("__host", Value::Nil)?;
             result
         });
+        if ui {
+            self.block_left = self.block_left.saturating_sub(began.elapsed());
+        }
         DEADLINE.with(|d| d.set(None));
         let sliced = SLICED.with(std::cell::Cell::take);
         self.collect_spawned(&lua, context, ui);
@@ -594,6 +627,11 @@ impl Machine for LuaMachine {
                 Step::Yield
             }
             (Ok(waited), ThreadStatus::Resumable) => {
+                // An editor run that waits has run: its resume is held to the
+                // block's budget like a slice's (1 counts no checkpoints).
+                if let Some(slot) = self.slot(co).filter(|_| ui) {
+                    slot.used = 1;
+                }
                 Step::Wait(number(&waited).unwrap_or(0.0).max(0.0) as u64)
             }
             (Ok(_), _) => Step::Done,
@@ -636,6 +674,10 @@ impl Machine for LuaMachine {
 
     fn faults(&self) -> Faults {
         self.faults
+    }
+
+    fn begin_block(&mut self) {
+        self.block_left = SLICE;
     }
 
     fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId> {
@@ -1139,6 +1181,7 @@ mod tests {
         let co = machine.start(Callbacks::NOTE, 0).expect("start");
         let mut slices = 0;
         loop {
+            machine.begin_block();
             let step = machine.run(co, &mut Log(Vec::new()));
             slices += 1;
             if step != Step::Yield {
@@ -1148,6 +1191,106 @@ mod tests {
         }
         assert!(slices > 2, "{slices} slices");
         assert_eq!(machine.faults().bad_code, 0);
+    }
+
+    #[test]
+    fn editor_slices_share_one_budget_per_block() {
+        let source = "function onNote(e) for i = 1, 4000000 do local x = i * 2 end end";
+        let compiled = compile(source, &[], &[]).expect("compiles");
+        let mut machine = compiled.machine();
+        machine.stage_widget(0, 0.0, None);
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        assert_eq!(machine.run(co, &mut Log(Vec::new())), Step::Yield);
+        let ran = machine.runs();
+        // The block's budget is spent: the next resume waits without running.
+        assert_eq!(machine.run(co, &mut Log(Vec::new())), Step::Yield);
+        assert_eq!(machine.runs(), ran);
+        // A new block has budget again.
+        machine.begin_block();
+        let _ = machine.run(co, &mut Log(Vec::new()));
+        assert_eq!(machine.runs(), ran + 1);
+    }
+
+    #[test]
+    fn an_endless_comparator_under_sort_ends_with_a_runaway_fault() {
+        // Inside `table.sort` Luau cannot yield: past the slice only the
+        // count can end it.
+        let source = "function onNote(e) table.sort({2, 1}, function() while true do end end) end";
+        let mut machine = compile(source, &[], &[]).expect("compiles").machine();
+        machine.stage_widget(0, 0.0, None);
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        assert_eq!(machine.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(machine.faults().bad_code, 1);
+        assert!(
+            machine
+                .faults()
+                .last_error
+                .as_str()
+                .contains("ran too long")
+        );
+    }
+
+    #[test]
+    fn a_resume_from_wait_is_held_to_the_blocks_budget() {
+        // Value 0 waits; value 1 spends the block's budget.
+        let source = "function onNote(e) if __widget_value == 1 then \
+                      for i = 1, 4000000 do local x = i * 2 end else wait(0) end end";
+        let mut machine = compile(source, &[], &[]).expect("compiles").machine();
+        machine.stage_widget(0, 0.0, None);
+        let waiter = machine.start(Callbacks::NOTE, 0).expect("start");
+        assert_eq!(machine.run(waiter, &mut Log(Vec::new())), Step::Wait(0));
+        machine.stage_widget(0, 1.0, None);
+        let hog = machine.start(Callbacks::NOTE, 0).expect("start");
+        assert_eq!(machine.run(hog, &mut Log(Vec::new())), Step::Yield);
+        let ran = machine.runs();
+        // The block's budget is spent: the waiter's resume does not run.
+        assert_eq!(machine.run(waiter, &mut Log(Vec::new())), Step::Yield);
+        assert_eq!(machine.runs(), ran);
+        machine.begin_block();
+        assert_eq!(machine.run(waiter, &mut Log(Vec::new())), Step::Done);
+    }
+
+    #[test]
+    fn matching_with_a_required_literal_gives_the_matchers_results_in_linear_time() {
+        let source = r#"
+            local function list(s, p, ...)
+                local out = {}
+                for a, b in string.gmatch(s, p) do out[#out + 1] = tostring(a) .. ":" .. tostring(b) end
+                return table.concat(out, ",")
+            end
+            function onNote(e)
+                assert(list("a/b/c.d", "(.-)/()") == "a:3,b:5")
+                assert(list("a/b/", "(.-)/()") == "a:3,b:5")
+                assert(list("x=1, y=22", "(%w+)=(%d+)") == "x:1,y:22")
+                assert(list("abc", "x*") == ":nil,:nil,:nil,:nil")
+                assert(list("one", "(.-)/()") == "")
+                assert(string.find("a.b", "%.") == 2)
+                assert(string.find("a/b", "(.-)/") == 1)
+                assert(string.find("ab", "(.-)/") == nil)
+                assert(string.find("a/b", "/", 3) == nil)
+                assert(string.match("key=val", "(%w+)=") == "key")
+                assert(string.match("keyval", "(%w+)=") == nil)
+                assert(string.match("^x", "^%^x") == "^x")
+                -- A long last piece with no delimiter: quadratic in the matcher.
+                local long = "folder/" .. string.rep("name.wav*", 400)
+                for i = 1, 200 do
+                    local n = 0
+                    for part, pos in string.gfind(long, "(.-)/()") do n = n + 1 end
+                    assert(n == 1)
+                end
+            end"#;
+        let compiled = compile(source, &[], &[]).expect("compiles");
+        let mut machine = compiled.machine();
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        let began = std::time::Instant::now();
+        let _ = machine.run(co, &mut Log(Vec::new()));
+        assert_eq!(
+            machine.faults().bad_code,
+            0,
+            "{}",
+            machine.faults().last_error.as_str()
+        );
+        assert!(began.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
