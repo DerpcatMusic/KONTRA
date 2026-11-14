@@ -1,0 +1,302 @@
+{ KSP UI probe suite, page widgets: written by tools/ksp-ui/gen.py }
+on init
+  make_perfview
+  set_ui_width_px(900)
+  set_ui_height_px(380)
+  declare !log[1024]
+  declare $n := 0
+  pgs_create_key(KLOG, 1)
+  declare ui_knob $knob(0, 1000, 10)
+  make_persistent($knob)
+  declare ui_slider $slider(0, 127)
+  make_persistent($slider)
+  declare ui_button $button
+  make_persistent($button)
+  declare ui_switch $switch
+  make_persistent($switch)
+  declare ui_menu $menu
+  make_persistent($menu)
+  declare ui_label $label(2, 1)
+  declare ui_value_edit $vedit(0, 100, 1)
+  make_persistent($vedit)
+  declare ui_table %table[16](2, 2, 100)
+  make_persistent(%table)
+  declare ui_xy ?xy[2]
+  make_persistent(?xy)
+  declare ui_level_meter $meter
+  declare ui_waveform $wave(4, 2)
+  declare ui_wavetable $wtable
+  declare ui_file_selector $files
+  make_persistent($files)
+  declare ui_mouse_area $mouse
+  declare ui_text_edit @tedit
+  make_persistent(@tedit)
+  declare ui_panel $panel
+  set_control_par(get_ui_id($knob), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($knob), $CONTROL_PAR_POS_Y, 10)
+  !log[$n] := "init,knob.type," & get_control_par(get_ui_id($knob), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,knob.w," & get_control_par(get_ui_id($knob), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,knob.h," & get_control_par(get_ui_id($knob), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($slider), $CONTROL_PAR_POS_X, 230)
+  set_control_par(get_ui_id($slider), $CONTROL_PAR_POS_Y, 10)
+  !log[$n] := "init,slider.type," & get_control_par(get_ui_id($slider), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,slider.w," & get_control_par(get_ui_id($slider), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,slider.h," & get_control_par(get_ui_id($slider), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($button), $CONTROL_PAR_POS_X, 450)
+  set_control_par(get_ui_id($button), $CONTROL_PAR_POS_Y, 10)
+  !log[$n] := "init,button.type," & get_control_par(get_ui_id($button), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,button.w," & get_control_par(get_ui_id($button), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,button.h," & get_control_par(get_ui_id($button), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($switch), $CONTROL_PAR_POS_X, 670)
+  set_control_par(get_ui_id($switch), $CONTROL_PAR_POS_Y, 10)
+  !log[$n] := "init,switch.type," & get_control_par(get_ui_id($switch), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,switch.w," & get_control_par(get_ui_id($switch), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,switch.h," & get_control_par(get_ui_id($switch), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($menu), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($menu), $CONTROL_PAR_POS_Y, 100)
+  !log[$n] := "init,menu.type," & get_control_par(get_ui_id($menu), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,menu.w," & get_control_par(get_ui_id($menu), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,menu.h," & get_control_par(get_ui_id($menu), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($label), $CONTROL_PAR_POS_X, 230)
+  set_control_par(get_ui_id($label), $CONTROL_PAR_POS_Y, 100)
+  !log[$n] := "init,label.type," & get_control_par(get_ui_id($label), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,label.w," & get_control_par(get_ui_id($label), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,label.h," & get_control_par(get_ui_id($label), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($vedit), $CONTROL_PAR_POS_X, 450)
+  set_control_par(get_ui_id($vedit), $CONTROL_PAR_POS_Y, 100)
+  !log[$n] := "init,vedit.type," & get_control_par(get_ui_id($vedit), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,vedit.w," & get_control_par(get_ui_id($vedit), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,vedit.h," & get_control_par(get_ui_id($vedit), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id(%table), $CONTROL_PAR_POS_X, 670)
+  set_control_par(get_ui_id(%table), $CONTROL_PAR_POS_Y, 100)
+  !log[$n] := "init,table.type," & get_control_par(get_ui_id(%table), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,table.w," & get_control_par(get_ui_id(%table), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,table.h," & get_control_par(get_ui_id(%table), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id(?xy), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id(?xy), $CONTROL_PAR_POS_Y, 190)
+  !log[$n] := "init,xy.type," & get_control_par(get_ui_id(?xy), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,xy.w," & get_control_par(get_ui_id(?xy), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,xy.h," & get_control_par(get_ui_id(?xy), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($meter), $CONTROL_PAR_POS_X, 230)
+  set_control_par(get_ui_id($meter), $CONTROL_PAR_POS_Y, 190)
+  !log[$n] := "init,meter.type," & get_control_par(get_ui_id($meter), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,meter.w," & get_control_par(get_ui_id($meter), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,meter.h," & get_control_par(get_ui_id($meter), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($wave), $CONTROL_PAR_POS_X, 450)
+  set_control_par(get_ui_id($wave), $CONTROL_PAR_POS_Y, 190)
+  !log[$n] := "init,wave.type," & get_control_par(get_ui_id($wave), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,wave.w," & get_control_par(get_ui_id($wave), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,wave.h," & get_control_par(get_ui_id($wave), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($wtable), $CONTROL_PAR_POS_X, 670)
+  set_control_par(get_ui_id($wtable), $CONTROL_PAR_POS_Y, 190)
+  !log[$n] := "init,wtable.type," & get_control_par(get_ui_id($wtable), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,wtable.w," & get_control_par(get_ui_id($wtable), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,wtable.h," & get_control_par(get_ui_id($wtable), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($files), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($files), $CONTROL_PAR_POS_Y, 280)
+  !log[$n] := "init,files.type," & get_control_par(get_ui_id($files), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,files.w," & get_control_par(get_ui_id($files), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,files.h," & get_control_par(get_ui_id($files), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($mouse), $CONTROL_PAR_POS_X, 230)
+  set_control_par(get_ui_id($mouse), $CONTROL_PAR_POS_Y, 280)
+  !log[$n] := "init,mouse.type," & get_control_par(get_ui_id($mouse), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,mouse.w," & get_control_par(get_ui_id($mouse), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,mouse.h," & get_control_par(get_ui_id($mouse), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id(@tedit), $CONTROL_PAR_POS_X, 450)
+  set_control_par(get_ui_id(@tedit), $CONTROL_PAR_POS_Y, 280)
+  !log[$n] := "init,tedit.type," & get_control_par(get_ui_id(@tedit), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,tedit.w," & get_control_par(get_ui_id(@tedit), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,tedit.h," & get_control_par(get_ui_id(@tedit), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  set_control_par(get_ui_id($panel), $CONTROL_PAR_POS_X, 670)
+  set_control_par(get_ui_id($panel), $CONTROL_PAR_POS_Y, 280)
+  !log[$n] := "init,panel.type," & get_control_par(get_ui_id($panel), $CONTROL_PAR_TYPE)
+  inc($n)
+  !log[$n] := "init,panel.w," & get_control_par(get_ui_id($panel), $CONTROL_PAR_WIDTH)
+  inc($n)
+  !log[$n] := "init,panel.h," & get_control_par(get_ui_id($panel), $CONTROL_PAR_HEIGHT)
+  inc($n)
+  add_menu_item($menu, "one", 1)
+  add_menu_item($menu, "two", 2)
+  set_text($label, "label text")
+  set_text($button, "button")
+  set_text($switch, "switch")
+  pgs_set_key_val(KLOG, 0, $n)
+end on
+
+function log_line
+  if ($n < 1023)
+    inc($n)
+  end if
+  pgs_set_key_val(KLOG, 0, $n)
+end function
+
+on ui_controls
+  !log[$n] := "ucs," & $NI_UI_ID
+  call log_line
+end on
+
+on persistence_changed
+  !log[$n] := "pc"
+  call log_line
+end on
+
+on pgs_changed
+  save_array_str(!log, "Z:/data/dev/workspace/scratch/ksp-ui-trace/widgets.nka")
+end on
+
+on ui_control ($knob)
+  !log[$n] := "uc,knob," & $knob & "," ...
+    & get_control_par(get_ui_id($knob), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($knob), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($knob), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($slider)
+  !log[$n] := "uc,slider," & $slider & "," ...
+    & get_control_par(get_ui_id($slider), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($slider), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($slider), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($button)
+  !log[$n] := "uc,button," & $button & "," ...
+    & get_control_par(get_ui_id($button), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($button), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($button), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($switch)
+  !log[$n] := "uc,switch," & $switch & "," ...
+    & get_control_par(get_ui_id($switch), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($switch), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($switch), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($menu)
+  !log[$n] := "uc,menu," & $menu & "," ...
+    & get_control_par(get_ui_id($menu), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($menu), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($menu), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($vedit)
+  !log[$n] := "uc,vedit," & $vedit & "," ...
+    & get_control_par(get_ui_id($vedit), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($vedit), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($vedit), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control (%table)
+  !log[$n] := "uc,table," & %table[0] & "," ...
+    & get_control_par(get_ui_id(%table), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id(%table), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id(%table), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control (?xy)
+  !log[$n] := "uc,xy," & ?xy[0] & "," & ?xy[1] & "," ...
+    & get_control_par(get_ui_id(?xy), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id(?xy), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id(?xy), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($wave)
+  !log[$n] := "uc,wave," & $wave & "," ...
+    & get_control_par(get_ui_id($wave), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($wave), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($wave), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($wtable)
+  !log[$n] := "uc,wtable," & $wtable & "," ...
+    & get_control_par(get_ui_id($wtable), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($wtable), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($wtable), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($files)
+  !log[$n] := "uc,files," & $files & "," ...
+    & get_control_par(get_ui_id($files), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($files), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($files), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($mouse)
+  !log[$n] := "uc,mouse," & $NI_MOUSE_EVENT_TYPE & "," & $NI_MOUSE_OVER_CONTROL & "," ...
+    & get_control_par(get_ui_id($mouse), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($mouse), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($mouse), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control (@tedit)
+  !log[$n] := "uc,tedit," & @tedit & "," ...
+    & get_control_par(get_ui_id(@tedit), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id(@tedit), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id(@tedit), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($panel)
+  !log[$n] := "uc,panel," & $panel & "," ...
+    & get_control_par(get_ui_id($panel), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($panel), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($panel), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on

@@ -1,0 +1,7 @@
+dclick 300 230
+type xyz
+key Return
+drag 450 230 0 -25
+drag 560 230 0 -25
+drag 670 230 0 -25
+drag 780 230 0 -25
