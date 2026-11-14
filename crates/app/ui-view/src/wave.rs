@@ -402,7 +402,9 @@ pub(super) fn cursor(
     c: &model::Colors,
     (w, h, s): (f64, f64, f64),
 ) -> Option<El> {
-    let at = (wave.cursor_us >= 0 && wave.length_us > 0)
+    // At the sample's start Kontakt 8 draws none: the rim shows (oracle
+    // probe gate.ksp, a waveform before any note).
+    let at = (wave.cursor_us > 0 && wave.length_us > 0)
         .then(|| (wave.cursor_us as f64 / wave.length_us as f64).clamp(0., 1.))?;
     let ink = super::color(c.wave_cursor.unwrap_or(model::Rgba::rgb(CURSOR)));
     Some(
