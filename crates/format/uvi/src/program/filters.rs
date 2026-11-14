@@ -13,7 +13,14 @@
 //! Mode 0..=11 picks the taps (low 1..4 poles, high 1..4, band 2 and 4,
 //! notch 2 and 4; the table filled by [ref]), `Q` is the resonance
 //! as is and `Drive` the input gain in dB (the setters around
-//! [ref], `10^(dB/20)`); `Fat` carries through.
+//! [ref], `10^(dB/20)`); `Fat` carries through. The parameter table
+//! pairs each setter with its getter in registration order:
+//! `Cutoff` stores a float at +0x38 and `Q` one at +0x3c, both raw (no
+//! transform in the parameter layer), `Drive` converts dB at [ref].
+//! So the Q→feedback law lives in the kernel that reads +0x3c; the kernel
+//! has no direct caller or table reference in the unpacked image (probed:
+//! call/jmp/lea/pointer scans of [ref]..), so `Q` stays as is and the
+//! law is open (ponytail: read it by tracing the kernel's vtable at run time).
 //!
 //! An `MS20` is the two-pole Sallen-Key on the same `Freq` range: `Morph`
 //! mixes low to high, `Q` the resonance as is, `ReferenceVoltage` the drive,

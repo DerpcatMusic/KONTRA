@@ -8,11 +8,11 @@
 //! Nothing allocates after [`Instance::new`].
 
 mod action;
-pub mod midi;
 mod execute;
 mod fuse;
 mod host;
 mod machine;
+pub mod midi;
 mod poly;
 mod program;
 mod pure;
@@ -154,6 +154,63 @@ pub struct Faults {
     pub first_out_of_range: Option<(u32, bool, i32)>,
     /// Where the first division by zero was, as a code position.
     pub first_divide_by_zero: Option<u32>,
+    /// What the latest script error said, with its line (a foreign machine's).
+    pub last_error: FaultText,
+}
+
+/// The first error's text in a fixed buffer, so recording it on the audio
+/// thread allocates nothing; a longer message is cut.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct FaultText {
+    len: u8,
+    // Eight rows: arrays of up to 32 derive `Default`.
+    bytes: [[u8; 30]; 8],
+}
+
+impl FaultText {
+    pub const CAPACITY: usize = 240;
+
+    pub fn as_str(&self) -> &str {
+        self.bytes
+            .as_flattened()
+            .get(..usize::from(self.len))
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+impl std::fmt::Debug for FaultText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Write for FaultText {
+    /// Appends what fits, cut at a character boundary.
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let room = Self::CAPACITY - usize::from(self.len);
+        let mut take = s.len().min(room);
+        while !s.is_char_boundary(take) {
+            take -= 1;
+        }
+        let at = usize::from(self.len);
+        if let (Some(to), Some(from)) = (
+            self.bytes.as_flattened_mut().get_mut(at..at + take),
+            s.as_bytes().get(..take),
+        ) {
+            to.copy_from_slice(from);
+            self.len += take as u8;
+        }
+        Ok(())
+    }
 }
 
 /// Handle of a running or suspended callback: its slot and the slot's
