@@ -187,7 +187,8 @@ mod tests {
     use super::*;
 
     fn note(n: u32) -> NoteRef {
-        NoteRef::from_event_id(n as i32 + 1).unwrap()
+        // Generation 1 (the high half), slot n.
+        NoteRef::from_event_id((1 << 16) | n as i32).unwrap()
     }
 
     #[test]

@@ -40,6 +40,7 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
 /// - it starts from the previous note's key even when that key is up (0.5 s
 ///   after its release) or its own glide is unfinished, never from the pitch
 ///   reached; the first note does not glide.
+///
 /// One instrument shares one previous note: scope 0. ponytail: intensities
 /// below 100% are taken as a linear share of the interval, unmeasured.
 pub(crate) fn glide(g: &Glide, depth: f32) -> ir::Glide {
