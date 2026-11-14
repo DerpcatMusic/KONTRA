@@ -520,7 +520,7 @@ impl Engine {
             .count()
     }
 
-    /// The controller's current value (128 is aftertouch, 129 pitch bend).
+    /// The controller's current value (129 is channel pressure).
     #[must_use]
     pub fn controller(&self, cc: usize) -> Option<u8> {
         self.cc_values.get(cc).copied()
@@ -830,7 +830,8 @@ impl Engine {
         // The scripts run with the hit list back in place: they use it.
         self.hits = hits;
         for key in (0u8..).zip(keys).filter_map(|(key, k)| k.then_some(key)) {
-            self.run_poly_at(key);
+            // A note's own expression is the host's: it stands either way.
+            let _ = self.run_poly_at(key);
         }
     }
 }

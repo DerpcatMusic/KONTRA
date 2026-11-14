@@ -4434,6 +4434,73 @@ fn uvi_hears_transport_pitch_bend_and_aftertouch_in_their_callbacks() {
     assert!(poly > pressed + 0.1, "onPolyAfterTouch did not run: {poly}");
 }
 
+fn pressure(value: u8) -> Timed<Event> {
+    Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xD0, value, 0),
+    }
+}
+
+/// UVI's API: an event reaches the instrument only through `postEvent`,
+/// as posted (a changed value replaces the one that arrived).
+#[test]
+fn uvi_controllers_reach_the_instrument_only_as_posted() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = lua_engine(
+        &mut store,
+        "function onAfterTouch(e)
+            if e.value == 99 then e.value = 30; postEvent(e) end
+            if e.value == 50 then postEvent(e) end
+        end
+        function onController(e)
+            if e.controller == 1 then e.value = 7; postEvent(e) end
+        end",
+    );
+    level(&mut e, &[pressure(50)]);
+    assert_eq!(e.controller(129), Some(50), "a posted event passes");
+    level(&mut e, &[pressure(99)]);
+    assert_eq!(e.controller(129), Some(30), "a changed event replaces");
+    level(&mut e, &[pressure(10)]);
+    assert_eq!(
+        e.controller(129),
+        Some(30),
+        "an unposted event is kept back"
+    );
+    level(&mut e, &[cc(1, 100)]);
+    assert_eq!(e.controller(1), Some(7), "a changed controller replaces");
+}
+
+/// KSP manual: `set_controller` sends `$VCC_PITCH_BEND` and `$VCC_MONO_AT`
+/// too, and `ignore_controller` with it transforms what arrived.
+#[test]
+fn kontakt_sets_pitch_bend_and_pressure_and_transforms_a_controller() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on controller
+            if ($CC_NUM = $VCC_MONO_AT)
+                ignore_controller
+                set_controller($VCC_MONO_AT, 127 - %CC[$VCC_MONO_AT])
+            end if
+            if ($CC_NUM = 1)
+                set_controller($VCC_PITCH_BEND, 4096)
+            end if
+            if ($CC_NUM = 2 and %CC[$VCC_PITCH_BEND] = 4096)
+                play_note(60, 100, 0, -1)
+            end if
+        end on",
+    );
+    level(&mut e, &[pressure(100)]);
+    assert_eq!(e.controller(129), Some(27));
+    assert_eq!(level(&mut e, &[cc(1, 1)]), 0.0);
+    assert!(
+        level(&mut e, &[cc(2, 1)]) > 0.1,
+        "the script's bend did not stand"
+    );
+}
+
 /// KSP manual (MIDI object): `mf_insert_file` in `on init` reads at once, a
 /// note off becomes the note's length, and the position marker walks the
 /// events in time order across tracks.
@@ -4692,5 +4759,9 @@ fn midi_events_are_addressed_by_track_and_by_mark() {
     );
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "123 321 -1");
-    assert!(e.unhandled_actions().is_empty(), "{:?}", e.unhandled_actions());
+    assert!(
+        e.unhandled_actions().is_empty(),
+        "{:?}",
+        e.unhandled_actions()
+    );
 }
