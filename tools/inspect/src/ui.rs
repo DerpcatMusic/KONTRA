@@ -222,6 +222,7 @@ fn render(
         let spent = thread_cpu_ns().saturating_sub(began);
         let lua = kontra_lua::probe::take();
         if spent > WORST_BLOCK_NS.fetch_max(spent, std::sync::atomic::Ordering::Relaxed) {
+            // Wall time (the probe reads the monotonic clock), unlike the CPU-time block above.
             WORST_BLOCK_LUA_NS.store(lua.run_ns, std::sync::atomic::Ordering::Relaxed);
             WORST_BLOCK_GC_NS.store(lua.gc_ns, std::sync::atomic::Ordering::Relaxed);
         }
@@ -546,7 +547,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 let (_, again, ready_again) = fresh(&mut engine);
                 settled &= ready_next && ready_again;
                 let note_changed = note_diff(&first, &base, &next, &again);
-                moves.push(json!({"value":value,"move_us":move_us,"worst_block_lua_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
+                moves.push(json!({"value":value,"move_us":move_us,"worst_block_lua_wall_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_wall_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));

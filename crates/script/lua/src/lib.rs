@@ -332,11 +332,17 @@ fn sandbox() -> mlua::Result<(Lua, Arc<AtomicU32>, Arc<AtomicU32>)> {
             return Err(mlua::Error::runtime(at));
         }
         // Past the deadline: ask to yield at the next safepoint Luau can yield
-        // at (the interrupt stops reaching here from the others).
-        if DEADLINE.with(std::cell::Cell::get).is_some_and(|d| std::time::Instant::now() >= d) {
-            SLICED.with(|s| s.set(true));
+        // at. Elsewhere (inside a C call) the count above still runs, and the
+        // yield is not asked for: Luau refuses it.
+        if DEADLINE
+            .with(std::cell::Cell::get)
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
             interrupt::set_past(true);
-            return Ok(mlua::VmState::Yield);
+            if interrupt::can_yield() {
+                SLICED.with(|s| s.set(true));
+                return Ok(mlua::VmState::Yield);
+            }
         }
         Ok(mlua::VmState::Continue)
     });
@@ -403,6 +409,17 @@ fn state(
     globals.get::<Function>("__restore")?.call::<()>(())?;
     limit.store(UI_CHECKPOINTS, Ordering::Relaxed);
     Ok((lua, checkpoints))
+}
+
+/// Ends a run's slice mode when it drops, however the run ends.
+struct RunMode;
+
+impl Drop for RunMode {
+    fn drop(&mut self) {
+        DEADLINE.with(|d| d.set(None));
+        interrupt::set_past(false);
+        interrupt::set_stride(interrupt::STRIDE);
+    }
 }
 
 #[derive(Default)]
@@ -559,11 +576,20 @@ impl Machine for LuaMachine {
             return Step::Yield;
         }
         self.runs = self.runs.wrapping_add(1);
-        let from = if ui { used } else { UI_CHECKPOINTS - CHECKPOINTS };
+        let from = if ui && used > 1 {
+            used
+        } else if ui {
+            0
+        } else {
+            UI_CHECKPOINTS - CHECKPOINTS
+        };
         self.checkpoints.store(from, Ordering::Relaxed);
         SLICED.with(|s| s.set(false));
         let began = std::time::Instant::now();
         DEADLINE.with(|d| d.set(ui.then(|| began + self.block_left.max(MIN_SLICE))));
+        // The run's mode ends with it, on every exit: a synchronous callback
+        // after it (onSave) must not inherit the slice's deadline or `past`.
+        let _mode = RunMode;
         interrupt::set_past(false);
         interrupt::set_stride(if ui { SLICE_STRIDE } else { interrupt::STRIDE });
         let resumed = lua.scope(|scope| {
@@ -601,6 +627,11 @@ impl Machine for LuaMachine {
                 Step::Yield
             }
             (Ok(waited), ThreadStatus::Resumable) => {
+                // An editor run that waits has run: its resume is held to the
+                // block's budget like a slice's (1 counts no checkpoints).
+                if let Some(slot) = self.slot(co).filter(|_| ui) {
+                    slot.used = 1;
+                }
                 Step::Wait(number(&waited).unwrap_or(0.0).max(0.0) as u64)
             }
             (Ok(_), _) => Step::Done,
@@ -1178,6 +1209,45 @@ mod tests {
         machine.begin_block();
         let _ = machine.run(co, &mut Log(Vec::new()));
         assert_eq!(machine.runs(), ran + 1);
+    }
+
+    #[test]
+    fn an_endless_comparator_under_sort_ends_with_a_runaway_fault() {
+        // Inside `table.sort` Luau cannot yield: past the slice only the
+        // count can end it.
+        let source = "function onNote(e) table.sort({2, 1}, function() while true do end end) end";
+        let mut machine = compile(source, &[], &[]).expect("compiles").machine();
+        machine.stage_widget(0, 0.0, None);
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        assert_eq!(machine.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(machine.faults().bad_code, 1);
+        assert!(
+            machine
+                .faults()
+                .last_error
+                .as_str()
+                .contains("ran too long")
+        );
+    }
+
+    #[test]
+    fn a_resume_from_wait_is_held_to_the_blocks_budget() {
+        // Value 0 waits; value 1 spends the block's budget.
+        let source = "function onNote(e) if __widget_value == 1 then \
+                      for i = 1, 4000000 do local x = i * 2 end else wait(0) end end";
+        let mut machine = compile(source, &[], &[]).expect("compiles").machine();
+        machine.stage_widget(0, 0.0, None);
+        let waiter = machine.start(Callbacks::NOTE, 0).expect("start");
+        assert_eq!(machine.run(waiter, &mut Log(Vec::new())), Step::Wait(0));
+        machine.stage_widget(0, 1.0, None);
+        let hog = machine.start(Callbacks::NOTE, 0).expect("start");
+        assert_eq!(machine.run(hog, &mut Log(Vec::new())), Step::Yield);
+        let ran = machine.runs();
+        // The block's budget is spent: the waiter's resume does not run.
+        assert_eq!(machine.run(waiter, &mut Log(Vec::new())), Step::Yield);
+        assert_eq!(machine.runs(), ran);
+        machine.begin_block();
+        assert_eq!(machine.run(waiter, &mut Log(Vec::new())), Step::Done);
     }
 
     #[test]
