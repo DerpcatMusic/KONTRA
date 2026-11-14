@@ -61,7 +61,7 @@ def probe(cases, halves, digits):
         src.append("end on")
         lua.append(f"local src{slot} = [[\n" + "\n".join(src) + "\n]]")
         lua.append(f"pcall(kt.set_instrument_script_source, i, {slot}, src{slot})")
-    lua += ["local t0 = os.time()", "repeat until os.time() - t0 >= 8",
+    lua += ["local t0 = os.time()", "repeat until os.time() - t0 >= 30",
             f"for g = 0, {groups - 1} do",
             '  log(string.format(\'{"g":%d,"u":%.2f}\', g, kt.get_group_tune(i, g) / 0.36))',
             "end", "out:close()"]
@@ -72,7 +72,7 @@ def run(nki, work, name, lua):
     path = os.path.join(work, name)
     with open(path + ".lua", "w") as f:
         f.write(lua)
-    env = dict(os.environ, ORACLE_LUA=path + ".lua", ORACLE_TIMEOUT="500")
+    env = dict(os.environ, ORACLE_LUA=path + ".lua", ORACLE_TIMEOUT="150")
     subprocess.run(["../oracle/oracle-slot", "python3", "dump.py", path + ".jsonl", nki],
                    cwd=HERE, env=env, check=False)
     units = {}
@@ -89,8 +89,8 @@ def measure(nki, work, rows, n=[0]):
     come back (unknown to Kontakt, or in a script that failed) is retried in halves
     until it is alone. Returns {name: value or None (unknown)}."""
     found = {}
-    for start in range(0, len(rows), 90):
-        chunk = rows[start:start + 90]
+    for start in range(0, len(rows), 24):
+        chunk = rows[start:start + 24]
         half = len(chunk) // 2
         halves = [(0, half), (half, len(chunk))] if half else [(0, len(chunk)), (0, 0)]
         units = run(nki, work, f"digits{n[0]}", probe(chunk, halves, True))
