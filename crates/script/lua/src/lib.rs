@@ -18,6 +18,7 @@ use mlua::thread::ThreadStatus;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value};
 
 pub mod alloc;
+mod bridge;
 mod interrupt;
 mod literal;
 pub mod nui;
@@ -216,6 +217,12 @@ impl Foreign for Compiled {
     }
 
     fn machine(&self) -> Box<dyn Machine> {
+        Box::new(self.lua_machine())
+    }
+}
+
+impl Compiled {
+    fn lua_machine(&self) -> LuaMachine {
         let built = self.built.lock().ok().and_then(|mut b| b.take());
         let (lua, checkpoints, arena) = match built {
             Some(built) => built,
@@ -226,17 +233,50 @@ impl Foreign for Compiled {
                 drop(load);
                 // `compile` loaded the same source, so this fails only on memory.
                 let Ok((lua, checkpoints)) = built else {
-                    return Box::new(LuaMachine::empty(arena));
+                    return LuaMachine::empty(arena);
                 };
                 (lua, checkpoints, arena)
             }
         };
         let load = arena.load();
+        // Each slot's coroutine, made here so no start makes one.
+        let idle = lua.create_function(|_, ()| Ok(())).ok();
+        let slots = (0..COROUTINES)
+            .map(|_| Slot {
+                resident: idle
+                    .as_ref()
+                    .and_then(|f| lua.create_thread(f.clone()).ok()),
+                ..Slot::default()
+            })
+            .collect();
+        let entries = Entries::new(&lua);
+        // `__host`'s key exists from the start ([`set_host`]).
+        if let Some(g) = &entries.globals {
+            let _ = g.raw_set("__host", false);
+        }
+        let lend = bridge::Lend::default();
+        let host = {
+            let lend = lend.clone();
+            // Fixed arity, so a call allocates nothing: an action and up
+            // to eight arguments, the trailing nils dropped.
+            lua.create_function(move |lua, (a, b, c, d, e, f, g, h, i): Args| {
+                let args = [a, b, c, d, e, f, g, h, i];
+                let n = args.iter().rposition(|v| !v.is_nil()).map_or(0, |n| n + 1);
+                let args = args.get(..n).unwrap_or_default();
+                Ok(lend
+                    .with(|lent| host_call(lua, lent.host, lent.context, args))
+                    .unwrap_or(Value::Nil))
+            })
+            .ok()
+        };
         let machine = LuaMachine {
             reads: ui::Reads::new(&lua),
             lua: Some(lua),
             checkpoints,
-            slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
+            slots,
+            entries,
+            host,
+            lend,
             spawned: Vec::with_capacity(COROUTINES),
             faults: Faults::default(),
             runs: 0,
@@ -246,7 +286,7 @@ impl Foreign for Compiled {
         if let Some(lua) = &machine.lua {
             machine.arena.reserve(HEADROOM.max(lua.used_memory() / 2));
         }
-        Box::new(machine)
+        machine
     }
 }
 
@@ -351,9 +391,63 @@ fn state(
 
 #[derive(Default)]
 struct Slot {
-    thread: Option<Thread>,
+    /// The slot's own coroutine, built with the machine. A callback start
+    /// resets it to the callback (Luau's `lua_resetthread`) instead of
+    /// making a thread, so starting one allocates nothing.
+    resident: Option<Thread>,
+    running: Running,
+    /// What the next resume passes: a start's arguments, once.
+    first: First,
     generation: u16,
     context: u64,
+}
+
+/// What a slot runs.
+#[derive(Default)]
+enum Running {
+    #[default]
+    Idle,
+    Resident,
+    /// A coroutine the script made with `spawn`.
+    Spawned(Thread),
+}
+
+/// The arguments a callback's first resume passes to its function, in
+/// place of a closure bound to them per event.
+#[derive(Clone, Copy, Default)]
+enum First {
+    #[default]
+    Nothing,
+    Control(i32, f64),
+    ControlMod(i32, f64, f64, f64),
+}
+
+/// The functions a start resets a resident coroutine to, looked up once.
+#[derive(Default)]
+struct Entries {
+    /// `__entries[0..=4]`, by entry number.
+    callbacks: [Option<Function>; 5],
+    control: Option<Function>,
+    control_mod: Option<Function>,
+    /// The globals and the `spawn` queue: a lookup per run would add a
+    /// reference to mlua's ref thread each time, which the GC shrinks and
+    /// the next lookup regrows.
+    globals: Option<Table>,
+    spawned: Option<Table>,
+}
+
+impl Entries {
+    fn new(lua: &Lua) -> Self {
+        let g = lua.globals();
+        let table = g.get::<Table>("__entries").ok();
+        Self {
+            callbacks: std::array::from_fn(|n| table.as_ref()?.get::<Function>(n).ok()),
+            control: g.get("__control").ok(),
+            control_mod: g.get("__control_mod").ok(),
+            spawned: g.get("__spawned").ok(),
+            globals: Some(g),
+        }
+    }
 }
 
 struct LuaMachine {
@@ -364,6 +458,10 @@ struct LuaMachine {
     /// The interrupt's count for the current run.
     checkpoints: Arc<AtomicU32>,
     slots: Vec<Slot>,
+    entries: Entries,
+    /// `__host`, made once, and where it finds the host during a resume.
+    host: Option<Function>,
+    lend: bridge::Lend,
     spawned: Vec<(CoId, u64)>,
     faults: Faults,
     /// Runs of a callback or task, each resume one ([`Machine::runs`]).
@@ -379,6 +477,9 @@ impl LuaMachine {
             reads: None,
             checkpoints: Arc::default(),
             slots: Vec::new(),
+            entries: Entries::default(),
+            host: None,
+            lend: bridge::Lend::default(),
             spawned: Vec::new(),
             faults: Faults::default(),
             runs: 0,
@@ -386,33 +487,45 @@ impl LuaMachine {
         }
     }
 
-    /// Puts `thread` in a free slot.
-    fn take(&mut self, thread: Thread, context: u64) -> Option<CoId> {
-        let Some((i, slot)) = self
-            .slots
-            .iter_mut()
-            .enumerate()
-            .find(|(_, s)| s.thread.is_none())
+    /// Runs `running` in a free slot; a resident start first resets the
+    /// slot's coroutine to `start`.
+    fn take(
+        &mut self,
+        running: Running,
+        start: Option<(Function, First)>,
+        context: u64,
+    ) -> Option<CoId> {
+        let Some((i, slot)) =
+            (self.slots.iter_mut().enumerate()).find(|(_, s)| matches!(s.running, Running::Idle))
         else {
             self.faults.no_coroutine += 1;
             return None;
         };
+        if let Some((function, first)) = start {
+            slot.resident.as_ref()?.reset(function).ok()?;
+            slot.first = first;
+        }
         let index = u16::try_from(i).ok()?;
         slot.generation = slot.generation.wrapping_add(1);
-        slot.thread = Some(thread);
+        slot.running = running;
         slot.context = context;
         Some(CoId::new(index, slot.generation))
+    }
+
+    /// Starts `function` on a resident coroutine.
+    fn begin(&mut self, function: Option<Function>, first: First, context: u64) -> Option<CoId> {
+        self.take(Running::Resident, Some((function?, first)), context)
     }
 
     fn slot(&mut self, co: CoId) -> Option<&mut Slot> {
         self.slots
             .get_mut(usize::from(co.index()))
-            .filter(|s| s.generation == co.generation() && s.thread.is_some())
+            .filter(|s| s.generation == co.generation() && !matches!(s.running, Running::Idle))
     }
 
     /// Moves the coroutines `spawn` queued during the run into slots.
-    fn collect_spawned(&mut self, lua: &Lua, context: u64) {
-        let Ok(queued) = lua.globals().get::<Table>("__spawned") else {
+    fn collect_spawned(&mut self, context: u64) {
+        let Some(queued) = self.entries.spawned.as_ref().filter(|q| q.raw_len() > 0) else {
             return;
         };
         let pairs: Vec<(Thread, f64)> = queued
@@ -422,7 +535,7 @@ impl LuaMachine {
             .collect();
         let _ = queued.clear();
         for (thread, micros) in pairs {
-            if let Some(co) = self.take(thread, context) {
+            if let Some(co) = self.take(Running::Spawned(thread), None, context) {
                 self.spawned.push((co, micros.max(0.0) as u64));
             }
         }
@@ -433,14 +546,13 @@ impl Machine for LuaMachine {
     fn start(&mut self, entry: u32, context: u64) -> Option<CoId> {
         let _run = probe::Run::start();
         let _arena = self.arena.audio();
-        let lua = self.lua.as_ref()?;
-        let callback = lua
-            .globals()
-            .get::<Table>("__entries")
-            .and_then(|t| t.get::<Function>(entry))
-            .ok()?;
-        let thread = lua.create_thread(callback).ok()?;
-        self.take(thread, context)
+        self.lua.as_ref()?;
+        let callback = self
+            .entries
+            .callbacks
+            .get(usize::try_from(entry).ok()?)?
+            .clone();
+        self.begin(callback, First::Nothing, context)
     }
 
     fn run(&mut self, co: CoId, host: &mut dyn HostApi) -> Step {
@@ -453,32 +565,39 @@ impl Machine for LuaMachine {
             return Step::Done;
         };
         let context = slot.context;
-        let Some(thread) = slot.thread.clone() else {
+        let first = std::mem::take(&mut slot.first);
+        // A resident thread leaves its slot for the run and comes back
+        // after it; the slot stays taken meanwhile.
+        let resident = matches!(slot.running, Running::Resident);
+        let thread = match &slot.running {
+            Running::Spawned(thread) => Some(thread.clone()),
+            Running::Resident => slot.resident.take(),
+            Running::Idle => None,
+        };
+        let Some(thread) = thread else {
             return Step::Done;
         };
         // Every resume, not only a start, may change the state: a task that
         // waited (a layer loading after `wait`) must be seen by the next save.
         self.runs = self.runs.wrapping_add(1);
         self.checkpoints.store(0, Ordering::Relaxed);
-        let resumed = lua.scope(|scope| {
-            // Fixed arity, so a call allocates nothing: an action and up
-            // to eight arguments, the trailing nils dropped.
-            let call = scope.create_function_mut(|lua, (a, b, c, d, e, f, g, h, i): Args| {
-                let args = [a, b, c, d, e, f, g, h, i];
-                let n = args.iter().rposition(|v| !v.is_nil()).map_or(0, |n| n + 1);
-                Ok(host_call(
-                    lua,
-                    host,
-                    context,
-                    args.get(..n).unwrap_or_default(),
-                ))
-            })?;
-            lua.globals().set("__host", call)?;
-            let result = thread.resume::<Value>(());
-            lua.globals().set("__host", Value::Nil)?;
+        let (Some(call), Some(globals)) = (&self.host, &self.entries.globals) else {
+            return Step::Done;
+        };
+        let mut lent = bridge::Lent { host, context };
+        let resumed = self.lend.lend(&mut lent, || {
+            set_host(&lua, globals, call)?;
+            let result = match first {
+                First::Nothing => thread.resume::<Value>(()),
+                First::Control(id, value) => thread.resume::<Value>((id, value)),
+                First::ControlMod(id, saved, ratio, m) => {
+                    thread.resume::<Value>((id, saved, ratio, m))
+                }
+            };
+            set_host(&lua, globals, false)?;
             result
         });
-        self.collect_spawned(&lua, context);
+        self.collect_spawned(context);
         let step = match (resumed, thread.status()) {
             (Ok(waited), ThreadStatus::Resumable) => {
                 Step::Wait(number(&waited).unwrap_or(0.0).max(0.0) as u64)
@@ -489,10 +608,13 @@ impl Machine for LuaMachine {
                 Step::Done
             }
         };
-        if step == Step::Done
-            && let Some(slot) = self.slot(co)
-        {
-            slot.thread = None;
+        if let Some(slot) = self.slots.get_mut(usize::from(co.index())) {
+            if resident {
+                slot.resident = Some(thread);
+            }
+            if step == Step::Done && slot.generation == co.generation() {
+                slot.running = Running::Idle;
+            }
         }
         step
     }
@@ -500,14 +622,14 @@ impl Machine for LuaMachine {
     fn cancel(&mut self, co: CoId) {
         let _arena = self.arena.audio();
         if let Some(slot) = self.slot(co) {
-            slot.thread = None;
+            slot.running = Running::Idle;
         }
     }
 
     fn context(&self, co: CoId) -> Option<u64> {
         self.slots
             .get(usize::from(co.index()))
-            .filter(|s| s.generation == co.generation() && s.thread.is_some())
+            .filter(|s| s.generation == co.generation() && !matches!(s.running, Running::Idle))
             .map(|s| s.context)
     }
 
@@ -523,19 +645,24 @@ impl Machine for LuaMachine {
     fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId> {
         let _run = probe::Run::start();
         let _arena = self.arena.audio();
-        let lua = self.lua.as_ref()?;
-        let set = lua.globals().get::<Function>("__control").ok()?;
-        let thread = lua.create_thread(set.bind((id, value)).ok()?).ok()?;
-        self.take(thread, context)
+        self.lua.as_ref()?;
+        let set = self.entries.control.clone();
+        self.begin(set, First::Control(id, value), context)
     }
 
-    fn control_mod(&mut self, id: i32, saved: f64, ratio: f64, m: f64, context: u64) -> Option<CoId> {
+    fn control_mod(
+        &mut self,
+        id: i32,
+        saved: f64,
+        ratio: f64,
+        m: f64,
+        context: u64,
+    ) -> Option<CoId> {
         let _run = probe::Run::start();
         let _arena = self.arena.audio();
-        let lua = self.lua.as_ref()?;
-        let set = lua.globals().get::<Function>("__control_mod").ok()?;
-        let thread = lua.create_thread(set.bind((id, saved, ratio, m)).ok()?).ok()?;
-        self.take(thread, context)
+        self.lua.as_ref()?;
+        let set = self.entries.control_mod.clone();
+        self.begin(set, First::ControlMod(id, saved, ratio, m), context)
     }
 
     fn stage_widget(&mut self, n: u32, value: f64, cell: Option<u32>) {
@@ -590,6 +717,19 @@ impl Machine for LuaMachine {
         self.checkpoints.store(0, Ordering::Relaxed);
         save::file(self.lua.as_ref()?, out)
     }
+}
+
+/// Sets the `__host` global. Outside a run it is parked at `false`, never
+/// nil, so its key stays alive and the store allocates nothing; mlua's
+/// memory guard is lifted for it, since a guarded store makes a protected
+/// call whose two C closures every resume would leave for the GC
+/// (`starting_a_callback_makes_no_luau_object`). The prelude reads `false`
+/// as nil (`if not __host`).
+fn set_host(lua: &Lua, globals: &Table, value: impl mlua::IntoLua) -> mlua::Result<()> {
+    let limit = lua.set_memory_limit(0)?;
+    let set = globals.raw_set("__host", value);
+    lua.set_memory_limit(limit)?;
+    set
 }
 
 /// A Lua number, whichever way the state holds it.
@@ -670,6 +810,62 @@ fn host_call(lua: &Lua, host: &mut dyn HostApi, context: u64, args: &[Value]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Luau bytes one event allocates, the GC stopped so nothing it frees
+    /// hides them: Luau carves small objects out of 16 KB pages, so a
+    /// counting allocator sees only about one allocation in fifty.
+    fn bytes_per_event(
+        m: &mut LuaMachine,
+        mut event: impl FnMut(&mut LuaMachine) -> Option<CoId>,
+    ) -> f64 {
+        struct Host;
+        impl HostApi for Host {
+            fn call(&mut self, _: HostCall<'_>) -> HostValue {
+                HostValue::Int(1)
+            }
+        }
+        let mut once = |m: &mut LuaMachine| {
+            let co = event(m).expect("a free coroutine");
+            assert_eq!(m.run(co, &mut Host), Step::Done);
+        };
+        for _ in 0..100 {
+            once(m);
+        }
+        let lua = m.lua.clone().expect("a state");
+        lua.gc_stop();
+        let before = lua.used_memory();
+        for _ in 0..1000 {
+            once(m);
+        }
+        let after = lua.used_memory();
+        lua.gc_restart();
+        (after as f64 - before as f64) / 1000.0
+    }
+
+    /// Starting a callback (a note, a control change, a connection's move)
+    /// takes a resident coroutine and passes its arguments on the first
+    /// resume: no Luau object is made for it.
+    #[test]
+    fn starting_a_callback_makes_no_luau_object() {
+        let source = "last = 0
+            local k = Knob('k', 0, 0, 100)
+            k.changed = function(self) last = self.value end
+            function onNote(e) last = e.note end";
+        let mut m = compile(source, &[], &[]).unwrap().lua_machine();
+        let init = m.start(Callbacks::INIT, 0).unwrap();
+        while let Step::Wait(_) = m.run(init, &mut Log(Vec::new())) {}
+        let note = bytes_per_event(&mut m, |m| m.start(Callbacks::NOTE, 0));
+        let control = bytes_per_event(&mut m, |m| m.control(0, 42.0, 0));
+        let moved = bytes_per_event(&mut m, |m| m.control_mod(0, 50.0, 0.5, 0.25, 0));
+        assert_eq!(
+            (control, moved),
+            (0.0, 0.0),
+            "bytes per control change, move"
+        );
+        // A note's only object is the event table `onNote(e)` receives,
+        // fresh per note as in UVIScript (a script may keep it).
+        assert!(note <= 320.0, "{note} bytes per note");
+    }
 
     struct Log(Vec<(Action, Vec<i64>)>);
 
@@ -1271,7 +1467,8 @@ mod tests {
         let init = m.start(Callbacks::INIT, 0).expect("init");
         assert_eq!(m.run(init, &mut host), Step::Done);
         host = Routes(0, 0);
-        // A callback allocates the same for two writes as for a thousand.
+        // A thousand writes allocate no more than two (the allocator sees
+        // Luau's pages, so the first callback may take one).
         let mut note = |host: &mut Routes| {
             let _ = probe::take();
             let co = m.start(Callbacks::NOTE, 0).expect("note");
@@ -1282,7 +1479,7 @@ mod tests {
         assert_eq!((host.0, host.1), (2 * 500_000, 2));
         let thousand = note(&mut host);
         assert_eq!((host.0, host.1), (1_002 * 500_000, 1_002));
-        assert_eq!(thousand, two);
+        assert!(thousand <= two, "{thousand} > {two}");
     }
 
     #[test]
