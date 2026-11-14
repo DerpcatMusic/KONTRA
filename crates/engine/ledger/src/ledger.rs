@@ -109,7 +109,7 @@ pub struct Note {
     /// Sample start offset a script asked for, microseconds.
     pub offset: u32,
     /// `EVENT_PAR_0..3`, free for the script.
-    pub custom: [i32; 4],
+    pub custom: [i32; 16],
     /// The zone slot the note starts; -1 for any.
     pub zone_slot: i32,
     /// "From script" modulator values, `(index, value)`, ±1 000 000.
@@ -156,7 +156,7 @@ impl Note {
             script_volume: 0,
             script_pan: 0,
             offset: 0,
-            custom: [0; 4],
+            custom: [0; 16],
             zone_slot: -1,
             mod_values: [None; 4],
             first: 0,

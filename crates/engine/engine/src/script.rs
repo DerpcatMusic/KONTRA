@@ -507,10 +507,27 @@ impl HostApi for Engine {
                 self.set_group(int(0), int(3), int(2) != 0);
                 HostValue::Nothing
             }
-            Action::SetEventParArr if int(1) == event::MOD_VALUE => {
+            Action::SetEventParArr if int(1) == event::CUSTOM => {
+                if let Ok(index) = usize::try_from(int(3)) {
+                    self.each(int(0), |n| {
+                        if let Some(c) = n.custom.get_mut(index) {
+                            *c = int(2);
+                        }
+                    });
+                }
+                HostValue::Nothing
+            }
+            Action::GetEventParArr if int(1) == event::CUSTOM => {
+                let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
+                let index = usize::try_from(int(2)).ok();
+                HostValue::Int(note.zip(index).map_or(0, |(n, i)| n.custom.get(i).copied().unwrap_or(0)))
+            }
+            Action::SetEventParArr if matches!(int(1), event::MOD_VALUE | event::MOD_VALUE_EX) => {
                 if let Ok(index) = u16::try_from(int(3)) {
                     // An optional fifth argument ramps there over microseconds.
-                    let (value, now) = (int(2), self.now);
+                    // `_ID` clamps to ±1 000 000, `_EX_ID` does not.
+                    let value = if int(1) == event::MOD_VALUE { int(2).clamp(-1_000_000, 1_000_000) } else { int(2) };
+                    let now = self.now;
                     let frames =
                         u64::try_from(int(4)).unwrap_or(0) * u64::from(self.rate) / 1_000_000;
                     let from = self.script_mod(index);
@@ -534,7 +551,7 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
-            Action::GetEventParArr if int(1) == event::MOD_VALUE => {
+            Action::GetEventParArr if matches!(int(1), event::MOD_VALUE | event::MOD_VALUE_EX) => {
                 let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 let index = u16::try_from(int(2)).ok();
                 HostValue::Int(note.zip(index).map_or(0, |(n, i)| {

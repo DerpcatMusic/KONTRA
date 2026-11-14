@@ -118,7 +118,19 @@ impl Engine {
             },
             // Time Machine Pro's own voice pools: KONTRA's stretch draws on
             // the engine's voices, so the change is done at once.
-            Action::SetVoiceLimit => HostValue::Int(self.start_async(Exit::Done)),
+            Action::SetVoiceLimit => {
+                let slot = usize::from(int(0) == kontra_vm::midi::VL_HQ);
+                if let Some(limit) = self.voice_limits.get_mut(slot) {
+                    *limit = int(1).max(1);
+                }
+                HostValue::Int(self.start_async(Exit::Done))
+            }
+            Action::GetVoiceLimit => HostValue::Int(
+                self.voice_limits
+                    .get(usize::from(int(0) == kontra_vm::midi::VL_HQ))
+                    .copied()
+                    .unwrap_or(0),
+            ),
             // No file is picked in a browser KONTRA does not show.
             Action::FsGetFilename => {
                 *call.text_out = Text::EMPTY;
