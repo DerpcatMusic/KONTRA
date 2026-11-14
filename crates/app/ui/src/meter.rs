@@ -58,7 +58,11 @@ impl Channel {
             target
         } else {
             let risen = low + (target - low) * FALL;
-            if target - risen < 0.001 { target } else { risen }
+            if target - risen < 0.001 {
+                target
+            } else {
+                risen
+            }
         };
         if self.shown.low < self.shown.trough || self.held_low == 0 {
             self.shown.trough = self.shown.low;

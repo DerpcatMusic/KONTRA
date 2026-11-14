@@ -50,7 +50,9 @@ impl Engine {
     pub fn set_picked(&mut self, slot: u8, id: i32, path: Text) {
         let n = self.control_index_in(slot, id);
         let scripts = &self.plan.scripts;
-        let par = scripts.get(usize::from(slot)).map(|s| s.controls.look.filepath);
+        let par = scripts
+            .get(usize::from(slot))
+            .map(|s| s.controls.look.filepath);
         if let Some(par) = par {
             self.ui.pick_file(slot, n, par, path);
         }

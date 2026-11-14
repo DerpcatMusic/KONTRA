@@ -382,7 +382,11 @@ fn line(
             let y = mid - v(i) * amp;
             (lo.min(y), hi.max(y))
         });
-        let (lo, hi) = if end { (lo.min(mid), hi.max(mid)) } else { (lo, hi) };
+        let (lo, hi) = if end {
+            (lo.min(mid), hi.max(mid))
+        } else {
+            (lo, hi)
+        };
         let (top, bottom) = (lo - half, hi + half);
         let (ink, a) = paint((u0 + u1) / 2.);
         for y in top.floor().max(0.) as usize..(bottom.ceil() as usize).min(c.h) {

@@ -201,7 +201,10 @@ fn drawn_page(
                 let from = level.get(bus.map_or(0, |b| usize::from(b) + 1));
                 let shown = from.and_then(|l| l.get(usize::from(c)));
                 let inverted = wd.meter_range.is_some_and(|[min, max]| max < min);
-                Some((orientation, lit(shown.copied().unwrap_or_default(), inverted)))
+                Some((
+                    orientation,
+                    lit(shown.copied().unwrap_or_default(), inverted),
+                ))
             }
             _ => None,
         };
@@ -390,7 +393,10 @@ fn drawn_page(
                 wd.table_inner_edge.map(|edge| edge.visible),
                 wd.hide.background,
                 bare,
-                ((wd.waveform.as_ref()).map(|v| (v.cursor_us, v.length_us)), wave_key),
+                (
+                    (wd.waveform.as_ref()).map(|v| (v.cursor_us, v.length_us)),
+                    wave_key,
+                ),
             ),
             glyphs
                 .as_ref()

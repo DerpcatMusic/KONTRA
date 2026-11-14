@@ -132,7 +132,8 @@ fn peaks(sample: &ir::Sample, at: f32) -> Option<Read> {
         peaks,
         length_us: length as i64,
         density: density.into(),
-        frame: (f64::from(at.clamp(0., 1.)) * cycles.len().saturating_sub(1) as f64).round() as usize,
+        frame: (f64::from(at.clamp(0., 1.)) * cycles.len().saturating_sub(1) as f64).round()
+            as usize,
         frames: cycles,
     })
 }
