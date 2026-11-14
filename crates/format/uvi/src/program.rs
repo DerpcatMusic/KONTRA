@@ -264,8 +264,8 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 
     /// A layer's own note limit (`CustomPolyphony`, 0 = the program's): its
-    /// notes share one voice group of that many notes, each as many voices
-    /// as its widest keygroup sounds; a new note past it takes the oldest's.
+    /// notes share one voice group counting that many notes; a new note past
+    /// it takes every voice of the oldest, however many zones each sounds.
     /// VWinds' sustain layers hold 2, so a third note ends the first. A mono
     /// `PlayMode` (0 Poly, 1 Poly Portamento, 2 Mono Retrigger, 3 Mono
     /// Portamento, 4 Mono Portamento Slide, from UVIWorkstation's enum
@@ -284,12 +284,13 @@ impl<L: Library> Translator<'_, '_, L> {
             return Ok(None);
         }
         self.out.voice_groups.push(ir::VoiceGroup {
-            voices: notes.saturating_mul(routing::zones_per_note(layer)),
+            voices: notes,
             steal: ir::Steal::Oldest,
             prefer_released: false,
             // ponytail: UVI's steal fade is unmeasured; Kontakt's default.
             fade_ms: 10.0,
             exclusive: None,
+            per_note: true,
         });
         Ok(Some(self.out.voice_groups.len() - 1))
     }

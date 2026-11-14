@@ -2444,12 +2444,12 @@ fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
 
 #[test]
 fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
-    // VWinds' sustain layer: 2 notes of a keygroup sounding 2 zones (a
+    // VWinds' sustain layer: 2 notes, its keygroup sounding 2 zones (a
     // bundle); a Mono Portamento layer: 1 note, its glide reported.
     let xml = r#"<Program Gain="1">
       <Layers>
         <Layer Gain="1" Pan="0" CustomPolyphony="2" PlayMode="0"><Keygroups>
-          <Keygroup><Oscillators><SamplePlayer SamplePath="./a.wav*./b.wav*"/></Oscillators></Keygroup>
+          <Keygroup><Oscillators><SamplePlayer SamplePath="./*a.wav*b.wav"/></Oscillators></Keygroup>
         </Keygroups></Layer>
         <Layer Gain="1" Pan="0" CustomPolyphony="0" PlayMode="3" DisplayName="Lead"><Keygroups>
           <Keygroup><Oscillators><SamplePlayer SamplePath="./c.wav"/></Oscillators></Keygroup>
@@ -2466,7 +2466,10 @@ fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
         .iter()
         .map(|g| g.voice_group.map(|v| out.voice_groups[v].voices))
         .collect();
-    assert_eq!(limits, [Some(4), Some(1), None]);
+    assert_eq!(limits, [Some(2), Some(1), None]);
+    assert!(out.voice_groups.iter().all(|v| v.per_note));
+    // The bundle's keygroup sounds both members for a note.
+    assert_eq!(out.groups[0].zones.len(), 2, "{:?}", out.groups[0].zones);
     assert!(
         out.diagnostics
             .iter()

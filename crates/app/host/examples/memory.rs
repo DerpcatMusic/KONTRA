@@ -198,7 +198,9 @@ fn gaps(loaded: &kontra_host::instrument::Loaded) {
         let detail: String = detail.chars().take(140).collect::<String>().replace('\n', " / ");
         println!("  GAP\t{:?}\t{feature}\t{n}\t{detail}", impact.0);
     }
-    let store = Store::new(StoreConfig::DEFAULT).expect("store");
+    let Ok(store) = Store::new(StoreConfig::DEFAULT) else {
+        return;
+    };
     let engine = Engine::new(Arc::new(loaded.plan.clone()), store.client(), 48_000);
     for (action, n) in engine.unhandled_actions() {
         println!("  UNANSWERED\t{action:?}\t{n}");

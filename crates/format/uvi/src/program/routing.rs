@@ -847,7 +847,7 @@ pub(super) fn voices(program: Node) -> Result<u16, String> {
 }
 
 /// The most zones one keygroup under `node` sounds for a note.
-pub(super) fn zones_per_note(node: Node) -> u16 {
+fn zones_per_note(node: Node) -> u16 {
     let zones = |p: Node| {
         p.attribute("SamplePath")
             .map_or(1, |s| s.split('*').count().max(2) - 1)
