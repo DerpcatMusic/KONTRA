@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use kontra_engine::{Engine, Event, HostNote, HostPattern, Plan, Prepared, Text, Timed};
@@ -15,6 +15,8 @@ use super::RATE;
 
 const BLOCK: usize = 128;
 const BLOCKS: usize = 30;
+/// The slowest block `render` processed, ns (the audio thread's worst turn).
+static WORST_BLOCK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn targets(widget: &Widget) -> Option<Vec<f64>> {
     let values = match &widget.kind {
@@ -196,7 +198,10 @@ fn render(
     let mut settled = true;
     for block in 0..BLOCKS {
         settled &= stream.settle(Duration::from_secs(5));
+        let began = Instant::now();
         engine.process(&mut samples, if block == 0 { events } else { &[] });
+        let spent = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        WORST_BLOCK_NS.fetch_max(spent, std::sync::atomic::Ordering::Relaxed);
         // Each block's trace is taken, then cleared: the buffer holds one
         // block, so a long sweep drops nothing.
         keep(engine);
@@ -406,6 +411,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 let before_missing = engine.stats().missing_frames;
                 engine.clear_trace();
                 let dropped_before = engine.trace_dropped();
+                WORST_BLOCK_NS.store(0, std::sync::atomic::Ordering::Relaxed);
                 let moved_at = std::time::Instant::now();
                 if lua {
                     if let Ok(id) = u32::try_from(id) {
@@ -515,7 +521,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 let (_, again, ready_again) = fresh(&mut engine);
                 settled &= ready_next && ready_again;
                 let note_changed = note_diff(&first, &base, &next, &again);
-                moves.push(json!({"value":value,"move_us":move_us,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
+                moves.push(json!({"value":value,"move_us":move_us,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));
@@ -552,10 +558,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         .map(|(slot, n)| format!("script {slot}: {n}"))
         .collect();
     let summary = format!(
-        "{}: {} UI models, {} controls, {failed} moves with errors\n  missing sample frames {}; offline wait timeouts {}; dropped trace events {}; truncated moves {truncated:?}; complete {complete}\n",
+        "{}: {} UI models, {} controls, {failed} moves with errors; worst block {:.0} us of {:.0} us\n  missing sample frames {}; offline wait timeouts {}; dropped trace events {}; truncated moves {truncated:?}; complete {complete}\n",
         loaded.name,
         models.len(),
         controls.len(),
+        WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,
+        BLOCK as f64 / 48_000.0 * 1e6,
         stats.missing_frames,
         engine.offline_wait_timeouts(),
         engine.trace_dropped()
