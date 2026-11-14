@@ -6,6 +6,121 @@
 -- UVIWorkstation's own prelude ("lua compat", 4.0.9 binary) gives a VM newer
 -- than Lua 5.1 back the 5.1 names its scripts use.
 string.gfind = string.gfind or string.gmatch
+
+-- Luau's matcher retries from every start, so a pattern like "(.-)/()" over a
+-- long subject with no "/" left costs the subject's length squared in one
+-- call nothing can interrupt. A literal the pattern requires that the rest of
+-- the subject lacks means no match: one plain search says so first. Same
+-- results, linear.
+do
+	local find, match, gmatch, sub = string.find, string.match, string.gmatch, string.sub
+	local required_cache = {}
+	-- The first character `p` requires (nil if none is certain).
+	local function required(p)
+		local cached = required_cache[p]
+		if cached ~= nil then
+			return cached or nil
+		end
+		local found = false
+		local i, n = 1, #p
+		if sub(p, 1, 1) == "^" then
+			i = n + 1 -- anchored: leave it to the matcher
+		end
+		while i <= n do
+			local c = sub(p, i, i)
+			local literal, at = nil, i + 1
+			if c == "%" then
+				local d = sub(p, i + 1, i + 1)
+				if d == "b" then
+					at = i + 4
+				elseif d == "f" then
+					at = i + 2
+					if sub(p, at, at) == "[" then
+						at = (find(p, "]", at, true) or n) + 1
+					end
+				elseif d ~= "" and find(d, "^%p") then
+					literal, at = d, i + 2
+				else
+					at = i + 2
+				end
+			elseif c == "[" then
+				local close = i + 1
+				if sub(p, close, close) == "^" then
+					close = close + 1
+				end
+				if sub(p, close, close) == "]" then
+					close = close + 1
+				end
+				while close <= n and sub(p, close, close) ~= "]" do
+					close = close + (sub(p, close, close) == "%" and 2 or 1)
+				end
+				at = close + 1
+			elseif c == "(" or c == ")" or c == "." or c == "$" then
+				at = i + 1
+			else
+				literal = c
+			end
+			local q = sub(p, at, at)
+			if literal and q ~= "*" and q ~= "-" and q ~= "?" then
+				found = literal
+				break
+			end
+			if c == "(" or c == ")" then
+				-- zero width: a quantifier cannot follow
+			elseif q == "*" or q == "-" or q == "?" or q == "+" then
+				at = at + 1
+			end
+			i = at
+		end
+		required_cache[p] = found
+		return found or nil
+	end
+	-- Whether a match can start at or after `init` (false: certainly none).
+	local function possible(s, p, init)
+		local lit = required(p)
+		return not lit or find(s, lit, init, true) ~= nil
+	end
+	string.find = function(s, p, init, plain)
+		if plain or type(s) ~= "string" or type(p) ~= "string" or possible(s, p, init) then
+			return find(s, p, init, plain)
+		end
+		return nil
+	end
+	string.match = function(s, p, init)
+		if type(s) ~= "string" or type(p) ~= "string" or possible(s, p, init) then
+			return match(s, p, init)
+		end
+		return nil
+	end
+	local function gmatch_linear(s, p)
+		if type(s) ~= "string" or type(p) ~= "string" or not required(p) then
+			return gmatch(s, p)
+		end
+		local pos, last = 1, nil
+		return function()
+			while pos <= #s + 1 and possible(s, p, pos) do
+				local r = table.pack(find(s, p, pos))
+				if r[1] == nil then
+					break
+				end
+				local first, stop = r[1], r[2]
+				if stop + 1 == last then
+					pos = first + 1 -- an empty match where the last ended: move on
+				else
+					pos, last = stop + 1, stop + 1
+					if r.n == 2 then
+						return sub(s, first, stop)
+					end
+					return table.unpack(r, 3, r.n)
+				end
+			end
+			pos = #s + 2
+			return nil
+		end
+	end
+	string.gmatch = gmatch_linear
+	string.gfind = gmatch_linear
+end
 table.getn = table.getn or function(t) return #t end
 math.log10 = math.log10 or function(x) return math.log(x, 10) end
 math.pow = math.pow or function(a, b) return a ^ b end

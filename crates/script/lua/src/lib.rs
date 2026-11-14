@@ -1251,6 +1251,49 @@ mod tests {
     }
 
     #[test]
+    fn matching_with_a_required_literal_gives_the_matchers_results_in_linear_time() {
+        let source = r#"
+            local function list(s, p, ...)
+                local out = {}
+                for a, b in string.gmatch(s, p) do out[#out + 1] = tostring(a) .. ":" .. tostring(b) end
+                return table.concat(out, ",")
+            end
+            function onNote(e)
+                assert(list("a/b/c.d", "(.-)/()") == "a:3,b:5")
+                assert(list("a/b/", "(.-)/()") == "a:3,b:5")
+                assert(list("x=1, y=22", "(%w+)=(%d+)") == "x:1,y:22")
+                assert(list("abc", "x*") == ":nil,:nil,:nil,:nil")
+                assert(list("one", "(.-)/()") == "")
+                assert(string.find("a.b", "%.") == 2)
+                assert(string.find("a/b", "(.-)/") == 1)
+                assert(string.find("ab", "(.-)/") == nil)
+                assert(string.find("a/b", "/", 3) == nil)
+                assert(string.match("key=val", "(%w+)=") == "key")
+                assert(string.match("keyval", "(%w+)=") == nil)
+                assert(string.match("^x", "^%^x") == "^x")
+                -- A long last piece with no delimiter: quadratic in the matcher.
+                local long = "folder/" .. string.rep("name.wav*", 400)
+                for i = 1, 200 do
+                    local n = 0
+                    for part, pos in string.gfind(long, "(.-)/()") do n = n + 1 end
+                    assert(n == 1)
+                end
+            end"#;
+        let compiled = compile(source, &[], &[]).expect("compiles");
+        let mut machine = compiled.machine();
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        let began = std::time::Instant::now();
+        let _ = machine.run(co, &mut Log(Vec::new()));
+        assert_eq!(
+            machine.faults().bad_code,
+            0,
+            "{}",
+            machine.faults().last_error.as_str()
+        );
+        assert!(began.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
     fn a_runaway_top_level_loop_fails_the_load() {
         assert!(compile("while true do end", &[], &[]).is_err());
         assert!(sample_loads("while true do end", &[], &[]).is_empty());

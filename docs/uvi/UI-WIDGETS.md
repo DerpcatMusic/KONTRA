@@ -24,7 +24,7 @@ Status words: **implemented**, **partial** (what is missing is named), **missing
 
 | Class | Script | Editor |
 |---|---|---|
-| `Mapper` (10 values, reference order) | implemented, stored as `mapper`, default `Linear` | missing: a widget's drag law is linear; the formulas are in the reference (exponential is `min·(max/min)^pos`, the roots and powers `pos^(1/n)`, `pos^n`) |
+| `Mapper` (10 values, reference order) | implemented, stored as `mapper`, default `Linear` | drag and wheel travel in position space through the reference formulas (`crates/app/ui/src/input.rs`); arrow keys stay linear |
 | `Unit` (14 values, reference order) | implemented, default `Generic` | partial: the symbol (`%`, `s`, `ms`, `Hz`, `dB`, `MB`, `st`, `ct`) shows on a knob; the unit's own formatting (`s` to `ms` below 1 s, `Hz` to `kHz`, `Cents` to semitones above 100, `MidiKey` as a note name, `UviFilter`, `Pan`, `PercentNormalized` ×100) is missing |
 | `RectanglePlacement` (12 values, JUCE flags) | implemented | missing: pictures always fill their bounds |
 | `FileFormat` (`All`, `Audio`, `MIDI`) | implemented | missing with `DnDArea` |
@@ -47,7 +47,7 @@ Status words: **implemented**, **partial** (what is missing is named), **missing
 
 | Member | Script | Editor |
 |---|---|---|
-| `mapper` | implemented | missing (see `Mapper`) |
+| `mapper` | implemented | implemented (see `Mapper`) |
 | `unit` | implemented | partial (see `Unit`) |
 | `paramId` | implemented: assigned in the order widgets are made | n/a |
 | `exported` | implemented (stored) | missing: no host automation parameter yet |
@@ -161,3 +161,6 @@ Constructor sites counted in every script of the 26 banks (`Name{...}`), weighte
 | SVG, XY, DnDArea, FileSelector | 0 | 0 | unused by any carried library: not built (YAGNI) |
 
 So the renderer work that pays is in the common classes (the mapper law and the unit formatting on Knob, Slider and NumBox; sub-menus on Menu; the named element or bus on AudioMeter), not in WaveView, XY or SVG.
+
+
+Widget batch (mapper, unit, sub-menus, AudioMeter): the drag law follows the reference mapper formulas; `Unit` names reach the display, which switches s/ms, Hz/kHz and ct/st by value and writes `MidiKey` as a note (C3 = 60), `UviFilter` and `Pan` stay numeric until calibrated against native readouts; a `hierarchical` Menu drills into `a/b` sub-menus inside one popup; an `AudioMeter` takes its orientation from `isVertical` and a non-default `busId`, but not yet a per-element tap (it shows the part's levels).
