@@ -29,6 +29,9 @@ pub struct Controls {
     /// By UI id, the steps of each control whose value is an int array (a
     /// table's): `set_control_par_arr` writes them from its cell on.
     pub steps: Vec<u32>,
+    /// By UI id, the string-array entries a control may hold (a ui_xy's
+    /// cursor pictures, one per cursor); 0 for most.
+    pub entries: Vec<u32>,
     /// (value cell, control) for every control with a value cell, sorted by
     /// cell: a save finds each cell's control in log time instead of
     /// scanning every control per cell (Areia: seconds on the audio thread).
@@ -255,9 +258,12 @@ impl Store {
         }
         if call.action == Action::GetUiWfProperty {
             // What `set_ui_wf_property` stored; a property KONTRA does not keep reads 0.
-            let par = [(look.wf_prop_cursor, look.wf_cursor), (look.wf_prop_flags, look.wf_flags)]
-                .into_iter()
-                .find_map(|(prop, par)| (prop == a).then_some(par));
+            let par = [
+                (look.wf_prop_cursor, look.wf_cursor),
+                (look.wf_prop_flags, look.wf_flags),
+            ]
+            .into_iter()
+            .find_map(|(prop, par)| (prop == a).then_some(par));
             let value = par.map_or(0, |par| self.control_par(c, slot, call.cells, id, par));
             return Some(HostValue::Int(value));
         }

@@ -404,7 +404,9 @@ impl Engine {
             })
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
-        let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
+        let ui = kontra_script_ui::Store::new(
+            (plan.scripts.iter()).map(|s| (s.controls.cells.len(), s.controls.entries.as_slice())),
+        );
         let zone_index = Arc::new(zone_index::ZoneIndex::new(&plan.zones));
         let release_zones = plan.zones.iter().any(|z| z.trigger == Trigger::Release);
         let mut engine = Self {
@@ -573,6 +575,9 @@ impl Engine {
         let end = start.advance(Frames(u32::try_from(out.len()).unwrap_or(u32::MAX)));
         self.block_end = end;
         self.block_turns = 0;
+        for vm in self.vms.iter_mut().flatten() {
+            vm.begin_block();
+        }
         while self.now < end {
             // One frame runs at most a queue's worth of resumes: a script
             // chain of sub-frame waits goes on next frame, never spins here.

@@ -49,6 +49,8 @@ pub struct Gesture {
     /// The XY pad being dragged, its cursor, and where that cursor's
     /// corner was at the press (points from the pad's corner).
     xy: Option<(usize, u32, (f64, f64))>,
+    /// The sub-menu levels a hierarchical menu has drilled into, by child.
+    branch: Vec<usize>,
 }
 
 impl Gesture {
@@ -99,6 +101,50 @@ fn range(kind: &Kind) -> Option<model::Range> {
             Some(*range)
         }
         _ => None,
+    }
+}
+
+/// The widget's mapper law (UVI Mapper, reference formulas): the value at
+/// normalised position `pos`, `min + (max - min)·f(pos)` with `f` a power or
+/// root, or `min·(max/min)^pos` for Exponential over a strictly positive
+/// range. `inverse` gives the position of a value instead.
+fn mapped(mapper: Option<&str>, range: model::Range, x: f64, inverse: bool) -> f64 {
+    let (lo, span) = (range.min, range.max - range.min);
+    let power = match mapper {
+        Some("Exponential") if lo > 0. && range.max > 0. => {
+            let ratio = range.max / lo;
+            return if inverse {
+                (x.clamp(lo, range.max) / lo).ln() / ratio.ln()
+            } else {
+                lo * ratio.powf(x.clamp(0., 1.))
+            };
+        }
+        Some("QuinticRoot") => 0.2,
+        Some("QuarticRoot") => 0.25,
+        Some("CubeRoot") => 1. / 3.,
+        Some("SquareRoot") => 0.5,
+        Some("Quadratic") => 2.,
+        Some("Cubic") => 3.,
+        Some("Quartic") => 4.,
+        Some("Quintic") => 5.,
+        _ => 1.,
+    };
+    match (inverse, span == 0.) {
+        (_, true) => lo,
+        (false, _) => lo + span * x.clamp(0., 1.).powf(power),
+        (true, _) => ((x - lo) / span).clamp(0., 1.).powf(1. / power),
+    }
+}
+
+/// `from` moved `by` of the range's length along the widget's mapper.
+fn slide(w: &model::Widget, range: model::Range, from: f64, by: f64) -> f64 {
+    let span = range.max - range.min;
+    match w.mapper.as_deref() {
+        None | Some("Linear") => from + by * span,
+        m => {
+            let pos = mapped(m, range, from, true);
+            mapped(m, range, (pos + by).clamp(0., 1.), false)
+        }
     }
 }
 
@@ -238,16 +284,15 @@ pub fn read(
                     // Sub-pixel: the pointer's travel is a float, so a
                     // high-resolution mouse or trackpad moves it finely.
                     let fine = if r.press_mods.shift { 0.1 } else { 1. };
-                    set(snap(
-                        range,
-                        start + along(r.drag_total) / points * span * fine,
-                    ));
+                    // The travel is in position space, so a mapper bends it.
+                    let by = along(r.drag_total) / points * fine;
+                    set(snap(range, slide(w, range, start, by)));
                 }
                 _ => {}
             }
             // Claimed, so the rack under the knob does not scroll with it.
             if let Some(wheel) = ui.wheel(id.as_str()).filter(|_| !r.held) {
-                set(snap(range, now - wheel.y / points * span));
+                set(snap(range, slide(w, range, now, -wheel.y / points)));
             }
             // Keyboard focus steps it, the way the wheel does.
             let step = ui.keys(id.as_str()).iter().fold(0., |at, k| match k.key {
@@ -300,6 +345,7 @@ pub fn read(
             }
             Kind::Menu { .. } if r.clicked || r.key_activated => {
                 g.menu = (g.menu != Some(n.0)).then_some(n.0);
+                g.branch.clear();
             }
             Kind::TextEdit if (r.clicked || r.key_activated) && g.entry.is_none() => {
                 type_into(ui, g, n.0, &id, w.text.clone());
@@ -421,14 +467,23 @@ fn pad(
             1 => Some(active),
             _ => Some((0..cursors).rev().find(|&i| inside(i)).unwrap_or(active)),
         };
-        g.xy = cursor.and_then(|c| Some((n.0, c, rect(c).map(|[x, y, ..]| (x, y))?)));
+        // From the unrounded corner, so a press that does not move edits nothing.
+        g.xy = cursor.and_then(|c| Some((n.0, c, xy::corner(w, c, points, art(c))?)));
     }
     let Some((_, c, start)) = g.xy.filter(|(p, ..)| *p == n.0) else {
         return Vec::new();
     };
     if r.released || !r.held {
         g.xy = None;
-        return Vec::new();
+        // The source runs its callback once on release, moved or not: one
+        // edit, of the cursor's x cell, as it stands.
+        return if r.released && w.reports_release {
+            (w.cell(2 * c).map(|v| edit(Set::Cell(2 * c, v))))
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
     }
     let [_, _, cw, ch] = rect(c).unwrap_or([0., 0., xy::CURSOR, xy::CURSOR]);
     let corner = if mode >= 2 {
@@ -442,10 +497,10 @@ fn pad(
         };
         (at.0 - half(cw), at.1 - half(ch))
     } else {
-        // ponytail: MOUSE_BEHAVIOUR_X/Y scale the travel as 1000 / value
-        // (1000, the default, is 1:1); the direction of a larger value is
-        // unprobed.
-        let scale = |s: Option<u32>| 1000. / f64::from(s.filter(|&s| s > 0).unwrap_or(1000));
+        // MOUSE_BEHAVIOUR_X/Y scale the travel by |value| / 1000, 1000 (the
+        // default) 1:1; a negative value moves the same way (Kontakt 8
+        // oracle, probe/wave.ksp: -1000 as 1000, 500 half, 2000 double).
+        let scale = |s: Option<u32>| f64::from(s.unwrap_or(1000)) / 1000.;
         let [sx, sy] = sensitivity.map(scale);
         (
             start.0 + r.drag_total.x / k * sx,
@@ -478,6 +533,9 @@ fn menu(
         g.menu = None;
         return None;
     }
+    if let Some(tree) = &w.menu_hierarchy {
+        return sub_menu(ui, &id, (m, tree, items), g, edits);
+    }
     let shown: Vec<&model::MenuItem> = items.iter().filter(|i| i.visible).collect();
     let labels: Vec<&str> = shown.iter().map(|i| i.text.as_str()).collect();
     let now = w.number() as i32;
@@ -490,6 +548,55 @@ fn menu(
             keys: model::UiModifiers::default(),
         });
         g.menu = None;
+    }
+    Some(menu.el)
+}
+
+/// A hierarchical menu (UVI `hierarchical`, "a/b" items): the level `g.branch`
+/// names, a branch drilling in (`›`) and a "‹ Back" line out, a leaf picked.
+/// ponytail: one popup that drills in, not a cascade of floating popups.
+fn sub_menu(
+    ui: &mut Ui,
+    id: &str,
+    (m, nodes, items): (usize, &[model::MenuNode], &[model::MenuItem]),
+    g: &mut Gesture,
+    edits: &mut Vec<Edit>,
+) -> Option<El> {
+    let mut level = nodes;
+    for &k in &g.branch {
+        level = level.get(k).map_or(level, |n| &n.children);
+    }
+    let back = usize::from(!g.branch.is_empty());
+    let mut labels: Vec<String> = Vec::new();
+    if back == 1 {
+        labels.push("‹ Back".into());
+    }
+    labels.extend(level.iter().map(|n| {
+        if n.children.is_empty() {
+            n.label.clone()
+        } else {
+            format!("{} ›", n.label)
+        }
+    }));
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let menu = kit::menu(ui, id, &refs, 1, None);
+    if let Some(k) = menu.changed {
+        match k.checked_sub(back).and_then(|i| level.get(i)) {
+            None => {
+                g.branch.pop();
+            }
+            Some(n) if !n.children.is_empty() => g.branch.push(k - back),
+            Some(n) => {
+                if let Some(item) = n.item_index.and_then(|i| items.get(i)) {
+                    edits.push(Edit {
+                        widget: WidgetRef(m),
+                        to: Set::Value(f64::from(item.value)),
+                        keys: model::UiModifiers::default(),
+                    });
+                }
+                g.menu = None;
+            }
+        }
     }
     Some(menu.el)
 }
@@ -573,5 +680,41 @@ pub fn apply(tree: &mut Interface, edits: &[Edit]) {
             (&Set::Value(v), Some(model::Value::Real(_))) => w.value = Some(model::Value::Real(v)),
             (&Set::Value(v), _) => w.value = Some(model::Value::Integer(v.round() as i32)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reference's own example: an exponential [1; 10000] puts 0, 25,
+    /// 50, 75 and 100 % at 1, 10, 100, 1000 and 10000.
+    #[test]
+    fn mappers_follow_the_reference_formulas() {
+        let r = model::Range {
+            min: 1.,
+            max: 10_000.,
+            default: 1.,
+            step: None,
+        };
+        for (pos, v) in [
+            (0., 1.),
+            (0.25, 10.),
+            (0.5, 100.),
+            (0.75, 1000.),
+            (1., 10_000.),
+        ] {
+            assert!((mapped(Some("Exponential"), r, pos, false) - v).abs() < 1e-6 * v);
+            assert!((mapped(Some("Exponential"), r, v, true) - pos).abs() < 1e-9);
+        }
+        let r = model::Range {
+            min: 0.,
+            max: 8.,
+            default: 0.,
+            step: None,
+        };
+        assert_eq!(mapped(Some("Cubic"), r, 0.5, false), 1.);
+        assert_eq!(mapped(Some("CubeRoot"), r, 0.125, false), 4.);
+        assert!((mapped(Some("Quadratic"), r, 2., true) - 0.5).abs() < 1e-12);
     }
 }
