@@ -20,22 +20,24 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
         ..Default::default()
     };
     let mut asset = |tree: &mut ui::Interface, path: &str, frames: u32, stretch: bool| {
-        let at = *assets.entry((path.to_owned(), frames, stretch)).or_insert_with(|| {
-            let mut meta = picture(path).unwrap_or_default();
-            // A strip's frames stack down; each is drawn at the widget's size.
-            meta.frames = frames;
-            meta.axis = ui::Orientation::Vertical;
-            meta.size = meta.size.map(|s| ui::Size {
-                width: s.width,
-                height: (s.height / f64::from(frames)).floor(),
+        let at = *assets
+            .entry((path.to_owned(), frames, stretch))
+            .or_insert_with(|| {
+                let mut meta = picture(path).unwrap_or_default();
+                // A strip's frames stack down; each is drawn at the widget's size.
+                meta.frames = frames;
+                meta.axis = ui::Orientation::Vertical;
+                meta.size = meta.size.map(|s| ui::Size {
+                    width: s.width,
+                    height: (s.height / f64::from(frames)).floor(),
+                });
+                meta.stretch = [stretch; 2];
+                tree.assets.push(ui::Asset {
+                    path: path.to_owned(),
+                    kind: ui::AssetKind::Image(meta),
+                });
+                tree.assets.len() - 1
             });
-            meta.stretch = [stretch; 2];
-            tree.assets.push(ui::Asset {
-                path: path.to_owned(),
-                kind: ui::AssetKind::Image(meta),
-            });
-            tree.assets.len() - 1
-        });
         let size = match tree.assets.get(at).map(|a| &a.kind) {
             Some(ui::AssetKind::Image(m)) => m.size,
             _ => None,

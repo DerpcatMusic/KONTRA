@@ -213,26 +213,30 @@ fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size
 /// modifier is an `align` or a `position` (offsets and looks keep their
 /// child's size).
 fn fills(n: &Node) -> bool {
-    n.mods.iter().rev().map(|(m, _)| m.as_str()).find(|m| {
-        !matches!(
-            *m,
-            "offset"
-                | "opacity"
-                | "hidden"
-                | "foreground_color"
-                | "font_size"
-                | "bold"
-                | "background"
-                | "overlay"
-                | "rotation"
-                | "on_hover_gesture"
-                | "on_tap_gesture"
-                | "on_drag_gesture"
-                | "disabled"
-                | "popover"
-        )
-    })
-    .is_some_and(|m| matches!(m, "align" | "position"))
+    n.mods
+        .iter()
+        .rev()
+        .map(|(m, _)| m.as_str())
+        .find(|m| {
+            !matches!(
+                *m,
+                "offset"
+                    | "opacity"
+                    | "hidden"
+                    | "foreground_color"
+                    | "font_size"
+                    | "bold"
+                    | "background"
+                    | "overlay"
+                    | "rotation"
+                    | "on_hover_gesture"
+                    | "on_tap_gesture"
+                    | "on_drag_gesture"
+                    | "disabled"
+                    | "popover"
+            )
+        })
+        .is_some_and(|m| matches!(m, "align" | "position"))
 }
 
 fn words(n: &Node) -> String {
@@ -1127,13 +1131,18 @@ mod tests {
             "Rectangle",
             vec![
                 frame(2., 2.),
-                ("position", vec![Prop::Table(vec![num("x", 1.), num("y", 30.)])]),
+                (
+                    "position",
+                    vec![Prop::Table(vec![num("x", 1.), num("y", 30.)])],
+                ),
             ],
             Vec::new(),
         );
-        let mut cloud = node("ZStack", vec![("opacity", vec![Prop::Number(0.)])], vec![
-            node("ForEach", Vec::new(), vec![dot]),
-        ]);
+        let mut cloud = node(
+            "ZStack",
+            vec![("opacity", vec![Prop::Number(0.)])],
+            vec![node("ForEach", Vec::new(), vec![dot])],
+        );
         cloud.props = vec![("alignment".into(), Prop::Text("center".into()))];
         let track = node("Rectangle", Vec::new(), Vec::new());
         let meter = node("ZStack", vec![frame(4., 40.)], vec![track, cloud]);
@@ -1153,6 +1162,10 @@ mod tests {
         let shapes: Vec<_> = (bld.ui.widgets.iter())
             .map(|w| (w.rect.width, w.rect.height, w.colors.background))
             .collect();
-        assert_eq!(shapes.first().map(|s| (s.0, s.1)), Some((4., 40.)), "{shapes:?}");
+        assert_eq!(
+            shapes.first().map(|s| (s.0, s.1)),
+            Some((4., 40.)),
+            "{shapes:?}"
+        );
     }
 }
