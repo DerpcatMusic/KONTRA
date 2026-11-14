@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use kontra_host::state::{Saved, SavedPart, VERSION};
+use kontra_host::state::{Saved, SavedPart};
 use moose::core::export::PluginExport;
 use moose::core::state::snapshot_plugin;
 
@@ -30,25 +30,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("usage: kontra-window state <instrument> <file>".into());
         };
         let plugin = kontra_plugin::Plugin::create();
-        let saved = Saved {
-            version: VERSION,
-            parts: vec![SavedPart {
-                part: 0,
-                path: PathBuf::from(path),
-                channel: 0,
-                output: 0,
-                gain: 1.,
-                pan: 0.,
-                solo: false,
-                mute: false,
-                scripts: Vec::new(),
-                delays: None,
-                slot_types: Vec::new(),
-                slot_responses: Vec::new(),
-                preset: None,
-                modified: false,
-            }],
-        };
+        let saved = Saved::new(vec![SavedPart {
+            part: 0,
+            path: PathBuf::from(path),
+            channel: 0,
+            output: 0,
+            gain: 1.,
+            pan: 0.,
+            solo: false,
+            mute: false,
+            scripts: Vec::new(),
+            delays: None,
+            slot_types: Vec::new(),
+            slot_responses: Vec::new(),
+            preset: None,
+            modified: false,
+        }]);
         let params = plugin.params_arc();
         if let Ok(mut s) = params.saved.write() {
             *s = saved.write();
