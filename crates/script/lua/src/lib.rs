@@ -487,8 +487,12 @@ impl Machine for LuaMachine {
                 Step::Wait(number(&waited).unwrap_or(0.0).max(0.0) as u64)
             }
             (Ok(_), _) => Step::Done,
-            (Err(_), _) => {
+            (Err(e), _) => {
                 self.faults.bad_code += 1;
+                if self.faults.first_error.is_empty() {
+                    use std::fmt::Write;
+                    let _ = write!(self.faults.first_error, "{e}");
+                }
                 Step::Done
             }
         };

@@ -572,7 +572,7 @@ fn faults(all: &[kontra_engine::Faults], sources: &[Option<String>]) -> Vec<Valu
                 |(base, text, index)| json!({"array": array(slot, base, text), "index": index}),
             );
             json!({"slot": slot, "out_of_range": f.out_of_range, "first_out_of_range": first,
-                "divide_by_zero": f.divide_by_zero, "first_divide_by_zero": f.first_divide_by_zero,
+                "divide_by_zero": f.divide_by_zero, "first_divide_by_zero": f.first_divide_by_zero, "first_error": f.first_error.as_str(),
                 "divisor": f.first_divide_by_zero.and_then(|pc| divisor(slot, pc)),
                 "stack_overflow": f.stack_overflow, "loop_limits": f.loop_limits,
                 "no_coroutine": f.no_coroutine, "bad_code": f.bad_code, "texts_cut": f.texts_cut})
