@@ -345,6 +345,16 @@ impl Engine {
             let kinds = &self.script()?.mod_kinds;
             return i32::try_from(kinds.iter().position(|k| *k == Some(kind))?).ok();
         }
+        if par == EnginePar::ModOscWave {
+            return Some(i32::from(g.wavetable?.modosc.wave));
+        }
+        if par == EnginePar::ModOscUnit {
+            return Some(match g.wavetable?.modosc.unit {
+                kontra_voice::Unit::Semitones => 0,
+                kontra_voice::Unit::Ratio => 1,
+                kontra_voice::Unit::Hz => 2,
+            });
+        }
         if let EnginePar::WarpMode(n) = par {
             let w = g.wavetable?.warps.get(usize::from(n)).copied()?;
             let modes = &self.script()?.warp_modes;
@@ -570,6 +580,25 @@ impl Engine {
                 .as_mut()
                 .zip(kind)
                 .map(|(t, k)| t.modosc.kind = k)
+                .is_some(),
+            // A value outside the lists is dropped, like a form mode's.
+            EnginePar::ModOscWave => g
+                .wavetable
+                .as_mut()
+                .zip(u8::try_from(value).ok().filter(|&w| w <= 8))
+                .map(|(t, w)| t.modosc.wave = w)
+                .is_some(),
+            EnginePar::ModOscUnit => g
+                .wavetable
+                .as_mut()
+                .zip(ir::TuneUnit::from_index(value))
+                .map(|(t, u)| {
+                    t.modosc.unit = match u {
+                        ir::TuneUnit::Semitones => kontra_voice::Unit::Semitones,
+                        ir::TuneUnit::Ratio => kontra_voice::Unit::Ratio,
+                        ir::TuneUnit::Hz => kontra_voice::Unit::Hz,
+                    }
+                })
                 .is_some(),
             EnginePar::WarpMode(n) => g
                 .wavetable
