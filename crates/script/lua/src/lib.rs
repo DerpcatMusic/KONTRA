@@ -34,6 +34,8 @@ pub use ui::{Ui, Widget};
 static ROUTED: alloc::Routed = alloc::Routed;
 
 const PRELUDE: &str = include_str!("prelude.lua");
+/// The UI widget classes beyond the generic widget (`widgets.lua`).
+const WIDGETS: &str = include_str!("widgets.lua");
 /// Luau heap per script. Augmented Orchestra's scripts, once they see their
 /// modulation connections, build about 88 MB (V Strings Pizzicato 2: 61 MB
 /// without them). ponytail: a cap, not a GC budget; past the spike's 0.5 ms
@@ -343,6 +345,7 @@ fn state(
     })?;
     globals.set("__file", file)?;
     lua.load(PRELUDE).set_name("prelude").exec()?;
+    lua.load(WIDGETS).set_name("widgets").exec()?;
     lua.load(source).set_name("script").exec()?;
     globals.get::<Function>("__restore")?.call::<()>(())?;
     limit.store(CHECKPOINTS, Ordering::Relaxed);
