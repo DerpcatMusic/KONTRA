@@ -55,6 +55,7 @@ fn measure(
 fn run(machine: &mut Box<dyn Machine>, co: Option<kontra_vm::CoId>) {
     let mut step = co.map(|co| machine.run(co, &mut Host));
     while let (Some(Step::Yield), Some(co)) = (step, co) {
+        machine.begin_block();
         step = Some(machine.run(co, &mut Host));
     }
     assert_eq!(step, Some(Step::Done));

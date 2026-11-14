@@ -208,12 +208,20 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
         },
         "Label" => ui::Kind::Label,
         "Image" => ui::Kind::Image,
-        // ponytail: a meter shows the part's output, not the program node
-        // the script names (a layer); per-node levels when one needs them.
+        // `AudioMeter(name, element, isVertical, busId, useOutput)`: the bus
+        // the script names, 0 (the default) the part's output.
+        // ponytail: the element (a layer) is not tapped on its own; it shows
+        // the part's levels until the engine publishes per-element taps.
         "AudioMeter" => ui::Kind::LevelMeter {
-            orientation: ui::Orientation::Vertical,
+            orientation: if prop(w, "isVertical") == Some("false") {
+                ui::Orientation::Horizontal
+            } else {
+                ui::Orientation::Vertical
+            },
             channel: Some(0),
-            bus: None,
+            bus: prop(w, "busId")
+                .and_then(|b| b.parse::<u8>().ok())
+                .filter(|b| *b > 0),
         },
         // ponytail: XY pads and wave views draw as empty panels; give each
         // its kind when a library's page needs it.
@@ -236,6 +244,13 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
     out.tooltip.clone_from(&w.tooltip);
     out.opacity = w.alpha.clamp(0., 1.) as f32;
     out.menu_cycle = w.kind == "MultiStateButton";
+    out.mapper = mapper(w);
+    // `hierarchical = true`: "a/b" items are sub-menus.
+    if w.kind == "Menu" && prop(w, "hierarchical") == Some("true") {
+        if let ui::Kind::Menu { items } = &out.kind {
+            out.menu_hierarchy = ui::menu_hierarchy(items).ok();
+        }
+    }
     out.viewport = (w.kind == "Viewport").then_some([0, 0]);
     out.colors.background = w.colours[0].as_deref().and_then(colour);
     out.colors.bar = w
@@ -259,6 +274,32 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
     out.hidden = !w.visible;
     out.enabled = w.enabled;
     out
+}
+
+/// A field the script set that the host keeps by name.
+fn prop<'a>(w: &'a Widget, key: &str) -> Option<&'a str> {
+    w.props
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+/// The `Mapper` enumerator a widget carries, by its reference name.
+fn mapper(w: &Widget) -> Option<String> {
+    const NAMES: [&str; 10] = [
+        "Linear",
+        "Exponential",
+        "QuinticRoot",
+        "QuarticRoot",
+        "CubeRoot",
+        "SquareRoot",
+        "Quadratic",
+        "Cubic",
+        "Quartic",
+        "Quintic",
+    ];
+    let n = prop(w, "mapper")?.parse::<usize>().ok()?;
+    NAMES.get(n).map(|s| (*s).to_owned())
 }
 
 /// A control's value as the editor keeps it: a menu's or button's whole.

@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use kontra_engine::{Engine, Event, HostNote, HostPattern, Plan, Prepared, Text, Timed};
@@ -16,6 +16,9 @@ use super::RATE;
 const BLOCK: usize = 128;
 const BLOCKS: usize = 30;
 /// The slowest block `render` processed, ns (the audio thread's worst turn).
+/// What the Lua callbacks spent in that block (wall), and the GC within it.
+static WORST_BLOCK_LUA_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WORST_BLOCK_GC_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static WORST_BLOCK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn targets(widget: &Widget) -> Option<Vec<f64>> {
@@ -186,6 +189,21 @@ fn sound(engine: &Engine) -> Vec<String> {
         .collect()
 }
 
+/// This thread's CPU time, ns: a block the machine preempted is not a spike of ours.
+fn thread_cpu_ns() -> u64 {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `t` is a valid timespec the call fills in.
+    let ok = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0;
+    if ok {
+        (t.tv_sec as u64) * 1_000_000_000 + t.tv_nsec as u64
+    } else {
+        0
+    }
+}
+
 fn render(
     engine: &mut Engine,
     plan: &Plan,
@@ -198,10 +216,16 @@ fn render(
     let mut settled = true;
     for block in 0..BLOCKS {
         settled &= stream.settle(Duration::from_secs(5));
-        let began = Instant::now();
+        let _ = kontra_lua::probe::take();
+        let began = thread_cpu_ns();
         engine.process(&mut samples, if block == 0 { events } else { &[] });
-        let spent = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        WORST_BLOCK_NS.fetch_max(spent, std::sync::atomic::Ordering::Relaxed);
+        let spent = thread_cpu_ns().saturating_sub(began);
+        let lua = kontra_lua::probe::take();
+        if spent > WORST_BLOCK_NS.fetch_max(spent, std::sync::atomic::Ordering::Relaxed) {
+            // Wall time (the probe reads the monotonic clock), unlike the CPU-time block above.
+            WORST_BLOCK_LUA_NS.store(lua.run_ns, std::sync::atomic::Ordering::Relaxed);
+            WORST_BLOCK_GC_NS.store(lua.gc_ns, std::sync::atomic::Ordering::Relaxed);
+        }
         // Each block's trace is taken, then cleared: the buffer holds one
         // block, so a long sweep drops nothing.
         keep(engine);
@@ -412,7 +436,9 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 engine.clear_trace();
                 let dropped_before = engine.trace_dropped();
                 WORST_BLOCK_NS.store(0, std::sync::atomic::Ordering::Relaxed);
-                let moved_at = std::time::Instant::now();
+                WORST_BLOCK_LUA_NS.store(0, std::sync::atomic::Ordering::Relaxed);
+                WORST_BLOCK_GC_NS.store(0, std::sync::atomic::Ordering::Relaxed);
+                let moved_at = thread_cpu_ns();
                 if lua {
                     if let Ok(id) = u32::try_from(id) {
                         engine.set_widget(slot_id, id, value, None);
@@ -429,7 +455,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     engine.set_control(slot_id, id, v);
                 }
                 // The move runs on the audio thread: what it costs one block.
-                let move_us = moved_at.elapsed().as_secs_f64() * 1e6;
+                let move_us = thread_cpu_ns().saturating_sub(moved_at) as f64 / 1e3;
                 let mut events: Vec<_> = engine
                     .trace_events()
                     .iter()
@@ -521,7 +547,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 let (_, again, ready_again) = fresh(&mut engine);
                 settled &= ready_next && ready_again;
                 let note_changed = note_diff(&first, &base, &next, &again);
-                moves.push(json!({"value":value,"move_us":move_us,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
+                moves.push(json!({"value":value,"move_us":move_us,"worst_block_lua_wall_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_wall_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));

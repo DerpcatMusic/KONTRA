@@ -26,6 +26,8 @@ type Pars = Vec<(i32, i32)>;
 // list on the audio thread once; size by the parameter ids if a library does.
 const PARS: usize = 32;
 const TEXTS: usize = 4;
+/// Indexed string-array entries a control can hold (`entry_par` indices 0 to 30).
+const ENTRIES: usize = 31;
 
 /// Keys on the keyboard a script colours and names.
 const KEYS: usize = 128;
@@ -135,6 +137,8 @@ pub struct LookPars {
     /// The `set_ui_wf_property` properties for the cursor and the flags.
     pub wf_prop_cursor: i32,
     pub wf_prop_flags: i32,
+    /// `$CONTROL_PAR_FILEPATH`: the file a file selector picked last.
+    pub filepath: i32,
     /// The UI ids that address the instrument's wallpaper and icon.
     pub wallpaper: i32,
     pub icon: i32,
@@ -195,8 +199,10 @@ pub struct ControlLook<'a> {
 pub const FIRST_FONT: i32 = 26;
 
 impl Store {
-    /// Empty stores for scripts with these control counts.
-    pub fn new(controls: impl Iterator<Item = usize> + Clone) -> Self {
+    /// Empty stores for scripts with these control counts, and by control
+    /// the string-array entries each may hold ([`Controls::entries`]).
+    pub fn new<'a>(scripts: impl Iterator<Item = (usize, &'a [u32])> + Clone) -> Self {
+        let controls = scripts.clone().map(|(n, _)| n);
         Self {
             pars: controls
                 .clone()
@@ -208,9 +214,15 @@ impl Store {
                 .collect(),
             selected: controls.clone().map(|n| vec![0; n].into()).collect(),
             waiting: controls.clone().map(|n| vec![u16::MAX; n].into()).collect(),
-            texts: controls
-                .clone()
-                .map(|n| (0..n).map(|_| Vec::with_capacity(TEXTS)).collect())
+            texts: scripts
+                .map(|(n, entries)| {
+                    (0..n)
+                        .map(|c| {
+                            let extra = entries.get(c).map_or(0, |&e| e as usize);
+                            Vec::with_capacity(TEXTS + extra.min(ENTRIES))
+                        })
+                        .collect()
+                })
                 .collect(),
             keys: vec![Key::UNTOUCHED; KEYS].into(),
             pressed_support: false,
@@ -387,6 +399,12 @@ impl Store {
         }
     }
 
+    /// The user picked `path` in file selector `n` of script `slot`: what
+    /// `$CONTROL_PAR_FILEPATH` and `fs_get_filename` read.
+    pub fn pick_file(&mut self, slot: u8, n: Option<usize>, par: i32, path: Text) {
+        self.set_text_par(slot, n, par, path, false);
+    }
+
     /// Sets text parameter `par` of control `n`; `line` appends a line.
     fn set_text_par(&mut self, slot: u8, n: Option<usize>, par: i32, text: Text, line: bool) {
         let Some(n) = n else {
@@ -509,6 +527,20 @@ impl Store {
         let item = |s: &Self| at.and_then(|i| s.menu(slot, n).get(i).copied());
         Some(match call.action {
             Action::GetFontId => HostValue::Int(self.font_id(slot, text)),
+            // The file a selector picked: 0 its name, 1 with its extension,
+            // 2 its whole path (KSP manual, fs_get_filename).
+            Action::FsGetFilename if look.is_some() => {
+                let par = look.map_or(0, |l| l.filepath);
+                let picked = n.and_then(|n| self.texts(slot, n).iter().find(|(p, _)| *p == par));
+                let path = picked.map_or("", |(_, t)| t.as_str());
+                let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+                let shown = match int(1) {
+                    2 => path,
+                    1 => file,
+                    _ => file.rsplit_once('.').map_or(file, |(name, _)| name),
+                };
+                out(Text::from_str_cut(shown).0)
+            }
             // Opens Kontakt's library browser tab: nothing here shows one.
             Action::ShowLibraryTab => HostValue::Nothing,
             // Kontakt names its outputs "Out 1", "Out 2", ... and -1 ""
@@ -770,7 +802,7 @@ mod tests {
             ),
         ];
         for (steps, want) in cases {
-            let mut s = Store::new([1].into_iter());
+            let mut s = Store::new([(1, &[][..])].into_iter());
             for &(action, ints) in *steps {
                 assert_eq!(call(&mut s, action, ints), Some(HostValue::Nothing));
             }
@@ -801,7 +833,7 @@ mod tests {
             let got = s.call(0, None, None, &mut c);
             (got, out)
         };
-        let mut s = Store::new([1].into_iter());
+        let mut s = Store::new([(1, &[][..])].into_iter());
         call(&mut s, Action::SetKeyrange, &[36, 72]);
         let edge = |s: &mut Store, action, note| match call(s, action, &[note]).0 {
             Some(HostValue::Int(v)) => v,
@@ -819,4 +851,3 @@ mod tests {
         assert_eq!(call(&mut s, Action::GetKeyrangeName, &[50]).1.as_str(), "");
     }
 }
-

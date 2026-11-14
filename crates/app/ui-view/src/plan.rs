@@ -80,14 +80,27 @@ pub(super) fn page<'a>(
                         pressed.binary_search(&index).is_ok(),
                     ),
                     size: {
-                        // A handle keeps its own size to ride its track.
+                        // A handle keeps its own size to ride its track; a
+                        // picture stretched across its control takes the
+                        // control's snapped edges, so neighbours never overlap.
                         let size = match (use_.role, meta.size) {
                             (Role::Handle, Some(own)) => own,
                             _ => drawn(raw, meta),
                         };
+                        let edges = snapped(raw.x, raw.y + above, raw.width, raw.height, scale);
+                        let fills = |own: f64, of: f64| (own - of).abs() < 1e-9;
+                        let stretched = use_.role != Role::Handle;
                         model::Size {
-                            width: size.width * scale,
-                            height: size.height * scale,
+                            width: if stretched && fills(size.width, raw.width) {
+                                edges.width
+                            } else {
+                                size.width * scale
+                            },
+                            height: if stretched && fills(size.height, raw.height) {
+                                edges.height
+                            } else {
+                                size.height * scale
+                            },
                         }
                     },
                 })
