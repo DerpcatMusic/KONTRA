@@ -712,6 +712,8 @@ fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
             damping_hz: f32::INFINITY,
             low_cut_hz: 0.0,
             steep_low_cut: false,
+            body: &[],
+            triangle_s: None,
             high_shelf: None,
             spread_ms: 0.0,
             rate: ir::Rate::Hz(0.0),

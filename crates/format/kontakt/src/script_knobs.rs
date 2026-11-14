@@ -418,6 +418,8 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     rows.extend(crate::dynamics::feedback_rows());
     rows.extend(crate::skreamer::rows());
     rows.extend(crate::tape::rows());
+    rows.extend(crate::dstortion::rows());
+    rows.extend(crate::supergt::rows());
     rows.extend(crate::phasis::rows());
     rows.extend(crate::impulse::script_knobs());
     rows.extend(crate::choral::rows());

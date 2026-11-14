@@ -4,9 +4,11 @@
 
 pub mod choral;
 pub mod delays;
+pub mod dstortion;
 pub mod dynamics;
 pub mod flair;
 pub mod legacy_reverb;
 pub mod phasis;
 pub mod skreamer;
+pub mod supergt;
 pub mod tape;

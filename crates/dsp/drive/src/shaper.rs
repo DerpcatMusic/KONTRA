@@ -4,8 +4,9 @@
 //! again (an optional one-pole low-pass, a second-order Butterworth
 //! high-pass, [`Stage::Out`] sections). The curves are ported from v2
 //! sampler-core dsp/color/{shaping,distortion}.rs and checked against v1's
-//! measured transfer vectors (tests/drive.rs); the format translators carry
-//! their provenance and knob laws.
+//! measured transfer vectors (tests/drive.rs), except Tube, which is
+//! Kontakt 8.13.1's measured curves (`tube.rs`); the format translators
+//! carry their provenance and knob laws.
 //!
 //! Twice the rate because it is audible and cheap: a full-scale 1.76 kHz
 //! tone through `Tube(1.0)` at 48 kHz aliases at −30 dB under its
@@ -23,7 +24,8 @@ pub enum Curve {
     /// −1..=1: above 0 a soft clip `2|x| − x²` blended in (fully at 0.25,
     /// with gain up to 4 beyond); below 0 a cubic expansion `(x² + q)x/(1 + q)`.
     Soft(f32),
-    /// 0..=1: an asymmetric rational clip, harder on the positive half.
+    /// 0..=1: Kontakt's measured Tube curves (`tube.rs`), asymmetric,
+    /// blended between the measured drives.
     Tube(f32),
     /// 0..=1: a power law on small signals (|x| < 0.25) that thins the
     /// negative half and thickens the positive one.
@@ -89,9 +91,9 @@ enum Prepared {
         q: f32,
     },
     Tube {
-        k: f32,
-        negative: f32,
-        positive: f32,
+        lower: Option<&'static [f32; crate::tube::POINTS]>,
+        upper: &'static [f32; crate::tube::POINTS],
+        t: f32,
     },
     Power {
         drive: f32,
@@ -125,22 +127,8 @@ impl Prepared {
             },
             Curve::Tube(d) if d.is_nan() => Self::Identity,
             Curve::Tube(d) => {
-                let d = d.clamp(0.0, 1.0);
-                let negative = if d > 0.75 {
-                    1.0
-                } else {
-                    (0.5625 - (0.75 - d).powi(2)) * (16.0 / 9.0)
-                };
-                let positive = if d < 0.25 {
-                    0.0
-                } else {
-                    (0.5625 - (1.0 - d).powi(2)) * (16.0 / 9.0)
-                };
-                Self::Tube {
-                    k: 1.0 + 1.5 * d,
-                    negative,
-                    positive,
-                }
+                let (lower, upper, t) = crate::tube::between(d);
+                Self::Tube { lower, upper, t }
             }
             Curve::Sine(d) => Self::Sine(d),
             Curve::Fold(d) => Self::Fold(d),
@@ -208,11 +196,7 @@ impl Prepared {
                 let b = points.get(i + 1).copied().unwrap_or(a);
                 ((b - a) * (at - i as f32) + a).copysign(x) * makeup
             }
-            Self::Tube {
-                k,
-                negative,
-                positive,
-            } => tube(x, k, negative, positive),
+            Self::Tube { lower, upper, t } => crate::tube::tube(x, lower, upper, t),
             Self::Power {
                 drive,
                 power,
@@ -241,23 +225,6 @@ impl Prepared {
                 }
             }
         }
-    }
-}
-
-fn tube(x: f32, k: f32, negative: f32, positive: f32) -> f32 {
-    if x < 0.0 {
-        if negative == 0.0 {
-            return x;
-        }
-        let r = ((k - x) * x / (1.0 + (x - (k - 1.0)) * x)).clamp(-1.0, 1.0);
-        negative * (r * r * r) + (1.0 - negative) * x
-    } else {
-        if positive == 0.0 {
-            return x;
-        }
-        let r = ((k + x) * x / (1.0 + (x + k - 1.0) * x)).clamp(-1.0, 1.0);
-        let c = 1.0 - r;
-        positive * (1.0 - c * c * c) + (1.0 - positive) * x
     }
 }
 

@@ -23,10 +23,35 @@ fn model(effect: &str, keys: &HashMap<&str, f32>) -> Option<(ir::EffectKind, f32
                 feedback: k("fb", replika::INIT.feedback),
                 depth: k("depth", 0.0),
                 rate: k("rate", replika::INIT.rate),
+                high_cut: k("hc", replika::INIT.high_cut),
+                tape_age: k("age", replika::INIT.tape_age),
+                flutter: k("flutter", replika::INIT.flutter),
+                quality: k("quality", replika::INIT.quality),
                 ..replika::INIT
             };
-            Some((ir::EffectKind::Delay(replika::delay(r)?), 1.0))
+            Some((ir::EffectKind::Delay(replika::delay(r)?), 0.0))
         }
+        "dstortion" => Some((
+            crate::dstortion::dstortion(
+                k("volume", 0.5),
+                k("tone", 0.5),
+                k("drive", 0.5),
+                k("bass", 0.5),
+                k("mid", 0.5),
+                k("treble", 0.5),
+            ),
+            0.0,
+        )),
+        "supergt" => Some((
+            crate::supergt::supergt(
+                k("trim", 0.5),
+                k("sat", 0.5),
+                k("char", 0.0),
+                k("satmode", 0.0),
+                k("charmode", 0.0),
+            ),
+            0.0,
+        )),
         "distortion" => Some((
             crate::drive::distortion(k("type", 0.0) as i32, k("drive", 0.0), k("damp", 0.0))?,
             0.0,
