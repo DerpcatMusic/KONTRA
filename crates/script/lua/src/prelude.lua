@@ -433,12 +433,25 @@ end
 
 -- Control `id` (0-based in `__controls`) moves to `value` and runs its
 -- `changed`, as a user's edit would; a button reads nonzero as on.
+-- Whether the run is the editor's (a control move): the host slices it and
+-- what it spawns to the block's budget, so a preset it loads may land at once.
+local editing = false
+
+local function edit(f, ...)
+	editing = true
+	local ok, err = pcall(f, ...)
+	editing = false
+	if not ok then
+		error(err, 0)
+	end
+end
+
 function __control(id, value)
 	local c = __controls[id + 1]
 	if c and type(c.value) == "boolean" then
-		c:setValue(value ~= 0, __FORCE)
+		edit(c.setValue, c, value ~= 0, __FORCE)
 	elseif c then
-		c:setValue(value, force(c))
+		edit(c.setValue, c, value, force(c))
 	end
 end
 -- Control `id` moves to its own value's place in its range times
@@ -465,7 +478,7 @@ function __control_mod(id, scale, m)
 	if rawget(c, "integer") == true then
 		v = math.floor(v + 0.5)
 	end
-	c:setValue(v)
+	edit(c.setValue, c, v)
 	rawset(c, "__route_base", base)
 	rawset(c, "__routed", c.value)
 end
@@ -657,6 +670,7 @@ local ALL_EVENTS = -1
 local ALLOW_GROUP = 10
 local MOD_VALUE = 30
 local ZONE_SLOT = 15
+local START_OFFSET = 4096
 local found, tree = pcall(require, "__program")
 if not found or type(tree) ~= "table" then
 	tree = { params = {}, db = 0, pan = 0, layers = {} }
@@ -1120,13 +1134,18 @@ function isKeyDown(note)
 	return host_call("KeyDown", note) ~= 0
 end
 
-function playNote(note, velocity, duration, layer, channel, input, vol, pan, tune, oscIndex)
+-- UVI's signature (its embedded api): `slice` comes before `oscIndex`, and
+-- a duration > 0 releases after that many ms, 0 waits for releaseVoice,
+-- -1 (the default) releases with the note that started the callback.
+function playNote(note, velocity, duration, layer, channel, input, vol, pan, tune, slice, oscIndex)
 	if type(note) == "table" then
 		local t = note
 		note, velocity, duration = t.note or t[1], t.velocity or t[2], t.duration or t[3]
-		layer, vol, pan, tune, oscIndex = t.layer or t[4], t.vol, t.pan, t.tune, t.oscIndex
+		layer, vol, pan, tune = t.layer or t[4], t.vol or t[7], t.pan or t[8], t.tune or t[9]
+		oscIndex = t.oscIndex or t[11]
 	end
-	local micros = duration and duration > 0 and math.floor(duration * 1000) or 0
+	duration = duration or -1
+	local micros = duration > 0 and math.floor(duration * 1000) or (duration < 0 and -1 or 0)
 	local id = host_call("PlayNote", note, velocity or 100, 0, micros)
 	if oscIndex and oscIndex >= 0 then
 		host_call("SetEventPar", id, ZONE_SLOT, oscIndex)
@@ -1444,13 +1463,24 @@ function fadein(id, ms)
 	host_call("FadeIn", id, math.floor((ms or 0) * 1000))
 end
 
--- ponytail: the fade is drawn as a jump to its end level.
-function fade2(id, from, to, ms, kill)
+-- UVI's fade gain sits on top of changeVolume (its embedded api: `fade`
+-- ramps from the current fade value, `fade2` from `from`; the fifth
+-- argument is a layer, not a kill). A note not yet started fades in from
+-- silence, as `fade2(playNote{...}, 0, 1, ms)` asks.
+-- ponytail: the engine fades to full or to silence; a target between
+-- holds full, and a started voice's `from` is where it is. Every flagship
+-- call is (new note, 0, 1|0, ms).
+function fade(id, to, ms)
+	local micros = math.floor(math.max(0, ms or 0) * 1000)
 	if (to or 0) <= 0 then
-		fadeout(id, ms, kill)
+		host_call("FadeOut", id, micros, 0)
 	else
-		changeVolume(id, to, false, true)
+		host_call("FadeIn", id, micros)
 	end
+end
+
+function fade2(id, from, to, ms)
+	fade(id, to, ms)
 end
 
 -- class 'Name' or class 'Name' (Base): luabind-style classes. Calling the
@@ -1661,17 +1691,30 @@ function loadState(path, done)
 		land(file, done, function() end)
 		return
 	end
-	-- Once running, the preset lands after the call returns (our choice),
-	-- one control's callbacks every PRESET_PACE ms of audio: a preset's 26
-	-- callbacks (VWinds, up to 4 ms each) never pile into one audio block.
+	-- Once running, the preset lands after the call returns, as UVI's async
+	-- `_loadState` task does. From a control move it lands at once, all its
+	-- values together as UVI's do: the host slices the task to the block's
+	-- budget (a VWinds preset is ~130 values; paced, a move made within
+	-- 1.5 s of picking it was overwritten). From any other callback, which
+	-- runs unsliced, one control's callbacks every PRESET_PACE ms of audio,
+	-- so a preset's callbacks (VWinds, up to 4 ms each) never pile into one
+	-- block.
+	local pace = editing and function() end or wait
 	spawn(function()
 		wait(PRESET_PACE)
-		land(file, done, wait)
+		land(file, done, pace)
 	end)
 end
 
+-- UVI's own: `setVoiceParameter(SampleStartMillisecond, id, ms)` (its
+-- embedded api, "offset in milliseconds in the sample"). It acts on a note
+-- before its voices start, as `playNote` returns in the same callback.
+function setSampleOffset(id, ms)
+	host_call("SetEventPar", id, START_OFFSET, math.floor(math.max(0, ms or 0) * 1000))
+end
+
 for _, name in ipairs({
-	"setKeyColour", "setSampleOffset", "setKeyType", "setKeyPressed",
+	"setKeyColour", "setKeyType", "setKeyPressed",
 }) do
 	_G[name] = function() end
 end

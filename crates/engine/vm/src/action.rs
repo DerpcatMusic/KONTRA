@@ -58,6 +58,10 @@ pub mod event {
     /// Read only: the number of the zone its first voice plays (its format's
     /// numbering), -1 before a voice starts.
     pub const ZONE_ID: i32 = 1027;
+    /// Before the note starts: microseconds into the sample its voices start
+    /// at, as `play_note`'s offset (not a KSP parameter: UVI's
+    /// `setSampleOffset` after `playNote`).
+    pub const START_OFFSET: i32 = 4096;
 }
 
 macro_rules! actions {

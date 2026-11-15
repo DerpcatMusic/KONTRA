@@ -54,7 +54,7 @@ fn engine_par<'a>(
             return Some((par, p.readout.as_ref()));
         }
     }
-    None
+    kontra_format_kontakt::held(name).then_some((EnginePar::Held, None))
 }
 
 const CONTROL_VALUE: &str = "$CONTROL_PAR_VALUE";

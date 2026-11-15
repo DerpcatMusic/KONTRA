@@ -2682,6 +2682,7 @@ fn a_script_loads_a_library_response_into_a_convolution() {
             mix: None,
             size: [1.0, 1.0],
             length: 1.0,
+            window_whole: false,
         },
     )];
     plan.responses = vec![(
@@ -2770,6 +2771,77 @@ fn a_script_loads_a_library_response_into_a_convolution() {
     assert_eq!(e.stats().actions_unhandled, 0);
 }
 
+/// A seat change: `loadImpulse` then `Time` in one callback. Neither is
+/// installed when the next runs, so the knob builds on the requested file,
+/// not on the one still playing, and keeps the new file.
+#[test]
+fn a_time_after_a_load_in_one_callback_keeps_the_new_response() {
+    use kontra_engine::{Response, ir};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution { impulse: 0 },
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.impulses = vec![Some(Response {
+        left: vec![1.0],
+        right: vec![1.0],
+    })];
+    let law = ir::Impulse {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+        size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
+    };
+    plan.impulse_laws = vec![("room".into(), law)];
+    let sample = |name: &str| ir::Sample {
+        name: name.into(),
+        file: std::path::PathBuf::from(name),
+        offset: 0,
+        len: None,
+        channels: 0,
+        frames: 0,
+        rate: 0,
+        keystream: None,
+    };
+    plan.responses = vec![
+        ("room".into(), sample("Room.wav")),
+        ("seat_30".into(), sample("Seat_30.wav")),
+    ];
+    let tree = "return {params={},db=0,pan=0,layers={},auxs={},
+        inserts={{params={Name='Room',Time='1'},fx={2,1,0},impulse={Time=1,PreDelay=2}}}}";
+    let source = "function onNote(e)
+            loadImpulse(Program.inserts[1], '../IRs/Seat_30.flac')
+            Program.inserts[1]:setParameter('Time', 0.5)
+            Program.inserts[1]:setParameter('PreDelay', 20)
+            postEvent(e)
+        end";
+    let modules = [("__program.lua".to_string(), tree.to_string())];
+    let compiled = kontra_lua::compile(source, &modules, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 480];
+    e.process(&mut out, &[on(60)]);
+    let mut requests = Vec::new();
+    e.drain_requests(|r| requests.push(r.response));
+    let last = requests.last().copied().flatten();
+    let want = ir::Impulse {
+        length: 0.5,
+        predelay_ms: 20.0,
+        ..law
+    };
+    assert_eq!(last, Some((1, want)), "{requests:?}");
+    assert_eq!(e.stats().actions_unhandled, 0);
+}
+
 /// A script's `IRC_*` knobs prepare the slot's own response again: at
 /// x 0.5 the predelay is `2·(151^0.5 − 1)` = 22.6 ms, and the knob reads
 /// back what it was set to.
@@ -2812,6 +2884,7 @@ fn a_scripts_convolution_predelay_prepares_its_response_again() {
         mix: None,
         size: [1.0, 1.0],
         length: 1.0,
+        window_whole: false,
     };
     plan.impulse_laws = vec![("half".into(), law)];
     plan.responses = vec![(
@@ -3890,6 +3963,39 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
     assert_eq!(e.unhandled_actions(), vec![]);
     assert_eq!(e.last_message(), "3494 -1 932 36 204800 -1 31 0");
+}
+
+/// A module KONTRA has no processor for keeps the values a script sets
+/// (Conflux's Replika, Bite and Freak slots): they read back, and on a slot
+/// holding another type the control names nothing and reads 0.
+#[test]
+fn an_uncarried_modules_controls_hold_what_a_script_sets() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let pass = Some(ir::Effect {
+        kind: ir::EffectKind::Gain(1.0),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    });
+    plan.inserts = vec![pass, pass];
+    // Slot 0 holds a Replika (40), slot 1 a Jump (31).
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 40), (ir::RackAt::Inserts, 1, 31)];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_RDL_TAPEAGE, 300000, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_RDL_TAPEAGE, 420000, -1, 1, 1)
+            message(get_engine_par($ENGINE_PAR_RDL_TAPEAGE, -1, 0, 1) ...
+                & \" \" & get_engine_par($ENGINE_PAR_RDL_TAPEAGE, -1, 1, 1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    assert_eq!(e.last_message(), "300000 0");
 }
 
 /// The LFO and wavetable texts and switches as Kontakt 8.13.1 answered them

@@ -1215,6 +1215,43 @@ mod tests {
         assert_eq!(m.faults().bad_code, 0);
     }
 
+    /// A preset picked in the editor (VWinds' preset arrows) lands all its
+    /// values in one resume of its task, after the move: paced, a control
+    /// moved within the next 1.5 s was overwritten by the landing preset.
+    #[test]
+    fn a_preset_picked_by_a_control_lands_at_once() {
+        let source = r#"
+            local a = Knob('a', 0, 0, 100)
+            local b = Knob('b', 0, 0, 100)
+            a.changed = function() end
+            b.changed = function() end
+            local pick = Menu{'pick', {'-', 'Studio 1'}}
+            pick.changed = function() loadState('../Script/presets/Studio 1.VHFPreset') end
+            function onNote() assert(a.value == 66 and b.value == 7) end"#;
+        let modules = [
+            ("__dir.lua".to_string(), "return \"Script\"".to_string()),
+            (
+                "__file/script/presets/studio 1.vhfpreset".to_string(),
+                r#"return {values={["a"]="66",["b"]="7"}}"#.to_string(),
+            ),
+        ];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let init = m.start(Callbacks::INIT, 0).expect("init");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(init, &mut log), Step::Done);
+        let pick = m.control(2, 2.0, 0).expect("pick");
+        assert_eq!(m.run(pick, &mut log), Step::Done);
+        let (task, _) = m.spawned().expect("the preset lands in a task");
+        assert_eq!(
+            m.run(task, &mut log),
+            Step::Done,
+            "no wait between its controls"
+        );
+        let note = m.start(Callbacks::NOTE, 0).expect("note");
+        assert_eq!(m.run(note, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults().last_error);
+    }
+
     /// VWinds' Save/Load menu once the player picked a name: `saveState`
     /// keeps the preset for `loadState` and hands it out once for the host
     /// to write (`take_file`).
@@ -1344,7 +1381,11 @@ mod tests {
         assert_eq!(m.faults().bad_code, 0);
         let actions: Vec<Action> = log.0.iter().map(|c| c.0).collect();
         assert!(actions.contains(&Action::IgnoreEvent), "{actions:?}");
-        assert_eq!(log.0.last().map(|c| c.1.clone()), Some(vec![14, 100, 0, 0]));
+        // No duration is UVI's -1: the note ends with the one that started the callback.
+        assert_eq!(
+            log.0.last().map(|c| c.1.clone()),
+            Some(vec![14, 100, 0, -1])
+        );
     }
 
     #[test]
@@ -1564,6 +1605,43 @@ mod tests {
             log.0
                 .iter()
                 .any(|(a, ints)| *a == Action::ChangeVol && ints.first() == Some(&7))
+        );
+    }
+
+    /// UVI's `setSampleOffset(id, ms)` moves where the new note's voices
+    /// start, in microseconds, before they start.
+    #[test]
+    fn set_sample_offset_sets_the_notes_start_in_microseconds() {
+        let source =
+            "function onNote(e) local id = playNote(e.note, 90, 0) setSampleOffset(id, 123.5) end";
+        let log = run(source, Callbacks::NOTE);
+        assert!(
+            log.0
+                .iter()
+                .any(|(a, ints)| *a == Action::SetEventPar && ints[..] == [7, 4096, 123_500])
+        );
+    }
+
+    /// `fade2(new note, 0, 1, ms)`, VWinds' legato crossfade, fades the note
+    /// in over `ms`; the fifth argument is a layer, not a kill.
+    #[test]
+    fn fade2_fades_a_new_note_in_over_its_time() {
+        let source = "function onNote(e)
+            local id = playNote(e.note, 90, 0)
+            fade2(id, 0, 1, 250, 1)
+            fade2(id, 0, 0, 0)
+        end";
+        let log = run(source, Callbacks::NOTE);
+        let fades: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| matches!(a, Action::FadeIn | Action::FadeOut))
+            .cloned()
+            .collect();
+        assert_eq!(
+            fades,
+            [
+                (Action::FadeIn, vec![7, 250_000]),
+                (Action::FadeOut, vec![7, 0, 0])
+            ]
         );
     }
 
