@@ -561,15 +561,21 @@ widget = function(kind, name, value, ...)
 	-- A script's setValue runs `changed` only when the value changes, as
 	-- JUCE's controls under UVI do: W Strings Harmonic's linked arpeggiator
 	-- buttons set each other and recursed without end. A user's move always
-	-- runs it (`__FORCE`); a restore, when it moves the widget.
+	-- runs it (`__FORCE`); a restore, when it moves the widget. A `changed`
+	-- that failed leaves the value unsettled, so setting it again (the same
+	-- preset reloaded) runs `changed` again.
 	w.setValue = function(self, v, run)
 		local was = rawget(self, "__value")
 		rawset(self, "__value", v)
-		if run ~= false and (run == __FORCE or v ~= was) then
+		if run ~= false and (run == __FORCE or v ~= was or rawget(self, "__unsettled")) then
 			-- A click's modifier keys reach a button's `changed`; a script's
 			-- own move has none.
 			local click = run == __FORCE and pressed[kind]
-			run_changed(self, click and { altDown = false, commandDown = false, shiftDown = false } or nil)
+			local ok, err = pcall(run_changed, self, click and { altDown = false, commandDown = false, shiftDown = false } or nil)
+			rawset(self, "__unsettled", not ok or nil)
+			if not ok then
+				error(err, 0)
+			end
 		end
 	end
 	w.getValue = function(self)

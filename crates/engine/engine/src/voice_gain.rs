@@ -48,7 +48,7 @@ impl Engine {
         age: Age,
         group_pan: f32,
     ) -> (Gain, Lag) {
-        let channel = note.host.channel;
+        let channel = note.host.port_channel();
         let crossfade: f32 = zone
             .crossfades
             .iter()
@@ -274,7 +274,7 @@ impl Engine {
         note: &Note,
         age: Age,
     ) -> Option<f32> {
-        let channel = note.host.channel;
+        let channel = note.host.port_channel();
         let group = || self.groups.get(zone.group as usize);
         match source {
             ir::Source::Shaped(n) => {

@@ -539,18 +539,17 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
         params.shared.request(crate::Request::Browse(action));
         Tick.run(&params);
     };
-    let (presets, felt) = {
+    let (dir, presets, felt) = {
         let b = crate::lock(&params.shared.browser);
-        let presets = b.as_ref().unwrap().catalog.libraries[library]
-            .presets
-            .clone();
+        let shown = &b.as_ref().unwrap().catalog.libraries[library];
+        let presets = shown.presets.clone();
         let felt = presets[preset].clone();
-        (presets, felt)
+        (shown.dir.clone(), presets, felt)
     };
     // As Kontakt's instrument header: the arrows step through the
     // instrument and its snapshots (the whole library for one without).
     let after = |at: usize| {
-        let family = kontra_ui_model::preset_family(&presets, Some(at));
+        let family = kontra_ui_model::preset_family(&dir, &presets, Some(at));
         assert!(family.len() > 1);
         let k = family.iter().position(|&n| n == at).unwrap();
         (family[(k + 1) % family.len()], *family.last().unwrap())
