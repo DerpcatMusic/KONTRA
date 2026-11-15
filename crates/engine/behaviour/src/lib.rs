@@ -53,8 +53,9 @@ impl RrDraw {
     }
 }
 
-/// Held module controls an instrument's scripts may set (Conflux sets
-/// ~120 across its eight FX slots).
+/// Held module controls an instrument's scripts may set beyond the saved
+/// ones (Conflux sets ~120 across its eight FX slots), reserved on top of
+/// the saved seeds.
 const HELD: usize = 512;
 
 /// Channels controller state is kept by: Kontakt's 16 on each of ports A
@@ -141,7 +142,7 @@ impl Behaviour {
             shapes: vec![None; plan.slot_shapes.slots.len()],
             loaded: Vec::with_capacity(LOADED.max(plan.loaded.len())),
             knobs: Vec::with_capacity(LOADED + plan.slot_models.len() + plan.loaded.len()),
-            held: Vec::with_capacity(HELD.max(plan.slot_shapes.held.len())),
+            held: Vec::with_capacity(HELD + plan.slot_shapes.held.len()),
         };
         behaviour.held.extend_from_slice(&plan.slot_shapes.held);
         // Every modelled slot starts at its model's saved positions: the
