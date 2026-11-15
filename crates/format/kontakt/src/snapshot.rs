@@ -42,17 +42,15 @@ pub(crate) struct Native {
     pub groups: Vec<Option<Group>>,
 }
 
-/// A group as a snapshot saves it: its insert effects and its volume, pan
-/// and tune, the first three floats of its public data. Volume and pan are
-/// as the group's own params hold them (a factory snapshot of the
-/// instrument's own state matches the instrument's on all 933 groups of
-/// Morphology Evolved); tune is in octaves, not a ratio (ANALOG STRINGS'
-/// 9001 Punch saves -2.0 for a group Kontakt then plays 24 semitones down).
+/// A group as a snapshot saves it: its insert effects, its 24 public bytes
+/// (volume and pan as the group's own params hold them, tune in octaves,
+/// the key-tracking, reverse and release-trigger flags, the release counter
+/// and the interpolation quality), its source module and its modulators.
+/// ANALOG STRINGS' 9001 Punch saves tune -2.0 for a group Kontakt then plays
+/// 24 semitones down.
 pub(crate) struct Group {
     pub fx: BParamArrayBParFX8,
-    pub volume: f32,
-    pub pan: f32,
-    pub tune: f32,
+    public: [u8; 24],
     /// Its source module's record and its internal and external modulator
     /// arrays, as the group holds them: they stand in for the base's.
     source: Vec<u8>,
@@ -61,30 +59,24 @@ pub(crate) struct Group {
 
 impl Group {
     fn of(g: ni_file::kontakt::objects::GroupSnapshot) -> Result<Self, ni_file::Error> {
-        let float = |at: usize| {
-            (g.public_data.get(at..at + 4))
-                .and_then(|b| b.try_into().ok())
-                .map_or(0.0, f32::from_le_bytes)
-        };
         Ok(Self {
-            volume: float(0),
-            pan: float(4),
-            tune: float(8),
+            public: g.public_data,
             source: g.source_record()?.to_vec(),
             mods: Vec::from(g.modulator_chunks()?),
             fx: g.fx,
         })
     }
 
-    /// Puts its source and modulators into the base's `group`, which the
+    /// Puts its params, source and modulators into the base's `group`, which the
     /// translator then reads as it reads any group.
     ///
     /// # Errors
-    /// When the base group's source record does not decode.
+    /// When the base group's public data or source record does not decode.
     pub(crate) fn apply(
         &mut self,
         group: &mut ni_file::kontakt::objects::Group,
     ) -> Result<(), ni_file::Error> {
+        group.set_snapshot_params(&self.public)?;
         group.set_source_record(&self.source)?;
         for chunk in std::mem::take(&mut self.mods) {
             let children = &mut group.0.children;
