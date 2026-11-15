@@ -27,6 +27,7 @@ pub(crate) fn wow_flutter(p: [f32; 5]) -> ir::Delay {
         false => (flutter_ms + wow_ms * wow_hz / flutter_hz, flutter_hz),
     };
     ir::Delay {
+        direct: 0.0,
         time: ir::DelayTime::Ms(5.0),
         depth_ms,
         second_head: false,

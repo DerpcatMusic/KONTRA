@@ -98,6 +98,27 @@ the body's 1 kHz gain divided out.
   follows the tone (its small-signal slope 1.19). TIME does not move the steep cut much (-8.2 to -13.5 dB at 10 kHz at
   400 and 100 ms), so the body does not follow the bucket brigade's clock.
 
+### Analogue: steady tones against the sweep (Kontakt 8.13.1, 2026-11-15)
+
+`fx_lab.py` `levels` (1 kHz, -48 to -8 dB peak) and `steps`/`stepslo` (0.5 s tones from 63 Hz to 16 kHz, 40 dB apart: about -20 and
+-60 dB at the effect), FEEDBACK 0, DEPTH 0, wet only:
+
+- Level does not move it at 1 kHz: -0.05, -0.06, -0.07 and -0.11 dB re the input at -48, -38, -26 and -20 dB peak
+  (two of seven steps lost to capture gaps). So the 1.5 dB tone/sweep split is steady against moving, not loud against
+  quiet.
+- Steady tones, dB re the input at the low and high level:
+
+  | Hz | 63 | 1k | 2k | 4k | 6k | 8k | 10k | 12k | 14k | 16k |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | -60 dB | -0.6 | -0.1 | -1.0 | +0.7 | +4.8 | +7.2 | -21.6 | -27.6 | -74.7 | -87.0 |
+  | -20 dB | 0 | 0 | 0 | +3 | +8 | +11 | -20 | -25 | -71 | -91 |
+
+  Each step is at its level from its first 10 ms frame (no build-up); the sweep at -20 dB reads -6.5, -8.9 and -21.9
+  dB at 4, 8 and 10 kHz. So above 2 kHz a steady tone plays up to 20 dB over the same frequency swept, louder the louder
+  it is. Vintage and Tape steps match their sweeps, so it is Analogue's own (its compander: the noise grows as
+  sqrt(level)). Not modelled: one time-invariant body cannot play both, and which a held note hears (the steps) against a
+  moving one (the sweep) needs a probe that separates them (two tones, or a slow and a fast sweep).
+
 Open: Analogue's sweep (1.5 dB over it everywhere, from the tone/sweep split above) and its stopband (Kontakt -46 dB at
 12 kHz and -58 dB at 16 kHz, the body -27 dB at 16 kHz); Tape's sidebands within 100 Hz of a tone, 11 dB over its noise
 floor (a random flutter); Diffusion.

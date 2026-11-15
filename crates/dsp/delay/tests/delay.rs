@@ -9,6 +9,7 @@ fn diagonal(g: f32) -> [[f32; 2]; 2] {
 
 fn echo() -> Settings {
     Settings {
+        direct: 0.0,
         ms: 10.0,
         depth_ms: 0.0,
         second_head: false,
@@ -153,6 +154,7 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         }
     };
     let chorus = Settings {
+        direct: 0.0,
         ms: 0.0,
         depth_ms: 0.0,
         second_head: true,
@@ -184,6 +186,7 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         0.08,
     );
     let flanger = Settings {
+        direct: 0.0,
         ms: 2.5,
         depth_ms: 0.7 * 50.0 / 48.0,
         second_head: false,

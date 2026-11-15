@@ -57,6 +57,7 @@ pub(super) fn dual_delay(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
     let mix = num(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32;
     Ok(ir::Effect {
         kind: ir::EffectKind::Delay(ir::Delay {
+            direct: 0.0,
             time: if flag(node, "SyncToHost") {
                 ir::DelayTime::Beats(time as f32)
             } else {

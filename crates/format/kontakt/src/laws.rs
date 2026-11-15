@@ -689,6 +689,7 @@ pub(crate) fn compressor(
         } else {
             ir::Detector::Input
         },
+        sidechain_hz: None,
     }
 }
 
@@ -743,6 +744,7 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
         link,
         mix,
         detector: ir::Detector::Input,
+        sidechain_hz: None,
     };
     (c, step(release) == 5)
 }

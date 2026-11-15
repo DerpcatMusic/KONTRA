@@ -887,6 +887,7 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
             bits: 16.0,
             noise: 0.0,
             noise_tone: 1.0,
+            converter: None,
         }),
         bypass: false,
         output: 1.0,
@@ -4152,6 +4153,7 @@ fn a_parameter_of_another_effect_type_names_nothing() {
             bits: 8.0,
             noise: 0.0,
             noise_tone: 0.8,
+            converter: None,
         }),
         bypass: false,
         output: 1.0,
@@ -4196,6 +4198,7 @@ fn interacting_knobs_rebuild_the_slot_in_any_order() {
             link: true,
             mix: 1.0,
             detector: ir::Detector::Output,
+            sidechain_hz: None,
         }))
     }
     let run = |first: &str, second: &str| {
@@ -4260,6 +4263,7 @@ fn a_restored_type_in_an_empty_slot_reads_and_moves_its_modelled_knobs() {
             link: true,
             mix: 1.0,
             detector: ir::Detector::Output,
+            sidechain_hz: None,
         }))
     }
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
