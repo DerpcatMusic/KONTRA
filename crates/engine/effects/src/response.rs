@@ -44,7 +44,7 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
         left = kontra_dsp::reverb::shape::cut(&left, from, &c);
         right = kontra_dsp::reverb::shape::cut(&right, from, &c);
     }
-    if impulse.length < 1.0 {
+    if impulse.length < 1.0 || impulse.window_whole {
         window([&mut left, &mut right], impulse.length);
     }
     if let Some(knots) = impulse.envelope {

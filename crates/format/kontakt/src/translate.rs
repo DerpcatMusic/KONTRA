@@ -762,6 +762,9 @@ fn translate_group(
                 || (matches!(p.modulator, Modulator::Ahdsr(_)) && !amp_env);
             if !reads_flags {
                 for (flag, what) in [(1, "bypass"), (2, "retrigger"), (3, "flag 3")] {
+                    if amp_env && flag == 3 {
+                        continue;
+                    }
                     if p.unknown_flags.get(flag).is_some_and(|&b| b != 0) {
                         notes.ignored(&format!("internal modulator {what}"), &p.name);
                     }
@@ -781,6 +784,10 @@ fn translate_group(
                             .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
                 {
                     out.envelope = laws::envelope(e);
+                    if let Some(t) = p.targets.iter().find(|t| t.param == "volume") {
+                        let scaled = p.unknown_flags.get(3).is_some_and(|&b| b != 0);
+                        laws::envelope_depth(&mut out.envelope, t.signed_intensity(), scaled);
+                    }
                     kontra_law::record(|| kontra_law::Application {
                         id: kontra_law::LawId("kontakt.ahdsr_envelope.v1"),
                         location: format!("groups/{group_index}/envelope"),

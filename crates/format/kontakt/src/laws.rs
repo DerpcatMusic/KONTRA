@@ -28,7 +28,23 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         attack_shape: ATTACK_CURVE.eval_unclamped(e.attack_curve),
         fall_shape: FALL,
         lag: ENVELOPE_LAG_S,
+        floor: 0.0,
+        depth: 1.0,
     }
+}
+
+/// The amplitude envelope's depth from its volume route: intensity `i` and
+/// byte 3 of the internal modulator's flags. Kontakt 8's legacy-modulation
+/// compiler (FUN_140873040, AHDSR type 2 with mode +0x600 < 2) emits, with the
+/// byte set (+0x548), `$out := $in * env * $intensity` (template 0x144f1da68),
+/// a scaled envelope; clear, `$out := $in * (1.0 - (1.0 - env) * $intensity)`
+/// (0x144f1daa0), the envelope above a floor of `1 − i`. Both are the plain
+/// envelope at full intensity, which is every Areia, Dolce, Pacific and probe
+/// route in the corpus census. ponytail: mode +0x600 = 2 (`* 3.0` signal) is
+/// not decoded; add it when a library saves it.
+pub(crate) fn envelope_depth(e: &mut ir::Envelope, intensity: f32, scaled: bool) {
+    e.depth = intensity;
+    e.floor = if scaled { 0.0 } else { 1.0 - intensity };
 }
 
 /// A Glide modulator on the source's pitch, at `depth` (its signed intensity).

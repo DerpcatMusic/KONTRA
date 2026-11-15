@@ -110,6 +110,16 @@ pub const MILLIBEL_GAIN: Law = Law::PowIndex {
 mod tests {
     use super::*;
 
+    /// Areia's script sets ATTACK about 465600 (read to ±1000 in ours):
+    /// Kontakt's converter (fconv_u2n_env_a, `2·e^(8.9228·u) − 2`) gives
+    /// 125.43 ms; the file's stored 125.01 ms is knob 465222.
+    #[test]
+    fn attack_knob_465600_is_kontakts_125_ms() {
+        let ms = STAGE_15S.eval_f64(0.4656);
+        assert!((ms - 125.434).abs() < 0.01, "{ms}");
+        assert!((ms - (2.0 * (8.9228f64 * 0.4656).exp() - 2.0)).abs() < 0.01);
+    }
+
     #[test]
     fn bipolar_maps_normalized_endpoints_and_midpoint() {
         for (x, expected) in [(0.0, -1.0), (0.5, 0.0), (1.0, 1.0)] {
