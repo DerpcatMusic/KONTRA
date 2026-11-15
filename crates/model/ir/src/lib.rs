@@ -593,6 +593,7 @@ pub struct Stream {
 /// A voice limit shared by the groups that name it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VoiceGroup {
+    /// The limit; 0 none (a line a script may make mono later).
     pub voices: u16,
     pub steal: Steal,
     /// Steal released voices before held ones.

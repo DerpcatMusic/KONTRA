@@ -133,6 +133,11 @@ impl<L: Library> Translator<'_, '_, L> {
                 out.push_str(",impulse={Time=1,PreDelay=2}");
             }
         }
+        // A layer a script switches: `{voice group, glide scope, own note
+        // limit}` (program.rs `layer_polyphony`).
+        if let Some((vg, scope, notes)) = self.lines.get(&node.id()) {
+            out.push_str(&format!(",line={{{vg},{scope},{notes}}}"));
+        }
         if let Some(id) = matrix::live_macro(self.program, node) {
             out.push_str(&format!(",mod={id}"));
         }
