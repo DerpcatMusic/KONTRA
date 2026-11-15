@@ -384,6 +384,11 @@ impl Voice {
         self.env.stage_name()
     }
 
+    /// Current amplitude envelope level, 0..=1.
+    pub fn envelope_level(&self) -> f32 {
+        self.env.level()
+    }
+
     /// Peak of this voice's last render call before group effects, when tracing is enabled.
     #[cfg(feature = "trace")]
     #[must_use]
