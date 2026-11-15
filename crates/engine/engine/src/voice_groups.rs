@@ -69,40 +69,44 @@ impl Engine {
         if group.voices == 0 || playing < usize::from(group.voices) {
             return;
         }
-        let key = |s: &Slot| {
-            s.note
-                .and_then(|n| self.notes.get(n))
-                .map_or(0, |n| i64::from(n.key))
-        };
-        let victim = self
-            .voices
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| voice_group(s) == Some(vg))
-            .filter(|(_, s)| !group.per_note || s.note != Some(note))
-            .min_by_key(|(_, s)| {
-                let order = match group.steal {
-                    ir::Steal::Oldest => s.started.0 as i64,
-                    ir::Steal::Newest => -(s.started.0 as i64),
-                    ir::Steal::Highest => -key(s),
-                    ir::Steal::Lowest => key(s),
-                };
-                (!(group.prefer_released && s.voice.is_released()), order)
-            })
-            .map(|(i, _)| i);
-        let Some(index) = victim else {
-            return;
-        };
-        // A counted note goes whole: every voice of it in the group.
-        let owner = self.voices.get(index).and_then(|s| s.note);
-        for i in 0..self.voices.len() {
-            let whole = group.per_note
-                && self
-                    .voices
-                    .get(i)
-                    .is_some_and(|s| s.note == owner && voice_group(s) == Some(vg));
-            if i == index || whole {
-                self.steal(i, fade);
+        // Down to one under the limit: a limit lowered while notes were
+        // held (a script switching Poly to mono) gives up all the excess.
+        for _ in usize::from(group.voices)..=playing {
+            let key = |s: &Slot| {
+                s.note
+                    .and_then(|n| self.notes.get(n))
+                    .map_or(0, |n| i64::from(n.key))
+            };
+            let victim = self
+                .voices
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| voice_group(s) == Some(vg))
+                .filter(|(_, s)| !group.per_note || s.note != Some(note))
+                .min_by_key(|(_, s)| {
+                    let order = match group.steal {
+                        ir::Steal::Oldest => s.started.0 as i64,
+                        ir::Steal::Newest => -(s.started.0 as i64),
+                        ir::Steal::Highest => -key(s),
+                        ir::Steal::Lowest => key(s),
+                    };
+                    (!(group.prefer_released && s.voice.is_released()), order)
+                })
+                .map(|(i, _)| i);
+            let Some(index) = victim else {
+                break;
+            };
+            // A counted note goes whole: every voice of it in the group.
+            let owner = self.voices.get(index).and_then(|s| s.note);
+            for i in 0..self.voices.len() {
+                let whole = group.per_note
+                    && self
+                        .voices
+                        .get(i)
+                        .is_some_and(|s| s.note == owner && voice_group(s) == Some(vg));
+                if i == index || whole {
+                    self.steal(i, fade);
+                }
             }
         }
     }
