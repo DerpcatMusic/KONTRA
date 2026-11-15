@@ -338,6 +338,7 @@ pub(crate) fn instrument(
         }
         out.slot_shapes.slots.extend(open);
         out.slot_shapes.types = crate::script_knobs::slot_types();
+        out.slot_shapes.fresh = crate::held::fresh();
         out.slot_shapes.subtypes = std::mem::take(&mut slots.subtypes);
         out.slot_shapes.saved_types = std::mem::take(&mut slots.types);
         out.slot_shapes.held = std::mem::take(&mut slots.held);

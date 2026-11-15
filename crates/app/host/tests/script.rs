@@ -4005,6 +4005,47 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
     assert_eq!(e.last_message(), "123456 300000 0");
 }
 
+/// A module a script loads answers reads at once with Kontakt's fresh
+/// values (Freak's MODE starts on the oscillator, 1).
+#[test]
+fn a_loaded_module_reads_its_fresh_values() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let unit = |kind| ir::Effect {
+        kind,
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    plan.inserts = vec![Some(unit(ir::EffectKind::Gain(1.0)))];
+    plan.slot_shapes.types = vec![ir::SlotType {
+        id: 54,
+        subtype: false,
+        reads: 0,
+        kind: 54,
+        effect: Some(unit(ir::EffectKind::Stereo {
+            width: 0.5,
+            pan: 0.0,
+        })),
+        laws: Vec::new().into(),
+        model: None,
+    }];
+    let mode = ir::held_key("$ENGINE_PAR_FREAK_MODE");
+    plan.slot_shapes.fresh = vec![(54, mode, 1), (40, mode, 7)];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 54, -1, 0, 1)
+            message(get_engine_par($ENGINE_PAR_FREAK_MODE, -1, 0, 1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "1");
+}
+
 /// The LFO and wavetable texts and switches as Kontakt 8.13.1 answered them
 /// (ANALOG's stepped LFO, Morphology's wavetable group): a stepped rate
 /// shows its count, the phase whole degrees, retrigger is a switch, and a
