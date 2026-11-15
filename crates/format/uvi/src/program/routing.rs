@@ -818,34 +818,55 @@ fn matrix(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
     Ok(effect(ir::EffectKind::Matrix(m), 1.0, 0.0))
 }
 
-/// UVI's Maximizer (engine 0x141665620, parameter ids 0x1427fd2c0..2e4):
-/// the peak level in dB floored at Threshold, smoothed, gives a gain of
-/// `Ceiling − level` dB. That is Threshold-to-Ceiling of input gain into a
-/// limiter at Ceiling. Its release falls to a third in Release ms
-/// (`e^(ln(1/3)/frames)`, ln(1/3) at 0x141e64248, read at 0x1416656ea): the
-/// limiter, which halves in its release time, gets `Release·ln 2/ln 3`.
+/// UVI's Maximizer (process 0x141665620, prepare 0x141666780, parameter
+/// ids 0x1427fd2c0..2e4). Per block it takes the louder channel in dB,
+/// floored at Threshold (or through a quadratic knee `(x−T+k)²/4k` within
+/// ±Knee), and turns it into a gain of `Ceiling − level` dB after:
 ///
-/// ponytail: the 2 ms lookahead, ReleaseBlend's slow release (100× longer,
-/// 0.1 in every corpus program) and SlewRate are not carried; Knee and
-/// Attack, 0 in the corpus, are reported when set.
+/// - a slew limit: the level falls at most `10000/SlewRate` dB/s (prepare
+///   `10000/(rate·SlewRate)` per frame, no limit at 0); rises are free;
+/// - two one-pole falls blended by ReleaseBlend (0x141667480): one to a
+///   third in Release ms (`e^(ln(1/3)/frames)`, ln(1/3) at 0x141e64248),
+///   one 100× slower (`e^(−0.010986/frames)`); a rise uses Attack, which
+///   CeilingMode 0 (Brickwall, the default) forces to 0;
+/// - the largest level over the last `2·⌊Lookahead·rate/2000⌋` frames
+///   (0x141667790), applied to the audio delayed by as many frames.
+///
+/// CeilingMode 2 (Hard) also clamps the output at Ceiling (`10^(C/20)`).
+/// Threshold-to-Ceiling is input gain into a limiter at Ceiling.
+///
+/// ponytail: TruePeak (Off in every corpus program) adds a 6-frame
+/// oversampled detector; it is reported, not modelled.
 fn maximizer(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
     let threshold = num(node, "Threshold", 0.0)? as f32;
     let ceiling = num(node, "Ceiling", -0.1)? as f32;
-    for name in ["Knee", "Attack"] {
-        if num(node, name, 0.0)? != 0.0 {
-            notes.add(ir::Impact::Audible, &format!("maximizer {name}"), "");
-        }
+    let mode = num(node, "CeilingMode", 0.0)?;
+    if num(node, "TruePeak", 0.0)? != 0.0 {
+        notes.add(ir::Impact::Audible, "maximizer TruePeak", "");
     }
+    let slew = num(node, "SlewRate", 0.0)?;
     let kind = ir::EffectKind::Limiter(ir::Limiter {
         input_db: ceiling - threshold,
         ceiling_db: ceiling,
-        release_ms: (num(node, "Release", 10.0)?.max(0.0) * THIRD_TO_HALF) as f32,
+        // 6.02 dB at 10000/SlewRate dB/s.
+        release_ms: if slew > 0.0 {
+            (slew * 20.0 * std::f64::consts::LOG10_2 / 10.0) as f32
+        } else {
+            0.0
+        },
+        knee_db: num(node, "Knee", 0.0)?.max(0.0) as f32,
+        attack_ms: if mode == 0.0 {
+            0.0
+        } else {
+            num(node, "Attack", 0.0)?.max(0.0) as f32
+        },
+        smooth_ms: num(node, "Release", 10.0)?.max(0.0) as f32,
+        slow: num(node, "ReleaseBlend", 0.0)?.clamp(0.0, 1.0) as f32,
+        lookahead_ms: num(node, "Lookahead", 0.0)?.max(0.0) as f32,
+        clip: mode == 2.0,
     });
     Ok(effect(kind, 1.0, 0.0))
 }
-
-/// A fall to a third in `t` is a halving in `t·ln 2/ln 3`.
-const THIRD_TO_HALF: f64 = std::f64::consts::LN_2 / 1.098_612_288_668_109_8;
 
 /// The dry level of an effect whose output is mostly a wet path (a reverb,
 /// a delay); `None` for one that processes in place.
@@ -934,15 +955,19 @@ mod tests {
     #[test]
     fn a_maximizer_lifts_by_its_threshold_into_a_limiter_at_its_ceiling() {
         // Augmented Orchestra's most common setting (90 programs).
-        let xml = r#"<Maximizer Threshold="-6" Attack="0" Lookahead="2" Release="10" Ceiling="-0.1" Knee="0"/>"#;
+        let xml = r#"<Maximizer Threshold="-6" Attack="0" Lookahead="2" Release="10" Ceiling="-0.1" Knee="0" ReleaseBlend="0.1" SlewRate="20"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
         let e = maximizer(doc.root_element(), &mut Notes::default()).unwrap();
         let ir::EffectKind::Limiter(l) = e.kind else {
             panic!("{e:?}")
         };
-        // Falls to a third in 10 ms: halves in 6.31 ms.
         assert_eq!((l.input_db, l.ceiling_db), (5.9, -0.1));
-        assert!((l.release_ms - 6.309).abs() < 0.01, "{}", l.release_ms);
+        // 500 dB/s: 6.02 dB in 12.04 ms.
+        assert!((l.release_ms - 12.04).abs() < 0.01, "{}", l.release_ms);
+        assert_eq!(
+            (l.smooth_ms, l.slow, l.lookahead_ms, l.attack_ms, l.clip),
+            (10.0, 0.1, 2.0, 0.0, false)
+        );
         assert_eq!((e.output, e.dry), (1.0, 0.0));
     }
 

@@ -493,6 +493,12 @@ fn limiter(l: ir::Limiter) -> LimiterSettings {
         input_db: l.input_db,
         ceiling_db: l.ceiling_db,
         release_ms: l.release_ms,
+        knee_db: l.knee_db,
+        attack_ms: l.attack_ms,
+        smooth_ms: l.smooth_ms,
+        slow: l.slow,
+        lookahead_ms: l.lookahead_ms,
+        clip: l.clip,
     }
 }
 

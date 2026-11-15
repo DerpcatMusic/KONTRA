@@ -71,15 +71,44 @@ pub struct Transient {
     pub clip: bool,
 }
 
-/// A peak limiter: input gain, then nothing past the ceiling.
+/// A peak limiter: input gain, then a gain reduction that holds peaks to
+/// the ceiling, optionally smoothed and looking ahead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Limiter {
     /// Gain before limiting.
     pub input_db: f32,
     /// The highest peak it lets out.
     pub ceiling_db: f32,
-    /// Time for the held peak to halve.
+    /// Time for the held peak to halve (6 dB of recovery); 0 = no limit.
     pub release_ms: f32,
+    /// Width of the soft knee around the ceiling, dB.
+    pub knee_db: f32,
+    /// Time a rising reduction takes to cover two thirds of the step.
+    pub attack_ms: f32,
+    /// Time a falling reduction takes to fall to a third; 0 = no smoothing.
+    pub smooth_ms: f32,
+    /// Share, 0..=1, of a fall 100× slower than `smooth_ms`.
+    pub slow: f32,
+    /// How far ahead the gain looks; the audio is delayed by this much.
+    pub lookahead_ms: f32,
+    /// Clip the output at the ceiling.
+    pub clip: bool,
+}
+
+impl Limiter {
+    /// A peak follower and a clip at full scale: no knee, smoothing or
+    /// lookahead.
+    pub const PEAK: Self = Self {
+        input_db: 0.0,
+        ceiling_db: 0.0,
+        release_ms: 0.0,
+        knee_db: 0.0,
+        attack_ms: 0.0,
+        smooth_ms: 0.0,
+        slow: 0.0,
+        lookahead_ms: 0.0,
+        clip: true,
+    };
 }
 
 /// A delay length: fixed, or in quarter-note beats at the host's tempo.
