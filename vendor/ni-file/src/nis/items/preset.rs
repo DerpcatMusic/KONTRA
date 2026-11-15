@@ -172,6 +172,7 @@ mod tests {
             },
         ]);
         let mut root = preset_root(Some(encryption(encoded(&chunk(&old)), false)), false);
+        root.child_headers.push([0; 12]);
         let values = [vec![], vec![], vec!["$level 99".to_owned()], vec![], vec![]];
         let new = Snapshot::with_persistent(&state(&["$level 17"]), &values).unwrap();
         assert_eq!(new.data, state(&["$level 99"]).data);
