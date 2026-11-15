@@ -526,9 +526,10 @@ impl Voice {
                 n = n.min((HALF_GRAIN - self.grain % HALF_GRAIN) as usize);
             }
             let filled = if let Some(table) = region.table.as_mut() {
-                let cursor = (self.at(0), self.step());
                 let raw = scratch.raw.get_mut(..n).unwrap_or_default();
-                table.render(cursor, raw);
+                // Each frame's own cursor: a gliding table moves pitch every
+                // frame, the same at any block size.
+                table.render(|i| self.at(i), self.step(), raw);
                 raw.len()
             } else if stretched {
                 self.read_stretched(scratch, client, &region, n)

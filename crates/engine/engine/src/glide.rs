@@ -55,13 +55,17 @@ impl Engine {
         let key = f32::from(key);
         // Where the previous note sounds now, mid-slide or not.
         let sliding = latest.slide.filter(|_| law.resume);
-        let from = latest
-            .note
-            .map(|_| latest.key + sliding.map_or(0.0, |s| s.offset(now)));
+        let heard = (law.from_heard)
+            .then(|| self.heard.into_iter().flatten().find(|&(n, _)| n != note))
+            .flatten();
+        let from = match heard {
+            Some((_, key)) => Some(key),
+            None => (latest.note).map(|_| latest.key + sliding.map_or(0.0, |s| s.offset(now))),
+        };
         let joined = !law.legato || self.holds_other(scope, note);
         let slide = from
             .filter(|_| joined)
-            .map(|from| (from - key) * law.depth)
+            .map(|from| (from - key).clamp(-law.range, law.range) * law.depth)
             .filter(|interval| interval.abs() > 1e-4)
             .map(|interval| Slide {
                 from: interval,
@@ -109,7 +113,9 @@ impl Engine {
                     bent(law, step, semitones + s.offset(next)),
                     (next - now) as u32,
                 );
-                if s.offset(next) == 0.0 {
+                // Kept until its last ramp has played: a refresh inside it
+                // (a bend) rebuilds the rest instead of jumping to the note.
+                if s.offset(now) == 0.0 {
                     slot.slide = None;
                 }
             }
@@ -124,6 +130,8 @@ mod tests {
     const LAW: ir::Glide = ir::Glide {
         scope: 0,
         depth: 1.0,
+        range: f32::INFINITY,
+        from_heard: false,
         seconds: 1.0,
         per_semitone: false,
         resume: true,

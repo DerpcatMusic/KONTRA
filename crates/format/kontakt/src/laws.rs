@@ -58,14 +58,24 @@ pub(crate) fn envelope_depth(e: &mut ir::Envelope, intensity: f32, scaled: bool)
 ///   semitone over 4 and 12; 418.7 ms: 413–423);
 /// - it starts from the previous note's key even when that key is up (0.5 s
 ///   after its release) or its own glide is unfinished, never from the pitch
-///   reached; the first note does not glide.
+///   reached.
 ///
-/// One instrument shares one previous note: scope 0. ponytail: intensities
-/// below 100% are taken as a linear share of the interval, unmeasured.
+/// glide_intensity_groups.lua and glide_range.lua (same rig):
+/// - intensity is a signed share of the interval over the same time: 50%
+///   slides 6 st of a 12 st step in ~420 ms, 25% 3 st; a negative intensity
+///   starts beyond the note (−50% on 60 → 72 from 78);
+/// - a slide covers at most 12 st: jumps of 17, 19, 20, 24 and 38 st all slid
+///   12 st in the same time. Applying the cap before the intensity is
+///   inferred (an intensity on a jump wider than 12 st was not measured);
+/// - every group glides from the instrument's previous note, one it never
+///   played too (kept from it by `$EVENT_PAR_ALLOW_GROUP` or its key range),
+///   and a note a script ignores still counts as the previous one: scope 0.
 pub(crate) fn glide(g: &Glide, depth: f32) -> ir::Glide {
     ir::Glide {
         scope: 0,
         depth,
+        range: 12.0,
+        from_heard: true,
         seconds: g.values[0].max(0.0) / 1000.0,
         per_semitone: g.mode == 1,
         legato: false,
