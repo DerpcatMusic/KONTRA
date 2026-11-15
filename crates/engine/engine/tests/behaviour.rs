@@ -949,6 +949,8 @@ fn glide_plan(store: &mut Store, legato: bool) -> Plan {
     plan.groups[0].glide = Some(ir::Glide {
         scope: 0,
         depth: 1.0,
+        range: f32::INFINITY,
+        from_heard: false,
         seconds: 0.1,
         per_semitone: false,
         resume: true,

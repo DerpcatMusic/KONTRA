@@ -303,6 +303,9 @@ pub struct Engine {
     groups: Box<[Group]>,
     /// Each portamento scope's latest note ([`glide`]).
     glides: [glide::Latest; glide::SCOPES],
+    /// The last two host note-ons and their keys, newest first
+    /// ([`ir::Glide::from_heard`]).
+    heard: [Option<(NoteRef, f32)>; 2],
     /// Each mono voice group's line ([`mono`]), by voice group.
     lines: Box<[mono::Line]>,
     /// While set, notes start only their zones in this voice group (a
@@ -472,6 +475,7 @@ impl Engine {
             reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
             glides: [glide::Latest::default(); glide::SCOPES],
+            heard: [None; 2],
             lines: vec![mono::Line::default(); mono::LINES].into(),
             only_voice_group: None,
             voice_groups,
@@ -704,6 +708,8 @@ impl Engine {
             return;
         };
         self.masks.reset(note.slot());
+        let [last, _] = self.heard;
+        self.heard = [Some((note, f32::from(host.key))), last];
         self.pass_note(note);
         self.start_pending();
     }

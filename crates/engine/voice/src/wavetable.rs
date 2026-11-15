@@ -409,8 +409,10 @@ impl Table {
         })
     }
 
-    /// Fills `out` from cursor `x` ([`PERIOD`] a cycle since the note
-    /// began), moving `step` a frame, as Kontakt reads (`0x140cd55c0`):
+    /// Fills `out` from the cursor of each frame (`cursor_at(i)`, [`PERIOD`] a
+    /// cycle since the note began; a glide ramps it), about `step` a frame
+    /// (which picks the level and paces the mod oscillator), as Kontakt
+    /// reads (`0x140cd55c0`):
     /// Hermite within the two levels about the period, blended, then the
     /// two cycles about `position`; each form's shaper last. A stretched
     /// read plays the table at `stretch` times the rate and shifts every
@@ -420,7 +422,7 @@ impl Table {
     /// The mod oscillator (a sine at its ratio of the note) runs per frame
     /// from the voice's own state: FM accumulates into the read phase, PM
     /// adds to it, the output kinds act on the level read.
-    pub(crate) fn render(&mut self, (x, step): (f64, f64), out: &mut [[f32; 2]]) {
+    pub(crate) fn render(&mut self, cursor_at: impl Fn(u64) -> f64, step: f64, out: &mut [[f32; 2]]) {
         let at = f64::from(self.read.position.clamp(0.0, 1.0)) * (self.cycles - 1) as f64;
         let c0 = at as usize;
         let c1 = (c0 + 1).min(self.cycles - 1);
@@ -462,7 +464,7 @@ impl Table {
         let fir = self.read.quality.fir();
         let mut st = self.osc;
         for (i, frame) in out.iter_mut().enumerate() {
-            let cursor = (x + i as f64 * step) / PERIOD;
+            let cursor = cursor_at(i as u64) / PERIOD;
             let m = osc.wave_at(st.phase);
             let y = f64::from(st.last);
             let pm = match osc.kind {
