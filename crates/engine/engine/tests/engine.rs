@@ -433,6 +433,7 @@ fn idle_costs_a_fraction_of_a_voice_and_voices_add_up_linearly() {
     let diagonal = |g| [[g, 0.0], [0.0, g]];
     let chorus = kontra_engine::ir::Effect {
         kind: kontra_engine::ir::EffectKind::Delay(kontra_engine::ir::Delay {
+            direct: 0.0,
             time: kontra_engine::ir::DelayTime::Ms(15.0),
             depth_ms: 5.0,
             second_head: true,

@@ -1,6 +1,9 @@
 //! The reducer: a sample hold, a quantizer that truncates toward zero, then
 //! coloured LCG noise (ported from v2 sampler-core dsp/color/lofi.rs; the
-//! format translators carry the provenance and the knob laws).
+//! format translators carry the provenance and the knob laws); or, given a
+//! [`Converter`], that modelled converter pair in place of hold and quantizer.
+
+use crate::converter::{Converter, Unit};
 
 /// What it reduces.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -13,6 +16,10 @@ pub struct Reduction {
     pub noise: f32,
     /// The noise's one-pole smoothing, 0..=1 (1 white).
     pub noise_tone: f32,
+    /// Replaces the hold and quantizer.
+    pub converter: Option<Converter>,
+    /// The rate the converter runs at.
+    pub rate: u32,
 }
 
 /// A stereo reducer with its hold, quantizer and noise state.
@@ -29,6 +36,7 @@ pub struct Crush {
     /// The seed [`Crush::reset`] restarts from.
     origin: u32,
     colour: [f32; 2],
+    converter: Option<Unit>,
 }
 
 impl Crush {
@@ -45,13 +53,18 @@ impl Crush {
             seed: seed.max(1),
             origin: seed.max(1),
             colour: [0.0; 2],
+            converter: None,
         };
         c.set(r);
         c
     }
 
-    /// Moves the settings; the hold phase and noise carry on.
+    /// Moves the settings; the hold phase, converter and noise carry on.
     pub fn set(&mut self, r: Reduction) {
+        match (&mut self.converter, r.converter) {
+            (Some(unit), Some(c)) => unit.set(c, r.rate),
+            (unit, c) => *unit = c.map(|c| Unit::new(c, r.rate)),
+        }
         self.hold = if r.hold.is_nan() {
             1.0
         } else {
@@ -75,6 +88,15 @@ impl Crush {
 
     /// Reduces `io` (frames of `[left, right]`) in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        if let Some(unit) = &mut self.converter {
+            unit.process(io);
+        } else {
+            self.hold_and_quantize(io);
+        }
+        self.add_noise(io);
+    }
+
+    fn hold_and_quantize(&mut self, io: &mut [[f32; 2]]) {
         for frame in io.iter_mut() {
             self.phase += 1.0;
             if self.phase >= self.hold {
@@ -88,6 +110,9 @@ impl Crush {
                 *x = ((*x * q) as i32) as f32 * inverse;
             }
         }
+    }
+
+    fn add_noise(&mut self, io: &mut [[f32; 2]]) {
         if self.noise > 0.0 {
             for frame in io.iter_mut() {
                 for (x, h) in frame.iter_mut().zip(&mut self.colour) {
@@ -113,6 +138,9 @@ impl Crush {
     /// the settings stay.
     pub fn reset(&mut self) {
         (self.phase, self.held, self.colour) = (0.0, [0.0; 2], [0.0; 2]);
+        if let Some(unit) = &mut self.converter {
+            unit.reset();
+        }
         self.seed = self.origin;
     }
 }

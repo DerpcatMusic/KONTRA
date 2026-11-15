@@ -9,9 +9,11 @@ use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
 mod choir;
 mod comb;
 mod comb_bank;
+mod shifter;
 pub use choir::{CHOIR_MAX_S, CHOIR_VOICES, Choir, ChoirSettings};
 pub use comb::{Comb, line_frames};
 pub use comb_bank::{COMB_VOICES, CombBank, CombSettings, ScanShape};
+pub use shifter::{SHIFTER_MAX_MS, Shifter, ShifterSettings};
 
 /// The longest line [`ModDelay::new`] allocates, ms.
 pub const MAX_MS: f32 = 6000.0;
@@ -65,6 +67,8 @@ pub struct Settings {
     pub lfo_hz: f32,
     /// Cycles the right LFO runs ahead of the left.
     pub phase: f32,
+    /// The input straight to the output, with the heads.
+    pub direct: f32,
 }
 
 /// A high shelf: `gain_db` above `hz`, its knee the cookbook's S.
@@ -291,7 +295,7 @@ impl ModDelay {
     /// Whether every input gain is 0: the input never reaches the ring.
     #[must_use]
     pub fn deaf(&self) -> bool {
-        self.s.input == [[0.0; 2]; 2]
+        self.s.input == [[0.0; 2]; 2] && self.s.direct == 0.0
     }
 
     /// The ring's length, frames: how long silent input can still echo.
@@ -465,7 +469,8 @@ impl ModDelay {
             if self.at >= self.ring.len() {
                 self.at = 0;
             }
-            *frame = apply(s.output, y);
+            let [l, r] = apply(s.output, y);
+            *frame = [l + s.direct * frame[0], r + s.direct * frame[1]];
         }
         written
     }
@@ -587,6 +592,7 @@ mod tests {
     #[test]
     fn a_delay_is_deaf_only_when_every_input_gain_is_zero() {
         let mut s = Settings {
+            direct: 0.0,
             ms: 10.0,
             depth_ms: 0.0,
             second_head: false,

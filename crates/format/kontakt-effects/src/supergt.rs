@@ -17,9 +17,15 @@
 //!   (CHARACTER 0.5 sits midway in dB, measured in two modes).
 //! - MIX crossfades the dry input back in (`mix_dry`).
 //!
-//! Not carried: COMPRESS, ATTACK, RELEASE and HPF_MODE (the compressor and
-//! its detector's high-pass; measured in the doc, reported), channel link,
-//! and the hard clip at ±1 after the trim's make-up.
+//! - COMPRESS is the engine's compressor before all of it ([`SQUEEZE`],
+//!   fitted to level steps), ATTACK and RELEASE its time constants (burst
+//!   envelopes), HPF_MODE a one-pole high-pass on its detector and a fixed
+//!   loss ([`DETECTOR`], stepped tones).
+//!
+//!   Both also move its steady gain ([`timing_db`]).
+//!
+//! Not carried: channel link (linked; no knob sets it), and the hard clip
+//! at ±1 after the trim's make-up.
 
 use ir::Stage::{In, Out};
 use kontra_ir as ir;
@@ -215,10 +221,13 @@ fn high_shelf(hz: f32, gain: f32) -> ir::Section {
 }
 
 /// The base tone: +0.55 dB, a 0.78 dB bump at 67 Hz (Q 1.32), +5.0 dB above
-/// 16.6 kHz. Static, so its sections are worked out by hand: the peak's
+/// 16.6 kHz, then before the curve an 8 Hz one-pole high-pass: what rings
+/// for 100 ms or more after a loud input stops (a tail at DC falling 4 to
+/// 5 dB per 10 ms from 44 dB under the tone, which the saturator lifts).
+/// Static, so its sections are worked out by hand: the peak's
 /// `10^(0.784/40)` = 1.0454 and the shelf's `10^(5.036/20)` = 1.7853, the
 /// gain `10^(0.5475/20)` = 1.0651 on the peak's numerator.
-static BASE: [(ir::Stage, ir::Section); 2] = [
+static BASE: [(ir::Stage, ir::Section); 3] = [
     (
         In,
         ir::Section {
@@ -232,6 +241,14 @@ static BASE: [(ir::Stage, ir::Section); 2] = [
         ir::Section {
             hz: 16_624.0,
             num: [1.0, 1.7853, 0.0],
+            den: [1.0, 1.0, 0.0],
+        },
+    ),
+    (
+        ir::Stage::Pre,
+        ir::Section {
+            hz: 8.0,
+            num: [0.0, 1.0, 0.0],
             den: [1.0, 1.0, 0.0],
         },
     ),
@@ -263,46 +280,96 @@ const CHARACTER: [Tone; 3] = [
     ),
 ];
 
-/// The record's knobs and modes as the engine's waveshaper: TRIM,
-/// SATURATION, CHARACTER and MIX 0..=1, SAT_MODE and CHAR_MODE 0..=2. MIX
-/// scales the wet path (the slot's dry level carries the rest, [`mix_dry`]).
-pub fn supergt(
-    trim: f32,
-    saturation: f32,
-    character: f32,
-    mix: f32,
-    sat_mode: f32,
-    char_mode: f32,
-) -> ir::EffectKind {
-    let [trim, saturation, character, mix] =
-        [trim, saturation, character, mix].map(|x| x.clamp(0.0, 1.0));
+/// The record's settings: each 0..=1 but the modes, 0..=2.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Knobs {
+    pub trim: f32,
+    pub saturation: f32,
+    pub compress: f32,
+    pub character: f32,
+    pub mix: f32,
+    pub attack: f32,
+    pub release: f32,
+    pub hpf_mode: f32,
+    pub sat_mode: f32,
+    pub char_mode: f32,
+}
+
+/// The INIT record.
+pub const INIT: Knobs = Knobs {
+    trim: 0.5,
+    saturation: 0.0,
+    compress: 0.0,
+    character: 0.0,
+    mix: 1.0,
+    attack: 0.3667,
+    release: 0.4444,
+    hpf_mode: 0.0,
+    sat_mode: 0.0,
+    char_mode: 0.0,
+};
+
+/// The compressor's static curve at COMPRESS 0, 0.25, 0.5, 0.75 and 1:
+/// threshold dB, ratio, knee dB and make-up dB, fitted to 1 kHz tones from
+/// −48 to −8 dB peak, at 1 down to −58 dB too (a burst's quiet tail; rms
+/// error 0.06, 0.10, 0.19 and 0.24 dB); linear between. At 0 it passes.
+const SQUEEZE: [[f32; 4]; 5] = [
+    [-26.5, 1.0, 19.0, 0.0],
+    [-26.5, 2.41, 19.0, 3.48],
+    [-33.5, 3.85, 24.0, 8.0],
+    [-42.0, 4.71, 25.0, 15.96],
+    [-68.0, 5.76, 27.0, 37.54],
+];
+
+/// HPF_MODE 1 and 2: the detector's high-pass (Hz) and the output's loss
+/// (dB), from stepped tones at COMPRESS 1 and level steps at COMPRESS 0.
+const DETECTOR: [(f32, f32); 2] = [(100.0, -1.5), (300.0, -3.0)];
+
+/// The record as the engine's compressor into its waveshaper; with
+/// COMPRESS 0 the waveshaper alone (which a group rack runs per voice).
+/// MIX scales the wet path (the slot's dry level carries the rest,
+/// [`mix_dry`]).
+pub fn supergt(k: Knobs) -> ir::EffectKind {
+    let [trim, saturation, character, mix, compress, attack, release] = [
+        k.trim,
+        k.saturation,
+        k.character,
+        k.mix,
+        k.compress,
+        k.attack,
+        k.release,
+    ]
+    .map(|x| x.clamp(0.0, 1.0));
     let pick = |m: f32| m.round().clamp(0.0, 2.0) as usize;
     let [mild, moderate, hot] = &CURVES;
-    let curves = match pick(sat_mode) {
+    let curves = match pick(k.sat_mode) {
         1 => moderate,
         2 => hot,
         _ => mild,
     };
     let at = saturation * 4.0;
     let i = (at as usize).min(3);
-    let (lower, upper) = match (curves.get(i), curves.get(i + 1)) {
-        (Some(lower), Some(upper)) => (lower, upper),
-        _ => (&mild[0], &mild[0]),
-    };
-    let gain = db(2.0 * TRIM_DB * (trim - 0.5));
+    // Rows i and i + 1, adjacent in the table.
+    let rows = curves.get(i..i + 2).map_or(&[][..], <[_]>::as_flattened);
+    let trim_db = 2.0 * TRIM_DB * (trim - 0.5);
     let [first, second, third] = CHARACTER;
-    let (out_db, [ls_hz, ls_db], [pk_hz, pk_q, pk_db], [hs_hz, hs_db]) = match pick(char_mode) {
+    let (out_db, [ls_hz, ls_db], [pk_hz, pk_q, pk_db], [hs_hz, hs_db]) = match pick(k.char_mode) {
         1 => second,
         2 => third,
         _ => first,
     };
-    let k = character;
-    ir::EffectKind::Shaper(ir::Shaper {
+    let (sidechain_hz, loss_db) = match pick(k.hpf_mode) {
+        0 => (None, 0.0),
+        m => DETECTOR
+            .get(m - 1)
+            .map_or((None, 0.0), |&(hz, db)| (Some(hz), db)),
+    };
+    let c = character;
+    let shaper = ir::Shaper {
         pre_lowpass_hz: None,
         curve: ir::DriveCurve::Blend {
-            drive: gain,
-            lower,
-            upper,
+            drive: db(trim_db),
+            rows,
             t: at - i as f32,
         },
         lowpass_hz: None,
@@ -310,55 +377,149 @@ pub fn supergt(
         sections: ir::Sections {
             fixed: &BASE,
             moving: [
-                Some((Out, peak(pk_hz, pk_q, k * pk_db, db(k * out_db) * mix))),
-                Some((Out, low_shelf(ls_hz, k * ls_db))),
-                Some((Out, high_shelf(hs_hz, k * hs_db))),
+                Some((
+                    Out,
+                    peak(pk_hz, pk_q, c * pk_db, db(c * out_db + loss_db) * mix),
+                )),
+                Some((Out, low_shelf(ls_hz, c * ls_db))),
+                Some((Out, high_shelf(hs_hz, c * hs_db))),
             ],
         },
+    };
+    if compress <= 0.0 {
+        return ir::EffectKind::Shaper(shaper);
+    }
+    let at = compress * 4.0;
+    let j = (at as usize).min(3);
+    let row = |n: usize| SQUEEZE.get(n).copied().unwrap_or([0.0, 1.0, 0.0, 0.0]);
+    let [mut threshold, mut ratio, mut knee, mut makeup] = row(j);
+    let t = at - j as f32;
+    for (a, b) in [&mut threshold, &mut ratio, &mut knee, &mut makeup]
+        .into_iter()
+        .zip(row(j + 1))
+    {
+        *a += (b - *a) * t;
+    }
+    ir::EffectKind::Strip(ir::Strip {
+        compressor: ir::Compressor {
+            // The trim is the gain into it: the same reduction at a
+            // threshold that much lower on the untrimmed input.
+            threshold_db: threshold - trim_db,
+            ratio,
+            knee_db: knee,
+            // 1 ms at ATTACK 0, 1.6 ms at the INIT 0.3667, 30 ms at 1 (gain
+            // envelopes of −12 dB bursts); 63, 288 and 770 ms at RELEASE 0,
+            // 0.5 and 1 (the recovery after them).
+            attack_ms: 30f32.powf(attack * attack),
+            release_ms: (4.143 + 3.57 * release - 1.06 * release * release).exp(),
+            makeup_db: makeup + timing_db(attack, release),
+            makeup_slope: 0.0,
+            link: true,
+            mix: 1.0,
+            detector: ir::Detector::Input,
+            sidechain_hz,
+        },
+        shaper,
     })
 }
 
-/// The saved record: TRIM, SATURATION, CHARACTER, MIX, SAT_MODE and
-/// CHAR_MODE.
+/// The steady gain ATTACK and RELEASE add at COMPRESS 1, loud and quiet
+/// alike (−12 and −50 dB bursts, against the INIT 0.3667 and 0.4444 the
+/// curve was fitted at): +0.8 dB at ATTACK 0, none from the INIT to 0.5,
+/// −9 dB at 1; 3.3 dB per RELEASE unit.
+fn timing_db(attack: f32, release: f32) -> f32 {
+    let attack_db = if attack < INIT.attack {
+        0.8 * (1.0 - attack / INIT.attack)
+    } else {
+        -18.0 * (attack - 0.5).max(0.0)
+    };
+    attack_db + 3.3 * (release - INIT.release)
+}
+
+/// The saved record.
 #[must_use]
-pub fn saved(public: &[u8]) -> Option<[f32; 6]> {
+pub fn saved(public: &[u8]) -> Option<Knobs> {
     let f = |n: usize| Some(f32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?));
     let mode = |n: usize| {
         let saved = i32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?);
         Some((2 - saved).clamp(0, 2) as f32)
     };
-    Some([f(0)?, f(4)?, f(12)?, f(16)?, mode(32)?, mode(36)?])
+    Some(Knobs {
+        trim: f(0)?,
+        saturation: f(4)?,
+        compress: f(8)?,
+        character: f(12)?,
+        mix: f(16)?,
+        attack: f(20)?,
+        release: f(24)?,
+        hpf_mode: mode(28)?,
+        sat_mode: mode(32)?,
+        char_mode: mode(36)?,
+    })
 }
 
 /// The slot's dry level for the saved MIX at `output`: the input crossfaded
 /// back in.
 #[must_use]
 pub fn mix_dry(public: &[u8], output: f32) -> f32 {
-    saved(public).map_or(0.0, |[.., mix, _, _]| (1.0 - mix.clamp(0.0, 1.0)) * output)
+    saved(public).map_or(0.0, |k| (1.0 - k.mix.clamp(0.0, 1.0)) * output)
 }
 
-/// The saved record as a script moves it: TRIM, SATURATION, CHARACTER and
-/// the modes (MIX as saved).
+/// The saved record as a script moves it: every knob and mode but MIX
+/// (as saved), in [`rows`]' order.
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
     use ir::SlotKnob::Knob;
-    let [trim, saturation, character, mix, sat_mode, char_mode] = saved(public)?;
+    let k = saved(public)?;
     Some(ir::KnobModel {
-        knobs: (0..6).map(Knob).collect(),
-        saved: [trim, saturation, character, sat_mode, char_mode, mix].into(),
+        knobs: (0..10).map(Knob).collect(),
+        saved: [
+            k.trim,
+            k.saturation,
+            k.character,
+            k.sat_mode,
+            k.char_mode,
+            k.compress,
+            k.attack,
+            k.release,
+            k.hpf_mode,
+            k.mix,
+        ]
+        .into(),
         build: |p| {
-            let [trim, saturation, character, sat_mode, char_mode, mix] = *p else {
+            let [
+                trim,
+                saturation,
+                character,
+                sat_mode,
+                char_mode,
+                compress,
+                attack,
+                release,
+                hpf_mode,
+                mix,
+            ] = *p
+            else {
                 return None;
             };
-            Some(supergt(
-                trim, saturation, character, mix, sat_mode, char_mode,
-            ))
+            Some(supergt(Knobs {
+                trim,
+                saturation,
+                compress,
+                character,
+                mix,
+                attack,
+                release,
+                hpf_mode,
+                sat_mode,
+                char_mode,
+            }))
         },
     })
 }
 
 /// The KSP names of [`model`]'s knobs: the floats as set, the modes by their
 /// index (a script sets SAT_MODE 1 as the raw value 1).
-pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 9] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
@@ -372,5 +533,9 @@ pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
         ("$ENGINE_PAR_SUPERGT_CHARACTER", Slot(Knob(2)), unit()),
         ("$ENGINE_PAR_SUPERGT_SAT_MODE", Slot(Knob(3)), index()),
         ("$ENGINE_PAR_SUPERGT_CHAR_MODE", Slot(Knob(4)), index()),
+        ("$ENGINE_PAR_SUPERGT_COMPRESS", Slot(Knob(5)), unit()),
+        ("$ENGINE_PAR_SUPERGT_ATTACK", Slot(Knob(6)), unit()),
+        ("$ENGINE_PAR_SUPERGT_RELEASE", Slot(Knob(7)), unit()),
+        ("$ENGINE_PAR_SUPERGT_HPF_MODE", Slot(Knob(8)), index()),
     ]
 }
