@@ -690,7 +690,10 @@ impl<L: Library> Translator<'_, '_, L> {
             .program
             .descendants()
             .filter(|n| n.has_tag_name("Convolver") || n.has_tag_name("SampledReverb"))
-            .filter_map(|n| self.library.path_of(self.program_dir, n.attribute("SamplePath")?))
+            .filter_map(|n| {
+                self.library
+                    .path_of(self.program_dir, n.attribute("SamplePath")?)
+            })
             .collect();
         let responses: std::collections::HashSet<usize> =
             self.out.impulses.iter().map(|i| i.sample).collect();
@@ -723,7 +726,10 @@ impl<L: Library> Translator<'_, '_, L> {
                 // The engine matches a load by its file name without the
                 // extension (`load_ir_sample`'s law).
                 let file = path.rsplit('/').next().unwrap_or(&path);
-                let stem = file.rsplit_once('.').map_or(file, |(s, _)| s).to_lowercase();
+                let stem = file
+                    .rsplit_once('.')
+                    .map_or(file, |(s, _)| s)
+                    .to_lowercase();
                 let index = self.sample_index(sample);
                 self.out.responses.push((stem, index));
             }
@@ -733,7 +739,9 @@ impl<L: Library> Translator<'_, '_, L> {
 
 /// The folder of a member path; `None` at the bank's root.
 fn parent(path: &str) -> Option<&str> {
-    path.rsplit_once('/').map(|(f, _)| f).filter(|f| !f.is_empty())
+    path.rsplit_once('/')
+        .map(|(f, _)| f)
+        .filter(|f| !f.is_empty())
 }
 
 /// A sampled reverb's wet level when its response is not normalized: UVI's

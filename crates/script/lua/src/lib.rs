@@ -499,7 +499,7 @@ enum First {
     #[default]
     Nothing,
     Control(i32, f64),
-    ControlMod(i32, f64, f64, f64),
+    ControlMod(i32, f64, f64),
 }
 
 /// The functions a start resets a resident coroutine to, looked up once.
@@ -739,9 +739,7 @@ impl Machine for LuaMachine {
             let result = match first {
                 First::Nothing => thread.resume::<Value>(()),
                 First::Control(id, value) => thread.resume::<Value>((id, value)),
-                First::ControlMod(id, saved, scale, m) => {
-                    thread.resume::<Value>((id, saved, scale, m))
-                }
+                First::ControlMod(id, scale, m) => thread.resume::<Value>((id, scale, m)),
             };
             set_host(&lua, globals, false)?;
             set_global(&lua, globals, "__editing", false)?;
@@ -828,19 +826,12 @@ impl Machine for LuaMachine {
         self.begin(set, First::Control(id, value), context, true)
     }
 
-    fn control_mod(
-        &mut self,
-        id: i32,
-        saved: f64,
-        scale: f64,
-        m: f64,
-        context: u64,
-    ) -> Option<CoId> {
+    fn control_mod(&mut self, id: i32, scale: f64, m: f64, context: u64) -> Option<CoId> {
         let _run = probe::Run::start();
         let _arena = self.arena.audio();
         self.lua.as_ref()?;
         let set = self.entries.control_mod.clone();
-        self.begin(set, First::ControlMod(id, saved, scale, m), context, true)
+        self.begin(set, First::ControlMod(id, scale, m), context, true)
     }
 
     fn stage_widget(&mut self, n: u32, value: f64, cell: Option<u32>) {
@@ -1054,7 +1045,7 @@ mod tests {
         while let Step::Wait(_) = m.run(init, &mut Log(Vec::new())) {}
         let note = bytes_per_event(&mut m, |m| m.start(Callbacks::NOTE, 0));
         let control = bytes_per_event(&mut m, |m| m.control(0, 42.0, 0));
-        let moved = bytes_per_event(&mut m, |m| m.control_mod(0, 50.0, 0.5, 0.25, 0));
+        let moved = bytes_per_event(&mut m, |m| m.control_mod(0, 0.5, 0.25, 0));
         assert_eq!(
             (control, moved),
             (0.0, 0.0),
@@ -1104,16 +1095,17 @@ mod tests {
         let tree = "return {params={},db=0,pan=0,layers={},modulations={
             {params={Name='Macro 7',Value='0',Bipolar='0'},mod=32768}}}";
         let source = "local m = Program.modulations['Macro 7']
-            local k = Knob('drive', 0, -20, 20)
+            local k = Knob('drive', -10, -20, 20)
             k.changed = function(s) m:setParameter('Value', s.value) end";
         let modules = [("__program.lua".to_string(), tree.to_string())];
         let compiled = compile(source, &modules, &[]).unwrap();
         let mut m = compiled.machine();
-        // Saved -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
-        // (10), and a ratio of -1 from there holds at the bottom (-20).
+        // Its own -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
+        // (10), and a ratio of -1 from the same -10 holds at the bottom
+        // (-20): the route moves from the knob's value, not its own last.
         let mut log = Log(Vec::new());
-        for (saved, scale, at) in [(-10.0, 0.0, 0.5), (-10.0, 0.0, -1.0)] {
-            let co = m.control_mod(1, saved, scale, at, 0).expect("route");
+        for at in [0.5, -1.0] {
+            let co = m.control_mod(1, 0.0, at, 0).expect("route");
             assert_eq!(m.run(co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0);
@@ -1917,6 +1909,32 @@ mod tests {
             (more(sent), group, bus),
             ([2, 2, 1], Some(-200_000), Some(-200_000))
         );
+    }
+
+    #[test]
+    fn a_routed_knob_keeps_its_restored_value_until_a_route_moves_it() {
+        // Augmented Orchestra saves `MIDICurve_1=-0.99999899` where its
+        // program's processor says -1: the route moves from the restored
+        // value, and back to it exactly.
+        let source = "local k = Knob('MIDICurve_1', 0, -1, 1)
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function(s)
+                if s.value == 1 then assert(k.value == -0.99999899, k.value)
+                else assert(math.abs(k.value - 0.00000101) < 1e-12, k.value) end
+            end";
+        let saved = ["MIDICurve_1=-0.99999899".to_string()];
+        let mut m = compile(source, &[], &saved).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        // At rest, up by half the range, at rest again.
+        for (at, check) in [(0.0, 1.0), (0.5, 0.0), (0.0, 1.0)] {
+            let co = m.control_mod(0, 0.0, at, 0).expect("route");
+            assert_eq!(m.run(co, &mut log), Step::Done);
+            let co = m.control(1, check, 0).expect("check");
+            assert_eq!(m.run(co, &mut log), Step::Done);
+        }
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
     }
 
     #[test]
