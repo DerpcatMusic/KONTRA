@@ -86,7 +86,7 @@ fn model(effect: &str, keys: &HashMap<&str, f32>) -> Option<(ir::EffectKind, f32
                 width: k("width", v.width),
                 mix: k("mix", v.mix),
             };
-            Some((ir::EffectKind::Delay(crate::vibrato::delay(v)), 0.0))
+            Some((ir::EffectKind::Scanner(crate::vibrato::scanner(v)), 0.0))
         }
         "freak" => {
             let f = crate::freak::FRESH;
@@ -104,7 +104,12 @@ fn model(effect: &str, keys: &HashMap<&str, f32>) -> Option<(ir::EffectKind, f32
                     contour: k("contour", f.contour),
                     release: k("release", f.release),
                     gate: k("gate", f.gate),
-                    ..f
+                    antifold: k("antifold", f.antifold),
+                    stereo: k("stereo", f.stereo),
+                    wide_range: k("wide", f.wide_range),
+                    bp_freq: k("bp_freq", f.bp_freq),
+                    demod: k("demod", f.demod),
+                    bp_filter: k("bp", f.bp_filter),
                 }),
                 0.0,
             ))
@@ -117,7 +122,14 @@ fn model(effect: &str, keys: &HashMap<&str, f32>) -> Option<(ir::EffectKind, f32
                     bits: k("bits", b.bits),
                     saturate: k("sat", b.saturate),
                     mix: k("mix", b.mix),
-                    ..b
+                    jitter: k("jitter", b.jitter),
+                    crunch: k("crunch", b.crunch),
+                    dither: k("dither", b.dither),
+                    expand: k("expand", b.expand),
+                    prefilter: k("pre", b.prefilter),
+                    postfilter: k("post", b.postfilter),
+                    hpf: k("hpf", b.hpf),
+                    dc: k("dc", b.dc),
                 }),
                 0.0,
             ))

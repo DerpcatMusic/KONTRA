@@ -394,20 +394,8 @@ fn slot_effect(
             crate::legacy_reverb::effect(object.version, &public)
         }
         0x69 => crate::vibrato::saved(object.version, &public).map(|v| {
-            if v.color != 0 {
-                let impact = if params.bypass {
-                    ir::Impact::Cosmetic
-                } else {
-                    ir::Impact::Audible
-                };
-                notes.add(
-                    impact,
-                    "Vibrato/Chorus COLOR 1 and 2 (play COLOR 0)",
-                    at.to_owned(),
-                );
-            }
             *model = Some(crate::vibrato::model(v));
-            ir::EffectKind::Delay(crate::vibrato::delay(v))
+            ir::EffectKind::Scanner(crate::vibrato::scanner(v))
         }),
         0x63 => crate::psyche::saved(object.version, &public).map(|p| {
             if p.beats.is_some() {

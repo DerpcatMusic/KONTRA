@@ -2733,6 +2733,9 @@ fn a_script_loads_a_library_response_into_a_convolution() {
         output: 1.0,
         dry: 0.0,
     })];
+    // The plan's other law mutes: borrowing it in place of the fresh law
+    // would be heard.
+    fresh.impulse_laws[0].1.mix = Some([[0.0; 2]; 2]);
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.25).abs() < 1e-3, "{l}");

@@ -104,7 +104,8 @@ STIMULI = {
     "steps": (6.5, "0.25 * math.sin(2 * math.pi * STEPS[math.floor(t / 0.5) + 1] * t)"),
     "stepslo": (6.5, "0.0025 * math.sin(2 * math.pi * STEPS[math.floor(t / 0.5) + 1] * t)"),
     # Two non-harmonic tones together (4 s: images and intermodulation fall between their harmonics), then the
-    # same 500 Hz..16 kHz log sweep fast (0.5 s, from 4.5 s) and slow (12 s, from 5.5 s), all -20.6 dB at the effect.
+    # same 500 Hz..16 kHz log sweep fast (0.5 s, from 4.5 s) and slow (12 s, from 5.5 s). Each paired tone is 0.125
+    # (-26.6 dB at the effect), each sweep 0.25 (-20.6 dB): compare the pair against single tones at its own level.
     "pairsweeps": (18.0, "(t < 4 and 0.125 * (math.sin(2 * math.pi * 1000 * t) + math.sin(2 * math.pi * 7300 * t)))"
                          " or (t >= 4.5 and t < 5 and 0.25 * math.sin(2 * math.pi * 500 * (math.exp(6.931472 * (t - 4.5)) - 1)"
                          " / 6.931472)) or (t >= 5.5 and t < 17.5 and 0.25 * math.sin(2 * math.pi * 500"

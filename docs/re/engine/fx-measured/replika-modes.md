@@ -140,10 +140,13 @@ ported bit-exact in v2 `sampler-core/src/dsp/replika/{mode1,design}.rs` at e80a9
   against a fast sweep) separates images from gain.
 
 Probe (2026-11-15, `pairsweeps`, TIME 200 ms, FEEDBACK 0, wet; dB re the input): a 0.5 s and a 12 s sweep agree
-within 0.5 dB to 8 kHz (fast/slow: −1.3/−1.4 at 1 kHz, −7.1/−6.6 at 4 kHz, −10.9/−9.1 at 8 kHz, −27.8/−25.4 at
-10 kHz), so speed does not move it. With 1 kHz and 7.3 kHz together, 7.3 kHz plays −8.1 dB, as the sweep: the
-steps' +11 dB at 8 kHz does not reproduce, and the fitted body stands. 1 kHz plays +1.6 dB beside its partner
-against −1.4 dB alone (the compander: about 3 dB of level interaction, not modelled), with intermodulation at
+within 0.5 dB to 4 kHz and part by 1.8 dB at 8 kHz and 2.4 dB at 10 kHz (fast/slow: −1.3/−1.4 at 1 kHz, −7.1/−6.6
+at 4 kHz, −10.9/−9.1 at 8 kHz, −27.8/−25.4 at 10 kHz): speed moves the top by a couple of dB, nowhere near the
+steps' +11 dB. With 1 kHz and 7.3 kHz together (each tone 0.125, 6 dB below the sweep's 0.25), 7.3 kHz plays
+−8.1 dB, as the sweep there; this is not the steps' condition (one tone at 8 kHz, −20.6 dB), so it shows the
+excess is absent for this pair, not that it cannot occur. 8 kHz alone and with a partner at matched levels is
+the open probe; the fitted body stands until then. 1 kHz plays +1.6 dB beside its partner, against about −0.1 dB
+as a steady tone alone (the steps): about 1.7 dB of interaction (the compander, not modelled), with intermodulation at
 −38 dB (±100 Hz about 1 kHz) and −45 dB (7.3 kHz ± 1 kHz). Modern, the control, holds everything within 0.2 dB
 and nothing above −68 dB.
 

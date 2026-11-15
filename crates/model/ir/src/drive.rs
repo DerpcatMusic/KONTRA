@@ -183,9 +183,10 @@ pub enum RingSource {
         damping: f32,
         /// The received level's makeup.
         makeup: f32,
-        /// Product rather than envelope demodulation; the bias then follows
-        /// the input's level.
-        product: bool,
+        /// How far demodulation is a product rather than an envelope (0..1):
+        /// the received signal crossfades to the band times the tuned sine,
+        /// and the bias follows the input's level that far.
+        product: f32,
         /// The noise level.
         noise: f32,
     },
@@ -700,6 +701,9 @@ pub struct SlotShapes {
     /// The held controls a script-loaded type starts with: effect type id
     /// ([`SlotType::id`]), [`crate::held_key`], raw value.
     pub fresh: Vec<(i32, u32, i32)>,
+    /// How a script-loaded convolution normalizes the first response it
+    /// loads (its fresh Auto Gain); `None` plays it as recorded.
+    pub fresh_normalize: Option<crate::Normalize>,
 }
 
 impl SlotShapes {
@@ -711,7 +715,18 @@ impl SlotShapes {
         saved_types: Vec::new(),
         held: Vec::new(),
         fresh: Vec::new(),
+        fresh_normalize: None,
     };
+
+    /// How a script-made convolution ([`crate::Impulse::NONE`]) prepares the
+    /// first response it loads.
+    #[must_use]
+    pub fn fresh_impulse(&self) -> crate::Impulse {
+        crate::Impulse {
+            normalize: self.fresh_normalize,
+            ..crate::Impulse::PLAIN
+        }
+    }
 }
 
 /// An effect a script loads into a slot by the format's type `id` (or a
