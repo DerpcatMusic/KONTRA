@@ -424,7 +424,8 @@ impl Engine {
 
     /// Runs the release callbacks of the slots after `note`'s player (from
     /// it when it [hears its own](crate::ScriptPlan::hears_own_releases) and
-    /// did not `note_off` it); the slot that ignored it, if one did.
+    /// did not `note_off` it from its own `on release`); the slot that
+    /// ignored it, if one did.
     pub(crate) fn release_callbacks(&mut self, note: NoteRef) -> Option<u8> {
         let plan = Arc::clone(&self.plan);
         let first = self.notes.get(note).map_or(0, |n| {
