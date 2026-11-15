@@ -84,9 +84,12 @@ def lua_names(src):
     shared |= set(re.findall(r"^\s*([A-Za-z_]\w*)\s*=[^=]", src, re.M)) - local
     # Globals read: an identifier not after `.` or `:`.
     used = re.findall(r"(?<![.:\w])([A-Za-z_]\w*)", src)
+    # A local's initializer reads the outer name (`local print = print`).
+    outer = [n for rhs in re.findall(r"\blocal\s+[A-Za-z_][\w\s,]*=([^\n]*)", src)
+             for n in re.findall(r"(?<![.:\w])([A-Za-z_]\w*)", rhs)]
     members = re.findall(r"(?<=[.:])([A-Za-z_]\w*)\s*\(", src)
     callbacks = [c for c in re.findall(r"\bfunction\s+(on[A-Z]\w*)", src) if c in UVI_CALLBACKS]
-    return used, members, callbacks, local, shared
+    return used, members, callbacks, local, shared, outer
 
 
 def lua_api():
@@ -162,16 +165,16 @@ def main():
         for p in sorted(dump.rglob("*")):
             # The program tree and state the bank carries are data, not script.
             if p.is_file() and (p.name == "source" or (p.suffix == ".lua" and not p.name.startswith("__"))):
-                used, members, cbs, local, shared = lua_names(p.read_text(errors="ignore"))
-                files.append((used, members, local))
+                used, members, cbs, local, shared, outer = lua_names(p.read_text(errors="ignore"))
+                files.append((used, members, local, outer))
                 shared_all |= shared
                 cbs_all += cbs
-        defined_all = shared_all | {n for _, _, local in files for n in local}
         used_all = []
-        for used, members, local in files:
-            # A method the script defines is its own, whatever UVI names alike.
-            used_all += [u for u in used if u not in local]
-            used_all += [m for m in members if m not in defined_all]
+        for used, members, local, outer in files:
+            used_all += [u for u in used if u not in local] + [u for u in outer if u in local]
+            # A method the script defines is its own, whatever UVI names
+            # alike; a local of the same name is not one (`math.random`).
+            used_all += [m for m in members if m not in shared_all]
         for c in cbs_all:
             rows.setdefault(("cb", c), ["implemented" if c in api or c in prelude_text else "missing", 0])[1] += 1
         for u in used_all:

@@ -1306,13 +1306,22 @@ mod tests {
         let init = m.start(Callbacks::INIT, 0).expect("init");
         let mut log = Log(Vec::new());
         assert_eq!(m.run(init, &mut log), Step::Done);
+        // A run past its block's budget yields; it goes on in the next block.
+        let mut settle = |m: &mut Box<dyn Machine>, co| {
+            let mut step = m.run(co, &mut log);
+            while step == Step::Yield {
+                m.begin_block();
+                step = m.run(co, &mut log);
+            }
+            step
+        };
         let slow = m.control(2, 1.0, 0).expect("slow");
-        assert!(matches!(m.run(slow, &mut log), Step::Wait(_)));
+        assert!(matches!(settle(&mut m, slow), Step::Wait(_)));
         let note = m.start(Callbacks::NOTE, 0).expect("note");
-        assert_eq!(m.run(note, &mut log), Step::Done);
+        assert_eq!(settle(&mut m, note), Step::Done);
         let (task, _) = m.spawned().expect("the preset lands in a task");
         assert!(
-            matches!(m.run(task, &mut log), Step::Wait(_)),
+            matches!(settle(&mut m, task), Step::Wait(_)),
             "a note's preset waits between its controls"
         );
     }

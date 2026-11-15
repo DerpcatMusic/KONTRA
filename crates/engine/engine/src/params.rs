@@ -113,18 +113,21 @@ impl Engine {
         rack.get_mut(usize::try_from(slot).ok()?)
     }
 
-    /// Keeps `value` for held control `id` of the addressed slot (the
-    /// address exists: `absent` ruled out the rest). False when the store is
-    /// full.
-    fn hold(&mut self, id: i32, value: i32, group: i32, slot: i32, generic: i32) -> bool {
-        let Some((at, slot)) = held_key(group, slot, generic) else {
+    /// Keeps `value` for held control `name` ([`ir::held_key`]) of the
+    /// addressed slot (the address exists: `absent` ruled out the rest).
+    /// False when the store is full.
+    fn hold(&mut self, name: u32, value: i32, group: i32, slot: i32, generic: i32) -> bool {
+        let Some((at, slot)) = slot_at(group, slot, generic) else {
             return false;
         };
         let held = &mut self.behaviour.held;
-        if let Some(h) = held.iter_mut().find(|h| (h.0, h.1, h.2) == (at, slot, id)) {
+        if let Some(h) = held
+            .iter_mut()
+            .find(|h| (h.0, h.1, h.2) == (at, slot, name))
+        {
             h.3 = value;
         } else if held.len() < held.capacity() {
-            held.push((at, slot, id, value));
+            held.push((at, slot, name, value));
         } else {
             return false;
         }
@@ -346,13 +349,12 @@ impl Engine {
         if self.absent(par, group, slot, generic) {
             return Some(0);
         }
-        let id = par;
         let par = self.engine_par(par)?;
-        if par == EnginePar::Held {
-            let key = held_key(group, slot, generic)?;
+        if let EnginePar::Held(name) = par {
+            let (at, slot) = slot_at(group, slot, generic)?;
             let mut held = self.behaviour.held.iter();
             return held
-                .find(|h| (h.0, h.1, h.2) == (key.0, key.1, id))
+                .find(|h| (h.0, h.1, h.2) == (at, slot, name))
                 .map(|h| h.3);
         }
         if par == EnginePar::OutputChannel {
@@ -547,12 +549,11 @@ impl Engine {
         if self.absent(par, group, slot, generic) {
             return false;
         }
-        let id = par;
         let Some(par) = self.engine_par(par) else {
             return false;
         };
-        if par == EnginePar::Held {
-            return self.hold(id, value, group, slot, generic);
+        if let EnginePar::Held(name) = par {
+            return self.hold(name, value, group, slot, generic);
         }
         if par == EnginePar::OutputChannel {
             return self.set_output_channel(value, group, generic);
@@ -880,7 +881,7 @@ fn in_unit(rate: ir::Rate, unit: ir::Rate) -> ir::Rate {
 }
 
 /// The rack and slot a held control lives in.
-fn held_key(group: i32, slot: i32, generic: i32) -> Option<(ir::RackAt, u8)> {
+fn slot_at(group: i32, slot: i32, generic: i32) -> Option<(ir::RackAt, u8)> {
     Some((
         crate::knobs::rack_at(group, generic)?,
         u8::try_from(slot).ok()?,
