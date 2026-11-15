@@ -180,6 +180,13 @@ local function span(id)
 		return c.min, c.max - c.min
 	end
 end
+-- A menu reads and writes the index of its entry, not the entry's value:
+-- Conflux's FX menus hold None as -1 and their pages read None as 0.
+local function entries(id)
+	local c = __controls[id]
+	local e = c and c.entries
+	return e and #e > 0 and e or nil
+end
 function Parameter:value(index)
 	current.reads[self.id] = true
 	-- A text edit reads as its text, as a macro's name field does.
@@ -188,12 +195,23 @@ function Parameter:value(index)
 		return c.text
 	end
 	local raw = __params[self.id] or 0
+	local menu = entries(self.id)
+	if menu then
+		for i, e in ipairs(menu) do
+			if e.value == raw then
+				return i - 1
+			end
+		end
+		return 0
+	end
 	local min, width = span(self.id)
 	return min and (raw - min) / width or raw
 end
 function Parameter:set_value(v, index)
 	local min, width = span(self.id)
-	local raw = min and min + v * width or v
+	local menu = entries(self.id)
+	local entry = menu and menu[math.floor(v + 0.5) + 1]
+	local raw = entry and entry.value or min and min + v * width or v
 	__params[self.id] = raw
 	__writes[#__writes + 1] = { self.id, raw }
 	__dirty = true
