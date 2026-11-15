@@ -1,5 +1,5 @@
-//! Saturation, Distortion, Lo-Fi, Skreamer, Tape Saturator, DStortion and Supercharger GT onto the engine's waveshaper and
-//! reducer: their saved records (readers [ref],
+//! Saturation, Distortion, Lo-Fi, Skreamer, Tape Saturator, DStortion, Supercharger GT, Bite and Freak onto the engine's waveshaper,
+//! reducer and ring modulator: their saved records (readers [ref],
 //! [ref], via v2 sampler-kontakt effects/mod.rs) and knob laws.
 //! Any rack: the engine runs them on each voice in a group rack and on the
 //! sum in a bus or instrument rack.
@@ -61,19 +61,17 @@ pub(crate) fn effect(
                 f(20)?,
             ))
         }
-        0x60 if version == 0x51 => {
-            let [trim, saturation, character, mix, sat_mode, char_mode] =
-                crate::supergt::saved(public)?;
-            if f(8)? > 0.0 || i(28)? != 2 {
-                notes.add(
-                    ir::Impact::Audible,
-                    "Supercharger GT compressor (COMPRESS, HPF_MODE)",
-                    at,
-                );
+        0x60 if version == 0x51 => Some(crate::supergt::supergt(crate::supergt::saved(public)?)),
+        0x66 => crate::bite::saved(public).map(crate::bite::bite),
+        0x68 => {
+            let (knobs, feedback, mode) = crate::freak::saved(public)?;
+            if mode != crate::freak::OSCILLATOR {
+                notes.add(ir::Impact::Audible, "Freak Radio or Sidechain mode", at);
             }
-            Some(crate::supergt::supergt(
-                trim, saturation, character, mix, sat_mode, char_mode,
-            ))
+            if feedback > 0.0 {
+                notes.add(ir::Impact::Audible, "Freak feedback", at);
+            }
+            Some(crate::freak::freak(knobs))
         }
         _ => None,
     }
@@ -139,6 +137,7 @@ fn lofi(bits: f32, frequency: f32, noise: f32, color: f32) -> ir::EffectKind {
         bits: 16.0 * off(bits),
         noise: if noise >= 0.001 { noise * 0.075 } else { 0.0 },
         noise_tone: 1.0 - 0.9 * color.clamp(0.0, 1.0),
+        converter: None,
     })
 }
 

@@ -426,6 +426,10 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     rows.extend(crate::raum::rows());
     rows.extend(crate::wowflutter::rows());
     rows.extend(crate::flair::rows());
+    rows.extend(crate::bite::rows());
+    rows.extend(crate::freak::rows());
+    rows.extend(crate::psyche::rows());
+    rows.extend(crate::vibrato::rows());
     rows
 }
 
@@ -724,6 +728,63 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
             ..ty(id, false, 0, fresh(module, version, public), [].into())
         });
     }
+    // Fresh as Kontakt 8.13 reads them back after loading (oracle,
+    // 2026-11-15): Distortion Tube, drive .25, damping 0; Stereo Modeller
+    // width and pan .5, pseudo off; Solid G-EQ every knob .5, bells and
+    // pass filters off; Convolution with no response loaded, dry 0 dB.
+    let distortion = crate::drive::distortion(0, 0.25, 0.0).map(unit);
+    types.push(ty(10, false, 0, distortion, [].into()));
+    let stereo = ir::EffectKind::Stereo {
+        width: 0.5,
+        pan: 0.0,
+    };
+    types.push(ty(9, false, 0, Some(unit(stereo)), [].into()));
+    let geq = crate::solid_knobs::solid_model([0.5; 10], [false; 2]);
+    types.push(ir::SlotType {
+        effect: (geq.build)(&geq.saved).map(unit),
+        model: Some(geq),
+        ..ty(28, false, 0, None, [].into())
+    });
+    // ponytail: no response to convolve, so the wet is silent and the dry
+    // passes; a later `load_ir_sample` needs a convolution already in the
+    // slot (impulse_knobs `playing`), so it is not answered here.
+    let irc = Some(ir::Effect {
+        dry: 1.0,
+        ..unit(ir::EffectKind::Gain(0.0))
+    });
+    types.push(ty(19, false, 0, irc, [].into()));
+    // Bite and Freak (Oscillator mode), fresh as a script loads them.
+    let bite = unit(crate::bite::bite(crate::bite::FRESH));
+    types.push(ir::SlotType {
+        model: Some(crate::bite::model(crate::bite::FRESH)),
+        ..ty(52, false, 0, Some(bite), [].into())
+    });
+    let freak = unit(crate::freak::freak(crate::freak::FRESH));
+    types.push(ir::SlotType {
+        model: Some(crate::freak::model(crate::freak::FRESH)),
+        ..ty(54, false, 0, Some(freak), [].into())
+    });
+    // A fresh Psyche Delay plays its dry signal at unity (Kontakt 8.13.1
+    // reads SEND_EFFECT_DRY_LEVEL 396850 back), as Replika.
+    let psyche = ir::Effect {
+        dry: 1.0,
+        ..unit(ir::EffectKind::Shifter(crate::psyche::shifter(
+            crate::psyche::INIT,
+        )))
+    };
+    types.push(ir::SlotType {
+        model: Some(crate::psyche::model(crate::psyche::INIT)),
+        ..ty(49, false, 0, Some(psyche), [].into())
+    });
+    // A fresh Vibrato/Chorus: no dry level (Kontakt 8.13.1 reads 0 back);
+    // its MIX and BLEND carry the input inside the delay.
+    let vibrato = unit(ir::EffectKind::Delay(crate::vibrato::delay(
+        crate::vibrato::INIT,
+    )));
+    types.push(ir::SlotType {
+        model: Some(crate::vibrato::model(crate::vibrato::INIT)),
+        ..ty(55, false, 0, Some(vibrato), [].into())
+    });
     types
 }
 
@@ -984,7 +1045,7 @@ mod tests {
     #[test]
     fn the_saved_type_indices_never_move() {
         #[rustfmt::skip]
-        const PINNED: [(i32, bool); 57] = [
+        const PINNED: [(i32, bool); 65] = [
             (29, false), (39, false), (11, false), (40, false), (0, false), (7, false),
             (24, true), (19, true), (13, true), (14, true), (15, true),
             (100, true), (101, true), (102, true), (103, true), (104, true), (105, true),
@@ -1008,6 +1069,14 @@ mod tests {
             (26, false),
             (36, false),
             (46, false),
+            (10, false),
+            (9, false),
+            (28, false),
+            (19, false),
+            (52, false),
+            (54, false),
+            (49, false),
+            (55, false),
         ];
         let types: Vec<_> = slot_types().iter().map(|t| (t.id, t.subtype)).collect();
         assert_eq!(types, PINNED);
@@ -1016,7 +1085,20 @@ mod tests {
     #[test]
     fn a_script_loads_the_compressor_tape_saturator_dstortion_and_supergt() {
         let types = slot_types();
-        for (id, modelled) in [(2, false), (26, true), (36, true), (46, true)] {
+        for (id, modelled) in [
+            (2, false),
+            (26, true),
+            (36, true),
+            (46, true),
+            (10, false),
+            (9, false),
+            (28, true),
+            (19, false),
+            (49, true),
+            (55, true),
+            (52, true),
+            (54, true),
+        ] {
             let t = types.iter().find(|t| t.id == id && !t.subtype).unwrap();
             assert!(
                 t.effect

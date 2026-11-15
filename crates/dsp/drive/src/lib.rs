@@ -4,12 +4,14 @@
 //! into these; a named unit is a law, not a class.
 
 mod clipper;
+mod converter;
 mod crush;
 mod overdrive;
 mod shaper;
 mod tube;
 
 pub use clipper::{Circuit, Clipper};
+pub use converter::Converter;
 pub use crush::{Crush, Reduction};
 pub use kontra_dsp_core::{Section, Sections, Stage};
 pub use overdrive::{Overdrive, Voicing};
