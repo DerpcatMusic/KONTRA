@@ -116,8 +116,8 @@ time, and a YIN pitch track. Results:
 - **From the previous note's key**, never from the pitch it reached: a note
   played while the previous one was still gliding (at 67.96 on its way down
   to 60) started from 60. So `resume` is false.
-- **Not legato-only:** it glides from a key released 0.5 s earlier. The
-  first note does not glide. So `legato` is false.
+- **Not legato-only:** it glides from a key released 0.5 s earlier. So
+  `legato` is false.
 
 | `$ENGINE_PAR_GLIDE_COEF` | 0 | 150000 | 300000 | 450000 | 600000 | 750000 | 900000 |
 |---|---|---|---|---|---|---|---|
@@ -129,12 +129,49 @@ Writing `$ENGINE_PAR_GLIDE_COEF_UNIT` from KSP changed nothing: it reads back
 **KONTRA on the same saved patch:** 9.9 st/s, so 60 → 72 takes 1.23 s.
 Kontakt played the same patch at 9.93 st/s.
 
-Not measured:
-- Intensities below 100% (taken as a linear share of the interval).
-- Several gliding groups (taken as one previous note per instrument,
-  `scope` 0).
-- One unexplained miss: once in 24 transitions Kontakt did not glide (Speed
-  142.3 ms, 72 → 60).
+**Intensity, range and the previous note** (`probes/glide_intensity_groups.lua`,
+`probes/glide_range.lua`, intensity set from KSP with
+`$ENGINE_PAR_INTMOD_INTENSITY`, depth = (2x − 1)³):
+
+| depth | 60 → 72 | slide |
+|---|---|---|
+| +1 | 28.9 st/s | 12 st in 415 ms |
+| +0.5 | 14.3 st/s | 6 st in 420 ms |
+| +0.25 | 7.04 st/s | 3 st in 426 ms |
+| −0.5 | −14.4 st/s from 78 | 6 st, overshooting |
+| −1 | −29.1 st/s from 84 | 12 st, overshooting |
+
+- **Intensity** is a signed share of the interval over the same time
+  (`depth`, negative from beyond the note).
+- **At most 12 st:** jumps of 17, 19, 20, 24 and 38 st all slid 12 st in the
+  same time (`range` 12). That the cap applies before the intensity is
+  inferred; an intensity on a wider jump was not measured.
+- **The previous note is the last one heard** (`from_heard`), even one a
+  script ignored. The probe's trigger note 36, dropped by `ignore_event`, was
+  where the first note slid from. "The first note does not glide" above was
+  that artefact.
+- **Every group glides from the instrument's previous note**, including one
+  it never played (kept from it by `$EVENT_PAR_ALLOW_GROUP` or by its key
+  range). So `scope` is 0.
+
+Not measured: the cap in Speed mode, and a group without Glide next to one
+with it. One unexplained miss: once in 24 transitions Kontakt did not glide
+(Speed 142.3 ms, 72 → 60).
+
+**Release triggers** (`probes/release_trigger.lua`, with Release Trigger
+switched on in the editor; no Lua or KSP route sets it):
+- Release voices count toward the instrument polyphony and the voice-group
+  limit. They steal and can be stolen.
+- A release still fires after its note's own voice was stolen.
+- **Monophonic** (on by default with Release Trigger) is per key: playing the
+  key again cuts its sounding release voice at the new note-on, and other
+  keys' release voices sound on (`Group.repeat_cuts`).
+- With t(ms) 0 and nothing routed, the release level is the same after
+  holds of 0.1, 1 and 3 s.
+
+**Script offsets in DFD.** The KSP manual (`play_note()`) says that in DFD
+mode a sample offset greater than the zone's S.Mod is ignored, and the sample
+plays from its start (`Group.offset_limited`).
 
 Scripted glides (`change_tune` steps from KSP, pitch-bend routes with lag)
 stay script-driven. They need nothing from `ir::Glide`.
