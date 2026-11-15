@@ -287,6 +287,7 @@ pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> 
             source: ir::Source::Key,
             table: (0..128u8).map(|x| at(f32::from(x))).collect(),
             smooth_s: 0.0,
+            stepped: false,
         },
         depth: held_ratio(program, connection)?.clamp(-1.0, 1.0),
     })
@@ -364,10 +365,8 @@ fn read(table: &[f32], x: f32) -> Option<f32> {
 /// The connection's mapper as a table scaled by `Max` (or `-Min` below
 /// zero); empty for none, None for one not found or rounding to integers.
 /// A `Discrete` one reads point `⌊(len − 1)·x⌋` of its in-memory table, not
-/// between two (0x1411391a6, the flag at +0x130): at each saved point's own
-/// `x` that is the point (`⌊n·j/(n − 1)⌋ = j`), so its table is read as it is,
-/// exact at every MIDI controller value for the usual 128. ponytail: read
-/// linearly between points (a 14-bit bend), within a step of the stepped read.
+/// between two (0x1411391a6, the flag at +0x130): [`discrete`] marks the
+/// transfer stepped, so a 14-bit bend steps as UVI's does.
 fn mapper(connection: Node) -> Option<Vec<f32>> {
     if connection.attribute("Mapper").is_none_or(str::is_empty) {
         return Some(Vec::new());
@@ -430,6 +429,7 @@ pub(super) fn transfer(
     mut lfos: Option<&mut Vec<ir::Lfo>>,
 ) -> Option<ir::Transfer> {
     let mut table = mapper(connection)?;
+    let stepped = discrete(connection);
     let name = connection.attribute("Source")?;
     let source = if let Some(cc) = name.strip_prefix("@MIDI CC ") {
         ir::Source::Controller(cc.trim().parse().ok()?)
@@ -443,6 +443,7 @@ pub(super) fn transfer(
                 return Some(ir::Transfer {
                     source,
                     table,
+                    stepped,
                     ..Default::default()
                 });
             }
@@ -454,6 +455,7 @@ pub(super) fn transfer(
             return Some(ir::Transfer {
                 source,
                 table: half,
+                stepped,
                 ..Default::default()
             });
         } else if let Some(id) = live_macro(program, node) {
@@ -461,7 +463,15 @@ pub(super) fn transfer(
             ir::Source::Script(id)
         } else if node.has_tag_name("ConstantModulation") && inputs(node).next().is_none() {
             let x = num(node, "Value", 0.0).ok()? as f32;
-            let value = read(&table, x).unwrap_or(x);
+            let value = match table.is_empty() {
+                true => x,
+                false => ir::Transfer {
+                    table: table.clone(),
+                    stepped,
+                    ..Default::default()
+                }
+                .apply(x),
+            };
             return Some(ir::Transfer {
                 source: ir::Source::Constant,
                 table: vec![value],
@@ -486,6 +496,7 @@ pub(super) fn transfer(
                 source: ir::Source::Lfo(index_of(lfos, lfo)),
                 table: steps,
                 smooth_s: tau,
+                stepped: false,
             });
         } else if node.has_tag_name("LFO") || node.has_tag_name("MultiLFO") {
             // ponytail: an LFO not carried (VWinds' growl: a random wave whose
@@ -503,8 +514,15 @@ pub(super) fn transfer(
     Some(ir::Transfer {
         source,
         table,
+        stepped,
         ..Default::default()
     })
+}
+
+/// Whether the connection's mapper is `Discrete`: it holds each point
+/// until the next ([`ir::Transfer::stepped`]).
+fn discrete(connection: Node) -> bool {
+    mapper_node(connection).is_some_and(|m| flag(m, "Discrete"))
 }
 
 /// The first script modulation id [`live_macro`] gives.

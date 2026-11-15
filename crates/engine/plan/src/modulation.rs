@@ -109,7 +109,7 @@ pub fn smoothed_shared(
     if l.fade_ms > 0.0 || t.smooth_s <= 0.0 {
         return eval();
     }
-    let mut table = 0xcbf2_9ce4_8422_2325_u64 ^ t.table.len() as u64;
+    let mut table = 0xcbf2_9ce4_8422_2325_u64 ^ t.table.len() as u64 ^ u64::from(t.stepped) << 63;
     for v in &t.table {
         table = (table ^ u64::from(v.to_bits())).wrapping_mul(0x0100_0000_01b3);
     }

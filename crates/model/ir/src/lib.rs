@@ -19,14 +19,14 @@ mod route_names;
 mod wavetable;
 pub use bus::{Bus, BusSend};
 pub use drive::{
-    Clipper, Crush, Curve as DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive, RackAt,
-    Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
+    Clipper, Converter, Crush, Curve as DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive,
+    RackAt, RingMod, Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
     COMB_LOWEST_HZ, Cascade, CascadeStage, Clocked, ClockedShape, Comb, CombBank, CombMode,
     Compressor, Delay, DelayTime, Detector, ENSEMBLE_VOICES, Ensemble, EnsembleVoices, Formant,
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Polarity, Reverb,
-    ScanShape, Transient, VowelSet,
+    ScanShape, Shifter, Strip, Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar, held_key};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
@@ -317,10 +317,12 @@ mod tests {
 
     /// An effect travels by value through racks and commands: an effect kind
     /// that grows past this bound states its shared fields once instead.
+    /// [`Strip`] (a compressor and a waveshaper, one slot) sets it: 24 bytes
+    /// more per slot, against a second slot and its routing.
     #[test]
     fn an_effect_stays_small() {
         let size = std::mem::size_of::<Effect>();
-        assert!(size <= 208, "ir::Effect is {size} bytes");
+        assert!(size <= 232, "ir::Effect is {size} bytes");
     }
 }
 
@@ -593,6 +595,7 @@ pub struct Stream {
 /// A voice limit shared by the groups that name it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VoiceGroup {
+    /// The limit; 0 none (a line a script may make mono later).
     pub voices: u16,
     pub steal: Steal,
     /// Steal released voices before held ones.
@@ -800,6 +803,8 @@ pub enum EffectKind {
     Overdrive(Overdrive),
     /// A diode clipper circuit (the wet path; `dry` mixes the input back).
     Clipper(Clipper),
+    /// A ring modulator or frequency shifter, its own dry mixed in.
+    RingMod(RingMod),
     /// Copies its input to send slot n at `levels[n]` (linear), passing it on.
     Sends([f32; 8]),
     /// The input convolved with [`Instrument::impulses`] at this index (wet).
@@ -808,10 +813,15 @@ pub enum EffectKind {
     Reverb(Reverb),
     /// A compressor, in place.
     Compressor(Compressor),
+    /// A compressor into a waveshaper, in place.
+    Strip(Strip),
     /// A peak limiter, in place.
     Limiter(Limiter),
     /// An echo, chorus or flanger (the wet path; `dry` mixes the input back).
     Delay(Delay),
+    /// A pitch-shifting or reversing echo (the wet path; `dry` mixes the
+    /// input back).
+    Shifter(Shifter),
     /// A phaser (the wet path; `dry` mixes the input back).
     Phaser(Phaser),
     /// A phaser of second-order allpasses, its input mixed in (`dry` 0).

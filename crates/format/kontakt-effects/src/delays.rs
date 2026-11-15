@@ -87,6 +87,7 @@ pub fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir:
     let [feedback, pan, damping] = [feedback, pan, damping].map(|x| x.clamp(0.0, 1.0));
     let g = DELAY_LOOP * feedback;
     ir::Delay {
+        direct: 0.0,
         time: if unit > SYNC {
             ir::DelayTime::Beats(unit * time.max(1.0))
         } else {
@@ -117,6 +118,7 @@ pub fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir:
 /// is smoothed by 0.95. Phase is a quarter cycle.
 fn chorus(depth: f32, speed: f32, phase: f32, unit: f32) -> ir::Delay {
     ir::Delay {
+        direct: 0.0,
         time: ir::DelayTime::Ms(20.0),
         depth_ms: kontra_law::Law::Linear {
             lo: 0.0,
@@ -149,6 +151,7 @@ fn flanger(depth: f32, feedback: f32, speed: f32, phase: f32, colour: f32, unit:
     let colour = colour.clamp(0.0, 5.0);
     let swing = 50.0 * depth.clamp(0.0, 1.0) / RATE * 1000.0;
     ir::Delay {
+        direct: 0.0,
         time: ir::DelayTime::Ms(colour),
         depth_ms: swing.min((colour - 1000.0 / RATE).max(0.0)),
         second_head: false,

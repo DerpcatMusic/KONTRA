@@ -1771,6 +1771,36 @@ mod tests {
     }
 
     #[test]
+    fn a_layers_play_mode_and_glide_reach_its_line() {
+        // Augmented Orchestra's play mode menu and glide slider:
+        // `Program.layers[i]:setParameter("PlayMode", v - 1)`, `"PortamentoTime"`.
+        let tree = "return {params={},db=0,pan=0,auxs={},
+            layers={{params={PlayMode='0'},line={2,1,4}}}}";
+        let source = "Program.layers[1]:setParameter('PlayMode', 3)
+            Program.layers[1]:setParameter('PortamentoTime', 0.25)
+            Program.layers[1]:setParameter('PlayMode', 0)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let sent: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| matches!(a, Action::VoiceLine | Action::GlideKnob))
+            .map(|(_, i)| i.clone())
+            .collect();
+        // Mono Portamento: one note, legato, returns, slides while held,
+        // from where the last slide got; then Poly: its own limit, no slide.
+        assert_eq!(
+            sent,
+            [
+                vec![2, 1, 1, 1, 1, 1, 1, 1],
+                vec![1, 1, 250_000],
+                vec![2, 1, 4, 0, 0, 0, 0, 1],
+            ]
+        );
+    }
+
+    #[test]
     fn a_sampled_reverbs_time_prepares_its_response_again() {
         // VWinds' room size: `virtSpaceInsert1.inserts[1]:setParameter("Time", v)`.
         let tree = "return {params={},db=0,pan=0,layers={},auxs={{params={},bus=2,

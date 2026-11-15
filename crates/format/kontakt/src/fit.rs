@@ -43,15 +43,34 @@ fn model(effect: &str, keys: &HashMap<&str, f32>) -> Option<(ir::EffectKind, f32
             0.0,
         )),
         "supergt" => Some((
-            crate::supergt::supergt(
-                k("trim", 0.5),
-                k("sat", 0.5),
-                k("char", 0.0),
-                k("mix", 1.0),
-                k("satmode", 0.0),
-                k("charmode", 0.0),
-            ),
+            crate::supergt::supergt(crate::supergt::Knobs {
+                trim: k("trim", 0.5),
+                saturation: k("sat", 0.5),
+                compress: k("compress", 0.0),
+                character: k("char", 0.0),
+                mix: k("mix", 1.0),
+                attack: k("attack", crate::supergt::INIT.attack),
+                release: k("release", crate::supergt::INIT.release),
+                hpf_mode: k("hpf", 0.0),
+                sat_mode: k("satmode", 0.0),
+                char_mode: k("charmode", 0.0),
+            }),
             1.0 - k("mix", 1.0),
+        )),
+        "psyche" => Some((
+            ir::EffectKind::Shifter(crate::psyche::shifter(crate::psyche::Psyche {
+                ms: k("ms", crate::psyche::INIT.ms),
+                feedback: k("fb", crate::psyche::INIT.feedback),
+                detune: k("detune", 0.5),
+                pitch: k("pitch", 0.5),
+                offset: k("offset", 0.5),
+                cross: k("cross", 0.5),
+                reverse_stereo: k("rs", 0.0) > 0.0,
+                detune_stereo: k("ds", 0.0) > 0.0,
+                reverse: k("rev", 0.0) > 0.0,
+                beats: None,
+            })),
+            0.0,
         )),
         "distortion" => Some((
             crate::drive::distortion(k("type", 0.0) as i32, k("drive", 0.0), k("damp", 0.0))?,
@@ -91,14 +110,32 @@ fn fit() {
             output: 1.0,
             dry: 0.0,
         };
-        let Dsp::Wet(mut unit, _) = processor(Some(slot), 48_000, &Responses(&[], &[])) else {
+        // `switch`: the oracle's unit ran fresh and took the case's knobs
+        // this many seconds before the input (from the note callback): a
+        // head that keeps its place until it restarts still plays the
+        // fresh delay for a while.
+        let switch = keys.get("switch").copied();
+        let first = match switch {
+            Some(_) => ir::Effect {
+                kind: model(effect, &HashMap::new()).expect("fresh model").0,
+                ..slot
+            },
+            None => slot,
+        };
+        let Dsp::Wet(mut unit, _) = processor(Some(first), 48_000, &Responses(&[], &[])) else {
             panic!("{effect}: no processor");
         };
+        let silence = |unit: &mut Box<dyn kontra_effects::processors::Wet>, seconds: f32| {
+            for chunk in vec![0.0f32; (seconds * 48_000.0) as usize].chunks(256) {
+                let mut io = vec![[0.0f32; 2]; chunk.len()];
+                unit.process(&mut io);
+            }
+        };
         // The oracle's LFO runs free: `pre` seconds of silence first put the model's LFO where the oracle's was.
-        let pre = (keys.get("pre").copied().unwrap_or(0.0) * 48_000.0) as usize;
-        for chunk in vec![0.0f32; pre].chunks(256) {
-            let mut io = vec![[0.0f32; 2]; chunk.len()];
-            unit.process(&mut io);
+        silence(&mut unit, keys.get("pre").copied().unwrap_or(0.0));
+        if let Some(seconds) = switch {
+            unit.set(kind, 120.0);
+            silence(&mut unit, seconds);
         }
         let mut out = Vec::with_capacity(input.len() * 4);
         for chunk in input.chunks(256) {

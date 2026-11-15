@@ -33,6 +33,7 @@ pub(super) fn flanger(p: Params) -> Result<ir::Effect, String> {
     let time = p.num("DelayTime", 0.0)?.clamp(0.0, 1.0) as f32;
     let feedback = p.num("Feedback", 0.0)? as f32;
     let delay = ir::Delay {
+        direct: 0.0,
         time: ir::DelayTime::Ms(20.0 * (time + depth / 2.0)),
         depth_ms: 10.0 * depth,
         second_head: false,

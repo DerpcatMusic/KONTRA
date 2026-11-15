@@ -135,6 +135,7 @@ fn feedback([input, makeup, attack, release, ratio, mix]: [f32; 6], link: bool) 
         link,
         mix,
         detector: ir::Detector::Output,
+        sidechain_hz: None,
     }
 }
 

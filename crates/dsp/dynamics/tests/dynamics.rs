@@ -34,6 +34,7 @@ fn settings() -> CompressorSettings {
         link: true,
         mix: 1.0,
         detector: Detector::Input,
+        sidechain_hz: None,
     }
 }
 
@@ -198,6 +199,7 @@ fn a_trigger_pulls_any_level_past_the_threshold_to_one_fixed_depth() {
         let mut c = Compressor::new(
             CompressorSettings {
                 detector: Detector::Trigger,
+                sidechain_hz: None,
                 ..settings()
             },
             RATE,
