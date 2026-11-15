@@ -681,9 +681,6 @@ fn translate_group(
     if v.fx_idx_amp_split_point != 8 {
         notes.ignored("group.fx_idx_amp_split_point", v.fx_idx_amp_split_point);
     }
-    if v.release_trigger && v.release_trigger_note_monophonic {
-        notes.ignored("group.release_trigger_note_monophonic", "release group");
-    }
     crate::ignored::chunks(
         notes,
         "group",
@@ -703,6 +700,13 @@ fn translate_group(
         } else {
             ir::Trigger::Attack
         },
+        // Monophonic (on by default with Release Trigger): measured per key,
+        // a repeat's note-on cuts the key's sounding release voice; other
+        // keys' release voices sound on (release_trigger.lua, Kontakt 8.13).
+        repeat_cuts: v.release_trigger && v.release_trigger_note_monophonic,
+        // KSP manual, play_note(): in DFD mode a sample offset greater than
+        // the zone's S.Mod is ignored and no offset applies.
+        offset_limited: stream_mode == 3,
         purged: group.source_identity().is_ok_and(|s| s.flag == 1),
         stream: laws::stream(stream_mode, base.preload),
         speed: matches!(stream_mode, 2 | 5 | 8).then_some(1.0), // Time Machine 1, 2, Pro

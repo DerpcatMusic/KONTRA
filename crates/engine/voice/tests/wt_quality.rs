@@ -25,10 +25,9 @@ struct Heard {
     alias: f64,
 }
 
-fn play(quality: Quality, key: i32) -> Heard {
-    let f0 = 261.6256 * 2f64.powf(f64::from(key - 60) / 12.0);
+/// A voice reading the sawtooth table at `step` a frame, and its store.
+fn saw(quality: Quality, step: f64) -> (Store, Voice) {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let client = store.client();
     let frames = CYCLE;
     let sample = store
         .load(
@@ -87,12 +86,19 @@ fn play(quality: Quality, key: i32) -> Heard {
     voice.start(VoiceStart {
         speed: 1.0,
         region,
-        step: PERIOD * f0 / RATE,
+        step,
         gain: [[1.0, 0.0], [0.0, 1.0]],
         lag: kontra_voice::Lag::NONE,
         envelope: Ahdsr::GATE,
         fade: None,
     });
+    (store, voice)
+}
+
+fn play(quality: Quality, key: i32) -> Heard {
+    let f0 = 261.6256 * 2f64.powf(f64::from(key - 60) / 12.0);
+    let (store, mut voice) = saw(quality, PERIOD * f0 / RATE);
+    let client = store.client();
     let mut out = vec![[0.0f32; 2]; 8192 + N];
     for (i, block) in out.chunks_mut(128).enumerate() {
         voice.render(&mut Scratch::allocate(), &client, (i * 128) as u64, block);
@@ -184,4 +190,26 @@ fn the_quality_settings_sound_as_kontakts_do() {
             }
         }
     }
+}
+
+/// A gliding table voice moves its pitch every frame: the same sound at any
+/// block size (the read takes each frame's ramped cursor).
+#[test]
+fn a_gliding_table_sounds_the_same_at_any_block_size() {
+    let run = |block: usize| {
+        let step = PERIOD * 261.6256 / RATE;
+        let (store, mut voice) = saw(Quality::default(), step);
+        let client = store.client();
+        voice.set_step_ramp(step, step * 2.0, 4096);
+        let mut out = vec![[0.0f32; 2]; 4096];
+        for (i, chunk) in out.chunks_mut(block).enumerate() {
+            voice.render(&mut Scratch::allocate(), &client, (i * block) as u64, chunk);
+        }
+        out
+    };
+    let (a, b) = (run(512), run(37));
+    let worst = a.iter().zip(&b).map(|(x, y)| (x[0] - y[0]).abs()).fold(0.0f32, f32::max);
+    // The level (mip) is picked per chunk, so blocks differ by ~0.016; a
+    // chunk read at one pitch with a phase jump after it is off by ~0.4.
+    assert!(worst < 0.05, "{worst}");
 }

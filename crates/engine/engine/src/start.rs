@@ -90,6 +90,11 @@ impl Engine {
             let mut region = zone.region.clone();
             if !region.reverse {
                 let script = u64::from(n.offset) * u64::from(zone.sample_rate) / 1_000_000;
+                let script = if zone.offset_limited && script > zone.start_mod {
+                    0
+                } else {
+                    script
+                };
                 let frames = self.start_offset(zone, &n);
                 region.start = region
                     .start
