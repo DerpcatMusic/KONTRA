@@ -26,7 +26,7 @@ pub use effects::{
     COMB_LOWEST_HZ, Cascade, CascadeStage, Clocked, ClockedShape, Comb, CombBank, CombMode,
     Compressor, Delay, DelayTime, Detector, ENSEMBLE_VOICES, Ensemble, EnsembleVoices, Formant,
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Polarity, Reverb,
-    ScanShape, Shifter, Strip, Transient, VowelSet,
+    ScanShape, Scanner, Shifter, Strip, Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar, held_key};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
@@ -892,6 +892,8 @@ pub enum EffectKind {
     Limiter(Limiter),
     /// An echo, chorus or flanger (the wet path; `dry` mixes the input back).
     Delay(Delay),
+    /// A scanner vibrato, its own input mixed in.
+    Scanner(Scanner),
     /// A pitch-shifting or reversing echo (the wet path; `dry` mixes the
     /// input back).
     Shifter(Shifter),

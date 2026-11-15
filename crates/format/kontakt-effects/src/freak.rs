@@ -100,7 +100,7 @@ pub fn freak(k: Knobs) -> ir::EffectKind {
                 } else {
                     1.0
                 },
-                product: on(k.demod),
+                product: k.demod.clamp(0.0, 1.0),
                 noise: 0.299 * feedback * feedback + 0.001,
             }
         }

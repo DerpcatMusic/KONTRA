@@ -42,6 +42,7 @@ pub fn rack_only(kind: ir::EffectKind) -> bool {
         ir::EffectKind::Compressor(_)
             | ir::EffectKind::Limiter(_)
             | ir::EffectKind::Delay(_)
+            | ir::EffectKind::Scanner(_)
             | ir::EffectKind::Shifter(_)
             | ir::EffectKind::Phaser(_)
             | ir::EffectKind::Notches(_)
@@ -106,6 +107,7 @@ pub fn matrix(e: &ir::Effect) -> Gain {
         | ir::EffectKind::Convolution { .. }
         | ir::EffectKind::Reverb(_)
         | ir::EffectKind::Delay(_)
+        | ir::EffectKind::Scanner(_)
         | ir::EffectKind::Shifter(_)
         | ir::EffectKind::Phaser(_)
         | ir::EffectKind::Cascade(_)

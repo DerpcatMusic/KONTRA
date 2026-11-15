@@ -598,10 +598,50 @@ fn loading_response(wav: &[u8], name: &str) -> (Rack, RackAudio) {
     (rack, audio)
 }
 
+/// A recall reloads the response a script put into a convolution it made
+/// itself (no response yet, `Impulse::NONE`), prepared as a fresh one.
 #[test]
-fn a_response_a_script_loads_later_is_decoded_off_audio_swapped_in_and_saved() {
+fn a_recall_reloads_a_response_into_a_script_made_convolution() {
     use kontra_engine::ir;
-    // One frame at half scale, 16-bit stereo.
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rack-none.wav");
+    std::fs::write(&file, half_wav()).unwrap();
+    let (mut rack, _audio) = rack();
+    let mut plan = plan_of(rack.store_mut(), 0.5);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution {
+            impulse: ir::Impulse::NONE,
+        },
+        bypass: false,
+        output: 1.0,
+        dry: 1.0,
+    })];
+    plan.responses = vec![(
+        "half".into(),
+        ir::Sample {
+            name: "Half.wav".into(),
+            file,
+            offset: 0,
+            len: None,
+            channels: 0,
+            frames: 0,
+            rate: 0,
+            keystream: None,
+        },
+    )];
+    assert!(plan.load_response(ir::RackAt::Inserts, 0, "Half", RATE));
+    let Some(Some(ir::Effect {
+        kind: ir::EffectKind::Convolution { impulse },
+        ..
+    })) = plan.inserts.first()
+    else {
+        panic!("no convolution");
+    };
+    assert_eq!(*impulse, 0);
+    assert_eq!(plan.impulse_laws[0].1, plan.slot_shapes.fresh_impulse());
+}
+
+/// One frame at half scale, 16-bit stereo.
+fn half_wav() -> Vec<u8> {
     let half = 16_384i16.to_le_bytes();
     let mut wav = b"RIFF".to_vec();
     wav.extend(40u32.to_le_bytes());
@@ -614,7 +654,13 @@ fn a_response_a_script_loads_later_is_decoded_off_audio_swapped_in_and_saved() {
     wav.extend(b"data");
     wav.extend(4u32.to_le_bytes());
     wav.extend(half.iter().chain(&half));
-    let (mut rack, mut audio) = loading_response(&wav, "rack-half.wav");
+    wav
+}
+
+#[test]
+fn a_response_a_script_loads_later_is_decoded_off_audio_swapped_in_and_saved() {
+    use kontra_engine::ir;
+    let (mut rack, mut audio) = loading_response(&half_wav(), "rack-half.wav");
     rack.tick();
     let [half, _] = play(&mut audio, &[]);
     assert!(

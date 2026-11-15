@@ -103,3 +103,15 @@ dB, model minus oracle, 1/3-octave band rms / max, 10 ms frame rms:
 
 Fresh read-back of a script-loaded Freak: every control at the core's init values used in `FRESH` (FEEDBACK,
 DEMOD, BP_FILTER 0; TUNING, WIDTH, CONTOUR, BP_FREQ, RELEASE 0.5; CARRIER 1; MODE 1).
+
+### The three fails, against the native cores (2026-11-15)
+
+The models were run sample for sample against v2's emulator-checked native cores (Freak's and Bite's, compiled
+from `e80a9f22b^` with stubs, on the same stimuli and the translator's laws): Freak Oscillator 0.0 dB everywhere,
+Freak Sidechain (TYPE 1, CONTOUR 0) 0.0 dB across the sweep, Freak Radio (CARRIER .5, FEEDBACK .3) within 0.3 dB,
+Bite FREQ .2 within 0.6 dB (bands 200..6400 Hz: 0, 0, 0, 0, −0.3, −3.4). The laws also match the core ctors (clock,
+bits, the corners at clock/2, compander, mix, HPF). So the gaps above are not in the cores the models port: they
+come in upstream, in the BParFX wrappers' parameter path or the level the core sees (Sidechain follows the input
+square-law, so a level offset doubles in dB). Bite's apply (0x140aba100) feeds cores 2, 5, 3, 4, 6, 8, 0, 1, 9,
+11, 7 through `FUN_1409aa540(obj, k)` and HPF as `int·0.5`; that value path and the oversampling wrapper
+(0x141ee2160, flag +0x57c) are the next reads. No model was changed without them (that would be fitting).

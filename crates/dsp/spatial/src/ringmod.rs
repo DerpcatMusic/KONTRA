@@ -48,7 +48,9 @@ pub enum Source {
         tuned_hz: f32,
         damping: f32,
         makeup: f32,
-        product: bool,
+        /// DEMOD: how far the received signal crossfades to the band times
+        /// the tuned sine (unfiltered), and the envelope into the carrier.
+        product: f32,
         noise: f32,
     },
 }
@@ -441,7 +443,7 @@ impl Ring {
             {
                 let pre = match s.source {
                     Source::Radio { gain, product, .. } => {
-                        let carried = if product { self.envelope } else { 1.0 } * s.bias;
+                        let carried = ((self.envelope - 1.0) * product + 1.0) * s.bias;
                         (gain * x + carried) * (1.0 - s.bias * 0.5)
                     }
                     _ => x,
@@ -488,7 +490,7 @@ impl Ring {
                 self.demod -= self.demod.floor();
                 let scale = makeup * 2.0 / gain.max(1e-3).sqrt();
                 for (o, ch) in out.iter_mut().zip(&mut self.channels) {
-                    *o = ch.radio.receive(*o, &c, noise, product.then_some(lfo)) * scale;
+                    *o = ch.radio.receive(*o, &c, noise, lfo, product) * scale;
                 }
                 track(
                     &mut self.agc,
@@ -510,8 +512,9 @@ impl Ring {
 
 impl Receiver {
     /// The transmitted `x` received: noise added, band-passed, rectified
-    /// (or multiplied by `product`'s sine), its hum and highs taken off.
-    fn receive(&mut self, x: f32, c: &Coefs, noise: f32, product: Option<f32>) -> f32 {
+    /// its hum and highs taken off, then crossfaded by `product` to the band
+    /// times `lfo` (the native core skips the stages there too).
+    fn receive(&mut self, x: f32, c: &Coefs, noise: f32, lfo: f32, product: f32) -> f32 {
         // MINSTD (48271, 2³¹ − 1), uniform in −1..1.
         let seed = if self.seed == 0 { 12_345 } else { self.seed };
         self.seed = ((u64::from(seed) * 48_271) % 2_147_483_647) as u32;
@@ -523,7 +526,7 @@ impl Receiver {
         for (state, svf) in self.low.iter_mut().zip(c.low) {
             y = state.tick(y, svf).1;
         }
-        product.map_or(y, |lfo| lfo * band)
+        y + (lfo * band - y) * product
     }
 }
 
@@ -619,7 +622,7 @@ mod tests {
                 tuned_hz: 10_000.0,
                 damping: 0.7,
                 makeup: 1.0,
-                product: false,
+                product: 0.0,
                 noise: 0.001,
             },
             feedback: 0.5,

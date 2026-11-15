@@ -28,6 +28,7 @@ fn wet(kind: ir::EffectKind) -> bool {
         ir::EffectKind::Reverb(_)
             | ir::EffectKind::Convolution { .. }
             | ir::EffectKind::Delay(_)
+            | ir::EffectKind::Scanner(_)
             | ir::EffectKind::Shifter(_)
             | ir::EffectKind::Phaser(_)
             | ir::EffectKind::Compressor(_)

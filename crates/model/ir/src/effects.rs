@@ -124,6 +124,34 @@ pub type Matrix = [[f32; 2]; 2];
 /// Each channel to itself.
 pub const IDENTITY: Matrix = [[1.0, 0.0], [0.0, 1.0]];
 
+/// A scanner vibrato in physical units: the band below `split_hz` runs down
+/// a lumped LC delay line (`sections` series inductors, shunt capacitors to
+/// ground, `load_ohm` at its end); a pickup turning `hz` times a second
+/// sweeps out across `taps` and back, crossfading neighbours. The band above
+/// passes around the line at `high`; `blend` mixes the line's input into
+/// the pickup's signal (a chorus, half each at 1), `mix` all of it against
+/// the input. The line takes both channels' sum; each side has its own
+/// pickup, the right `lead` turns ahead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scanner {
+    pub sections: u8,
+    pub henry: f32,
+    /// Each section's capacitance, F; the last section's is `last_farad`.
+    pub farad: f32,
+    pub last_farad: f32,
+    pub load_ohm: f32,
+    /// Resistances to ground at the first six nodes after the input, Ω.
+    pub shunt_ohm: [f32; 6],
+    /// Nodes the pickup crosses, out from the first (0: the line's input).
+    pub taps: [u8; 9],
+    pub hz: f32,
+    pub lead: f32,
+    pub split_hz: f32,
+    pub high: f32,
+    pub blend: f32,
+    pub mix: f32,
+}
+
 /// A modulated stereo delay in physical units: two lines, one or two heads
 /// an LFO sweeps on each, the heads filtered, then mixed back into the lines
 /// and out by matrices.

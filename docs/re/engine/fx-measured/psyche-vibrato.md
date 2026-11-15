@@ -75,7 +75,7 @@ Carried as `ir::Delay` (a sine-swept head, a body section, `direct` for the inpu
 Not modelled: COLOR 1 and 2 (relative to COLOR 0: +5 dB at 635 Hz and −2 dB at 1 kHz; +4.5 dB at 250 Hz and 1 kHz,
 +3 dB above; they play COLOR 0 and are reported), the 4..9 dB amplitude ripple (the scanner's line), the delay's
 centre (1 ms taken), BLEND between its ends (linear taken), WIDTH's law (the right sweep a quarter cycle ahead at
-WIDTH 1 taken). No model gate was run (the rule of 2026-11-15: one check at the end at most).
+WIDTH 1 taken). Superseded: the binary core below replaces these fits, and its gate follows it.
 
 ## The core (binary, 2026-11-15)
 
@@ -84,20 +84,60 @@ WIDTH 1 taken). No model gate was run (the rule of 2026-11-15: one check at the 
 line design 0x14196d7d0 / 0x14196e310 per channel, constants read with
 `tools/re/pe_consts.py`):
 
-- The switches: DEPTH `int(6x)` (0..5), COLOR `int(3x)` (0..2), a byte
+- The switches: DEPTH `int(6x)` (0..5), COLOR `int(3x)` (0..2), for `x` below 1 (the indices a
+  script writes land there; `x = 1` would give 6 and 3, which no saved or written index reaches), a byte
   switch at `x ≥ 0.5` (the record's trailing byte).
 - RATE (lambda 0x14196ad10): `6·2^(5x − 3)` Hz (6.0 Hz at 0.6, as measured).
 - One continuous lambda (0x14196ad60) is `π·x` (WIDTH's phase, taken).
 - The line is a wave-digital LC ladder (series and parallel adaptors,
-  capacitor ports `T/2C`) with the scanner's tap tables in the ctor; the
-  whole ladder is not ported (the model's line is the fitted [`BODY`]).
+  inductor ports `2L·fs` with L 0.5 H, capacitor ports `T/2C` with C 4 nF,
+  1 nF the last): 18 sections (FUN_14196d7d0) for DEPTH I..III, 36
+  (FUN_14196e310) for IV..VI. Its first nodes carry resistive dividers to
+  ground (27k+68k, 56k+150k, 39k+150k, 33k+180k, 18k+180k, 12k+180k, the
+  first at the input); the source resistance is `11000·p₀²` Ω. A section's
+  delay is √(LC) = 44.7 µs and its cutoff 2/√(LC) = 7.1 kHz.
+- Process (0x14196d230): the channels' sum ×½ goes through two identical
+  trapezoidal state-variable filters at 7100 Hz, k √2; the lowpass feeds
+  the line, ½ × the highpass is added to the pickup's output; MIX (+0x58)
+  blends that against each channel's input.
+- The pickup (0x141969370): its phase steps `2π·rate/fs`, the right one
+  ahead by WIDTH's `π·x`; 16 stations per turn (×8/π), through the
+  triangle 0..8..1 into DEPTH's row of nine taps (ctor 0x664..0x738):
+  I `0 1 2 3 4 5 6 7 8`, II `0 1 2 4 6 8 10 11 12`, III `0 1 3 6 9 12 15 17
+  18`, IV `0 1 3 7 12 17 21 23 24`, V `0 1 4 9 15 21 26 29 30`, VI `0 2 6
+  12 20 28 30 34 36`; neighbouring stations crossfade linearly.
 - COLOR sets the ladder's terminating resistance, both channels:
-  `15000·10^(4.5u − 2.25)` Ω, with `u = 0.5` at COLOR 0 (15 kΩ, matched),
-  `0.3667(1 − p₀)` at COLOR 1 (lower: 84 Ω..3.8 kΩ) and `0.3667p₀ + 0.6333`
-  at COLOR 2 (higher: 60 kΩ..2.7 MΩ); `p₀` is the core's first continuous
-  parameter (clamped 1e-6..1, it also retunes the line), not yet tied to an
-  ENGINE_PAR. A mismatched termination reflects along the line: the
-  resonances measured above. COLOR 1 and 2 still play COLOR 0.
+  `15000·10^(4.5u − 2.25)` Ω, with `u = 0.5` at COLOR 0 (15 kΩ),
+  `0.3667(1 − p₀)` at COLOR 1 and `0.3667p₀ + 0.6333` at COLOR 2; `p₀` is
+  the core's first continuous parameter (+0x40, clamped 1e-6..1), fresh at
+  1e-6 and not tied to an ENGINE_PAR: 3.8 kΩ and 60 kΩ. A mismatched load
+  reflects along the line: COLOR 1 and 2's resonances.
+- Ported as `ir::Scanner` (`kontra-dsp-delay` `scanner.rs`: the same circuit,
+  trapezoidal nodal solve, which is what the bilinear WDF computes), laws in
+  `kontra-kontakt-effects` `vibrato.rs`. BLEND is not in this process; it is
+  taken as the line's input mixed into the pickup's signal, half each at 1
+  (the chorus measured above). The DEPTH gain table and the fitted body are
+  gone: the line makes both.
 
-Gate (2026-11-15, `sweep`, DEPTH 2, RATE .6; band rms / max, frame rms, dB): COLOR 0 1.24 / 2.7, 2.09; COLOR 1
-1.93 / 3.9 (worst 635 Hz), 3.57; COLOR 2 3.13 / 10.2 (worst 317 Hz), 3.97; COLOR 1 at BLEND 1 2.36 / 7.0, 5.90.
+Gate of the fitted delay (2026-11-15, `sweep`, DEPTH 2, RATE .6; band rms / max, frame rms, dB): COLOR 0 1.24 /
+2.7, 2.09; COLOR 1 1.93 / 3.9 (worst 635 Hz), 3.57; COLOR 2 3.13 / 10.2 (worst 317 Hz), 3.97; COLOR 1 at BLEND 1
+2.36 / 7.0, 5.90.
+
+Gate of the ported core (2026-11-15, same stimulus, one oracle session; band rms / max, frame rms, dB):
+
+| Case | band rms / max | frame rms |
+|---|---|---|
+| DEPTH III, COLOR 0 | 0.59 / 1.2 | 2.02 |
+| DEPTH III, COLOR 1 | 0.98 / 1.9 | 3.59 |
+| DEPTH III, COLOR 2 | 0.87 / 2.2 | 4.48 |
+| DEPTH III, COLOR 1, BLEND 1 | 2.23 / 9.3 (8 kHz) | 4.96 |
+| DEPTH I, COLOR 0 | 0.95 / 1.5 | 1.84 |
+| DEPTH VI, COLOR 0 | 0.58 / 1.5 | 2.33 |
+| DEPTH III, WIDTH 1 | 0.71 / 2.0 | 2.02 |
+| DEPTH IV, COLOR 2, RATE .3 | 2.28 / 6.8 (2.5 kHz) | 5.27 |
+
+Every COLOR passes the band gate the fit missed. Frame errors follow the pickup's start phase (the model's starts
+at 0, Kontakt's where its last turn left it). BLEND 1 misses about the split (−3 dB at 6.3 kHz, −9.5 at 8 kHz):
+the line's input and ½ the high band cancel about 7.1 kHz in the model, not in Kontakt, so BLEND is not that mix;
+its law is open (not in the core's process). DEPTH IV at RATE .3: a 2 Hz pickup over a 5 s sweep gives each band
+one place in the turn, so its band error hangs on the start phase.
