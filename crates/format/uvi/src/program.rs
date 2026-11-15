@@ -343,6 +343,7 @@ impl<L: Library> Translator<'_, '_, L> {
             per_note: true,
             legato: matches!(mode, 3 | 4),
             returns: mono,
+            ..ir::VoiceGroup::DEFAULT
         });
         let vg = self.out.voice_groups.len() - 1;
         if let (true, Some(g)) = (live, glide) {

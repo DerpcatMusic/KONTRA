@@ -541,7 +541,18 @@ fn criteria_reverse(group: u32, groups: &GroupList) -> bool {
 /// Groups name a voice group 1-based (0 is none). All 128 exist in Kontakt;
 /// the file stores only those changed from the default (1 voice, oldest
 /// first, released first, 10 ms fade).
+///
+/// The instrument's own limit (Instrument Options: Max Voices, the stealing
+/// mode and fade) is the chunk's first voice limit: measured in the oracle,
+/// it steals as a voice group does, "any" the oldest, voices released but
+/// still sounding counted.
 fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&VoiceGroups>) {
+    if let Some(l) = limits.map(|l| voice_group(&l.voice_limit)) {
+        out.voices = l.voices;
+        out.steal = l.steal;
+        out.steal_released_first = l.prefer_released;
+        out.steal_fade_ms = l.fade_ms;
+    }
     let mut index = [None::<usize>; 128];
     for (g, group) in out.groups.iter_mut().zip(&groups.groups) {
         let Some((n, slot)) = group
@@ -564,6 +575,7 @@ fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&Vo
                     per_note: false,
                     legato: false,
                     returns: false,
+                    ..ir::VoiceGroup::DEFAULT
                 },
                 |l| voice_group(&l.voice_limit),
             ));
@@ -589,6 +601,7 @@ fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
         per_note: false,
         legato: false,
         returns: false,
+        ..ir::VoiceGroup::DEFAULT
     }
 }
 

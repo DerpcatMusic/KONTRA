@@ -73,7 +73,9 @@ impl Engine {
             {
                 continue;
             }
-            self.choke_by(zone.group, note);
+            if let Some(vg) = zone.voice_group {
+                self.choke_by(vg, note);
+            }
             self.limit_group(zone.group);
             if let Some(vg) = zone.voice_group {
                 self.limit_voice_group(vg, note);
