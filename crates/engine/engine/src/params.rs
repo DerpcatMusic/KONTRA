@@ -113,6 +113,24 @@ impl Engine {
         rack.get_mut(usize::try_from(slot).ok()?)
     }
 
+    /// Keeps `value` for held control `id` of the addressed slot (the
+    /// address exists: `absent` ruled out the rest). False when the store is
+    /// full.
+    fn hold(&mut self, id: i32, value: i32, group: i32, slot: i32, generic: i32) -> bool {
+        let Some((at, slot)) = held_key(group, slot, generic) else {
+            return false;
+        };
+        let held = &mut self.behaviour.held;
+        if let Some(h) = held.iter_mut().find(|h| (h.0, h.1, h.2) == (at, slot, id)) {
+            h.3 = value;
+        } else if held.len() < held.capacity() {
+            held.push((at, slot, id, value));
+        } else {
+            return false;
+        }
+        true
+    }
+
     /// `set_engine_par` of an effect control; false when not carried.
     fn set_effect(
         &mut self,
@@ -328,7 +346,15 @@ impl Engine {
         if self.absent(par, group, slot, generic) {
             return Some(0);
         }
+        let id = par;
         let par = self.engine_par(par)?;
+        if par == EnginePar::Held {
+            let key = held_key(group, slot, generic)?;
+            let mut held = self.behaviour.held.iter();
+            return held
+                .find(|h| (h.0, h.1, h.2) == (key.0, key.1, id))
+                .map(|h| h.3);
+        }
         if par == EnginePar::OutputChannel {
             return self.output_channel(group, generic);
         }
@@ -521,9 +547,13 @@ impl Engine {
         if self.absent(par, group, slot, generic) {
             return false;
         }
+        let id = par;
         let Some(par) = self.engine_par(par) else {
             return false;
         };
+        if par == EnginePar::Held {
+            return self.hold(id, value, group, slot, generic);
+        }
         if par == EnginePar::OutputChannel {
             return self.set_output_channel(value, group, generic);
         }
@@ -847,6 +877,14 @@ fn in_unit(rate: ir::Rate, unit: ir::Rate) -> ir::Rate {
             count: (seconds / (beats * 0.5)).round().max(1.0),
         },
     }
+}
+
+/// The rack and slot a held control lives in.
+fn held_key(group: i32, slot: i32, generic: i32) -> Option<(ir::RackAt, u8)> {
+    Some((
+        crate::knobs::rack_at(group, generic)?,
+        u8::try_from(slot).ok()?,
+    ))
 }
 
 /// A placed effect's `(group, generic)`: 0 is group `index`'s inserts, 1 bus
