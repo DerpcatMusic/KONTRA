@@ -461,7 +461,8 @@ function __control_mod(id, scale, m)
 	local u = math.min(math.max((base - lo) / (hi - lo) * (1 + scale) + m, 0), 1)
 	-- Routes at rest leave it exactly where it was.
 	local v = (scale == 0 and m == 0) and base or lo + u * (hi - lo)
-	if c.integer then
+	-- Its own flag: an unset one reads through the widget's methods.
+	if rawget(c, "integer") == true then
 		v = math.floor(v + 0.5)
 	end
 	c:setValue(v)

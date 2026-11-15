@@ -1760,7 +1760,7 @@ mod tests {
             let co = m.control(1, check, 0).expect("check");
             assert_eq!(m.run(co, &mut log), Step::Done);
         }
-        assert_eq!(m.faults().bad_code, 0);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
     }
 
     #[test]
