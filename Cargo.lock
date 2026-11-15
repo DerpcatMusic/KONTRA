@@ -2290,6 +2290,7 @@ dependencies = [
  "kontra-ksp",
  "kontra-law",
  "kontra-lua",
+ "kontra-prepare",
  "kontra-stream",
  "kontra-ui-model",
  "libc",
