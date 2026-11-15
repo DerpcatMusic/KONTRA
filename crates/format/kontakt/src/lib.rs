@@ -32,7 +32,7 @@ mod reverb;
 mod samples;
 mod script_knobs;
 mod snapshot;
-pub use snapshot::{Preset, preset};
+pub use snapshot::{Preset, preset, save as save_snapshot};
 mod solid_knobs;
 mod timed;
 mod translate;

@@ -139,6 +139,58 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_saved_with_new_values_reads_back_with_them() {
+        use crate::kontakt::{objects::Snapshot, Chunk, KontaktChunks};
+        // A script-only v3 snapshot: flags 3, then five slots of values.
+        let state = |slot2: &[&str]| {
+            let mut data = vec![0, 3, 0];
+            data.extend(3u32.to_le_bytes());
+            for slot in 0..5 {
+                let entries = if slot == 2 { slot2 } else { &[] };
+                data.extend((entries.len() as u32).to_le_bytes());
+                for entry in entries {
+                    data.extend((entry.len() as u32).to_le_bytes());
+                    data.extend(entry.as_bytes());
+                }
+            }
+            Chunk { id: 0x4f, data }
+        };
+        let other = Chunk {
+            id: 0x51,
+            data: vec![7; 9],
+        };
+        let stream = |chunks: Vec<Chunk>| {
+            let mut bytes = Vec::new();
+            KontaktChunks(chunks).write(&mut bytes).unwrap();
+            bytes
+        };
+        let old = stream(vec![
+            state(&["$level 17"]),
+            Chunk {
+                id: 0x51,
+                data: vec![7; 9],
+            },
+        ]);
+        let mut root = preset_root(Some(encryption(encoded(&chunk(&old)), false)), false);
+        let values = [vec![], vec![], vec!["$level 99".to_owned()], vec![], vec![]];
+        let new = Snapshot::with_persistent(&state(&["$level 17"]), &values).unwrap();
+        assert_eq!(new.data, state(&["$level 99"]).data);
+        root.set_preset_chunk(&stream(vec![new, other]), None)
+            .unwrap();
+
+        let read = ItemContainer::read(std::io::Cursor::new(encoded(&root))).unwrap();
+        let data = PresetContainer::try_from(&read)
+            .unwrap()
+            .preset_data()
+            .unwrap()
+            .unwrap();
+        let chunks = KontaktChunks::read(std::io::Cursor::new(data)).unwrap();
+        let saved = Snapshot::try_from(&chunks.0[0]).unwrap();
+        assert_eq!(saved.persistent[2], ["$level 99"]);
+        assert_eq!(chunks.0[1].data, vec![7; 9]);
+    }
+
+    #[test]
     fn nis_readers_preset_extraction_preserves_absence_and_present_errors() {
         let payload = b"opaque preset bytes";
         for kontakt in [false, true] {

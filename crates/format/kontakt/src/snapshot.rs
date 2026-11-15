@@ -119,6 +119,58 @@ pub fn preset(path: &Path, known: &[PathBuf]) -> Result<Preset, Error> {
     read(path, known).map(|(preset, _)| preset)
 }
 
+/// Writes the snapshot `from` to `to` with `held` (by script slot, the
+/// values its scripts hold now) in place of the values it saved. Each slot
+/// saves the names Kontakt saved in it, in its order: an instrument's own
+/// (`make_instr_persistent`) values stay out of it, as in Kontakt's. The
+/// rest of the file is kept, its preset written unencrypted.
+///
+/// # Errors
+/// When `from` is not an NIS snapshot this reads, or `to` cannot be written.
+pub fn save(from: &Path, to: &Path, held: &[(usize, Vec<String>)]) -> Result<(), Error> {
+    let decode = |what| move |e: ni_file::Error| Error::new(from, what, e);
+    let (bytes, _, encrypted) = container::decoded(from)?;
+    let mut chunks = ni_file::kontakt::KontaktChunks::read(std::io::Cursor::new(bytes))
+        .map_err(decode("Kontakt chunks"))?;
+    let state = (chunks.0.iter_mut().find(|c| c.id == SNAPSHOT))
+        .ok_or_else(|| Error::new(from, "snapshot", "missing"))?;
+    let saved = Snapshot::try_from(&*state).map_err(decode("snapshot"))?;
+    let name = |v: &str| v.split_once(' ').map_or(v, |(n, _)| n).to_owned();
+    let values: Vec<Vec<String>> = (saved.persistent.iter().enumerate())
+        .map(|(slot, own)| {
+            let now = held.iter().find(|(s, _)| *s == slot).map(|(_, v)| v);
+            (own.iter())
+                .map(|v| {
+                    (now.and_then(|now| now.iter().find(|h| name(h) == name(v))))
+                        .unwrap_or(v)
+                        .clone()
+                })
+                .collect()
+        })
+        .collect();
+    *state = Snapshot::with_persistent(state, &values).map_err(decode("snapshot"))?;
+    let mut stream = Vec::new();
+    chunks
+        .write(&mut stream)
+        .map_err(decode("Kontakt chunks"))?;
+    let file = std::fs::File::open(from).map_err(|e| Error::new(from, "open", e))?;
+    let ni_file::NIFile::NISoundContainer(mut root) =
+        ni_file::NIFile::read(std::io::BufReader::new(file)).map_err(decode("container"))?
+    else {
+        return Err(Error::new(from, "container", "not an NIS snapshot"));
+    };
+    let key = match encrypted {
+        Some(true) => Some(
+            crate::access::library_key(from).map_err(|e| Error::new(from, "library access", e))?,
+        ),
+        _ => None,
+    };
+    (root.set_preset_chunk(&stream, key.as_deref())).map_err(decode("NIS preset"))?;
+    let mut out = Vec::new();
+    root.write(&mut out).map_err(decode("NIS container"))?;
+    std::fs::write(to, out).map_err(|e| Error::new(to, "write", e))
+}
+
 /// [`preset`], with what it saves of the instrument.
 fn read(path: &Path, known: &[PathBuf]) -> Result<(Preset, Snapshot), Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
