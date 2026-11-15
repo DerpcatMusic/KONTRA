@@ -214,6 +214,11 @@ local widget
 -- A widget's value lives in `__value`: assigning `w.value` runs its
 -- `changed`, as UVIWorkstation's setter does (VWinds' preset arrows set
 -- `menu.value` and rely on it), except from inside its own `changed`.
+-- Every write of a widget's value counts: a route knows its own by it.
+local function wrote(w, v)
+	rawset(w, "__value", v)
+	rawset(w, "__writes", (rawget(w, "__writes") or 0) + 1)
+end
 local function run_changed(w, mods)
 	local changed = rawget(w, "changed")
 	if type(changed) == "function" and not rawget(w, "__changing") then
@@ -289,7 +294,7 @@ local widget_meta = {
 				target[1]:setParameter(target[2], v)
 			end
 		elseif key == "value" then
-			rawset(w, "__value", v)
+			wrote(w, v)
 			run_changed(w)
 		elseif geometry[key] and type(v) == "table" then
 			place(w, key, v)
@@ -454,8 +459,11 @@ function __control_mod(id, scale, m)
 	if not (lo and hi and own) or hi == lo then
 		return
 	end
+	-- Any write since the route's own (a script's, the player's, a
+	-- restore's, even of the routed value) is the new base.
+	local writes = rawget(c, "__writes") or 0
 	local base = rawget(c, "__route_base")
-	if base == nil or own ~= rawget(c, "__routed") then
+	if base == nil or writes ~= rawget(c, "__routed_at") then
 		base = own
 	end
 	local u = math.min(math.max((base - lo) / (hi - lo) * (1 + scale) + m, 0), 1)
@@ -465,9 +473,11 @@ function __control_mod(id, scale, m)
 	if rawget(c, "integer") == true then
 		v = math.floor(v + 0.5)
 	end
-	c:setValue(v)
+	-- Kept before the write: a `changed` that fails or waits leaves it,
+	-- and an edit while it waits counts past it.
 	rawset(c, "__route_base", base)
-	rawset(c, "__routed", c.value)
+	rawset(c, "__routed_at", writes + 1)
+	c:setValue(v)
 end
 -- The UI the script builds, for the editor: every widget in the order the
 -- script made it (its index there names it), the page's size, picture and
@@ -578,7 +588,7 @@ widget = function(kind, name, value, ...)
 	-- preset reloaded) runs `changed` again.
 	w.setValue = function(self, v, run)
 		local was = rawget(self, "__value")
-		rawset(self, "__value", v)
+		wrote(self, v)
 		if run ~= false and (run == __FORCE or v ~= was or rawget(self, "__unsettled")) then
 			-- A click's modifier keys reach a button's `changed`; a script's
 			-- own move has none.
