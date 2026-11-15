@@ -37,8 +37,12 @@ pub(super) fn view(
             let (edits, el) = if look == FaceLook::Kontra {
                 super::controls::view(ui, n, &face.tree, PageRef(0), &mut v.menu)
             } else {
-                let (edits, popup) =
+                let (mut edits, popup) =
                     input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
+                if let Some(drag) = &v.files {
+                    let page = (&face.tree, PageRef(0));
+                    edits.extend(input::files(ui, n, page, scale, drag, &mut face.gesture));
+                }
                 // Shown this frame (a selector's browsing is drawn from them).
                 input::apply(&mut face.tree, &edits);
                 let (shown, moving) = face.meters.update(&p.level, ui.time());
@@ -85,6 +89,13 @@ pub(super) fn view(
                         part: n,
                         widget,
                         text,
+                    },
+                    input::Set::Drop { drop, over, items } => Action::ControlDrop {
+                        part: n,
+                        widget,
+                        drop,
+                        over,
+                        items,
                     },
                     // The page's own browsing: drawn, never sent.
                     input::Set::Browse(..) => return None,

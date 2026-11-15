@@ -602,9 +602,9 @@ fn drawn_page(
         } else {
             el
         };
-        let el = if hovers(wd) {
-            // Marks where it is and takes no press: input reads the pointer
-            // against it (crate::input).
+        let el = if hovers(wd) || matches!(wd.kind, Kind::MouseArea { .. }) {
+            // Marks where it is and takes no press: input reads the pointer,
+            // or a file dragged over it, against it (crate::input).
             block(0., 0.).id(id)
         } else if takes_input(wd) {
             let el = el
