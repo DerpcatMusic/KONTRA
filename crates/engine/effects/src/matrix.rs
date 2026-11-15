@@ -40,8 +40,10 @@ pub fn rack_only(kind: ir::EffectKind) -> bool {
     matches!(
         kind,
         ir::EffectKind::Compressor(_)
+            | ir::EffectKind::Strip(_)
             | ir::EffectKind::Limiter(_)
             | ir::EffectKind::Delay(_)
+            | ir::EffectKind::Shifter(_)
             | ir::EffectKind::Phaser(_)
             | ir::EffectKind::Notches(_)
             | ir::EffectKind::Ensemble(_)
@@ -94,6 +96,7 @@ pub fn matrix(e: &ir::Effect) -> Gain {
         // compressor's, limiter's, notch phaser's, ensemble's or comb
         // bank's output is its wet path.
         ir::EffectKind::Compressor(_)
+        | ir::EffectKind::Strip(_)
         | ir::EffectKind::Notches(_)
         | ir::EffectKind::Ensemble(_)
         | ir::EffectKind::CombBank(_)
@@ -104,10 +107,12 @@ pub fn matrix(e: &ir::Effect) -> Gain {
         | ir::EffectKind::Convolution { .. }
         | ir::EffectKind::Reverb(_)
         | ir::EffectKind::Delay(_)
+        | ir::EffectKind::Shifter(_)
         | ir::EffectKind::Phaser(_)
         | ir::EffectKind::Cascade(_)
         | ir::EffectKind::Clocked(_)
-        | ir::EffectKind::Clipper(_) => [[0.0; 2]; 2],
+        | ir::EffectKind::Clipper(_)
+        | ir::EffectKind::RingMod(_) => [[0.0; 2]; 2],
     };
     let (o, d) = (e.output, e.dry);
     [

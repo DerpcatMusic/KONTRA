@@ -816,7 +816,7 @@ impl HostApi for Engine {
                 if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
                     self.count_par([int(0), int(2), int(3), int(4)]);
-                } else if set && par == Some(EnginePar::Held) {
+                } else if set && matches!(par, Some(EnginePar::Held(_))) {
                     // Answered, but no processor plays it: the effects' work list.
                     self.count_par([int(0), int(2), int(3), int(4)]);
                 }
@@ -833,6 +833,38 @@ impl HostApi for Engine {
                 let y = int(4) as f32 / 1e6;
                 if !self.set_placed_impulse_knob(int(0), int(1), int(2), int(3), y) {
                     self.count_unhandled(Action::ImpulseKnob);
+                }
+                HostValue::Nothing
+            }
+            Action::VoiceLine => {
+                let law = crate::glide::LineLaw {
+                    voices: u16::try_from(int(2)).unwrap_or(0),
+                    legato: int(3) != 0,
+                    returns: int(4) != 0,
+                    glide: int(5) != 0,
+                    glide_legato: int(6) != 0,
+                    resume: int(7) != 0,
+                };
+                let at = (usize::try_from(int(0)).ok()).zip(u16::try_from(int(1)).ok());
+                if !at.is_some_and(|(vg, scope)| self.set_voice_line(vg, scope, law)) {
+                    self.count_unhandled(Action::VoiceLine);
+                }
+                HostValue::Nothing
+            }
+            Action::GlideKnob => {
+                use crate::glide::GlideKnob;
+                let knob = match int(1) {
+                    1 => Some(GlideKnob::Seconds),
+                    2 => Some(GlideKnob::PerSemitone),
+                    3 => Some(GlideKnob::Curve),
+                    _ => None,
+                };
+                let value = int(2) as f32 / 1e6;
+                let done = (u16::try_from(int(0)).ok())
+                    .zip(knob)
+                    .is_some_and(|(scope, knob)| self.set_glide_knob(scope, knob, value));
+                if !done {
+                    self.count_unhandled(Action::GlideKnob);
                 }
                 HostValue::Nothing
             }

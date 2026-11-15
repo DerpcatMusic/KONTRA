@@ -239,6 +239,14 @@ impl Vm {
         }
     }
 
+    /// As [`Machine::widget_image`].
+    pub fn widget_image(&self, n: u32, out: &mut Text) -> bool {
+        match self {
+            Self::Code(_) => false,
+            Self::Foreign(m) => m.widget_image(n, out),
+        }
+    }
+
     /// As [`Machine::widget_item`].
     pub fn widget_item(&self, n: u32, i: u32, out: &mut Text) -> bool {
         match self {

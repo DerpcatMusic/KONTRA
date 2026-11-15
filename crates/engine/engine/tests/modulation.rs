@@ -479,6 +479,7 @@ fn a_compressor_slot_mixes_its_dry_level_from_the_input() {
                 link: true,
                 mix: 1.0,
                 detector: ir::Detector::Input,
+                sidechain_hz: None,
             }),
             bypass: false,
             output,
@@ -536,6 +537,7 @@ fn a_group_lofis_noise_fades_with_the_voice() {
             bits: 16.0,
             noise: 0.075,
             noise_tone: 1.0,
+            converter: None,
         }),
         bypass: false,
         output: 1.0,
@@ -703,6 +705,7 @@ fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.inserts = vec![Some(ir::Effect {
         kind: ir::EffectKind::Delay(ir::Delay {
+            direct: 0.0,
             time: ir::DelayTime::Beats(1.0),
             depth_ms: 0.0,
             second_head: false,

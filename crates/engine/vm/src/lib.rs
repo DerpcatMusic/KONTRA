@@ -72,6 +72,11 @@ pub trait Machine: Send {
     fn widget_text(&self, _n: u32, _out: &mut Text) -> bool {
         false
     }
+    /// The picture widget `n` shows now (its `image`, which a script swaps
+    /// at run time: VWinds' seat chart) into `out`; false when it has none.
+    fn widget_image(&self, _n: u32, _out: &mut Text) -> bool {
+        false
+    }
     /// Menu widget `n`'s item `i` (from 0) into `out`; false past its last.
     fn widget_item(&self, _n: u32, _i: u32, _out: &mut Text) -> bool {
         false

@@ -479,6 +479,7 @@ mod tests {
         let diagonal = |g| [[g, 0.0], [0.0, g]];
         ir::Effect {
             kind: ir::EffectKind::Delay(ir::Delay {
+                direct: 0.0,
                 time: ir::DelayTime::Ms(15.0),
                 depth_ms: 5.0,
                 second_head: true,

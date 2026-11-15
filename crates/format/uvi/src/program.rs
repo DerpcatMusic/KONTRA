@@ -116,6 +116,7 @@ pub(crate) fn unfinished<'a, L: Library>(
         routed: HashMap::new(),
         units: HashMap::new(),
         glide_scopes: 0,
+        lines: HashMap::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
             pan: num(program, "Pan", 0.0)?.clamp(-1.0, 1.0) as f32,
@@ -231,6 +232,9 @@ struct Translator<'a, 'input, L> {
     units: HashMap<usize, f32>,
     /// Glide scopes handed out: one per gliding layer.
     glide_scopes: u16,
+    /// Each layer a script may switch (`PlayMode`, `Portamento*`): its
+    /// voice group, glide scope and own note limit, for the tree.
+    lines: HashMap<roxmltree::NodeId, (usize, u16, u16)>,
 }
 
 impl<L: Library> Translator<'_, '_, L> {
@@ -289,6 +293,11 @@ impl<L: Library> Translator<'_, '_, L> {
     ///   Portamento (a legato note takes over the voice and slides it), 4
     ///   Mono Portamento Slide (as 3, and a detached note slides too, from
     ///   where the last slide had got).
+    /// - A layer a script may switch (it quotes `PlayMode` or a
+    ///   `Portamento*` name, as Augmented Orchestra's play mode menu and
+    ///   glide slider do) always gets its voice group and glide scope, the
+    ///   glide at depth 0 while it does not slide; the script runtime sets
+    ///   both at run time (`VoiceLine`, `GlideKnob`).
     /// - `PortamentoTime` seconds, or per semitone with `PortamentoMode` 1;
     ///   `PortamentoCurve` -1..=1, the exponential segment of [`ir::Glide`].
     /// - A stolen voice fades linearly over 10 ms (0.01 × rate at every kill
@@ -299,10 +308,14 @@ impl<L: Library> Translator<'_, '_, L> {
     ) -> Result<(Option<usize>, Option<ir::Glide>), String> {
         let mode = num(layer, "PlayMode", 0.0)? as u8;
         let mono = matches!(mode, 2..=4);
-        let glide = matches!(mode, 1 | 3 | 4).then(|| -> Result<_, String> {
+        let slides = matches!(mode, 1 | 3 | 4);
+        let live = ["PlayMode", "PortamentoTime", "PortamentoMode", "PortamentoCurve"]
+            .iter()
+            .any(|w| self.script_words.contains(*w));
+        let glide = (slides || live).then(|| -> Result<_, String> {
             Ok(ir::Glide {
                 scope: self.glide_scopes,
-                depth: 1.0,
+                depth: if slides { 1.0 } else { 0.0 },
                 seconds: num(layer, "PortamentoTime", 0.03)?.max(0.0) as f32,
                 per_semitone: num(layer, "PortamentoMode", 0.0)? != 0.0,
                 legato: mode == 3,
@@ -314,11 +327,9 @@ impl<L: Library> Translator<'_, '_, L> {
         if glide.is_some() {
             self.glide_scopes = self.glide_scopes.saturating_add(1);
         }
-        let notes = match mono {
-            true => 1,
-            false => num(layer, "CustomPolyphony", 0.0)?.clamp(0.0, 256.0) as u16,
-        };
-        if notes == 0 {
+        let custom = num(layer, "CustomPolyphony", 0.0)?.clamp(0.0, 256.0) as u16;
+        let notes = if mono { 1 } else { custom };
+        if notes == 0 && !live {
             return Ok((None, glide));
         }
         self.out.voice_groups.push(ir::VoiceGroup {
@@ -331,7 +342,11 @@ impl<L: Library> Translator<'_, '_, L> {
             legato: matches!(mode, 3 | 4),
             returns: mono,
         });
-        Ok((Some(self.out.voice_groups.len() - 1), glide))
+        let vg = self.out.voice_groups.len() - 1;
+        if let (true, Some(g)) = (live, glide) {
+            self.lines.insert(layer.id(), (vg, g.scope, custom));
+        }
+        Ok((Some(vg), glide))
     }
 
     fn keygroup(

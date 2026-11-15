@@ -169,6 +169,8 @@ fn the_hold_captures_every_hold_frames() {
         bits: None,
         noise: 0.0,
         noise_tone: 1.0,
+        converter: None,
+        rate: 48_000,
     };
     let mut io = ramp();
     Crush::new(off, 1).process(&mut io);
@@ -187,6 +189,8 @@ fn the_quantizer_truncates_toward_zero() {
         bits: Some(1.0),
         noise: 0.0,
         noise_tone: 1.0,
+        converter: None,
+        rate: 48_000,
     };
     let mut io = vec![[0.9, -0.9]];
     Crush::new(r, 1).process(&mut io);
@@ -201,6 +205,8 @@ fn the_noise_is_the_lcg_and_its_seed_decides_it() {
         bits: None,
         noise: 0.075,
         noise_tone: 1.0,
+        converter: None,
+        rate: 48_000,
     };
     let mut a = vec![[0.0; 2]; 64];
     Crush::new(r, 1).process(&mut a);
@@ -230,6 +236,8 @@ fn nan_settings_stay_finite_and_reset_replays_the_noise() {
         bits: Some(f32::NAN),
         noise: 0.075,
         noise_tone: f32::NAN,
+        converter: None,
+        rate: 48_000,
     };
     let mut c = Crush::new(r, 7);
     let mut a = vec![[0.0; 2]; 64];

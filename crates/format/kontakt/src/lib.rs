@@ -3,7 +3,8 @@
 //! store; everything this cannot carry over is an [`ir::Diagnostic`].
 
 use kontra_kontakt_effects::{
-    choral, delays, dstortion, dynamics, flair, legacy_reverb, phasis, skreamer, supergt, tape,
+    bite, choral, delays, dstortion, dynamics, flair, freak, legacy_reverb, phasis, psyche,
+    skreamer, supergt, tape, vibrato,
 };
 
 mod access;
@@ -21,6 +22,7 @@ mod multi;
 pub use multi::{Slot, is_multi, scripts as multi_scripts, slots as multi};
 #[cfg(test)]
 mod fit;
+mod held;
 mod provenance;
 mod raum;
 mod readouts;

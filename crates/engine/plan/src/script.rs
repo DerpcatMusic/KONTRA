@@ -114,7 +114,7 @@ impl ScriptPlan {
             | EnginePar::GainerGain
             | EnginePar::StereoWidth
             | EnginePar::StereoPan
-            | EnginePar::Held => Holder::Slot,
+            | EnginePar::Held(_) => Holder::Slot,
             EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
             EnginePar::LfoFade | EnginePar::LfoRetrigger | EnginePar::LfoUnit => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,

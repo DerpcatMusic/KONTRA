@@ -46,7 +46,7 @@ pub(super) fn page<'a>(
     page: PageRef,
     bare: bool,
     scale: f64,
-    pressed: &[WidgetRef],
+    (pressed, hovered): (&[WidgetRef], &[WidgetRef]),
 ) -> Option<Page<'a>> {
     let source = tree.pages.get(page.0)?;
     let above = f64::from(source.background.above);
@@ -63,6 +63,7 @@ pub(super) fn page<'a>(
         .into_iter()
         .filter_map(|index| {
             let raw = tree.page_rect(index);
+            let over = hovered.binary_search(&index).is_ok();
             let w = tree.widgets.get(index.0)?;
             if !tree.visible(index) || (!on_page(raw) && tree.scroller(index).is_none()) {
                 return None;
@@ -78,6 +79,7 @@ pub(super) fn page<'a>(
                         use_,
                         meta.frames as usize,
                         pressed.binary_search(&index).is_ok(),
+                        over,
                     ),
                     size: {
                         // A handle keeps its own size to ride its track; a
@@ -108,7 +110,16 @@ pub(super) fn page<'a>(
             let (handles, faces): (Vec<&ImageUse>, Vec<&ImageUse>) =
                 w.images.iter().partition(|u| u.role == Role::Handle);
             let handle = handles.first().filter(|_| !bare).and_then(|u| picture(u));
-            let picture = faces.first().filter(|_| !bare).and_then(|u| picture(u));
+            // Under the pointer, the script's hover picture for its state.
+            let hover = if w.number() != 0. {
+                Role::HoverPressed
+            } else {
+                Role::Hover
+            };
+            let shown = (faces.iter())
+                .find(|u| over && u.role == hover)
+                .or(faces.first());
+            let picture = shown.filter(|_| !bare).and_then(|u| picture(u));
             let style = w.style.and_then(|s| tree.styles.get(s.0));
             let position = w.position();
             let look = stock::Look::of(
@@ -151,7 +162,7 @@ pub(super) fn page<'a>(
 
 /// The frame `w` shows of a picture with `frames`: the script's
 /// `PICTURE_STATE`, else the one its value selects.
-fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool) -> usize {
+fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool, over: bool) -> usize {
     if let Some(f) = u.frame {
         return f as usize;
     }
@@ -160,7 +171,7 @@ fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool) -> usize {
             (w.position() * frames.saturating_sub(1) as f64).round() as usize
         }
         (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
-            kontakt_picture_frame(w.number() != 0., held, false, frames)
+            kontakt_picture_frame(w.number() != 0., held, over, frames)
         }
         _ => 0,
     }
@@ -529,7 +540,7 @@ mod tests {
             .push(model::ImageUse::new(model::AssetRef(0), model::Role::Strip));
         tree.widgets.push(w);
         let frame = |pressed: &[WidgetRef]| {
-            page(&tree, PageRef(0), false, 1., pressed)
+            page(&tree, PageRef(0), false, 1., (pressed, &[]))
                 .and_then(|p| p.widgets.into_iter().next()?.picture.map(|p| p.frame))
         };
         assert_eq!(frame(&[]), Some(0));
@@ -603,7 +614,7 @@ mod tests {
             model::Rect::new(0, -5, 60, 18),
             model::Kind::Label,
         ));
-        let p = page(&tree, PageRef(0), false, 2., &[]).unwrap();
+        let p = page(&tree, PageRef(0), false, 2., (&[], &[])).unwrap();
         assert_eq!(p.size.height, 108.);
         assert_eq!(p.widgets.first().map(|w| w.rect.y), Some(-2.));
     }

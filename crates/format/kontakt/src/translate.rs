@@ -289,6 +289,7 @@ pub(crate) fn instrument(
     slots.subtypes.extend(racks.laws.subtypes);
     slots.types.extend(racks.laws.types);
     slots.models.extend(racks.laws.models);
+    slots.held.extend(racks.laws.held);
     out.slot_laws = slots.laws;
     out.slot_models = slots.models;
     if !slots.shape_slots.is_empty() {
@@ -345,6 +346,7 @@ pub(crate) fn instrument(
         out.slot_shapes.types = crate::script_knobs::slot_types();
         out.slot_shapes.subtypes = std::mem::take(&mut slots.subtypes);
         out.slot_shapes.saved_types = std::mem::take(&mut slots.types);
+        out.slot_shapes.held = std::mem::take(&mut slots.held);
     }
     // A script may load any response of the library's `ir_samples` by name.
     if out

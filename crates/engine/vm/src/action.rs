@@ -502,4 +502,11 @@ actions! {
     // slot)` as for `EffectBypass`, the knob (1 the share of the response
     // kept, 2 predelay in ms) and its value in millionths.
     ImpulseKnob,
+    // A line's play law: ints (voice group, glide scope, notes at once with
+    // 0 no limit, legato, returns, glides, glides only legato, resumes);
+    // flags 0 or 1.
+    VoiceLine,
+    // A number of a glide scope: ints (scope, knob: 1 seconds, 2 per
+    // semitone, 3 curve, value in millionths).
+    GlideKnob,
 }

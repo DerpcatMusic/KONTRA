@@ -114,15 +114,16 @@ fn rack(
         .enumerate()
         .map(|(slot, chunk)| {
             let chunk = chunk.as_ref()?;
-            let (mut knobs, mut model) = (Vec::new(), None);
+            let (mut knobs, mut model, mut held) = (Vec::new(), None, Vec::new());
             let effect = slot_effect(
                 chunk,
                 impulses,
                 &format!("{at} slot {slot}"),
                 notes,
-                (&mut knobs, &mut model),
+                (&mut knobs, &mut model, &mut held),
             );
             if let (Some((rack_at, laws)), Ok(slot)) = (laws.as_mut(), u8::try_from(slot)) {
+                (laws.held).extend(held.into_iter().map(|(k, v)| (*rack_at, slot, k, v)));
                 laws.models.extend(model.map(|m| (*rack_at, slot, m)));
                 laws.laws
                     .extend(knobs.into_iter().map(|(knob, field, law)| ir::SlotLaw {
@@ -213,13 +214,18 @@ fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
             _ if last_drive.is_none_or(|d| slot > d) => None,
             ir::EffectKind::Convolution { .. } => Some("group convolution before a drive"),
             ir::EffectKind::Reverb(_) => Some("group reverb before a drive"),
-            ir::EffectKind::Compressor(_) => Some("group compressor before a drive"),
+            ir::EffectKind::Compressor(_) | ir::EffectKind::Strip(_) => {
+                Some("group compressor before a drive")
+            }
             ir::EffectKind::Limiter(_) => Some("group limiter before a drive"),
-            ir::EffectKind::Delay(_) => Some("group delay before a drive"),
+            ir::EffectKind::Delay(_) | ir::EffectKind::Shifter(_) => {
+                Some("group delay before a drive")
+            }
             ir::EffectKind::Phaser(_) => Some("group phaser before a drive"),
             ir::EffectKind::Cascade(_) => Some("group 3x2 Versatile before a drive"),
             ir::EffectKind::Clocked(_) => Some("group Phaser or Vowel filter before a drive"),
             ir::EffectKind::Transient(_) => Some("group transient master before a drive"),
+            ir::EffectKind::RingMod(_) => Some("group Freak before a drive"),
             _ => None,
         };
         if let Some(feature) = lost {
@@ -237,9 +243,10 @@ fn slot_effect(
     impulses: &mut Impulses,
     at: &str,
     notes: &mut Notes,
-    (knobs, model): (
+    (knobs, model, held): (
         &mut Vec<crate::script_knobs::SlotKnob>,
         &mut Option<ir::KnobModel>,
+        &mut Vec<(u32, i32)>,
     ),
 ) -> Option<(ir::Effect, u16, i32)> {
     let fx = BParFX::try_from(chunk).ok()?;
@@ -247,6 +254,7 @@ fn slot_effect(
     let effect = fx.effect()?;
     let object = StructuredObject::try_from(effect).ok()?;
     let public = object.public_data;
+    *held = crate::held::saved(effect.id, object.version, &public);
     let f32_at = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
@@ -383,6 +391,38 @@ fn slot_effect(
             }
             crate::legacy_reverb::effect(object.version, &public)
         }
+        0x69 => crate::vibrato::saved(object.version, &public).map(|v| {
+            if v.color != 0 {
+                let impact = if params.bypass {
+                    ir::Impact::Cosmetic
+                } else {
+                    ir::Impact::Audible
+                };
+                notes.add(
+                    impact,
+                    "Vibrato/Chorus COLOR 1 and 2 (play COLOR 0)",
+                    at.to_owned(),
+                );
+            }
+            *model = Some(crate::vibrato::model(v));
+            ir::EffectKind::Delay(crate::vibrato::delay(v))
+        }),
+        0x63 => crate::psyche::saved(object.version, &public).map(|p| {
+            if p.beats.is_some() {
+                let impact = if params.bypass {
+                    ir::Impact::Cosmetic
+                } else {
+                    ir::Impact::Audible
+                };
+                notes.add(
+                    impact,
+                    "Psyche Delay tempo sync (unmeasured)",
+                    at.to_owned(),
+                );
+            }
+            *model = Some(crate::psyche::model(p));
+            ir::EffectKind::Shifter(crate::psyche::shifter(p))
+        }),
         0x5a => crate::replika::saved(object.version, &public).and_then(|r| {
             let impact = if params.bypass {
                 ir::Impact::Cosmetic
@@ -401,16 +441,18 @@ fn slot_effect(
                 0x42 => *model = crate::tape::model(&public),
                 0x56 => *model = crate::dstortion::model(&public),
                 0x60 => *model = crate::supergt::model(&public),
+                0x66 => *model = crate::bite::saved(&public).map(crate::bite::model),
+                0x68 => *model = crate::freak::saved(&public).map(|(k, ..)| crate::freak::model(k)),
                 _ => {}
             }
             crate::drive::effect(id, object.version, &public, at, notes)
         }
     };
-    // The legacy delay, chorus and flanger, Replika, the Gainer and Convolution mix
+    // The legacy delay, chorus and flanger, Replika, Psyche, the Gainer and Convolution mix
     // their slot's dry level back in; other modules' stored dry is unused
     // (trims store 1 there). v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
     // The reverbs run fully wet; Return and Dry carry their mix (v2 effects/space.rs).
-    let parallel = matches!(effect.id, 0x10..=0x12 | 0x15 | 0x16 | 0x59 | 0x5a);
+    let parallel = matches!(effect.id, 0x10..=0x12 | 0x15 | 0x16 | 0x59 | 0x5a | 0x63);
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
     // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
@@ -710,6 +752,8 @@ pub(crate) struct Slots {
     pub types: Vec<(ir::RackAt, u8, i32)>,
     /// Slots whose knobs interact, rebuilt together.
     pub models: Vec<(ir::RackAt, u8, ir::KnobModel)>,
+    /// Saved values of controls no processor plays (held key, raw).
+    pub held: Vec<(ir::RackAt, u8, u32, i32)>,
 }
 
 pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {
