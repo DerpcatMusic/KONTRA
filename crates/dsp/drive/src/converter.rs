@@ -2,7 +2,8 @@
 //! four-pole low-passes around a jittered clock, cubic Hermite reads, a
 //! companding quantizer with Gaussian dither and a soft saturator, steps
 //! made band-limited by a 4-tap polynomial correction, a one-pole
-//! high-pass, the dry delayed to meet it. Up to 48 kHz it runs inside a
+//! high-pass, the dry delayed to meet it (three core frames sooner than
+//! the native core: see `Channel::history`). Up to 48 kHz it runs inside a
 //! 2x halfband. Ported from v2 sampler-core dsp/color/bite.rs, checked
 //! there against vectors of the emulated native core; the format
 //! translators carry the provenance and the knob laws.
@@ -82,11 +83,27 @@ fn butterworth(hz: f32, inverse_rate: f32) -> [Svf; 2] {
     ]
 }
 
+/// The settings the frames read (the corners live on as coefficients).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Levels {
+    jitter: f32,
+    step: f32,
+    mu: f32,
+    midrise: bool,
+    dither: f32,
+    drive_in: f32,
+    drive_out: f32,
+    soft: f32,
+    trim: f32,
+    wet: f32,
+    dry: f32,
+}
+
 /// The settings at the core's rate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Coefficients {
     inc: f32,
-    s: Converter,
+    s: Levels,
     istep: f32,
     ilog: f32,
     pre: [Svf; 2],
@@ -107,7 +124,19 @@ impl Coefficients {
         let decay = |seconds: f32| 1.0 - (-std::f32::consts::LN_10 / (seconds * host)).exp();
         Self {
             inc: (s.clock_hz * inverse).clamp(0.001, 1.0),
-            s: Converter { mu, ..s },
+            s: Levels {
+                jitter: s.jitter,
+                step: s.step,
+                mu,
+                midrise: s.midrise,
+                dither: s.dither,
+                drive_in: s.drive_in,
+                drive_out: s.drive_out,
+                soft: s.soft,
+                trim: s.trim,
+                wet: s.wet,
+                dry: s.dry,
+            },
             istep: 1.0 / s.step.max(1e-9),
             ilog: 1.0 / mu.ln_1p(),
             pre: butterworth(s.pre_hz, inverse),
@@ -126,10 +155,15 @@ struct Channel {
     phase: f32,
     inc: f32,
     held: f32,
-    /// Pre-filtered input, newest first.
-    history: [f32; 7],
-    /// Output samples with their pending step corrections.
-    ring: [f32; 8],
+    /// The last four pre-filtered inputs, newest first. The native core
+    /// reads three to six frames back and delays the dry eleven; reading
+    /// the newest four with the dry eight back is the same output three
+    /// frames sooner (the silence follower then leads the reads by three
+    /// core frames).
+    history: [f32; 4],
+    /// Output frames three back to one ahead, with their pending step
+    /// corrections; the oldest leaves each frame.
+    ring: [f32; 5],
     jitter_seed: u32,
 }
 
@@ -139,19 +173,23 @@ impl Channel {
             phase: 0.0,
             inc,
             held: 0.0,
-            history: [0.0; 7],
-            ring: [0.0; 8],
+            history: [0.0; 4],
+            ring: [0.0; 5],
             jitter_seed: 12_345,
         }
     }
 
-    fn slot(&mut self, i: usize) -> Option<&mut f32> {
-        self.ring.get_mut(i & 7)
+    /// Takes `y`, captures when the clock comes round (not while `awake` is
+    /// false: silence holds the last sample), and gives the frame three back.
+    fn tick(&mut self, c: &Coefficients, dither: &mut Dither, y: f32, awake: bool) -> f32 {
+        self.capture(c, dither, y, awake);
+        let out = self.ring[0];
+        self.ring.rotate_left(1);
+        self.ring[4] = 0.0;
+        out
     }
 
-    /// Frame `n`: takes `y`, captures when the clock comes round (not while
-    /// `awake` is false: silence holds the last sample).
-    fn tick(&mut self, c: &Coefficients, dither: &mut Dither, n: usize, y: f32, awake: bool) {
+    fn capture(&mut self, c: &Coefficients, dither: &mut Dither, y: f32, awake: bool) {
         self.history.rotate_right(1);
         if let Some(newest) = self.history.first_mut() {
             *newest = y;
@@ -162,27 +200,24 @@ impl Channel {
             if awake {
                 self.phase = ph;
             }
-            if let Some(r) = self.slot(n) {
-                *r = held;
-            }
+            self.ring[3] = held;
             return;
         }
         let ph = ph - 1.0;
         self.phase = ph;
         let t = ph / self.inc;
-        // Cubic Hermite from four to five frames back (tangents from three and six).
-        let [_, _, _, x3, x4, x5, x6] = self.history;
+        // Cubic Hermite between the second and third newest (tangents from
+        // the newest and the oldest).
+        let [x3, x4, x5, x6] = self.history;
         let sq = (1.0 - t) * (1.0 - t);
         let t2 = t * t;
         let slope = (x5 - x3) * (sq * t) + (x6 - x4) * ((t - 1.0) * t2);
         let v = slope * 0.5 + (2.0 * t + 1.0) * sq * x4 + (3.0 - 2.0 * t) * t2 * x5;
         let out = quantize(c, dither, v);
-        if let Some(r) = self.slot(n) {
-            *r = out;
-        }
+        self.ring[3] = out;
         // The step made band-limited: a polynomial kernel either side.
         let d = out - held;
-        for (k, lag) in [6usize, 7, 0, 1].into_iter().enumerate() {
+        for (k, r) in self.ring.iter_mut().skip(1).enumerate() {
             let u = if k < 2 {
                 (t - (2 - k) as f32).abs()
             } else {
@@ -194,9 +229,7 @@ impl Channel {
             ] {
                 p = p * u + a;
             }
-            if let Some(r) = self.slot(n + lag) {
-                *r += p * if k < 2 { d } else { -d };
-            }
+            *r += p * if k < 2 { d } else { -d };
         }
         self.held = out;
         let jitter = if c.s.jitter > 0.0 {
@@ -272,9 +305,9 @@ pub(crate) struct Unit {
     hp: [f32; 2],
     envelope: f32,
     channels: [Channel; 2],
-    at: usize,
-    dry: [[f32; 2]; 16],
-    dry_at: usize,
+    /// The dry input, eight frames back to meet the wet.
+    dry: [[f32; 2]; 9],
+    dry_at: u8,
     dither: Dither,
 }
 
@@ -291,8 +324,7 @@ impl Unit {
             hp: [0.0; 2],
             envelope: 0.0,
             channels: [Channel::new(c.inc); 2],
-            at: 0,
-            dry: [[0.0; 2]; 16],
+            dry: [[0.0; 2]; 9],
             dry_at: 0,
             dither: Dither::FRESH,
         }
@@ -309,8 +341,8 @@ impl Unit {
             h.reset();
         }
         (self.pre, self.post, self.hp, self.envelope) = Default::default();
-        (self.channels, self.at) = ([Channel::new(self.c.inc); 2], 0);
-        (self.dry, self.dry_at, self.dither) = ([[0.0; 2]; 16], 0, Dither::FRESH);
+        self.channels = [Channel::new(self.c.inc); 2];
+        (self.dry, self.dry_at, self.dither) = ([[0.0; 2]; 9], 0, Dither::FRESH);
     }
 
     pub(crate) fn process(&mut self, io: &mut [[f32; 2]]) {
@@ -326,34 +358,28 @@ impl Unit {
 
     fn tick(&mut self, x: [f32; 2]) -> [f32; 2] {
         let c = self.c;
-        if let Some(d) = self.dry.get_mut(self.dry_at) {
+        // Write this frame, read the one eight back (the next slot).
+        let at = usize::from(self.dry_at);
+        if let Some(d) = self.dry.get_mut(at) {
             *d = x;
         }
-        self.dry_at = (self.dry_at + 1) & 15;
+        let next = (at + 1) % 9;
+        let dry = self.dry.get(next).copied().unwrap_or_default();
+        self.dry_at = next as u8;
         let [p0, p1] = &mut self.pre;
         let [s0, s1] = c.pre;
         let y = s1.tick(p1, s0.tick(p0, x.map(|v| v * c.s.drive_in)));
         let a = ((x[0] + x[1]) * 0.5).abs();
         let e = self.envelope;
         self.envelope = e + (a - e) * if a > e { c.attack } else { c.release };
-        let (n, awake) = (self.at, self.envelope.abs() > 1e-4);
-        for (channel, y) in self.channels.iter_mut().zip(y) {
-            channel.tick(&c, &mut self.dither, n, y, awake);
+        let awake = self.envelope.abs() > 1e-4;
+        let mut w = [0.0; 2];
+        for ((w, channel), y) in w.iter_mut().zip(&mut self.channels).zip(y) {
+            *w = channel.tick(&c, &mut self.dither, y, awake);
         }
-        self.at = (n + 1) & 7;
-        let k = self.at + 4;
-        let w = self
-            .channels
-            .each_mut()
-            .map(|ch| ch.slot(k).map(std::mem::take).unwrap_or(0.0));
         let [q0, q1] = &mut self.post;
         let [s0, s1] = c.post;
         let w = s1.tick(q1, s0.tick(q0, w));
-        let dry = self
-            .dry
-            .get((self.dry_at + 4) & 15)
-            .copied()
-            .unwrap_or_default();
         let mut out = [0.0; 2];
         for (((o, st), w), dl) in out.iter_mut().zip(&mut self.hp).zip(w).zip(dry) {
             let hp = w - (c.hg * w + 2.0 * *st) * c.hgain;
@@ -361,5 +387,58 @@ impl Unit {
             *o = hp * c.s.wet + dl * c.s.dry;
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh() -> Converter {
+        Converter {
+            clock_hz: 44_100.0,
+            jitter: 0.0,
+            pre_hz: 22_050.0,
+            post_hz: 22_050.0,
+            highpass_hz: 5.0,
+            step: 2f32.powi(-15),
+            mu: 2f32.powf(0.1) - 1.0,
+            midrise: false,
+            dither: 0.0,
+            drive_in: 1.0,
+            drive_out: 1.0,
+            soft: 0.05,
+            trim: 1.0,
+            wet: 1.0,
+            dry: 0.0,
+        }
+    }
+
+    /// Peak of the settled output of a 1 kHz sine at `amp`.
+    fn peak(s: Converter, amp: f32) -> f32 {
+        let mut unit = Unit::new(s, 48_000);
+        let mut io: Vec<[f32; 2]> = (0..9_600)
+            .map(|n| [amp * (std::f32::consts::TAU * 1_000.0 * n as f32 / 48_000.0).sin(); 2])
+            .collect();
+        unit.process(&mut io);
+        io.iter()
+            .skip(4_800)
+            .map(|f| f[0].abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn fresh_it_passes_with_the_saturators_compression_and_few_bits_step() {
+        // y·(1 − 0.05·|y|): 0.94 → 0.896 (Kontakt 0.856 with its droop).
+        let p = peak(fresh(), 0.94);
+        assert!((p - 0.896).abs() < 0.02, "{p}");
+        // Two bits, linear: steps of 0.5, 0.06 holds at zero.
+        let two = Converter {
+            step: 0.5,
+            drive_out: 0.6,
+            ..fresh()
+        };
+        assert!(peak(two, 0.06) < 1e-3);
+        assert!(peak(two, 0.9) > 0.2);
     }
 }

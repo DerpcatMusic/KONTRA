@@ -29,6 +29,11 @@ Lo-Fi keeps the raw hold and quantizer). Laws: `crates/format/kontakt-effects/sr
 | HPF | one-pole 5 / 100 / 200 Hz | HPF 1: −3.1 dB at 100 Hz; HPF 2: −3.1 at 200, −18 at 25 |
 | MIX | wet `2m²` below 0.5, `4m − 2m² − 1` above; dry `1 − wet` | MIX 0.5: −6.0 dB above the clock |
 
+The engine reads the newest four inputs where the core reads three to six
+frames back, and delays the dry 8 frames instead of 11: the same output 3
+core frames sooner. This keeps the reducer within the per-voice unit size
+(voices copy their units without allocating).
+
 Also from the core: fewer than 9 bits scale the output by 0.6..0.95, and
 silence (follower ≤ 1e-4, 5/100 ms) holds the last sample.
 
