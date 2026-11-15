@@ -46,7 +46,7 @@ pub struct Gesture {
     pub menu: Option<usize>,
     /// The control typed into, the text so far, and the selection (in
     /// characters) still to make once the field is on screen.
-    entry: Option<(usize, String, Option<(usize, usize)>)>,
+    entry: Option<(usize, String, Option<Span>)>,
     /// The value edit whose arrow is held, its step, and when it steps next.
     arrow: Option<(usize, f64, f64)>,
     /// The XY pad being dragged, its cursor, and where that cursor's
@@ -62,6 +62,9 @@ pub struct Gesture {
     /// a hover sets its state, and the area stays the same one.
     hovered: Vec<[i64; 4]>,
 }
+
+/// A run of characters, from and to.
+type Span = (usize, usize);
 
 impl Gesture {
     /// Whether a control is still pressed: dragged, or its arrow held.
@@ -870,10 +873,10 @@ fn entry(
         return None;
     }
     if !away {
-        if let Some((from, to)) = pending {
-            if ui.request_action(SemanticAction::set_selection(field.as_str(), from, to)) {
-                pending = None;
-            }
+        if let Some((from, to)) = pending
+            && ui.request_action(SemanticAction::set_selection(field.as_str(), from, to))
+        {
+            pending = None;
         }
         let typed = text_edit(ui, field.as_str(), &mut text, TextOpts::default());
         if !typed.changed.submitted {

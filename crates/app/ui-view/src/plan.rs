@@ -540,7 +540,7 @@ mod tests {
             .push(model::ImageUse::new(model::AssetRef(0), model::Role::Strip));
         tree.widgets.push(w);
         let frame = |pressed: &[WidgetRef]| {
-            page(&tree, PageRef(0), false, 1., pressed)
+            page(&tree, PageRef(0), false, 1., (pressed, &[]))
                 .and_then(|p| p.widgets.into_iter().next()?.picture.map(|p| p.frame))
         };
         assert_eq!(frame(&[]), Some(0));
@@ -614,7 +614,7 @@ mod tests {
             model::Rect::new(0, -5, 60, 18),
             model::Kind::Label,
         ));
-        let p = page(&tree, PageRef(0), false, 2., &[]).unwrap();
+        let p = page(&tree, PageRef(0), false, 2., (&[], &[])).unwrap();
         assert_eq!(p.size.height, 108.);
         assert_eq!(p.widgets.first().map(|w| w.rect.y), Some(-2.));
     }

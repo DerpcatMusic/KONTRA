@@ -804,7 +804,7 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
     let bar = w.colors.bar;
     // UVI draws a table's inner edges unless told not to (Augmented
     // Orchestra's arpeggiator steps leave `drawInnerEdge` unset).
-    let edges = w.table_inner_edge.map_or(true, |edge| edge.visible);
+    let edges = w.table_inner_edge.is_none_or(|edge| edge.visible);
     let zero = match &w.kind {
         Kind::Table { range, .. } => {
             ((0. - range.min) / (range.max - range.min).max(f64::EPSILON)).clamp(0., 1.)
