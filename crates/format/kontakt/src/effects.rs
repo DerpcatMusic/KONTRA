@@ -114,15 +114,16 @@ fn rack(
         .enumerate()
         .map(|(slot, chunk)| {
             let chunk = chunk.as_ref()?;
-            let (mut knobs, mut model) = (Vec::new(), None);
+            let (mut knobs, mut model, mut held) = (Vec::new(), None, Vec::new());
             let effect = slot_effect(
                 chunk,
                 impulses,
                 &format!("{at} slot {slot}"),
                 notes,
-                (&mut knobs, &mut model),
+                (&mut knobs, &mut model, &mut held),
             );
             if let (Some((rack_at, laws)), Ok(slot)) = (laws.as_mut(), u8::try_from(slot)) {
+                (laws.held).extend(held.into_iter().map(|(k, v)| (*rack_at, slot, k, v)));
                 laws.models.extend(model.map(|m| (*rack_at, slot, m)));
                 laws.laws
                     .extend(knobs.into_iter().map(|(knob, field, law)| ir::SlotLaw {
@@ -237,9 +238,10 @@ fn slot_effect(
     impulses: &mut Impulses,
     at: &str,
     notes: &mut Notes,
-    (knobs, model): (
+    (knobs, model, held): (
         &mut Vec<crate::script_knobs::SlotKnob>,
         &mut Option<ir::KnobModel>,
+        &mut Vec<(u32, i32)>,
     ),
 ) -> Option<(ir::Effect, u16, i32)> {
     let fx = BParFX::try_from(chunk).ok()?;
@@ -247,6 +249,7 @@ fn slot_effect(
     let effect = fx.effect()?;
     let object = StructuredObject::try_from(effect).ok()?;
     let public = object.public_data;
+    *held = crate::held::saved(effect.id, object.version, &public);
     let f32_at = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
@@ -710,6 +713,8 @@ pub(crate) struct Slots {
     pub types: Vec<(ir::RackAt, u8, i32)>,
     /// Slots whose knobs interact, rebuilt together.
     pub models: Vec<(ir::RackAt, u8, ir::KnobModel)>,
+    /// Saved values of controls no processor plays (held key, raw).
+    pub held: Vec<(ir::RackAt, u8, u32, i32)>,
 }
 
 pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {

@@ -563,6 +563,9 @@ pub struct SlotShapes {
     pub subtypes: Vec<(RackAt, u8, i32)>,
     /// Each saved slot's effect type, as a script reads it back.
     pub saved_types: Vec<(RackAt, u8, i32)>,
+    /// The saved values of controls no processor plays
+    /// ([`crate::EnginePar::Held`]): slot, [`crate::held_key`], raw value.
+    pub held: Vec<(RackAt, u8, u32, i32)>,
 }
 
 impl SlotShapes {
@@ -572,6 +575,7 @@ impl SlotShapes {
         types: Vec::new(),
         subtypes: Vec::new(),
         saved_types: Vec::new(),
+        held: Vec::new(),
     };
 }
 
