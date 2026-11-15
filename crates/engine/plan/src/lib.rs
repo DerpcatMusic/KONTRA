@@ -375,6 +375,10 @@ pub struct Zone {
     pub member: u16,
     /// A voice of this zone fades when a voice of group `off_by` starts (hi-hat choke).
     pub off_by: Option<u32>,
+    /// Its voices of a key stop when that key is played again.
+    pub repeat_cuts: bool,
+    /// A script offset past [`Self::start_mod`] plays from the start.
+    pub offset_limited: bool,
     /// Index into [`Plan::voice_groups`].
     pub voice_group: Option<u32>,
     // Playback.
@@ -442,6 +446,8 @@ impl Zone {
             group: 0,
             member: 0,
             off_by: None,
+            repeat_cuts: false,
+            offset_limited: false,
             voice_group: None,
             root,
             keytrack: 1.0,
