@@ -233,8 +233,21 @@ fn thread_cpu_ns() -> u64 {
     }
 }
 
+/// Calls per script action, by name: (calls, calls left unanswered).
+type Counts = std::collections::BTreeMap<String, (u32, u32)>;
+
+/// Adds what happened between `before` and `after` to `to`.
+fn add(to: &mut Counts, before: &Counts, after: &Counts) {
+    for (name, &(c, u)) in after {
+        let (c0, u0) = before.get(name).copied().unwrap_or_default();
+        let e = to.entry(name.clone()).or_default();
+        e.0 += c.saturating_sub(c0);
+        e.1 += u.saturating_sub(u0);
+    }
+}
+
 /// Each script action called so far, by name: (calls, calls left unanswered).
-fn calls(engine: &Engine) -> std::collections::BTreeMap<String, (u32, u32)> {
+fn calls(engine: &Engine) -> Counts {
     let mut out = std::collections::BTreeMap::new();
     for (a, n) in engine.action_calls() {
         out.entry(format!("{a:?}")).or_insert((0, 0)).0 = n;
@@ -246,10 +259,7 @@ fn calls(engine: &Engine) -> std::collections::BTreeMap<String, (u32, u32)> {
 }
 
 /// What a phase added to the running counts of [`calls`].
-fn phase(
-    before: &std::collections::BTreeMap<String, (u32, u32)>,
-    after: &std::collections::BTreeMap<String, (u32, u32)>,
-) -> Json {
+fn phase(before: &Counts, after: &Counts) -> Json {
     (after.iter())
         .filter_map(|(name, &(c, u))| {
             let (c0, u0) = before.get(name).copied().unwrap_or_default();
@@ -499,6 +509,8 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
     let (_, ready, _) = render(&mut engine, &plan, &stream, &events, |_| {});
     settled &= ready;
     let at_note = calls(&engine);
+    // What the probe notes around each move called: not the moves' own.
+    let mut probes = Counts::new();
     engine.clear_trace();
     let mut controls = Vec::new();
     let list_only = std::env::var_os("KONTRA_INSPECT_UI_LIST").is_some();
@@ -634,8 +646,10 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     );
                     (rms, acts, ready && done, (wave, tail))
                 };
+                let probing = calls(&engine);
                 let (_, first, ready_first, wave_first) = fresh(&mut engine);
                 let (prior_rms, base, ready, wave_base) = fresh(&mut engine);
+                add(&mut probes, &probing, &calls(&engine));
                 settled &= ready_first && ready;
                 engine.clear_trace();
                 let panel = |engine: &Engine| -> Vec<String> {
@@ -779,8 +793,10 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 }
                 // And one after the move: a difference the noise does not
                 // explain is the move reaching the next note.
+                let probing = calls(&engine);
                 let (_, next, ready_next, wave_next) = fresh(&mut engine);
                 let (_, again, ready_again, wave_again) = fresh(&mut engine);
+                add(&mut probes, &probing, &calls(&engine));
                 // A fresh note after the move against one before it, with
                 // what two renders on either side differ by as the floor
                 // (humanizing, round robins): the move is heard when the
@@ -839,10 +855,14 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         }
     }
     let at_end = calls(&engine);
+    // The sweep's own calls: from the note phase's end, less the probes'.
+    let mut ui_from = at_note.clone();
+    add(&mut ui_from, &Counts::new(), &probes);
     let phases = json!({
         "load": phase(&Default::default(), &at_load),
         "note": phase(&at_load, &at_note),
-        "ui": phase(&at_note, &at_end),
+        "ui": phase(&ui_from, &at_end),
+        "probe_notes": phase(&Counts::new(), &probes),
         // Named by the scripts that resolve the id, as `load` does.
         "unanswered_pars": (engine.unanswered_pars().iter())
             .map(|(p, n)| {

@@ -433,25 +433,12 @@ end
 
 -- Control `id` (0-based in `__controls`) moves to `value` and runs its
 -- `changed`, as a user's edit would; a button reads nonzero as on.
--- Whether the run is the editor's (a control move): the host slices it and
--- what it spawns to the block's budget, so a preset it loads may land at once.
-local editing = false
-
-local function edit(f, ...)
-	editing = true
-	local ok, err = pcall(f, ...)
-	editing = false
-	if not ok then
-		error(err, 0)
-	end
-end
-
 function __control(id, value)
 	local c = __controls[id + 1]
 	if c and type(c.value) == "boolean" then
-		edit(c.setValue, c, value ~= 0, __FORCE)
+		c:setValue(value ~= 0, __FORCE)
 	elseif c then
-		edit(c.setValue, c, value, force(c))
+		c:setValue(value, force(c))
 	end
 end
 -- Control `id` moves to `saved`'s place in its range times `1 + scale`, plus `m`, held
@@ -468,7 +455,7 @@ function __control_mod(id, saved, scale, m)
 	if c.integer then
 		v = math.floor(v + 0.5)
 	end
-	edit(c.setValue, c, v)
+	c:setValue(v)
 end
 -- The UI the script builds, for the editor: every widget in the order the
 -- script made it (its index there names it), the page's size, picture and
@@ -1687,7 +1674,7 @@ function loadState(path, done)
 	-- runs unsliced, one control's callbacks every PRESET_PACE ms of audio,
 	-- so a preset's callbacks (VWinds, up to 4 ms each) never pile into one
 	-- block.
-	local pace = editing and function() end or wait
+	local pace = __editing and function() end or wait
 	spawn(function()
 		wait(PRESET_PACE)
 		land(file, done, pace)

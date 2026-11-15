@@ -289,6 +289,7 @@ impl Compiled {
         // `__host`'s key exists from the start ([`set_host`]).
         if let Some(g) = &entries.globals {
             let _ = g.raw_set("__host", false);
+            let _ = g.raw_set("__editing", false);
         }
         let lend = bridge::Lend::default();
         let host = {
@@ -732,6 +733,9 @@ impl Machine for LuaMachine {
         let mut lent = bridge::Lent { host, context };
         let resumed = self.lend.lend(&mut lent, || {
             set_host(&lua, globals, call)?;
+            // Whether this coroutine is the editor's: a control or widget
+            // move, or a task one spawned (the prelude's loadState reads it).
+            set_global(&lua, globals, "__editing", ui)?;
             let result = match first {
                 First::Nothing => thread.resume::<Value>(()),
                 First::Control(id, value) => thread.resume::<Value>((id, value)),
@@ -740,6 +744,7 @@ impl Machine for LuaMachine {
                 }
             };
             set_host(&lua, globals, false)?;
+            set_global(&lua, globals, "__editing", false)?;
             result
         });
         if ui {
@@ -900,8 +905,18 @@ impl Machine for LuaMachine {
 /// (`starting_a_callback_makes_no_luau_object`). The prelude reads `false`
 /// as nil (`if not __host`).
 fn set_host(lua: &Lua, globals: &Table, value: impl mlua::IntoLua) -> mlua::Result<()> {
+    set_global(lua, globals, "__host", value)
+}
+
+/// Sets global `name`, whose key exists from the start, as [`set_host`].
+fn set_global(
+    lua: &Lua,
+    globals: &Table,
+    name: &str,
+    value: impl mlua::IntoLua,
+) -> mlua::Result<()> {
     let limit = lua.set_memory_limit(0)?;
-    let set = globals.raw_set("__host", value);
+    let set = globals.raw_set(name, value);
     lua.set_memory_limit(limit)?;
     set
 }
@@ -1250,14 +1265,51 @@ mod tests {
         let pick = m.control(2, 2.0, 0).expect("pick");
         assert_eq!(m.run(pick, &mut log), Step::Done);
         let (task, _) = m.spawned().expect("the preset lands in a task");
-        assert_eq!(
-            m.run(task, &mut log),
-            Step::Done,
-            "no wait between its controls"
-        );
+        // The editor's slice may run out mid-preset (a valid yield, resumed in
+        // the next block); a wait between its controls is the bug.
+        let mut step = m.run(task, &mut log);
+        while step == Step::Yield {
+            m.begin_block();
+            step = m.run(task, &mut log);
+        }
+        assert_eq!(step, Step::Done, "no wait between its controls");
         let note = m.start(Callbacks::NOTE, 0).expect("note");
         assert_eq!(m.run(note, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults().last_error);
+    }
+
+    /// Editor status belongs to the coroutine: a control move waiting
+    /// mid-callback does not make a preset a note loads land unpaced.
+    #[test]
+    fn a_preset_a_note_loads_is_paced_while_a_control_waits() {
+        let source = r#"
+            local a = Knob('a', 0, 0, 100)
+            local b = Knob('b', 0, 0, 100)
+            a.changed = function() end
+            b.changed = function() end
+            local slow = Knob('slow', 0, 0, 1)
+            slow.changed = function() wait(1000) end
+            function onNote() loadState('../Script/presets/Studio 1.VHFPreset') end"#;
+        let modules = [
+            ("__dir.lua".to_string(), "return \"Script\"".to_string()),
+            (
+                "__file/script/presets/studio 1.vhfpreset".to_string(),
+                r#"return {values={["a"]="66",["b"]="7"}}"#.to_string(),
+            ),
+        ];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let init = m.start(Callbacks::INIT, 0).expect("init");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(init, &mut log), Step::Done);
+        let slow = m.control(2, 1.0, 0).expect("slow");
+        assert!(matches!(m.run(slow, &mut log), Step::Wait(_)));
+        let note = m.start(Callbacks::NOTE, 0).expect("note");
+        assert_eq!(m.run(note, &mut log), Step::Done);
+        let (task, _) = m.spawned().expect("the preset lands in a task");
+        assert!(
+            matches!(m.run(task, &mut log), Step::Wait(_)),
+            "a note's preset waits between its controls"
+        );
     }
 
     /// VWinds' Save/Load menu once the player picked a name: `saveState`
@@ -1716,7 +1768,10 @@ mod tests {
         let mut log = Log(Vec::new());
         assert_eq!(m.run(co, &mut log), Step::Done);
         let call = log.0.iter().find(|(a, _)| *a == Action::ImpulseKnob);
-        assert_eq!(call.map(|(_, i)| i.clone()), Some(vec![1, 2, 0, 1, 400_000]));
+        assert_eq!(
+            call.map(|(_, i)| i.clone()),
+            Some(vec![1, 2, 0, 1, 400_000])
+        );
     }
 
     #[test]
