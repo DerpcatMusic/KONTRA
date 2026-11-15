@@ -80,8 +80,7 @@ pub(crate) fn fresh() -> Vec<(i32, u32, i32)> {
         ("$ENGINE_PAR_RDL_TIME_UNIT", r.beats.map_or(0, unit)),
     ];
     out.extend(replika.map(|(n, v)| (40, key(n), v)));
-    // A fresh Freak runs its Oscillator mode; Psyche Delay's time is free.
-    out.push((54, key("$ENGINE_PAR_FREAK_MODE"), crate::freak::OSCILLATOR));
+    // Psyche Delay's time is free (Freak's MODE is a knob of its model).
     let psyche = crate::psyche::INIT.beats.map_or(0, unit);
     out.push((49, key("$ENGINE_PAR_PSYDL_TIME_UNIT"), psyche));
     out

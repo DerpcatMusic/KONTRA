@@ -2,4 +2,4 @@
 
 mod ringmod;
 
-pub use ringmod::{Ring, RingMod};
+pub use ringmod::{Ring, RingMod, Source as RingSource};

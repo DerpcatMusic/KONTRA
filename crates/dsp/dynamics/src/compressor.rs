@@ -38,6 +38,7 @@ pub enum Detector {
     Trigger,
 }
 
+#[derive(Clone)]
 pub struct Compressor {
     s: Settings,
     attack: f32,

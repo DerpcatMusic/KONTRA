@@ -74,7 +74,7 @@ impl Engine {
                     .voice_comb(zone, u.insert, note, age)
                     .map(|(hz, g)| Tune::Comb(hz, g)),
                 Kind::Formant(_) | Kind::Overdrive(_) => effect.as_ref().map(Tune::Effect),
-                Kind::Shaper(_) | Kind::Crush(_) => {
+                Kind::Shaper(_) | Kind::Strip(..) | Kind::Crush(_) => {
                     let now = effect;
                     // The next refresh, on the grid.
                     let len = (crate::MAX_SPAN - self.now.0 % crate::MAX_SPAN) as u32;

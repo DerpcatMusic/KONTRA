@@ -40,7 +40,6 @@ pub fn rack_only(kind: ir::EffectKind) -> bool {
     matches!(
         kind,
         ir::EffectKind::Compressor(_)
-            | ir::EffectKind::Strip(_)
             | ir::EffectKind::Limiter(_)
             | ir::EffectKind::Delay(_)
             | ir::EffectKind::Shifter(_)
@@ -80,6 +79,7 @@ pub fn matrix(e: &ir::Effect) -> Gain {
         }
         // Run per voice, their output gain after them (voice_rack.rs).
         ir::EffectKind::Shaper(_)
+        | ir::EffectKind::Strip(_)
         | ir::EffectKind::Crush(_)
         | ir::EffectKind::Overdrive(_)
         | ir::EffectKind::Comb(_) => {
@@ -96,7 +96,6 @@ pub fn matrix(e: &ir::Effect) -> Gain {
         // compressor's, limiter's, notch phaser's, ensemble's or comb
         // bank's output is its wet path.
         ir::EffectKind::Compressor(_)
-        | ir::EffectKind::Strip(_)
         | ir::EffectKind::Notches(_)
         | ir::EffectKind::Ensemble(_)
         | ir::EffectKind::CombBank(_)

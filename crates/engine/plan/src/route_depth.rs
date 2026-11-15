@@ -83,6 +83,19 @@ pub fn lerp(a: ir::EffectKind, b: ir::EffectKind, t: f32) -> ir::EffectKind {
             }
             ir::EffectKind::Shaper(s)
         }
+        // A strip's curve moves as a shaper's; its compressor takes the new
+        // settings at once.
+        (ir::EffectKind::Strip(mut s), ir::EffectKind::Strip(e)) => {
+            if let ir::EffectKind::Shaper(shaper) = lerp(
+                ir::EffectKind::Shaper(s.shaper),
+                ir::EffectKind::Shaper(e.shaper),
+                t,
+            ) {
+                s.shaper = shaper;
+            }
+            s.compressor = e.compressor;
+            ir::EffectKind::Strip(s)
+        }
         (ir::EffectKind::Crush(mut c), ir::EffectKind::Crush(e)) => {
             (c.rate, c.bits) = (mix(c.rate, e.rate), mix(c.bits, e.bits));
             ir::EffectKind::Crush(c)

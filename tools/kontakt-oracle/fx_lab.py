@@ -103,6 +103,12 @@ STIMULI = {
     # Steady tones, 0.5 s each at the STEPS frequencies (a steady-state response, against a sweep's).
     "steps": (6.5, "0.25 * math.sin(2 * math.pi * STEPS[math.floor(t / 0.5) + 1] * t)"),
     "stepslo": (6.5, "0.0025 * math.sin(2 * math.pi * STEPS[math.floor(t / 0.5) + 1] * t)"),
+    # Two non-harmonic tones together (4 s: images and intermodulation fall between their harmonics), then the
+    # same 500 Hz..16 kHz log sweep fast (0.5 s, from 4.5 s) and slow (12 s, from 5.5 s), all -20.6 dB at the effect.
+    "pairsweeps": (18.0, "(t < 4 and 0.125 * (math.sin(2 * math.pi * 1000 * t) + math.sin(2 * math.pi * 7300 * t)))"
+                         " or (t >= 4.5 and t < 5 and 0.25 * math.sin(2 * math.pi * 500 * (math.exp(6.931472 * (t - 4.5)) - 1)"
+                         " / 6.931472)) or (t >= 5.5 and t < 17.5 and 0.25 * math.sin(2 * math.pi * 500"
+                         " * (math.exp(0.288811 * (t - 5.5)) - 1) / 0.288811)) or 0.0"),
 }
 STEPS = [63, 125, 250, 500, 1000, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000]
 

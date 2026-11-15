@@ -2723,9 +2723,23 @@ fn a_script_loads_a_library_response_into_a_convolution() {
     .unwrap();
     let mut resumed = plan.clone();
     resumed.scripts = vec![kontra_host::script::plan(&later, &[], &[])];
+    // A convolution with no response yet (one a script made) loads it plain.
+    let mut fresh = plan.clone();
+    fresh.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution {
+            impulse: ir::Impulse::NONE,
+        },
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.25).abs() < 1e-3, "{l}");
+    assert_eq!(e.stats().actions_unhandled, 0);
+    let mut e = Engine::new(Arc::new(fresh), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.25).abs() < 1e-3, "a script-made convolution: {l}");
     assert_eq!(e.stats().actions_unhandled, 0);
 
     // After init the host decodes it off the audio thread, and the id
@@ -4006,7 +4020,7 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
 }
 
 /// A module a script loads answers reads at once with Kontakt's fresh
-/// values (Freak's MODE starts on the oscillator, 1).
+/// values (a held control: Psyche Delay's TIME_UNIT, as a fresh unit holds it).
 #[test]
 fn a_loaded_module_reads_its_fresh_values() {
     use kontra_engine::ir;
@@ -4020,10 +4034,10 @@ fn a_loaded_module_reads_its_fresh_values() {
     };
     plan.inserts = vec![Some(unit(ir::EffectKind::Gain(1.0)))];
     plan.slot_shapes.types = vec![ir::SlotType {
-        id: 54,
+        id: 49,
         subtype: false,
         reads: 0,
-        kind: 54,
+        kind: 49,
         effect: Some(unit(ir::EffectKind::Stereo {
             width: 0.5,
             pan: 0.0,
@@ -4031,12 +4045,12 @@ fn a_loaded_module_reads_its_fresh_values() {
         laws: Vec::new().into(),
         model: None,
     }];
-    let mode = ir::held_key("$ENGINE_PAR_FREAK_MODE");
-    plan.slot_shapes.fresh = vec![(54, mode, 1), (40, mode, 7)];
+    let mode = ir::held_key("$ENGINE_PAR_PSYDL_TIME_UNIT");
+    plan.slot_shapes.fresh = vec![(49, mode, 1), (40, mode, 7)];
     let script = kontra_ksp::compile(
         "on init
-            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 54, -1, 0, 1)
-            message(get_engine_par($ENGINE_PAR_FREAK_MODE, -1, 0, 1))
+            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 49, -1, 0, 1)
+            message(get_engine_par($ENGINE_PAR_PSYDL_TIME_UNIT, -1, 0, 1))
         end on",
         &[],
     )
