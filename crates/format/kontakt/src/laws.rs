@@ -715,6 +715,7 @@ pub(crate) fn limiter(input_db: f32, release_ms: f32) -> ir::Limiter {
         input_db,
         ceiling_db: 0.0,
         release_ms: release_ms.max(0.0),
+        ..ir::Limiter::PEAK
     }
 }
 
@@ -728,6 +729,7 @@ pub(crate) fn transparent_limiter(drive: f32, release: f32, ceiling: f32) -> ir:
         ceiling_db: -0.35 - (1.0 - ceiling) * 39.7,
         // A one-pole time constant τ halves in τ·ln 2.
         release_ms: 1000.0 * release.max(0.001) * std::f32::consts::LN_2,
+        ..ir::Limiter::PEAK
     }
 }
 
