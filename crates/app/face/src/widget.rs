@@ -35,8 +35,10 @@ const MEASURED_AT: f64 = 1.5;
 const KNOB_SWEEP: f64 = 350. / MEASURED_AT;
 /// Points a slider without `MOUSE_BEHAVIOUR` travels to sweep its range (172 px).
 const SLIDER_SWEEP: f64 = 172. / MEASURED_AT;
-/// The `MOUSE_BEHAVIOUR` that sweeps a slider in its picture's length (manual).
-const BEHAVIOUR_PER_LENGTH: f64 = 1000.;
+/// The `MOUSE_BEHAVIOUR` that sweeps a slider in its picture's length:
+/// 1000 sweeps it in twice that (Kontakt 8 oracle, tools/ksp-ui pictures
+/// page: a 40-point picture at 1000 swept in 78 points, at -500 in 158).
+const BEHAVIOUR_PER_LENGTH: f64 = 2000.;
 /// Points a value edit's drag travels per unit (4 px).
 const VALUE_EDIT_PER_UNIT: f64 = 4. / MEASURED_AT;
 
@@ -299,16 +301,20 @@ pub(super) fn widget(
     w.value_text = p.text("$CONTROL_PAR_LABEL").map(Into::into);
     // Kontakt 8's drags, measured in 150 % screen pixels and held in page
     // points (the constants above): a knob sweeps in 350 px up, ignoring
-    // MOUSE_BEHAVIOUR; a slider in 172 px, or 1000 / |MOUSE_BEHAVIOUR| of its
+    // MOUSE_BEHAVIOUR; a slider in 172 px, or 2000 / |MOUSE_BEHAVIOUR| lengths of its
     // picture along the sign's axis; a value edit 4 px a unit, up. Each runs
     // its callback again on release.
     // ponytail: 172 measured on the stock skin only; a picture may scale it.
-    let behaviour = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").filter(|&m| m != 0);
+    // A slider set to 0 sweeps in no travel at all: any move takes it to
+    // an end (the same page: a drag of 30 took 0 to its top, 100).
+    let behaviour = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR");
     let sweep = match kind {
         ControlKind::Knob => Some(ui::Sweep::Points(KNOB_SWEEP)),
-        ControlKind::Slider => Some(behaviour.map_or(ui::Sweep::Points(SLIDER_SWEEP), |m| {
-            ui::Sweep::Lengths(BEHAVIOUR_PER_LENGTH / f64::from(m.unsigned_abs()))
-        })),
+        ControlKind::Slider => Some(match behaviour {
+            None => ui::Sweep::Points(SLIDER_SWEEP),
+            Some(0) => ui::Sweep::Points(0.),
+            Some(m) => ui::Sweep::Lengths(BEHAVIOUR_PER_LENGTH / f64::from(m.unsigned_abs())),
+        }),
         ControlKind::ValueEdit => Some(ui::Sweep::PerUnit(VALUE_EDIT_PER_UNIT)),
         _ => None,
     };

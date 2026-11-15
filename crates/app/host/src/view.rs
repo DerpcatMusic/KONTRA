@@ -289,6 +289,8 @@ pub struct LookFrame {
     widgets: Box<[Option<WidgetLook>]>,
     reads: Vec<u32>,
     texts: Box<[(u32, bool, Text)]>,
+    /// The pictured widgets' `image` paths: a script swaps them at run time.
+    images: Box<[(u32, bool, Text)]>,
     arrays: Box<[ArrayRead]>,
     menus: Box<[MenuRead]>,
     /// The script's bitmap fonts from [`FIRST_FONT`] on; `on init` names
@@ -355,6 +357,7 @@ impl LookFrame {
             widgets: Box::default(),
             reads: Vec::new(),
             texts: Box::default(),
+            images: Box::default(),
             arrays: Box::default(),
             menus: Box::default(),
             fonts: (FIRST_FONT..)
@@ -384,6 +387,11 @@ impl LookFrame {
             widgets: vec![None; tree.widgets.len()].into(),
             reads: readable(tree),
             texts: labels.collect(),
+            images: (0u32..)
+                .zip(&tree.widgets)
+                .filter(|(_, w)| w.images.iter().any(|i| i.role == model::Role::Background))
+                .map(|(n, _)| (n, false, Text::EMPTY))
+                .collect(),
             arrays: tree
                 .widgets
                 .iter()
@@ -452,6 +460,9 @@ impl LookFrame {
                 changed |= crate::ui::lua::apply(tree, n, look, text);
             }
         }
+        for (n, _, path) in self.images.iter().filter(|i| i.1) {
+            changed |= crate::ui::lua::picture(tree, *n as usize, path.as_str());
+        }
         for (n, has, cells) in &self.arrays {
             if *has
                 && let Some(w) = tree.widgets.get_mut(*n as usize)
@@ -513,6 +524,9 @@ impl LookFrame {
         }
         for (n, has, text) in &mut *self.texts {
             *has = self.reads.binary_search(n).is_ok() && engine.widget_text(self.slot, *n, text);
+        }
+        for (n, has, path) in &mut *self.images {
+            *has = self.reads.binary_search(n).is_ok() && engine.widget_image(self.slot, *n, path);
         }
         for (n, has, cells) in &mut *self.arrays {
             *has = self.reads.binary_search(n).is_ok()
@@ -593,6 +607,7 @@ impl LookFrame {
                 })
                 .collect(),
             texts: self.texts.clone(),
+            images: self.images.clone(),
             fonts: Arc::clone(&self.fonts),
             keys: self.keys.clone(),
             state: Filled::No,

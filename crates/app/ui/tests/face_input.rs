@@ -384,6 +384,39 @@ fn a_momentary_button_rebuilt_while_held_reports_its_release() {
     );
 }
 
+/// A native page's knob with both a drag and a tap gesture (Conflux's
+/// macros, Bend, Mod) lowers to the knob and a tap area right over it: a
+/// drag on the area turns the knob, and the area still reports its press
+/// and release, which run the page's own callbacks.
+#[test]
+fn a_knob_under_its_own_tap_area_turns_and_still_taps() {
+    let mut f = Face::new();
+    let rect = f.tree.widgets.first().map(|w| w.rect).unwrap_or_default();
+    f.tree.widgets.insert(
+        1,
+        Widget::new(
+            "native_ui tap 1 2",
+            PageRef(0),
+            rect,
+            Kind::Button { momentary: true },
+        ),
+    );
+    f.frame(Input::default());
+    let start = f.at(&input::surface(0, 1));
+    let mut edits = f.pointer(start, true, Mods::default());
+    for dy in [20., 60., 100.] {
+        edits.extend(f.pointer(Point::new(start.x, start.y - dy), true, Mods::default()));
+    }
+    edits.extend(f.pointer(Point::new(start.x, start.y - 100.), false, Mods::default()));
+    edits.extend(f.frame(Input::default()));
+    assert_eq!(f.value(0), 50.);
+    let taps: Vec<_> = (edits.iter())
+        .filter(|e| e.widget == WidgetRef(1))
+        .map(|e| &e.to)
+        .collect();
+    assert_eq!(taps, [&Set::Value(1.), &Set::Value(0.)]);
+}
+
 /// A pad runs its callback once on the press and once on the release, not
 /// once per cell it holds: a press and release that do not move send two
 /// edits (Kontakt 8 oracle, probe gate.ksp).
