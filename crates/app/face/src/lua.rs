@@ -74,7 +74,10 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             (w.normal.as_deref().map(|p| (p, 1)), ui::Role::Background),
             (w.pressed.as_deref().map(|p| (p, 1)), ui::Role::Pressed),
             (w.over.as_deref().map(|p| (p, 1)), ui::Role::Hover),
-            (w.over_pressed.as_deref().map(|p| (p, 1)), ui::Role::HoverPressed),
+            (
+                w.over_pressed.as_deref().map(|p| (p, 1)),
+                ui::Role::HoverPressed,
+            ),
             (w.handle.as_deref().map(|p| (p, 1)), ui::Role::Handle),
         ];
         let mut own = None;
@@ -351,7 +354,8 @@ pub fn picture(tree: &mut ui::Interface, n: usize, path: &str) -> bool {
         _ => [true; 2],
     };
     let asset = match (tree.assets.iter()).position(|a| {
-        a.path == path && matches!(&a.kind, ui::AssetKind::Image(m) if m.frames == 1 && m.stretch == stretch)
+        a.path == path
+            && matches!(&a.kind, ui::AssetKind::Image(m) if m.frames == 1 && m.stretch == stretch)
     }) {
         Some(found) => found,
         None => {

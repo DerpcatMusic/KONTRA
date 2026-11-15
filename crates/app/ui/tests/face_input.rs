@@ -405,11 +405,7 @@ fn a_knob_under_its_own_tap_area_turns_and_still_taps() {
     let start = f.at(&input::surface(0, 1));
     let mut edits = f.pointer(start, true, Mods::default());
     for dy in [20., 60., 100.] {
-        edits.extend(f.pointer(
-            Point::new(start.x, start.y - dy),
-            true,
-            Mods::default(),
-        ));
+        edits.extend(f.pointer(Point::new(start.x, start.y - dy), true, Mods::default()));
     }
     edits.extend(f.pointer(Point::new(start.x, start.y - 100.), false, Mods::default()));
     edits.extend(f.frame(Input::default()));

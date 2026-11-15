@@ -223,7 +223,8 @@ pub fn read(
     for (i, &n) in order.iter().enumerate() {
         if let Some(w) = tree.widgets.get(n.0).filter(|w| hovers(w)) {
             if tree.visible(n)
-                && let Some(edit) = hover(ui, surface(face, n.0), (n, w), scale, pointer, g, &mut over)
+                && let Some(edit) =
+                    hover(ui, surface(face, n.0), (n, w), scale, pointer, g, &mut over)
             {
                 edits.push(edit);
             }
@@ -402,8 +403,14 @@ pub fn read(
             // oracle, tools/ksp-ui text page); the first click opened the
             // field with its caret at the end.
             Kind::TextEdit if ui.double_click(id.as_str()) => {
-                let width = ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size.width);
-                let at = ui.local(id.as_str()).zip(width).map_or(0., |(p, w)| p.x / w.max(1.));
+                let width = ui
+                    .scene()
+                    .and_then(|s| s.surface(&id))
+                    .map(|s| s.frame.size.width);
+                let at = ui
+                    .local(id.as_str())
+                    .zip(width)
+                    .map_or(0., |(p, w)| p.x / w.max(1.));
                 type_into(ui, g, n.0, &id, w.text.clone(), word(&w.text, at));
             }
             Kind::TextEdit if (r.clicked || r.key_activated) && g.entry.is_none() => {
@@ -832,8 +839,13 @@ fn word(text: &str, at: f64) -> (usize, usize) {
     let i = ((at.clamp(0., 1.) * chars.len() as f64) as usize).min(chars.len().saturating_sub(1));
     let space = |c: Option<&char>| c.is_some_and(|c| c.is_whitespace());
     let kind = space(chars.get(i));
-    let from = (0..i).rev().find(|&j| space(chars.get(j)) != kind).map_or(0, |j| j + 1);
-    let to = (i..chars.len()).find(|&j| space(chars.get(j)) != kind).unwrap_or(chars.len());
+    let from = (0..i)
+        .rev()
+        .find(|&j| space(chars.get(j)) != kind)
+        .map_or(0, |j| j + 1);
+    let to = (i..chars.len())
+        .find(|&j| space(chars.get(j)) != kind)
+        .unwrap_or(chars.len());
     (from, to)
 }
 
