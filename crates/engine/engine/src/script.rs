@@ -679,9 +679,9 @@ impl HostApi for Engine {
                 HostValue::Int(i32::from(self.running.midi[1]))
             }
             // Across Kontakt's ports A to D: 0..=63.
-            Action::MidiChannel => HostValue::Int(current.map_or(0, |n| {
-                i32::from(n.host.port.min(3)) * 16 + i32::from(n.host.channel)
-            })),
+            Action::MidiChannel => {
+                HostValue::Int(current.map_or(0, |n| i32::from(n.host.port_channel())))
+            }
             Action::NoteHeld => flag(current.is_some_and(|n| !n.is_up())),
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
                 HostValue::Int(self.active_voices() as i32)
@@ -855,7 +855,7 @@ impl HostApi for Engine {
             Action::SetPolyAt => {
                 let channel = running
                     .and_then(|r| self.notes.get(r))
-                    .map_or(0, |n| n.host.channel);
+                    .map_or(0, |n| n.host.port_channel());
                 let at = |i| u8::try_from(int(i).clamp(0, 127)).unwrap_or(0);
                 let (key, value) = (at(0), at(1));
                 // A third argument delays it, in microseconds (UVI's `delta`).

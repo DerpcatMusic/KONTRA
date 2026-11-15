@@ -214,8 +214,8 @@ pub struct Engine {
     /// The buffers every voice renders through, in turn.
     voice_scratch: Scratch,
     buses: Vec<BusState>,
-    /// Sustain pedal down, per MIDI channel.
-    pedal: [bool; 16],
+    /// Sustain pedal down, per port and channel.
+    pedal: [bool; kontra_behaviour::CHANNELS],
     /// Scratch for ledger queries, capacity = note table size.
     hits: Vec<NoteRef>,
     ended: Vec<HostNote>,
@@ -456,7 +456,7 @@ impl Engine {
             voices,
             voice_scratch: Scratch::allocate(),
             buses,
-            pedal: [false; 16],
+            pedal: [false; kontra_behaviour::CHANNELS],
             stats: Stats::default(),
             vms,
             routes_moved: None,
@@ -684,7 +684,8 @@ impl Engine {
     }
 
     fn note_on(&mut self, host: HostNote, velocity: f64, tune: f64) {
-        self.behaviour.play(&self.plan, host.key, host.channel);
+        self.behaviour
+            .play(&self.plan, host.key, host.port_channel());
         // A script that plays its own release notes: the key going down
         // starts its release-trigger counter, not the notes it plays.
         if self.plan.release_zones == ReleaseZones::WithNote
@@ -736,7 +737,7 @@ impl Engine {
             if n.is_up() {
                 continue;
             }
-            let channel = n.host.channel;
+            let channel = n.host.port_channel();
             // `%KEY_DOWN` reads 0 in the key's own `on release`.
             n.key_up = true;
             if let Some(slot) = self.release_callbacks(note) {

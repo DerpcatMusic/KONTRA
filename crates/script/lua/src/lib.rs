@@ -1319,6 +1319,28 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_changed_runs_again_when_the_same_value_is_set_again() {
+        // A preset's value whose `changed` failed stays retryable: the
+        // same preset loaded again runs it.
+        let source = "n = 0
+            local k = Knob('k', 0, 0, 1)
+            k.changed = function(s) n = n + 1; if n == 1 then error('first') end end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function()
+                assert(not pcall(k.setValue, k, 0.5))
+                k:setValue(0.5)
+                assert(n == 2 and k.value == 0.5, n)
+                k:setValue(0.5)
+                assert(n == 2, n)
+            end";
+        let compiled = compile(source, &[], &[]).unwrap();
+        let mut m = compiled.machine();
+        let co = m.control(1, 0.5, 0).expect("control");
+        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+    }
+
+    #[test]
     fn a_note_callback_reaches_the_host() {
         let compiled =
             compile("function onNote(e) playNote(e.note + 7, 100) end", &[], &[]).unwrap();

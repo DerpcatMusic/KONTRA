@@ -62,7 +62,7 @@ impl Engine {
             if !selected
                 || !self
                     .behaviour
-                    .starts(zone, n.host.channel, n.key, n.draw, step)
+                    .starts(zone, n.host.port_channel(), n.key, n.draw, step)
             {
                 continue;
             }

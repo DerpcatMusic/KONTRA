@@ -310,7 +310,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         false => name,
     };
     // Kontakt's instrument header: the instrument and its snapshots.
-    let family = kontra_ui_model::preset_family(&presets, p.preset);
+    let family = kontra_ui_model::preset_family(std::path::Path::new(""), &presets, p.preset);
     let listed: Vec<&str> = (family.iter())
         .filter_map(|&n| names.get(n).map(String::as_str))
         .collect();
