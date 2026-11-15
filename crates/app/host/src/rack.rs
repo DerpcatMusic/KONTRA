@@ -747,6 +747,41 @@ impl Rack {
         });
     }
 
+    /// Files dropped on, or dragged over (`drop` false), mouse area
+    /// `widget` of `part`'s interface: `!NI_DND_ITEMS_*` read `items` by
+    /// kind (0 audio, 1 MIDI, 2 array), then its callbacks run.
+    pub fn control_drop(
+        &mut self,
+        part: usize,
+        widget: usize,
+        (drop, over): (bool, bool),
+        items: &[(u8, String)],
+    ) {
+        let Some(Some(p)) = self.parts.get_mut(part) else {
+            return;
+        };
+        let Some((slot, id, _)) = p.view.as_ref().and_then(|v| v.control(widget, 0.)) else {
+            return;
+        };
+        for (i, (kind, path)) in items.iter().enumerate() {
+            let text = Box::new(kontra_engine::Text::from_str_cut(path).0);
+            let (kind, first) = (*kind, i == 0);
+            self.send(Command::DropItem {
+                part,
+                kind,
+                first,
+                text,
+            });
+        }
+        self.send(Command::ControlDrop {
+            part,
+            slot,
+            id,
+            drop,
+            over,
+        });
+    }
+
     /// The user set `param` of `part`'s group `group` (every group when
     /// `None`) to `value`, in the Sound tab's units: the next notes play it.
     pub fn set_sound(

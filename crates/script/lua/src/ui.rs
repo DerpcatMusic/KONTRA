@@ -418,7 +418,13 @@ impl Reads {
         let Ok(s) = s.to_str() else {
             return false;
         };
-        *out = Text::from_str_cut(&s).0;
+        // A path longer than a `Text` is not published cut short: the
+        // picture shown stays (the build read the whole path).
+        let (text, cut) = Text::from_str_cut(&s);
+        if cut {
+            return false;
+        }
+        *out = text;
         true
     }
 }

@@ -659,8 +659,14 @@ pub enum Kind {
     TextEdit,
     /// A static picture (Lua `Image`); KSP pictures on labels are [`Kind::Label`].
     Image,
-    /// An invisible drag-and-drop / mouse target.
-    MouseArea,
+    /// An invisible target files are dropped on. `takes`: how many audio,
+    /// MIDI and array files it accepts (0 none, 1 one, more any number);
+    /// `drag`: whether a drag passing over it calls back too, not only
+    /// the drop.
+    MouseArea {
+        takes: [u16; 3],
+        drag: bool,
+    },
     /// A shape a Kontakt 8 `native_ui` page draws, filled with
     /// `colors.background`.
     Shape(Shape),
@@ -1178,7 +1184,7 @@ fn kontakt_paint_rank(kind: &Kind) -> u8 {
         Kind::Table { .. } => 12,
         Kind::Xy { .. } => 13,
         Kind::TextEdit => 14,
-        Kind::MouseArea => 15,
+        Kind::MouseArea { .. } => 15,
     }
 }
 

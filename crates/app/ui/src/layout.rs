@@ -16,7 +16,7 @@ fn default_size(kind: &Kind) -> (u32, u32) {
         Kind::Knob { .. } => (85, 52),
         // An unsized table draws 87 by 18 (Kontakt 8 oracle, tools/ksp-ui data page).
         Kind::Table { .. } => (87, 18),
-        Kind::MouseArea => (92, 92),
+        Kind::MouseArea { .. } => (92, 92),
         // Drawn 87 by 30 (it reports 87 by 18; Kontakt 8 oracle, probe/xy.ksp).
         Kind::Xy { .. } => (87, 30),
         Kind::Waveform | Kind::Wavetable { .. } => (184, 92),

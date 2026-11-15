@@ -58,6 +58,19 @@ impl Engine {
         }
     }
 
+    /// A file of kind `kind` (0 audio, 1 MIDI, 2 array) dragged onto a
+    /// mouse area; `first` starts the drag's list.
+    pub fn drop_item(&mut self, first: bool, kind: u8, path: Text) {
+        self.ui.drop_item(first, kind, path);
+    }
+
+    /// Those files let go on (`drop`), or dragged over (`over`) or out of,
+    /// a mouse area of script `slot`; then [`Engine::set_control`] runs
+    /// its callback.
+    pub fn drop_event(&mut self, slot: u8, drop: bool, over: bool) {
+        self.ui.drop_event(slot, drop, over);
+    }
+
     /// Script `slot`'s control with UI id `id`, as the script left it.
     #[must_use]
     pub fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>> {
