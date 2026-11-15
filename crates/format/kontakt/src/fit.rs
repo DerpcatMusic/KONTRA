@@ -76,6 +76,52 @@ fn model(effect: &str, keys: &HashMap<&str, f32>) -> Option<(ir::EffectKind, f32
             crate::drive::distortion(k("type", 0.0) as i32, k("drive", 0.0), k("damp", 0.0))?,
             0.0,
         )),
+        "vibrato" => {
+            let v = crate::vibrato::INIT;
+            let v = crate::vibrato::Vibrato {
+                depth: k("depth", v.depth as f32) as i32,
+                color: k("color", v.color as f32) as i32,
+                blend: k("blend", v.blend),
+                rate: k("rate", v.rate),
+                width: k("width", v.width),
+                mix: k("mix", v.mix),
+            };
+            Some((ir::EffectKind::Delay(crate::vibrato::delay(v)), 0.0))
+        }
+        "freak" => {
+            let f = crate::freak::FRESH;
+            Some((
+                crate::freak::freak(crate::freak::Knobs {
+                    kind: k("type", f.kind),
+                    frequency: k("freq", f.frequency),
+                    harmonics: k("harm", f.harmonics),
+                    feedback: k("fb", f.feedback),
+                    mix: k("mix", f.mix),
+                    mode: k("mode", f.mode),
+                    carrier: k("carrier", f.carrier),
+                    tuning: k("tuning", f.tuning),
+                    width: k("width", f.width),
+                    contour: k("contour", f.contour),
+                    release: k("release", f.release),
+                    gate: k("gate", f.gate),
+                    ..f
+                }),
+                0.0,
+            ))
+        }
+        "bite" => {
+            let b = crate::bite::FRESH;
+            Some((
+                crate::bite::bite(crate::bite::Knobs {
+                    frequency: k("freq", b.frequency),
+                    bits: k("bits", b.bits),
+                    saturate: k("sat", b.saturate),
+                    mix: k("mix", b.mix),
+                    ..b
+                }),
+                0.0,
+            ))
+        }
         _ => None,
     }
 }

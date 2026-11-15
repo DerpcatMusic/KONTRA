@@ -63,16 +63,7 @@ pub(crate) fn effect(
         }
         0x60 if version == 0x51 => Some(crate::supergt::supergt(crate::supergt::saved(public)?)),
         0x66 => crate::bite::saved(public).map(crate::bite::bite),
-        0x68 => {
-            let (knobs, feedback, mode) = crate::freak::saved(public)?;
-            if mode != crate::freak::OSCILLATOR {
-                notes.add(ir::Impact::Audible, "Freak Radio or Sidechain mode", at);
-            }
-            if feedback > 0.0 {
-                notes.add(ir::Impact::Audible, "Freak feedback", at);
-            }
-            Some(crate::freak::freak(knobs))
-        }
+        0x68 => crate::freak::saved(public).map(crate::freak::freak),
         _ => None,
     }
 }

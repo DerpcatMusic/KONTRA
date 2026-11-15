@@ -76,3 +76,28 @@ Not modelled: COLOR 1 and 2 (relative to COLOR 0: +5 dB at 635 Hz and −2 dB at
 +3 dB above; they play COLOR 0 and are reported), the 4..9 dB amplitude ripple (the scanner's line), the delay's
 centre (1 ms taken), BLEND between its ends (linear taken), WIDTH's law (the right sweep a quarter cycle ahead at
 WIDTH 1 taken). No model gate was run (the rule of 2026-11-15: one check at the end at most).
+
+## The core (binary, 2026-11-15)
+
+`ni::effektrig::dsp::hammondvibratochorus::HammondVibratoChorus` (ctor
+[ref], process [ref], switches [ref], COLOR [ref],
+line design [ref] per channel, constants read with
+`tools/re/pe_consts.py`):
+
+- The switches: DEPTH `int(6x)` (0..5), COLOR `int(3x)` (0..2), a byte
+  switch at `x ≥ 0.5` (the record's trailing byte).
+- RATE (lambda [ref]): `6·2^(5x − 3)` Hz (6.0 Hz at 0.6, as measured).
+- One continuous lambda is `π·x` (WIDTH's phase, taken).
+- The line is a wave-digital LC ladder (series and parallel adaptors,
+  capacitor ports `T/2C`) with the scanner's tap tables in the ctor; the
+  whole ladder is not ported (the model's line is the fitted [`BODY`]).
+- COLOR sets the ladder's terminating resistance, both channels:
+  `15000·10^(4.5u − 2.25)` Ω, with `u = 0.5` at COLOR 0 (15 kΩ, matched),
+  `0.3667(1 − p₀)` at COLOR 1 (lower: 84 Ω..3.8 kΩ) and `0.3667p₀ + 0.6333`
+  at COLOR 2 (higher: 60 kΩ..2.7 MΩ); `p₀` is the core's first continuous
+  parameter (clamped 1e-6..1, it also retunes the line), not yet tied to an
+  ENGINE_PAR. A mismatched termination reflects along the line: the
+  resonances measured above. COLOR 1 and 2 still play COLOR 0.
+
+Gate (2026-11-15, `sweep`, DEPTH 2, RATE .6; band rms / max, frame rms, dB): COLOR 0 1.24 / 2.7, 2.09; COLOR 1
+1.93 / 3.9 (worst 635 Hz), 3.57; COLOR 2 3.13 / 10.2 (worst 317 Hz), 3.97; COLOR 1 at BLEND 1 2.36 / 7.0, 5.90.

@@ -37,7 +37,7 @@ core frames sooner. This keeps the reducer within the per-voice unit size
 Also from the core: fewer than 9 bits scale the output by 0.6..0.95, and
 silence (follower ≤ 1e-4, 5/100 ms) holds the last sample.
 
-## Freak (module 0x68) → `ir::RingMod`, Oscillator mode
+## Freak (module 0x68) → `ir::RingMod`, all three modes
 
 Engine: `crates/dsp/spatial/src/ringmod.rs`. Laws: `crates/format/kontakt-effects/src/freak.rs`.
 
@@ -54,21 +54,52 @@ Engine: `crates/dsp/spatial/src/ringmod.rs`. Laws: `crates/format/kontakt-effect
 The Hilbert pair is Niemitalo's fixed polyphase IIR, not the native
 per-rate elliptic design: they differ in phase only.
 
-Not carried, reported by the translator: the Radio mode (MODE 0: fuzz,
-band-pass, noise and demodulator chain; TUNING, CARRIER, WIDTH, DEMOD) and
-Sidechain mode (MODE 2: follower, CONTOUR, RELEASE, BP_FILTER, BP_FREQ),
-and FEEDBACK (the core's implicit feedback loop). Their scripts' moves have
-no rows, so they report as unknown parameters.
+Radio, Sidechain and FEEDBACK, from the core's setters and process
+(through v2's port); not yet rendered against Kontakt:
+
+| Control | Law |
+|---|---|
+| FEEDBACK | `a = 0.9x²` of the wet output, low-passed at 15 kHz and high-passed at 20 Hz, taken off the input, solved implicitly (≤ 4 passes, 1e-4); the shifted branch's level `q·√(1 − a²) + 1 − q` (Oscillator, Sidechain) |
+| MODE 2 Sidechain | carrier = the input's analytic pair, its quadrature branch inverted; CONTOUR blends it to its envelope (mono magnitude), whose attack and release are `0.005 + 0.195c`, `0.01 + 9.99c` s, `c = RELEASE³`; the TYPE bias follows the envelope; no input high-pass |
+| BP_FILTER, BP_FREQ | 3.5-octave band-pass on the modulator at pitch index `455x + 1551.88` |
+| MODE 0 Radio | the input × `3·HARMONICS + 1`, plus the TYPE bias (× the input's level with DEMOD), transmitted on a sine at pitch index `200·CARRIER + 1881.88`; noise (`0.299a² + 0.001`, 5 kHz low-pass) added, then received |
+| TUNING, CARRIER | receiver band-pass at pitch index `5·(a − b + 2b·TUNING) + 1381.88`, `a = 40·CARRIER + 100`, `b = 24 − 12·CARRIER` (the carrier at 0.5) |
+| WIDTH | band-pass `0.1 + 1.9x` octaves, makeup `1/(0.556v + 0.444)` below one octave |
+| DEMOD | off: ADAA rectifier, 50 Hz high-pass, 4-pole Butterworth at half the tuned pitch; on: the band-pass × a sine at the tuned pitch |
+| level | received × `2/√(3·HARMONICS + 1)`, then `0.707/(e + 0.4)` of a 2/200 ms follower |
 
 ## Saved records
 
-Field order from v2's readers (Bite apply [ref]: HPF i32, ten
-floats, DC_QUANT byte; Freak apply [ref]: thirteen floats, five
-bytes, the mode i32). Byte offsets assume packed fields and are not yet
-byte-diffed against a probe save.
+Checked against Kontakt 8's own readers (reader_schemas.tsv plus the
+decompile) and the member offsets in
+docs/re/kontakt-bindings/fx_bite_dirt_freak_wowflutter_twindelay.tsv:
 
-## Gate
+- Bite, reader [ref], schema `IFx10B`: HPF i32 at 0, ten floats at
+  4..40 (FREQ, BITS, JITTER, CRUNCH, DITHER, EXPAND, SAT, PRE, POST, MIX),
+  DC_QUANT byte at 44.
+- Freak, reader [ref], schema `Fx13Bx5I`: thirteen floats at 0..48
+  (member offset − 8: TYPE, HARMONICS, FEEDBACK, MIX, TUNING, CARRIER,
+  WIDTH, FREQUENCY, ANTIFOLD, STEREO, CONTOUR, BP_FREQ, RELEASE), five
+  bytes at 52..56 (DEMOD, GATE, WIDE_RANGE, BP_FILTER, then one with no
+  ENGINE_PAR), MODE i32 at 57, stored raw 0/1/2.
 
-The fit gate (`fx_export.py`, `fx_gate.py`, `fit` test) was not run.
-Under the 2026-11-15 rule (read first, no per-parameter sweeps) the models
-come from the core laws above, and the renders here only confirm them.
+The record is packed: no padding between the byte run and the mode.
+
+## Gate (Kontakt 8.13.1, 2026-11-15)
+
+One oracle session, `fx_lab.py` `sweep` (5 s log sweep, every control set), `fx_export.py` + `fit` + `fx_gate.py`;
+dB, model minus oracle, 1/3-octave band rms / max, 10 ms frame rms:
+
+| Case | band rms / max | frame rms | |
+|---|---|---|---|
+| Freak Oscillator, FREQ .75, TYPE .5 | 1.09 / 4.6 | 2.26 | passes |
+| Freak Oscillator, TYPE 1, FEEDBACK .7 | 2.30 / 8.9 | 1.57 | worst at 31 Hz |
+| Freak Radio, CARRIER .5, FEEDBACK .3 | 4.91 / 16.9 | 4.74 | worst at 16 kHz (the receiver's top) |
+| Freak Sidechain, TYPE 1, CONTOUR 0 | 7.51 / 16.6 | 8.28 | fails: level and lows (25 Hz) |
+| Bite FREQ .5, BITS .5 | 0.16 / 0.5 | 2.55 | passes |
+| Bite FREQ .2 | 12.0 / 32.0 | 2.20 | fails above the clock (1.6 kHz): images |
+| Bite SATURATE .7 | 1.11 / 1.1 | 1.12 | passes |
+| Bite BITS .3 | 0.17 / 0.6 | 0.25 | passes |
+
+Fresh read-back of a script-loaded Freak: every control at the core's init values used in `FRESH` (FEEDBACK,
+DEMOD, BP_FILTER 0; TUNING, WIDTH, CONTOUR, BP_FREQ, RELEASE 0.5; CARRIER 1; MODE 1).
