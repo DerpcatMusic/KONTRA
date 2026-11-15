@@ -233,27 +233,16 @@ impl Analytic {
 }
 
 /// The radio receiver's state for one channel.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Receiver {
+    /// The noise generator's state; 0 (never a MINSTD value) until the
+    /// first sample seeds it with 12345.
     seed: u32,
     noise: OnePole,
     band: SvfState,
     rectifier: Rectifier,
     dc: OnePole,
     low: [SvfState; 2],
-}
-
-impl Default for Receiver {
-    fn default() -> Self {
-        Self {
-            seed: 12_345,
-            noise: OnePole::default(),
-            band: SvfState::default(),
-            rectifier: Rectifier::default(),
-            dc: OnePole::default(),
-            low: [SvfState::default(); 2],
-        }
-    }
 }
 
 /// One channel's state.
@@ -524,7 +513,8 @@ impl Receiver {
     /// (or multiplied by `product`'s sine), its hum and highs taken off.
     fn receive(&mut self, x: f32, c: &Coefs, noise: f32, product: Option<f32>) -> f32 {
         // MINSTD (48271, 2³¹ − 1), uniform in −1..1.
-        self.seed = ((u64::from(self.seed) * 48_271) % 2_147_483_647) as u32;
+        let seed = if self.seed == 0 { 12_345 } else { self.seed };
+        self.seed = ((u64::from(seed) * 48_271) % 2_147_483_647) as u32;
         let white = 2.0 * (self.seed as f32 - 1.0) * 4.656_613e-10 - 1.0;
         let x = x + noise * self.noise.tick(white, c.noise);
         let band = c.band.k * self.band.tick(x, c.band).0;
