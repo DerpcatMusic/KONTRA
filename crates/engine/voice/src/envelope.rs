@@ -22,6 +22,9 @@ pub struct Ahdsr {
     pub fall_shape: f32,
     /// Silent frames at the start of an attack, taken out of its length.
     pub lag: u32,
+    /// The gain is `floor + depth·level` while the envelope runs.
+    pub floor: f32,
+    pub depth: f32,
 }
 
 impl Ahdsr {
@@ -35,6 +38,8 @@ impl Ahdsr {
         attack_shape: 0.0,
         fall_shape: 0.0,
         lag: 0,
+        floor: 0.0,
+        depth: 1.0,
     };
 }
 
@@ -101,6 +106,9 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Starts an envelope at its attack. Times in `settings` are frames. The
+    /// lag is capped at `attack − 1` frames, so the attack always moves on its
+    /// last frame; with no attack there is no lag and the first frame is full.
     pub fn new(settings: Ahdsr) -> Self {
         let wait = settings.lag.min(settings.attack.saturating_sub(1));
         let mut env = Self {
@@ -146,8 +154,18 @@ impl Envelope {
         self.stage == Stage::Off
     }
 
-    /// The gain for the next frame.
+    /// The gain for the next frame: `floor + depth·level`, silent once off.
     pub fn tick(&mut self) -> f32 {
+        let s = self.settings;
+        let level = self.step();
+        if self.stage == Stage::Off {
+            return 0.0;
+        }
+        s.floor + s.depth * level
+    }
+
+    /// The next frame's envelope level.
+    fn step(&mut self) -> f32 {
         let s = self.settings;
         if self.wait > 0 && self.stage != Stage::Release {
             self.wait -= 1;
@@ -239,6 +257,46 @@ mod tests {
         let got = lagged(4);
         assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-5), "{got:?}");
         assert_eq!(lagged(0)[0], 1.0);
+    }
+
+    /// A volume route at half intensity: scaled, the envelope tops out at
+    /// 0.5; floored, it starts at 0.5. Both are silent once released.
+    #[test]
+    fn depth_and_floor_shape_the_gain() {
+        let run = |floor, depth| {
+            let mut env = Envelope::new(Ahdsr {
+                attack: 2,
+                release: 1,
+                floor,
+                depth,
+                ..Ahdsr::GATE
+            });
+            let mut out: Vec<f32> = (0..3).map(|_| env.tick()).collect();
+            env.release();
+            out.extend((0..2).map(|_| env.tick()));
+            out
+        };
+        let got = run(0.0, 0.5);
+        assert!(got.iter().zip([0.25, 0.5, 0.5, 0.0, 0.0]).all(|(g, w)| (g - w).abs() < 1e-5), "{got:?}");
+        let got = run(0.5, 0.5);
+        assert!(got.iter().zip([0.75, 1.0, 1.0, 0.0, 0.0]).all(|(g, w)| (g - w).abs() < 1e-5), "{got:?}");
+    }
+
+    /// A key-up during the lag releases at once: silent, and off after the
+    /// release time, without waiting out the rest of the attack.
+    #[test]
+    fn a_release_in_the_lag_ends_after_the_release_time() {
+        let mut env = Envelope::new(Ahdsr {
+            attack: 100,
+            lag: 50,
+            release: 4,
+            ..Ahdsr::GATE
+        });
+        assert_eq!(env.tick(), 0.0);
+        env.release();
+        let levels: Vec<f32> = (0..4).map(|_| env.tick()).collect();
+        assert_eq!(levels, [0.0; 4]);
+        assert!(env.is_off());
     }
 
     #[test]

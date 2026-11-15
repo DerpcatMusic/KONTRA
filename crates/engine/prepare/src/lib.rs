@@ -856,6 +856,8 @@ pub fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
         attack_shape: e.attack_shape,
         fall_shape: e.fall_shape,
         lag: frames(e.lag),
+        floor: e.floor,
+        depth: e.depth,
     }
 }
 

@@ -545,6 +545,10 @@ pub struct Envelope {
     /// Seconds an attack stays silent before its curve runs in the rest of
     /// the attack time; none without an attack.
     pub lag: f32,
+    /// The voice gain is `floor + depth·level`: a volume route's intensity
+    /// below full either scales the envelope or keeps a floor under it.
+    pub floor: f32,
+    pub depth: f32,
 }
 
 impl Envelope {
@@ -558,6 +562,8 @@ impl Envelope {
         attack_shape: 0.0,
         fall_shape: 0.0,
         lag: 0.0,
+        floor: 0.0,
+        depth: 1.0,
     };
 }
 
