@@ -2134,25 +2134,28 @@ fn a_spawned_task_starts_after_its_caller_and_a_run_one_at_once() {
 
 /// Antartide's arpeggiator and step modulators stop their loop and spawn a
 /// new one on every control move; the old one stays parked in its wait
-/// until it wakes and sees it was stopped. UVI parks them all: 300 such
-/// restarts leave the newest run playing, with no task dropped.
+/// until it wakes and sees it was stopped. UVI parks them all: 300 moves,
+/// a block apart, leave 300 loops parked, the newest running, and a note
+/// still gets its callback (tasks never take the callbacks' slots).
 #[test]
 fn restarted_loops_park_until_they_wake_and_the_newest_plays() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let restarts = "local runid = 0
         local function loop(id)
-            while id == runid do wait(2000) end
+            while id == runid do wait(60000) end
+        end
+        function onController(e)
+            runid = runid + 1
+            spawn(loop, runid)
         end
         function onNote(e)
-            for i = 1, 300 do
-                runid = runid + 1
-                spawn(loop, runid)
-            end
-            spawn(function() wait(10) playNote(60, 100) end)
+            playNote(60, 100)
         end";
     let mut e = lua_engine(&mut store, restarts);
-    level(&mut e, &[on(60)]);
-    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+    for n in 0..300u16 {
+        level(&mut e, &[cc(1, u8::try_from(n % 128).unwrap())]);
+    }
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
     assert_eq!(e.script_faults().first().map(|f| f.no_coroutine), Some(0));
 }
 

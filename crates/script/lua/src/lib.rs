@@ -590,15 +590,14 @@ impl LuaMachine {
         start: Option<(Function, First)>,
         context: u64,
     ) -> Option<CoId> {
-        // A callback needs a resident coroutine; a task any slot, the task
-        // slots first so the callbacks keep theirs.
-        let resident = start.is_some();
-        let order = match resident {
-            true => 0..COROUTINES.min(self.slots.len()),
-            false => COROUTINES.min(self.slots.len())..self.slots.len(),
+        // A callback takes a resident slot, a task a task slot: tasks never
+        // take the slots note, release and control callbacks need.
+        let residents = COROUTINES.min(self.slots.len());
+        let mut range = match start.is_some() {
+            true => 0..residents,
+            false => residents..self.slots.len(),
         };
-        let fallback = (!resident).then_some(0..COROUTINES.min(self.slots.len()));
-        let free = order.chain(fallback.into_iter().flatten()).find(|&i| {
+        let free = range.find(|&i| {
             self.slots
                 .get(i)
                 .is_some_and(|s| matches!(s.running, Running::Idle))
@@ -670,6 +669,7 @@ impl LuaMachine {
                 let waited = waited.map(|m: f64| m.max(0.0) as u64);
                 self.spawned.push_back((co, waited));
             } else {
+                self.faults.no_coroutine += 1;
                 self.cancel(co);
             }
         }
@@ -1280,8 +1280,14 @@ mod tests {
         let pick = m.control(2, 2.0, 0).expect("pick");
         assert_eq!(m.run(pick, &mut log), Step::Done);
         let (task, _) = m.spawned().expect("the preset lands in a task");
-        // Not started yet (UVI's `spawn`): it first waits its pace.
-        assert!(matches!(m.run(task, &mut log), Step::Wait(_)));
+        // Not started yet (UVI's `spawn`): it first waits its pace, after
+        // any slice that runs out (resumed in the next block).
+        let mut step = m.run(task, &mut log);
+        while step == Step::Yield {
+            m.begin_block();
+            step = m.run(task, &mut log);
+        }
+        assert!(matches!(step, Step::Wait(_)), "{step:?}");
         // The editor's slice may run out mid-preset (a valid yield, resumed in
         // the next block); a wait between its controls is the bug.
         let mut step = m.run(task, &mut log);
