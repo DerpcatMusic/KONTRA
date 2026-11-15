@@ -228,7 +228,7 @@ pub(crate) fn instrument(
     for why in resources.iter().flat_map(|r| &r.unreadable) {
         notes.add(ir::Impact::Broken, "resource archive", why);
     }
-    let groups = program
+    let mut groups = program
         .0
         .find_first(GROUP_LIST)
         .ok_or_else(|| Error::new(path, "group list", "missing"))
@@ -248,11 +248,17 @@ pub(crate) fn instrument(
         crate::snapshot::unmatched(native.groups.len(), groups.groups.len(), &mut notes);
         group_fx = native.groups;
     }
-    for (index, group) in groups.groups.iter().enumerate() {
+    for (index, group) in groups.groups.iter_mut().enumerate() {
+        let mut saved = group_fx.get_mut(index).and_then(Option::take);
+        // A snapshot's source and modulators stand in for the group's own.
+        if let Some(s) = &mut saved {
+            s.apply(group)
+                .map_err(|e| Error::new(path, "snapshot group", format!("{index}: {e}")))?;
+        }
+        let group = &*group;
         let t = translate_group(group, index, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
-        let saved = group_fx.get_mut(index).and_then(Option::take);
         let fx = saved.map(|s| {
             g.volume_db = db(s.volume);
             g.pan = s.pan.clamp(-1.0, 1.0);

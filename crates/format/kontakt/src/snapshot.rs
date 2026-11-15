@@ -53,21 +53,47 @@ pub(crate) struct Group {
     pub volume: f32,
     pub pan: f32,
     pub tune: f32,
+    /// Its source module's record and its internal and external modulator
+    /// arrays, as the group holds them: they stand in for the base's.
+    source: Vec<u8>,
+    mods: Vec<Chunk>,
 }
 
 impl Group {
-    fn of(g: ni_file::kontakt::objects::GroupSnapshot) -> Self {
+    fn of(g: ni_file::kontakt::objects::GroupSnapshot) -> Result<Self, ni_file::Error> {
         let float = |at: usize| {
             (g.public_data.get(at..at + 4))
                 .and_then(|b| b.try_into().ok())
                 .map_or(0.0, f32::from_le_bytes)
         };
-        Self {
+        Ok(Self {
             volume: float(0),
             pan: float(4),
             tune: float(8),
+            source: g.source_record()?.to_vec(),
+            mods: Vec::from(g.modulator_chunks()?),
             fx: g.fx,
+        })
+    }
+
+    /// Puts its source and modulators into the base's `group`, which the
+    /// translator then reads as it reads any group.
+    ///
+    /// # Errors
+    /// When the base group's source record does not decode.
+    pub(crate) fn apply(
+        &mut self,
+        group: &mut ni_file::kontakt::objects::Group,
+    ) -> Result<(), ni_file::Error> {
+        group.set_source_record(&self.source)?;
+        for chunk in std::mem::take(&mut self.mods) {
+            let children = &mut group.0.children;
+            match children.iter_mut().find(|c| c.id == chunk.id) {
+                Some(own) => *own = chunk,
+                None => children.push(chunk),
+            }
         }
+        Ok(())
     }
 }
 
@@ -81,8 +107,8 @@ impl Native {
             return Ok(None);
         }
         let groups = (state.group_snapshots()?.into_iter())
-            .map(|(_, g)| Some(Group::of(g)))
-            .collect();
+            .map(|(_, g)| Group::of(g).map(Some))
+            .collect::<Result<_, _>>()?;
         Ok(Some(Self {
             racks: state.effect_children,
             groups,
