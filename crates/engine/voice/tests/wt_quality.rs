@@ -2,6 +2,7 @@
 //! (harmonics 1..1023 at 1/h) read at keys 60, 84 and 96, analysed as `tools/kontakt-oracle/wt_quality.py`
 //! analyses Kontakt's render of the same table (4096-frame Hann window, bins within 2 of a harmonic are
 //! the harmonic's; the rest below 20 kHz is alias).
+#![cfg(test)]
 
 use std::sync::Arc;
 
