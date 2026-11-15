@@ -16,7 +16,7 @@ use kontra_dsp::filter::{
     Cascade, CascadeSettings, CascadeStage, Clocked, ClockedShape, NotchSettings, Notches, Svf,
 };
 use kontra_dsp::reverb::{Combs, Convolver, Fdn, Hadamard, Network, Settings};
-use kontra_dsp::spatial::{Ring, RingMod};
+use kontra_dsp::spatial::{Ring, RingMod, RingSource};
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
@@ -423,6 +423,36 @@ fn ring(r: ir::RingMod) -> RingMod {
         drive: r.drive,
         highpass_hz: r.highpass_hz,
         gate: r.gate,
+        feedback: r.feedback,
+        source: match r.source {
+            ir::RingSource::Oscillator => RingSource::Oscillator,
+            ir::RingSource::Sidechain {
+                contour,
+                attack,
+                release,
+                bandpass_hz,
+            } => RingSource::Sidechain {
+                contour,
+                attack,
+                release,
+                bandpass_hz,
+            },
+            ir::RingSource::Radio {
+                gain,
+                tuned_hz,
+                damping,
+                makeup,
+                product,
+                noise,
+            } => RingSource::Radio {
+                gain,
+                tuned_hz,
+                damping,
+                makeup,
+                product,
+                noise,
+            },
+        },
         wet: r.wet,
         dry: r.dry,
     }
@@ -469,7 +499,8 @@ pub fn stem(name: &str) -> &str {
     file.rsplit_once('.').map_or(file, |(s, _)| s)
 }
 
-fn compressor(c: ir::Compressor) -> CompressorSettings {
+/// A compressor's settings in DSP terms.
+pub fn compressor(c: ir::Compressor) -> CompressorSettings {
     CompressorSettings {
         threshold_db: c.threshold_db,
         ratio: c.ratio,

@@ -102,9 +102,11 @@ impl Engine {
             ..
         } = self.effect_mut(-1, slot, generic).map(|e| &*e)?
         else {
-            let at = crate::knobs::rack_at(-1, generic)?;
-            return self.empty_convolution(at, slot).map(|law| (None, law));
+            return None;
         };
+        if impulse == ir::Impulse::NONE {
+            return Some((None, ir::Impulse::PLAIN));
+        }
         let plan = Arc::clone(&self.plan);
         let at = usize::from(impulse);
         let (name, law) = match at.checked_sub(plan.impulses.len()) {
@@ -113,15 +115,6 @@ impl Engine {
         }?;
         let found = (plan.responses.iter()).position(|(n, _)| n.eq_ignore_ascii_case(name));
         Some((found.and_then(|f| u16::try_from(f).ok()), law))
-    }
-
-    /// A type the script loaded that is a convolution with no response yet:
-    /// how one it loads is prepared ([`ir::SlotShapes::impulses`]).
-    pub(crate) fn empty_convolution(&self, at: ir::RackAt, slot: i32) -> Option<ir::Impulse> {
-        let shapes = &self.plan.slot_shapes;
-        let t = shapes.types.get(usize::from(self.loaded_type(at, slot)?))?;
-        let empty = |i: &&(i32, ir::Impulse)| !t.subtype && i.0 == t.id;
-        shapes.impulses.iter().find(empty).map(|&(_, law)| law)
     }
 
     /// Decodes each response asked for into its slot (the rack now plays

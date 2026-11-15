@@ -593,6 +593,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  block {n} after a control's edits: {us:.1} µs");
         }
         install_requests(&mut engine, &plan, &stream);
+        // KONTRA_TRACE_VOICES=1: every voice in the first 15 blocks (160 ms):
+        // zone, group, envelope stage and level, gain and last peak.
+        if n < 15 && std::env::var_os("KONTRA_TRACE_VOICES").is_some() {
+            let t = (n + 1) as f64 * 512.0 / f64::from(RATE);
+            for v in engine.inspect_voices() {
+                let group = plan.zones.get(v.zone).map(|z| z.group);
+                println!("trace\t{t:.4}\t{}\t{group:?}\t{}\t{:.4}\t{:?}\t{v:?}", v.zone, v.envelope_stage, v.envelope_level, v.gain);
+            }
+        }
         // KONTRA_POSITIONS=1: each voice's source position after every block
         // (`pos  seconds  zone  frames`); the slope is its pitch, for sounds
         // too noisy to pitch-track.

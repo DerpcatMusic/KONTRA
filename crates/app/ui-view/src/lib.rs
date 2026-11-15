@@ -602,9 +602,9 @@ fn drawn_page(
         } else {
             el
         };
-        let el = if hovers(wd) {
-            // Marks where it is and takes no press: input reads the pointer
-            // against it (crate::input).
+        let el = if hovers(wd) || matches!(wd.kind, Kind::MouseArea { .. }) {
+            // Marks where it is and takes no press: input reads the pointer,
+            // or a file dragged over it, against it (crate::input).
             block(0., 0.).id(id)
         } else if takes_input(wd) {
             let el = el
@@ -830,6 +830,39 @@ fn image_asset(tree: &Interface, a: model::AssetRef) -> Option<(&str, model::Ima
         model::AssetKind::Image(m) => Some((asset.path.as_str(), m)),
         _ => None,
     }
+}
+
+/// The character of widget `w`'s one-line words under `x` (view units from
+/// its left edge, the widget `width` wide at `scale`): its words placed as
+/// [`words_el`] draws them (the plan's size, inset and alignment) and hit
+/// against the scene font's own caret positions.
+pub fn char_at(
+    ui: &Ui,
+    tree: &Interface,
+    w: &model::Widget,
+    (width, height, scale): (f64, f64, f64),
+    x: f64,
+) -> usize {
+    let style = w.style.and_then(|s| tree.styles.get(s.0));
+    let words = w.text.as_str();
+    let geometry = plan::text(words, style, w, (height, scale, 1.), tree.source);
+    let carets = ui.carets(words, geometry.size);
+    let wide = carets.last().map_or(0., |c| c.1);
+    let room = (width - geometry.inset.0 - geometry.inset.1).max(0.);
+    let left = geometry.inset.0
+        + match geometry.align {
+            model::Align::Left => 0.,
+            model::Align::Center => (room - wide) / 2.,
+            model::Align::Right => room - wide,
+        };
+    let at = x - left;
+    // The character under the pointer starts at the last boundary left of it.
+    let byte = (carets.iter())
+        .filter(|c| c.1 <= at && c.0 < words.len())
+        .map(|c| c.0)
+        .max()
+        .unwrap_or(0);
+    words.get(..byte).map_or(0, |s| s.chars().count())
 }
 
 fn words_el(

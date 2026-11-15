@@ -267,6 +267,17 @@ impl Voice {
         };
     }
 
+    /// Ends it through its envelope's release at engine frame `now` (a voice
+    /// stopped by a rule that releases): it no longer counts as playing.
+    /// `true` when this first sets it ending.
+    pub fn end_by_release(&mut self, now: u64) -> bool {
+        let first = !self.is_ending();
+        let at = self.released_at().unwrap_or(now);
+        self.release();
+        self.life = Life::Ending(Some(at));
+        first
+    }
+
     /// Fades over `frames` to `target`; ending (a stolen or choked voice)
     /// is click-free, and a fade already ending it ends at the sooner.
     /// `true` when this fade first sets it ending.
@@ -382,6 +393,11 @@ impl Voice {
     #[must_use]
     pub fn envelope_stage(&self) -> &'static str {
         self.env.stage_name()
+    }
+
+    /// Current amplitude envelope level, 0..=1.
+    pub fn envelope_level(&self) -> f32 {
+        self.env.level()
     }
 
     /// Peak of this voice's last render call before group effects, when tracing is enabled.
@@ -526,9 +542,10 @@ impl Voice {
                 n = n.min((HALF_GRAIN - self.grain % HALF_GRAIN) as usize);
             }
             let filled = if let Some(table) = region.table.as_mut() {
-                let cursor = (self.at(0), self.step());
                 let raw = scratch.raw.get_mut(..n).unwrap_or_default();
-                table.render(cursor, raw);
+                // Each frame's own cursor: a gliding table moves pitch every
+                // frame, the same at any block size.
+                table.render(|i| self.at(i), self.step(), raw);
                 raw.len()
             } else if stretched {
                 self.read_stretched(scratch, client, &region, n)
@@ -596,7 +613,14 @@ impl Voice {
             self.heads[1] = at;
         }
         let step = self.step();
-        let a = self.read_window(scratch, client, region, n, (self.heads[0], 0, step), Ramp::NONE);
+        let a = self.read_window(
+            scratch,
+            client,
+            region,
+            n,
+            (self.heads[0], 0, step),
+            Ramp::NONE,
+        );
         if let (Some(head), Some(raw)) = (scratch.head.get_mut(..a), scratch.raw.get(..a)) {
             head.copy_from_slice(raw);
         }

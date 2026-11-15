@@ -261,10 +261,9 @@ impl Engine {
     ) -> Option<ir::Effect> {
         let (rack, n) = self.rack_slot(at, slot)?;
         let current = (*rack.slots.get(n)?)?;
-        let convolution = matches!(current.kind, ir::EffectKind::Convolution { .. });
-        if !convolution && self.empty_convolution(at, i32::from(slot)).is_none() {
+        let ir::EffectKind::Convolution { .. } = current.kind else {
             return None;
-        }
+        };
         let (name, law, _) = response.as_ref()?;
         let known = (self.loaded.iter()).position(|(m, l, _)| m == name && l == law);
         let j = match known {

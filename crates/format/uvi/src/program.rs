@@ -316,6 +316,8 @@ impl<L: Library> Translator<'_, '_, L> {
             Ok(ir::Glide {
                 scope: self.glide_scopes,
                 depth: if slides { 1.0 } else { 0.0 },
+                range: f32::INFINITY,
+                from_heard: false,
                 seconds: num(layer, "PortamentoTime", 0.03)?.max(0.0) as f32,
                 per_semitone: num(layer, "PortamentoMode", 0.0)? != 0.0,
                 legato: mode == 3,
@@ -341,6 +343,7 @@ impl<L: Library> Translator<'_, '_, L> {
             per_note: true,
             legato: matches!(mode, 3 | 4),
             returns: mono,
+            ..ir::VoiceGroup::DEFAULT
         });
         let vg = self.out.voice_groups.len() - 1;
         if let (true, Some(g)) = (live, glide) {

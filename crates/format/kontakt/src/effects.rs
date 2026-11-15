@@ -202,7 +202,11 @@ fn rack(
 // voice_rack.rs); a wet slot before one is not reported.
 fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
     let drive = |e: &ir::Effect| {
-        !e.bypass && matches!(e.kind, ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_))
+        !e.bypass
+            && matches!(
+                e.kind,
+                ir::EffectKind::Shaper(_) | ir::EffectKind::Strip(_) | ir::EffectKind::Crush(_)
+            )
     };
     let last_drive = out.iter().rposition(|e| e.as_ref().is_some_and(drive));
     for (slot, e) in out.iter().enumerate() {
@@ -214,9 +218,7 @@ fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
             _ if last_drive.is_none_or(|d| slot > d) => None,
             ir::EffectKind::Convolution { .. } => Some("group convolution before a drive"),
             ir::EffectKind::Reverb(_) => Some("group reverb before a drive"),
-            ir::EffectKind::Compressor(_) | ir::EffectKind::Strip(_) => {
-                Some("group compressor before a drive")
-            }
+            ir::EffectKind::Compressor(_) => Some("group compressor before a drive"),
             ir::EffectKind::Limiter(_) => Some("group limiter before a drive"),
             ir::EffectKind::Delay(_) | ir::EffectKind::Shifter(_) => {
                 Some("group delay before a drive")
@@ -442,7 +444,7 @@ fn slot_effect(
                 0x56 => *model = crate::dstortion::model(&public),
                 0x60 => *model = crate::supergt::model(&public),
                 0x66 => *model = crate::bite::saved(&public).map(crate::bite::model),
-                0x68 => *model = crate::freak::saved(&public).map(|(k, ..)| crate::freak::model(k)),
+                0x68 => *model = crate::freak::saved(&public).map(crate::freak::model),
                 _ => {}
             }
             crate::drive::effect(id, object.version, &public, at, notes)

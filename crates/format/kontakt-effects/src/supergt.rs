@@ -325,9 +325,9 @@ const SQUEEZE: [[f32; 4]; 5] = [
 /// (dB), from stepped tones at COMPRESS 1 and level steps at COMPRESS 0.
 const DETECTOR: [(f32, f32); 2] = [(100.0, -1.5), (300.0, -3.0)];
 
-/// The record as the engine's compressor into its waveshaper; with
-/// COMPRESS 0 the waveshaper alone (which a group rack runs per voice).
-/// MIX scales the wet path (the slot's dry level carries the rest,
+/// The record as the engine's compressor into its waveshaper, the
+/// compressor built at every COMPRESS (passing at 0), so a script or knob
+/// raising it later is heard; a group rack runs both on each voice. MIX scales the wet path (the slot's dry level carries the rest,
 /// [`mix_dry`]).
 pub fn supergt(k: Knobs) -> ir::EffectKind {
     let [trim, saturation, character, mix, compress, attack, release] = [
@@ -386,9 +386,6 @@ pub fn supergt(k: Knobs) -> ir::EffectKind {
             ],
         },
     };
-    if compress <= 0.0 {
-        return ir::EffectKind::Shaper(shaper);
-    }
     let at = compress * 4.0;
     let j = (at as usize).min(3);
     let row = |n: usize| SQUEEZE.get(n).copied().unwrap_or([0.0, 1.0, 0.0, 0.0]);
@@ -412,7 +409,9 @@ pub fn supergt(k: Knobs) -> ir::EffectKind {
             // 0.5 and 1 (the recovery after them).
             attack_ms: 30f32.powf(attack * attack),
             release_ms: (4.143 + 3.57 * release - 1.06 * release * release).exp(),
-            makeup_db: makeup + timing_db(attack, release),
+            // The timing shifts were measured at COMPRESS 1; they fade in
+            // by 0.25 so COMPRESS 0 passes at unity.
+            makeup_db: makeup + timing_db(attack, release) * (4.0 * compress).min(1.0),
             makeup_slope: 0.0,
             link: true,
             mix: 1.0,

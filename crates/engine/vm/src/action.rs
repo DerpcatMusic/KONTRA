@@ -509,4 +509,12 @@ actions! {
     // A number of a glide scope: ints (scope, knob: 1 seconds, 2 per
     // semitone, 3 curve, value in millionths).
     GlideKnob,
+    // `!NI_DND_ITEMS_AUDIO`, `_MIDI`, `_ARRAY` at int 0: the path of a file
+    // dropped on a mouse area, as text.
+    DndItemsAudio,
+    DndItemsMidi,
+    DndItemsArray,
+    // `num_elements` of those: how many files of kind int 0 (0 audio, 1
+    // MIDI, 2 array) the drop holds.
+    DndItemsCount,
 }

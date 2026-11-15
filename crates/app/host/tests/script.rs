@@ -2685,104 +2685,6 @@ fn output_channels_and_disable_logging_are_answered() {
     assert_eq!(e.stats().actions_unhandled, 0);
 }
 
-/// A Convolution a script loads has no response; a `load_ir_sample` into it
-/// after init is prepared by the host like any other (Conflux loads its
-/// reverb slot's response from its menu).
-#[test]
-fn a_response_loads_into_a_convolution_the_script_created() {
-    use kontra_engine::{Prepared, ir};
-    // One frame at half scale, 16-bit stereo at 48 kHz.
-    let half = 16_384i16.to_le_bytes();
-    let mut wav = b"RIFF".to_vec();
-    wav.extend(40u32.to_le_bytes());
-    wav.extend(b"WAVEfmt ");
-    wav.extend(16u32.to_le_bytes());
-    wav.extend([1, 0, 2, 0]);
-    wav.extend(RATE.to_le_bytes());
-    wav.extend((RATE * 4).to_le_bytes());
-    wav.extend([4, 0, 16, 0]);
-    wav.extend(b"data");
-    wav.extend(4u32.to_le_bytes());
-    wav.extend(half.iter().chain(&half));
-    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half_fresh.wav");
-    std::fs::write(&file, wav).unwrap();
-    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
-    let unit = |kind, dry| ir::Effect {
-        kind,
-        bypass: false,
-        output: 1.0,
-        dry,
-    };
-    let stereo = ir::EffectKind::Stereo {
-        width: 0.5,
-        pan: 0.0,
-    };
-    plan.inserts = vec![Some(unit(stereo, 0.0))];
-    plan.slot_shapes.types = vec![ir::SlotType {
-        id: 19,
-        subtype: false,
-        reads: 0,
-        kind: 19,
-        effect: Some(unit(ir::EffectKind::Gain(0.0), 1.0)),
-        laws: Vec::new().into(),
-        model: None,
-    }];
-    let law = ir::Impulse {
-        sample: 0,
-        reverse: false,
-        normalize: None,
-        predelay_ms: 0.0,
-        cuts: None,
-        envelope: None,
-        mix: None,
-        size: [1.0, 1.0],
-        length: 1.0,
-        window_whole: false,
-    };
-    plan.slot_shapes.impulses = vec![(19, law)];
-    plan.responses = vec![(
-        "half".into(),
-        ir::Sample {
-            name: "Half.wav".into(),
-            file,
-            offset: 0,
-            len: None,
-            channels: 0,
-            frames: 0,
-            rate: 0,
-            keystream: None,
-        },
-    )];
-    let script = kontra_ksp::compile(
-        "on init
-            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 19, -1, 0, $NI_INSERT_BUS)
-        end on
-        on note
-            load_ir_sample(\"Half.ncw\", 0, $NI_INSERT_BUS)
-        end on",
-        &[],
-    )
-    .unwrap();
-    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
-    let plan = Arc::new(plan);
-    let mut e = Engine::new(Arc::clone(&plan), store.client(), RATE);
-    assert!(
-        (level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3,
-        "the dry passes"
-    );
-    let mut requests = Vec::new();
-    e.drain_requests(|r| requests.push(r));
-    assert_eq!(requests.len(), 1);
-    assert_eq!(e.stats().actions_unhandled, 0);
-    e.install(Prepared::new(requests[0], Some(&plan), RATE));
-    let l = level(&mut e, &[]);
-    assert!(
-        (l - 0.75).abs() < 1e-3,
-        "dry and the half-scale response: {l}"
-    );
-}
-
 /// `load_ir_sample` swaps an insert convolution's response for the library
 /// one it names (any extension), prepared as the one it replaces: in init at
 /// once, later through the host and an async id.
@@ -2868,9 +2770,23 @@ fn a_script_loads_a_library_response_into_a_convolution() {
     .unwrap();
     let mut resumed = plan.clone();
     resumed.scripts = vec![kontra_host::script::plan(&later, &[], &[])];
+    // A convolution with no response yet (one a script made) loads it plain.
+    let mut fresh = plan.clone();
+    fresh.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution {
+            impulse: ir::Impulse::NONE,
+        },
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.25).abs() < 1e-3, "{l}");
+    assert_eq!(e.stats().actions_unhandled, 0);
+    let mut e = Engine::new(Arc::new(fresh), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.25).abs() < 1e-3, "a script-made convolution: {l}");
     assert_eq!(e.stats().actions_unhandled, 0);
 
     // After init the host decodes it off the audio thread, and the id
@@ -4151,7 +4067,7 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
 }
 
 /// A module a script loads answers reads at once with Kontakt's fresh
-/// values (Freak's MODE starts on the oscillator, 1).
+/// values (a held control: Psyche Delay's TIME_UNIT, as a fresh unit holds it).
 #[test]
 fn a_loaded_module_reads_its_fresh_values() {
     use kontra_engine::ir;
@@ -4165,10 +4081,10 @@ fn a_loaded_module_reads_its_fresh_values() {
     };
     plan.inserts = vec![Some(unit(ir::EffectKind::Gain(1.0)))];
     plan.slot_shapes.types = vec![ir::SlotType {
-        id: 54,
+        id: 49,
         subtype: false,
         reads: 0,
-        kind: 54,
+        kind: 49,
         effect: Some(unit(ir::EffectKind::Stereo {
             width: 0.5,
             pan: 0.0,
@@ -4176,12 +4092,12 @@ fn a_loaded_module_reads_its_fresh_values() {
         laws: Vec::new().into(),
         model: None,
     }];
-    let mode = ir::held_key("$ENGINE_PAR_FREAK_MODE");
-    plan.slot_shapes.fresh = vec![(54, mode, 1), (40, mode, 7)];
+    let mode = ir::held_key("$ENGINE_PAR_PSYDL_TIME_UNIT");
+    plan.slot_shapes.fresh = vec![(49, mode, 1), (40, mode, 7)];
     let script = kontra_ksp::compile(
         "on init
-            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 54, -1, 0, 1)
-            message(get_engine_par($ENGINE_PAR_FREAK_MODE, -1, 0, 1))
+            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 49, -1, 0, 1)
+            message(get_engine_par($ENGINE_PAR_PSYDL_TIME_UNIT, -1, 0, 1))
         end on",
         &[],
     )
@@ -5686,6 +5602,7 @@ fn a_switch_to_mono_under_a_held_chord_keeps_only_the_new_note() {
         per_note: true,
         legato: false,
         returns: false,
+        ..ir::VoiceGroup::DEFAULT
     }];
     let tree = "return {params={},db=0,pan=0,auxs={},
         layers={{params={PlayMode='0'},line={0,0,0}}}}";

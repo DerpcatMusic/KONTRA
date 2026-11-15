@@ -754,11 +754,13 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         model: Some(geq),
         ..ty(28, false, 0, None, [].into())
     });
-    // No response to convolve, so the wet is silent and the dry passes
-    // until a `load_ir_sample` prepares one ([`fresh_impulse`]).
+    // No response yet: the wet is silent and the dry passes until a
+    // `load_ir_sample` loads one, prepared plain.
     let irc = Some(ir::Effect {
         dry: 1.0,
-        ..unit(ir::EffectKind::Gain(0.0))
+        ..unit(ir::EffectKind::Convolution {
+            impulse: ir::Impulse::NONE,
+        })
     });
     types.push(ty(19, false, 0, irc, [].into()));
     // Bite and Freak (Oscillator mode), fresh as a script loads them.
@@ -918,26 +920,6 @@ fn moving(
         let first = values.first()?;
         values.iter().any(|v| v != first).then_some((field, values))
     })
-}
-
-/// How a fresh Convolution (`$EFFECT_TYPE_IRC`, 19) prepares the response a
-/// script loads into it: as the file is, at full size, cuts open, no
-/// envelope. ponytail: Auto Gain's fresh state is unmeasured (#1579 read
-/// back the dry level only); off, the response as it is.
-pub(crate) fn fresh_impulse() -> (i32, ir::Impulse) {
-    let law = ir::Impulse {
-        sample: 0,
-        reverse: false,
-        normalize: None,
-        predelay_ms: 0.0,
-        cuts: None,
-        envelope: None,
-        mix: None,
-        size: [1.0, 1.0],
-        length: 1.0,
-        window_whole: false,
-    };
-    (19, law)
 }
 
 #[cfg(test)]
@@ -1134,6 +1116,46 @@ mod tests {
             );
             assert_eq!(t.model.is_some(), modelled, "{id}");
         }
+    }
+
+    #[test]
+    fn a_fresh_supergt_compresses_once_a_script_raises_compress() {
+        use kontra_effects::processors::{Dsp, Responses, processor};
+        use kontra_kontakt_effects::supergt::{INIT, Knobs, supergt};
+        let types = slot_types();
+        let fresh = types
+            .iter()
+            .find(|t| t.id == 46 && !t.subtype)
+            .and_then(|t| t.effect)
+            .unwrap();
+        let level = |compress: Option<f32>| {
+            let Dsp::Wet(mut unit, _) = processor(Some(fresh), 48_000, &Responses(&[], &[])) else {
+                panic!("no Super GT processor");
+            };
+            if let Some(compress) = compress {
+                unit.set(supergt(Knobs { compress, ..INIT }), 120.0);
+            }
+            let mut peak = 0.0f32;
+            for block in 0..375 {
+                let mut io: Vec<[f32; 2]> = (0..256)
+                    .map(|i| {
+                        let t = (block * 256 + i) as f32 / 48_000.0;
+                        let v = 0.4 * (std::f32::consts::TAU * 1000.0 * t).sin();
+                        [v, v]
+                    })
+                    .collect();
+                unit.process(&mut io);
+                if block > 300 {
+                    peak = io.iter().fold(peak, |p, f| p.max(f[0].abs()));
+                }
+            }
+            peak
+        };
+        let (open, squeezed) = (level(None), level(Some(1.0)));
+        assert!(
+            squeezed < open * 0.5,
+            "COMPRESS 1 did not compress: {open} vs {squeezed}"
+        );
     }
 
     #[test]

@@ -5,8 +5,10 @@ shapes. The engine plays them on the audio thread without allocating.
 
 | IR | What it says | Engine |
 |---|---|---|
-| `Group.polyphony`, `Plan.voices` | most voices a group / the instrument holds | `admit.rs` |
-| `ir::VoiceGroup` | a shared budget: `voices`, `steal`, `prefer_released`, `fade_ms`, `exclusive`, `per_note`, `legato`, `returns` | `voice_groups.rs`, `mono.rs` |
+| `Group.polyphony` | most voices a group holds | `lib.rs` `limit_group` |
+| `Instrument.voices`, `.steal`, `.steal_released_first`, `.steal_fade_ms` | the instrument's limit and how it makes room | `admit.rs` `free_slot` |
+| `ir::VoiceGroup` | a shared budget: `voices`, `steal`, `prefer_released`, `fade_ms`, `exclusive`, `per_note`, `per_key`, `quieter_only`, `release`, `legato`, `returns` | `voice_groups.rs`, `mono.rs` |
+| `Group.off_by` | the voice group whose new voices stop this group's (choke) | `voice_groups.rs` `choke_by` |
 | `ir::Glide` | how a note's pitch arrives from the previous one: `scope`, `depth`, `seconds`, `per_semitone`, `legato`, `resume`, `curve` | `glide.rs` |
 | scripts | `change_tune`, pitch-bend routes with lag | the script VM, routes |
 
@@ -21,6 +23,24 @@ instead would let a mono layer with uneven zone counts keep two notes
 sounding (#1560's CodeRabbit finding). Ownership is a stamp per note, so
 there is no allocation. `exclusive` chokes the other voice groups of its set
 (hi-hat open/closed).
+
+One steal order (`steal_order`) and one way to stop (`stop_by`) serve every
+limit: the instrument's (its rule is a `VoiceGroup` built from the
+instrument's fields), a voice group's, an exclusive set and a choke. A rule
+stops a voice by fading it over `fade_ms`, or with `release` through its
+own release envelope. Either way it stops counting at once.
+
+- **`per_key`:** at most that many voices of one key in the group, other
+  notes' voices counted. Past it the oldest stop, or with `quieter_only`
+  only those started no louder than the new note, quietest first. A softer
+  repeat then sounds beside a louder one.
+- **`off_by`** names a voice group, not a group. A format that splits one
+  choke number over several groups (SFZ regions with different settings)
+  still chokes all of them. Each choked voice stops by its own voice group's
+  rule.
+
+Not modelled: stealing the quietest voice (sfizz's envelope-and-age stealer).
+No format measured here needs it: Kontakt's "any" takes the oldest.
 
 ## Mono lines: legato and last-note priority
 
@@ -116,8 +136,8 @@ time, and a YIN pitch track. Results:
 - **From the previous note's key**, never from the pitch it reached: a note
   played while the previous one was still gliding (at 67.96 on its way down
   to 60) started from 60. So `resume` is false.
-- **Not legato-only:** it glides from a key released 0.5 s earlier. The
-  first note does not glide. So `legato` is false.
+- **Not legato-only:** it glides from a key released 0.5 s earlier. So
+  `legato` is false.
 
 | `$ENGINE_PAR_GLIDE_COEF` | 0 | 150000 | 300000 | 450000 | 600000 | 750000 | 900000 |
 |---|---|---|---|---|---|---|---|
@@ -129,15 +149,93 @@ Writing `$ENGINE_PAR_GLIDE_COEF_UNIT` from KSP changed nothing: it reads back
 **KONTRA on the same saved patch:** 9.9 st/s, so 60 → 72 takes 1.23 s.
 Kontakt played the same patch at 9.93 st/s.
 
-Not measured:
-- Intensities below 100% (taken as a linear share of the interval).
-- Several gliding groups (taken as one previous note per instrument,
-  `scope` 0).
-- One unexplained miss: once in 24 transitions Kontakt did not glide (Speed
-  142.3 ms, 72 → 60).
+**Intensity, range and the previous note** (`probes/glide_intensity_groups.lua`,
+`probes/glide_range.lua`, intensity set from KSP with
+`$ENGINE_PAR_INTMOD_INTENSITY`, depth = (2x − 1)³):
+
+| depth | 60 → 72 | slide |
+|---|---|---|
+| +1 | 28.9 st/s | 12 st in 415 ms |
+| +0.5 | 14.3 st/s | 6 st in 420 ms |
+| +0.25 | 7.04 st/s | 3 st in 426 ms |
+| −0.5 | −14.4 st/s from 78 | 6 st, overshooting |
+| −1 | −29.1 st/s from 84 | 12 st, overshooting |
+
+- **Intensity** is a signed share of the interval over the same time
+  (`depth`, negative from beyond the note).
+- **At most 12 st:** jumps of 17, 19, 20, 24 and 38 st all slid 12 st in the
+  same time (`range` 12). That the cap applies before the intensity is
+  inferred; an intensity on a wider jump was not measured.
+- **The previous note is the last one heard** (`from_heard`), even one a
+  script ignored. The probe's trigger note 36, dropped by `ignore_event`, was
+  where the first note slid from. "The first note does not glide" above was
+  that artefact.
+- **Every group glides from the instrument's previous note**, including one
+  it never played (kept from it by `$EVENT_PAR_ALLOW_GROUP` or by its key
+  range). So `scope` is 0.
+
+Not measured: the cap in Speed mode, and a group without Glide next to one
+with it. One unexplained miss: once in 24 transitions Kontakt did not glide
+(Speed 142.3 ms, 72 → 60).
+
+**Release triggers** (`probes/release_trigger.lua`, with Release Trigger
+switched on in the editor; no Lua or KSP route sets it):
+- Release voices count toward the instrument polyphony and the voice-group
+  limit. They steal and can be stolen.
+- A release still fires after its note's own voice was stolen.
+- **Monophonic** (on by default with Release Trigger) is per key: playing the
+  key again cuts its sounding release voice at the new note-on, and other
+  keys' release voices sound on (`Group.repeat_cuts`).
+- With t(ms) 0 and nothing routed, the release level is the same after
+  holds of 0.1, 1 and 3 s.
+
+**Script offsets in DFD.** The KSP manual (`play_note()`) says that in DFD
+mode a sample offset greater than the zone's S.Mod is ignored, and the sample
+plays from its start (`Group.offset_limited`).
+
+**Voice groups and the instrument limit.** Measured in Kontakt 8.13 with
+`tools/kontakt-oracle/probes/voice_limits.lua`: one instrument per case,
+four voices, keys +1, +0, +4 and +2 held and then +3, each key on its own
+frequency.
+
+- Oldest, newest, highest and lowest take the voice they name. "Any" takes
+  the oldest, not the quietest (a velocity-1 newest note survived).
+- `prefer_released` on: a released voice still sounding goes first. Off:
+  the oldest held voice goes and the released one keeps releasing. Released
+  voices count toward the limit either way.
+- The steal fade is linear in amplitude: about half at half time, silent
+  at `fade_ms` (300 and 1000 ms tested).
+- An exclusive group cuts the other group about 20 ms after the new note.
+- **The instrument limit** (Instrument Options: Max Voices, the stealing
+  mode and fadeout) behaves the same, mode for mode. It is stored as the
+  first voice limit of chunk 0x32 (`VoiceGroups.voice_limit`: kill mode
+  @31, voices @34, fade @38). The translator now reads it (it was a
+  hard-coded 256).
 
 Scripted glides (`change_tune` steps from KSP, pitch-bend routes with lag)
 stay script-driven. They need nothing from `ir::Glide`.
+
+### SFZ
+
+Mapped as sfizz plays it (`VoiceManager.cpp`, `Voice.cpp`, `Region.cpp`):
+
+| opcode | IR |
+|---|---|
+| `group=N` | voice group N, made only when N has a rule or is an `off_by` target |
+| `polyphony` with `group` | `VoiceGroup.voices` of N; without `group` the region's own limit, `Group.polyphony` |
+| `note_polyphony` | `VoiceGroup.per_key` |
+| `note_selfmask` (default on) | `quieter_only` (sfizz steals voices of velocity ≤ the new one, lowest velocity first) |
+| `off_by=M` | `Group.off_by` = voice group M |
+| `off_mode=fast` (default) | a 6 ms fade |
+| `off_mode=normal` | `release`: the region's own release envelope |
+| `off_mode=time`, `off_time` | a fade of `off_time` |
+| `trigger=first` / `legato` | `Trigger::First` (no other key held) / `Legato` (another held), as sfizz's active-note count |
+
+sfizz counts voices not yet stopped, released ones too, oldest first, so an
+SFZ voice group has `prefer_released` off. Opcodes are per region in sfizz
+but per group number here: the last region's value wins, as sfizz's
+`setGroupPolyphony` does. A header's `polyphony` without `group` (sfizz's
+set polyphony) becomes the polyphony of each group of settings under it.
 
 ## Survey, and what won
 

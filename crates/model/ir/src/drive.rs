@@ -145,8 +145,50 @@ pub struct RingMod {
     pub highpass_hz: f32,
     /// Mutes the wet path while the input is silent.
     pub gate: bool,
+    /// The share of the wet output, high-passed at 20 Hz and low-passed at
+    /// 15 kHz, taken back off the input (solved implicitly); 0 is none.
+    pub feedback: f32,
+    /// What modulates the input.
+    pub source: RingSource,
     pub wet: f32,
     pub dry: f32,
+}
+
+/// A ring modulator's carrier.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RingSource {
+    /// A quadrature sine at `hz`.
+    Oscillator,
+    /// The input's own analytic pair, its quadrature branch inverted (so a
+    /// shift doubles rather than cancels), blended toward its envelope.
+    Sidechain {
+        /// 0 the signal itself, 1 its envelope.
+        contour: f32,
+        /// The envelope's attack and release in seconds.
+        attack: f32,
+        release: f32,
+        /// A band-pass (3.5 octaves wide) on the modulator first.
+        bandpass_hz: Option<f32>,
+    },
+    /// An AM radio: the input, scaled by `gain` and biased (`bias`), is
+    /// transmitted on the sine carrier, then received through a band-pass,
+    /// a rectifier (or a product with a sine at `tuned_hz`), a 50 Hz
+    /// high-pass, a four-pole low-pass at half `tuned_hz` and a level
+    /// control, with low-passed noise added before the band-pass.
+    Radio {
+        gain: f32,
+        /// The receiver's band-pass centre.
+        tuned_hz: f32,
+        /// The band-pass damping `1/Q`.
+        damping: f32,
+        /// The received level's makeup.
+        makeup: f32,
+        /// Product rather than envelope demodulation; the bias then follows
+        /// the input's level.
+        product: bool,
+        /// The noise level.
+        noise: f32,
+    },
 }
 
 /// An overdrive pedal (the engine's `drive::Overdrive`): one-pole splits
@@ -281,17 +323,44 @@ impl EffectParam {
             (Self::FormantTalk, EffectKind::Formant(f)) => &mut f.talk,
             (Self::FormantSharp, EffectKind::Formant(f)) => &mut f.sharp,
             (Self::FormantSize, EffectKind::Formant(f)) => &mut f.size,
-            (Self::ShaperAmount, EffectKind::Shaper(s)) => s.curve.amount_mut(),
-            (Self::ShaperLowpassHz, EffectKind::Shaper(s)) => s.lowpass_hz.as_mut()?,
+            (
+                Self::ShaperAmount,
+                EffectKind::Shaper(s) | EffectKind::Strip(crate::Strip { shaper: s, .. }),
+            ) => s.curve.amount_mut(),
+            (
+                Self::ShaperLowpassHz,
+                EffectKind::Shaper(s) | EffectKind::Strip(crate::Strip { shaper: s, .. }),
+            ) => s.lowpass_hz.as_mut()?,
             (Self::CrushRate, EffectKind::Crush(c)) => &mut c.rate,
             (Self::CrushBits, EffectKind::Crush(c)) => &mut c.bits,
-            (Self::CompressorThreshold, EffectKind::Compressor(c)) => &mut c.threshold_db,
-            (Self::CompressorRatio, EffectKind::Compressor(c)) => &mut c.ratio,
-            (Self::CompressorAttack, EffectKind::Compressor(c)) => &mut c.attack_ms,
-            (Self::CompressorRelease, EffectKind::Compressor(c)) => &mut c.release_ms,
-            (Self::CompressorMakeup, EffectKind::Compressor(c)) => &mut c.makeup_db,
-            (Self::CompressorMix, EffectKind::Compressor(c)) => &mut c.mix,
-            (Self::CompressorKnee, EffectKind::Compressor(c)) => &mut c.knee_db,
+            (
+                Self::CompressorThreshold,
+                EffectKind::Compressor(c) | EffectKind::Strip(crate::Strip { compressor: c, .. }),
+            ) => &mut c.threshold_db,
+            (
+                Self::CompressorRatio,
+                EffectKind::Compressor(c) | EffectKind::Strip(crate::Strip { compressor: c, .. }),
+            ) => &mut c.ratio,
+            (
+                Self::CompressorAttack,
+                EffectKind::Compressor(c) | EffectKind::Strip(crate::Strip { compressor: c, .. }),
+            ) => &mut c.attack_ms,
+            (
+                Self::CompressorRelease,
+                EffectKind::Compressor(c) | EffectKind::Strip(crate::Strip { compressor: c, .. }),
+            ) => &mut c.release_ms,
+            (
+                Self::CompressorMakeup,
+                EffectKind::Compressor(c) | EffectKind::Strip(crate::Strip { compressor: c, .. }),
+            ) => &mut c.makeup_db,
+            (
+                Self::CompressorMix,
+                EffectKind::Compressor(c) | EffectKind::Strip(crate::Strip { compressor: c, .. }),
+            ) => &mut c.mix,
+            (
+                Self::CompressorKnee,
+                EffectKind::Compressor(c) | EffectKind::Strip(crate::Strip { compressor: c, .. }),
+            ) => &mut c.knee_db,
             (Self::ModRate, EffectKind::Delay(crate::Delay { rate, .. }))
             | (Self::ModRate, EffectKind::Phaser(crate::Phaser { rate, .. })) => match rate {
                 crate::Rate::Hz(hz) => hz,
@@ -591,7 +660,7 @@ pub struct KnobModel {
 impl KnobModel {
     /// The most positions a model holds: its live positions fit a fixed
     /// array, so moving a knob allocates nothing.
-    pub const MAX: usize = 16;
+    pub const MAX: usize = 24;
 }
 
 impl PartialEq for KnobModel {
@@ -631,9 +700,6 @@ pub struct SlotShapes {
     /// The held controls a script-loaded type starts with: effect type id
     /// ([`SlotType::id`]), [`crate::held_key`], raw value.
     pub fresh: Vec<(i32, u32, i32)>,
-    /// Types that load as a convolution with no response yet, by effect
-    /// type id: how a response a script then loads is prepared.
-    pub impulses: Vec<(i32, crate::Impulse)>,
 }
 
 impl SlotShapes {
@@ -645,7 +711,6 @@ impl SlotShapes {
         saved_types: Vec::new(),
         held: Vec::new(),
         fresh: Vec::new(),
-        impulses: Vec::new(),
     };
 }
 

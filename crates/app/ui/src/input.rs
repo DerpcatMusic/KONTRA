@@ -36,6 +36,23 @@ pub enum Set {
     /// A file selector's browsing: the path it shows selected and each open
     /// column's first row. The page's own; the host never hears it.
     Browse(String, Vec<u32>),
+    /// Files dragged onto a mouse area: let go (`drop`) or passing over,
+    /// whether the drag is over it now, and the files it takes by kind
+    /// (0 audio, 1 MIDI, 2 array).
+    Drop {
+        drop: bool,
+        over: bool,
+        items: Vec<(u8, String)>,
+    },
+}
+
+/// Files dragged over the window: where (scene points), their paths, and
+/// whether they were let go there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileDrag {
+    pub at: Point,
+    pub paths: Vec<String>,
+    pub dropped: bool,
 }
 
 /// A page's gesture in flight: the control pressed and its value then, the
@@ -61,6 +78,10 @@ pub struct Gesture {
     /// native page re-renders its views (new widgets, new callbacks) when
     /// a hover sets its state, and the area stays the same one.
     hovered: Vec<[i64; 4]>,
+    /// The mouse area a file drag is over.
+    // ponytail: a drag that leaves the window is noticed at the next one;
+    // a leave event from the window if a library lights its area on enter.
+    dragged_over: Option<WidgetRef>,
 }
 
 /// A run of characters, from and to.
@@ -406,14 +427,13 @@ pub fn read(
             // oracle, tools/ksp-ui text page); the first click opened the
             // field with its caret at the end.
             Kind::TextEdit if ui.double_click(id.as_str()) => {
-                let width = ui
+                let size = ui
                     .scene()
                     .and_then(|s| s.surface(&id))
-                    .map(|s| s.frame.size.width);
-                let at = ui
-                    .local(id.as_str())
-                    .zip(width)
-                    .map_or(0., |(p, w)| p.x / w.max(1.));
+                    .map(|s| s.frame.size);
+                let at = ui.local(id.as_str()).zip(size).map_or(0, |(p, s)| {
+                    kontra_ui_view::char_at(ui, tree, w, (s.width, s.height, scale), p.x)
+                });
                 type_into(ui, g, n.0, &id, w.text.clone(), word(&w.text, at));
             }
             Kind::TextEdit if (r.clicked || r.key_activated) && g.entry.is_none() => {
@@ -456,6 +476,82 @@ fn hover(
         to: Set::Value(if inside { 1. } else { 0. }),
         keys: model::UiModifiers::default(),
     })
+}
+
+/// A file drag over page `page`: the topmost mouse area under it that
+/// takes any of the files hears it let go, and, when it asked for drags,
+/// the drag enter and leave it (KSP manual, `ui_mouse_area`).
+pub fn files(
+    ui: &Ui,
+    face: usize,
+    (tree, page): (&Interface, PageRef),
+    scale: f64,
+    drag: &FileDrag,
+    g: &mut Gesture,
+) -> Vec<Edit> {
+    let p = drag.at;
+    let target = tree.draw_order(page).iter().rev().find_map(|&n| {
+        let w = tree.widgets.get(n.0).filter(|_| tree.visible(n))?;
+        let Kind::MouseArea { takes, drag: hears } = w.kind else {
+            return None;
+        };
+        let f = ui.scene()?.surface(&surface(face, n.0))?.frame;
+        let (width, height) = (w.rect.width * scale, w.rect.height * scale);
+        let inside = p.x >= f.x && p.y >= f.y && p.x < f.x + width && p.y < f.y + height;
+        let items = taken(&drag.paths, takes);
+        (inside && !items.is_empty()).then_some((n, hears, items))
+    });
+    let edit = |widget, drop, over, items| Edit {
+        widget,
+        to: Set::Drop { drop, over, items },
+        keys: model::UiModifiers::default(),
+    };
+    let hears = |n: WidgetRef| {
+        let w = tree.widgets.get(n.0);
+        w.is_some_and(|w| matches!(w.kind, Kind::MouseArea { drag: true, .. }))
+    };
+    let mut edits = Vec::new();
+    let now = target.as_ref().map(|t| t.0);
+    if g.dragged_over != now || drag.dropped {
+        if let Some(left) = g.dragged_over.filter(|&n| Some(n) != now && hears(n)) {
+            edits.push(edit(left, false, false, Vec::new()));
+        }
+        if let Some((n, hears, items)) = target
+            && (drag.dropped || hears)
+        {
+            edits.push(edit(n, drag.dropped, true, items));
+        }
+    }
+    g.dragged_over = now.filter(|_| !drag.dropped);
+    edits
+}
+
+/// The files of `paths` a mouse area taking `takes` (audio, MIDI, array:
+/// 0 none, 1 one, more any number) accepts, by kind.
+// ponytail: more files of a kind than it takes one of are all refused,
+// unmeasured; measure in Kontakt if a library drops several on a one.
+fn taken(paths: &[String], takes: [u16; 3]) -> Vec<(u8, String)> {
+    let kind = |p: &str| {
+        let ext = std::path::Path::new(p).extension()?.to_str()?;
+        match ext.to_ascii_lowercase().as_str() {
+            "wav" | "aif" | "aiff" | "ncw" => Some(0u8),
+            "mid" | "midi" => Some(1),
+            "nka" => Some(2),
+            _ => None,
+        }
+    };
+    let kinds: Vec<(u8, String)> = (paths.iter())
+        .filter_map(|p| Some((kind(p)?, p.clone())))
+        .collect();
+    let count = |k: u8| kinds.iter().filter(|(j, _)| *j == k).count();
+    (kinds.iter())
+        .filter(|(k, _)| match takes.get(usize::from(*k)) {
+            Some(0) | None => false,
+            Some(1) => count(*k) == 1,
+            Some(_) => true,
+        })
+        .cloned()
+        .collect()
 }
 
 /// The cells of a table the pointer crossed this frame, set to its height
@@ -835,11 +931,11 @@ fn type_into(
     g.entry = Some((n, text, Some(select)));
 }
 
-/// The word of `text` at `at` of its width (0 to 1), as a character range:
-/// the run of non-spaces the pointer is in, or the spaces it is between.
-fn word(text: &str, at: f64) -> (usize, usize) {
+/// The word of `text` around character `i`, as a character range: the run
+/// of non-spaces it is in, or the spaces it is between.
+fn word(text: &str, i: usize) -> (usize, usize) {
     let chars: Vec<char> = text.chars().collect();
-    let i = ((at.clamp(0., 1.) * chars.len() as f64) as usize).min(chars.len().saturating_sub(1));
+    let i = i.min(chars.len().saturating_sub(1));
     let space = |c: Option<&char>| c.is_some_and(|c| c.is_whitespace());
     let kind = space(chars.get(i));
     let from = (0..i)
@@ -915,6 +1011,7 @@ pub fn apply(tree: &mut Interface, edits: &[Edit]) {
         };
         match (&e.to, &mut w.value) {
             (Set::Text(text), _) => w.text.clone_from(text),
+            (Set::Drop { .. }, _) => {}
             (Set::Browse(path, shown), _) => {
                 w.text.clone_from(path);
                 if let Kind::FileSelector { tops, .. } = &mut w.kind {

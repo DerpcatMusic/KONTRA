@@ -477,7 +477,6 @@ fn slot_shapes(out: &mut ir::Instrument, slots: crate::effects::Slots, buses: &m
         out.slot_shapes.slots.extend(open);
         out.slot_shapes.types = crate::script_knobs::slot_types();
         out.slot_shapes.fresh = crate::held::fresh();
-        out.slot_shapes.impulses = vec![crate::script_knobs::fresh_impulse()];
         out.slot_shapes.subtypes = slots.subtypes;
     }
 }
@@ -542,7 +541,18 @@ fn criteria_reverse(group: u32, groups: &GroupList) -> bool {
 /// Groups name a voice group 1-based (0 is none). All 128 exist in Kontakt;
 /// the file stores only those changed from the default (1 voice, oldest
 /// first, released first, 10 ms fade).
+///
+/// The instrument's own limit (Instrument Options: Max Voices, the stealing
+/// mode and fade) is the chunk's first voice limit: measured in the oracle,
+/// it steals as a voice group does, "any" the oldest, voices released but
+/// still sounding counted.
 fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&VoiceGroups>) {
+    if let Some(l) = limits.map(|l| voice_group(&l.voice_limit)) {
+        out.voices = l.voices;
+        out.steal = l.steal;
+        out.steal_released_first = l.prefer_released;
+        out.steal_fade_ms = l.fade_ms;
+    }
     let mut index = [None::<usize>; 128];
     for (g, group) in out.groups.iter_mut().zip(&groups.groups) {
         let Some((n, slot)) = group
@@ -565,6 +575,7 @@ fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&Vo
                     per_note: false,
                     legato: false,
                     returns: false,
+                    ..ir::VoiceGroup::DEFAULT
                 },
                 |l| voice_group(&l.voice_limit),
             ));
@@ -590,6 +601,7 @@ fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
         per_note: false,
         legato: false,
         returns: false,
+        ..ir::VoiceGroup::DEFAULT
     }
 }
 
@@ -682,9 +694,6 @@ fn translate_group(
     if v.fx_idx_amp_split_point != 8 {
         notes.ignored("group.fx_idx_amp_split_point", v.fx_idx_amp_split_point);
     }
-    if v.release_trigger && v.release_trigger_note_monophonic {
-        notes.ignored("group.release_trigger_note_monophonic", "release group");
-    }
     crate::ignored::chunks(
         notes,
         "group",
@@ -704,6 +713,13 @@ fn translate_group(
         } else {
             ir::Trigger::Attack
         },
+        // Monophonic (on by default with Release Trigger): measured per key,
+        // a repeat's note-on cuts the key's sounding release voice; other
+        // keys' release voices sound on (release_trigger.lua, Kontakt 8.13).
+        repeat_cuts: v.release_trigger && v.release_trigger_note_monophonic,
+        // KSP manual, play_note(): in DFD mode a sample offset greater than
+        // the zone's S.Mod is ignored and no offset applies.
+        offset_limited: stream_mode == 3,
         purged: group.source_identity().is_ok_and(|s| s.flag == 1),
         stream: laws::stream(stream_mode, base.preload),
         speed: matches!(stream_mode, 2 | 5 | 8).then_some(1.0), // Time Machine 1, 2, Pro

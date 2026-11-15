@@ -495,3 +495,55 @@ fn a_waveform_property_reads_back_as_set() {
     );
     assert_eq!(widget(&ui, "$echo").text, "250000");
 }
+
+/// A file dropped on a mouse area reaches its `on ui_control` as a drop
+/// with the files it takes (KSP manual, `ui_mouse_area`), and the face
+/// knows what the area takes.
+#[test]
+fn a_file_dropped_on_a_mouse_area_reaches_its_callback() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let script = kontra_ksp::compile(
+        "on init
+            make_perfview
+            declare ui_mouse_area $area
+            set_control_par(get_ui_id($area), $CONTROL_PAR_DND_ACCEPT_AUDIO, $NI_DND_ACCEPT_ONE)
+            set_control_par(get_ui_id($area), $CONTROL_PAR_RECEIVE_DRAG_EVENTS, 1)
+            declare ui_label $got (1, 1)
+            message(get_ui_id($area))
+        end on
+        on ui_control ($area)
+            if ($NI_MOUSE_EVENT_TYPE = $NI_MOUSE_EVENT_TYPE_DROP)
+                set_text($got, num_elements(!NI_DND_ITEMS_AUDIO) & \" \" & !NI_DND_ITEMS_AUDIO[0])
+            end if
+            if ($NI_MOUSE_EVENT_TYPE = $NI_MOUSE_EVENT_TYPE_DRAG)
+                set_text($got, \"over \" & $NI_MOUSE_OVER_CONTROL)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![], 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let face = Face::of(&script, &[]);
+    let mut live = Live::new(&face, 0, &engine, &|_| None).unwrap();
+    assert_eq!(
+        widget(&live.tree, "$area").kind,
+        ui::Kind::MouseArea {
+            takes: [1, 0, 0],
+            drag: true
+        }
+    );
+    let area: i32 = engine.last_message().parse().unwrap();
+    let mut run = |engine: &mut Engine, drop: bool, over: bool| {
+        engine.set_click(0, area, [false; 3], 0);
+        engine.drop_event(0, drop, over);
+        engine.set_control(0, area, 0);
+        engine.process(&mut vec![[0f32; 2]; 512], &[]);
+        live.refresh(&face, 0, engine, &|_| None);
+        widget(&live.tree, "$got").text.clone()
+    };
+    engine.drop_item(true, 0, kontra_engine::Text::from_str_cut("/s/kick.wav").0);
+    assert_eq!(run(&mut engine, false, true), "over 1");
+    assert_eq!(run(&mut engine, true, true), "1 /s/kick.wav");
+}

@@ -132,9 +132,11 @@ impl Engine {
         }
     }
 
-    /// Whether a line still remembers `note` as a key to come back to.
+    /// Whether a line still remembers `note` as a key to come back to: one
+    /// whose key is up never comes back.
     pub(crate) fn waits_in_line(&self, note: NoteRef) -> bool {
-        self.lines.iter().any(|l| l.held.contains(&Some(note)))
+        self.notes.get(note).is_some_and(|n| !n.is_up())
+            && self.lines.iter().any(|l| l.held.contains(&Some(note)))
     }
 
     /// The slide of `vg`'s voices of `from` going back to `to`.

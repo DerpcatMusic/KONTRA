@@ -20,7 +20,7 @@ mod wavetable;
 pub use bus::{Bus, BusSend};
 pub use drive::{
     Clipper, Converter, Crush, Curve as DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive,
-    RackAt, RingMod, Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
+    RackAt, RingMod, RingSource, Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
     COMB_LOWEST_HZ, Cascade, CascadeStage, Clocked, ClockedShape, Comb, CombBank, CombMode,
@@ -58,6 +58,11 @@ pub struct Instrument {
     pub scripts: Vec<Script>,
     /// Voices the instrument may sound at once.
     pub voices: u16,
+    /// Which voice makes room at [`Self::voices`], released ones first when
+    /// [`Self::steal_released_first`], fading over [`Self::steal_fade_ms`].
+    pub steal: Steal,
+    pub steal_released_first: bool,
+    pub steal_fade_ms: f32,
     /// Shared voice limits; [`Group::voice_group`] indexes here.
     pub voice_groups: Vec<VoiceGroup>,
     /// Effects on everything the instrument plays, by slot.
@@ -105,6 +110,9 @@ impl Instrument {
         buses: Vec::new(),
         scripts: Vec::new(),
         voices: 64,
+        steal: Steal::Oldest,
+        steal_released_first: true,
+        steal_fade_ms: 10.0,
         voice_groups: Vec::new(),
         inserts: Vec::new(),
         sends: Vec::new(),
@@ -150,6 +158,26 @@ pub struct Impulse {
     /// That window over the whole response too, at `length` 1. One window
     /// either way, chosen from the length the response is prepared at now.
     pub window_whole: bool,
+}
+
+impl Impulse {
+    /// A convolution's index before any response is loaded.
+    pub const NONE: u16 = u16::MAX;
+
+    /// A response as recorded: what a slot with none loaded prepares the
+    /// first one it loads as.
+    pub const PLAIN: Self = Self {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+        size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
+    };
 }
 
 /// Scales a response's channel energy toward `energy`, by at most `max_gain`;
@@ -344,11 +372,20 @@ pub struct Group {
     pub release_decay_db: f32,
     /// Ignores note-off and plays to the end.
     pub one_shot: bool,
+    /// Its voices of a key stop when that key is played again (Kontakt's
+    /// release-trigger Monophonic).
+    pub repeat_cuts: bool,
+    /// A script's start offset past a zone's `start_mod` range plays from
+    /// the zone's start instead (only that much of a streamed sample is
+    /// held ready).
+    pub offset_limited: bool,
     /// Start rules folded left to right by their joins; empty always starts.
     pub start: Vec<(Join, StartRule)>,
     /// Voices of this group that may sound at once.
     pub polyphony: Option<u16>,
-    /// Voices of this group fade when a voice of that group starts (hi-hat choke).
+    /// Voices of this group stop when a voice of that voice group (index
+    /// into [`Instrument::voice_groups`]) starts, as their own voice group
+    /// stops a voice (hi-hat choke).
     pub off_by: Option<usize>,
     pub bus: usize,
     /// Saved unloaded: no preload until a script loads it.
@@ -406,6 +443,8 @@ impl Group {
         one_shot: false,
         start: Vec::new(),
         polyphony: None,
+        repeat_cuts: false,
+        offset_limited: false,
         off_by: None,
         bus: 0,
         purged: false,
@@ -616,6 +655,31 @@ pub struct VoiceGroup {
     /// it is still down brings that note back (its voices taken back when
     /// `legato`, started again otherwise).
     pub returns: bool,
+    /// Voices of one key the group may sound: a new one past it stops the
+    /// key's earlier voices, oldest first, or with `quieter_only` only those
+    /// started no louder than it, quietest first.
+    pub per_key: Option<u16>,
+    pub quieter_only: bool,
+    /// A voice it stops (stolen, excluded or choked) plays its release
+    /// instead of fading over `fade_ms`.
+    pub release: bool,
+}
+
+impl VoiceGroup {
+    /// No limit to speak of: oldest first, released first, a 10 ms fade.
+    pub const DEFAULT: Self = Self {
+        voices: u16::MAX,
+        steal: Steal::Oldest,
+        prefer_released: true,
+        fade_ms: 10.0,
+        exclusive: None,
+        per_note: false,
+        legato: false,
+        returns: false,
+        per_key: None,
+        quieter_only: false,
+        release: false,
+    };
 }
 
 /// Portamento: a new note's voices start at the pitch the previous note of
@@ -626,8 +690,16 @@ pub struct Glide {
     /// Groups with the same scope share the previous note (a layer, or the
     /// whole instrument).
     pub scope: u16,
-    /// The share of the interval the slide starts from: 1 the whole of it.
+    /// The share of the interval the slide starts from: 1 the whole of it,
+    /// negative from beyond the note (overshooting into it).
     pub depth: f32,
+    /// The most semitones of interval a slide covers before `depth`; a
+    /// wider jump slides this far and starts from there.
+    pub range: f32,
+    /// The previous note is the last one the instrument heard (a played
+    /// key, one a script ignored or replaced too), not the last that
+    /// sounded in the scope.
+    pub from_heard: bool,
     /// How long the slide takes, or with `per_semitone` how long it takes
     /// for each semitone of the interval (a constant rate).
     pub seconds: f32,
@@ -807,7 +879,8 @@ pub enum EffectKind {
     RingMod(RingMod),
     /// Copies its input to send slot n at `levels[n]` (linear), passing it on.
     Sends([f32; 8]),
-    /// The input convolved with [`Instrument::impulses`] at this index (wet).
+    /// The input convolved with [`Instrument::impulses`] at this index (wet);
+    /// [`Impulse::NONE`] before a response is loaded (silent).
     Convolution { impulse: u16 },
     /// An algorithmic reverb (the wet path; `dry` mixes the input back).
     Reverb(Reverb),

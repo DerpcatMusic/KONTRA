@@ -683,6 +683,34 @@ impl RackAudio {
                         self.dropped += 1;
                     }
                 }
+                Command::DropItem {
+                    part,
+                    kind,
+                    first,
+                    text,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part) {
+                        p.engine.drop_item(first, kind, *text);
+                    }
+                    if self.channels.typed.send(text).is_err() {
+                        self.dropped += 1;
+                    }
+                }
+                Command::ControlDrop {
+                    part,
+                    slot,
+                    id,
+                    drop,
+                    over,
+                } => {
+                    let t = std::time::Instant::now();
+                    if let Some(Some(p)) = self.parts.get_mut(part) {
+                        p.engine.set_click(slot, id, [false; 3], 0);
+                        p.engine.drop_event(slot, drop, over);
+                        p.engine.set_control(slot, id, 0);
+                    }
+                    self.ui_scripts_ns += ns_since(t);
+                }
                 Command::Widget {
                     part,
                     slot,

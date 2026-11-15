@@ -373,8 +373,13 @@ pub struct Zone {
     pub group: u32,
     /// Its index among its group's zones ([`ir::ModKind::Mix`] names it).
     pub member: u16,
-    /// A voice of this zone fades when a voice of group `off_by` starts (hi-hat choke).
+    /// A voice of this zone stops when a voice of voice group `off_by`
+    /// starts (hi-hat choke), as its own voice group stops voices.
     pub off_by: Option<u32>,
+    /// Its voices of a key stop when that key is played again.
+    pub repeat_cuts: bool,
+    /// A script offset past [`Self::start_mod`] plays from the start.
+    pub offset_limited: bool,
     /// Index into [`Plan::voice_groups`].
     pub voice_group: Option<u32>,
     // Playback.
@@ -442,6 +447,8 @@ impl Zone {
             group: 0,
             member: 0,
             off_by: None,
+            repeat_cuts: false,
+            offset_limited: false,
             voice_group: None,
             root,
             keytrack: 1.0,
@@ -497,6 +504,9 @@ pub struct Plan {
     /// The key the latch starts as if pressed.
     pub default_keyswitch: Option<u8>,
     pub voices: usize,
+    /// How a voice makes room at [`Self::voices`] (its steal, released
+    /// first and fade; the instrument's).
+    pub steal: ir::VoiceGroup,
     pub notes: usize,
     /// Pending timed work; also bounds one block's input.
     pub queue: usize,
@@ -595,6 +605,7 @@ impl Plan {
             }],
             polyphony: Vec::new(),
             voice_groups: Vec::new(),
+            steal: ir::VoiceGroup::DEFAULT,
             switches: Vec::new(),
             default_keyswitch: None,
             voices,
