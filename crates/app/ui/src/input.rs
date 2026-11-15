@@ -44,9 +44,9 @@ pub enum Set {
 pub struct Gesture {
     press: Option<(usize, f64)>,
     pub menu: Option<usize>,
-    /// The control typed into, the text so far, and whether it has been
-    /// selected whole (once the field is on screen).
-    entry: Option<(usize, String, bool)>,
+    /// The control typed into, the text so far, and the selection (in
+    /// characters) still to make once the field is on screen.
+    entry: Option<(usize, String, Option<(usize, usize)>)>,
     /// The value edit whose arrow is held, its step, and when it steps next.
     arrow: Option<(usize, f64, f64)>,
     /// The XY pad being dragged, its cursor, and where that cursor's
@@ -360,7 +360,9 @@ pub fn read(
                     Kind::ValueEdit { display, .. } if display.ratio != 0. => now / display.ratio,
                     _ => now,
                 };
-                type_into(ui, g, n.0, &id, shown.to_string());
+                let shown = shown.to_string();
+                let all = (0, shown.chars().count());
+                type_into(ui, g, n.0, &id, shown, all);
             }
             if r.released && g.press.is_some_and(|(p, _)| p == n.0) {
                 g.press = None;
@@ -396,8 +398,17 @@ pub fn read(
                 g.menu = (g.menu != Some(n.0)).then_some(n.0);
                 g.branch.clear();
             }
+            // A double-click selects the word under the pointer (Kontakt 8
+            // oracle, tools/ksp-ui text page); the first click opened the
+            // field with its caret at the end.
+            Kind::TextEdit if ui.double_click(id.as_str()) => {
+                let width = ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size.width);
+                let at = ui.local(id.as_str()).zip(width).map_or(0., |(p, w)| p.x / w.max(1.));
+                type_into(ui, g, n.0, &id, w.text.clone(), word(&w.text, at));
+            }
             Kind::TextEdit if (r.clicked || r.key_activated) && g.entry.is_none() => {
-                type_into(ui, g, n.0, &id, w.text.clone());
+                let end = w.text.chars().count();
+                type_into(ui, g, n.0, &id, w.text.clone(), (end, end));
             }
             _ => {}
         }
@@ -548,6 +559,15 @@ fn pad(
         };
         // From the unrounded corner, so a press that does not move edits nothing.
         g.xy = cursor.and_then(|c| Some((n.0, c, xy::corner(w, c, points, art(c))?)));
+        // A press off every cursor moves none, but the source still runs its
+        // callback once, values unchanged (Kontakt 8 oracle, tools/ksp-ui
+        // data page, MOUSE_MODE 0).
+        if cursor.is_none() && w.reports_release {
+            return (w.cell(2 * active))
+                .map(|v| edit(Set::Cell(2 * active, v)))
+                .into_iter()
+                .collect();
+        }
     }
     let Some((_, c, start)) = g.xy.filter(|(p, ..)| *p == n.0) else {
         return Vec::new();
@@ -793,9 +813,28 @@ fn sub_menu(
 /// a value edit's selected whole, so what the user types replaces it; a
 /// text edit's with the caret at its end, as Kontakt 8 opens one (oracle
 /// probe fs3.ksp: a click then "x" turned "abc" into "abcx").
-fn type_into(ui: &mut Ui, g: &mut Gesture, n: usize, id: &str, text: String) {
+fn type_into(
+    ui: &mut Ui,
+    g: &mut Gesture,
+    n: usize,
+    id: &str,
+    text: String,
+    select: (usize, usize),
+) {
     ui.focus(format!("{id}-entry"));
-    g.entry = Some((n, text, false));
+    g.entry = Some((n, text, Some(select)));
+}
+
+/// The word of `text` at `at` of its width (0 to 1), as a character range:
+/// the run of non-spaces the pointer is in, or the spaces it is between.
+fn word(text: &str, at: f64) -> (usize, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let i = ((at.clamp(0., 1.) * chars.len() as f64) as usize).min(chars.len().saturating_sub(1));
+    let space = |c: Option<&char>| c.is_some_and(|c| c.is_whitespace());
+    let kind = space(chars.get(i));
+    let from = (0..i).rev().find(|&j| space(chars.get(j)) != kind).map_or(0, |j| j + 1);
+    let to = (i..chars.len()).find(|&j| space(chars.get(j)) != kind).unwrap_or(chars.len());
+    (from, to)
 }
 
 /// What is being typed into a value edit (a number in its shown units) or
@@ -809,7 +848,7 @@ fn entry(
     g: &mut Gesture,
     edits: &mut Vec<Edit>,
 ) -> Option<El> {
-    let (m, mut text, mut selected) = g.entry.take()?;
+    let (m, mut text, mut pending) = g.entry.take()?;
     let w = tree.widgets.get(m)?;
     let id = surface(face, m);
     let field = format!("{id}-entry");
@@ -819,14 +858,14 @@ fn entry(
         return None;
     }
     if !away {
-        if !selected {
-            let len = text.chars().count();
-            let from = if words { len } else { 0 };
-            selected = ui.request_action(SemanticAction::set_selection(field.as_str(), from, len));
+        if let Some((from, to)) = pending {
+            if ui.request_action(SemanticAction::set_selection(field.as_str(), from, to)) {
+                pending = None;
+            }
         }
         let typed = text_edit(ui, field.as_str(), &mut text, TextOpts::default());
         if !typed.changed.submitted {
-            g.entry = Some((m, text, selected));
+            g.entry = Some((m, text, pending));
             // In a row: the popup names its content, and the field keeps its own id.
             return Some(kit::popup(&id, row![typed.el.w(TEXT * 6.)]));
         }
