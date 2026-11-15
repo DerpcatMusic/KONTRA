@@ -58,27 +58,35 @@ UVI_CALLBACKS = set("onInit onLoad onSave onNote onRelease onController onPitchB
 LUA_KEYWORDS = set("and break do else elseif end false for function goto if in local nil not or repeat return then true until while self".split())
 
 
+# One scan over Lua's strings and comments, so `--` in a string starts nothing.
+LUA_TOKENS = re.compile(
+    r"""--\[(?P<lc>=*)\[.*?\](?P=lc)\]"""  # long comment
+    r"""|--[^\n]*"""  # line comment
+    r"""|\[(?P<ls>=*)\[.*?\](?P=ls)\]"""  # long string
+    r"""|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'""",
+    re.S,
+)
+
+
 def lua_names(src):
-    src = re.sub(r"--\[(=*)\[.*?\]\1\]", " ", src, flags=re.S)
-    src = re.sub(r"--[^\n]*", " ", src)
-    src = re.sub(r"\[(=*)\[.*?\]\1\]", '""', src, flags=re.S)
-    src = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', src)
-    src = re.sub(r"'(?:\\.|[^'\\\n])*'", "''", src)
-    defined = set(re.findall(r"\bfunction\s+([A-Za-z_]\w*)", src))
-    defined |= set(re.findall(r"\bfunction\s+[A-Za-z_][\w.]*[.:]([A-Za-z_]\w*)", src))
-    defined |= set(re.findall(r"\blocal\s+function\s+([A-Za-z_]\w*)", src))
+    src = LUA_TOKENS.sub(lambda m: " " if m.group(0).startswith("--") else '""', src)
+    # Names this file alone sees (locals, parameters, loop variables) and
+    # those every file sees (globals it defines).
+    local = set(re.findall(r"\blocal\s+function\s+([A-Za-z_]\w*)", src))
     for names in re.findall(r"\blocal\s+([A-Za-z_][\w\s,]*?)(?:=|\n|$)", src):
-        defined |= {n.strip() for n in names.split(",") if n.strip()}
+        local |= {n.strip() for n in names.split(",") if n.strip()}
     for args in re.findall(r"\bfunction\b[^(]*\(([^)]*)\)", src):
-        defined |= {a.strip() for a in args.split(",") if a.strip() and a.strip() != "..."}
+        local |= {a.strip() for a in args.split(",") if a.strip() and a.strip() != "..."}
     for names in re.findall(r"\bfor\s+([\w\s,]+?)\s+(?:in|=)", src):
-        defined |= {n.strip() for n in names.split(",")}
-    defined |= set(re.findall(r"^\s*([A-Za-z_]\w*)\s*=[^=]", src, re.M))
-    # Globals read: an identifier not after `.` or `:`, not a table key `x =` inside braces.
+        local |= {n.strip() for n in names.split(",")}
+    shared = set(re.findall(r"(?<!local )\bfunction\s+([A-Za-z_]\w*)\s*\(", src))
+    shared |= set(re.findall(r"\bfunction\s+[A-Za-z_][\w.]*[.:]([A-Za-z_]\w*)", src))
+    shared |= set(re.findall(r"^\s*([A-Za-z_]\w*)\s*=[^=]", src, re.M)) - local
+    # Globals read: an identifier not after `.` or `:`.
     used = re.findall(r"(?<![.:\w])([A-Za-z_]\w*)", src)
     members = re.findall(r"(?<=[.:])([A-Za-z_]\w*)\s*\(", src)
     callbacks = [c for c in re.findall(r"\bfunction\s+(on[A-Z]\w*)", src) if c in UVI_CALLBACKS]
-    return used, members, callbacks, defined
+    return used, members, callbacks, local, shared
 
 
 def lua_api():
@@ -115,14 +123,20 @@ def main():
             out.append((c, u))
         return out
 
-    lua_hits = ui["result"].get("lua_calls", {})
+    # Per-name Lua API counts: only when the report carries them (the
+    # inspector counts host actions, `calls`, not Lua functions).
+    lua_hits = ui["result"].get("lua_calls")
 
     def lua_calls(ph, name):
-        return lua_hits.get(ph, {}).get(name, 0)
+        return "-" if lua_hits is None else lua_hits.get(ph, {}).get(name, 0)
 
     rows = {}
     sources = sorted(dump.glob("*/source"))
-    ksp = any(p.read_text(errors="ignore").lstrip().startswith("on ") for p in sources)
+    # KSP opens with `on <callback>`, maybe after `{ ... }` comments.
+    def ksp_source(text):
+        return re.sub(r"^(?:\s*\{[^}]*\})*\s*", "", text).startswith("on ")
+
+    ksp = any(ksp_source(p.read_text(errors="ignore")) for p in sources)
     if ksp:
         status, engine_vars, fns, measured, opaque = ksp_tables(status_path)
         for p in sources:
@@ -144,15 +158,20 @@ def main():
         uvi_api = {n.split(".")[-1] for n in uvi_api if ":" not in n}
         api, stubs = lua_api()
         prelude_text = (ROOT / "crates/script/lua/src/prelude.lua").read_text()
-        defined_all, used_all, cbs_all = set(), [], []
+        files, shared_all, cbs_all = [], set(), []
         for p in sorted(dump.rglob("*")):
             # The program tree and state the bank carries are data, not script.
             if p.is_file() and (p.name == "source" or (p.suffix == ".lua" and not p.name.startswith("__"))):
-                used, members, cbs, defined = lua_names(p.read_text(errors="ignore"))
-                defined_all |= defined
-                # A method the script defines is its own, whatever UVI names alike.
-                used_all += used + [m for m in members if m not in defined]
+                used, members, cbs, local, shared = lua_names(p.read_text(errors="ignore"))
+                files.append((used, members, local))
+                shared_all |= shared
                 cbs_all += cbs
+        defined_all = shared_all | {n for _, _, local in files for n in local}
+        used_all = []
+        for used, members, local in files:
+            # A method the script defines is its own, whatever UVI names alike.
+            used_all += [u for u in used if u not in local]
+            used_all += [m for m in members if m not in defined_all]
         for c in cbs_all:
             rows.setdefault(("cb", c), ["implemented" if c in api or c in prelude_text else "missing", 0])[1] += 1
         for u in used_all:
@@ -160,18 +179,20 @@ def main():
                 continue
             if u not in uvi_api and u not in api:
                 continue
-            if u in defined_all and u not in uvi_api:
+            if u in shared_all and u not in uvi_api:
                 continue
             st = "stub" if u in stubs else "implemented" if u in api else "missing"
             rows.setdefault(("api", u), [st, 0])[1] += 1
 
+    if not ksp and lua_hits is None:
+        print("# no lua_calls in the report: Lua rows show '-' per phase", file=sys.stderr)
     print("kind\tname\tstatus\tuses\tload\tnote\tui\tunanswered")
     counts = {}
     for (kind, name), (st, n) in sorted(rows.items(), key=lambda r: (r[0][0], -r[1][1])):
         h = hit(name) if kind == "fn" else [(0, 0)] * 3
         if kind == "api":
             h = [(lua_calls(ph, name), 0) for ph in ("load", "note", "ui")]
-        un = sum(u for _, u in h)
+        un = sum(u for _, u in h if isinstance(u, int))
         print(f"{kind}\t{name}\t{st}\t{n}\t" + "\t".join(str(c) for c, _ in h) + f"\t{un}")
         counts.setdefault(kind, {}).setdefault(st, 0)
         counts[kind][st] += 1
