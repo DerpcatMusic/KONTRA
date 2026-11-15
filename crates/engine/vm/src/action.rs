@@ -509,4 +509,12 @@ actions! {
     // A number of a glide scope: ints (scope, knob: 1 seconds, 2 per
     // semitone, 3 curve, value in millionths).
     GlideKnob,
+    // A group's amplitude envelope as a script sets it: ints (group,
+    // attack, hold, decay, sustain level, release, attack shape, fall
+    // shape, silent lag at the attack's start); times in microseconds,
+    // the rest in millionths.
+    AmpEnvelope,
+    // A point of breakpoint envelope `index` of a group: ints (group,
+    // index, point, microseconds, level and curve in millionths).
+    EnvelopePoint,
 }

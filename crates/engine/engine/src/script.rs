@@ -851,6 +851,26 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
+            Action::AmpEnvelope => {
+                let n = |i: usize| int(i) as f32 / 1e6;
+                let set = self.set_amp_envelope(int(0), [1, 2, 3, 4, 5, 6, 7, 8].map(n));
+                if !set {
+                    self.count_unhandled(Action::AmpEnvelope);
+                }
+                HostValue::Nothing
+            }
+            Action::EnvelopePoint => {
+                let n = |i: usize| int(i) as f32 / 1e6;
+                let point = crate::ir::Breakpoint {
+                    ms: n(3) * 1000.0,
+                    level: n(4),
+                    curve: n(5),
+                };
+                if !self.set_envelope_point(int(0), int(1), int(2), point) {
+                    self.count_unhandled(Action::EnvelopePoint);
+                }
+                HostValue::Nothing
+            }
             Action::GlideKnob => {
                 use crate::glide::GlideKnob;
                 let knob = match int(1) {

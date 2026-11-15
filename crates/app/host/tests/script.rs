@@ -5558,3 +5558,34 @@ fn a_switch_to_mono_under_a_held_chord_keeps_only_the_new_note() {
     let mono = level(&mut e, &[]);
     assert!((mono - 0.25).abs() < 1e-3, "after the switch {mono}");
 }
+
+/// AO's amplitude attack knob: `modulations["DAHDSR 1"]:setParameter(
+/// "AttackTime", v)` reaches the group's envelope for the next note.
+#[test]
+fn a_scripts_attack_time_reaches_the_next_notes_envelope() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.25, 0);
+    z.keys = 0..=127;
+    let plan = Plan::new(vec![z], 16);
+    let tree = "return {params={},db=0,pan=0,auxs={},layers={{params={},
+        modulations={{params={Name='DAHDSR 1',AttackTime='0'},env={'DAHDSR',{0,-1}}}}}}}";
+    let source = "function onNote(e)
+            if e.note == 62 then
+                Program.layers[1].modulations['DAHDSR 1']:setParameter('AttackTime', 1)
+            end
+            postEvent(e)
+        end";
+    let modules = [("__program.lua".to_string(), tree.to_string())];
+    let compiled = kontra_lua::compile(source, &modules, &[]).unwrap();
+    let mut plan = plan;
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let gate = level(&mut e, &[on(60)]);
+    assert!((gate - 0.25).abs() < 1e-3, "no attack: {gate}");
+    level(&mut e, &[off(60)]);
+    level(&mut e, &[]);
+    // A 1 s attack: 4096 frames in, under a tenth of the way.
+    let rising = level(&mut e, &[on(62)]);
+    assert!(rising > 0.0 && rising < 0.025, "1 s attack at {rising}");
+    assert_eq!(e.stats().actions_unhandled, 0);
+}
