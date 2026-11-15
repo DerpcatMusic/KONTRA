@@ -5480,3 +5480,40 @@ fn a_picked_file_runs_the_selector_callback_with_its_names() {
     e.set_control(0, id, 0);
     assert_eq!(e.last_message(), "a|a.mid|/lib/midi/a.mid");
 }
+
+/// A chord held in Poly, then a script switches the layer to mono: the next
+/// note leaves only itself sounding, not one of the chord's notes besides.
+#[test]
+fn a_switch_to_mono_under_a_held_chord_keeps_only_the_new_note() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.25, 0);
+    z.keys = 0..=127;
+    z.voice_group = Some(0);
+    let mut plan = Plan::new(vec![z], 16);
+    plan.voice_groups = vec![ir::VoiceGroup {
+        voices: 0,
+        steal: ir::Steal::Oldest,
+        prefer_released: false,
+        fade_ms: 1.0,
+        exclusive: None,
+        per_note: true,
+        legato: false,
+        returns: false,
+    }];
+    let tree = "return {params={},db=0,pan=0,auxs={},
+        layers={{params={PlayMode='0'},line={0,0,0}}}}";
+    let source = "function onNote(e)
+            if e.note == 67 then Program.layers[1]:setParameter('PlayMode', 2) end
+            postEvent(e)
+        end";
+    let modules = [("__program.lua".to_string(), tree.to_string())];
+    let compiled = kontra_lua::compile(source, &modules, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let chord = level(&mut e, &[on(60), on(64), on(65)]);
+    assert!((chord - 0.75).abs() < 1e-3, "chord at {chord}");
+    level(&mut e, &[on(67)]);
+    let mono = level(&mut e, &[]);
+    assert!((mono - 0.25).abs() < 1e-3, "after the switch {mono}");
+}
