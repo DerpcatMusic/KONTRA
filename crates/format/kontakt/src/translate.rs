@@ -477,6 +477,8 @@ fn slot_shapes(out: &mut ir::Instrument, slots: crate::effects::Slots, buses: &m
         out.slot_shapes.slots.extend(open);
         out.slot_shapes.types = crate::script_knobs::slot_types();
         out.slot_shapes.fresh = crate::held::fresh();
+        // A fresh IRC reads back AUTO_GAIN 1, every other setting plain.
+        out.slot_shapes.fresh_normalize = Some(crate::laws::AUTO_GAIN);
         out.slot_shapes.subtypes = slots.subtypes;
     }
 }

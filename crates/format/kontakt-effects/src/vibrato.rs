@@ -3,22 +3,25 @@
 //! BLEND, RATE, WIDTH and MIX as floats at 8..24, then a byte (1 in every
 //! factory preset).
 //!
-//! Measured wet on Kontakt 8.13.1 through the oracle (a steady 1 kHz tone
-//! and a sweep, 2026-11-14; docs/re/engine/fx-measured/psyche-vibrato.md):
-//! - the vibrato is a delay swept by a near sine (third harmonic 4% of the
-//!   fundamental at DEPTH 2): [`SWING_MS`] peak to peak by DEPTH, at
-//!   `0.814·28.7^RATE` Hz (0.83, 2.17, 6.0, 17.0 Hz at 0, .3, .6, .9);
-//! - its line rolls off as [`BODY`] (−1.3 dB at 1 kHz, −7 dB above 6 kHz,
-//!   COLOR 0), with a level per DEPTH ([`GAIN`]);
-//! - BLEND 1 mixes the dry signal in at the vibrato's level (the 12 Hz beat
-//!   of a chorus), MIX blends the input against all of it.
+//! The core, read from Kontakt 8.13.1 (HammondVibratoChorus, ctor
+//! [ref], process [ref]; docs/re/engine/fx-measured/
+//! psyche-vibrato.md) as [`ir::Scanner`]:
+//! - both channels' sum is split at 7.1 kHz (a Butterworth state-variable
+//!   pair); the band below runs down a wave-digital LC ladder, half the band
+//!   above passes around it;
+//! - the ladder: 0.5 H and 4 nF sections (1 nF the last), 18 for DEPTH I..III
+//!   and 36 for IV..VI, resistive dividers to ground at its first nodes, and
+//!   COLOR's load at its end, `15000·10^(4.5u − 2.25)` Ω: `u` ½ at COLOR 0
+//!   (15 kΩ), 0.3667 at 1 (3.8 kΩ), 0.6333 at 2 (60 kΩ);
+//! - a pickup turns at `6·2^(5·RATE − 3)` Hz through 16 stations, out across
+//!   DEPTH's nine taps and back, crossfading neighbours; the right one
+//!   `WIDTH/2` turns ahead;
+//! - MIX blends the input against it.
 //!
-//! Not carried: COLOR 1 and 2 (their own resonant responses: +5 dB at 635 Hz,
-//! or +4.5 dB at 250 Hz and 1 kHz, against COLOR 0; they play COLOR 0), the
-//! line's 4 dB ripple as the scanner sweeps, the delay's centre (unmeasured;
-//! 1 ms), BLEND's law between its ends (taken linear) and WIDTH's (taken as
-//! the right sweep a quarter cycle ahead at 1; measured L/R correlation
-//! 0.57 there).
+//! BLEND is not in the core's process: taken (as measured, a chorus at
+//! BLEND 1) as the line's input mixed into the pickup's signal, half each
+//! at 1. The core's first continuous parameter (the source's resistance,
+//! `11000·p²` Ω, and COLOR 1 and 2's load) stays at its fresh 1e-6.
 
 use kontra_ir as ir;
 
@@ -44,20 +47,28 @@ pub const INIT: Vibrato = Vibrato {
     mix: 1.0,
 };
 
-/// The sweep, ms peak to peak, by DEPTH I..VI.
-const SWING_MS: [f32; 6] = [0.63, 0.56, 0.82, 1.10, 1.35, 1.78];
-/// The vibrato's gain by DEPTH, with [`BODY`]'s −1.25 dB: its 1 kHz tone
-/// measured −0.72, −1.24, −0.95, −2.49, −3.09 and −2.96 dB re the input.
-const GAIN: [f32; 6] = [0.930, 0.876, 0.906, 0.759, 0.708, 0.719];
-/// The delay's centre, ms (unmeasured; past the largest swing's half).
-const CENTRE_MS: f32 = 1.0;
-/// COLOR 0's line: a second-order high shelf to −6.4 dB about 3.8 kHz,
-/// fitted to the sweep (0.74 dB rms, 1.65 dB at most, 30 Hz..16 kHz).
-static BODY: [ir::Section; 1] = [ir::Section {
-    hz: 3819.8,
-    num: [1.0, 1.0900, 0.4775],
-    den: [1.0, 1.5773, 1.0],
-}];
+/// The nodes DEPTH I..VI's pickup crosses (I..III on the short line).
+const TAPS: [[u8; 9]; 6] = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    [0, 1, 2, 4, 6, 8, 10, 11, 12],
+    [0, 1, 3, 6, 9, 12, 15, 17, 18],
+    [0, 1, 3, 7, 12, 17, 21, 23, 24],
+    [0, 1, 4, 9, 15, 21, 26, 29, 30],
+    [0, 2, 6, 12, 20, 28, 30, 34, 36],
+];
+/// The dividers to ground at nodes 1..5 (27k+68k at the input, unheard).
+const SHUNT_OHM: [f32; 6] = [206e3, 189e3, 213e3, 198e3, 192e3, f32::INFINITY];
+
+/// COLOR's load at the line's end, Ω.
+fn load_ohm(color: i32) -> f32 {
+    const P: f32 = 1e-6;
+    let u = match color {
+        1 => 0.366_666 * (1.0 - P),
+        2 => 0.366_666 * P + 0.633_333,
+        _ => 0.5,
+    };
+    15_000.0 * 10f32.powf(4.5 * u - 2.25)
+}
 
 #[must_use]
 pub fn saved(version: u16, public: &[u8]) -> Option<Vibrato> {
@@ -80,36 +91,27 @@ pub fn saved(version: u16, public: &[u8]) -> Option<Vibrato> {
 }
 
 #[must_use]
-pub fn delay(v: Vibrato) -> ir::Delay {
+pub fn scanner(v: Vibrato) -> ir::Scanner {
     let d = usize::try_from(v.depth.clamp(0, 5)).unwrap_or(0);
-    let swing = SWING_MS.get(d).copied().unwrap_or(0.63);
-    let gain = GAIN.get(d).copied().unwrap_or(0.93);
-    let (blend, mix) = (v.blend.clamp(0.0, 1.0), v.mix.clamp(0.0, 1.0));
-    let wet = mix * (1.0 - 0.5 * blend) * gain;
-    ir::Delay {
-        time: ir::DelayTime::Ms(CENTRE_MS),
-        depth_ms: 0.5 * swing,
-        second_head: false,
-        input: ir::IDENTITY,
-        feedback: [[0.0; 2]; 2],
-        output: [[wet, 0.0], [0.0, wet]],
-        damping_hz: f32::INFINITY,
-        low_cut_hz: 0.0,
-        steep_low_cut: false,
-        body: &BODY,
-        triangle_s: None,
-        shape: &[],
-        noise: [0.0; 2],
-        high_shelf: None,
-        spread_ms: 0.0,
-        rate: ir::Rate::Hz(0.814 * 28.7f32.powf(v.rate.clamp(0.0, 1.0))),
-        phase: 0.25 * v.width.clamp(0.0, 1.0),
-        direct: mix * 0.5 * blend * gain + (1.0 - mix),
+    ir::Scanner {
+        sections: if d < 3 { 18 } else { 36 },
+        henry: 0.5,
+        farad: 4e-9,
+        last_farad: 1e-9,
+        load_ohm: load_ohm(v.color),
+        shunt_ohm: SHUNT_OHM,
+        taps: TAPS.get(d).copied().unwrap_or(TAPS[0]),
+        hz: 6.0 * 2f32.powf(5.0 * v.rate.clamp(0.0, 1.0) - 3.0),
+        lead: 0.5 * v.width.clamp(0.0, 1.0),
+        split_hz: 7100.0,
+        high: 0.5,
+        blend: v.blend.clamp(0.0, 1.0),
+        mix: v.mix.clamp(0.0, 1.0),
     }
 }
 
-/// The record as a script moves it: every knob move rebuilds the delay
-/// through [`delay`].
+/// The record as a script moves it: every knob move rebuilds the scanner
+/// through [`scanner`].
 #[must_use]
 pub fn model(v: Vibrato) -> ir::KnobModel {
     use ir::SlotKnob::Knob;
@@ -128,7 +130,7 @@ pub fn model(v: Vibrato) -> ir::KnobModel {
             let [depth, color, blend, rate, width, mix] = *p else {
                 return None;
             };
-            Some(ir::EffectKind::Delay(delay(Vibrato {
+            Some(ir::EffectKind::Scanner(scanner(Vibrato {
                 depth: depth.round() as i32,
                 color: color.round() as i32,
                 blend,
@@ -174,14 +176,10 @@ mod tests {
         }
         public.push(1);
         assert_eq!(saved(0x10, &public), Some(INIT));
-        let d = delay(INIT);
-        let ir::Rate::Hz(hz) = d.rate else {
-            panic!("Hz");
-        };
-        assert!((hz - 6.0).abs() < 0.15, "{hz}");
-        assert_eq!(d.direct, 0.0);
-        // MIX 0 passes the input alone.
-        let dry = delay(Vibrato { mix: 0.0, ..INIT });
-        assert_eq!((dry.output, dry.direct), ([[0.0; 2]; 2], 1.0));
+        let s = scanner(INIT);
+        assert_eq!((s.hz, s.load_ohm.round(), s.sections), (6.0, 15_000.0, 18));
+        // COLOR 1 loads the line below its 11 kΩ, COLOR 2 above.
+        let load = |color| scanner(Vibrato { color, ..INIT }).load_ohm;
+        assert!((load(1) - 3768.0).abs() < 2.0 && (load(2) - 59_716.0).abs() < 30.0);
     }
 }

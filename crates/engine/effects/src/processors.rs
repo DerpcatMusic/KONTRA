@@ -3,7 +3,8 @@
 //! with their settings in DSP terms. Not real-time unless a function says so.
 
 use kontra_dsp::delay::{
-    CombBank, CombSettings, MAX_MS, ModDelay, Phaser, PhaserSettings, Shifter, ShifterSettings,
+    CombBank, CombSettings, MAX_MS, ModDelay, Phaser, PhaserSettings, Scanner, ScannerSettings,
+    Shifter, ShifterSettings,
 };
 use kontra_dsp::drive::{
     self, Circuit, Clipper, Converter, Crush, Overdrive, Reduction, Shaper, Voicing,
@@ -224,6 +225,36 @@ impl Wet for ModDelay {
         if let ir::EffectKind::Delay(d) = kind {
             ModDelay::set(self, delay(d, tempo));
         }
+    }
+}
+
+impl Wet for Scanner {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Scanner::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Scanner(s) = kind {
+            Scanner::set(self, scanner(s));
+        }
+    }
+}
+
+fn scanner(s: ir::Scanner) -> ScannerSettings {
+    ScannerSettings {
+        sections: usize::from(s.sections),
+        henry: s.henry,
+        farad: s.farad,
+        last_farad: s.last_farad,
+        load_ohm: s.load_ohm,
+        shunt_ohm: s.shunt_ohm,
+        taps: s.taps,
+        hz: s.hz,
+        lead: s.lead,
+        split_hz: s.split_hz,
+        high: s.high,
+        blend: s.blend,
+        mix: s.mix,
     }
 }
 
@@ -736,6 +767,7 @@ pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) 
             wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
         }
         Some(ir::EffectKind::Shifter(s)) => wet(Box::new(Shifter::new(shifter(s, 120.0), rate))),
+        Some(ir::EffectKind::Scanner(s)) => wet(Box::new(Scanner::new(scanner(s), rate))),
         Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(p, 120.0), rate))),
         Some(ir::EffectKind::Notches(n)) => wet(Box::new(Notches::new(notches(n, 120.0), rate))),
         Some(ir::EffectKind::Ensemble(e)) => wet(Box::new(crate::ensemble::Ensemble::new(e, rate))),

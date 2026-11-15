@@ -320,3 +320,86 @@ pub enum Tune<'a> {
     /// Borrowed: an effect's settings outweigh the other moves.
     Effect(&'a ir::EffectKind),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strip(threshold_db: f32) -> ir::EffectKind {
+        ir::EffectKind::Strip(ir::Strip {
+            compressor: ir::Compressor {
+                threshold_db,
+                ratio: 8.0,
+                knee_db: 0.0,
+                attack_ms: 1.0,
+                release_ms: 50.0,
+                makeup_db: 0.0,
+                makeup_slope: 0.0,
+                link: true,
+                mix: 1.0,
+                detector: ir::Detector::Input,
+                sidechain_hz: None,
+            },
+            shaper: ir::Shaper {
+                pre_lowpass_hz: None,
+                curve: ir::DriveCurve::Soft(0.0),
+                lowpass_hz: None,
+                highpass_hz: None,
+                sections: ir::Sections::NONE,
+            },
+        })
+    }
+
+    /// A script moving a group rack's strip on a sounding voice (COMPRESS
+    /// up: the threshold down) retunes the voice's own unit.
+    #[test]
+    fn a_sounding_voice_takes_its_strips_new_settings() {
+        let rate = 48_000;
+        let open = strip(0.0);
+        let Some((kind, outer)) = unit(open, rate) else {
+            panic!("no strip unit");
+        };
+        let mut rack = [Unit {
+            insert: 0,
+            kind,
+            outer,
+            line: 0,
+            ramp: None,
+            tuned: None,
+        }];
+        let mut inserts = [Some(ir::Effect {
+            kind: open,
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        let mut spare = vec![[0.0; 2]; 256];
+        let mut peak = |rack: &mut [Unit], inserts: &[Option<ir::Effect>]| {
+            let mut top = 0.0f32;
+            for block in 0..100 {
+                let mut io: Vec<[f32; 2]> = (0..256)
+                    .map(|i| {
+                        let t = (block * 256 + i) as f32 / rate as f32;
+                        [0.5 * (std::f32::consts::TAU * 1000.0 * t).sin(); 2]
+                    })
+                    .collect();
+                process(rack, inserts, &mut io, &mut spare, &mut [], rate);
+                if block > 80 {
+                    top = io.iter().fold(top, |p, f| p.max(f[0].abs()));
+                }
+            }
+            top
+        };
+        let before = peak(&mut rack, &inserts);
+        let squeezed = strip(-30.0);
+        inserts[0] = Some(ir::Effect {
+            kind: squeezed,
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        });
+        tune_unit(&mut rack[0], Tune::Effect(&squeezed), None, rate);
+        let after = peak(&mut rack, &inserts);
+        assert!(after < 0.5 * before, "not retuned: {before} then {after}");
+    }
+}

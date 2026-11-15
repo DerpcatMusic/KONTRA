@@ -50,8 +50,14 @@ impl Plan {
         else {
             return false;
         };
-        let Some(&(_, law)) = self.impulse_laws.get(usize::from(impulse)) else {
-            return false;
+        // A script-made convolution holds no response yet: its fresh law.
+        let law = if impulse == ir::Impulse::NONE {
+            self.slot_shapes.fresh_impulse()
+        } else {
+            let Some(&(_, law)) = self.impulse_laws.get(usize::from(impulse)) else {
+                return false;
+            };
+            law
         };
         let found = (self.responses.iter()).find(|(n, _)| n.eq_ignore_ascii_case(name));
         let Some(r) =

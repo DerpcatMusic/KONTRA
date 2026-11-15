@@ -105,7 +105,7 @@ impl Engine {
             return None;
         };
         if impulse == ir::Impulse::NONE {
-            return Some((None, ir::Impulse::PLAIN));
+            return Some((None, self.plan.slot_shapes.fresh_impulse()));
         }
         let plan = Arc::clone(&self.plan);
         let at = usize::from(impulse);

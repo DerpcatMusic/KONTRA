@@ -787,8 +787,8 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         ..ty(49, false, 0, Some(psyche), [].into())
     });
     // A fresh Vibrato/Chorus: no dry level (Kontakt 8.13.1 reads 0 back);
-    // its MIX and BLEND carry the input inside the delay.
-    let vibrato = unit(ir::EffectKind::Delay(crate::vibrato::delay(
+    // its MIX and BLEND carry the input inside the scanner.
+    let vibrato = unit(ir::EffectKind::Scanner(crate::vibrato::scanner(
         crate::vibrato::INIT,
     )));
     types.push(ir::SlotType {
