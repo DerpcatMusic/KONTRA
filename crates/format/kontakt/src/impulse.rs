@@ -163,6 +163,7 @@ impl<'a> Impulses<'a> {
             // offline into the response); ours overlap-adds grains.
             size: [size(3), size(6)],
             length: 1.0,
+            window_whole: false,
         });
         u16::try_from(self.out.len() - 1).ok()
     }

@@ -147,6 +147,9 @@ pub struct Impulse {
     /// 1 its first `max(2, length·frames)` frames, faded to silence by the
     /// raised cosine `(1 + cos(π·i/(n + 1)))/2`, before [`Self::mix`].
     pub length: f32,
+    /// That window over the whole response too, at `length` 1. One window
+    /// either way, chosen from the length the response is prepared at now.
+    pub window_whole: bool,
 }
 
 /// Scales a response's channel energy toward `energy`, by at most `max_gain`;
@@ -542,6 +545,10 @@ pub struct Envelope {
     /// Seconds an attack stays silent before its curve runs in the rest of
     /// the attack time; none without an attack.
     pub lag: f32,
+    /// The voice gain is `floor + depth·level`: a volume route's intensity
+    /// below full either scales the envelope or keeps a floor under it.
+    pub floor: f32,
+    pub depth: f32,
 }
 
 impl Envelope {
@@ -555,6 +562,8 @@ impl Envelope {
         attack_shape: 0.0,
         fall_shape: 0.0,
         lag: 0.0,
+        floor: 0.0,
+        depth: 1.0,
     };
 }
 
