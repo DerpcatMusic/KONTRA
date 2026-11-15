@@ -3,11 +3,19 @@
 //! by a quadrature carrier through a diode pair `√((k(c + x))² + 1) −
 //! √((k(c − x))² + 1)` (first-order antiderivative antialiasing), the
 //! quadrature branch weighted in, a silence gate and the dry mixed in.
-//! The structure is the oscillator path of v2 sampler-core
-//! dsp/color/freak.rs (a port of a native core); the Hilbert pair here is
+//! Feedback takes the band-limited wet output back off the input, solved
+//! implicitly (at most four fixed-point passes, as the native core does).
+//! The carrier is a sine, the input's own analytic pair (sidechain), or a
+//! sine the input is transmitted on and then received like an AM radio.
+//! The structure is the Freak core's (ctor 0x141963480, process
+//! 0x141966ad0; laws read through v2 sampler-core dsp/color/freak.rs,
+//! which matched vectors of the emulated core); the Hilbert pair here is
 //! Olli Niemitalo's fixed design, a phase difference within 0.7° over
 //! 0.002..0.998 of the band, not the native per-rate elliptic one (which
-//! differs in phase only).
+//! differs in phase only), and the receiver's filters are TPT state
+//! variable ones at the native corners and dampings.
+
+use std::f32::consts::PI;
 
 /// The settings in signal terms (see `ir::RingMod`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,8 +27,30 @@ pub struct RingMod {
     pub drive: f32,
     pub highpass_hz: f32,
     pub gate: bool,
+    pub feedback: f32,
+    pub source: Source,
     pub wet: f32,
     pub dry: f32,
+}
+
+/// The carrier (see `ir::RingSource`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Source {
+    Oscillator,
+    Sidechain {
+        contour: f32,
+        attack: f32,
+        release: f32,
+        bandpass_hz: Option<f32>,
+    },
+    Radio {
+        gain: f32,
+        tuned_hz: f32,
+        damping: f32,
+        makeup: f32,
+        product: bool,
+        noise: f32,
+    },
 }
 
 /// The two branches' allpass coefficients `a`; each stage is
@@ -51,6 +81,86 @@ fn antiderivative(q: f32) -> f32 {
     ((q + r).ln() + q * r) * 0.5 - q
 }
 
+/// The diode pair `√((k(m + a))² + 1) − √((k(m − a))² + 1)` without
+/// antialiasing (the implicit solve's estimate).
+fn diodes(k: f32, m: f32, a: f32) -> f32 {
+    let (p, q) = (k * (m + a), k * (m - a));
+    (p * p + 1.0).sqrt() - (q * q + 1.0).sqrt()
+}
+
+/// `1 − e^(ln 0.01 / (seconds · rate))`: a level follower's step.
+fn follow(seconds: f32, rate: f32) -> f32 {
+    if seconds > 0.0 {
+        1.0 - (-std::f32::consts::LN_10 * 2.0 / (seconds * rate)).exp()
+    } else {
+        1.0
+    }
+}
+
+fn track(level: &mut f32, x: f32, attack: f32, release: f32) {
+    *level += (x - *level) * if x <= *level { release } else { attack };
+}
+
+/// A TPT one-pole's step `G/(1 + G)`, `G = tan(π·hz/rate)`.
+fn pole(hz: f32, rate: f32) -> f32 {
+    let g = (PI * hz.clamp(0.0, 0.49 * rate) / rate).tan();
+    g / (1.0 + g)
+}
+
+/// A TPT one-pole low-pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct OnePole(f32);
+
+impl OnePole {
+    /// The low-pass of `x` were it fed now (the state unchanged).
+    fn peek(self, x: f32, g: f32) -> f32 {
+        g * x + (1.0 - g) * self.0
+    }
+
+    fn tick(&mut self, x: f32, g: f32) -> f32 {
+        let v = (x - self.0) * g;
+        let low = v + self.0;
+        self.0 = low + v;
+        low
+    }
+}
+
+/// A TPT state-variable filter's coefficients (damping `k = 1/Q`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Svf {
+    k: f32,
+    a1: f32,
+    a2: f32,
+    a3: f32,
+}
+
+impl Svf {
+    fn new(hz: f32, k: f32, rate: f32) -> Self {
+        let g = (PI * hz.clamp(1.0, 0.49 * rate) / rate).tan();
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        Self {
+            k,
+            a1,
+            a2: g * a1,
+            a3: g * g * a1,
+        }
+    }
+}
+
+/// A state-variable filter's state; `tick` returns the band and low outputs.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SvfState(f32, f32);
+
+impl SvfState {
+    fn tick(&mut self, x: f32, c: Svf) -> (f32, f32) {
+        let v3 = x - self.1;
+        let v1 = c.a1 * self.0 + c.a2 * v3;
+        let v2 = self.1 + c.a2 * self.0 + c.a3 * v3;
+        (self.0, self.1) = (2.0 * v1 - self.0, 2.0 * v2 - self.1);
+        (v1, v2)
+    }
+}
+
 /// `√(q² + 1) − 1` antialiased against the previous input.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Diode {
@@ -73,21 +183,41 @@ impl Diode {
     }
 }
 
-/// One channel's high-pass, allpass branches and diodes.
+/// `|x|` antialiased against the previous input (the radio's rectifier).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Channel {
-    hp: f32,
+struct Rectifier {
+    x: f32,
+    f: f32,
+}
+
+impl Rectifier {
+    fn tick(&mut self, x: f32) -> f32 {
+        let f = 0.5 * x * x.abs();
+        let dx = x - self.x;
+        let y = if dx.abs() < (x.abs() + self.x.abs() + 0.2) * 1e-5 {
+            ((x + self.x) * 0.5).abs()
+        } else {
+            (f - self.f) / dx
+        };
+        (self.x, self.f) = (x, f);
+        y
+    }
+}
+
+/// A high-pass and an analytic pair from two allpass chains.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Analytic {
+    hp: OnePole,
     /// Per branch and stage `[x₁, x₂, y₁, y₂]`.
     allpass: [[[f32; 4]; 4]; 2],
     /// The first branch's last output (its one-frame delay).
     delayed: f32,
-    /// Sum and difference diodes per branch.
-    diodes: [[Diode; 2]; 2],
 }
 
-impl Channel {
-    /// The analytic pair of `x`.
-    fn analytic(&mut self, x: f32) -> [f32; 2] {
+impl Analytic {
+    /// The analytic pair of `x` high-passed with step `g`.
+    fn tick(&mut self, x: f32, g: f32) -> [f32; 2] {
+        let x = x - self.hp.tick(x, g);
         let mut out = [x; 2];
         for ((o, stages), coefs) in out.iter_mut().zip(&mut self.allpass).zip(BRANCHES) {
             for (s, a) in stages.iter_mut().zip(coefs) {
@@ -102,17 +232,84 @@ impl Channel {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Ring {
-    s: RingMod,
+/// The radio receiver's state for one channel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Receiver {
+    seed: u32,
+    noise: OnePole,
+    band: SvfState,
+    rectifier: Rectifier,
+    dc: OnePole,
+    low: [SvfState; 2],
+}
+
+impl Default for Receiver {
+    fn default() -> Self {
+        Self {
+            seed: 12_345,
+            noise: OnePole::default(),
+            band: SvfState::default(),
+            rectifier: Rectifier::default(),
+            dc: OnePole::default(),
+            low: [SvfState::default(); 2],
+        }
+    }
+}
+
+/// One channel's state.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Channel {
+    input: Analytic,
+    /// Sum and difference diodes per branch.
+    diodes: [[Diode; 2]; 2],
+    /// The sidechain's band-pass and analytic pair.
+    side_band: SvfState,
+    side: Analytic,
+    /// The feedback path: the last wet output and its 15 kHz low-pass and
+    /// 20 Hz high-pass.
+    wet: f32,
+    smooth: OnePole,
+    dc: OnePole,
+    radio: Receiver,
+}
+
+/// The coefficients `set` derives.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Coefs {
     inc: f32,
     hg: f32,
     k: f32,
     norm: f32,
     attack: f32,
     release: f32,
+    /// Feedback: the 15 kHz and 20 Hz steps and the output's makeup.
+    smooth: f32,
+    dc: f32,
+    makeup: f32,
+    /// Sidechain: the band-pass and the envelope's steps.
+    side_band: Svf,
+    side_attack: f32,
+    side_release: f32,
+    /// Radio: the noise and 50 Hz steps, the band-pass, the low-pass pair,
+    /// the demodulating sine's increment and the level control's steps.
+    noise: f32,
+    hum: f32,
+    band: Svf,
+    low: [Svf; 2],
+    demod: f32,
+    agc_attack: f32,
+    agc_release: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ring {
+    s: RingMod,
+    c: Coefs,
     phase: f32,
     envelope: f32,
+    side: f32,
+    demod: f32,
+    agc: f32,
     channels: [Channel; 2],
 }
 
@@ -121,14 +318,12 @@ impl Ring {
     pub fn new(s: RingMod, rate: u32) -> Self {
         let mut r = Self {
             s,
-            inc: 0.0,
-            hg: 0.0,
-            k: 0.5,
-            norm: 1.0,
-            attack: 1.0,
-            release: 1.0,
+            c: Coefs::default(),
             phase: 0.0,
             envelope: 0.0,
+            side: 0.0,
+            demod: 0.0,
+            agc: 0.0,
             channels: [Channel::default(); 2],
         };
         r.set(s, rate);
@@ -138,66 +333,207 @@ impl Ring {
     /// New settings; the carrier and filter state carry on.
     pub fn set(&mut self, s: RingMod, rate: u32) {
         let rate = rate.max(1) as f32;
-        let x = f64::from(std::f32::consts::PI * s.highpass_hz.clamp(0.0, 0.45 * rate) / rate);
+        let x = f64::from(PI * s.highpass_hz.clamp(0.0, 0.45 * rate) / rate);
         // The native one-pole prewarp: a tan series as `P/(P + 1)`.
         let p = x * x * x * (1.0 / 3.0) + x + x * x * x * x * x * (2.0 / 15.0);
-        let decay = |seconds: f32| 1.0 - (-std::f32::consts::LN_10 * 2.0 / (seconds * rate)).exp();
         let k = s.drive.max(1e-3);
-        (self.s, self.inc, self.hg, self.k) = (s, s.hz / rate, (p / (p + 1.0)) as f32, k);
-        self.norm = (k * k * 0.5 + 1.0).sqrt() * (0.5 / (k * k));
-        (self.attack, self.release) = (decay(0.005), decay(0.1));
+        let fb = s.feedback.clamp(0.0, 0.99);
+        let mut c = Coefs {
+            inc: s.hz / rate,
+            hg: (p / (p + 1.0)) as f32,
+            k,
+            norm: (k * k * 0.5 + 1.0).sqrt() * (0.5 / (k * k)),
+            attack: follow(0.005, rate),
+            release: follow(0.1, rate),
+            smooth: pole(15_000.0, rate),
+            dc: pole(20.0, rate),
+            makeup: 1.0,
+            ..Coefs::default()
+        };
+        match s.source {
+            Source::Oscillator | Source::Sidechain { .. } => {
+                // Feedback takes the shifted branch's level down by
+                // `√(1 − fb²)`; the makeup follows the branch's share.
+                let q = s.quadrature.clamp(0.0, 1.0);
+                c.makeup = q * (1.0 - fb * fb).sqrt() + (1.0 - q);
+            }
+            Source::Radio { .. } => {}
+        }
+        if let Source::Sidechain {
+            attack,
+            release,
+            bandpass_hz,
+            ..
+        } = s.source
+        {
+            // 3.5 octaves: `1/Q = (o² − 1)/o`, `o = 2^1.75`.
+            let o = 2f32.powf(1.75);
+            c.side_band = Svf::new(bandpass_hz.unwrap_or(1_000.0), (o * o - 1.0) / o, rate);
+            (c.side_attack, c.side_release) = (follow(attack, rate), follow(release, rate));
+        }
+        if let Source::Radio {
+            tuned_hz, damping, ..
+        } = s.source
+        {
+            c.noise = pole(5_000.0, rate);
+            c.hum = pole(50.0, rate);
+            c.band = Svf::new(tuned_hz, damping, rate);
+            // A four-pole Butterworth: dampings 2·cos(3π/8) and 2·cos(π/8).
+            c.low = [0.765_366_9, 1.847_759].map(|k| Svf::new(0.5 * tuned_hz, k, rate));
+            c.demod = tuned_hz / rate;
+            (c.agc_attack, c.agc_release) = (follow(0.002, rate), follow(0.2, rate));
+        }
+        self.s = s;
+        self.c = c;
     }
 
     pub fn reset(&mut self) {
-        (self.phase, self.envelope) = (0.0, 0.0);
+        (self.phase, self.envelope, self.side, self.demod, self.agc) = (0.0, 0.0, 0.0, 0.0, 0.0);
         self.channels = [Channel::default(); 2];
     }
 
+    /// The feedback taken off the input for a wet output `w`.
+    fn returned(ch: &Channel, c: &Coefs, w: f32) -> f32 {
+        let low = ch.smooth.peek(w, c.smooth);
+        (1.0 - c.dc) * (low - ch.dc.0)
+    }
+
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        let s = self.s;
-        let scale = 1.0 - s.bias * 0.5;
+        let (s, c) = (self.s, self.c);
+        let fb = s.feedback.clamp(0.0, 0.99);
+        let (weight, offset, scale) = match s.source {
+            Source::Oscillator => (s.quadrature, s.bias, 1.0 - s.bias * 0.5),
+            Source::Sidechain { .. } => (-s.quadrature, 0.0, 1.0 - s.bias * 0.5),
+            Source::Radio { .. } => (s.quadrature, 0.0, 1.0),
+        };
         for frame in io {
-            let level = frame[0].abs().max(frame[1].abs());
-            let e = self.envelope;
-            self.envelope = e
-                + (level - e)
-                    * if level <= e {
-                        self.release
-                    } else {
-                        self.attack
-                    };
+            let input = *frame;
+            let level = input[0].abs().max(input[1].abs());
+            track(&mut self.envelope, level, c.attack, c.release);
             let open = if s.gate && self.envelope < 1e-5 {
                 self.envelope * 1e5
             } else {
                 1.0
             };
+            // Each channel's carrier pair, before the bias.
             let lead = s.spread * 0.5;
-            for ((x, ch), offset) in frame.iter_mut().zip(&mut self.channels).zip([lead, -lead]) {
-                let input = *x;
-                // The input's high-pass (TPT one-pole).
-                let v = (input - ch.hp) * self.hg;
-                let low = v + ch.hp;
-                ch.hp = low + v;
-                let pair = ch.analytic(input - low);
-                let u = self.phase + offset;
-                let carriers = [carrier(u + 0.5), carrier(u + 0.25)];
-                let mut wet = 0.0;
-                for (((a, c), diodes), weight) in pair
-                    .into_iter()
-                    .zip(carriers)
-                    .zip(&mut ch.diodes)
-                    .zip([1.0, s.quadrature])
-                {
-                    let m = (s.bias + c) * scale;
-                    let [sum, difference] = diodes;
-                    let y = sum.tick(self.k * (m + a)) - difference.tick(self.k * (m - a));
-                    wet += y * self.norm * weight;
+            let mut carriers = [lead, -lead].map(|o| {
+                let u = self.phase + o;
+                [carrier(u + 0.5), carrier(u + 0.25)]
+            });
+            let mut bias = offset;
+            if let Source::Sidechain {
+                contour,
+                bandpass_hz,
+                ..
+            } = s.source
+            {
+                let mut pairs = [[0.0f32; 2]; 2];
+                for ((pair, ch), mut x) in pairs.iter_mut().zip(&mut self.channels).zip(input) {
+                    if bandpass_hz.is_some() {
+                        x = c.side_band.k * ch.side_band.tick(x, c.side_band).0;
+                    }
+                    *pair = ch.side.tick(x, 0.0);
                 }
-                *x = s.dry * input + s.wet * open * wet;
+                let [[re_l, im_l], [re_r, im_r]] = pairs;
+                let (re, im) = (re_l + re_r, im_l + im_r);
+                let amp = ((re * re + im * im) * 0.25).sqrt();
+                track(&mut self.side, amp, c.side_attack, c.side_release);
+                let e = self.side;
+                carriers = pairs.map(|p| p.map(|v| v + (e - v) * contour));
+                bias = e * s.bias;
             }
-            self.phase += self.inc;
+            let mut out = [0.0f32; 2];
+            for ((ch, cs), (o, x)) in self
+                .channels
+                .iter_mut()
+                .zip(carriers)
+                .zip(out.iter_mut().zip(input))
+            {
+                let pre = match s.source {
+                    Source::Radio { gain, product, .. } => {
+                        let carried = if product { self.envelope } else { 1.0 } * s.bias;
+                        (gain * x + carried) * (1.0 - s.bias * 0.5)
+                    }
+                    _ => x,
+                };
+                let m = cs.map(|v| (bias + v) * scale);
+                let mut y = pre;
+                if fb > 0.0 {
+                    y = pre - fb * Self::returned(ch, &c, ch.wet);
+                    for _ in 0..4 {
+                        let a = { ch.input }.tick(y, c.hg);
+                        let w =
+                            (diodes(c.k, m[0], a[0]) + weight * diodes(c.k, m[1], a[1])) * c.norm;
+                        let next = pre - fb * Self::returned(ch, &c, w);
+                        let settled = (next - y).abs() < 1e-4;
+                        y = next;
+                        if settled {
+                            break;
+                        }
+                    }
+                }
+                let a = ch.input.tick(y, c.hg);
+                let mut wet = 0.0;
+                for (((a, m), [sum, difference]), weight) in
+                    a.into_iter().zip(m).zip(&mut ch.diodes).zip([1.0, weight])
+                {
+                    wet += (sum.tick(c.k * (m + a)) - difference.tick(c.k * (m - a)))
+                        * c.norm
+                        * weight;
+                }
+                ch.wet = wet;
+                ch.dc.tick(ch.smooth.tick(wet, c.smooth), c.dc);
+                *o = wet;
+            }
+            if let Source::Radio {
+                gain,
+                makeup,
+                product,
+                noise,
+                ..
+            } = s.source
+            {
+                let lfo = carrier(self.demod);
+                self.demod += c.demod;
+                self.demod -= self.demod.floor();
+                let scale = makeup * 2.0 / gain.max(1e-3).sqrt();
+                for (o, ch) in out.iter_mut().zip(&mut self.channels) {
+                    *o = ch.radio.receive(*o, &c, noise, product.then_some(lfo)) * scale;
+                }
+                track(
+                    &mut self.agc,
+                    out[0].abs().max(out[1].abs()),
+                    c.agc_attack,
+                    c.agc_release,
+                );
+                let level = std::f32::consts::FRAC_1_SQRT_2 / (self.agc + 0.4);
+                out = out.map(|o| o * level);
+            }
+            for ((x, dry), wet) in frame.iter_mut().zip(input).zip(out) {
+                *x = s.dry * dry + s.wet * open * c.makeup * wet;
+            }
+            self.phase += c.inc;
             self.phase -= self.phase.floor();
         }
+    }
+}
+
+impl Receiver {
+    /// The transmitted `x` received: noise added, band-passed, rectified
+    /// (or multiplied by `product`'s sine), its hum and highs taken off.
+    fn receive(&mut self, x: f32, c: &Coefs, noise: f32, product: Option<f32>) -> f32 {
+        // MINSTD (48271, 2³¹ − 1), uniform in −1..1.
+        self.seed = ((u64::from(self.seed) * 48_271) % 2_147_483_647) as u32;
+        let white = 2.0 * (self.seed as f32 - 1.0) * 4.656_613e-10 - 1.0;
+        let x = x + noise * self.noise.tick(white, c.noise);
+        let band = c.band.k * self.band.tick(x, c.band).0;
+        let rectified = self.rectifier.tick(band);
+        let mut y = rectified - self.dc.tick(rectified, c.hum);
+        for (state, svf) in self.low.iter_mut().zip(c.low) {
+            y = state.tick(y, svf).1;
+        }
+        product.map_or(y, |lfo| lfo * band)
     }
 }
 
@@ -214,6 +550,8 @@ mod tests {
             drive: 0.5,
             highpass_hz: 8.0,
             gate: false,
+            feedback: 0.0,
+            source: Source::Oscillator,
             wet: 1.0,
             dry: 0.0,
         }
@@ -249,5 +587,55 @@ mod tests {
         let am = settings(1.0, 0.0);
         let carrier_less = level(am, 2_000.0);
         assert!((carrier_less / 0.05 - 1.0).abs() < 0.1, "{carrier_less}");
+    }
+
+    /// The level at `tone` Hz of `s` run over a 0.1 sine at `hz`.
+    fn level_of(s: RingMod, hz: f32, tone: f32) -> f32 {
+        let mut ring = Ring::new(s, 48_000);
+        let mut io: Vec<[f32; 2]> = (0..48_000)
+            .map(|n| [0.1 * (std::f32::consts::TAU * hz * n as f32 / 48_000.0).sin(); 2])
+            .collect();
+        ring.process(&mut io);
+        assert!(io.iter().all(|f| f[0].is_finite()));
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (n, f) in io.iter().enumerate().skip(24_000) {
+            let w = f64::from(std::f32::consts::TAU * tone) * n as f64 / 48_000.0;
+            re += f64::from(f[0]) * w.cos();
+            im += f64::from(f[0]) * w.sin();
+        }
+        (2.0 * (re * re + im * im).sqrt() / 24_000.0) as f32
+    }
+
+    #[test]
+    fn a_sidechain_shift_doubles_its_input_and_a_radio_plays_it_back() {
+        let side = RingMod {
+            highpass_hz: 0.0,
+            source: Source::Sidechain {
+                contour: 0.0,
+                attack: 0.005,
+                release: 0.01,
+                bandpass_hz: None,
+            },
+            ..settings(0.0, 1.0)
+        };
+        let (octave, unison) = (level_of(side, 500.0, 1_000.0), level_of(side, 500.0, 500.0));
+        assert!(octave > 10.0 * unison, "{octave} {unison}");
+        // AM on a 10 kHz carrier, tuned there, envelope-demodulated.
+        let radio = RingMod {
+            hz: 10_000.0,
+            highpass_hz: 0.0,
+            source: Source::Radio {
+                gain: 1.0,
+                tuned_hz: 10_000.0,
+                damping: 0.7,
+                makeup: 1.0,
+                product: false,
+                noise: 0.001,
+            },
+            feedback: 0.5,
+            ..settings(1.0, 0.0)
+        };
+        let (played, other) = (level_of(radio, 500.0, 500.0), level_of(radio, 500.0, 730.0));
+        assert!(played > 0.02 && played > 10.0 * other, "{played} {other}");
     }
 }

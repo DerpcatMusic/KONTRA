@@ -31,7 +31,6 @@ fn wet(kind: ir::EffectKind) -> bool {
             | ir::EffectKind::Shifter(_)
             | ir::EffectKind::Phaser(_)
             | ir::EffectKind::Compressor(_)
-            | ir::EffectKind::Strip(_)
             | ir::EffectKind::Limiter(_)
             | ir::EffectKind::Transient(_)
             | ir::EffectKind::Cascade(_)

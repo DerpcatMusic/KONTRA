@@ -754,12 +754,13 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         model: Some(geq),
         ..ty(28, false, 0, None, [].into())
     });
-    // ponytail: no response to convolve, so the wet is silent and the dry
-    // passes; a later `load_ir_sample` needs a convolution already in the
-    // slot (impulse_knobs `playing`), so it is not answered here.
+    // No response yet: the wet is silent and the dry passes until a
+    // `load_ir_sample` loads one, prepared plain.
     let irc = Some(ir::Effect {
         dry: 1.0,
-        ..unit(ir::EffectKind::Gain(0.0))
+        ..unit(ir::EffectKind::Convolution {
+            impulse: ir::Impulse::NONE,
+        })
     });
     types.push(ty(19, false, 0, irc, [].into()));
     // Bite and Freak (Oscillator mode), fresh as a script loads them.
@@ -1115,6 +1116,46 @@ mod tests {
             );
             assert_eq!(t.model.is_some(), modelled, "{id}");
         }
+    }
+
+    #[test]
+    fn a_fresh_supergt_compresses_once_a_script_raises_compress() {
+        use kontra_effects::processors::{Dsp, Responses, processor};
+        use kontra_kontakt_effects::supergt::{INIT, Knobs, supergt};
+        let types = slot_types();
+        let fresh = types
+            .iter()
+            .find(|t| t.id == 46 && !t.subtype)
+            .and_then(|t| t.effect)
+            .unwrap();
+        let level = |compress: Option<f32>| {
+            let Dsp::Wet(mut unit, _) = processor(Some(fresh), 48_000, &Responses(&[], &[])) else {
+                panic!("no Super GT processor");
+            };
+            if let Some(compress) = compress {
+                unit.set(supergt(Knobs { compress, ..INIT }), 120.0);
+            }
+            let mut peak = 0.0f32;
+            for block in 0..375 {
+                let mut io: Vec<[f32; 2]> = (0..256)
+                    .map(|i| {
+                        let t = (block * 256 + i) as f32 / 48_000.0;
+                        let v = 0.4 * (std::f32::consts::TAU * 1000.0 * t).sin();
+                        [v, v]
+                    })
+                    .collect();
+                unit.process(&mut io);
+                if block > 300 {
+                    peak = io.iter().fold(peak, |p, f| p.max(f[0].abs()));
+                }
+            }
+            peak
+        };
+        let (open, squeezed) = (level(None), level(Some(1.0)));
+        assert!(
+            squeezed < open * 0.5,
+            "COMPRESS 1 did not compress: {open} vs {squeezed}"
+        );
     }
 
     #[test]

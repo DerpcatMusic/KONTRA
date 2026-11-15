@@ -20,7 +20,7 @@ mod wavetable;
 pub use bus::{Bus, BusSend};
 pub use drive::{
     Clipper, Converter, Crush, Curve as DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive,
-    RackAt, RingMod, Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
+    RackAt, RingMod, RingSource, Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
     COMB_LOWEST_HZ, Cascade, CascadeStage, Clocked, ClockedShape, Comb, CombBank, CombMode,
@@ -150,6 +150,26 @@ pub struct Impulse {
     /// That window over the whole response too, at `length` 1. One window
     /// either way, chosen from the length the response is prepared at now.
     pub window_whole: bool,
+}
+
+impl Impulse {
+    /// A convolution's index before any response is loaded.
+    pub const NONE: u16 = u16::MAX;
+
+    /// A response as recorded: what a slot with none loaded prepares the
+    /// first one it loads as.
+    pub const PLAIN: Self = Self {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+        size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
+    };
 }
 
 /// Scales a response's channel energy toward `energy`, by at most `max_gain`;
@@ -807,7 +827,8 @@ pub enum EffectKind {
     RingMod(RingMod),
     /// Copies its input to send slot n at `levels[n]` (linear), passing it on.
     Sends([f32; 8]),
-    /// The input convolved with [`Instrument::impulses`] at this index (wet).
+    /// The input convolved with [`Instrument::impulses`] at this index (wet);
+    /// [`Impulse::NONE`] before a response is loaded (silent).
     Convolution { impulse: u16 },
     /// An algorithmic reverb (the wet path; `dry` mixes the input back).
     Reverb(Reverb),
