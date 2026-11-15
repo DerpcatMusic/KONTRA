@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{path}\tERROR\t{e}");
                 continue;
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         };
         if std::env::var_os("KONTRA_TRANSLATE_ONLY").is_some() {
             for d in &ir.diagnostics {
@@ -124,9 +124,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let data: usize = (ir.scripts.iter())
                 .map(|s| s.source.len() + s.data.iter().map(|(_, d)| d.len()).sum::<usize>())
                 .sum();
-            println!("  {} scripts, {:.1} MB of script source and data", ir.scripts.len(), data as f64 / 1e6);
+            println!(
+                "  {} scripts, {:.1} MB of script source and data",
+                ir.scripts.len(),
+                data as f64 / 1e6
+            );
             let g = &ir.groups;
-            let sum = |f: &dyn Fn(&kontra_engine::ir::Group) -> usize| g.iter().map(f).sum::<usize>();
+            let sum =
+                |f: &dyn Fn(&kontra_engine::ir::Group) -> usize| g.iter().map(f).sum::<usize>();
             println!(
                 "  {} groups: inserts {} (Effect {} B), mods {} (Mod {} B), routes {} (targets {}), lfos {}, envelopes {} (points {}), shaper bytes {}, blends {}, start {}",
                 g.len(),
@@ -200,17 +205,27 @@ fn peak_mb() -> u64 {
 /// What did not load: the loader's diagnostics by impact and feature, then
 /// what the scripts' `on init` left unanswered (an engine runs it).
 fn gaps(loaded: &kontra_host::instrument::Loaded) {
-    let mut by: std::collections::BTreeMap<(std::cmp::Reverse<kontra_engine::ir::Impact>, &str), (usize, &str)> =
-        Default::default();
+    let mut by: std::collections::BTreeMap<
+        (std::cmp::Reverse<kontra_engine::ir::Impact>, &str),
+        (usize, &str),
+    > = Default::default();
     for d in &loaded.diagnostics {
         let e = by
             .entry((std::cmp::Reverse(d.impact), d.feature.as_str()))
             .or_insert((0, d.detail.as_str()));
         e.0 += 1;
     }
-    println!("  peak rss {} MB; diagnostics {}", peak_mb(), loaded.diagnostics.len());
+    println!(
+        "  peak rss {} MB; diagnostics {}",
+        peak_mb(),
+        loaded.diagnostics.len()
+    );
     for ((impact, feature), (n, detail)) in &by {
-        let detail: String = detail.chars().take(140).collect::<String>().replace('\n', " / ");
+        let detail: String = detail
+            .chars()
+            .take(140)
+            .collect::<String>()
+            .replace('\n', " / ");
         println!("  GAP\t{:?}\t{feature}\t{n}\t{detail}", impact.0);
     }
     let Ok(store) = Store::new(StoreConfig::DEFAULT) else {

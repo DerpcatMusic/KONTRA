@@ -517,7 +517,7 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
         // Its area goes under what it wraps: a press goes to the innermost
         // gesture, as in SwiftUI (Conflux's selectors open their popup from
         // an inner tap inside an outer one that only reports a touch).
-        "on_drag_gesture" | "on_tap_gesture" => {
+        "on_drag_gesture" | "on_tap_gesture" | "on_hover_gesture" => {
             gesture(bld, m, args, r);
             place_layer(n, k - 1, r, inner_env, bld);
             return;
@@ -702,11 +702,20 @@ fn dragged(bld: &Builder<'_>) -> Option<ui::Widget> {
 
 /// A gesture's area over what it modifies, drawn as nothing: a drag
 /// drives its control's own widget; a tap is a momentary button the host
-/// answers with the page's own callbacks ([`super::TAP`]).
+/// answers with the page's own callbacks ([`super::TAP`]); a hover is one
+/// that takes no press, set while the pointer is over it, whose `enter` and
+/// `exit` run in place of a tap's `start` and `complete` (Conflux shows its
+/// macros' assign toggles while the row is hovered).
 fn gesture(bld: &mut Builder<'_>, m: &str, args: &[Prop], r: ui::Rect) {
+    let hover = m == "on_hover_gesture";
     let callback = |k: &str| match arg(args, k) {
         Some(Prop::Callback(n)) => *n,
         _ => 0,
+    };
+    let (start, complete) = if hover {
+        (callback("enter"), callback("exit"))
+    } else {
+        (callback("start"), callback("complete"))
     };
     let w = match m {
         "on_drag_gesture" => dragged(bld).map(|w| ui::Widget {
@@ -719,17 +728,15 @@ fn gesture(bld: &mut Builder<'_>, m: &str, args: &[Prop], r: ui::Rect) {
             z: 0,
             ..w
         }),
-        _ if callback("start") + callback("complete") > 0 => Some(ui::Widget::new(
-            format!(
-                "{} {} {}",
-                super::TAP,
-                callback("start"),
-                callback("complete")
-            ),
-            ui::PageRef(0),
-            r,
-            ui::Kind::Button { momentary: true },
-        )),
+        _ if start + complete > 0 => Some(ui::Widget {
+            intercepts_mouse: !hover,
+            ..ui::Widget::new(
+                format!("{} {start} {complete}", super::TAP),
+                ui::PageRef(0),
+                r,
+                ui::Kind::Button { momentary: true },
+            )
+        }),
         _ => None,
     };
     if let Some(mut w) = w.filter(|_| r.width > 0. && r.height > 0.) {

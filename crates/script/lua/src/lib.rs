@@ -865,6 +865,11 @@ impl Machine for LuaMachine {
         self.reads.as_ref().is_some_and(|r| r.text(n, out))
     }
 
+    fn widget_image(&self, n: u32, out: &mut Text) -> bool {
+        let _arena = self.arena.audio();
+        self.reads.as_ref().is_some_and(|r| r.image(n, out))
+    }
+
     fn widget_item(&self, n: u32, i: u32, out: &mut Text) -> bool {
         let _arena = self.arena.audio();
         self.reads.as_ref().is_some_and(|r| r.item_text(n, i, out))

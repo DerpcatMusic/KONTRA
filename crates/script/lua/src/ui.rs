@@ -54,6 +54,9 @@ pub struct Widget {
     pub image: Option<String>,
     pub normal: Option<String>,
     pub pressed: Option<String>,
+    /// What a button shows under the pointer, off and on.
+    pub over: Option<String>,
+    pub over_pressed: Option<String>,
     pub background: Option<String>,
     /// A slider's handle, moved along its track by the value.
     pub handle: Option<String>,
@@ -76,7 +79,7 @@ pub struct Widget {
 }
 
 /// The fields [`Widget`] reads by name; the rest are its `props`.
-const HANDLED: [&str; 38] = [
+const HANDLED: [&str; 40] = [
     "kind",
     "name",
     "x",
@@ -100,6 +103,8 @@ const HANDLED: [&str; 38] = [
     "image",
     "normalImage",
     "pressedImage",
+    "overImage",
+    "overPressedImage",
     "backgroundImage",
     "handleImage",
     "stripImage",
@@ -235,6 +240,8 @@ pub(crate) fn read(lua: &Lua) -> Ui {
                 image: text(w, "image"),
                 normal: text(w, "normalImage"),
                 pressed: text(w, "pressedImage"),
+                over: text(w, "overImage"),
+                over_pressed: text(w, "overPressedImage"),
                 background: text(w, "backgroundImage"),
                 handle: text(w, "handleImage"),
                 strip,
@@ -285,6 +292,7 @@ pub(crate) struct Reads {
     revision: LuaString,
     alpha: LuaString,
     display: LuaString,
+    image: LuaString,
 }
 
 impl Reads {
@@ -306,6 +314,7 @@ impl Reads {
             revision: key("__items_revision")?,
             alpha: key("alpha")?,
             display: key("displayText")?,
+            image: key("image")?,
         })
     }
 
@@ -391,6 +400,19 @@ impl Reads {
             .or_else(|| string(&self.text))
             .or_else(|| self.item(&w));
         let Some(s) = text else {
+            return false;
+        };
+        let Ok(s) = s.to_str() else {
+            return false;
+        };
+        *out = Text::from_str_cut(&s).0;
+        true
+    }
+
+    /// Widget `n`'s `image` path as it stands.
+    pub(crate) fn image(&self, n: u32, out: &mut Text) -> bool {
+        let Some(Ok(Value::String(s))) = self.table(n).map(|w| w.raw_get::<Value>(&self.image))
+        else {
             return false;
         };
         let Ok(s) = s.to_str() else {
