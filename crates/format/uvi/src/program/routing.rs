@@ -650,11 +650,17 @@ impl<L: Library> Translator<'_, '_, L> {
                 0.0
             },
             cuts: None,
-            // The window over the whole response: only when asked for.
-            envelope: (time >= 1.0 && flag(node, "UseWindowAtOriginalSize")).then(|| fade(time)),
+            envelope: None,
             mix: (width != 0.0 && stereo).then(|| widen(width)),
             size: [1.0, 1.0],
+            // UVI keeps `Time` of the response and fades it by a half
+            // cosine, `(cos(πn/(N+1)) + 1)/2` over the kept `N` frames
+            // (0x141532fe0, π at 0x141cfab4c), skipped when `N` is the
+            // whole response unless UseWindowAtOriginalSize (0x1415332a8).
+            // Both stay in the law: a script's `Time` moves the length at
+            // run time, and the engine picks the one window from it.
             length: time,
+            window_whole: flag(node, "UseWindowAtOriginalSize"),
         });
         Ok(u16::try_from(self.out.impulses.len() - 1).ok())
     }
@@ -747,23 +753,6 @@ const POWER: ir::Normalize = ir::Normalize {
     channels: ir::EnergyChannels::Mean,
     after_resample: true,
 };
-
-/// A sampled reverb's `Time` window: UVI keeps `time` of the response and
-/// fades it by a half cosine, `(cos(πn/(N+1)) + 1)/2` over the kept `N`
-/// frames (0x141532fe0, π at 0x141cfab4c; skipped when `N` is the whole
-/// response unless UseWindowAtOriginalSize, 0x1415332a8). The engine applies
-/// it exactly as [`ir::Impulse::length`], which a script's `Time` moves at
-/// run time; these knots (six trace the cosine within 2%, the rest silent)
-/// are only the whole-length window UseWindowAtOriginalSize asks for.
-fn fade(time: f32) -> [[f32; 2]; 8] {
-    let mut knots = [[1.0, SILENT]; 8];
-    for (k, knot) in knots.iter_mut().take(7).enumerate() {
-        let x = k as f32 / 6.0;
-        let gain = ((std::f32::consts::PI * x).cos() + 1.0) * 0.5;
-        *knot = [time * x, 20.0 * gain.max(1e-10).log10()];
-    }
-    knots
-}
 
 /// A sampled reverb's `Width` (-1..1) on a stereo response: UVI (IR build
 /// 0x141532fe0, from setter 0x14103f8f0) takes `c = -w`, `d = 2 + w` (2.0
@@ -995,19 +984,5 @@ mod tests {
         // Full width: the sides lean apart, a quarter of each into the other.
         let [a, _] = widen(1.0);
         assert!((a[1] / a[0] + 1.0 / 3.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_shortened_reverb_fades_out_by_its_time() {
-        let knots = fade(0.6);
-        assert_eq!(knots[0], [0.0, 0.0]);
-        // Halfway through the kept part, the cosine is at half (-6 dB).
-        let [x, db] = knots[3];
-        assert!(
-            (x - 0.3).abs() < 1e-6 && (db + 6.02).abs() < 0.01,
-            "{x} {db}"
-        );
-        assert_eq!(knots[6], [0.6, SILENT]);
-        assert_eq!(knots[7], [1.0, SILENT]);
     }
 }
