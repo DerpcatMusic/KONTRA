@@ -37,11 +37,31 @@ impl Engine {
             return true;
         }
         *at = y;
-        self.want(slot, generic, found, law);
         if self.running.kind == Kind::Init {
+            self.want(slot, generic, found, law);
             return true;
         }
-        self.request_response(slot, generic, found, law).is_some()
+        self.ask(slot, generic, found, law).is_some()
+    }
+
+    /// After init: asks the host for the response and records it as the
+    /// slot's last request only when the host took it, so a refused request
+    /// can be asked again. The async id, `None` when refused.
+    pub(crate) fn ask(
+        &mut self,
+        slot: i32,
+        generic: i32,
+        found: u16,
+        law: ir::Impulse,
+    ) -> Option<i32> {
+        let id = self.request_response(slot, generic, found, law)?;
+        self.want(slot, generic, found, law);
+        Some(id)
+    }
+
+    /// Whether the slot has a request the host has not installed yet.
+    pub(crate) fn pending(&self, slot: i32, generic: i32) -> bool {
+        self.wanted.iter().any(|p| (p.0, p.1) == (slot, generic))
     }
 
     /// Records the response the slot is asked for, replacing its last. After
@@ -73,10 +93,7 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> Option<(Option<u16>, ir::Impulse)> {
-        let pending = self
-            .wanted
-            .iter()
-            .find(|p| (p.0, p.1) == (slot, generic));
+        let pending = self.wanted.iter().find(|p| (p.0, p.1) == (slot, generic));
         if let Some(&(_, _, found, law)) = pending {
             return Some((Some(found), law));
         }

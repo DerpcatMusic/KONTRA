@@ -28,13 +28,14 @@ impl Engine {
         };
         let (_, sample) = plan.responses.get(found)?;
         let (playing, law) = self.playing(slot, generic)?;
-        if playing.map(usize::from) == Some(found) {
+        // 0 only when the slot holds it now; a match still loading is
+        // asked again, for an async id.
+        if playing.map(usize::from) == Some(found) && !self.pending(slot, generic) {
             return Some(0);
         }
         if self.running.kind != crate::script::Kind::Init {
             let index = u16::try_from(found).ok()?;
-            self.want(slot, generic, index, law);
-            return self.request_response(slot, generic, index, law);
+            return self.ask(slot, generic, index, law);
         }
         self.wanted.retain(|p| (p.0, p.1) != (slot, generic));
         self.install_response(stem, sample, (slot, generic), law)
