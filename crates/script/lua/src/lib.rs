@@ -948,7 +948,8 @@ fn host_call(lua: &Lua, host: &mut dyn HostApi, context: u64, args: &[Value]) ->
     else {
         return Value::Nil;
     };
-    let mut ints = [0i64; 8];
+    // The widest call (an envelope with its delay) sends nine.
+    let mut ints = [0i64; 12];
     let mut texts = [Text::EMPTY; 4];
     let (mut n_int, mut n_text) = (0, 0);
     for value in args.iter().skip(1) {
