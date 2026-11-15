@@ -29,19 +29,19 @@ pub fn chunks(path: &Path) -> Result<KontaktChunks, Error> {
 
 /// [`chunks`], and the file's own monolith table when it is one: the file
 /// opens once for both.
-pub(crate) fn opened(
-    path: &Path,
-) -> Result<(KontaktChunks, Option<NIFileContainer>, Option<bool>), Error> {
+pub(crate) fn opened(path: &Path) -> Result<Opened<KontaktChunks>, Error> {
     let (bytes, monolith, encrypted) = decoded(path)?;
     let chunks = KontaktChunks::read(Cursor::new(bytes))
         .map_err(|e| Error::new(path, "Kontakt chunks", e))?;
     Ok((chunks, monolith, encrypted))
 }
 
+/// What a file opens to: its chunks (or their bytes), its own monolith
+/// table when it is one, and whether it was encrypted.
+pub(crate) type Opened<T> = (T, Option<NIFileContainer>, Option<bool>);
+
 /// The chunk stream's bytes, the monolith table and whether it was encrypted.
-pub(crate) fn decoded(
-    path: &Path,
-) -> Result<(Vec<u8>, Option<NIFileContainer>, Option<bool>), Error> {
+pub(crate) fn decoded(path: &Path) -> Result<Opened<Vec<u8>>, Error> {
     let mut file = std::fs::File::open(path).map_err(|e| Error::new(path, "open", e))?;
     let mut monolith = None;
     let mut encrypted = None;

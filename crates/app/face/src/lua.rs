@@ -251,10 +251,11 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
     out.menu_cycle = w.kind == "MultiStateButton";
     out.mapper = mapper(w);
     // `hierarchical = true`: "a/b" items are sub-menus.
-    if w.kind == "Menu" && prop(w, "hierarchical") == Some("true") {
-        if let ui::Kind::Menu { items } = &out.kind {
-            out.menu_hierarchy = ui::menu_hierarchy(items).ok();
-        }
+    if w.kind == "Menu"
+        && prop(w, "hierarchical") == Some("true")
+        && let ui::Kind::Menu { items } = &out.kind
+    {
+        out.menu_hierarchy = ui::menu_hierarchy(items).ok();
     }
     out.viewport = (w.kind == "Viewport").then_some([0, 0]);
     out.colors.background = w.colours[0].as_deref().and_then(colour);
