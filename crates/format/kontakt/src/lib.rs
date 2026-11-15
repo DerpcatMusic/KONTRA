@@ -39,7 +39,7 @@ mod wavetable;
 mod wowflutter;
 
 pub use container::chunks;
-pub use engine_pars::{engine_pars, lfo_units, owner};
+pub use engine_pars::{engine_pars, held, lfo_units, owner};
 /// No resource a script loads, or array file it names, is larger (bytes).
 pub use resources::LIMIT as RESOURCE_LIMIT;
 pub use resources::Resources;

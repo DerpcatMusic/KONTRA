@@ -72,10 +72,11 @@ pub enum EnginePar {
     ModOscUnit,
     /// `$ENGINE_PAR_WT_QUALITY`.
     WtQuality,
-    /// A control the engine does not carry yet: only the text of a value
-    /// the script passes answers (`get_engine_par_disp_ext`); a set or a
-    /// read is reported as unhandled.
-    Shown,
+    /// A control of an effect module KONTRA has no processor for: its slot
+    /// keeps the value a script sets and reads answer it, as Kontakt's
+    /// module does; the sound does not follow. Its text answers when the
+    /// translator gave a law.
+    Held,
 }
 
 /// What a script reads of a zone (`get_zone_par`).

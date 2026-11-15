@@ -337,6 +337,8 @@ impl Engine {
         {
             *on = None;
         }
+        // The new unit's controls start at its own values, not the old one's.
+        (self.behaviour.held).retain(|&(a, s, ..)| (a, s) != (at, slot));
         let loaded = &mut self.behaviour.loaded;
         loaded.retain(|&(a, s, _)| (a, s) != (at, slot));
         if loaded.len() < loaded.capacity() {

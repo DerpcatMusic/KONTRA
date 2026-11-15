@@ -53,6 +53,10 @@ impl RrDraw {
     }
 }
 
+/// Held module controls an instrument's scripts may set (Conflux sets
+/// ~120 across its eight FX slots).
+const HELD: usize = 512;
+
 /// Channels controller state is kept by: Kontakt's 16 on each of ports A
 /// to D (`HostNote::port_channel`). An Omni instrument keeps them apart:
 /// a sustain pedal on B1, or on A2, holds no A1 note (oracle, Kontakt 8,
@@ -92,6 +96,10 @@ pub struct Behaviour {
     /// Each slot with a [`kontra_ir::KnobModel`] and its knobs' positions
     /// as last set: the saved slots', then those of types a script loaded.
     pub knobs: Vec<(kontra_ir::RackAt, u8, Positions)>,
+    /// The values scripts set on controls of modules KONTRA has no
+    /// processor for ([`kontra_ir::EnginePar::Held`]): slot, parameter id,
+    /// raw value. Fixed capacity: a set beyond it is dropped.
+    pub held: Vec<(kontra_ir::RackAt, u8, i32, i32)>,
 }
 
 /// A [`kontra_ir::KnobModel`]'s live positions.
@@ -132,6 +140,7 @@ impl Behaviour {
             shapes: vec![None; plan.slot_shapes.slots.len()],
             loaded: Vec::with_capacity(LOADED.max(plan.loaded.len())),
             knobs: Vec::with_capacity(LOADED + plan.slot_models.len() + plan.loaded.len()),
+            held: Vec::with_capacity(HELD),
         };
         // Every modelled slot starts at its model's saved positions: the
         // type a recalled project loaded there, else the slot's own.
