@@ -2,7 +2,7 @@ use std::io::{Cursor, Read, Write};
 
 use super::{BParSrcMode, BParamArrayBParFX8};
 use crate::read_bytes::ReadBytesExt;
-use crate::{kontakt::Chunk, Error};
+use crate::{Error, kontakt::Chunk};
 
 /// Compact group snapshot v1..=v4. Group IDs are the enclosing array indices.
 /// Unknown public/source values and the trailing flag are retained verbatim.
@@ -62,6 +62,26 @@ fn source_data(reader: &mut Cursor<&[u8]>, version: u16) -> Result<Vec<u8>, Erro
 }
 
 impl GroupSnapshot {
+    /// The source record alone, as a group holds it (`Group::set_source_record`):
+    /// without the two bytes most snapshot records keep after it.
+    pub fn source_record(&self) -> Result<&[u8], Error> {
+        let source = BParSrcMode::read(&mut Cursor::new(self.source_data.as_slice()))?;
+        self.source_data
+            .get(..usize::from(source.bytes))
+            .ok_or(Error::Static("Truncated group snapshot source"))
+    }
+
+    /// The internal (0x3B) and external (0x3C) modulator arrays as the group
+    /// chunks that hold them: the snapshot saves the same parameter arrays.
+    pub fn modulator_chunks(&self) -> Result<[Chunk; 2], Error> {
+        let chunk = |id, array: &BParamArrayBParFX8| -> Result<Chunk, Error> {
+            let mut data = Vec::new();
+            write_array(array, &mut data)?;
+            Ok(Chunk { id, data })
+        };
+        Ok([chunk(0x3b, &self.internal)?, chunk(0x3c, &self.external)?])
+    }
+
     pub(crate) fn read(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
         let header = bytes::<3>(reader)?;
         if header[0] != 0 || header[2] != 0 || !(1..=4).contains(&header[1]) {

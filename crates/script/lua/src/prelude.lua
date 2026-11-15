@@ -441,21 +441,33 @@ function __control(id, value)
 		c:setValue(value, force(c))
 	end
 end
--- Control `id` moves to `saved`'s place in its range times `1 + scale`, plus `m`, held
--- within it (a format's connection onto a knob); its `changed` runs when the
--- value moves.
-function __control_mod(id, saved, scale, m)
+-- Control `id` moves to its own value's place in its range times
+-- `1 + scale`, plus `m`, held within it (a format's connection onto a knob);
+-- its `changed` runs when the value moves. Its own value is what a restore,
+-- the player or the script last set: the routes move from it, not from
+-- where they last left it, so a preset's value (Augmented Orchestra's
+-- `MIDICurve_1=-0.99999899`) holds until a route moves.
+function __control_mod(id, scale, m)
 	local c = __controls[id + 1]
 	local lo, hi = tonumber(c and c.min), tonumber(c and c.max)
-	if not (lo and hi) or hi == lo then
+	local own = tonumber(c and c.value)
+	if not (lo and hi and own) or hi == lo then
 		return
 	end
-	local u = math.min(math.max((saved - lo) / (hi - lo) * (1 + scale) + m, 0), 1)
-	local v = lo + u * (hi - lo)
-	if c.integer then
+	local base = rawget(c, "__route_base")
+	if base == nil or own ~= rawget(c, "__routed") then
+		base = own
+	end
+	local u = math.min(math.max((base - lo) / (hi - lo) * (1 + scale) + m, 0), 1)
+	-- Routes at rest leave it exactly where it was.
+	local v = (scale == 0 and m == 0) and base or lo + u * (hi - lo)
+	-- Its own flag: an unset one reads through the widget's methods.
+	if rawget(c, "integer") == true then
 		v = math.floor(v + 0.5)
 	end
 	c:setValue(v)
+	rawset(c, "__route_base", base)
+	rawset(c, "__routed", c.value)
 end
 -- The UI the script builds, for the editor: every widget in the order the
 -- script made it (its index there names it), the page's size, picture and

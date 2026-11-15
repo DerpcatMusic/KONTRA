@@ -1312,9 +1312,9 @@ fn an_envelope_timing_its_own_attack_renders() {
 
 /// A foreign machine that records the knob moves it is given.
 #[derive(Debug)]
-struct Knobbed(std::sync::mpsc::Sender<(i32, f64, f64, f64)>);
+struct Knobbed(std::sync::mpsc::Sender<(i32, f64, f64)>);
 
-struct KnobMachine(std::sync::mpsc::Sender<(i32, f64, f64, f64)>);
+struct KnobMachine(std::sync::mpsc::Sender<(i32, f64, f64)>);
 
 impl kontra_vm::Foreign for Knobbed {
     fn machine(&self) -> Box<dyn kontra_vm::Machine> {
@@ -1345,15 +1345,8 @@ impl kontra_vm::Machine for KnobMachine {
     fn control(&mut self, _: i32, _: f64, _: u64) -> Option<kontra_vm::CoId> {
         None
     }
-    fn control_mod(
-        &mut self,
-        id: i32,
-        saved: f64,
-        scale: f64,
-        m: f64,
-        _: u64,
-    ) -> Option<kontra_vm::CoId> {
-        let _ = self.0.send((id, saved, scale, m));
+    fn control_mod(&mut self, id: i32, scale: f64, m: f64, _: u64) -> Option<kontra_vm::CoId> {
+        let _ = self.0.send((id, scale, m));
         None
     }
 }
@@ -1410,7 +1403,6 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
     let knob = |id, source, scale| KnobModPlan {
         slot: 0,
         id,
-        saved: 0.25,
         source: ir::Source::Blend(source),
         scale,
     };
@@ -1421,7 +1413,7 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
         knob(8, 3, false),
     ];
     let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
-    let mut all: Vec<(i32, f64, f64, f64)> = Vec::new();
+    let mut all: Vec<(i32, f64, f64)> = Vec::new();
     let at = |all: &mut Vec<_>| {
         all.extend(moves.try_iter());
         all.len()
@@ -1434,8 +1426,8 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
     // Two additive controllers on one knob: one move, their sum.
     level(&mut engine, &[cc(1, 127), cc(2, 127)]);
     assert_eq!(at(&mut all), 3);
-    let (id, saved, scale, add) = all[2];
-    assert_eq!((id, saved), (7, 0.25));
+    let (id, scale, add) = all[2];
+    assert_eq!(id, 7);
     assert!(
         (add - 2.0).abs() < 1e-3 && scale.abs() < 1e-3,
         "{scale} {add}"
@@ -1443,7 +1435,7 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
     // The multiplicative controller moves the same knob's scale alone.
     level(&mut engine, &[cc(3, 127)]);
     assert_eq!(at(&mut all), 4);
-    let (id, _, scale, add) = all[3];
+    let (id, scale, add) = all[3];
     assert_eq!(id, 7);
     assert!(
         (scale - 1.0).abs() < 1e-3 && (add - 2.0).abs() < 1e-3,

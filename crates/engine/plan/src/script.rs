@@ -193,7 +193,6 @@ impl CcLink {
 pub struct KnobModPlan {
     pub slot: u8,
     pub id: i32,
-    pub saved: f32,
     pub source: kontra_ir::Source,
     pub scale: bool,
 }

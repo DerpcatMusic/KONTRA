@@ -70,7 +70,7 @@ fn costs(mut m: Box<dyn Machine>) -> [(&'static str, f64, f64); 3] {
         run(m, co);
     });
     let (ma, mu) = measure(&mut m, &mut |m, i| {
-        let co = m.control_mod(0, 50.0, 0.5, f64::from(i % 3) - 1.0, 0);
+        let co = m.control_mod(0, 0.5, f64::from(i % 3) - 1.0, 0);
         run(m, co);
     });
     let (na, nu) = measure(&mut m, &mut |m, _| {
