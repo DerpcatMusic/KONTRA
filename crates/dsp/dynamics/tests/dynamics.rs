@@ -15,6 +15,10 @@ fn sine(amplitude: f32, frames: usize) -> Vec<[f32; 2]> {
         .collect()
 }
 
+fn gain(db: f32) -> f32 {
+    10f32.powf(db / 20.0)
+}
+
 fn peak_db(io: &[[f32; 2]]) -> f32 {
     let p = io
         .iter()
@@ -103,6 +107,12 @@ fn the_limiter_never_passes_its_ceiling_and_releases() {
             input_db: 12.0,
             ceiling_db: -1.0,
             release_ms: 50.0,
+            knee_db: 0.0,
+            attack_ms: 0.0,
+            smooth_ms: 0.0,
+            slow: 0.0,
+            lookahead_ms: 0.0,
+            clip: true,
         },
         RATE,
     );
@@ -115,6 +125,31 @@ fn the_limiter_never_passes_its_ceiling_and_releases() {
     let tail = quiet.get(RATE as usize / 2..).unwrap();
     let out = peak_db(tail);
     assert!((out - (-40.0 + 12.0)).abs() < 0.5, "quiet tail at {out} dB");
+}
+
+/// The Augmented Orchestra Maximizer: 2 ms lookahead, no clip.
+#[test]
+fn a_lookahead_limiter_turns_down_before_the_peak_without_clipping() {
+    let s = LimiterSettings {
+        input_db: 0.0,
+        ceiling_db: -6.0,
+        release_ms: 12.0,
+        knee_db: 0.0,
+        attack_ms: 0.0,
+        smooth_ms: 10.0,
+        slow: 0.1,
+        lookahead_ms: 2.0,
+        clip: false,
+    };
+    let mut l = Limiter::new(s, RATE);
+    let mut io = vec![[0.1; 2]; 960];
+    io.extend(vec![[1.0; 2]; 960]);
+    l.process(&mut io);
+    // 96 frames of delay; the last quiet frames out are already turned down.
+    let (quiet, loud) = io.split_at(960 + 96);
+    assert!(quiet[96..960].iter().all(|f| f[0] == 0.1));
+    assert!((quiet[1055][0] - 0.1 * gain(-6.0)).abs() < 1e-4, "{:?}", quiet[1055]);
+    assert!(loud.iter().all(|f| f[0] <= gain(-6.0) + 1e-4), "{}", peak_db(loud));
 }
 
 #[test]
