@@ -2109,6 +2109,53 @@ fn uvi_waits_and_spawned_coroutines_land_on_time() {
     assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
 }
 
+/// UVI's `spawn` queues its task, which starts after the caller at the same
+/// instant; `run` starts it at once and goes back to the caller when it
+/// first waits (UVI's embedded `uvi.thread`).
+#[test]
+fn a_spawned_task_starts_after_its_caller_and_a_run_one_at_once() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let spawned = "function onNote(e)
+            spawn(function() print('task') end)
+            print('caller')
+        end";
+    let mut e = lua_engine(&mut store, spawned);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "task");
+    let ran = "local order = ''
+        function onNote(e)
+            run(function() order = order .. 'a' wait(10) print(order .. 'c') end)
+            order = order .. 'b'
+        end";
+    let mut e = lua_engine(&mut store, ran);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "abc");
+}
+
+/// Antartide's arpeggiator and step modulators stop their loop and spawn a
+/// new one on every control move; the old one stays parked in its wait
+/// until it wakes and sees it was stopped. UVI parks them all: 300 such
+/// restarts leave the newest run playing, with no task dropped.
+#[test]
+fn restarted_loops_park_until_they_wake_and_the_newest_plays() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let restarts = "local runid = 0
+        local function loop(id)
+            while id == runid do wait(2000) end
+        end
+        function onNote(e)
+            for i = 1, 300 do
+                runid = runid + 1
+                spawn(loop, runid)
+            end
+            spawn(function() wait(10) playNote(60, 100) end)
+        end";
+    let mut e = lua_engine(&mut store, restarts);
+    level(&mut e, &[on(60)]);
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+    assert_eq!(e.script_faults().first().map(|f| f.no_coroutine), Some(0));
+}
+
 /// A task that waits 10 µs, then spawns its replacement, moves time on by
 /// the summed waits: 10000 links are 100 ms (4800 frames), never a spin.
 #[test]
@@ -2636,6 +2683,104 @@ fn output_channels_and_disable_logging_are_answered() {
     );
     assert_eq!(e.last_message(), "2");
     assert_eq!(e.stats().actions_unhandled, 0);
+}
+
+/// A Convolution a script loads has no response; a `load_ir_sample` into it
+/// after init is prepared by the host like any other (Conflux loads its
+/// reverb slot's response from its menu).
+#[test]
+fn a_response_loads_into_a_convolution_the_script_created() {
+    use kontra_engine::{Prepared, ir};
+    // One frame at half scale, 16-bit stereo at 48 kHz.
+    let half = 16_384i16.to_le_bytes();
+    let mut wav = b"RIFF".to_vec();
+    wav.extend(40u32.to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend([1, 0, 2, 0]);
+    wav.extend(RATE.to_le_bytes());
+    wav.extend((RATE * 4).to_le_bytes());
+    wav.extend([4, 0, 16, 0]);
+    wav.extend(b"data");
+    wav.extend(4u32.to_le_bytes());
+    wav.extend(half.iter().chain(&half));
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half_fresh.wav");
+    std::fs::write(&file, wav).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let unit = |kind, dry| ir::Effect {
+        kind,
+        bypass: false,
+        output: 1.0,
+        dry,
+    };
+    let stereo = ir::EffectKind::Stereo {
+        width: 0.5,
+        pan: 0.0,
+    };
+    plan.inserts = vec![Some(unit(stereo, 0.0))];
+    plan.slot_shapes.types = vec![ir::SlotType {
+        id: 19,
+        subtype: false,
+        reads: 0,
+        kind: 19,
+        effect: Some(unit(ir::EffectKind::Gain(0.0), 1.0)),
+        laws: Vec::new().into(),
+        model: None,
+    }];
+    let law = ir::Impulse {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+        size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
+    };
+    plan.slot_shapes.impulses = vec![(19, law)];
+    plan.responses = vec![(
+        "half".into(),
+        ir::Sample {
+            name: "Half.wav".into(),
+            file,
+            offset: 0,
+            len: None,
+            channels: 0,
+            frames: 0,
+            rate: 0,
+            keystream: None,
+        },
+    )];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 19, -1, 0, $NI_INSERT_BUS)
+        end on
+        on note
+            load_ir_sample(\"Half.ncw\", 0, $NI_INSERT_BUS)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let plan = Arc::new(plan);
+    let mut e = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    assert!(
+        (level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3,
+        "the dry passes"
+    );
+    let mut requests = Vec::new();
+    e.drain_requests(|r| requests.push(r));
+    assert_eq!(requests.len(), 1);
+    assert_eq!(e.stats().actions_unhandled, 0);
+    e.install(Prepared::new(requests[0], Some(&plan), RATE));
+    let l = level(&mut e, &[]);
+    assert!(
+        (l - 0.75).abs() < 1e-3,
+        "dry and the half-scale response: {l}"
+    );
 }
 
 /// `load_ir_sample` swaps an insert convolution's response for the library

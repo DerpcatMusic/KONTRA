@@ -754,9 +754,8 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         model: Some(geq),
         ..ty(28, false, 0, None, [].into())
     });
-    // ponytail: no response to convolve, so the wet is silent and the dry
-    // passes; a later `load_ir_sample` needs a convolution already in the
-    // slot (impulse_knobs `playing`), so it is not answered here.
+    // No response to convolve, so the wet is silent and the dry passes
+    // until a `load_ir_sample` prepares one ([`fresh_impulse`]).
     let irc = Some(ir::Effect {
         dry: 1.0,
         ..unit(ir::EffectKind::Gain(0.0))
@@ -919,6 +918,26 @@ fn moving(
         let first = values.first()?;
         values.iter().any(|v| v != first).then_some((field, values))
     })
+}
+
+/// How a fresh Convolution (`$EFFECT_TYPE_IRC`, 19) prepares the response a
+/// script loads into it: as the file is, at full size, cuts open, no
+/// envelope. ponytail: Auto Gain's fresh state is unmeasured (#1579 read
+/// back the dry level only); off, the response as it is.
+pub(crate) fn fresh_impulse() -> (i32, ir::Impulse) {
+    let law = ir::Impulse {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+        size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
+    };
+    (19, law)
 }
 
 #[cfg(test)]

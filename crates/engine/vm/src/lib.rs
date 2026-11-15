@@ -30,6 +30,12 @@ pub use text::{TEXT_CAPACITY, Text};
 /// leaves the loop. Counted across nested loops, so an inner loop's exit
 /// does not restart a runaway outer loop's count.
 pub const LOOP_LIMIT: u32 = 10_000_001;
+/// Tasks a script may have parked at once besides its running callbacks.
+/// UVI has no such limit: its `_Thread` list is a Lua table that grows with
+/// the heap. Antartide's arpeggiator and step modulators park a run per
+/// control move until its wait ends. ponytail: a fixed pool so nothing
+/// allocates on the audio thread; past it a spawn is dropped and counted.
+pub const TASKS: usize = 1024;
 /// First iteration count at which a loop's state is compared; doubles after.
 const LOOP_PROBE: u32 = 1024;
 
@@ -42,10 +48,11 @@ pub trait Machine: Send {
     fn run(&mut self, co: CoId, host: &mut dyn HostApi) -> Step;
     fn cancel(&mut self, co: CoId);
     fn context(&self, co: CoId) -> Option<u64>;
-    /// A callback the last run started beside itself (a front end's
-    /// `spawn`), now waiting this many microseconds: the host schedules it
-    /// like a wait. In the order they were started.
-    fn spawned(&mut self) -> Option<(CoId, u64)>;
+    /// A task the last run started beside itself, in the order started:
+    /// `None` not run yet (a front end's `spawn`), to start at the run's
+    /// time after it; else run already and now waiting this many
+    /// microseconds (`run`), which the host schedules like a wait.
+    fn spawned(&mut self) -> Option<(CoId, Option<u64>)>;
     fn faults(&self) -> Faults;
     /// A coroutine that moves control `id` ([`Foreign::controls`]) to
     /// `value` and runs its callback, as [`Machine::start`].

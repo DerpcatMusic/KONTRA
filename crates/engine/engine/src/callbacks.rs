@@ -344,9 +344,18 @@ impl Engine {
                 vm.cancel(co);
             }
         }
-        // A callback started beside this one waits from this one's time.
-        while let Some((spawned, micros)) = vm.spawned() {
-            self.wake(slot, vm, spawned, micros, now);
+        // A task started beside this one starts at this one's time (UVI's
+        // `spawn`), after it; one that waited waits from that time.
+        while let Some((spawned, waited)) = vm.spawned() {
+            if let Some(micros) = waited {
+                self.wake(slot, vm, spawned, micros, now);
+                continue;
+            }
+            let wait = vm.wait_epoch(spawned).unwrap_or(0);
+            if !self.queue.push_due(now, Work::Resume(slot, spawned, wait)) {
+                self.stats.events_refused += 1;
+                vm.cancel(spawned);
+            }
         }
     }
 

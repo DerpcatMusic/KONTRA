@@ -631,6 +631,9 @@ pub struct SlotShapes {
     /// The held controls a script-loaded type starts with: effect type id
     /// ([`SlotType::id`]), [`crate::held_key`], raw value.
     pub fresh: Vec<(i32, u32, i32)>,
+    /// Types that load as a convolution with no response yet, by effect
+    /// type id: how a response a script then loads is prepared.
+    pub impulses: Vec<(i32, crate::Impulse)>,
 }
 
 impl SlotShapes {
@@ -642,6 +645,7 @@ impl SlotShapes {
         saved_types: Vec::new(),
         held: Vec::new(),
         fresh: Vec::new(),
+        impulses: Vec::new(),
     };
 }
 

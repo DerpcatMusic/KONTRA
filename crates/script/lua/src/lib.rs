@@ -9,7 +9,7 @@
 //! allocator. A binary linking this crate takes it; a second
 //! `#[global_allocator]` fails to link.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -37,10 +37,13 @@ static ROUTED: alloc::Routed = alloc::Routed;
 const PRELUDE: &str = include_str!("prelude.lua");
 /// The UI widget classes beyond the generic widget (`widgets.lua`).
 const WIDGETS: &str = include_str!("widgets.lua");
-/// Luau heap per script. Augmented Orchestra's scripts, once they see their
-/// modulation connections, build about 88 MB (V Strings Pizzicato 2: 61 MB
-/// without them). ponytail: a cap, not a GC budget; past the spike's 0.5 ms
-/// cycle boundary (spikes/luau-alloc-mlua.md) either way.
+/// Luau heap per script while it loads; after, three times what the load
+/// left, room for the 200% GC goal and a cycle's garbage. UVI has no cap
+/// (its Lua pool adds 1 MB regions until the system refuses one).
+/// Augmented Orchestra's scripts, once they see their modulation
+/// connections, build about 88 MB (V Strings Pizzicato 2: 61 MB without
+/// them), so a 128 MB cap ran out mid-session (Antartide). ponytail: a
+/// runaway guard, not a GC budget.
 const MEMORY: usize = 128 << 20;
 /// Free arena kept after a load for its callbacks: at least this, or half
 /// the heap the load built (spikes/luau-alloc-mlua.md, "Per-script arena rule").
@@ -72,7 +75,8 @@ const UI_CHECKPOINTS: u32 = 400_000_000;
 /// Loading and restoring widgets runs off the audio thread and can traverse
 /// large instrument trees; it is bounded independently of callbacks.
 const LOAD_CHECKPOINTS: u32 = 100_000_000;
-/// Callbacks that may run or wait at once.
+/// Callbacks that may run or wait at once, each on a resident coroutine;
+/// spawned tasks take the [`kontra_vm::TASKS`] slots after them.
 const COROUTINES: usize = 64;
 
 /// Which UVI callbacks a script defines, by the engine's entry number.
@@ -277,14 +281,14 @@ impl Compiled {
         let load = arena.load();
         // Each slot's coroutine, made here so no start makes one.
         let idle = lua.create_function(|_, ()| Ok(())).ok();
-        let slots = (0..COROUTINES)
-            .map(|_| Slot {
-                resident: idle
-                    .as_ref()
-                    .and_then(|f| lua.create_thread(f.clone()).ok()),
-                ..Slot::default()
-            })
-            .collect();
+        let residents = (0..COROUTINES).map(|_| Slot {
+            resident: idle
+                .as_ref()
+                .and_then(|f| lua.create_thread(f.clone()).ok()),
+            ..Slot::default()
+        });
+        let tasks = (0..kontra_vm::TASKS).map(|_| Slot::default());
+        let slots = residents.chain(tasks).collect();
         let entries = Entries::new(&lua);
         // `__host`'s key exists from the start ([`set_host`]).
         if let Some(g) = &entries.globals {
@@ -314,7 +318,7 @@ impl Compiled {
             entries,
             host,
             lend,
-            spawned: Vec::with_capacity(COROUTINES),
+            spawned: VecDeque::with_capacity(kontra_vm::TASKS),
             faults: Faults::default(),
             runs: 0,
             widget_run: false,
@@ -323,7 +327,12 @@ impl Compiled {
         };
         drop(load);
         if let Some(lua) = &machine.lua {
-            machine.arena.reserve(HEADROOM.max(lua.used_memory() / 2));
+            let live = lua.used_memory();
+            // Luau collects once the heap doubles what the last cycle left
+            // (its 200% goal), so a callback may allocate up to the live
+            // heap again before a collection frees it.
+            machine.arena.reserve(HEADROOM.max(live));
+            let _ = lua.set_memory_limit(MEMORY.max(3 * live));
         }
         machine
     }
@@ -542,7 +551,7 @@ struct LuaMachine {
     /// `__host`, made once, and where it finds the host during a resume.
     host: Option<Function>,
     lend: bridge::Lend,
-    spawned: Vec<(CoId, u64)>,
+    spawned: VecDeque<(CoId, Option<u64>)>,
     faults: Faults,
     /// Runs of a callback or task, each resume one ([`Machine::runs`]).
     runs: u32,
@@ -564,7 +573,7 @@ impl LuaMachine {
             entries: Entries::default(),
             host: None,
             lend: bridge::Lend::default(),
-            spawned: Vec::new(),
+            spawned: VecDeque::new(),
             faults: Faults::default(),
             runs: 0,
             widget_run: false,
@@ -581,9 +590,20 @@ impl LuaMachine {
         start: Option<(Function, First)>,
         context: u64,
     ) -> Option<CoId> {
-        let Some((i, slot)) =
-            (self.slots.iter_mut().enumerate()).find(|(_, s)| matches!(s.running, Running::Idle))
-        else {
+        // A callback needs a resident coroutine; a task any slot, the task
+        // slots first so the callbacks keep theirs.
+        let resident = start.is_some();
+        let order = match resident {
+            true => 0..COROUTINES.min(self.slots.len()),
+            false => COROUTINES.min(self.slots.len())..self.slots.len(),
+        };
+        let fallback = (!resident).then_some(0..COROUTINES.min(self.slots.len()));
+        let free = order.chain(fallback.into_iter().flatten()).find(|&i| {
+            self.slots
+                .get(i)
+                .is_some_and(|s| matches!(s.running, Running::Idle))
+        });
+        let Some((i, slot)) = free.and_then(|i| Some((i, self.slots.get_mut(i)?))) else {
             self.faults.no_coroutine += 1;
             return None;
         };
@@ -620,42 +640,40 @@ impl LuaMachine {
             .filter(|s| s.generation == co.generation() && !matches!(s.running, Running::Idle))
     }
 
-    /// Moves the coroutines `spawn` queued during the run into slots.
+    /// Moves the coroutines the run queued into slots: a `spawn`'s has not
+    /// run (UVI's `_spawn` only queues its thread, which starts at the end
+    /// of the current instant: its embedded `uvi.thread`); a `run`'s ran
+    /// until its first wait, `{thread, microseconds}`.
     fn collect_spawned(&mut self, context: u64, ui: bool) {
-        let Some(queued) = self.entries.spawned.as_ref().filter(|q| q.raw_len() > 0) else {
+        let Some(queued) = (self.entries.spawned.clone()).filter(|q| q.raw_len() > 0) else {
             return;
         };
-        let pairs: Vec<(Thread, f64)> = queued
-            .sequence_values::<Table>()
-            .flatten()
-            .filter_map(|pair| {
-                // A coroutine that failed as it was spawned is dead: it says
-                // why, and is not queued to be resumed (which would only
-                // report "non-resumable" over the real error).
-                if let Ok(Some(text)) = pair.get::<Option<mlua::LuaString>>(3)
-                    && let Ok(text) = text.to_str()
-                {
-                    use std::fmt::Write;
-                    self.faults.bad_code += 1;
-                    self.faults.last_error.clear();
-                    let _ = self.faults.last_error.write_str(&text);
-                    return None;
-                }
-                Some((pair.get(1).ok()?, pair.get(2).ok()?))
-            })
-            .collect();
-        let _ = queued.clear();
-        for (thread, micros) in pairs {
-            if let Some(co) = self.take(Running::Spawned(thread), None, context) {
-                if let Some(slot) = self.slot(co) {
-                    slot.ui = ui;
-                    // It has run (inline, in `spawn`): the rest waits for a block
-                    // with budget like any resumed run.
-                    slot.used = u32::from(ui);
-                }
-                self.spawned.push((co, micros.max(0.0) as u64));
+        for n in 1..=queued.raw_len() {
+            let (thread, waited) = match queued.raw_get::<Value>(n) {
+                Ok(Value::Thread(thread)) => (thread, None),
+                Ok(Value::Table(pair)) => match (pair.raw_get(1), pair.raw_get(2)) {
+                    (Ok(thread), Ok(micros)) => (thread, Some(micros)),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let Some(co) = self.take(Running::Spawned(thread), None, context) else {
+                continue;
+            };
+            if let Some(slot) = self.slot(co) {
+                slot.ui = ui;
+                // An editor's task waits for a block with budget, as the
+                // run that spawned it would have (1 counts no checkpoints).
+                slot.used = u32::from(ui);
+            }
+            if self.spawned.len() < self.spawned.capacity() {
+                let waited = waited.map(|m: f64| m.max(0.0) as u64);
+                self.spawned.push_back((co, waited));
+            } else {
+                self.cancel(co);
             }
         }
+        let _ = queued.clear();
     }
 }
 
@@ -805,9 +823,8 @@ impl Machine for LuaMachine {
             .map(|s| s.context)
     }
 
-    fn spawned(&mut self) -> Option<(CoId, u64)> {
-        // In spawn order; at most `COROUTINES` entries.
-        (!self.spawned.is_empty()).then(|| self.spawned.remove(0))
+    fn spawned(&mut self) -> Option<(CoId, Option<u64>)> {
+        self.spawned.pop_front()
     }
 
     fn faults(&self) -> Faults {
@@ -1222,14 +1239,15 @@ mod tests {
         assert!(m.spawned().is_none(), "init's preset landed in the call");
         let note = m.start(Callbacks::NOTE, 0).expect("note");
         assert_eq!(m.run(note, &mut log), Step::Done);
-        // The preset's task, already waiting before its first control: one
-        // more wait after the only control with a changed (air).
+        // The preset's task, not started yet (UVI's `spawn`): its pace before
+        // the first control, then one wait after the only control with a
+        // changed (air).
         let (task, _) = m.spawned().expect("the preset lands in a task");
         let mut waits = 0;
         while let Step::Wait(_) = m.run(task, &mut log) {
             waits += 1;
         }
-        assert_eq!(waits, 1, "a wait after air's changed");
+        assert_eq!(waits, 2, "its pace, then a wait after air's changed");
         let release = m.start(Callbacks::RELEASE, 0).expect("release");
         assert_eq!(m.run(release, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
@@ -1262,6 +1280,8 @@ mod tests {
         let pick = m.control(2, 2.0, 0).expect("pick");
         assert_eq!(m.run(pick, &mut log), Step::Done);
         let (task, _) = m.spawned().expect("the preset lands in a task");
+        // Not started yet (UVI's `spawn`): it first waits its pace.
+        assert!(matches!(m.run(task, &mut log), Step::Wait(_)));
         // The editor's slice may run out mid-preset (a valid yield, resumed in
         // the next block); a wait between its controls is the bug.
         let mut step = m.run(task, &mut log);
