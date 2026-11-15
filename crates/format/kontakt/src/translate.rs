@@ -250,7 +250,7 @@ pub(crate) fn instrument(
     }
     for (index, group) in groups.groups.iter_mut().enumerate() {
         let mut saved = group_fx.get_mut(index).and_then(Option::take);
-        // A snapshot's source and modulators stand in for the group's own.
+        // A snapshot's params, source and modulators stand in for the group's own.
         if let Some(s) = &mut saved {
             s.apply(group)
                 .map_err(|e| Error::new(path, "snapshot group", format!("{index}: {e}")))?;
@@ -259,12 +259,7 @@ pub(crate) fn instrument(
         let t = translate_group(group, index, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
-        let fx = saved.map(|s| {
-            g.volume_db = db(s.volume);
-            g.pan = s.pan.clamp(-1.0, 1.0);
-            g.tune = f64::from(s.tune) * 12.0 + base.tune;
-            s.fx
-        });
+        let fx = saved.map(|s| s.fx);
         g.inserts = crate::effects::group(group, fx, index, &mut impulses, &mut notes, &mut slots);
         crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
         // ponytail: a filter a modulator moves passes unfiltered until filters

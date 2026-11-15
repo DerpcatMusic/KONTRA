@@ -116,6 +116,7 @@ fn restore(
             file.scripts.len()
         ));
     }
+    resaved(rack, audio, path, &held)?;
     let mut off = Vec::new();
     let mut count = 0;
     for (script, held) in file.scripts.iter().zip(&held) {
@@ -133,6 +134,50 @@ fn restore(
         }
     }
     Ok((off, count))
+}
+
+/// `KONTRA_PRESET_SAVE`: a folder to save each restored snapshot into.
+/// The saved file, loaded again, must hold `held` and the same instrument.
+fn resaved(
+    rack: &mut Rack,
+    audio: &mut RackAudio,
+    path: &Path,
+    held: &[Vec<String>],
+) -> Result<(), String> {
+    let Some(dir) = std::env::var_os("KONTRA_PRESET_SAVE").map(PathBuf::from) else {
+        return Ok(());
+    };
+    if !has_ext(path, "nksn") {
+        return Ok(());
+    }
+    let to = dir.join("resaved.nksn");
+    rack.save_snapshot(0, &to)
+        .map_err(|e| format!("save: {e}"))?;
+    let base = kontra_format_kontakt::preset(path, &[])
+        .map_err(|e| e.to_string())?
+        .base;
+    // The instrument but its saved values, which hold what `on init` made.
+    let shape = |p: &Path| -> Result<String, String> {
+        let mut ir = kontra_host::instrument::read_saved(p, &[], std::slice::from_ref(&base))
+            .map_err(|e| format!("{}: {e}", p.display()))?;
+        (ir.name, ir.source_path, ir.library_path) = (String::new(), None, None);
+        ir.scripts.iter_mut().for_each(|s| s.saved.clear());
+        Ok(format!("{ir:?}"))
+    };
+    if shape(path)? != shape(&to)? {
+        return Err("resaved: the instrument differs".into());
+    }
+    let ir = kontra_host::instrument::read_saved(&to, &[], std::slice::from_ref(&base))
+        .map_err(|e| e.to_string())?;
+    rack.load_ir(0, ir, Some(to.clone()))
+        .map_err(|e| e.to_string())?;
+    settle(rack, audio);
+    let again = rack.saved_scripts(0);
+    std::fs::remove_file(&to).map_err(|e| e.to_string())?;
+    match (held.iter().flatten()).find(|h| !again.iter().flatten().any(|a| a == *h)) {
+        Some(lost) => Err(format!("resaved: {lost:.120} is not held again")),
+        None => Ok(()),
+    }
 }
 
 /// `KONTRA_PRESET_LIBRARIES`: library folders (a UVI bank's folder too),

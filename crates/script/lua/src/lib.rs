@@ -1938,6 +1938,30 @@ mod tests {
     }
 
     #[test]
+    fn a_script_write_of_the_routed_value_is_the_next_routes_base() {
+        // Routed from 0.25 to 0.5, then the script sets 0.5 itself: a route
+        // at rest leaves its 0.5, not the old base.
+        let source = "local k = Knob('k', 0.25, 0, 1)
+            local s = Knob('set', 0, 0, 1)
+            s.changed = function() k:setValue(0.5) end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function() assert(k.value == 0.5, k.value) end";
+        let mut m = compile(source, &[], &[]).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control_mod(0, 0.0, 0.25, 0).expect("route");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control(1, 1.0, 0).expect("set");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control_mod(0, 0.0, 0.0, 0).expect("rest");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control(2, 1.0, 0).expect("check");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
+    }
+
+    #[test]
     fn a_saved_widget_restored_after_init_sets_a_connections_route() {
         let tree = "return {params={},db=0,pan=0,layers={{params={},keygroups={
             {params={},group=0,links={2,1}}}}},

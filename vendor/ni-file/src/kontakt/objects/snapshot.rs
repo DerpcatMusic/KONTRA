@@ -22,7 +22,50 @@ pub struct Snapshot {
     pub persistent: Vec<Vec<String>>,
 }
 
+/// The five script slots' persistent values as a snapshot ends with them.
+fn persistence(slots: &[Vec<String>]) -> Result<Vec<u8>, Error> {
+    if slots.len() != 5 {
+        return Err(Error::Static("A snapshot saves five script slots"));
+    }
+    let count = |n: usize| u32::try_from(n).map_err(|_| Error::Static("Snapshot value too large"));
+    let mut out = Vec::new();
+    for slot in slots {
+        out.extend(count(slot.len())?.to_le_bytes());
+        for value in slot {
+            out.extend(count(value.len())?.to_le_bytes());
+            out.extend(value.as_bytes());
+        }
+    }
+    Ok(out)
+}
+
 impl Snapshot {
+    /// The snapshot `chunk` with `persistent` (five script slots) in place
+    /// of the values it saved; all before them is kept byte for byte.
+    pub fn with_persistent(chunk: &Chunk, persistent: &[Vec<String>]) -> Result<Chunk, Error> {
+        let saved = persistence(&Self::try_from(chunk)?.persistent)?;
+        let object = StructuredObject::try_from(chunk)?;
+        let mut public = (object.public_data.len().checked_sub(saved.len()))
+            .and_then(|end| object.public_data.get(..end))
+            .ok_or(Error::Static("Invalid snapshot persistence"))?
+            .to_vec();
+        public.extend(persistence(persistent)?);
+        let structured = chunk.data.first() == Some(&1);
+        let mut data = vec![u8::from(structured)];
+        data.extend(object.version.to_le_bytes());
+        if structured {
+            let length =
+                u32::try_from(public.len()).map_err(|_| Error::Static("Snapshot too large"))?;
+            data.extend(0u32.to_le_bytes());
+            data.extend(length.to_le_bytes());
+            data.extend(public);
+            data.extend(0u32.to_le_bytes());
+        } else {
+            data.extend(public);
+        }
+        Ok(Chunk { id: chunk.id, data })
+    }
+
     /// Opt-in compact-v1..v4 decoding; IDs retain Kontakt's original array order.
     pub fn group_snapshots(&self) -> Result<Vec<(u32, super::GroupSnapshot)>, Error> {
         let Some(group_chunk) = &self.groups else {
