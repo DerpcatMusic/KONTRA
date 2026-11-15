@@ -79,8 +79,6 @@ pub struct Gesture {
     /// a hover sets its state, and the area stays the same one.
     hovered: Vec<[i64; 4]>,
     /// The mouse area a file drag is over.
-    // ponytail: a drag that leaves the window is noticed at the next one;
-    // a leave event from the window if a library lights its area on enter.
     dragged_over: Option<WidgetRef>,
 }
 
@@ -243,6 +241,14 @@ pub fn read(
     let mut edits = Vec::new();
     let order = tree.draw_order(page);
     let pointer = ui.pointer().pos;
+    // A file drag moves the pointer with it; one that leaves the window or
+    // is cancelled takes it away: the area it was over hears it leave.
+    if pointer.is_none()
+        && let Some(n) = g.dragged_over.take()
+        && hears_drag(tree, n)
+    {
+        edits.push(left(n));
+    }
     let mut over = Vec::new();
     for (i, &n) in order.iter().enumerate() {
         if let Some(w) = tree.widgets.get(n.0).filter(|w| hovers(w)) {
@@ -501,29 +507,45 @@ pub fn files(
         let items = taken(&drag.paths, takes);
         (inside && !items.is_empty()).then_some((n, hears, items))
     });
-    let edit = |widget, drop, over, items| Edit {
-        widget,
-        to: Set::Drop { drop, over, items },
-        keys: model::UiModifiers::default(),
-    };
-    let hears = |n: WidgetRef| {
-        let w = tree.widgets.get(n.0);
-        w.is_some_and(|w| matches!(w.kind, Kind::MouseArea { drag: true, .. }))
-    };
     let mut edits = Vec::new();
     let now = target.as_ref().map(|t| t.0);
     if g.dragged_over != now || drag.dropped {
-        if let Some(left) = g.dragged_over.filter(|&n| Some(n) != now && hears(n)) {
-            edits.push(edit(left, false, false, Vec::new()));
+        if let Some(n) = g.dragged_over.filter(|&n| Some(n) != now && hears_drag(tree, n)) {
+            edits.push(left(n));
         }
         if let Some((n, hears, items)) = target
             && (drag.dropped || hears)
         {
-            edits.push(edit(n, drag.dropped, true, items));
+            let to = Set::Drop {
+                drop: drag.dropped,
+                over: true,
+                items,
+            };
+            let keys = model::UiModifiers::default();
+            edits.push(Edit { widget: n, to, keys });
         }
     }
     g.dragged_over = now.filter(|_| !drag.dropped);
     edits
+}
+
+/// Whether mouse area `n` asked to hear drags pass over, not only drops.
+fn hears_drag(tree: &Interface, n: WidgetRef) -> bool {
+    let w = tree.widgets.get(n.0);
+    w.is_some_and(|w| matches!(w.kind, Kind::MouseArea { drag: true, .. }))
+}
+
+/// A file drag leaving mouse area `n`.
+fn left(n: WidgetRef) -> Edit {
+    Edit {
+        widget: n,
+        to: Set::Drop {
+            drop: false,
+            over: false,
+            items: Vec::new(),
+        },
+        keys: model::UiModifiers::default(),
+    }
 }
 
 /// The files of `paths` a mouse area taking `takes` (audio, MIDI, array:

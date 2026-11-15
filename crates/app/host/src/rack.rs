@@ -763,9 +763,25 @@ impl Rack {
         let Some((slot, id, _)) = p.view.as_ref().and_then(|v| v.control(widget, 0.)) else {
             return;
         };
-        for (i, (kind, path)) in items.iter().enumerate() {
-            let text = Box::new(kontra_engine::Text::from_str_cut(path).0);
-            let (kind, first) = (*kind, i == 0);
+        // A path longer than a script text holds would read as another
+        // file: it is left out, and the part notes it.
+        let mut fits = Vec::with_capacity(items.len());
+        for (kind, path) in items {
+            match kontra_engine::Text::from_str_cut(path) {
+                (text, false) => fits.push((*kind, Box::new(text))),
+                (_, true) => p.diagnostics.push(ir::Diagnostic {
+                    impact: ir::Impact::Cosmetic,
+                    feature: "dropped file".into(),
+                    detail: format!("path too long for a script, left out: {path}"),
+                }),
+            }
+        }
+        // A drop or drag in with every file left out reaches no script.
+        if fits.is_empty() && !items.is_empty() {
+            return;
+        }
+        for (i, (kind, text)) in fits.into_iter().enumerate() {
+            let first = i == 0;
             self.send(Command::DropItem {
                 part,
                 kind,
