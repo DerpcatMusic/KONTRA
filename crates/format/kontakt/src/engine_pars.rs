@@ -68,6 +68,19 @@ pub fn owner(name: &str) -> Option<&'static str> {
         .map(|&(_, ty)| ty)
 }
 
+/// Whether `name`, a parameter not in [`engine_pars`], is a control of an
+/// effect module: its slot holds the value ([`ir::EnginePar::Held`]).
+#[must_use]
+pub fn held(name: &str) -> bool {
+    owner(name).is_some()
+        || UNCARRIED_FILTER
+            .iter()
+            .any(|n| name.eq_ignore_ascii_case(n))
+}
+
+/// Filter-slot controls (KSP manual, "Filters") with no processor yet.
+const UNCARRIED_FILTER: &[&str] = &["$ENGINE_PAR_GAIN", "$ENGINE_PAR_BANDWIDTH"];
+
 /// Parameter families (a trailing `_` is a prefix, else the exact name)
 /// and their effect type, from the KSP manual's engine parameter sections.
 const OWNERS: &[(&str, &str)] = &[
@@ -112,6 +125,8 @@ const OWNERS: &[(&str, &str)] = &[
     ("$ENGINE_PAR_BIGFUZZ_", "$EFFECT_TYPE_BIGFUZZ"),
     ("$ENGINE_PAR_FUZZ_", "$EFFECT_TYPE_FUZZ"),
     ("$ENGINE_PAR_STEREOTUNE_", "$EFFECT_TYPE_STEREO_TUNE"),
+    ("$ENGINE_PAR_VC_", "$EFFECT_TYPE_VIBRATO_CHORUS"),
+    ("$ENGINE_PAR_RT_", "$EFFECT_TYPE_ROTATOR"),
 ];
 
 /// The names with an engine parameter of their own.
@@ -162,13 +177,12 @@ const FIXED: &[(&str, ir::EnginePar)] = {
             "$ENGINE_PAR_WT_PHASE_RAND",
             P::Wavetable(ir::TableValue::PhaseRandom),
         ),
-        // Modules KONTRA has no processor for: the knob's text answers, a
-        // set is reported.
-        ("$ENGINE_PAR_CH_DEPTH", P::Shown),
-        ("$ENGINE_PAR_JMP_PREAMP", P::Shown),
-        ("$ENGINE_PAR_JMP_BASS", P::Shown),
-        ("$ENGINE_PAR_JMP_MID", P::Shown),
-        ("$ENGINE_PAR_JMP_TREBLE", P::Shown),
+        // Controls KONTRA has no processor for, with a text law.
+        ("$ENGINE_PAR_CH_DEPTH", P::Held),
+        ("$ENGINE_PAR_JMP_PREAMP", P::Held),
+        ("$ENGINE_PAR_JMP_BASS", P::Held),
+        ("$ENGINE_PAR_JMP_MID", P::Held),
+        ("$ENGINE_PAR_JMP_TREBLE", P::Held),
         (
             "$ENGINE_PAR_WT_INHARMONIC",
             P::Wavetable(ir::TableValue::Inharmonic),
