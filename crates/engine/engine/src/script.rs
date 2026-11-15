@@ -691,6 +691,33 @@ impl HostApi for Engine {
             Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
             Action::UiIdVar => HostValue::Int(self.running.ui),
             Action::ControlParIdx => HostValue::Int(self.ui.last_cell(self.running.slot) as i32),
+            // $NI_MOUSE_EVENT_TYPE_DROP 4, _DRAG 3 (Kontakt 8 oracle); 0 for
+            // a callback no drag ran.
+            Action::MouseEventType => HostValue::Int(
+                self.ui
+                    .dragged(self.running.slot)
+                    .map_or(0, |(drop, _)| if drop { 4 } else { 3 }),
+            ),
+            Action::MouseOverControl => flag(
+                self.ui
+                    .dragged(self.running.slot)
+                    .is_some_and(|(_, over)| over),
+            ),
+            Action::DndItemsAudio | Action::DndItemsMidi | Action::DndItemsArray => {
+                let kind = match call.action {
+                    Action::DndItemsAudio => 0,
+                    Action::DndItemsMidi => 1,
+                    _ => 2,
+                };
+                let at = usize::try_from(int(0)).ok();
+                let path = at.and_then(|i| self.ui.dropped(kind).nth(i));
+                *call.text_out = path.copied().unwrap_or(Text::EMPTY);
+                HostValue::Text
+            }
+            Action::DndItemsCount => {
+                let kind = u8::try_from(int(0)).unwrap_or(u8::MAX);
+                HostValue::Int(self.ui.dropped(kind).count() as i32)
+            }
             Action::ResetRlsTrigCounter => self.reset_rls_trig_counter(int(0)),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
             Action::EventParAt => HostValue::Int(
