@@ -98,6 +98,24 @@ pub enum Command {
         cell: Option<u32>,
         text: Box<kontra_engine::Text>,
     },
+    /// A file dropped or dragged onto a mouse area of `part`: its kind (0
+    /// audio, 1 MIDI, 2 array) and path; `first` starts the drop's list.
+    /// The box comes back as a typed text's does.
+    DropItem {
+        part: usize,
+        kind: u8,
+        first: bool,
+        text: Box<kontra_engine::Text>,
+    },
+    /// Files let go on (`drop`), or dragged over, mouse area `id` of
+    /// `part`'s script `slot`, the drag `over` it or leaving: its callback runs.
+    ControlDrop {
+        part: usize,
+        slot: u8,
+        id: i32,
+        drop: bool,
+        over: bool,
+    },
     /// The user moved widget `n` of script `slot`'s own page to `value`.
     Widget {
         part: usize,

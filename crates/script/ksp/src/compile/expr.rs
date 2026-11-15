@@ -128,7 +128,7 @@ impl<'a> Compiler<'a> {
                 (_, Some(i)) => Err(Error::new(i.span, format!("{name} is not an array"))),
             };
         }
-        if let Some(b) = Builtin::from_name(name).filter(|b| b.name().starts_with(['$', '%'])) {
+        if let Some(b) = Builtin::from_name(name).filter(|b| b.name().starts_with(['$', '%', '!'])) {
             return match (b.array_len(), index) {
                 (Some(_), Some(i)) => self.value_builtin(b, std::slice::from_ref(i), span),
                 (None, None) => self.value_builtin(b, &[], span),
@@ -408,6 +408,18 @@ impl<'a> Compiler<'a> {
                     && Builtin::from_name(name) == Some(Builtin::UserZoneIds)
                 {
                     self.host(Action::NumUserZones, 0, 0, Returns::Int);
+                    return Ok(Some(Ty::Int));
+                }
+                // So is a drop's: as many files as it holds of the kind.
+                let dropped = match Builtin::from_name(name) {
+                    Some(Builtin::DndItemsAudio) => Some(0),
+                    Some(Builtin::DndItemsMidi) => Some(1),
+                    Some(Builtin::DndItemsArray) => Some(2),
+                    _ => None,
+                };
+                if let Some(kind) = dropped.filter(|_| self.lookup(name, e.span).is_err()) {
+                    self.emit(Op::Int(kind));
+                    self.host(Action::DndItemsCount, 1, 0, Returns::Int);
                     return Ok(Some(Ty::Int));
                 }
                 let len = match self.lookup(name, e.span) {

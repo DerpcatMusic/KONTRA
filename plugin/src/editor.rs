@@ -743,6 +743,13 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
             ..
         } => return rack.control(slot, widget, cell, value, keys),
         Action::ControlText { widget, text, .. } => return rack.control_text(slot, widget, &text),
+        Action::ControlDrop {
+            widget,
+            drop,
+            over,
+            ref items,
+            ..
+        } => return rack.control_drop(slot, widget, (drop, over), items),
         Action::Sound {
             group,
             param,
@@ -815,6 +822,7 @@ fn part_of(action: &Action) -> Option<usize> {
         | Action::Remove(n)
         | Action::Control { part: n, .. }
         | Action::ControlText { part: n, .. }
+        | Action::ControlDrop { part: n, .. }
         | Action::Sound { part: n, .. } => Some(n),
         _ => None,
     }
@@ -836,6 +844,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let p = Arc::clone(&params);
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
+    // Files dragged over the window since the last frame, for the
+    // library's mouse areas (kontra_ui::input::files).
+    let dragged: Arc<std::sync::Mutex<Option<kontra_ui::input::FileDrag>>> = Arc::default();
+    let dragging_files = Arc::clone(&dragged);
     let owner = Arc::clone(&params);
     let closing = Arc::clone(&params);
     let mut app = App {
@@ -894,7 +906,9 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         app.loading = p.shared.loading().then_some(target);
         app.load_progress = p.shared.progress.snapshot();
         crate::frames::note("fill", start.elapsed());
+        app.view.files = lock(&dragged).take();
         let response = crate::frames::time("view", || kontra_ui::app::view(ui, &mut app));
+        app.view.files = None;
         // A frame reads its input as it builds, so what a press or release
         // changes (a switch applied to the face, a row selected) shows in
         // the frame after it: ask for that one, or it waits for more input.
@@ -1060,7 +1074,19 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         false
     })
-    .on_files(move |_, _, paths, dropped| {
+    .on_files(move |_, at, paths, dropped| {
+        // A let go is kept over a move queued before it, and asks for a frame.
+        let mut drag = lock(&dragging_files);
+        if dropped || !drag.as_ref().is_some_and(|d| d.dropped) {
+            *drag = Some(kontra_ui::input::FileDrag {
+                at,
+                paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+                dropped,
+            });
+        }
+        drop(drag);
+        dropping.shared.dirty.store(true, Ordering::Release);
+        let library = paths.iter().any(|p| is_dropped(p));
         let instruments: Vec<_> = paths.iter().filter(|p| is_instrument(p)).cloned().collect();
         let folders: Vec<_> = paths.iter().filter(|p| p.is_dir()).cloned().collect();
         if dropped {
@@ -1074,7 +1100,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 });
             }
         }
-        !instruments.is_empty() || !folders.is_empty()
+        library || !instruments.is_empty() || !folders.is_empty()
     })
     .changed({
         let previous = std::sync::atomic::AtomicU64::new(u64::MAX);
@@ -1142,6 +1168,15 @@ fn is_preset(path: &std::path::Path) -> bool {
     ext.is_some_and(|e| {
         e.eq_ignore_ascii_case("nksn") || e.eq_ignore_ascii_case(kontra_host::presets::EXTENSION)
     })
+}
+
+/// Whether a dropped file is one a library's mouse area may take: audio,
+/// MIDI or a KSP array (KSP manual, `ui_mouse_area`).
+// ponytail: accepted anywhere over the window; ask the face's areas if a
+// host shows the copy cursor where nothing takes it.
+fn is_dropped(path: &std::path::Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    matches!(ext.as_deref(), Some("wav" | "aif" | "aiff" | "ncw" | "mid" | "midi" | "nka"))
 }
 
 /// Whether a dropped file is an instrument the rack loads: a Kontakt

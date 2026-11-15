@@ -179,7 +179,17 @@ pub struct Store {
     /// That click's cell, until the control write it came with takes it: a
     /// later write from elsewhere (MIDI learn, a host) sets the first cell.
     pending: Option<(u8, usize, u32)>,
+    /// The files of the last drag and drop, by kind (0 audio, 1 MIDI, 2
+    /// array): what `!NI_DND_ITEMS_*` read. At most [`DROPPED`].
+    dropped: Vec<(u8, Text)>,
+    /// That drag's event: script slot, whether let go, whether over the area.
+    dragged: Option<(u8, bool, bool)>,
 }
+
+/// Most files one drop hands a script; more are left out.
+// ponytail: a fixed list kept on the audio side; larger if a library takes
+// folders of samples at once.
+pub const DROPPED: usize = 32;
 
 /// One control as the script left it: what the host builds its widget from.
 #[derive(Clone, Copy, Debug)]
@@ -232,6 +242,8 @@ impl Store {
             fonts: Vec::with_capacity(64),
             click: None,
             pending: None,
+            dropped: Vec::with_capacity(DROPPED),
+            dragged: None,
         }
     }
 
@@ -337,8 +349,38 @@ impl Store {
     /// The user clicked cell `cell` (0 but in a table) of control `n` of
     /// script `slot` holding `keys` (`[shift, alt, control]`).
     pub fn click(&mut self, slot: u8, n: Option<usize>, keys: [bool; 3], cell: u32) {
+        self.dragged = None;
         self.click = n.map(|n| (slot, n, keys, cell));
         self.pending = n.map(|n| (slot, n, cell));
+    }
+
+    /// A file of kind `kind` dragged onto a mouse area; `first` starts the
+    /// drag's list.
+    pub fn drop_item(&mut self, first: bool, kind: u8, path: Text) {
+        if first {
+            self.dropped.clear();
+        }
+        if self.dropped.len() < DROPPED {
+            self.dropped.push((kind, path));
+        }
+    }
+
+    /// Those files let go on (`drop`), or dragged over (`over`) or out of,
+    /// a mouse area of script `slot`; its callback runs next.
+    pub fn drop_event(&mut self, slot: u8, drop: bool, over: bool) {
+        self.dragged = Some((slot, drop, over));
+    }
+
+    /// Script `slot`'s last drag and drop: whether let go, whether over the
+    /// area (`$NI_MOUSE_EVENT_TYPE`, `$NI_MOUSE_OVER_CONTROL`).
+    #[must_use]
+    pub fn dragged(&self, slot: u8) -> Option<(bool, bool)> {
+        self.dragged.filter(|d| d.0 == slot).map(|(_, drop, over)| (drop, over))
+    }
+
+    /// The dropped files of kind `kind`.
+    pub fn dropped(&self, kind: u8) -> impl Iterator<Item = &Text> {
+        (self.dropped.iter()).filter(move |d| d.0 == kind).map(|d| &d.1)
     }
 
     /// `$NI_CONTROL_PAR_IDX`: the cell of script `slot`'s last click (the
