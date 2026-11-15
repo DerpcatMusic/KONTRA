@@ -197,11 +197,15 @@ fn a_choke_group_fades_the_open_hat() {
     let mut open = zone(&mut store, 0.5);
     open.keys = 46..=46;
     open.group = 1;
-    open.off_by = Some(2);
+    open.voice_group = Some(0);
+    open.off_by = Some(1);
     let mut closed = zone(&mut store, 0.25);
     closed.keys = 42..=42;
     closed.group = 2;
-    let mut e = engine(&store, Plan::new(vec![open, closed], 8));
+    closed.voice_group = Some(1);
+    let mut plan = Plan::new(vec![open, closed], 8);
+    plan.voice_groups = vec![kontra_ir::VoiceGroup::DEFAULT; 2];
+    let mut e = engine(&store, plan);
     assert!(close(level(&mut e, &[on(46, 1.0)])[0], 0.5));
     level(&mut e, &[on(42, 1.0)]);
     level(&mut e, &[]);
@@ -224,6 +228,29 @@ fn group_polyphony_keeps_only_the_newest_voice() {
     level(&mut e, &[]);
     assert!(close(level(&mut e, &[])[0], 0.5), "one voice, not two");
     assert_eq!(e.playing_voices(), 1);
+}
+
+#[test]
+fn a_key_limit_with_self_mask_stops_only_quieter_voices_of_the_key() {
+    // SFZ note_polyphony=1 with note_selfmask=on: a louder repeat stops the
+    // key's earlier voice, a softer one plays alongside the louder.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.voice_group = Some(0);
+    let mut plan = Plan::new(vec![z], 8);
+    plan.voice_groups = vec![kontra_ir::VoiceGroup {
+        per_key: Some(1),
+        quieter_only: true,
+        ..kontra_ir::VoiceGroup::DEFAULT
+    }];
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 0.5)]);
+    level(&mut e, &[on(60, 1.0)]);
+    assert_eq!(e.playing_voices(), 1, "the softer voice gave way");
+    level(&mut e, &[on(60, 0.25)]);
+    assert_eq!(e.playing_voices(), 2, "the louder voice stays");
+    level(&mut e, &[on(62, 1.0)]);
+    assert_eq!(e.playing_voices(), 3, "another key is not counted");
 }
 
 #[test]
@@ -541,6 +568,7 @@ fn a_voice_group_steals_by_its_rule_and_an_exclusive_set_silences_the_others() {
         per_note: false,
         legato: false,
         returns: false,
+        ..kontra_ir::VoiceGroup::DEFAULT
     };
     plan.voice_groups = vec![
         group(2, kontra_ir::Steal::Highest),
@@ -579,6 +607,7 @@ fn a_note_counting_voice_group_steals_every_voice_of_the_note_it_replaces() {
         per_note: true,
         legato: false,
         returns: false,
+        ..kontra_ir::VoiceGroup::DEFAULT
     }];
     let mut e = engine(&store, plan);
     level(&mut e, &[on(60, 1.0)]);
@@ -949,6 +978,8 @@ fn glide_plan(store: &mut Store, legato: bool) -> Plan {
     plan.groups[0].glide = Some(ir::Glide {
         scope: 0,
         depth: 1.0,
+        range: f32::INFINITY,
+        from_heard: false,
         seconds: 0.1,
         per_semitone: false,
         resume: true,
@@ -985,10 +1016,12 @@ fn a_glide_moves_every_frame_the_same_whatever_the_block_size() {
     let run = |block: usize| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let plan = glide_plan(&mut store, true);
-    let mut e = engine(&store, plan);
+        let mut e = engine(&store, plan);
         level(&mut e, &[on(60, 1.0)]);
         level(&mut e, &[on(67, 1.0)]);
-        (0..12).map(|_| advance(&mut e, 384, block)).collect::<Vec<_>>()
+        (0..12)
+            .map(|_| advance(&mut e, 384, block))
+            .collect::<Vec<_>>()
     };
     let (coarse, fine) = (run(384), run(32));
     for (a, b) in coarse.iter().zip(&fine) {
@@ -996,6 +1029,43 @@ fn a_glide_moves_every_frame_the_same_whatever_the_block_size() {
     }
     // Rising through the slide, not in 256-frame stairs.
     assert!(coarse.windows(2).all(|w| w[1] >= w[0]), "{coarse:?}");
+}
+
+#[test]
+fn a_bend_in_a_glides_last_span_keeps_the_rest_of_the_slide() {
+    // The slide (60 -> 72, 4800 frames from frame 256) ends in the span
+    // 4864..5120; a bend one step off centre inside it refreshes the pitch, which must
+    // keep ramping, not jump to 72: a jump is ~5 source frames ahead by the
+    // block's end, the one-step bend 0.05.
+    let run = |bend: bool| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = glide_plan(&mut store, false);
+        plan.groups[0].mods = vec![ir::Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ir::ModKind::Pitch {
+                source: ir::Source::PitchBend,
+                semitones: 2.0,
+                depth: 1.0,
+                tau_ms: 0.0,
+            },
+        }];
+        let mut e = engine(&store, plan);
+        level(&mut e, &[on(60, 1.0)]);
+        level(&mut e, &[on(72, 1.0)]);
+        advance(&mut e, 4352, 256);
+        let events = [Timed {
+            at: SampleTime(64),
+            body: Event::midi1(0xE0, 1, 0x40),
+        }];
+        let mut out = vec![[0.0; 2]; 256];
+        e.process(&mut out, if bend { &events } else { &[] });
+        e.voices().map(|(_, p, _)| p).fold(f64::MIN, f64::max)
+    };
+    let (still, bent) = (run(false), run(true));
+    assert!((still - bent).abs() < 0.5, "{still} {bent}");
 }
 
 #[test]
@@ -1025,13 +1095,16 @@ fn mono_plan(store: &mut Store, legato: bool) -> Plan {
         per_note: true,
         legato,
         returns: true,
+        ..kontra_ir::VoiceGroup::DEFAULT
     }];
     plan
 }
 
 /// Sounding voices that are not on their way out.
 fn holding(e: &Engine) -> usize {
-    e.voices().filter(|(_, _, g)| g.as_flattened().iter().any(|v| *v > 0.0)).count()
+    e.voices()
+        .filter(|(_, _, g)| g.as_flattened().iter().any(|v| *v > 0.0))
+        .count()
 }
 
 #[test]
@@ -1056,6 +1129,23 @@ fn a_legato_line_keeps_its_voice_moves_it_to_the_new_key_and_back() {
 }
 
 #[test]
+fn a_reset_ends_the_keys_a_line_was_waiting_on() {
+    // 60 waits in the line under 67; a reset must end both, not keep 60.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = mono_plan(&mut store, false);
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[on(67, 1.0)]);
+    e.reset();
+    let mut ended = 0;
+    for _ in 0..64 {
+        level(&mut e, &[]);
+        ended += e.ended().len();
+    }
+    assert_eq!(ended, 2);
+}
+
+#[test]
 fn a_retriggering_line_restarts_the_older_key_when_the_newer_goes_up() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let plan = mono_plan(&mut store, false);
@@ -1071,5 +1161,8 @@ fn a_retriggering_line_restarts_the_older_key_when_the_newer_goes_up() {
     let again = advance(&mut e, 256, 256);
     assert!((again - 1.0).abs() < 1e-9, "{again}");
     let start = e.voices().map(|(_, p, _)| p).fold(f64::MAX, f64::min);
-    assert!(start < 3000.0, "a new voice from the sample's start: {start}");
+    assert!(
+        start < 3000.0,
+        "a new voice from the sample's start: {start}"
+    );
 }

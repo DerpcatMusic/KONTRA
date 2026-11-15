@@ -119,6 +119,34 @@ the body's 1 kHz gain divided out.
   sqrt(level)). Not modelled: one time-invariant body cannot play both, and which a held note hears (the steps) against a
   moving one (the sweep) needs a probe that separates them (two tones, or a slow and a fast sweep).
 
+### Analogue from the binary (2026-11-15)
+
+TYPE index 0.3 runs head mode 1 with write lane mode 3 (`141aca670`, `141aca4a0`, design `141abbc90` / `141ac3fd0`,
+ported bit-exact in v2 `sampler-core/src/dsp/replika/{mode1,design}.rs` at e80a9f22b^; see k-replika-gaps.md GAP-C):
+
+- Write side (`141aa3c60`): a feedback compressor, gain `10^(−e/20)` from the smoothed (`exp(−75π/fs)`, 4.2 ms)
+  dB envelope `e` of its own output `|g·x| + 1e-4`: 2:1, the line holds `√level`. Then MT dither (0.01), the
+  shaper (in 0.6, ADAA 0.2, out 1.6) and two TPT low-passes: 8 kHz damping 0.5 (+6 dB peak) and 7 kHz damping 1.3.
+- Read side (`141aa3e00`): a band-pass at 150 Hz, 8 octaves wide (damping 15.94, times its damping: unity at the
+  centre, −3 dB at 9.4 Hz and 2.4 kHz), times `10^(e/20)` of the smoothed (`exp(−50π/fs)`, 6.4 ms) dB envelope of
+  the line's output: a 1:2 expander.
+- The compander explains the noise: what the line adds is expanded with the signal, so it grows as √level and
+  closes in silence (the −124 dB tail).
+- The design once (`|BP|·|H_write|`) predicts the sweep at 4, 8, 10 kHz: −3.8, −8.5, −17.7 dB against −6.5, −8.9,
+  −21.9 measured. A compander whose expander hears the write filter predicts it squared for a held tone (−1.8, −6.1,
+  −22.8 at 4, 8, 10 kHz); Kontakt's steps read +3, +11, −20 at −20 dB. So neither is the steady-tone excess, which
+  grows with level and was read broadband: the bucket brigade's images (its clock) are the candidate. The fitted
+  body stays (0.45 dB rms on the sweep, better than the design's sections) until the probe (two tones; a slow
+  against a fast sweep) separates images from gain.
+
+Probe (2026-11-15, `pairsweeps`, TIME 200 ms, FEEDBACK 0, wet; dB re the input): a 0.5 s and a 12 s sweep agree
+within 0.5 dB to 8 kHz (fast/slow: −1.3/−1.4 at 1 kHz, −7.1/−6.6 at 4 kHz, −10.9/−9.1 at 8 kHz, −27.8/−25.4 at
+10 kHz), so speed does not move it. With 1 kHz and 7.3 kHz together, 7.3 kHz plays −8.1 dB, as the sweep: the
+steps' +11 dB at 8 kHz does not reproduce, and the fitted body stands. 1 kHz plays +1.6 dB beside its partner
+against −1.4 dB alone (the compander: about 3 dB of level interaction, not modelled), with intermodulation at
+−38 dB (±100 Hz about 1 kHz) and −45 dB (7.3 kHz ± 1 kHz). Modern, the control, holds everything within 0.2 dB
+and nothing above −68 dB.
+
 Open: Analogue's sweep (1.5 dB over it everywhere, from the tone/sweep split above) and its stopband (Kontakt -46 dB at
 12 kHz and -58 dB at 16 kHz, the body -27 dB at 16 kHz); Tape's sidebands within 100 Hz of a tone, 11 dB over its noise
 floor (a random flutter); Diffusion.

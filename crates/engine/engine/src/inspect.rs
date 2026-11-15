@@ -149,6 +149,8 @@ pub struct VoiceObservation {
     pub step: f64,
     /// Current amplitude envelope stage.
     pub envelope_stage: &'static str,
+    /// Current amplitude envelope level.
+    pub envelope_level: f32,
     /// Its note's event id (0 once gone), origin (host, child, script),
     /// and whether the note was released or the pedal holds it: why a
     /// voice plays on after every key is up.
@@ -241,6 +243,7 @@ impl Engine {
                 #[cfg(feature = "trace")]
                 step: s.voice.step(),
                 envelope_stage: s.voice.envelope_stage(),
+                envelope_level: s.voice.envelope_level(),
                 id: note.map_or(0, |(r, _)| r.event_id()),
                 origin: note.map(|(_, n)| match n.origin {
                     crate::ledger::Origin::Host => "host",

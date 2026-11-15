@@ -517,4 +517,12 @@ actions! {
     // A point of breakpoint envelope `index` of a group: ints (group,
     // index, point, microseconds, level and curve in millionths).
     EnvelopePoint,
+    // `!NI_DND_ITEMS_AUDIO`, `_MIDI`, `_ARRAY` at int 0: the path of a file
+    // dropped on a mouse area, as text.
+    DndItemsAudio,
+    DndItemsMidi,
+    DndItemsArray,
+    // `num_elements` of those: how many files of kind int 0 (0 audio, 1
+    // MIDI, 2 array) the drop holds.
+    DndItemsCount,
 }

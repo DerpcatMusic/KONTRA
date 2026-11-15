@@ -466,6 +466,10 @@ builtins! {
         KeyDownOct "%KEY_DOWN_OCT" [I] 0 Int;
         EventParAt "%EVENT_PAR" [I] 0 Int;
         NoteDuration "%NOTE_DURATION" [I] 0 Int;
+        // The files of a drop on a mouse area (KSP manual, `ui_mouse_area`).
+        DndItemsAudio "!NI_DND_ITEMS_AUDIO" [I] 0 Text;
+        DndItemsMidi "!NI_DND_ITEMS_MIDI" [I] 0 Text;
+        DndItemsArray "!NI_DND_ITEMS_ARRAY" [I] 0 Text;
     }
 }
 
@@ -482,6 +486,8 @@ impl Builtin {
             Self::UserZoneIds => 1024,
             Self::EventParAt => 4,
             Self::NoteDuration => 128,
+            // As many as one drop hands over (the engine's list).
+            Self::DndItemsAudio | Self::DndItemsMidi | Self::DndItemsArray => 32,
             _ => return None,
         })
     }

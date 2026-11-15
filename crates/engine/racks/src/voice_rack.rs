@@ -19,7 +19,8 @@ use kontra_dsp::filter::{Formant, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 use kontra_plan::route_depth;
 
-use kontra_effects::processors::{reduction, shaper, voicing};
+use kontra_dsp::dynamics::Compressor;
+use kontra_effects::processors::{compressor, reduction, shaper, voicing};
 
 use kontra_effects::summed::{VoiceEq, shape};
 
@@ -69,6 +70,8 @@ pub enum Kind {
     Eq(VoiceEq),
     Formant(Formant),
     Shaper(Core),
+    /// A compressor into a shaper's core ([`ir::Strip`]).
+    Strip(Compressor, Core),
     Crush(Crush),
     Overdrive(Overdrive),
     Comb(Comb),
@@ -80,6 +83,11 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<(Kind, Outer)> {
     if let ir::EffectKind::Shaper(s) = kind {
         let s = shaper(s, rate);
         return Some((Kind::Shaper(s.core), s.outer));
+    }
+    if let ir::EffectKind::Strip(s) = kind {
+        let c = Compressor::new(compressor(s.compressor), rate);
+        let s = shaper(s.shaper, rate);
+        return Some((Kind::Strip(c, s.core), s.outer));
     }
     let kind = match kind {
         ir::EffectKind::Filter(f) => {
@@ -116,6 +124,7 @@ pub fn template(group: &kontra_plan::Group, rate: u32) -> Arc<[Unit]> {
             matches!(
                 e.kind,
                 ir::EffectKind::Shaper(_)
+                    | ir::EffectKind::Strip(_)
                     | ir::EffectKind::Crush(_)
                     | ir::EffectKind::Overdrive(_)
                     | ir::EffectKind::Comb(_)
@@ -205,6 +214,12 @@ pub fn process(
                     s.process(io);
                     u.outer.after(io);
                 }),
+                Kind::Strip(c, s) => drive(chunk, spare, e, |io| {
+                    c.process(io);
+                    u.outer.before(io);
+                    s.process(io);
+                    u.outer.after(io);
+                }),
                 Kind::Crush(c) => drive(chunk, spare, e, |io| c.process(io)),
                 Kind::Overdrive(o) => drive(chunk, spare, e, |io| o.process(io)),
                 Kind::Comb(c) => {
@@ -278,6 +293,13 @@ fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune<'_>, rate: u32) {
         (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(*v), rate),
         (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => {
             let new = shaper(*v, rate);
+            s.retune(&new.core);
+            outer.retune(&new.outer);
+        }
+        // Coefficients only: a script moving COMPRESS allocates nothing.
+        (Kind::Strip(c, s), Tune::Effect(ir::EffectKind::Strip(v))) => {
+            c.set(compressor(v.compressor), rate);
+            let new = shaper(v.shaper, rate);
             s.retune(&new.core);
             outer.retune(&new.outer);
         }

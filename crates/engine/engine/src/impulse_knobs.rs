@@ -104,6 +104,9 @@ impl Engine {
         else {
             return None;
         };
+        if impulse == ir::Impulse::NONE {
+            return Some((None, ir::Impulse::PLAIN));
+        }
         let plan = Arc::clone(&self.plan);
         let at = usize::from(impulse);
         let (name, law) = match at.checked_sub(plan.impulses.len()) {

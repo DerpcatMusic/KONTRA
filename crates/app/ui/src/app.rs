@@ -296,6 +296,8 @@ pub struct View {
     pub picking: Option<FilePick>,
     /// The id of the open popup menu.
     pub menu: Option<String>,
+    /// Files the window has dragged over it this frame.
+    pub files: Option<crate::input::FileDrag>,
     pub mixer_wide: bool,
     pub report_search: String,
     /// The report entry shown whole.
@@ -437,6 +439,15 @@ pub enum Action {
         part: usize,
         widget: usize,
         text: String,
+    },
+    /// Files dropped on, or dragged over, a library's mouse area
+    /// ([`crate::input::Set::Drop`]).
+    ControlDrop {
+        part: usize,
+        widget: usize,
+        drop: bool,
+        over: bool,
+        items: Vec<(u8, String)>,
     },
     /// A value of a part's sound, for one group or all of them.
     Sound {

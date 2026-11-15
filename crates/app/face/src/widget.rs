@@ -198,7 +198,18 @@ pub(super) fn widget(
             tops: Vec::new(),
         },
         ControlKind::TextEdit => ui::Kind::TextEdit,
-        ControlKind::MouseArea => ui::Kind::MouseArea,
+        // $NI_DND_ACCEPT_NONE 0, _ONE 1, _MULTIPLE 512 (Kontakt 8 oracle).
+        ControlKind::MouseArea => ui::Kind::MouseArea {
+            takes: [
+                "$CONTROL_PAR_DND_ACCEPT_AUDIO",
+                "$CONTROL_PAR_DND_ACCEPT_MIDI",
+                "$CONTROL_PAR_DND_ACCEPT_ARRAY",
+            ]
+            .map(|par| p.int(par).and_then(|n| u16::try_from(n).ok()).unwrap_or(0)),
+            drag: p
+                .int("$CONTROL_PAR_RECEIVE_DRAG_EVENTS")
+                .is_some_and(|n| n != 0),
+        },
     };
     // Missing sizes stay 0: the renderer applies Kontakt's stock sizes.
     // GRID_WIDTH and GRID_HEIGHT size in the grid's 92 by 21 cells

@@ -153,6 +153,12 @@ pub fn prepare(
     plan.output = instrument.output;
     plan.route_pitch = instrument.route_pitch;
     plan.steal_whole_groups = instrument.steal_whole_groups;
+    plan.steal = ir::VoiceGroup {
+        steal: instrument.steal,
+        prefer_released: instrument.steal_released_first,
+        fade_ms: instrument.steal_fade_ms,
+        ..ir::VoiceGroup::DEFAULT
+    };
     effects(&mut plan, instrument, rate, &mut diagnostics);
     plan.polyphony = polyphony;
     plan.voice_groups.clone_from(&instrument.voice_groups);
@@ -841,6 +847,8 @@ fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
         keytrack: group.keytrack,
         release_decay_db: group.release_decay_db,
         one_shot: group.one_shot,
+        repeat_cuts: group.repeat_cuts,
+        offset_limited: group.offset_limited,
     }
 }
 

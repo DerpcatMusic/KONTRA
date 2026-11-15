@@ -2479,6 +2479,8 @@ fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
         Some(ir::Glide {
             scope: 0,
             depth: 1.0,
+            range: f32::INFINITY,
+            from_heard: false,
             seconds: 4.831_722_7,
             per_semitone: true,
             legato: true,

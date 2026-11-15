@@ -663,6 +663,41 @@ mod tests {
         assert_eq!(tree.prop("text"), Some(&Prop::Text("Cutoff".into())));
     }
 
+    /// A menu reads and writes the index of its entry, not its value:
+    /// Conflux's FX menus hold None as -1, and their pages hide an empty
+    /// slot's knobs on index 0 and pick an effect by index.
+    #[test]
+    fn a_menu_reads_and_writes_its_entry_index() {
+        let mut page = page(&[(
+            "main.nui",
+            r#"local ui = require "native_ui"
+            local kontakt = require "kontakt"
+            return function()
+                local fx = kontakt.connect_parameter("Fx")
+                return @ui.Text { text = fx:value() }
+                .on_tap_gesture(complete = function() fx:set_value(2) end)
+            end"#,
+        )]);
+        let entry = |t: &str, v: f64| (t.to_owned(), v);
+        let fx = Control {
+            name: "Fx".into(),
+            entries: vec![entry("None", -1.), entry("Comp", 0.), entry("Digitize", 1.)],
+            ..Control::default()
+        };
+        page.set_controls(std::slice::from_ref(&fx)).unwrap();
+        let tree = page.render(&[("Fx".into(), -1.)]).unwrap().unwrap();
+        assert_eq!(tree.prop("text"), Some(&Prop::Number(0.)));
+        let Some(Prop::Callback(n)) = tree.mods[0].1[0].field("complete") else {
+            panic!("no tap callback");
+        };
+        let writes = page.call(*n, [0.; 2], [1.; 2]).unwrap();
+        assert_eq!(
+            writes,
+            [("Fx".to_owned(), 1.)],
+            "entry 2 is Digitize, value 1"
+        );
+    }
+
     /// A canvas paints in the frame it is given: a path filled and
     /// stroked, a dashed line as its dashes. What its painter reads renders
     /// its instance again.

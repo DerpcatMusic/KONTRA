@@ -137,6 +137,8 @@ pub struct ZoneRules {
     pub keytrack: f64,
     pub release_decay_db: f32,
     pub one_shot: bool,
+    pub repeat_cuts: bool,
+    pub offset_limited: bool,
 }
 
 impl ZoneRules {
@@ -150,6 +152,8 @@ impl ZoneRules {
         keytrack: 1.0,
         release_decay_db: 0.0,
         one_shot: false,
+        repeat_cuts: false,
+        offset_limited: false,
     };
 
     /// Gives `zone` these rules.
@@ -168,6 +172,8 @@ impl ZoneRules {
         zone.voice_group = self.voice_group;
         zone.keytrack = self.keytrack;
         zone.release_decay_db = self.release_decay_db;
+        zone.repeat_cuts = self.repeat_cuts;
+        zone.offset_limited = self.offset_limited;
         zone.one_shot = self.one_shot;
     }
 }
