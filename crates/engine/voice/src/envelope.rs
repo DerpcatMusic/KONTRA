@@ -106,6 +106,9 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Starts an envelope at its attack. Times in `settings` are frames. The
+    /// lag is capped at `attack − 1` frames, so the attack always moves on its
+    /// last frame; with no attack there is no lag and the first frame is full.
     pub fn new(settings: Ahdsr) -> Self {
         let wait = settings.lag.min(settings.attack.saturating_sub(1));
         let mut env = Self {
@@ -277,6 +280,23 @@ mod tests {
         assert!(got.iter().zip([0.25, 0.5, 0.5, 0.0, 0.0]).all(|(g, w)| (g - w).abs() < 1e-5), "{got:?}");
         let got = run(0.5, 0.5);
         assert!(got.iter().zip([0.75, 1.0, 1.0, 0.0, 0.0]).all(|(g, w)| (g - w).abs() < 1e-5), "{got:?}");
+    }
+
+    /// A key-up during the lag releases at once: silent, and off after the
+    /// release time, without waiting out the rest of the attack.
+    #[test]
+    fn a_release_in_the_lag_ends_after_the_release_time() {
+        let mut env = Envelope::new(Ahdsr {
+            attack: 100,
+            lag: 50,
+            release: 4,
+            ..Ahdsr::GATE
+        });
+        assert_eq!(env.tick(), 0.0);
+        env.release();
+        let levels: Vec<f32> = (0..4).map(|_| env.tick()).collect();
+        assert_eq!(levels, [0.0; 4]);
+        assert!(env.is_off());
     }
 
     #[test]
