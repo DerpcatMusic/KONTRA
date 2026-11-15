@@ -466,6 +466,29 @@ impl Rack {
         }
     }
 
+    /// Saves `part` as a Kontakt snapshot at `to`: the snapshot it loaded,
+    /// its scripts' values as they are now ([`Rack::saved_scripts`]).
+    ///
+    /// # Errors
+    /// When `part` did not load a Kontakt snapshot, or the save fails.
+    pub fn save_snapshot(&self, part: usize, to: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let from = (self.parts.get(part).and_then(Option::as_ref))
+            .and_then(|p| p.path.as_deref())
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
+            })
+            .ok_or("a Kontakt snapshot saves over the snapshot its part loaded")?;
+        let slots =
+            (self.parts.get(part).and_then(Option::as_ref)).map_or(&[][..], |p| &p.script.slots);
+        let held: Vec<(usize, Vec<String>)> = slots
+            .iter()
+            .copied()
+            .zip(self.saved_scripts(part))
+            .collect();
+        Ok(kontra_format_kontakt::save_snapshot(from, to, &held)?)
+    }
+
     /// [`Rack::load`] for an instrument already read into the IR.
     ///
     /// # Errors

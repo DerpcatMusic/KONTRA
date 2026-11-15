@@ -280,6 +280,33 @@ impl Group {
         Ok(())
     }
 
+    /// Writes a group snapshot's 24 public bytes over the group's own, as
+    /// Kontakt's snapshot reader (`0x140cff070`) sets them: volume, pan, tune
+    /// in octaves (held as the ratio `2^tune`), key tracking, reverse,
+    /// release trigger, its note-monophonic flag, the release-trigger counter
+    /// and the interpolation quality (0 normal, 1 high, 2 ultra). Name, MIDI
+    /// channel, voice group, split point, mute and solo stay the group's.
+    pub fn set_snapshot_params(&mut self, public: &[u8; 24]) -> Result<(), Error> {
+        let mut reader = Cursor::new(&self.0.public_data);
+        reader.read_widestring_utf16()?;
+        let at = usize::try_from(reader.position())
+            .map_err(|_| Error::Static("Group name out of range"))?;
+        let (head, quality) = public.split_at(20);
+        let mut own = head.to_vec();
+        let tune = Cursor::new(head.get(8..12).unwrap_or_default()).read_f32_le()?;
+        own.splice(8..12, 2f32.powf(tune).to_le_bytes());
+        // volume..rls_trig_counter, then past midi channel (2), voice group,
+        // split point (4 each), mute and solo (1 each) to the quality.
+        for (offset, bytes) in [(at, own.as_slice()), (at + 32, quality)] {
+            self.0
+                .public_data
+                .get_mut(offset..offset + bytes.len())
+                .ok_or(Error::Static("Group public data too short"))?
+                .copy_from_slice(bytes);
+        }
+        Ok(())
+    }
+
     pub fn params(&self) -> Result<GroupParams, Error> {
         let mut reader = Cursor::new(&self.0.public_data);
 
