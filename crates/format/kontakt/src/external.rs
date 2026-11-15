@@ -339,6 +339,7 @@ fn shaped(
         _ => None,
     };
     shapers.push(ir::Transfer {
+        stepped: false,
         source,
         table: (0..128)
             .map(|k| {

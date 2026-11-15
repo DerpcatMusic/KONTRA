@@ -308,6 +308,8 @@ pub struct Engine {
     /// While set, notes start only their zones in this voice group (a
     /// line's older key coming back).
     only_voice_group: Option<u32>,
+    /// The plan's voice groups as scripts left them (`set_voice_line`).
+    voice_groups: Box<[ir::VoiceGroup]>,
     /// A stamp per ledger slot: the notes a note-counting voice group
     /// has seen in its current count (voice_groups.rs). Sized at build.
     note_seen: Box<[u32]>,
@@ -360,6 +362,7 @@ impl Engine {
     ) -> Self {
         let out = plan.output;
         let shared: Box<[Group]> = plan.groups.clone().into();
+        let voice_groups: Box<[ir::VoiceGroup]> = plan.voice_groups.clone().into();
         let rack = racks::Rack::new(&plan.inserts, rate, &[]);
         let sends: Box<[racks::Rack]> = plan
             .sends
@@ -471,6 +474,7 @@ impl Engine {
             glides: [glide::Latest::default(); glide::SCOPES],
             lines: vec![mono::Line::default(); mono::LINES].into(),
             only_voice_group: None,
+            voice_groups,
             note_seen: vec![0; capacity].into(),
             note_stamp: 0,
             running: Running::IDLE,

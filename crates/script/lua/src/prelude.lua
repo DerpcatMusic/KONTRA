@@ -738,6 +738,32 @@ local function fields_of(e)
 	return getmetatable(e).__newindex
 end
 
+-- A layer's play law, `line` its `{voice group, glide scope, own note
+-- limit}`. `PlayMode` (Falcon manual, Layer editor; program.rs
+-- `layer_polyphony`): 0 Poly, 1 Poly Portamento (each note slides from the
+-- last), 2 Mono Retrigger, 3 Mono Portamento (a legato note takes over and
+-- slides), 4 Mono Portamento Slide (a detached note slides too). The glide's
+-- numbers: `PortamentoTime` seconds, `PortamentoMode` 1 per semitone,
+-- `PortamentoCurve` -1..1.
+local GLIDE_KNOBS = { PortamentoTime = 1, PortamentoMode = 2, PortamentoCurve = 3 }
+local function set_line(line, name, value)
+	local x = tonumber(value)
+	if not x then
+		return
+	end
+	if name == "PlayMode" then
+		local m = math.floor(x)
+		local mono = m >= 2 and m <= 4
+		local bit = function(b)
+			return b and 1 or 0
+		end
+		host_call("VoiceLine", line[1], line[2], mono and 1 or line[3], bit(m == 3 or m == 4), bit(mono),
+			bit(m == 1 or m == 3 or m == 4), bit(m == 3), bit(m ~= 1))
+	elseif GLIDE_KNOBS[name] then
+		host_call("GlideKnob", line[2], GLIDE_KNOBS[name], math.floor(x * 1e6 + 0.5))
+	end
+end
+
 local Element = {}
 function Element.getParameter(self, name)
 	return self.params[name]
@@ -753,6 +779,11 @@ function Element.setParameter(self, name, value)
 	self.params[name] = value
 	if was ~= value and __watch then
 		__watch(self, name)
+	end
+	local line = fields_of(self).line
+	if line then
+		set_line(line, name, value)
+		return
 	end
 	local fx = fields_of(self).fx
 	if not fx then
@@ -884,6 +915,7 @@ function element(node)
 		fx = node.fx,
 		knobs = node.knobs,
 		impulse = node.impulse,
+		line = node.line,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)
@@ -1010,8 +1042,11 @@ local levels = { Gain = true, Pan = true, Mute = true, Bypass = true }
 
 local function set_level(self, name, value)
 	self.params[name] = value
+	local line = fields_of(self).line
 	if levels[name] then
 		apply_level(self)
+	elseif line then
+		set_line(line, name, value)
 	end
 end
 

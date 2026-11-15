@@ -167,3 +167,64 @@ mod tests {
         assert!((rate.duration(-12.0) - 0.36).abs() < 1e-6);
     }
 }
+
+/// A line's play law as a script sets it ([`Engine::set_voice_line`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LineLaw {
+    /// Notes at once, 0 no limit.
+    pub voices: u16,
+    pub legato: bool,
+    pub returns: bool,
+    /// Its notes slide (`depth` 1, else 0), only while another is held, and
+    /// from where a cut-short slide had got.
+    pub glide: bool,
+    pub glide_legato: bool,
+    pub resume: bool,
+}
+
+/// Which number of a scope's glide [`Engine::set_glide_knob`] sets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum GlideKnob {
+    Seconds,
+    PerSemitone,
+    Curve,
+}
+
+impl Engine {
+    /// Voice group `vg` and the groups gliding in `scope` play by `law` from
+    /// the next note. False when the plan has no such voice group.
+    pub(crate) fn set_voice_line(&mut self, vg: usize, scope: u16, law: LineLaw) -> bool {
+        let Some(group) = self.voice_groups.get_mut(vg) else {
+            return false;
+        };
+        group.voices = law.voices;
+        group.legato = law.legato;
+        group.returns = law.returns;
+        self.each_glide(scope, |g| {
+            g.depth = if law.glide { 1.0 } else { 0.0 };
+            g.legato = law.glide_legato;
+            g.resume = law.resume;
+        })
+    }
+
+    /// One number of the glide of the groups in `scope`. False when none
+    /// glides in it.
+    pub(crate) fn set_glide_knob(&mut self, scope: u16, knob: GlideKnob, value: f32) -> bool {
+        self.each_glide(scope, |g| match knob {
+            GlideKnob::Seconds => g.seconds = value.max(0.0),
+            GlideKnob::PerSemitone => g.per_semitone = value != 0.0,
+            GlideKnob::Curve => g.curve = value.clamp(-1.0, 1.0),
+        })
+    }
+
+    fn each_glide(&mut self, scope: u16, mut f: impl FnMut(&mut ir::Glide)) -> bool {
+        let mut any = false;
+        for g in self.groups.iter_mut().filter_map(|g| g.glide.as_mut()) {
+            if g.scope == scope {
+                f(g);
+                any = true;
+            }
+        }
+        any
+    }
+}
