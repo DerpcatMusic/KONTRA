@@ -339,6 +339,15 @@ impl Engine {
         }
         // The new unit's controls start at its own values, not the old one's.
         (self.behaviour.held).retain(|&(a, s, ..)| (a, s) != (at, slot));
+        let shapes = &self.plan.slot_shapes;
+        if let Some(t) = shapes.types.get(usize::from(ty)).filter(|t| !t.subtype) {
+            let held = &mut self.behaviour.held;
+            for &(_, name, value) in shapes.fresh.iter().filter(|f| f.0 == t.id) {
+                if held.len() < held.capacity() {
+                    held.push((at, slot, name, value));
+                }
+            }
+        }
         let loaded = &mut self.behaviour.loaded;
         loaded.retain(|&(a, s, _)| (a, s) != (at, slot));
         if loaded.len() < loaded.capacity() {
