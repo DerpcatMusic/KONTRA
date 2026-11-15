@@ -147,6 +147,9 @@ pub struct Impulse {
     /// 1 its first `max(2, length·frames)` frames, faded to silence by the
     /// raised cosine `(1 + cos(π·i/(n + 1)))/2`, before [`Self::mix`].
     pub length: f32,
+    /// That window over the whole response too, at `length` 1. One window
+    /// either way, chosen from the length the response is prepared at now.
+    pub window_whole: bool,
 }
 
 /// Scales a response's channel energy toward `energy`, by at most `max_gain`;

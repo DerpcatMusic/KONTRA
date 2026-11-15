@@ -31,11 +31,12 @@ impl Engine {
         if playing.map(usize::from) == Some(found) {
             return Some(0);
         }
-        self.init_impulses.retain(|p| (p.0, p.1) != (slot, generic));
         if self.running.kind != crate::script::Kind::Init {
             let index = u16::try_from(found).ok()?;
+            self.want(slot, generic, index, law);
             return self.request_response(slot, generic, index, law);
         }
+        self.wanted.retain(|p| (p.0, p.1) != (slot, generic));
         self.install_response(stem, sample, (slot, generic), law)
     }
 
@@ -49,7 +50,7 @@ impl Engine {
         }
         let sample = crate::zone_edits::describe(path)?;
         let (_, law) = self.playing(slot, generic)?;
-        self.init_impulses.retain(|p| (p.0, p.1) != (slot, generic));
+        self.wanted.retain(|p| (p.0, p.1) != (slot, generic));
         // The whole path is the key: two folders may hold the same file name.
         self.install_response(&path.to_lowercase(), &sample, (slot, generic), law)
     }
@@ -87,7 +88,7 @@ impl Engine {
     /// Rebuilds every rack's processors from its slots as the init callback
     /// left them. Not real-time.
     pub(crate) fn rebuild_racks(&mut self) {
-        self.prepare_init_impulses();
+        self.prepare_wanted();
         let rate = self.rate;
         let plan = Arc::clone(&self.plan);
         let racks = std::iter::once(&mut self.rack)

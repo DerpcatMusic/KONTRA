@@ -184,7 +184,8 @@ pub struct Engine {
     /// Responses scripts loaded while loading (`load_ir_sample`): name,
     /// how prepared, the response. Convolution indices past the plan's.
     loaded: Vec<(String, ir::Impulse, Response)>,
-    init_impulses: Vec<impulse_knobs::InitImpulse>,
+    /// Each convolution slot's last asked-for response (impulse_knobs.rs).
+    wanted: Vec<impulse_knobs::Wanted>,
     /// Effects scripts asked to load since the host last drained them.
     requests: Vec<fx_types::EffectRequest>,
     /// `set_zone_par` calls waiting for the host (zone_edits.rs).
@@ -441,7 +442,7 @@ impl Engine {
             notes,
             plan,
             loaded: Vec::with_capacity(fx_types::REQUESTS),
-            init_impulses: Vec::new(),
+            wanted: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
             zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
             unpurges: Vec::with_capacity(16),
