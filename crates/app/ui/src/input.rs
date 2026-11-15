@@ -406,14 +406,10 @@ pub fn read(
             // oracle, tools/ksp-ui text page); the first click opened the
             // field with its caret at the end.
             Kind::TextEdit if ui.double_click(id.as_str()) => {
-                let width = ui
-                    .scene()
-                    .and_then(|s| s.surface(&id))
-                    .map(|s| s.frame.size.width);
-                let at = ui
-                    .local(id.as_str())
-                    .zip(width)
-                    .map_or(0., |(p, w)| p.x / w.max(1.));
+                let size = ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size);
+                let at = ui.local(id.as_str()).zip(size).map_or(0, |(p, s)| {
+                    kontra_ui_view::char_at(ui, tree, w, (s.width, s.height, scale), p.x)
+                });
                 type_into(ui, g, n.0, &id, w.text.clone(), word(&w.text, at));
             }
             Kind::TextEdit if (r.clicked || r.key_activated) && g.entry.is_none() => {
@@ -835,11 +831,11 @@ fn type_into(
     g.entry = Some((n, text, Some(select)));
 }
 
-/// The word of `text` at `at` of its width (0 to 1), as a character range:
-/// the run of non-spaces the pointer is in, or the spaces it is between.
-fn word(text: &str, at: f64) -> (usize, usize) {
+/// The word of `text` around character `i`, as a character range: the run
+/// of non-spaces it is in, or the spaces it is between.
+fn word(text: &str, i: usize) -> (usize, usize) {
     let chars: Vec<char> = text.chars().collect();
-    let i = ((at.clamp(0., 1.) * chars.len() as f64) as usize).min(chars.len().saturating_sub(1));
+    let i = i.min(chars.len().saturating_sub(1));
     let space = |c: Option<&char>| c.is_some_and(|c| c.is_whitespace());
     let kind = space(chars.get(i));
     let from = (0..i)
