@@ -135,17 +135,13 @@ pub fn save(from: &Path, to: &Path, held: &[(usize, Vec<String>)]) -> Result<(),
     let state = (chunks.0.iter_mut().find(|c| c.id == SNAPSHOT))
         .ok_or_else(|| Error::new(from, "snapshot", "missing"))?;
     let saved = Snapshot::try_from(&*state).map_err(decode("snapshot"))?;
-    let name = |v: &str| v.split_once(' ').map_or(v, |(n, _)| n).to_owned();
     let values: Vec<Vec<String>> = (saved.persistent.iter().enumerate())
         .map(|(slot, own)| {
-            let now = held.iter().find(|(s, _)| *s == slot).map(|(_, v)| v);
-            (own.iter())
-                .map(|v| {
-                    (now.and_then(|now| now.iter().find(|h| name(h) == name(v))))
-                        .unwrap_or(v)
-                        .clone()
-                })
-                .collect()
+            let now = held
+                .iter()
+                .find(|(s, _)| *s == slot)
+                .map(|(_, v)| v.as_slice());
+            resaved(own, now.unwrap_or_default())
         })
         .collect();
     *state = Snapshot::with_persistent(state, &values).map_err(decode("snapshot"))?;
@@ -169,6 +165,29 @@ pub fn save(from: &Path, to: &Path, held: &[(usize, Vec<String>)]) -> Result<(),
     let mut out = Vec::new();
     root.write(&mut out).map_err(decode("NIS container"))?;
     std::fs::write(to, out).map_err(|e| Error::new(to, "write", e))
+}
+
+/// A slot's saved values, `own`, each taking its value from the one of
+/// `now` with its name. Names match as the host's do (`persist::saved`):
+/// without their sigils, in any case. Each keeps the name Kontakt saved.
+fn resaved(own: &[String], now: &[String]) -> Vec<String> {
+    fn split(v: &str) -> (&str, &str) {
+        v.split_once(' ').unwrap_or((v, ""))
+    }
+    let bare = |n: &str| {
+        n.trim_start_matches(['$', '%', '~', '?', '@', '!'])
+            .to_ascii_lowercase()
+    };
+    (own.iter())
+        .map(|v| {
+            let (name, _) = split(v);
+            match now.iter().find(|h| bare(split(h).0) == bare(name)) {
+                Some(h) if split(h).1.is_empty() => name.to_owned(),
+                Some(h) => format!("{name} {}", split(h).1),
+                None => v.clone(),
+            }
+        })
+        .collect()
 }
 
 /// [`preset`], with what it saves of the instrument.
@@ -362,6 +381,17 @@ pub(crate) fn over(own: Vec<String>, snapshot: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_value_takes_the_held_one_by_its_bare_name() {
+        let own = [
+            "$Level 1".to_owned(),
+            "%table 1 2".to_owned(),
+            "$gone 3".to_owned(),
+        ];
+        let now = ["level 7".to_owned(), "$TABLE 4 5".to_owned()];
+        assert_eq!(resaved(&own, &now), ["$Level 7", "%table 4 5", "$gone 3"]);
+    }
 
     #[test]
     fn a_snapshot_keeps_the_instruments_values_it_does_not_save() {
