@@ -2424,8 +2424,7 @@ fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
     let [rate, tone, scaled] = &out.knob_mods[..] else {
         panic!("{:?}", out.knob_mods)
     };
-    assert_eq!((rate.name.as_str(), rate.saved), ("Rate", 0.25));
-    assert_eq!((tone.name.as_str(), tone.saved), ("Tone", 0.5));
+    assert_eq!((rate.name.as_str(), tone.name.as_str()), ("Rate", "Tone"));
     assert_eq!(out.knob_lfos.len(), 1);
     let ir::Source::Blend(t) = tone.source else {
         panic!("{:?}", tone.source)
@@ -2489,8 +2488,9 @@ fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
     );
     assert_eq!(out.groups[0].glide, None);
     assert!(
-        !out.diagnostics.iter().any(|d| d.feature.contains("Portamento")
-            || d.feature.contains("PlayMode")),
+        !out.diagnostics
+            .iter()
+            .any(|d| d.feature.contains("Portamento") || d.feature.contains("PlayMode")),
         "{:?}",
         out.diagnostics
     );

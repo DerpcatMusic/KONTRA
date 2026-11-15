@@ -235,7 +235,6 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                             plan.knob_mods.push(kontra_engine::KnobModPlan {
                                 slot,
                                 id,
-                                saved: k.saved,
                                 source: k.source,
                                 scale: k.scale,
                             });
@@ -292,8 +291,16 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                     .count();
                 let unranged = script.links.len() - planned.links.len() - absent;
                 for (n, impact, feature) in [
-                    (absent, ir::Impact::Cosmetic, "MIDI automation of a missing script control"),
-                    (unranged, ir::Impact::Audible, "MIDI automation of an unranged script control"),
+                    (
+                        absent,
+                        ir::Impact::Cosmetic,
+                        "MIDI automation of a missing script control",
+                    ),
+                    (
+                        unranged,
+                        ir::Impact::Audible,
+                        "MIDI automation of an unranged script control",
+                    ),
                 ] {
                     if n > 0 {
                         diagnostics.push(ir::Diagnostic {

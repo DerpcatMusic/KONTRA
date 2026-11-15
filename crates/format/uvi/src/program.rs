@@ -768,13 +768,11 @@ impl<L: Library> Translator<'_, '_, L> {
             .filter(|c| c.has_tag_name("SignalConnection"))
             .collect::<Vec<_>>();
         for c in connections {
+            // The knob, by the parameter the processor saves for it.
             let name = c.attribute("Destination").unwrap_or_default();
-            let Some(saved) = processor
-                .attribute(name)
-                .and_then(|v| v.parse::<f32>().ok())
-            else {
+            if processor.attribute(name).is_none() {
                 continue;
-            };
+            }
             if flag(c, "Bypass") || num(c, "Ratio", 0.0).ok() == Some(0.0) {
                 continue;
             }
@@ -816,7 +814,6 @@ impl<L: Library> Translator<'_, '_, L> {
             self.out.knob_mods.push(ir::KnobMod {
                 script,
                 name: name.into(),
-                saved,
                 source,
                 scale,
             });
