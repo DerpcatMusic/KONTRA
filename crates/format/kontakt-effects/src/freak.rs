@@ -296,6 +296,12 @@ mod tests {
     }
 
     #[test]
+    fn every_freak_position_fits_the_live_knobs() {
+        // A model longer than the live array drops every script write.
+        assert!(model(FRESH).saved.len() <= ir::KnobModel::MAX);
+    }
+
+    #[test]
     fn frequency_and_type_follow_the_measured_laws() {
         let fresh = ring(FRESH);
         assert!((fresh.hz - 0.1).abs() < 1e-3, "{}", fresh.hz);

@@ -660,7 +660,7 @@ pub struct KnobModel {
 impl KnobModel {
     /// The most positions a model holds: its live positions fit a fixed
     /// array, so moving a knob allocates nothing.
-    pub const MAX: usize = 16;
+    pub const MAX: usize = 24;
 }
 
 impl PartialEq for KnobModel {
