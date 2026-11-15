@@ -5555,6 +5555,7 @@ fn a_switch_to_mono_under_a_held_chord_keeps_only_the_new_note() {
         per_note: true,
         legato: false,
         returns: false,
+        ..ir::VoiceGroup::DEFAULT
     }];
     let tree = "return {params={},db=0,pan=0,auxs={},
         layers={{params={PlayMode='0'},line={0,0,0}}}}";

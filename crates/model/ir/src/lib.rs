@@ -58,6 +58,11 @@ pub struct Instrument {
     pub scripts: Vec<Script>,
     /// Voices the instrument may sound at once.
     pub voices: u16,
+    /// Which voice makes room at [`Self::voices`], released ones first when
+    /// [`Self::steal_released_first`], fading over [`Self::steal_fade_ms`].
+    pub steal: Steal,
+    pub steal_released_first: bool,
+    pub steal_fade_ms: f32,
     /// Shared voice limits; [`Group::voice_group`] indexes here.
     pub voice_groups: Vec<VoiceGroup>,
     /// Effects on everything the instrument plays, by slot.
@@ -105,6 +110,9 @@ impl Instrument {
         buses: Vec::new(),
         scripts: Vec::new(),
         voices: 64,
+        steal: Steal::Oldest,
+        steal_released_first: true,
+        steal_fade_ms: 10.0,
         voice_groups: Vec::new(),
         inserts: Vec::new(),
         sends: Vec::new(),
@@ -375,7 +383,9 @@ pub struct Group {
     pub start: Vec<(Join, StartRule)>,
     /// Voices of this group that may sound at once.
     pub polyphony: Option<u16>,
-    /// Voices of this group fade when a voice of that group starts (hi-hat choke).
+    /// Voices of this group stop when a voice of that voice group (index
+    /// into [`Instrument::voice_groups`]) starts, as their own voice group
+    /// stops a voice (hi-hat choke).
     pub off_by: Option<usize>,
     pub bus: usize,
     /// Saved unloaded: no preload until a script loads it.
@@ -645,6 +655,31 @@ pub struct VoiceGroup {
     /// it is still down brings that note back (its voices taken back when
     /// `legato`, started again otherwise).
     pub returns: bool,
+    /// Voices of one key the group may sound: a new one past it stops the
+    /// key's earlier voices, oldest first, or with `quieter_only` only those
+    /// started no louder than it, quietest first.
+    pub per_key: Option<u16>,
+    pub quieter_only: bool,
+    /// A voice it stops (stolen, excluded or choked) plays its release
+    /// instead of fading over `fade_ms`.
+    pub release: bool,
+}
+
+impl VoiceGroup {
+    /// No limit to speak of: oldest first, released first, a 10 ms fade.
+    pub const DEFAULT: Self = Self {
+        voices: u16::MAX,
+        steal: Steal::Oldest,
+        prefer_released: true,
+        fade_ms: 10.0,
+        exclusive: None,
+        per_note: false,
+        legato: false,
+        returns: false,
+        per_key: None,
+        quieter_only: false,
+        release: false,
+    };
 }
 
 /// Portamento: a new note's voices start at the pitch the previous note of

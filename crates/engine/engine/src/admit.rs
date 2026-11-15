@@ -35,26 +35,27 @@ impl Engine {
         self.notes.insert(note)
     }
 
-    /// An idle voice. At the plan's polyphony the oldest playing voice fades
-    /// (released ones first), with its note's others in its group when the
-    /// plan steals whole groups, and an idle reserve voice takes the new start.
+    /// An idle voice. At the plan's polyphony a playing voice stops by the
+    /// plan's steal rule, with its note's others in its group when the plan
+    /// steals whole groups, and an idle reserve voice takes the new start.
     pub(crate) fn free_slot(&mut self) -> Option<usize> {
         if self.playing_voices() >= self.plan.voices {
-            let fade = self.fade_frames();
-            let plan = self.plan.clone();
-            let group = |s: &Slot| plan.zones.get(s.zone).map(|z| z.group);
-            let playing = |s: &Slot| s.voice.is_active() && !s.voice.is_ending();
-            let victim = self
-                .voices
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| playing(s))
-                .min_by_key(|(_, s)| (!s.voice.is_released(), s.started))
-                .map(|(i, s)| (i, s.note, group(s)));
+            let rule = self.plan.steal;
+            let group = |e: &Self, s: &Slot| e.plan.zones.get(s.zone).map(|z| z.group);
+            let victim = (self.voices.iter().enumerate())
+                .filter(|(_, s)| s.voice.is_active() && !s.voice.is_ending())
+                .min_by_key(|(_, s)| self.steal_order(&rule, s))
+                .map(|(i, s)| (i, s.note, group(self, s)));
             if let Some((v, note, of)) = victim {
-                self.steal(v, fade);
-                if plan.steal_whole_groups && note.is_some() {
-                    self.steal_where(fade, |s| s.note == note && group(s) == of);
+                self.stop_by(v, &rule);
+                if self.plan.steal_whole_groups && note.is_some() {
+                    for i in 0..self.voices.len() {
+                        if (self.voices.get(i)).is_some_and(|s| {
+                            s.note == note && group(self, s) == of && !s.voice.is_ending()
+                        }) {
+                            self.stop_by(i, &rule);
+                        }
+                    }
                 }
             }
         }

@@ -2,7 +2,7 @@
 //! group-level settings, samples by file. What the IR cannot carry is a
 //! diagnostic (06-FORMATS.md).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use kontra_format::Notes;
@@ -43,6 +43,11 @@ const MAPPED: &[&str] = &[
     "seq_position",
     "group",
     "off_by",
+    "off_mode",
+    "off_time",
+    "polyphony",
+    "note_polyphony",
+    "note_selfmask",
     "amp_veltrack",
     "direction",
     "cutoff",
@@ -98,6 +103,9 @@ struct Build {
     samples: Vec<ir::Sample>,
     sample_index: HashMap<PathBuf, usize>,
     entries: Vec<Entry>,
+    /// The voice rules of each group number that has one (its polyphony,
+    /// key limit or off mode); with off_by targets, each becomes a voice group.
+    limits: BTreeMap<u32, ir::VoiceGroup>,
     notes: Notes,
 }
 
@@ -179,9 +187,17 @@ impl Build {
             slot: 0,
         };
 
-        let settings = self.settings(ops);
-        let number = self.number(ops, &["group"]).map_or(0, whole);
+        let mut settings = self.settings(ops);
+        let grouped = self.number(ops, &["group"]);
+        let number = grouped.map_or(0, whole);
         let off_by = self.number(ops, &["off_by"]).map(whole);
+        let polyphony = self.number(ops, &["polyphony"]).map(voices);
+        if grouped.is_none() {
+            // Without a group number the limit is its own (sfizz: the
+            // region's or its header's): kept per group of settings.
+            settings.polyphony = polyphony;
+        }
+        self.voice_rules(ops, number, grouped.and(polyphony));
         let index = self.entry(number, off_by, settings);
         if let Some(entry) = self.entries.get_mut(index) {
             entry.zones.push(zone);
@@ -315,6 +331,42 @@ impl Build {
     }
 
     /// The index of the group with these settings, made when new.
+    /// The voice rules a region gives its group number (the last region's
+    /// win, as sfizz's): `polyphony` with `group`, `note_polyphony` and
+    /// `note_selfmask`, `off_mode` and `off_time`. sfizz counts voices not
+    /// yet stopped, released ones too, the oldest first.
+    fn voice_rules(&mut self, ops: &Opcodes, number: u32, polyphony: Option<u16>) {
+        let per_key = self.number(ops, &["note_polyphony"]).map(voices);
+        let mask = raw(ops, &["note_selfmask"]);
+        let off = raw(ops, &["off_mode", "offmode"]);
+        let off_time = self.number(ops, &["off_time"]);
+        if polyphony.is_none() && per_key.is_none() && off.is_none() && off_time.is_none() {
+            return;
+        }
+        let limit = self.limits.entry(number).or_insert(laws::VOICE_GROUP);
+        if let Some(v) = polyphony {
+            limit.voices = v;
+        }
+        if per_key.is_some() {
+            limit.per_key = per_key;
+            limit.quieter_only = !matches!(mask, Some("off" | "dontmask"));
+        }
+        // off_time alone is off_mode=time.
+        match (off, off_time) {
+            (Some("normal"), _) => limit.release = true,
+            (Some("time") | None, Some(t)) => {
+                limit.release = false;
+                limit.fade_ms = (t.max(0.0) * 1000.0) as f32;
+            }
+            (Some("fast" | "time"), _) => {
+                limit.release = false;
+                limit.fade_ms = laws::VOICE_GROUP.fade_ms;
+            }
+            (Some(other), _) => self.notes.add(ir::Impact::Audible, "off_mode", other),
+            (None, None) => {}
+        }
+    }
+
     fn entry(&mut self, number: u32, off_by: Option<u32>, settings: ir::Group) -> usize {
         let found = self
             .entries
@@ -401,24 +453,22 @@ impl Build {
     }
 
     fn finish(self) -> ir::Instrument {
-        let mut notes = self.notes;
-        let numbers: Vec<u32> = self.entries.iter().map(|e| e.number).collect();
-        for entry in &self.entries {
-            if let Some(n) = entry.off_by
-                && numbers.iter().filter(|&&x| x == n).count() > 1
-            {
-                notes.add(
-                    ir::Impact::Audible,
-                    "off_by to a split group",
-                    format!("group {n}"),
-                );
+        // Group numbers with voice rules, and those an off_by names (a choke
+        // stops its targets as their own number's rule does).
+        let mut limits = self.limits;
+        for e in &self.entries {
+            if let Some(n) = e.off_by {
+                limits.entry(n).or_insert(laws::VOICE_GROUP);
             }
         }
+        let numbers: Vec<u32> = limits.keys().copied().collect();
+        let index = |n: u32| numbers.iter().position(|&x| x == n);
         let groups = self
             .entries
             .into_iter()
             .map(|e| ir::Group {
-                off_by: e.off_by.and_then(|n| numbers.iter().position(|&x| x == n)),
+                off_by: e.off_by.and_then(index),
+                voice_group: index(e.number),
                 zones: e.zones,
                 ..e.settings
             })
@@ -426,7 +476,8 @@ impl Build {
         ir::Instrument {
             samples: self.samples,
             groups,
-            diagnostics: notes.finish(),
+            voice_groups: limits.into_values().collect(),
+            diagnostics: self.notes.finish(),
             ..ir::Instrument::DEFAULT
         }
     }
@@ -460,6 +511,10 @@ fn midi(value: f64) -> u8 {
 
 fn frames(value: f64) -> u64 {
     value.max(0.0) as u64
+}
+
+fn voices(value: f64) -> u16 {
+    value.clamp(1.0, f64::from(u16::MAX)) as u16
 }
 
 fn whole(value: f64) -> u32 {
