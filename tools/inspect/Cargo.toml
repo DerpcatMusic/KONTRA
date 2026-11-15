@@ -19,5 +19,6 @@ kontra-law = { path = "../../crates/base/law" }
 kontra-host = { path = "../../crates/app/host" }
 kontra-format-uvi = { path = "../../crates/format/uvi" }
 kontra-stream = { path = "../../crates/engine/stream" }
+kontra-prepare = { path = "../../crates/engine/prepare" }
 serde_json = "1"
 rustfft = "6"

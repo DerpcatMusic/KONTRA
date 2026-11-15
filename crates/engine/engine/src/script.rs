@@ -230,6 +230,7 @@ impl Engine {
             event::NOTE => i32::from(n.key),
             event::VELOCITY => i32::from(n.velocity_byte),
             event::ZONE_SLOT => n.zone_slot,
+            event::START_OFFSET => i32::try_from(n.offset).unwrap_or(i32::MAX),
             event::SOURCE => match n.origin {
                 Origin::Host => -1,
                 Origin::Child(_) | Origin::Script => i32::from(n.first) - 1,
@@ -250,6 +251,7 @@ impl Engine {
             event::PAN => n.script_pan = value.clamp(-1000, 1000),
             event::NOTE if !n.started => n.key = value.clamp(0, 127) as u8,
             event::ZONE_SLOT if !n.started => n.zone_slot = value,
+            event::START_OFFSET if !n.started => n.offset = value.max(0).unsigned_abs(),
             event::VELOCITY if !n.started => {
                 n.velocity_byte = value.clamp(1, 127) as u8;
                 n.velocity = f64::from(n.velocity_byte) / 127.0;
