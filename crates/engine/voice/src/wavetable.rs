@@ -422,7 +422,12 @@ impl Table {
     /// The mod oscillator (a sine at its ratio of the note) runs per frame
     /// from the voice's own state: FM accumulates into the read phase, PM
     /// adds to it, the output kinds act on the level read.
-    pub(crate) fn render(&mut self, cursor_at: impl Fn(u64) -> f64, step: f64, out: &mut [[f32; 2]]) {
+    pub(crate) fn render(
+        &mut self,
+        cursor_at: impl Fn(u64) -> f64,
+        step: f64,
+        out: &mut [[f32; 2]],
+    ) {
         let at = f64::from(self.read.position.clamp(0.0, 1.0)) * (self.cycles - 1) as f64;
         let c0 = at as usize;
         let c1 = (c0 + 1).min(self.cycles - 1);

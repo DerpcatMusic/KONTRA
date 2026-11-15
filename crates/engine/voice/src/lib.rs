@@ -597,7 +597,14 @@ impl Voice {
             self.heads[1] = at;
         }
         let step = self.step();
-        let a = self.read_window(scratch, client, region, n, (self.heads[0], 0, step), Ramp::NONE);
+        let a = self.read_window(
+            scratch,
+            client,
+            region,
+            n,
+            (self.heads[0], 0, step),
+            Ramp::NONE,
+        );
         if let (Some(head), Some(raw)) = (scratch.head.get_mut(..a), scratch.raw.get(..a)) {
             head.copy_from_slice(raw);
         }
