@@ -44,6 +44,9 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
         left = kontra_dsp::reverb::shape::cut(&left, from, &c);
         right = kontra_dsp::reverb::shape::cut(&right, from, &c);
     }
+    if impulse.length < 1.0 || impulse.window_whole {
+        window([&mut left, &mut right], impulse.length);
+    }
     if let Some(knots) = impulse.envelope {
         kontra_dsp::reverb::shape::envelope([&mut left, &mut right], knots);
     }
@@ -59,6 +62,20 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
         c.splice(0..0, std::iter::repeat_n(0.0, delay));
     }
     Ok(resample(left, right, from, rate, impulse.normalize))
+}
+
+/// The first `max(2, length·frames)` frames of each channel, faded to
+/// silence by `(1 + cos(π·i/(n + 1)))/2`; gains under 1e-10 are silence.
+fn window(channels: [&mut Vec<f32>; 2], length: f32) {
+    for c in channels {
+        let n = ((c.len() as f32 * length.max(0.0)).round() as usize).max(2).min(c.len());
+        c.truncate(n);
+        let step = std::f32::consts::PI / (n + 1) as f32;
+        for (i, x) in c.iter_mut().enumerate() {
+            let w = ((i as f32 * step).cos() + 1.0) * 0.5;
+            *x *= if w >= 1e-10 { w } else { 0.0 };
+        }
+    }
 }
 
 /// The early part's share of the stretched response: `at` frames of the
@@ -111,6 +128,18 @@ fn normalize(left: &mut [f32], right: &mut [f32], n: ir::Normalize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shorter_length_keeps_its_share_faded_by_a_raised_cosine() {
+        let (mut l, mut r) = (vec![1.0f32; 1000], vec![1.0f32; 1000]);
+        window([&mut l, &mut r], 0.25);
+        assert_eq!(l.len(), 250);
+        // (1 + cos(π·i/251))/2: whole at the start, half at the middle, near silence at the end.
+        assert_eq!(l[0], 1.0);
+        assert!((l[125] - 0.5).abs() < 0.01, "{}", l[125]);
+        assert!(l[249] < 1e-3 && l[249] > 0.0);
+        assert_eq!(l, r);
+    }
 
     #[test]
     fn normalization_can_follow_rate_conversion() {

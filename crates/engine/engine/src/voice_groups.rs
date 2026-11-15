@@ -70,7 +70,7 @@ impl Engine {
                 continue;
             }
             let rule = (zone.voice_group)
-                .and_then(|g| self.plan.voice_groups.get(g as usize).copied())
+                .and_then(|g| self.voice_groups.get(g as usize).copied())
                 .unwrap_or(self.plan.steal);
             self.stop_by(i, &rule);
         }
@@ -79,7 +79,7 @@ impl Engine {
     /// Makes room for one more voice of `note` in voice group `vg`, before
     /// it starts.
     pub(crate) fn limit_voice_group(&mut self, vg: u32, note: NoteRef) {
-        let Some(&group) = self.plan.voice_groups.get(vg as usize) else {
+        let Some(&group) = self.voice_groups.get(vg as usize) else {
             return;
         };
         if let Some(set) = group.exclusive {
@@ -87,13 +87,13 @@ impl Engine {
                 let other = (self.voices.get(i))
                     .and_then(|s| self.voice_group_of(s))
                     .filter(|&o| o != vg)
-                    .and_then(|o| self.plan.voice_groups.get(o as usize));
+                    .and_then(|o| self.voice_groups.get(o as usize));
                 if other.is_some_and(|o| o.exclusive == Some(set)) {
                     self.stop_by(i, &group);
                 }
             }
         }
-        if let Some(limit) = group.per_key {
+        if let Some(limit) = group.per_key.filter(|&l| l > 0) {
             self.limit_key(vg, &group, note, limit);
         }
         // Notes other than this one (its earlier zones are not rivals), or voices.
@@ -124,24 +124,28 @@ impl Engine {
                 .filter(|s| self.voice_group_of(s) == Some(vg))
                 .count()
         };
-        if playing < usize::from(group.voices) {
+        if group.voices == 0 || playing < usize::from(group.voices) {
             return;
         }
-        let victim = (self.voices.iter().enumerate())
-            .filter(|(_, s)| self.voice_group_of(s) == Some(vg))
-            .filter(|(_, s)| !group.per_note || s.note != Some(note))
-            .min_by_key(|(_, s)| self.steal_order(&group, s))
-            .map(|(i, s)| (i, s.note));
-        let Some((index, owner)) = victim else {
-            return;
-        };
-        // A counted note goes whole: every voice of it in the group.
-        for i in 0..self.voices.len() {
-            let whole = group.per_note
-                && (self.voices.get(i))
-                    .is_some_and(|s| s.note == owner && self.voice_group_of(s) == Some(vg));
-            if i == index || whole {
-                self.stop_by(i, &group);
+        // Down to one under the limit: a limit lowered while notes were
+        // held (a script switching Poly to mono) gives up all the excess.
+        for _ in usize::from(group.voices)..=playing {
+            let victim = (self.voices.iter().enumerate())
+                .filter(|(_, s)| self.voice_group_of(s) == Some(vg))
+                .filter(|(_, s)| !group.per_note || s.note != Some(note))
+                .min_by_key(|(_, s)| self.steal_order(&group, s))
+                .map(|(i, s)| (i, s.note));
+            let Some((index, owner)) = victim else {
+                break;
+            };
+            // A counted note goes whole: every voice of it in the group.
+            for i in 0..self.voices.len() {
+                let whole = group.per_note
+                    && (self.voices.get(i))
+                        .is_some_and(|s| s.note == owner && self.voice_group_of(s) == Some(vg));
+                if i == index || whole {
+                    self.stop_by(i, &group);
+                }
             }
         }
     }

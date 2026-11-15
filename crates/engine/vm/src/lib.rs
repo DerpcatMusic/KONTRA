@@ -50,16 +50,10 @@ pub trait Machine: Send {
     /// A coroutine that moves control `id` ([`Foreign::controls`]) to
     /// `value` and runs its callback, as [`Machine::start`].
     fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId>;
-    /// A coroutine that moves control `id` to `saved`'s place in its range
-    /// plus `ratio × m` (`m` 0..=1) and runs its callback when it changes.
-    fn control_mod(
-        &mut self,
-        _id: i32,
-        _saved: f64,
-        _scale: f64,
-        _m: f64,
-        _context: u64,
-    ) -> Option<CoId> {
+    /// A coroutine that moves control `id` from its own value's place in
+    /// its range by `ratio × m` (`m` 0..=1) and runs its callback when it
+    /// changes.
+    fn control_mod(&mut self, _id: i32, _scale: f64, _m: f64, _context: u64) -> Option<CoId> {
         None
     }
     /// The editor moved widget `n` of the front end's own interface (one it
@@ -76,6 +70,11 @@ pub trait Machine: Send {
     }
     /// Widget `n`'s text into `out`; false when it has none.
     fn widget_text(&self, _n: u32, _out: &mut Text) -> bool {
+        false
+    }
+    /// The picture widget `n` shows now (its `image`, which a script swaps
+    /// at run time: VWinds' seat chart) into `out`; false when it has none.
+    fn widget_image(&self, _n: u32, _out: &mut Text) -> bool {
         false
     }
     /// Menu widget `n`'s item `i` (from 0) into `out`; false past its last.

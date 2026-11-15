@@ -17,7 +17,9 @@ impl Engine {
             return;
         }
         let status = (word >> 16) as u8;
-        let channel = status & 0x0F;
+        // Kept per port and channel (`HostNote::port_channel`): the group
+        // is the port.
+        let channel = ((word >> 24) as u8 & 15).min(3) * 16 + (status & 0x0F);
         if matches!(status & 0xF0, 0xB0 | 0xD0 | 0xE0) {
             self.behaviour.channel = channel;
         }
@@ -39,7 +41,8 @@ impl Engine {
                 Heard::Passed => {}
             }
             let mut hits = std::mem::take(&mut self.hits);
-            self.notes.select(&mut hits, |n| n.host.channel == channel);
+            self.notes
+                .select(&mut hits, |n| n.host.port_channel() == channel);
             self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
             self.hits = hits;
             return;
@@ -70,7 +73,8 @@ impl Engine {
             }
             self.behaviour.set_pressure(channel, value);
             let mut hits = std::mem::take(&mut self.hits);
-            self.notes.select(&mut hits, |n| n.host.channel == channel);
+            self.notes
+                .select(&mut hits, |n| n.host.port_channel() == channel);
             self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
             self.hits = hits;
             return;
@@ -101,8 +105,9 @@ impl Engine {
                 *p = down;
             }
             if !down {
-                self.notes
-                    .select(&mut hits, |n| n.pedal_held && n.host.channel == channel);
+                self.notes.select(&mut hits, |n| {
+                    n.pedal_held && n.host.port_channel() == channel
+                });
                 // Kontakt runs `on release` again at pedal-up for every note
                 // the pedal held, after `on controller` (oracle, sine probe,
                 // Kontakt 8, 2026-11-13); one that ignores it keeps playing.
@@ -121,7 +126,8 @@ impl Engine {
                 }
             }
         }
-        self.notes.select(&mut hits, |n| n.host.channel == channel);
+        self.notes
+            .select(&mut hits, |n| n.host.port_channel() == channel);
         // One pass over the voices, not one per note.
         self.refresh_voices(Some(controller), |slot, _| {
             slot.note.is_some_and(|n| hits.contains(&n))
@@ -202,8 +208,9 @@ impl Engine {
         }
         // The key's notes on the channel take it as their own pressure.
         let mut hits = std::mem::take(&mut self.hits);
-        self.notes
-            .select(&mut hits, |n| n.host.channel == channel && n.key == key);
+        self.notes.select(&mut hits, |n| {
+            n.host.port_channel() == channel && n.key == key
+        });
         for &note in &hits {
             if let Some(n) = self.notes.get_mut(note) {
                 n.expression_pressure = Some(f32::from(value) / 127.0);

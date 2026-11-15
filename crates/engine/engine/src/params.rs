@@ -113,6 +113,27 @@ impl Engine {
         rack.get_mut(usize::try_from(slot).ok()?)
     }
 
+    /// Keeps `value` for held control `name` ([`ir::held_key`]) of the
+    /// addressed slot (the address exists: `absent` ruled out the rest).
+    /// False when the store is full.
+    fn hold(&mut self, name: u32, value: i32, group: i32, slot: i32, generic: i32) -> bool {
+        let Some((at, slot)) = slot_at(group, slot, generic) else {
+            return false;
+        };
+        let held = &mut self.behaviour.held;
+        if let Some(h) = held
+            .iter_mut()
+            .find(|h| (h.0, h.1, h.2) == (at, slot, name))
+        {
+            h.3 = value;
+        } else if held.len() < held.capacity() {
+            held.push((at, slot, name, value));
+        } else {
+            return false;
+        }
+        true
+    }
+
     /// `set_engine_par` of an effect control; false when not carried.
     fn set_effect(
         &mut self,
@@ -181,12 +202,46 @@ impl Engine {
     }
 
     fn placed_effect(&mut self, at: i32, index: i32, slot: i32) -> Option<&mut ir::Effect> {
-        let (group, generic) = match at {
-            0 => (index, -1),
-            1 => (-1, (BUS_OFFSET - 1).saturating_add(index)),
-            _ => (-1, 1),
-        };
+        let (group, generic) = placed(at, index);
         self.effect_mut(group, slot, generic)
+    }
+
+    /// [`kontra_vm::Action::LoadImpulse`]: the library response `name` into
+    /// the placed convolution, as [`Engine::load_ir_sample`] loads one. A
+    /// group's inserts run per voice: `None`, as `load_ir_sample` answers.
+    /// [`kontra_vm::Action::ImpulseKnob`]: knob `code` (1 the share of the
+    /// response kept, 2 predelay in ms) of the placed convolution at `y`.
+    /// False when it cannot be prepared again.
+    pub(crate) fn set_placed_impulse_knob(
+        &mut self,
+        at: i32,
+        index: i32,
+        slot: i32,
+        code: i32,
+        y: f32,
+    ) -> bool {
+        let (knob, y) = match code {
+            1 => (ir::ImpulseKnob::Length, y.clamp(0.0, 1.0)),
+            2 => (ir::ImpulseKnob::PredelayMs, y.clamp(0.0, 1000.0)),
+            _ => return false,
+        };
+        match placed(at, index) {
+            (-1, generic) => self.set_impulse_knob(knob, y, slot, generic),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn load_placed_impulse(
+        &mut self,
+        name: &str,
+        at: i32,
+        index: i32,
+        slot: i32,
+    ) -> Option<i32> {
+        match placed(at, index) {
+            (-1, generic) => self.load_ir_sample(name, slot, generic),
+            _ => None,
+        }
     }
 
     /// A group's level, or the instrument's (group -1, generic -1). Buses
@@ -295,6 +350,13 @@ impl Engine {
             return Some(0);
         }
         let par = self.engine_par(par)?;
+        if let EnginePar::Held(name) = par {
+            let (at, slot) = slot_at(group, slot, generic)?;
+            let mut held = self.behaviour.held.iter();
+            return held
+                .find(|h| (h.0, h.1, h.2) == (at, slot, name))
+                .map(|h| h.3);
+        }
         if par == EnginePar::OutputChannel {
             return self.output_channel(group, generic);
         }
@@ -490,6 +552,9 @@ impl Engine {
         let Some(par) = self.engine_par(par) else {
             return false;
         };
+        if let EnginePar::Held(name) = par {
+            return self.hold(name, value, group, slot, generic);
+        }
         if par == EnginePar::OutputChannel {
             return self.set_output_channel(value, group, generic);
         }
@@ -736,7 +801,7 @@ impl Engine {
 
     /// `set_controller`: the script moves a controller (0 to 127), the
     /// pitch bend (`$VCC_PITCH_BEND`, -8192 to 8191) or the channel pressure
-    /// (`$VCC_MONO_AT`) as if it had arrived, on every channel.
+    /// (`$VCC_MONO_AT`) as if it had arrived, on every port and channel.
     pub(crate) fn set_controller(&mut self, controller: i32, value: i32) {
         let Ok(cc) = u8::try_from(controller) else {
             return;
@@ -746,7 +811,7 @@ impl Engine {
         }
         if cc == crate::midi::VCC_PITCH_BEND {
             let bend = value.clamp(-8192, 8191) as f32 / 8192.0;
-            for channel in 0..16 {
+            for channel in (0u8..).take(kontra_behaviour::CHANNELS) {
                 self.behaviour.set_bend(channel, bend);
             }
             self.refresh_all(None);
@@ -759,12 +824,12 @@ impl Engine {
             *v = value;
         }
         if cc == crate::midi::VCC_MONO_AT {
-            for channel in 0..16 {
+            for channel in (0u8..).take(kontra_behaviour::CHANNELS) {
                 self.behaviour.set_pressure(channel, value);
             }
             self.refresh_all(None);
         } else if cc < 128 {
-            for channel in 0..16 {
+            for channel in (0u8..).take(kontra_behaviour::CHANNELS) {
                 self.behaviour.set_cc(channel, cc, value);
             }
             self.refresh_all(Some(cc));
@@ -812,5 +877,23 @@ fn in_unit(rate: ir::Rate, unit: ir::Rate) -> ir::Rate {
             beats,
             count: (seconds / (beats * 0.5)).round().max(1.0),
         },
+    }
+}
+
+/// The rack and slot a held control lives in.
+fn slot_at(group: i32, slot: i32, generic: i32) -> Option<(ir::RackAt, u8)> {
+    Some((
+        crate::knobs::rack_at(group, generic)?,
+        u8::try_from(slot).ok()?,
+    ))
+}
+
+/// A placed effect's `(group, generic)`: 0 is group `index`'s inserts, 1 bus
+/// `index`'s rack, 2 the instrument's inserts.
+fn placed(at: i32, index: i32) -> (i32, i32) {
+    match at {
+        0 => (index, -1),
+        1 => (-1, (BUS_OFFSET - 1).saturating_add(index)),
+        _ => (-1, 1),
     }
 }

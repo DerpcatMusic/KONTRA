@@ -60,7 +60,7 @@ impl Line {
 
 impl Engine {
     fn mono_group(&self, vg: usize) -> Option<ir::VoiceGroup> {
-        (self.plan.voice_groups.get(vg).copied()).filter(|g| g.legato || g.returns)
+        (self.voice_groups.get(vg).copied()).filter(|g| g.legato || g.returns)
     }
 
     /// At a zone of `note` in voice group `vg`, before it starts: whether it
@@ -98,7 +98,7 @@ impl Engine {
     /// Before `note`'s voices release: in each line it sounds, the newest
     /// older key still down comes back; a line it only waited in forgets it.
     pub(crate) fn mono_release(&mut self, note: NoteRef) {
-        for vg in 0..self.lines.len().min(self.plan.voice_groups.len()) {
+        for vg in 0..self.lines.len().min(self.voice_groups.len()) {
             let (Some(group), Some(&line)) = (self.mono_group(vg), self.lines.get(vg)) else {
                 continue;
             };

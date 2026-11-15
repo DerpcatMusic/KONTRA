@@ -28,13 +28,13 @@ pub enum Curve {
     /// interpolation, scaled back by `1 / (d·slope at 0)` so small signals
     /// pass at unity.
     Table { drive: f32, points: &'static [f32] },
-    /// Two measured odd curves, each spread evenly over inputs 0..=1 (held
-    /// beyond), `t` of the way from `lower` to `upper`, read at `d·|x|` and
-    /// scaled back by `1/d`: a gain of `d` in and out.
+    /// Two measured odd curves, `rows` the lower then the upper (half its
+    /// points each), each spread evenly over inputs 0..=1 (held beyond), `t`
+    /// of the way from lower to upper, read at `d·|x|` and scaled back by
+    /// `1/d`: a gain of `d` in and out. One slice, so a shaper stays small.
     Blend {
         drive: f32,
-        lower: &'static [f32],
-        upper: &'static [f32],
+        rows: &'static [f32],
         t: f32,
     },
 }
@@ -72,7 +72,9 @@ pub struct Shaper {
     pub sections: crate::Sections,
 }
 
-/// A sample hold, a quantizer truncating toward zero, then noise.
+/// A sample hold, a quantizer truncating toward zero, then noise; or, with
+/// a [`Converter`], a modelled converter pair instead of the raw hold and
+/// quantizer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Crush {
     /// The hold: after each captured frame it holds `1/rate` more (at most
@@ -85,6 +87,66 @@ pub struct Crush {
     pub noise: f32,
     /// The noise's one-pole smoothing per frame, 0..=1 (1 white).
     pub noise_tone: f32,
+    /// Replaces the hold and quantizer above (which are then off).
+    pub converter: Option<Converter>,
+}
+
+/// A low-quality sampler as a converter pair (the engine's
+/// `drive::Converter`), run at twice the rate up to 48 kHz: a four-pole
+/// low-pass, a jittered clock reading the input by cubic interpolation, a
+/// companding quantizer with dither, a soft saturator, band-limited steps
+/// back, a four-pole low-pass, a one-pole high-pass, then the dry mixed in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Converter {
+    pub clock_hz: f32,
+    /// Random clock change per captured sample, a share of the period.
+    pub jitter: f32,
+    /// The Butterworth low-passes before and after.
+    pub pre_hz: f32,
+    pub post_hz: f32,
+    pub highpass_hz: f32,
+    /// The quantizer step on the companded scale (2 over the levels).
+    pub step: f32,
+    /// The compander's `μ` (`ln(1 + μ·|x|)/ln(1 + μ)`), above 0.
+    pub mu: f32,
+    /// No zero level: steps sit at half steps, so silence buzzes.
+    pub midrise: bool,
+    /// Gaussian dither, in quantizer steps.
+    pub dither: f32,
+    /// Linear gains into the quantizer and out of it.
+    pub drive_in: f32,
+    pub drive_out: f32,
+    /// The saturator `y·(1 − soft·|y|)` (`y` held to ±2), then `trim`.
+    pub soft: f32,
+    pub trim: f32,
+    /// Wet and dry levels.
+    pub wet: f32,
+    pub dry: f32,
+}
+
+/// A diode ring modulator (the engine's `spatial::RingMod`): the input's
+/// analytic pair times a quadrature sine, through the diode law
+/// `√((k(c + x))² + 1) − √((k(c − x))² + 1)`, normalized to unit gain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RingMod {
+    /// The carrier, signed: below 0 a shift moves down.
+    pub hz: f32,
+    /// The left carrier's lead over the right, in cycles.
+    pub spread: f32,
+    /// A bias added to the carrier, scaled by `1 − bias/2`: 1 is amplitude
+    /// modulation, 0 ring modulation.
+    pub bias: f32,
+    /// The quadrature branch's level: 1 cancels one sideband (a frequency
+    /// shift).
+    pub quadrature: f32,
+    /// The diode law's `k`; small is a clean product.
+    pub drive: f32,
+    /// A one-pole high-pass on the input.
+    pub highpass_hz: f32,
+    /// Mutes the wet path while the input is silent.
+    pub gate: bool,
+    pub wet: f32,
+    pub dry: f32,
 }
 
 /// An overdrive pedal (the engine's `drive::Overdrive`): one-pole splits
@@ -563,6 +625,12 @@ pub struct SlotShapes {
     pub subtypes: Vec<(RackAt, u8, i32)>,
     /// Each saved slot's effect type, as a script reads it back.
     pub saved_types: Vec<(RackAt, u8, i32)>,
+    /// The saved values of controls no processor plays
+    /// ([`crate::EnginePar::Held`]): slot, [`crate::held_key`], raw value.
+    pub held: Vec<(RackAt, u8, u32, i32)>,
+    /// The held controls a script-loaded type starts with: effect type id
+    /// ([`SlotType::id`]), [`crate::held_key`], raw value.
+    pub fresh: Vec<(i32, u32, i32)>,
 }
 
 impl SlotShapes {
@@ -572,6 +640,8 @@ impl SlotShapes {
         types: Vec::new(),
         subtypes: Vec::new(),
         saved_types: Vec::new(),
+        held: Vec::new(),
+        fresh: Vec::new(),
     };
 }
 

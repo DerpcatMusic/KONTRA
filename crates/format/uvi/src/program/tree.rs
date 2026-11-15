@@ -125,6 +125,18 @@ impl<L: Library> Translator<'_, '_, L> {
             if let Some(set) = self.knobs_of.get(&node.id()) {
                 out.push_str(&format!(",knobs=K[{}]", set + 1));
             }
+            // A sampled reverb's numbers that prepare its response again
+            // (`ImpulseKnob` codes): `Time` the share of it kept (Falcon
+            // manual: "the duration of the wet signal, specified as a
+            // percentage of the impulse response's duration"), `PreDelay` ms.
+            if node.has_tag_name("SampledReverb") {
+                out.push_str(",impulse={Time=1,PreDelay=2}");
+            }
+        }
+        // A layer a script switches: `{voice group, glide scope, own note
+        // limit}` (program.rs `layer_polyphony`).
+        if let Some((vg, scope, notes)) = self.lines.get(&node.id()) {
+            out.push_str(&format!(",line={{{vg},{scope},{notes}}}"));
         }
         if let Some(id) = matrix::live_macro(self.program, node) {
             out.push_str(&format!(",mod={id}"));

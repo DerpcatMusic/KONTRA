@@ -58,6 +58,10 @@ pub mod event {
     /// Read only: the number of the zone its first voice plays (its format's
     /// numbering), -1 before a voice starts.
     pub const ZONE_ID: i32 = 1027;
+    /// Before the note starts: microseconds into the sample its voices start
+    /// at, as `play_note`'s offset (not a KSP parameter: UVI's
+    /// `setSampleOffset` after `playNote`).
+    pub const START_OFFSET: i32 = 4096;
 }
 
 macro_rules! actions {
@@ -490,4 +494,19 @@ actions! {
     // The pick with async id int 0: its file name as text once picked, 0
     // when cancelled, nothing while the player is still choosing.
     PickedFile,
+    // A library response into a placed convolution (UVI `loadImpulse`):
+    // ints `(where, index, slot)` as for `EffectBypass`, text the file. The
+    // engine finds it by name as `LoadIrSample` does.
+    LoadImpulse,
+    // A placed convolution's response prepared again: ints `(where, index,
+    // slot)` as for `EffectBypass`, the knob (1 the share of the response
+    // kept, 2 predelay in ms) and its value in millionths.
+    ImpulseKnob,
+    // A line's play law: ints (voice group, glide scope, notes at once with
+    // 0 no limit, legato, returns, glides, glides only legato, resumes);
+    // flags 0 or 1.
+    VoiceLine,
+    // A number of a glide scope: ints (scope, knob: 1 seconds, 2 per
+    // semitone, 3 curve, value in millionths).
+    GlideKnob,
 }

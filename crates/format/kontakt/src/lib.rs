@@ -3,7 +3,8 @@
 //! store; everything this cannot carry over is an [`ir::Diagnostic`].
 
 use kontra_kontakt_effects::{
-    choral, delays, dstortion, dynamics, flair, legacy_reverb, phasis, skreamer, supergt, tape,
+    bite, choral, delays, dstortion, dynamics, flair, freak, legacy_reverb, phasis, psyche,
+    skreamer, supergt, tape, vibrato,
 };
 
 mod access;
@@ -21,6 +22,7 @@ mod multi;
 pub use multi::{Slot, is_multi, scripts as multi_scripts, slots as multi};
 #[cfg(test)]
 mod fit;
+mod held;
 mod provenance;
 mod raum;
 mod readouts;
@@ -30,7 +32,7 @@ mod reverb;
 mod samples;
 mod script_knobs;
 mod snapshot;
-pub use snapshot::{Preset, preset};
+pub use snapshot::{Preset, preset, save as save_snapshot};
 mod solid_knobs;
 mod timed;
 mod translate;
@@ -39,7 +41,7 @@ mod wavetable;
 mod wowflutter;
 
 pub use container::chunks;
-pub use engine_pars::{engine_pars, lfo_units, owner};
+pub use engine_pars::{engine_pars, held, lfo_units, owner};
 /// No resource a script loads, or array file it names, is larger (bytes).
 pub use resources::LIMIT as RESOURCE_LIMIT;
 pub use resources::Resources;

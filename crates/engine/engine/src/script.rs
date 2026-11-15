@@ -230,6 +230,7 @@ impl Engine {
             event::NOTE => i32::from(n.key),
             event::VELOCITY => i32::from(n.velocity_byte),
             event::ZONE_SLOT => n.zone_slot,
+            event::START_OFFSET => i32::try_from(n.offset).unwrap_or(i32::MAX),
             event::SOURCE => match n.origin {
                 Origin::Host => -1,
                 Origin::Child(_) | Origin::Script => i32::from(n.first) - 1,
@@ -250,6 +251,7 @@ impl Engine {
             event::PAN => n.script_pan = value.clamp(-1000, 1000),
             event::NOTE if !n.started => n.key = value.clamp(0, 127) as u8,
             event::ZONE_SLOT if !n.started => n.zone_slot = value,
+            event::START_OFFSET if !n.started => n.offset = value.max(0).unsigned_abs(),
             event::VELOCITY if !n.started => {
                 n.velocity_byte = value.clamp(1, 127) as u8;
                 n.velocity = f64::from(n.velocity_byte) / 127.0;
@@ -679,9 +681,9 @@ impl HostApi for Engine {
                 HostValue::Int(i32::from(self.running.midi[1]))
             }
             // Across Kontakt's ports A to D: 0..=63.
-            Action::MidiChannel => HostValue::Int(current.map_or(0, |n| {
-                i32::from(n.host.port.min(3)) * 16 + i32::from(n.host.channel)
-            })),
+            Action::MidiChannel => {
+                HostValue::Int(current.map_or(0, |n| i32::from(n.host.port_channel())))
+            }
             Action::NoteHeld => flag(current.is_some_and(|n| !n.is_up())),
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
                 HostValue::Int(self.active_voices() as i32)
@@ -814,6 +816,9 @@ impl HostApi for Engine {
                 if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
                     self.count_par([int(0), int(2), int(3), int(4)]);
+                } else if set && matches!(par, Some(EnginePar::Held(_))) {
+                    // Answered, but no processor plays it: the effects' work list.
+                    self.count_par([int(0), int(2), int(3), int(4)]);
                 }
                 HostValue::Int(match loaded {
                     Some(answer) => answer,
@@ -823,6 +828,55 @@ impl HostApi for Engine {
                     }
                     None => -1,
                 })
+            }
+            Action::ImpulseKnob => {
+                let y = int(4) as f32 / 1e6;
+                if !self.set_placed_impulse_knob(int(0), int(1), int(2), int(3), y) {
+                    self.count_unhandled(Action::ImpulseKnob);
+                }
+                HostValue::Nothing
+            }
+            Action::VoiceLine => {
+                let law = crate::glide::LineLaw {
+                    voices: u16::try_from(int(2)).unwrap_or(0),
+                    legato: int(3) != 0,
+                    returns: int(4) != 0,
+                    glide: int(5) != 0,
+                    glide_legato: int(6) != 0,
+                    resume: int(7) != 0,
+                };
+                let at = (usize::try_from(int(0)).ok()).zip(u16::try_from(int(1)).ok());
+                if !at.is_some_and(|(vg, scope)| self.set_voice_line(vg, scope, law)) {
+                    self.count_unhandled(Action::VoiceLine);
+                }
+                HostValue::Nothing
+            }
+            Action::GlideKnob => {
+                use crate::glide::GlideKnob;
+                let knob = match int(1) {
+                    1 => Some(GlideKnob::Seconds),
+                    2 => Some(GlideKnob::PerSemitone),
+                    3 => Some(GlideKnob::Curve),
+                    _ => None,
+                };
+                let value = int(2) as f32 / 1e6;
+                let done = (u16::try_from(int(0)).ok())
+                    .zip(knob)
+                    .is_some_and(|(scope, knob)| self.set_glide_knob(scope, knob, value));
+                if !done {
+                    self.count_unhandled(Action::GlideKnob);
+                }
+                HostValue::Nothing
+            }
+            Action::LoadImpulse => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                match self.load_placed_impulse(name, int(0), int(1), int(2)) {
+                    Some(answer) => HostValue::Int(answer),
+                    None => {
+                        self.count_unhandled(Action::LoadImpulse);
+                        HostValue::Nothing
+                    }
+                }
             }
             Action::LoadIrSample => {
                 let name = call.texts.first().map_or("", Text::as_str);
@@ -838,7 +892,7 @@ impl HostApi for Engine {
             Action::SetPolyAt => {
                 let channel = running
                     .and_then(|r| self.notes.get(r))
-                    .map_or(0, |n| n.host.channel);
+                    .map_or(0, |n| n.host.port_channel());
                 let at = |i| u8::try_from(int(i).clamp(0, 127)).unwrap_or(0);
                 let (key, value) = (at(0), at(1));
                 // A third argument delays it, in microseconds (UVI's `delta`).

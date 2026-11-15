@@ -16,36 +16,45 @@ pub fn preset_file_name(name: &str) -> Option<String> {
     (!kept.is_empty()).then(|| kept.to_owned())
 }
 
+/// The instrument `preset` belongs to, lower case: an instrument its own
+/// name, a snapshot the instrument its folder names. Below `root` (the
+/// library's folder; paths may also be relative to it) that is the folder
+/// after a leading `Snapshots`, however deep its category folders go
+/// (Conflux's `Snapshots/Conflux/Keys/`), else its own folder (Kontakt's
+/// user `<instrument>/`), any case. A `Snapshots` folder above the library
+/// root names nothing.
+#[must_use]
+pub fn preset_owner(root: &std::path::Path, preset: &std::path::Path) -> Option<String> {
+    let snapshot = preset
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
+    let named = if snapshot {
+        let inside = preset.strip_prefix(root).unwrap_or(preset);
+        let mut folders = inside.parent()?.iter();
+        let library = folders
+            .next()
+            .is_some_and(|f| f.eq_ignore_ascii_case("snapshots"));
+        match folders.next() {
+            Some(instrument) if library => instrument,
+            _ => preset.parent()?.file_name()?,
+        }
+    } else {
+        preset.file_stem()?
+    };
+    Some(named.to_str()?.to_lowercase())
+}
+
 /// The presets Kontakt's instrument header lists while `current` plays:
-/// the instrument and its snapshots, by index into `presets`. A snapshot
-/// belongs to the instrument its folder names: the one after `Snapshots`,
-/// however deep its category folders go (Conflux's
-/// `Snapshots/Conflux/Keys/`), else its own folder (Kontakt's user
-/// `<instrument>/`), any case. An instrument without
-/// snapshots, or nothing playing, lists them all.
+/// the instrument and its snapshots ([`preset_owner`]), by index into
+/// `presets`. An instrument without snapshots, or nothing playing, lists
+/// them all.
 #[must_use]
 pub fn preset_family<P: AsRef<std::path::Path>>(
+    root: &std::path::Path,
     presets: &[P],
     current: Option<usize>,
 ) -> Vec<usize> {
-    fn key(p: &std::path::Path) -> Option<String> {
-        let snapshot = p
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
-        let named = if snapshot {
-            let mut folders = p.parent()?.iter();
-            let library = folders
-                .by_ref()
-                .any(|f| f.eq_ignore_ascii_case("snapshots"));
-            match folders.next() {
-                Some(instrument) if library => instrument,
-                _ => p.parent()?.file_name()?,
-            }
-        } else {
-            p.file_stem()?
-        };
-        Some(named.to_str()?.to_lowercase())
-    }
+    let key = |p: &std::path::Path| preset_owner(root, p);
     let all = || (0..presets.len()).collect();
     let Some(mine) = current
         .and_then(|c| presets.get(c))
@@ -75,11 +84,27 @@ mod family_tests {
             "Instruments/Lone.nki",
             "Snapshots/Felt/Keys/Deep.nksn",
         ];
-        assert_eq!(preset_family(&presets, Some(0)), [0, 2, 4, 6]);
+        let root = std::path::Path::new("");
+        assert_eq!(preset_family(root, &presets, Some(0)), [0, 2, 4, 6]);
         // From a snapshot too.
-        assert_eq!(preset_family(&presets, Some(3)), [1, 3]);
+        assert_eq!(preset_family(root, &presets, Some(3)), [1, 3]);
         // No snapshots, or nothing playing: the whole library.
-        assert_eq!(preset_family(&presets, Some(5)).len(), 7);
-        assert_eq!(preset_family(&presets, None).len(), 7);
+        assert_eq!(preset_family(root, &presets, Some(5)).len(), 7);
+        assert_eq!(preset_family(root, &presets, None).len(), 7);
+    }
+
+    #[test]
+    fn a_snapshots_folder_above_the_library_names_nothing() {
+        // The library lives under a `Snapshots` folder of the player's:
+        // only its own `Snapshots/Felt/` names the instrument.
+        let root = std::path::Path::new("/Snapshots/Lib");
+        let presets = [
+            "/Snapshots/Lib/Instruments/Felt.nki",
+            "/Snapshots/Lib/Instruments/Lib.nki",
+            "/Snapshots/Lib/Snapshots/Felt/Soft.nksn",
+            "/Snapshots/Lib/Extra/Felt/Loud.nksn",
+        ];
+        assert_eq!(preset_family(root, &presets, Some(0)), [0, 2, 3]);
+        assert_eq!(preset_family(root, &presets, Some(1)).len(), 4);
     }
 }

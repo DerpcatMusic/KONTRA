@@ -197,6 +197,44 @@ fn the_pedal_holds_released_notes_until_it_lifts() {
 }
 
 #[test]
+fn a_pedal_holds_only_the_notes_of_its_own_port_and_channel() {
+    // Kontakt 8, Omni instrument (oracle, 2026-11-14): a pedal on B1, or
+    // on A2, holds no A1 note.
+    let pedal = |port: u32, channel: u8| {
+        let Event::Ump([word, rest]) = Event::midi1(0xB0 | channel, 64, 127) else {
+            panic!("a MIDI 1.0 packet");
+        };
+        Timed {
+            at: SampleTime(0),
+            body: Event::Ump([word | port << 24, rest]),
+        }
+    };
+    for (port, channel, held) in [(0, 0, 1), (1, 0, 0), (0, 1, 0)] {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut z = zone(region(&mut store, "loop", 1000).unwrap(), 0.0);
+        z.region.loops = vec![kontra_voice::Loop {
+            start: 0,
+            end: 1000,
+            crossfade: 0,
+            ..Default::default()
+        }]
+        .into();
+        let mut engine = Engine::new(plan(vec![z], 8), store.client(), RATE);
+        render(
+            &mut engine,
+            &[pedal(port, channel), on(1, 60), off(100, 60)],
+            4096,
+            128,
+        );
+        assert_eq!(
+            engine.active_voices(),
+            held,
+            "pedal on port {port} channel {channel}"
+        );
+    }
+}
+
+#[test]
 fn a_script_owned_pedal_does_not_hold_released_notes() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = zone(region(&mut store, "loop", 1000).unwrap(), 0.0);
@@ -395,6 +433,7 @@ fn idle_costs_a_fraction_of_a_voice_and_voices_add_up_linearly() {
     let diagonal = |g| [[g, 0.0], [0.0, g]];
     let chorus = kontra_engine::ir::Effect {
         kind: kontra_engine::ir::EffectKind::Delay(kontra_engine::ir::Delay {
+            direct: 0.0,
             time: kontra_engine::ir::DelayTime::Ms(15.0),
             depth_ms: 5.0,
             second_head: true,

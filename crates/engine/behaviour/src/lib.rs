@@ -53,19 +53,30 @@ impl RrDraw {
     }
 }
 
+/// Held module controls an instrument's scripts may set beyond the saved
+/// ones (Conflux sets ~120 across its eight FX slots), reserved on top of
+/// the saved seeds.
+const HELD: usize = 512;
+
+/// Channels controller state is kept by: Kontakt's 16 on each of ports A
+/// to D (`HostNote::port_channel`). An Omni instrument keeps them apart:
+/// a sustain pedal on B1, or on A2, holds no A1 note (oracle, Kontakt 8,
+/// 2026-11-14).
+pub const CHANNELS: usize = 64;
+
 pub struct Behaviour {
     /// The last key pressed inside a switch range.
     pub keyswitch: Option<u8>,
     /// One latch per [`Plan::switches`] range.
     switches: Vec<bool>,
-    cc: [[u8; 128]; 16],
+    cc: [[u8; 128]; CHANNELS],
     /// Per channel, the controllers a message has set (bit `cc`).
-    cc_set: [u128; 16],
+    cc_set: [u128; CHANNELS],
     /// Pitch bend per channel, −1..=1.
-    bend: [f32; 16],
+    bend: [f32; CHANNELS],
     /// Channel pressure per channel, 0..=127: an MPE member channel's is
     /// its one note's.
-    pressure: [u8; 16],
+    pressure: [u8; CHANNELS],
     /// The channel the latest note, controller or bend came on: what routes
     /// no note owns read (the engine plays every channel).
     pub channel: u8,
@@ -86,6 +97,11 @@ pub struct Behaviour {
     /// Each slot with a [`kontra_ir::KnobModel`] and its knobs' positions
     /// as last set: the saved slots', then those of types a script loaded.
     pub knobs: Vec<(kontra_ir::RackAt, u8, Positions)>,
+    /// The values of controls of modules KONTRA has no processor for
+    /// ([`kontra_ir::EnginePar::Held`]): slot, [`kontra_ir::held_key`], raw
+    /// value; the saved ones, then as scripts set them. Fixed capacity: a
+    /// set beyond it is dropped.
+    pub held: Vec<(kontra_ir::RackAt, u8, u32, i32)>,
 }
 
 /// A [`kontra_ir::KnobModel`]'s live positions.
@@ -109,14 +125,14 @@ impl Behaviour {
         // Every controller reads 0 until a message sets it, as in a fresh
         // Kontakt 8 (measured: %CC 1, 2, 7, 10, 11, 21, 64, 100 all 0); a
         // source that starts elsewhere says so (`Source::ControllerFrom`).
-        let cc = [[0u8; 128]; 16];
+        let cc = [[0u8; 128]; CHANNELS];
         let mut behaviour = Self {
             keyswitch: None,
             switches: vec![false; plan.switches.len()],
             cc,
-            cc_set: [0; 16],
-            bend: [0.0; 16],
-            pressure: [0; 16],
+            cc_set: [0; CHANNELS],
+            bend: [0.0; CHANNELS],
+            pressure: [0; CHANNELS],
             channel: 0,
             global: Counter::default(),
             keys: [Counter::default(); 128],
@@ -126,7 +142,9 @@ impl Behaviour {
             shapes: vec![None; plan.slot_shapes.slots.len()],
             loaded: Vec::with_capacity(LOADED.max(plan.loaded.len())),
             knobs: Vec::with_capacity(LOADED + plan.slot_models.len() + plan.loaded.len()),
+            held: Vec::with_capacity(HELD + plan.slot_shapes.held.len()),
         };
+        behaviour.held.extend_from_slice(&plan.slot_shapes.held);
         // Every modelled slot starts at its model's saved positions: the
         // type a recalled project loaded there, else the slot's own.
         let slots = (plan.slot_models.iter().map(|m| (m.0, m.1)))
@@ -193,7 +211,7 @@ impl Behaviour {
 
     pub fn cc(&self, channel: u8, controller: u8) -> u8 {
         self.cc
-            .get(usize::from(channel & 15))
+            .get(usize::from(channel & 63))
             .and_then(|c| c.get(usize::from(controller & 127)))
             .copied()
             .unwrap_or(0)
@@ -202,13 +220,13 @@ impl Behaviour {
     /// Whether a message has set `controller` on `channel`.
     pub fn cc_arrived(&self, channel: u8, controller: u8) -> bool {
         self.cc_set
-            .get(usize::from(channel & 15))
+            .get(usize::from(channel & 63))
             .is_some_and(|bits| bits >> (controller & 127) & 1 == 1)
     }
 
     pub fn bend(&self, channel: u8) -> f32 {
         self.bend
-            .get(usize::from(channel & 15))
+            .get(usize::from(channel & 63))
             .copied()
             .unwrap_or(0.0)
     }
@@ -216,18 +234,18 @@ impl Behaviour {
     /// Channel pressure on `channel`, 0..=1.
     #[must_use]
     pub fn pressure(&self, channel: u8) -> f32 {
-        let v = self.pressure.get(usize::from(channel & 15)).copied();
+        let v = self.pressure.get(usize::from(channel & 63)).copied();
         f32::from(v.unwrap_or(0)) / 127.0
     }
 
     pub fn set_pressure(&mut self, channel: u8, value: u8) {
-        if let Some(v) = self.pressure.get_mut(usize::from(channel & 15)) {
+        if let Some(v) = self.pressure.get_mut(usize::from(channel & 63)) {
             *v = value;
         }
     }
 
     pub fn set_bend(&mut self, channel: u8, value: f32) {
-        if let Some(v) = self.bend.get_mut(usize::from(channel & 15)) {
+        if let Some(v) = self.bend.get_mut(usize::from(channel & 63)) {
             *v = value;
         }
     }
@@ -235,12 +253,12 @@ impl Behaviour {
     pub fn set_cc(&mut self, channel: u8, controller: u8, value: u8) {
         if let Some(v) = self
             .cc
-            .get_mut(usize::from(channel & 15))
+            .get_mut(usize::from(channel & 63))
             .and_then(|c| c.get_mut(usize::from(controller & 127)))
         {
             *v = value;
         }
-        if let Some(bits) = self.cc_set.get_mut(usize::from(channel & 15)) {
+        if let Some(bits) = self.cc_set.get_mut(usize::from(channel & 63)) {
             *bits |= 1 << (controller & 127);
         }
     }

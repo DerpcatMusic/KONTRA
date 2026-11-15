@@ -289,6 +289,7 @@ impl Compiled {
         // `__host`'s key exists from the start ([`set_host`]).
         if let Some(g) = &entries.globals {
             let _ = g.raw_set("__host", false);
+            let _ = g.raw_set("__editing", false);
         }
         let lend = bridge::Lend::default();
         let host = {
@@ -498,7 +499,7 @@ enum First {
     #[default]
     Nothing,
     Control(i32, f64),
-    ControlMod(i32, f64, f64, f64),
+    ControlMod(i32, f64, f64),
 }
 
 /// The functions a start resets a resident coroutine to, looked up once.
@@ -732,14 +733,16 @@ impl Machine for LuaMachine {
         let mut lent = bridge::Lent { host, context };
         let resumed = self.lend.lend(&mut lent, || {
             set_host(&lua, globals, call)?;
+            // Whether this coroutine is the editor's: a control or widget
+            // move, or a task one spawned (the prelude's loadState reads it).
+            set_global(&lua, globals, "__editing", ui)?;
             let result = match first {
                 First::Nothing => thread.resume::<Value>(()),
                 First::Control(id, value) => thread.resume::<Value>((id, value)),
-                First::ControlMod(id, saved, scale, m) => {
-                    thread.resume::<Value>((id, saved, scale, m))
-                }
+                First::ControlMod(id, scale, m) => thread.resume::<Value>((id, scale, m)),
             };
             set_host(&lua, globals, false)?;
+            set_global(&lua, globals, "__editing", false)?;
             result
         });
         if ui {
@@ -823,19 +826,12 @@ impl Machine for LuaMachine {
         self.begin(set, First::Control(id, value), context, true)
     }
 
-    fn control_mod(
-        &mut self,
-        id: i32,
-        saved: f64,
-        scale: f64,
-        m: f64,
-        context: u64,
-    ) -> Option<CoId> {
+    fn control_mod(&mut self, id: i32, scale: f64, m: f64, context: u64) -> Option<CoId> {
         let _run = probe::Run::start();
         let _arena = self.arena.audio();
         self.lua.as_ref()?;
         let set = self.entries.control_mod.clone();
-        self.begin(set, First::ControlMod(id, saved, scale, m), context, true)
+        self.begin(set, First::ControlMod(id, scale, m), context, true)
     }
 
     fn stage_widget(&mut self, n: u32, value: f64, cell: Option<u32>) {
@@ -863,6 +859,11 @@ impl Machine for LuaMachine {
     fn widget_text(&self, n: u32, out: &mut Text) -> bool {
         let _arena = self.arena.audio();
         self.reads.as_ref().is_some_and(|r| r.text(n, out))
+    }
+
+    fn widget_image(&self, n: u32, out: &mut Text) -> bool {
+        let _arena = self.arena.audio();
+        self.reads.as_ref().is_some_and(|r| r.image(n, out))
     }
 
     fn widget_item(&self, n: u32, i: u32, out: &mut Text) -> bool {
@@ -900,8 +901,18 @@ impl Machine for LuaMachine {
 /// (`starting_a_callback_makes_no_luau_object`). The prelude reads `false`
 /// as nil (`if not __host`).
 fn set_host(lua: &Lua, globals: &Table, value: impl mlua::IntoLua) -> mlua::Result<()> {
+    set_global(lua, globals, "__host", value)
+}
+
+/// Sets global `name`, whose key exists from the start, as [`set_host`].
+fn set_global(
+    lua: &Lua,
+    globals: &Table,
+    name: &str,
+    value: impl mlua::IntoLua,
+) -> mlua::Result<()> {
     let limit = lua.set_memory_limit(0)?;
-    let set = globals.raw_set("__host", value);
+    let set = globals.raw_set(name, value);
     lua.set_memory_limit(limit)?;
     set
 }
@@ -1034,7 +1045,7 @@ mod tests {
         while let Step::Wait(_) = m.run(init, &mut Log(Vec::new())) {}
         let note = bytes_per_event(&mut m, |m| m.start(Callbacks::NOTE, 0));
         let control = bytes_per_event(&mut m, |m| m.control(0, 42.0, 0));
-        let moved = bytes_per_event(&mut m, |m| m.control_mod(0, 50.0, 0.5, 0.25, 0));
+        let moved = bytes_per_event(&mut m, |m| m.control_mod(0, 0.5, 0.25, 0));
         assert_eq!(
             (control, moved),
             (0.0, 0.0),
@@ -1084,16 +1095,17 @@ mod tests {
         let tree = "return {params={},db=0,pan=0,layers={},modulations={
             {params={Name='Macro 7',Value='0',Bipolar='0'},mod=32768}}}";
         let source = "local m = Program.modulations['Macro 7']
-            local k = Knob('drive', 0, -20, 20)
+            local k = Knob('drive', -10, -20, 20)
             k.changed = function(s) m:setParameter('Value', s.value) end";
         let modules = [("__program.lua".to_string(), tree.to_string())];
         let compiled = compile(source, &modules, &[]).unwrap();
         let mut m = compiled.machine();
-        // Saved -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
-        // (10), and a ratio of -1 from there holds at the bottom (-20).
+        // Its own -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
+        // (10), and a ratio of -1 from the same -10 holds at the bottom
+        // (-20): the route moves from the knob's value, not its own last.
         let mut log = Log(Vec::new());
-        for (saved, scale, at) in [(-10.0, 0.0, 0.5), (-10.0, 0.0, -1.0)] {
-            let co = m.control_mod(1, saved, scale, at, 0).expect("route");
+        for at in [0.5, -1.0] {
+            let co = m.control_mod(1, 0.0, at, 0).expect("route");
             assert_eq!(m.run(co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0);
@@ -1223,6 +1235,89 @@ mod tests {
         assert_eq!(m.faults().bad_code, 0);
     }
 
+    /// A preset picked in the editor (VWinds' preset arrows) lands all its
+    /// values in one resume of its task, after the move: paced, a control
+    /// moved within the next 1.5 s was overwritten by the landing preset.
+    #[test]
+    fn a_preset_picked_by_a_control_lands_at_once() {
+        let source = r#"
+            local a = Knob('a', 0, 0, 100)
+            local b = Knob('b', 0, 0, 100)
+            a.changed = function() end
+            b.changed = function() end
+            local pick = Menu{'pick', {'-', 'Studio 1'}}
+            pick.changed = function() loadState('../Script/presets/Studio 1.VHFPreset') end
+            function onNote() assert(a.value == 66 and b.value == 7) end"#;
+        let modules = [
+            ("__dir.lua".to_string(), "return \"Script\"".to_string()),
+            (
+                "__file/script/presets/studio 1.vhfpreset".to_string(),
+                r#"return {values={["a"]="66",["b"]="7"}}"#.to_string(),
+            ),
+        ];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let init = m.start(Callbacks::INIT, 0).expect("init");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(init, &mut log), Step::Done);
+        let pick = m.control(2, 2.0, 0).expect("pick");
+        assert_eq!(m.run(pick, &mut log), Step::Done);
+        let (task, _) = m.spawned().expect("the preset lands in a task");
+        // The editor's slice may run out mid-preset (a valid yield, resumed in
+        // the next block); a wait between its controls is the bug.
+        let mut step = m.run(task, &mut log);
+        while step == Step::Yield {
+            m.begin_block();
+            step = m.run(task, &mut log);
+        }
+        assert_eq!(step, Step::Done, "no wait between its controls");
+        let note = m.start(Callbacks::NOTE, 0).expect("note");
+        assert_eq!(m.run(note, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults().last_error);
+    }
+
+    /// Editor status belongs to the coroutine: a control move waiting
+    /// mid-callback does not make a preset a note loads land unpaced.
+    #[test]
+    fn a_preset_a_note_loads_is_paced_while_a_control_waits() {
+        let source = r#"
+            local a = Knob('a', 0, 0, 100)
+            local b = Knob('b', 0, 0, 100)
+            a.changed = function() end
+            b.changed = function() end
+            local slow = Knob('slow', 0, 0, 1)
+            slow.changed = function() wait(1000) end
+            function onNote() loadState('../Script/presets/Studio 1.VHFPreset') end"#;
+        let modules = [
+            ("__dir.lua".to_string(), "return \"Script\"".to_string()),
+            (
+                "__file/script/presets/studio 1.vhfpreset".to_string(),
+                r#"return {values={["a"]="66",["b"]="7"}}"#.to_string(),
+            ),
+        ];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let init = m.start(Callbacks::INIT, 0).expect("init");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(init, &mut log), Step::Done);
+        // A run past its block's budget yields; it goes on in the next block.
+        let mut settle = |m: &mut Box<dyn Machine>, co| {
+            let mut step = m.run(co, &mut log);
+            while step == Step::Yield {
+                m.begin_block();
+                step = m.run(co, &mut log);
+            }
+            step
+        };
+        let slow = m.control(2, 1.0, 0).expect("slow");
+        assert!(matches!(settle(&mut m, slow), Step::Wait(_)));
+        let note = m.start(Callbacks::NOTE, 0).expect("note");
+        assert_eq!(settle(&mut m, note), Step::Done);
+        let (task, _) = m.spawned().expect("the preset lands in a task");
+        assert!(
+            matches!(settle(&mut m, task), Step::Wait(_)),
+            "a note's preset waits between its controls"
+        );
+    }
+
     /// VWinds' Save/Load menu once the player picked a name: `saveState`
     /// keeps the preset for `loadState` and hands it out once for the host
     /// to write (`take_file`).
@@ -1319,6 +1414,28 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_changed_runs_again_when_the_same_value_is_set_again() {
+        // A preset's value whose `changed` failed stays retryable: the
+        // same preset loaded again runs it.
+        let source = "n = 0
+            local k = Knob('k', 0, 0, 1)
+            k.changed = function(s) n = n + 1; if n == 1 then error('first') end end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function()
+                assert(not pcall(k.setValue, k, 0.5))
+                k:setValue(0.5)
+                assert(n == 2 and k.value == 0.5, n)
+                k:setValue(0.5)
+                assert(n == 2, n)
+            end";
+        let compiled = compile(source, &[], &[]).unwrap();
+        let mut m = compiled.machine();
+        let co = m.control(1, 0.5, 0).expect("control");
+        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+    }
+
+    #[test]
     fn a_note_callback_reaches_the_host() {
         let compiled =
             compile("function onNote(e) playNote(e.note + 7, 100) end", &[], &[]).unwrap();
@@ -1330,7 +1447,11 @@ mod tests {
         assert_eq!(m.faults().bad_code, 0);
         let actions: Vec<Action> = log.0.iter().map(|c| c.0).collect();
         assert!(actions.contains(&Action::IgnoreEvent), "{actions:?}");
-        assert_eq!(log.0.last().map(|c| c.1.clone()), Some(vec![14, 100, 0, 0]));
+        // No duration is UVI's -1: the note ends with the one that started the callback.
+        assert_eq!(
+            log.0.last().map(|c| c.1.clone()),
+            Some(vec![14, 100, 0, -1])
+        );
     }
 
     #[test]
@@ -1553,6 +1674,43 @@ mod tests {
         );
     }
 
+    /// UVI's `setSampleOffset(id, ms)` moves where the new note's voices
+    /// start, in microseconds, before they start.
+    #[test]
+    fn set_sample_offset_sets_the_notes_start_in_microseconds() {
+        let source =
+            "function onNote(e) local id = playNote(e.note, 90, 0) setSampleOffset(id, 123.5) end";
+        let log = run(source, Callbacks::NOTE);
+        assert!(
+            log.0
+                .iter()
+                .any(|(a, ints)| *a == Action::SetEventPar && ints[..] == [7, 4096, 123_500])
+        );
+    }
+
+    /// `fade2(new note, 0, 1, ms)`, VWinds' legato crossfade, fades the note
+    /// in over `ms`; the fifth argument is a layer, not a kill.
+    #[test]
+    fn fade2_fades_a_new_note_in_over_its_time() {
+        let source = "function onNote(e)
+            local id = playNote(e.note, 90, 0)
+            fade2(id, 0, 1, 250, 1)
+            fade2(id, 0, 0, 0)
+        end";
+        let log = run(source, Callbacks::NOTE);
+        let fades: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| matches!(a, Action::FadeIn | Action::FadeOut))
+            .cloned()
+            .collect();
+        assert_eq!(
+            fades,
+            [
+                (Action::FadeIn, vec![7, 250_000]),
+                (Action::FadeOut, vec![7, 0, 0])
+            ]
+        );
+    }
+
     #[test]
     fn the_load_pass_runs_onload_with_the_saved_state_and_records_its_samples() {
         let tree = "return {params={},db=0,pan=0,layers={{params={},keygroups={
@@ -1590,6 +1748,66 @@ mod tests {
             assert(#list == 0 and list[1]:getParameter('Ratio') == 0)
             assert(sustain:getParameterConnections('Gain') == list)";
         run(source, Callbacks::INIT);
+    }
+
+    #[test]
+    fn load_impulse_asks_the_host_for_the_inserts_convolution() {
+        // VWinds' seats: `loadImpulse(virtSpaceInsert1.inserts[1], path, cb)`.
+        let source = "local ok
+            loadImpulse(Program.auxs[1].inserts[1], '../Samples/IRs/Seat_14.flac',
+                function(task) ok = task.success end)
+            assert(ok == true)";
+        let log = run(source, Callbacks::INIT);
+        let call = log.0.iter().find(|(a, _)| *a == Action::LoadImpulse);
+        assert_eq!(call.map(|(_, ints)| ints.clone()), Some(vec![1, 3, 0]));
+    }
+
+    #[test]
+    fn a_layers_play_mode_and_glide_reach_its_line() {
+        // Augmented Orchestra's play mode menu and glide slider:
+        // `Program.layers[i]:setParameter("PlayMode", v - 1)`, `"PortamentoTime"`.
+        let tree = "return {params={},db=0,pan=0,auxs={},
+            layers={{params={PlayMode='0'},line={2,1,4}}}}";
+        let source = "Program.layers[1]:setParameter('PlayMode', 3)
+            Program.layers[1]:setParameter('PortamentoTime', 0.25)
+            Program.layers[1]:setParameter('PlayMode', 0)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let sent: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| matches!(a, Action::VoiceLine | Action::GlideKnob))
+            .map(|(_, i)| i.clone())
+            .collect();
+        // Mono Portamento: one note, legato, returns, slides while held,
+        // from where the last slide got; then Poly: its own limit, no slide.
+        assert_eq!(
+            sent,
+            [
+                vec![2, 1, 1, 1, 1, 1, 1, 1],
+                vec![1, 1, 250_000],
+                vec![2, 1, 4, 0, 0, 0, 0, 1],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sampled_reverbs_time_prepares_its_response_again() {
+        // VWinds' room size: `virtSpaceInsert1.inserts[1]:setParameter("Time", v)`.
+        let tree = "return {params={},db=0,pan=0,layers={},auxs={{params={},bus=2,
+            inserts={{params={Name='Room',Time='1'},fx={1,2,0},impulse={Time=1,PreDelay=2}}}}}}";
+        let source = "Program.auxs[1].inserts[1]:setParameter('Time', 0.4)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let call = log.0.iter().find(|(a, _)| *a == Action::ImpulseKnob);
+        assert_eq!(
+            call.map(|(_, i)| i.clone()),
+            Some(vec![1, 2, 0, 1, 400_000])
+        );
     }
 
     #[test]
@@ -1691,6 +1909,56 @@ mod tests {
             (more(sent), group, bus),
             ([2, 2, 1], Some(-200_000), Some(-200_000))
         );
+    }
+
+    #[test]
+    fn a_routed_knob_keeps_its_restored_value_until_a_route_moves_it() {
+        // Augmented Orchestra saves `MIDICurve_1=-0.99999899` where its
+        // program's processor says -1: the route moves from the restored
+        // value, and back to it exactly.
+        let source = "local k = Knob('MIDICurve_1', 0, -1, 1)
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function(s)
+                if s.value == 1 then assert(k.value == -0.99999899, k.value)
+                else assert(math.abs(k.value - 0.00000101) < 1e-12, k.value) end
+            end";
+        let saved = ["MIDICurve_1=-0.99999899".to_string()];
+        let mut m = compile(source, &[], &saved).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        // At rest, up by half the range, at rest again.
+        for (at, check) in [(0.0, 1.0), (0.5, 0.0), (0.0, 1.0)] {
+            let co = m.control_mod(0, 0.0, at, 0).expect("route");
+            assert_eq!(m.run(co, &mut log), Step::Done);
+            let co = m.control(1, check, 0).expect("check");
+            assert_eq!(m.run(co, &mut log), Step::Done);
+        }
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
+    }
+
+    #[test]
+    fn a_script_write_of_the_routed_value_is_the_next_routes_base() {
+        // Routed from 0.25 to 0.5, then the script sets 0.5 itself: a route
+        // at rest leaves its 0.5, not the old base.
+        let source = "local k = Knob('k', 0.25, 0, 1)
+            local s = Knob('set', 0, 0, 1)
+            s.changed = function() k:setValue(0.5) end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function() assert(k.value == 0.5, k.value) end";
+        let mut m = compile(source, &[], &[]).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control_mod(0, 0.0, 0.25, 0).expect("route");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control(1, 1.0, 0).expect("set");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control_mod(0, 0.0, 0.0, 0).expect("rest");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control(2, 1.0, 0).expect("check");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
     }
 
     #[test]

@@ -228,7 +228,7 @@ pub(crate) fn instrument(
     for why in resources.iter().flat_map(|r| &r.unreadable) {
         notes.add(ir::Impact::Broken, "resource archive", why);
     }
-    let groups = program
+    let mut groups = program
         .0
         .find_first(GROUP_LIST)
         .ok_or_else(|| Error::new(path, "group list", "missing"))
@@ -248,17 +248,18 @@ pub(crate) fn instrument(
         crate::snapshot::unmatched(native.groups.len(), groups.groups.len(), &mut notes);
         group_fx = native.groups;
     }
-    for (index, group) in groups.groups.iter().enumerate() {
+    for (index, group) in groups.groups.iter_mut().enumerate() {
+        let mut saved = group_fx.get_mut(index).and_then(Option::take);
+        // A snapshot's params, source and modulators stand in for the group's own.
+        if let Some(s) = &mut saved {
+            s.apply(group)
+                .map_err(|e| Error::new(path, "snapshot group", format!("{index}: {e}")))?;
+        }
+        let group = &*group;
         let t = translate_group(group, index, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
-        let saved = group_fx.get_mut(index).and_then(Option::take);
-        let fx = saved.map(|s| {
-            g.volume_db = db(s.volume);
-            g.pan = s.pan.clamp(-1.0, 1.0);
-            g.tune = f64::from(s.tune) * 12.0 + base.tune;
-            s.fx
-        });
+        let fx = saved.map(|s| s.fx);
         g.inserts = crate::effects::group(group, fx, index, &mut impulses, &mut notes, &mut slots);
         crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
         // ponytail: a filter a modulator moves passes unfiltered until filters
@@ -283,63 +284,10 @@ pub(crate) fn instrument(
     slots.subtypes.extend(racks.laws.subtypes);
     slots.types.extend(racks.laws.types);
     slots.models.extend(racks.laws.models);
-    out.slot_laws = slots.laws;
-    out.slot_models = slots.models;
-    if !slots.shape_slots.is_empty() {
-        out.slot_shapes.shapes = crate::laws::filter_shapes();
-        kontra_law::record(|| kontra_law::Application {
-            id: kontra_law::LawId("kontakt.filter_shapes.v1"),
-            location: "slot_shapes/shapes".into(),
-            input: "()".into(),
-            output: format!("{:?}", out.slot_shapes.shapes),
-        });
-        out.slot_shapes.slots = slots.shape_slots;
-    }
-    let loads = |s: &ir::Script| {
-        s.source.contains("$ENGINE_PAR_EFFECT_") || s.source.contains("$ENGINE_PAR_SEND_EFFECT_")
-    };
-    if out.scripts.iter().any(loads) {
-        // Every Kontakt rack has 8 slots, and a script may load into an
-        // empty one the file does not save.
-        let racks = [&mut out.inserts, &mut out.sends, &mut out.main].into_iter();
-        let groups = out.groups.iter_mut().map(|g| &mut g.inserts);
-        for rack in racks
-            .chain(groups)
-            .chain(buses.iter_mut().map(|b| &mut b.inserts))
-        {
-            if rack.len() < SLOTS {
-                rack.resize(SLOTS, None);
-            }
-        }
-        // A filter a script loads into an empty slot switches shapes as a
-        // saved one does (group slots load in `on init` only).
-        let empty = |at, rack: &[Option<ir::Effect>]| {
-            let slots = (0u8..).zip(rack.iter());
-            slots
-                .filter(|(_, s)| s.is_none())
-                .map(move |(n, _)| (at, n))
-                .collect::<Vec<_>>()
-        };
-        let mut open = empty(ir::RackAt::Inserts, &out.inserts);
-        open.extend(empty(ir::RackAt::Sends, &out.sends));
-        open.extend(empty(ir::RackAt::Main, &out.main));
-        for (b, bus) in (0u8..).zip(&buses) {
-            open.extend(empty(ir::RackAt::Bus(b), &bus.inserts));
-        }
-        if !open.is_empty() && out.slot_shapes.shapes.is_empty() {
-            out.slot_shapes.shapes = crate::laws::filter_shapes();
-            kontra_law::record(|| kontra_law::Application {
-                id: kontra_law::LawId("kontakt.filter_shapes.v1"),
-                location: "slot_shapes/shapes".into(),
-                input: "()".into(),
-                output: format!("{:?}", out.slot_shapes.shapes),
-            });
-        }
-        out.slot_shapes.slots.extend(open);
-        out.slot_shapes.types = crate::script_knobs::slot_types();
-        out.slot_shapes.subtypes = std::mem::take(&mut slots.subtypes);
-        out.slot_shapes.saved_types = std::mem::take(&mut slots.types);
-    }
+    slots.held.extend(racks.laws.held);
+    out.slot_laws = std::mem::take(&mut slots.laws);
+    out.slot_models = std::mem::take(&mut slots.models);
+    slot_shapes(&mut out, slots, &mut buses);
     // A script may load any response of the library's `ir_samples` by name.
     if out
         .scripts
@@ -468,6 +416,69 @@ pub(crate) fn instrument(
     out.samples.extend(responses);
     out.diagnostics = notes.finish();
     Ok(out)
+}
+
+/// The slots a script may read, load into or switch shapes on.
+fn slot_shapes(out: &mut ir::Instrument, slots: crate::effects::Slots, buses: &mut [ir::Bus]) {
+    if !slots.shape_slots.is_empty() {
+        out.slot_shapes.shapes = crate::laws::filter_shapes();
+        kontra_law::record(|| kontra_law::Application {
+            id: kontra_law::LawId("kontakt.filter_shapes.v1"),
+            location: "slot_shapes/shapes".into(),
+            input: "()".into(),
+            output: format!("{:?}", out.slot_shapes.shapes),
+        });
+        out.slot_shapes.slots = slots.shape_slots;
+    }
+    // What a script reads of a saved slot, whether or not it loads types:
+    // Conflux reads $ENGINE_PAR_BITE_BITS with no `$ENGINE_PAR_EFFECT_`.
+    out.slot_shapes.saved_types = slots.types;
+    out.slot_shapes.held = slots.held;
+    let loads = |s: &ir::Script| {
+        s.source.contains("$ENGINE_PAR_EFFECT_") || s.source.contains("$ENGINE_PAR_SEND_EFFECT_")
+    };
+    if out.scripts.iter().any(loads) {
+        // Every Kontakt rack has 8 slots, and a script may load into an
+        // empty one the file does not save.
+        let racks = [&mut out.inserts, &mut out.sends, &mut out.main].into_iter();
+        let groups = out.groups.iter_mut().map(|g| &mut g.inserts);
+        for rack in racks
+            .chain(groups)
+            .chain(buses.iter_mut().map(|b| &mut b.inserts))
+        {
+            if rack.len() < SLOTS {
+                rack.resize(SLOTS, None);
+            }
+        }
+        // A filter a script loads into an empty slot switches shapes as a
+        // saved one does (group slots load in `on init` only).
+        let empty = |at, rack: &[Option<ir::Effect>]| {
+            let slots = (0u8..).zip(rack.iter());
+            slots
+                .filter(|(_, s)| s.is_none())
+                .map(move |(n, _)| (at, n))
+                .collect::<Vec<_>>()
+        };
+        let mut open = empty(ir::RackAt::Inserts, &out.inserts);
+        open.extend(empty(ir::RackAt::Sends, &out.sends));
+        open.extend(empty(ir::RackAt::Main, &out.main));
+        for (b, bus) in (0u8..).zip(buses.iter()) {
+            open.extend(empty(ir::RackAt::Bus(b), &bus.inserts));
+        }
+        if !open.is_empty() && out.slot_shapes.shapes.is_empty() {
+            out.slot_shapes.shapes = crate::laws::filter_shapes();
+            kontra_law::record(|| kontra_law::Application {
+                id: kontra_law::LawId("kontakt.filter_shapes.v1"),
+                location: "slot_shapes/shapes".into(),
+                input: "()".into(),
+                output: format!("{:?}", out.slot_shapes.shapes),
+            });
+        }
+        out.slot_shapes.slots.extend(open);
+        out.slot_shapes.types = crate::script_knobs::slot_types();
+        out.slot_shapes.fresh = crate::held::fresh();
+        out.slot_shapes.subtypes = slots.subtypes;
+    }
 }
 
 /// "Accept standard controllers for Volume and Pan" (MIDI CC 7 and 10; the
@@ -775,6 +786,9 @@ fn translate_group(
                 || (matches!(p.modulator, Modulator::Ahdsr(_)) && !amp_env);
             if !reads_flags {
                 for (flag, what) in [(1, "bypass"), (2, "retrigger"), (3, "flag 3")] {
+                    if amp_env && flag == 3 {
+                        continue;
+                    }
                     if p.unknown_flags.get(flag).is_some_and(|&b| b != 0) {
                         notes.ignored(&format!("internal modulator {what}"), &p.name);
                     }
@@ -794,6 +808,10 @@ fn translate_group(
                             .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
                 {
                     out.envelope = laws::envelope(e);
+                    if let Some(t) = p.targets.iter().find(|t| t.param == "volume") {
+                        let scaled = p.unknown_flags.get(3).is_some_and(|&b| b != 0);
+                        laws::envelope_depth(&mut out.envelope, t.signed_intensity(), scaled);
+                    }
                     kontra_law::record(|| kontra_law::Application {
                         id: kontra_law::LawId("kontakt.ahdsr_envelope.v1"),
                         location: format!("groups/{group_index}/envelope"),
@@ -1009,4 +1027,36 @@ fn translate_zone(
         reverse,
         slot: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use kontra_ir as ir;
+
+    /// A script that only reads a saved module's control, with no
+    /// `$ENGINE_PAR_EFFECT_` anywhere, still gets the saved value and the
+    /// slot's type (Conflux reads `$ENGINE_PAR_BITE_BITS`).
+    #[test]
+    fn a_reading_script_gets_the_saved_controls_without_loading_types() {
+        let mut out = ir::Instrument::DEFAULT;
+        out.scripts.push(ir::Script {
+            name: String::new(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source: "on init message(get_engine_par($ENGINE_PAR_BITE_BITS, -1, 0, 1)) end on"
+                .into(),
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        });
+        let bits = ir::held_key("$ENGINE_PAR_BITE_BITS");
+        let slots = crate::effects::Slots {
+            types: vec![(ir::RackAt::Inserts, 0, 52)],
+            held: vec![(ir::RackAt::Inserts, 0, bits, 8)],
+            ..Default::default()
+        };
+        super::slot_shapes(&mut out, slots, &mut []);
+        assert_eq!(out.slot_shapes.held, [(ir::RackAt::Inserts, 0, bits, 8)]);
+        assert_eq!(out.slot_shapes.saved_types, [(ir::RackAt::Inserts, 0, 52)]);
+    }
 }

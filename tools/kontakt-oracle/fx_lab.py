@@ -5,7 +5,7 @@
 
 CHAIN is a factory preset folder ("Effects/RDelay"), STIMULUS one of `impulse`, `tone` (5 s, 1 kHz, -12 dB),
 `levels`, `burst` (fxrig's stimuli), `ramp` (1 kHz, amplitude 0..1 over 5 s), `clicks`, `sweep`, or one of STIMULI (`long`: 12 s
-of 1 kHz at -12 dB; `ramplo`: the ramp to 0.02; `sweeplo`: the sweep at -60 dB) (a 5 s log sweep 20 Hz..20 kHz, -12 dB), SETS.json a list of
+of 1 kHz at -12 dB; `ramplo`: the ramp to 0.02; `sweeplo`: the sweep at -60 dB; `steps`/`stepslo`: 0.5 s tones at STEPS, -20.6 / -60 dB at the effect) (a 5 s log sweep 20 Hz..20 kHz, -12 dB), SETS.json a list of
 settings, each a list of [slot, "PAR", raw] (raw 0..1000000 for knobs). Instance 0 is the bypassed reference.
 OUT.npz holds `rate` and one float array per instance (`x0` = reference, `x1`...), each cut from its note's start to
 the slot's end, left channel and right (`y1`...).
@@ -84,6 +84,7 @@ def stim_lua(seconds, expr):
 local NF = {n}
 LF:write("RIFF", string.pack("<I4", 36 + NF * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", NF * 8))
 local k = math.log(1000.0) / {SWEEP_LEN}
+local STEPS = {{{", ".join(str(f) for f in STEPS)}}}
 for i = 0, NF - 1 do
   local t = i / 48000
   local v = {expr}
@@ -99,7 +100,11 @@ STIMULI = {
     "long": (12.0, "0.25 * math.sin(2 * math.pi * 1000 * t)"),
     "ramplo": (SWEEP_LEN, f"(t / {SWEEP_LEN}) * 0.054 * math.sin(2 * math.pi * 1000 * t)"),
     "sweeplo": (SWEEP_LEN, "0.001 * math.sin(2 * math.pi * 20 * (math.exp(k * t) - 1) / k)"),
+    # Steady tones, 0.5 s each at the STEPS frequencies (a steady-state response, against a sweep's).
+    "steps": (6.5, "0.25 * math.sin(2 * math.pi * STEPS[math.floor(t / 0.5) + 1] * t)"),
+    "stepslo": (6.5, "0.0025 * math.sin(2 * math.pi * STEPS[math.floor(t / 0.5) + 1] * t)"),
 }
+STEPS = [63, 125, 250, 500, 1000, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000]
 
 
 def ksp_for(chain_len, sets):

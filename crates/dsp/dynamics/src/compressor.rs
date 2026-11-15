@@ -19,6 +19,9 @@ pub struct Settings {
     /// 0..=1: the compressed share of the output, the rest is the input.
     pub mix: f32,
     pub detector: Detector,
+    /// A one-pole high-pass on what the detector reads (not on the audio),
+    /// its corner in Hz.
+    pub sidechain_hz: Option<f32>,
 }
 
 /// What the level detector reads.
@@ -48,6 +51,10 @@ pub struct Compressor {
     envelope: [f32; 2],
     threshold: f32,
     depth: f32,
+    /// [`Settings::sidechain_hz`]: its pole (0 passes all) and, per
+    /// channel, the last input and output.
+    key: f32,
+    keyed: [[f32; 2]; 2],
 }
 
 impl Compressor {
@@ -63,6 +70,8 @@ impl Compressor {
             envelope: [0.0; 2],
             threshold: 1.0,
             depth: 1.0,
+            key: 0.0,
+            keyed: [[0.0; 2]; 2],
         };
         c.set(s, rate);
         c
@@ -77,6 +86,10 @@ impl Compressor {
         self.makeup = gain(s.makeup_db);
         self.threshold = gain(s.threshold_db);
         self.depth = gain(s.threshold_db * (1.0 - 1.0 / s.ratio.max(1.0)));
+        self.key = s
+            .sidechain_hz
+            .filter(|hz| *hz > 0.0)
+            .map_or(0.0, |hz| (-std::f32::consts::TAU * hz / rate).exp());
     }
 
     /// Compresses `io` in place.
@@ -87,11 +100,12 @@ impl Compressor {
         }
         let mix = self.s.mix.clamp(0.0, 1.0);
         for frame in io {
+            let key = self.highpass(*frame);
             let [l, r] = if self.s.detector == Detector::Output {
-                let ([a, b], [ra, rb]) = (*frame, self.reduction);
+                let ([a, b], [ra, rb]) = (key, self.reduction);
                 [(a * gain(-ra)).abs(), (b * gain(-rb)).abs()]
             } else {
-                frame.map(f32::abs)
+                key.map(f32::abs)
             };
             let levels = if self.s.link { [l.max(r); 2] } else { [l, r] };
             for ((x, level), reduction) in frame.iter_mut().zip(levels).zip(&mut self.reduction) {
@@ -113,6 +127,24 @@ impl Compressor {
         }
     }
 
+    /// What the detector reads of `frame`: [`Settings::sidechain_hz`]'s
+    /// high-pass, `y = (1 + p)/2·(x − x₁) + p·y₁`.
+    fn highpass(&mut self, frame: [f32; 2]) -> [f32; 2] {
+        if self.key == 0.0 {
+            return frame;
+        }
+        let p = self.key;
+        let mut out = frame;
+        for (x, [x1, y1]) in out.iter_mut().zip(&mut self.keyed) {
+            let y = 0.5 * (1.0 + p) * (*x - *x1) + p * *y1;
+            // Silence settles to 0, never to a subnormal tail.
+            *y1 = if y.abs() < 1e-20 { 0.0 } else { y };
+            *x1 = *x;
+            *x = *y1;
+        }
+        out
+    }
+
     /// [`Detector::Trigger`]: a level past the threshold sets the hold to 1
     /// once it has fallen below [`REARM`]; else the hold falls by the
     /// release. The envelope drops to the hold at once and rises toward 1
@@ -123,7 +155,7 @@ impl Compressor {
         let mix = self.s.mix.clamp(0.0, 1.0);
         let (rise, fall) = (1.0 - self.attack, 1.0 - self.release);
         for frame in io.iter_mut() {
-            let [l, r] = *frame;
+            let [l, r] = self.highpass(*frame);
             let levels = if self.s.link {
                 [((l + r) * 0.5).abs(); 2]
             } else {

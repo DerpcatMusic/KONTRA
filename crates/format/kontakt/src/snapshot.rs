@@ -42,32 +42,50 @@ pub(crate) struct Native {
     pub groups: Vec<Option<Group>>,
 }
 
-/// A group as a snapshot saves it: its insert effects and its volume, pan
-/// and tune, the first three floats of its public data. Volume and pan are
-/// as the group's own params hold them (a factory snapshot of the
-/// instrument's own state matches the instrument's on all 933 groups of
-/// Morphology Evolved); tune is in octaves, not a ratio (ANALOG STRINGS'
-/// 9001 Punch saves -2.0 for a group Kontakt then plays 24 semitones down).
+/// A group as a snapshot saves it: its insert effects, its 24 public bytes
+/// (volume and pan as the group's own params hold them, tune in octaves,
+/// the key-tracking, reverse and release-trigger flags, the release counter
+/// and the interpolation quality), its source module and its modulators.
+/// ANALOG STRINGS' 9001 Punch saves tune -2.0 for a group Kontakt then plays
+/// 24 semitones down.
 pub(crate) struct Group {
     pub fx: BParamArrayBParFX8,
-    pub volume: f32,
-    pub pan: f32,
-    pub tune: f32,
+    public: [u8; 24],
+    /// Its source module's record and its internal and external modulator
+    /// arrays, as the group holds them: they stand in for the base's.
+    source: Vec<u8>,
+    mods: Vec<Chunk>,
 }
 
 impl Group {
-    fn of(g: ni_file::kontakt::objects::GroupSnapshot) -> Self {
-        let float = |at: usize| {
-            (g.public_data.get(at..at + 4))
-                .and_then(|b| b.try_into().ok())
-                .map_or(0.0, f32::from_le_bytes)
-        };
-        Self {
-            volume: float(0),
-            pan: float(4),
-            tune: float(8),
+    fn of(g: ni_file::kontakt::objects::GroupSnapshot) -> Result<Self, ni_file::Error> {
+        Ok(Self {
+            public: g.public_data,
+            source: g.source_record()?.to_vec(),
+            mods: Vec::from(g.modulator_chunks()?),
             fx: g.fx,
+        })
+    }
+
+    /// Puts its params, source and modulators into the base's `group`, which the
+    /// translator then reads as it reads any group.
+    ///
+    /// # Errors
+    /// When the base group's public data or source record does not decode.
+    pub(crate) fn apply(
+        &mut self,
+        group: &mut ni_file::kontakt::objects::Group,
+    ) -> Result<(), ni_file::Error> {
+        group.set_snapshot_params(&self.public)?;
+        group.set_source_record(&self.source)?;
+        for chunk in std::mem::take(&mut self.mods) {
+            let children = &mut group.0.children;
+            match children.iter_mut().find(|c| c.id == chunk.id) {
+                Some(own) => *own = chunk,
+                None => children.push(chunk),
+            }
         }
+        Ok(())
     }
 }
 
@@ -81,8 +99,8 @@ impl Native {
             return Ok(None);
         }
         let groups = (state.group_snapshots()?.into_iter())
-            .map(|(_, g)| Some(Group::of(g)))
-            .collect();
+            .map(|(_, g)| Group::of(g).map(Some))
+            .collect::<Result<_, _>>()?;
         Ok(Some(Self {
             racks: state.effect_children,
             groups,
@@ -99,6 +117,58 @@ impl Native {
 /// is not found.
 pub fn preset(path: &Path, known: &[PathBuf]) -> Result<Preset, Error> {
     read(path, known).map(|(preset, _)| preset)
+}
+
+/// Writes the snapshot `from` to `to` with `held` (by script slot, the
+/// values its scripts hold now) in place of the values it saved. Each slot
+/// saves the names Kontakt saved in it, in its order: an instrument's own
+/// (`make_instr_persistent`) values stay out of it, as in Kontakt's. The
+/// rest of the file is kept, its preset written unencrypted.
+///
+/// # Errors
+/// When `from` is not an NIS snapshot this reads, or `to` cannot be written.
+pub fn save(from: &Path, to: &Path, held: &[(usize, Vec<String>)]) -> Result<(), Error> {
+    let decode = |what| move |e: ni_file::Error| Error::new(from, what, e);
+    let (bytes, _, encrypted) = container::decoded(from)?;
+    let mut chunks = ni_file::kontakt::KontaktChunks::read(std::io::Cursor::new(bytes))
+        .map_err(decode("Kontakt chunks"))?;
+    let state = (chunks.0.iter_mut().find(|c| c.id == SNAPSHOT))
+        .ok_or_else(|| Error::new(from, "snapshot", "missing"))?;
+    let saved = Snapshot::try_from(&*state).map_err(decode("snapshot"))?;
+    let name = |v: &str| v.split_once(' ').map_or(v, |(n, _)| n).to_owned();
+    let values: Vec<Vec<String>> = (saved.persistent.iter().enumerate())
+        .map(|(slot, own)| {
+            let now = held.iter().find(|(s, _)| *s == slot).map(|(_, v)| v);
+            (own.iter())
+                .map(|v| {
+                    (now.and_then(|now| now.iter().find(|h| name(h) == name(v))))
+                        .unwrap_or(v)
+                        .clone()
+                })
+                .collect()
+        })
+        .collect();
+    *state = Snapshot::with_persistent(state, &values).map_err(decode("snapshot"))?;
+    let mut stream = Vec::new();
+    chunks
+        .write(&mut stream)
+        .map_err(decode("Kontakt chunks"))?;
+    let file = std::fs::File::open(from).map_err(|e| Error::new(from, "open", e))?;
+    let ni_file::NIFile::NISoundContainer(mut root) =
+        ni_file::NIFile::read(std::io::BufReader::new(file)).map_err(decode("container"))?
+    else {
+        return Err(Error::new(from, "container", "not an NIS snapshot"));
+    };
+    let key = match encrypted {
+        Some(true) => Some(
+            crate::access::library_key(from).map_err(|e| Error::new(from, "library access", e))?,
+        ),
+        _ => None,
+    };
+    (root.set_preset_chunk(&stream, key.as_deref())).map_err(decode("NIS preset"))?;
+    let mut out = Vec::new();
+    root.write(&mut out).map_err(decode("NIS container"))?;
+    std::fs::write(to, out).map_err(|e| Error::new(to, "write", e))
 }
 
 /// [`preset`], with what it saves of the instrument.

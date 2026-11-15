@@ -11,6 +11,22 @@ use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model::{Interface, Kind, Value, Widget};
 use serde_json::{Value as Json, json};
 
+/// Trace events a move keeps of each kind in the report
+/// (`KONTRA_INSPECT_KEEP_EVENTS`, default 64).
+fn kept_events() -> usize {
+    std::env::var("KONTRA_INSPECT_KEEP_EVENTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64)
+}
+
+/// This process's resident memory, so a sweep shows whether moves leak.
+fn rss_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
 use super::RATE;
 
 const BLOCK: usize = 128;
@@ -21,17 +37,30 @@ static WORST_BLOCK_LUA_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 static WORST_BLOCK_GC_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static WORST_BLOCK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The most entries of one menu a sweep moves to.
+const MENU_MOVES: usize = 16;
+
 fn targets(widget: &Widget) -> Option<Vec<f64>> {
     let values = match &widget.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => {
             vec![range.min, range.max]
         }
         Kind::Switch | Kind::Button { .. } => vec![1.0, 0.0],
-        Kind::Menu { items } => items
-            .iter()
-            .filter(|i| i.visible)
-            .map(|i| f64::from(i.value))
-            .collect(),
+        // A long menu (a controller list, a preset list) is moved to 16
+        // entries spread over it, first and last included.
+        Kind::Menu { items } => {
+            let shown: Vec<f64> = (items.iter().filter(|i| i.visible))
+                .map(|i| f64::from(i.value))
+                .collect();
+            let n = shown.len();
+            if n <= MENU_MOVES {
+                shown
+            } else {
+                (0..MENU_MOVES)
+                    .filter_map(|k| shown.get(k * (n - 1) / (MENU_MOVES - 1)).copied())
+                    .collect()
+            }
+        }
         _ => return None,
     };
     Some(values)
@@ -204,17 +233,66 @@ fn thread_cpu_ns() -> u64 {
     }
 }
 
+/// Calls per script action, by name: (calls, calls left unanswered).
+type Counts = std::collections::BTreeMap<String, (u32, u32)>;
+
+/// Adds what happened between `before` and `after` to `to`.
+fn add(to: &mut Counts, before: &Counts, after: &Counts) {
+    for (name, &(c, u)) in after {
+        let (c0, u0) = before.get(name).copied().unwrap_or_default();
+        let e = to.entry(name.clone()).or_default();
+        e.0 += c.saturating_sub(c0);
+        e.1 += u.saturating_sub(u0);
+    }
+}
+
+/// Each script action called so far, by name: (calls, calls left unanswered).
+fn calls(engine: &Engine) -> Counts {
+    let mut out = std::collections::BTreeMap::new();
+    for (a, n) in engine.action_calls() {
+        out.entry(format!("{a:?}")).or_insert((0, 0)).0 = n;
+    }
+    for (a, n) in engine.unhandled_actions() {
+        out.entry(format!("{a:?}")).or_insert((0, 0)).1 = n;
+    }
+    out
+}
+
+/// What a phase added to the running counts of [`calls`].
+fn phase(before: &Counts, after: &Counts) -> Json {
+    (after.iter())
+        .filter_map(|(name, &(c, u))| {
+            let (c0, u0) = before.get(name).copied().unwrap_or_default();
+            (c > c0 || u > u0).then(|| (name.clone(), json!([c - c0, u.saturating_sub(u0)])))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
 fn render(
     engine: &mut Engine,
     plan: &Plan,
     stream: &kontra_stream::StreamClient,
     events: &[Timed<Event>],
+    keep: impl FnMut(&Engine),
+) -> (f64, bool, Vec<[f32; 2]>) {
+    render_for(engine, plan, stream, events, keep, BLOCKS)
+}
+
+/// [`render`] for `blocks` blocks.
+fn render_for(
+    engine: &mut Engine,
+    plan: &Plan,
+    stream: &kontra_stream::StreamClient,
+    events: &[Timed<Event>],
     mut keep: impl FnMut(&Engine),
-) -> (f64, bool) {
+    blocks: usize,
+) -> (f64, bool, Vec<[f32; 2]>) {
     let mut samples = [[0.0f32; 2]; BLOCK];
+    let mut frames = Vec::with_capacity(BLOCK * blocks);
     let mut energy = 0.0f64;
     let mut settled = true;
-    for block in 0..BLOCKS {
+    for block in 0..blocks {
         settled &= stream.settle(Duration::from_secs(5));
         let _ = kontra_lua::probe::take();
         let began = thread_cpu_ns();
@@ -233,18 +311,144 @@ fn render(
         for sample in samples.iter().flatten() {
             energy += f64::from(*sample).powi(2);
         }
+        frames.extend_from_slice(&samples);
         let mut requests = Vec::new();
         engine.drain_requests(|r| requests.push(r));
         for request in requests {
             engine.install(Prepared::new(request, Some(plan), RATE));
         }
+        // `set_zone_par` edits, applied together off audio as the host does.
+        let mut edits = Vec::new();
+        engine.drain_zone_edits(|e| {
+            edits.push(e);
+            true
+        });
+        if !edits.is_empty() {
+            let mut next = Plan::clone(engine.plan());
+            let done: Vec<_> = (edits.iter()).map(|e| (*e, e.apply(&mut next))).collect();
+            let next = kontra_prepare::tables(&next, stream).unwrap_or(next);
+            engine.swap_plan(&mut Arc::new(next), &done);
+        }
     }
-    ((energy / (BLOCK * BLOCKS * 2) as f64).sqrt(), settled)
+    (
+        (energy / (BLOCK * blocks * 2) as f64).sqrt(),
+        settled,
+        frames,
+    )
+}
+
+/// Blocks a move gets before the next note: a script that waits before
+/// it acts (a fade out, `wait(150)`, then the room's new `Time`) has acted.
+const SETTLE_BLOCKS: usize = 240;
+
+/// Blocks a fresh note renders: 320 ms, long enough for a room's early
+/// reflections and a 2048-point spectrum.
+const FRESH_BLOCKS: usize = 120;
+
+/// A render's sound without its phase: each channel's octave-band levels
+/// (dBFS, Hann-windowed 2048-point FFT) and the channels' correlation. A
+/// humanized note (random detune, attack pitch) keeps its print.
+fn print(frames: &[[f32; 2]]) -> (Vec<f64>, f64) {
+    use rustfft::{FftPlanner, num_complex::Complex};
+    const N: usize = 2048;
+    let window: Vec<f64> = (0..N)
+        .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / (N - 1) as f64).cos())
+        .collect();
+    let fft = FftPlanner::<f64>::new().plan_fft_forward(N);
+    let centers = [
+        62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+    ];
+    let mut sums = vec![0.0f64; centers.len() * 2];
+    let mut buf = vec![Complex::new(0.0, 0.0); N];
+    for chunk in frames.chunks_exact(N / 2).collect::<Vec<_>>().windows(2) {
+        for c in 0..2 {
+            for (i, (b, w)) in buf.iter_mut().zip(&window).enumerate() {
+                let f = if i < N / 2 {
+                    chunk[0][i]
+                } else {
+                    chunk[1][i - N / 2]
+                };
+                *b = Complex::new(f64::from(f[c]) * w, 0.0);
+            }
+            fft.process(&mut buf);
+            for (i, bin) in buf.iter().enumerate().take(N / 2).skip(1) {
+                let hz = i as f64 * f64::from(RATE) / N as f64;
+                if let Some(k) = centers
+                    .iter()
+                    .position(|&m| hz >= m / 2f64.sqrt() && hz < m * 2f64.sqrt())
+                {
+                    sums[c * centers.len() + k] += bin.norm_sqr();
+                }
+            }
+        }
+    }
+    let db = sums
+        .iter()
+        .map(|&p| 10.0 * (p.max(1e-20)).log10() - 60.0)
+        .collect();
+    let (mut lr, mut ll, mut rr) = (0.0f64, 0.0f64, 0.0f64);
+    for f in frames {
+        let (l, r) = (f64::from(f[0]), f64::from(f[1]));
+        lr += l * r;
+        ll += l * l;
+        rr += r * r;
+    }
+    (db, lr / (ll * rr).sqrt().max(1e-20))
+}
+
+/// How far print `b` is from `a`: the RMS of their band differences (dB,
+/// bands either holds above 70 dB under its loudest) plus ten times the
+/// change in correlation.
+fn print_distance(a: &(Vec<f64>, f64), b: &(Vec<f64>, f64)) -> f64 {
+    let top = a.0.iter().chain(&b.0).copied().fold(f64::MIN, f64::max);
+    let diffs: Vec<f64> = (a.0.iter().zip(&b.0))
+        .filter(|(x, y)| x.max(**y) > top - 70.0)
+        .map(|(x, y)| (x - y).powi(2))
+        .collect();
+    let bands = (diffs.iter().sum::<f64>() / diffs.len().max(1) as f64).sqrt();
+    bands + 10.0 * (a.1 - b.1).abs()
+}
+
+/// How far render `b` is from render `a`, dB relative to `a`'s energy:
+/// level, spectrum, stereo image and timing all show (−inf when equal).
+fn difference_db(a: &[[f32; 2]], b: &[[f32; 2]]) -> f64 {
+    let (mut diff, mut base) = (0.0f64, 0.0f64);
+    for (x, y) in a.iter().zip(b) {
+        for c in 0..2 {
+            base += f64::from(x[c]).powi(2);
+            diff += f64::from(x[c] - y[c]).powi(2);
+        }
+    }
+    if diff == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    10.0 * (diff / base.max(1e-30)).log10()
+}
+
+/// Left and right RMS of a render.
+fn sides(frames: &[[f32; 2]]) -> [f64; 2] {
+    let n = frames.len().max(1) as f64;
+    [0, 1].map(|c| (frames.iter().map(|f| f64::from(f[c]).powi(2)).sum::<f64>() / n).sqrt())
 }
 
 pub fn run(path: &Path) -> Result<(Json, String)> {
     let instrument = kontra_host::instrument::read(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    // KONTRA_INSPECT_DUMP=DIR: each script's source and the modules it loads.
+    if let Some(dir) = std::env::var_os("KONTRA_INSPECT_DUMP").map(std::path::PathBuf::from) {
+        for script in &instrument.scripts {
+            let dir = dir.join(format!("{}-{}", script.slot, script.name.replace('/', "_")));
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join("source"), &script.source)?;
+            for (name, bytes) in &script.data {
+                let file = dir.join(name.trim_start_matches('/'));
+                if let Some(parent) = file.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(file, bytes)?;
+            }
+        }
+    }
     let samples: Vec<_> = instrument.samples.iter().map(|s| s.name.clone()).collect();
     let members: Vec<Vec<usize>> = instrument
         .groups
@@ -293,7 +497,20 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         },
         Timed { at, body: note },
     ];
-    let (_, mut settled) = render(&mut engine, &plan, &stream, &events, |_| {});
+    // The script's init runs in the first blocks, before any event.
+    let (_, mut settled, _) = render(&mut engine, &plan, &stream, &[], |_| {});
+    let at_load = calls(&engine);
+    let events: Vec<_> = (events.iter())
+        .map(|e| Timed {
+            at: engine.now(),
+            body: e.body,
+        })
+        .collect();
+    let (_, ready, _) = render(&mut engine, &plan, &stream, &events, |_| {});
+    settled &= ready;
+    let at_note = calls(&engine);
+    // What the probe notes around each move called: not the moves' own.
+    let mut probes = Counts::new();
     engine.clear_trace();
     let mut controls = Vec::new();
     let list_only = std::env::var_os("KONTRA_INSPECT_UI_LIST").is_some();
@@ -306,6 +523,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
     let deadline = env("KONTRA_INSPECT_UI_SECONDS")
         .map(|s| std::time::Instant::now() + Duration::from_secs(s as u64));
     let mut capped = false;
+    // KONTRA_INSPECT_UI_ONLY=a,b moves only the controls whose names hold
+    // one of the words.
+    let words = std::env::var("KONTRA_INSPECT_UI_ONLY").unwrap_or_default();
+    let only = |name: &str| words.is_empty() || words.split(',').any(|w| name.contains(w));
+    // KONTRA_INSPECT_UI_LEAN=1 keeps each move's verdicts, not its trace.
+    let lean = std::env::var_os("KONTRA_INSPECT_UI_LEAN").is_some();
     // A move keeps at most the trace's capacity per window; the moves that
     // passed it are named with how many events they dropped (the renders
     // between moves are not kept, so their drops lose nothing). Only a
@@ -371,7 +594,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 break;
             }
             seen.insert(key);
-            if (seen.len() - 1) % stride != 0 {
+            if (seen.len() - 1) % stride != 0 || !only(&widget.name) {
                 continue;
             }
             // KONTRA_INSPECT_UI_LIST=1: each control and the values it would
@@ -402,17 +625,31 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     let at = engine.now();
                     let mut acts = Note::new();
                     let mut names = std::collections::HashMap::new();
-                    let (rms, ready) = render(
+                    let (rms, ready, wave) = render_for(
                         engine,
                         &plan,
                         &stream,
                         &[Timed { at, body: off }, Timed { at, body: note }],
                         |engine| note_fields(engine, &plan, &zone_samples, &mut acts, &mut names),
+                        FRESH_BLOCKS,
                     );
-                    (rms, acts, ready)
+                    // Then its release: a room's length, a reverb's decay
+                    // and a release time live in the tail.
+                    let at = engine.now();
+                    let (_, done, tail) = render_for(
+                        engine,
+                        &plan,
+                        &stream,
+                        &[Timed { at, body: off }],
+                        |_| {},
+                        FRESH_BLOCKS,
+                    );
+                    (rms, acts, ready && done, (wave, tail))
                 };
-                let (_, first, ready_first) = fresh(&mut engine);
-                let (prior_rms, base, ready) = fresh(&mut engine);
+                let probing = calls(&engine);
+                let (_, first, ready_first, wave_first) = fresh(&mut engine);
+                let (prior_rms, base, ready, wave_base) = fresh(&mut engine);
+                add(&mut probes, &probing, &calls(&engine));
                 settled &= ready_first && ready;
                 engine.clear_trace();
                 let panel = |engine: &Engine| -> Vec<String> {
@@ -467,16 +704,23 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     .collect();
                 engine.clear_trace();
                 let dropped_control = engine.trace_dropped() - dropped_before;
-                let (rms, ready) = render(&mut engine, &plan, &stream, &[], |engine| {
-                    events.extend(
-                        (engine.trace_events().iter())
-                            .map(|e| super::trace_output::event(e, &plan, &zone_samples, RATE)),
-                    );
-                    route_events.extend(
-                        (engine.trace_route_values())
-                            .map(|v| super::trace_output::route(&v, &plan, &zone_samples)),
-                    );
-                });
+                let (rms, ready, _) = render_for(
+                    &mut engine,
+                    &plan,
+                    &stream,
+                    &[],
+                    |engine| {
+                        events
+                            .extend((engine.trace_events().iter()).map(|e| {
+                                super::trace_output::event(e, &plan, &zone_samples, RATE)
+                            }));
+                        route_events.extend(
+                            (engine.trace_route_values())
+                                .map(|v| super::trace_output::route(&v, &plan, &zone_samples)),
+                        );
+                    },
+                    SETTLE_BLOCKS,
+                );
                 settled &= ready;
                 let dropped_render = engine.trace_dropped() - dropped_before - dropped_control;
                 if dropped_control + dropped_render > 0 {
@@ -488,6 +732,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 }
                 let after = cells(&engine, &plan);
                 let after_panel = panel(&engine);
+                // The value the control holds after the move: a script may
+                // clamp or reset it, or the move may not land.
+                let landed = (tree(&loaded, &engine, slot).ok().flatten())
+                    .and_then(|t| t.widgets.into_iter().find(|w| w.source_id == Some(id)))
+                    .and_then(|w| w.value)
+                    .map(|v| format!("{v:?}"));
                 // Other widgets whose state the move changed (shown, value,
                 // text): a panel switch or a linked control.
                 let panel_changed: Vec<_> = (before_panel.iter().zip(&after_panel).enumerate())
@@ -543,18 +793,90 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 }
                 // And one after the move: a difference the noise does not
                 // explain is the move reaching the next note.
-                let (_, next, ready_next) = fresh(&mut engine);
-                let (_, again, ready_again) = fresh(&mut engine);
+                let probing = calls(&engine);
+                let (_, next, ready_next, wave_next) = fresh(&mut engine);
+                let (_, again, ready_again, wave_again) = fresh(&mut engine);
+                add(&mut probes, &probing, &calls(&engine));
+                // A fresh note after the move against one before it, with
+                // what two renders on either side differ by as the floor
+                // (humanizing, round robins): the move is heard when the
+                // change stands clear of both.
+                let prints =
+                    [&wave_first, &wave_base, &wave_next, &wave_again].map(|(head, tail)| {
+                        let (mut bands, correlation) = print(head);
+                        bands.extend(print(tail).0);
+                        (bands, correlation)
+                    });
+                let floor = print_distance(&prints[0], &prints[1])
+                    .max(print_distance(&prints[2], &prints[3]));
+                let change = print_distance(&prints[1], &prints[2])
+                    .min(print_distance(&prints[0], &prints[3]));
+                let finite = |x: f64| if x.is_finite() { json!(x) } else { json!(null) };
+                let sound = json!({"change_db":finite(change),"floor_db":finite(floor),
+                    "waveform_change_db":finite(difference_db(&wave_base.0, &wave_next.0)),
+                    "heard": change > 2.0 * floor + 0.5,
+                    "correlation":[prints[1].1, prints[2].1],
+                    "lr_rms_before":sides(&wave_base.0),"lr_rms_after":sides(&wave_next.0)});
                 settled &= ready_next && ready_again;
                 let note_changed = note_diff(&first, &base, &next, &again);
-                moves.push(json!({"value":value,"move_us":move_us,"worst_block_lua_wall_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_wall_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
-                    "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
+                // A move's first events only: a VWinds move runs ~150 script
+                // callbacks, and keeping all of a 1200-move sweep's held 20 GB.
+                let stage_total = events.len();
+                let route_total = route_events.len();
+                events.truncate(kept_events());
+                route_events.truncate(kept_events());
+                moves.push(json!({"value":value,"landed":landed,"move_us":move_us,"worst_block_lua_wall_us":WORST_BLOCK_LUA_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_gc_wall_us":WORST_BLOCK_GC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"worst_block_us":WORST_BLOCK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e3,"errors":errors,"note_actions_changed":note_changed,"script_cells_changed":cell_diff(&before,&after),"panel_changed":panel_changed,"panel_size":[before_panel.len(),after_panel.len()], "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":if lean { json!([]) } else { json!(events) },"stage_events_total":stage_total,"route_events":if lean { json!([]) } else { json!(route_events) },"route_events_total":route_total,"rss_kb":rss_kb(),
+                    "output":{"before_rms":prior_rms,"after_rms":rms},"sound":sound, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready,
                     "trace_dropped":{"control":dropped_control,"render":dropped_render}}));
+            }
+            // Back where the preset had it: the next control moves from the
+            // preset's state, not from wherever this one was left (a muted
+            // room would hide every room control after it).
+            if let (Some(id), false) = (widget.source_id, moves.is_empty()) {
+                let start = widget.number();
+                if lua {
+                    if let Ok(id) = u32::try_from(id) {
+                        engine.set_widget(slot_id, id, start, None);
+                    }
+                } else {
+                    let v = if matches!(widget.value, Some(Value::Real(_))) {
+                        start.to_bits() as i64
+                    } else {
+                        start.round() as i64
+                    };
+                    engine.set_control(slot_id, id, v);
+                }
+                let (_, ready, _) =
+                    render_for(&mut engine, &plan, &stream, &[], |_| {}, SETTLE_BLOCKS);
+                settled &= ready;
             }
             controls.push(json!({"slot":slot,"widget":widget_index,"name":widget.name,"kind":format!("{:?}",widget.kind),"hidden":widget.hidden,"enabled":widget.enabled,"moves":moves}));
         }
     }
+    let at_end = calls(&engine);
+    // The sweep's own calls: from the note phase's end, less the probes'.
+    let mut ui_from = at_note.clone();
+    add(&mut ui_from, &Counts::new(), &probes);
+    let phases = json!({
+        "load": phase(&Default::default(), &at_load),
+        "note": phase(&at_load, &at_note),
+        "ui": phase(&ui_from, &at_end),
+        "probe_notes": phase(&Counts::new(), &probes),
+        // Named by the scripts that resolve the id, as `load` does.
+        "unanswered_pars": (engine.unanswered_pars().iter())
+            .map(|(p, n)| {
+                let i = usize::try_from(p[0] - kontra_ksp::SYMBOL_BASE).ok();
+                let mut names: Vec<&str> = (loaded.symbols.iter())
+                    .filter_map(|s| s.get(i?).map(|n| &**n))
+                    .filter(|n| n.starts_with("$ENGINE_PAR"))
+                    .collect();
+                names.dedup();
+                json!([p, n, names])
+            })
+            .collect::<Vec<_>>(),
+        "faults": format!("{:?}", engine.script_faults()),
+    });
     let stats = engine.stats();
     let stream_stats = stream.stats();
     let complete = model_errors.is_empty()
@@ -601,7 +923,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         format!("{summary}  zone edits refused: {}\n", refused.join(", "))
     };
     Ok((
-        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"sampled":{"per_slot":sample,"time_capped":capped},"trace_truncated":truncated,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
+        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"calls":phases,"sampled":{"per_slot":sample,"time_capped":capped},"trace_truncated":truncated,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
         summary,
     ))
 }

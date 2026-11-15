@@ -113,7 +113,8 @@ impl ScriptPlan {
             | EnginePar::ReverbNetwork
             | EnginePar::GainerGain
             | EnginePar::StereoWidth
-            | EnginePar::StereoPan => Holder::Slot,
+            | EnginePar::StereoPan
+            | EnginePar::Held(_) => Holder::Slot,
             EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
             EnginePar::LfoFade | EnginePar::LfoRetrigger | EnginePar::LfoUnit => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
@@ -192,7 +193,6 @@ impl CcLink {
 pub struct KnobModPlan {
     pub slot: u8,
     pub id: i32,
-    pub saved: f32,
     pub source: kontra_ir::Source,
     pub scale: bool,
 }

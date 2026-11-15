@@ -887,6 +887,7 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
             bits: 16.0,
             noise: 0.0,
             noise_tone: 1.0,
+            converter: None,
         }),
         bypass: false,
         output: 1.0,
@@ -2681,6 +2682,8 @@ fn a_script_loads_a_library_response_into_a_convolution() {
             envelope: None,
             mix: None,
             size: [1.0, 1.0],
+            length: 1.0,
+            window_whole: false,
         },
     )];
     plan.responses = vec![(
@@ -2769,6 +2772,77 @@ fn a_script_loads_a_library_response_into_a_convolution() {
     assert_eq!(e.stats().actions_unhandled, 0);
 }
 
+/// A seat change: `loadImpulse` then `Time` in one callback. Neither is
+/// installed when the next runs, so the knob builds on the requested file,
+/// not on the one still playing, and keeps the new file.
+#[test]
+fn a_time_after_a_load_in_one_callback_keeps_the_new_response() {
+    use kontra_engine::{Response, ir};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution { impulse: 0 },
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.impulses = vec![Some(Response {
+        left: vec![1.0],
+        right: vec![1.0],
+    })];
+    let law = ir::Impulse {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+        size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
+    };
+    plan.impulse_laws = vec![("room".into(), law)];
+    let sample = |name: &str| ir::Sample {
+        name: name.into(),
+        file: std::path::PathBuf::from(name),
+        offset: 0,
+        len: None,
+        channels: 0,
+        frames: 0,
+        rate: 0,
+        keystream: None,
+    };
+    plan.responses = vec![
+        ("room".into(), sample("Room.wav")),
+        ("seat_30".into(), sample("Seat_30.wav")),
+    ];
+    let tree = "return {params={},db=0,pan=0,layers={},auxs={},
+        inserts={{params={Name='Room',Time='1'},fx={2,1,0},impulse={Time=1,PreDelay=2}}}}";
+    let source = "function onNote(e)
+            loadImpulse(Program.inserts[1], '../IRs/Seat_30.flac')
+            Program.inserts[1]:setParameter('Time', 0.5)
+            Program.inserts[1]:setParameter('PreDelay', 20)
+            postEvent(e)
+        end";
+    let modules = [("__program.lua".to_string(), tree.to_string())];
+    let compiled = kontra_lua::compile(source, &modules, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 480];
+    e.process(&mut out, &[on(60)]);
+    let mut requests = Vec::new();
+    e.drain_requests(|r| requests.push(r.response));
+    let last = requests.last().copied().flatten();
+    let want = ir::Impulse {
+        length: 0.5,
+        predelay_ms: 20.0,
+        ..law
+    };
+    assert_eq!(last, Some((1, want)), "{requests:?}");
+    assert_eq!(e.stats().actions_unhandled, 0);
+}
+
 /// A script's `IRC_*` knobs prepare the slot's own response again: at
 /// x 0.5 the predelay is `2·(151^0.5 − 1)` = 22.6 ms, and the knob reads
 /// back what it was set to.
@@ -2810,6 +2884,8 @@ fn a_scripts_convolution_predelay_prepares_its_response_again() {
         envelope: None,
         mix: None,
         size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
     };
     plan.impulse_laws = vec![("half".into(), law)];
     plan.responses = vec![(
@@ -3890,6 +3966,86 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
     assert_eq!(e.last_message(), "3494 -1 932 36 204800 -1 31 0");
 }
 
+/// A module KONTRA has no processor for keeps the values it was saved with
+/// and those a script sets (Conflux's Replika, Bite and Freak slots): they
+/// read back, and on a slot holding another type the control names nothing
+/// and reads 0.
+#[test]
+fn an_uncarried_modules_controls_hold_what_a_script_sets() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let pass = Some(ir::Effect {
+        kind: ir::EffectKind::Gain(1.0),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    });
+    plan.inserts = vec![pass, pass];
+    // Slot 0 holds a Replika (40), slot 1 a Jump (31).
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 40), (ir::RackAt::Inserts, 1, 31)];
+    // What the instrument saved there (the translator's held seeds).
+    let age = ir::held_key("$ENGINE_PAR_RDL_TAPEAGE");
+    plan.slot_shapes.held = vec![(ir::RackAt::Inserts, 0, age, 123_456)];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $saved
+            $saved := get_engine_par($ENGINE_PAR_RDL_TAPEAGE, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_RDL_TAPEAGE, 300000, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_RDL_TAPEAGE, 420000, -1, 1, 1)
+            message($saved & \" \" & get_engine_par($ENGINE_PAR_RDL_TAPEAGE, -1, 0, 1) ...
+                & \" \" & get_engine_par($ENGINE_PAR_RDL_TAPEAGE, -1, 1, 1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.unhandled_actions(), vec![]);
+    assert_eq!(e.last_message(), "123456 300000 0");
+}
+
+/// A module a script loads answers reads at once with Kontakt's fresh
+/// values (Freak's MODE starts on the oscillator, 1).
+#[test]
+fn a_loaded_module_reads_its_fresh_values() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let unit = |kind| ir::Effect {
+        kind,
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    plan.inserts = vec![Some(unit(ir::EffectKind::Gain(1.0)))];
+    plan.slot_shapes.types = vec![ir::SlotType {
+        id: 54,
+        subtype: false,
+        reads: 0,
+        kind: 54,
+        effect: Some(unit(ir::EffectKind::Stereo {
+            width: 0.5,
+            pan: 0.0,
+        })),
+        laws: Vec::new().into(),
+        model: None,
+    }];
+    let mode = ir::held_key("$ENGINE_PAR_FREAK_MODE");
+    plan.slot_shapes.fresh = vec![(54, mode, 1), (40, mode, 7)];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 54, -1, 0, 1)
+            message(get_engine_par($ENGINE_PAR_FREAK_MODE, -1, 0, 1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "1");
+}
+
 /// The LFO and wavetable texts and switches as Kontakt 8.13.1 answered them
 /// (ANALOG's stepped LFO, Morphology's wavetable group): a stepped rate
 /// shows its count, the phase whole degrees, retrigger is a switch, and a
@@ -4150,6 +4306,7 @@ fn a_parameter_of_another_effect_type_names_nothing() {
             bits: 8.0,
             noise: 0.0,
             noise_tone: 0.8,
+            converter: None,
         }),
         bypass: false,
         output: 1.0,
@@ -4194,6 +4351,7 @@ fn interacting_knobs_rebuild_the_slot_in_any_order() {
             link: true,
             mix: 1.0,
             detector: ir::Detector::Output,
+            sidechain_hz: None,
         }))
     }
     let run = |first: &str, second: &str| {
@@ -4258,6 +4416,7 @@ fn a_restored_type_in_an_empty_slot_reads_and_moves_its_modelled_knobs() {
             link: true,
             mix: 1.0,
             detector: ir::Detector::Output,
+            sidechain_hz: None,
         }))
     }
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -5361,4 +5520,41 @@ fn a_picked_file_runs_the_selector_callback_with_its_names() {
     e.set_click(0, id, [false; 3], 0);
     e.set_control(0, id, 0);
     assert_eq!(e.last_message(), "a|a.mid|/lib/midi/a.mid");
+}
+
+/// A chord held in Poly, then a script switches the layer to mono: the next
+/// note leaves only itself sounding, not one of the chord's notes besides.
+#[test]
+fn a_switch_to_mono_under_a_held_chord_keeps_only_the_new_note() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.25, 0);
+    z.keys = 0..=127;
+    z.voice_group = Some(0);
+    let mut plan = Plan::new(vec![z], 16);
+    plan.voice_groups = vec![ir::VoiceGroup {
+        voices: 0,
+        steal: ir::Steal::Oldest,
+        prefer_released: false,
+        fade_ms: 1.0,
+        exclusive: None,
+        per_note: true,
+        legato: false,
+        returns: false,
+    }];
+    let tree = "return {params={},db=0,pan=0,auxs={},
+        layers={{params={PlayMode='0'},line={0,0,0}}}}";
+    let source = "function onNote(e)
+            if e.note == 67 then Program.layers[1]:setParameter('PlayMode', 2) end
+            postEvent(e)
+        end";
+    let modules = [("__program.lua".to_string(), tree.to_string())];
+    let compiled = kontra_lua::compile(source, &modules, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let chord = level(&mut e, &[on(60), on(64), on(65)]);
+    assert!((chord - 0.75).abs() < 1e-3, "chord at {chord}");
+    level(&mut e, &[on(67)]);
+    let mono = level(&mut e, &[]);
+    assert!((mono - 0.25).abs() < 1e-3, "after the switch {mono}");
 }

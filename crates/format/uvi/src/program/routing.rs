@@ -650,12 +650,98 @@ impl<L: Library> Translator<'_, '_, L> {
                 0.0
             },
             cuts: None,
-            envelope: (time < 1.0 || flag(node, "UseWindowAtOriginalSize")).then(|| fade(time)),
+            envelope: None,
             mix: (width != 0.0 && stereo).then(|| widen(width)),
             size: [1.0, 1.0],
+            // UVI keeps `Time` of the response and fades it by a half
+            // cosine, `(cos(πn/(N+1)) + 1)/2` over the kept `N` frames
+            // (0x141532fe0, π at 0x141cfab4c), skipped when `N` is the
+            // whole response unless UseWindowAtOriginalSize (0x1415332a8).
+            // Both stay in the law: a script's `Time` moves the length at
+            // run time, and the engine picks the one window from it.
+            length: time,
+            window_whole: flag(node, "UseWindowAtOriginalSize"),
         });
         Ok(u16::try_from(self.out.impulses.len() - 1).ok())
     }
+}
+
+impl<L: Library> Translator<'_, '_, L> {
+    /// The responses a script's `loadImpulse` may name, as
+    /// [`ir::Instrument::responses`]: every audio file in the response
+    /// folder of one the program's convolvers play. That folder is the
+    /// highest one above the played response that holds none of the zones'
+    /// samples: VWinds' `Samples/IRs` (69 seats × 4 microphone pairs in
+    /// `VirtSpace3`, rooms in `FalconIRs`, mutes beside them), Augmented
+    /// Orchestra's `IRs` (its menu's nested rooms). Located, not read: the
+    /// host decodes one when a script loads it. Only when a script calls
+    /// `loadImpulse`.
+    pub(super) fn responses(&mut self) {
+        let loads = self.out.scripts.iter().any(|s| {
+            s.source.contains("loadImpulse")
+                || s.data.iter().any(|(name, bytes)| {
+                    name.ends_with(".lua") && bytes.windows(11).any(|w| w == b"loadImpulse")
+                })
+        });
+        if !loads {
+            return;
+        }
+        let played: Vec<String> = self
+            .program
+            .descendants()
+            .filter(|n| n.has_tag_name("Convolver") || n.has_tag_name("SampledReverb"))
+            .filter_map(|n| {
+                self.library
+                    .path_of(self.program_dir, n.attribute("SamplePath")?)
+            })
+            .collect();
+        let responses: std::collections::HashSet<usize> =
+            self.out.impulses.iter().map(|i| i.sample).collect();
+        let zones: std::collections::HashSet<String> = (self.out.samples.iter().enumerate())
+            .filter(|(i, _)| !responses.contains(i))
+            .map(|(_, s)| s.name.to_lowercase())
+            .collect();
+        let mut folders = std::collections::BTreeSet::new();
+        for path in &played {
+            let mut folder = parent(path);
+            while let Some(up) = folder.and_then(parent) {
+                let holds_zones = (self.library.audio_under(up).iter())
+                    .any(|p| zones.contains(&p.to_lowercase()));
+                if holds_zones {
+                    break;
+                }
+                folder = Some(up);
+            }
+            folders.extend(folder.map(str::to_owned));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for folder in folders {
+            for path in self.library.audio_under(&folder) {
+                if !seen.insert(path.to_lowercase()) {
+                    continue;
+                }
+                let Ok(sample) = self.sample(&path) else {
+                    continue;
+                };
+                // The engine matches a load by its file name without the
+                // extension (`load_ir_sample`'s law).
+                let file = path.rsplit('/').next().unwrap_or(&path);
+                let stem = file
+                    .rsplit_once('.')
+                    .map_or(file, |(s, _)| s)
+                    .to_lowercase();
+                let index = self.sample_index(sample);
+                self.out.responses.push((stem, index));
+            }
+        }
+    }
+}
+
+/// The folder of a member path; `None` at the bank's root.
+fn parent(path: &str) -> Option<&str> {
+    path.rsplit_once('/')
+        .map(|(f, _)| f)
+        .filter(|f| !f.is_empty())
 }
 
 /// A sampled reverb's wet level when its response is not normalized: UVI's
@@ -675,20 +761,6 @@ const POWER: ir::Normalize = ir::Normalize {
     channels: ir::EnergyChannels::Mean,
     after_resample: true,
 };
-
-/// A sampled reverb's `Time` window: UVI keeps `time` of the response and
-/// fades it by a half cosine, `(cos(πn/(N+1)) + 1)/2` over the kept `N`
-/// frames (0x141532fe0, π at 0x141cfab4c). Six linear knots trace the
-/// cosine within 2%; the rest is silent.
-fn fade(time: f32) -> [[f32; 2]; 8] {
-    let mut knots = [[1.0, SILENT]; 8];
-    for (k, knot) in knots.iter_mut().take(7).enumerate() {
-        let x = k as f32 / 6.0;
-        let gain = ((std::f32::consts::PI * x).cos() + 1.0) * 0.5;
-        *knot = [time * x, 20.0 * gain.max(1e-10).log10()];
-    }
-    knots
-}
 
 /// A sampled reverb's `Width` (-1..1) on a stereo response: UVI (IR build
 /// 0x141532fe0, from setter 0x14103f8f0) takes `c = -w`, `d = 2 + w` (2.0
@@ -754,34 +826,55 @@ fn matrix(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
     Ok(effect(ir::EffectKind::Matrix(m), 1.0, 0.0))
 }
 
-/// UVI's Maximizer (engine 0x141665620, parameter ids 0x1427fd2c0..2e4):
-/// the peak level in dB floored at Threshold, smoothed, gives a gain of
-/// `Ceiling − level` dB. That is Threshold-to-Ceiling of input gain into a
-/// limiter at Ceiling. Its release falls to a third in Release ms
-/// (`e^(ln(1/3)/frames)`, ln(1/3) at 0x141e64248, read at 0x1416656ea): the
-/// limiter, which halves in its release time, gets `Release·ln 2/ln 3`.
+/// UVI's Maximizer (process 0x141665620, prepare 0x141666780, parameter
+/// ids 0x1427fd2c0..2e4). Per block it takes the louder channel in dB,
+/// floored at Threshold (or through a quadratic knee `(x−T+k)²/4k` within
+/// ±Knee), and turns it into a gain of `Ceiling − level` dB after:
 ///
-/// ponytail: the 2 ms lookahead, ReleaseBlend's slow release (100× longer,
-/// 0.1 in every corpus program) and SlewRate are not carried; Knee and
-/// Attack, 0 in the corpus, are reported when set.
+/// - a slew limit: the level falls at most `10000/SlewRate` dB/s (prepare
+///   `10000/(rate·SlewRate)` per frame, no limit at 0); rises are free;
+/// - two one-pole falls blended by ReleaseBlend (0x141667480): one to a
+///   third in Release ms (`e^(ln(1/3)/frames)`, ln(1/3) at 0x141e64248),
+///   one 100× slower (`e^(−0.010986/frames)`); a rise uses Attack, which
+///   CeilingMode 0 (Brickwall, the default) forces to 0;
+/// - the largest level over the last `2·⌊Lookahead·rate/2000⌋` frames
+///   (0x141667790), applied to the audio delayed by as many frames.
+///
+/// CeilingMode 2 (Hard) also clamps the output at Ceiling (`10^(C/20)`).
+/// Threshold-to-Ceiling is input gain into a limiter at Ceiling.
+///
+/// ponytail: TruePeak (Off in every corpus program) adds a 6-frame
+/// oversampled detector; it is reported, not modelled.
 fn maximizer(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
     let threshold = num(node, "Threshold", 0.0)? as f32;
     let ceiling = num(node, "Ceiling", -0.1)? as f32;
-    for name in ["Knee", "Attack"] {
-        if num(node, name, 0.0)? != 0.0 {
-            notes.add(ir::Impact::Audible, &format!("maximizer {name}"), "");
-        }
+    let mode = num(node, "CeilingMode", 0.0)?;
+    if num(node, "TruePeak", 0.0)? != 0.0 {
+        notes.add(ir::Impact::Audible, "maximizer TruePeak", "");
     }
+    let slew = num(node, "SlewRate", 0.0)?;
     let kind = ir::EffectKind::Limiter(ir::Limiter {
         input_db: ceiling - threshold,
         ceiling_db: ceiling,
-        release_ms: (num(node, "Release", 10.0)?.max(0.0) * THIRD_TO_HALF) as f32,
+        // 6.02 dB at 10000/SlewRate dB/s.
+        release_ms: if slew > 0.0 {
+            (slew * 20.0 * std::f64::consts::LOG10_2 / 10.0) as f32
+        } else {
+            0.0
+        },
+        knee_db: num(node, "Knee", 0.0)?.max(0.0) as f32,
+        attack_ms: if mode == 0.0 {
+            0.0
+        } else {
+            num(node, "Attack", 0.0)?.max(0.0) as f32
+        },
+        smooth_ms: num(node, "Release", 10.0)?.max(0.0) as f32,
+        slow: num(node, "ReleaseBlend", 0.0)?.clamp(0.0, 1.0) as f32,
+        lookahead_ms: num(node, "Lookahead", 0.0)?.max(0.0) as f32,
+        clip: mode == 2.0,
     });
     Ok(effect(kind, 1.0, 0.0))
 }
-
-/// A fall to a third in `t` is a halving in `t·ln 2/ln 3`.
-const THIRD_TO_HALF: f64 = std::f64::consts::LN_2 / 1.098_612_288_668_109_8;
 
 /// The dry level of an effect whose output is mostly a wet path (a reverb,
 /// a delay); `None` for one that processes in place.
@@ -870,15 +963,19 @@ mod tests {
     #[test]
     fn a_maximizer_lifts_by_its_threshold_into_a_limiter_at_its_ceiling() {
         // Augmented Orchestra's most common setting (90 programs).
-        let xml = r#"<Maximizer Threshold="-6" Attack="0" Lookahead="2" Release="10" Ceiling="-0.1" Knee="0"/>"#;
+        let xml = r#"<Maximizer Threshold="-6" Attack="0" Lookahead="2" Release="10" Ceiling="-0.1" Knee="0" ReleaseBlend="0.1" SlewRate="20"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
         let e = maximizer(doc.root_element(), &mut Notes::default()).unwrap();
         let ir::EffectKind::Limiter(l) = e.kind else {
             panic!("{e:?}")
         };
-        // Falls to a third in 10 ms: halves in 6.31 ms.
         assert_eq!((l.input_db, l.ceiling_db), (5.9, -0.1));
-        assert!((l.release_ms - 6.309).abs() < 0.01, "{}", l.release_ms);
+        // 500 dB/s: 6.02 dB in 12.04 ms.
+        assert!((l.release_ms - 12.04).abs() < 0.01, "{}", l.release_ms);
+        assert_eq!(
+            (l.smooth_ms, l.slow, l.lookahead_ms, l.attack_ms, l.clip),
+            (10.0, 0.1, 2.0, 0.0, false)
+        );
         assert_eq!((e.output, e.dry), (1.0, 0.0));
     }
 
@@ -920,19 +1017,5 @@ mod tests {
         // Full width: the sides lean apart, a quarter of each into the other.
         let [a, _] = widen(1.0);
         assert!((a[1] / a[0] + 1.0 / 3.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_shortened_reverb_fades_out_by_its_time() {
-        let knots = fade(0.6);
-        assert_eq!(knots[0], [0.0, 0.0]);
-        // Halfway through the kept part, the cosine is at half (-6 dB).
-        let [x, db] = knots[3];
-        assert!(
-            (x - 0.3).abs() < 1e-6 && (db + 6.02).abs() < 0.01,
-            "{x} {db}"
-        );
-        assert_eq!(knots[6], [0.6, SILENT]);
-        assert_eq!(knots[7], [1.0, SILENT]);
     }
 }

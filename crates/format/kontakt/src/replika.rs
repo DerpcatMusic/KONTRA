@@ -327,6 +327,7 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
         .zip(0u8..)
         .map(|(&hz, n)| (f32::from(n) / 10.0, hz, 0.0));
     Some(ir::Delay {
+        direct: 0.0,
         time: match r.beats {
             Some(beats) => ir::DelayTime::Beats(r.ms.max(0.0) * beats),
             None => ir::DelayTime::Ms(r.ms.max(0.0)),

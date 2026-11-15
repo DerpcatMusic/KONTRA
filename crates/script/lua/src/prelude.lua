@@ -214,6 +214,11 @@ local widget
 -- A widget's value lives in `__value`: assigning `w.value` runs its
 -- `changed`, as UVIWorkstation's setter does (VWinds' preset arrows set
 -- `menu.value` and rely on it), except from inside its own `changed`.
+-- Every write of a widget's value counts: a route knows its own by it.
+local function wrote(w, v)
+	rawset(w, "__value", v)
+	rawset(w, "__writes", (rawget(w, "__writes") or 0) + 1)
+end
 local function run_changed(w, mods)
 	local changed = rawget(w, "changed")
 	if type(changed) == "function" and not rawget(w, "__changing") then
@@ -289,7 +294,7 @@ local widget_meta = {
 				target[1]:setParameter(target[2], v)
 			end
 		elseif key == "value" then
-			rawset(w, "__value", v)
+			wrote(w, v)
 			run_changed(w)
 		elseif geometry[key] and type(v) == "table" then
 			place(w, key, v)
@@ -441,20 +446,37 @@ function __control(id, value)
 		c:setValue(value, force(c))
 	end
 end
--- Control `id` moves to `saved`'s place in its range times `1 + scale`, plus `m`, held
--- within it (a format's connection onto a knob); its `changed` runs when the
--- value moves.
-function __control_mod(id, saved, scale, m)
+-- Control `id` moves to its own value's place in its range times
+-- `1 + scale`, plus `m`, held within it (a format's connection onto a knob);
+-- its `changed` runs when the value moves. Its own value is what a restore,
+-- the player or the script last set: the routes move from it, not from
+-- where they last left it, so a preset's value (Augmented Orchestra's
+-- `MIDICurve_1=-0.99999899`) holds until a route moves.
+function __control_mod(id, scale, m)
 	local c = __controls[id + 1]
 	local lo, hi = tonumber(c and c.min), tonumber(c and c.max)
-	if not (lo and hi) or hi == lo then
+	local own = tonumber(c and c.value)
+	if not (lo and hi and own) or hi == lo then
 		return
 	end
-	local u = math.min(math.max((saved - lo) / (hi - lo) * (1 + scale) + m, 0), 1)
-	local v = lo + u * (hi - lo)
-	if c.integer then
+	-- Any write since the route's own (a script's, the player's, a
+	-- restore's, even of the routed value) is the new base.
+	local writes = rawget(c, "__writes") or 0
+	local base = rawget(c, "__route_base")
+	if base == nil or writes ~= rawget(c, "__routed_at") then
+		base = own
+	end
+	local u = math.min(math.max((base - lo) / (hi - lo) * (1 + scale) + m, 0), 1)
+	-- Routes at rest leave it exactly where it was.
+	local v = (scale == 0 and m == 0) and base or lo + u * (hi - lo)
+	-- Its own flag: an unset one reads through the widget's methods.
+	if rawget(c, "integer") == true then
 		v = math.floor(v + 0.5)
 	end
+	-- Kept before the write: a `changed` that fails or waits leaves it,
+	-- and an edit while it waits counts past it.
+	rawset(c, "__route_base", base)
+	rawset(c, "__routed_at", writes + 1)
 	c:setValue(v)
 end
 -- The UI the script builds, for the editor: every widget in the order the
@@ -561,15 +583,21 @@ widget = function(kind, name, value, ...)
 	-- A script's setValue runs `changed` only when the value changes, as
 	-- JUCE's controls under UVI do: W Strings Harmonic's linked arpeggiator
 	-- buttons set each other and recursed without end. A user's move always
-	-- runs it (`__FORCE`); a restore, when it moves the widget.
+	-- runs it (`__FORCE`); a restore, when it moves the widget. A `changed`
+	-- that failed leaves the value unsettled, so setting it again (the same
+	-- preset reloaded) runs `changed` again.
 	w.setValue = function(self, v, run)
 		local was = rawget(self, "__value")
-		rawset(self, "__value", v)
-		if run ~= false and (run == __FORCE or v ~= was) then
+		wrote(self, v)
+		if run ~= false and (run == __FORCE or v ~= was or rawget(self, "__unsettled")) then
 			-- A click's modifier keys reach a button's `changed`; a script's
 			-- own move has none.
 			local click = run == __FORCE and pressed[kind]
-			run_changed(self, click and { altDown = false, commandDown = false, shiftDown = false } or nil)
+			local ok, err = pcall(run_changed, self, click and { altDown = false, commandDown = false, shiftDown = false } or nil)
+			rawset(self, "__unsettled", not ok or nil)
+			if not ok then
+				error(err, 0)
+			end
 		end
 	end
 	w.getValue = function(self)
@@ -639,6 +667,7 @@ local ALL_EVENTS = -1
 local ALLOW_GROUP = 10
 local MOD_VALUE = 30
 local ZONE_SLOT = 15
+local START_OFFSET = 4096
 local found, tree = pcall(require, "__program")
 if not found or type(tree) ~= "table" then
 	tree = { params = {}, db = 0, pan = 0, layers = {} }
@@ -718,6 +747,32 @@ local function fields_of(e)
 	return getmetatable(e).__newindex
 end
 
+-- A layer's play law, `line` its `{voice group, glide scope, own note
+-- limit}`. `PlayMode` (Falcon manual, Layer editor; program.rs
+-- `layer_polyphony`): 0 Poly, 1 Poly Portamento (each note slides from the
+-- last), 2 Mono Retrigger, 3 Mono Portamento (a legato note takes over and
+-- slides), 4 Mono Portamento Slide (a detached note slides too). The glide's
+-- numbers: `PortamentoTime` seconds, `PortamentoMode` 1 per semitone,
+-- `PortamentoCurve` -1..1.
+local GLIDE_KNOBS = { PortamentoTime = 1, PortamentoMode = 2, PortamentoCurve = 3 }
+local function set_line(line, name, value)
+	local x = tonumber(value)
+	if not x then
+		return
+	end
+	if name == "PlayMode" then
+		local m = math.floor(x)
+		local mono = m >= 2 and m <= 4
+		local bit = function(b)
+			return b and 1 or 0
+		end
+		host_call("VoiceLine", line[1], line[2], mono and 1 or line[3], bit(m == 3 or m == 4), bit(mono),
+			bit(m == 1 or m == 3 or m == 4), bit(m == 3), bit(m ~= 1))
+	elseif GLIDE_KNOBS[name] then
+		host_call("GlideKnob", line[2], GLIDE_KNOBS[name], math.floor(x * 1e6 + 0.5))
+	end
+end
+
 local Element = {}
 function Element.getParameter(self, name)
 	return self.params[name]
@@ -734,6 +789,11 @@ function Element.setParameter(self, name, value)
 	if was ~= value and __watch then
 		__watch(self, name)
 	end
+	local line = fields_of(self).line
+	if line then
+		set_line(line, name, value)
+		return
+	end
 	local fx = fields_of(self).fx
 	if not fx then
 		return
@@ -742,6 +802,11 @@ function Element.setParameter(self, name, value)
 		host_call("EffectBypass", fx[1], fx[2], fx[3], on and 1 or 0)
 	elseif name == "Volume" and type(value) == "number" then
 		host_call("EffectGain", fx[1], fx[2], fx[3], math.floor(value * 1e6 + 0.5))
+	end
+	-- A number its response is prepared by: prepared again off the audio thread.
+	local knob = (fields_of(self).impulse or EMPTY)[name]
+	if knob and tonumber(value) then
+		host_call("ImpulseKnob", fx[1], fx[2], fx[3], knob, math.floor(tonumber(value) * 1e6 + 0.5))
 	end
 	-- Any other number the format mapped: each control it moves,
 	-- `{control, x1, y1, ...}`, by the number, straight between points.
@@ -858,6 +923,8 @@ function element(node)
 		mod = node.mod,
 		fx = node.fx,
 		knobs = node.knobs,
+		impulse = node.impulse,
+		line = node.line,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)
@@ -984,8 +1051,11 @@ local levels = { Gain = true, Pan = true, Mute = true, Bypass = true }
 
 local function set_level(self, name, value)
 	self.params[name] = value
+	local line = fields_of(self).line
 	if levels[name] then
 		apply_level(self)
+	elseif line then
+		set_line(line, name, value)
 	end
 end
 
@@ -1096,13 +1166,18 @@ function isKeyDown(note)
 	return host_call("KeyDown", note) ~= 0
 end
 
-function playNote(note, velocity, duration, layer, channel, input, vol, pan, tune, oscIndex)
+-- UVI's signature (its embedded api): `slice` comes before `oscIndex`, and
+-- a duration > 0 releases after that many ms, 0 waits for releaseVoice,
+-- -1 (the default) releases with the note that started the callback.
+function playNote(note, velocity, duration, layer, channel, input, vol, pan, tune, slice, oscIndex)
 	if type(note) == "table" then
 		local t = note
 		note, velocity, duration = t.note or t[1], t.velocity or t[2], t.duration or t[3]
-		layer, vol, pan, tune, oscIndex = t.layer or t[4], t.vol, t.pan, t.tune, t.oscIndex
+		layer, vol, pan, tune = t.layer or t[4], t.vol or t[7], t.pan or t[8], t.tune or t[9]
+		oscIndex = t.oscIndex or t[11]
 	end
-	local micros = duration and duration > 0 and math.floor(duration * 1000) or 0
+	duration = duration or -1
+	local micros = duration > 0 and math.floor(duration * 1000) or (duration < 0 and -1 or 0)
 	local id = host_call("PlayNote", note, velocity or 100, 0, micros)
 	if oscIndex and oscIndex >= 0 then
 		host_call("SetEventPar", id, ZONE_SLOT, oscIndex)
@@ -1243,11 +1318,20 @@ function loadSample(oscillator, path, done)
 	end
 end
 
--- ponytail: impulses are not loaded; the callback reports success so a
--- script that mutes while one loads (VWinds' room) unmutes.
+-- loadImpulse(insert, path, done): the bank's response `path` (found by its
+-- file name, as the program's own responses are listed) into the
+-- convolution the engine plays for `insert`. It is decoded off the audio
+-- thread and swapped in a few blocks later; the callback reports at once,
+-- so a script that mutes while one loads (VWinds' room) unmutes.
 function loadImpulse(insert, path, done)
+	local fx = type(insert) == "userdata" and fields_of(insert).fx
+	local ok = false
+	if fx and type(path) == "string" then
+		-- Before init the call waits in `pending`: it loads then.
+		ok = host_call("LoadImpulse", fx[1], fx[2], fx[3], path) ~= nil or not __host
+	end
 	if type(done) == "function" then
-		done({ success = true })
+		done({ success = ok })
 	end
 end
 
@@ -1411,13 +1495,24 @@ function fadein(id, ms)
 	host_call("FadeIn", id, math.floor((ms or 0) * 1000))
 end
 
--- ponytail: the fade is drawn as a jump to its end level.
-function fade2(id, from, to, ms, kill)
+-- UVI's fade gain sits on top of changeVolume (its embedded api: `fade`
+-- ramps from the current fade value, `fade2` from `from`; the fifth
+-- argument is a layer, not a kill). A note not yet started fades in from
+-- silence, as `fade2(playNote{...}, 0, 1, ms)` asks.
+-- ponytail: the engine fades to full or to silence; a target between
+-- holds full, and a started voice's `from` is where it is. Every flagship
+-- call is (new note, 0, 1|0, ms).
+function fade(id, to, ms)
+	local micros = math.floor(math.max(0, ms or 0) * 1000)
 	if (to or 0) <= 0 then
-		fadeout(id, ms, kill)
+		host_call("FadeOut", id, micros, 0)
 	else
-		changeVolume(id, to, false, true)
+		host_call("FadeIn", id, micros)
 	end
+end
+
+function fade2(id, from, to, ms)
+	fade(id, to, ms)
 end
 
 -- class 'Name' or class 'Name' (Base): luabind-style classes. Calling the
@@ -1628,17 +1723,30 @@ function loadState(path, done)
 		land(file, done, function() end)
 		return
 	end
-	-- Once running, the preset lands after the call returns (our choice),
-	-- one control's callbacks every PRESET_PACE ms of audio: a preset's 26
-	-- callbacks (VWinds, up to 4 ms each) never pile into one audio block.
+	-- Once running, the preset lands after the call returns, as UVI's async
+	-- `_loadState` task does. From a control move it lands at once, all its
+	-- values together as UVI's do: the host slices the task to the block's
+	-- budget (a VWinds preset is ~130 values; paced, a move made within
+	-- 1.5 s of picking it was overwritten). From any other callback, which
+	-- runs unsliced, one control's callbacks every PRESET_PACE ms of audio,
+	-- so a preset's callbacks (VWinds, up to 4 ms each) never pile into one
+	-- block.
+	local pace = __editing and function() end or wait
 	spawn(function()
 		wait(PRESET_PACE)
-		land(file, done, wait)
+		land(file, done, pace)
 	end)
 end
 
+-- UVI's own: `setVoiceParameter(SampleStartMillisecond, id, ms)` (its
+-- embedded api, "offset in milliseconds in the sample"). It acts on a note
+-- before its voices start, as `playNote` returns in the same callback.
+function setSampleOffset(id, ms)
+	host_call("SetEventPar", id, START_OFFSET, math.floor(math.max(0, ms or 0) * 1000))
+end
+
 for _, name in ipairs({
-	"setKeyColour", "setSampleOffset", "setKeyType", "setKeyPressed",
+	"setKeyColour", "setKeyType", "setKeyPressed",
 }) do
 	_G[name] = function() end
 end

@@ -25,6 +25,8 @@ pub struct Compressor {
     /// 0..=1: the compressed share of the output.
     pub mix: f32,
     pub detector: Detector,
+    /// A one-pole high-pass on what the detector reads, its corner in Hz.
+    pub sidechain_hz: Option<f32>,
 }
 
 impl Compressor {
@@ -33,6 +35,14 @@ impl Compressor {
         let reduction = -self.threshold_db * (1.0 - 1.0 / self.ratio.max(1.0));
         self.makeup_db + self.makeup_slope * reduction
     }
+}
+
+/// A compressor, then a waveshaper (a channel strip's dynamics and drive),
+/// in place: the curve reads the compressed signal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Strip {
+    pub compressor: Compressor,
+    pub shaper: crate::Shaper,
 }
 
 /// What a compressor's level detector reads.
@@ -61,15 +71,44 @@ pub struct Transient {
     pub clip: bool,
 }
 
-/// A peak limiter: input gain, then nothing past the ceiling.
+/// A peak limiter: input gain, then a gain reduction that holds peaks to
+/// the ceiling, optionally smoothed and looking ahead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Limiter {
     /// Gain before limiting.
     pub input_db: f32,
     /// The highest peak it lets out.
     pub ceiling_db: f32,
-    /// Time for the held peak to halve.
+    /// Time for the held peak to halve (6 dB of recovery); 0 = no limit.
     pub release_ms: f32,
+    /// Width of the soft knee around the ceiling, dB.
+    pub knee_db: f32,
+    /// Time a rising reduction takes to cover two thirds of the step.
+    pub attack_ms: f32,
+    /// Time a falling reduction takes to fall to a third; 0 = no smoothing.
+    pub smooth_ms: f32,
+    /// Share, 0..=1, of a fall 100× slower than `smooth_ms`.
+    pub slow: f32,
+    /// How far ahead the gain looks; the audio is delayed by this much.
+    pub lookahead_ms: f32,
+    /// Clip the output at the ceiling.
+    pub clip: bool,
+}
+
+impl Limiter {
+    /// A peak follower and a clip at full scale: no knee, smoothing or
+    /// lookahead.
+    pub const PEAK: Self = Self {
+        input_db: 0.0,
+        ceiling_db: 0.0,
+        release_ms: 0.0,
+        knee_db: 0.0,
+        attack_ms: 0.0,
+        smooth_ms: 0.0,
+        slow: 0.0,
+        lookahead_ms: 0.0,
+        clip: true,
+    };
 }
 
 /// A delay length: fixed, or in quarter-note beats at the host's tempo.
@@ -130,6 +169,27 @@ pub struct Delay {
     pub rate: Rate,
     /// Cycles the right LFO runs ahead of the left.
     pub phase: f32,
+    /// The input straight to the output, with the heads (0 for none): a
+    /// chorus that mixes its own dry signal.
+    pub direct: f32,
+}
+
+/// A pitch-shifting echo in physical units: two lines, on each two heads
+/// gliding at `speed` against the write head, crossfaded so each grain is
+/// centred on the delay; their sum back into the lines by `feedback`,
+/// `cross` of it from the other side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shifter {
+    /// The left side's delay.
+    pub time: DelayTime,
+    /// The right side's delay over the left's.
+    pub right: f32,
+    /// Each side's heads' speed over the write head's: 1 an echo, 2 an
+    /// octave up, negative backwards.
+    pub speed: [f32; 2],
+    pub feedback: f32,
+    /// 0..=1: the other side's share of each line's feedback.
+    pub cross: f32,
 }
 
 /// A phaser in physical units: `stages` first-order allpasses whose corner
@@ -379,6 +439,8 @@ pub enum ImpulseKnob {
     Size {
         late: bool,
     },
+    /// The share of the response kept ([`crate::Impulse::length`]).
+    Length,
 }
 
 impl ImpulseKnob {
@@ -387,6 +449,7 @@ impl ImpulseKnob {
     pub fn field_mut(self, law: &mut crate::Impulse) -> &mut f32 {
         match self {
             Self::PredelayMs => &mut law.predelay_ms,
+            Self::Length => &mut law.length,
             Self::Size { late } => {
                 let [early, late_part] = &mut law.size;
                 if late { late_part } else { early }

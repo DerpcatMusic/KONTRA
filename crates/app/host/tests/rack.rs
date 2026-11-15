@@ -185,7 +185,7 @@ fn parts_listen_on_their_port_and_channel_a1_to_d16() {
     assert!(l0 > 0.05, "A1 silent on port A: {l0}");
     let cc = Event::midi1(0xB0, 7, 100);
     let Event::Ump([word, extra]) = cc else {
-        unreachable!()
+        panic!("a MIDI 1 controller is a UMP: {cc:?}")
     };
     let on_b = Event::Ump([word | 1 << 24, extra]);
     assert_eq!((on_b.port(), on_b.port_channel()), (Some(1), Some(16)));
@@ -558,6 +558,8 @@ fn loading_response(wav: &[u8], name: &str) -> (Rack, RackAudio) {
         envelope: None,
         mix: None,
         size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
     };
     plan.impulse_laws = vec![("room".into(), law)];
     let sample = ir::Sample {

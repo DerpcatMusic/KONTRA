@@ -92,15 +92,47 @@ high shelf at CHARACTER 1, whose dB is linear in CHARACTER (0.5 sits midway in t
 - At SATURATION 0 (every mode), and at 0.25 in Mild and Hot, part of the loss is a clean gain: at full input Kontakt's
   3rd harmonic is -58 to -77 dB under the tone where the curve gives -20 to -39 dB. From 0.5 up the harmonics match
   within 1 dB (3rd to 9th).
-- COMPRESS is a compressor, not a curve: at 0.5 the output holds -20 to -19 dB for a 1 kHz tone rising 18 dB, the
-  3rd harmonic at -62 to -64 dB; at 1, -21 dB with the 3rd at -57 to -39 dB.
-- HPF_MODE is level-dependent, so it sits in that compressor's detector: against mode 0 the level falls by 1.5 dB
-  (mode 1) and 3.0 dB (mode 2) on a -20.6 dBFS sweep but rises by 2.0 and 1.5 dB on a -60 dB sweep, flat to within
-  0.4 dB from 63 Hz to 10 kHz.
-- After a loud input stops, Kontakt's output holds near the curve's ceiling for 30 ms and falls to -50 dB over the
-  next 100 ms (Hot, SATURATION 1); something before its saturator rings, which the model's base tone does not.
 
-The translator reports a record with COMPRESS above 0 or HPF_MODE not 0 (`Supercharger GT compressor`).
+### The compressor, HPF_MODE and the ring-out (Kontakt 8.13.1, 2026-11-15)
+
+COMPRESS is a compressor ahead of the saturator and the tone, one slot in the engine (`ir::Strip`: the engine's
+compressor into its waveshaper). Each law was read from oracle renders at SATURATION 0 (Mild), wet against the
+bypassed instance; `tools/kontakt-oracle/fx_lab.py` `levels`, `burst`, `steps` and `ramp`.
+
+- Static curve: 1 kHz tones from -48 to -8 dB peak (and, at 1, the -58 dB tail of a burst), gains less COMPRESS 0's,
+  fitted with the engine compressor's soft knee:
+
+  | COMPRESS | threshold dB | ratio | knee dB | make-up dB | rms error dB |
+  |---|---|---|---|---|---|
+  | 0.25 | -26.5 | 2.41 | 19 | 3.48 | 0.06 |
+  | 0.5 | -33.5 | 3.85 | 24 | 8.00 | 0.10 |
+  | 0.75 | -42.0 | 4.71 | 25 | 15.96 | 0.19 |
+  | 1 | -68.0 | 5.76 | 27 | 37.54 | 0.24 |
+
+  Linear between; 0 passes. The trim is the gain into it (the model lowers the threshold by the trim instead).
+- ATTACK and RELEASE (bursts of -12 dB over a -50 dB tone, COMPRESS 1): attack t63 1 ms at 0, 2 ms at 0.5, 30 ms at 1
+  (`30^(ATTACK^2)` ms); release t63 63, 288 and 770 ms at 0, 0.5 and 1 (`exp(4.143 + 3.57r - 1.06r^2)` ms). Both
+  also move the steady gain, loud and quiet alike: +0.8 dB at ATTACK 0, none at 0.5, -9 dB at 1; +3.3 dB per RELEASE
+  unit (against the INIT 0.3667 and 0.4444).
+- HPF_MODE 1 and 2: a one-pole high-pass at 100 and 300 Hz on the detector (stepped tones at -12 dB, COMPRESS 1: the
+  reduction lost at 63..500 Hz matches the high-pass within 0.4 dB), and a flat -1.5 and -3.0 dB on the output (the
+  same at COMPRESS 0, every level from -48 to -8 dB).
+- The ring-out after a loud stop is a DC tail: a ramp stopping at full scale leaves a 0..40 Hz tail 44 dB under the
+  tone falling 4 to 5 dB per 10 ms, at COMPRESS 0 too. An 8 Hz one-pole high-pass before the curve gives it (at the
+  end of a burst the model falls 4.4 dB per 10 ms where Kontakt falls 4.0), and the saturator lifts it at high drive.
+- Channel link is not read (linked; no knob sets it).
+
+Gate (`fx_export.py`, the fit test, `fx_gate.py`; SATURATION 0, Mild):
+
+| Case | band max / rms dB | frames, rms dB | settled frames, rms dB |
+|---|---|---|---|
+| levels, COMPRESS 0.5 / 1 | 7.8, 4.3 / 3.7, 3.2 | 0.41 / 0.69 | 0.41 / 0.01 |
+| bursts, COMPRESS 1, RELEASE 0 / 0.5 / 1 | 1.9, 6.8, 7.8 / 0.85, 2.0, 2.2 | 1.06 / 1.42 / 1.86 | 0.98 / 1.36 / 1.82 |
+| bursts, COMPRESS 1, ATTACK 0.5 / 1 | 10.5, 10.0 / 5.4, 5.2 | 1.02 / 1.42 | 0.95 / 1.27 |
+| steps, COMPRESS 1, HPF_MODE 0 / 1 / 2 | 3.3, 3.7, 3.3 / 0.76, 1.22, 0.98 | 1.32 / 1.98 / 2.90 | 1.26 / 1.49 / 2.00 |
+
+Band errors are the harmonics (the 3rd at 3 kHz; the clean-gain loss above); frame maxima sit on the edges of the
+steps and bursts, where a 10 ms lag is 20 dB.
 
 ### Gate (ramps to full scale, every SAT_MODE x SATURATION; session slot 1 left out)
 

@@ -119,18 +119,17 @@ impl Engine {
             }
         }
         for (k, scale, add) in moved {
-            let (saved, scale, add) = (f64::from(k.saved), f64::from(scale), f64::from(add));
-            self.set_control_mod(k.slot, k.id, saved, scale, add);
+            self.set_control_mod(k.slot, k.id, f64::from(scale), f64::from(add));
         }
     }
 
     /// A route's value moved foreign script `slot`'s control `id`
     /// ([`kontra_plan::KnobModPlan`]); the machine runs its `changed` if the
     /// value moved.
-    pub fn set_control_mod(&mut self, slot: u8, id: i32, saved: f64, scale: f64, m: f64) {
+    pub fn set_control_mod(&mut self, slot: u8, id: i32, scale: f64, m: f64) {
         let running = Running::new(Kind::UiControl, None);
         self.run_with(slot, running, |vm, context| {
-            vm.control_mod(id, saved, scale, m, context)
+            vm.control_mod(id, scale, m, context)
         });
     }
 

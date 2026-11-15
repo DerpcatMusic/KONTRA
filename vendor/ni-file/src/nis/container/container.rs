@@ -143,6 +143,67 @@ impl ItemContainer {
         Ok(())
     }
 
+    /// The first item of `kind` here or below, to edit.
+    fn find_mut(&mut self, kind: &ItemType) -> Option<&mut ItemContainer> {
+        if &self.data.header.item_type() == kind {
+            return Some(self);
+        }
+        self.children.iter_mut().find_map(|c| c.find_mut(kind))
+    }
+
+    /// Puts `chunk` in place of the preset's Kontakt chunk stream: its
+    /// encryption item's subtree is decoded (with `key` when encrypted) and
+    /// written back compressed and unencrypted, as a user preset is. The
+    /// preset chunk's checksum field is kept as it was.
+    pub fn set_preset_chunk(
+        &mut self,
+        chunk: &[u8],
+        key: Option<&dyn super::super::LibraryKey>,
+    ) -> Result<(), Error> {
+        let enc = self
+            .find_mut(&ItemType::EncryptionItem)
+            .ok_or(Error::Static("No EncryptionItem"))?;
+        let mut inner = super::super::EncryptionItem::read_with_key(&enc.data, key)?
+            .subtree
+            .item()?;
+        let item = inner
+            .find_mut(&ItemType::PresetChunkItem)
+            .ok_or(Error::Static("No PresetChunkItem"))?;
+        // version, checksum, version, u64 length, then the chunk stream.
+        let old = &item.data.data;
+        let size = old
+            .get(12..20)
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_le_bytes)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or(Error::Static("Invalid preset chunk item"))?;
+        let (head, tail) = old
+            .get(..12)
+            .zip(size.checked_add(20).and_then(|end| old.get(end..)))
+            .ok_or(Error::Static("Invalid preset chunk item"))?;
+        let mut data = head.to_vec();
+        data.extend((chunk.len() as u64).to_le_bytes());
+        data.extend(chunk);
+        data.extend(tail);
+        item.data.data = data;
+        let mut bytes = Vec::new();
+        inner.write(&mut bytes)?;
+        let mut subtree = Vec::new();
+        super::super::SubtreeItem { inner_data: bytes }.write_with_key(&mut subtree, true, None)?;
+        let flag = enc
+            .data
+            .data
+            .get_mut(4)
+            .ok_or(Error::Static("Invalid encryption item"))?;
+        *flag = 0;
+        enc.data
+            .inner
+            .as_mut()
+            .ok_or(Error::Static("Missing preset subtree"))?
+            .data = subtree;
+        Ok(())
+    }
+
     pub fn first_child(&self) -> Option<&ItemContainer> {
         self.children.first()
     }

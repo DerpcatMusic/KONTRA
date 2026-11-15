@@ -184,7 +184,8 @@ pub struct Engine {
     /// Responses scripts loaded while loading (`load_ir_sample`): name,
     /// how prepared, the response. Convolution indices past the plan's.
     loaded: Vec<(String, ir::Impulse, Response)>,
-    init_impulses: Vec<impulse_knobs::InitImpulse>,
+    /// Each convolution slot's last asked-for response (impulse_knobs.rs).
+    wanted: Vec<impulse_knobs::Wanted>,
     /// Effects scripts asked to load since the host last drained them.
     requests: Vec<fx_types::EffectRequest>,
     /// `set_zone_par` calls waiting for the host (zone_edits.rs).
@@ -214,8 +215,8 @@ pub struct Engine {
     /// The buffers every voice renders through, in turn.
     voice_scratch: Scratch,
     buses: Vec<BusState>,
-    /// Sustain pedal down, per MIDI channel.
-    pedal: [bool; 16],
+    /// Sustain pedal down, per port and channel.
+    pedal: [bool; kontra_behaviour::CHANNELS],
     /// Scratch for ledger queries, capacity = note table size.
     hits: Vec<NoteRef>,
     ended: Vec<HostNote>,
@@ -307,6 +308,8 @@ pub struct Engine {
     /// While set, notes start only their zones in this voice group (a
     /// line's older key coming back).
     only_voice_group: Option<u32>,
+    /// The plan's voice groups as scripts left them (`set_voice_line`).
+    voice_groups: Box<[ir::VoiceGroup]>,
     /// A stamp per ledger slot: the notes a note-counting voice group
     /// has seen in its current count (voice_groups.rs). Sized at build.
     note_seen: Box<[u32]>,
@@ -359,6 +362,7 @@ impl Engine {
     ) -> Self {
         let out = plan.output;
         let shared: Box<[Group]> = plan.groups.clone().into();
+        let voice_groups: Box<[ir::VoiceGroup]> = plan.voice_groups.clone().into();
         let rack = racks::Rack::new(&plan.inserts, rate, &[]);
         let sends: Box<[racks::Rack]> = plan
             .sends
@@ -441,7 +445,7 @@ impl Engine {
             notes,
             plan,
             loaded: Vec::with_capacity(fx_types::REQUESTS),
-            init_impulses: Vec::new(),
+            wanted: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
             zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
             unpurges: Vec::with_capacity(16),
@@ -456,7 +460,7 @@ impl Engine {
             voices,
             voice_scratch: Scratch::allocate(),
             buses,
-            pedal: [false; 16],
+            pedal: [false; kontra_behaviour::CHANNELS],
             stats: Stats::default(),
             vms,
             routes_moved: None,
@@ -470,6 +474,7 @@ impl Engine {
             glides: [glide::Latest::default(); glide::SCOPES],
             lines: vec![mono::Line::default(); mono::LINES].into(),
             only_voice_group: None,
+            voice_groups,
             note_seen: vec![0; capacity].into(),
             note_stamp: 0,
             running: Running::IDLE,
@@ -684,7 +689,8 @@ impl Engine {
     }
 
     fn note_on(&mut self, host: HostNote, velocity: f64, tune: f64) {
-        self.behaviour.play(&self.plan, host.key, host.channel);
+        self.behaviour
+            .play(&self.plan, host.key, host.port_channel());
         // A script that plays its own release notes: the key going down
         // starts its release-trigger counter, not the notes it plays.
         if self.plan.release_zones == ReleaseZones::WithNote
@@ -736,7 +742,7 @@ impl Engine {
             if n.is_up() {
                 continue;
             }
-            let channel = n.host.channel;
+            let channel = n.host.port_channel();
             // `%KEY_DOWN` reads 0 in the key's own `on release`.
             n.key_up = true;
             if let Some(slot) = self.release_callbacks(note) {
