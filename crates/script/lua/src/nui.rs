@@ -691,7 +691,11 @@ mod tests {
             panic!("no tap callback");
         };
         let writes = page.call(*n, [0.; 2], [1.; 2]).unwrap();
-        assert_eq!(writes, [("Fx".to_owned(), 1.)], "entry 2 is Digitize, value 1");
+        assert_eq!(
+            writes,
+            [("Fx".to_owned(), 1.)],
+            "entry 2 is Digitize, value 1"
+        );
     }
 
     /// A canvas paints in the frame it is given: a path filled and

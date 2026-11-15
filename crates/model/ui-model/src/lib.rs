@@ -663,7 +663,10 @@ pub enum Kind {
     /// MIDI and array files it accepts (0 none, 1 one, more any number);
     /// `drag`: whether a drag passing over it calls back too, not only
     /// the drop.
-    MouseArea { takes: [u16; 3], drag: bool },
+    MouseArea {
+        takes: [u16; 3],
+        drag: bool,
+    },
     /// A shape a Kontakt 8 `native_ui` page draws, filled with
     /// `colors.background`.
     Shape(Shape),

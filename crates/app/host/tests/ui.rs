@@ -529,7 +529,10 @@ fn a_file_dropped_on_a_mouse_area_reaches_its_callback() {
     let mut live = Live::new(&face, 0, &engine, &|_| None).unwrap();
     assert_eq!(
         widget(&live.tree, "$area").kind,
-        ui::Kind::MouseArea { takes: [1, 0, 0], drag: true }
+        ui::Kind::MouseArea {
+            takes: [1, 0, 0],
+            drag: true
+        }
     );
     let area: i32 = engine.last_message().parse().unwrap();
     let mut run = |engine: &mut Engine, drop: bool, over: bool| {

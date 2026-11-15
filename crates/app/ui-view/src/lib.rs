@@ -836,7 +836,13 @@ fn image_asset(tree: &Interface, a: model::AssetRef) -> Option<(&str, model::Ima
 /// its left edge, the widget `width` wide at `scale`): its words placed as
 /// [`words_el`] draws them (the plan's size, inset and alignment) and hit
 /// against the scene font's own caret positions.
-pub fn char_at(ui: &Ui, tree: &Interface, w: &model::Widget, (width, height, scale): (f64, f64, f64), x: f64) -> usize {
+pub fn char_at(
+    ui: &Ui,
+    tree: &Interface,
+    w: &model::Widget,
+    (width, height, scale): (f64, f64, f64),
+    x: f64,
+) -> usize {
     let style = w.style.and_then(|s| tree.styles.get(s.0));
     let words = w.text.as_str();
     let geometry = plan::text(words, style, w, (height, scale, 1.), tree.source);

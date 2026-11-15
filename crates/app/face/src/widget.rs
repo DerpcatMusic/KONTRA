@@ -206,7 +206,9 @@ pub(super) fn widget(
                 "$CONTROL_PAR_DND_ACCEPT_ARRAY",
             ]
             .map(|par| p.int(par).and_then(|n| u16::try_from(n).ok()).unwrap_or(0)),
-            drag: p.int("$CONTROL_PAR_RECEIVE_DRAG_EVENTS").is_some_and(|n| n != 0),
+            drag: p
+                .int("$CONTROL_PAR_RECEIVE_DRAG_EVENTS")
+                .is_some_and(|n| n != 0),
         },
     };
     // Missing sizes stay 0: the renderer applies Kontakt's stock sizes.

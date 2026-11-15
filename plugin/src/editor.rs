@@ -1080,7 +1080,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         if dropped || !drag.as_ref().is_some_and(|d| d.dropped) {
             *drag = Some(kontra_ui::input::FileDrag {
                 at,
-                paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+                paths: paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
                 dropped,
             });
         }
@@ -1175,8 +1178,14 @@ fn is_preset(path: &std::path::Path) -> bool {
 // ponytail: accepted anywhere over the window; ask the face's areas if a
 // host shows the copy cursor where nothing takes it.
 fn is_dropped(path: &std::path::Path) -> bool {
-    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    matches!(ext.as_deref(), Some("wav" | "aif" | "aiff" | "ncw" | "mid" | "midi" | "nka"))
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    matches!(
+        ext.as_deref(),
+        Some("wav" | "aif" | "aiff" | "ncw" | "mid" | "midi" | "nka")
+    )
 }
 
 /// Whether a dropped file is an instrument the rack loads: a Kontakt

@@ -698,9 +698,11 @@ impl HostApi for Engine {
                     .dragged(self.running.slot)
                     .map_or(0, |(drop, _)| if drop { 4 } else { 3 }),
             ),
-            Action::MouseOverControl => {
-                flag(self.ui.dragged(self.running.slot).is_some_and(|(_, over)| over))
-            }
+            Action::MouseOverControl => flag(
+                self.ui
+                    .dragged(self.running.slot)
+                    .is_some_and(|(_, over)| over),
+            ),
             Action::DndItemsAudio | Action::DndItemsMidi | Action::DndItemsArray => {
                 let kind = match call.action {
                     Action::DndItemsAudio => 0,

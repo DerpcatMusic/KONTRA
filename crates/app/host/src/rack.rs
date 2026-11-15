@@ -766,9 +766,20 @@ impl Rack {
         for (i, (kind, path)) in items.iter().enumerate() {
             let text = Box::new(kontra_engine::Text::from_str_cut(path).0);
             let (kind, first) = (*kind, i == 0);
-            self.send(Command::DropItem { part, kind, first, text });
+            self.send(Command::DropItem {
+                part,
+                kind,
+                first,
+                text,
+            });
         }
-        self.send(Command::ControlDrop { part, slot, id, drop, over });
+        self.send(Command::ControlDrop {
+            part,
+            slot,
+            id,
+            drop,
+            over,
+        });
     }
 
     /// The user set `param` of `part`'s group `group` (every group when

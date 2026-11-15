@@ -427,7 +427,10 @@ pub fn read(
             // oracle, tools/ksp-ui text page); the first click opened the
             // field with its caret at the end.
             Kind::TextEdit if ui.double_click(id.as_str()) => {
-                let size = ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size);
+                let size = ui
+                    .scene()
+                    .and_then(|s| s.surface(&id))
+                    .map(|s| s.frame.size);
                 let at = ui.local(id.as_str()).zip(size).map_or(0, |(p, s)| {
                     kontra_ui_view::char_at(ui, tree, w, (s.width, s.height, scale), p.x)
                 });

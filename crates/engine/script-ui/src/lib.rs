@@ -375,12 +375,16 @@ impl Store {
     /// area (`$NI_MOUSE_EVENT_TYPE`, `$NI_MOUSE_OVER_CONTROL`).
     #[must_use]
     pub fn dragged(&self, slot: u8) -> Option<(bool, bool)> {
-        self.dragged.filter(|d| d.0 == slot).map(|(_, drop, over)| (drop, over))
+        self.dragged
+            .filter(|d| d.0 == slot)
+            .map(|(_, drop, over)| (drop, over))
     }
 
     /// The dropped files of kind `kind`.
     pub fn dropped(&self, kind: u8) -> impl Iterator<Item = &Text> {
-        (self.dropped.iter()).filter(move |d| d.0 == kind).map(|d| &d.1)
+        (self.dropped.iter())
+            .filter(move |d| d.0 == kind)
+            .map(|d| &d.1)
     }
 
     /// `$NI_CONTROL_PAR_IDX`: the cell of script `slot`'s last click (the

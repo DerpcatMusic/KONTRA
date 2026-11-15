@@ -128,7 +128,8 @@ impl<'a> Compiler<'a> {
                 (_, Some(i)) => Err(Error::new(i.span, format!("{name} is not an array"))),
             };
         }
-        if let Some(b) = Builtin::from_name(name).filter(|b| b.name().starts_with(['$', '%', '!'])) {
+        if let Some(b) = Builtin::from_name(name).filter(|b| b.name().starts_with(['$', '%', '!']))
+        {
             return match (b.array_len(), index) {
                 (Some(_), Some(i)) => self.value_builtin(b, std::slice::from_ref(i), span),
                 (None, None) => self.value_builtin(b, &[], span),
