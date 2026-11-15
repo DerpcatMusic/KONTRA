@@ -74,7 +74,8 @@ impl Engine {
     }
 
     /// Engine-parameter addresses (par, group, slot, generic) that
-    /// `set_engine_par` or `get_engine_par_disp` left unanswered, most first.
+    /// `set_engine_par` or `get_engine_par_disp` left unanswered, or set on
+    /// a held control no processor plays, most first.
     #[must_use]
     pub fn unanswered_pars(&self) -> Vec<([i32; 4], u32)> {
         let mut out: Vec<_> = self

@@ -113,7 +113,8 @@ impl ScriptPlan {
             | EnginePar::ReverbNetwork
             | EnginePar::GainerGain
             | EnginePar::StereoWidth
-            | EnginePar::StereoPan => Holder::Slot,
+            | EnginePar::StereoPan
+            | EnginePar::Held => Holder::Slot,
             EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
             EnginePar::LfoFade | EnginePar::LfoRetrigger | EnginePar::LfoUnit => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
