@@ -344,6 +344,13 @@ pub struct Group {
     pub release_decay_db: f32,
     /// Ignores note-off and plays to the end.
     pub one_shot: bool,
+    /// Its voices of a key stop when that key is played again (Kontakt's
+    /// release-trigger Monophonic).
+    pub repeat_cuts: bool,
+    /// A script's start offset past a zone's `start_mod` range plays from
+    /// the zone's start instead (only that much of a streamed sample is
+    /// held ready).
+    pub offset_limited: bool,
     /// Start rules folded left to right by their joins; empty always starts.
     pub start: Vec<(Join, StartRule)>,
     /// Voices of this group that may sound at once.
@@ -406,6 +413,8 @@ impl Group {
         one_shot: false,
         start: Vec::new(),
         polyphony: None,
+        repeat_cuts: false,
+        offset_limited: false,
         off_by: None,
         bus: 0,
         purged: false,
@@ -626,8 +635,16 @@ pub struct Glide {
     /// Groups with the same scope share the previous note (a layer, or the
     /// whole instrument).
     pub scope: u16,
-    /// The share of the interval the slide starts from: 1 the whole of it.
+    /// The share of the interval the slide starts from: 1 the whole of it,
+    /// negative from beyond the note (overshooting into it).
     pub depth: f32,
+    /// The most semitones of interval a slide covers before `depth`; a
+    /// wider jump slides this far and starts from there.
+    pub range: f32,
+    /// The previous note is the last one the instrument heard (a played
+    /// key, one a script ignored or replaced too), not the last that
+    /// sounded in the scope.
+    pub from_heard: bool,
     /// How long the slide takes, or with `per_semitone` how long it takes
     /// for each semitone of the interval (a constant rate).
     pub seconds: f32,

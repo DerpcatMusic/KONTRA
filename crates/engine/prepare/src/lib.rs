@@ -841,6 +841,8 @@ fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
         keytrack: group.keytrack,
         release_decay_db: group.release_decay_db,
         one_shot: group.one_shot,
+        repeat_cuts: group.repeat_cuts,
+        offset_limited: group.offset_limited,
     }
 }
 

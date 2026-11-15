@@ -949,6 +949,8 @@ fn glide_plan(store: &mut Store, legato: bool) -> Plan {
     plan.groups[0].glide = Some(ir::Glide {
         scope: 0,
         depth: 1.0,
+        range: f32::INFINITY,
+        from_heard: false,
         seconds: 0.1,
         per_semitone: false,
         resume: true,
@@ -985,10 +987,12 @@ fn a_glide_moves_every_frame_the_same_whatever_the_block_size() {
     let run = |block: usize| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let plan = glide_plan(&mut store, true);
-    let mut e = engine(&store, plan);
+        let mut e = engine(&store, plan);
         level(&mut e, &[on(60, 1.0)]);
         level(&mut e, &[on(67, 1.0)]);
-        (0..12).map(|_| advance(&mut e, 384, block)).collect::<Vec<_>>()
+        (0..12)
+            .map(|_| advance(&mut e, 384, block))
+            .collect::<Vec<_>>()
     };
     let (coarse, fine) = (run(384), run(32));
     for (a, b) in coarse.iter().zip(&fine) {
@@ -996,6 +1000,43 @@ fn a_glide_moves_every_frame_the_same_whatever_the_block_size() {
     }
     // Rising through the slide, not in 256-frame stairs.
     assert!(coarse.windows(2).all(|w| w[1] >= w[0]), "{coarse:?}");
+}
+
+#[test]
+fn a_bend_in_a_glides_last_span_keeps_the_rest_of_the_slide() {
+    // The slide (60 -> 72, 4800 frames from frame 256) ends in the span
+    // 4864..5120; a bend one step off centre inside it refreshes the pitch, which must
+    // keep ramping, not jump to 72: a jump is ~5 source frames ahead by the
+    // block's end, the one-step bend 0.05.
+    let run = |bend: bool| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = glide_plan(&mut store, false);
+        plan.groups[0].mods = vec![ir::Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ir::ModKind::Pitch {
+                source: ir::Source::PitchBend,
+                semitones: 2.0,
+                depth: 1.0,
+                tau_ms: 0.0,
+            },
+        }];
+        let mut e = engine(&store, plan);
+        level(&mut e, &[on(60, 1.0)]);
+        level(&mut e, &[on(72, 1.0)]);
+        advance(&mut e, 4352, 256);
+        let events = [Timed {
+            at: SampleTime(64),
+            body: Event::midi1(0xE0, 1, 0x40),
+        }];
+        let mut out = vec![[0.0; 2]; 256];
+        e.process(&mut out, if bend { &events } else { &[] });
+        e.voices().map(|(_, p, _)| p).fold(f64::MIN, f64::max)
+    };
+    let (still, bent) = (run(false), run(true));
+    assert!((still - bent).abs() < 0.5, "{still} {bent}");
 }
 
 #[test]
@@ -1031,7 +1072,9 @@ fn mono_plan(store: &mut Store, legato: bool) -> Plan {
 
 /// Sounding voices that are not on their way out.
 fn holding(e: &Engine) -> usize {
-    e.voices().filter(|(_, _, g)| g.as_flattened().iter().any(|v| *v > 0.0)).count()
+    e.voices()
+        .filter(|(_, _, g)| g.as_flattened().iter().any(|v| *v > 0.0))
+        .count()
 }
 
 #[test]
@@ -1056,6 +1099,23 @@ fn a_legato_line_keeps_its_voice_moves_it_to_the_new_key_and_back() {
 }
 
 #[test]
+fn a_reset_ends_the_keys_a_line_was_waiting_on() {
+    // 60 waits in the line under 67; a reset must end both, not keep 60.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = mono_plan(&mut store, false);
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[on(67, 1.0)]);
+    e.reset();
+    let mut ended = 0;
+    for _ in 0..64 {
+        level(&mut e, &[]);
+        ended += e.ended().len();
+    }
+    assert_eq!(ended, 2);
+}
+
+#[test]
 fn a_retriggering_line_restarts_the_older_key_when_the_newer_goes_up() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let plan = mono_plan(&mut store, false);
@@ -1071,5 +1131,8 @@ fn a_retriggering_line_restarts_the_older_key_when_the_newer_goes_up() {
     let again = advance(&mut e, 256, 256);
     assert!((again - 1.0).abs() < 1e-9, "{again}");
     let start = e.voices().map(|(_, p, _)| p).fold(f64::MAX, f64::min);
-    assert!(start < 3000.0, "a new voice from the sample's start: {start}");
+    assert!(
+        start < 3000.0,
+        "a new voice from the sample's start: {start}"
+    );
 }
