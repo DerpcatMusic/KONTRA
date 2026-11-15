@@ -23,7 +23,7 @@ impl Engine {
     /// it starts.
     pub(crate) fn limit_voice_group(&mut self, vg: u32, note: NoteRef) {
         let plan = self.plan.clone();
-        let Some(group) = plan.voice_groups.get(vg as usize) else {
+        let Some(&group) = self.voice_groups.get(vg as usize) else {
             return;
         };
         // A stolen voice fades over its group's time, at least 1 ms.
@@ -66,7 +66,7 @@ impl Engine {
                 .filter(|s| voice_group(s) == Some(vg))
                 .count()
         };
-        if playing < usize::from(group.voices) {
+        if group.voices == 0 || playing < usize::from(group.voices) {
             return;
         }
         let key = |s: &Slot| {

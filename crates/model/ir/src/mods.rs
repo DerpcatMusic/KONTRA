@@ -191,7 +191,8 @@ impl Factor {
 }
 
 /// A source through a transfer table: `table` holds the outputs for evenly
-/// spaced inputs 0..=1, read with linear interpolation; an LFO enters as
+/// spaced inputs 0..=1, read with linear interpolation (or held, `stepped`);
+/// an LFO enters as
 /// `(x + 1)/2`. Its source is never itself shaped.
 ///
 /// The output is used as is, in the domain the route that reads it consumes
@@ -205,6 +206,9 @@ pub struct Transfer {
     /// `1 − e^−1` of a step in this long. Read for an LFO source, from the
     /// LFO's own past, so it needs no state and follows the tempo.
     pub smooth_s: f32,
+    /// Each point holds until the next: `x` reads point `⌊(len − 1)·x⌋`,
+    /// never between two, so a 14-bit source steps where a 7-bit one would.
+    pub stepped: bool,
 }
 
 /// Taps of [`Transfer::smoothed`] over five time constants.
@@ -241,6 +245,9 @@ impl Transfer {
         };
         let at = x.clamp(0.0, 1.0) * last as f32;
         let i = (at as usize).min(last);
+        if self.stepped {
+            return self.table.get(i).copied().unwrap_or(x);
+        }
         let (a, b) = (
             self.table.get(i).copied().unwrap_or(x),
             self.table

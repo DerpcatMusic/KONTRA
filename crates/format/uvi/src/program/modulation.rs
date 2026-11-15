@@ -416,6 +416,7 @@ pub(super) fn group_source(
                     source,
                     table,
                     smooth_s,
+                    stepped: false,
                 },
             ))
         }
