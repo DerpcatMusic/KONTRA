@@ -72,11 +72,11 @@ pub enum EnginePar {
     ModOscUnit,
     /// `$ENGINE_PAR_WT_QUALITY`.
     WtQuality,
-    /// A control of an effect module KONTRA has no processor for: its slot
-    /// keeps the value a script sets and reads answer it, as Kontakt's
-    /// module does; the sound does not follow. Its text answers when the
-    /// translator gave a law.
-    Held,
+    /// A control of an effect module KONTRA has no processor for, by its
+    /// [`held_key`]: its slot keeps the value a script sets (or the one the
+    /// instrument saved) and reads answer it, as Kontakt's module does; the
+    /// sound does not follow. Its text answers when the translator gave a law.
+    Held(u32),
 }
 
 /// What a script reads of a zone (`get_zone_par`).
@@ -123,4 +123,16 @@ pub struct ScriptPar {
     pub name: &'static str,
     pub drives: Drives,
     pub readout: Option<Readout>,
+}
+
+/// The key a held control is known by in every script of an instrument:
+/// FNV-1a of its name without case.
+#[must_use]
+pub const fn held_key(name: &str) -> u32 {
+    let (mut h, mut rest) = (0x811c_9dc5_u32, name.as_bytes());
+    while let [b, tail @ ..] = rest {
+        h = (h ^ b.to_ascii_uppercase() as u32).wrapping_mul(0x0100_0193);
+        rest = tail;
+    }
+    h
 }

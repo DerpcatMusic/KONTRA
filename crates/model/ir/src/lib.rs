@@ -28,7 +28,7 @@ pub use effects::{
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Polarity, Reverb,
     ScanShape, Shifter, Strip, Transient, VowelSet,
 };
-pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar};
+pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar, held_key};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, KnobMod, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Source, Term, Transfer, Wave};

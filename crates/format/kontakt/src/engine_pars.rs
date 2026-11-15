@@ -178,11 +178,26 @@ const FIXED: &[(&str, ir::EnginePar)] = {
             P::Wavetable(ir::TableValue::PhaseRandom),
         ),
         // Controls KONTRA has no processor for, with a text law.
-        ("$ENGINE_PAR_CH_DEPTH", P::Held),
-        ("$ENGINE_PAR_JMP_PREAMP", P::Held),
-        ("$ENGINE_PAR_JMP_BASS", P::Held),
-        ("$ENGINE_PAR_JMP_MID", P::Held),
-        ("$ENGINE_PAR_JMP_TREBLE", P::Held),
+        (
+            "$ENGINE_PAR_CH_DEPTH",
+            P::Held(ir::held_key("$ENGINE_PAR_CH_DEPTH")),
+        ),
+        (
+            "$ENGINE_PAR_JMP_PREAMP",
+            P::Held(ir::held_key("$ENGINE_PAR_JMP_PREAMP")),
+        ),
+        (
+            "$ENGINE_PAR_JMP_BASS",
+            P::Held(ir::held_key("$ENGINE_PAR_JMP_BASS")),
+        ),
+        (
+            "$ENGINE_PAR_JMP_MID",
+            P::Held(ir::held_key("$ENGINE_PAR_JMP_MID")),
+        ),
+        (
+            "$ENGINE_PAR_JMP_TREBLE",
+            P::Held(ir::held_key("$ENGINE_PAR_JMP_TREBLE")),
+        ),
         (
             "$ENGINE_PAR_WT_INHARMONIC",
             P::Wavetable(ir::TableValue::Inharmonic),

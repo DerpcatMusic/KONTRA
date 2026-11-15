@@ -816,7 +816,7 @@ impl HostApi for Engine {
                 if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
                     self.count_par([int(0), int(2), int(3), int(4)]);
-                } else if set && par == Some(EnginePar::Held) {
+                } else if set && matches!(par, Some(EnginePar::Held(_))) {
                     // Answered, but no processor plays it: the effects' work list.
                     self.count_par([int(0), int(2), int(3), int(4)]);
                 }
