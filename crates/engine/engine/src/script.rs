@@ -153,6 +153,7 @@ impl Engine {
             Some(p) => self.masks.copy(p.slot(), r.slot()),
             None => self.masks.reset(r.slot()),
         }
+        self.hear(r, key);
         if duration > 0 {
             let at = SampleTime(self.now.0 + micros_to_frames(i64::from(duration), self.rate));
             if !self.queue.push(at, Work::Release(r)) {
