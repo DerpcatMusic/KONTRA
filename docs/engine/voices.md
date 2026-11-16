@@ -169,6 +169,15 @@ switched on in the editor; no Lua or KSP route sets it):
 - With t(ms) 0 and nothing routed, the release level is the same after
   holds of 0.1, 1 and 3 s.
 
+**Which scripts hear a played note's release**
+(`probes/release_callbacks.lua`, Kontakt 8.13, two script slots; each
+`on release` marks the key it heard). The script that played the note runs
+its own `on release` when the note ends by its duration, by its parent's
+release (`-1`), or by a `note_off` sent from `on note`. A `note_off` it
+sends from its own `on release` skips that script, and only later slots
+hear it. KONTRA used to skip the player after any `note_off` of its own
+(an inference from Pacific, #1210).
+
 **Script offsets in DFD.** The KSP manual (`play_note()`) says that in DFD
 mode a sample offset greater than the zone's S.Mod is ignored, and the sample
 plays from its start (`Group.offset_limited`).
