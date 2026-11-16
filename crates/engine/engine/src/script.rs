@@ -898,6 +898,46 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
+            Action::LfoSet => {
+                use crate::ir::{Attractor, Clock, Rate, Wave};
+                let bits = |i: usize| f32::from_bits(int(i) as u32);
+                let [a, b, c, step, scale] = [3, 4, 5, 6, 7].map(bits);
+                let chaos = |attractor| Wave::Chaos {
+                    attractor,
+                    step,
+                    scale,
+                };
+                let wave = match int(2) {
+                    0 => Some(Wave::Sine),
+                    1 => Some(Wave::Triangle),
+                    2 => Some(Wave::Saw),
+                    3 => Some(Wave::Ramp),
+                    4 => Some(Wave::Square { width: a }),
+                    5 => Some(Wave::Random),
+                    6 => Some(chaos(Attractor::Lorenz {
+                        sigma: a,
+                        rho: b,
+                        beta: c,
+                    })),
+                    7 => Some(chaos(Attractor::Rossler { a, b, c })),
+                    _ => None,
+                };
+                let speed = int(9) as f32 / 1e6;
+                let rate = match int(8) {
+                    0 => Some(Rate::Hz(speed)),
+                    1 => Some(Rate::Beats(speed)),
+                    _ => None,
+                };
+                let clock = match int(10) {
+                    0 => Some(Clock::Free),
+                    1 => Some(Clock::Voice),
+                    _ => None,
+                };
+                if !self.set_lfo(int(0), int(1), wave, rate, clock) {
+                    self.count_unhandled(Action::LfoSet);
+                }
+                HostValue::Nothing
+            }
             Action::GlideKnob => {
                 use crate::glide::GlideKnob;
                 let knob = match int(1) {

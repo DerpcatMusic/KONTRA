@@ -525,4 +525,11 @@ actions! {
     // `num_elements` of those: how many files of kind int 0 (0 audio, 1
     // MIDI, 2 array) the drop holds.
     DndItemsCount,
+    // LFO `index` of a group: ints (group, index, wave, five wave numbers
+    // as f32 bits, rate kind, rate in millionths, clock). Wave −1 keeps
+    // it, 0 sine, 1 triangle, 2 falling saw, 3 rising ramp, 4 square (high
+    // for the first number of the cycle), 5 random, 6 Lorenz (σ, ρ, β,
+    // step, scale), 7 Rössler (a, b, c, step, scale). Rate kind −1 keeps
+    // it, 0 Hz, 1 beats a cycle; clock −1 keeps it, 0 free, 1 per voice.
+    LfoSet,
 }

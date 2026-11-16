@@ -845,6 +845,32 @@ impl Engine {
         true
     }
 
+    /// LFO `index` of a group: each of its wave, rate and clock given.
+    pub(crate) fn set_lfo(
+        &mut self,
+        group: i32,
+        index: i32,
+        wave: Option<ir::Wave>,
+        rate: Option<ir::Rate>,
+        clock: Option<ir::Clock>,
+    ) -> bool {
+        let lfo = (self.group_mut(group))
+            .and_then(|g| g.lfos.get_mut(usize::try_from(index).ok()?));
+        let Some(lfo) = lfo else {
+            return false;
+        };
+        if let Some(wave) = wave {
+            lfo.wave = wave;
+        }
+        if let Some(rate) = rate.filter(|r| matches!(r, ir::Rate::Hz(x) | ir::Rate::Beats(x) if *x > 0.0)) {
+            lfo.rate = rate;
+        }
+        if let Some(clock) = clock {
+            lfo.clock = clock;
+        }
+        true
+    }
+
     /// `set_controller`: the script moves a controller (0 to 127), the
     /// pitch bend (`$VCC_PITCH_BEND`, -8192 to 8191) or the channel pressure
     /// (`$VCC_MONO_AT`) as if it had arrived, on every port and channel.
