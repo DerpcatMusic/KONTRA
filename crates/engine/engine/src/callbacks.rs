@@ -111,11 +111,18 @@ impl Engine {
                     .sum()
             };
             let (scale, add) = (sum(true), sum(false));
+            // The first reading only sets where the routes stand: a knob's
+            // saved value already holds them (UVI saves Augmented
+            // Orchestra's routed `MIDICurve_1` as -0.99999899, at its
+            // route's floor of -1 to float precision).
             if let Some(last) = self.knob_last.get_mut(n)
                 && [scale, add] != *last
             {
+                let first = last[0].is_nan();
                 *last = [scale, add];
-                moved.push((k, scale, add));
+                if !first {
+                    moved.push((k, scale, add));
+                }
             }
         }
         for (k, scale, add) in moved {
