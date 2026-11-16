@@ -2497,3 +2497,35 @@ fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
         out.diagnostics
     );
 }
+
+#[test]
+fn the_tree_names_the_envelopes_a_script_may_set() {
+    // AO's Part.lua: `modulations["DAHDSR 1"]:setParameter("AttackTime", v)`
+    // on the amplitude envelope, `"AHD 1"` on the pitch envelope.
+    let xml = r#"<Program Name="p">
+      <Scripts><ScriptProcessor Name="EventProcessor0" Bypass="0" API_version="21"><script><![CDATA[--]]></script></ScriptProcessor></Scripts>
+      <Layers><Layer Gain="1" Pan="0">
+        <ControlSignalSources>
+          <DAHDSR Name="DAHDSR 1" Bypass="0" AttackTime="0.1" SustainLevel="1" ReleaseTime="0.5"/>
+          <AHD Name="AHD 1" Bypass="0" AttackTime="0" HoldTime="0" DecayTime="0.3"/>
+        </ControlSignalSources>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="1" Source="$Layer/DAHDSR 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="12" Source="$Layer/AHD 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    assert_eq!(out.groups[0].envelopes.len(), 1, "{:?}", out.groups[0].envelopes);
+    let tree = out.scripts[0].data.iter().find(|(name, _)| name == "__program.lua");
+    let tree = String::from_utf8_lossy(&tree.unwrap().1).into_owned();
+    assert!(tree.contains(r#"env={"DAHDSR",{0,-1}}"#), "{tree}");
+    assert!(tree.contains(r#"env={"AHD",{0,0}}"#), "{tree}");
+}

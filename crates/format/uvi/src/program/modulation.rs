@@ -22,6 +22,9 @@ impl<L: Library> Translator<'_, '_, L> {
             return Ok(None);
         };
         let source = connection.attribute("Source").unwrap_or_default();
+        // The keygroup's group goes at the end once built.
+        let at = (self.out.groups.len(), -1);
+        self.envelopes.entry(env.id()).or_default().push(at);
         let seconds = |name| num(env, name, 0.0).map(|t| t.clamp(0.0, 30.0) as f32);
         // The delay holds silence before the attack: a lag the attack is
         // lengthened by, so the attack still runs its whole time after it.
