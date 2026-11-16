@@ -196,10 +196,16 @@ impl Engine {
     fn script_note_off(&mut self, id: i32) {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
+        // Measured (probes/release_callbacks.lua, Kontakt 8.13): a note
+        // its player ends from its own `on release` skips that script's
+        // `on release`; ended from anywhere else, the player hears it.
         let player = self.running.slot + 1;
+        // Across a wait the kind is Resumed; the callback type stays.
+        let from_release =
+            self.running.callback_type == Running::new(Kind::Release, None).callback_type;
         for &note in &hits {
             if let Some(n) = self.notes.get_mut(note) {
-                n.noted_off |= n.first == player;
+                n.noted_off |= from_release && n.first == player;
             }
             self.queue_end(note);
         }
