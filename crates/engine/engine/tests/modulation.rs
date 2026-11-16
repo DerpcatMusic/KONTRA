@@ -1336,7 +1336,7 @@ impl kontra_vm::Machine for KnobMachine {
     fn context(&self, _: kontra_vm::CoId) -> Option<u64> {
         None
     }
-    fn spawned(&mut self) -> Option<(kontra_vm::CoId, u64)> {
+    fn spawned(&mut self) -> Option<(kontra_vm::CoId, Option<u64>)> {
         None
     }
     fn faults(&self) -> kontra_vm::Faults {

@@ -2109,6 +2109,56 @@ fn uvi_waits_and_spawned_coroutines_land_on_time() {
     assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
 }
 
+/// UVI's `spawn` queues its task, which starts after the caller at the same
+/// instant; `run` starts it at once and goes back to the caller when it
+/// first waits (UVI's embedded `uvi.thread`).
+#[test]
+fn a_spawned_task_starts_after_its_caller_and_a_run_one_at_once() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let spawned = "function onNote(e)
+            spawn(function() print('task') end)
+            print('caller')
+        end";
+    let mut e = lua_engine(&mut store, spawned);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "task");
+    let ran = "local order = ''
+        function onNote(e)
+            run(function() order = order .. 'a' wait(10) print(order .. 'c') end)
+            order = order .. 'b'
+        end";
+    let mut e = lua_engine(&mut store, ran);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "abc");
+}
+
+/// Antartide's arpeggiator and step modulators stop their loop and spawn a
+/// new one on every control move; the old one stays parked in its wait
+/// until it wakes and sees it was stopped. UVI parks them all: 300 moves,
+/// a block apart, leave 300 loops parked, the newest running, and a note
+/// still gets its callback (tasks never take the callbacks' slots).
+#[test]
+fn restarted_loops_park_until_they_wake_and_the_newest_plays() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let restarts = "local runid = 0
+        local function loop(id)
+            while id == runid do wait(60000) end
+        end
+        function onController(e)
+            runid = runid + 1
+            spawn(loop, runid)
+        end
+        function onNote(e)
+            playNote(60, 100)
+        end";
+    let mut e = lua_engine(&mut store, restarts);
+    for n in 0..300u16 {
+        level(&mut e, &[cc(1, u8::try_from(n % 128).unwrap())]);
+    }
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(e.script_faults().first().map(|f| f.no_coroutine), Some(0));
+}
+
 /// A task that waits 10 µs, then spawns its replacement, moves time on by
 /// the summed waits: 10000 links are 100 ms (4800 frames), never a spin.
 #[test]

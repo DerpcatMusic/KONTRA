@@ -610,7 +610,8 @@ impl Plan {
             default_keyswitch: None,
             voices,
             notes: Self::notes_for(voices),
-            queue: (4 * Self::notes_for(voices)).max(1024),
+            // Room for every task a script may park ([`kontra_vm::TASKS`]).
+            queue: (4 * Self::notes_for(voices)).max(1024) + kontra_vm::TASKS,
             scripts: Vec::new(),
             inserts: Vec::new(),
             sends: Vec::new(),

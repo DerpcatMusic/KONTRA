@@ -113,7 +113,7 @@ impl Vm {
         }
     }
 
-    pub fn spawned(&mut self) -> Option<(CoId, u64)> {
+    pub fn spawned(&mut self) -> Option<(CoId, Option<u64>)> {
         match self {
             Self::Code(_) => None,
             Self::Foreign(m) => m.spawned(),

@@ -1294,15 +1294,14 @@ function print(...)
 	host_call("Message", table.concat(parts, " "))
 end
 
+-- UVI's `_spawn` (its embedded `uvi.thread`): the task is queued, not run;
+-- it starts at the end of the current instant, after the caller, with the
+-- arguments it was given.
 function spawn(f, ...)
-	local co = coroutine.create(f)
-	local ok, waited = coroutine.resume(co, ...)
-	-- A coroutine that failed is queued too: resuming it counts the fault.
-	-- Its error text rides along: the fault the resume counts would only say
-	-- the coroutine is dead.
-	if not ok or coroutine.status(co) == "suspended" then
-		table.insert(__spawned, { co, ok and waited or 0, (not ok) and tostring(waited) or nil })
-	end
+	local args = table.pack(...)
+	table.insert(__spawned, coroutine.create(function()
+		return f(table.unpack(args, 1, args.n))
+	end))
 end
 
 -- loadSample(oscillator, path, done): the samples a script loads were put
@@ -1352,7 +1351,7 @@ function __record()
 			steps = steps + 1
 		end
 		for _, spawned in ipairs(__spawned) do
-			table.insert(runs, spawned[1])
+			table.insert(runs, type(spawned) == "table" and spawned[1] or spawned)
 		end
 		table.clear(__spawned)
 		i = i + 1
@@ -1569,8 +1568,16 @@ function ChordRec.chordKind(notes)
 	end
 end
 
+-- UVI's `_run`: the task runs at once, depth first, and the caller goes
+-- on when it ends or first waits; the rest runs after that wait.
 function run(f, ...)
-	return f(...)
+	local co = coroutine.create(f)
+	local ok, waited = coroutine.resume(co, ...)
+	if not ok then
+		error(waited, 0)
+	elseif coroutine.status(co) == "suspended" then
+		table.insert(__spawned, { co, waited or 0 })
+	end
 end
 
 -- A path a script names, relative to its own folder in the bank (`__dir`),
