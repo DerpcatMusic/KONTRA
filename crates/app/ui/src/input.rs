@@ -510,7 +510,10 @@ pub fn files(
     let mut edits = Vec::new();
     let now = target.as_ref().map(|t| t.0);
     if g.dragged_over != now || drag.dropped {
-        if let Some(n) = g.dragged_over.filter(|&n| Some(n) != now && hears_drag(tree, n)) {
+        if let Some(n) = g
+            .dragged_over
+            .filter(|&n| Some(n) != now && hears_drag(tree, n))
+        {
             edits.push(left(n));
         }
         if let Some((n, hears, items)) = target
@@ -522,7 +525,11 @@ pub fn files(
                 items,
             };
             let keys = model::UiModifiers::default();
-            edits.push(Edit { widget: n, to, keys });
+            edits.push(Edit {
+                widget: n,
+                to,
+                keys,
+            });
         }
     }
     g.dragged_over = now.filter(|_| !drag.dropped);

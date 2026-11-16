@@ -548,3 +548,32 @@ fn a_file_drag_leaving_the_window_leaves_its_mouse_area() {
     assert_eq!(over(&gone), [false], "it heard the drag leave");
     assert_eq!(over(&enter(&mut f)), [true], "and hears the next one enter");
 }
+
+/// A native page's hover area is set while the pointer is over it and let
+/// go when it leaves (Conflux shows its macros' assign toggles while the
+/// row is hovered); its marker must be a surface the scene keeps.
+#[test]
+fn a_hover_area_answers_the_pointer_over_it() {
+    let mut f = Face::new();
+    let mut area = Widget::new(
+        "native_ui tap 1 2",
+        PageRef(0),
+        Rect::new(300, 150, 60, 30),
+        Kind::Button { momentary: true },
+    );
+    area.intercepts_mouse = false;
+    f.tree.widgets.push(area);
+    let n = WidgetRef(f.tree.widgets.len() - 1);
+    f.frame(Input::default());
+    let at = f.at(&input::surface(0, n.0));
+    let inside = Point::new(at.x + 20., at.y + 10.);
+    let mut edits = f.pointer(inside, false, Mods::default());
+    edits.extend(f.pointer(inside, false, Mods::default()));
+    edits.extend(f.pointer(Point::new(5., 5.), false, Mods::default()));
+    edits.extend(f.pointer(Point::new(5., 5.), false, Mods::default()));
+    let set: Vec<_> = (edits.iter())
+        .filter(|e| e.widget == n)
+        .map(|e| &e.to)
+        .collect();
+    assert_eq!(set, [&Set::Value(1.), &Set::Value(0.)]);
+}
