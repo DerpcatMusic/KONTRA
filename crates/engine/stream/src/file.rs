@@ -47,9 +47,18 @@ pub fn describe(path: &Path) -> io::Result<ir::Sample> {
         rate: 0,
         keystream: None,
     };
-    let o = opened(&sample)?;
-    (sample.channels, sample.frames, sample.rate) = (o.fmt.channels, o.frames, o.rate);
+    (sample.channels, sample.frames, sample.rate) = header(&sample)?;
     Ok(sample)
+}
+
+/// What `sample`'s own header says: channels, frames and rate (what a
+/// translator's saved values are checked against).
+///
+/// # Errors
+/// As [`open`].
+pub fn header(sample: &ir::Sample) -> io::Result<(u8, u64, u32)> {
+    let o = opened(sample)?;
+    Ok((o.fmt.channels, o.frames, o.rate))
 }
 
 /// The files an instrument's samples live in, each opened once: a monolith
