@@ -275,6 +275,47 @@ fn a_callback_knows_its_event_after_a_wait() {
     assert_eq!(e.last_message(), "60,127");
 }
 
+/// KSP manual: `$EVENT_PAR_ZONE_ID` is the highest zone ID when several
+/// zones sound for one event, not the first voice's.
+#[test]
+fn zone_id_reads_the_highest_sounding_zone() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (mut high, mut low) = (zone(&mut store, 0.25, 0), zone(&mut store, 0.5, 0));
+    (high.id, low.id) = (7, 3);
+    let mut e = engine(
+        &store,
+        vec![low, high],
+        "on note
+            wait(1000)
+            message(get_event_par($EVENT_ID, $EVENT_PAR_ZONE_ID))
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "7");
+}
+
+/// KSP manual: `change_vol` mode 2 is absolute (keeping zone volume), so
+/// calling it twice sets the level once rather than adding it up.
+#[test]
+fn change_vol_mode_two_is_absolute() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on note
+            change_vol($EVENT_ID, -6000, 2)
+            change_vol($EVENT_ID, -6000, 2)
+            change_pan($EVENT_ID, 300, 2)
+            change_pan($EVENT_ID, 300, 2)
+            message(get_event_par($EVENT_ID, $EVENT_PAR_VOLUME) & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_PAN))
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "-6000,300");
+}
+
 /// Areia: under the sustain pedal the script keeps its own note playing,
 /// and at pedal-up ends each one whose key is up (`%KEY_DOWN` 0: the key,
 /// not its sound, KSP manual). A pedalled key read as still down, and the
