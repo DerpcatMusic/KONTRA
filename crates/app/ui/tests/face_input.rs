@@ -537,7 +537,7 @@ fn a_file_drag_leaving_the_window_leaves_its_mouse_area() {
             })
             .collect()
     };
-    let mut enter = |f: &mut Face| {
+    let enter = |f: &mut Face| {
         f.pointer(at, false, Mods::default());
         let page = (&f.tree, PageRef(0));
         input::files(&f.ui, 0, page, 1., &drag, &mut f.gesture)
