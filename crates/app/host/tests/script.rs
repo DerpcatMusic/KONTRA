@@ -5657,3 +5657,50 @@ fn a_scripts_attack_time_reaches_the_next_notes_envelope() {
     assert!(rising > 0.0 && rising < 0.025, "1 s attack at {rising}");
     assert_eq!(e.stats().actions_unhandled, 0);
 }
+
+/// Notes a script plays are glide predecessors (Kontakt: the previous note
+/// is the last to arrive, played or scripted): a `play_note` phrase glides
+/// note to note, 60 then 64, not each note from the ignored trigger key.
+#[test]
+fn a_play_note_phrase_glides_note_to_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "on init
+            declare $id
+        end on
+        on note
+            if ($EVENT_NOTE = 36)
+                ignore_event($EVENT_ID)
+                $id := play_note(60, 100, 0, 0)
+                wait(100000)
+                $id := play_note(64, 100, 0, 0)
+            end if
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.25, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+        g.glide = Some(kontra_engine::ir::Glide {
+            scope: 0,
+            depth: 1.0,
+            range: 12.0,
+            from_heard: true,
+            seconds: 1.0,
+            per_semitone: false,
+            legato: false,
+            resume: false,
+            curve: 0.0,
+        });
+    }
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(36)]);
+    level(&mut e, &[]); // 64 starts at 100 ms, gliding up from where it starts
+    let newest = |e: &Engine| e.voices().map(|(_, p, _)| p).fold(f64::MAX, f64::min);
+    let from = newest(&e);
+    let mut out = vec![[0.0; 2]; 256];
+    e.process(&mut out, &[]);
+    // Root 60: from 60 the step is about 1 (0.8 s still to go); from the
+    // trigger's 36, capped at 12 st, it would be about 2^(-8/12) = 0.63.
+    let step = (newest(&e) - from) / 256.0;
+    assert!((0.9..1.1).contains(&step), "{step}");
+}

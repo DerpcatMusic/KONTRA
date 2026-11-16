@@ -42,6 +42,14 @@ pub(crate) struct Latest {
 }
 
 impl Engine {
+    /// A note arrives (a played key, or one a script plays): it becomes the
+    /// glide predecessor of the next ([`ir::Glide::from_heard`]), even if a
+    /// script ignores it (Kontakt: the ignored trigger counts).
+    pub(crate) fn hear(&mut self, note: NoteRef, key: u8) {
+        let [last, _] = self.heard;
+        self.heard = [Some((note, f32::from(key))), last];
+    }
+
     /// The slide a voice of `note` in `group` starts with: worked out at the
     /// note's first voice in the scope, shared by the rest of its voices.
     pub(crate) fn slide_for(&mut self, group: u32, note: NoteRef, key: u8) -> Option<Slide> {
