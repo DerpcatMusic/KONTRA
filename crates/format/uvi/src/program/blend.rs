@@ -53,7 +53,7 @@ pub(super) fn table(program: Node, node: Node, inverted: bool) -> Option<Option<
     let shape = still.then(|| modulation::shape(node, user)).flatten();
     if !matrix::bipolar(node) {
         return Some(shape.map(|(lfo, d)| {
-            // A negative depth is a rising saw read backwards ([`modulation::shape`]).
+            // A negative depth reads the wave backwards ([`modulation::shape`]).
             let flip = |v: f32| if inverted { 1.0 - v } else { v };
             let (lo, hi) = if d < 0.0 { (-d, 0.0) } else { (0.0, d) };
             Timed::Steps(lfo, vec![flip(lo), flip(hi)], 0.0)
@@ -228,10 +228,16 @@ pub(super) fn gain(mut b: Blend, r: f32) -> Blend {
 }
 
 /// `b` in `group`, its LFOs copied onto it.
-pub(super) fn lower(group: &mut ir::Group, b: Blend) -> ir::Source {
+pub(super) fn lower(
+    group: &mut ir::Group,
+    b: Blend,
+    at: Option<(usize, NodeId)>,
+    slots: &mut modulation::Slots,
+) -> ir::Source {
     let terms = b.parts.into_iter().map(|(lfo, mut t)| {
         if let Some(lfo) = lfo {
-            t.input.source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
+            let i = modulation::slot(&mut group.lfos, lfo, at, modulation::Slot::Lfo, slots);
+            t.input.source = ir::Source::Lfo(i);
         }
         t.factors.extend(b.keys.iter().cloned());
         t

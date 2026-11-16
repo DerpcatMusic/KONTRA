@@ -831,6 +831,48 @@ local function set_envelope(p, env)
 	end
 end
 
+-- An LFO's, MultiLFO's or StepEnvelope's wave, rate and clock as
+-- kontra-format-uvi's modulation.rs translates them; `lfo` is `{tag,
+-- {group, index}, ..., fixed}`, `fixed` for a user-table LFO, whose wave
+-- is its table. WaveFormType (registry [ref]): its engine wave and
+-- that wave's numbers as f32 bits (the chaos constants set at
+-- [ref]); 5 AnalogSquare and 9 User keep the wave they have.
+local LFO_PARAMS = { Freq = true, SyncToHost = true, WaveFormType = true, Retrigger = true }
+local CHAOS_TEN = 1092616192
+local LFO_WAVES = {
+	[0] = { 0 },
+	[1] = { 4, 1056964608 },
+	[2] = { 1 },
+	[3] = { 3 },
+	[4] = { 2 },
+	[6] = { 5 },
+	[7] = { 6, CHAOS_TEN, 1105199104, 1076535230, 1065353216, 1028730567 },
+	[8] = { 7, 1041865114, 1045220557, CHAOS_TEN, 1077558641, 1030475397 },
+}
+local function set_lfo(p, lfo)
+	local tag = lfo[1]
+	local wave = { -1 }
+	if tag == "LFO" and not lfo.fixed then
+		wave = LFO_WAVES[math.floor(tonumber(p.WaveFormType) or 0)] or wave
+	end
+	local sync = p.SyncToHost == true or (tonumber(p.SyncToHost) or 0) ~= 0
+	local steps = tag == "StepEnvelope"
+	local freq = tonumber(p.Freq) or (steps and 0.25 or 0.5)
+	-- A random wave draws twice a cycle; a step envelope's cycle is its steps.
+	local per = steps and (tonumber(p.NumSteps) or 16) or (wave[1] == 5 and 2 or 1)
+	local kind, speed = -1, 0
+	if freq > 0 then
+		kind = sync and 1 or 0
+		speed = sync and freq * per or freq / per
+	end
+	local retrigger = tonumber(p.Retrigger) or (steps and 0 or 1)
+	local clock = (retrigger == 0 or retrigger == 1) and retrigger or -1
+	for i = 2, #lfo do
+		host_call("LfoSet", lfo[i][1], lfo[i][2], wave[1], wave[2] or 0, wave[3] or 0, wave[4] or 0,
+			wave[5] or 0, wave[6] or 0, kind, math.floor(speed * 1e6 + 0.5), clock)
+	end
+end
+
 local Element = {}
 function Element.getParameter(self, name)
 	return self.params[name]
@@ -850,6 +892,11 @@ function Element.setParameter(self, name, value)
 	local env = fields_of(self).env
 	if env and ENVELOPE_PARAMS[name] and tonumber(value) then
 		set_envelope(self.params, env)
+		return
+	end
+	local lfo = fields_of(self).lfo
+	if lfo and LFO_PARAMS[name] then
+		set_lfo(self.params, lfo)
 		return
 	end
 	local line = fields_of(self).line
@@ -989,6 +1036,7 @@ function element(node)
 		impulse = node.impulse,
 		line = node.line,
 		env = node.env,
+		lfo = node.lfo,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)

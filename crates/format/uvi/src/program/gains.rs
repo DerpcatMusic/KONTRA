@@ -68,7 +68,8 @@ impl<L: Library> Translator<'_, '_, L> {
                     1.0 - k + k * x
                 }
             };
-            let t = match modulation::group_source(group, r.source, r.timed) {
+            let at = source_node(program, c).map(|n| (self.out.groups.len(), n.id()));
+            let t = match modulation::group_source(group, r.source, r.timed, at, &mut self.slots) {
                 ir::Source::Shaped(i) => {
                     let Some(mut t) = group.shapers.get(usize::from(i)).cloned() else {
                         continue;
