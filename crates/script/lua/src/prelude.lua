@@ -773,6 +773,64 @@ local function set_line(line, name, value)
 	end
 end
 
+-- An AHD's or DAHDSR's times (seconds, 0..30), levels and curves, as
+-- kontra-format-uvi's modulation.rs translates them; `env` is `{tag,
+-- {group, envelope}, ...}`, envelope -1 a group's amplitude envelope.
+-- A segment curve c passes (1 - c)/2 of its way at half its time: shape
+-- 2 ln((1 + c)/(1 - c)), c within +-0.9998 (UVIWorkstation [ref]).
+local ENVELOPE_PARAMS = {
+	DelayTime = true, AttackTime = true, HoldTime = true, DecayTime = true, SustainLevel = true,
+	ReleaseTime = true, AttackCurve = true, DecayCurve = true, ReleaseCurve = true,
+}
+local function micro(x)
+	return math.floor(x * 1e6 + 0.5)
+end
+local function set_envelope(p, env)
+	local function seconds(name, default)
+		return math.max(0, math.min(30, tonumber(p[name]) or default))
+	end
+	local function curve(name)
+		local c = math.max(-0.9998, math.min(0.9998, tonumber(p[name]) or 0))
+		return 2 * math.log((1 + c) / (1 - c))
+	end
+	local sustain = math.max(0, math.min(1, tonumber(p.SustainLevel) or 1))
+	local points
+	if env[1] == "AHD" then
+		points = {
+			{ seconds("AttackTime", 0), 1, curve("AttackCurve") },
+			{ seconds("HoldTime", 1), 1, 0 },
+			{ seconds("DecayTime", 0.1), 0, curve("DecayCurve") },
+		}
+	else
+		points = {
+			{ seconds("DelayTime", 0), 0, 0 },
+			{ seconds("AttackTime", 0), 1, curve("AttackCurve") },
+			{ seconds("HoldTime", 0), 1, 0 },
+			{ seconds("DecayTime", 0), sustain, curve("DecayCurve") },
+			{ seconds("ReleaseTime", 0), 0, curve("ReleaseCurve") },
+		}
+	end
+	for i = 2, #env do
+		local group, index = env[i][1], env[i][2]
+		if index < 0 then
+			-- The delay lengthens the attack and stays silent at its start;
+			-- decay and release share the release's curve, the decay's when
+			-- only it moves.
+			local delay = points[1][1]
+			local decays = sustain < 1 and points[4][1] > 0
+			local fall = curve((decays and points[5][1] == 0) and "DecayCurve" or "ReleaseCurve")
+			host_call("AmpEnvelope", group, micro(delay + points[2][1]), micro(points[3][1]),
+				micro(points[4][1]), micro(sustain), micro(points[5][1]), micro(points[2][3]),
+				micro(fall), micro(delay))
+		else
+			for k, point in ipairs(points) do
+				host_call("EnvelopePoint", group, index, k - 1, micro(point[1]), micro(point[2]),
+					micro(point[3]))
+			end
+		end
+	end
+end
+
 local Element = {}
 function Element.getParameter(self, name)
 	return self.params[name]
@@ -788,6 +846,11 @@ function Element.setParameter(self, name, value)
 	self.params[name] = value
 	if was ~= value and __watch then
 		__watch(self, name)
+	end
+	local env = fields_of(self).env
+	if env and ENVELOPE_PARAMS[name] and tonumber(value) then
+		set_envelope(self.params, env)
+		return
 	end
 	local line = fields_of(self).line
 	if line then
@@ -925,6 +988,7 @@ function element(node)
 		knobs = node.knobs,
 		impulse = node.impulse,
 		line = node.line,
+		env = node.env,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)

@@ -138,6 +138,13 @@ impl<L: Library> Translator<'_, '_, L> {
         if let Some((vg, scope, notes)) = self.lines.get(&node.id()) {
             out.push_str(&format!(",line={{{vg},{scope},{notes}}}"));
         }
+        // An envelope a script sets: `{tag, {group, envelope}, ...}`
+        // (`envelopes`), envelope −1 the amplitude one.
+        if let Some(at) = self.envelopes.get(&node.id()) {
+            let at: Vec<_> = at.iter().map(|(g, e)| format!("{{{g},{e}}}")).collect();
+            let tag = lua_string(node.tag_name().name());
+            out.push_str(&format!(",env={{{tag},{}}}", at.join(",")));
+        }
         if let Some(id) = matrix::live_macro(self.program, node) {
             out.push_str(&format!(",mod={id}"));
         }
