@@ -95,7 +95,8 @@ pub struct Note {
     pub ignored: bool,
     /// What its release sounds.
     pub releases: Releases,
-    /// Its player ended it with `note_off`: only the slots after hear it.
+    /// Its player ended it with `note_off` from its own `on release`: only
+    /// the slots after hear it.
     pub noted_off: bool,
     /// The last fade a script asked of it (target, frames): its attack
     /// voices yet to start begin with it.
