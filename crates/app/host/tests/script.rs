@@ -1683,7 +1683,51 @@ fn a_script_hears_its_notes_end_except_its_note_offs_from_on_release() {
     assert_eq!(e.last_message(), "1 1 0");
     level(&mut e, &[off(60)]);
     level(&mut e, &[]);
-    assert_eq!(e.last_message(), "1 1 0", "63, ended from on release, is not heard");
+    assert_eq!(
+        e.last_message(),
+        "1 1 0",
+        "63, ended from on release, is not heard"
+    );
+}
+
+/// An `on release` that waits before its `note_off` is still a release: the
+/// player does not hear that note end (a resumed callback keeps its type).
+#[test]
+fn a_note_off_after_a_wait_in_on_release_is_not_heard_by_its_player() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $held := 0
+            declare $inner := 0
+        end on
+        on note
+            if ($EVENT_NOTE = 60)
+                $held := play_note(63, 100, 0, 0)
+            end if
+        end on
+        on release
+            if ($EVENT_NOTE = 60)
+                wait(1000)
+                note_off($held)
+            end if
+            if ($EVENT_NOTE = 63)
+                inc($inner)
+            end if
+            message($inner)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[off(60)]);
+    level(&mut e, &[]);
+    level(&mut e, &[]);
+    assert_eq!(
+        e.last_message(),
+        "0",
+        "63, ended after a wait in on release, is not heard"
+    );
 }
 
 /// A timed note an `on release` plays is that release's own sound: the key's
