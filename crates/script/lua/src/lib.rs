@@ -1938,6 +1938,34 @@ mod tests {
     }
 
     #[test]
+    fn a_routed_knobs_changed_echoing_its_value_keeps_the_routes_base() {
+        // Augmented Orchestra's linked layers: each curve knob's `changed`
+        // sets both, itself too. At rest the route still comes back to the
+        // restored -0.99999899, not the -1 it routed to.
+        let source = "local ks = {}
+            for i = 1, 2 do
+                ks[i] = Knob('MIDICurve_' .. i, 0, -1, 1)
+                ks[i].changed = function(s)
+                    for j = 1, 2 do ks[j]:setValue(s.value, false) end
+                end
+            end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function() assert(ks[1].value == -0.99999899, ks[1].value) end";
+        let saved = ["MIDICurve_1=-0.99999899".to_string()];
+        let mut m = compile(source, &[], &saved).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control_mod(0, 0.0, -0.5, 0).expect("route");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control_mod(0, 0.0, 0.0, 0).expect("rest");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control(2, 1.0, 0).expect("check");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
+    }
+
+    #[test]
     fn a_script_write_of_the_routed_value_is_the_next_routes_base() {
         // Routed from 0.25 to 0.5, then the script sets 0.5 itself: a route
         // at rest leaves its 0.5, not the old base.

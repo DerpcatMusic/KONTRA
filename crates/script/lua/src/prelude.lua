@@ -214,10 +214,15 @@ local widget
 -- A widget's value lives in `__value`: assigning `w.value` runs its
 -- `changed`, as UVIWorkstation's setter does (VWinds' preset arrows set
 -- `menu.value` and rely on it), except from inside its own `changed`.
--- Every write of a widget's value counts: a route knows its own by it.
+-- Every write of a widget's value counts, but a route's own: those its
+-- coroutine makes while it routes, its `changed` echoing it included
+-- (Augmented Orchestra's linked layers set both curve knobs, itself too).
+-- A write from any other event, while the route waits too, counts.
 local function wrote(w, v)
 	rawset(w, "__value", v)
-	rawset(w, "__writes", (rawget(w, "__writes") or 0) + 1)
+	if rawget(w, "__routing") ~= coroutine.running() then
+		rawset(w, "__writes", (rawget(w, "__writes") or 0) + 1)
+	end
 end
 local function run_changed(w, mods)
 	local changed = rawget(w, "changed")
@@ -473,11 +478,15 @@ function __control_mod(id, scale, m)
 	if rawget(c, "integer") == true then
 		v = math.floor(v + 0.5)
 	end
-	-- Kept before the write: a `changed` that fails or waits leaves it,
-	-- and an edit while it waits counts past it.
+	-- Kept before the write: a `changed` that fails or waits leaves it.
 	rawset(c, "__route_base", base)
-	rawset(c, "__routed_at", writes + 1)
-	c:setValue(v)
+	rawset(c, "__routed_at", writes)
+	rawset(c, "__routing", coroutine.running())
+	local ok, err = pcall(c.setValue, c, v)
+	rawset(c, "__routing", nil)
+	if not ok then
+		error(err, 0)
+	end
 end
 -- The UI the script builds, for the editor: every widget in the order the
 -- script made it (its index there names it), the page's size, picture and
