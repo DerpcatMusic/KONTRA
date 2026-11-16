@@ -1418,15 +1418,16 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
         all.extend(moves.try_iter());
         all.len()
     };
-    // Everything at rest still tells each knob where its routes put it, once.
+    // Where the routes stand at load moves nothing: the knobs' saved
+    // values already hold them.
     level(&mut engine, &[]);
-    assert_eq!(at(&mut all), 2, "one move per knob, not per route");
+    assert_eq!(at(&mut all), 0, "the first reading moves no knob");
     level(&mut engine, &[]);
-    assert_eq!(at(&mut all), 2, "nothing moved");
+    assert_eq!(at(&mut all), 0, "nothing moved");
     // Two additive controllers on one knob: one move, their sum.
     level(&mut engine, &[cc(1, 127), cc(2, 127)]);
-    assert_eq!(at(&mut all), 3);
-    let (id, scale, add) = all[2];
+    assert_eq!(at(&mut all), 1);
+    let (id, scale, add) = all[0];
     assert_eq!(id, 7);
     assert!(
         (add - 2.0).abs() < 1e-3 && scale.abs() < 1e-3,
@@ -1434,8 +1435,8 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
     );
     // The multiplicative controller moves the same knob's scale alone.
     level(&mut engine, &[cc(3, 127)]);
-    assert_eq!(at(&mut all), 4);
-    let (id, scale, add) = all[3];
+    assert_eq!(at(&mut all), 2);
+    let (id, scale, add) = all[1];
     assert_eq!(id, 7);
     assert!(
         (scale - 1.0).abs() < 1e-3 && (add - 2.0).abs() < 1e-3,
