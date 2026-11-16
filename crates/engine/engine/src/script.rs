@@ -216,7 +216,13 @@ impl Engine {
             .find(|s| s.note == note && s.voice.is_active())
             .and_then(|s| Some((s, self.plan.zones.get(s.zone)?)));
         match par {
-            event::ZONE_ID => voice.map_or(-1, |(_, z)| z.id as i32),
+            // The manual: the highest zone ID when several zones sound.
+            event::ZONE_ID => (self.voices.iter())
+                .filter(|s| s.note == note && s.voice.is_active())
+                .filter_map(|s| self.plan.zones.get(s.zone))
+                .map(|z| z.id as i32)
+                .max()
+                .unwrap_or(-1),
             event::PLAY_POS => voice.map_or(0, |(s, z)| {
                 // The position in the sample: a looped or reversed voice's
                 // cursor is not its elapsed frames.
@@ -544,7 +550,8 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::ChangeTune | Action::ChangeVol | Action::ChangePan => {
-                let (value, relative) = (int(1), int(2) != 0);
+                // Mode 1 is relative; 0 and 2 are absolute (2 keeps zone volume).
+                let (value, relative) = (int(1), int(2) == 1);
                 let action = call.action;
                 self.each(int(0), |n| {
                     let field = match action {
