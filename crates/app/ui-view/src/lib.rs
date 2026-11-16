@@ -44,6 +44,10 @@ pub fn surface(face: usize, n: usize) -> String {
     format!("kontra-w-{face}-{n}")
 }
 
+/// A marker's side: the least the scene keeps a surface for, too small for
+/// any press to land on.
+const MARK: f64 = 0.01;
+
 /// Whether a widget is a hover area: set while the pointer is over it,
 /// taking no press (a native page's `on_hover_gesture`).
 pub fn hovers(w: &model::Widget) -> bool {
@@ -604,8 +608,10 @@ fn drawn_page(
         };
         let el = if hovers(wd) || matches!(wd.kind, Kind::MouseArea { .. }) {
             // Marks where it is and takes no press: input reads the pointer,
-            // or a file dragged over it, against it (crate::input).
-            block(0., 0.).id(id)
+            // or a file dragged over it, against it (crate::input). Not
+            // 0 by 0: the scene keeps no surface for an empty frame, and
+            // then nothing would ever be over it.
+            block(MARK, MARK).id(id)
         } else if takes_input(wd) {
             let el = el
                 .id(id)

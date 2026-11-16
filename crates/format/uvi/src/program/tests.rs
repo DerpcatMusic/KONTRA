@@ -1584,7 +1584,7 @@ fn an_effect_on_an_aux_no_send_reaches_is_latent() {
 #[test]
 fn a_unipolar_lfo_scales_a_keygroups_gain_by_its_own_m() {
     // `m = (w + 1)·d/2` takes the plain law; inverted `1 − m`; a rising saw
-    // runs the table backwards. Its depth routes are reported.
+    // is the rising ramp, read forward. Its depth routes are reported.
     let xml = r#"<Program Gain="1">
       <Modulators>
         <LFO Name="LFO 1" Bypass="0" SyncToHost="0" DelayTime="0" RiseTime="0" Freq="2" Depth="0.5" Phase="0" WaveFormType="0" Retrigger="1" Bipolar="0">
@@ -1618,7 +1618,7 @@ fn a_unipolar_lfo_scales_a_keygroups_gain_by_its_own_m() {
         [
             (ir::Source::Lfo(0), vec![0.0, 0.5]),
             (ir::Source::Lfo(0), vec![1.0, 0.5]),
-            (ir::Source::Lfo(1), vec![0.25, 0.0]),
+            (ir::Source::Lfo(1), vec![0.0, 0.25]),
         ]
     );
     // At rest (wave −1) the first route leaves the gain alone: `1 + r·0`.
@@ -2496,4 +2496,49 @@ fn a_layers_custom_polyphony_and_mono_play_mode_limit_its_notes() {
         "{:?}",
         out.diagnostics
     );
+}
+
+#[test]
+fn the_tree_names_each_envelope_and_lfo_a_script_may_set() {
+    // AO's Part.lua: `modulations["DAHDSR 1"]:setParameter("AttackTime", v)`
+    // on the amplitude envelope, `"AHD 1"` on the pitch envelope.
+    let xml = r#"<Program Name="p">
+      <Scripts><ScriptProcessor Name="EventProcessor0" Bypass="0" API_version="21"><script><![CDATA[--]]></script></ScriptProcessor></Scripts>
+      <Layers><Layer Gain="1" Pan="0">
+        <ControlSignalSources>
+          <DAHDSR Name="DAHDSR 1" Bypass="0" AttackTime="0.1" SustainLevel="1" ReleaseTime="0.5"/>
+          <AHD Name="AHD 1" Bypass="0" AttackTime="0" HoldTime="0" DecayTime="0.3"/>
+          <AHD Name="AHD 2" Bypass="0" AttackTime="0" HoldTime="0" DecayTime="0.3"/>
+          <LFO Name="LFO 1" Bypass="0" WaveFormType="3" Freq="2" Depth="1" Retrigger="1" Bipolar="1"/>
+        </ControlSignalSources>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="1" Source="$Layer/DAHDSR 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="12" Source="$Layer/AHD 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              <SignalConnection Ratio="12" Source="$Layer/AHD 2" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              <SignalConnection Ratio="1" Source="$Layer/LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    // Alike AHDs a script may set apart: a copy each.
+    assert_eq!(out.groups[0].envelopes.len(), 2, "{:?}", out.groups[0].envelopes);
+    // UVI's RampUp is the rising ramp.
+    assert_eq!(out.groups[0].lfos[0].wave, ir::Wave::Ramp);
+    let tree = out.scripts[0].data.iter().find(|(name, _)| name == "__program.lua");
+    let tree = String::from_utf8_lossy(&tree.unwrap().1).into_owned();
+    for copy in [
+        r#"env={"DAHDSR",{0,-1}}"#,
+        r#"env={"AHD",{0,0}}"#,
+        r#"env={"AHD",{0,1}}"#,
+        r#"lfo={"LFO",{0,0}}"#,
+    ] {
+        assert!(tree.contains(copy), "{copy} in {tree}");
+    }
 }

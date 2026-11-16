@@ -1677,11 +1677,12 @@ fn a_release_sees_its_key_up() {
     assert_eq!(e.last_message(), "down 0");
 }
 
-/// A script hears its notes end when the engine ends them (Shreddage plays
-/// its sound from a 1 µs trigger note's release), not when it `note_off`s
-/// them itself (Pacific's layers: native Kontakt plays its release once).
+/// A script hears the end of every note it plays, `note_off` included, but
+/// not one it ends from its own `on release`: there only the slots after
+/// it hear it (Kontakt 8.13, probes/release_callbacks.lua; Pacific's layers
+/// play their release once).
 #[test]
-fn a_script_hears_its_notes_end_but_not_its_own_note_offs() {
+fn a_script_hears_its_notes_end_except_its_note_offs_from_on_release() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let zones = vec![zone(&mut store, 0.5, 0)];
     let mut e = engine(
@@ -1689,56 +1690,85 @@ fn a_script_hears_its_notes_end_but_not_its_own_note_offs() {
         zones,
         "on init
             declare $id := 0
+            declare $held := 0
             declare $timed := 0
             declare $off := 0
+            declare $inner := 0
         end on
         on note
             if ($EVENT_NOTE = 60)
                 play_note(61, 100, 0, 1)
                 $id := play_note(62, 100, 0, 0)
                 note_off($id)
+                $held := play_note(63, 100, 0, 0)
             end if
         end on
         on release
+            if ($EVENT_NOTE = 60)
+                note_off($held)
+            end if
             if ($EVENT_NOTE = 61)
                 inc($timed)
             end if
             if ($EVENT_NOTE = 62)
                 inc($off)
             end if
-            message($timed & \" \" & $off)
+            if ($EVENT_NOTE = 63)
+                inc($inner)
+            end if
+            message($timed & \" \" & $off & \" \" & $inner)
         end on",
     );
     level(&mut e, &[on(60)]);
     level(&mut e, &[]);
-    assert_eq!(e.last_message(), "1 0");
+    assert_eq!(e.last_message(), "1 1 0");
+    level(&mut e, &[off(60)]);
+    level(&mut e, &[]);
+    assert_eq!(
+        e.last_message(),
+        "1 1 0",
+        "63, ended from on release, is not heard"
+    );
 }
 
-/// A note an `on release` plays sounds its release-trigger zones (Pacific
-/// plays its release samples from `on release`, into release groups).
+/// An `on release` that waits before its `note_off` is still a release: the
+/// player does not hear that note end (a resumed callback keeps its type).
 #[test]
-fn a_note_played_on_release_sounds_its_release_zones() {
+fn a_note_off_after_a_wait_in_on_release_is_not_heard_by_its_player() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let mut tail = zone(&mut store, 0.25, 1);
-    tail.trigger = kontra_engine::Trigger::Release;
-    let zones = vec![zone(&mut store, 0.5, 0), tail];
+    let zones = vec![zone(&mut store, 0.5, 0)];
     let mut e = engine(
         &store,
         zones,
-        "on note
-            disallow_group(1)
+        "on init
+            declare $held := 0
+            declare $inner := 0
+        end on
+        on note
+            if ($EVENT_NOTE = 60)
+                $held := play_note(63, 100, 0, 0)
+            end if
         end on
         on release
-            ignore_event($EVENT_ID)
-            disallow_group($ALL_GROUPS)
-            allow_group(1)
-            play_note(60, 100, 0, 0)
+            if ($EVENT_NOTE = 60)
+                wait(1000)
+                note_off($held)
+            end if
+            if ($EVENT_NOTE = 63)
+                inc($inner)
+            end if
+            message($inner)
         end on",
     );
     level(&mut e, &[on(60)]);
-    // The held voice rings on (its release is ignored) under the tail.
-    let l = level(&mut e, &[off(60)]);
-    assert!((l - 0.75).abs() < 1e-3, "{l}");
+    level(&mut e, &[off(60)]);
+    level(&mut e, &[]);
+    level(&mut e, &[]);
+    assert_eq!(
+        e.last_message(),
+        "0",
+        "63, ended after a wait in on release, is not heard"
+    );
 }
 
 /// A timed note an `on release` plays is that release's own sound: the key's
@@ -5666,4 +5696,35 @@ fn a_switch_to_mono_under_a_held_chord_keeps_only_the_new_note() {
     level(&mut e, &[on(67)]);
     let mono = level(&mut e, &[]);
     assert!((mono - 0.25).abs() < 1e-3, "after the switch {mono}");
+}
+
+/// AO's amplitude attack knob: `modulations["DAHDSR 1"]:setParameter(
+/// "AttackTime", v)` reaches the group's envelope for the next note.
+#[test]
+fn a_scripts_attack_time_reaches_the_next_notes_envelope() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.25, 0);
+    z.keys = 0..=127;
+    let plan = Plan::new(vec![z], 16);
+    let tree = "return {params={},db=0,pan=0,auxs={},layers={{params={},
+        modulations={{params={Name='DAHDSR 1',AttackTime='0'},env={'DAHDSR',{0,-1}}}}}}}";
+    let source = "function onNote(e)
+            if e.note == 62 then
+                Program.layers[1].modulations['DAHDSR 1']:setParameter('AttackTime', 1)
+            end
+            postEvent(e)
+        end";
+    let modules = [("__program.lua".to_string(), tree.to_string())];
+    let compiled = kontra_lua::compile(source, &modules, &[]).unwrap();
+    let mut plan = plan;
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let gate = level(&mut e, &[on(60)]);
+    assert!((gate - 0.25).abs() < 1e-3, "no attack: {gate}");
+    level(&mut e, &[off(60)]);
+    level(&mut e, &[]);
+    // A 1 s attack: 4096 frames in, under a tenth of the way.
+    let rising = level(&mut e, &[on(62)]);
+    assert!(rising > 0.0 && rising < 0.025, "1 s attack at {rising}");
+    assert_eq!(e.stats().actions_unhandled, 0);
 }

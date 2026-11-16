@@ -117,6 +117,8 @@ pub(crate) fn unfinished<'a, L: Library>(
         units: HashMap::new(),
         glide_scopes: 0,
         lines: HashMap::new(),
+        envelopes: HashMap::new(),
+        slots: HashMap::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
             pan: num(program, "Pan", 0.0)?.clamp(-1.0, 1.0) as f32,
@@ -235,6 +237,14 @@ struct Translator<'a, 'input, L> {
     /// Each layer a script may switch (`PlayMode`, `Portamento*`): its
     /// voice group, glide scope and own note limit, for the tree.
     lines: HashMap<roxmltree::NodeId, (usize, u16, u16)>,
+    /// What each AHD and DAHDSR became, for the tree: `(group, envelope)`,
+    /// envelope −1 the group's amplitude envelope, else its breakpoints.
+    envelopes: HashMap<roxmltree::NodeId, Vec<(usize, i32)>>,
+    /// Each modulator's copy on a group: `(group, node, kind)` to its index
+    /// in the group's envelopes or LFOs ([`modulation::Slots`]). Keyed by
+    /// identity, not value: two alike modulators a script may set apart
+    /// get a slot each.
+    slots: modulation::Slots,
 }
 
 impl<L: Library> Translator<'_, '_, L> {
@@ -490,7 +500,9 @@ impl<L: Library> Translator<'_, '_, L> {
             return;
         }
         self.carried.extend(blend::carries(connection, &r));
-        let source = modulation::group_source(group, r.source, r.timed);
+        // Groups are pushed once built: this one goes at the end.
+        let at = source_node(self.program, connection).map(|n| (self.out.groups.len(), n.id()));
+        let source = modulation::group_source(group, r.source, r.timed, at, &mut self.slots);
         if connection.attribute("Destination") != Some("Depth") {
             self.depth_scales(group, connection, source);
         }

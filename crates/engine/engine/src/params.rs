@@ -799,6 +799,78 @@ impl Engine {
         true
     }
 
+    /// A group's amplitude envelope in seconds, level and shapes, as a
+    /// format's script runtime computes it: attack, hold, decay, sustain,
+    /// release, attack shape, fall shape, lag. Its floor and depth (a
+    /// volume route's) stay. New voices play it.
+    pub(crate) fn set_amp_envelope(&mut self, group: i32, v: [f32; 8]) -> bool {
+        let rate = f64::from(self.rate);
+        let Some(g) = self.group_mut(group) else {
+            return false;
+        };
+        let frames = |s: f32| (f64::from(s.max(0.0)) * rate).round() as u32;
+        let [attack, hold, decay, sustain, release, attack_shape, fall_shape, lag] = v;
+        let e = &mut g.envelope;
+        e.attack = frames(attack);
+        e.hold = frames(hold);
+        e.decay = frames(decay);
+        e.sustain = sustain.clamp(0.0, 1.0);
+        e.release = frames(release).max(1);
+        e.attack_shape = attack_shape;
+        e.fall_shape = fall_shape;
+        e.lag = frames(lag);
+        true
+    }
+
+    /// Point `point` of breakpoint envelope `index` of a group. New voices
+    /// play it.
+    pub(crate) fn set_envelope_point(
+        &mut self,
+        group: i32,
+        index: i32,
+        point: i32,
+        to: ir::Breakpoint,
+    ) -> bool {
+        let p = (self.group_mut(group))
+            .and_then(|g| g.envelopes.get_mut(usize::try_from(index).ok()?))
+            .and_then(|e| e.points.get_mut(usize::try_from(point).ok()?));
+        let Some(p) = p else {
+            return false;
+        };
+        *p = ir::Breakpoint {
+            ms: to.ms.max(0.0),
+            level: to.level,
+            curve: to.curve,
+        };
+        true
+    }
+
+    /// LFO `index` of a group: each of its wave, rate and clock given.
+    pub(crate) fn set_lfo(
+        &mut self,
+        group: i32,
+        index: i32,
+        wave: Option<ir::Wave>,
+        rate: Option<ir::Rate>,
+        clock: Option<ir::Clock>,
+    ) -> bool {
+        let lfo = (self.group_mut(group))
+            .and_then(|g| g.lfos.get_mut(usize::try_from(index).ok()?));
+        let Some(lfo) = lfo else {
+            return false;
+        };
+        if let Some(wave) = wave {
+            lfo.wave = wave;
+        }
+        if let Some(rate) = rate.filter(|r| matches!(r, ir::Rate::Hz(x) | ir::Rate::Beats(x) if *x > 0.0)) {
+            lfo.rate = rate;
+        }
+        if let Some(clock) = clock {
+            lfo.clock = clock;
+        }
+        true
+    }
+
     /// `set_controller`: the script moves a controller (0 to 127), the
     /// pitch bend (`$VCC_PITCH_BEND`, -8192 to 8191) or the channel pressure
     /// (`$VCC_MONO_AT`) as if it had arrived, on every port and channel.

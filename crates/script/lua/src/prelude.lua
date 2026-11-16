@@ -773,6 +773,106 @@ local function set_line(line, name, value)
 	end
 end
 
+-- An AHD's or DAHDSR's times (seconds, 0..30), levels and curves, as
+-- kontra-format-uvi's modulation.rs translates them; `env` is `{tag,
+-- {group, envelope}, ...}`, envelope -1 a group's amplitude envelope.
+-- A segment curve c passes (1 - c)/2 of its way at half its time: shape
+-- 2 ln((1 + c)/(1 - c)), c within +-0.9998 (UVIWorkstation 0x1410f1220).
+local ENVELOPE_PARAMS = {
+	DelayTime = true, AttackTime = true, HoldTime = true, DecayTime = true, SustainLevel = true,
+	ReleaseTime = true, AttackCurve = true, DecayCurve = true, ReleaseCurve = true,
+}
+local function micro(x)
+	return math.floor(x * 1e6 + 0.5)
+end
+local function set_envelope(p, env)
+	local function seconds(name, default)
+		return math.max(0, math.min(30, tonumber(p[name]) or default))
+	end
+	local function curve(name)
+		local c = math.max(-0.9998, math.min(0.9998, tonumber(p[name]) or 0))
+		return 2 * math.log((1 + c) / (1 - c))
+	end
+	local sustain = math.max(0, math.min(1, tonumber(p.SustainLevel) or 1))
+	local points
+	if env[1] == "AHD" then
+		points = {
+			{ seconds("AttackTime", 0), 1, curve("AttackCurve") },
+			{ seconds("HoldTime", 1), 1, 0 },
+			{ seconds("DecayTime", 0.1), 0, curve("DecayCurve") },
+		}
+	else
+		points = {
+			{ seconds("DelayTime", 0), 0, 0 },
+			{ seconds("AttackTime", 0), 1, curve("AttackCurve") },
+			{ seconds("HoldTime", 0), 1, 0 },
+			{ seconds("DecayTime", 0), sustain, curve("DecayCurve") },
+			{ seconds("ReleaseTime", 0), 0, curve("ReleaseCurve") },
+		}
+	end
+	for i = 2, #env do
+		local group, index = env[i][1], env[i][2]
+		if index < 0 then
+			-- The delay lengthens the attack and stays silent at its start;
+			-- decay and release share the release's curve, the decay's when
+			-- only it moves.
+			local delay = points[1][1]
+			local decays = sustain < 1 and points[4][1] > 0
+			local fall = curve((decays and points[5][1] == 0) and "DecayCurve" or "ReleaseCurve")
+			host_call("AmpEnvelope", group, micro(delay + points[2][1]), micro(points[3][1]),
+				micro(points[4][1]), micro(sustain), micro(points[5][1]), micro(points[2][3]),
+				micro(fall), micro(delay))
+		else
+			for k, point in ipairs(points) do
+				host_call("EnvelopePoint", group, index, k - 1, micro(point[1]), micro(point[2]),
+					micro(point[3]))
+			end
+		end
+	end
+end
+
+-- An LFO's, MultiLFO's or StepEnvelope's wave, rate and clock as
+-- kontra-format-uvi's modulation.rs translates them; `lfo` is `{tag,
+-- {group, index}, ..., fixed}`, `fixed` for a user-table LFO, whose wave
+-- is its table. WaveFormType (registry 0x1410f5d00): its engine wave and
+-- that wave's numbers as f32 bits (the chaos constants set at
+-- 0x1410f593b); 5 AnalogSquare and 9 User keep the wave they have.
+local LFO_PARAMS = { Freq = true, SyncToHost = true, WaveFormType = true, Retrigger = true }
+local CHAOS_TEN = 1092616192
+local LFO_WAVES = {
+	[0] = { 0 },
+	[1] = { 4, 1056964608 },
+	[2] = { 1 },
+	[3] = { 3 },
+	[4] = { 2 },
+	[6] = { 5 },
+	[7] = { 6, CHAOS_TEN, 1105199104, 1076535230, 1065353216, 1028730567 },
+	[8] = { 7, 1041865114, 1045220557, CHAOS_TEN, 1077558641, 1030475397 },
+}
+local function set_lfo(p, lfo)
+	local tag = lfo[1]
+	local wave = { -1 }
+	if tag == "LFO" and not lfo.fixed then
+		wave = LFO_WAVES[math.floor(tonumber(p.WaveFormType) or 0)] or wave
+	end
+	local sync = p.SyncToHost == true or (tonumber(p.SyncToHost) or 0) ~= 0
+	local steps = tag == "StepEnvelope"
+	local freq = tonumber(p.Freq) or (steps and 0.25 or 0.5)
+	-- A random wave draws twice a cycle; a step envelope's cycle is its steps.
+	local per = steps and (tonumber(p.NumSteps) or 16) or (wave[1] == 5 and 2 or 1)
+	local kind, speed = -1, 0
+	if freq > 0 then
+		kind = sync and 1 or 0
+		speed = sync and freq * per or freq / per
+	end
+	local retrigger = tonumber(p.Retrigger) or (steps and 0 or 1)
+	local clock = (retrigger == 0 or retrigger == 1) and retrigger or -1
+	for i = 2, #lfo do
+		host_call("LfoSet", lfo[i][1], lfo[i][2], wave[1], wave[2] or 0, wave[3] or 0, wave[4] or 0,
+			wave[5] or 0, wave[6] or 0, kind, math.floor(speed * 1e6 + 0.5), clock)
+	end
+end
+
 local Element = {}
 function Element.getParameter(self, name)
 	return self.params[name]
@@ -788,6 +888,16 @@ function Element.setParameter(self, name, value)
 	self.params[name] = value
 	if was ~= value and __watch then
 		__watch(self, name)
+	end
+	local env = fields_of(self).env
+	if env and ENVELOPE_PARAMS[name] and tonumber(value) then
+		set_envelope(self.params, env)
+		return
+	end
+	local lfo = fields_of(self).lfo
+	if lfo and LFO_PARAMS[name] then
+		set_lfo(self.params, lfo)
+		return
 	end
 	local line = fields_of(self).line
 	if line then
@@ -925,6 +1035,8 @@ function element(node)
 		knobs = node.knobs,
 		impulse = node.impulse,
 		line = node.line,
+		env = node.env,
+		lfo = node.lfo,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)

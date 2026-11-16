@@ -299,9 +299,9 @@ impl Compiled {
         let host = {
             let lend = lend.clone();
             // Fixed arity, so a call allocates nothing: an action and up
-            // to eight arguments, the trailing nils dropped.
-            lua.create_function(move |lua, (a, b, c, d, e, f, g, h, i): Args| {
-                let args = [a, b, c, d, e, f, g, h, i];
+            // to twelve arguments, the trailing nils dropped.
+            lua.create_function(move |lua, (a, b, c, d, e, f, g, h, i, j, k, l, m): Args| {
+                let args = [a, b, c, d, e, f, g, h, i, j, k, l, m];
                 let n = args.iter().rposition(|v| !v.is_nil()).map_or(0, |n| n + 1);
                 let args = args.get(..n).unwrap_or_default();
                 Ok(lend
@@ -944,8 +944,12 @@ fn number(v: &Value) -> Option<f64> {
 }
 
 /// `__host(action, ...)`: numbers become int arguments, strings text ones.
-/// A host call's Lua arguments: the action and up to eight more.
+/// A host call's Lua arguments: the action and up to twelve more.
 type Args = (
+    Value,
+    Value,
+    Value,
+    Value,
     Value,
     Value,
     Value,
@@ -965,7 +969,8 @@ fn host_call(lua: &Lua, host: &mut dyn HostApi, context: u64, args: &[Value]) ->
     else {
         return Value::Nil;
     };
-    let mut ints = [0i64; 8];
+    // The widest call (`LfoSet`) sends eleven.
+    let mut ints = [0i64; 12];
     let mut texts = [Text::EMPTY; 4];
     let (mut n_int, mut n_text) = (0, 0);
     for value in args.iter().skip(1) {
@@ -1814,6 +1819,39 @@ mod tests {
                 vec![2, 1, 1, 1, 1, 1, 1, 1],
                 vec![1, 1, 250_000],
                 vec![2, 1, 4, 0, 0, 0, 0, 1],
+            ]
+        );
+    }
+
+    #[test]
+    fn an_lfos_shape_speed_and_sync_reach_its_copies() {
+        // AO's LFO page: WaveFormType 3 (RampUp), a 4 Hz free speed, then
+        // synced at 0.5 beats, then No Retrigger.
+        let tree = "return {params={},db=0,pan=0,auxs={},layers={{params={},
+            modulations={{params={Name='LFO 1',Freq='1',WaveFormType='0'},lfo={'LFO',{2,1}}}}}}}";
+        let source = "local l = Program.layers[1].modulations['LFO 1']
+            l:setParameter('WaveFormType', 3)
+            l:setParameter('Freq', 4)
+            l:setParameter('SyncToHost', true)
+            l:setParameter('Freq', 0.5)
+            l:setParameter('Retrigger', 0)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let sent: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| *a == Action::LfoSet)
+            .map(|(_, i)| [i[0], i[1], i[2], i[8], i[9], i[10]])
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                [2, 1, 3, 0, 1_000_000, 1],
+                [2, 1, 3, 0, 4_000_000, 1],
+                [2, 1, 3, 1, 4_000_000, 1],
+                [2, 1, 3, 1, 500_000, 1],
+                [2, 1, 3, 1, 500_000, 0],
             ]
         );
     }

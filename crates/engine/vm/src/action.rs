@@ -509,6 +509,14 @@ actions! {
     // A number of a glide scope: ints (scope, knob: 1 seconds, 2 per
     // semitone, 3 curve, value in millionths).
     GlideKnob,
+    // A group's amplitude envelope as a script sets it: ints (group,
+    // attack, hold, decay, sustain level, release, attack shape, fall
+    // shape, silent lag at the attack's start); times in microseconds,
+    // the rest in millionths.
+    AmpEnvelope,
+    // A point of breakpoint envelope `index` of a group: ints (group,
+    // index, point, microseconds, level and curve in millionths).
+    EnvelopePoint,
     // `!NI_DND_ITEMS_AUDIO`, `_MIDI`, `_ARRAY` at int 0: the path of a file
     // dropped on a mouse area, as text.
     DndItemsAudio,
@@ -517,4 +525,11 @@ actions! {
     // `num_elements` of those: how many files of kind int 0 (0 audio, 1
     // MIDI, 2 array) the drop holds.
     DndItemsCount,
+    // LFO `index` of a group: ints (group, index, wave, five wave numbers
+    // as f32 bits, rate kind, rate in millionths, clock). Wave −1 keeps
+    // it, 0 sine, 1 triangle, 2 falling saw, 3 rising ramp, 4 square (high
+    // for the first number of the cycle), 5 random, 6 Lorenz (σ, ρ, β,
+    // step, scale), 7 Rössler (a, b, c, step, scale). Rate kind −1 keeps
+    // it, 0 Hz, 1 beats a cycle; clock −1 keeps it, 0 free, 1 per voice.
+    LfoSet,
 }

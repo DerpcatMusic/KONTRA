@@ -2,7 +2,9 @@
 
 use kontra_ir as ir;
 use kontra_law::uvi::ENVELOPE_CURVE;
-use roxmltree::Node;
+use std::collections::HashMap;
+
+use roxmltree::{Node, NodeId};
 
 use super::{Library, Translator, blend, flag, index_of, matrix, num, source_node};
 
@@ -22,6 +24,9 @@ impl<L: Library> Translator<'_, '_, L> {
             return Ok(None);
         };
         let source = connection.attribute("Source").unwrap_or_default();
+        // The keygroup's group goes at the end once built.
+        let at = (self.out.groups.len(), -1);
+        self.envelopes.entry(env.id()).or_default().push(at);
         let seconds = |name| num(env, name, 0.0).map(|t| t.clamp(0.0, 30.0) as f32);
         // The delay holds silence before the attack: a lag the attack is
         // lengthened by, so the attack still runs its whole time after it.
@@ -368,20 +373,58 @@ pub(super) fn factor(mut r: Route, connection: Node) -> Option<Route> {
     Some(r)
 }
 
-/// The source `timed` (or `source`) is in `group`, its modulator copied
-/// onto it: a rising LFO is the LFO under an [`ir::ModKind::Intensity`]
-/// from its rise.
+/// Which copy of a modulator a group holds ([`Slots`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Slot {
+    Envelope,
+    Lfo,
+    /// An LFO's delay and rise, an envelope under it.
+    Rise,
+}
+
+/// `(group, modulator node, slot)` to the index of its copy in the group.
+pub(super) type Slots = HashMap<(usize, NodeId, Slot), u8>;
+
+/// The index of `item` in `items`: modulator `at`'s own copy (one per
+/// group, node and slot), or without `at` any equal one.
+pub(super) fn slot<T: PartialEq>(
+    items: &mut Vec<T>,
+    item: T,
+    at: Option<(usize, NodeId)>,
+    kind: Slot,
+    slots: &mut Slots,
+) -> u8 {
+    let Some((group, node)) = at else {
+        return index_of(items, item);
+    };
+    if let Some(&i) = slots.get(&(group, node, kind))
+        && items.get(usize::from(i)) == Some(&item)
+    {
+        return i;
+    }
+    items.push(item);
+    let i = u8::try_from(items.len() - 1).unwrap_or(u8::MAX);
+    slots.insert((group, node, kind), i);
+    i
+}
+
+/// The source `timed` (or `source`) is in `group`, its modulator `at`
+/// (group index, node) copied onto it: a rising LFO is the LFO under an
+/// [`ir::ModKind::Intensity`] from its rise.
 pub(super) fn group_source(
     group: &mut ir::Group,
     source: ir::Source,
     timed: Option<Timed>,
+    at: Option<(usize, NodeId)>,
+    slots: &mut Slots,
 ) -> ir::Source {
     match timed {
         None => source,
-        Some(Timed::Lfo(lfo)) => ir::Source::Lfo(index_of(&mut group.lfos, lfo)),
+        Some(Timed::Lfo(lfo)) => ir::Source::Lfo(slot(&mut group.lfos, lfo, at, Slot::Lfo, slots)),
         Some(Timed::Rising(lfo, rise, table)) => {
-            let of = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
-            let source = ir::Source::Envelope(index_of(&mut group.envelopes, rise));
+            let of = ir::Source::Lfo(slot(&mut group.lfos, lfo, at, Slot::Lfo, slots));
+            let source =
+                ir::Source::Envelope(slot(&mut group.envelopes, rise, at, Slot::Rise, slots));
             let kind = ir::ModKind::Intensity {
                 source,
                 of,
@@ -407,9 +450,11 @@ pub(super) fn group_source(
                 ir::Source::Shaped(index_of(&mut group.shapers, t))
             }
         }
-        Some(Timed::Envelope(e)) => ir::Source::Envelope(index_of(&mut group.envelopes, e)),
+        Some(Timed::Envelope(e)) => {
+            ir::Source::Envelope(slot(&mut group.envelopes, e, at, Slot::Envelope, slots))
+        }
         Some(Timed::Steps(lfo, table, smooth_s)) => {
-            let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
+            let source = ir::Source::Lfo(slot(&mut group.lfos, lfo, at, Slot::Lfo, slots));
             ir::Source::Shaped(index_of(
                 &mut group.shapers,
                 ir::Transfer {
@@ -421,7 +466,7 @@ pub(super) fn group_source(
             ))
         }
         Some(Timed::Mapped(t)) => ir::Source::Shaped(index_of(&mut group.shapers, t)),
-        Some(Timed::Blend(b)) => blend::lower(group, b),
+        Some(Timed::Blend(b)) => blend::lower(group, b, at, slots),
     }
 }
 
@@ -492,7 +537,7 @@ fn shape_value(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
             0.0 => (ir::Wave::Sine, 1.0),
             1.0 => (ir::Wave::Square { width: 0.5 }, 1.0),
             2.0 => (ir::Wave::Triangle, 1.0),
-            3.0 => (ir::Wave::Saw, -1.0),
+            3.0 => (ir::Wave::Ramp, 1.0),
             4.0 => (ir::Wave::Saw, 1.0),
             // Random S&H: a uniform −1..=1 draw each time its 32-bit phase
             // wraps (0x1410f95b0), once a cycle (the random wave's half cycle).

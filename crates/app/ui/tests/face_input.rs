@@ -504,3 +504,76 @@ fn a_file_selector_selects_on_a_click_and_picks_on_a_double_click() {
         "{sub:?}"
     );
 }
+
+/// A file drag that leaves the window (or is cancelled) takes the pointer
+/// with it: the mouse area it was over hears it leave, and the next drag
+/// over it is an enter again.
+#[test]
+fn a_file_drag_leaving_the_window_leaves_its_mouse_area() {
+    let mut f = Face::new();
+    f.tree.widgets.push(Widget::new(
+        "$area",
+        PageRef(0),
+        Rect::new(300, 150, 60, 60),
+        Kind::MouseArea {
+            takes: [1, 0, 0],
+            drag: true,
+        },
+    ));
+    let area = WidgetRef(f.tree.widgets.len() - 1);
+    f.frame(Input::default());
+    let at = f.at(&input::surface(0, area.0));
+    let drag = input::FileDrag {
+        at,
+        paths: vec!["/s/kick.wav".into()],
+        dropped: false,
+    };
+    let over = |edits: &[Edit]| -> Vec<bool> {
+        (edits.iter())
+            .filter(|e| e.widget == area)
+            .filter_map(|e| match e.to {
+                Set::Drop { over, .. } => Some(over),
+                _ => None,
+            })
+            .collect()
+    };
+    let enter = |f: &mut Face| {
+        f.pointer(at, false, Mods::default());
+        let page = (&f.tree, PageRef(0));
+        input::files(&f.ui, 0, page, 1., &drag, &mut f.gesture)
+    };
+    assert_eq!(over(&enter(&mut f)), [true]);
+    let mut gone = f.frame(Input::default());
+    gone.extend(f.frame(Input::default()));
+    assert_eq!(over(&gone), [false], "it heard the drag leave");
+    assert_eq!(over(&enter(&mut f)), [true], "and hears the next one enter");
+}
+
+/// A native page's hover area is set while the pointer is over it and let
+/// go when it leaves (Conflux shows its macros' assign toggles while the
+/// row is hovered); its marker must be a surface the scene keeps.
+#[test]
+fn a_hover_area_answers_the_pointer_over_it() {
+    let mut f = Face::new();
+    let mut area = Widget::new(
+        "native_ui tap 1 2",
+        PageRef(0),
+        Rect::new(300, 150, 60, 30),
+        Kind::Button { momentary: true },
+    );
+    area.intercepts_mouse = false;
+    f.tree.widgets.push(area);
+    let n = WidgetRef(f.tree.widgets.len() - 1);
+    f.frame(Input::default());
+    let at = f.at(&input::surface(0, n.0));
+    let inside = Point::new(at.x + 20., at.y + 10.);
+    let mut edits = f.pointer(inside, false, Mods::default());
+    edits.extend(f.pointer(inside, false, Mods::default()));
+    edits.extend(f.pointer(Point::new(5., 5.), false, Mods::default()));
+    edits.extend(f.pointer(Point::new(5., 5.), false, Mods::default()));
+    let set: Vec<_> = (edits.iter())
+        .filter(|e| e.widget == n)
+        .map(|e| &e.to)
+        .collect();
+    assert_eq!(set, [&Set::Value(1.), &Set::Value(0.)]);
+}

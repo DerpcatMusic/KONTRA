@@ -196,10 +196,16 @@ impl Engine {
     fn script_note_off(&mut self, id: i32) {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
+        // Measured (probes/release_callbacks.lua, Kontakt 8.13): a note
+        // its player ends from its own `on release` skips that script's
+        // `on release`; ended from anywhere else, the player hears it.
         let player = self.running.slot + 1;
+        // Across a wait the kind is Resumed; the callback type stays.
+        let from_release =
+            self.running.callback_type == Running::new(Kind::Release, None).callback_type;
         for &note in &hits {
             if let Some(n) = self.notes.get_mut(note) {
-                n.noted_off |= n.first == player;
+                n.noted_off |= from_release && n.first == player;
             }
             self.queue_end(note);
         }
@@ -882,6 +888,66 @@ impl HostApi for Engine {
                 let at = (usize::try_from(int(0)).ok()).zip(u16::try_from(int(1)).ok());
                 if !at.is_some_and(|(vg, scope)| self.set_voice_line(vg, scope, law)) {
                     self.count_unhandled(Action::VoiceLine);
+                }
+                HostValue::Nothing
+            }
+            Action::AmpEnvelope => {
+                let n = |i: usize| int(i) as f32 / 1e6;
+                let set = self.set_amp_envelope(int(0), [1, 2, 3, 4, 5, 6, 7, 8].map(n));
+                if !set {
+                    self.count_unhandled(Action::AmpEnvelope);
+                }
+                HostValue::Nothing
+            }
+            Action::EnvelopePoint => {
+                let n = |i: usize| int(i) as f32 / 1e6;
+                let point = crate::ir::Breakpoint {
+                    ms: n(3) * 1000.0,
+                    level: n(4),
+                    curve: n(5),
+                };
+                if !self.set_envelope_point(int(0), int(1), int(2), point) {
+                    self.count_unhandled(Action::EnvelopePoint);
+                }
+                HostValue::Nothing
+            }
+            Action::LfoSet => {
+                use crate::ir::{Attractor, Clock, Rate, Wave};
+                let bits = |i: usize| f32::from_bits(int(i) as u32);
+                let [a, b, c, step, scale] = [3, 4, 5, 6, 7].map(bits);
+                let chaos = |attractor| Wave::Chaos {
+                    attractor,
+                    step,
+                    scale,
+                };
+                let wave = match int(2) {
+                    0 => Some(Wave::Sine),
+                    1 => Some(Wave::Triangle),
+                    2 => Some(Wave::Saw),
+                    3 => Some(Wave::Ramp),
+                    4 => Some(Wave::Square { width: a }),
+                    5 => Some(Wave::Random),
+                    6 => Some(chaos(Attractor::Lorenz {
+                        sigma: a,
+                        rho: b,
+                        beta: c,
+                    })),
+                    7 => Some(chaos(Attractor::Rossler { a, b, c })),
+                    _ => None,
+                };
+                let speed = int(9) as f32 / 1e6;
+                let rate = match int(8) {
+                    0 => Some(Rate::Hz(speed)),
+                    1 => Some(Rate::Beats(speed)),
+                    _ => None,
+                };
+                let clock = match int(10) {
+                    0 => Some(Clock::Free),
+                    1 => Some(Clock::Voice),
+                    _ => None,
+                };
+                if !self.set_lfo(int(0), int(1), wave, rate, clock) {
+                    self.count_unhandled(Action::LfoSet);
                 }
                 HostValue::Nothing
             }
