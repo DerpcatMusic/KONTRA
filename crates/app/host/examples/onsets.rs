@@ -1,0 +1,137 @@
+//! Renders a note pattern twice, in fixed 512-frame blocks and in random
+//! 64..=1024-frame blocks (a host such as Bitwig), events on their exact
+//! frames, and reports whether the two renders differ and how many onsets
+//! each note has within 200 ms (two is a double attack).
+//! `cargo run --release -p kontra-host --example onsets -- <file> <key> [keyswitch]`
+//! KONTRA_PATTERN=solo|repeats: six notes 600 ms apart (default), or 16 notes
+//! every 70 ms, 45 ms long.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use kontra_engine::{Engine, Event, HostNote, HostPattern, Prepared, SampleTime, Timed};
+use kontra_stream::{Store, StoreConfig};
+
+const RATE: u32 = 48_000;
+const MS: usize = RATE as usize / 1000;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args_os().skip(1);
+    let path: PathBuf = args.next().ok_or("usage: onsets <file> <key> [keyswitch]")?.into();
+    let key: u8 = args.next().and_then(|k| k.to_str()?.parse().ok()).unwrap_or(60);
+    let switch: Option<u8> = args.next().and_then(|k| k.to_str()?.parse().ok());
+    let repeats = std::env::var("KONTRA_PATTERN").is_ok_and(|p| p == "repeats");
+    // (frame, key, on): the keyswitch at 0, notes from 0.3 s.
+    let mut notes: Vec<(usize, u8, bool)> = Vec::new();
+    if let Some(k) = switch {
+        notes.extend([(0, k, true), (50 * MS, k, false)]);
+    }
+    let (count, period, length) = if repeats { (16, 70, 45) } else { (6, 600, 400) };
+    for i in 0..count {
+        let at = (300 + i * period) * MS;
+        notes.extend([(at, key, true), (at + length * MS, key, false)]);
+    }
+    notes.sort_by_key(|n| n.0);
+    let total = (300 + count * period + 1000) * MS;
+    let fixed = render(&path, &notes, total, |_| 512)?;
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let varied = render(&path, &notes, total, move |_| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        64 + (seed % 961) as usize
+    })?;
+    let diff = fixed.iter().zip(&varied).map(|(a, b)| (a - b).abs()).enumerate();
+    let (first, worst) = diff.fold((None, 0f32), |(first, worst), (n, d)| {
+        (first.or((d > 1e-4).then_some(n)), worst.max(d))
+    });
+    println!("fixed vs varied blocks: max diff {worst:.6}, first differing frame {first:?}");
+    let starts: Vec<usize> = (notes.iter()).filter(|n| n.2 && Some(n.1) != switch).map(|n| n.0).collect();
+    for (name, audio) in [("fixed", &fixed), ("varied", &varied)] {
+        let counts: Vec<usize> = starts.iter().map(|&s| onsets(audio, s)).collect();
+        println!("{name}: onsets per note {counts:?}");
+    }
+    Ok(())
+}
+
+/// Onsets in the 200 ms after `start`: a 1 ms RMS rising 12 dB or more over
+/// 5 ms, above −50 dB re the render's peak, at least 20 ms apart.
+fn onsets(audio: &[f32], start: usize) -> usize {
+    let peak = audio.iter().fold(0f32, |p, x| p.max(x.abs())).max(1e-9);
+    let db = |at: usize| {
+        let s = audio.get(at..at + MS).unwrap_or_default();
+        let rms = (s.iter().map(|x| x * x).sum::<f32>() / MS as f32).sqrt();
+        20.0 * (rms / peak).max(1e-9).log10()
+    };
+    let (mut count, mut last) = (0, None::<usize>);
+    for ms in 0..200 {
+        let at = start + ms * MS;
+        let before = db(at.saturating_sub(5 * MS));
+        let now = db(at);
+        if now > -50.0 && now - before >= 12.0 && last.is_none_or(|l| ms - l >= 20) {
+            count += 1;
+            last = Some(ms);
+        }
+    }
+    count
+}
+
+/// Mono (left + right) render of `notes` in blocks of `size(n)` frames.
+fn render(
+    path: &Path,
+    notes: &[(usize, u8, bool)],
+    total: usize,
+    mut size: impl FnMut(usize) -> usize,
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    let mut store = Store::new(StoreConfig::DEFAULT)?;
+    let ir = kontra_host::instrument::read(path)?;
+    let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
+    let stream = store.client();
+    let plan = Arc::new(loaded.plan);
+    let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    if let Some(p) = kontra_prepare::tables(engine.plan(), &stream) {
+        engine.swap_plan(&mut Arc::new(p), &[]);
+    }
+    let install = |engine: &mut Engine| {
+        let mut asked = Vec::new();
+        engine.drain_requests(|r| asked.push(r));
+        for r in asked {
+            engine.install(Prepared::new(r, Some(&plan), RATE));
+        }
+    };
+    let mut block = vec![[0.0f32; 2]; 1024];
+    let mut silent = vec![[0.0f32; 2]; 512];
+    for _ in 0..RATE as usize / 2 / 512 {
+        engine.process(&mut silent, &[]);
+        install(&mut engine);
+    }
+    stream.settle(std::time::Duration::from_secs(10));
+    let mut out = Vec::with_capacity(total);
+    let mut n = 0;
+    while out.len() < total {
+        let len = size(n).clamp(1, 1024).min(total - out.len());
+        let (from, now) = (out.len(), engine.now().0);
+        let events: Vec<Timed<Event>> = (notes.iter())
+            .filter(|e| e.0 >= from && e.0 < from + len)
+            .map(|&(at, key, on)| Timed {
+                at: SampleTime(now + (at - from) as u64),
+                body: if on {
+                    Event::NoteOn {
+                        note: HostNote { port: 0, channel: 0, key, id: -1, clap: true },
+                        velocity: (100.0f32 / 127.0).into(),
+                        tune: 0.0,
+                    }
+                } else {
+                    Event::NoteOff(HostPattern { port: 0, channel: 0, key: i32::from(key), id: -1, clap: true })
+                },
+            })
+            .collect();
+        stream.settle(std::time::Duration::from_secs(5));
+        let part = block.get_mut(..len).unwrap_or_default();
+        engine.process(part, &events);
+        install(&mut engine);
+        out.extend(part.iter().map(|[l, r]| l + r));
+        n += 1;
+    }
+    Ok(out)
+}
