@@ -348,8 +348,10 @@ mod tests {
 pub enum Wave {
     Sine,
     Triangle,
-    /// Falling.
+    /// Falling: `1 − 2p`.
     Saw,
+    /// Rising: `2p − 1`.
+    Ramp,
     /// High for `width` of the cycle.
     Square {
         width: f32,

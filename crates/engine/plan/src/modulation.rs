@@ -103,6 +103,7 @@ pub fn smoothed_shared(
         ir::Wave::Sine => (0, 0),
         ir::Wave::Triangle => (0, 1),
         ir::Wave::Saw => (0, 2),
+        ir::Wave::Ramp => (0, 4),
         ir::Wave::Square { width } => (width.to_bits(), 3),
         _ => return eval(),
     };
@@ -238,6 +239,7 @@ pub fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
         ir::Wave::Sine => sine(),
         ir::Wave::Triangle => 1.0 - 4.0 * ((p + 0.25).fract() - 0.5).abs(),
         ir::Wave::Saw => 1.0 - 2.0 * p,
+        ir::Wave::Ramp => 2.0 * p - 1.0,
         ir::Wave::Square { width } => pulse(width),
         ir::Wave::Random => random(),
         // Integrated per voice, not a function of time (at the current span).

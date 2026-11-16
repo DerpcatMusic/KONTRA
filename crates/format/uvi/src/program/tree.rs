@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use roxmltree::{Node, NodeId};
 
 use super::routing::Fx;
-use super::{Library, Translator, flag, matrix};
+use super::{Library, Translator, flag, matrix, modulation, num};
 
 impl<L: Library> Translator<'_, '_, L> {
     /// The program tree as a Lua module for the script runtime: each element's
@@ -138,12 +138,28 @@ impl<L: Library> Translator<'_, '_, L> {
         if let Some((vg, scope, notes)) = self.lines.get(&node.id()) {
             out.push_str(&format!(",line={{{vg},{scope},{notes}}}"));
         }
-        // An envelope a script sets: `{tag, {group, envelope}, ...}`
-        // (`envelopes`), envelope −1 the amplitude one.
-        if let Some(at) = self.envelopes.get(&node.id()) {
-            let at: Vec<_> = at.iter().map(|(g, e)| format!("{{{g},{e}}}")).collect();
-            let tag = lua_string(node.tag_name().name());
-            out.push_str(&format!(",env={{{tag},{}}}", at.join(",")));
+        // The envelope or LFO copies a script sets: `env`/`lfo` = `{tag,
+        // {group, index}, ...}`, envelope −1 a group's amplitude one.
+        let tag = lua_string(node.tag_name().name());
+        let copies = |kind| {
+            let mut at: Vec<(usize, i32)> = (self.slots.iter())
+                .filter(|((_, n, k), _)| *n == node.id() && *k == kind)
+                .map(|(&(g, _, _), &i)| (g, i32::from(i)))
+                .collect();
+            if kind == modulation::Slot::Envelope {
+                at.extend(self.envelopes.get(&node.id()).into_iter().flatten());
+            }
+            at.sort_unstable();
+            at.iter().map(|(g, i)| format!("{{{g},{i}}}")).collect::<Vec<_>>()
+        };
+        for (key, kind) in [("env", modulation::Slot::Envelope), ("lfo", modulation::Slot::Lfo)] {
+            let at = copies(kind);
+            // A user-table LFO's wave is its table.
+            let fixed = num(node, "WaveFormType", 0.0).is_ok_and(|w| w == 9.0);
+            if !at.is_empty() {
+                let fixed = if fixed { ",fixed=true" } else { "" };
+                out.push_str(&format!(",{key}={{{tag},{}{fixed}}}", at.join(",")));
+            }
         }
         if let Some(id) = matrix::live_macro(self.program, node) {
             out.push_str(&format!(",mod={id}"));
