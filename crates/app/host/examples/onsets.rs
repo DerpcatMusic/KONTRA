@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kontra_engine::{Engine, Event, HostNote, HostPattern, Prepared, SampleTime, Timed};
+use kontra_engine::{Engine, Event, HostNote, HostPattern, Plan, Prepared, SampleTime, Timed};
 use kontra_stream::{Store, StoreConfig};
 
 const RATE: u32 = 48_000;
@@ -48,15 +48,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("fixed vs varied blocks: max diff {worst:.6}, first differing frame {first:?}");
     let starts: Vec<usize> = (notes.iter()).filter(|n| n.2 && Some(n.1) != switch).map(|n| n.0).collect();
     for (name, audio) in [("fixed", &fixed), ("varied", &varied)] {
-        let counts: Vec<usize> = starts.iter().map(|&s| onsets(audio, s)).collect();
+        let counts: Vec<usize> = (starts.iter().enumerate())
+            .map(|(i, &s)| onsets(audio, s, starts.get(i + 1).copied()))
+            .collect();
         println!("{name}: onsets per note {counts:?}");
     }
     Ok(())
 }
 
-/// Onsets in the 200 ms after `start`: a 1 ms RMS rising 12 dB or more over
-/// 5 ms, above −50 dB re the render's peak, at least 20 ms apart.
-fn onsets(audio: &[f32], start: usize) -> usize {
+/// Onsets in the 200 ms after `start`, or up to the next note's start when
+/// that is sooner (so fast repeats each count their own): a 1 ms RMS rising
+/// 12 dB or more over 5 ms, above −50 dB re the render's peak, at least
+/// 20 ms apart.
+fn onsets(audio: &[f32], start: usize, next: Option<usize>) -> usize {
+    let window = next.map_or(200, |n| (n.saturating_sub(start) / MS).min(200));
     let peak = audio.iter().fold(0f32, |p, x| p.max(x.abs())).max(1e-9);
     let db = |at: usize| {
         let s = audio.get(at..at + MS).unwrap_or_default();
@@ -64,7 +69,7 @@ fn onsets(audio: &[f32], start: usize) -> usize {
         20.0 * (rms / peak).max(1e-9).log10()
     };
     let (mut count, mut last) = (0, None::<usize>);
-    for ms in 0..200 {
+    for ms in 0..window {
         let at = start + ms * MS;
         let before = db(at.saturating_sub(5 * MS));
         let now = db(at);
@@ -92,11 +97,24 @@ fn render(
     if let Some(p) = kontra_prepare::tables(engine.plan(), &stream) {
         engine.swap_plan(&mut Arc::new(p), &[]);
     }
+    // Between blocks, as a host does: effect loads, then zone edits
+    // (`set_zone_par` and the like) applied to a new plan and swapped in.
     let install = |engine: &mut Engine| {
         let mut asked = Vec::new();
         engine.drain_requests(|r| asked.push(r));
         for r in asked {
             engine.install(Prepared::new(r, Some(&plan), RATE));
+        }
+        let mut edits = Vec::new();
+        engine.drain_zone_edits(|e| {
+            edits.push(e);
+            true
+        });
+        if !edits.is_empty() {
+            let mut next = Plan::clone(engine.plan());
+            let done: Vec<_> = (edits.iter()).map(|e| (*e, e.apply(&mut next))).collect();
+            let next = kontra_prepare::tables(&next, &stream).unwrap_or(next);
+            engine.swap_plan(&mut Arc::new(next), &done);
         }
     };
     let mut block = vec![[0.0f32; 2]; 1024];
