@@ -150,9 +150,9 @@ pub fn latch(ui: &mut Ui, id: impl Into<Id>, label: &str, name: &str, on: bool) 
     }
 }
 
-/// A dial: a vertical drag sweeps `range` (Shift is fine), a double click
-/// puts back `default`. It shows no words; `name` and `readout` are its
-/// tooltip, so a strip of them stays quiet until asked.
+/// A dial: a vertical drag sweeps `range`, a double click puts back
+/// `default`. It shows no words; `name` and `readout` are its tooltip, so a
+/// strip of them stays quiet until asked. MUI's knob, quiet.
 pub fn knob(
     ui: &mut Ui,
     id: impl Into<Id>,
@@ -161,75 +161,17 @@ pub fn knob(
     range: RangeInclusive<f64>,
     default: f64,
 ) -> Response {
-    let id: Id = id.into();
-    let before = *value;
-    ui.drag(id.clone(), value, range.clone(), 120., true);
-    if ui.double_click(id.clone()) {
-        *value = default;
-    }
-    let span = range.end() - range.start();
-    let t = if span == 0. {
-        0.
-    } else {
-        ((*value - range.start()) / span).clamp(0., 1.)
-    };
-    let t = ui.tween(id.field("t"), t);
-    let hover = ui.state(id.clone()).hover;
-    let el = canvas(move |s| {
-        let (c, r) = (
-            Point::new(s.width / 2., s.height / 2.),
-            s.width.min(s.height) / 2. - 2.,
-        );
-        let sweep = |from: f64, to: f64| {
-            let steps = 32;
-            Path::polyline(
-                (0..=steps).map(|n| {
-                    let a = (135. + 270. * (from + (to - from) * f64::from(n) / f64::from(steps)))
-                        .to_radians();
-                    Point::new(c.x + r * a.cos(), c.y + r * a.sin())
-                }),
-                false,
-            )
-        };
-        let a = (135. + 270. * t).to_radians();
-        vec![
-            Draw::stroke(sweep(0., 1.), lift(3), 2.),
-            Draw::stroke(
-                sweep(0., t),
-                Fill::from(Color::oklch(0.78 + 0.1 * hover as f32, 0., 0.)),
-                2.,
-            ),
-            Draw::stroke(
-                Path::polyline(
-                    [
-                        c,
-                        Point::new(c.x + r * 0.7 * a.cos(), c.y + r * 0.7 * a.sin()),
-                    ],
-                    false,
-                ),
-                Fill::from(Role::Ink),
-                1.5,
-            ),
-        ]
-    })
-    .square(CONTROL)
-    .shrink(0)
-    .cursor(Cursor::Hand)
-    .focusable()
-    .a11y(A11y::Button)
-    .named(name.to_owned())
-    .tip(format!("{name} {readout}"))
-    .id(id);
+    let r = mui::widgets::knob(ui, id, name, value, Domain::new(range).default(default));
     Response {
-        el,
-        changed: *value != before,
+        el: r.el.quiet().value_text(readout).px(CONTROL / 1.25).el(),
+        changed: r.changed,
     }
 }
 
 /// A slider `size` big, vertical when taller than wide: a drag anywhere on
 /// it sweeps `range`, a double click puts back `default`. A range centred
-/// on 0 (pan) fills from the middle; others fill from the start. `name` is
-/// its tooltip.
+/// on 0 (pan) fills from the middle. `name` is its tooltip. MUI's slider,
+/// quiet.
 pub fn slider(
     ui: &mut Ui,
     id: impl Into<Id>,
@@ -239,76 +181,16 @@ pub fn slider(
     default: f64,
     (w, h): (f64, f64),
 ) -> Response {
-    let id: Id = id.into();
-    let before = *value;
-    let vertical = h > w;
-    ui.drag(id.clone(), value, range.clone(), w.max(h), vertical);
-    if ui.double_click(id.clone()) {
-        *value = default;
-    }
-    let (lo, hi) = (*range.start(), *range.end());
-    let at = |v: f64| {
-        if hi == lo {
-            0.
-        } else {
-            ((v - lo) / (hi - lo)).clamp(0., 1.)
-        }
-    };
-    let t = ui.tween(id.field("t"), at(*value));
-    let from: f64 = if lo == -hi { 0.5 } else { 0. };
-    let hover = ui.state(id.clone()).hover as f32;
-    let el = canvas(move |s| {
-        let rect = rect_path;
-        // Along the travel: 0 at the start (left, or bottom), 1 at the end.
-        let (len, mid) = if vertical {
-            (s.height - 4., s.width / 2.)
-        } else {
-            (s.width - 4., s.height / 2.)
-        };
-        let pos = |t: f64| 2. + len * if vertical { 1. - t } else { t };
-        let bar = |a: f64, b: f64, half: f64| {
-            let (a, b) = (pos(a).min(pos(b)), pos(a).max(pos(b)));
-            if vertical {
-                rect(mid - half, a, mid + half, b)
-            } else {
-                rect(a, mid - half, b, mid + half)
-            }
-        };
-        let lit = Fill::from(Color::oklch(0.78 + 0.1 * hover, 0., 0.));
-        let mut draw = vec![
-            Draw::fill(bar(0., 1., 1.), lift(3)),
-            Draw::fill(bar(from.min(t), from.max(t), 1.), lit),
-        ];
-        if from > 0. {
-            draw.push(Draw::fill(
-                bar(0.5 - 0.5 / len, 0.5 + 0.5 / len, 4.),
-                lift(4),
-            ));
-        }
-        let x = pos(t);
-        draw.push(Draw::fill(
-            if vertical {
-                rect(mid - 5., x - 2., mid + 5., x + 2.)
-            } else {
-                rect(x - 2., mid - 5., x + 2., mid + 5.)
-            },
-            Fill::from(Color::oklch(0.85, 0., 0.)),
-        ));
-        draw
-    })
-    .w(w)
-    .h(h)
-    .shrink(0)
-    .cursor(Cursor::Hand)
-    .focusable()
-    .named(name.to_owned())
-    .tip(name.to_owned())
-    .id(id);
+    let r = mui::widgets::slider(ui, id, name, value, Domain::new(range).default(default));
+    let control = if h > w { r.el.vertical() } else { r.el };
     Response {
-        el,
-        changed: *value != before,
+        el: control.quiet().px(w.min(h) / LANE_SHARE).el().w(w).h(h).shrink(0),
+        changed: r.changed,
     }
 }
+
+/// MUI sizes a slider's lane as this share of the control's height.
+const LANE_SHARE: f64 = 0.45;
 
 /// A number with its icon that a horizontal drag nudges and a double click
 /// resets, for values set once and left: a part's tune.
@@ -638,20 +520,6 @@ pub fn sheet(ui: &mut Ui, id: &str, title_text: &str, content: El) -> Response {
         el,
         changed: closed,
     }
-}
-
-/// A level from 0 to 1 as a thin bar, `width` wide.
-pub fn meter(level: f64, width: f64) -> El {
-    let t = level.clamp(0., 1.);
-    row![
-        block(0., 3.)
-            .grow(t)
-            .fill(Fill::from(Color::oklch(0.78, 0., 0.))),
-        block(0., 3.).grow(1. - t)
-    ]
-    .w(width)
-    .fill(lift(3))
-    .shrink(0)
 }
 
 /// A small uppercase title.

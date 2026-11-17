@@ -112,14 +112,13 @@ fn channel(ui: &mut Ui, app: &mut App, n: usize, w: f64, out: &mut Vec<Action>) 
         p.volume = value;
         out.push(Action::Volume(n, value));
     }
-    let t = p.level.first().map_or(0., |[l, r]| l.max(*r)).clamp(0., 1.);
-    let meter = col![
-        block(3, 0).grow(1. - t),
-        block(3, 0).grow(t).fill(Fill::from(part_color(n)))
-    ]
-    .h(height)
-    .fill(lift(3))
-    .shrink(0);
+    let [l, r] = p.level.first().copied().unwrap_or_default();
+    let meter = meter(ui, id("level"), [l as f32, r as f32])
+        .vertical()
+        .color(part_color(n))
+        .w(7.)
+        .h(height)
+        .el();
     let kind = if p.library.is_empty() {
         "Bus"
     } else {
