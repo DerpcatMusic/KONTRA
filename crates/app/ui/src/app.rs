@@ -688,7 +688,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         section("Master"),
         gain.el,
         caption(db(app.master)).reserve("-inf dB"),
-        kit::meter(app.level, TEXT * 4.),
+        meter(ui, "master-level", app.level).w(TEXT * 4.).h(3.).el(),
         vrule().h(CONTROL * 0.6),
         keyboard.el,
         thru.el.tip("Pass MIDI through to the host"),
