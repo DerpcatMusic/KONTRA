@@ -1,6 +1,6 @@
 //! Renders a note pattern twice, in fixed 512-frame blocks and in random
 //! 64..=1024-frame blocks (a host such as Bitwig), events on their exact
-//! frames, and reports whether the two renders differ and how many onsets
+//! frames, and reports whether the two renders differ on either channel and how many onsets
 //! each note has within 200 ms (two is a double attack).
 //! `cargo run --release -p kontra-host --example onsets -- <file> <key> [keyswitch]`
 //! KONTRA_PATTERN=solo|repeats: six notes 600 ms apart (default), or 16 notes
@@ -41,11 +41,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         seed ^= seed << 17;
         64 + (seed % 961) as usize
     })?;
-    let diff = fixed.iter().zip(&varied).map(|(a, b)| (a - b).abs()).enumerate();
+    // Per channel: a pan or stereo-width difference must not cancel in l+r.
+    let diff = (fixed.iter().zip(&varied)).map(|(a, b)| (a[0] - b[0]).abs().max((a[1] - b[1]).abs())).enumerate();
     let (first, worst) = diff.fold((None, 0f32), |(first, worst), (n, d)| {
         (first.or((d > 1e-4).then_some(n)), worst.max(d))
     });
-    println!("fixed vs varied blocks: max diff {worst:.6}, first differing frame {first:?}");
+    println!("fixed vs varied blocks (L and R): max diff {worst:.6}, first differing frame {first:?}");
     let starts: Vec<usize> = (notes.iter()).filter(|n| n.2 && Some(n.1) != switch).map(|n| n.0).collect();
     for (name, audio) in [("fixed", &fixed), ("varied", &varied)] {
         let counts: Vec<usize> = (starts.iter().enumerate())
@@ -59,13 +60,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Onsets in the 200 ms after `start`, or up to the next note's start when
 /// that is sooner (so fast repeats each count their own): a 1 ms RMS rising
 /// 12 dB or more over 5 ms, above −50 dB re the render's peak, at least
-/// 20 ms apart.
-fn onsets(audio: &[f32], start: usize, next: Option<usize>) -> usize {
+/// 20 ms apart. Level is channel energy (L² + R²), so out-of-phase or
+/// hard-panned onsets still count.
+fn onsets(audio: &[[f32; 2]], start: usize, next: Option<usize>) -> usize {
     let window = next.map_or(200, |n| (n.saturating_sub(start) / MS).min(200));
-    let peak = audio.iter().fold(0f32, |p, x| p.max(x.abs())).max(1e-9);
+    let energy = |[l, r]: &[f32; 2]| l * l + r * r;
+    let peak = audio.iter().map(energy).fold(0f32, f32::max).sqrt().max(1e-9);
     let db = |at: usize| {
         let s = audio.get(at..at + MS).unwrap_or_default();
-        let rms = (s.iter().map(|x| x * x).sum::<f32>() / MS as f32).sqrt();
+        let rms = (s.iter().map(energy).sum::<f32>() / MS as f32).sqrt();
         20.0 * (rms / peak).max(1e-9).log10()
     };
     let (mut count, mut last) = (0, None::<usize>);
@@ -81,13 +84,13 @@ fn onsets(audio: &[f32], start: usize, next: Option<usize>) -> usize {
     count
 }
 
-/// Mono (left + right) render of `notes` in blocks of `size(n)` frames.
+/// Stereo render of `notes` in blocks of `size(n)` frames.
 fn render(
     path: &Path,
     notes: &[(usize, u8, bool)],
     total: usize,
     mut size: impl FnMut(usize) -> usize,
-) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+) -> Result<Vec<[f32; 2]>, Box<dyn std::error::Error>> {
     let mut store = Store::new(StoreConfig::DEFAULT)?;
     let ir = kontra_host::instrument::read(path)?;
     let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
@@ -123,7 +126,13 @@ fn render(
         engine.process(&mut silent, &[]);
         install(&mut engine);
     }
-    stream.settle(std::time::Duration::from_secs(10));
+    // A timed-out settle renders silence for unstreamed samples: fail
+    // rather than report onsets from an incomplete render.
+    let settle = |secs| match stream.settle(std::time::Duration::from_secs(secs)) {
+        true => Ok(()),
+        false => Err(format!("stream did not settle within {secs} s; render incomplete")),
+    };
+    settle(10)?;
     let mut out = Vec::with_capacity(total);
     let mut n = 0;
     while out.len() < total {
@@ -144,11 +153,11 @@ fn render(
                 },
             })
             .collect();
-        stream.settle(std::time::Duration::from_secs(5));
+        settle(5)?;
         let part = block.get_mut(..len).unwrap_or_default();
         engine.process(part, &events);
         install(&mut engine);
-        out.extend(part.iter().map(|[l, r]| l + r));
+        out.extend_from_slice(part);
         n += 1;
     }
     Ok(out)
