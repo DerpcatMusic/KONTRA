@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 kontra-law = { path = "../../base/law" }
 kontra-time = { path = "../../base/time" }
+moose-dsp = { workspace = true }

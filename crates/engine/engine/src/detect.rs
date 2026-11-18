@@ -9,6 +9,8 @@
 
 use std::f64::consts::PI;
 
+use moose_dsp::biquad::{Biquad, k_weighting};
+
 /// A sample's stereo frames and rate.
 pub struct Audio<'a> {
     pub frames: &'a [[f32; 2]],
@@ -49,55 +51,6 @@ pub fn rms(a: &Audio) -> Option<f64> {
     db(sum / (a.frames.len() * 2).max(1) as f64)
 }
 
-struct Biquad {
-    b: [f64; 3],
-    a: [f64; 2],
-}
-
-impl Biquad {
-    fn run(&self, x: &[f64]) -> Vec<f64> {
-        let (mut z1, mut z2) = (0.0, 0.0);
-        x.iter()
-            .map(|&v| {
-                let y = self.b[0] * v + z1;
-                z1 = self.b[1] * v - self.a[0] * y + z2;
-                z2 = self.b[2] * v - self.a[1] * y;
-                y
-            })
-            .collect()
-    }
-}
-
-/// BS.1770's two K-weighting stages at `rate` (the standard's 48 kHz
-/// coefficients are this derivation at 48 kHz).
-fn k_weighting(rate: f64) -> [Biquad; 2] {
-    let (f0, gain, q) = (
-        1_681.974_450_955_533,
-        3.999_843_853_973_347,
-        0.707_175_236_955_419_6,
-    );
-    let k = (PI * f0 / rate).tan();
-    let vh = 10f64.powf(gain / 20.0);
-    let vb = vh.powf(0.499_666_774_154_541_6);
-    let a0 = 1.0 + k / q + k * k;
-    let shelf = Biquad {
-        b: [
-            (vh + vb * k / q + k * k) / a0,
-            2.0 * (k * k - vh) / a0,
-            (vh - vb * k / q + k * k) / a0,
-        ],
-        a: [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0],
-    };
-    let (f0, q) = (38.135_470_876_024_44, 0.500_327_037_323_877_3);
-    let k = (PI * f0 / rate).tan();
-    let a0 = 1.0 + k / q + k * k;
-    let high_pass = Biquad {
-        b: [1.0, -2.0, 1.0],
-        a: [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0],
-    };
-    [shelf, high_pass]
-}
-
 /// Integrated loudness, LUFS: 400 ms blocks every 100 ms, gated at -70 LUFS
 /// and then 10 LU under the mean of what passed.
 pub fn loudness(a: &Audio) -> Option<f64> {
@@ -109,8 +62,10 @@ pub fn loudness(a: &Audio) -> Option<f64> {
                 .iter()
                 .map(|&[l, r]| f64::from(if c == 0 { l } else { r }))
                 .collect();
-            let [shelf, high_pass] = k_weighting(rate);
-            high_pass.run(&shelf.run(&x))
+            let [mut shelf, mut high_pass] = k_weighting(rate).map(Biquad::new);
+            x.iter()
+                .map(|&v| high_pass.process(shelf.process(v)))
+                .collect()
         })
         .collect();
     let block = (rate * 0.4) as usize;

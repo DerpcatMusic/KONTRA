@@ -12,6 +12,7 @@ workspace = true
 trace = ["kontra-voice/trace", "dep:kontra-trace"]
 
 [dependencies]
+moose-dsp = { workspace = true }
 kontra-events = { path = "../../model/events" }
 kontra-stream = { path = "../stream" }
 kontra-time = { path = "../../base/time" }
