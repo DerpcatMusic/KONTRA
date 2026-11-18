@@ -1811,7 +1811,11 @@ fn conflux_edit_tab_switches_the_page() {
             .as_ref()
             .unwrap();
         let tree = view.tree();
-        let taps: Vec<(usize, f64, f64)> = (tree.widgets.iter().enumerate())
+        // Topmost first, as a click finds them.
+        let taps: Vec<(usize, f64, f64)> = (tree.draw_order(kontra_ui_model::PageRef(0)))
+            .into_iter()
+            .rev()
+            .filter_map(|r| Some((r.0, tree.widgets.get(r.0)?)))
             .filter(|(_, w)| w.name.starts_with("native_ui tap") && !w.hidden)
             .map(|(n, w)| (n, w.rect.x, w.rect.y))
             .collect();
@@ -1825,6 +1829,9 @@ fn conflux_edit_tab_switches_the_page() {
         .copied()
         .collect();
     header.sort_by(|a, b| a.1.total_cmp(&b.1));
+    // A tab is two stacked taps, its outer gesture and the on_tap inside
+    // it; a click reaches the topmost, the inner one.
+    header.dedup_by(|tap, kept| tap.1 == kept.1);
     // The header's Play, Edit and Settings tabs, left to right.
     let edit = header.get(1).expect("Play, Edit, Settings").0;
     for value in [1., 0.] {
