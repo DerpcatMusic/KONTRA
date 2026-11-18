@@ -184,7 +184,13 @@ pub fn slider(
     let r = mui::widgets::slider(ui, id, name, value, Domain::new(range).default(default));
     let control = if h > w { r.el.vertical() } else { r.el };
     Response {
-        el: control.quiet().px(w.min(h) / LANE_SHARE).el().w(w).h(h).shrink(0),
+        el: control
+            .quiet()
+            .px(w.min(h) / LANE_SHARE)
+            .el()
+            .w(w)
+            .h(h)
+            .shrink(0),
         changed: r.changed,
     }
 }
@@ -306,11 +312,62 @@ pub fn list_row(
     }
 }
 
-/// The most rows a menu shows at once; a longer one scrolls.
-const MENU_ROWS: f64 = 18.;
+/// KONTRA's look on MUI's overlays: a lifted, hairlined float of flat rows,
+/// a grid of cells when `columns` is above one. The width fits the longest
+/// of `items`: a list within 16 to 32 em so a long preset name reads whole,
+/// a grid's cells each as wide as its longest pick.
+fn overlay(items: &[&str], columns: usize) -> Overlay<'static> {
+    let longest = items.iter().map(|i| i.chars().count()).max().unwrap_or(0) as f64;
+    let wide = match columns {
+        1 => (longest * TEXT * 0.6 + SPACE * 2.).clamp(TEXT * 16., TEXT * 32.),
+        n => (longest * TEXT * 0.75 + SPACE * 3.).max(TEXT * 3.) * n as f64,
+    };
+    Overlay::default()
+        .area(Area::Bottom)
+        .fallback(Area::Top)
+        .gap(0.)
+        .frame(&popup_frame)
+        .row(if columns == 1 { &list_face } else { &cell_face })
+        .row_h(CONTROL + 1.)
+        .min_w(wide)
+        .columns(columns)
+}
 
-/// A popup menu of `items`, `columns` to a row (one for words, more for a
-/// grid of short picks); the index of the one picked. `current` is raised.
+/// A menu row: the label to the menu's edge, the current pick raised.
+fn list_face(r: MenuRow<'_>) -> El {
+    interactive(
+        row![
+            body(r.label.to_owned())
+                .text_size(TEXT)
+                .fill(ink(r.selected))
+                .lines(1)
+                .min_w(0)
+        ]
+        .center_y()
+        .pad(edges(0., SPACE, 0., SPACE))
+        .when(r.selected, |e| e.fill(Role::Raised)),
+    )
+}
+
+/// A grid cell: the label centred, the current pick raised.
+fn cell_face(r: MenuRow<'_>) -> El {
+    interactive(
+        row![
+            body(r.label.to_owned())
+                .text_size(TEXT)
+                .fill(ink(r.selected))
+                .lines(1)
+                .min_w(0)
+        ]
+        .center()
+        .when(r.selected, |e| e.fill(Role::Raised)),
+    )
+}
+
+/// A popup menu of `items` under the element `id` names, `columns` to a
+/// row (one for words, more for a grid of short picks); the index picked.
+/// `current` is raised. The caller opens it with [`toggle`]; Down on `id`
+/// enters it.
 pub fn menu(
     ui: &mut Ui,
     id: &str,
@@ -318,84 +375,16 @@ pub fn menu(
     columns: usize,
     current: Option<usize>,
 ) -> Response<Option<usize>> {
-    let mut picked = None;
-    let longest = items.iter().map(|i| i.chars().count()).max().unwrap_or(0);
-    // A grid's cells all fit its longest pick: short picks run wider than
-    // a list's 0.6 em a letter ("Omni"), plus the button's own padding.
-    let cell_w = (longest as f64 * TEXT * 0.75 + SPACE * 3.).max(TEXT * 3.);
-    let mut cells: Vec<El> = items
-        .iter()
-        .enumerate()
-        .map(|(n, item)| {
-            let (cell, on) = (format!("{id}-{n}"), current == Some(n));
-            // A row of words reads to the menu's edge; a grid keeps cells.
-            let r = match columns {
-                1 => list_row(ui, cell, (item, ""), None, on),
-                _ => button(ui, cell, item, on),
-            };
-            if r.changed {
-                picked = Some(n);
-            }
-            if columns == 1 { r.el } else { r.el.w(cell_w) }
-        })
-        .collect();
-    let mut rows = Vec::new();
-    while !cells.is_empty() {
-        let rest = cells.split_off(columns.clamp(1, cells.len()));
-        rows.push(row(std::mem::replace(&mut cells, rest)).gap(1).shrink(0));
-    }
-    // Floats are sized by the space around their parent; a menu takes its
-    // own height so a long one is never squeezed. A longer one (a library's
-    // hundreds of presets) scrolls within MENU_ROWS: the wheel moves it,
-    // never what lies under it.
-    let tall = rows.len() as f64 * (CONTROL + 1.);
-    let most = MENU_ROWS * (CONTROL + 1.);
-    // A list of words is as wide as its longest, within 16 to 32 em: a
-    // long preset name reads whole.
-    let wide = (longest as f64 * TEXT * 0.6 + SPACE * 2.).clamp(TEXT * 16., TEXT * 32.);
-    let list = col(rows).gap(1).when(columns == 1, |e| e.w(wide));
-    let list_id = format!("{id}-list");
-    let list = match tall > most {
-        true => col![list.scroll().h(most).id(list_id.clone())].h(most),
-        false => list.min_h(tall),
-    };
-    // Up and Down move the focus a row, from the anchor into the list, and
-    // a scrolling list follows it.
-    let step = |keys: &[KeyPress]| {
-        keys.iter().fold(0_isize, |at, k| match k.key {
-            Key::Down => at + 1,
-            Key::Up => at - 1,
-            _ => at,
-        })
-    };
-    let per_row = columns.max(1);
-    let mut to = (step(ui.keys(id)) != 0).then(|| current.unwrap_or(0));
-    for n in 0..items.len() {
-        let by = step(ui.keys(format!("{id}-{n}")));
-        if by != 0 {
-            let next = n.saturating_add_signed(by.saturating_mul(per_row.cast_signed()));
-            to = Some(next.min(items.len().saturating_sub(1)));
-        }
-    }
-    if let Some(n) = to {
-        ui.focus(format!("{id}-{n}"));
-        let row_h = CONTROL + 1.;
-        let top = (n / per_row) as f64 * row_h;
-        let at = ui.scroll(list_id.as_str())[1];
-        let y = if top < at {
-            top
-        } else if top + row_h > at + most {
-            top + row_h - most
-        } else {
-            at
-        };
-        if tall > most {
-            ui.set_scroll(list_id.as_str(), [0., y]);
-        }
-    }
+    let m = overlay(items, columns).current(current).menu(
+        ui,
+        format!("{id}-popup"),
+        id,
+        &mut true,
+        items,
+    );
     Response {
-        el: popup(id, list),
-        changed: picked,
+        el: m.el.unwrap_or_else(|| stack![]),
+        changed: m.changed,
     }
 }
 
@@ -415,9 +404,10 @@ pub fn toggle(ui: &Ui, open: &mut Option<String>, id: &str, hit: bool) -> bool {
     open.as_deref() == Some(id)
 }
 
-/// A dropdown: `icon` and the current `label` with a chevron; clicked, it
-/// floats `items` under itself, a grid when they are many and short. The
+/// A dropdown: `icon` and the current `label` with a drop arrow; clicked,
+/// it floats `items` under itself, a grid when they are many and short. The
 /// index picked comes back, and the pick closes it. `name` is its tooltip.
+/// `open` holds the one open popup.
 pub fn dropdown(
     ui: &mut Ui,
     open: &mut Option<String>,
@@ -426,15 +416,11 @@ pub fn dropdown(
     items: &[&str],
     current: Option<usize>,
 ) -> Response<Option<usize>> {
-    let hit = ui.get(id).activated();
-    let shown = toggle(ui, open, id, hit);
+    let mut shown = open.as_deref() == Some(id);
     let mut face = Vec::new();
     face.extend(icon.map(|i| glyph(i, TEXT, secondary())));
     face.push(caption(label.to_owned()).fill(Role::Ink).lines(1));
-    face.push(glyph(Icon::Down, TEXT * 0.75, secondary()));
-    let face = row(face)
-        .gap(TIGHT)
-        .align(Align::Center)
+    let face = chooser(row(face).gap(TIGHT).center_y(), shown)
         .pad((TIGHT * 1.5, 0))
         .h(CONTROL * 0.9)
         .shrink(0)
@@ -443,44 +429,40 @@ pub fn dropdown(
         } else {
             Role::Ink.alpha(0.)
         })
-        .stroke_width(1)
-        .focusable()
-        .a11y(A11y::Button)
-        .named(name.to_owned())
-        .id(id.to_owned());
+        .stroke_width(1);
     // The pointer rests on the button it opened: its tip would float over
     // the menu.
-    let face = match shown {
-        true => face,
-        false => face.tip(name.to_owned()),
-    };
-    let mut el = vec![interactive(face)];
-    let mut picked = None;
+    let face = interactive(face).when(!shown, |e| e.tip(name.to_owned()));
+    let grid = items.len() > 8 && items.iter().all(|i| i.chars().count() <= 4);
+    let d = overlay(items, if grid { 4 } else { 1 })
+        .dropdown(ui, id, name, face, &mut shown, items, current);
     if shown {
-        let grid = items.len() > 8 && items.iter().all(|i| i.chars().count() <= 4);
-        let m = menu(ui, id, items, if grid { 4 } else { 1 }, current);
-        picked = m.changed;
-        if picked.is_some() {
-            *open = None;
-        }
-        el.push(m.el);
+        *open = Some(id.to_owned());
+    } else if open.as_deref() == Some(id) {
+        *open = None;
     }
     Response {
-        el: row(el).shrink(0),
-        changed: picked,
+        el: d.el,
+        changed: d.changed,
     }
 }
 
-/// `content` floated over everything, pinned under the element `anchor`
-/// names, easing in from just above it. It keeps the wheel from what lies
-/// under it (a knob, the rack); a node that keeps the wheel does not scroll
-/// itself, so scrolling `content` nests its scroller inside.
-pub fn popup(anchor: &str, content: El) -> El {
+/// A float's frame: lifted, hairlined, easing in from just above.
+fn popup_frame(content: El) -> El {
     content
         .fill(lift(2))
         .stroke(hairline())
         .stroke_width(1)
         .pad(TIGHT)
+        .appear(Appear::Slide(0., -TIGHT))
+}
+
+/// `content` floated over everything, pinned under the element `anchor`
+/// names. It keeps the wheel from what lies under it (a knob, the rack); a
+/// node that keeps the wheel does not scroll itself, so scrolling `content`
+/// nests its scroller inside.
+pub fn popup(anchor: &str, content: El) -> El {
+    popup_frame(content)
         .captures_wheel()
         .float()
         .pin(
@@ -488,7 +470,6 @@ pub fn popup(anchor: &str, content: El) -> El {
                 .area(Area::Bottom)
                 .fallback(Area::Top),
         )
-        .appear(Appear::Slide(0., -TIGHT))
         .id(format!("{anchor}-popup"))
 }
 
@@ -596,7 +577,7 @@ mod tests {
                     .is_ok()
             );
         }
-        (read, ui.scroll("m-list")[1])
+        (read, ui.scroll("m-popup/rows")[1])
     }
 
     /// Down from the anchor walks a long menu past its fold, and the list
@@ -628,14 +609,11 @@ mod tests {
             );
         }
         let focused = ui.focus_key().map(str::to_owned).unwrap_or_default();
-        let row: usize = focused.trim_start_matches("m-").parse().unwrap_or(0);
-        assert!(row > MENU_ROWS as usize, "walked past the fold: {focused}");
+        let row: usize = focused.trim_start_matches("m-popup/").parse().unwrap_or(0);
         let top = row as f64 * (CONTROL + 1.);
-        let at = ui.scroll("m-list")[1];
-        assert!(
-            at <= top && top < at + MENU_ROWS * (CONTROL + 1.),
-            "{top} in view of {at}"
-        );
+        let at = ui.scroll("m-popup/rows")[1];
+        assert!(at > 0., "walked past the fold: {focused}");
+        assert!(at <= top && top < at + 900., "{top} in view of {at}");
     }
 
     /// Escape closes a sheet whatever holds the focus (here a field in it).
@@ -697,7 +675,7 @@ mod tests {
             };
             let keys = match n {
                 1 => {
-                    ui.focus("dd-1");
+                    ui.focus("dd/list/1");
                     key(Key::Enter)
                 }
                 3 => key(Key::Escape),

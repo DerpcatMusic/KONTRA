@@ -10,8 +10,10 @@ use super::{Action, App, FaceLook, Part, PartTab, db, part};
 use crate::kit::{self, Icon, icon_button, knob, latch, nudge, rule, tab};
 use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, lift, part_color, secondary};
 
-pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    // A preset dropped on free rack space, or on its foot, adds a part.
+/// A preset dropped on free rack space, or on its foot, adds a part. The
+/// rack holds the part headers, so it asks after them: a drop on a header
+/// is theirs.
+fn dropped_on_rack(ui: &mut Ui, out: &mut Vec<Action>) {
     for at in ["rack", "rack-drop"] {
         if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>(at) {
             out.push(Action::Load {
@@ -21,7 +23,11 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             });
         }
     }
+}
+
+pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if app.parts.is_empty() && app.loading != Some(super::Loading::New) {
+        dropped_on_rack(ui, out);
         return col![
             spacer(),
             title("Pick an instrument"),
@@ -72,6 +78,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         }
         strips.push(rule());
     }
+    dropped_on_rack(ui, out);
     if app.loading == Some(super::Loading::New) {
         let stripe = block(3, Len::Pct(100.)).fill(lift(3)).shrink(0);
         let row = row![stripe, chip(app.load_progress)].gap(SPACE);

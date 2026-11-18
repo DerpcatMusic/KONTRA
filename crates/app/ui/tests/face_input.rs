@@ -237,7 +237,10 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     // A menu floats its items; a pick sets the value and closes it.
     f.click(&input::surface(0, 2), Mods::default());
     assert_eq!(f.gesture.menu, Some(2));
-    f.click(&format!("{}-2", input::surface(0, 2)), Mods::default());
+    f.click(
+        &format!("{}-popup/2", input::surface(0, 2)),
+        Mods::default(),
+    );
     assert_eq!(f.value(2), 2.);
     assert_eq!(f.gesture.menu, None);
     // A value edit sweeps 4 points a unit: up 20 is 5.
