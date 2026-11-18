@@ -3,6 +3,7 @@
 //! input allpasses. Formats load their own laws into [`Settings`].
 
 use crate::fade::{Fade, flush};
+use moose_dsp::time::coeff;
 
 /// What a reverb sounds like, in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -168,7 +169,7 @@ impl Fdn {
                 shelf_gain: 0.0,
                 stereo: 0.0,
             },
-            ease: 1.0 - (-1.0 / (GLIDE_S * rate)).exp(),
+            ease: coeff(GLIDE_S * rate),
         };
         fdn.apply(s);
         (fdn.gains, fdn.shelf_gain, fdn.stereo) = (fdn.to.gains, fdn.to.shelf_gain, fdn.to.stereo);

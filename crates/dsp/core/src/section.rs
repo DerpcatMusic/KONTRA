@@ -3,6 +3,7 @@
 //! stages well above the bass, where f32 state is clean.
 
 use kontra_law::Section;
+use moose_dsp::biquad::Coeffs;
 
 use crate::Biquad;
 
@@ -36,8 +37,7 @@ impl Biquad {
 /// well above the bass at an oversampled rate, one frame at a time.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Biquad32 {
-    /// b0, b1, b2, a1, a2 with a0 = 1.
-    c: [f32; 5],
+    c: Coeffs<f32>,
     state: [[f32; 2]; 2],
 }
 
@@ -45,9 +45,8 @@ impl Biquad32 {
     /// `s` at `rate`.
     #[must_use]
     pub fn analog(s: Section, rate: u32) -> Self {
-        let [b0, b1, b2, a0, a1, a2] = bilinear(s, rate);
         Self {
-            c: [b0, b1, b2, a1, a2].map(|v| (v / a0) as f32),
+            c: Coeffs::normalize(bilinear(s, rate)).to_f32(),
             state: [[0.0; 2]; 2],
         }
     }
@@ -55,7 +54,7 @@ impl Biquad32 {
     /// One stereo frame.
     #[must_use]
     pub fn tick(&mut self, frame: [f32; 2]) -> [f32; 2] {
-        let [b0, b1, b2, a1, a2] = self.c;
+        let Coeffs { b0, b1, b2, a1, a2 } = self.c;
         let mut out = frame;
         for (x, s) in out.iter_mut().zip(&mut self.state) {
             let input = *x;
@@ -75,9 +74,7 @@ impl Biquad32 {
     /// Zeroes state that has decayed into the denormal range.
     pub fn settle(&mut self) {
         for v in self.state.as_flattened_mut() {
-            if v.abs() < 1e-20 {
-                *v = 0.0;
-            }
+            moose_dsp::flush(v, 1e-20);
         }
     }
 

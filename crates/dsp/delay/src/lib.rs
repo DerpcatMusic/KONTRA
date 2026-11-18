@@ -2,6 +2,7 @@
 //! design in docs/architecture-v3/03-DSP.md. Formats load their laws into
 //! [`Settings`] and [`PhaserSettings`]. Both put out the wet signal only.
 
+use moose_dsp::time::coeff;
 use std::f64::consts::TAU;
 
 use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
@@ -224,7 +225,7 @@ impl ModDelay {
             ring: vec![[0.0; 2]; frames].into(),
             at: 0,
             delay: None,
-            glide: 1.0 - (-1.0 / (GLIDE_S * rate)).exp(),
+            glide: coeff(GLIDE_S * rate),
             damping: 1.0,
             low_cut: 0.0,
             cycle: 0.0,
@@ -236,7 +237,7 @@ impl ModDelay {
             written: 0.0,
             power: [0.0; 2],
             seed: 0x9e37_79b9,
-            smooth: 1.0 - (-1.0 / (0.01 * rate)).exp(),
+            smooth: coeff(0.01 * rate),
         };
         d.set(s);
         d

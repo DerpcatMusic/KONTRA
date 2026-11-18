@@ -7,31 +7,38 @@ mod section;
 pub use glide::{Fader, Levels};
 pub use halfband::Halfband;
 pub use kontra_law::{Section, Sections, Stage};
+pub use moose_dsp::biquad::Side;
+use moose_dsp::biquad::{Coeffs, cookbook};
 pub use section::{Biquad32, bilinear};
 
 /// One stereo biquad section, transposed direct form II, f64 state so
 /// low bands stay clean at high rates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Biquad {
-    /// b0, b1, b2, a1, a2 with a0 = 1.
-    c: [f64; 5],
+    c: Coeffs<f64>,
     state: [[f64; 2]; 2],
+}
+
+impl From<Coeffs<f64>> for Biquad {
+    fn from(c: Coeffs<f64>) -> Self {
+        Self {
+            c,
+            state: [[0.0; 2]; 2],
+        }
+    }
 }
 
 impl Biquad {
     /// A section from `b0, b1, b2, a0, a1, a2`; `a0` must not be 0.
     #[must_use]
-    pub fn new([b0, b1, b2, a0, a1, a2]: [f64; 6]) -> Self {
-        Self {
-            c: [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0],
-            state: [[0.0; 2]; 2],
-        }
+    pub fn new(c: [f64; 6]) -> Self {
+        Coeffs::normalize(c).into()
     }
 
     /// Filters both channels of `io` in place.
     #[inline]
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        let [b0, b1, b2, a1, a2] = self.c;
+        let Coeffs { b0, b1, b2, a1, a2 } = self.c;
         for frame in io {
             for (x, s) in frame.iter_mut().zip(&mut self.state) {
                 let input = f64::from(*x);
@@ -58,7 +65,7 @@ impl Biquad {
 
     /// Multiplies the section's output by `gain`.
     pub fn scale(&mut self, gain: f64) {
-        for b in self.c.iter_mut().take(3) {
+        for b in [&mut self.c.b0, &mut self.c.b1, &mut self.c.b2] {
             *b *= gain;
         }
     }
@@ -66,13 +73,6 @@ impl Biquad {
     pub fn reset(&mut self) {
         self.state = [[0.0; 2]; 2];
     }
-}
-
-/// Which side of its corner a shelf moves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Low,
-    High,
 }
 
 /// A shelf: `gain_db` on `side` of `hz`, its knee set by `slope` (the
@@ -85,21 +85,7 @@ pub fn shelf(hz: f32, gain_db: f32, slope: f32, side: Side, rate: u32) -> Biquad
     let a = 10f64.powf(f64::from(gain_db) / 40.0);
     let s = f64::from(slope).clamp(0.01, 1.0);
     let alpha = w.sin() / 2.0 * ((a + 1.0 / a) * (1.0 / s - 1.0) + 2.0).sqrt();
-    let (cos, root) = (w.cos(), 2.0 * a.sqrt() * alpha);
-    // The high shelf is the low one with cos negated and b1, a1 flipped.
-    let (c, sign) = if side == Side::High {
-        (-cos, -1.0)
-    } else {
-        (cos, 1.0)
-    };
-    Biquad::new([
-        a * ((a + 1.0) - (a - 1.0) * c + root),
-        sign * 2.0 * a * ((a - 1.0) - (a + 1.0) * c),
-        a * ((a + 1.0) - (a - 1.0) * c - root),
-        (a + 1.0) + (a - 1.0) * c + root,
-        sign * -2.0 * ((a - 1.0) + (a + 1.0) * c),
-        (a + 1.0) + (a - 1.0) * c - root,
-    ])
+    cookbook::shelf(w.cos(), alpha, a, side).into()
 }
 
 /// The cookbook second-order high-pass at `hz`, resonance `q` (½ two
@@ -108,23 +94,13 @@ pub fn shelf(hz: f32, gain_db: f32, slope: f32, side: Side, rate: u32) -> Biquad
 pub fn high_pass(hz: f32, q: f32, rate: u32) -> Biquad {
     let rate = f64::from(rate.max(1));
     let w = std::f64::consts::TAU * f64::from(hz).max(1.0).min(0.49 * rate) / rate;
-    let (cos, alpha) = (w.cos(), w.sin() / (2.0 * f64::from(q).max(1e-3)));
-    Biquad::new([
-        (1.0 + cos) / 2.0,
-        -(1.0 + cos),
-        (1.0 + cos) / 2.0,
-        1.0 + alpha,
-        -2.0 * cos,
-        1.0 - alpha,
-    ])
+    cookbook::high_pass(w.cos(), w.sin() / (2.0 * f64::from(q).max(1e-3))).into()
 }
 
 /// Zeroes state that has decayed below −400 dB, so a rung-out filter never
 /// feeds subnormals to what follows (no FTZ on the audio thread).
 pub fn flush(state: &mut [f64]) {
     for s in state {
-        if s.abs() < 1e-20 {
-            *s = 0.0;
-        }
+        moose_dsp::flush(s, 1e-20);
     }
 }

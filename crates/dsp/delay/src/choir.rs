@@ -10,6 +10,7 @@
 //! loops run straight over `[f32; 7]` fields.
 
 use kontra_dsp_core::{Biquad, Section, bilinear};
+use moose_dsp::time::coeff;
 
 use crate::{flush, fract, sine};
 
@@ -135,7 +136,7 @@ impl Choir {
             len,
             at: 0,
             live: None,
-            glide: 1.0 - (-1.0 / (GLIDE_S * rate as f32)).exp(),
+            glide: coeff(GLIDE_S * rate as f32),
             mix: [[0.0; V]; V],
             mix_aim: [[0.0; V]; V],
             mix_left: 0,

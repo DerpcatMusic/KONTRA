@@ -17,6 +17,8 @@
 
 use std::f32::consts::PI;
 
+use moose_dsp::svf::{Svf, SvfCoeffs};
+
 /// The settings in signal terms (see `ir::RingMod`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RingMod {
@@ -127,40 +129,10 @@ impl OnePole {
     }
 }
 
-/// A TPT state-variable filter's coefficients (damping `k = 1/Q`).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Svf {
-    k: f32,
-    a1: f32,
-    a2: f32,
-    a3: f32,
-}
-
-impl Svf {
-    fn new(hz: f32, k: f32, rate: f32) -> Self {
-        let g = (PI * hz.clamp(1.0, 0.49 * rate) / rate).tan();
-        let a1 = 1.0 / (1.0 + g * (g + k));
-        Self {
-            k,
-            a1,
-            a2: g * a1,
-            a3: g * g * a1,
-        }
-    }
-}
-
-/// A state-variable filter's state; `tick` returns the band and low outputs.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct SvfState(f32, f32);
-
-impl SvfState {
-    fn tick(&mut self, x: f32, c: Svf) -> (f32, f32) {
-        let v3 = x - self.1;
-        let v1 = c.a1 * self.0 + c.a2 * v3;
-        let v2 = self.1 + c.a2 * self.0 + c.a3 * v3;
-        (self.0, self.1) = (2.0 * v1 - self.0, 2.0 * v2 - self.1);
-        (v1, v2)
-    }
+/// A TPT state-variable filter's coefficients at `hz`, held within
+/// 1 Hz..=0.49 of the rate (damping `k = 1/Q`).
+fn svf(hz: f32, k: f32, rate: f32) -> SvfCoeffs<f32> {
+    SvfCoeffs::new(hz.clamp(1.0, 0.49 * rate), k, rate)
 }
 
 /// `√(q² + 1) − 1` antialiased against the previous input.
@@ -241,10 +213,10 @@ struct Receiver {
     /// first sample seeds it with 12345.
     seed: u32,
     noise: OnePole,
-    band: SvfState,
+    band: Svf<f32>,
     rectifier: Rectifier,
     dc: OnePole,
-    low: [SvfState; 2],
+    low: [Svf<f32>; 2],
 }
 
 /// One channel's state.
@@ -254,7 +226,7 @@ struct Channel {
     /// Sum and difference diodes per branch.
     diodes: [[Diode; 2]; 2],
     /// The sidechain's band-pass and analytic pair.
-    side_band: SvfState,
+    side_band: Svf<f32>,
     side: Analytic,
     /// The feedback path: the last wet output and its 15 kHz low-pass and
     /// 20 Hz high-pass.
@@ -278,15 +250,15 @@ struct Coefs {
     dc: f32,
     makeup: f32,
     /// Sidechain: the band-pass and the envelope's steps.
-    side_band: Svf,
+    side_band: SvfCoeffs<f32>,
     side_attack: f32,
     side_release: f32,
     /// Radio: the noise and 50 Hz steps, the band-pass, the low-pass pair,
     /// the demodulating sine's increment and the level control's steps.
     noise: f32,
     hum: f32,
-    band: Svf,
-    low: [Svf; 2],
+    band: SvfCoeffs<f32>,
+    low: [SvfCoeffs<f32>; 2],
     demod: f32,
     agc_attack: f32,
     agc_release: f32,
@@ -359,7 +331,7 @@ impl Ring {
         {
             // 3.5 octaves: `1/Q = (o² − 1)/o`, `o = 2^1.75`.
             let o = 2f32.powf(1.75);
-            c.side_band = Svf::new(bandpass_hz.unwrap_or(1_000.0), (o * o - 1.0) / o, rate);
+            c.side_band = svf(bandpass_hz.unwrap_or(1_000.0), (o * o - 1.0) / o, rate);
             (c.side_attack, c.side_release) = (follow(attack, rate), follow(release, rate));
         }
         if let Source::Radio {
@@ -368,9 +340,9 @@ impl Ring {
         {
             c.noise = pole(5_000.0, rate);
             c.hum = pole(50.0, rate);
-            c.band = Svf::new(tuned_hz, damping, rate);
+            c.band = svf(tuned_hz, damping, rate);
             // A four-pole Butterworth: dampings 2·cos(3π/8) and 2·cos(π/8).
-            c.low = [0.765_366_9, 1.847_759].map(|k| Svf::new(0.5 * tuned_hz, k, rate));
+            c.low = [0.765_366_9, 1.847_759].map(|k| svf(0.5 * tuned_hz, k, rate));
             c.demod = tuned_hz / rate;
             (c.agc_attack, c.agc_release) = (follow(0.002, rate), follow(0.2, rate));
         }
@@ -422,7 +394,7 @@ impl Ring {
                 let mut pairs = [[0.0f32; 2]; 2];
                 for ((pair, ch), mut x) in pairs.iter_mut().zip(&mut self.channels).zip(input) {
                     if bandpass_hz.is_some() {
-                        x = c.side_band.k * ch.side_band.tick(x, c.side_band).0;
+                        x = ch.side_band.tick(x, &c.side_band).band_norm();
                     }
                     *pair = ch.side.tick(x, 0.0);
                 }
@@ -520,11 +492,11 @@ impl Receiver {
         self.seed = ((u64::from(seed) * 48_271) % 2_147_483_647) as u32;
         let white = 2.0 * (self.seed as f32 - 1.0) * 4.656_613e-10 - 1.0;
         let x = x + noise * self.noise.tick(white, c.noise);
-        let band = c.band.k * self.band.tick(x, c.band).0;
+        let band = self.band.tick(x, &c.band).band_norm();
         let rectified = self.rectifier.tick(band);
         let mut y = rectified - self.dc.tick(rectified, c.hum);
-        for (state, svf) in self.low.iter_mut().zip(c.low) {
-            y = state.tick(y, svf).1;
+        for (state, svf) in self.low.iter_mut().zip(&c.low) {
+            y = state.tick(y, svf).low;
         }
         y + (lfo * band - y) * product
     }

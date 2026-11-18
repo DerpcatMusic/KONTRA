@@ -66,6 +66,7 @@ moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108"
 moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
 moose-test = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
 moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
+moose-dsp = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
 thiserror = "2"
 smallvec = "1"
 serde = { version = "1", features = ["derive"] }
