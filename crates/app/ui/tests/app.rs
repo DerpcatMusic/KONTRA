@@ -100,14 +100,14 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
     click(&mut ui, &mut app, "part-0-channel");
     assert_eq!(app.view.menu.as_deref(), Some("part-0-channel"));
     assert_eq!(
-        click(&mut ui, &mut app, "part-0-channel-0"),
+        click(&mut ui, &mut app, "part-0-channel/list/0"),
         vec![Action::Channel(0, 0)],
         "the first cell is every channel"
     );
     assert_eq!(app.view.menu, None, "a pick closes the menu");
     click(&mut ui, &mut app, "part-0-output");
     assert_eq!(
-        click(&mut ui, &mut app, "part-0-output-2"),
+        click(&mut ui, &mut app, "part-0-output/list/2"),
         vec![Action::Output(0, 2)]
     );
     click(&mut ui, &mut app, "tab-Mixer");
