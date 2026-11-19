@@ -530,7 +530,6 @@ impl PluginLogic for Kontra {
         }
     }
 
-
     fn process(
         s: &mut Dsp,
         p: &KontraParams,
@@ -727,4 +726,17 @@ fn build_rack(s: &mut Dsp, p: &KontraParams, c: &AudioConfig) {
         }
     }
     s.audio = Some(audio);
+}
+
+moose::enable_rt_paranoid!();
+
+#[cfg(all(test, feature = "rt-paranoid"))]
+mod reset_realtime_tests {
+    #[test]
+    fn reset_is_realtime_after_prepare() {
+        moose_test::assert_reset_realtime::<super::Kontra, f32>(
+            &super::KontraParams::default(),
+            &moose::prelude::AudioConfig::new(48_000.0, 512),
+        );
+    }
 }

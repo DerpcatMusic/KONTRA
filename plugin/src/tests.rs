@@ -1920,7 +1920,10 @@ fn a_panic_in_the_render_is_one_silent_block_and_the_next_plays() {
     }
     assert_eq!(peak(&block(&params, &mut dsp, &[])), 0.0);
     block(&params, &mut dsp, &[note(true, 60)]);
-    assert!(peak(&block(&params, &mut dsp, &[])) > 0.01, "reset kept the part");
+    assert!(
+        peak(&block(&params, &mut dsp, &[])) > 0.01,
+        "reset kept the part"
+    );
     // The next render panics: that block is silent, the host is not unwound
     // into, and the fault is flagged for the player.
     params.shared.inject_panic.store(true, Ordering::Release);
