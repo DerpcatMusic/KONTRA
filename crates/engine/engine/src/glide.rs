@@ -123,59 +123,6 @@ impl Engine {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const LAW: ir::Glide = ir::Glide {
-        scope: 0,
-        depth: 1.0,
-        range: f32::INFINITY,
-        from_heard: false,
-        seconds: 1.0,
-        per_semitone: false,
-        resume: true,
-        legato: false,
-        curve: 0.0,
-    };
-
-    #[test]
-    fn a_straight_slide_is_linear_in_semitones_and_ends_on_the_note() {
-        let s = Slide {
-            from: -12.0,
-            start: 100,
-            frames: 1000.0,
-            law: LAW,
-        };
-        assert_eq!(s.offset(100), -12.0);
-        assert_eq!(s.offset(600), -6.0);
-        assert_eq!(s.offset(1100), 0.0);
-        assert_eq!(s.offset(5000), 0.0);
-    }
-
-    #[test]
-    fn a_bent_slide_keeps_its_ends_and_covers_its_half_way_share() {
-        // Curve 0.5: a quarter of the interval at half time (slow, then fast).
-        let law = ir::Glide { curve: 0.5, ..LAW };
-        let s = Slide {
-            from: 12.0,
-            start: 0,
-            frames: 100.0,
-            law,
-        };
-        assert_eq!(s.offset(0), 12.0);
-        assert!((s.offset(50) - 9.0).abs() < 1e-4, "{}", s.offset(50));
-        assert_eq!(s.offset(100), 0.0);
-        // A constant rate: 0.03 s a semitone, so an octave takes 0.36 s.
-        let rate = ir::Glide {
-            per_semitone: true,
-            seconds: 0.03,
-            ..LAW
-        };
-        assert!((rate.duration(-12.0) - 0.36).abs() < 1e-6);
-    }
-}
-
 /// A line's play law as a script sets it ([`Engine::set_voice_line`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LineLaw {
@@ -234,5 +181,58 @@ impl Engine {
             }
         }
         any
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LAW: ir::Glide = ir::Glide {
+        scope: 0,
+        depth: 1.0,
+        range: f32::INFINITY,
+        from_heard: false,
+        seconds: 1.0,
+        per_semitone: false,
+        resume: true,
+        legato: false,
+        curve: 0.0,
+    };
+
+    #[test]
+    fn a_straight_slide_is_linear_in_semitones_and_ends_on_the_note() {
+        let s = Slide {
+            from: -12.0,
+            start: 100,
+            frames: 1000.0,
+            law: LAW,
+        };
+        assert_eq!(s.offset(100), -12.0);
+        assert_eq!(s.offset(600), -6.0);
+        assert_eq!(s.offset(1100), 0.0);
+        assert_eq!(s.offset(5000), 0.0);
+    }
+
+    #[test]
+    fn a_bent_slide_keeps_its_ends_and_covers_its_half_way_share() {
+        // Curve 0.5: a quarter of the interval at half time (slow, then fast).
+        let law = ir::Glide { curve: 0.5, ..LAW };
+        let s = Slide {
+            from: 12.0,
+            start: 0,
+            frames: 100.0,
+            law,
+        };
+        assert_eq!(s.offset(0), 12.0);
+        assert!((s.offset(50) - 9.0).abs() < 1e-4, "{}", s.offset(50));
+        assert_eq!(s.offset(100), 0.0);
+        // A constant rate: 0.03 s a semitone, so an octave takes 0.36 s.
+        let rate = ir::Glide {
+            per_semitone: true,
+            seconds: 0.03,
+            ..LAW
+        };
+        assert!((rate.duration(-12.0) - 0.36).abs() < 1e-6);
     }
 }

@@ -311,49 +311,6 @@ impl std::fmt::Debug for Keystream {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_synced_rate_moves_along_the_note_ladder_and_stays_on_it() {
-        // 2/3 of a beat is place 18; four places on is 1/4 (place 22).
-        assert!((ladder_beats(0.666_666_7, 4.0) - 0.25).abs() < 1e-6);
-        assert_eq!(ladder_beats(2.0, -40.0), 128.0);
-        assert!((ladder_beats(1.0, 0.0) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn block_keystream_reads_in_any_piece_and_undoes_itself() {
-        let plain: Vec<u8> = (0..1500u32).map(|i| (i * 7 + 3) as u8).collect();
-        let key = Keystream::Blocks {
-            key: 0x1234_5678_9abc_def0,
-            origin: 4096,
-            block: 512,
-        };
-        let mut whole = plain.clone();
-        key.apply(4096, &mut whole);
-        assert_ne!(whole, plain);
-        // A read that starts mid-block and crosses two block starts decrypts the
-        // same bytes as the whole pass.
-        let mut piece = whole[300..1100].to_vec();
-        key.apply(4096 + 300, &mut piece);
-        assert_eq!(piece, plain[300..1100]);
-        key.apply(4096, &mut whole);
-        assert_eq!(whole, plain);
-    }
-
-    /// An effect travels by value through racks and commands: an effect kind
-    /// that grows past this bound states its shared fields once instead.
-    /// [`Strip`] (a compressor and a waveshaper, one slot) sets it: 24 bytes
-    /// more per slot, against a second slot and its routing.
-    #[test]
-    fn an_effect_stays_small() {
-        let size = std::mem::size_of::<Effect>();
-        assert!(size <= 232, "ir::Effect is {size} bytes");
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
     pub name: String,
@@ -1031,4 +988,47 @@ pub enum Impact {
     Audible,
     /// Notes are missing or wrong.
     Broken,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_synced_rate_moves_along_the_note_ladder_and_stays_on_it() {
+        // 2/3 of a beat is place 18; four places on is 1/4 (place 22).
+        assert!((ladder_beats(0.666_666_7, 4.0) - 0.25).abs() < 1e-6);
+        assert_eq!(ladder_beats(2.0, -40.0), 128.0);
+        assert!((ladder_beats(1.0, 0.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn block_keystream_reads_in_any_piece_and_undoes_itself() {
+        let plain: Vec<u8> = (0..1500u32).map(|i| (i * 7 + 3) as u8).collect();
+        let key = Keystream::Blocks {
+            key: 0x1234_5678_9abc_def0,
+            origin: 4096,
+            block: 512,
+        };
+        let mut whole = plain.clone();
+        key.apply(4096, &mut whole);
+        assert_ne!(whole, plain);
+        // A read that starts mid-block and crosses two block starts decrypts the
+        // same bytes as the whole pass.
+        let mut piece = whole[300..1100].to_vec();
+        key.apply(4096 + 300, &mut piece);
+        assert_eq!(piece, plain[300..1100]);
+        key.apply(4096, &mut whole);
+        assert_eq!(whole, plain);
+    }
+
+    /// An effect travels by value through racks and commands: an effect kind
+    /// that grows past this bound states its shared fields once instead.
+    /// [`Strip`] (a compressor and a waveshaper, one slot) sets it: 24 bytes
+    /// more per slot, against a second slot and its routing.
+    #[test]
+    fn an_effect_stays_small() {
+        let size = std::mem::size_of::<Effect>();
+        assert!(size <= 232, "ir::Effect is {size} bytes");
+    }
 }

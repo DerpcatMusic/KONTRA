@@ -111,11 +111,6 @@ impl Run {
             .as_str()
             .to_owned()
     }
-
-    /// The catalog name a script's opaque symbol value stands for.
-    fn symbol(&self, value: i64) -> Option<&str> {
-        self.script.symbol(i32::try_from(value).ok()?)
-    }
 }
 
 #[test]
