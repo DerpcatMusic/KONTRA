@@ -225,23 +225,6 @@ pub struct Callbacks {
     pub widget: Option<u32>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Controls;
-
-    #[test]
-    fn a_cell_finds_the_first_control_on_it() {
-        let c = Controls {
-            by_cell: vec![(3, 0), (7, 2), (9, 1)],
-            ..Controls::default()
-        };
-        assert_eq!(
-            [3, 7, 9, 4].map(|cell| c.of_cell(cell)),
-            [Some(0), Some(2), Some(1), None]
-        );
-    }
-}
-
 /// What recalling saved values (a preset of the loaded instrument) does to
 /// its scripts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,4 +256,21 @@ impl Recall {
 pub struct Saved {
     pub ints: Vec<(u32, i64)>,
     pub texts: Vec<(u32, Text)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Controls;
+
+    #[test]
+    fn a_cell_finds_the_first_control_on_it() {
+        let c = Controls {
+            by_cell: vec![(3, 0), (7, 2), (9, 1)],
+            ..Controls::default()
+        };
+        assert_eq!(
+            [3, 7, 9, 4].map(|cell| c.of_cell(cell)),
+            [Some(0), Some(2), Some(1), None]
+        );
+    }
 }

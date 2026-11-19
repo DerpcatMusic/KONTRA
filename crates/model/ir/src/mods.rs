@@ -323,27 +323,6 @@ impl Exp2 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Exp2;
-
-    #[test]
-    fn the_quadratic_power_of_two_plays_a_two_semitone_bend_flat() {
-        let law = Exp2::Quadratic { c: 0.33971 };
-        let semitones = |st: f64| 12.0 * law.of(st / 12.0).log2();
-        // Kontakt on a ±2 st route: full bend up and down, a quarter each way.
-        for (st, heard) in [(2.0, 1.954), (-2.0, -1.958), (0.5, 0.480), (-0.5, -0.485)] {
-            assert!(
-                (semitones(st) - heard).abs() < 0.001,
-                "{st}: {}",
-                semitones(st)
-            );
-        }
-        assert_eq!(law.of(1.0), 2.0);
-        assert_eq!(Exp2::Exact.of(-1.0), 0.5);
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Wave {
     Sine,
@@ -437,5 +416,26 @@ impl Source {
             Self::Controller(cc) | Self::ControllerFrom { cc, .. } => Some(cc),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Exp2;
+
+    #[test]
+    fn the_quadratic_power_of_two_plays_a_two_semitone_bend_flat() {
+        let law = Exp2::Quadratic { c: 0.33971 };
+        let semitones = |st: f64| 12.0 * law.of(st / 12.0).log2();
+        // Kontakt on a ±2 st route: full bend up and down, a quarter each way.
+        for (st, heard) in [(2.0, 1.954), (-2.0, -1.958), (0.5, 0.480), (-0.5, -0.485)] {
+            assert!(
+                (semitones(st) - heard).abs() < 0.001,
+                "{st}: {}",
+                semitones(st)
+            );
+        }
+        assert_eq!(law.of(1.0), 2.0);
+        assert_eq!(Exp2::Exact.of(-1.0), 0.5);
     }
 }
