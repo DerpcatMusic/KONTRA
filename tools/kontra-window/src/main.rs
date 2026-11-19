@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (Some(path), Some(out)) = (args.next(), args.next()) else {
             return Err("usage: kontra-window state <instrument> <file>".into());
         };
-        let plugin = kontra_plugin::Plugin::create();
+        let plugin = kontra_plugin::PluginShell::create();
         let saved = Saved::new(vec![SavedPart {
             part: 0,
             path: PathBuf::from(path),
@@ -53,6 +53,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(out, snapshot_plugin(&plugin))?;
         return Ok(());
     }
-    moose_standalone::run::<kontra_plugin::Plugin>();
+    moose_standalone::run::<kontra_plugin::PluginShell>();
     Ok(())
 }

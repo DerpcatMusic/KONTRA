@@ -602,7 +602,7 @@ fn block_in(
         let mut cx =
             ProcessContext::new(&transport, RATE, BLOCK, &mut out_events).with_process_mode(mode);
         window::process_mark(window::Mark::Enter);
-        <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+        <Kontra as Plugin>::process(dsp, params, &mut buffer, &list, &mut cx);
         window::process_mark(window::Mark::Leave);
     }
     let channel_peaks = output_peaks(&channels);
@@ -711,7 +711,7 @@ fn perform(path: PathBuf) -> Report {
     (last.slowest, last.commands_ns) = Default::default();
     let mut failed = Vec::new();
     let mut fail = |what: String| failed.push(format!("{name}: {what}"));
-    let latency_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
+    let latency_ms = <Kontra as Plugin>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
     let (limited, pool) = limited(&params);
     let quiet_s = quiet_s(&params);
     let mut onsets = Vec::new();
