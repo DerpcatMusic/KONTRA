@@ -501,49 +501,35 @@ impl PluginLogic for Kontra {
         })]
     }
 
-    /// A new rack at the host's rate. The parts of the one it replaces (a
-    /// rate change) load again into it on the next tick.
-    fn reset(s: &mut Dsp, p: &KontraParams, c: &AudioConfig) {
-        // A reset at the same rate (CLAP's plain reset, a host restarting
-        // its stream) keeps the loaded parts and only ends their notes.
-        if let Some(audio) = &s.audio
-            && s.rate == c.sample_rate
-            && audio.max_block() >= c.max_block_size
-            && let Some(rack) = lock(&p.shared.rack).as_mut()
-        {
-            rack.panic();
-            return;
+    /// A new rack at the host's rate (allocates; main thread). The parts of
+    /// the one it replaces (a rate change) load again into it on the next
+    /// tick. Same rate and block size keeps the rack.
+    fn prepare(
+        s: &mut Dsp,
+        p: &KontraParams,
+        config: &moose::core::plugin::PreparationConfig,
+    ) -> Result<(), moose::core::plugin::PreparationError> {
+        config.validate()?;
+        let c = &config.audio;
+        let same = s
+            .audio
+            .as_ref()
+            .is_some_and(|audio| s.rate == c.sample_rate && audio.max_block() >= c.max_block_size);
+        if !same {
+            build_rack(s, p, c);
         }
-        s.rate = c.sample_rate;
-        s.gain = db_to_linear(p.volume.value());
-        s.input = Vec::with_capacity(EVENTS);
-        s.chunk = Vec::with_capacity(EVENTS);
-        s.moves = Vec::with_capacity(EVENTS);
-        s.until_tick = 0;
-        let rate = c.sample_rate.round() as u32;
-        let Ok(mut store) = Store::new(StoreConfig::DEFAULT) else {
-            s.audio = None;
-            return;
-        };
-        // Other instances in this host share this one's pinned pages.
-        store.share_pages_in_process();
-        store.set_progress(Arc::clone(&p.shared.progress));
-        // A part plays as soon as its plan exists; the sample heads follow.
-        store.defer_heads(true);
-        let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
-        if let Some(saves) = kontra_host::rack::user_saves() {
-            rack.set_saves(saves);
-        }
-        *lock(&p.shared.player) = Some(rack.player());
-        let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
-        if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {
-            let mut requests = lock(&p.shared.requests);
-            if !requests.iter().any(|r| matches!(r, Request::Restore(_))) {
-                requests.insert(0, Request::Restore(saved));
-            }
-        }
-        s.audio = Some(audio);
+        <Self as PluginLogic>::reset(s, p, c);
+        Ok(())
     }
+
+    /// May run on the audio thread (CLAP's plain reset, a host restarting
+    /// its stream): keeps the loaded parts and only ends their notes.
+    fn reset(s: &mut Dsp, _p: &KontraParams, _c: &AudioConfig) {
+        if let Some(audio) = s.audio.as_mut() {
+            audio.panic();
+        }
+    }
+
 
     fn process(
         s: &mut Dsp,
@@ -709,3 +695,36 @@ impl PluginLogic for Kontra {
 }
 
 moose::plugin! { logic: Kontra, params: KontraParams, tasks: [Tick] }
+
+/// Build a fresh rack and audio engine for `c` (allocates; main thread).
+fn build_rack(s: &mut Dsp, p: &KontraParams, c: &AudioConfig) {
+    s.rate = c.sample_rate;
+    s.gain = db_to_linear(p.volume.value());
+    s.input = Vec::with_capacity(EVENTS);
+    s.chunk = Vec::with_capacity(EVENTS);
+    s.moves = Vec::with_capacity(EVENTS);
+    s.until_tick = 0;
+    let rate = c.sample_rate.round() as u32;
+    let Ok(mut store) = Store::new(StoreConfig::DEFAULT) else {
+        s.audio = None;
+        return;
+    };
+    // Other instances in this host share this one's pinned pages.
+    store.share_pages_in_process();
+    store.set_progress(Arc::clone(&p.shared.progress));
+    // A part plays as soon as its plan exists; the sample heads follow.
+    store.defer_heads(true);
+    let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
+    if let Some(saves) = kontra_host::rack::user_saves() {
+        rack.set_saves(saves);
+    }
+    *lock(&p.shared.player) = Some(rack.player());
+    let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
+    if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {
+        let mut requests = lock(&p.shared.requests);
+        if !requests.iter().any(|r| matches!(r, Request::Restore(_))) {
+            requests.insert(0, Request::Restore(saved));
+        }
+    }
+    s.audio = Some(audio);
+}
