@@ -40,7 +40,7 @@ pub(super) fn activate(saved: &str) -> (KontraParams, Dsp) {
     *params.saved.write().unwrap() = saved.to_owned();
     params.restore();
     let mut dsp = Dsp::default();
-    <Kontra as PluginLogic>::reset(&mut dsp, &params, &AudioConfig::new(RATE, BLOCK));
+    prepare_for_test(&mut dsp, &params, &AudioConfig::new(RATE, BLOCK));
     // The tests read the parts' interfaces, as an open editor does.
     params.shared.shown.store(true, Ordering::Release);
     Tick.run(&params);
@@ -180,7 +180,7 @@ fn recall(path: PathBuf) -> Result<String, String> {
         .map_or(0, |s| s.missing_frames);
     // A host's plain reset at the same rate keeps the part: it plays at once,
     // without a control tick to reload it.
-    <Kontra as PluginLogic>::reset(&mut live_dsp, &live, &AudioConfig::new(RATE, BLOCK));
+    prepare_for_test(&mut live_dsp, &live, &AudioConfig::new(RATE, BLOCK));
     let after_reset = play(&live, &mut live_dsp);
     settle(&live, &mut live_dsp);
     let moved = move_control(&live);
@@ -1909,6 +1909,18 @@ fn a_panic_in_the_render_is_one_silent_block_and_the_next_plays() {
         peak(&block(&params, &mut dsp, &[])) > 0.01,
         "the note plays"
     );
+    // A library load can hold this lock for seconds. Reset must finish
+    // while it is held, end the note, and keep the part playable.
+    {
+        let _loading = params.shared.rack.lock().unwrap();
+        <Kontra as PluginLogic>::reset(&mut dsp, &params, &AudioConfig::new(RATE, BLOCK));
+    }
+    for _ in 0..4 {
+        block(&params, &mut dsp, &[]);
+    }
+    assert_eq!(peak(&block(&params, &mut dsp, &[])), 0.0);
+    block(&params, &mut dsp, &[note(true, 60)]);
+    assert!(peak(&block(&params, &mut dsp, &[])) > 0.01, "reset kept the part");
     // The next render panics: that block is silent, the host is not unwound
     // into, and the fault is flagged for the player.
     params.shared.inject_panic.store(true, Ordering::Release);
@@ -2233,7 +2245,7 @@ fn reopen(params: &KontraParams) -> (KontraParams, Dsp) {
     again.restore_state(&pairs, &persist);
     again.restore();
     let mut dsp = Dsp::default();
-    <Kontra as PluginLogic>::reset(&mut dsp, &again, &AudioConfig::new(RATE, BLOCK));
+    prepare_for_test(&mut dsp, &again, &AudioConfig::new(RATE, BLOCK));
     again.shared.shown.store(true, Ordering::Release);
     Tick.run(&again);
     (again, dsp)
@@ -2392,4 +2404,11 @@ fn a_part_playing_a_snapshot_reopens_with_it_without_a_library_scan() {
         now.parts[0].scripts, part.scripts,
         "its script values changed"
     );
+}
+
+/// Runs the main-thread `prepare` the way a host does before the first block.
+fn prepare_for_test(dsp: &mut Dsp, params: &KontraParams, audio: &AudioConfig) {
+    use moose::core::plugin::{PreparationConfig, PreparationFrameBound};
+    let config = PreparationConfig::new(*audio, PreparationFrameBound::NegotiatedHost);
+    <Kontra as PluginLogic>::prepare(dsp, params, &config).expect("prepare");
 }

@@ -126,6 +126,14 @@ impl RackAudio {
         }
     }
 
+    /// Ends the current notes on the next render, keeping the loaded parts.
+    /// Audio-owned and bounded: does not drain commands or wait for the
+    /// control side (which may be loading a library).
+    pub fn panic(&mut self) {
+        self.panic = true;
+        self.played.clear();
+    }
+
     /// Whether the host renders offline (a bounce, faster or slower than
     /// real time): then a voice waits for the sample pages it reads, deferred
     /// heads among them, instead of playing silence. Never live: it blocks.
@@ -593,10 +601,7 @@ impl RackAudio {
                 Command::Master(gain) => self.master = gain,
                 Command::Tempo(bpm) => self.set_tempo(bpm),
                 // What was played before the panic ends with it.
-                Command::Panic => {
-                    self.panic = true;
-                    self.played.clear();
-                }
+                Command::Panic => self.panic(),
                 Command::Play(event) => {
                     if self.played.len() < self.played.capacity() {
                         self.played.push(event);
