@@ -13,6 +13,10 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 workspace = true
 
 [features]
+# Counting allocator for the real-time tests: `cargo test --features rt-paranoid`.
+# Luau then allocates from the system heap through the counting allocator,
+# instead of installing kontra-lua's own arena allocator (two can't link).
+rt-paranoid = ["moose/rt-paranoid", "kontra-host/heap-profile"]
 default = ["clap", "vst3"]
 clap = ["dep:moose-clap", "dep:clap-sys"]
 vst3 = ["dep:moose-vst3"]
