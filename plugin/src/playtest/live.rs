@@ -133,7 +133,7 @@ fn load_live(state: &str, notes: bool) -> (KontraParams, Dsp, Played, f64, Vec<f
     params.restore();
     params.align.set_value(true);
     let mut dsp = Dsp::default();
-    <Kontra as PluginLogic>::reset(&mut dsp, &params, &AudioConfig::new(RATE, BLOCK));
+    <Kontra as Plugin>::reset(&mut dsp, &params);
     let mut last = Played::default();
     let (mut audio, mut downs) = (Vec::new(), Vec::new());
     let started = Instant::now();
@@ -186,7 +186,7 @@ fn play_live(path: PathBuf) -> Vec<String> {
     // Keys while it loads: each sound starts within the hold after one
     // (a key before the engine is in never sounds; none waits for it).
     let (params, mut dsp, mut last, _, mut audio, loading) = load_live(&state, true);
-    let hold = <Kontra as PluginLogic>::latency(&dsp) as usize + at(0.03);
+    let hold = <Kontra as Plugin>::latency(&dsp) as usize + at(0.03);
     let mut voices = 0;
     audio.extend(render(
         &params,
@@ -216,7 +216,7 @@ fn play_live(path: PathBuf) -> Vec<String> {
     // Loaded with no keys: silence, then the performance, cold.
     let (params, mut dsp, mut last, load_s, _, _) = load_live(&state, false);
     let (limited, pool) = limited(&params);
-    let hold_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
+    let hold_ms = <Kontra as Plugin>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
     let events = performance();
     let end = events.last().map_or(0, |e| e.0) + 1;
     let before = (last.stolen, last.cut, last.refused, last.missing);

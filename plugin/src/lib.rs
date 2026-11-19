@@ -135,6 +135,10 @@ pub struct Shared {
     latency: AtomicU32,
     /// Moves when the host loads a state: the editor reads its view again.
     restored: AtomicU32,
+    /// The audio side a deactivation hands back, with its rate: the next
+    /// activation at that rate and block size takes it, parts and all.
+    /// Locked on the host's main thread only.
+    parked: Arc<Mutex<Option<(f64, RackAudio)>>>,
     /// The "Add folder" dialog; dropping it closes an open one.
     folder: folder::Dialog,
     /// The editor is open: the tick keeps its copy of the rack current.
@@ -315,10 +319,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The audio thread's state.
+/// The audio thread's state, built by [`Kontra`]'s `activate`.
 #[derive(Default)]
 pub struct Dsp {
     audio: Option<RackAudio>,
+    /// [`Shared::parked`], where `deactivate` leaves `audio`.
+    park: Arc<Mutex<Option<(f64, RackAudio)>>>,
     input: Vec<(u32, Event)>,
     /// This chunk's share of `input`.
     chunk: Vec<(u32, Event)>,
@@ -487,9 +493,10 @@ fn requests_restoring(p: &KontraParams) -> bool {
 
 pub struct Kontra;
 
-impl PluginLogic for Kontra {
-    type Params = KontraParams;
-    type DspState = Dsp;
+impl Plugin for Kontra {
+    type Shared = KontraParams;
+    type MainThread = ();
+    type Processor = Dsp;
 
     fn bus_layouts() -> Vec<BusLayout> {
         const NAMES: [&str; OUTPUTS] = [
@@ -501,30 +508,52 @@ impl PluginLogic for Kontra {
         })]
     }
 
-    /// A new rack at the host's rate (allocates; main thread). The parts of
-    /// the one it replaces (a rate change) load again into it on the next
-    /// tick. Same rate and block size keeps the rack.
-    fn prepare(
-        s: &mut Dsp,
+    fn main_thread(_: &Arc<KontraParams>) {}
+
+    /// The audio side at the host's rate (allocates; main thread). The one
+    /// the last deactivation parked is kept when its rate and block size
+    /// still fit; otherwise a new rack, and the parts of the one it
+    /// replaces load again into it on the next tick.
+    fn activate(
         p: &KontraParams,
-        config: &moose::core::plugin::PreparationConfig,
-    ) -> Result<(), moose::core::plugin::PreparationError> {
-        config.validate()?;
-        let c = &config.audio;
-        let same = s
-            .audio
-            .as_ref()
-            .is_some_and(|audio| s.rate == c.sample_rate && audio.max_block() >= c.max_block_size);
-        if !same {
-            build_rack(s, p, c);
+        c: &AudioConfig,
+        _cx: &InitContext,
+    ) -> Result<Dsp, PreparationError> {
+        let parked = lock(&p.shared.parked).take();
+        let mut audio = match parked {
+            Some((rate, audio))
+                if rate == c.sample_rate && audio.max_block() >= c.max_block_size =>
+            {
+                Some(audio)
+            }
+            _ => build_rack(p, c),
+        };
+        if let Some(audio) = audio.as_mut() {
+            audio.panic();
         }
-        <Self as PluginLogic>::reset(s, p, c);
-        Ok(())
+        Ok(Dsp {
+            audio,
+            park: Arc::clone(&p.shared.parked),
+            input: Vec::with_capacity(EVENTS),
+            chunk: Vec::with_capacity(EVENTS),
+            moves: Vec::with_capacity(EVENTS),
+            gain: db_to_linear(p.volume.value()),
+            rate: c.sample_rate,
+            until_tick: 0,
+            latency: p.shared.latency.load(Ordering::Relaxed),
+        })
+    }
+
+    /// Parks the audio side for the next activation (main thread).
+    fn deactivate(s: Dsp) {
+        if let Some(audio) = s.audio {
+            *lock(&s.park) = Some((s.rate, audio));
+        }
     }
 
     /// May run on the audio thread (CLAP's plain reset, a host restarting
     /// its stream): keeps the loaded parts and only ends their notes.
-    fn reset(s: &mut Dsp, _p: &KontraParams, _c: &AudioConfig) {
+    fn reset(s: &mut Dsp, _p: &KontraParams) {
         if let Some(audio) = s.audio.as_mut() {
             audio.panic();
         }
@@ -688,26 +717,18 @@ impl PluginLogic for Kontra {
         s.latency
     }
 
-    fn editor(params: std::sync::Arc<KontraParams>) -> Box<dyn Editor> {
+    fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         editor::editor(params)
     }
 }
 
-moose::plugin! { logic: Kontra, params: KontraParams, tasks: [Tick] }
+moose::plugin! { plugin: Kontra, params: KontraParams, tasks: [Tick] }
 
-/// Build a fresh rack and audio engine for `c` (allocates; main thread).
-fn build_rack(s: &mut Dsp, p: &KontraParams, c: &AudioConfig) {
-    s.rate = c.sample_rate;
-    s.gain = db_to_linear(p.volume.value());
-    s.input = Vec::with_capacity(EVENTS);
-    s.chunk = Vec::with_capacity(EVENTS);
-    s.moves = Vec::with_capacity(EVENTS);
-    s.until_tick = 0;
+/// Build a fresh rack and its audio side for `c` (allocates; main thread);
+/// `None` when the sample store can't open.
+fn build_rack(p: &KontraParams, c: &AudioConfig) -> Option<RackAudio> {
     let rate = c.sample_rate.round() as u32;
-    let Ok(mut store) = Store::new(StoreConfig::DEFAULT) else {
-        s.audio = None;
-        return;
-    };
+    let mut store = Store::new(StoreConfig::DEFAULT).ok()?;
     // Other instances in this host share this one's pinned pages.
     store.share_pages_in_process();
     store.set_progress(Arc::clone(&p.shared.progress));
@@ -725,7 +746,7 @@ fn build_rack(s: &mut Dsp, p: &KontraParams, c: &AudioConfig) {
             requests.insert(0, Request::Restore(saved));
         }
     }
-    s.audio = Some(audio);
+    Some(audio)
 }
 
 moose::enable_rt_paranoid!();
@@ -734,7 +755,7 @@ moose::enable_rt_paranoid!();
 mod reset_realtime_tests {
     #[test]
     fn reset_is_realtime_after_prepare() {
-        moose_test::assert_reset_realtime::<super::Kontra, f32>(
+        moose_test::assert_reset_realtime::<moose::Lifecycle<super::Kontra>, f32>(
             &super::KontraParams::default(),
             &moose::prelude::AudioConfig::new(48_000.0, 512),
         );

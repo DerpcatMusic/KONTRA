@@ -17,17 +17,17 @@ pub(super) const KONTAKT: &str = "/data/main/Libraries/Kontakt";
 
 #[test]
 fn plugin_contract() {
-    moose_test::assert_valid_info::<crate::Plugin>();
-    moose_test::assert_bus_config_instrument::<crate::Plugin>();
-    moose_test::assert_state_round_trip::<crate::Plugin>();
-    moose_test::assert_empty_state_no_crash::<crate::Plugin>();
-    moose_test::assert_corrupt_state_no_crash::<crate::Plugin>();
+    moose_test::assert_valid_info::<crate::PluginShell>();
+    moose_test::assert_bus_config_instrument::<crate::PluginShell>();
+    moose_test::assert_state_round_trip::<crate::PluginShell>();
+    moose_test::assert_empty_state_no_crash::<crate::PluginShell>();
+    moose_test::assert_corrupt_state_no_crash::<crate::PluginShell>();
 }
 
 /// Preserve the v3 plugin identifiers when changing its display name.
 #[test]
 fn v3_has_its_own_identity() {
-    let info = <crate::Plugin as moose::core::plugin::PluginRuntime>::info();
+    let info = <crate::PluginShell as moose::core::plugin::PluginRuntime>::info();
     assert_eq!(info.name, "KONTRA");
     assert_eq!(info.clap_id, "audio.matari.kontra-v3");
     assert_eq!(info.vst3_id, "audio.matari.kontra-v3");
@@ -62,7 +62,7 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event])
         // A bounce, as the host renders offline: every page read in time.
         let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events)
             .with_process_mode(ProcessMode::Offline);
-        <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+        <Kontra as Plugin>::process(dsp, params, &mut buffer, &list, &mut cx);
     }
     channels[0]
         .iter()
@@ -279,7 +279,7 @@ fn pairs(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event])
         let mut out_events = EventList::with_capacity(16);
         let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events)
             .with_process_mode(ProcessMode::Offline);
-        <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+        <Kontra as Plugin>::process(dsp, params, &mut buffer, &list, &mut cx);
     }
     let mono = |n: usize| {
         channels[2 * n]
@@ -337,17 +337,13 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
         out.map(|x| kontra_align::onset_ms(&x, RATE, kontra_align::ONSET_DB).unwrap_or(f32::NAN))
     };
     let [a0, b0] = onsets(&params, &mut dsp);
-    assert_eq!(
-        <Kontra as PluginLogic>::latency(&dsp),
-        0,
-        "latency while off"
-    );
+    assert_eq!(<Kontra as Plugin>::latency(&dsp), 0, "latency while off");
     params.align.set_value(true);
     let t = std::time::Instant::now();
     Tick.run(&params);
     let measured = t.elapsed();
     pairs(&params, &mut dsp, &[]);
-    let latency = <Kontra as PluginLogic>::latency(&dsp);
+    let latency = <Kontra as Plugin>::latency(&dsp);
     let ms = latency as f32 * 1000.0 / RATE as f32;
     let [a1, b1] = onsets(&params, &mut dsp);
     println!(
@@ -369,7 +365,7 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
     let remeasured = t.elapsed();
     pairs(&again, &mut again_dsp, &[]);
     assert_eq!(
-        <Kontra as PluginLogic>::latency(&again_dsp),
+        <Kontra as Plugin>::latency(&again_dsp),
         latency,
         "reload latency"
     );
@@ -380,11 +376,7 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
     params.align.set_value(false);
     Tick.run(&params);
     pairs(&params, &mut dsp, &[]);
-    assert_eq!(
-        <Kontra as PluginLogic>::latency(&dsp),
-        0,
-        "latency after off"
-    );
+    assert_eq!(<Kontra as Plugin>::latency(&dsp), 0, "latency after off");
 }
 
 #[test]
@@ -1523,7 +1515,7 @@ fn live_block(params: &KontraParams, dsp: &mut Dsp) {
     let transport = TransportInfo::default();
     let mut out_events = EventList::with_capacity(16);
     let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events);
-    <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+    <Kontra as Plugin>::process(dsp, params, &mut buffer, &list, &mut cx);
 }
 
 /// An instrument under this machine's Kontakt libraries, whether the test
@@ -1913,7 +1905,7 @@ fn a_panic_in_the_render_is_one_silent_block_and_the_next_plays() {
     // while it is held, end the note, and keep the part playable.
     {
         let _loading = params.shared.rack.lock().unwrap();
-        <Kontra as PluginLogic>::reset(&mut dsp, &params, &AudioConfig::new(RATE, BLOCK));
+        <Kontra as Plugin>::reset(&mut dsp, &params);
     }
     for _ in 0..4 {
         block(&params, &mut dsp, &[]);
@@ -2042,7 +2034,7 @@ fn block_64_exact(
         let transport = TransportInfo::default();
         let mut out_events = EventList::with_capacity(16);
         let mut cx = ProcessContext::new(&transport, RATE, FRAMES, &mut out_events);
-        <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+        <Kontra as Plugin>::process(dsp, params, &mut buffer, &list, &mut cx);
     }
     channels.swap_remove(0)
 }
@@ -2409,9 +2401,9 @@ fn a_part_playing_a_snapshot_reopens_with_it_without_a_library_scan() {
     );
 }
 
-/// Runs the main-thread `prepare` the way a host does before the first block.
+/// Activates `dsp` the way a host does before the first block: the one it
+/// held is deactivated first.
 fn prepare_for_test(dsp: &mut Dsp, params: &KontraParams, audio: &AudioConfig) {
-    use moose::core::plugin::{PreparationConfig, PreparationFrameBound};
-    let config = PreparationConfig::new(*audio, PreparationFrameBound::NegotiatedHost);
-    <Kontra as PluginLogic>::prepare(dsp, params, &config).expect("prepare");
+    <Kontra as Plugin>::deactivate(std::mem::take(dsp));
+    *dsp = <Kontra as Plugin>::activate(params, audio, &InitContext::default()).expect("activate");
 }
