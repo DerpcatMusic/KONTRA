@@ -2669,6 +2669,7 @@ dependencies = [
  "bitflags 2.13.2",
  "crossbeam-queue",
  "crossbeam-utils",
+ "keyboard-types",
  "moose-params",
  "moose-utils",
  "png",
