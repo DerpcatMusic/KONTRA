@@ -7,12 +7,14 @@
 mod envelope;
 mod fade;
 mod mod_waves;
+mod oscillator;
 mod wavetable;
 mod zone;
 
 use kontra_stream::{Mix, StreamClient};
 
 pub use envelope::{Ahdsr, Envelope};
+pub use oscillator::{OSC_PERIOD, OscWave, Oscillator};
 pub use wavetable::{
     CYCLE, Inharmonic, LEVELS, ModKind, ModOsc, Osc, PERIOD, Quality, Read, SIZE, Shape, Shaper,
     Side, TOP, Table, Unit, Warp, shape, warp,
@@ -94,6 +96,8 @@ pub struct VoiceStart {
     pub mix: Option<Mix>,
     /// Optional modulated wavetable read state overriding [`Table::read`] at onset.
     pub read: Option<Read>,
+    /// Optional real-time synth oscillator overriding sample playback (zero allocation).
+    pub oscillator: Option<Oscillator>,
     /// Source frames per output frame: pitch and sample-rate ratio together.
     pub step: f64,
     pub gain: Gain,
@@ -137,6 +141,7 @@ pub struct Voice {
     loops: Loops,
     mix: Option<Mix>,
     table: Option<Table>,
+    osc: Option<Oscillator>,
     /// Position at `elapsed == 0`; moved only when the step changes, so the
     /// cursor is the same whatever block sizes rendered it (rule 3).
     anchor: f64,
@@ -212,6 +217,7 @@ impl Voice {
             loops: Loops::new(),
             mix: None,
             table: None,
+            osc: None,
             anchor: 0.0,
             elapsed: 0,
             step: 1.0,
@@ -259,6 +265,7 @@ impl Voice {
         }
         self.mix = start.mix.or_else(|| start.region.mix.as_deref().copied());
         self.table = start.region.table.as_deref().cloned();
+        self.osc = start.oscillator;
         if let (Some(read), Some(table)) = (start.read, self.table.as_mut()) {
             table.read = read;
         }
@@ -378,6 +385,7 @@ impl Voice {
         self.loops.clear();
         self.mix = None;
         self.table = None;
+        self.osc = None;
     }
 
     /// Changes pitch from the next frame.
@@ -561,8 +569,8 @@ impl Voice {
             self.heads.iter().fold(self.at(0), |a, &h| a.min(h))
         };
         let ahead = (LOOKAHEAD * step) as usize + (self.at(0) - from) as usize;
-        let table = self.table.is_some();
-        let ahead = if table { 0 } else { ahead };
+        let synth = self.table.is_some() || self.osc.is_some();
+        let ahead = if synth { 0 } else { ahead };
         region.runs_with(&self.loops, from as i64, ahead, released, |offset, run| {
             let low = if run.descending {
                 run.first + 1 - run.count as u64
@@ -589,7 +597,7 @@ impl Voice {
         // A note whose first pages are not in yet because their heads are still
         // loading (a streaming miss keeps time instead) holds still, so its attack plays whole when they land instead of the note
         // joining mid-sample; the requests above are already queued, due now.
-        if self.elapsed == 0 && !table && self.waited < HEAD_WAIT && sample.heads_pending() {
+        if self.elapsed == 0 && !synth && self.waited < HEAD_WAIT && sample.heads_pending() {
             let block = (out.len() as f64 * step) as usize + 4;
             let mut ready = true;
             region.runs_with(&self.loops, from as i64, block, released, |_, run| {
@@ -606,7 +614,7 @@ impl Voice {
                 return;
             }
         }
-        let has_tuned = !table && zone::Region::has_tuned_loop(&self.loops);
+        let has_tuned = !synth && zone::Region::has_tuned_loop(&self.loops);
         let mut done = 0;
         let mut alive = true;
         while done < out.len() && alive {
@@ -626,7 +634,7 @@ impl Voice {
                     tune_boundary = Some(pos.max(0.0).floor() + run_left as f64);
                 }
             }
-            let fit = if table {
+            let fit = if synth {
                 SCRATCH
             } else {
                 (((SCRATCH - 4) as f64 / (self.ramp.peak(self.step) * self.loop_tune)).floor()
@@ -656,7 +664,14 @@ impl Voice {
                 n = lo;
             }
             let missing_before = self.missing;
-            let filled = if let Some(mut tbl) = self.table.take() {
+            let filled = if let Some(mut osc) = self.osc.take() {
+                let raw = scratch.raw.get_mut(..n).unwrap_or_default();
+                let (base_step, elapsed, ramp, loop_tune) =
+                    (self.step, self.elapsed, self.ramp, self.loop_tune);
+                osc.render(|i| ramp.step_at(base_step, elapsed + i) * loop_tune, raw);
+                self.osc = Some(osc);
+                raw.len()
+            } else if let Some(mut tbl) = self.table.take() {
                 let raw = scratch.raw.get_mut(..n).unwrap_or_default();
                 // Each frame's own cursor: a gliding table moves pitch every
                 // frame, the same at any block size.
@@ -717,7 +732,7 @@ impl Voice {
                 }
             }
             self.elapsed += n as u64;
-            if !table && region.finished_with(&self.loops, self.at(0), released) {
+            if !synth && region.finished_with(&self.loops, self.at(0), released) {
                 alive = false;
             }
             done += n;
@@ -728,6 +743,7 @@ impl Voice {
             self.loops.clear();
             self.mix = None;
             self.table = None;
+            self.osc = None;
         }
     }
 

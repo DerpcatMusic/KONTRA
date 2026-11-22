@@ -26,6 +26,12 @@ pub struct Chain {
     /// A group's own chain, never shared: its rack runs the slots its
     /// voices leave to the sum (group_racks.rs).
     pub group: Option<(usize, Rack)>,
+    /// In graph mode, each group with summed inserts owns its own chain even
+    /// without a group rack split, so groups stay isolated before `GroupInput`.
+    pub graph_group: Option<usize>,
+    /// True when this chain outputs into `Engine::group_mix[owner]` (graph mode)
+    /// rather than `Engine::buses[self.bus]`.
+    pub to_graph_group: bool,
     pub mix: Box<[[f32; 2]]>,
     pub live: bool,
     /// Its filters still ring: they last ran and were not silent after.
@@ -36,7 +42,7 @@ pub struct Chain {
 impl Chain {
     /// The group whose own chain this is, if any.
     pub fn owner(&self) -> Option<usize> {
-        self.group.as_ref().map(|(g, _)| *g)
+        self.group.as_ref().map(|(g, _)| *g).or(self.graph_group)
     }
 
     pub fn new(
@@ -56,6 +62,8 @@ impl Chain {
             sections,
             private: false,
             group,
+            graph_group: None,
+            to_graph_group: false,
             mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             live: false,
             ringing: false,

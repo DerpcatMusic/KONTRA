@@ -157,6 +157,7 @@ struct GroupKey {
     one_shot: bool,
     start: Vec<StartRuleKey>,
     filter: Option<(u8, u32, u8, [u32; 3], u32)>,
+    oscillator: Option<u8>,
 }
 
 impl GroupKey {
@@ -223,6 +224,19 @@ impl GroupKey {
                 _ => None,
             });
 
+        let oscillator = settings.generator.as_ref().and_then(|g| match g {
+            ir::Generator::Oscillator { wave, .. } => Some(match wave {
+                ir::Wave::Sine => 0,
+                ir::Wave::Saw => 1,
+                ir::Wave::Square { .. } => 2,
+                ir::Wave::Triangle => 3,
+                ir::Wave::Random => 4,
+                ir::Wave::Ramp => 5,
+                _ => 6,
+            }),
+            _ => None,
+        });
+
         Self {
             number,
             off_by,
@@ -241,6 +255,7 @@ impl GroupKey {
             one_shot: settings.one_shot,
             start,
             filter,
+            oscillator,
         }
     }
 }
@@ -272,15 +287,27 @@ impl Build {
             self.notes.add(ir::Impact::Cosmetic, "silence region", "");
             return;
         }
-        if sample.starts_with('*') {
-            self.notes
-                .add(ir::Impact::Audible, "built-in sample", sample);
-            return;
-        }
-        let sample_name = normalize(sample);
-        let path = dir.join(&sample_name);
-        let (sample_idx, hdr) = self.samples.add(sample_name, &path, &mut self.notes);
-        let total = hdr.map_or(0, |h| h.frames);
+        let builtin_wave = match sample {
+            "*sine" => Some(ir::Wave::Sine),
+            "*saw" => Some(ir::Wave::Saw),
+            "*square" => Some(ir::Wave::Square { width: 0.5 }),
+            "*tri" | "*triangle" => Some(ir::Wave::Triangle),
+            "*noise" => Some(ir::Wave::Random),
+            _ if sample.starts_with('*') => {
+                self.notes
+                    .add(ir::Impact::Audible, "built-in sample", sample);
+                return;
+            }
+            _ => None,
+        };
+        let (sample_idx, total) = if builtin_wave.is_some() {
+            (0, 0)
+        } else {
+            let sample_name = normalize(sample);
+            let path = dir.join(&sample_name);
+            let (idx, hdr) = self.samples.add(sample_name, &path, &mut self.notes);
+            (idx, hdr.map_or(0, |h| h.frames))
+        };
 
         let key = self.read(ops, &["key"], parse_midi_note);
         let lo = self
@@ -385,6 +412,13 @@ impl Build {
         };
 
         let mut settings = self.settings(ops);
+        if let Some(wave) = builtin_wave {
+            settings.generator = Some(ir::Generator::Oscillator {
+                wave,
+                tune_semitones: 0.0,
+                phase: 0.0,
+            });
+        }
         let grouped = self.number(ops, &["group"]);
         let number = grouped.map_or(0, whole);
         let off_by = self.number(ops, &["off_by"]).map(whole);

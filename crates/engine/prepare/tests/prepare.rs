@@ -428,3 +428,53 @@ fn a_wavetables_quality_reaches_the_read() {
     assert_eq!(read(ir::Quality::High), V::High);
     assert_eq!(read(ir::Quality::Best), V::Best);
 }
+
+#[test]
+fn oscillator_facts_and_cycle_positions_survive_purge_and_wake() {
+    let mut inst = ir::Instrument {
+        groups: vec![ir::Group {
+            generator: Some(ir::Generator::Oscillator {
+                wave: ir::Wave::Saw,
+                tune_semitones: 0.0,
+                phase: 0.0,
+            }),
+            zones: vec![
+                zone(0),
+                ir::Zone {
+                    id: 9,
+                    slot: 7,
+                    ..zone(0)
+                },
+            ],
+            start: vec![(ir::Join::And, ir::StartRule::Cycle { random: false })],
+            ..ir::Group::DEFAULT
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    for purged in [false, true] {
+        inst.groups[0].purged = purged;
+        let (plan, diagnostics) = prepare(&inst, RATE, &mut store, &open);
+        assert!(diagnostics.is_empty());
+        assert_eq!(plan.zone_facts.len(), 2);
+        assert_eq!(plan.zone_facts[1].id, 9);
+        assert!(plan.zone_facts[1].source.is_none());
+        let plan = if purged {
+            assert!(plan.zones.is_empty());
+            let (plan, diagnostics, loaded) =
+                kontra_prepare::wake(&plan, 0, &mut store, &open).unwrap();
+            assert!(diagnostics.is_empty());
+            assert_eq!(loaded, 0);
+            assert!(plan.dormant.is_empty());
+            plan
+        } else {
+            plan
+        };
+        assert_eq!(plan.zones.len(), 2);
+        for (pos, z) in plan.zones.iter().enumerate() {
+            assert!(
+                matches!(&z.start[..], [(_, kontra_engine::Atom::RoundRobin(rr))] if usize::from(rr.position)==pos && rr.length==2)
+            );
+        }
+    }
+}

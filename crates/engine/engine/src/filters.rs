@@ -55,12 +55,28 @@ impl Engine {
         let mut chains: Vec<Chain> = Vec::new();
         let rate = self.rate;
         let plan = Arc::clone(&self.plan);
+        let has_graph = self.graph.is_some();
         self.group_chain = (0..self.groups.len())
             .map(|g| {
                 let sections = shared.get(g)?.clone();
                 let split = self.group_split.get(g).copied().flatten();
                 if !sections.iter().any(|(_, e)| sounds(e)) && split.is_none() {
                     return None;
+                }
+                if has_graph {
+                    // In graph mode every group with inserts owns a dedicated chain
+                    // feeding `group_mix[g]` (`bus = usize::MAX`), so groups stay
+                    // isolated before `GroupInput { group: g }` and `effect_mut`
+                    // updates follow in place.
+                    let group = split.zip(self.groups.get(g)).map(|(from, group)| {
+                        let slots = group_racks::slots(group, from);
+                        (g, Rack::new(&slots, rate, &plan.impulses))
+                    });
+                    let mut chain = Chain::new(usize::MAX, sections, group, rate);
+                    chain.graph_group = Some(g);
+                    chain.to_graph_group = true;
+                    chains.push(chain);
+                    return u16::try_from(chains.len() - 1).ok();
                 }
                 let bus = self.groups.get(g).map_or(0, |g| g.bus);
                 let own = split.map(|_| g);
@@ -79,9 +95,11 @@ impl Engine {
             })
             .collect();
         // A twin of each chain on every other bus, so a script that moves a
-        // group to another bus allocates nothing on the audio thread.
+        // group (or redirects a note) to another bus allocates nothing on the audio thread.
         for n in 0..chains.len() {
-            let Some((sections, own)) = chains.get(n).map(|c| (c.sections.clone(), c.owner()))
+            let Some((sections, own, graph_group)) = chains
+                .get(n)
+                .map(|c| (c.sections.clone(), c.owner(), c.graph_group))
             else {
                 continue;
             };
@@ -95,7 +113,9 @@ impl Engine {
                         let slots = group_racks::slots(self.groups.get(g)?, from);
                         Some((g, Rack::new(&slots, rate, &plan.impulses)))
                     });
-                    chains.push(Chain::new(bus, sections.clone(), group, rate));
+                    let mut twin = Chain::new(bus, sections.clone(), group, rate);
+                    twin.graph_group = graph_group;
+                    chains.push(twin);
                 }
             }
         }
@@ -105,6 +125,9 @@ impl Engine {
         let mut left = PRIVATE_CHAINS;
         self.group_private = (0..self.groups.len())
             .map(|g| {
+                if has_graph {
+                    return None;
+                }
                 let sections = shared.get(g).filter(|s| !s.is_empty())?;
                 if self.group_split.get(g).copied().flatten().is_some() {
                     return None;
@@ -145,7 +168,7 @@ impl Engine {
                 continue;
             };
             let inserts = &group.inserts[..];
-            if self.group_split.get(g).copied().flatten().is_some() {
+            if self.group_split.get(g).copied().flatten().is_some() || self.graph.is_some() {
                 for chain in self.chains.iter_mut().filter(|c| c.owner() == Some(g)) {
                     chain.follow(inserts, rate);
                 }
@@ -181,6 +204,13 @@ impl Engine {
                 mix.fill([0.0; 2]);
             }
         }
+        for gmix in &mut self.group_mix {
+            if let Some(mix) = gmix.get_mut(..len) {
+                mix.fill([0.0; 2]);
+            }
+        }
+        self.graph_redirected = false;
+        let has_graph = self.graph.is_some();
         for (_index, slot) in self
             .voices
             .iter_mut()
@@ -188,23 +218,54 @@ impl Engine {
             .filter(|(_, s)| s.voice.is_active())
         {
             let zone = self.plan.zones.get(slot.zone);
-            let redirect = (slot.note.and_then(|n| self.notes.get(n))).and_then(|n| n.redirect);
-            let bus = redirect
+            let redirect = (slot.note.and_then(|n| self.notes.get(n)))
+                .and_then(|n| n.redirect)
                 .map(usize::from)
-                .filter(|&b| b < self.buses.len())
-                .unwrap_or_else(|| zone.map_or(0, |z| crate::plan::bus(&self.groups, z)));
-            let chain =
-                zone.and_then(|z| self.group_chain.get(z.group as usize).copied().flatten());
-            let chain = chain.and_then(|c| on_bus(&self.chains, usize::from(c), bus));
-            let mix = match chain.and_then(|c| self.chains.get_mut(c)) {
-                Some(chain) => {
-                    if chain.private {
-                        chain.bus = bus;
+                .filter(|&b| b < self.buses.len());
+            let bus =
+                redirect.unwrap_or_else(|| zone.map_or(0, |z| crate::plan::bus(&self.groups, z)));
+            let mix = if has_graph {
+                if let Some(target_bus) = redirect {
+                    self.graph_redirected = true;
+                    let chain = zone
+                        .and_then(|z| self.group_chain.get(z.group as usize).copied().flatten())
+                        .and_then(|c| on_bus(&self.chains, usize::from(c), target_bus));
+                    match chain.and_then(|c| self.chains.get_mut(c)) {
+                        Some(chain) => {
+                            chain.live = true;
+                            chain.mix.get_mut(..len)
+                        }
+                        None => self
+                            .buses
+                            .get_mut(target_bus)
+                            .and_then(|b| b.mix.get_mut(..len)),
                     }
-                    chain.live = true;
-                    chain.mix.get_mut(..len)
+                } else if let Some(g) = zone.map(|z| z.group as usize) {
+                    let chain = self.group_chain.get(g).copied().flatten();
+                    match chain.and_then(|c| self.chains.get_mut(usize::from(c))) {
+                        Some(chain) => {
+                            chain.live = true;
+                            chain.mix.get_mut(..len)
+                        }
+                        None => self.group_mix.get_mut(g).and_then(|m| m.get_mut(..len)),
+                    }
+                } else {
+                    None
                 }
-                None => self.buses.get_mut(bus).and_then(|b| b.mix.get_mut(..len)),
+            } else {
+                let chain =
+                    zone.and_then(|z| self.group_chain.get(z.group as usize).copied().flatten());
+                let chain = chain.and_then(|c| on_bus(&self.chains, usize::from(c), bus));
+                match chain.and_then(|c| self.chains.get_mut(c)) {
+                    Some(chain) => {
+                        if chain.private {
+                            chain.bus = bus;
+                        }
+                        chain.live = true;
+                        chain.mix.get_mut(..len)
+                    }
+                    None => self.buses.get_mut(bus).and_then(|b| b.mix.get_mut(..len)),
+                }
             };
             let Some(mix) = mix else {
                 continue;
@@ -248,9 +309,10 @@ impl Engine {
         self.mix_chains(len);
     }
 
-    /// Filters each chain that sounded or still rings, into its bus.
+    /// Filters each chain that sounded or still rings, into its bus (or group mix in graph mode).
     pub(crate) fn mix_chains(&mut self, len: usize) {
         let tempo = self.tempo;
+        let has_graph = self.graph.is_some();
         for chain in &mut self.chains {
             // A group rack may ring on (a reverb's tail): it always runs.
             if !chain.live && chain.group.is_none() && !chain.ringing {
@@ -258,6 +320,9 @@ impl Engine {
             }
             chain.live = false;
             chain.run(len);
+            let owner = chain.owner();
+            let to_graph_group = chain.to_graph_group;
+            let chain_bus = chain.bus;
             let Some(mix) = chain.mix.get_mut(..len) else {
                 continue;
             };
@@ -272,11 +337,24 @@ impl Engine {
                 }
                 rack.process(mix, &mut [], tempo);
             }
-            if let Some(out) = self
+            if has_graph && to_graph_group {
+                if let Some(out) = owner
+                    .and_then(|g| self.group_mix.get_mut(g))
+                    .and_then(|m| m.get_mut(..len))
+                {
+                    for (o, m) in out.iter_mut().zip(mix.iter()) {
+                        o[0] += m[0];
+                        o[1] += m[1];
+                    }
+                }
+            } else if let Some(out) = self
                 .buses
-                .get_mut(chain.bus)
+                .get_mut(chain_bus)
                 .and_then(|b| b.mix.get_mut(..len))
             {
+                if has_graph {
+                    self.graph_redirected = true;
+                }
                 for (o, m) in out.iter_mut().zip(mix.iter()) {
                     o[0] += m[0];
                     o[1] += m[1];

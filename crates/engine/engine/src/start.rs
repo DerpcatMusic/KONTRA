@@ -148,6 +148,10 @@ impl Engine {
                 loop_shift,
                 mix,
                 read,
+                oscillator: self
+                    .groups
+                    .get(zone.group as usize)
+                    .and_then(|g| g.oscillator),
                 step: voice_gain::bent(
                     self.plan.route_pitch,
                     step,

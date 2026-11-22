@@ -347,6 +347,12 @@ pub struct Engine {
     group_split: Box<[Option<usize>]>,
     /// One voice's audio on its way through its filter.
     scratch: Box<[[f32; 2]]>,
+    /// Optional compiled [`ir::AudioGraph`] executor (allocated only when `plan.graph` is `Some`).
+    graph: Option<kontra_racks::graph::GraphRuntime>,
+    /// Per-group stereo sum buffers feeding [`Self::graph`] (empty when `graph` is `None`).
+    group_mix: Box<[Box<[[f32; 2]]>]>,
+    /// True during a span when any voice redirected its output to a bus in graph mode.
+    graph_redirected: bool,
 }
 
 impl Engine {
@@ -441,6 +447,16 @@ impl Engine {
         );
         let zone_index = Arc::new(zone_index::ZoneIndex::new(&plan.zones));
         let release_zones = plan.zones.iter().any(|z| z.trigger == Trigger::Release);
+        let graph = plan.graph.as_ref().and_then(|g| {
+            kontra_racks::graph::GraphRuntime::new(g, rate, MAX_SPAN as usize, &plan.impulses).ok()
+        });
+        let group_mix: Box<[Box<[[f32; 2]]>]> = if graph.is_some() {
+            (0..groups)
+                .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into_boxed_slice())
+                .collect()
+        } else {
+            Box::new([])
+        };
         let mut engine = Self {
             #[cfg(feature = "trace")]
             trace: _trace_capacity.map(trace::Trace::new),
@@ -541,6 +557,9 @@ impl Engine {
             voice_units: Box::new([]),
             group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
+            graph,
+            group_mix,
+            graph_redirected: false,
         };
         engine.cc_values[7] = 100;
         engine.cc_values[11] = 127;
@@ -606,7 +625,19 @@ impl Engine {
     /// Renders `out.len()` frames from [`Engine::now`], applying each input at
     /// its sample time. Input stamped before now applies at once.
     pub fn process(&mut self, out: &mut [[f32; 2]], input: &[Timed<Event>]) {
-        out.fill([0.0; 2]);
+        self.process_multi(&mut [out], input);
+    }
+
+    /// Renders multi-output stereo stems (up to 16 buses: `outputs[0]` is Main Out,
+    /// `outputs[1..]` are aux/stem outputs driven by [`ir::GraphNodeKind::Output`]).
+    /// Zero heap allocations on the audio thread.
+    pub fn process_multi(&mut self, outputs: &mut [&mut [[f32; 2]]], input: &[Timed<Event>]) {
+        let frames = outputs.iter().map(|b| b.len()).min().unwrap_or(0);
+        for out in outputs.iter_mut() {
+            if let Some(s) = out.get_mut(..frames) {
+                s.fill([0.0; 2]);
+            }
+        }
         self.ended.clear();
         for e in input {
             if !self.queue.push(e.at, Work::Input(e.body)) {
@@ -614,7 +645,7 @@ impl Engine {
             }
         }
         let start = self.now;
-        let end = start.advance(Frames(u32::try_from(out.len()).unwrap_or(u32::MAX)));
+        let end = start.advance(Frames(u32::try_from(frames).unwrap_or(u32::MAX)));
         self.block_end = end;
         self.block_turns = 0;
         for vm in self.vms.iter_mut().flatten() {
@@ -649,9 +680,7 @@ impl Engine {
             self.render_span(len);
             self.advance_transport(len);
             let from = (self.now.0 - start.0) as usize;
-            if let Some(span) = out.get_mut(from..from + len) {
-                self.mix_out(span);
-            }
+            self.mix_out_multi(outputs, from, len);
             self.follow_knobs(false);
             self.now = until;
         }

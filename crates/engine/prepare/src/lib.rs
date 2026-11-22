@@ -11,9 +11,12 @@ mod levels;
 
 use kontra_ir as ir;
 use kontra_stream::{
-    BlobKey, LoadRequest, MAX_CHANNELS, Mix, Sample, SampleFmt, Source, Store, StreamClient,
+    BlobKey, Encoding, LoadRequest, MAX_CHANNELS, MemSource, Mix, Sample, SampleFmt, Source, Store,
+    StreamClient,
 };
-use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp};
+use kontra_voice::{
+    Ahdsr, Loop, OSC_PERIOD, OscWave, Oscillator, PERIOD, Read, Region, Shape, Shaper, Side, Warp,
+};
 
 use kontra_engine::{
     Atom, Bus, Control, Crossfade, Dormant, Group, Level, Plan, RoundRobin, RrCounter, Trigger,
@@ -34,6 +37,11 @@ pub fn prepare(
 ) -> (Plan, Vec<ir::Diagnostic>) {
     let mut diagnostics = Vec::new();
     let loaded = load_samples(instrument, store, open, &mut diagnostics);
+    let has_osc = instrument
+        .groups
+        .iter()
+        .any(|g| !g.purged && matches!(g.generator, Some(ir::Generator::Oscillator { .. })));
+    let osc_sentinel: Option<Arc<Sample>> = has_osc.then(|| load_osc_sentinel(store)).flatten();
     let shared: Vec<Arc<ir::Sample>> = instrument.samples.iter().cloned().map(Arc::new).collect();
     let client = store.client();
     let mut zones = Vec::new();
@@ -43,9 +51,12 @@ pub fn prepare(
     // `detect_*` reads the samples' music information: measured here, once
     // per sample, only for instruments whose scripts ask.
     let mut group_rules = Vec::with_capacity(instrument.groups.len());
+    let mut group_oscs = Vec::with_capacity(instrument.groups.len());
     let mut dormant = Vec::new();
     for (index, group) in instrument.groups.iter().enumerate() {
         let group_id = u32::try_from(index).unwrap_or(u32::MAX);
+        let osc_info = oscillator_of(group, &mut diagnostics);
+        group_oscs.push(osc_info.map(|(osc, _)| osc));
         if let Some(voices) = group.polyphony {
             polyphony.push((group_id, voices));
         }
@@ -58,6 +69,47 @@ pub fn prepare(
         }
         let rules = rules(group, &switches);
         for (member, z) in group.zones.iter().enumerate() {
+            if let Some((_, tune_semitones)) = osc_info {
+                let name = if group.name.is_empty() {
+                    "<oscillator>"
+                } else {
+                    group.name.as_str()
+                };
+                facts.push(kontra_engine::ZoneFacts {
+                    id: z.id,
+                    name: name.into(),
+                    group: group_id,
+                    keys: z.keys.clone(),
+                    velocities: z.velocities.clone(),
+                    root: z.root,
+                    start: z.start,
+                    end: z.end,
+                    start_range: z.start_mod,
+                    rate,
+                    source: None,
+                    loops: z.loops.clone(),
+                    user: false,
+                    volume: (z.volume_db * 100.0).round() as i32,
+                    pan: (z.pan * 1000.0).round() as i32,
+                    tune: ((z.tune + tune_semitones) * 100.0).round() as i32,
+                    fades: [
+                        i32::from(z.key_fade.0),
+                        i32::from(z.key_fade.1),
+                        i32::from(z.velocity_fade.0),
+                        i32::from(z.velocity_fade.1),
+                    ],
+                });
+                if group.purged {
+                    continue;
+                }
+                let Some(sentinel) = &osc_sentinel else {
+                    continue;
+                };
+                let mut zone = osc_zone((group, group_id, &rules), z, sentinel, tune_semitones);
+                zone.member = u16::try_from(member).unwrap_or(u16::MAX);
+                zones.push(zone);
+                continue;
+            }
             let Some(source) = instrument.samples.get(z.sample) else {
                 continue;
             };
@@ -106,8 +158,8 @@ pub fn prepare(
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
     plan.dormant = Arc::new(dormant);
     plan.zone_facts = facts;
-    plan.groups = (instrument.groups.iter().zip(group_rules))
-        .map(|(g, zones)| Group {
+    plan.groups = (instrument.groups.iter().zip(group_rules).zip(group_oscs))
+        .map(|((g, zones), oscillator)| Group {
             name: g.name.clone(),
             level: Level {
                 gain: gain(g.volume_db),
@@ -127,6 +179,7 @@ pub fn prepare(
             release_trigger: g.trigger == ir::Trigger::Release,
             bus: g.bus,
             wavetable: g.wavetable.map(read),
+            oscillator,
             speed: g.speed,
             glide: g.glide,
             zones,
@@ -164,6 +217,7 @@ pub fn prepare(
     plan.voice_groups.clone_from(&instrument.voice_groups);
     plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();
     plan.switches = switches;
+    plan.graph.clone_from(&instrument.graph);
     (plan, diagnostics)
 }
 
@@ -276,13 +330,32 @@ pub fn wake(
         ..ir::Instrument::DEFAULT
     };
     let mut diagnostics = Vec::new();
-    let loaded = load_samples(&instrument, store, open, &mut diagnostics);
-    let client = store.client();
     let [source] = instrument.groups.as_slice() else {
         return None;
     };
     let rules = rules(source, &plan.switches);
     let mut out = plan.clone();
+    if let Some((osc, tune_semitones)) = oscillator_of(source, &mut diagnostics) {
+        let sentinel = load_osc_sentinel(store)?;
+        if let Some(g) = out.groups.get_mut(group as usize) {
+            g.oscillator = Some(osc);
+        }
+        for (member, z) in source.zones.iter().enumerate() {
+            let mut zone = osc_zone((source, group, &rules), z, &sentinel, tune_semitones);
+            zone.member = u16::try_from(member).unwrap_or(u16::MAX);
+            out.zones.push(zone);
+        }
+        out.dormant = Arc::new(
+            plan.dormant
+                .iter()
+                .filter(|d| d.group != group)
+                .cloned()
+                .collect(),
+        );
+        return Some((out, diagnostics, 0));
+    }
+    let loaded = load_samples(&instrument, store, open, &mut diagnostics);
+    let client = store.client();
     for (member, z) in source.zones.iter().enumerate() {
         let (Some(from), Some(Some(sample))) =
             (instrument.samples.get(z.sample), loaded.get(z.sample))
@@ -404,7 +477,11 @@ fn load_samples(
     diagnostics: &mut Vec<ir::Diagnostic>,
 ) -> Vec<Option<Arc<Sample>>> {
     let mut used: HashMap<usize, Vec<(&ir::Zone, Option<ir::Stream>)>> = HashMap::new();
-    for group in instrument.groups.iter().filter(|g| !g.purged) {
+    for group in instrument
+        .groups
+        .iter()
+        .filter(|g| !g.purged && !matches!(g.generator, Some(ir::Generator::Oscillator { .. })))
+    {
         for z in &group.zones {
             used.entry(z.sample).or_default().push((z, group.stream));
         }
@@ -735,6 +812,123 @@ pub fn read(w: ir::Wavetable) -> Read {
 /// A table plays its cycle at 440 Hz on A4, whatever the zone's root and
 /// the sample's rate: (root, rate).
 const TABLE_PITCH: (u8, u32) = (69, (440.0 * PERIOD) as u32);
+
+/// An oscillator plays its cycle at 440 Hz on A4 (MIDI 69).
+const OSC_PITCH: (u8, u32) = (69, (440.0 * OSC_PERIOD) as u32);
+
+fn oscillator_of(
+    group: &ir::Group,
+    diagnostics: &mut Vec<ir::Diagnostic>,
+) -> Option<(Oscillator, f64)> {
+    let ir::Generator::Oscillator {
+        wave,
+        tune_semitones,
+        phase,
+    } = group.generator.as_ref()?
+    else {
+        return None;
+    };
+    let osc_wave = match *wave {
+        ir::Wave::Sine => OscWave::Sine,
+        ir::Wave::Saw => OscWave::Saw,
+        ir::Wave::Ramp => OscWave::Ramp,
+        ir::Wave::Square { width } => OscWave::Square { width },
+        ir::Wave::Triangle => OscWave::Triangle,
+        ir::Wave::Random => OscWave::Noise,
+        ir::Wave::Multi { .. } | ir::Wave::Chaos { .. } => {
+            diagnostics.push(ir::Diagnostic {
+                impact: ir::Impact::Audible,
+                feature: "generator.oscillator.wave".into(),
+                detail: format!("unsupported oscillator waveform {:?}; using sine", wave),
+            });
+            OscWave::Sine
+        }
+    };
+    let tune = if tune_semitones.is_finite() {
+        f64::from(*tune_semitones)
+    } else {
+        0.0
+    };
+    Some((Oscillator::new(osc_wave, *phase), tune))
+}
+
+fn load_osc_sentinel(store: &mut Store) -> Option<Arc<Sample>> {
+    let fmt = SampleFmt {
+        encoding: Encoding::F32,
+        channels: 1,
+    };
+    let source: Arc<dyn Source> = Arc::new(MemSource::new(fmt, vec![0u8; 4]));
+    store
+        .load_many_now(vec![LoadRequest {
+            key: BlobKey {
+                file: "<oscillator>".into(),
+                offset: 0,
+                fmt,
+            },
+            source,
+            frames: 1,
+            pin: std::iter::once(0..1).collect(),
+        }])
+        .into_iter()
+        .next()
+        .and_then(Result::ok)
+}
+
+fn osc_zone(
+    (_group, group_id, rules): (&ir::Group, u32, &ZoneRules),
+    z: &ir::Zone,
+    sentinel: &Arc<Sample>,
+    tune_semitones: f64,
+) -> Zone {
+    let region = Region {
+        sample: Arc::clone(sentinel),
+        start: 0,
+        end: 1,
+        loops: None,
+        reverse: false,
+        mix: None,
+        table: None,
+    };
+    let (root, rate) = OSC_PITCH;
+    let mut out = Zone::new(region, root, rate);
+    out.slot = z.slot;
+    out.id = z.id;
+    out.keys = z.keys.clone();
+    out.velocities = z.velocities.clone();
+    let has_vel_xf = z
+        .crossfades
+        .iter()
+        .any(|x| x.control == ir::CrossfadeControl::Velocity);
+    let has_key_xf = z
+        .crossfades
+        .iter()
+        .any(|x| x.control == ir::CrossfadeControl::Key);
+    out.fades = [
+        if has_vel_xf { (0, 0) } else { z.velocity_fade },
+        if has_key_xf { (0, 0) } else { z.key_fade },
+    ];
+    out.range_crossfades();
+    for xf in &z.crossfades {
+        let control = match xf.control {
+            ir::CrossfadeControl::Velocity => Control::Velocity,
+            ir::CrossfadeControl::Key => Control::Key,
+            ir::CrossfadeControl::Cc(cc) => Control::Cc(cc),
+        };
+        out.crossfades.push(Crossfade {
+            control,
+            fade_in: xf.fade_in,
+            fade_out: xf.fade_out,
+            law: xf.law,
+        });
+    }
+    out.group = group_id;
+    rules.apply(&mut out);
+    out.tune = z.tune + tune_semitones;
+    out.gain = gain(z.volume_db);
+    out.pan = z.pan;
+    out.envelopes.clone_from(&z.envelopes);
+    out
+}
 
 /// `plan` with a table for every zone in a wavetable group that has none
 /// (`set_zone_par` moved it there), built off the audio thread; `None` when

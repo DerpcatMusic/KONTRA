@@ -409,3 +409,149 @@ fn an_sf2_slot_path_loads_a_specific_preset() {
         "preset 0:1 should sound an octave up (~960 Hz), got {hz} Hz"
     );
 }
+
+#[test]
+fn sfz_builtin_saw_oscillator_loads_and_sounds_at_concert_pitch() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("sfz_osc_e2e");
+    std::fs::create_dir_all(&dir).unwrap();
+    let sfz = dir.join("SawSynth.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=*saw ampeg_attack=0.001 ampeg_release=0.05\n",
+    )
+    .unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let loaded = kontra_host::instrument::load(&sfz, RATE, &mut store).unwrap();
+    assert!(
+        loaded.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        loaded.diagnostics
+    );
+    let mut e = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; 512];
+    e.process(&mut out, &[note(69, true)]);
+    let mut held = Vec::new();
+    for block in 0..16 {
+        e.process(&mut out, &[]);
+        if block >= 2 {
+            held.extend(out.iter().map(|f| f[0]));
+        }
+    }
+    let peak = held.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+    assert!(
+        peak > 0.2,
+        "saw oscillator should sound loudly, peak {peak}"
+    );
+    let rises = held
+        .windows(2)
+        .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+        .count();
+    let hz = rises as f32 * RATE as f32 / held.len() as f32;
+    assert!(
+        (430.0..450.0).contains(&hz),
+        "MIDI 69 should sound at ~440 Hz, got {hz} Hz"
+    );
+}
+
+#[test]
+fn native_kontra_oscillator_and_multi_stem_audio_graph_render() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("kontra_phase3_e2e");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("SplitSynth.kontra");
+    let toml = r#"
+version = 1
+name = "SplitSynth"
+voices = 8
+
+[[graph.effects]]
+kind = "gain"
+gain = 0.5
+
+[[graph.effects]]
+kind = "gain"
+gain = 0.5
+
+[[graph.nodes]]
+kind = "group_input"
+group = 0
+
+[[graph.nodes]]
+kind = "split"
+pre_amp = [0]
+post_amp = [1]
+amp_gain = 0.5
+amp_pan = 0.0
+
+[[graph.nodes]]
+kind = "output"
+bus_index = 0
+
+[[graph.nodes]]
+kind = "output"
+bus_index = 1
+
+[[graph.edges]]
+from = 0
+to = 1
+gain = 1.0
+post_fader = true
+
+[[graph.edges]]
+from = 1
+to = 2
+gain = 1.0
+post_fader = true
+
+[[graph.edges]]
+from = 1
+to = 3
+gain = 1.0
+post_fader = false
+
+[[groups]]
+name = "SineLead"
+
+[groups.generator]
+kind = "oscillator"
+wave = "sine"
+
+[groups.envelope]
+attack = 0.0
+sustain = 1.0
+release = 0.05
+
+[[groups.zones]]
+keys = [0, 127]
+velocities = [1, 127]
+"#;
+    std::fs::write(&path, toml).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let loaded = kontra_host::instrument::load(&path, RATE, &mut store).unwrap();
+    assert!(
+        loaded.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        loaded.diagnostics
+    );
+    let mut e = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
+    let mut main_out = vec![[0.0; 2]; 512];
+    let mut aux_out = vec![[0.0; 2]; 512];
+    let mut outs: [&mut [[f32; 2]]; 2] = [&mut main_out, &mut aux_out];
+    e.process_multi(&mut outs, &[note(69, true)]);
+    for _ in 0..8 {
+        let mut outs: [&mut [[f32; 2]]; 2] = [&mut main_out, &mut aux_out];
+        e.process_multi(&mut outs, &[]);
+    }
+    let main_peak = main_out.iter().map(|f| f[0].abs()).fold(0.0_f32, f32::max);
+    let aux_peak = aux_out.iter().map(|f| f[0].abs()).fold(0.0_f32, f32::max);
+    assert!(
+        main_peak > 0.05 && aux_peak > 0.2,
+        "main {main_peak} aux {aux_peak}"
+    );
+    // Main passes pre (0.5) * amp (0.5) * post (0.5) = 0.125; Aux taps pre-fader after pre (0.5).
+    // Expected aux / main ratio is 4.0.
+    let ratio = aux_peak / main_peak;
+    assert!(
+        (ratio - 4.0).abs() < 0.05,
+        "expected aux/main ratio ~4.0, got {ratio} (aux={aux_peak}, main={main_peak})"
+    );
+}
