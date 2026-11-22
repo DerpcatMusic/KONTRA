@@ -392,7 +392,7 @@ fn quiet_s(params: &KontraParams) -> f64 {
     let delay_ms = |effects: &[Option<ir::Effect>]| {
         (effects.iter().flatten())
             .filter(|e| !e.bypass)
-            .filter_map(|e| match e.kind {
+            .filter_map(|e| match &e.kind {
                 ir::EffectKind::Delay(d) => Some(
                     match d.time {
                         ir::DelayTime::Ms(ms) => ms,

@@ -3,8 +3,10 @@
 //! another root and rate; a script still reads the saved ones).
 
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 
 use kontra_ir::{self as ir, ZonePar};
+use kontra_voice::Region;
 
 use crate::{Atom, RrCounter, Trigger, Zone};
 
@@ -34,8 +36,6 @@ pub struct ZoneFacts {
     pub tune: i32,
     /// Fade lengths: low key, high key, low velocity, high velocity.
     pub fades: [i32; 4],
-    /// A user zone's eight loops as the script set them (`set_loop_par`).
-    pub loop_pars: [LoopPar; 8],
 }
 
 /// One loop of a user zone as `set_loop_par` holds it.
@@ -88,17 +88,21 @@ impl ZoneFacts {
         }
     }
 
-    /// `get_loop_par`: a user zone's loop as set, a saved zone's as loaded;
-    /// -1 past the eighth loop, 0 for a loop the zone lacks.
+    /// `get_loop_par`: a user zone's loop as set (passed via `user_pars`), a
+    /// saved zone's as loaded; -1 past the eighth loop, 0 for a loop the zone
+    /// lacks.
     #[must_use]
-    pub fn loop_par(&self, index: i32, par: i32) -> i32 {
+    pub fn loop_par(&self, user_pars: Option<&[LoopPar; 8]>, index: i32, par: i32) -> i32 {
         let Ok(i) = usize::try_from(index).map(|i| (i < 8).then_some(i)) else {
             return -1;
         };
         let Some(i) = i else { return -1 };
         let int = |n: u64| i32::try_from(n).unwrap_or(i32::MAX);
         if self.user {
-            let l = self.loop_pars.get(i).copied().unwrap_or_default();
+            let l = user_pars
+                .and_then(|pars| pars.get(i))
+                .copied()
+                .unwrap_or_default();
             return match par {
                 520 => l.mode,
                 521 => l.start,
@@ -272,7 +276,7 @@ impl crate::Plan {
                 // entering one without a table gets it built off the audio
                 // thread (`kontra_prepare::tables`).
                 match (g.wavetable, &mut z.region.table) {
-                    (Some(read), Some(table)) => table.read = read,
+                    (Some(read), Some(table)) => Arc::make_mut(table).read = read,
                     (None, table @ Some(_)) => {
                         *table = None;
                         if let Some(f) = zone_facts.iter().find(|f| f.id == id) {
@@ -304,6 +308,31 @@ impl crate::Plan {
             .unwrap_or_default()
     }
 
+    /// `get_loop_par` for zone `id`, reading sparse user loop parameters when
+    /// `id` is a user zone. Zero allocation (audio-thread safe).
+    #[must_use]
+    pub fn zone_loop_par(&self, id: u32, index: i32, par: i32) -> i32 {
+        let Some(f) = self.zone_facts.iter().find(|z| z.id == id) else {
+            return 0;
+        };
+        let user_pars = if f.user {
+            self.user_loop_pars_for(id)
+        } else {
+            None
+        };
+        f.loop_par(user_pars, index, par)
+    }
+
+    /// The sparse [`LoopPar`] table for user zone `id`, if present.
+    #[must_use]
+    pub fn user_loop_pars_for(&self, id: u32) -> Option<&[LoopPar; 8]> {
+        self.user_loop_pars
+            .binary_search_by_key(&id, |(z, _)| *z)
+            .ok()
+            .and_then(|i| self.user_loop_pars.get(i))
+            .map(|(_, pars)| pars)
+    }
+
     /// `set_num_user_zones(n)`: `n` empty user zones with consecutive ids
     /// after the highest saved one, replacing any made before (Kontakt
     /// 8.13: ids 181963, 181964 after the instrument's 181962; a second
@@ -313,10 +342,14 @@ impl crate::Plan {
         let user: Vec<u32> = self.user_zone_ids().collect();
         self.zone_facts.retain(|z| !z.user);
         self.zones.retain(|z| !user.contains(&z.id));
+        self.user_loop_pars.clear();
         let first = self.zone_facts.iter().map(|z| z.id + 1).max().unwrap_or(0);
-        for i in 0..n.min(MAX_USER_ZONES) {
+        let count = n.min(MAX_USER_ZONES);
+        self.user_loop_pars.reserve(count);
+        for i in 0..count {
+            let id = first + i as u32;
             self.zone_facts.push(ZoneFacts {
-                id: first + i as u32,
+                id,
                 name: "".into(),
                 group: 0,
                 keys: 0..=0,
@@ -333,8 +366,8 @@ impl crate::Plan {
                 pan: 0,
                 tune: 0,
                 fades: [0; 4],
-                loop_pars: [LoopPar::default(); 8],
             });
+            self.user_loop_pars.push((id, [LoopPar::default(); 8]));
         }
     }
 
@@ -354,14 +387,18 @@ impl crate::Plan {
     /// a length ends at the sample's end). False for a zone that is not a
     /// user zone or a loop past the eighth.
     pub fn set_user_loop(&mut self, zone: u32, index: i32, par: i32, value: i32) -> bool {
-        let Some(f) = self.zone_facts.iter_mut().find(|z| z.id == zone && z.user) else {
+        let Some(f) = self.zone_facts.iter().find(|z| z.id == zone && z.user) else {
             return false;
         };
         let frames = i32::try_from(f.source.as_ref().map_or(0, |s| s.frames)).unwrap_or(i32::MAX);
-        let Some(l) = usize::try_from(index)
-            .ok()
-            .and_then(|i| f.loop_pars.get_mut(i))
-        else {
+        let id = f.id;
+        let Ok(slot) = self.user_loop_pars.binary_search_by_key(&id, |(z, _)| *z) else {
+            return false;
+        };
+        let Some(pars) = self.user_loop_pars.get_mut(slot).map(|(_, p)| p) else {
+            return false;
+        };
+        let Some(l) = usize::try_from(index).ok().and_then(|i| pars.get_mut(i)) else {
             return false;
         };
         match par {
@@ -377,8 +414,7 @@ impl crate::Plan {
             525 => l.tuning = value.clamp(-14400, 14400),
             _ => return false,
         }
-        let loops = user_loops(f);
-        let id = f.id;
+        let loops = user_loops(pars);
         for z in self.zones.iter_mut().filter(|z| z.id == id) {
             z.region.loops = loops.clone();
         }
@@ -418,23 +454,23 @@ pub const LOOP_MODES: std::ops::RangeInclusive<i32> = 0..=4;
 
 /// What a user zone's loops play as: each loop whose mode is not 0.
 #[must_use]
-pub fn user_loops(f: &ZoneFacts) -> kontra_voice::Loops {
+pub fn user_loops(pars: &[LoopPar; 8]) -> Option<Arc<[kontra_voice::Loop]>> {
     let n = |v: i32| u64::try_from(v).unwrap_or(0);
-    f.loop_pars
-        .iter()
-        .filter(|l| l.mode != 0 && l.length > 0)
-        .map(|l| kontra_voice::Loop {
-            start: n(l.start),
-            end: n(l.start) + n(l.length),
-            crossfade: n(l.xfade),
-            count: u32::try_from(l.count).unwrap_or(0),
-            // Modes 2..=4 are guessed (release, alternating, both): only 0..=4
-            // reading back is measured.
-            alternating: l.mode >= 3,
-            until_release: matches!(l.mode, 2 | 4),
-            tune_ratio: 2f32.powf(l.tuning as f32 / 1200.0),
-        })
-        .collect()
+    Region::pack_loops(
+        pars.iter()
+            .filter(|l| l.mode != 0 && l.length > 0)
+            .map(|l| kontra_voice::Loop {
+                start: n(l.start),
+                end: n(l.start) + n(l.length),
+                crossfade: n(l.xfade),
+                count: u32::try_from(l.count).unwrap_or(0),
+                // Modes 2..=4 are guessed (release, alternating, both): only 0..=4
+                // reading back is measured.
+                alternating: l.mode >= 3,
+                until_release: matches!(l.mode, 2 | 4),
+                tune_ratio: 2f32.powf(l.tuning as f32 / 1200.0),
+            }),
+    )
 }
 
 /// Moves one edge of a range; the other follows when they would cross
@@ -495,6 +531,11 @@ pub fn zone_name(sample: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of;
+
+    use super::{Region, ZoneFacts, ir};
+    use crate::Zone;
+
     #[test]
     fn a_zone_is_called_by_its_files_stem() {
         assert_eq!(
@@ -503,6 +544,19 @@ mod tests {
         );
         assert_eq!(super::zone_name("a\\b\\Buzz Cut.ncw"), "Buzz Cut");
         assert_eq!(super::zone_name("plain"), "plain");
+    }
+
+    #[test]
+    fn zone_and_region_footprints_stay_compact() {
+        let region = size_of::<Region>();
+        let zone = size_of::<Zone>();
+        let facts = size_of::<ZoneFacts>();
+        let effect = size_of::<ir::Effect>();
+        assert!(region <= 64, "Region grew to {region} B");
+        // 224 B: #93 added `envelopes: Vec<ZoneEnvelope>` (24 B) after the 200 B measure.
+        assert!(zone <= 224, "plan::Zone grew to {zone} B");
+        assert!(facts <= 120, "ZoneFacts grew to {facts} B");
+        assert!(effect <= 232, "ir::Effect grew to {effect} B");
     }
 }
 

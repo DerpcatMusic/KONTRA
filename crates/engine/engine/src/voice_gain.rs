@@ -188,7 +188,7 @@ impl Engine {
     /// read for this note; `None` when no route moves it.
     pub(crate) fn voice_mix(&self, zone: &Zone, note: &Note, age: Age) -> Option<Mix> {
         let g = self.groups.get(zone.group as usize)?;
-        let mut mix = zone.region.mix?;
+        let mut mix = *zone.region.mix.as_deref()?;
         let mut moved = false;
         for m in g.mods.iter().filter(|m| !m.bypass) {
             if let ir::ModKind::Mix {

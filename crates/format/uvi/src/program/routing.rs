@@ -279,8 +279,9 @@ impl<L: Library> Translator<'_, '_, L> {
                 let slot = self.slot(node)?;
                 if let Some(b) = self.out.buses.get_mut(at) {
                     let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
+                    let present = slot.is_some();
                     b.inserts.push(slot);
-                    if slot.is_some() {
+                    if present {
                         self.fx_of
                             .insert(node.id(), Fx::Bus(at, usize::from(insert)));
                         self.moves(node, at, insert)?;
@@ -354,7 +355,7 @@ impl<L: Library> Translator<'_, '_, L> {
         let program = self.program;
         if let Some(b) = self.out.buses.get_mut(at) {
             let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
-            b.inserts.extend(bands.effects.iter().copied().map(Some));
+            b.inserts.extend(bands.effects.iter().cloned().map(Some));
             for c in gain_scale(program, node, &bands, insert, b) {
                 self.carried.insert(c.id());
             }
@@ -468,8 +469,8 @@ impl<L: Library> Translator<'_, '_, L> {
     fn slot(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {
         let bypass = flag(node, "Bypass");
         let built = self.built(node)?.map(|e| ir::Effect { bypass, ..e });
-        if let Some(effect) = built
-            && let Some(set) = self.knobs(node, effect)
+        if let Some(effect) = &built
+            && let Some(set) = self.knobs(node, effect.clone())
         {
             self.knobs_of.insert(node.id(), set);
         }
@@ -564,7 +565,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 self.notes
                     .add(ir::Impact::Audible, "DigitalEq band past the fourth", "");
             }
-            bands.effects.first().copied()
+            bands.effects.into_iter().next()
         } else if node.has_tag_name("TrackDelay") {
             // A track delay at 0 (every one in VWinds) passes its input.
             if num(node, "DelayTime", 0.0)? != 0.0 {

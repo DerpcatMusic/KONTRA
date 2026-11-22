@@ -1,6 +1,8 @@
 //! The dynamics and time effects' settings in physical units.
 
-use crate::{Network, Rate, Section};
+use std::borrow::Cow;
+
+use crate::{Network, Rate, Section, Shared};
 
 /// A feed-forward compressor in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,7 +41,7 @@ impl Compressor {
 
 /// A compressor, then a waveshaper (a channel strip's dynamics and drive),
 /// in place: the curve reads the compressed signal.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Strip {
     pub compressor: Compressor,
     pub shaper: crate::Shaper,
@@ -155,7 +157,7 @@ pub struct Scanner {
 /// A modulated stereo delay in physical units: two lines, one or two heads
 /// an LFO sweeps on each, the heads filtered, then mixed back into the lines
 /// and out by matrices.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Delay {
     /// The head's delay at the LFO's centre.
     pub time: DelayTime,
@@ -178,7 +180,7 @@ pub struct Delay {
     /// Sections on the heads' sum, inside the loop after the low cut and
     /// the shelf (a mode's own body: a tape's or a bucket brigade's tone);
     /// the first four run.
-    pub body: &'static [crate::Section],
+    pub body: Cow<'static, [crate::Section]>,
     /// A triangle LFO averaged over this many seconds (0: sharp corners)
     /// instead of the sine; it falls first as the sine does.
     pub triangle_s: Option<f32>,
@@ -186,7 +188,7 @@ pub struct Delay {
     /// feedback): points evenly over −1..=1, read with linear interpolation
     /// and held beyond; empty for none (a mode's tape or bucket brigade
     /// saturation).
-    pub shape: &'static [f32],
+    pub shape: Cow<'static, [f32]>,
     /// Noise written into the lines after the curve: white, its rms
     /// `level·rms^power` of the line's input over 10 ms; level 0 for none.
     pub noise: [f32; 2],
@@ -278,9 +280,9 @@ pub struct Notches {
 /// tap (its read plus its input) turns in the stereo field to a wet bus
 /// with a low shelf on it, plus `direct` of the input. The voices' fixed
 /// shape is shared data; the knobs set the rest.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Ensemble {
-    pub voices: &'static EnsembleVoices,
+    pub voices: Shared<EnsembleVoices>,
     /// The rest delays' scale: voice `v` rests at `delay[v]·span` s.
     pub span: f32,
     /// The LFOs' scale: voice `v` runs at `rate[v]·hz`.
@@ -419,7 +421,7 @@ pub enum ScanShape {
 }
 
 /// An algorithmic reverb in physical units.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Reverb {
     /// Time for the tail to fall 60 dB.
     pub seconds: f32,

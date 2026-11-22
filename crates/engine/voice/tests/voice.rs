@@ -41,6 +41,9 @@ fn start(region: Region, step: f64, envelope: Ahdsr) -> VoiceStart {
     VoiceStart {
         speed: 1.0,
         region,
+        loop_shift: [0.0; 2],
+        mix: None,
+        read: None,
         step,
         gain: [[1.0, 0.0], [0.0, 1.0]],
         lag: kontra_voice::Lag::NONE,
@@ -116,13 +119,12 @@ fn a_loop_sustains_past_the_sample_end() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
-    region.loops = vec![Loop {
+    region.loops = Region::pack_loops([Loop {
         start: 500,
         end: 600,
         crossfade: 0,
         ..Loop::default()
-    }]
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 5000);
@@ -138,13 +140,12 @@ fn a_loop_crossfade_blends_the_tail_into_the_audio_before_the_start() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
-    region.loops = vec![Loop {
+    region.loops = Region::pack_loops([Loop {
         start: 500,
         end: 600,
         crossfade: 40,
         ..Loop::default()
-    }]
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 800);
@@ -178,13 +179,12 @@ fn release_ends_the_voice() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
-    region.loops = vec![Loop {
+    region.loops = Region::pack_loops([Loop {
         start: 0,
         end: 1000,
         crossfade: 0,
         ..Loop::default()
-    }]
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(
         region,
@@ -204,7 +204,7 @@ fn release_ends_the_voice() {
 fn looped_output(store: &mut Store, loops: Vec<Loop>, frames: usize) -> std::io::Result<Vec<f32>> {
     let client = store.client();
     let mut region = ramp_region(store, 1000, 1000)?;
-    region.loops = loops.into();
+    region.loops = Region::pack_loops(loops);
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     Ok(render(&mut voice, &client, frames))
@@ -308,13 +308,12 @@ fn an_until_release_loop_repeats_until_release_then_plays_on() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
-    region.loops = vec![Loop {
+    region.loops = Region::pack_loops([Loop {
         start: 100,
         end: 200,
         until_release: true,
         ..Loop::default()
-    }]
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(
         region,
@@ -391,7 +390,8 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
         };
         let region = Region {
             mix: None,
-            table: Table::new((Arc::clone(&data), 1.0 / 32767.0), Arc::clone(&spans), read),
+            table: Table::new((Arc::clone(&data), 1.0 / 32767.0), Arc::clone(&spans), read)
+                .map(Arc::new),
             sample: Arc::clone(&sample),
             start: 0,
             end: frames,
@@ -543,11 +543,11 @@ fn starting_inside_a_loop_plays_to_loop_end_and_wraps() {
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
     region.start = 550;
-    region.loops = vec![Loop {
+    region.loops = kontra_voice::Region::pack_loops(vec![Loop {
         start: 500,
         end: 600,
         ..Loop::default()
-    }]
+    }])
     .into();
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
@@ -602,11 +602,11 @@ fn reverse_loops_crossfade_and_start_inside_loop() {
     // then wraps back to 599..500.
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
     region.reverse = true;
-    region.loops = vec![Loop {
+    region.loops = kontra_voice::Region::pack_loops(vec![Loop {
         start: 500,
         end: 600,
         ..Loop::default()
-    }]
+    }])
     .into();
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
@@ -620,12 +620,12 @@ fn reverse_loops_crossfade_and_start_inside_loop() {
     // Reverse alternating loop: 999..500, then bounces 501..598, then 599..500.
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
     region.reverse = true;
-    region.loops = vec![Loop {
+    region.loops = kontra_voice::Region::pack_loops(vec![Loop {
         start: 500,
         end: 600,
         alternating: true,
         ..Loop::default()
-    }]
+    }])
     .into();
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
@@ -640,12 +640,12 @@ fn reverse_loops_crossfade_and_start_inside_loop() {
     // blends half of 519 with half of 619 (= 569).
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
     region.reverse = true;
-    region.loops = vec![Loop {
+    region.loops = kontra_voice::Region::pack_loops(vec![Loop {
         start: 500,
         end: 600,
         crossfade: 40,
         ..Loop::default()
-    }]
+    }])
     .into();
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
@@ -662,11 +662,11 @@ fn reverse_loops_crossfade_and_start_inside_loop() {
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
     region.reverse = true;
     region.end = 550;
-    region.loops = vec![Loop {
+    region.loops = kontra_voice::Region::pack_loops(vec![Loop {
         start: 500,
         end: 600,
         ..Loop::default()
-    }]
+    }])
     .into();
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
@@ -682,12 +682,12 @@ fn tuned_loop_applies_ratio_on_repeats_and_is_block_size_invariant() {
     let client = store.client();
     let make = |store: &mut Store| {
         let mut region = ramp_region(store, 1000, 1000).unwrap();
-        region.loops = vec![Loop {
+        region.loops = kontra_voice::Region::pack_loops(vec![Loop {
             start: 500,
             end: 600,
             tune_ratio: 2.0,
             ..Loop::default()
-        }]
+        }])
         .into();
         region
     };
@@ -768,13 +768,13 @@ fn until_release_released_mid_crossfade_finishes_wrap_without_click() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
-    region.loops = vec![Loop {
+    region.loops = kontra_voice::Region::pack_loops(vec![Loop {
         start: 500,
         end: 600,
         crossfade: 40,
         until_release: true,
         ..Loop::default()
-    }]
+    }])
     .into();
     let mut voice = Voice::allocate();
     voice.start(start(

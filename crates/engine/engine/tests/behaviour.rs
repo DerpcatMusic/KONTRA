@@ -289,13 +289,12 @@ fn a_cc_crossfade_moves_sounding_voices() {
         fade_out: None,
     }];
     let mut looped = z.region.clone();
-    looped.loops = vec![kontra_voice::Loop {
+    looped.loops = Region::pack_loops([kontra_voice::Loop {
         start: 0,
         end: 48_000,
         crossfade: 0,
         ..Default::default()
-    }]
-    .into();
+    }]);
     z.region = looped;
     let mut e = engine(&store, Plan::new(vec![z], 8));
     let quiet = level(&mut e, &[cc(1, 10), on(60, 1.0)])[0];
@@ -842,7 +841,7 @@ fn a_blended_macro_moves_one_cell_of_a_sounding_voices_matrix() {
     let mut z = zone(&mut store, 1.0);
     let mut mix = [[0.0; 2]; 16];
     mix[0] = [1.0, 1.0];
-    z.region.mix = Some(mix);
+    z.region.mix = Some(std::sync::Arc::new(mix));
     let mut plan = Plan::new(vec![z], 8);
     let through = |source| Transfer {
         source,

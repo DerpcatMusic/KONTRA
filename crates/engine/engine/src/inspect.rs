@@ -381,7 +381,7 @@ impl Engine {
 }
 
 /// Target parameters for one per-voice effect, sampled between spans.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct VoiceEffectObservation {
     pub voice_slot: usize,
     pub zone: usize,
@@ -424,9 +424,9 @@ impl Engine {
                             .get(zone.group as usize)
                             .and_then(|g| g.inserts.get(usize::from(unit.insert)))
                             .and_then(Option::as_ref)
-                            .map(|e| e.kind)
+                            .map(|e| &e.kind)
                         {
-                            *f = base;
+                            *f = *base;
                         }
                         if let Some((hz, damping)) = self.voice_filter(zone, unit.insert, note, age)
                         {
@@ -449,7 +449,7 @@ impl Engine {
 }
 
 /// An instrument, main, send or bus effect after its last route update.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SharedEffectObservation {
     pub scope: &'static str,
     pub owner: usize,

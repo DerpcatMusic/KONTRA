@@ -194,7 +194,11 @@ pub fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
     ir::Reverb {
         seconds: laws.seconds.eval(time),
         size: laws.size.eval(size),
-        network: Some(ir::Network::Lines(if kind == 1 { &HALL } else { &ROOM })),
+        network: Some(ir::Network::Lines(ir::Shared::Borrowed(if kind == 1 {
+            &HALL
+        } else {
+            &ROOM
+        }))),
         damping: laws.damping.eval(damping),
         diffusion: laws.diffusion.eval(diffusion),
         predelay_ms: laws.predelay.eval(predelay),
@@ -210,7 +214,10 @@ pub fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
 /// 0) and Hall (1), as the saved room type numbers them (both values measured
 /// in Kontakt 8.13.1, ksp_constants.py).
 pub fn reverb_networks() -> [ir::Network; 2] {
-    [ir::Network::Lines(&ROOM), ir::Network::Lines(&HALL)]
+    [
+        ir::Network::Lines(ir::Shared::Borrowed(&ROOM)),
+        ir::Network::Lines(ir::Shared::Borrowed(&HALL)),
+    ]
 }
 
 /// The reverb's controls as KSP's `$ENGINE_PAR_RV2_*` set them (value ÷ 1e6 is

@@ -41,7 +41,7 @@ pub trait Wet: Send {
     fn process(&mut self, io: &mut [[f32; 2]]);
     /// The slot's settings as scripts left them, at the host's tempo,
     /// before each block. Never allocates.
-    fn set(&mut self, _kind: ir::EffectKind, _tempo: f32) {}
+    fn set(&mut self, _kind: &ir::EffectKind, _tempo: f32) {}
     /// Frames after which silent input leaves it silent, once nothing
     /// louder than silence went into its state for as long; `None`: it
     /// always runs.
@@ -85,9 +85,9 @@ impl Wet for Rated<Compressor> {
         self.0.process(io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Compressor(c) = kind {
-            self.0.set(compressor(c), self.1);
+            self.0.set(compressor(*c), self.1);
         }
     }
 }
@@ -97,9 +97,9 @@ impl Wet for Rated<Limiter> {
         self.0.process(io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Limiter(l) = kind {
-            self.0.set(limiter(l), self.1);
+            self.0.set(limiter(*l), self.1);
         }
     }
 }
@@ -109,9 +109,9 @@ impl Wet for Transient {
         Transient::process(self, io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Transient(t) = kind {
-            Transient::set(self, transient(t));
+            Transient::set(self, transient(*t));
         }
     }
 }
@@ -121,9 +121,9 @@ impl Wet for Cascade {
         Cascade::process(self, io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Cascade(c) = kind {
-            Cascade::set(self, cascade(c));
+            Cascade::set(self, cascade(*c));
         }
     }
 }
@@ -133,7 +133,7 @@ impl Wet for Clocked {
         Clocked::process(self, io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Clocked(c) = kind {
             Clocked::set(self, [c.cutoff, c.resonance]);
         }
@@ -145,7 +145,7 @@ impl Wet for Fdn {
         Fdn::process(self, io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Fdn::set(self, settings(r));
         }
@@ -157,7 +157,7 @@ impl Wet for Combs {
         Combs::process(self, io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Combs::set(self, settings(r));
         }
@@ -169,7 +169,7 @@ impl Wet for Hadamard {
         Hadamard::process(self, io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Hadamard::set(self, settings(r));
         }
@@ -193,7 +193,7 @@ impl Wet for Network {
         Network::idle(self, silence);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Network::set(self, settings(r));
         }
@@ -221,7 +221,7 @@ impl Wet for ModDelay {
         ModDelay::deaf(self)
     }
 
-    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
         if let ir::EffectKind::Delay(d) = kind {
             ModDelay::set(self, delay(d, tempo));
         }
@@ -233,9 +233,9 @@ impl Wet for Scanner {
         Scanner::process(self, io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Scanner(s) = kind {
-            Scanner::set(self, scanner(s));
+            Scanner::set(self, scanner(*s));
         }
     }
 }
@@ -275,9 +275,9 @@ impl Wet for Shifter {
         Shifter::idle(self, silence);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
         if let ir::EffectKind::Shifter(s) = kind {
-            Shifter::set(self, shifter(s, tempo));
+            Shifter::set(self, shifter(*s, tempo));
         }
     }
 }
@@ -299,9 +299,9 @@ impl Wet for CombBank {
         CombBank::idle(self, silence.len());
     }
 
-    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
         if let ir::EffectKind::CombBank(c) = kind {
-            CombBank::set(self, comb_bank(c, tempo));
+            CombBank::set(self, comb_bank(*c, tempo));
         }
     }
 }
@@ -311,9 +311,9 @@ impl Wet for Phaser {
         Phaser::process(self, io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
         if let ir::EffectKind::Phaser(p) = kind {
-            Phaser::set(self, phaser(p, tempo));
+            Phaser::set(self, phaser(*p, tempo));
         }
     }
 }
@@ -335,9 +335,9 @@ impl Wet for Notches {
         Notches::idle(self, silence.len());
     }
 
-    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
         if let ir::EffectKind::Notches(n) = kind {
-            Notches::set(self, notches(n, tempo));
+            Notches::set(self, notches(*n, tempo));
         }
     }
 }
@@ -347,11 +347,11 @@ impl Wet for Rated<Shaper> {
         self.0.process(io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         // A strip's compressor is lost on a slot built without one.
         if let ir::EffectKind::Shaper(s) | ir::EffectKind::Strip(ir::Strip { shaper: s, .. }) = kind
         {
-            self.0.retune(curve(s.curve), tone(s), self.1);
+            self.0.retune(curve(&s.curve), tone(s), self.1);
         }
     }
 
@@ -374,14 +374,14 @@ impl Wet for Strip {
         self.1.process(io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         let (c, s) = match kind {
-            ir::EffectKind::Strip(ir::Strip { compressor, shaper }) => (compressor, shaper),
+            ir::EffectKind::Strip(ir::Strip { compressor, shaper }) => (*compressor, shaper),
             ir::EffectKind::Shaper(s) => (PASS, s),
             _ => return,
         };
         self.0.set(compressor(c), self.2);
-        self.1.retune(curve(s.curve), tone(s), self.2);
+        self.1.retune(curve(&s.curve), tone(s), self.2);
     }
 }
 
@@ -408,7 +408,7 @@ impl Wet for Rated<Overdrive> {
         self.0.process(io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Overdrive(o) = kind {
             self.0.set(voicing(o), self.1);
         }
@@ -420,9 +420,9 @@ impl Wet for Rated<Crush> {
         self.0.process(io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Crush(c) = kind {
-            self.0.set(reduction(c, self.1));
+            self.0.set(reduction(*c, self.1));
         }
     }
 }
@@ -438,9 +438,9 @@ impl Wet for Rated<Ring> {
         self.0.process(io);
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::RingMod(r) = kind {
-            self.0.set(ring(r), self.1);
+            self.0.set(ring(*r), self.1);
         }
     }
 }
@@ -586,7 +586,7 @@ fn shifter(s: ir::Shifter, tempo: f32) -> ShifterSettings {
     }
 }
 
-fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
+fn delay(d: &ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
     kontra_dsp::delay::Settings {
         ms: match d.time {
             ir::DelayTime::Ms(ms) => ms,
@@ -601,9 +601,9 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
         damping_hz: d.damping_hz,
         low_cut_hz: d.low_cut_hz,
         steep_low_cut: d.steep_low_cut,
-        body: d.body,
+        body: d.body.clone(),
         triangle_s: d.triangle_s,
-        shape: d.shape,
+        shape: d.shape.clone(),
         noise: d.noise,
         high_shelf: d
             .high_shelf
@@ -705,7 +705,7 @@ fn cascade(c: ir::Cascade) -> CascadeSettings {
     }
 }
 
-fn settings(r: ir::Reverb) -> Settings {
+fn settings(r: &ir::Reverb) -> Settings {
     Settings {
         seconds: r.seconds,
         size: r.size,
@@ -721,13 +721,15 @@ fn settings(r: ir::Reverb) -> Settings {
 }
 
 /// The processor slot `slot` runs. Not real-time.
-pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) -> Dsp {
-    match slot.map(|e| e.kind) {
+pub fn processor(slot: Option<&ir::Effect>, rate: u32, impulses: &Responses<'_>) -> Dsp {
+    match slot.map(|e| &e.kind) {
         // Retuned from its slot each span: a route or a script may move any
         // band, and one saved flat (no stages) may be raised later.
-        Some(ir::EffectKind::Eq(bells)) => Dsp::Bells(Box::new(filters::VoiceEq::new(bells, rate))),
+        Some(ir::EffectKind::Eq(bells)) => {
+            Dsp::Bells(Box::new(filters::VoiceEq::new(*bells, rate)))
+        }
         Some(ir::EffectKind::Filter(f)) => {
-            let mut svf = Svf::new(filters::shape(&f));
+            let mut svf = Svf::new(filters::shape(f));
             svf.set_cutoff(f.hz, rate);
             // A script may switch it to any ladder on the audio thread.
             svf.keep_spare();
@@ -735,27 +737,32 @@ pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) 
         }
         // Built even while bypassed: a script may enable it later.
         Some(ir::EffectKind::Formant(_)) => {
-            let live = slot.map(|e| ir::Effect { bypass: false, ..e });
+            let live = slot.map(|e| ir::Effect {
+                bypass: false,
+                ..e.clone()
+            });
             let sections = filters::sections(&[live]);
             Dsp::Eq(filters::stages(&sections, rate))
         }
-        Some(ir::EffectKind::Convolution { impulse }) => match impulses.get(usize::from(impulse)) {
-            Some(r) => convolver(r),
-            None => Dsp::None,
-        },
-        Some(ir::EffectKind::Reverb(r)) => match r.network {
+        Some(ir::EffectKind::Convolution { impulse }) => {
+            match impulses.get(usize::from(*impulse)) {
+                Some(r) => convolver(r),
+                None => Dsp::None,
+            }
+        }
+        Some(ir::EffectKind::Reverb(r)) => match &r.network {
             Some(ir::Network::Lines(law)) => wet(Box::new(Network::new(law, settings(r), rate))),
             Some(ir::Network::Combs(law)) => wet(Box::new(Combs::new(law, settings(r), rate))),
             Some(ir::Network::Hadamard(law)) => {
-                wet(Box::new(Hadamard::new(law, settings(r), rate)))
+                wet(Box::new(Hadamard::new(*law, settings(r), rate)))
             }
             None => wet(Box::new(Fdn::new(settings(r), rate))),
         },
         Some(ir::EffectKind::Compressor(c)) => {
-            wet(Box::new(Rated(Compressor::new(compressor(c), rate), rate)))
+            wet(Box::new(Rated(Compressor::new(compressor(*c), rate), rate)))
         }
         Some(ir::EffectKind::Limiter(l)) => {
-            wet(Box::new(Rated(Limiter::new(limiter(l), rate), rate)))
+            wet(Box::new(Rated(Limiter::new(limiter(*l), rate), rate)))
         }
         // ponytail: an echo gets the longest line, so a script or a
         // tempo can lengthen it; a swept line only what it needs.
@@ -766,17 +773,17 @@ pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) 
             };
             wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
         }
-        Some(ir::EffectKind::Shifter(s)) => wet(Box::new(Shifter::new(shifter(s, 120.0), rate))),
-        Some(ir::EffectKind::Scanner(s)) => wet(Box::new(Scanner::new(scanner(s), rate))),
-        Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(p, 120.0), rate))),
-        Some(ir::EffectKind::Notches(n)) => wet(Box::new(Notches::new(notches(n, 120.0), rate))),
+        Some(ir::EffectKind::Shifter(s)) => wet(Box::new(Shifter::new(shifter(*s, 120.0), rate))),
+        Some(ir::EffectKind::Scanner(s)) => wet(Box::new(Scanner::new(scanner(*s), rate))),
+        Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(*p, 120.0), rate))),
+        Some(ir::EffectKind::Notches(n)) => wet(Box::new(Notches::new(notches(*n, 120.0), rate))),
         Some(ir::EffectKind::Ensemble(e)) => wet(Box::new(crate::ensemble::Ensemble::new(e, rate))),
         Some(ir::EffectKind::CombBank(c)) => wet(Box::new(CombBank::new(
-            comb_bank(c, 120.0),
+            comb_bank(*c, 120.0),
             rate,
             c.lowest_hz,
         ))),
-        Some(ir::EffectKind::Cascade(c)) => wet(Box::new(Cascade::new(cascade(c), rate))),
+        Some(ir::EffectKind::Cascade(c)) => wet(Box::new(Cascade::new(cascade(*c), rate))),
         Some(ir::EffectKind::Clocked(c)) => {
             let shape = match c.shape {
                 ir::ClockedShape::Allpass => ClockedShape::Allpass,
@@ -790,14 +797,14 @@ pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) 
         Some(ir::EffectKind::Shaper(s)) => wet(Box::new(Rated(shaper(s, rate), rate))),
         Some(ir::EffectKind::Strip(s)) => wet(Box::new(Strip(
             Compressor::new(compressor(s.compressor), rate),
-            shaper(s.shaper, rate),
+            shaper(&s.shaper, rate),
             rate,
         ))),
         Some(ir::EffectKind::Overdrive(o)) => {
             wet(Box::new(Rated(Overdrive::new(voicing(o), rate), rate)))
         }
         Some(ir::EffectKind::Crush(c)) => {
-            wet(Box::new(Rated(Crush::new(reduction(c, rate), 1), rate)))
+            wet(Box::new(Rated(Crush::new(reduction(*c, rate), 1), rate)))
         }
         Some(ir::EffectKind::Clipper(c)) => wet(Box::new(Clipper::new(
             Circuit {
@@ -812,8 +819,8 @@ pub fn processor(slot: Option<ir::Effect>, rate: u32, impulses: &Responses<'_>) 
             },
             rate,
         ))),
-        Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(transient(t), rate))),
-        Some(ir::EffectKind::RingMod(r)) => wet(Box::new(Rated(Ring::new(ring(r), rate), rate))),
+        Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(transient(*t), rate))),
+        Some(ir::EffectKind::RingMod(r)) => wet(Box::new(Rated(Ring::new(ring(*r), rate), rate))),
         _ => Dsp::None,
     }
 }
@@ -830,12 +837,12 @@ pub fn apply(m: Gain, io: &mut [[f32; 2]]) {
 }
 
 /// The waveshaper for `s` at `rate`, in a group rack or a bus rack.
-pub fn shaper(s: ir::Shaper, rate: u32) -> Shaper {
-    Shaper::new(curve(s.curve), tone(s), rate)
+pub fn shaper(s: &ir::Shaper, rate: u32) -> Shaper {
+    Shaper::new(curve(&s.curve), tone(s), rate)
 }
 
 /// The filters around `s`'s curve.
-pub fn tone(s: ir::Shaper) -> drive::Tone {
+pub fn tone(s: &ir::Shaper) -> drive::Tone {
     drive::Tone {
         pre_lowpass_hz: s.pre_lowpass_hz,
         lowpass_hz: s.lowpass_hz,
@@ -844,38 +851,37 @@ pub fn tone(s: ir::Shaper) -> drive::Tone {
     }
 }
 
-pub fn curve(c: ir::DriveCurve) -> drive::Curve {
+pub fn curve(c: &ir::DriveCurve) -> drive::Curve {
     match c {
-        ir::DriveCurve::Soft(x) => drive::Curve::Soft(x),
-        ir::DriveCurve::Tube(x) => drive::Curve::Tube(x),
-        ir::DriveCurve::Power(x) => drive::Curve::Power(x),
-        ir::DriveCurve::Sine(x) => drive::Curve::Sine(x),
-        ir::DriveCurve::Fold(x) => drive::Curve::Fold(x),
-        ir::DriveCurve::Tanh(x) => drive::Curve::Tanh(x),
-        ir::DriveCurve::Atan(x) => drive::Curve::Atan(x),
-        ir::DriveCurve::Saturate(x) => drive::Curve::Saturate(x),
-        ir::DriveCurve::Table { drive, points } => drive::Curve::Table { drive, points },
-        ir::DriveCurve::Blend { drive, rows, t } => {
-            let (lower, upper) = rows.split_at(rows.len() / 2);
-            drive::Curve::Blend {
-                drive,
-                lower,
-                upper,
-                t,
-            }
-        }
+        ir::DriveCurve::Soft(x) => drive::Curve::Soft(*x),
+        ir::DriveCurve::Tube(x) => drive::Curve::Tube(*x),
+        ir::DriveCurve::Power(x) => drive::Curve::Power(*x),
+        ir::DriveCurve::Sine(x) => drive::Curve::Sine(*x),
+        ir::DriveCurve::Fold(x) => drive::Curve::Fold(*x),
+        ir::DriveCurve::Tanh(x) => drive::Curve::Tanh(*x),
+        ir::DriveCurve::Atan(x) => drive::Curve::Atan(*x),
+        ir::DriveCurve::Saturate(x) => drive::Curve::Saturate(*x),
+        ir::DriveCurve::Table { drive, points } => drive::Curve::Table {
+            drive: *drive,
+            points: points.clone(),
+        },
+        ir::DriveCurve::Blend { drive, rows, t } => drive::Curve::Blend {
+            drive: *drive,
+            rows: rows.clone(),
+            t: *t,
+        },
     }
 }
 
 /// Multiband overdrive settings in DSP terms.
-pub fn voicing(o: ir::Overdrive) -> Voicing {
+pub fn voicing(o: &ir::Overdrive) -> Voicing {
     Voicing {
         split_hz: o.split_hz,
         smooth_hz: o.smooth_hz,
         drive: o.drive,
         mix: o.mix,
         level: o.level,
-        curve: o.curve,
+        curve: o.curve.clone(),
     }
 }
 
@@ -924,7 +930,7 @@ mod tests {
             drive: 4.0,
             mix: 1.0,
             level: 1.0,
-            curve: Box::leak(Box::new(std::array::from_fn(|i| (i as f32 - 128.0) / 64.0))),
+            curve: std::borrow::Cow::Owned((0..256).map(|i| (i as f32 - 128.0) / 64.0).collect()),
         };
         let c = ir::Crush {
             rate: 0.25,
@@ -935,13 +941,13 @@ mod tests {
         };
         for kind in [ir::EffectKind::Overdrive(o), ir::EffectKind::Crush(c)] {
             let slot = ir::Effect {
-                kind,
+                kind: kind.clone(),
                 bypass: false,
                 output: 1.0,
                 dry: 0.0,
             };
-            let Dsp::Wet(mut unit, _) = processor(Some(slot), 48_000, &Responses(&[], &[])) else {
-                panic!("{kind:?} has no bus processor");
+            let Dsp::Wet(mut unit, _) = processor(Some(&slot), 48_000, &Responses(&[], &[])) else {
+                panic!("{:?} has no bus processor", slot.kind);
             };
             let mut io: Vec<[f32; 2]> = (0..256)
                 .map(|n| [(n as f32 * 0.05).sin() * 0.8; 2])

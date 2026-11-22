@@ -75,7 +75,6 @@ impl Engine {
                     .map(|(hz, g)| Tune::Comb(hz, g)),
                 Kind::Formant(_) | Kind::Overdrive(_) => effect.as_ref().map(Tune::Effect),
                 Kind::Shaper(_) | Kind::Strip(..) | Kind::Crush(_) => {
-                    let now = effect;
                     // The next refresh, on the grid.
                     let len = (crate::MAX_SPAN - self.now.0 % crate::MAX_SPAN) as u32;
                     let dt = len as f32 / rate as f32;
@@ -85,11 +84,11 @@ impl Engine {
                         ..age
                     };
                     let next = self.voice_effect(zone, u.insert, note, later);
-                    if let (Some(from), Some(to)) = (now, next)
-                        && from != to
+                    if let (Some(from), Some(to)) = (&effect, next)
+                        && *from != to
                     {
                         ramp = Some(Ramp {
-                            from,
+                            from: from.clone(),
                             to,
                             at: 0,
                             len,
@@ -243,7 +242,12 @@ impl Engine {
         age: Age,
     ) -> Option<ir::EffectKind> {
         let group = self.groups.get(zone.group as usize)?;
-        let mut kind = group.inserts.get(usize::from(insert))?.as_ref()?.kind;
+        let mut kind = group
+            .inserts
+            .get(usize::from(insert))?
+            .as_ref()?
+            .kind
+            .clone();
         for m in group.mods.iter().filter(|m| !m.bypass) {
             if let ir::ModKind::EffectParam {
                 source,

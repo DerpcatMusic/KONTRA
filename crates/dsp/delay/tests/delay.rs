@@ -19,9 +19,9 @@ fn echo() -> Settings {
         damping_hz: f32::INFINITY,
         low_cut_hz: 0.0,
         steep_low_cut: false,
-        body: &[],
+        body: std::borrow::Cow::Borrowed(&[]),
         triangle_s: None,
-        shape: &[],
+        shape: std::borrow::Cow::Borrowed(&[]),
         noise: [0.0; 2],
         high_shelf: None,
         spread_ms: 0.0,
@@ -60,13 +60,13 @@ fn cross_feedback_ping_pongs_and_the_cuts_round_the_repeats() {
     let mut s = echo();
     (s.input, s.feedback) = ([[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.5], [0.5, 0.0]]);
     let mut io = impulse(1000);
-    ModDelay::new(s, RATE, 10.0).process(&mut io);
+    ModDelay::new(s.clone(), RATE, 10.0).process(&mut io);
     assert!((io[480][0] - 1.0).abs() < 1e-6 && io[480][1] == 0.0);
     assert!((io[960][1] - 0.5).abs() < 1e-6 && io[960][0] == 0.0);
 
     s.damping_hz = 2000.0;
     let mut io = impulse(600);
-    ModDelay::new(s, RATE, 10.0).process(&mut io);
+    ModDelay::new(s.clone(), RATE, 10.0).process(&mut io);
     let tail: f32 = io[480..].iter().map(|f| f[0]).sum();
     assert!(
         io[480][0] < 0.5 && (tail - 1.0).abs() < 0.01,
@@ -75,7 +75,7 @@ fn cross_feedback_ping_pongs_and_the_cuts_round_the_repeats() {
 
     s.low_cut_hz = 50.0;
     let mut io = impulse(48_000);
-    ModDelay::new(s, RATE, 10.0).process(&mut io);
+    ModDelay::new(s.clone(), RATE, 10.0).process(&mut io);
     let tail: f32 = io.iter().map(|f| f[0]).sum();
     assert!(tail.abs() < 0.01, "a high-pass takes DC out: {tail}");
 }
@@ -86,7 +86,7 @@ fn the_spread_splits_the_lines_and_the_shelf_cuts_only_the_highs() {
     s.feedback = diagonal(0.0);
     s.spread_ms = 1.0;
     let mut io = impulse(1000);
-    ModDelay::new(s, RATE, 10.0).process(&mut io);
+    ModDelay::new(s.clone(), RATE, 10.0).process(&mut io);
     assert!((io[432][0] - 1.0).abs() < 1e-6 && (io[528][1] - 1.0).abs() < 1e-6);
 
     s.spread_ms = 0.0;
@@ -96,7 +96,7 @@ fn the_spread_splits_the_lines_and_the_shelf_cuts_only_the_highs() {
         slope: 0.75,
     });
     let mut io = impulse(4000);
-    ModDelay::new(s, RATE, 10.0).process(&mut io);
+    ModDelay::new(s.clone(), RATE, 10.0).process(&mut io);
     let dc: f32 = io.iter().map(|f| f[0]).sum();
     let nyquist: f32 = io
         .iter()
@@ -164,9 +164,9 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         damping_hz: 22_885.0,
         low_cut_hz: 0.0,
         steep_low_cut: false,
-        body: &[],
+        body: std::borrow::Cow::Borrowed(&[]),
         triangle_s: None,
-        shape: &[],
+        shape: std::borrow::Cow::Borrowed(&[]),
         noise: [0.0; 2],
         high_shelf: None,
         spread_ms: 0.0,
@@ -174,7 +174,7 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         phase: 0.3 * 0.25,
     };
     let mut y = stimulus(2000);
-    ModDelay::new(chorus, RATE, 0.0).process(&mut y);
+    ModDelay::new(chorus.clone(), RATE, 0.0).process(&mut y);
     near(
         &y,
         &[
@@ -196,9 +196,9 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         damping_hz: f32::INFINITY,
         low_cut_hz: 0.0,
         steep_low_cut: false,
-        body: &[],
+        body: std::borrow::Cow::Borrowed(&[]),
         triangle_s: None,
-        shape: &[],
+        shape: std::borrow::Cow::Borrowed(&[]),
         noise: [0.0; 2],
         high_shelf: None,
         spread_ms: 0.0,
@@ -281,12 +281,12 @@ fn an_idled_chorus_plays_on_in_step_with_one_that_ran() {
     let mut s = echo();
     (s.ms, s.depth_ms, s.lfo_hz, s.phase, s.second_head) = (12.0, 4.0, 0.7, 0.25, true);
     s.feedback = diagonal(0.2);
-    let (mut ran, mut idled) = (ModDelay::new(s, RATE, 12.0), ModDelay::new(s, RATE, 12.0));
+    let (mut ran, mut idled) = (ModDelay::new(s.clone(), RATE, 12.0), ModDelay::new(s.clone(), RATE, 12.0));
     for d in [&mut ran, &mut idled] {
         let mut io = impulse(RATE as usize);
         d.process(&mut io);
         // A new time while silent: the head glides there unheard.
-        d.set(Settings { ms: 7.0, ..s });
+        d.set(Settings { ms: 7.0, ..s.clone() });
     }
     let quiet = 30_011;
     let mut silence = vec![[0.0; 2]; quiet];
@@ -330,9 +330,9 @@ fn reference_render() -> Vec<[f32; 2]> {
         feedback: diagonal(0.6),
         low_cut_hz: 120.0,
         steep_low_cut: true,
-        body: &[],
+        body: std::borrow::Cow::Borrowed(&[]),
         triangle_s: None,
-        shape: &[],
+        shape: std::borrow::Cow::Borrowed(&[]),
         noise: [0.0; 2],
         lfo_hz: 0.7,
         phase: 0.4,
@@ -357,7 +357,7 @@ fn reference_render() -> Vec<[f32; 2]> {
         ..echo()
     };
     let mut delays = [
-        ModDelay::new(chorus, RATE, 50.0),
+        ModDelay::new(chorus.clone(), RATE, 50.0),
         ModDelay::new(flanger, RATE, 50.0),
         ModDelay::new(long, RATE, 300.0),
     ];
@@ -378,7 +378,7 @@ fn reference_render() -> Vec<[f32; 2]> {
             delays[0].set(Settings {
                 ms: 11.0,
                 lfo_hz: 2.1,
-                ..chorus
+                ..chorus.clone()
             });
         }
         for d in &mut delays {
@@ -438,11 +438,11 @@ fn the_line_bends_what_it_writes_and_its_noise_rides_on_sound() {
     static HALF: [f32; 3] = [-0.5, 0.0, 0.5];
     let s = Settings {
         feedback: diagonal(0.0),
-        shape: &HALF,
+        shape: std::borrow::Cow::Borrowed(&HALF),
         noise: [0.01, 1.0],
         ..echo()
     };
-    let mut d = ModDelay::new(s, RATE, 50.0);
+    let mut d = ModDelay::new(s.clone(), RATE, 50.0);
     let mut silent = vec![[0.0; 2]; 4800];
     d.process(&mut silent);
     assert!(silent.iter().all(|f| *f == [0.0; 2]));

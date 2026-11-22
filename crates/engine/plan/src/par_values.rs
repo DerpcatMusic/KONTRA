@@ -84,16 +84,16 @@ impl EffectPar {
     /// control.
     pub fn get(self, e: &ir::Effect) -> Option<f64> {
         let gain = |g: f32| UNITY_EFFECT_GAIN * cube_root(g);
-        Some(match (self, e.kind) {
+        Some(match (self, &e.kind) {
             (Self::Bypass, _) => f64::from(u8::from(e.bypass)),
             (Self::Output, _) => gain(e.output),
             (Self::Dry, _) => gain(e.dry),
             (Self::Send(n), ir::EffectKind::Sends(levels)) => {
                 UNITY_VOLUME * cube_root(*levels.get(n)?)
             }
-            (Self::Gain, ir::EffectKind::Gain(g)) => gain(g),
-            (Self::Width, ir::EffectKind::Stereo { width, .. }) => f64::from(width) * 1e6,
-            (Self::Pan, ir::EffectKind::Stereo { pan, .. }) => (f64::from(pan) + 1.0) * 5e5,
+            (Self::Gain, ir::EffectKind::Gain(g)) => gain(*g),
+            (Self::Width, ir::EffectKind::Stereo { width, .. }) => f64::from(*width) * 1e6,
+            (Self::Pan, ir::EffectKind::Stereo { pan, .. }) => (f64::from(*pan) + 1.0) * 5e5,
             _ => return None,
         })
     }

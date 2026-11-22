@@ -163,7 +163,7 @@ fn fit() {
             .map(|b| f32::from_le_bytes(*b))
             .collect();
         let slot = ir::Effect {
-            kind,
+            kind: kind.clone(),
             bypass: false,
             output: 1.0,
             dry: 0.0,
@@ -180,7 +180,7 @@ fn fit() {
             },
             None => slot,
         };
-        let Dsp::Wet(mut unit, _) = processor(Some(first), 48_000, &Responses(&[], &[])) else {
+        let Dsp::Wet(mut unit, _) = processor(Some(&first), 48_000, &Responses(&[], &[])) else {
             panic!("{effect}: no processor");
         };
         let silence = |unit: &mut Box<dyn kontra_effects::processors::Wet>, seconds: f32| {
@@ -192,7 +192,7 @@ fn fit() {
         // The oracle's LFO runs free: `pre` seconds of silence first put the model's LFO where the oracle's was.
         silence(&mut unit, keys.get("pre").copied().unwrap_or(0.0));
         if let Some(seconds) = switch {
-            unit.set(kind, 120.0);
+            unit.set(&kind, 120.0);
             silence(&mut unit, seconds);
         }
         let mut out = Vec::with_capacity(input.len() * 4);

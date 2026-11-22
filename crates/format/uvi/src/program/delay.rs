@@ -71,9 +71,9 @@ pub(super) fn dual_delay(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
             damping_hz: num(node, "HighCut", 20_000.0)? as f32,
             low_cut_hz: num(node, "LowCut", 0.0)?.max(0.0) as f32,
             steep_low_cut: false,
-            body: &[],
+            body: std::borrow::Cow::Borrowed(&[]),
             triangle_s: None,
-            shape: &[],
+            shape: std::borrow::Cow::Borrowed(&[]),
             noise: [0.0; 2],
             high_shelf: None,
             spread_ms: 0.0,
@@ -110,7 +110,7 @@ mod tests {
         let xml = format!("<DualDelay {attributes}/>");
         let doc = roxmltree::Document::parse(&xml).unwrap();
         let e = dual_delay(doc.root_element(), &mut Notes::default()).unwrap();
-        let ir::EffectKind::Delay(d) = e.kind else {
+        let ir::EffectKind::Delay(d) = e.kind.clone() else {
             panic!("{:?}", e.kind)
         };
         (e, d)

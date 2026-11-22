@@ -144,8 +144,9 @@ impl Engine {
             }
             // -1 past the eighth loop; the modes of a saved loop are unmeasured.
             GetLoopPar => HostValue::Int(
-                self.facts_of(int(0))
-                    .map_or(0, |z| z.loop_par(int(1), int(2))),
+                u32::try_from(int(0))
+                    .ok()
+                    .map_or(0, |id| self.plan.zone_loop_par(id, int(1), int(2))),
             ),
             // Only user zones take a sample or a loop; in `on init` they land at
             // once (-1), elsewhere the host builds them and the async completes.

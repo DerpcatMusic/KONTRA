@@ -20,7 +20,7 @@ pub(crate) const REQUESTS: usize = 16;
 
 /// Slot `slot` of `at` to load with type `ty` of the plan's
 /// [`ir::SlotShapes::types`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EffectRequest {
     pub at: ir::RackAt,
     pub slot: u8,
@@ -57,7 +57,7 @@ impl Prepared {
             (Some((_, _, r)), _) => racks::convolver(r),
             (None, Some(_)) => Dsp::None,
             // Routed, so a script's later knob writes retune it.
-            (None, None) => racks::processor(request.effect, rate, &Responses(&[], &[])),
+            (None, None) => racks::processor(request.effect.as_ref(), rate, &Responses(&[], &[])),
         };
         Self {
             request,
@@ -95,7 +95,7 @@ impl Engine {
         let ty = types
             .iter()
             .position(|t| t.id == id && t.subtype == subtype)?;
-        let (ty, effect) = (u16::try_from(ty).ok()?, types.get(ty)?.effect);
+        let (ty, effect) = (u16::try_from(ty).ok()?, types.get(ty)?.effect.clone());
         let (at, n) = (
             crate::knobs::rack_at(group, generic)?,
             u8::try_from(slot).ok()?,
@@ -110,7 +110,7 @@ impl Engine {
         // Loading the type a slot holds keeps it as it is (Kontakt 8.13: a
         // reverb's size stays through a reverb load; measured). A subtype
         // is held when the slot reads it; a type, by its kind of effect.
-        let kind = |e: &Option<ir::Effect>| e.map(|e| std::mem::discriminant(&e.kind));
+        let kind = |e: &Option<ir::Effect>| e.as_ref().map(|e| std::mem::discriminant(&e.kind));
         let holds = kind(self.slot_mut(group, slot, generic)?);
         let same = match subtype {
             true => self.subtype(group, slot, generic) == Some(id),
@@ -145,7 +145,7 @@ impl Engine {
     ) -> bool {
         let network = usize::try_from(n)
             .ok()
-            .and_then(|n| self.script()?.reverb_networks.get(n).copied());
+            .and_then(|n| self.script()?.reverb_networks.get(n).cloned());
         let init = self.running.kind == Kind::Init;
         let Some(slot_now) = self.effect_mut(group, slot, generic) else {
             return false;
@@ -153,14 +153,14 @@ impl Engine {
         let (Some(network), ir::EffectKind::Reverb(r)) = (network, &mut slot_now.kind) else {
             return false;
         };
-        if r.network == Some(network) {
+        if r.network.as_ref() == Some(&network) {
             return true;
         }
         if init {
             r.network = Some(network);
             return true;
         }
-        let mut effect = *slot_now;
+        let mut effect = slot_now.clone();
         if let ir::EffectKind::Reverb(r) = &mut effect.kind {
             r.network = Some(network);
         }
@@ -225,17 +225,20 @@ impl Engine {
     /// allocation.
     pub fn install(&mut self, prepared: Prepared) -> Prepared {
         let Prepared {
-            request: r,
+            request: mut r,
             dsp,
             mut response,
         } = prepared;
         let effect = match r.response {
-            None => Some(r.effect),
+            None => Some(r.effect.take()),
             Some(_) => self.retarget(r.at, r.slot, &mut response).map(Some),
         };
         let swapped = match (effect, self.rack_slot(r.at, r.slot)) {
             (Some(effect), Some((rack, n))) => rack.install(n, effect, dsp),
-            _ => Err(dsp),
+            (effect, _) => {
+                r.effect = effect.flatten();
+                Err(dsp)
+            }
         };
         if let (true, Some(ty)) = (swapped.is_ok(), r.ty) {
             self.mark_loaded(r.at, r.slot, ty);
@@ -260,10 +263,11 @@ impl Engine {
         response: &mut Option<(String, ir::Impulse, Response)>,
     ) -> Option<ir::Effect> {
         let (rack, n) = self.rack_slot(at, slot)?;
-        let current = (*rack.slots.get(n)?)?;
+        let current = rack.slots.get(n)?.as_ref()?;
         let ir::EffectKind::Convolution { .. } = current.kind else {
             return None;
         };
+        let (bypass, output, dry) = (current.bypass, current.output, current.dry);
         let (name, law, _) = response.as_ref()?;
         let known = (self.loaded.iter()).position(|(m, l, _)| m == name && l == law);
         let j = match known {
@@ -277,7 +281,9 @@ impl Engine {
         let impulse = u16::try_from(self.plan.impulses.len() + j).ok()?;
         Some(ir::Effect {
             kind: ir::EffectKind::Convolution { impulse },
-            ..current
+            bypass,
+            output,
+            dry,
         })
     }
 

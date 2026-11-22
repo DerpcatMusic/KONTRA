@@ -36,7 +36,7 @@ pub fn skreamer(tone: f32, drive: f32, bass: f32, bright: f32, mix: f32) -> ir::
         drive: table(199.315_67 * drive + 1_550.795_7) * 4.0,
         mix: table(398.631_35 * mix + 1_070.444_8) * 0.5,
         level: 0.447,
-        curve: &CURVE,
+        curve: std::borrow::Cow::Borrowed(CURVE.as_slice()),
     })
 }
 

@@ -97,8 +97,8 @@ impl Sounds {
         };
         let mut out = Vec::new();
         for (slot, e) in inserts.iter().enumerate() {
-            match e.as_ref().map(|e| e.kind) {
-                Some(ir::EffectKind::Filter(f)) => out.push(filter_band(slot, &f)),
+            match e.as_ref().map(|e| &e.kind) {
+                Some(ir::EffectKind::Filter(f)) => out.push(filter_band(slot, f)),
                 Some(ir::EffectKind::Eq(bells)) => {
                     out.extend((bells.iter().enumerate()).map(|(n, b)| Band {
                         slot,
@@ -146,7 +146,7 @@ impl Sounds {
             (_, Some(b)) => {
                 let effect = inserts.get_mut(b.slot)?.as_mut()?;
                 set_band(&mut effect.kind, b.band, param, value as f32);
-                changed = Some((b.slot, *effect));
+                changed = Some((b.slot, effect.clone()));
             }
             _ => return None,
         }

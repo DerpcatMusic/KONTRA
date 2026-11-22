@@ -45,7 +45,6 @@ fn engine(source: &str) -> (Engine, u32, i32) {
         pan: 0,
         tune: 0,
         fades: [0; 4],
-        loop_pars: Default::default(),
     }];
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let store = Store::new(StoreConfig::DEFAULT).unwrap();

@@ -86,7 +86,6 @@ pub fn prepare(
                     i32::from(z.velocity_fade.0),
                     i32::from(z.velocity_fade.1),
                 ],
-                loop_pars: Default::default(),
             });
             // A purged group loads nothing: a script's un-purge builds it.
             if group.purged {
@@ -380,7 +379,9 @@ pub fn user_zones(
             sample,
             &client,
         );
-        zone.region.loops = kontra_engine::user_loops(f);
+        zone.region.loops = out
+            .user_loop_pars_for(f.id)
+            .and_then(kontra_engine::user_loops);
         match out.zones.iter_mut().find(|p| p.id == f.id) {
             Some(slot) => *slot = zone,
             None => out.zones.push(zone),
@@ -757,7 +758,7 @@ pub fn tables(plan: &Plan, client: &StreamClient) -> Option<Plan> {
             else {
                 continue;
             };
-            z.region.table = Some(table);
+            z.region.table = Some(Arc::new(table));
             (z.root, z.sample_rate) = TABLE_PITCH;
         }
         out
@@ -775,24 +776,22 @@ fn zone(
         sample: Arc::clone(sample),
         start: z.start,
         end: z.end.min(source.frames),
-        loops: z
-            .loops
-            .iter()
-            .map(|l| Loop {
-                start: l.start,
-                end: l.end,
-                crossfade: l.crossfade,
-                count: l.count,
-                alternating: l.alternating,
-                until_release: l.until_release,
-                tune_ratio: l.tune_ratio,
-            })
-            .collect(),
+        loops: Region::pack_loops(z.loops.iter().map(|l| Loop {
+            start: l.start,
+            end: l.end,
+            crossfade: l.crossfade,
+            count: l.count,
+            alternating: l.alternating,
+            until_release: l.until_release,
+            tune_ratio: l.tune_ratio,
+        })),
         reverse: z.reverse,
-        mix: mix(&z.mix),
-        table: (group.wavetable).and_then(|w| {
-            levels::table(sample, client, (z.start, z.end.min(source.frames)), read(w))
-        }),
+        mix: mix(&z.mix).map(Arc::new),
+        table: (group.wavetable)
+            .and_then(|w| {
+                levels::table(sample, client, (z.start, z.end.min(source.frames)), read(w))
+            })
+            .map(Arc::new),
     };
     let (root, rate) = if region.table.is_some() {
         TABLE_PITCH

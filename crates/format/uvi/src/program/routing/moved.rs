@@ -142,7 +142,7 @@ impl<L: Library> Translator<'_, '_, L> {
             }
         }
         let scratch = &mut Notes::default();
-        let Some(rest) = build(Params::of(node), scratch)? else {
+        let Some(mut rest) = build(Params::of(node), scratch)? else {
             return Ok(());
         };
         for (input, moved) in by_source {
@@ -172,12 +172,12 @@ impl<L: Library> Translator<'_, '_, L> {
                 continue;
             };
             for param in FIELDS {
-                let Some(base) = field(param, rest) else {
+                let Some(base) = field(param, &mut rest) else {
                     continue;
                 };
                 let table: Vec<f32> = effects
-                    .iter()
-                    .map(|&e| field(param, e).unwrap_or(base) - base)
+                    .iter_mut()
+                    .map(|e| field(param, e).unwrap_or(base) - base)
                     .collect();
                 if table.iter().all(|d| d.abs() < 1e-7) {
                     continue;
@@ -213,7 +213,7 @@ impl<L: Library> Translator<'_, '_, L> {
 }
 
 /// `param`'s value on `e`.
-fn field(param: ir::EffectParam, mut e: ir::Effect) -> Option<f32> {
+fn field(param: ir::EffectParam, e: &mut ir::Effect) -> Option<f32> {
     match param {
         ir::EffectParam::Output => Some(e.output),
         ir::EffectParam::Dry => Some(e.dry),

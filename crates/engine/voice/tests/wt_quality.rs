@@ -75,7 +75,7 @@ fn saw(quality: Quality, step: f64) -> (Store, Voice) {
     };
     let region = Region {
         mix: None,
-        table: Table::new((steps, (peak / 32767.0) as f32), spans.into(), read),
+        table: Table::new((steps, (peak / 32767.0) as f32), spans.into(), read).map(Arc::new),
         sample,
         start: 0,
         end: frames,
@@ -86,6 +86,9 @@ fn saw(quality: Quality, step: f64) -> (Store, Voice) {
     voice.start(VoiceStart {
         speed: 1.0,
         region,
+        loop_shift: [0.0; 2],
+        mix: None,
+        read: None,
         step,
         gain: [[1.0, 0.0], [0.0, 1.0]],
         lag: kontra_voice::Lag::NONE,
@@ -208,7 +211,11 @@ fn a_gliding_table_sounds_the_same_at_any_block_size() {
         out
     };
     let (a, b) = (run(512), run(37));
-    let worst = a.iter().zip(&b).map(|(x, y)| (x[0] - y[0]).abs()).fold(0.0f32, f32::max);
+    let worst = a
+        .iter()
+        .zip(&b)
+        .map(|(x, y)| (x[0] - y[0]).abs())
+        .fold(0.0f32, f32::max);
     // The level (mip) is picked per chunk, so blocks differ by ~0.016; a
     // chunk read at one pitch with a phase jump after it is off by ~0.4.
     assert!(worst < 0.05, "{worst}");

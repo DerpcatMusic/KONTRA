@@ -13,6 +13,15 @@ pub struct Section {
     pub den: [f32; 3],
 }
 
+impl Section {
+    /// Unity pass-through section.
+    pub const IDENTITY: Self = Self {
+        hz: 1000.0,
+        num: [1.0, 0.0, 0.0],
+        den: [1.0, 0.0, 0.0],
+    };
+}
+
 /// Where a [`Section`] runs, in signal order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -28,24 +37,55 @@ pub enum Stage {
 
 /// A stage's sections: a fixed list and up to three that move with a
 /// control. Sections at one stage commute, so their order there is free.
+///
+/// The moving slots store stages and sections in separate arrays so the
+/// struct avoids 9 bytes of inter-element alignment padding.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sections {
     pub fixed: &'static [(Stage, Section)],
-    pub moving: [Option<(Stage, Section)>; 3],
+    moving_stages: [Option<Stage>; 3],
+    moving_sections: [Section; 3],
 }
 
 impl Sections {
     /// None.
     pub const NONE: Self = Self {
         fixed: &[],
-        moving: [None; 3],
+        moving_stages: [None; 3],
+        moving_sections: [Section::IDENTITY; 3],
     };
+
+    /// Builds a section set from a static fixed list and up to three moving
+    /// sections.
+    #[must_use]
+    pub const fn new(
+        fixed: &'static [(Stage, Section)],
+        moving: [Option<(Stage, Section)>; 3],
+    ) -> Self {
+        const fn split(slot: Option<(Stage, Section)>) -> (Option<Stage>, Section) {
+            match slot {
+                Some((stage, section)) => (Some(stage), section),
+                None => (None, Section::IDENTITY),
+            }
+        }
+        let [m0, m1, m2] = moving;
+        let (s0, c0) = split(m0);
+        let (s1, c1) = split(m1);
+        let (s2, c2) = split(m2);
+        Self {
+            fixed,
+            moving_stages: [s0, s1, s2],
+            moving_sections: [c0, c1, c2],
+        }
+    }
 
     /// Every section, fixed first.
     pub fn iter(&self) -> impl Iterator<Item = (Stage, Section)> + '_ {
-        self.fixed
-            .iter()
-            .copied()
-            .chain(self.moving.iter().flatten().copied())
+        self.fixed.iter().copied().chain(
+            self.moving_stages
+                .iter()
+                .zip(&self.moving_sections)
+                .filter_map(|(&stage, &section)| Some((stage?, section))),
+        )
     }
 }

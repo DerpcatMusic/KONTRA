@@ -205,19 +205,19 @@ fn translates_effects_lfo_envelope_and_midi_cc_bindings() {
     // Global inserts: chorus (Ensemble), delay, reverb, gain
     assert_eq!(inst.inserts.len(), 4);
     assert!(matches!(
-        inst.inserts[0].map(|e| e.kind),
+        inst.inserts[0].clone().map(|e| e.kind),
         Some(ir::EffectKind::Ensemble(_))
     ));
     assert!(matches!(
-        inst.inserts[1].map(|e| e.kind),
+        inst.inserts[1].clone().map(|e| e.kind),
         Some(ir::EffectKind::Delay(_))
     ));
     assert!(matches!(
-        inst.inserts[2].map(|e| e.kind),
+        inst.inserts[2].clone().map(|e| e.kind),
         Some(ir::EffectKind::Reverb(_))
     ));
     assert!(matches!(
-        inst.inserts[3].map(|e| e.kind),
+        inst.inserts[3].clone().map(|e| e.kind),
         Some(ir::EffectKind::Gain(_))
     ));
 
@@ -339,7 +339,7 @@ fn effect_units_preserve_seconds_and_linear_gain_without_guessing_tempo_division
         <effect type="gain" levelUnit="linear"/>
     </effects></DecentSampler>"#;
     let inst = translate_xml(xml, Path::new("/lib"), &fake_probe).unwrap();
-    let fx = |i: usize| inst.inserts[i].unwrap();
+    let fx = |i: usize| inst.inserts[i].clone().unwrap();
     assert!(fx(0).bypass);
     assert!(
         inst.diagnostics
@@ -371,7 +371,7 @@ fn instrument_cutoff_bindings_share_the_same_promoted_filter_per_group() {
             );
             let inst = translate_xml(&xml, Path::new("/lib"), &fake_probe).unwrap();
             assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
-            assert!(inst.inserts[0].unwrap().bypass);
+            assert!(inst.inserts[0].clone().unwrap().bypass);
             for (index, group) in inst.groups.iter().enumerate() {
                 let slot = if index == 1 && !middle_rack.is_empty() {
                     2
@@ -380,9 +380,9 @@ fn instrument_cutoff_bindings_share_the_same_promoted_filter_per_group() {
                 };
                 assert_eq!(group.inserts.len(), slot + 1);
                 assert!(
-                    matches!(group.inserts[0].unwrap().kind, ir::EffectKind::Filter(f) if f.hz == (index + 1) as f32 * 1000.0)
+                    matches!(group.inserts[0].clone().unwrap().kind, ir::EffectKind::Filter(f) if f.hz == (index + 1) as f32 * 1000.0)
                 );
-                let filter = group.inserts[slot].unwrap();
+                let filter = group.inserts[slot].clone().unwrap();
                 assert!(!filter.bypass);
                 assert!(matches!(filter.kind, ir::EffectKind::Filter(f) if f.hz == 60.0));
                 assert!(
@@ -473,8 +473,8 @@ fn promoting_global_filter_after_delay_reports_reordering_approximation() {
         </midi>
     </DecentSampler>"#;
     let inst = translate_xml(xml, Path::new("/lib"), &fake_probe).unwrap();
-    assert!(!inst.inserts[0].unwrap().bypass);
-    assert!(inst.inserts[1].unwrap().bypass);
+    assert!(!inst.inserts[0].clone().unwrap().bypass);
+    assert!(inst.inserts[1].clone().unwrap().bypass);
     assert_eq!(inst.groups[0].inserts.len(), 1);
     assert!(
         inst.diagnostics.iter().any(|d| {

@@ -178,7 +178,7 @@ pub fn choral(p: [f32; 10]) -> ir::EffectKind {
     let first = at(&table.delay, 0) * span;
     let shelf = (1.0 - f).max(0.2);
     ir::EffectKind::Ensemble(ir::Ensemble {
-        voices: table,
+        voices: ir::Shared::Borrowed(table),
         span,
         hz: 7.4 * rate.powi(3) + 0.25,
         sweep: 0.5 * (ratio - 1.0),

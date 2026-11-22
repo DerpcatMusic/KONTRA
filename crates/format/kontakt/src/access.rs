@@ -87,11 +87,43 @@ struct Key(Arc<[u8]>);
 
 impl LibraryKey for Key {
     fn apply_at(&self, offset: u64, bytes: &mut [u8]) {
-        let key = kontra_ir::Keystream::Repeat {
-            stream: Arc::clone(&self.0),
-            origin: 0,
-        };
-        key.apply(offset, bytes);
+        repeat(&self.0, 0, offset, bytes);
+    }
+}
+
+/// Repeating XOR keystream starting at `origin`: file byte `origin + n` is
+/// XORed with `stream[n % stream.len()]`. Deliberately not `Debug`.
+struct RepeatXor {
+    stream: Arc<[u8]>,
+    origin: u64,
+}
+
+impl kontra_ir::ByteTransform for RepeatXor {
+    fn apply(&self, offset: u64, bytes: &mut [u8]) {
+        repeat(&self.stream, self.origin, offset, bytes);
+    }
+}
+
+/// Wraps a repeating 64 KiB Kontakt keystream starting at `origin` for streaming reads.
+pub(crate) fn repeat_keystream(stream: Arc<[u8]>, origin: u64) -> kontra_ir::Keystream {
+    kontra_ir::Keystream::new(Arc::new(RepeatXor { stream, origin }))
+}
+
+fn repeat(stream: &[u8], origin: u64, at: u64, bytes: &mut [u8]) {
+    let len = stream.len() as u64;
+    if len == 0 {
+        return;
+    }
+    // Whole runs of the key at a time, so the XOR vectorises.
+    let mut position = (at.wrapping_sub(origin) % len) as usize;
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let key = stream.get(position..).unwrap_or_default();
+        let n = key.len().min(rest.len());
+        let (head, tail) = std::mem::take(&mut rest).split_at_mut(n);
+        head.iter_mut().zip(key).for_each(|(b, k)| *b ^= k);
+        rest = tail;
+        position = 0;
     }
 }
 

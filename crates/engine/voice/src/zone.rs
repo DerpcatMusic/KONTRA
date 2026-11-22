@@ -87,6 +87,11 @@ impl Loop {
 }
 
 /// The playable region of one zone, already resolved by the plan.
+///
+/// Heavy optional payloads (`loops`, `mix`, `table`) are stored behind `Arc`
+/// so each [`Region`] stays compact (64 bytes, one cache line) across tens of
+/// thousands of zones; [`crate::Voice`] keeps its own pre-allocated inline
+/// working copies so starting and modulating a voice never allocates.
 #[derive(Clone)]
 pub struct Region {
     pub sample: Arc<Sample>,
@@ -97,15 +102,17 @@ pub struct Region {
     /// Loops in slot order. Each is entered when the playhead reaches its end
     /// (in mirrored coordinates when reversed); a loop ending before the
     /// playhead or past the region is skipped.
-    pub loops: Loops,
-    /// Plays `end - 1` down to `start` (loops run in mirrored coordinates).
-    pub reverse: bool,
+    pub loops: Option<Arc<[Loop]>>,
     /// How the sample's channels reach the voice's left and right; `None`
     /// plays mono on both sides and two or more channels as left and right.
-    pub mix: Option<Mix>,
+    pub mix: Option<Arc<Mix>>,
     /// Read as a wavetable instead: `start`, `end` and the loops go unused.
-    pub table: Option<crate::Table>,
+    pub table: Option<Arc<crate::Table>>,
+    /// Plays `end - 1` down to `start` (loops run in mirrored coordinates).
+    pub reverse: bool,
 }
+
+const _: () = assert!(std::mem::size_of::<Region>() <= 64);
 
 /// Consecutive source frames the cursor reads under one mapping.
 #[derive(Clone, Copy, Debug)]
@@ -175,38 +182,58 @@ impl Run {
     }
 }
 
-impl Region {
-    /// Moves each loop by `start` of the sample's frames and its end by
-    /// `length` more, each truncated to whole frames; a loop stays within the
-    /// region and at least four frames long, or keeps its place.
-    pub fn shift_loops(&mut self, start: f32, length: f32) {
-        let n = self.sample.frames() as i64;
-        let frames = |x: f32| (n as f32 * x) as i64;
-        let (start, length) = (frames(start), frames(length));
-        // Bounds are the region's, not the sample's: `locate` skips a loop
-        // starting before it or ending past it.
-        let hi = i64::try_from(self.end).unwrap_or(n).min(n);
-        let lo = i64::try_from(self.start).unwrap_or(hi).min(hi);
-        for l in &mut self.loops {
-            let mut a = l.start as i64 + start;
-            let mut b = l.end as i64 + start + length;
-            if a < lo {
-                (a, b) = (lo, (b - a + lo).min(hi));
-            }
-            if b > hi {
-                (a, b) = ((a + hi - b).max(lo), hi);
-            }
-            if b - a < 4 {
-                if a < hi - 4 {
-                    b = a + 4;
-                } else {
-                    a = b - 4;
-                }
-            }
-            if a >= lo && b <= hi && b - a >= 4 {
-                (l.start, l.end) = (a as u64, b as u64);
+/// Moves each loop in `loops` by `start` of `sample_frames` and its end by
+/// `length` more, each truncated to whole frames; a loop stays within
+/// `region_start..region_end` and at least four frames long, or keeps its place.
+pub(crate) fn shift_loops(
+    loops: &mut [Loop],
+    sample_frames: u64,
+    region_start: u64,
+    region_end: u64,
+    start: f32,
+    length: f32,
+) {
+    let n = sample_frames as i64;
+    let frames = |x: f32| (n as f32 * x) as i64;
+    let (start, length) = (frames(start), frames(length));
+    // Bounds are the region's, not the sample's: `locate` skips a loop
+    // starting before it or ending past it.
+    let hi = i64::try_from(region_end).unwrap_or(n).min(n);
+    let lo = i64::try_from(region_start).unwrap_or(hi).min(hi);
+    for l in loops {
+        let mut a = l.start as i64 + start;
+        let mut b = l.end as i64 + start + length;
+        if a < lo {
+            (a, b) = (lo, (b - a + lo).min(hi));
+        }
+        if b > hi {
+            (a, b) = ((a + hi - b).max(lo), hi);
+        }
+        if b - a < 4 {
+            if a < hi - 4 {
+                b = a + 4;
+            } else {
+                a = b - 4;
             }
         }
+        if a >= lo && b <= hi && b - a >= 4 {
+            (l.start, l.end) = (a as u64, b as u64);
+        }
+    }
+}
+
+impl Region {
+    /// Packs `loops` into [`Region::loops`]; empty returns `None` with zero allocation.
+    #[must_use]
+    pub fn pack_loops(loops: impl IntoIterator<Item = Loop>) -> Option<Arc<[Loop]>> {
+        let collected: Vec<Loop> = loops.into_iter().collect();
+        (!collected.is_empty()).then(|| Arc::from(collected))
+    }
+
+    /// The region's loops as a slice (empty when [`Self::loops`] is `None`).
+    #[must_use]
+    pub fn loops_slice(&self) -> &[Loop] {
+        self.loops.as_deref().unwrap_or(&[])
     }
 
     /// The run at logical position `logical`: frames played from the region's
@@ -217,24 +244,35 @@ impl Region {
     /// through its loops and reverse; `None` past its end.
     #[must_use]
     pub fn frame_at(&self, logical: u64, released: Option<u64>) -> Option<u64> {
-        self.locate(logical, released).map(|run| run.first)
+        self.locate_with(self.loops_slice(), logical, released)
+            .map(|run| run.first)
     }
 
     /// Whether any loop in this region changes playback rate on repeats.
-    pub(crate) fn has_tuned_loop(&self) -> bool {
-        self.loops.iter().any(|l| {
+    pub(crate) fn has_tuned_loop(loops: &[Loop]) -> bool {
+        loops.iter().any(|l| {
             l.tune_ratio > 0.0 && l.tune_ratio.is_finite() && (l.tune_ratio - 1.0).abs() > 1e-6
         })
     }
 
     /// Playback-rate multiplier at `logical`, and how many logical source
     /// frames remain in the current run before it can change.
-    pub(crate) fn tune_span(&self, logical: u64, released: Option<u64>) -> Option<(f64, u64)> {
-        self.locate(logical, released)
+    pub(crate) fn tune_span(
+        &self,
+        loops: &[Loop],
+        logical: u64,
+        released: Option<u64>,
+    ) -> Option<(f64, u64)> {
+        self.locate_with(loops, logical, released)
             .map(|run| (f64::from(run.tune_ratio), run.count as u64))
     }
 
-    fn locate(&self, logical: u64, released: Option<u64>) -> Option<Run> {
+    pub(crate) fn locate_with(
+        &self,
+        loops: &[Loop],
+        logical: u64,
+        released: Option<u64>,
+    ) -> Option<Run> {
         let mirror = self.reverse.then(|| self.sample.frames().max(self.end));
         let (r_start, r_end) = match mirror {
             Some(total) => (total - self.end, total - self.start),
@@ -256,7 +294,7 @@ impl Region {
             };
         // `at` is the logical position at which the playhead reaches `src`.
         let (mut at, mut src) = (0u64, r_start);
-        for raw in &self.loops {
+        for raw in loops {
             let (l_start, l_end) = match mirror {
                 Some(total) => {
                     if raw.end <= raw.start || raw.end > total {
@@ -357,15 +395,21 @@ impl Region {
     }
 
     /// Whether logical position `logical` is past everything the region plays.
-    pub(crate) fn finished(&self, logical: f64, released: Option<u64>) -> bool {
-        self.locate(logical as u64, released).is_none()
+    pub(crate) fn finished_with(
+        &self,
+        loops: &[Loop],
+        logical: f64,
+        released: Option<u64>,
+    ) -> bool {
+        self.locate_with(loops, logical as u64, released).is_none()
     }
 
     /// Calls `f(offset, run)` for each run covering logical `from..from + len`,
     /// in logical order; `offset` indexes the span. Positions before the region
     /// are skipped; the walk stops at the region's end.
-    pub(crate) fn runs(
+    pub(crate) fn runs_with(
         &self,
+        loops: &[Loop],
         from: i64,
         len: usize,
         released: Option<u64>,
@@ -375,7 +419,7 @@ impl Region {
         let mut i = skip;
         let mut logical = u64::try_from(from + skip as i64).unwrap_or(0);
         while i < len {
-            let Some(run) = self.locate(logical, released) else {
+            let Some(run) = self.locate_with(loops, logical, released) else {
                 return;
             };
             let count = run.count.min(len - i);
@@ -417,7 +461,7 @@ mod tests {
             sample,
             start,
             end,
-            loops: loops.into(),
+            loops: Region::pack_loops(loops),
             reverse,
             mix: None,
             table: None,
@@ -427,14 +471,14 @@ mod tests {
     #[test]
     fn a_loop_shift_stays_in_the_region_and_four_frames_long() {
         let shifted_from = |from, end, start, length| {
-            let l = Loop {
+            let mut loops = [Loop {
                 start: 10.max(from),
                 end: 70,
                 ..Loop::default()
-            };
-            let mut r = region(from, end, vec![l], false);
-            r.shift_loops(start, length);
-            r.loops.first().map(|l| (l.start, l.end))
+            }];
+            let r = region(from, end, loops.to_vec(), false);
+            shift_loops(&mut loops, r.sample.frames(), r.start, r.end, start, length);
+            loops.first().map(|l| (l.start, l.end))
         };
         let shifted = |end, start, length| shifted_from(0, end, start, length);
         // v1's native-checked writes, at a tenth of its 1000-frame sample.
@@ -451,7 +495,9 @@ mod tests {
 
     fn collect(r: &Region, from: i64, len: usize) -> Vec<(usize, u64, usize)> {
         let mut v = Vec::new();
-        r.runs(from, len, None, |o, run| v.push((o, run.first, run.count)));
+        r.runs_with(r.loops_slice(), from, len, None, |o, run| {
+            v.push((o, run.first, run.count))
+        });
         v
     }
 
@@ -476,7 +522,7 @@ mod tests {
         assert_eq!(collect(&r, 15, 12), vec![(0, 15, 5), (5, 10, 7)]);
         // The play position of a looped voice is in the sample, not elapsed.
         assert_eq!(r.frame_at(25, None), Some(15));
-        assert!(!r.finished(1e9, None));
+        assert!(!r.finished_with(r.loops_slice(), 1e9, None));
     }
 
     #[test]
@@ -485,6 +531,6 @@ mod tests {
         assert_eq!(collect(&r, 0, 4), vec![(0, 19, 4)]);
         assert_eq!(r.frame_at(3, None), Some(16));
         assert_eq!(collect(&r, 8, 5), vec![(0, 11, 2)]);
-        assert!(r.finished(10.0, None));
+        assert!(r.finished_with(r.loops_slice(), 10.0, None));
     }
 }

@@ -348,14 +348,14 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
             0.0
         },
         steep_low_cut: true,
-        body,
+        body: std::borrow::Cow::Borrowed(body),
         triangle_s,
-        shape: match r.mode {
+        shape: std::borrow::Cow::Borrowed(match r.mode {
             1 => &ANALOGUE_SHAPE,
             2 => &TAPE_SHAPE,
             3 => &VINTAGE_SHAPE,
             _ => &[],
-        },
+        }),
         noise: match r.mode {
             1 => ANALOGUE_NOISE,
             2 => TAPE_NOISE,
@@ -507,6 +507,6 @@ mod tests {
                 ..INIT
             },
         );
-        assert!(matches!(old.body, [_, s] if (s.hz - 3568.0).abs() < 0.5));
+        assert!(matches!(&*old.body, [_, s] if (s.hz - 3568.0).abs() < 0.5));
     }
 }

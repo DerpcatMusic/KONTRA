@@ -1043,8 +1043,8 @@ fn slot_knobs_move_a_filters_fields_through_the_slots_own_laws() {
         output: 1.0,
         dry: 0.0,
     });
-    plan.groups[0].inserts = vec![filter];
-    plan.inserts = vec![None, filter];
+    plan.groups[0].inserts = vec![filter.clone()];
+    plan.inserts = vec![None, filter.clone()];
     let mut bus = plan.buses[0].clone();
     bus.inserts = vec![filter];
     plan.buses.push(bus);
@@ -2527,7 +2527,7 @@ fn a_script_loads_an_effect_type_into_a_slot() {
     assert_eq!(requests.len(), 1);
     assert!(level(&mut e, &[]).abs() < 1e-3, "nothing until installed");
     assert_eq!(e.last_message(), "70 90");
-    let old = e.install(Prepared::new(requests[0], None, RATE));
+    let old = e.install(Prepared::new(requests[0].clone(), None, RATE));
     assert!(old.request().effect.is_some(), "the high-pass comes back");
     assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
     assert_eq!(e.last_message(), "-1 1 1");
@@ -2573,7 +2573,7 @@ fn wait_async_holds_until_the_effect_type_is_installed() {
     e.drain_requests(|r| requests.push(r));
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "init 70", "still waiting");
-    e.install(Prepared::new(requests[0], None, RATE));
+    e.install(Prepared::new(requests[0].clone(), None, RATE));
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "after 0");
 }
@@ -2606,10 +2606,10 @@ fn a_reverb_type_change_rebuilds_the_reverb_with_its_network() {
     level(&mut e, &[on(60)]);
     let mut requests = Vec::new();
     e.drain_requests(|r| requests.push(r));
-    let [r] = requests[..] else {
+    let [r] = &requests[..] else {
         panic!("{requests:?}");
     };
-    let Some(ir::EffectKind::Reverb(reverb)) = r.effect.map(|e| e.kind) else {
+    let Some(ir::EffectKind::Reverb(reverb)) = r.effect.as_ref().map(|e| e.kind.clone()) else {
         panic!("{r:?}");
     };
     assert_ne!(room, hall);
@@ -2617,7 +2617,7 @@ fn a_reverb_type_change_rebuilds_the_reverb_with_its_network() {
         (reverb.network, reverb.seconds, r.ty),
         (Some(hall), 0.5, None)
     );
-    e.install(Prepared::new(r, None, RATE));
+    e.install(Prepared::new(r.clone(), None, RATE));
     level(&mut e, &[on(62)]);
     e.drain_requests(|r| panic!("{r:?}"));
 }
@@ -2887,7 +2887,7 @@ fn a_script_loads_a_library_response_into_a_convolution() {
         (level(&mut e, &[]) - 0.5).abs() < 1e-3,
         "nothing until installed"
     );
-    let old = e.install(Prepared::new(requests[0], Some(&resumed), RATE));
+    let old = e.install(Prepared::new(requests[0].clone(), Some(&resumed), RATE));
     assert!(old.request().effect.is_some(), "the room comes back");
     let l = level(&mut e, &[]);
     assert!((l - 0.25).abs() < 1e-3, "{l}");
@@ -3278,7 +3278,7 @@ fn a_loaded_filter_follows_its_subtype() {
     level(&mut e, &[on(60)]);
     let mut requests = Vec::new();
     e.drain_requests(|r| requests.push(r));
-    e.install(Prepared::new(requests[0], None, RATE));
+    e.install(Prepared::new(requests[0].clone(), None, RATE));
     level(&mut e, &[]);
     let after = level(&mut e, &[]);
     assert!(after.abs() < 1e-3, "{after}");
@@ -3831,7 +3831,7 @@ fn reverb_controls_write_read_and_keep_missing_target_semantics() {
         let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
         let original = kontra_format_kontakt::reverb(0, [0.5; 9]);
         plan.inserts = vec![Some(ir::Effect {
-            kind: ir::EffectKind::Reverb(original),
+            kind: ir::EffectKind::Reverb(original.clone()),
             bypass: false,
             output: 1.0,
             dry: 0.0,
@@ -3851,10 +3851,12 @@ fn reverb_controls_write_read_and_keep_missing_target_semantics() {
         assert!((read - 250_000).abs() <= 1, "{name}: {read}");
         let mut requests = Vec::new();
         e.drain_requests(|r| requests.push(r));
-        let [request] = requests[..] else {
+        let [request] = &requests[..] else {
             panic!("{name}: {requests:?}")
         };
-        let Some(ir::EffectKind::Reverb(actual)) = request.effect.map(|effect| effect.kind) else {
+        let Some(ir::EffectKind::Reverb(actual)) =
+            request.effect.as_ref().map(|effect| effect.kind.clone())
+        else {
             panic!("{name}: {request:?}");
         };
         let expected = kontra_format_kontakt::reverb_laws().get(par).eval(0.25);
@@ -3866,7 +3868,7 @@ fn reverb_controls_write_read_and_keep_missing_target_semantics() {
             };
             assert_eq!(actual.control(control), want, "{name} changed {control:?}");
         }
-        e.install(Prepared::new(request, None, RATE));
+        e.install(Prepared::new(request.clone(), None, RATE));
     }
 
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -4071,7 +4073,6 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
         pan: 0,
         tune: 0,
         fades: [0; 4],
-        loop_pars: Default::default(),
     }];
     plan.inserts = vec![
         Some(ir::Effect {
@@ -4130,7 +4131,7 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
         output: 1.0,
         dry: 0.0,
     });
-    plan.inserts = vec![pass, pass];
+    plan.inserts = vec![pass.clone(), pass];
     // Slot 0 holds a Replika (40), slot 1 a Jump (31).
     plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 40), (ir::RackAt::Inserts, 1, 31)];
     // What the instrument saved there (the translator's held seeds).
@@ -4536,7 +4537,7 @@ fn interacting_knobs_rebuild_the_slot_in_any_order() {
         plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
         let e = Engine::new(Arc::new(plan), store.client(), RATE);
         let sounds = e.group_sounds();
-        let effect = sounds[0].1[0].as_ref().map(|e| e.kind);
+        let effect = sounds[0].1[0].as_ref().map(|e| e.kind.clone());
         (e.last_message().to_owned(), effect)
     };
     let want = build(&[0.8, 0.6]);
@@ -4606,7 +4607,10 @@ fn a_restored_type_in_an_empty_slot_reads_and_moves_its_modelled_knobs() {
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
     assert_eq!(e.last_message(), "400000 600000 800000");
     let sounds = e.group_sounds();
-    assert_eq!(sounds[0].1[0].as_ref().map(|e| e.kind), build(&[0.6, 0.8]));
+    assert_eq!(
+        sounds[0].1[0].as_ref().map(|e| e.kind.clone()),
+        build(&[0.6, 0.8])
+    );
 }
 
 /// A Solid G-EQ's bell switch reads any value but 0 back as 1 and shows no
@@ -4663,7 +4667,7 @@ fn a_bell_switch_reads_one_and_shows_nothing() {
     assert_eq!(e.last_message(), "1[]-10.0");
     assert!(e.unhandled_actions().is_empty());
     let sounds = e.group_sounds();
-    let eq = sounds[0].1[0].as_ref().map(|e| e.kind);
+    let eq = sounds[0].1[0].as_ref().map(|e| e.kind.clone());
     assert_eq!(eq, build(&[0.25, 1.0]));
 }
 
@@ -5296,7 +5300,6 @@ fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
         pan: 0,
         tune: 0,
         fades: [0; 4],
-        loop_pars: Default::default(),
     }];
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     Engine::new(Arc::new(plan), store.client(), RATE)

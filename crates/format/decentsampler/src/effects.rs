@@ -95,9 +95,9 @@ fn translate_effect(node: Node<'_, '_>, notes: &mut Notes) -> ir::Effect {
                 damping_hz: f32::INFINITY,
                 low_cut_hz: 0.0,
                 steep_low_cut: false,
-                body: &[],
+                body: std::borrow::Cow::Borrowed(&[]),
                 triangle_s: None,
-                shape: &[],
+                shape: std::borrow::Cow::Borrowed(&[]),
                 noise: [0.0, 0.0],
                 high_shelf: None,
                 spread_ms,
@@ -112,7 +112,7 @@ fn translate_effect(node: Node<'_, '_>, notes: &mut Notes) -> ir::Effect {
             let depth = attr_f32(node, "modDepth").unwrap_or(0.2).clamp(0.0, 1.0);
             let mix = attr_f32(node, "mix").unwrap_or(0.5).clamp(0.0, 1.0);
             let ensemble = ir::Ensemble {
-                voices: &CHORUS_VOICES,
+                voices: ir::Shared::Borrowed(&CHORUS_VOICES),
                 span: 1.0,
                 hz: rate_hz,
                 sweep: depth * 0.005,

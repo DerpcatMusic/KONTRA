@@ -370,7 +370,8 @@ impl Engine {
             return self.effect_type(group, slot, generic);
         }
         if let EnginePar::Reverb(which) = par {
-            let ir::EffectKind::Reverb(reverb) = self.effect_mut(group, slot, generic)?.kind else {
+            let ir::EffectKind::Reverb(reverb) = &self.effect_mut(group, slot, generic)?.kind
+            else {
                 return None;
             };
             let physical = reverb.control(which);
@@ -382,8 +383,8 @@ impl Engine {
                 .then(|| (value * 1e6).round().clamp(0.0, 1e6) as i32);
         }
         if let Some(which) = effect_par(par) {
-            let e = *self.effect_mut(group, slot, generic)?;
-            return Some(which.get(&e)?.round().clamp(0.0, 1e6) as i32);
+            let e = self.effect_mut(group, slot, generic)?;
+            return Some(which.get(e)?.round().clamp(0.0, 1e6) as i32);
         }
         if let Some(which) = level_par(par) {
             let level = match self.bus_mut(group, generic) {

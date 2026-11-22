@@ -16,10 +16,12 @@
 //! The shaper is two parts so a voice rack can hold it: the oversampled
 //! [`Core`] lives in the rack's unit enum, the base-rate [`Outer`] beside it.
 
+use std::borrow::Cow;
+
 use kontra_dsp_core::{Biquad, Biquad32, Halfband, Section, Sections, Stage};
 
 /// A transfer curve and its amount.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Curve {
     /// −1..=1: above 0 a soft clip `2|x| − x²` blended in (fully at 0.25,
     /// with gain up to 4 beyond); below 0 a cubic expansion `(x² + q)x/(1 + q)`.
@@ -44,14 +46,16 @@ pub enum Curve {
     /// An odd curve from `points` spread evenly over 0..=1, read at `d·|x|`
     /// (held at the last point beyond 1) with linear interpolation, scaled
     /// by `1 / (d·slope at 0)` so small signals pass at unity.
-    Table { drive: f32, points: &'static [f32] },
-    /// Two measured odd curves, each spread evenly over inputs 0..=1 (held
-    /// beyond), `t` of the way from `lower` to `upper`, read at `d·|x|` and
-    /// scaled back by `1/d`.
+    Table {
+        drive: f32,
+        points: Cow<'static, [f32]>,
+    },
+    /// Two measured odd curves, `rows` the lower then the upper (half its
+    /// points each), each spread evenly over inputs 0..=1 (held beyond), `t`
+    /// of the way from lower to upper, read at `d·|x|` and scaled back by `1/d`.
     Blend {
         drive: f32,
-        lower: &'static [f32],
-        upper: &'static [f32],
+        rows: Cow<'static, [f32]>,
         t: f32,
     },
 }
@@ -90,7 +94,7 @@ impl Tone {
 }
 
 /// A curve with its constants worked out once per change.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Prepared {
     Identity,
     Clip {
@@ -120,14 +124,13 @@ enum Prepared {
         /// The drive times the spans between points.
         scale: f32,
         makeup: f32,
-        points: &'static [f32],
+        points: Cow<'static, [f32]>,
     },
     Blend {
         /// The drive times the spans between points.
         scale: f32,
         inverse: f32,
-        lower: &'static [f32],
-        upper: &'static [f32],
+        rows: Cow<'static, [f32]>,
         t: f32,
     },
 }
@@ -164,7 +167,7 @@ impl Prepared {
             Curve::Saturate(d) => Self::Saturate(d * d),
             Curve::Table { drive, points } => {
                 let spans = points.len().saturating_sub(1) as f32;
-                let slope = match points {
+                let slope = match points.as_ref() {
                     [a, b, ..] => (b - a) * spans,
                     _ => 0.0,
                 };
@@ -178,16 +181,10 @@ impl Prepared {
                 }
             }
             Curve::Blend { drive, .. } if drive.is_nan() || drive <= 0.0 => Self::Identity,
-            Curve::Blend {
-                drive,
-                lower,
-                upper,
-                t,
-            } => Self::Blend {
-                scale: drive * lower.len().saturating_sub(1) as f32,
+            Curve::Blend { drive, rows, t } => Self::Blend {
+                scale: drive * (rows.len() / 2).saturating_sub(1) as f32,
                 inverse: 1.0 / drive,
-                lower,
-                upper,
+                rows,
                 t: t.clamp(0.0, 1.0),
             },
             Curve::Power(d) if d.is_nan() || d <= 0.0 => Self::Identity,
@@ -206,10 +203,11 @@ impl Prepared {
         }
     }
 
-    fn apply(self, x: f32) -> f32 {
+    fn apply(&self, x: f32) -> f32 {
         match self {
             Self::Identity => x,
             Self::Clip { amount } => {
+                let amount = *amount;
                 let m = (if amount >= 1.0 { amount * x } else { x }).abs().min(1.0);
                 let bent = (2.0 * m - m * m).copysign(x);
                 if amount >= 1.0 {
@@ -232,15 +230,15 @@ impl Prepared {
             Self::Blend {
                 scale,
                 inverse,
-                lower,
-                upper,
+                rows,
                 t,
             } => {
+                let (lower, upper) = rows.split_at(rows.len() / 2);
                 let at = scale * x.abs();
                 let a = read(lower, at);
                 ((read(upper, at) - a) * t + a).copysign(x) * inverse
             }
-            Self::Tube { lower, upper, t } => crate::tube::tube(x, lower, upper, t),
+            Self::Tube { lower, upper, t } => crate::tube::tube(x, *lower, upper, *t),
             Self::Power {
                 drive,
                 power,
@@ -248,6 +246,8 @@ impl Prepared {
                 scale,
                 inverse,
             } => {
+                let (drive, power, threshold, scale, inverse) =
+                    (*drive, *power, *threshold, *scale, *inverse);
                 if !(-0.25..0.25).contains(&x) {
                     return x;
                 }
@@ -439,7 +439,7 @@ impl Core {
 
     /// Shapes `io` in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        let curve = self.curve;
+        let curve = &self.curve;
         let [pre, post] = self.counts.map(usize::from);
         let (before, rest) = self.inner.split_at_mut(pre.min(INNER));
         let after = rest.get_mut(..post).unwrap_or_default();
@@ -466,7 +466,7 @@ impl Core {
             if n < used { o.retune(f) } else { *o = *f }
         }
         self.counts = new.counts;
-        self.curve = new.curve;
+        self.curve.clone_from(&new.curve);
     }
 
     /// Moves the curve's amount; filter states carry on.

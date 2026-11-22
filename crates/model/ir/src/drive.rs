@@ -2,10 +2,12 @@
 //! overdrive. Each runs on each voice when it sits in a group rack. [`EffectParam`] names the
 //! effect controls a route can move.
 
+use std::borrow::Cow;
+
 use crate::{Effect, EffectKind};
 
 /// A transfer curve and its amount (the engine's `drive::Curve`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Curve {
     /// −1..=1: above 0 a soft clip, below 0 a cubic expansion.
     Soft(f32),
@@ -27,14 +29,17 @@ pub enum Curve {
     /// at `d·|x|` (held at the last point beyond 1) with linear
     /// interpolation, scaled back by `1 / (d·slope at 0)` so small signals
     /// pass at unity.
-    Table { drive: f32, points: &'static [f32] },
+    Table {
+        drive: f32,
+        points: Cow<'static, [f32]>,
+    },
     /// Two measured odd curves, `rows` the lower then the upper (half its
     /// points each), each spread evenly over inputs 0..=1 (held beyond), `t`
     /// of the way from lower to upper, read at `d·|x|` and scaled back by
     /// `1/d`: a gain of `d` in and out. One slice, so a shaper stays small.
     Blend {
         drive: f32,
-        rows: &'static [f32],
+        rows: Cow<'static, [f32]>,
         t: f32,
     },
 }
@@ -61,7 +66,7 @@ impl Curve {
 /// low-pass and a second-order Butterworth high-pass; `sections` add linear
 /// sections at the base rate around all of it and oversampled around the
 /// curve.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Shaper {
     /// The corner of a one-pole low-pass before the curve, pole
     /// `e^(−2π·hz/rate)` (no zero at Nyquist).
@@ -195,7 +200,7 @@ pub enum RingSource {
 /// An overdrive pedal (the engine's `drive::Overdrive`): one-pole splits
 /// around a clipping curve at four times the rate, the shaped band fed back
 /// into the input split and mixed with the dry one through a tone low-pass.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Overdrive {
     /// The input split's one-pole corners in Hz: bass, then two high-passes.
     pub split_hz: [f32; 3],
@@ -208,7 +213,7 @@ pub struct Overdrive {
     /// Linear output gain.
     pub level: f32,
     /// The clipping curve at 256 points over inputs −128..=127.
-    pub curve: &'static [f32; 256],
+    pub curve: Cow<'static, [f32]>,
 }
 
 /// A diode clipper circuit (the engine's `drive::Clipper`), solved per

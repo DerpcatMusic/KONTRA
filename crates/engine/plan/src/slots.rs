@@ -25,7 +25,7 @@ impl Plan {
             .slot_shapes
             .types
             .get(usize::from(ty))
-            .map(|t| t.effect)
+            .map(|t| t.effect.clone())
         else {
             return false;
         };
@@ -46,10 +46,11 @@ impl Plan {
         let Some(Some(ir::Effect {
             kind: ir::EffectKind::Convolution { impulse },
             ..
-        })) = self.slot_mut(at, slot).map(|s| *s)
+        })) = self.slot_mut(at, slot).map(|s| s.as_ref())
         else {
             return false;
         };
+        let impulse = *impulse;
         // A script-made convolution holds no response yet: its fresh law.
         let law = if impulse == ir::Impulse::NONE {
             self.slot_shapes.fresh_impulse()

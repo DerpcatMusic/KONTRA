@@ -64,7 +64,7 @@ pub fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
         // 60 dB over the loops a mean comb runs at that feedback.
         seconds: 3.0 * COMBS.mean_s() / -feedback.log10(),
         size: 1.0,
-        network: Some(ir::Network::Combs(&COMBS)),
+        network: Some(ir::Network::Combs(ir::Shared::Borrowed(&COMBS))),
         damping: 0.35 * (1.0 - colour),
         diffusion: 0.5,
         predelay_ms: predelay_ms.clamp(0.0, 180.0),
