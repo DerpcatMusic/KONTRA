@@ -2804,7 +2804,6 @@ version = "7.0.0"
 dependencies = [
  "cpal",
  "crossbeam-queue",
- "dirs",
  "keyboard-types",
  "midir",
  "moose-baseview",
