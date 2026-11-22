@@ -39,6 +39,11 @@ pub enum Dsp {
 /// mixes the input back.
 pub trait Wet: Send {
     fn process(&mut self, io: &mut [[f32; 2]]);
+    /// Processes `io` using an external sidechain `key` signal for detection.
+    /// Non-sidechain processors ignore `key` and run [`Wet::process`].
+    fn process_sidechain(&mut self, io: &mut [[f32; 2]], _key: &[[f32; 2]]) {
+        self.process(io);
+    }
     /// The slot's settings as scripts left them, at the host's tempo,
     /// before each block. Never allocates.
     fn set(&mut self, _kind: &ir::EffectKind, _tempo: f32) {}
@@ -83,6 +88,10 @@ impl Wet for Convolver {
 impl Wet for Rated<Compressor> {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         self.0.process(io);
+    }
+
+    fn process_sidechain(&mut self, io: &mut [[f32; 2]], key: &[[f32; 2]]) {
+        self.0.process_sidechain(io, key);
     }
 
     fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
@@ -371,6 +380,11 @@ struct Strip(Compressor, Shaper, u32);
 impl Wet for Strip {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         self.0.process(io);
+        self.1.process(io);
+    }
+
+    fn process_sidechain(&mut self, io: &mut [[f32; 2]], key: &[[f32; 2]]) {
+        self.0.process_sidechain(io, key);
         self.1.process(io);
     }
 

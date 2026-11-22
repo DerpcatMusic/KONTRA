@@ -239,3 +239,219 @@ fn graph_mode_runs_group_inserts_and_legacy_instrument_racks() {
         "legacy instrument insert zero-gain must not be silently bypassed in graph mode: muted={muted_peak}"
     );
 }
+
+#[test]
+fn granular_cloud_sidechain_ducking_and_param_addr_allocate_nothing_on_audio_thread() {
+    const RATE: u32 = 48_000;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let fmt = SampleFmt {
+        encoding: Encoding::F32,
+        channels: 1,
+    };
+    let mut wav_bytes = Vec::with_capacity(4096 * 4);
+    for i in 0..4096 {
+        let s = (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin() * 0.5;
+        wav_bytes.extend_from_slice(&s.to_le_bytes());
+    }
+    let grain_sample = store
+        .load_many_now(vec![LoadRequest {
+            key: BlobKey {
+                file: "<grain-rt>".into(),
+                offset: 0,
+                fmt,
+            },
+            source: Arc::new(MemSource::new(fmt, wav_bytes)),
+            frames: 4096,
+            pin: std::iter::once(0..4096).collect(),
+        }])
+        .into_iter()
+        .next()
+        .unwrap()
+        .unwrap();
+
+    // Group 0 (key 60): Granular cloud program -> Compressor Rack -> Output 0
+    // Group 1 (key 62): Loud Saw oscillator key -> Sidechain input of Compressor Rack
+    let z0 = {
+        let mut z = Zone::new(
+            Region {
+                sample: Arc::clone(&grain_sample),
+                start: 0,
+                end: 4096,
+                loops: None,
+                mix: None,
+                table: None,
+                reverse: false,
+            },
+            60,
+            RATE,
+        );
+        z.keys = 60..=60;
+        z.group = 0;
+        z
+    };
+    let z1 = {
+        let mut z = Zone::new(
+            Region {
+                sample: grain_sample,
+                start: 0,
+                end: 1,
+                loops: None,
+                mix: None,
+                table: None,
+                reverse: false,
+            },
+            69,
+            (440.0 * OSC_PERIOD) as u32,
+        );
+        z.keys = 62..=62;
+        z.group = 1;
+        z
+    };
+    let mut plan = Plan::new(vec![z0, z1], 8);
+    plan.groups = vec![
+        kontra_engine::Group {
+            granular: Some(kontra_voice::GranularSpec {
+                grain_ms: 40.0,
+                density: 30.0,
+                position: 0.3,
+                pitch_semitones: 0.0,
+                spread: 0.5,
+            }),
+            inserts: vec![Some(ir::Effect {
+                kind: ir::EffectKind::Filter(ir::Filter {
+                    pass: ir::Pass::Low,
+                    hz: 16_000.0,
+                    stages: 2,
+                    ladder: None,
+                    damping: [1.414; 3],
+                    gain: 1.0,
+                    octaves: 0.0,
+                    q_octaves: 0.0,
+                }),
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            })],
+            ..kontra_engine::Group::standard()
+        },
+        kontra_engine::Group {
+            oscillator: Some(Oscillator::new(OscWave::Saw, 0.0)),
+            ..kontra_engine::Group::standard()
+        },
+    ];
+
+    let mut graph = ir::AudioGraph::default();
+    let comp = graph.push_effect(ir::Effect {
+        kind: ir::EffectKind::Compressor(ir::Compressor {
+            threshold_db: -24.0,
+            ratio: 10.0,
+            knee_db: 0.0,
+            attack_ms: 0.5,
+            release_ms: 40.0,
+            makeup_db: 0.0,
+            makeup_slope: 0.0,
+            link: true,
+            mix: 1.0,
+            detector: ir::Detector::Input,
+            sidechain_hz: None,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    });
+    let g0 = graph.push_node(ir::GraphNodeKind::GroupInput { group: 0 });
+    let g1 = graph.push_node(ir::GraphNodeKind::GroupInput { group: 1 });
+    let rack = graph.push_node(ir::GraphNodeKind::Rack {
+        effects: vec![comp],
+        layout: ir::ChannelLayout::Stereo,
+    });
+    let out0 = graph.push_node(ir::GraphNodeKind::Output {
+        bus_index: 0,
+        layout: ir::ChannelLayout::Stereo,
+    });
+    graph.connect(g0, rack, 1.0, true);
+    graph.connect_sidechain(g1, rack, 1.0);
+    graph.connect(rack, out0, 1.0, true);
+    plan.graph = Some(graph);
+
+    let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; 256];
+    let note_event = |key: u8| Timed {
+        at: SampleTime(0),
+        body: Event::NoteOn {
+            note: HostNote {
+                port: 0,
+                channel: 0,
+                key,
+                id: -1,
+                clap: true,
+            },
+            velocity: 1.0,
+            tune: 0.0,
+        },
+    };
+
+    COUNT.with(|n| n.set(Some(0)));
+    // Play granular program alone first.
+    {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut out];
+        engine.process_multi(&mut outs, &[note_event(60)]);
+    }
+    for _ in 0..6 {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut out];
+        engine.process_multi(&mut outs, &[]);
+    }
+    let unducked_peak = out.iter().map(|f| f[0].abs()).fold(0.0_f32, f32::max);
+
+    // Fire sidechain key on group 1 -> program must duck cleanly.
+    {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut out];
+        engine.process_multi(&mut outs, &[note_event(62)]);
+    }
+    for _ in 0..6 {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut out];
+        engine.process_multi(&mut outs, &[]);
+    }
+    let ducked_peak = out.iter().map(|f| f[0].abs()).fold(0.0_f32, f32::max);
+
+    // Live zero-alloc ParamAddr API: close group 0 filter cutoff and verify get_param matches.
+    assert!(engine.set_param(
+        ir::Scope::Group(0),
+        ir::ParamAddr::FilterCutoff {
+            insert: 0,
+            hz_range: true,
+        },
+        150.0,
+    ));
+    assert_eq!(
+        engine.get_param(
+            ir::Scope::Group(0),
+            ir::ParamAddr::FilterCutoff {
+                insert: 0,
+                hz_range: true,
+            },
+        ),
+        Some(150.0)
+    );
+    assert!(engine.set_param(ir::Scope::Instrument, ir::ParamAddr::Volume, 0.5));
+    assert_eq!(
+        engine.get_param(ir::Scope::Instrument, ir::ParamAddr::Volume),
+        Some(0.5)
+    );
+    for _ in 0..4 {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut out];
+        engine.process_multi(&mut outs, &[]);
+    }
+    let allocated = COUNT.with(|n| n.replace(None));
+
+    assert_eq!(
+        allocated,
+        Some(0),
+        "granular + sidechain + set_param RT allocs"
+    );
+    assert!(unducked_peak > 0.15, "granular peak={unducked_peak}");
+    assert!(
+        ducked_peak < unducked_peak * 0.4,
+        "sidechain key must duck granular cloud: unducked={unducked_peak}, ducked={ducked_peak}"
+    );
+}

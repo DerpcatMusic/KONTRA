@@ -214,6 +214,9 @@ pub struct Group {
     /// Its zones synthesize audio via a real-time polyBLEP oscillator
     /// ([`kontra_ir::Generator::Oscillator`]).
     pub oscillator: Option<kontra_voice::Oscillator>,
+    /// Its zones synthesize audio via a real-time granular cloud engine
+    /// ([`kontra_ir::Generator::Granular`]).
+    pub granular: Option<kontra_voice::GranularSpec>,
     /// The speed its voices start at when its source stretches time
     /// ([`kontra_ir::Group::speed`]).
     pub speed: Option<f32>,
@@ -317,6 +320,7 @@ impl Group {
             bus: 0,
             wavetable: None,
             oscillator: None,
+            granular: None,
             speed: None,
             glide: None,
             zones: ZoneRules::PLAIN,

@@ -379,6 +379,17 @@ impl Rack {
 
     /// Processes `io`; a send slot adds it to `taps` (one buffer per send slot).
     pub fn process(&mut self, io: &mut [[f32; 2]], taps: &mut [Box<[[f32; 2]]>], tempo: f32) {
+        self.process_with_sidechain(io, None, taps, tempo);
+    }
+
+    /// Processes `io` with an optional external sidechain detector signal `sidechain`.
+    pub fn process_with_sidechain(
+        &mut self,
+        io: &mut [[f32; 2]],
+        sidechain: Option<&[[f32; 2]]>,
+        taps: &mut [Box<[[f32; 2]]>],
+        tempo: f32,
+    ) {
         let slots = self.slots.iter().zip(self.dsp.iter_mut());
         let slots = slots.zip(self.levels.iter_mut()).zip(self.quiet.iter_mut());
         for (n, (((slot, dsp), levels), quiet)) in slots.enumerate() {
@@ -416,7 +427,8 @@ impl Rack {
                     // silence stored for longer than it remembers: its state is
                     // silent, so its clocks move on alone.
                     let deaf = processor.deaf();
-                    let still = deaf || is_silent(io);
+                    let key_silent = sidechain.is_none_or(is_silent);
+                    let still = deaf || (is_silent(io) && key_silent);
                     if still && processor.memory().is_some_and(|m| *quiet >= m) {
                         processor.idle(wet);
                         if deaf {
@@ -429,7 +441,11 @@ impl Rack {
                         continue;
                     }
                     wet.copy_from_slice(io);
-                    processor.process(wet);
+                    if let Some(key) = sidechain {
+                        processor.process_sidechain(wet, key);
+                    } else {
+                        processor.process(wet);
+                    }
                     // Its state, not only what it let out: a closed filter or
                     // a zero output may hide a tail still ringing inside.
                     let settled = processor.written() < SILENT;

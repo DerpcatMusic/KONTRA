@@ -45,6 +45,7 @@ fn start(region: Region, step: f64, envelope: Ahdsr) -> VoiceStart {
         mix: None,
         read: None,
         oscillator: None,
+        granular: None,
         step,
         gain: [[1.0, 0.0], [0.0, 1.0]],
         lag: kontra_voice::Lag::NONE,

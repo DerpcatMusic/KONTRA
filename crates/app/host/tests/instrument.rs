@@ -555,3 +555,134 @@ velocities = [1, 127]
         "expected aux/main ratio ~4.0, got {ratio} (aux={aux_peak}, main={main_peak})"
     );
 }
+
+#[test]
+fn native_kontra_granular_cloud_and_sidechain_ducking_render() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("kontra_granular_sidechain_e2e");
+    std::fs::create_dir_all(&dir).unwrap();
+    let frames = RATE / 2;
+    let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+    for field in [16u32, 1 | (1 << 16), RATE, RATE * 2, 2 | (16 << 16)] {
+        wav.extend(field.to_le_bytes());
+    }
+    wav.extend(b"data");
+    wav.extend((frames * 2).to_le_bytes());
+    for i in 0..frames {
+        let s = (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
+        wav.extend(((s * 20_000.0) as i16).to_le_bytes());
+    }
+    let riff = (wav.len() - 8) as u32;
+    wav.splice(4..8, riff.to_le_bytes());
+    std::fs::write(dir.join("pad.wav"), wav).unwrap();
+    let path = dir.join("GranularDuck.kontra");
+    let toml = r#"
+version = 1
+name = "GranularDuck"
+voices = 16
+
+[[graph.effects]]
+kind = "compressor"
+threshold_db = -24.0
+ratio = 10.0
+attack_ms = 0.5
+release_ms = 50.0
+
+[[graph.nodes]]
+kind = "group_input"
+group = 0
+
+[[graph.nodes]]
+kind = "group_input"
+group = 1
+
+[[graph.nodes]]
+kind = "rack"
+effects = [0]
+
+[[graph.nodes]]
+kind = "output"
+bus_index = 0
+
+[[graph.edges]]
+from = 0
+to = 2
+gain = 1.0
+post_fader = true
+
+[[graph.edges]]
+from = 1
+to = 2
+gain = 1.0
+post_fader = true
+sidechain = true
+
+[[graph.edges]]
+from = 2
+to = 3
+gain = 1.0
+post_fader = true
+
+[[groups]]
+name = "Cloud"
+
+[groups.generator]
+kind = "granular"
+sample = "pad.wav"
+grain_ms = 40.0
+density = 30.0
+position = 0.25
+spread = 0.7
+
+[[groups.zones]]
+sample = "pad.wav"
+keys = [60, 60]
+velocities = [1, 127]
+
+[[groups]]
+name = "Key"
+
+[groups.generator]
+kind = "oscillator"
+wave = "saw"
+
+[[groups.zones]]
+keys = [62, 62]
+velocities = [1, 127]
+"#;
+    std::fs::write(&path, toml).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let loaded = kontra_host::instrument::load(&path, RATE, &mut store).unwrap();
+    assert!(
+        loaded.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        loaded.diagnostics
+    );
+
+    let mut e = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
+    let mut main_out = vec![[0.0; 2]; 512];
+    {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut main_out];
+        e.process_multi(&mut outs, &[note(60, true)]);
+    }
+    for _ in 0..4 {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut main_out];
+        e.process_multi(&mut outs, &[]);
+    }
+    let unducked = main_out.iter().map(|f| f[0].abs()).fold(0.0_f32, f32::max);
+    assert!(unducked > 0.1, "granular cloud must sound: {unducked}");
+
+    // Trigger key group (MIDI 62) into sidechain detector -> program ducks cleanly.
+    {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut main_out];
+        e.process_multi(&mut outs, &[note(62, true)]);
+    }
+    for _ in 0..4 {
+        let mut outs: [&mut [[f32; 2]]; 1] = [&mut main_out];
+        e.process_multi(&mut outs, &[]);
+    }
+    let ducked = main_out.iter().map(|f| f[0].abs()).fold(0.0_f32, f32::max);
+    assert!(
+        ducked < unducked * 0.4,
+        "sidechain key must duck granular pad: unducked={unducked}, ducked={ducked}"
+    );
+}

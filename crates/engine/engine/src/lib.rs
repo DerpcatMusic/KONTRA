@@ -26,6 +26,7 @@ mod midi_object;
 mod modulators;
 mod mono;
 mod par_display;
+mod param_addr;
 mod params;
 mod pgs;
 mod racks;

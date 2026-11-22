@@ -53,6 +53,8 @@ struct RuntimeNode {
     buffer: Box<[[f32; 2]]>,
     /// Pre-fader scratch copy used only when a node has pre-fader outgoing sends.
     pre_fader: Option<Box<[[f32; 2]]>>,
+    /// Sidechain detector buffer allocated only when a node has incoming sidechain edges.
+    sidechain: Option<Box<[[f32; 2]]>>,
 }
 
 /// Real-time allocation-free audio DAG executor compiled from [`ir::AudioGraph`].
@@ -76,6 +78,7 @@ impl GraphRuntime {
         let node_count = graph.nodes.len();
 
         let mut outgoing: Vec<Vec<CompiledEdge>> = (0..node_count).map(|_| Vec::new()).collect();
+        let mut has_sidechain_in = vec![false; node_count];
         for e in &graph.edges {
             let from = usize::from(e.from.0);
             let to = usize::from(e.to.0);
@@ -83,6 +86,11 @@ impl GraphRuntime {
                 && to < node_count
                 && let Some(list) = outgoing.get_mut(from)
             {
+                if e.sidechain
+                    && let Some(flag) = has_sidechain_in.get_mut(to)
+                {
+                    *flag = true;
+                }
                 list.push(CompiledEdge {
                     to,
                     gain: e.gain,
@@ -144,11 +152,13 @@ impl GraphRuntime {
                     bus_index: *bus_index,
                 },
             };
+            let sidechain_in = has_sidechain_in.get(i).copied().unwrap_or(false);
             nodes.push(RuntimeNode {
                 kind,
                 edges,
                 buffer: vec![[0.0; 2]; max_frames].into_boxed_slice(),
                 pre_fader: has_pre_fader.then(|| vec![[0.0; 2]; max_frames].into_boxed_slice()),
+                sidechain: sidechain_in.then(|| vec![[0.0; 2]; max_frames].into_boxed_slice()),
             });
         }
 
@@ -197,12 +207,15 @@ impl GraphRuntime {
             .unwrap_or(1)
     }
 
-    /// Clears all node buffers before injecting group audio for a block.
+    /// Clears all node audio and sidechain buffers before injecting group audio for a block.
     pub fn clear(&mut self, frames: usize) {
         let len = frames.min(self.max_frames);
         for node in &mut self.nodes {
             if let Some(buf) = node.buffer.get_mut(..len) {
                 buf.fill([0.0; 2]);
+            }
+            if let Some(sc) = node.sidechain.as_mut().and_then(|b| b.get_mut(..len)) {
+                sc.fill([0.0; 2]);
             }
         }
     }
@@ -277,6 +290,8 @@ impl GraphRuntime {
                 continue;
             };
 
+            let sidechain_slice = node.sidechain.as_deref().and_then(|s| s.get(..len));
+
             match &mut node.kind {
                 RuntimeNodeKind::GroupInput { .. } => {
                     if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
@@ -284,14 +299,14 @@ impl GraphRuntime {
                     }
                 }
                 RuntimeNodeKind::Bus { rack, gain, pan } => {
-                    rack.process(buf, &mut [], tempo);
+                    rack.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
                     if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
                         pre.copy_from_slice(buf);
                     }
                     apply_gain_pan(buf, *gain, *pan);
                 }
                 RuntimeNodeKind::Rack { rack } => {
-                    rack.process(buf, &mut [], tempo);
+                    rack.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
                     if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
                         pre.copy_from_slice(buf);
                     }
@@ -302,12 +317,12 @@ impl GraphRuntime {
                     amp_gain,
                     amp_pan,
                 } => {
-                    pre.process(buf, &mut [], tempo);
+                    pre.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
                     if let Some(pre_buf) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
                         pre_buf.copy_from_slice(buf);
                     }
                     apply_gain_pan(buf, *amp_gain, *amp_pan);
-                    post.process(buf, &mut [], tempo);
+                    post.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
                 }
                 RuntimeNodeKind::Mix { gain, pan } => {
                     if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
@@ -336,7 +351,7 @@ impl GraphRuntime {
                         Some(e) => (e.to, e.gain, e.post_fader, e.sidechain),
                         None => continue,
                     };
-                if sidechain || to == idx {
+                if to == idx {
                     continue;
                 }
                 // Split `self.nodes` cleanly without unsafe code.
@@ -358,7 +373,15 @@ impl GraphRuntime {
                 } else {
                     src_node.buffer.get(..len)
                 };
-                if let (Some(src), Some(dst)) = (src_slice, dst_node.buffer.get_mut(..len)) {
+                let dst_slice = if sidechain {
+                    dst_node
+                        .sidechain
+                        .as_deref_mut()
+                        .and_then(|b| b.get_mut(..len))
+                } else {
+                    dst_node.buffer.get_mut(..len)
+                };
+                if let (Some(src), Some(dst)) = (src_slice, dst_slice) {
                     for (d, s) in dst.iter_mut().zip(src.iter()) {
                         d[0] += s[0] * gain;
                         d[1] += s[1] * gain;
@@ -475,6 +498,88 @@ mod tests {
             (aux_buf[31][0] - 0.5).abs() < 1e-4,
             "aux {}",
             aux_buf[31][0]
+        );
+    }
+
+    #[test]
+    fn graph_runtime_sidechain_key_ducks_program_audio() {
+        let mut graph = ir::AudioGraph::default();
+        let comp = graph.push_effect(ir::Effect {
+            kind: ir::EffectKind::Compressor(ir::Compressor {
+                threshold_db: -24.0,
+                ratio: 10.0,
+                knee_db: 0.0,
+                attack_ms: 0.5,
+                release_ms: 50.0,
+                makeup_db: 0.0,
+                makeup_slope: 0.0,
+                link: true,
+                mix: 1.0,
+                detector: ir::Detector::Input,
+                sidechain_hz: None,
+            }),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        });
+        let prog = graph.push_node(ir::GraphNodeKind::GroupInput { group: 0 });
+        let key = graph.push_node(ir::GraphNodeKind::GroupInput { group: 1 });
+        let comp_node = graph.push_node(ir::GraphNodeKind::Rack {
+            effects: vec![comp],
+            layout: ir::ChannelLayout::Stereo,
+        });
+        let out_node = graph.push_node(ir::GraphNodeKind::Output {
+            bus_index: 0,
+            layout: ir::ChannelLayout::Stereo,
+        });
+        graph.connect(prog, comp_node, 1.0, true);
+        graph.connect_sidechain(key, comp_node, 1.0);
+        graph.connect(comp_node, out_node, 1.0, true);
+
+        // 1. Program only (no sidechain key): passes uncompressed at ~0.5.
+        let mut rt = GraphRuntime::new(&graph, 48_000, 256, &[]).unwrap();
+        let mut prog_only = [[0.0; 2]; 256];
+        for _ in 0..4 {
+            prog_only.fill([0.0; 2]);
+            rt.clear(256);
+            rt.add_group_audio(0, &[[0.5; 2]; 256]);
+            rt.process(256, 120.0, &mut [&mut prog_only]);
+        }
+
+        // 2. Key only (no program): output is completely silent.
+        let mut rt_key = GraphRuntime::new(&graph, 48_000, 256, &[]).unwrap();
+        let mut key_only = [[0.0; 2]; 256];
+        rt_key.clear(256);
+        rt_key.add_group_audio(1, &[[0.9; 2]; 256]);
+        rt_key.process(256, 120.0, &mut [&mut key_only]);
+
+        // 3. Program + loud key: program is heavily ducked!
+        let mut rt_duck = GraphRuntime::new(&graph, 48_000, 256, &[]).unwrap();
+        let mut ducked = [[0.0; 2]; 256];
+        for _ in 0..4 {
+            ducked.fill([0.0; 2]);
+            rt_duck.clear(256);
+            rt_duck.add_group_audio(0, &[[0.5; 2]; 256]);
+            rt_duck.add_group_audio(1, &[[0.9; 2]; 256]);
+            rt_duck.process(256, 120.0, &mut [&mut ducked]);
+        }
+
+        assert!(
+            prog_only[255][0] > 0.45,
+            "program-only should pass uncompressed: {}",
+            prog_only[255][0]
+        );
+        assert!(
+            key_only
+                .iter()
+                .all(|f| f[0].abs() < 1e-6 && f[1].abs() < 1e-6),
+            "key-only must not bleed into Main Out"
+        );
+        assert!(
+            ducked[255][0] < prog_only[255][0] * 0.25,
+            "sidechain key must duck program: prog_only={}, ducked={}",
+            prog_only[255][0],
+            ducked[255][0]
         );
     }
 }
