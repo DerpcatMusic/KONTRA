@@ -152,7 +152,7 @@ pub fn latch(ui: &mut Ui, id: impl Into<Id>, label: &str, name: &str, on: bool) 
 
 /// A dial: a vertical drag sweeps `range`, a double click puts back
 /// `default`. It shows no words; `name` and `readout` are its tooltip, so a
-/// strip of them stays quiet until asked. MUI's knob, quiet.
+/// strip of them stays quiet until asked. MUI's K knob (shared with KURV), quiet.
 pub fn knob(
     ui: &mut Ui,
     id: impl Into<Id>,
@@ -163,7 +163,7 @@ pub fn knob(
 ) -> Response {
     let r = mui::widgets::knob(ui, id, name, value, Domain::new(range).default(default));
     Response {
-        el: r.el.quiet().value_text(readout).px(CONTROL / 1.25).el(),
+        el: r.el.quiet().look(mui::widgets::Knob::k()).value_text(readout).px(CONTROL / 1.25).el(),
         changed: r.changed,
     }
 }
