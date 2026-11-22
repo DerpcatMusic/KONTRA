@@ -299,6 +299,11 @@ impl Envelope {
         }
     }
 
+    /// Updates the release duration (in frames) before [`Self::release`] runs.
+    pub fn set_release(&mut self, frames: u32) {
+        self.settings.release = frames;
+    }
+
     /// The key-up: the release starts smoothly from the current output gain
     /// (`floor + depth·level`), avoiding any cliff click when `floor > 0`.
     /// Ignored in AHD one-shot mode.

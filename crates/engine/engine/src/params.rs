@@ -761,6 +761,7 @@ impl Engine {
         let Some(g) = self.group_mut(group) else {
             return false;
         };
+        let mut updated = false;
         let routed = routed_envelope(g, slot).map(|e| e.stages);
         if let (Some((i, stage)), Some(stages)) = (stage_point(par), routed) {
             // Measured (probes/flex_stage_writes.lua): an envelope without
@@ -768,22 +769,21 @@ impl Engine {
             if !stages {
                 return true;
             }
-            let Some(p) = routed_index(g, slot)
+            if let Some(p) = routed_index(g, slot)
                 .and_then(|n| g.envelopes.get_mut(n))
                 .and_then(|e| e.points.get_mut(i))
-            else {
-                return false;
-            };
-            match par {
-                EnginePar::Sustain => p.level = CUBE.eval_f64(x) as f32,
-                EnginePar::AttackCurve => p.curve = attack_shape(x),
-                _ => p.ms = stage.eval_f64(x) as f32,
+            {
+                match par {
+                    EnginePar::Sustain => p.level = CUBE.eval_f64(x) as f32,
+                    EnginePar::AttackCurve => p.curve = attack_shape(x),
+                    _ => p.ms = stage.eval_f64(x) as f32,
+                }
+                updated = true;
             }
-            return true;
         }
         let amplitude = |m: &ir::Mod| i32::from(m.slot) == slot && m.kind == ir::ModKind::Envelope;
         if !g.mods.iter().any(amplitude) {
-            return false;
+            return updated;
         }
         let frames = |ms: f64| (ms * f64::from(rate) / 1000.0).round() as u32;
         let e = &mut g.envelope;
@@ -794,7 +794,7 @@ impl Engine {
             EnginePar::Release => e.release = frames(STAGE_25S.eval_f64(x)),
             EnginePar::Sustain => e.sustain = CUBE.eval_f64(x) as f32,
             EnginePar::AttackCurve => e.attack_shape = attack_shape(x),
-            _ => return false,
+            _ => return updated,
         }
         if let Ok(group_id) = u32::try_from(group) {
             let plan = std::sync::Arc::clone(&self.plan);

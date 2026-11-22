@@ -173,6 +173,8 @@ pub struct Group {
     pub level: Level,
     /// Its samples are unloaded (KSP `purge_group`): its zones do not play.
     pub purged: bool,
+    /// Muted (or silenced by another group's solo): zones stay loaded, start no voices.
+    pub muted: bool,
     /// Effects on its voices, by slot.
     pub inserts: Vec<Option<ir::Effect>>,
     pub mods: Vec<ir::Mod>,
@@ -272,6 +274,7 @@ impl Group {
             name: String::new(),
             level: Level::UNITY,
             purged: false,
+            muted: false,
             inserts: Vec::new(),
             mods: vec![ir::Mod {
                 name: String::new(),
@@ -656,6 +659,9 @@ pub fn source(kind: &ir::ModKind) -> Option<ir::Source> {
         | K::Send { source, .. }
         | K::SampleStart { source, .. }
         | K::Attack { source, .. }
+        | K::Hold { source, .. }
+        | K::Decay { source, .. }
+        | K::Sustain { source, .. }
         | K::Release { source, .. }
         | K::LfoPhase { source, .. }
         | K::LfoRate { source, .. }

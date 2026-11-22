@@ -53,6 +53,7 @@ pub(crate) fn external(
                 // its channel's (MPE: the same).
                 ModSource::PolyAftertouch | ModSource::MonoAftertouch => Some(ir::Source::Pressure),
                 ModSource::KeyPosition => Some(ir::Source::Key),
+                ModSource::ReleaseVelocity => Some(ir::Source::ReleaseVelocity),
                 ModSource::Constant => Some(ir::Source::Constant),
                 // KSP set_event_par_arr(id, $EVENT_PAR_MOD_VALUE_ID, v, index).
                 ModSource::Script(index) => u16::try_from(index).ok().map(ir::Source::Script),
@@ -64,7 +65,7 @@ pub(crate) fn external(
                 // Per-zone sample-position envelope (BZEnvMod, BParExternalMod
                 // category 2); matches each zone's BZoneLevelEnv by ext_mod_idx.
                 ModSource::ZoneEnvelope => u8::try_from(ext_idx).ok().map(ir::Source::ZoneEnvelope),
-                ModSource::ReleaseVelocity | ModSource::Unassigned => None,
+                ModSource::PolyExpression(_) | ModSource::Unassigned => None,
             };
             for (target, t) in p.targets.iter().enumerate() {
                 // The loop consumer is off for a streamed sample (its preload
@@ -80,6 +81,7 @@ pub(crate) fn external(
                             ir::Source::PitchBend
                                 | ir::Source::Random { bipolar: true }
                                 | ir::Source::ZoneEnvelope(_)
+                                | ir::Source::Key
                         );
                         let signed = bipolar && signed_route(&t.param);
                         let result = shaped(&mut out.shapers, s, &shaper.curve, signed);
@@ -99,8 +101,73 @@ pub(crate) fn external(
                         });
                         result
                     }
+                    // Unshaped KeyPosition on signed targets produces C3-centered
+                    // octaves `(key - 60) / 12` (`0140840000.c:9341`): a 2-point
+                    // linear transfer mapping `key / 127` in `0..=1` to
+                    // `-5.0..=(67.0 / 12.0)`. Unipolar targets keep `key / 127`.
+                    (Some(ir::Source::Key), None) if signed_route(&t.param) => {
+                        key_bipolar(&mut out.shapers)
+                    }
                     _ => raw,
                 };
+                if matches!(
+                    t.param.as_str(),
+                    "ahdsr_attack"
+                        | "ahdsr_hold"
+                        | "ahdsr_decay"
+                        | "ahdsr_sustain"
+                        | "ahdsr_release"
+                ) && let (Some(source), Some(at)) = (source, t.slot)
+                {
+                    let is_amp = out
+                        .mods
+                        .iter()
+                        .any(|m| m.kind == ir::ModKind::Envelope && m.slot == u16::from(at));
+                    let timed_env = staged_envelope(out, timed_slots, at, &t.param);
+                    if is_amp || timed_env.is_some() {
+                        let intensity = t.signed_intensity();
+                        let scale = laws::time_scale(p.simulate_k2_env_time());
+                        if t.param != "ahdsr_sustain" {
+                            kontra_law::record(|| kontra_law::Application {
+                                id: kontra_law::LawId("kontakt.time_scale.v1"),
+                                location: format!(
+                                    "groups/{group_index}/routes/{n}/targets/{target}/time_scale"
+                                ),
+                                input: format!("simulate_k2={}", p.simulate_k2_env_time()),
+                                output: format!("{scale:?}"),
+                            });
+                        }
+                        if t.lag_ms < 0 {
+                            notes.add(ir::Impact::Audible, "negative modulation lag", &p.name);
+                        }
+                        let bypass = p.bypass();
+                        if is_amp
+                            && let Some(kind) =
+                                ahdsr_route(&t.param, source, intensity, scale, None)
+                        {
+                            out.mods.push(ir::Mod {
+                                name: p.name.clone(),
+                                slot: slot(n),
+                                target: slot(target),
+                                bypass,
+                                kind,
+                            });
+                        }
+                        if let Some(env) = timed_env
+                            && let Some(kind) =
+                                ahdsr_route(&t.param, source, intensity, scale, Some(env))
+                        {
+                            out.mods.push(ir::Mod {
+                                name: p.name.clone(),
+                                slot: slot(n),
+                                target: slot(target),
+                                bypass,
+                                kind,
+                            });
+                        }
+                        continue;
+                    }
+                }
                 let kind = match (source, t.param.as_str(), t.slot) {
                     (Some(source), "volume", None) => Some(ir::ModKind::Volume {
                         source,
@@ -169,54 +236,6 @@ pub(crate) fn external(
                         });
                         result
                     }
-                    // Only the amplitude envelope's times: another AHDSR is
-                    // a breakpoint source with fixed times.
-                    (Some(source), stage @ ("ahdsr_attack" | "ahdsr_release"), Some(at))
-                        if out.mods.iter().any(|m| {
-                            m.kind == ir::ModKind::Envelope && m.slot == u16::from(at)
-                        }) =>
-                    {
-                        let intensity = t.signed_intensity();
-                        let floor_ms = laws::time_floor_ms(&p.unknown_source_data);
-                        kontra_law::record(|| kontra_law::Application {
-                            id: kontra_law::LawId("kontakt.time_floor_ms.v1"),
-                            location: format!(
-                                "groups/{group_index}/routes/{n}/targets/{target}/floor_ms"
-                            ),
-                            input: format!("{:?}", p.unknown_source_data),
-                            output: format!("{floor_ms:?}"),
-                        });
-                        Some(if stage == "ahdsr_attack" {
-                            ir::ModKind::Attack {
-                                source,
-                                intensity,
-                                floor_ms,
-                                envelope: None,
-                            }
-                        } else {
-                            ir::ModKind::Release {
-                                source,
-                                intensity,
-                                floor_ms,
-                            }
-                        })
-                    }
-                    // Another AHDSR runs as a breakpoint source: the same
-                    // target (ahdsr_attack) and law compiler stretch its
-                    // attack segment.
-                    (Some(source), "ahdsr_attack", Some(at)) => {
-                        timed_slots.iter().find_map(|&(n, of)| match of {
-                            ir::Source::Envelope(e) if n == usize::from(at) => {
-                                Some(ir::ModKind::Attack {
-                                    source,
-                                    intensity: t.signed_intensity(),
-                                    floor_ms: laws::time_floor_ms(&p.unknown_source_data),
-                                    envelope: Some(e),
-                                })
-                            }
-                            _ => None,
-                        })
-                    }
                     // The target table (FUN_140a6d410) names it 0xb4; the law
                     // compiler (FUN_140873040) adds `E·intensity` in knob
                     // units, one cycle.
@@ -274,11 +293,14 @@ pub(crate) fn external(
                         }
                         _ => {}
                     }
+                    if t.lag_ms < 0 {
+                        notes.add(ir::Impact::Audible, "negative modulation lag", &p.name);
+                    }
                     out.mods.push(ir::Mod {
                         name: p.name.clone(),
                         slot: slot(n),
                         target: slot(target),
-                        bypass: false,
+                        bypass: p.bypass(),
                         kind,
                     });
                 } else {
@@ -293,6 +315,28 @@ pub(crate) fn external(
         }
     }
     Ok(())
+}
+
+fn staged_envelope(
+    out: &ir::Group,
+    slots: &[(usize, ir::Source)],
+    at: u8,
+    param: &str,
+) -> Option<u8> {
+    let needs_stages = matches!(param, "ahdsr_hold" | "ahdsr_decay" | "ahdsr_sustain");
+    slots.iter().find_map(|&(slot, source)| match source {
+        ir::Source::Envelope(e)
+            if slot == usize::from(at)
+                && (!needs_stages
+                    || out
+                        .envelopes
+                        .get(usize::from(e))
+                        .is_some_and(|env| env.stages)) =>
+        {
+            Some(e)
+        }
+        _ => None,
+    })
 }
 
 /// A route to another modulator's knob, by the target's law whatever modulates it (FUN_140873040):
@@ -319,12 +363,86 @@ pub(crate) fn modulator_route(
     }
 }
 
+/// Builds an AHDSR stage route for `stage` (`ahdsr_{attack,hold,decay,sustain,release}`).
+fn ahdsr_route(
+    stage: &str,
+    source: ir::Source,
+    intensity: f32,
+    scale: ir::TimeScale,
+    envelope: Option<u8>,
+) -> Option<ir::ModKind> {
+    Some(match stage {
+        "ahdsr_attack" => ir::ModKind::Attack {
+            source,
+            intensity,
+            scale,
+            envelope,
+        },
+        "ahdsr_hold" => ir::ModKind::Hold {
+            source,
+            intensity,
+            scale,
+            envelope,
+        },
+        "ahdsr_decay" => ir::ModKind::Decay {
+            source,
+            intensity,
+            scale,
+            envelope,
+        },
+        // Sustain scales knob `u` linearly (`m`), and Kontakt sustain level is
+        // `S = u³`, so `S' = (u·m)³ = S·m³` (`0140870000.c:4325-4352`).
+        "ahdsr_sustain" => ir::ModKind::Sustain {
+            source,
+            intensity,
+            curve: ir::Curve::Depth { power: 3 },
+            envelope,
+        },
+        "ahdsr_release" => ir::ModKind::Release {
+            source,
+            intensity,
+            scale,
+            envelope,
+        },
+        _ => return None,
+    })
+}
+
+/// Deduplicated 2-point linear transfer mapping `ir::Source::Key` (`key / 127`)
+/// to Kontakt's C3-centered octaves `(key - 60) / 12` (`0140840000.c:9341`).
+fn key_bipolar(shapers: &mut Vec<ir::Transfer>) -> Option<ir::Source> {
+    let table = [-5.0_f32, 67.0 / 12.0];
+    if let Some(i) = shapers.iter().position(|t| {
+        t.source == ir::Source::Key
+            && !t.stepped
+            && t.smooth_s == 0.0
+            && t.table.as_slice() == table
+    }) {
+        return u8::try_from(i).ok().map(ir::Source::Shaped);
+    }
+    let n = u8::try_from(shapers.len()).ok()?;
+    shapers.push(ir::Transfer {
+        source: ir::Source::Key,
+        table: table.to_vec(),
+        smooth_s: 0.0,
+        stepped: false,
+    });
+    Some(ir::Source::Shaped(n))
+}
+
 /// Whether a Kontakt target reads its source signed (-1..=1): every target
 /// but the gains and times the engine reads on 0..=1.
-fn signed_route(param: &str) -> bool {
+pub(crate) fn signed_route(param: &str) -> bool {
     !matches!(
         param,
-        "volume" | "ahdsr_attack" | "ahdsr_release" | "intensity" | "filterQ"
+        "volume"
+            | "ahdsr_attack"
+            | "ahdsr_hold"
+            | "ahdsr_decay"
+            | "ahdsr_sustain"
+            | "ahdsr_release"
+            | "intensity"
+            | "filterQ"
     )
 }
 
@@ -332,7 +450,7 @@ fn signed_route(param: &str) -> bool {
 /// draws every shaper on 0..=1; a bipolar source's shaper keeps its source's
 /// polarity (centre 0.5 = rest), so on a `signed` route the table becomes
 /// `2y - 1`, the domain the IR reads it in.
-fn shaped(
+pub(crate) fn shaped(
     shapers: &mut Vec<ir::Transfer>,
     source: ir::Source,
     curve: &ShaperCurve,
@@ -363,7 +481,7 @@ fn shaped(
     Some(ir::Source::Shaped(n))
 }
 
-fn record_lag(group: usize, route: usize, target: usize, lag: i16, tau: f32) {
+pub(crate) fn record_lag(group: usize, route: usize, target: usize, lag: i16, tau: f32) {
     kontra_law::record(|| kontra_law::Application {
         id: kontra_law::LawId("kontakt.route_tau_ms.v1"),
         location: format!("groups/{group}/routes/{route}/targets/{target}/tau_ms"),
@@ -376,6 +494,36 @@ fn record_lag(group: usize, route: usize, target: usize, lag: i16, tau: f32) {
 mod tests {
     use super::*;
     use ni_file::kontakt::objects::Breakpoint;
+
+    #[test]
+    fn stage_targets_only_accept_staged_envelopes() {
+        let mut group = ir::Group::DEFAULT;
+        group.envelopes = vec![
+            ir::Breakpoints {
+                start: 0.0,
+                points: vec![],
+                sustain: None,
+                loop_from: None,
+                stages: false,
+            },
+            ir::Breakpoints {
+                start: 0.0,
+                points: vec![],
+                sustain: None,
+                loop_from: None,
+                stages: true,
+            },
+        ];
+        let slots = [(4, ir::Source::Envelope(0)), (5, ir::Source::Envelope(1))];
+        for stage in ["ahdsr_hold", "ahdsr_decay", "ahdsr_sustain"] {
+            assert_eq!(staged_envelope(&group, &slots, 4, stage), None);
+            assert_eq!(staged_envelope(&group, &slots, 5, stage), Some(1));
+        }
+        for stage in ["ahdsr_attack", "ahdsr_release"] {
+            assert_eq!(staged_envelope(&group, &slots, 4, stage), Some(0));
+            assert_eq!(staged_envelope(&group, &slots, 5, stage), Some(1));
+        }
+    }
 
     #[test]
     fn curved_crossfade_keeps_both_layers_near_the_native_midpoint() {
@@ -423,5 +571,83 @@ mod tests {
         .unwrap();
         assert!(shapers[0].apply(0.5).abs() < 1e-6, "{:?}", shapers[0].table);
         assert!((shapers[1].apply(0.5) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn key_position_unshaped_is_c3_centered_octaves_and_deduplicated() {
+        let mut shapers = Vec::new();
+        let a = key_bipolar(&mut shapers).unwrap();
+        let b = key_bipolar(&mut shapers).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(shapers.len(), 1);
+        let t = &shapers[0];
+        assert_eq!(t.source, ir::Source::Key);
+        for (key, expected) in [
+            (0u8, -5.0f32),
+            (48, -1.0),
+            (60, 0.0),
+            (72, 1.0),
+            (127, 67.0 / 12.0),
+        ] {
+            let actual = t.apply(f32::from(key) / 127.0);
+            assert!((actual - expected).abs() < 1e-5, "key {key}: {actual}");
+        }
+        assert!(!signed_route("ahdsr_hold"));
+        assert!(!signed_route("ahdsr_decay"));
+        assert!(!signed_route("ahdsr_sustain"));
+        assert!(signed_route("pan"));
+        assert!(signed_route("pitch"));
+    }
+
+    #[test]
+    fn laws_cover_inverted_env_depth_pressure_power_time_scale_and_dbd() {
+        let mut env = ir::Envelope::GATE;
+        laws::envelope_depth(&mut env, -0.6, false);
+        assert!((env.floor - 1.0).abs() < 1e-6);
+        assert!((env.depth - -0.6).abs() < 1e-6);
+        laws::envelope_depth(&mut env, -0.6, true);
+        assert!((env.floor - 0.6).abs() < 1e-6);
+        assert!((env.depth - -0.6).abs() < 1e-6);
+
+        assert_eq!(
+            laws::volume(ir::Source::Pressure),
+            ir::Curve::Depth { power: 1 }
+        );
+        assert_eq!(
+            laws::volume(ir::Source::ReleaseVelocity),
+            ir::Curve::Depth { power: 3 }
+        );
+        assert_eq!(
+            laws::time_scale(false),
+            ir::TimeScale::LogKnob {
+                floor_ms: 2.0,
+                power: 1
+            }
+        );
+        assert_eq!(laws::time_scale(true), ir::TimeScale::Linear { power: 3 });
+
+        let dbd = ni_file::kontakt::objects::EnvelopeDbd {
+            version: 0x12,
+            values: [100.0, 0.1, 200.0],
+            extra: None,
+            records: None,
+            flag: Some(0),
+        };
+        let bp = laws::dbd(&dbd);
+        assert!((bp.start - 1.0).abs() < 1e-6);
+        assert_eq!(bp.points.len(), 2);
+        assert!((bp.points[0].ms - 100.0).abs() < 1e-6);
+        assert!((bp.points[0].level - 0.3).abs() < 1e-6);
+        assert!((bp.points[1].ms - 200.0).abs() < 1e-6);
+        assert!((bp.points[1].level - 0.0).abs() < 1e-6);
+        assert_eq!(bp.sustain, None);
+
+        let flagged = ni_file::kontakt::objects::EnvelopeDbd {
+            flag: Some(1),
+            ..dbd
+        };
+        let bp = laws::dbd(&flagged);
+        assert_eq!(bp.start, 0.0);
+        assert!(bp.points.is_empty());
     }
 }

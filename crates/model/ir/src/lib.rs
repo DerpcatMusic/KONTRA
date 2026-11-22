@@ -31,7 +31,9 @@ pub use effects::{
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar, held_key};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, KnobMod, Linked};
-pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Source, Term, Transfer, Wave};
+pub use mods::{
+    Attractor, Blend, Curve, Exp2, Factor, ModKind, Source, Term, TimeScale, Transfer, Wave,
+};
 pub use output::{Balance, Output, OutputControllers};
 pub use readout::{Form, Readout};
 pub use reverb::{
@@ -347,6 +349,9 @@ pub struct Group {
     pub bus: usize,
     /// Saved unloaded: no preload until a script loads it.
     pub purged: bool,
+    /// Muted (or silenced because another group is soloed): zones remain
+    /// loaded and visible to scripts, but start no voices.
+    pub muted: bool,
     /// How much of each zone's sample stays in memory; `None` keeps it whole.
     pub stream: Option<Stream>,
     /// Its zones are wavetables.
@@ -405,6 +410,7 @@ impl Group {
         off_by: None,
         bus: 0,
         purged: false,
+        muted: false,
         stream: None,
         wavetable: None,
         speed: None,

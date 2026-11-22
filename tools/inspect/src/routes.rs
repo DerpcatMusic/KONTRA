@@ -1,5 +1,5 @@
 //! Machine-readable modulation routes from the translated model.
-use kontra_engine::ir::{ModKind, Source};
+use kontra_engine::ir::{ModKind, Source, TimeScale};
 use serde_json::{Value, json};
 
 pub fn source(s: Source) -> Value {
@@ -15,6 +15,15 @@ pub fn source(s: Source) -> Value {
         Source::Lfo(id) => json!({"type": "lfo", "id": id}),
         Source::Script(id) => json!({"type": "script", "id": id}),
         other => json!({"type": format!("{other:?}")}),
+    }
+}
+
+fn time_scale(scale: TimeScale) -> Value {
+    match scale {
+        TimeScale::Linear { power } => json!({"type":"linear", "power":power}),
+        TimeScale::LogKnob { floor_ms, power } => {
+            json!({"type":"log_knob", "floor_ms":floor_ms, "power":power})
+        }
     }
 }
 
@@ -82,17 +91,42 @@ pub fn route(kind: ModKind) -> Value {
         ModKind::Attack {
             source: s,
             intensity,
-            floor_ms,
+            scale,
             envelope,
         } => {
-            json!({"target":"attack", "source":source(s), "intensity":intensity, "floor_ms":floor_ms, "envelope":envelope})
+            json!({"target":"attack", "source":source(s), "intensity":intensity, "scale":time_scale(scale), "envelope":envelope})
+        }
+        ModKind::Hold {
+            source: s,
+            intensity,
+            scale,
+            envelope,
+        } => {
+            json!({"target":"hold", "source":source(s), "intensity":intensity, "scale":time_scale(scale), "envelope":envelope})
+        }
+        ModKind::Decay {
+            source: s,
+            intensity,
+            scale,
+            envelope,
+        } => {
+            json!({"target":"decay", "source":source(s), "intensity":intensity, "scale":time_scale(scale), "envelope":envelope})
+        }
+        ModKind::Sustain {
+            source: s,
+            intensity,
+            curve,
+            envelope,
+        } => {
+            json!({"target":"sustain", "source":source(s), "intensity":intensity, "curve":format!("{curve:?}"), "envelope":envelope})
         }
         ModKind::Release {
             source: s,
             intensity,
-            floor_ms,
+            scale,
+            envelope,
         } => {
-            json!({"target":"release", "source":source(s), "intensity":intensity, "floor_ms":floor_ms})
+            json!({"target":"release", "source":source(s), "intensity":intensity, "scale":time_scale(scale), "envelope":envelope})
         }
         ModKind::LfoPhase {
             source: s,
@@ -216,5 +250,35 @@ mod tests {
         assert_eq!(out["insert"], 2);
         assert_eq!(out["band"], 1);
         assert_eq!(out["depth_db"], 3.0);
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    #[test]
+    fn timing_routes_report_scale_and_envelope() {
+        let attack = route(ModKind::Attack {
+            source: Source::Velocity,
+            intensity: 0.5,
+            scale: TimeScale::Linear { power: 3 },
+            envelope: None,
+        });
+        let release = route(ModKind::Release {
+            source: Source::ReleaseVelocity,
+            intensity: 1.0,
+            scale: TimeScale::LogKnob {
+                floor_ms: 2.0,
+                power: 1,
+            },
+            envelope: Some(2),
+        });
+        assert_eq!(attack["scale"], json!({"type":"linear", "power":3}));
+        assert_eq!(
+            release["scale"],
+            json!({"type":"log_knob", "floor_ms":2.0, "power":1})
+        );
+        assert_eq!(release["envelope"], 2);
     }
 }

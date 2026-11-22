@@ -23,7 +23,11 @@ impl Engine {
         }
         let step = if attack { Step::Advance } else { Step::Reuse };
         let since = self.behaviour.rls_reset.get(key).map_or(n.at.0, |&r| r);
-        let held_seconds = self.now.0.saturating_sub(since) as f32 / self.rate as f32;
+        let held_seconds = if n.key_up {
+            n.held
+        } else {
+            self.now.0.saturating_sub(since) as f32 / self.rate as f32
+        };
         // Every route reads the counter through the note, shaped or not.
         n.held = held_seconds;
         if let Some(live) = self.notes.get_mut(note) {
@@ -50,7 +54,7 @@ impl Engine {
                 && self
                     .groups
                     .get(zone.group as usize)
-                    .is_none_or(|g| !g.purged)
+                    .is_none_or(|g| !g.purged && !g.muted)
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
                 && (n.zone_slot < 0 || n.zone_slot == i32::from(zone.slot))
@@ -145,6 +149,10 @@ impl Engine {
             let pan = self.group_pan(zone);
             let (gain, lag) = self.voice_gain(zone, &n, factor, onset, pan);
             let (step, bend) = self.step(zone, &n, onset);
+            let release_base = self
+                .groups
+                .get(zone.group as usize)
+                .map_or(0, |g| g.envelope.release);
             let start = VoiceStart {
                 region,
                 step: voice_gain::bent(
@@ -182,6 +190,9 @@ impl Engine {
                             m.kind,
                             ir::ModKind::SampleStart { .. }
                                 | ir::ModKind::Attack { .. }
+                                | ir::ModKind::Hold { .. }
+                                | ir::ModKind::Decay { .. }
+                                | ir::ModKind::Sustain { .. }
                                 | ir::ModKind::Release { .. }
                                 | ir::ModKind::LoopShift { .. }
                                 | ir::ModKind::LfoPhase { .. }
@@ -240,6 +251,7 @@ impl Engine {
             slot.warp = [0.0; modulators::WARPS];
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
             slot.stretch = stretch;
+            slot.release_base = release_base;
             slot.slide = slide;
             slot.start_frame = start_frame;
             #[cfg(feature = "trace")]
