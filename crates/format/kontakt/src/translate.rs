@@ -77,6 +77,7 @@ const USED_GROUP: &[&str] = &[
     "release_trigger_note_monophonic",
 ];
 const COSMETIC_GROUP: &[&str] = &[];
+#[cfg(test)]
 const USED_ZONE: &[&str] = &[
     "sample_start",
     "sample_end",
@@ -102,6 +103,7 @@ const USED_ZONE: &[&str] = &[
 // The sample header's own copies (`root_note`, `tuning`, format); the zone's
 // `root_key` and `zone_tune` carry what plays.
 // `filename_prefix` is the sample's name prefix; the file table resolves the sample.
+#[cfg(test)]
 const COSMETIC_ZONE: &[&str] = &[
     "filename_prefix",
     "reserved1",
@@ -112,6 +114,47 @@ const COSMETIC_ZONE: &[&str] = &[
     "tuning",
     "sample_data_type",
 ];
+
+/// Fast typed equivalent of `notes.ignored_fields("zone", z, USED_ZONE, COSMETIC_ZONE)`.
+/// Avoids formatting `{z:#?}` once per zone (42k+ allocations on large libraries)
+/// while exhaustively destructuring [`ZoneParams`] so any newly added field fails
+/// to compile until explicitly classified.
+fn check_ignored_zone_fields(notes: &mut Notes, z: &ni_file::kontakt::objects::ZoneParams) {
+    let ni_file::kontakt::objects::ZoneParams {
+        sample_start: _,
+        sample_end: _,
+        sample_start_mod_range: _,
+        low_velocity: _,
+        high_velocity: _,
+        low_key: _,
+        high_key: _,
+        fade_low_velocity: _,
+        fade_high_velocity: _,
+        fade_low_key: _,
+        fade_high_key: _,
+        root_key: _,
+        zone_volume: _,
+        zone_pan: _,
+        zone_tune: _,
+        sample_present: _,
+        filename_id: _,
+        filename_prefix: _,
+        sample_data_type: _,
+        sample_rate: _,
+        num_channels: _,
+        num_frames: _,
+        reserved1: _,
+        reserved2: _,
+        root_note: _,
+        tuning: _,
+        reserved3: _,
+        reserved4: _,
+        unknown_tail,
+    } = z;
+    if !unknown_tail.is_empty() {
+        notes.ignored("zone.unknown_tail", "(nested)");
+    }
+}
 
 /// `saved`: a snapshot's persistent values per script slot, over the
 /// instrument's own.
@@ -358,7 +401,7 @@ pub(crate) fn instrument(
     // A zone's id is its place in the zone list, saved or not.
     for (zone_id, (zone, &group)) in (0u32..).zip(zones.zones().iter().zip(&zones.group_ids)) {
         let z = zone.params().map_err(decode("zone"))?;
-        notes.ignored_fields("zone", &z, USED_ZONE, COSMETIC_ZONE);
+        check_ignored_zone_fields(&mut notes, &z);
         crate::ignored::chunks(&mut notes, "zone", &zone.0, &[LOOPS], &[QUICK_BROWSE]);
         if !z.sample_present {
             continue;
@@ -1365,5 +1408,26 @@ mod tests {
         });
         assert_eq!(vg.steal, ir::Steal::Oldest);
         assert!(!vg.prefer_released);
+    }
+
+    #[test]
+    fn zone_ignored_fields_fast_path_matches_debug_reflection() {
+        for tail in [Vec::new(), vec![1, 2, 3]] {
+            let z = ni_file::kontakt::objects::ZoneParams {
+                sample_start: 10,
+                sample_end: 500,
+                sample_present: true,
+                filename_id: 3,
+                filename_prefix: Some([1; 6]),
+                root_note: 60,
+                unknown_tail: tail,
+                ..Default::default()
+            };
+            let mut fast = kontra_format::Notes::default();
+            super::check_ignored_zone_fields(&mut fast, &z);
+            let mut slow = kontra_format::Notes::default();
+            slow.ignored_fields("zone", &z, super::USED_ZONE, super::COSMETIC_ZONE);
+            assert_eq!(fast.finish(), slow.finish());
+        }
     }
 }

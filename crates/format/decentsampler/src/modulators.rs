@@ -496,10 +496,10 @@ fn ensure_voice_filter(
         .collect::<Result<_, _>>()
         .ok()?;
     let resolved = resolve_slots(&slots)?;
-    let promoted = *global_fx;
+    let promoted = global_fx.clone();
     global_fx.bypass = true;
     for group in groups {
-        group.inserts.push(Some(promoted));
+        group.inserts.push(Some(promoted.clone()));
     }
     if reordered {
         notes.add(

@@ -12,7 +12,7 @@ pub struct Ensemble {
 }
 
 fn settings(e: &ir::Ensemble) -> ChoirSettings {
-    let v = e.voices;
+    let v = &*e.voices;
     let first = v.delay.first().copied().unwrap_or(0.0);
     let rate = v.rate.map(|r| r * e.hz);
     ChoirSettings {
@@ -47,9 +47,9 @@ fn settings(e: &ir::Ensemble) -> ChoirSettings {
 
 impl Ensemble {
     /// Not real-time: allocates.
-    pub fn new(e: ir::Ensemble, rate: u32) -> Self {
+    pub fn new(e: &ir::Ensemble, rate: u32) -> Self {
         Self {
-            choir: Choir::new(settings(&e), rate),
+            choir: Choir::new(settings(e), rate),
             direct: e.direct,
         }
     }
@@ -82,9 +82,9 @@ impl Wet for Ensemble {
         self.choir.idle(silence.len());
     }
 
-    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Ensemble(e) = kind {
-            self.choir.set(settings(&e));
+            self.choir.set(settings(e));
             self.direct = e.direct;
         }
     }

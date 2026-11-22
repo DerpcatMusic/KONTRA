@@ -3,6 +3,7 @@
 //! [`Settings`] and [`PhaserSettings`]. Both put out the wet signal only.
 
 use moose_dsp::time::coeff;
+use std::borrow::Cow;
 use std::f64::consts::TAU;
 
 use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
@@ -28,7 +29,7 @@ const SPAN: usize = 64;
 const SECOND_AHEAD: f64 = 0.015;
 
 /// A delay line in physical units.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// The head's delay at the LFO's centre.
     pub ms: f32,
@@ -51,13 +52,13 @@ pub struct Settings {
     /// Sections on the heads' sum, inside the loop after the low cut and
     /// the shelf (a mode's own body: a tape's or a bucket brigade's tone);
     /// the first four run.
-    pub body: &'static [kontra_law::Section],
+    pub body: Cow<'static, [kontra_law::Section]>,
     /// A triangle LFO averaged over this many seconds (0: sharp corners)
     /// instead of the sine; it falls first as the sine does.
     pub triangle_s: Option<f32>,
     /// A curve on what is written into the lines: points evenly over
     /// −1..=1, held beyond; empty for none.
-    pub shape: &'static [f32],
+    pub shape: Cow<'static, [f32]>,
     /// Noise written into the lines with what is shaped: white, its rms
     /// `level·rms^power` of the line's input (rms over 10 ms); level 0 for
     /// none (a bucket brigade's or tape's noise, heard only under sound).
@@ -220,7 +221,7 @@ impl ModDelay {
         let ms = (max_ms.max(s.ms) + s.depth_ms.abs() + s.spread_ms.abs()).clamp(0.0, MAX_MS);
         let frames = (ms * 0.001 * rate) as usize + 8;
         let mut d = Self {
-            s,
+            s: s.clone(),
             rate,
             ring: vec![[0.0; 2]; frames].into(),
             at: 0,
@@ -246,7 +247,6 @@ impl ModDelay {
     /// Changes the settings while it plays; never allocates. The delay
     /// glides to its new length.
     pub fn set(&mut self, s: Settings) {
-        self.s = s;
         self.damping = one_pole(s.damping_hz, self.rate).clamp(0.0, 1.0);
         let rate = self.rate as u32;
         let steep = s.steep_low_cut && s.low_cut_hz > 0.0;
@@ -258,6 +258,7 @@ impl ModDelay {
             .map(|t| shelf(t.hz, t.gain_db, t.slope, Side::High, rate));
         let mut sections = s.body.iter().map(|&b| Biquad::analog(b, rate));
         let body: [Option<Biquad>; 4] = std::array::from_fn(|_| sections.next());
+        self.s = s;
         // A moved filter keeps its state, so a sweep never clicks.
         let filters = [&mut self.cut, &mut self.shelf]
             .into_iter()
@@ -311,10 +312,9 @@ impl ModDelay {
     /// the head's glide and the write point move on as [`Self::process`]
     /// would move them.
     pub fn idle(&mut self, frames: usize) {
-        let s = self.s;
         let longest = self.ring.len().saturating_sub(3) as f32;
         let per_ms = 0.001 * self.rate;
-        let target = (s.ms * per_ms).max(0.0).min(longest);
+        let target = (self.s.ms * per_ms).max(0.0).min(longest);
         // The glide's own f32 steps, not its closed form: they stall a
         // little short of the target, and a modulated head hears that.
         let mut delay = self.delay.unwrap_or(target);
@@ -327,7 +327,7 @@ impl ModDelay {
         }
         self.delay = Some(delay);
         self.at = (self.at + frames) % self.ring.len().max(1);
-        let step = f64::from(s.lfo_hz / self.rate);
+        let step = f64::from(self.s.lfo_hz / self.rate);
         self.cycle = fract(self.cycle + step * frames as f64);
     }
 
@@ -366,18 +366,20 @@ impl ModDelay {
     /// and writes in order. Each value comes from the same operations as
     /// frame by frame.
     fn span<const H: usize>(&mut self, io: &mut [[f32; 2]], mut written: f32) -> f32 {
-        let s = self.s;
         let n = io.len().min(SPAN);
         let per_ms = 0.001 * self.rate;
         let longest = self.ring.len().saturating_sub(3) as f32;
-        let target = (s.ms * per_ms).max(0.0).min(longest);
+        let target = (self.s.ms * per_ms).max(0.0).min(longest);
         let mut delay = self.delay.unwrap_or(target);
-        let swing = s.depth_ms * per_ms;
-        let spread = [-s.spread_ms * per_ms, s.spread_ms * per_ms];
-        let step = f64::from(s.lfo_hz / self.rate);
-        let offsets = [0.0, f64::from(s.phase)];
+        let swing = self.s.depth_ms * per_ms;
+        let spread = [-self.s.spread_ms * per_ms, self.s.spread_ms * per_ms];
+        let step = f64::from(self.s.lfo_hz / self.rate);
+        let offsets = [0.0, f64::from(self.s.phase)];
         // The averaging window in cycles of the LFO.
-        let window = s.triangle_s.map(|t| f64::from(t.max(0.0) * s.lfo_hz));
+        let window = self
+            .s
+            .triangle_s
+            .map(|t| f64::from(t.max(0.0) * self.s.lfo_hz));
         let mut d = [[[0f32; SPAN]; 2]; H];
         let mut nearest = f32::INFINITY;
         for f in 0..n {
@@ -447,12 +449,12 @@ impl ModDelay {
             {
                 filter.process(std::slice::from_mut(&mut y));
             }
-            let [a, b] = apply(s.input, *frame);
-            let [c, d] = apply(s.feedback, y);
+            let [a, b] = apply(self.s.input, *frame);
+            let [c, d] = apply(self.s.feedback, y);
             let mut line = [a + c, b + d];
-            let [level, power] = s.noise;
+            let [level, power] = self.s.noise;
             for (v, p) in line.iter_mut().zip(&mut self.power) {
-                *v = shaped(s.shape, *v);
+                *v = shaped(&self.s.shape, *v);
                 if level > 0.0 {
                     *p = flush(*p + (*v * *v - *p) * self.smooth);
                     // xorshift32: uniform in −1..1, rms 1/√3.
@@ -472,8 +474,8 @@ impl ModDelay {
             if self.at >= self.ring.len() {
                 self.at = 0;
             }
-            let [l, r] = apply(s.output, y);
-            *frame = [l + s.direct * frame[0], r + s.direct * frame[1]];
+            let [l, r] = apply(self.s.output, y);
+            *frame = [l + self.s.direct * frame[0], r + self.s.direct * frame[1]];
         }
         written
     }
@@ -605,16 +607,16 @@ mod tests {
             damping_hz: f32::INFINITY,
             low_cut_hz: 0.0,
             steep_low_cut: false,
-            body: &[],
+            body: std::borrow::Cow::Borrowed(&[]),
             triangle_s: None,
-            shape: &[],
+            shape: std::borrow::Cow::Borrowed(&[]),
             noise: [0.0; 2],
             high_shelf: None,
             spread_ms: 0.0,
             lfo_hz: 1.0,
             phase: 0.0,
         };
-        assert!(ModDelay::new(s, 48_000, 50.0).deaf());
+        assert!(ModDelay::new(s.clone(), 48_000, 50.0).deaf());
         s.input[1][0] = 0.5;
         assert!(!ModDelay::new(s, 48_000, 50.0).deaf());
     }

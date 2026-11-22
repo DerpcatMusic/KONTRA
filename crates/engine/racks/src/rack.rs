@@ -175,7 +175,7 @@ impl Rack {
     ) -> Self {
         let dsp = slots
             .iter()
-            .map(|slot| processor(*slot, rate, &impulses))
+            .map(|slot| processor(slot.as_ref(), rate, &impulses))
             .collect();
         Self {
             slots: slots.into(),
@@ -346,7 +346,7 @@ impl Rack {
     pub fn inspect_slots(&self) -> Vec<Option<ir::Effect>> {
         self.slots
             .iter()
-            .copied()
+            .cloned()
             .enumerate()
             .map(|(n, slot)| {
                 let mut effect = slot?;
@@ -382,25 +382,27 @@ impl Rack {
         let slots = self.slots.iter().zip(self.dsp.iter_mut());
         let slots = slots.zip(self.levels.iter_mut()).zip(self.quiet.iter_mut());
         for (n, (((slot, dsp), levels), quiet)) in slots.enumerate() {
-            let Some(mut e) = slot.filter(|e| !e.bypass) else {
+            let Some(base) = slot.as_ref().filter(|e| !e.bypass) else {
                 continue;
             };
+            let mut modulated = None;
             for (m, &amount) in self.mods.iter().zip(self.amounts.iter()) {
                 if let ir::ModKind::EffectParam { insert, param, .. } = *m
                     && usize::from(insert) == n
                 {
-                    param.add_to(&mut e, amount);
+                    param.add_to(modulated.get_or_insert_with(|| base.clone()), amount);
                 }
             }
-            match (dsp, e.kind) {
+            let e = modulated.as_ref().unwrap_or(base);
+            match (dsp, &e.kind) {
                 (Dsp::Eq(f), _) => filters::run(f, io),
                 (Dsp::Filter(svf), ir::EffectKind::Filter(f)) => {
-                    svf.retune(filters::shape(&f), self.rate);
+                    svf.retune(filters::shape(f), self.rate);
                     svf.process(io);
                 }
                 // ponytail: retuned once a span; per-sample if a sweep zippers.
                 (Dsp::Bells(eq), ir::EffectKind::Eq(bells)) => {
-                    eq.retune(bells, self.rate);
+                    eq.retune(*bells, self.rate);
                     eq.process(io);
                 }
                 // The wet path from the input, then the dry level, then the wet at the output gain.
@@ -440,7 +442,7 @@ impl Rack {
                     continue;
                 }
                 (_, ir::EffectKind::Sends(levels)) => {
-                    for (tap, level) in taps.iter_mut().zip(levels) {
+                    for (tap, &level) in taps.iter_mut().zip(levels) {
                         for (t, x) in tap.iter_mut().zip(io.iter()) {
                             t[0] += x[0] * level;
                             t[1] += x[1] * level;
@@ -449,7 +451,7 @@ impl Rack {
                 }
                 _ => {}
             }
-            levels.matrix(io, effects::matrix(&e));
+            levels.matrix(io, effects::matrix(e));
         }
     }
 
@@ -489,9 +491,9 @@ mod tests {
                 damping_hz: 8_000.0,
                 low_cut_hz: 0.0,
                 steep_low_cut: false,
-                body: &[],
+                body: std::borrow::Cow::Borrowed(&[]),
                 triangle_s: None,
-                shape: &[],
+                shape: std::borrow::Cow::Borrowed(&[]),
                 noise: [0.0; 2],
                 high_shelf: None,
                 spread_ms: 1.0,
@@ -550,7 +552,7 @@ mod tests {
         };
         ir::Effect {
             kind: ir::EffectKind::Ensemble(ir::Ensemble {
-                voices: &VOICES,
+                voices: ir::Shared::Borrowed(&VOICES),
                 span: 1.0,
                 hz: 0.25,
                 sweep: 0.004,
@@ -629,7 +631,7 @@ mod tests {
     }
 
     fn sleeps_and_wakes_in_step(effect: ir::Effect) {
-        let make = || Rack::new(&[Some(effect)], RATE, &[]);
+        let make = || Rack::new(&[Some(effect.clone())], RATE, &[]);
         let (mut gated, mut always) = (make(), make());
         let a = play(&mut gated, true);
         let b = play(&mut always, false);
@@ -730,7 +732,7 @@ mod tests {
     /// slot never slept: sleeping asks whether its state is silent, not
     /// whether its output was.
     fn assert_revealed(hidden: ir::Effect, open: ir::Effect, quiet: f32) {
-        let a = reveal(hidden, open, quiet, true);
+        let a = reveal(hidden.clone(), open.clone(), quiet, true);
         let b = reveal(hidden, open, quiet, false);
         let worst = (a.iter().flatten().zip(b.iter().flatten()))
             .map(|(x, y)| (x - y).abs())
@@ -748,7 +750,7 @@ mod tests {
             wet(ir::EffectKind::Reverb(ir::Reverb {
                 seconds: 8.0,
                 size: 1.0,
-                network: Some(ir::Network::Lines(law())),
+                network: Some(ir::Network::Lines(ir::Shared::Borrowed(law()))),
                 damping: 0.2,
                 diffusion: 0.5,
                 predelay_ms: 0.0,

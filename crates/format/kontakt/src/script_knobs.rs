@@ -1112,6 +1112,7 @@ mod tests {
             let t = types.iter().find(|t| t.id == id && !t.subtype).unwrap();
             assert!(
                 t.effect
+                    .as_ref()
                     .is_some_and(|e| !matches!(e.kind, ir::EffectKind::Other))
             );
             assert_eq!(t.model.is_some(), modelled, "{id}");
@@ -1126,14 +1127,14 @@ mod tests {
         let fresh = types
             .iter()
             .find(|t| t.id == 46 && !t.subtype)
-            .and_then(|t| t.effect)
+            .and_then(|t| t.effect.as_ref())
             .unwrap();
         let level = |compress: Option<f32>| {
             let Dsp::Wet(mut unit, _) = processor(Some(fresh), 48_000, &Responses(&[], &[])) else {
                 panic!("no Super GT processor");
             };
             if let Some(compress) = compress {
-                unit.set(supergt(Knobs { compress, ..INIT }), 120.0);
+                unit.set(&supergt(Knobs { compress, ..INIT }), 120.0);
             }
             let mut peak = 0.0f32;
             for block in 0..375 {
@@ -1164,11 +1165,11 @@ mod tests {
         let ladder = types.iter().find(|t| t.id == 30 && t.subtype).unwrap();
         assert_eq!((ladder.kind, ladder.reads), (7, 30));
         assert!(matches!(
-            ladder.effect.map(|e| e.kind),
+            ladder.effect.as_ref().map(|e| &e.kind),
             Some(ir::EffectKind::Filter(_))
         ));
         let none = types.iter().find(|t| t.id == 0 && t.subtype).unwrap();
-        assert_eq!((none.kind, none.reads, none.effect), (7, 0, None));
+        assert_eq!((none.kind, none.reads, &none.effect), (7, 0, &None));
     }
 
     #[test]
@@ -1176,7 +1177,7 @@ mod tests {
         let types = slot_types();
         let effect = |id: i32| {
             let found = types.iter().find(|t| t.id == id && !t.subtype);
-            found.and_then(|t| t.effect)
+            found.and_then(|t| t.effect.clone())
         };
         let Some(ir::Effect {
             kind: ir::EffectKind::Reverb(r),

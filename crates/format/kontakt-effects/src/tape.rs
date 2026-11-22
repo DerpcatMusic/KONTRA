@@ -152,13 +152,13 @@ pub fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
         // The table spans 4096 of the drive's units (0x149e6c5b0).
         curve: ir::DriveCurve::Table {
             drive: 300.0 * 10f32.powf(48.0 * gain / 20.0) / 4096.0,
-            points: &CURVE,
+            points: std::borrow::Cow::Borrowed(&CURVE),
         },
         lowpass_hz: None,
         highpass_hz: None,
-        sections: ir::Sections {
-            fixed: &FIXED,
-            moving: [
+        sections: ir::Sections::new(
+            &FIXED,
+            [
                 // 0x144fcdc7c, 0x144fcdc18.
                 Some((Post, low_pass(10_000.0 * (1.0 + rolloff), 1.428_571_4))),
                 // 0x144fcdc78, 0x144fcdc80, 0x144714940.
@@ -169,7 +169,7 @@ pub fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
                     section(55.0, [1.0 + 27.183_832 * warmth, 1.0, 0.0], [1.0, 1.0, 0.0]),
                 )),
             ],
-        },
+        ),
     })
 }
 

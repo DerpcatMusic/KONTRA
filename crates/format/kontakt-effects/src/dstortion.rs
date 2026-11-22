@@ -141,18 +141,18 @@ pub fn dstortion(
         pre_lowpass_hz: None,
         curve: ir::DriveCurve::Table {
             drive: 2.0 * gain / 127.0,
-            points: &POINTS,
+            points: std::borrow::Cow::Borrowed(&POINTS),
         },
         lowpass_hz: None,
         highpass_hz: None,
-        sections: ir::Sections {
-            fixed: &FIXED,
-            moving: [
+        sections: ir::Sections::new(
+            &FIXED,
+            [
                 Some((In, section(mul(tb, tb), mul(ta, ta)))),
                 Some((In, section(mul(shelf, bb), mul(ha, ba)))),
                 Some((Out, section(num, mul(d1, d2)))),
             ],
-        },
+        ),
     })
 }
 

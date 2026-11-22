@@ -7,6 +7,7 @@
 //! the curve. It is its own class because the native core (FUN_140aaf220)
 //! feeds the shaped band back into the input split, which `Shaper` cannot.
 
+use std::borrow::Cow;
 use std::f32::consts::TAU;
 
 /// Four lanes: one per stage of the split, or one per upsampled phase.
@@ -36,7 +37,7 @@ const BLOCK: u32 = 32;
 const RAMP_SECONDS: f32 = 0.01;
 
 /// The pedal's settings in physical terms.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Voicing {
     /// The input split's three one-pole corners in Hz (bass, then two
     /// fixed high-passes).
@@ -51,7 +52,7 @@ pub struct Voicing {
     /// Linear output gain.
     pub level: f32,
     /// The clipping curve at 256 points over inputs −128..=127.
-    pub curve: &'static [f32; 256],
+    pub curve: Cow<'static, [f32]>,
 }
 
 /// A stereo overdrive and its state.
@@ -60,7 +61,7 @@ pub struct Overdrive {
     split: Lanes,
     smooth: Lanes,
     target: Lanes,
-    curve: &'static [f32; 256],
+    curve: Cow<'static, [f32]>,
     gain: Lanes,
     step: Lanes,
     /// Gain blocks left on the ramp, frames left in this block, and the
@@ -86,7 +87,7 @@ impl Overdrive {
             split: [0.0; 4],
             smooth: [0.0; 4],
             target: [0.0; 4],
-            curve: v.curve,
+            curve: Cow::Borrowed(&[]),
             gain: [0.0; 4],
             step: [0.0; 4],
             blocks: 0,
@@ -137,7 +138,8 @@ impl Overdrive {
             for (g, s) in self.gain.iter_mut().zip(self.step) {
                 *g += s;
             }
-            let (gain, curve, split, smooth) = (self.gain, self.curve, self.split, self.smooth);
+            let (gain, split, smooth) = (self.gain, self.split, self.smooth);
+            let curve = self.curve.as_ref();
             for (x, lanes) in frame.iter_mut().zip(&mut self.ch) {
                 *x = sample(lanes, *x, gain, curve, split, smooth);
             }
@@ -161,7 +163,7 @@ fn map2(a: Lanes, b: Lanes, f: impl Fn(f32, f32) -> f32) -> Lanes {
     out
 }
 
-fn lookup(curve: &[f32; 256], m: f32) -> f32 {
+fn lookup(curve: &[f32], m: f32) -> f32 {
     let m = if m.is_nan() {
         128.0
     } else {
@@ -174,14 +176,7 @@ fn lookup(curve: &[f32; 256], m: f32) -> f32 {
 }
 
 /// One frame of one channel.
-fn sample(
-    l: &mut [Lanes; 8],
-    x: f32,
-    g: Lanes,
-    curve: &[f32; 256],
-    split: Lanes,
-    smooth: Lanes,
-) -> f32 {
+fn sample(l: &mut [Lanes; 8], x: f32, g: Lanes, curve: &[f32], split: Lanes, smooth: Lanes) -> f32 {
     let [p, s, q, a, e, h0, h1, h2] = l;
     p[1] = x;
     let d = map2(*p, *s, |p, s| p - s);
@@ -233,7 +228,7 @@ mod tests {
             drive: 0.5,
             mix: 0.5,
             level: 0.5,
-            curve: &CURVE,
+            curve: Cow::Borrowed(CURVE.as_slice()),
         };
         let mut o = Overdrive::new(v, 48_000);
         let mut burst = [[0.5f32; 2]; 4800];
@@ -257,7 +252,7 @@ mod tests {
         for (c, b) in curve.iter_mut().zip(bytes.as_chunks::<8>().0) {
             *c = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
         }
-        let curve: &'static [f32; 256] = Box::leak(Box::new(curve));
+        let curve: Cow<'static, [f32]> = Cow::Owned(curve.to_vec());
         let table = |i: f32| (i / 60.0 - 20.0).exp2();
         let hz = |c: f32| c * f32::from_bits(0x40c9_0e56) / TAU;
         let cases: [([f32; 5], [f32; 16]); 2] = [
@@ -319,7 +314,7 @@ mod tests {
                 drive: table(199.315_67 * drive + 1_550.795_7) * 4.0,
                 mix: table(398.631_35 * mix + 1_070.444_8) * 0.5,
                 level: 0.447,
-                curve,
+                curve: curve.clone(),
             };
             let mut o = Overdrive::new(v, 48_000);
             let mut io: Vec<[f32; 2]> = (0..976)

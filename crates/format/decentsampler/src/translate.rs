@@ -442,7 +442,7 @@ fn build_ir_group(
         .with_velocity_tracking(cfg.amp_vel_track)
         .trigger(cfg.trigger);
 
-    for &effect in effects {
+    for effect in effects.iter().cloned() {
         gb = gb.add_insert(effect);
     }
 

@@ -658,7 +658,7 @@ fn an_instrument_reverb_rings_on_after_the_note() {
     };
     let (dry_first, dry_tail) = tail(Vec::new(), false);
     assert!(dry_first[0] > 0.1 && dry_tail == 0.0, "the voice has ended");
-    let (first, wet) = tail(vec![Some(reverb)], false);
+    let (first, wet) = tail(vec![Some(reverb.clone())], false);
     // Fully wet: nothing until the shortest line (30 ms) comes round.
     assert_eq!(first, [0.0; 2]);
     assert!(wet > 1e-3 && wet.is_finite(), "tail {wet}");
@@ -926,9 +926,9 @@ fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
             damping_hz: f32::INFINITY,
             low_cut_hz: 0.0,
             steep_low_cut: false,
-            body: &[],
+            body: std::borrow::Cow::Borrowed(&[]),
             triangle_s: None,
-            shape: &[],
+            shape: std::borrow::Cow::Borrowed(&[]),
             noise: [0.0; 2],
             high_shelf: None,
             spread_ms: 0.0,
@@ -1335,13 +1335,12 @@ fn a_live_controller_moves_an_lfos_rate_mid_note() {
 fn a_controller_moves_a_bus_eq_band_while_it_plays() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = Zone::new(sine(&mut store), 60, RATE);
-    z.region.loops = vec![kontra_voice::Loop {
+    z.region.loops = Region::pack_loops([kontra_voice::Loop {
         start: 0,
         end: 48_000,
         crossfade: 0,
         ..Default::default()
-    }]
-    .into();
+    }]);
     let mut plan = Plan::new(vec![z], 8);
     plan.groups[0].bus = 1;
     let bell = ir::Bell {

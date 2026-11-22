@@ -76,11 +76,12 @@ pub fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
 
 /// `a` to `b` by `t`, for the controls a route moves.
 #[must_use]
-pub fn lerp(a: ir::EffectKind, b: ir::EffectKind, t: f32) -> ir::EffectKind {
+pub fn lerp(a: &ir::EffectKind, b: &ir::EffectKind, t: f32) -> ir::EffectKind {
     let mix = |x: f32, y: f32| x + (y - x) * t;
     match (a, b) {
-        (ir::EffectKind::Shaper(mut s), ir::EffectKind::Shaper(e)) => {
-            let mut to = e.curve;
+        (ir::EffectKind::Shaper(s), ir::EffectKind::Shaper(e)) => {
+            let mut s = s.clone();
+            let mut to = e.curve.clone();
             if std::mem::discriminant(&s.curve) == std::mem::discriminant(&to) {
                 let x = s.curve.amount_mut();
                 *x = mix(*x, *to.amount_mut());
@@ -89,22 +90,22 @@ pub fn lerp(a: ir::EffectKind, b: ir::EffectKind, t: f32) -> ir::EffectKind {
         }
         // A strip's curve moves as a shaper's; its compressor takes the new
         // settings at once.
-        (ir::EffectKind::Strip(mut s), ir::EffectKind::Strip(e)) => {
-            if let ir::EffectKind::Shaper(shaper) = lerp(
-                ir::EffectKind::Shaper(s.shaper),
-                ir::EffectKind::Shaper(e.shaper),
-                t,
-            ) {
-                s.shaper = shaper;
+        (ir::EffectKind::Strip(s), ir::EffectKind::Strip(e)) => {
+            let mut s = s.clone();
+            let mut to = e.shaper.curve.clone();
+            if std::mem::discriminant(&s.shaper.curve) == std::mem::discriminant(&to) {
+                let x = s.shaper.curve.amount_mut();
+                *x = mix(*x, *to.amount_mut());
             }
             s.compressor = e.compressor;
             ir::EffectKind::Strip(s)
         }
-        (ir::EffectKind::Crush(mut c), ir::EffectKind::Crush(e)) => {
+        (ir::EffectKind::Crush(c), ir::EffectKind::Crush(e)) => {
+            let mut c = *c;
             (c.rate, c.bits) = (mix(c.rate, e.rate), mix(c.bits, e.bits));
             ir::EffectKind::Crush(c)
         }
-        (a, _) => a,
+        (a, _) => a.clone(),
     }
 }
 

@@ -213,7 +213,7 @@ fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
         let Some(e) = e.as_ref().filter(|e| !e.bypass) else {
             continue;
         };
-        let lost = match e.kind {
+        let lost = match &e.kind {
             ir::EffectKind::Sends(_) => Some("group send levels"),
             _ if last_drive.is_none_or(|d| slot > d) => None,
             ir::EffectKind::Convolution { .. } => Some("group convolution before a drive"),

@@ -47,7 +47,7 @@ impl Engine {
                     // The group's rack runs those from the split on.
                     .take(split.unwrap_or(usize::MAX))
                     .filter(|&(n, _)| !per_voice(n))
-                    .filter_map(|(n, e)| Some((u8::try_from(n).ok()?, (*e)?)))
+                    .filter_map(|(n, e)| Some((u8::try_from(n).ok()?, e.clone()?)))
                     .filter(|(_, e)| summed(e))
                     .collect()
             })
@@ -266,7 +266,7 @@ impl Engine {
                 if let Some(group) = self.groups.get(*g) {
                     for (slot, now) in rack.slots.iter_mut().zip(&group.inserts) {
                         if slot.is_some() {
-                            *slot = *now;
+                            slot.clone_from(now);
                         }
                     }
                 }

@@ -4,13 +4,15 @@
 
 pub use kontra_law::{CombNetwork, HadamardNetwork, Law, NETWORK_LINES, ReverbNetwork};
 
+use crate::Shared;
+
 /// A reverb's structure as the translator's law gives it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Network {
     /// Prime-length lines through a feedback matrix.
-    Lines(&'static ReverbNetwork),
+    Lines(Shared<ReverbNetwork>),
     /// Damped combs into allpasses.
-    Combs(&'static CombNetwork),
+    Combs(Shared<CombNetwork>),
     /// Geometric lines through a Hadamard transform.
     Hadamard(HadamardNetwork),
 }

@@ -29,14 +29,14 @@ pub fn rack(slots: &[Option<ir::Effect>]) -> Gain {
     slots
         .iter()
         .flatten()
-        .filter(|e| !e.bypass && !rack_only(e.kind))
+        .filter(|e| !e.bypass && !rack_only(&e.kind))
         .fold(IDENTITY, |m, e| product(matrix(e), m))
 }
 
 /// An effect that runs in instrument and bus racks only; a group rack
 /// passes it unprocessed (the translator reports it) rather than keep only
 /// its dry level, which silences an insert with none.
-pub fn rack_only(kind: ir::EffectKind) -> bool {
+pub fn rack_only(kind: &ir::EffectKind) -> bool {
     matches!(
         kind,
         ir::EffectKind::Compressor(_)
@@ -55,12 +55,12 @@ pub fn rack_only(kind: ir::EffectKind) -> bool {
 }
 
 pub fn matrix(e: &ir::Effect) -> Gain {
-    let m = match e.kind {
-        ir::EffectKind::Gain(g) => [[g, 0.0], [0.0, g]],
-        ir::EffectKind::Matrix(m) => m,
+    let m = match &e.kind {
+        ir::EffectKind::Gain(g) => [[*g, 0.0], [0.0, *g]],
+        ir::EffectKind::Matrix(m) => *m,
         ir::EffectKind::Invert { phase, swap } => {
-            let s = if phase { -1.0 } else { 1.0 };
-            if swap {
+            let s = if *phase { -1.0 } else { 1.0 };
+            if *swap {
                 [[0.0, s], [s, 0.0]]
             } else {
                 [[s, 0.0], [0.0, s]]
@@ -69,14 +69,14 @@ pub fn matrix(e: &ir::Effect) -> Gain {
         // Kontakt's Stereo Modeller (v2 sampler-core dsp/color/stereo.rs): above 0.5 the
         // side grows, below it the channels blend; then a balance.
         ir::EffectKind::Stereo { width, pan } => {
-            let width = if width >= 0.5 {
-                let s = 2.0 * width - 1.0;
+            let width = if *width >= 0.5 {
+                let s = 2.0 * *width - 1.0;
                 [[1.0 + s, -s], [-s, 1.0 + s]]
             } else {
-                let a = 0.5 - width;
+                let a = 0.5 - *width;
                 [[1.0 - a, a], [a, 1.0 - a]]
             };
-            product(balance(pan), width)
+            product(balance(*pan), width)
         }
         // Run per voice, their output gain after them (voice_rack.rs).
         ir::EffectKind::Shaper(_)

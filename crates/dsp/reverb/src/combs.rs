@@ -66,7 +66,7 @@ struct Channel {
 }
 
 pub struct Combs {
-    law: &'static CombNetwork,
+    law: CombNetwork,
     channels: [Channel; 2],
     rate: f32,
     feedback: f32,
@@ -80,7 +80,7 @@ pub struct Combs {
 impl Combs {
     /// Not real-time: allocates the lines.
     #[must_use]
-    pub fn new(law: &'static CombNetwork, s: Settings, rate: u32) -> Self {
+    pub fn new(law: &CombNetwork, s: Settings, rate: u32) -> Self {
         let rate = rate.max(1) as f32;
         let frames = |ms: f32| (ms * 0.001 * rate) as usize;
         let channel = |c: f32| {
@@ -94,7 +94,7 @@ impl Combs {
             }
         };
         let mut combs = Self {
-            law,
+            law: *law,
             channels: [channel(0.0), channel(1.0)],
             rate,
             feedback: 0.0,

@@ -189,12 +189,14 @@ fn a_layer_sounds_through_its_aux_chain() {
     assert!((aux.volume_db - 6.0206).abs() < 1e-3);
     // An EQ with no bands enabled is flat.
     assert_eq!(
-        aux.inserts[0].map(|e| e.kind),
-        Some(ir::EffectKind::Eq([ir::Bell::FLAT; 4]))
+        aux.inserts[0].as_ref().map(|e| &e.kind),
+        Some(&ir::EffectKind::Eq([ir::Bell::FLAT; 4]))
     );
-    assert!(matches!(aux.inserts[1].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 0.5));
+    assert!(
+        matches!(aux.inserts[1].as_ref().map(|e| &e.kind), Some(&ir::EffectKind::Gain(g)) if g == 0.5)
+    );
     assert!(matches!(
-        aux.inserts[2].map(|e| e.kind),
+        aux.inserts[2].as_ref().map(|e| &e.kind),
         Some(ir::EffectKind::Convolution { impulse: 0 })
     ));
     assert_eq!(out.impulses.len(), 1);
@@ -243,11 +245,15 @@ fn an_effect_rack_fans_out_to_its_chains_and_back() {
     assert!((2..=4).all(|n| b[n].sends[0].bus == 5 && b[n].sends[0].post_fader));
     // The panned chain ends on a balance; the other runs its own Gain.
     assert!(
-        matches!(b[2].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Stereo { pan, .. }) if pan == -1.0)
+        matches!(b[2].inserts[0].as_ref().map(|e| &e.kind), Some(&ir::EffectKind::Stereo { pan, .. }) if pan == -1.0)
     );
-    assert!(matches!(b[3].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 2.0));
+    assert!(
+        matches!(b[3].inserts[0].as_ref().map(|e| &e.kind), Some(&ir::EffectKind::Gain(g)) if g == 2.0)
+    );
     // The rest of the inserts and the layer's fader are on the join.
-    assert!(matches!(b[7].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 3.0));
+    assert!(
+        matches!(b[7].inserts[0].as_ref().map(|e| &e.kind), Some(&ir::EffectKind::Gain(g)) if g == 3.0)
+    );
     assert!(b[7].to_main && (b[7].volume_db + 6.0206).abs() < 1e-3);
     assert!(
         !out.diagnostics
@@ -278,7 +284,7 @@ fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
     assert!(g.inserts[0].is_none());
-    let Some(ir::EffectKind::Filter(f)) = g.inserts[1].map(|e| e.kind) else {
+    let Some(ir::EffectKind::Filter(f)) = g.inserts[1].as_ref().map(|e| e.kind.clone()) else {
         panic!("{:?}", g.inserts);
     };
     // Inverted: 20 kHz × 1000^(−0.6(1 − v)), so 20 kHz × 1000^−0.6 at
@@ -394,7 +400,7 @@ fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
-    let Some(ir::EffectKind::Filter(f)) = g.inserts[0].map(|e| e.kind) else {
+    let Some(ir::EffectKind::Filter(f)) = g.inserts[0].as_ref().map(|e| e.kind.clone()) else {
         panic!("{:?}", g.inserts);
     };
     // Mode 9 is the four-pole band; Q 0.2 is the resonance, so k = 2(1 − 0.2).
@@ -419,7 +425,7 @@ fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
         ]
     );
     // Algorithm II is the zero-delay ladder, with nothing left unsaid.
-    let Some(ir::EffectKind::Filter(z)) = g.inserts[1].map(|e| e.kind) else {
+    let Some(ir::EffectKind::Filter(z)) = g.inserts[1].as_ref().map(|e| e.kind.clone()) else {
         panic!("{:?}", g.inserts);
     };
     assert_eq!(z.ladder, Some(ir::Ladder::ZeroDelay(4)));
@@ -445,7 +451,7 @@ fn a_keygroup_ms20_is_the_sallen_key_with_its_morph_q_and_trimmed_curve() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
-    let Some(ir::EffectKind::Filter(f)) = g.inserts[0].map(|e| e.kind) else {
+    let Some(ir::EffectKind::Filter(f)) = g.inserts[0].as_ref().map(|e| e.kind.clone()) else {
         panic!("{:?}", g.inserts);
     };
     let Some(ir::Ladder::SallenKey { morph, curve }) = f.ladder else {
@@ -941,7 +947,7 @@ fn an_aux_eqs_gain_scale_connections_move_its_bands_live() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let aux = out.buses.last().unwrap();
-    let Some(ir::EffectKind::Eq(bells)) = aux.inserts[0].map(|e| e.kind) else {
+    let Some(ir::EffectKind::Eq(bells)) = aux.inserts[0].as_ref().map(|e| e.kind.clone()) else {
         panic!("{:?}", aux.inserts);
     };
     // GainScale 0: flat at rest, the enabled bands in order.
@@ -1098,7 +1104,7 @@ fn an_aux_matrix_spreads_the_first_channel_to_both_sides() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let aux = out.buses.last().unwrap();
     assert_eq!(
-        aux.inserts[0].map(|e| e.kind),
+        aux.inserts[0].as_ref().map(|e| e.kind.clone()),
         Some(ir::EffectKind::Matrix([[0.7, 0.0], [0.7, 0.0]]))
     );
     assert!(aux.inserts[1].is_none());
@@ -1125,14 +1131,14 @@ fn an_aux_eq_past_four_bands_runs_as_eqs_in_series() {
     let aux = out.buses.last().unwrap();
     let gains: Vec<f32> = aux.inserts[..2]
         .iter()
-        .flat_map(|e| match e.map(|e| e.kind) {
+        .flat_map(|e| match e.as_ref().map(|e| &e.kind) {
             Some(ir::EffectKind::Eq(b)) => b.map(|b| b.gain_db),
             other => panic!("{other:?}"),
         })
         .collect();
     assert_eq!(gains, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0, 0.0]);
     assert!(matches!(
-        aux.inserts[2].map(|e| e.kind),
+        aux.inserts[2].as_ref().map(|e| &e.kind),
         Some(ir::EffectKind::Gain(_))
     ));
     // Band 5 is the second EQ's first.
@@ -2233,7 +2239,7 @@ fn a_feedback_machine_runs_its_chain_and_mixes_it_with_its_input() {
     let kinds: Vec<_> = out
         .buses
         .iter()
-        .flat_map(|b| b.inserts.iter().flatten().map(|e| e.kind))
+        .flat_map(|b| b.inserts.iter().flatten().map(|e| e.kind.clone()))
         .collect();
     assert!(matches!(kinds[0], ir::EffectKind::Shaper(_)), "{kinds:?}");
     assert!(matches!(kinds[1], ir::EffectKind::CombBank(_)), "{kinds:?}");
@@ -2413,7 +2419,7 @@ fn a_keygroup_comb_runs_per_voice_with_its_freq_routed() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
     assert!(matches!(
-        g.inserts[0].map(|e| e.kind),
+        g.inserts[0].as_ref().map(|e| &e.kind),
         Some(ir::EffectKind::Comb(c)) if (c.hz - 1008.4754).abs() < 1e-2 && c.feedback == 0.5
     ));
     assert!(

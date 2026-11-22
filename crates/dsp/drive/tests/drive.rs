@@ -60,7 +60,7 @@ fn the_curves_match_v1s_measured_transfer_vectors() {
         (Curve::Tanh(2.0), 1f32.tanh()),
         (Curve::Atan(2.0), 1f32.atan()),
     ] {
-        assert!((curve.transfer(0.5) - y).abs() < 1e-6, "{curve:?}");
+        assert!((curve.clone().transfer(0.5) - y).abs() < 1e-6, "{curve:?}");
     }
 }
 

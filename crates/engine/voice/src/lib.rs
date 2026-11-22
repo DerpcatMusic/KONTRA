@@ -85,6 +85,15 @@ impl Lag {
 #[derive(Clone)]
 pub struct VoiceStart {
     pub region: Region,
+    /// Onset loop shift `[start, length]` as fractions of sample frames (zero
+    /// leaves loops untouched; the caller negates it for a reversed region).
+    /// Applied into [`Voice`]'s inline loop array
+    /// with zero allocation.
+    pub loop_shift: [f32; 2],
+    /// Optional modulated channel matrix overriding [`Region::mix`] at onset.
+    pub mix: Option<Mix>,
+    /// Optional modulated wavetable read state overriding [`Table::read`] at onset.
+    pub read: Option<Read>,
     /// Source frames per output frame: pitch and sample-rate ratio together.
     pub step: f64,
     pub gain: Gain,
@@ -122,6 +131,12 @@ enum Life {
 
 pub struct Voice {
     region: Option<Region>,
+    /// Per-voice inline copies of `region`'s mutable loop/mix/wavetable state
+    /// so [`Region`] stays compact (64 B) while [`Voice::start`] and live
+    /// modulation never allocate on the audio thread.
+    loops: Loops,
+    mix: Option<Mix>,
+    table: Option<Table>,
     /// Position at `elapsed == 0`; moved only when the step changes, so the
     /// cursor is the same whatever block sizes rendered it (rule 3).
     anchor: f64,
@@ -194,6 +209,9 @@ impl Voice {
     pub fn allocate() -> Self {
         Self {
             region: None,
+            loops: Loops::new(),
+            mix: None,
+            table: None,
             anchor: 0.0,
             elapsed: 0,
             step: 1.0,
@@ -224,6 +242,26 @@ impl Voice {
     /// Starts playing. No allocation. The previous region's sample reference is
     /// dropped here, so the plan must keep its samples alive until it retires.
     pub fn start(&mut self, start: VoiceStart) {
+        self.loops.clear();
+        if let Some(loops) = &start.region.loops {
+            // Capped at inline capacity (8) so the audio thread never spills to the heap.
+            self.loops.extend(loops.iter().take(8).copied());
+        }
+        if start.loop_shift[0] != 0.0 || start.loop_shift[1] != 0.0 {
+            zone::shift_loops(
+                &mut self.loops,
+                start.region.sample.frames(),
+                start.region.start,
+                start.region.end,
+                start.loop_shift[0],
+                start.loop_shift[1],
+            );
+        }
+        self.mix = start.mix.or_else(|| start.region.mix.as_deref().copied());
+        self.table = start.region.table.as_deref().cloned();
+        if let (Some(read), Some(table)) = (start.read, self.table.as_mut()) {
+            table.read = read;
+        }
         self.region = Some(start.region);
         self.anchor = 0.0;
         self.elapsed = 0;
@@ -337,6 +375,9 @@ impl Voice {
     /// Stops at once, without a release.
     pub fn kill(&mut self) {
         self.region = None;
+        self.loops.clear();
+        self.mix = None;
+        self.table = None;
     }
 
     /// Changes pitch from the next frame.
@@ -375,8 +416,8 @@ impl Voice {
     /// ponytail: a step at each refresh, not smoothed like the gain; ramp it
     /// per chunk if a fast sweep zippers.
     pub fn set_mix(&mut self, mix: Mix) {
-        if let Some(r) = self.region.as_mut() {
-            r.mix = Some(mix);
+        if self.region.is_some() {
+            self.mix = Some(mix);
         }
     }
 
@@ -384,7 +425,7 @@ impl Voice {
     // ponytail: steps at each control span; Kontakt ramps over 32 frames
     // (0x102ac): ramp inside `Table::render` if a fast route steps audibly.
     pub fn set_read(&mut self, read: Read) {
-        if let Some(table) = self.region.as_mut().and_then(|r| r.table.as_mut()) {
+        if let Some(table) = self.table.as_mut() {
             table.read = read;
         }
     }
@@ -464,7 +505,14 @@ impl Voice {
     /// loops and reverse.
     #[must_use]
     pub fn sample_frame(&self, region: &Region) -> Option<u64> {
-        region.frame_at(self.at(0).max(0.) as u64, self.released)
+        let loops = if self.region.is_some() {
+            self.loops.as_slice()
+        } else {
+            region.loops_slice()
+        };
+        region
+            .locate_with(loops, self.at(0).max(0.) as u64, self.released)
+            .map(|run| run.first)
     }
 
     /// Cursor position `ahead` output frames from now.
@@ -500,7 +548,7 @@ impl Voice {
         {
             self.last_peak = 0.0;
         }
-        let Some(mut region) = self.region.take() else {
+        let Some(region) = self.region.take() else {
             return;
         };
         let sample = &region.sample;
@@ -513,9 +561,9 @@ impl Voice {
             self.heads.iter().fold(self.at(0), |a, &h| a.min(h))
         };
         let ahead = (LOOKAHEAD * step) as usize + (self.at(0) - from) as usize;
-        let table = region.table.is_some();
+        let table = self.table.is_some();
         let ahead = if table { 0 } else { ahead };
-        region.runs(from as i64, ahead, released, |offset, run| {
+        region.runs_with(&self.loops, from as i64, ahead, released, |offset, run| {
             let low = if run.descending {
                 run.first + 1 - run.count as u64
             } else {
@@ -544,7 +592,7 @@ impl Voice {
         if self.elapsed == 0 && !table && self.waited < HEAD_WAIT && sample.heads_pending() {
             let block = (out.len() as f64 * step) as usize + 4;
             let mut ready = true;
-            region.runs(from as i64, block, released, |_, run| {
+            region.runs_with(&self.loops, from as i64, block, released, |_, run| {
                 let low = if run.descending {
                     run.first + 1 - run.count as u64
                 } else {
@@ -558,7 +606,7 @@ impl Voice {
                 return;
             }
         }
-        let has_tuned = !table && region.has_tuned_loop();
+        let has_tuned = !table && zone::Region::has_tuned_loop(&self.loops);
         let mut done = 0;
         let mut alive = true;
         while done < out.len() && alive {
@@ -566,7 +614,7 @@ impl Voice {
             if has_tuned {
                 let pos = self.at(0);
                 if let Some((target_tune, run_left)) =
-                    region.tune_span(pos.max(0.0) as u64, released)
+                    region.tune_span(&self.loops, pos.max(0.0) as u64, released)
                 {
                     if (target_tune - self.loop_tune).abs() > 1e-9 {
                         self.anchor = pos;
@@ -608,11 +656,12 @@ impl Voice {
                 n = lo;
             }
             let missing_before = self.missing;
-            let filled = if let Some(table) = region.table.as_mut() {
+            let filled = if let Some(mut tbl) = self.table.take() {
                 let raw = scratch.raw.get_mut(..n).unwrap_or_default();
                 // Each frame's own cursor: a gliding table moves pitch every
                 // frame, the same at any block size.
-                table.render(|i| self.at(i), self.step(), raw);
+                tbl.render(|i| self.at(i), self.step(), raw);
+                self.table = Some(tbl);
                 raw.len()
             } else if stretched {
                 self.read_stretched(scratch, client, &region, n)
@@ -668,13 +717,17 @@ impl Voice {
                 }
             }
             self.elapsed += n as u64;
-            if !table && region.finished(self.at(0), released) {
+            if !table && region.finished_with(&self.loops, self.at(0), released) {
                 alive = false;
             }
             done += n;
         }
         if alive {
             self.region = Some(region);
+        } else {
+            self.loops.clear();
+            self.mix = None;
+            self.table = None;
         }
     }
 
@@ -746,7 +799,8 @@ impl Voice {
         ramp: Ramp,
     ) -> usize {
         let sample = &region.sample;
-        let mix = region.mix.as_ref();
+        let mix = self.mix.as_ref();
+        let loops = &self.loops;
         let released = self.released;
         let step = ramp.step_at(first_step, frames);
         let at = |i: u64| base + ramp.travel(first_step, frames + i);
@@ -758,7 +812,7 @@ impl Voice {
             return 0;
         };
         if self.mode == RenderMode::Offline {
-            region.runs(lo, window.len(), released, |_, run| {
+            region.runs_with(loops, lo, window.len(), released, |_, run| {
                 let low = if run.descending {
                     run.first + 1 - run.count as u64
                 } else {
@@ -784,7 +838,7 @@ impl Voice {
         // Runs tile the window from the first one's offset; each read writes
         // all its frames, so only what no run covers needs zeroing.
         let (mut first, mut end) = (window.len(), 0);
-        region.runs(lo, window.len(), released, |offset, run| {
+        region.runs_with(loops, lo, window.len(), released, |offset, run| {
             let count = run.count;
             first = first.min(offset);
             end = end.max(offset + count);

@@ -77,7 +77,7 @@ impl Chain {
     pub fn matches(&self, inserts: &[Option<ir::Effect>]) -> bool {
         self.sections
             .iter()
-            .all(|(n, e)| inserts.get(usize::from(*n)).copied().flatten() == Some(*e))
+            .all(|(n, e)| inserts.get(usize::from(*n)).and_then(Option::as_ref) == Some(e))
     }
 
     /// Follows `inserts`' settings in place, state kept, as a voice's units
@@ -88,14 +88,14 @@ impl Chain {
     pub fn follow(&mut self, inserts: &[Option<ir::Effect>], rate: u32) {
         let stages = self.filters.iter_mut().zip(self.on.iter_mut());
         for ((n, saved), (stage, on)) in self.sections.iter_mut().zip(stages) {
-            let now = inserts.get(usize::from(*n)).copied().flatten();
-            if now == Some(*saved) {
+            let now = inserts.get(usize::from(*n)).and_then(Option::as_ref);
+            if now == Some(&*saved) {
                 continue;
             }
             match now {
                 Some(e) if retune(stage, &e.kind, rate) => {
-                    *saved = e;
-                    *on = sounds(&e);
+                    saved.clone_from(e);
+                    *on = sounds(e);
                 }
                 _ => {
                     // Marked bypassed so the insert's return is seen as a move.

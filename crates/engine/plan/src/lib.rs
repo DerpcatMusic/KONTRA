@@ -557,6 +557,10 @@ pub struct Plan {
     pub loaded: Vec<(ir::RackAt, u8, u16)>,
     /// Every zone as scripts find and read it (`find_zone`, `get_zone_par`).
     pub zone_facts: Vec<ZoneFacts>,
+    /// Sparse loop parameters for user zones (`set_num_user_zones` /
+    /// `set_loop_par`), sorted by zone id so audio-thread `get_loop_par`
+    /// binary-searches with zero allocation while saved zones pay 0 bytes.
+    pub user_loop_pars: Vec<(u32, [LoopPar; 8])>,
     /// Saved-purged groups, nothing of them loaded: what a script's
     /// `purge_group(g, 1)` builds ([`Dormant`]).
     pub dormant: std::sync::Arc<Vec<Dormant>>,
@@ -637,6 +641,7 @@ impl Plan {
             knob_lfos: Vec::new(),
             loaded: Vec::new(),
             zone_facts: Vec::new(),
+            user_loop_pars: Vec::new(),
             dormant: std::sync::Arc::default(),
             user_loaded: Vec::new(),
         }

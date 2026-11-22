@@ -22,7 +22,7 @@ use kontra_plan::Group;
 use crate::voice_rack::Unit;
 
 /// A kind with a wet path a voice matrix cannot carry.
-fn wet(kind: ir::EffectKind) -> bool {
+fn wet(kind: &ir::EffectKind) -> bool {
     matches!(
         kind,
         ir::EffectKind::Reverb(_)
@@ -53,7 +53,7 @@ pub fn split(group: &Group, units: &[Unit]) -> Option<usize> {
         .get(from..)?
         .iter()
         .flatten()
-        .any(|e| !e.bypass && wet(e.kind))
+        .any(|e| !e.bypass && wet(&e.kind))
         .then_some(from)
 }
 
@@ -63,6 +63,6 @@ pub fn slots(group: &Group, from: usize) -> Vec<Option<ir::Effect>> {
         .inserts
         .iter()
         .enumerate()
-        .map(|(n, e)| e.filter(|_| n >= from))
+        .map(|(n, e)| if n >= from { e.clone() } else { None })
         .collect()
 }

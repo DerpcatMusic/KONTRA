@@ -56,7 +56,7 @@ pub struct Unit {
     pub tuned: Option<ir::EffectKind>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Ramp {
     pub from: ir::EffectKind,
     pub to: ir::EffectKind,
@@ -79,25 +79,25 @@ pub enum Kind {
 
 /// The unit for an insert, at its saved settings, and a shaper's base-rate
 /// filters.
-fn unit(kind: ir::EffectKind, rate: u32) -> Option<(Kind, Outer)> {
+fn unit(kind: &ir::EffectKind, rate: u32) -> Option<(Kind, Outer)> {
     if let ir::EffectKind::Shaper(s) = kind {
         let s = shaper(s, rate);
         return Some((Kind::Shaper(s.core), s.outer));
     }
     if let ir::EffectKind::Strip(s) = kind {
         let c = Compressor::new(compressor(s.compressor), rate);
-        let s = shaper(s.shaper, rate);
+        let s = shaper(&s.shaper, rate);
         return Some((Kind::Strip(c, s.core), s.outer));
     }
     let kind = match kind {
         ir::EffectKind::Filter(f) => {
-            let mut svf = Svf::new(shape(&f));
+            let mut svf = Svf::new(shape(f));
             svf.set_cutoff(f.hz, rate);
             Kind::Filter(svf)
         }
-        ir::EffectKind::Eq(bells) => Kind::Eq(VoiceEq::new(bells, rate)),
-        ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(f), rate)),
-        ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(c, rate), 1)),
+        ir::EffectKind::Eq(bells) => Kind::Eq(VoiceEq::new(*bells, rate)),
+        ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(*f), rate)),
+        ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(*c, rate), 1)),
         ir::EffectKind::Overdrive(o) => Kind::Overdrive(Overdrive::new(voicing(o), rate)),
         ir::EffectKind::Comb(c) => Kind::Comb(Comb::new(c.hz, c.feedback, c.forward, rate)),
         _ => return None,
@@ -139,7 +139,7 @@ pub fn template(group: &kontra_plan::Group, rate: u32) -> Arc<[Unit]> {
         .filter(|&(n, _)| last_drive.is_some_and(|l| n <= l) || route_depth::moved(&group.mods, n))
         .filter_map(|(n, e)| {
             let e = e.as_ref()?;
-            let (kind, outer) = unit(e.kind, rate)?;
+            let (kind, outer) = unit(&e.kind, rate)?;
             let line = combs;
             combs += usize::from(matches!(kind, Kind::Comb(_)));
             Some(Unit {
@@ -236,7 +236,8 @@ pub fn process(
             {
                 r.at += n as u32;
                 if r.at.is_multiple_of(TICK) || r.at >= r.len {
-                    let k = route_depth::lerp(r.from, r.to, (r.at as f32 / r.len as f32).min(1.0));
+                    let k =
+                        route_depth::lerp(&r.from, &r.to, (r.at as f32 / r.len as f32).min(1.0));
                     tune(&mut u.kind, &mut u.outer, Tune::Effect(&k), rate);
                 }
             }
@@ -269,16 +270,18 @@ fn drive(
 }
 
 pub fn tune_unit(u: &mut Unit, t: Tune<'_>, ramp: Option<Ramp>, rate: u32) {
-    let effect = match t {
-        Tune::Effect(e) => Some(*e),
-        _ => None,
+    let unchanged = match (&u.tuned, &t) {
+        (Some(prev), Tune::Effect(e)) => ramp.is_none() && u.ramp.is_none() && prev == *e,
+        _ => false,
     };
-    let unchanged = ramp.is_none() && u.ramp.is_none() && effect.is_some() && u.tuned == effect;
     u.ramp = ramp;
     if unchanged {
         return;
     }
-    u.tuned = effect.filter(|_| ramp.is_none());
+    u.tuned = match &t {
+        Tune::Effect(e) if u.ramp.is_none() => Some((*e).clone()),
+        _ => None,
+    };
     tune(&mut u.kind, &mut u.outer, t, rate);
 }
 
@@ -292,21 +295,19 @@ fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune<'_>, rate: u32) {
         (Kind::Comb(c), Tune::Comb(hz, feedback)) => c.set(hz, feedback, rate),
         (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(*v), rate),
         (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => {
-            let new = shaper(*v, rate);
+            let new = shaper(v, rate);
             s.retune(&new.core);
             outer.retune(&new.outer);
         }
         // Coefficients only: a script moving COMPRESS allocates nothing.
         (Kind::Strip(c, s), Tune::Effect(ir::EffectKind::Strip(v))) => {
             c.set(compressor(v.compressor), rate);
-            let new = shaper(v.shaper, rate);
+            let new = shaper(&v.shaper, rate);
             s.retune(&new.core);
             outer.retune(&new.outer);
         }
         (Kind::Crush(c), Tune::Effect(ir::EffectKind::Crush(v))) => c.set(reduction(*v, rate)),
-        (Kind::Overdrive(o), Tune::Effect(ir::EffectKind::Overdrive(v))) => {
-            o.set(voicing(*v), rate)
-        }
+        (Kind::Overdrive(o), Tune::Effect(ir::EffectKind::Overdrive(v))) => o.set(voicing(v), rate),
         _ => {}
     }
 }
@@ -356,7 +357,7 @@ mod tests {
     fn a_sounding_voice_takes_its_strips_new_settings() {
         let rate = 48_000;
         let open = strip(0.0);
-        let Some((kind, outer)) = unit(open, rate) else {
+        let Some((kind, outer)) = unit(&open, rate) else {
             panic!("no strip unit");
         };
         let mut rack = [Unit {
@@ -393,7 +394,7 @@ mod tests {
         let before = peak(&mut rack, &inserts);
         let squeezed = strip(-30.0);
         inserts[0] = Some(ir::Effect {
-            kind: squeezed,
+            kind: squeezed.clone(),
             bypass: false,
             output: 1.0,
             dry: 0.0,

@@ -171,7 +171,7 @@ impl<const N: usize> Glide<N> {
 }
 
 pub struct Network {
-    law: &'static ReverbNetwork,
+    law: Box<ReverbNetwork>,
     requested: Settings,
     controls: Glide<CONTROLS>,
     lengths: Glide<LINES>,
@@ -211,7 +211,7 @@ pub struct Network {
 impl Network {
     /// Not real-time: allocates the lines for the largest size and predelay.
     #[must_use]
-    pub fn new(law: &'static ReverbNetwork, s: Settings, rate: u32) -> Self {
+    pub fn new(law: &ReverbNetwork, s: Settings, rate: u32) -> Self {
         let rate = rate.max(1);
         let n = (rate as f32 * (1.0 / law.rate)) as u32;
         let pair = (rate as f32 > law.max_rate && n > 1 && rate.is_multiple_of(n))
@@ -254,7 +254,7 @@ impl Network {
         let w = std::f64::consts::TAU * f64::from(s.modulation_hz.max(0.0)) / f64::from(host);
         let [glide, glide_lines] = law.glide_s.map(|t| t * host);
         let mut n = Self {
-            law,
+            law: Box::new(*law),
             requested: s,
             controls: Glide::new([0.0; CONTROLS], glide),
             lengths: Glide::new([0.0; LINES], glide_lines),
@@ -317,7 +317,7 @@ impl Network {
 
     /// The glide targets for `s`; sets the input point and the output taps.
     fn targets(&mut self, s: Settings) -> ([f32; CONTROLS], [f32; LINES]) {
-        let law = self.law;
+        let law = &*self.law;
         let rate = law.rate;
         let len = lengths(law, &self.primes, s.size.clamp(0.0, MAX_SIZE));
         let [len0, len1] = [len[0], len[1]];
@@ -394,7 +394,7 @@ impl Network {
     /// Each line's damping one-pole and loop gain: 60 dB in the decay
     /// seconds (frames at the law's rate), the highs in `t_hf`.
     fn decay(&mut self) {
-        let law = self.law;
+        let law = &*self.law;
         let c = self.controls.now;
         let t = c[SECONDS];
         let [h0, h1, h2] = law.hf;

@@ -116,15 +116,11 @@ impl Engine {
                     .saturating_add_signed(frames)
                     .clamp(zone.region.start, region.end);
             }
-            if let [start, length] = self.loop_shift(zone, &n)
-                && (start != 0.0 || length != 0.0)
-            {
-                if region.reverse {
-                    region.shift_loops(-start, -length);
-                } else {
-                    region.shift_loops(start, length);
-                }
-            }
+            // A reversed region shifts its mirrored loops the other way.
+            let loop_shift = match self.loop_shift(zone, &n) {
+                [start, length] if region.reverse => [-start, -length],
+                shift => shift,
+            };
             let start_frame = if region.reverse {
                 zone.region.end.saturating_sub(region.end) as f64
             } else {
@@ -138,14 +134,8 @@ impl Engine {
                 now: self.now.0 as f32 / self.rate as f32,
                 ..timing_age
             };
-            if let Some(mix) = self.voice_mix(zone, &n, onset) {
-                region.mix = Some(mix);
-            }
-            if let (Some(read), Some(table)) =
-                (self.voice_read(zone, &n, onset), region.table.as_mut())
-            {
-                table.read = read;
-            }
+            let mix = self.voice_mix(zone, &n, onset);
+            let read = self.voice_read(zone, &n, onset);
             let pan = self.group_pan(zone);
             let (gain, lag) = self.voice_gain(zone, &n, factor, onset, pan);
             let (step, bend) = self.step(zone, &n, onset);
@@ -155,6 +145,9 @@ impl Engine {
                 .map_or(0, |g| g.envelope.release);
             let start = VoiceStart {
                 region,
+                loop_shift,
+                mix,
+                read,
                 step: voice_gain::bent(
                     self.plan.route_pitch,
                     step,

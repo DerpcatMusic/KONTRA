@@ -177,13 +177,12 @@ fn every_layer_of_a_note_starts_on_the_notes_sample() {
 fn the_pedal_holds_released_notes_until_it_lifts() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = zone(region(&mut store, "loop", 1000).unwrap(), 0.0);
-    z.region.loops = vec![kontra_voice::Loop {
+    z.region.loops = Region::pack_loops([kontra_voice::Loop {
         start: 0,
         end: 1000,
         crossfade: 0,
         ..Default::default()
-    }]
-    .into();
+    }]);
     let mut engine = Engine::new(plan(vec![z], 8), store.client(), RATE);
     render(
         &mut engine,
@@ -212,13 +211,12 @@ fn a_pedal_holds_only_the_notes_of_its_own_port_and_channel() {
     for (port, channel, held) in [(0, 0, 1), (1, 0, 0), (0, 1, 0)] {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut z = zone(region(&mut store, "loop", 1000).unwrap(), 0.0);
-        z.region.loops = vec![kontra_voice::Loop {
+        z.region.loops = Region::pack_loops([kontra_voice::Loop {
             start: 0,
             end: 1000,
             crossfade: 0,
             ..Default::default()
-        }]
-        .into();
+        }]);
         let mut engine = Engine::new(plan(vec![z], 8), store.client(), RATE);
         render(
             &mut engine,
@@ -238,13 +236,12 @@ fn a_pedal_holds_only_the_notes_of_its_own_port_and_channel() {
 fn a_script_owned_pedal_does_not_hold_released_notes() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = zone(region(&mut store, "loop", 1000).unwrap(), 0.0);
-    z.region.loops = vec![kontra_voice::Loop {
+    z.region.loops = Region::pack_loops([kontra_voice::Loop {
         start: 0,
         end: 1000,
         crossfade: 0,
         ..Default::default()
-    }]
-    .into();
+    }]);
     let mut p = (*plan(vec![z], 8)).clone();
     p.sustain_pedal = kontra_engine::SustainPedal::ToScripts;
     let mut engine = Engine::new(Arc::new(p), store.client(), RATE);
@@ -443,9 +440,9 @@ fn idle_costs_a_fraction_of_a_voice_and_voices_add_up_linearly() {
             damping_hz: 8_000.0,
             low_cut_hz: 0.0,
             steep_low_cut: false,
-            body: &[],
+            body: std::borrow::Cow::Borrowed(&[]),
             triangle_s: None,
-            shape: &[],
+            shape: std::borrow::Cow::Borrowed(&[]),
             noise: [0.0; 2],
             high_shelf: None,
             spread_ms: 1.0,

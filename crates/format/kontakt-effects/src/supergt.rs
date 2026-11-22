@@ -369,14 +369,14 @@ pub fn supergt(k: Knobs) -> ir::EffectKind {
         pre_lowpass_hz: None,
         curve: ir::DriveCurve::Blend {
             drive: db(trim_db),
-            rows,
+            rows: std::borrow::Cow::Borrowed(rows),
             t: at - i as f32,
         },
         lowpass_hz: None,
         highpass_hz: None,
-        sections: ir::Sections {
-            fixed: &BASE,
-            moving: [
+        sections: ir::Sections::new(
+            &BASE,
+            [
                 Some((
                     Out,
                     peak(pk_hz, pk_q, c * pk_db, db(c * out_db + loss_db) * mix),
@@ -384,7 +384,7 @@ pub fn supergt(k: Knobs) -> ir::EffectKind {
                 Some((Out, low_shelf(ls_hz, c * ls_db))),
                 Some((Out, high_shelf(hs_hz, c * hs_db))),
             ],
-        },
+        ),
     };
     let at = compress * 4.0;
     let j = (at as usize).min(3);

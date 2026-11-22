@@ -9,9 +9,12 @@ pub fn sections(rack: &[Option<ir::Effect>]) -> Vec<ir::EffectKind> {
     rack.iter()
         .flatten()
         .filter(|e| !e.bypass)
-        .filter_map(|e| match e.kind {
-            ir::EffectKind::Eq(bands) => bands.iter().any(|b| b.gain_db != 0.0).then_some(e.kind),
-            kind @ (ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_)) => Some(kind),
+        .filter_map(|e| match &e.kind {
+            ir::EffectKind::Eq(bands) => bands
+                .iter()
+                .any(|b| b.gain_db != 0.0)
+                .then(|| e.kind.clone()),
+            kind @ (ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_)) => Some(kind.clone()),
             _ => None,
         })
         .collect()

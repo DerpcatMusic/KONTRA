@@ -311,10 +311,7 @@ impl Resolver {
                     Some(key) => key.clone(),
                     None => self.key.insert(crate::access::keystream(archive)?).clone(),
                 };
-                Some(ir::Keystream::Repeat {
-                    stream,
-                    origin: entry.offset,
-                })
+                Some(crate::access::repeat_keystream(stream, entry.offset))
             }
             (true, other) => return Err(format!("archive cipher {other:#x}")),
         };

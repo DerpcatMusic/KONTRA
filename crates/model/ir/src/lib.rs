@@ -16,6 +16,7 @@ mod output;
 mod readout;
 mod reverb;
 mod route_names;
+mod validate;
 mod wavetable;
 pub use bus::{Bus, BusSend};
 pub use drive::{
@@ -41,6 +42,7 @@ pub use reverb::{
     ReverbPar,
 };
 pub use route_names::RouteNames;
+pub use validate::validate;
 pub use wavetable::{
     FormShaper, Inharmonic, ModOsc, ModOscKind, Quality, Side, TableValue, TuneUnit, Warp,
     WarpShape, Wavetable,
@@ -230,92 +232,40 @@ pub enum RawPcm {
     I16Le,
 }
 
-/// XOR keying of bytes a sample file stores encrypted: decrypts (or encrypts)
-/// the file's bytes as the engine reads them. Held in memory only; `Debug`
-/// never prints the key.
-#[derive(Clone, PartialEq, Eq)]
-pub enum Keystream {
-    /// File byte `origin + n` is stored XOR `stream[n % len]`.
-    Repeat { stream: Arc<[u8]>, origin: u64 },
-    /// Each `block` bytes from `origin` are XORed with a stream of 32-bit
-    /// little-endian words. The stream restarts at every block, seeded by `key`
-    /// and the block's file offset, so any read decrypts without its neighbours.
-    Blocks { key: u64, origin: u64, block: u32 },
+/// In-memory byte transform applied to encrypted sample/container reads
+/// (XOR streams, block ciphers, vendor container transforms). Keys live
+/// strictly in memory and are never formatted by `Debug` or serialized.
+pub trait ByteTransform: Send + Sync {
+    /// Decrypts (or encrypts) `bytes` read from file offset `offset`.
+    fn apply(&self, offset: u64, bytes: &mut [u8]);
 }
+
+/// Keyed transform of bytes a sample file stores encrypted: decrypts (or
+/// encrypts) the file's bytes as the engine reads them. Held in memory only;
+/// `Debug` never prints the key.
+#[derive(Clone)]
+pub struct Keystream(Arc<dyn ByteTransform>);
 
 impl Keystream {
+    /// Wraps a format-supplied [`ByteTransform`].
+    #[must_use]
+    pub fn new(transform: Arc<dyn ByteTransform>) -> Self {
+        Self(transform)
+    }
+
     /// Decrypts (or encrypts) `bytes` read from file offset `at`.
     pub fn apply(&self, at: u64, bytes: &mut [u8]) {
-        match self {
-            Self::Repeat { stream, origin } => repeat(stream, *origin, at, bytes),
-            Self::Blocks { key, origin, block } => {
-                blocks(*key, *origin, u64::from(*block), at, bytes);
-            }
-        }
+        self.0.apply(at, bytes);
     }
 }
 
-fn repeat(stream: &[u8], origin: u64, at: u64, bytes: &mut [u8]) {
-    let len = stream.len() as u64;
-    if len == 0 {
-        return;
-    }
-    // Whole runs of the key at a time, so the XOR vectorises.
-    let mut position = (at.wrapping_sub(origin) % len) as usize;
-    let mut rest = bytes;
-    while !rest.is_empty() {
-        let key = stream.get(position..).unwrap_or_default();
-        let n = key.len().min(rest.len());
-        let (head, tail) = std::mem::take(&mut rest).split_at_mut(n);
-        head.iter_mut().zip(key).for_each(|(b, k)| *b ^= k);
-        rest = tail;
-        position = 0;
+impl PartialEq for Keystream {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
-/// The block-restarted word stream: block `n` of `origin` starts at
-/// `origin + n·block`; the stream is the one a whole-block pass would XOR.
-fn blocks(key: u64, origin: u64, block: u64, at: u64, bytes: &mut [u8]) {
-    if block == 0 {
-        return;
-    }
-    let Some(mut into) = at.checked_sub(origin) else {
-        return;
-    };
-    let mut rest = bytes;
-    while !rest.is_empty() {
-        let start = into / block * block;
-        let skip = (into - start) as usize;
-        let n = (block as usize - skip).min(rest.len());
-        let (head, tail) = std::mem::take(&mut rest).split_at_mut(n);
-        let mask = word_stream(key, origin + start, skip + n);
-        head.iter_mut()
-            .zip(mask.get(skip..).unwrap_or_default())
-            .for_each(|(b, m)| *b ^= m);
-        rest = tail;
-        into += n as u64;
-    }
-}
-
-/// The first `len` bytes of the word stream seeded by `key` and `nonce`, a
-/// multiplicative state stepped per word (uvi-file's `transform`; uvi tests it).
-fn word_stream(key: u64, nonce: u64, len: usize) -> Vec<u8> {
-    const MIX: u64 = 0xc6a4_a793_5bd1_e995;
-    const STEP: u64 = 0x5851_f42d_4c95_7f2d;
-    let mix = |value: u64| {
-        let value = value.wrapping_mul(MIX);
-        (value ^ (value >> 47)).wrapping_mul(MIX)
-    };
-    let mut state = (mix(nonce) ^ key).wrapping_mul(MIX);
-    let mut out = Vec::with_capacity(len + 4);
-    while out.len() < len {
-        let word = (((state >> 22) ^ state) >> (22 + (state >> 61))) as u32;
-        out.extend(word.to_le_bytes());
-        state = state.wrapping_mul(STEP);
-    }
-    out.truncate(len);
-    out
-}
+impl Eq for Keystream {}
 
 impl std::fmt::Debug for Keystream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -859,8 +809,56 @@ impl Default for Loop {
     }
 }
 
+/// Static table data or a heap-allocated owned copy (for dynamic or
+/// deserialized presets). Cloning never allocates, and `size_of::<Shared<T>>()`
+/// stays 16 bytes regardless of `size_of::<T>()`.
+#[derive(Clone)]
+pub enum Shared<T: 'static> {
+    Borrowed(&'static T),
+    Owned(Arc<T>),
+}
+
+impl<T: 'static> Shared<T> {
+    /// Wraps a static table with zero allocation.
+    #[must_use]
+    pub const fn borrowed(value: &'static T) -> Self {
+        Self::Borrowed(value)
+    }
+
+    /// Wraps dynamically constructed or deserialized data.
+    #[must_use]
+    pub fn owned(value: T) -> Self {
+        Self::Owned(Arc::new(value))
+    }
+}
+
+impl<T: 'static> std::ops::Deref for Shared<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        match self {
+            Self::Borrowed(v) => v,
+            Self::Owned(v) => v,
+        }
+    }
+}
+
+impl<T: PartialEq + 'static> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<T: Eq + 'static> Eq for Shared<T> {}
+
+impl<T: std::fmt::Debug + 'static> std::fmt::Debug for Shared<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
+
 /// An effect slot.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Effect {
     pub kind: EffectKind,
     pub bypass: bool,
@@ -870,7 +868,7 @@ pub struct Effect {
     pub dry: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EffectKind {
     /// Linear gain.
     Gain(f32),
@@ -1070,23 +1068,27 @@ mod tests {
     }
 
     #[test]
-    fn block_keystream_reads_in_any_piece_and_undoes_itself() {
-        let plain: Vec<u8> = (0..1500u32).map(|i| (i * 7 + 3) as u8).collect();
-        let key = Keystream::Blocks {
-            key: 0x1234_5678_9abc_def0,
-            origin: 4096,
-            block: 512,
-        };
-        let mut whole = plain.clone();
-        key.apply(4096, &mut whole);
-        assert_ne!(whole, plain);
-        // A read that starts mid-block and crosses two block starts decrypts the
-        // same bytes as the whole pass.
-        let mut piece = whole[300..1100].to_vec();
-        key.apply(4096 + 300, &mut piece);
-        assert_eq!(piece, plain[300..1100]);
-        key.apply(4096, &mut whole);
-        assert_eq!(whole, plain);
+    fn keystream_delegates_to_custom_transform_and_redacts_debug() {
+        struct OffsetXor(u8);
+        impl ByteTransform for OffsetXor {
+            fn apply(&self, offset: u64, bytes: &mut [u8]) {
+                for (i, b) in bytes.iter_mut().enumerate() {
+                    *b ^= self.0.wrapping_add((offset + i as u64) as u8);
+                }
+            }
+        }
+
+        let key = Keystream::new(Arc::new(OffsetXor(0x5a)));
+        assert_eq!(format!("{key:?}"), "Keystream(..)");
+        assert_eq!(key, key.clone());
+        assert_ne!(key, Keystream::new(Arc::new(OffsetXor(0x5a))));
+
+        let plain: Vec<u8> = (0..64u8).collect();
+        let mut buf = plain.clone();
+        key.apply(100, &mut buf);
+        assert_ne!(buf, plain);
+        key.apply(100, &mut buf);
+        assert_eq!(buf, plain);
     }
 
     /// An effect travels by value through racks and commands: an effect kind
