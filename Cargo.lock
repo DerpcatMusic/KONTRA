@@ -2222,6 +2222,7 @@ dependencies = [
  "kontra-ui",
  "kontra-ui-model",
  "moose",
+ "moose-au",
  "moose-clap",
  "moose-test",
  "moose-vst3",
@@ -2617,6 +2618,9 @@ dependencies = [
 name = "moose"
 version = "7.0.0"
 dependencies = [
+ "moose-aax",
+ "moose-au",
+ "moose-clap",
  "moose-core",
  "moose-derive",
  "moose-gui-types",
@@ -2624,6 +2628,26 @@ dependencies = [
  "moose-mui",
  "moose-params",
  "moose-plugin",
+ "moose-vst3",
+]
+
+[[package]]
+name = "moose-aax"
+version = "7.0.0"
+dependencies = [
+ "moose-core",
+ "moose-params",
+]
+
+[[package]]
+name = "moose-au"
+version = "7.0.0"
+dependencies = [
+ "cc",
+ "crossbeam-queue",
+ "moose-core",
+ "moose-params",
+ "moose-shim-types",
 ]
 
 [[package]]
@@ -2818,6 +2842,10 @@ dependencies = [
  "moose-gui-types",
  "moose-params",
 ]
+
+[[package]]
+name = "moose-shim-types"
+version = "7.0.0"
 
 [[package]]
 name = "moose-standalone"
@@ -6357,10 +6385,6 @@ version = "0.1.0"
 [[patch.unused]]
 name = "symphonia-format-riff"
 version = "0.5.5"
-
-[[patch.unused]]
-name = "moose-au"
-version = "7.0.0"
 
 [[patch.unused]]
 name = "moose-egui"

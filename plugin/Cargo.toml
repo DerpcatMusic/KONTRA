@@ -18,8 +18,10 @@ workspace = true
 # instead of installing kontra-lua's own arena allocator (two can't link).
 rt-paranoid = ["moose/rt-paranoid", "kontra-host/heap-profile"]
 default = ["clap", "vst3"]
-clap = ["dep:moose-clap", "dep:clap-sys"]
-vst3 = ["dep:moose-vst3"]
+clap = ["dep:moose-clap", "dep:clap-sys", "moose/clap"]
+vst3 = ["dep:moose-vst3", "moose/vst3"]
+au = ["dep:moose-au", "moose/au"]
+aax = ["moose/aax"]
 
 [dependencies]
 kontra-align = { path = "../crates/app/align" }
@@ -32,6 +34,7 @@ kontra-library = { path = "../crates/app/library" }
 moose = { workspace = true, features = ["mui"] }
 moose-clap = { workspace = true, features = ["mpe-input"], optional = true }
 moose-vst3 = { workspace = true, optional = true }
+moose-au = { workspace = true, optional = true }
 clap-sys = { version = "0.5", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
