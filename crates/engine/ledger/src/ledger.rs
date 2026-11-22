@@ -91,6 +91,9 @@ pub struct Note {
     /// Voices started (or the note was ignored): later script changes move
     /// sounding voices instead of choosing zones.
     pub started: bool,
+    /// Predecessor captured on arrival, until the initial starts are done.
+    /// The inner None means no note had been heard yet.
+    pub heard_before: Option<Option<u8>>,
     /// A script ignored the event: it starts no voices.
     pub ignored: bool,
     /// What its release sounds.
@@ -151,6 +154,7 @@ impl Note {
             released: false,
             key_up: false,
             started: false,
+            heard_before: None,
             ignored: false,
             releases: Releases::OnRelease,
             noted_off: false,

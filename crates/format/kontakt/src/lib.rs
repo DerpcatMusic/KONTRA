@@ -8,6 +8,8 @@ use kontra_kontakt_effects::{
 };
 
 mod access;
+#[cfg(test)]
+mod audit;
 mod clocked;
 mod container;
 mod drive;

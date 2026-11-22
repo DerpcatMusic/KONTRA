@@ -469,6 +469,7 @@ impl Engine {
             }
             n.started = true;
             if n.ignored || n.released {
+                n.heard_before = None;
                 continue;
             }
             // The count scans every note: only zones that start on it ask.
@@ -493,6 +494,9 @@ impl Engine {
             n.released |= n.fade.is_some_and(|(target, ..)| target == FadeTarget::End);
             if !scripted && n.releases == Releases::AtStart {
                 self.start_zones(note, false, |trigger| trigger == Trigger::Release);
+            }
+            if let Some(n) = self.notes.get_mut(note) {
+                n.heard_before = None;
             }
             self.behaviour.advance();
         }
