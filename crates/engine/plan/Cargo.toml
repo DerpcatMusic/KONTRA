@@ -15,3 +15,6 @@ kontra-ir = { path = "../../model/ir" }
 kontra-script-ui = { path = "../script-ui" }
 kontra-vm = { path = "../vm" }
 kontra-voice = { path = "../voice" }
+
+[dev-dependencies]
+kontra-stream = { path = "../stream" }

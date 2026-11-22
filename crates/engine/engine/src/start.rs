@@ -43,7 +43,7 @@ impl Engine {
                 Some(&zone) => zone as usize,
                 None => at,
             };
-            if listed.is_none() && !index_of.holds(index, n.key) {
+            if !index_of.pre_matches(index, n.key, n.velocity_byte, &accept) {
                 continue;
             }
             let Some(zone) = plan.zones.get(index) else {

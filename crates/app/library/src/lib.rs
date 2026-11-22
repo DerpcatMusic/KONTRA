@@ -240,7 +240,7 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
                 out.presets += 1;
                 out.banks.push(path);
             }
-            "nki" | "nkm" | "uvip" | "sfz" | "dspreset" => out.presets += 1,
+            "nki" | "nkm" | "uvip" | "sfz" | "dspreset" | "kontra" => out.presets += 1,
             "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => out.audio += 1,
             _ => {}
         }
@@ -510,7 +510,9 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                 continue;
             }
             match ext(&path).as_str() {
-                "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" => presets.push(path),
+                "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" => {
+                    presets.push(path)
+                }
                 "ufs" => {
                     bank_presets(
                         &path,

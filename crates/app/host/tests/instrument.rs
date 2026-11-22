@@ -119,6 +119,59 @@ fn a_dspreset_loads_and_sounds() {
     assert!(peak > 1e-3, "a held A4 sounds, peak {peak}");
 }
 
+#[test]
+fn a_native_kontra_instrument_loads_and_sounds() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("kontra_native_e2e");
+    std::fs::create_dir_all(&dir).unwrap();
+    let frames = 24_000u32;
+    let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+    for field in [16u32, 1 | (1 << 16), RATE, RATE * 2, 2 | (16 << 16)] {
+        wav.extend(field.to_le_bytes());
+    }
+    wav.extend(b"data");
+    wav.extend((frames * 2).to_le_bytes());
+    for i in 0..frames {
+        let s = (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
+        wav.extend(((s * 20_000.0) as i16).to_le_bytes());
+    }
+    let riff = (wav.len() - 8) as u32;
+    wav.splice(4..8, riff.to_le_bytes());
+    std::fs::write(dir.join("tone.wav"), wav).unwrap();
+    let preset = dir.join("NativeTone.kontra");
+    std::fs::write(
+        &preset,
+        r#"version = 1
+name = "Native Tone"
+[[groups]]
+name = "Main"
+[groups.envelope]
+attack = 0.001
+release = 0.05
+[[groups.zones]]
+sample = "tone.wav"
+keys = [0, 127]
+root = 69
+"#,
+    )
+    .unwrap();
+
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let loaded = kontra_host::instrument::load(&preset, RATE, &mut store).unwrap();
+    assert_eq!(loaded.name, "Native Tone");
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    let mut e = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; 512];
+    let mut peak = 0f32;
+    e.process(&mut out, &[note(69, true)]);
+    for _ in 0..8 {
+        e.process(&mut out, &[]);
+        peak = out
+            .iter()
+            .fold(peak, |p, f| p.max(f[0].abs()).max(f[1].abs()));
+    }
+    assert!(peak > 1e-3, "a held A4 sounds, peak {peak}");
+}
+
 /// A SoundFont bank: one preset, one instrument, one looped 480 Hz sine
 /// rooted at A4, its PCM read straight from the bank's `smpl` chunk.
 #[test]

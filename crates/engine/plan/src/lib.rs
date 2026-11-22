@@ -12,6 +12,7 @@ mod route;
 pub mod route_depth;
 mod script;
 mod slots;
+pub mod soa;
 mod zones;
 
 pub use engine_pars::{EnginePar, EnginePars};

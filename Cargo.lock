@@ -2030,8 +2030,13 @@ name = "kontra-format-native"
 version = "0.0.0"
 dependencies = [
  "kontra-format",
+ "kontra-ir",
  "kontra-law",
  "kontra-params",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -2205,6 +2210,7 @@ dependencies = [
  "kontra-effects",
  "kontra-ir",
  "kontra-script-ui",
+ "kontra-stream",
  "kontra-vm",
  "kontra-voice",
 ]
