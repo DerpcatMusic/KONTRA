@@ -98,15 +98,16 @@ jobs:
         shell: bash
         run: |
           MOOSE_REV=$(python3 -c '
-          import re, tomllib
-          lock = tomllib.load(open("Cargo.lock", "rb"))
-          for pkg in lock.get("package", []):
-              if pkg.get("name") == "moose":
-                  m = re.search(r"#([0-9a-f]+)$", pkg.get("source", ""))
-                  if m:
-                      print(m.group(1))
-                      break
+          import re
+          text = open("Cargo.lock", encoding="utf-8").read()
+          m = re.search(
+              r"(?ms)^\[\[package\]\]\s*\nname = \"moose\"\n(?:(?!\[\[package\]\]).)*?source = \"git\+https://github\.com/Matari-Audio/moose[^\"#]*#([0-9a-f]+)\"",
+              text,
+          )
+          if m:
+              print(m.group(1))
           ')
+          unset CARGO_TARGET_DIR
           if [ -n "$MOOSE_REV" ]; then
             cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
           else
