@@ -200,6 +200,7 @@ impl ZoneBuilder {
                 reverse: false,
                 mix: Vec::new(),
                 slot: 0,
+                envelopes: Vec::new(),
             },
         }
     }
