@@ -412,8 +412,27 @@ pub enum Attractor {
     Rossler { a: f32, b: f32, c: f32 },
 }
 
+/// Per-note expression dimension (CLAP note expression / MPE / VST3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NoteExpr {
+    /// Per-note pressure (falls back to channel aftertouch), `0..=1`.
+    Pressure,
+    /// Per-note brightness / MPE timbre (falls back to CC 74), `0..=1`.
+    Brightness,
+    /// Per-note vibrato depth (falls back to CC 1), `0..=1`.
+    Vibrato,
+    /// Per-note expression (falls back to CC 11), `0..=1`.
+    Expression,
+    /// Per-note pitch expression, normalized `semitones / 12.0` clamped to `-1..=1`.
+    Tune,
+    /// Per-note gain multiplier (`0..=4`, unity at 1.0).
+    Gain,
+    /// Per-note stereo pan (`-1..=1`).
+    Pan,
+}
+
 /// A per-note modulation source, 0..=1 unless noted.
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
     Velocity,
     /// Note-off release velocity, 0..=1 (0.5 when a note-off carried none).
@@ -431,6 +450,15 @@ pub enum Source {
     /// aftertouch on its key) once it has one, else its channel's (an MPE
     /// member channel's is its one note's).
     Pressure,
+    /// A per-note expression dimension (CLAP/VST3/MPE), falling back to the
+    /// matching channel controller when no per-note value was sent.
+    NoteExpr(NoteExpr),
+    /// A MIDI 2.0 per-note controller (RPNC when `registered`, assignable APNC
+    /// otherwise), normalized `0..=1`; reads `0.0` until sent for the note.
+    PerNoteCc {
+        registered: bool,
+        index: u8,
+    },
     /// The note's key over 127.
     Key,
     /// The group's [`Group::envelopes`](crate::Group::envelopes) entry.

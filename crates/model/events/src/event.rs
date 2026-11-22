@@ -51,10 +51,14 @@ impl HostPattern {
 pub enum NoteExpression {
     /// Semitones from the note's key.
     Tune(f64),
-    /// Linear, 0..=1.
+    /// Linear, 0..=1 (CLAP 0..=4).
     Gain(f64),
     /// −1..=1.
     Pan(f64),
+    /// 0..=1.
+    Vibrato(f64),
+    /// 0..=1.
+    Expression(f64),
     /// 0..=1.
     Pressure(f64),
     /// 0..=1.

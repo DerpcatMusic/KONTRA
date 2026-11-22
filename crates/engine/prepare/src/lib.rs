@@ -861,11 +861,16 @@ fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
                 }
                 ir::StartRule::Controller { cc, range } => Atom::Cc(*cc, range.clone()),
                 ir::StartRule::RoundRobin {
+                    scope,
                     position,
                     length,
                     random,
                 } => Atom::RoundRobin(RoundRobin {
-                    counter: RrCounter::Global,
+                    counter: match scope {
+                        ir::RrScope::Global => RrCounter::Global,
+                        ir::RrScope::Key => RrCounter::Key,
+                        ir::RrScope::Group => RrCounter::Group,
+                    },
                     position: *position,
                     length: *length,
                     random: *random,

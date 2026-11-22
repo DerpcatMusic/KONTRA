@@ -314,6 +314,7 @@ fn velocity_tracking_defaults_to_full_on_the_squared_velocity() {
         vec![(
             ir::Join::And,
             StartRule::RoundRobin {
+                scope: ir::RrScope::Key,
                 position: 1,
                 length: 3,
                 random: false

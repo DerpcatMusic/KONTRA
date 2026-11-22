@@ -237,7 +237,7 @@ pub struct Clipper {
 /// An effect control a route or a script moves, in the effect's own units:
 /// a [`crate::Formant`] knob, a curve's amount, a [`Crush`] rate or bits, a
 /// dynamics or modulation effect's physical setting.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EffectParam {
     FormantTalk,
     FormantSharp,

@@ -6,6 +6,7 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod address;
 mod bus;
 mod drive;
 mod effects;
@@ -18,6 +19,9 @@ mod reverb;
 mod route_names;
 mod validate;
 mod wavetable;
+pub use address::{
+    CombineOp, EnvStage, LawId, LawSpec, LfoParam, ModRoute, ParamAddr, RouteFlags, Scope,
+};
 pub use bus::{Bus, BusSend};
 pub use drive::{
     Clipper, Converter, Crush, Curve as DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive,
@@ -33,7 +37,8 @@ pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar, held_key};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, KnobMod, Linked};
 pub use mods::{
-    Attractor, Blend, Curve, Exp2, Factor, ModKind, Source, Term, TimeScale, Transfer, Wave,
+    Attractor, Blend, Curve, Exp2, Factor, ModKind, NoteExpr, Source, Term, TimeScale, Transfer,
+    Wave,
 };
 pub use output::{Balance, Output, OutputControllers};
 pub use readout::{Form, Readout};
@@ -702,6 +707,18 @@ pub enum Join {
     Or,
 }
 
+/// Which counter a [`StartRule::RoundRobin`] steps.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RrScope {
+    /// One counter for the whole instrument (Kontakt default).
+    #[default]
+    Global,
+    /// One independent counter per MIDI key (SFZ / per-note round robin).
+    Key,
+    /// One counter per group.
+    Group,
+}
+
 /// A condition on which a group starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StartRule {
@@ -711,8 +728,9 @@ pub enum StartRule {
     Keyswitch { range: RangeInclusive<u8> },
     /// The controller's value is in range.
     Controller { cc: u8, range: RangeInclusive<u8> },
-    /// Step `position` of a cycle of `length`, counted per instrument.
+    /// Step `position` of a cycle of `length`, counted per [`RrScope`].
     RoundRobin {
+        scope: RrScope,
         position: u8,
         length: u8,
         random: bool,

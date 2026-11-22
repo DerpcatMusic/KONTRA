@@ -81,10 +81,15 @@ pub struct Note {
     pub expression_tune: f64,
     pub expression_gain: f32,
     pub expression_pan: f32,
-    /// Its own pressure and brightness (0..=1) once the host sent them:
-    /// they stand for its channel's pressure and controller 74.
+    /// Its own pressure, brightness, vibrato, and expression (0..=1) once the
+    /// host sent them: they stand for channel pressure, CC 74, CC 1, and CC 11.
     pub expression_pressure: Option<f32>,
     pub expression_brightness: Option<f32>,
+    pub expression_vibrato: Option<f32>,
+    pub expression_expression: Option<f32>,
+    /// MIDI 2.0 per-note controllers: `(key, value)` where `key = ((registered as u16) << 8) | index`.
+    /// Fixed-size inline table so updates never allocate on the audio thread.
+    pub per_note_cc: [Option<(u16, f32)>; 8],
     /// Key released while the sustain pedal was down.
     pub pedal_held: bool,
     /// Held by the sostenuto pedal (CC 66) pressed while this note was held.
@@ -156,6 +161,9 @@ impl Note {
             expression_pan: 0.0,
             expression_pressure: None,
             expression_brightness: None,
+            expression_vibrato: None,
+            expression_expression: None,
+            per_note_cc: [None; 8],
             pedal_held: false,
             sostenuto_held: false,
             released: false,
@@ -202,6 +210,33 @@ impl Note {
         from: i32,
     ) {
         set_ramp(&mut self.mod_values, index, value, now, frames, from);
+    }
+
+    /// Sets a MIDI 2.0 per-note controller value (`0..=1`) for this note.
+    pub fn set_per_note_cc(&mut self, registered: bool, index: u8, value: f32) {
+        let key = (u16::from(registered) << 8) | u16::from(index);
+        let clamped = value.clamp(0.0, 1.0);
+        for slot in &mut self.per_note_cc {
+            if let Some((k, v)) = slot
+                && *k == key
+            {
+                *v = clamped;
+                return;
+            }
+        }
+        if let Some(empty) = self.per_note_cc.iter_mut().find(|s| s.is_none()) {
+            *empty = Some((key, clamped));
+        }
+    }
+
+    /// Reads a MIDI 2.0 per-note controller value (`0..=1`) if one arrived for this note.
+    #[must_use]
+    pub fn per_note_cc(&self, registered: bool, index: u8) -> Option<f32> {
+        let key = (u16::from(registered) << 8) | u16::from(index);
+        self.per_note_cc
+            .iter()
+            .flatten()
+            .find_map(|&(k, v)| (k == key).then_some(v))
     }
 }
 
