@@ -236,11 +236,11 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
         match ext(&path).as_str() {
             "nicnt" => out.nicnt = out.nicnt.take().or(Some(path)),
             "nkx" | "nkc" | "nkr" => out.monolith = true,
-            "ufs" => {
+            "ufs" | "sf2" => {
                 out.presets += 1;
                 out.banks.push(path);
             }
-            "nki" | "nkm" | "uvip" => out.presets += 1,
+            "nki" | "nkm" | "uvip" | "sfz" | "dspreset" => out.presets += 1,
             "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => out.audio += 1,
             _ => {}
         }
@@ -263,12 +263,12 @@ fn detect(root: &Root, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Foun
     let mut out = Vec::new();
     match std::fs::metadata(&dir) {
         Err(e) => issues.push(issue(&dir, e)),
-        Ok(m) if m.is_file() && ext(&dir) == "ufs" => out.push(Found {
+        Ok(m) if m.is_file() && matches!(ext(&dir).as_str(), "ufs" | "sf2") => out.push(Found {
             dir,
             nicnt: None,
             vendor: None,
         }),
-        Ok(m) if !m.is_dir() => issues.push(issue(&dir, "not a library folder or UFS bank")),
+        Ok(m) if !m.is_dir() => issues.push(issue(&dir, "not a library folder or UFS/SF2 bank")),
         Ok(_) if root.single => {
             let nicnt = list(&dir, issues).nicnt;
             out.push(Found {
@@ -408,7 +408,9 @@ fn catalog(
                 .map(|e| found.dir.with_extension(e))
                 .filter(|p| p.is_file()),
         );
-        art.push(found.dir.clone());
+        if ext(&found.dir) == "ufs" {
+            art.push(found.dir.clone());
+        }
     } else {
         let mut state = Walk {
             nested,
@@ -508,7 +510,7 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                 continue;
             }
             match ext(&path).as_str() {
-                "nki" | "nkm" | "nksn" | "uvip" => presets.push(path),
+                "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" => presets.push(path),
                 "ufs" => {
                     bank_presets(
                         &path,
@@ -518,6 +520,15 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                         presets,
                     );
                     art.push(path);
+                }
+                "sf2" => {
+                    bank_presets(
+                        &path,
+                        &mut *state.cache,
+                        state.programs,
+                        &mut *state.issues,
+                        presets,
+                    );
                 }
                 "png" | "jpg" | "jpeg" | "nicnt" | "nkr" => art.push(path),
                 _ => {}

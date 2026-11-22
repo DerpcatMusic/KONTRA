@@ -111,6 +111,11 @@ pub fn read_saved(
     {
         return sf2(path);
     }
+    if let Some((bank_path, bank, program)) = sf2_slot(path) {
+        let mut out = kontra_format_sf2::read_preset(bank_path, bank, program)?;
+        out.source_path = Some(path.to_owned());
+        return Ok(out);
+    }
     if let Some((multi, slot)) = multi_slot(path) {
         let (slots, failed) = kontra_format_kontakt::multi(multi, Some(slot))?;
         let mut out = (slots.into_iter().next())
@@ -165,6 +170,21 @@ pub struct Preset {
     pub saved: Vec<Vec<String>>,
     /// It saves the instrument's effects too: a recall rebuilds them.
     pub effects: bool,
+}
+
+/// A SoundFont preset as a virtual path: `Bank.sf2/000:001 Name.sf2p` (or
+/// `Bank.sf2/0:1`), so the browser lists every preset in a bank and projects
+/// reopen the chosen preset by path.
+#[must_use]
+pub fn sf2_slot(path: &Path) -> Option<(&Path, u16, u16)> {
+    let bank_path = path
+        .parent()
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sf2")))?;
+    let name = path.file_name()?.to_str()?;
+    let head = name.split_whitespace().next().unwrap_or(name);
+    let head = head.strip_suffix(".sf2p").unwrap_or(head);
+    let (bank, program) = head.split_once(':')?;
+    Some((bank_path, bank.parse().ok()?, program.parse().ok()?))
 }
 
 /// A multi's slot as a path: `Multi.nkm/<slot>`, the slot counted from 0
