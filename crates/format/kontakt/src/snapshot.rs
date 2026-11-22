@@ -135,17 +135,13 @@ pub fn save(from: &Path, to: &Path, held: &[(usize, Vec<String>)]) -> Result<(),
     let state = (chunks.0.iter_mut().find(|c| c.id == SNAPSHOT))
         .ok_or_else(|| Error::new(from, "snapshot", "missing"))?;
     let saved = Snapshot::try_from(&*state).map_err(decode("snapshot"))?;
-    let name = |v: &str| v.split_once(' ').map_or(v, |(n, _)| n).to_owned();
     let values: Vec<Vec<String>> = (saved.persistent.iter().enumerate())
         .map(|(slot, own)| {
-            let now = held.iter().find(|(s, _)| *s == slot).map(|(_, v)| v);
-            (own.iter())
-                .map(|v| {
-                    (now.and_then(|now| now.iter().find(|h| name(h) == name(v))))
-                        .unwrap_or(v)
-                        .clone()
-                })
-                .collect()
+            let now = held
+                .iter()
+                .find(|(s, _)| *s == slot)
+                .map(|(_, v)| v.as_slice());
+            resaved(own, now.unwrap_or_default())
         })
         .collect();
     *state = Snapshot::with_persistent(state, &values).map_err(decode("snapshot"))?;
@@ -169,6 +165,40 @@ pub fn save(from: &Path, to: &Path, held: &[(usize, Vec<String>)]) -> Result<(),
     let mut out = Vec::new();
     root.write(&mut out).map_err(decode("NIS container"))?;
     std::fs::write(to, out).map_err(|e| Error::new(to, "write", e))
+}
+
+/// A slot's saved values, `own`, each taking its value from the one of
+/// `now` with its name. Names match as the host's do (`persist::restore`):
+/// exact (case-insensitive, with sigil) first, then bare (without sigil).
+/// Each keeps the name Kontakt saved and preserves an empty value's space
+/// delimiter (`"@label "` stays `"@label "`).
+fn resaved(own: &[String], now: &[String]) -> Vec<String> {
+    fn split(v: &str) -> (&str, Option<&str>) {
+        match v.split_once(' ') {
+            Some((name, rest)) => (name, Some(rest)),
+            None => (v, None),
+        }
+    }
+    let bare = |n: &str| {
+        n.trim_start_matches(['$', '%', '~', '?', '@', '!'])
+            .to_ascii_lowercase()
+    };
+    (own.iter())
+        .map(|v| {
+            let (name, _) = split(v);
+            let found = now
+                .iter()
+                .find(|h| split(h).0.eq_ignore_ascii_case(name))
+                .or_else(|| now.iter().find(|h| bare(split(h).0) == bare(name)));
+            match found {
+                Some(h) => match split(h).1 {
+                    Some(rest) => format!("{name} {rest}"),
+                    None => name.to_owned(),
+                },
+                None => v.clone(),
+            }
+        })
+        .collect()
 }
 
 /// [`preset`], with what it saves of the instrument.
@@ -362,6 +392,31 @@ pub(crate) fn over(own: Vec<String>, snapshot: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_value_takes_the_held_one_by_its_bare_name() {
+        let own = [
+            "$Level 1".to_owned(),
+            "%table 1 2".to_owned(),
+            "$gone 3".to_owned(),
+        ];
+        let now = ["level 7".to_owned(), "$TABLE 4 5".to_owned()];
+        assert_eq!(resaved(&own, &now), ["$Level 7", "%table 4 5", "$gone 3"]);
+    }
+
+    #[test]
+    fn a_saved_value_prefers_its_own_sigil_before_bare_name() {
+        let own = ["$Tuning 0".to_owned(), "%Tuning 1 2".to_owned()];
+        let now = ["%tuning 3 4".to_owned(), "$tuning 5".to_owned()];
+        assert_eq!(resaved(&own, &now), ["$Tuning 5", "%Tuning 3 4"]);
+    }
+
+    #[test]
+    fn an_empty_saved_text_keeps_its_space_delimiter() {
+        let own = ["@label Hello".to_owned(), "@kept ".to_owned()];
+        let now = ["@LABEL ".to_owned()];
+        assert_eq!(resaved(&own, &now), ["@label ", "@kept "]);
+    }
 
     #[test]
     fn a_snapshot_keeps_the_instruments_values_it_does_not_save() {

@@ -77,7 +77,7 @@ impl Engine {
 
     /// Reads each route onto a script knob ([`kontra_plan::KnobModPlan`]) at
     /// control rate, and moves the knob where the value changed.
-    pub(crate) fn follow_knobs(&mut self) {
+    pub(crate) fn follow_knobs(&mut self, loading: bool) {
         let plan = Arc::clone(&self.plan);
         if plan.knob_mods.is_empty() {
             return;
@@ -111,15 +111,29 @@ impl Engine {
                     .sum()
             };
             let (scale, add) = (sum(true), sum(false));
-            if let Some(last) = self.knob_last.get_mut(n)
-                && [scale, add] != *last
-            {
-                *last = [scale, add];
-                moved.push((k, scale, add));
+            // A restored knob already holds the loaded route position. A
+            // default knob has no such offset, so follow from zero instead.
+            let has_route_base = loading
+                && self
+                    .vm_mut(k.slot)
+                    .is_none_or(|vm| vm.control_has_route_base(k.id));
+            if let Some([initial, last]) = self.knob_reads.get_mut(n) {
+                let reading = [scale, add];
+                if has_route_base {
+                    *initial = reading;
+                    *last = reading;
+                } else if reading != *last {
+                    *last = reading;
+                    moved.push((
+                        k,
+                        f64::from(scale) - f64::from(initial[0]),
+                        f64::from(add) - f64::from(initial[1]),
+                    ));
+                }
             }
         }
         for (k, scale, add) in moved {
-            self.set_control_mod(k.slot, k.id, f64::from(scale), f64::from(add));
+            self.set_control_mod(k.slot, k.id, scale, add);
         }
     }
 

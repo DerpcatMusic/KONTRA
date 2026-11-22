@@ -1345,6 +1345,9 @@ impl kontra_vm::Machine for KnobMachine {
     fn control(&mut self, _: i32, _: f64, _: u64) -> Option<kontra_vm::CoId> {
         None
     }
+    fn control_has_route_base(&self, id: i32) -> bool {
+        id == 7
+    }
     fn control_mod(&mut self, id: i32, scale: f64, m: f64, _: u64) -> Option<kontra_vm::CoId> {
         let _ = self.0.send((id, scale, m));
         None
@@ -1406,6 +1409,10 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
         source: ir::Source::Blend(source),
         scale,
     };
+    // Knob 7 starts with a nonzero additive and multiplicative route.
+    plan.knob_blends[0].base = 0.5;
+    plan.knob_blends[2].base = -0.5;
+    plan.knob_blends[3].base = 0.25;
     plan.knob_mods = vec![
         knob(7, 0, false),
         knob(7, 1, false),
@@ -1418,27 +1425,40 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
         all.extend(moves.try_iter());
         all.len()
     };
-    // Everything at rest still tells each knob where its routes put it, once.
-    level(&mut engine, &[]);
-    assert_eq!(at(&mut all), 2, "one move per knob, not per route");
-    level(&mut engine, &[]);
-    assert_eq!(at(&mut all), 2, "nothing moved");
-    // Two additive controllers on one knob: one move, their sum.
+    assert_eq!(at(&mut all), 1, "loading moves only the unsaved knob");
+    assert_eq!(all.pop(), Some((8, 0.0, 0.25)));
+    // Both controllers arrive at the start of the first rendered block.
+    // The loaded offset is already in the saved value, so only the two
+    // live contributions should be forwarded.
     level(&mut engine, &[cc(1, 127), cc(2, 127)]);
-    assert_eq!(at(&mut all), 3);
-    let (id, scale, add) = all[2];
+    assert_eq!(at(&mut all), 1);
+    let (id, scale, add) = all[0];
     assert_eq!(id, 7);
     assert!(
         (add - 2.0).abs() < 1e-3 && scale.abs() < 1e-3,
         "{scale} {add}"
     );
+    level(&mut engine, &[]);
+    assert_eq!(at(&mut all), 1, "unchanged routes do not move the knob");
     // The multiplicative controller moves the same knob's scale alone.
     level(&mut engine, &[cc(3, 127)]);
-    assert_eq!(at(&mut all), 4);
-    let (id, scale, add) = all[3];
+    assert_eq!(at(&mut all), 2);
+    let (id, scale, add) = all[1];
     assert_eq!(id, 7);
     assert!(
         (scale - 1.0).abs() < 1e-3 && (add - 2.0).abs() < 1e-3,
         "{scale} {add}"
     );
+    // Returning both kinds of route to their loaded readings restores the
+    // saved position, even though their absolute readings are nonzero.
+    level(&mut engine, &[cc(1, 0), cc(2, 0), cc(3, 0)]);
+    assert_eq!(at(&mut all), 3);
+    assert_eq!(all[2], (7, 0.0, 0.0));
+    // The default knob continues to receive its full route position.
+    level(&mut engine, &[cc(4, 127)]);
+    assert_eq!(at(&mut all), 4);
+    assert!((all[3].2 - 1.25).abs() < 1e-3);
+    level(&mut engine, &[cc(4, 0)]);
+    assert_eq!(at(&mut all), 5);
+    assert_eq!(all[4], (8, 0.0, 0.25));
 }

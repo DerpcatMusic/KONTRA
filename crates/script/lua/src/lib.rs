@@ -288,8 +288,17 @@ impl Compiled {
             ..Slot::default()
         });
         let tasks = (0..kontra_vm::TASKS).map(|_| Slot::default());
-        let slots = residents.chain(tasks).collect();
+        let slots: Vec<Slot> = residents.chain(tasks).collect();
         let entries = Entries::new(&lua);
+        // Resident routes reuse their scope, so running a routed control
+        // does not allocate a table on every move.
+        if let Some(scopes) = &entries.route_scopes {
+            for thread in slots.iter().filter_map(|slot| slot.resident.as_ref()) {
+                if let Ok(scope) = lua.create_table_with_capacity(2, 1) {
+                    let _ = scopes.raw_set(thread, scope);
+                }
+            }
+        }
         // `__host`'s key exists from the start ([`set_host`]).
         if let Some(g) = &entries.globals {
             let _ = g.raw_set("__host", false);
@@ -518,6 +527,8 @@ struct Entries {
     callbacks: [Option<Function>; Callbacks::POLY_AT as usize + 1],
     control: Option<Function>,
     control_mod: Option<Function>,
+    route_scopes: Option<Table>,
+    controls: Option<Table>,
     /// The globals and the `spawn` queue: a lookup per run would add a
     /// reference to mlua's ref thread each time, which the GC shrinks and
     /// the next lookup regrows.
@@ -533,6 +544,8 @@ impl Entries {
             callbacks: std::array::from_fn(|n| table.as_ref()?.get::<Function>(n).ok()),
             control: g.get("__control").ok(),
             control_mod: g.get("__control_mod").ok(),
+            route_scopes: g.get("__route_scopes").ok(),
+            controls: g.get("__controls").ok(),
             spawned: g.get("__spawned").ok(),
             globals: Some(g),
         }
@@ -675,6 +688,14 @@ impl LuaMachine {
         }
         let _ = queued.clear();
     }
+
+    /// Abandoned Lua frames never unwind their widget ownership.
+    fn clear_route_scope(scopes: &Table, thread: &Thread) {
+        if let Ok(scope) = scopes.raw_get::<Table>(thread) {
+            // A widget may still hold the scope as its changed owner.
+            let _ = scope.clear();
+        }
+    }
 }
 
 impl Machine for LuaMachine {
@@ -789,6 +810,9 @@ impl Machine for LuaMachine {
             }
             (Ok(_), _) => Step::Done,
             (Err(e), _) => {
+                if let Some(scopes) = &self.entries.route_scopes {
+                    Self::clear_route_scope(scopes, &thread);
+                }
                 self.faults.bad_code += 1;
                 // The latest: a move's own fault says what it hit, not the first
                 // of the session.
@@ -811,7 +835,16 @@ impl Machine for LuaMachine {
 
     fn cancel(&mut self, co: CoId) {
         let _arena = self.arena.audio();
+        let scopes = self.entries.route_scopes.clone();
         if let Some(slot) = self.slot(co) {
+            let thread = match &slot.running {
+                Running::Resident => slot.resident.as_ref(),
+                Running::Spawned(thread) => Some(thread),
+                Running::Idle => None,
+            };
+            if let (Some(scopes), Some(thread)) = (&scopes, thread) {
+                Self::clear_route_scope(scopes, thread);
+            }
             slot.running = Running::Idle;
         }
     }
@@ -841,6 +874,15 @@ impl Machine for LuaMachine {
         self.lua.as_ref()?;
         let set = self.entries.control.clone();
         self.begin(set, First::Control(id, value), context, true)
+    }
+
+    fn control_has_route_base(&self, id: i32) -> bool {
+        let _arena = self.arena.load();
+        self.entries
+            .controls
+            .as_ref()
+            .and_then(|controls| controls.raw_get::<Table>(i64::from(id) + 1).ok())
+            .is_some_and(|control| matches!(control.raw_get("__restored"), Ok(true)))
     }
 
     fn control_mod(&mut self, id: i32, scale: f64, m: f64, context: u64) -> Option<CoId> {
@@ -1369,10 +1411,12 @@ mod tests {
                 assert(loaded and air.value == 40 and panel.value == true and text == 'mine')
             end"#;
         let mut m = compile(source, &[], &[]).unwrap().machine();
+        assert!(!m.control_has_route_base(0));
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("init");
         assert_eq!(m.run(co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
+        assert!(m.control_has_route_base(0));
         let mut room = [0u8; 4096];
         let len = m.take_file(&mut room).expect("the saved preset goes out");
         let file = std::str::from_utf8(&room[..len]).unwrap();
@@ -1982,12 +2026,19 @@ mod tests {
         // value, and back to it exactly.
         let source = "local k = Knob('MIDICurve_1', 0, -1, 1)
             local c = Knob('check', 0, 0, 1)
+            Knob{'ephemeral', 0, min=0, max=1, persistent=false}
             c.changed = function(s)
                 if s.value == 1 then assert(k.value == -0.99999899, k.value)
                 else assert(math.abs(k.value - 0.00000101) < 1e-12, k.value) end
             end";
-        let saved = ["MIDICurve_1=-0.99999899".to_string()];
+        let saved = [
+            "MIDICurve_1=-0.99999899".to_string(),
+            "ephemeral=0.5".to_string(),
+        ];
         let mut m = compile(source, &[], &saved).unwrap().machine();
+        assert!(m.control_has_route_base(0));
+        assert!(!m.control_has_route_base(1));
+        assert!(!m.control_has_route_base(2));
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("start");
         assert_eq!(m.run(co, &mut log), Step::Done);
@@ -1999,6 +2050,152 @@ mod tests {
             assert_eq!(m.run(co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
+    }
+
+    #[test]
+    fn a_routed_knobs_changed_echoing_its_value_keeps_the_routes_base() {
+        // Augmented Orchestra's linked layers: each curve knob's `changed`
+        // sets both, itself too. At rest the route still comes back to the
+        // restored -0.99999899, not the -1 it routed to.
+        let source = "local ks = {}
+            for i = 1, 2 do
+                ks[i] = Knob('MIDICurve_' .. i, 0, -1, 1)
+                ks[i].changed = function(s)
+                    for j = 1, 2 do ks[j]:setValue(s.value, false) end
+                end
+            end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function() assert(ks[1].value == -0.99999899, ks[1].value) end";
+        let saved = ["MIDICurve_1=-0.99999899".to_string()];
+        let mut m = compile(source, &[], &saved).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control_mod(0, 0.0, -0.5, 0).expect("route");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control_mod(0, 0.0, 0.0, 0).expect("rest");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        let co = m.control(2, 1.0, 0).expect("check");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
+    }
+
+    #[test]
+    fn a_main_thread_write_counts_even_though_coroutine_running_is_nil() {
+        // In Luau 0.740 `coroutine.running()` is `nil` on the main thread
+        // (script body load): writes there must still increment `__writes`.
+        let source = "assert(coroutine.running() == nil)
+            local k = Knob('k', 0.25, 0, 1)
+            k:setValue(0.5)
+            assert(rawget(k, '__writes') == 1, rawget(k, '__writes'))
+            k.value = 0.75
+            assert(rawget(k, '__writes') == 2, rawget(k, '__writes'))";
+        let mut m = compile(source, &[], &[]).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
+    }
+
+    fn run_past_yields(m: &mut dyn Machine, co: CoId, host: &mut dyn HostApi) -> Step {
+        loop {
+            match m.run(co, host) {
+                Step::Yield => m.begin_block(),
+                step => return step,
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_waiting_route_callbacks_keep_each_others_routing_ownership() {
+        // Route A suspends in `wait()` inside `changed`; route B completes
+        // while A is waiting; when A resumes and echoes its value, A is still
+        // recognized as a routing owner so the route base (0.25) is preserved.
+        let source = "local k = Knob('k', 0.25, 0, 1)
+            k.changed = function(s)
+                wait(10)
+                s:setValue(s.value, false)
+            end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function() assert(k.value == 0.25, k.value) end";
+        let mut m = compile(source, &[], &[]).unwrap().lua_machine();
+        let mut log = Log(Vec::new());
+        let init = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(run_past_yields(&mut m, init, &mut log), Step::Done);
+        let a = m.control_mod(0, 0.0, 0.5, 0).expect("route a");
+        assert!(matches!(
+            run_past_yields(&mut m, a, &mut log),
+            Step::Wait(_)
+        ));
+        let b = m.control_mod(0, 0.0, 0.25, 0).expect("route b");
+        assert_eq!(run_past_yields(&mut m, b, &mut log), Step::Done);
+        // A has already used a slice. Force its next resume to defer until
+        // begin_block replenishes the shared budget.
+        m.block_left = std::time::Duration::ZERO;
+        assert_eq!(run_past_yields(&mut m, a, &mut log), Step::Done);
+        let rest = m.control_mod(0, 0.0, 0.0, 0).expect("rest");
+        while let Step::Wait(_) = run_past_yields(&mut m, rest, &mut log) {}
+        let check = m.control(1, 1.0, 0).expect("check");
+        assert_eq!(run_past_yields(&mut m, check, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
+    }
+
+    #[test]
+    fn cancelling_a_waiting_route_releases_widget_ownership_before_reuse() {
+        let source = "local k = Knob('k', 0.25, 0, 1)
+            local changes = 0
+            k.changed = function()
+                changes += 1
+                if changes == 1 then wait(10) end
+            end
+            local s = Knob('set', 0, 0, 1)
+            s.changed = function() k:setValue(0.75) end
+            local c = Knob('check', 0, 0, 1)
+            c.changed = function()
+                assert(k.value == 0.75, k.value)
+                assert(changes == 3, changes)
+            end";
+        let mut m = compile(source, &[], &[]).unwrap().machine();
+        let mut log = Log(Vec::new());
+        let init = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(run_past_yields(m.as_mut(), init, &mut log), Step::Done);
+        let route = m.control_mod(0, 0.0, 0.25, 0).expect("route");
+        assert!(matches!(
+            run_past_yields(m.as_mut(), route, &mut log),
+            Step::Wait(_)
+        ));
+        m.cancel(route);
+        let next = m.control_mod(0, 0.0, 0.375, 0).expect("next route");
+        assert_eq!(next.index(), route.index());
+        assert_eq!(run_past_yields(m.as_mut(), next, &mut log), Step::Done);
+        let set = m.control(1, 1.0, 0).expect("set");
+        assert_eq!(set.index(), route.index());
+        assert_eq!(run_past_yields(m.as_mut(), set, &mut log), Step::Done);
+        let rest = m.control_mod(0, 0.0, 0.0, 0).expect("rest");
+        assert_eq!(run_past_yields(m.as_mut(), rest, &mut log), Step::Done);
+        let check = m.control(2, 1.0, 0).expect("check");
+        assert_eq!(run_past_yields(m.as_mut(), check, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
+    }
+
+    #[test]
+    fn an_incomplete_cancelled_owner_does_not_swallow_an_edit() {
+        let source = "local k = Knob('k', 0, 0, 1)
+            k.changed = function() changed = true end
+            -- Model a cancelled scope whose owner was published without a generation.
+            rawset(k, '__changing', {})";
+        let mut m = compile(source, &[], &[]).unwrap().lua_machine();
+        let mut log = Log(Vec::new());
+        let set = m.control(0, 1.0, 0).expect("set");
+        assert_eq!(run_past_yields(&mut m, set, &mut log), Step::Done);
+        assert!(
+            m.lua
+                .as_ref()
+                .unwrap()
+                .globals()
+                .get::<bool>("changed")
+                .unwrap()
+        );
     }
 
     #[test]

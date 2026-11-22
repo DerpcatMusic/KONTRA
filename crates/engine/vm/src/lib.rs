@@ -57,6 +57,11 @@ pub trait Machine: Send {
     /// A coroutine that moves control `id` ([`Foreign::controls`]) to
     /// `value` and runs its callback, as [`Machine::start`].
     fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId>;
+    /// Whether the loaded value already includes the initial route position.
+    /// Front ends without restore information keep the loaded position.
+    fn control_has_route_base(&self, _id: i32) -> bool {
+        true
+    }
     /// A coroutine that moves control `id` from its own value's place in
     /// its range by `ratio × m` (`m` 0..=1) and runs its callback when it
     /// changes.
