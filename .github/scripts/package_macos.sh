@@ -24,7 +24,10 @@ assert info['profile'] == 'release'
 print(info['version'].split('-', 1)[0])
 PY
 )
-for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST3/KONTRA.vst3; do
+for bundle in \
+  Library/Audio/Plug-Ins/CLAP/KONTRA.clap \
+  Library/Audio/Plug-Ins/VST3/KONTRA.vst3 \
+  Library/Audio/Plug-Ins/Components/KONTRA.component; do
   binary="$stage/payload/$bundle/Contents/MacOS/KONTRA"
   lipo "$binary" -verify_arch arm64 x86_64
   codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$APPLE_SIGNING_KEYCHAIN" \
@@ -76,7 +79,8 @@ stage, package, notary, receipt = map(pathlib.Path, sys.argv[1:])
 info = json.loads((stage / 'build-info.json').read_text())
 accepted = json.loads(notary.read_text())
 paths = ['Library/Audio/Plug-Ins/CLAP/KONTRA.clap/Contents/MacOS/KONTRA',
-         'Library/Audio/Plug-Ins/VST3/KONTRA.vst3/Contents/MacOS/KONTRA']
+         'Library/Audio/Plug-Ins/VST3/KONTRA.vst3/Contents/MacOS/KONTRA',
+         'Library/Audio/Plug-Ins/Components/KONTRA.component/Contents/MacOS/KONTRA']
 info.update(targets=['aarch64-apple-darwin', 'x86_64-apple-darwin'], id=accepted['id'],
             status=accepted['status'], stapled=True, signatures_verified=True,
             package_sha256=hashlib.sha256(package.read_bytes()).hexdigest(),

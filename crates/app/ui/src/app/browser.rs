@@ -21,13 +21,9 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let top = libraries(ui, app, out);
     let bottom = presets(ui, app, out);
     let edge = split(ui, app);
-    // The libraries' share of the column as it was laid out last frame: a
-    // share of free space would leave them none, the presets' rows being
-    // longer than the column.
-    let top = match column_height(ui) {
-        Some(h) => top.h(h * shared(app.view.split)).shrink(0),
-        None => top.grow(1).min_h(0),
-    };
+    // Percentage height avoids both a 1-frame jump on open/resize and a
+    // flex-share collapse when the presets list is taller than the column.
+    let top = top.h(Len::Pct(shared(app.view.split) * 100.)).shrink(0);
     col![top, edge, bottom.grow(1).min_h(0)]
         .h(Len::Pct(100.))
         .id("browser-column")

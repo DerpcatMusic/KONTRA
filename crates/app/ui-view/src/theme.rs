@@ -54,7 +54,7 @@ pub fn ui() -> Ui {
     let mut limits = ui.layout_limits();
     limits.nodes = 65_536;
     let _ = ui.set_layout_limits(limits);
-    match Font::new(NOTO_SANS) {
+    match Font::from_static(NOTO_SANS) {
         Ok(font) => ui.font(font),
         Err(_) => ui,
     }

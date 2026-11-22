@@ -524,7 +524,14 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         );
         middle.push(vrule());
     }
-    let mut main = vec![main(ui, app, &mut out).grow(1).min_w(0).min_h(0)];
+    let modal = app.pick.is_some() || app.view.sheet.is_some();
+    let mut main = vec![
+        main(ui, app, &mut out)
+            .grow(1)
+            .min_w(0)
+            .min_h(0)
+            .when(modal, |e| e.disabled()),
+    ];
     if let Some(pick) = app.pick.clone() {
         main.push(pick::sheet(ui, app, pick, &mut out).centered());
     } else if let Some(s) = app.view.sheet {

@@ -17,6 +17,8 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use crate::lock;
@@ -53,6 +55,9 @@ pub struct Dialog {
     error: Mutex<Option<String>>,
     /// The host's Win32 window the editor opened in; 0 when none.
     owner: AtomicIsize,
+    /// The editor's X11 window on Linux; 0 when none or running native Wayland.
+    #[cfg(target_os = "linux")]
+    x11_parent: AtomicU32,
     /// What the open picker's folder is for.
     wanted: Mutex<Wanted>,
 }
@@ -61,6 +66,12 @@ impl Dialog {
     /// The host's Win32 window the editor opened in, or `None` as it closes.
     pub fn set_owner(&self, hwnd: Option<isize>) {
         self.owner.store(hwnd.unwrap_or(0), Ordering::Release);
+    }
+
+    /// The editor's X11 window on Linux, or `None` when closed / Wayland.
+    #[cfg(target_os = "linux")]
+    pub fn set_x11_parent(&self, xid: Option<u32>) {
+        self.x11_parent.store(xid.unwrap_or(0), Ordering::Release);
     }
 
     /// Opens the picker at `from` for a folder `wanted` for, unless one is
@@ -89,9 +100,10 @@ impl Dialog {
         title: &str,
         from: Option<PathBuf>,
     ) -> Result<mui_native_dialog::DialogJob, String> {
-        use mui_native_dialog::{DialogKind, DialogRequest};
+        use mui_native_dialog::{DialogKind, DialogRequest, Parent};
+        let xid = self.x11_parent.load(Ordering::Acquire);
         let request = DialogRequest {
-            parent: None,
+            parent: (xid != 0).then_some(Parent::X11(xid)),
             title: title.into(),
             kind: DialogKind::PickFolder { multiple: false },
             directory: from,

@@ -115,13 +115,17 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
-      - name: CLAP and VST3 bundles
+      - name: CLAP, VST3, and AU bundles
         shell: bash
         run: |
           # About shows the release's version.
           KONTRA_VERSION=$(python3 tools/version.py next)
           export KONTRA_VERSION
-          cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
+          if [ "$RUNNER_OS" = macOS ]; then
+            cargo moose build --clap --vst3 --au2 -p kontra-plugin --target ${{ matrix.target }}
+          else
+            cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
+          fi
           git diff --exit-code -- Cargo.lock
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: runner.os != 'macOS'
@@ -136,7 +140,7 @@ jobs:
           bundles="target/bundles/${{ matrix.target }}"
           if [ "$RUNNER_OS" = macOS ]; then
             mkdir "$stage"
-            cp -R "$bundles/KONTRA.clap" "$bundles/KONTRA.vst3" "$stage/"
+            cp -R "$bundles/KONTRA.clap" "$bundles/KONTRA.vst3" "$bundles/KONTRA.component" "$stage/"
             printf '%s\n' "$GITHUB_SHA" > "$stage/SOURCE_COMMIT.txt"
             ditto -c -k --keepParent "$stage" "$stage.zip"
           else
@@ -257,14 +261,15 @@ jobs:
           mkdir compatibility
           ditto 'universal-stage/payload/Library/Audio/Plug-Ins/CLAP/KONTRA.clap' compatibility/KONTRA.clap
           ditto 'universal-stage/payload/Library/Audio/Plug-Ins/VST3/KONTRA.vst3' compatibility/KONTRA.vst3
+          ditto 'universal-stage/payload/Library/Audio/Plug-Ins/Components/KONTRA.component' compatibility/KONTRA.component
           cp legal/LICENSES.txt compatibility/LICENSES.txt
-          printf '%s\n' 'KONTRA universal plug-ins. The signed PKG installer is recommended; otherwise copy these bundles to your plug-in folders and rescan your DAW.' > compatibility/README.txt
+          printf '%s\n' 'KONTRA universal plug-ins (CLAP, VST3, AU). The signed PKG installer is recommended; otherwise copy these bundles to your plug-in folders and rescan your DAW.' > compatibility/README.txt
           ditto -c -k --sequesterRsrc compatibility KONTRA-macos-arm64.zip
       - name: Verify installed universal plugins
         run: |
           set -euo pipefail
           sudo installer -pkg KONTRA-macos-universal.pkg -target /
-          for bundle in /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3; do
+          for bundle in /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3 /Library/Audio/Plug-Ins/Components/KONTRA.component; do
             lipo "$bundle/Contents/MacOS/KONTRA" -verify_arch arm64 x86_64
             codesign --verify --deep --strict --all-architectures "$bundle"
           done

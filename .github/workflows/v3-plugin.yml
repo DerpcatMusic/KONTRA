@@ -87,10 +87,14 @@ jobs:
           else
             cargo install --locked --git https://github.com/Matari-Audio/moose cargo-moose
           fi
-      - name: CLAP and VST3 bundles
+      - name: CLAP, VST3, and AU bundles
         shell: bash
         run: |
-          cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
+          if [ "$RUNNER_OS" = macOS ]; then
+            cargo moose build --clap --vst3 --au2 -p kontra-plugin --target ${{ matrix.target }}
+          else
+            cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
+          fi
           git diff --exit-code -- Cargo.lock
       - name: Verify bundles
         shell: bash
@@ -98,6 +102,9 @@ jobs:
           ls -la "target/bundles/${{ matrix.target }}"
           test -e "target/bundles/${{ matrix.target }}/KONTRA.clap"
           test -e "target/bundles/${{ matrix.target }}/KONTRA.vst3"
+          if [ "$RUNNER_OS" = macOS ]; then
+            test -e "target/bundles/${{ matrix.target }}/KONTRA.component"
+          fi
       - name: clap-validator
         if: runner.os == 'Linux'
         shell: bash
@@ -112,7 +119,12 @@ jobs:
       # A tar keeps the bundles' executable bits; the artifact alone does not.
       - name: Archive bundles
         shell: bash
-        run: tar -cf kontra-v3-bundles.tar -C "target/bundles/${{ matrix.target }}" "KONTRA.clap" "KONTRA.vst3"
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            tar -cf kontra-v3-bundles.tar -C "target/bundles/${{ matrix.target }}" "KONTRA.clap" "KONTRA.vst3" "KONTRA.component"
+          else
+            tar -cf kontra-v3-bundles.tar -C "target/bundles/${{ matrix.target }}" "KONTRA.clap" "KONTRA.vst3"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kontra-v3-${{ matrix.name }}
