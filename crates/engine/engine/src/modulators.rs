@@ -19,6 +19,15 @@ pub(crate) struct Memo {
     live: Cell<bool>,
     lfo: [Slot; WARPS],
     envelope: [Slot; WARPS],
+    zone_envelope: [Cell<Option<ZoneRead>>; 16],
+}
+
+/// A cached zone read for the current voice, including both position clocks.
+#[derive(Clone, Copy)]
+struct ZoneRead {
+    source: u8,
+    position: [u64; 2],
+    value: Option<f32>,
 }
 
 /// A source's value remembered at one age; `None` inside is "no value".
@@ -35,6 +44,9 @@ impl Memo {
                 c.set(None);
             }
         }
+        for entry in &self.zone_envelope {
+            entry.set(None);
+        }
         self.live.set(true);
     }
 
@@ -48,6 +60,37 @@ impl Memo {
 
     pub(crate) fn envelope(&self, n: u8, age: Age, f: impl FnOnce() -> Option<f32>) -> Option<f32> {
         self.read(self.envelope.get(usize::from(n)), age, f)
+    }
+
+    pub(crate) fn zone_envelope(
+        &self,
+        source: u8,
+        age: Age,
+        f: impl FnOnce() -> Option<f32>,
+    ) -> Option<f32> {
+        if !self.live.get() {
+            return f();
+        }
+        let position = [age.sample_pos.to_bits(), age.unpitched_pos.to_bits()];
+        let Some(entry) = self
+            .zone_envelope
+            .get(usize::from(source) % self.zone_envelope.len())
+        else {
+            return f();
+        };
+        if let Some(read) = entry.get()
+            && read.source == source
+            && read.position == position
+        {
+            return read.value;
+        }
+        let value = f();
+        entry.set(Some(ZoneRead {
+            source,
+            position,
+            value,
+        }));
+        value
     }
 
     fn read(&self, slot: Option<&Slot>, age: Age, f: impl FnOnce() -> Option<f32>) -> Option<f32> {
@@ -81,6 +124,24 @@ impl Engine {
             warp: [0.0; WARPS],
             chaos: [0.0; WARPS],
             stretch: [1.0; WARPS],
+            start_frame: 0.0,
+            sample_pos: 0.0,
+            unpitched_pos: 0.0,
+        }
+    }
+
+    /// The full modulation age of an active voice slot, including its
+    /// sample-position coordinates for per-zone envelopes.
+    pub(crate) fn slot_age(&self, slot: &crate::Slot) -> Age {
+        let elapsed = self.now.0.saturating_sub(slot.started.0) as f64;
+        Age {
+            warp: slot.warp,
+            chaos: slot.chaos.map(|c| c[3]),
+            stretch: slot.stretch,
+            start_frame: slot.start_frame,
+            sample_pos: slot.start_frame + slot.voice.position(),
+            unpitched_pos: slot.start_frame + elapsed,
+            ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
         }
     }
 
@@ -97,11 +158,11 @@ impl Engine {
             let Some(zone) = plan.zones.get(slot.zone) else {
                 continue;
             };
-            let gliding = slot.bend[0] != slot.bend[1]
-                || slot.pan[0] != slot.pan[1]
-                || slot.slide.is_some();
+            let gliding =
+                slot.bend[0] != slot.bend[1] || slot.pan[0] != slot.pan[1] || slot.slide.is_some();
             let timed = ramping
                 || gliding
+                || !zone.envelopes.is_empty()
                 || self
                     .groups
                     .get(zone.group as usize)
@@ -123,10 +184,8 @@ impl Engine {
             let span = (MAX_SPAN - self.now.0 % MAX_SPAN) as f32 / rate as f32;
             let chaos = self.chaos(zone, slot.chaos, span);
             let age = Age {
-                warp: slot.warp,
                 chaos: chaos.map(|c| c[3]),
-                stretch: slot.stretch,
-                ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
+                ..self.slot_age(slot)
             };
             let warp = self.warp(zone, &n, age, span);
             let to = self.group_pan(zone);
@@ -279,6 +338,36 @@ mod tests {
         }
         // x swings about ±20 between the two lobes: ±1 at this scale.
         assert!(lo < -0.6 && hi > 0.6 && lo > -1.2 && hi < 1.2, "{lo} {hi}");
+    }
+
+    #[test]
+    fn zone_envelope_memo_distinguishes_positions_sources_and_voices() {
+        let memo = Memo::default();
+        let onset = Age::at_start(128.0);
+        let later = Age {
+            sample_pos: 256.0,
+            ..onset
+        };
+        let reread = Cell::new(0);
+        let read = || {
+            reread.set(reread.get() + 1);
+            Some(0.25)
+        };
+
+        memo.begin();
+        assert_eq!(memo.zone_envelope(1, onset, read), Some(0.25));
+        assert_eq!(memo.zone_envelope(1, onset, read), Some(0.25));
+        assert_eq!(reread.get(), 1);
+        assert_eq!(memo.zone_envelope(1, later, || Some(0.5)), Some(0.5));
+        assert_eq!(memo.zone_envelope(17, later, || None), None);
+        assert_eq!(memo.zone_envelope(17, later, read), None);
+        assert_eq!(reread.get(), 1);
+        memo.end();
+
+        assert_eq!(memo.zone_envelope(17, later, read), Some(0.25));
+        memo.begin();
+        assert_eq!(memo.zone_envelope(17, later, || Some(1.0)), Some(1.0));
+        memo.end();
     }
 
     fn at(held: f32, released: Option<f32>) -> Age {

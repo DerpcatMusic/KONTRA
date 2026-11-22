@@ -393,6 +393,17 @@ pub(crate) fn instrument(
             translate_zone(&z, loops.as_ref(), sample, frames, reverse, &mut notes)
         {
             translated.id = zone_id;
+            if !zone.0.private_data.is_empty() {
+                match zone.zone_envelopes() {
+                    Ok(envs) => {
+                        translated.envelopes =
+                            envs.iter().filter_map(laws::zone_envelope).collect();
+                    }
+                    Err(e) => {
+                        notes.add(ir::Impact::Audible, "zone envelopes", e.to_string());
+                    }
+                }
+            }
             kontra_law::record(|| kontra_law::Application {
                 id: kontra_law::LawId("kontakt.zone_gain_pan_tune.v1"),
                 location: format!("groups/{group}/zones/{}", g.zones.len()),
@@ -1042,6 +1053,7 @@ fn translate_zone(
         loops: found,
         reverse,
         slot: 0,
+        envelopes: Vec::new(),
     })
 }
 

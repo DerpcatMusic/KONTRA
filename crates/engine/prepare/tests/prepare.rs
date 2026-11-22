@@ -69,6 +69,7 @@ fn zone(sample: usize) -> ir::Zone {
         loops: Default::default(),
         reverse: false,
         slot: 0,
+        envelopes: Vec::new(),
     }
 }
 

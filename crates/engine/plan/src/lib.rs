@@ -402,6 +402,8 @@ pub struct Zone {
     pub release_decay_db: f32,
     /// Ignores note-off and plays to the end (drums, one-shots).
     pub one_shot: bool,
+    /// Per-zone sample-position envelopes read by [`ir::Source::ZoneEnvelope`].
+    pub envelopes: Vec<ir::ZoneEnvelope>,
 }
 
 impl Zone {
@@ -460,6 +462,7 @@ impl Zone {
             pan: 0.0,
             release_decay_db: 0.0,
             one_shot: false,
+            envelopes: Vec::new(),
         }
     }
 }

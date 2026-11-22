@@ -406,6 +406,9 @@ pub enum Source {
     Random {
         bipolar: bool,
     },
+    /// The playing zone's [`Zone::envelopes`](crate::Zone::envelopes) entry
+    /// matching this slot, bipolar −1..=1; zones without one skip the route.
+    ZoneEnvelope(u8),
 }
 
 impl Source {

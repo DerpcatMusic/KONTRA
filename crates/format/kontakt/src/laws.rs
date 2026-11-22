@@ -117,12 +117,47 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
                 | ir::Source::ControllerFrom { .. }
                 | ir::Source::Script(_)
                 | ir::Source::PitchBend
+                | ir::Source::ZoneEnvelope(_)
         ) {
             kontra_law::kontakt::CONTROLLER_VOLUME_POWER
         } else {
             kontra_law::kontakt::VOICE_VOLUME_POWER
         },
     }
+}
+
+/// A Kontakt per-zone envelope (`BZoneLevelEnv`) mapped onto the neutral
+/// sample-position envelope. `BZEnvMod` (`FUN_140ceb290`) shapes each segment
+/// with `(e^(k·t) − 1)/(e^k − 1)` where `k = 16·curve` when rising (`y1 ≥ y0`)
+/// and `k = −16·curve` when falling (`y1 < y0`) (`DAT_144714a10` /
+/// `DAT_144fd0f08`).
+pub(crate) fn zone_envelope(
+    e: &ni_file::kontakt::objects::ZoneEnvelope,
+) -> Option<ir::ZoneEnvelope> {
+    let slot = u8::try_from(e.ext_mod_idx).ok()?;
+    if e.points.is_empty() {
+        return None;
+    }
+    let points = e
+        .points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let falling = e.points.get(i + 1).is_some_and(|next| next.y < p.y);
+            let scale = if falling { -16.0 } else { 16.0 };
+            ir::ZonePoint {
+                frame: p.x,
+                value: p.y,
+                curve: p.curve * scale,
+            }
+        })
+        .collect();
+    Some(ir::ZoneEnvelope {
+        slot,
+        points,
+        loop_range: (e.loop_active && e.loop_length > 0).then_some((e.loop_start, e.loop_length)),
+        speed_lock: e.speed_lock,
+    })
 }
 
 /// A route to an AHDSR attack multiplies its knob `u`, where the time is
@@ -987,5 +1022,54 @@ mod tests {
         assert_eq!(eq_band_index("eqGain3"), Some(2));
         assert_eq!(eq_band_index("eqGain4"), None);
         assert_eq!(eq_band_index("filterQ"), None);
+    }
+
+    #[test]
+    fn zone_envelope_law_scales_curvature_by_segment_direction() {
+        let raw = ni_file::kontakt::objects::ZoneEnvelope {
+            slot: 0,
+            ext_mod_idx: 4,
+            loop_start: 100,
+            loop_length: 400,
+            loop_active: true,
+            speed_lock: true,
+            target: String::from("volume"),
+            target_idx: 0,
+            points: vec![
+                ni_file::kontakt::objects::ZoneEnvelopePoint {
+                    x: 0,
+                    y: -1.0,
+                    curve: 0.5,
+                },
+                ni_file::kontakt::objects::ZoneEnvelopePoint {
+                    x: 1000,
+                    y: 1.0,
+                    curve: 0.5,
+                },
+                ni_file::kontakt::objects::ZoneEnvelopePoint {
+                    x: 2000,
+                    y: -1.0,
+                    curve: 0.25,
+                },
+            ],
+        };
+        let env = zone_envelope(&raw).expect("valid zone envelope");
+        assert_eq!(env.slot, 4);
+        assert_eq!(env.loop_range, Some((100, 400)));
+        assert!(env.speed_lock);
+        // Rising segment uses +16 * curve, falling segment uses -16 * curve.
+        assert!((env.points[0].curve - 8.0).abs() < 1e-6);
+        assert!((env.points[1].curve - (-8.0)).abs() < 1e-6);
+        // Volume curve for ZoneEnvelope uses linear controller power (1).
+        assert_eq!(
+            volume(ir::Source::ZoneEnvelope(4)),
+            ir::Curve::Depth {
+                power: kontra_law::kontakt::CONTROLLER_VOLUME_POWER
+            }
+        );
+        // Negative ext_mod_idx is ignored rather than wrapped.
+        let mut unassigned = raw;
+        unassigned.ext_mod_idx = -1;
+        assert!(zone_envelope(&unassigned).is_none());
     }
 }

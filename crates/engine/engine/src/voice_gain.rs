@@ -221,6 +221,7 @@ impl Engine {
         // ponytail: phase and rate routes read their source at
         // note-on (exact for velocity and note-on values); a live
         // controller moving the rate needs a per-voice phase accumulator.
+        let onset = Age::at_start(age.start_frame);
         for m in moving.filter(|m| !m.bypass) {
             match m.kind {
                 // An LFO source here would recurse.
@@ -229,7 +230,7 @@ impl Engine {
                     lfo: l,
                     depth,
                 } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
-                    let input = self.source(zone, source, note, Age::START);
+                    let input = self.source(zone, source, note, onset);
                     let value = input.unwrap_or(0.0) * depth;
                     #[cfg(feature = "trace")]
                     self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
@@ -242,7 +243,7 @@ impl Engine {
                     octaves,
                     range_hz: [lo, hi],
                 } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
-                    let input = self.source(zone, source, note, Age::START);
+                    let input = self.source(zone, source, note, onset);
                     let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
                     #[cfg(feature = "trace")]
                     self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
@@ -329,6 +330,15 @@ impl Engine {
                 let u = note.draw.unit();
                 Some(if bipolar { 2.0 * u - 1.0 } else { u })
             }
+            ir::Source::ZoneEnvelope(slot) => self.memo.zone_envelope(slot, age, || {
+                let env = zone.envelopes.iter().find(|e| e.slot == slot)?;
+                let pos = if env.speed_lock {
+                    age.sample_pos
+                } else {
+                    age.unpitched_pos
+                };
+                Some(kontra_plan::modulation::zone_envelope(env, pos))
+            }),
         }
     }
 
@@ -379,10 +389,12 @@ impl Engine {
             s if shaper => self.source(zone, s, note, age)? * self.scale(zone, s, note, age),
             s => self.source(zone, s, note, age)?,
         };
-        // An LFO spans the table as `(x + 1)/2`, and pitch bend a table.
+        // An LFO spans the table as `(x + 1)/2`, and bipolar sources a table.
         let bend = matches!(
             t.source,
-            ir::Source::PitchBend | ir::Source::Random { bipolar: true }
+            ir::Source::PitchBend
+                | ir::Source::Random { bipolar: true }
+                | ir::Source::ZoneEnvelope(_)
         ) && !t.table.is_empty();
         let x = if bend || matches!(t.source, ir::Source::Lfo(_)) {
             (x + 1.0) / 2.0
@@ -407,9 +419,10 @@ impl Engine {
     pub(crate) fn unit(&self, zone: &Zone, s: ir::Source, note: &Note, age: Age) -> Option<f32> {
         let x = self.source(zone, s, note, age)?;
         Some(match s {
-            ir::Source::Lfo(_) | ir::Source::PitchBend | ir::Source::Random { bipolar: true } => {
-                (x + 1.0) * 0.5
-            }
+            ir::Source::Lfo(_)
+            | ir::Source::PitchBend
+            | ir::Source::Random { bipolar: true }
+            | ir::Source::ZoneEnvelope(_) => (x + 1.0) * 0.5,
             _ => x,
         })
     }
@@ -545,7 +558,7 @@ impl Engine {
     /// note, not this one (as the amplitude envelope's attack).
     // ponytail: envelopes past the eighth keep their drawn attack; widen
     // WARPS if a group routes one.
-    pub(crate) fn stretches(&self, zone: &Zone, note: &Note) -> [f32; modulators::WARPS] {
+    pub(crate) fn stretches(&self, zone: &Zone, note: &Note, age: Age) -> [f32; modulators::WARPS] {
         let mut out = [1.0; modulators::WARPS];
         let Some(g) = self.groups.get(zone.group as usize) else {
             return out;
@@ -569,7 +582,7 @@ impl Engine {
                     // envelope source is then its start level: its arm reads
                     // the voice's latched stretch, never these routes, so an
                     // envelope timing itself (or another) cannot recurse.
-                    && let Some(x) = self.unit(zone, source, note, Age::START)
+                    && let Some(x) = self.unit(zone, source, note, age)
                 {
                     ms = time_route(ms, x, intensity, floor_ms);
                 }
@@ -583,7 +596,7 @@ impl Engine {
     /// their routes.
     /// ponytail: release routes read at note-on too; a source moving
     /// before note-off is missed, read at release if a library needs it.
-    pub(crate) fn envelope(&self, zone: &Zone, note: &Note) -> Ahdsr {
+    pub(crate) fn envelope(&self, zone: &Zone, note: &Note, age: Age) -> Ahdsr {
         let Some(g) = self.groups.get(zone.group as usize) else {
             return Ahdsr::GATE;
         };
@@ -604,7 +617,7 @@ impl Engine {
                 } => (source, intensity, floor_ms, &mut e.release),
                 _ => continue,
             };
-            let Some(x) = self.unit(zone, source, note, Age::START) else {
+            let Some(x) = self.unit(zone, source, note, age) else {
                 continue;
             };
             let ms = time_route(*frames as f32 * 1000.0 / rate, x, intensity, floor_ms);

@@ -164,7 +164,9 @@ pub enum ModSource {
     RandomBipolar,
     /// Value sent by the script in this script slot.
     Script(u32),
-    /// Assignment without a source.
+    /// Per-zone envelope (`BZEnvMod`, `BParExternalMod` category 2).
+    ZoneEnvelope,
+    /// Assignment without a source (category 0).
     Unassigned,
 }
 
@@ -237,8 +239,11 @@ impl ExternalMod {
         let targets = read_targets(&mut reader, legacy)?;
         let name = read_assignment_name(&mut reader, legacy)?;
         let (source, unknown_len) = match reader.read_u32_le()? {
+            0 => (ModSource::Unassigned, 2),
             1 => (read_source(&mut reader)?, 4),
-            2 => (ModSource::Unassigned, 2),
+            // Kontakt 8.13.1 FUN_140d09620 / BGroup::UpdateTemplates 0x1409775c1:
+            // category 2 is BZEnvMod (per-zone envelope), not unassigned.
+            2 => (ModSource::ZoneEnvelope, 2),
             other => {
                 return Err(Error::Generic(format!(
                     "Unknown external modulation category {other}"

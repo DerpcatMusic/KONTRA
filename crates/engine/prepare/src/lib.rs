@@ -345,6 +345,7 @@ pub fn user_zones(
             reverse: false,
             mix: Vec::new(),
             slot: 0,
+            envelopes: Vec::new(),
         })
         .collect();
     let instrument = ir::Instrument {
@@ -793,6 +794,7 @@ fn zone(
     out.tune = z.tune;
     out.gain = gain(z.volume_db);
     out.pan = z.pan;
+    out.envelopes.clone_from(&z.envelopes);
     out
 }
 
@@ -910,6 +912,7 @@ mod tests {
             loops: Default::default(),
             reverse: false,
             slot: 0,
+            envelopes: Vec::new(),
         }
     }
 
