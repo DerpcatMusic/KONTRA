@@ -61,6 +61,7 @@ pub fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         | ir::ModKind::Wavetable { depth, .. } => Some(depth),
         ir::ModKind::Pan { amount, .. } => Some(amount),
         ir::ModKind::Envelope
+        | ir::ModKind::CutoffHz { .. }
         | ir::ModKind::EqGain { .. }
         | ir::ModKind::EffectParam { .. }
         | ir::ModKind::Mix { .. }
@@ -109,6 +110,7 @@ pub fn lerp(a: ir::EffectKind, b: ir::EffectKind, t: f32) -> ir::EffectKind {
 pub fn moved(mods: &[ir::Mod], n: usize) -> bool {
     mods.iter().any(|m| match m.kind {
         ir::ModKind::Cutoff { insert, .. }
+        | ir::ModKind::CutoffHz { insert, .. }
         | ir::ModKind::Resonance { insert, .. }
         | ir::ModKind::EqGain { insert, .. }
         | ir::ModKind::EffectParam { insert, .. } => usize::from(insert) == n,

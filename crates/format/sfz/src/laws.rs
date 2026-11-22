@@ -23,38 +23,6 @@ pub const ENVELOPE: ir::Envelope = ir::Envelope {
     one_shot: false,
 };
 
-/// A MIDI key from a number or a note name: `c4` is 60, `c-1` is 0.
-pub fn midi_key(text: &str) -> Option<u8> {
-    if let Ok(key) = text.parse::<u8>() {
-        return (key <= 127).then_some(key);
-    }
-    let mut chars = text.chars();
-    let letter = match chars.next()?.to_ascii_lowercase() {
-        'c' => 0,
-        'd' => 2,
-        'e' => 4,
-        'f' => 5,
-        'g' => 7,
-        'a' => 9,
-        'b' => 11,
-        _ => return None,
-    };
-    let rest = chars.as_str();
-    let (shift, digits) = if let Some(digits) = rest.strip_prefix('#') {
-        (1, digits)
-    } else if let Some(digits) = rest.strip_prefix('b') {
-        (-1, digits)
-    } else {
-        (0, rest)
-    };
-    let octave: i32 = digits.parse().ok()?;
-    let key = octave
-        .checked_add(1)?
-        .checked_mul(12)?
-        .checked_add(letter + shift)?;
-    u8::try_from(key).ok().filter(|key| *key <= 127)
-}
-
 /// Envelope times are seconds and never negative.
 pub fn seconds(value: f64) -> f32 {
     value.max(0.0) as f32

@@ -17,21 +17,75 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// A silent mono WAV of `frames` frames at `path`, its folder made as needed.
-fn wav(path: &Path, frames: u32) -> Result<(), hound::Error> {
+fn wav(path: &Path, frames: u32) -> std::io::Result<()> {
+    wav_with_smpl(path, frames, None)
+}
+
+/// A silent mono 16-bit 44.1 kHz WAV with an optional `smpl` forward loop `(start, end_inclusive)`.
+fn wav_with_smpl(path: &Path, frames: u32, smpl_loop: Option<(u32, u32)>) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 44_100,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(path, spec)?;
-    for _ in 0..frames {
-        writer.write_sample(0_i16)?;
+    let data_len = frames * 2;
+    let mut out = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes()); // PCM
+    out.extend(1u16.to_le_bytes()); // mono
+    out.extend(44_100u32.to_le_bytes());
+    out.extend(88_200u32.to_le_bytes());
+    out.extend(2u16.to_le_bytes()); // block align
+    out.extend(16u16.to_le_bytes());
+    out.extend(b"data");
+    out.extend(data_len.to_le_bytes());
+    out.resize(out.len() + data_len as usize, 0);
+    if let Some((start, end_inc)) = smpl_loop {
+        let mut body = vec![0u8; 36];
+        body.splice(28..32, 1u32.to_le_bytes());
+        for word in [0u32, 0, start, end_inc, 0, 0] {
+            body.extend(word.to_le_bytes());
+        }
+        out.extend(b"smpl");
+        out.extend((body.len() as u32).to_le_bytes());
+        out.extend(body);
     }
-    writer.finalize()
+    let riff_size = (out.len() - 8) as u32;
+    out.splice(4..8, riff_size.to_le_bytes());
+    std::fs::write(path, out)
+}
+
+/// Writes a minimal FLAC header (STREAMINFO only) declaring `frames` at 48 kHz stereo.
+fn flac(path: &Path, frames: u64) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let packed: u64 =
+        (48_000u64 << 44) | (1u64 << 41) | (15u64 << 36) | (frames & ((1u64 << 36) - 1));
+    let mut out = b"fLaC\x80\x00\x00\x22".to_vec();
+    out.extend([0u8; 10]);
+    out.extend(packed.to_be_bytes());
+    out.extend([0u8; 16]);
+    std::fs::write(path, out)
+}
+
+/// Writes a silent AIFF with `frames` at 44.1 kHz stereo.
+fn aiff(path: &Path, frames: u32) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut body = b"AIFFCOMM".to_vec();
+    body.extend(18u32.to_be_bytes());
+    body.extend(2u16.to_be_bytes());
+    body.extend(frames.to_be_bytes());
+    body.extend(16u16.to_be_bytes());
+    body.extend([0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0]); // 44100 Hz IEEE extended
+    let data_bytes = frames * 4;
+    body.extend(b"SSND");
+    body.extend((8 + data_bytes).to_be_bytes());
+    body.resize(body.len() + 8 + data_bytes as usize, 0);
+    let mut out = b"FORM".to_vec();
+    out.extend((body.len() as u32).to_be_bytes());
+    out.extend(body);
+    std::fs::write(path, out)
 }
 
 fn near(a: f32, b: f32) -> bool {
@@ -346,4 +400,77 @@ fn group_numbers_become_voice_groups_with_their_limits_and_off_modes() {
         ]
     );
     assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+}
+
+#[test]
+fn probes_flac_and_aiff_samples_without_hound() {
+    let dir = scratch("flac_aiff");
+    flac(&dir.join("pad.flac"), 48_000).expect("flac");
+    aiff(&dir.join("bell.aiff"), 22_050).expect("aiff");
+    let text = "\
+<region> sample=pad.flac key=c4
+<region> sample=bell.aiff key=d4
+";
+    let inst = parse(text, &dir);
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+    assert_eq!(inst.samples.len(), 2);
+    assert_eq!(
+        (
+            inst.samples[0].channels,
+            inst.samples[0].rate,
+            inst.samples[0].frames
+        ),
+        (2, 48_000, 48_000)
+    );
+    assert_eq!(
+        (
+            inst.samples[1].channels,
+            inst.samples[1].rate,
+            inst.samples[1].frames
+        ),
+        (2, 44_100, 22_050)
+    );
+}
+
+#[test]
+fn embedded_wav_smpl_loop_is_used_when_loop_mode_omits_points() {
+    let dir = scratch("smpl_loop");
+    wav_with_smpl(&dir.join("looped.wav"), 1_000, Some((120, 619))).expect("wav");
+    let inst = parse("<region> sample=looped.wav loop_mode=loop_sustain\n", &dir);
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+    let zone = &inst.groups[0].zones[0];
+    assert_eq!(
+        zone.loops,
+        vec![Loop {
+            start: 120,
+            end: 620,
+            until_release: true,
+            ..Loop::default()
+        }]
+    );
+}
+
+#[test]
+fn large_region_group_dedup_is_linear_and_exact() {
+    let dir = scratch("large_dedup");
+    wav(&dir.join("a.wav"), 100).expect("wav");
+    // 4,000 regions across 2,000 unique attack settings (each repeated twice).
+    let mut text = String::with_capacity(200_000);
+    for i in 0..4_000u32 {
+        let bucket = i % 2_000;
+        let key = (i % 128) as u8;
+        text.push_str(&format!(
+            "<region> sample=a.wav key={key} ampeg_attack={:.4}\n",
+            f64::from(bucket) * 0.0005
+        ));
+    }
+    let inst = parse(&text, &dir);
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+    assert_eq!(inst.samples.len(), 1);
+    assert_eq!(inst.groups.len(), 2_000);
+    assert_eq!(
+        inst.groups.iter().map(|g| g.zones.len()).sum::<usize>(),
+        4_000
+    );
+    assert!(inst.groups.iter().all(|g| g.zones.len() == 2));
 }

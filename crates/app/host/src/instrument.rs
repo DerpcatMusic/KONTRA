@@ -99,6 +99,12 @@ pub fn read_saved(
     {
         return Ok(kontra_format_sfz::load(path)?);
     }
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("dspreset"))
+    {
+        return Ok(kontra_format_decentsampler::read_file(path)?);
+    }
     if let Some((multi, slot)) = multi_slot(path) {
         let (slots, failed) = kontra_format_kontakt::multi(multi, Some(slot))?;
         let mut out = (slots.into_iter().next())

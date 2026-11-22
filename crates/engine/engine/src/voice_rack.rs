@@ -120,6 +120,7 @@ impl Engine {
         let ir::EffectKind::Filter(f) = effect.kind else {
             return None;
         };
+        let mut offset_hz = 0.0;
         let (mut octaves, mut q, mut resonance) = (0.0f32, 0.0f32, 1.0f32);
         for m in group.mods.iter().filter(|m| !m.bypass) {
             match m.kind {
@@ -133,6 +134,22 @@ impl Engine {
                     #[cfg(feature = "trace")]
                     self.trace_route(zone, m, input, value, crate::RouteUnit::CutoffDepth);
                     octaves += value;
+                }
+                ir::ModKind::CutoffHz {
+                    source,
+                    insert: i,
+                    min_hz,
+                    max_hz,
+                } if i == insert => {
+                    if let Some(x) = self.unit(zone, source, note, age) {
+                        let x = if matches!(source, ir::Source::Script(_)) {
+                            (x + 1.0) * 0.5
+                        } else {
+                            x
+                        };
+                        let delta = min_hz + (max_hz - min_hz) * x.clamp(0.0, 1.0);
+                        offset_hz += delta * self.scale(zone, source, note, age);
+                    }
                 }
                 ir::ModKind::Resonance {
                     source,
@@ -159,6 +176,11 @@ impl Engine {
             }
         }
         let hz = f.hz * (f.octaves * octaves).exp2();
+        let hz = if offset_hz == 0.0 {
+            hz
+        } else {
+            (hz + offset_hz).max(1.0)
+        };
         let damping = f
             .damping
             .map(|k| ((2.0 - (2.0 - k) * resonance) * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));

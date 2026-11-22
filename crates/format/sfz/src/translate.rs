@@ -3,9 +3,11 @@
 //! diagnostic (06-FORMATS.md).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use kontra_format::Notes;
+use kontra_format::builder::SamplePool;
+use kontra_format::math::parse_midi_note;
 use kontra_ir as ir;
 
 use crate::laws;
@@ -89,6 +91,135 @@ pub(crate) fn instrument(doc: &Document, base: &Path) -> ir::Instrument {
     build.finish()
 }
 
+/// Canonical bit representation of `f32`, normalizing `-0.0` to `+0.0`.
+fn bits_f32(v: f32) -> u32 {
+    if v == 0.0 {
+        0.0_f32.to_bits()
+    } else {
+        v.to_bits()
+    }
+}
+
+/// Canonical bit representation of `f64`, normalizing `-0.0` to `+0.0`.
+fn bits_f64(v: f64) -> u64 {
+    if v == 0.0 {
+        0.0_f64.to_bits()
+    } else {
+        v.to_bits()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum StartRuleKey {
+    RoundRobin {
+        position: u8,
+        length: u8,
+        random: bool,
+    },
+    Controller {
+        cc: u8,
+        lo: u8,
+        hi: u8,
+    },
+}
+
+/// Hashable exact key for deduplicating SFZ groups in `O(1)` amortized time.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct GroupKey {
+    number: u32,
+    off_by: Option<u32>,
+    polyphony: Option<u16>,
+    envelope: [u32; 5],
+    veltrack: Option<u32>,
+    keytrack: u64,
+    trigger: u8,
+    one_shot: bool,
+    start: Vec<StartRuleKey>,
+    filter: Option<(u8, u32, u8, [u32; 3], u32)>,
+}
+
+impl GroupKey {
+    fn of(number: u32, off_by: Option<u32>, settings: &ir::Group) -> Self {
+        let env = settings.envelope;
+        let veltrack = settings.mods.first().and_then(|m| match m.kind {
+            ir::ModKind::Volume { intensity, .. } => Some(bits_f32(intensity)),
+            _ => None,
+        });
+        let trigger = match settings.trigger {
+            ir::Trigger::Attack => 0,
+            ir::Trigger::Release => 1,
+            ir::Trigger::First => 2,
+            ir::Trigger::Legato => 3,
+        };
+        let start = settings
+            .start
+            .iter()
+            .filter_map(|(_, rule)| match rule {
+                ir::StartRule::RoundRobin {
+                    position,
+                    length,
+                    random,
+                } => Some(StartRuleKey::RoundRobin {
+                    position: *position,
+                    length: *length,
+                    random: *random,
+                }),
+                ir::StartRule::Controller { cc, range } => Some(StartRuleKey::Controller {
+                    cc: *cc,
+                    lo: *range.start(),
+                    hi: *range.end(),
+                }),
+                _ => None,
+            })
+            .collect();
+        let filter = settings
+            .inserts
+            .first()
+            .and_then(|slot| slot.as_ref())
+            .and_then(|eff| match eff.kind {
+                ir::EffectKind::Filter(f) => {
+                    let pass = match f.pass {
+                        ir::Pass::Low => 0,
+                        ir::Pass::High => 1,
+                        ir::Pass::Band => 2,
+                        ir::Pass::Notch => 3,
+                    };
+                    Some((
+                        pass,
+                        bits_f32(f.hz),
+                        f.stages,
+                        [
+                            bits_f32(f.damping[0]),
+                            bits_f32(f.damping[1]),
+                            bits_f32(f.damping[2]),
+                        ],
+                        bits_f32(f.gain),
+                    ))
+                }
+                _ => None,
+            });
+
+        Self {
+            number,
+            off_by,
+            polyphony: settings.polyphony,
+            envelope: [
+                bits_f32(env.attack),
+                bits_f32(env.hold),
+                bits_f32(env.decay),
+                bits_f32(env.sustain),
+                bits_f32(env.release),
+            ],
+            veltrack,
+            keytrack: bits_f64(settings.keytrack),
+            trigger,
+            one_shot: settings.one_shot,
+            start,
+            filter,
+        }
+    }
+}
+
 /// A group under construction: its SFZ number, its `off_by` number, the
 /// settings its regions share, and its zones.
 struct Entry {
@@ -100,9 +231,9 @@ struct Entry {
 
 #[derive(Default)]
 struct Build {
-    samples: Vec<ir::Sample>,
-    sample_index: HashMap<PathBuf, usize>,
+    samples: SamplePool<'static>,
     entries: Vec<Entry>,
+    entry_index: HashMap<GroupKey, usize>,
     /// The voice rules of each group number that has one (its polyphony,
     /// key limit or off mode); with off_by targets, each becomes a voice group.
     limits: BTreeMap<u32, ir::VoiceGroup>,
@@ -121,22 +252,25 @@ impl Build {
                 .add(ir::Impact::Audible, "built-in sample", sample);
             return;
         }
-        let (sample, total) = self.sample(&normalize(sample), dir);
+        let sample_name = normalize(sample);
+        let path = dir.join(&sample_name);
+        let (sample_idx, hdr) = self.samples.add(sample_name, &path, &mut self.notes);
+        let total = hdr.map_or(0, |h| h.frames);
 
-        let key = self.read(ops, &["key"], laws::midi_key);
+        let key = self.read(ops, &["key"], parse_midi_note);
         let lo = self
-            .read(ops, &["lokey"], laws::midi_key)
+            .read(ops, &["lokey"], parse_midi_note)
             .or(key)
             .unwrap_or(0);
         let hi = self
-            .read(ops, &["hikey"], laws::midi_key)
+            .read(ops, &["hikey"], parse_midi_note)
             .or(key)
             .unwrap_or(127);
         let xfin = self
-            .read(ops, &["xfin_lokey"], laws::midi_key)
+            .read(ops, &["xfin_lokey"], parse_midi_note)
             .unwrap_or(lo);
         let xfout = self
-            .read(ops, &["xfout_hikey"], laws::midi_key)
+            .read(ops, &["xfout_hikey"], parse_midi_note)
             .unwrap_or(hi);
         let (keys, key_fade) = laws::span(lo, hi, xfin, xfout);
 
@@ -159,17 +293,18 @@ impl Build {
                 }
             })
             .min(total);
+        let loops = self.looped(ops, total, sample_idx);
         // No SFZ script addresses a zone by id.
         let zone = ir::Zone {
             id: 0,
             mix: Vec::new(),
-            sample,
+            sample: sample_idx,
             keys,
             velocities,
             velocity_fade,
             key_fade,
             root: self
-                .read(ops, &["pitch_keycenter"], laws::midi_key)
+                .read(ops, &["pitch_keycenter"], parse_midi_note)
                 .or(key)
                 .unwrap_or(60),
             tune: self.number(ops, &["transpose"]).unwrap_or(0.0)
@@ -182,7 +317,7 @@ impl Build {
             start: start.min(end),
             end,
             start_mod: 0,
-            loops: self.looped(ops, total).into_iter().collect(),
+            loops,
             reverse: raw(ops, &["direction"]) == Some("reverse"),
             slot: 0,
             envelopes: Vec::new(),
@@ -277,31 +412,44 @@ impl Build {
         rules
     }
 
-    /// `loop_start`/`loop_end` as the zone's loop, SFZ's inclusive end made exclusive.
-    fn looped(&mut self, ops: &Opcodes, total: u64) -> Option<ir::Loop> {
+    /// `loop_start`/`loop_end` as the zone's loops, SFZ's inclusive end made
+    /// exclusive. When `loop_mode` enables looping without explicit points,
+    /// embedded loops from the sample file header (`smpl` / `INST`) are used.
+    fn looped(&mut self, ops: &Opcodes, total: u64, sample_idx: usize) -> Vec<ir::Loop> {
         let mode = raw(ops, &["loop_mode", "loopmode"]).unwrap_or("no_loop");
         match laws::loops(mode) {
             None => {
                 self.notes.add(ir::Impact::Audible, "loop_mode", mode);
-                None
+                Vec::new()
             }
-            Some(false) => None,
+            Some(false) => Vec::new(),
             Some(true) => {
-                let start = self
-                    .number(ops, &["loop_start", "loopstart"])
-                    .map_or(0, frames)
-                    .min(total);
-                let end = self
-                    .number(ops, &["loop_end", "loopend"])
+                let until_release = mode == "loop_sustain";
+                let explicit_start = self.number(ops, &["loop_start", "loopstart"]);
+                let explicit_end = self.number(ops, &["loop_end", "loopend"]);
+                if explicit_start.is_none()
+                    && explicit_end.is_none()
+                    && let Some(hdr) = self.samples.header(sample_idx)
+                    && !hdr.loops.is_empty()
+                {
+                    return hdr
+                        .loops
+                        .iter()
+                        .map(|l| l.to_ir_loop(until_release))
+                        .collect();
+                }
+
+                let start = explicit_start.map_or(0, frames).min(total);
+                let end = explicit_end
                     .map_or(total, |end| frames(end).saturating_add(1))
                     .min(total);
                 if end > start {
-                    Some(ir::Loop {
+                    vec![ir::Loop {
                         start,
                         end,
-                        until_release: mode == "loop_sustain",
+                        until_release,
                         ..ir::Loop::default()
-                    })
+                    }]
                 } else {
                     if total > 0 {
                         self.notes.add(
@@ -310,7 +458,7 @@ impl Build {
                             format!("{start}..{end}"),
                         );
                     }
-                    None
+                    Vec::new()
                 }
             }
         }
@@ -331,7 +479,6 @@ impl Build {
         })
     }
 
-    /// The index of the group with these settings, made when new.
     /// The voice rules a region gives its group number (the last region's
     /// win, as sfizz's): `polyphony` with `group`, `note_polyphony` and
     /// `note_selfmask`, `off_mode` and `off_time`. sfizz counts voices not
@@ -368,62 +515,21 @@ impl Build {
         }
     }
 
+    /// The index of the group with these settings, made when new (`O(1)` lookup).
     fn entry(&mut self, number: u32, off_by: Option<u32>, settings: ir::Group) -> usize {
-        let found = self
-            .entries
-            .iter()
-            .position(|e| e.number == number && e.off_by == off_by && e.settings == settings);
-        found.unwrap_or_else(|| {
-            self.entries.push(Entry {
-                number,
-                off_by,
-                settings,
-                zones: Vec::new(),
-            });
-            self.entries.len() - 1
-        })
-    }
-
-    /// The sample file's index and frame count. A file that cannot be read is
-    /// reported and kept with zero frames, so the zone stays visible in the IR.
-    fn sample(&mut self, name: &str, dir: &Path) -> (usize, u64) {
-        let file = kontra_format::moved(&dir.join(name));
-        if let Some(&index) = self.sample_index.get(&file) {
-            let frames = self.samples.get(index).map_or(0, |s| s.frames);
-            return (index, frames);
+        let key = GroupKey::of(number, off_by, &settings);
+        if let Some(&idx) = self.entry_index.get(&key) {
+            return idx;
         }
-        let (channels, rate, frames) = match hound::WavReader::open(&file) {
-            Ok(reader) => {
-                let spec = reader.spec();
-                let channels = u8::try_from(spec.channels).unwrap_or(0);
-                (channels, spec.sample_rate, u64::from(reader.duration()))
-            }
-            Err(hound::Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.notes.add_missing(&file);
-                (0, 0, 0)
-            }
-            Err(e) => {
-                self.notes.add(
-                    ir::Impact::Broken,
-                    "sample file",
-                    format!("{}: {e}", file.display()),
-                );
-                (0, 0, 0)
-            }
-        };
-        self.samples.push(ir::Sample {
-            name: name.into(),
-            file: file.clone(),
-            offset: 0,
-            len: None,
-            channels,
-            frames,
-            rate,
-            keystream: None,
+        let idx = self.entries.len();
+        self.entries.push(Entry {
+            number,
+            off_by,
+            settings,
+            zones: Vec::new(),
         });
-        let index = self.samples.len() - 1;
-        self.sample_index.insert(file, index);
-        (index, frames)
+        self.entry_index.insert(key, idx);
+        idx
     }
 
     /// The value of the first opcode in `names` that parses. A value that does
@@ -475,7 +581,7 @@ impl Build {
             })
             .collect();
         ir::Instrument {
-            samples: self.samples,
+            samples: self.samples.into_samples(),
             groups,
             voice_groups: limits.into_values().collect(),
             diagnostics: self.notes.finish(),
