@@ -643,6 +643,7 @@ impl Engine {
                     | ir::ModKind::Pitch { source, .. }
                     | ir::ModKind::Pan { source, .. }
                     | ir::ModKind::Cutoff { source, .. }
+                    | ir::ModKind::CutoffHz { source, .. }
                     | ir::ModKind::Resonance { source, .. }
                     | ir::ModKind::EqGain { source, .. }
                     | ir::ModKind::EffectParam { source, .. }

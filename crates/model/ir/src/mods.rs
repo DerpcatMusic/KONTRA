@@ -35,6 +35,14 @@ pub enum ModKind {
         insert: u8,
         depth: f32,
     },
+    /// Adds an interpolated Hz offset to a per-voice filter's cutoff.
+    /// Bipolar sources are mapped to the unit interval before interpolation.
+    CutoffHz {
+        source: Source,
+        insert: u8,
+        min_hz: f32,
+        max_hz: f32,
+    },
     /// Moves the resonance of the [`Filter`](crate::Filter) in group insert slot `insert` by
     /// `source × depth × Filter::q_octaves` octaves of Q; that filter runs per voice.
     /// On a [ladder](crate::Filter::ladder) it scales the resonance `1 − k/2` by

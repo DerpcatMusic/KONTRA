@@ -1996,6 +1996,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-format-decentsampler"
+version = "0.0.0"
+dependencies = [
+ "kontra-format",
+ "kontra-ir",
+ "roxmltree",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "kontra-format-kontakt"
 version = "0.0.0"
 dependencies = [
@@ -2025,7 +2035,6 @@ dependencies = [
 name = "kontra-format-sfz"
 version = "0.0.0"
 dependencies = [
- "hound",
  "kontra-format",
  "kontra-ir",
  "kontra-law",
@@ -2057,6 +2066,7 @@ dependencies = [
  "kontra-engine",
  "kontra-face",
  "kontra-format",
+ "kontra-format-decentsampler",
  "kontra-format-kontakt",
  "kontra-format-native",
  "kontra-format-sfz",

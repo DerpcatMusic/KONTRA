@@ -69,6 +69,172 @@ fn a_controller_opens_a_voice_filter() {
 }
 
 #[test]
+fn an_additive_cutoff_route_interpolates_in_hertz() {
+    use kontra_engine::ir::{Effect, EffectKind, Filter, Mod, ModKind, Pass, Source};
+
+    for maximum in [2000.0, 6000.0] {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+        plan.groups[0].inserts = vec![Some(Effect {
+            kind: EffectKind::Filter(Filter {
+                pass: Pass::Low,
+                hz: 60.0,
+                stages: 1,
+                ladder: None,
+                damping: [1.0; 3],
+                gain: 1.0,
+                octaves: 10.0,
+                q_octaves: 0.0,
+            }),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        plan.groups[0].mods = vec![Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ModKind::CutoffHz {
+                source: Source::Controller(1),
+                insert: 0,
+                min_hz: 0.0,
+                max_hz: maximum,
+            },
+        }];
+        let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = [[0.0; 2]; 512];
+        engine.process(&mut out, &[on(60, 1.0)]);
+        for value in [0, 64, 127] {
+            let event = Timed {
+                at: engine.now(),
+                body: cc(1, value).body,
+            };
+            engine.process(&mut out, &[event]);
+            let (groups, cutoffs) = engine.voice_filters();
+            assert_eq!(groups, 1);
+            let expected = 60.0 + maximum * f32::from(value) / 127.0;
+            assert!(
+                (cutoffs[0] - expected).abs() < 0.01,
+                "{cutoffs:?} != {expected}"
+            );
+        }
+    }
+
+    // Bipolar Script source at 0.0 maps to the midpoint (0.5 -> 60 + 1000 = 1060 Hz).
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Filter(Filter {
+            pass: Pass::Low,
+            hz: 60.0,
+            stages: 1,
+            ladder: None,
+            damping: [1.0; 3],
+            gain: 1.0,
+            octaves: 10.0,
+            q_octaves: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::CutoffHz {
+            source: Source::Script(0),
+            insert: 0,
+            min_hz: 0.0,
+            max_hz: 2000.0,
+        },
+    }];
+    let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = [[0.0; 2]; 512];
+    engine.process(&mut out, &[on(60, 1.0)]);
+    let (_, cutoffs) = engine.voice_filters();
+    assert!(
+        (cutoffs[0] - 1060.0).abs() < 0.01,
+        "script 0.0 should select midpoint 1060 Hz, got {:?}",
+        cutoffs
+    );
+
+    // Intensity route scaling an LFO to 0 removes its CutoffHz contribution.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Filter(Filter {
+            pass: Pass::Low,
+            hz: 60.0,
+            stages: 1,
+            ladder: None,
+            damping: [1.0; 3],
+            gain: 1.0,
+            octaves: 10.0,
+            q_octaves: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.groups[0].lfos = vec![kontra_engine::ir::Lfo {
+        wave: kontra_engine::ir::Wave::Sine,
+        rate: kontra_engine::ir::Rate::Hz(0.0),
+        phase: 0.25, // sine(0.25) = +1.0
+        fade_ms: 0.0,
+        clock: kontra_engine::ir::Clock::Voice,
+    }];
+    plan.groups[0].mods = vec![
+        Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ModKind::CutoffHz {
+                source: Source::Lfo(0),
+                insert: 0,
+                min_hz: 0.0,
+                max_hz: 2000.0,
+            },
+        },
+        Mod {
+            name: String::new(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: ModKind::Intensity {
+                source: Source::Controller(1),
+                of: Source::Lfo(0),
+                depth: 1.0,
+            },
+        },
+    ];
+    let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
+    // At CC1 = 0, intensity scale is 0 -> cutoff stays at base 60 Hz.
+    engine.process(&mut out, &[cc(1, 0), on(60, 1.0)]);
+    let (_, cutoffs_zero) = engine.voice_filters();
+    assert!(
+        (cutoffs_zero[0] - 60.0).abs() < 0.01,
+        "zero intensity should leave base cutoff 60 Hz, got {:?}",
+        cutoffs_zero
+    );
+    // At CC1 = 127, intensity scale is 1 -> cutoff reaches 2060 Hz.
+    let event = Timed {
+        at: engine.now(),
+        body: cc(1, 127).body,
+    };
+    engine.process(&mut out, &[event]);
+    let (_, cutoffs_full) = engine.voice_filters();
+    assert!(
+        (cutoffs_full[0] - 2060.0).abs() < 0.01,
+        "full intensity should reach 2060 Hz, got {:?}",
+        cutoffs_full
+    );
+}
+
+#[test]
 fn a_write_after_init_opens_a_shared_group_filter_while_the_note_sounds() {
     use kontra_engine::ir::{Effect, EffectKind, Filter, Pass};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

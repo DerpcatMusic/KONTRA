@@ -12,6 +12,7 @@ workspace = true
 kontra-engine = { path = "../../engine/engine" }
 kontra-prepare = { path = "../../engine/prepare" }
 kontra-format = { path = "../../format/common" }
+kontra-format-decentsampler = { path = "../../format/decentsampler" }
 kontra-format-kontakt = { path = "../../format/kontakt" }
 kontra-format-native = { path = "../../format/native" }
 kontra-format-sfz = { path = "../../format/sfz" }

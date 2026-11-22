@@ -45,6 +45,15 @@ pub fn route(kind: ModKind) -> Value {
             insert,
             depth,
         } => json!({"target":"cutoff", "source":source(s), "insert":insert, "depth":depth}),
+        ModKind::CutoffHz {
+            source: s,
+            insert,
+            min_hz,
+            max_hz,
+        } => json!({
+            "target": "cutoff_hz", "source": source(s), "insert": insert,
+            "min_hz": min_hz, "max_hz": max_hz
+        }),
         ModKind::Resonance {
             source: s,
             insert,

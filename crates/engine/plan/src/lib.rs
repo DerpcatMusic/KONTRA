@@ -648,6 +648,7 @@ pub fn source(kind: &ir::ModKind) -> Option<ir::Source> {
         | K::Pitch { source, .. }
         | K::Pan { source, .. }
         | K::Cutoff { source, .. }
+        | K::CutoffHz { source, .. }
         | K::Resonance { source, .. }
         | K::EqGain { source, .. }
         | K::EffectParam { source, .. }
