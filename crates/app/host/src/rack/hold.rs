@@ -140,13 +140,16 @@ impl Held {
                 }
                 frames
             }
-            Event::Expression(p, _) => self.waited(p),
+            Event::Expression(p, _) | Event::PerNoteCc { pattern: p, .. } => self.waited(p),
             Event::Ump(_) => self.hold.max(),
         };
         let mut due = at + u64::from(frames);
         // Only notes keep their order: a controller stream would hold every
         // legato back by the longest hold.
-        let note = !matches!(body, Event::Expression(..) | Event::Ump(_));
+        let note = !matches!(
+            body,
+            Event::Expression(..) | Event::PerNoteCc { .. } | Event::Ump(_)
+        );
         if self.hold.mono && note {
             due = due.max(self.last);
             self.last = due;

@@ -75,6 +75,14 @@ pub enum Event {
     NoteOffVelocity(HostPattern, f64),
     Choke(HostPattern),
     Expression(HostPattern, NoteExpression),
+    /// A MIDI 2.0 per-note controller: registered (RPNC) or assignable,
+    /// its 32-bit value as 0..=1. Per-note controllers have no bank.
+    PerNoteCc {
+        pattern: HostPattern,
+        registered: bool,
+        index: u8,
+        value: f32,
+    },
     /// Original one-word System/MIDI1 or two-word MIDI2 packet. Its group
     /// is the host input port it came in on (UMP groups are MIDI 2.0's
     /// cables, as Kontakt's ports A to D are MIDI 1.0 cables).
@@ -101,7 +109,8 @@ impl Event {
             Self::NoteOff(p)
             | Self::NoteOffVelocity(p, _)
             | Self::Choke(p)
-            | Self::Expression(p, _) => u8::try_from(p.port).ok(),
+            | Self::Expression(p, _)
+            | Self::PerNoteCc { pattern: p, .. } => u8::try_from(p.port).ok(),
             Self::Ump([word, _]) => Some((word >> 24) as u8 & 15),
         }
     }
@@ -120,7 +129,8 @@ impl Event {
             Self::NoteOff(p)
             | Self::NoteOffVelocity(p, _)
             | Self::Choke(p)
-            | Self::Expression(p, _) => u8::try_from(p.channel).ok(),
+            | Self::Expression(p, _)
+            | Self::PerNoteCc { pattern: p, .. } => u8::try_from(p.channel).ok(),
             Self::Ump([word, _]) => matches!(word >> 28, 2 | 4).then_some((word >> 16) as u8 & 15),
         }
     }
@@ -150,7 +160,7 @@ impl Event {
             Self::NoteOffVelocity(pattern, velocity) => (pattern, HostAction::Off(Some(velocity))),
             Self::Choke(pattern) => (pattern, HostAction::Choke),
             Self::Expression(pattern, value) => (pattern, HostAction::Expression(value)),
-            Self::NoteOn { .. } | Self::Ump(_) => return None,
+            Self::NoteOn { .. } | Self::PerNoteCc { .. } | Self::Ump(_) => return None,
         })
     }
 }

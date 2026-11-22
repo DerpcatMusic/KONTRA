@@ -691,6 +691,9 @@ impl Engine {
             Event::NoteOff(pattern) | Event::NoteOffVelocity(pattern, _) => self.note_off(pattern),
             Event::Choke(pattern) => self.choke(pattern),
             Event::Expression(pattern, expression) => self.expression(pattern, expression),
+            // ponytail: per-note controllers are dropped until modulation
+            // sources take them.
+            Event::PerNoteCc { .. } => {}
             Event::Ump(words) => self.ump(words),
         }
     }
