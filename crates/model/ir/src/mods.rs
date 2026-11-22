@@ -71,21 +71,45 @@ pub enum ModKind {
     SampleStart { source: Source, depth: f32 },
     /// Scales the attack `t` of the [`Group::envelope`](crate::Group::envelope)
     /// (`envelope` none) or of the group's breakpoint envelope `envelope`
-    /// (its first segment) at note-on by
-    /// `m = 1 − (1 − x)·|intensity|` (`x` read at note-on, `1 − x` for a
-    /// negative intensity): `t·m` when `floor_ms` is 0, else as a knob linear
-    /// in `ln(t + floor_ms)`, `floor_ms·((t + floor_ms)/floor_ms)^(m³) − floor_ms`.
+    /// (its first segment) at note-on by `m = 1 − (1 − x)·|intensity|`
+    /// (`x` read at note-on, `1 − x` for a negative intensity) under `scale`.
     Attack {
         source: Source,
         intensity: f32,
-        floor_ms: f32,
+        scale: TimeScale,
         envelope: Option<u8>,
     },
-    /// As [`ModKind::Attack`], on the amplitude envelope's release time.
+    /// As [`ModKind::Attack`], on the hold time of the amplitude envelope
+    /// (`envelope` none) or a staged breakpoint envelope.
+    Hold {
+        source: Source,
+        intensity: f32,
+        scale: TimeScale,
+        envelope: Option<u8>,
+    },
+    /// As [`ModKind::Attack`], on the decay time of the amplitude envelope
+    /// (`envelope` none) or a staged breakpoint envelope.
+    Decay {
+        source: Source,
+        intensity: f32,
+        scale: TimeScale,
+        envelope: Option<u8>,
+    },
+    /// Scales the sustain level of the amplitude envelope (`envelope` none) or
+    /// a staged breakpoint envelope at note-on via [`Curve::gain`].
+    Sustain {
+        source: Source,
+        intensity: f32,
+        curve: Curve,
+        envelope: Option<u8>,
+    },
+    /// As [`ModKind::Attack`], on the release time of the amplitude envelope
+    /// (`envelope` none) or a breakpoint envelope, evaluated live at note-off.
     Release {
         source: Source,
         intensity: f32,
-        floor_ms: f32,
+        scale: TimeScale,
+        envelope: Option<u8>,
     },
     /// Adds `source × depth` cycles (`depth` −1..=1) to the start phase of
     /// the group's LFO `lfo`, `source` read at note-on.
@@ -268,13 +292,26 @@ impl Transfer {
     }
 }
 
+/// How a modulation route scales an envelope stage's duration `t` (ms) by
+/// `m = 1 − (1 − x)·|intensity|` (`x` on 0..=1, inverted as `1 − x` when
+/// `intensity < 0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TimeScale {
+    /// Linear duration scaling: `t · m^power`.
+    Linear { power: u8 },
+    /// Logarithmic knob scaling in `ln(t + floor_ms)`:
+    /// `floor_ms · ((t + floor_ms) / floor_ms)^(m^power) − floor_ms`.
+    LogKnob { floor_ms: f32, power: u8 },
+}
+
 /// How a volume modulation turns its source into gain.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Curve {
     /// Linear in dB: `intensity ×` this many dB down at source 0.
     Decibels(f32),
-    /// `(1 − (1 − x) × intensity)^power`: the source pulls the gain down from
-    /// unity by its depth; power 1 is linear in amplitude.
+    /// `(1 − (1 − x') × |intensity|)^power`, where `x' = 1 − x` when
+    /// `intensity < 0`: the source pulls the gain down from unity by its
+    /// depth, never boosting above unity; power 1 is linear in amplitude.
     Depth { power: u8 },
     /// [`Self::Depth`] at power 1 on `x²`; a negative intensity reads `1 − x²`.
     Squared,
@@ -293,9 +330,12 @@ impl Curve {
         let x = x.clamp(0.0, 1.0);
         match self {
             Self::Decibels(range) => 10f32.powf(-range * intensity * (1.0 - x) / 20.0),
-            Self::Depth { power } => (1.0 - (1.0 - x) * intensity)
-                .max(0.0)
-                .powi(i32::from(power)),
+            Self::Depth { power } => {
+                let x = if intensity < 0.0 { 1.0 - x } else { x };
+                (1.0 - (1.0 - x) * intensity.abs())
+                    .max(0.0)
+                    .powi(i32::from(power))
+            }
             Self::Squared => {
                 let x = if intensity < 0.0 { 1.0 - x * x } else { x * x };
                 (1.0 - (1.0 - x) * intensity.abs()).max(0.0)
@@ -376,6 +416,8 @@ pub enum Attractor {
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Velocity,
+    /// Note-off release velocity, 0..=1 (0.5 when a note-off carried none).
+    ReleaseVelocity,
     Controller(u8),
     /// Controller `cc`, reading `start` (0..=127) until its first message
     /// on the channel arrives.
@@ -448,5 +490,26 @@ mod tests {
         }
         assert_eq!(law.of(1.0), 2.0);
         assert_eq!(Exp2::Exact.of(-1.0), 0.5);
+    }
+
+    #[test]
+    fn curve_depth_negative_intensity_inverts_source_without_boosting() {
+        use super::Curve;
+        for power in [1u8, 3] {
+            let c = Curve::Depth { power };
+            // Positive depth: x=1 -> 1.0, x=0 -> (1 - d)^power.
+            assert!((c.gain(0.5, 1.0) - 1.0).abs() < 1e-6);
+            assert!((c.gain(0.5, 0.0) - 0.5f32.powi(i32::from(power))).abs() < 1e-6);
+            // Negative depth inverts x -> 1 - x and scales by |d|:
+            // x=0 -> 1.0, x=1 -> (1 - |d|)^power, never > 1.0.
+            assert!((c.gain(-0.5, 0.0) - 1.0).abs() < 1e-6);
+            assert!((c.gain(-0.5, 1.0) - 0.5f32.powi(i32::from(power))).abs() < 1e-6);
+            assert!((c.gain(-1.0, 1.0) - 0.0).abs() < 1e-6);
+            assert!((c.gain(-1.0, 0.0) - 1.0).abs() < 1e-6);
+            for k in 0..=10 {
+                let x = k as f32 / 10.0;
+                assert!(c.gain(-1.0, x) <= 1.0 + 1e-6);
+            }
+        }
     }
 }

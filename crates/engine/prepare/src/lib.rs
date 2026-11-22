@@ -116,6 +116,7 @@ pub fn prepare(
                 tune: g.tune,
             },
             purged: g.purged,
+            muted: g.muted,
             inserts: Vec::new(),
             mods: g.mods.clone(),
             envelope: envelope(g.envelope, rate),

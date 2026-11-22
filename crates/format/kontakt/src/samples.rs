@@ -96,6 +96,11 @@ impl Resolver {
         file.canonicalize().is_ok_and(|f| f.starts_with(&self.root))
     }
 
+    /// An archive already opened was checked when it was.
+    fn can_open_archive(&self, archive: &Path) -> bool {
+        self.archives.contains_key(archive) || self.inside(archive)
+    }
+
     /// The bytes of the sample the preset names `name`, if the library has it.
     pub(crate) fn resolve(&mut self, name: &str) -> Result<Option<Location>, String> {
         if let Some(found) = self.resolved.get(name) {
@@ -126,8 +131,7 @@ impl Resolver {
                 continue;
             }
             if let Some((archive, member)) = archive_member(&candidate, &self.archives) {
-                // An archive already opened was checked when it was.
-                if (self.archives.contains_key(&archive) || self.inside(&archive))
+                if self.can_open_archive(&archive)
                     && let Some(found) = self.archive_entry(&archive, &member)?
                 {
                     return Ok(Some(found));
@@ -182,6 +186,9 @@ impl Resolver {
         let (Ok(path), Ok(file)) = (path.canonicalize(), file.try_clone()) else {
             return;
         };
+        if !path.starts_with(&self.root) {
+            return;
+        }
         self.archives
             .entry(path)
             .or_insert_with(|| Some((file, index.clone())));
@@ -199,18 +206,19 @@ impl Resolver {
         self.archives.get(archive).unwrap_or(&None)
     }
 
-    /// [`Resolver::warm`] for the samples the live zones of `zones` name.
+    /// [`Resolver::warm`] for the samples the zones of `zones` name.
     pub(crate) fn warm_zones(
         &mut self,
         zones: &ni_file::kontakt::objects::ZoneList,
-        muted: &[bool],
         table: &HashMap<u32, String>,
     ) {
-        let used: std::collections::BTreeSet<u32> = (zones.zones().iter().zip(&zones.group_ids))
-            .filter_map(|(zone, &group)| {
+        let used: std::collections::BTreeSet<u32> = zones
+            .zones()
+            .iter()
+            .filter_map(|zone| {
                 let z = zone.params().ok()?;
-                let live = z.sample_present && !muted.get(group as usize).copied().unwrap_or(true);
-                live.then(|| u32::try_from(z.filename_id).unwrap_or(u32::MAX))
+                z.sample_present
+                    .then(|| u32::try_from(z.filename_id).unwrap_or(u32::MAX))
             })
             .collect();
         self.warm(
@@ -232,6 +240,7 @@ impl Resolver {
                     return None;
                 }
                 archive_member(&candidate, &self.archives)
+                    .filter(|(archive, _)| self.can_open_archive(archive))
             });
             named.extend(found);
         }

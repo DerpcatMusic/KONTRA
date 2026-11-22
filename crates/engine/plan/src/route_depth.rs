@@ -49,6 +49,9 @@ pub fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
     match kind {
         ir::ModKind::Volume { intensity, .. }
         | ir::ModKind::Attack { intensity, .. }
+        | ir::ModKind::Hold { intensity, .. }
+        | ir::ModKind::Decay { intensity, .. }
+        | ir::ModKind::Sustain { intensity, .. }
         | ir::ModKind::Release { intensity, .. } => Some(intensity),
         ir::ModKind::Pitch { depth, .. }
         | ir::ModKind::Cutoff { depth, .. }

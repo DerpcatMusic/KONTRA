@@ -260,6 +260,11 @@ impl Voice {
         }
     }
 
+    /// Sets the amplitude envelope's release duration before [`Self::key_up`].
+    pub fn set_release_frames(&mut self, frames: u32) {
+        self.env.set_release(frames);
+    }
+
     pub fn release(&mut self) {
         let at = self.at(0) as u64;
         self.released = self.released.or(Some(at));

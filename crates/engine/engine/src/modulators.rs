@@ -110,7 +110,7 @@ impl Memo {
 }
 
 pub(crate) use kontra_plan::modulation::{
-    Age, CHAOS_START, Chaos, WARPS, chaos_step, lfo, smoothed_shared, stretched,
+    Age, CHAOS_START, Chaos, EnvScale, WARPS, chaos_step, lfo, smoothed_shared, stretched,
 };
 
 impl Engine {
@@ -123,7 +123,7 @@ impl Engine {
             now: seconds(self.now),
             warp: [0.0; WARPS],
             chaos: [0.0; WARPS],
-            stretch: [1.0; WARPS],
+            stretch: [EnvScale::UNITY; WARPS],
             start_frame: 0.0,
             sample_pos: 0.0,
             unpitched_pos: 0.0,

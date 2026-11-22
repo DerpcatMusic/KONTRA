@@ -13,7 +13,7 @@ use crate::Group;
 pub(crate) struct Reshaped {
     intensity: Box<[(ir::Source, usize)]>,
     lfo: Box<[(u8, usize)]>,
-    attack: Box<[(u8, usize)]>,
+    envelope: Box<[(u8, usize)]>,
 }
 
 impl Reshaped {
@@ -27,9 +27,21 @@ impl Reshaped {
                     _ => None,
                 })
                 .collect(),
-            attack: (routes.clone())
+            envelope: (routes.clone())
                 .filter_map(|(i, m)| match m.kind {
                     ir::ModKind::Attack {
+                        envelope: Some(n), ..
+                    }
+                    | ir::ModKind::Hold {
+                        envelope: Some(n), ..
+                    }
+                    | ir::ModKind::Decay {
+                        envelope: Some(n), ..
+                    }
+                    | ir::ModKind::Sustain {
+                        envelope: Some(n), ..
+                    }
+                    | ir::ModKind::Release {
                         envelope: Some(n), ..
                     } => Some((n, i)),
                     _ => None,
@@ -53,9 +65,9 @@ impl Reshaped {
             .map(|&(_, i)| i)
     }
 
-    /// The mods that may stretch breakpoint envelope `n`'s attack.
-    pub(crate) fn attacking(&self, n: u8) -> impl Iterator<Item = usize> + '_ {
-        (self.attack.iter())
+    /// The mods that may shape breakpoint envelope `n`'s stages.
+    pub(crate) fn enveloping(&self, n: u8) -> impl Iterator<Item = usize> + '_ {
+        (self.envelope.iter())
             .filter(move |&&(e, _)| e == n)
             .map(|&(_, i)| i)
     }

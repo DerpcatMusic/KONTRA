@@ -56,7 +56,9 @@ pub struct ModTarget {
     pub name: String,
     /// Owning module slot for module parameters; `None` for group parameters.
     pub slot: Option<u8>,
-    /// Invert button.
+    /// UI shaper-table open toggle (`tableOpen`, native `+0x16`,
+    /// [ref]). Audio polarity inversion is stored in
+    /// `unknown_flags & 2` (see [`Self::signed_intensity`]), not here.
     pub invert: bool,
     /// Modulation shaper curve, when one was ever edited.
     pub shaper: Option<ModShaper>,
@@ -166,6 +168,9 @@ pub enum ModSource {
     Script(u32),
     /// Per-zone envelope (`BZEnvMod`, `BParExternalMod` category 2).
     ZoneEnvelope,
+    /// Per-note / polyphonic expression source (Kontakt 8 source codes 13..=18:
+    /// MPE/polyphonic timbre, pitch, pressure, etc.).
+    PolyExpression(u8),
     /// Assignment without a source (category 0).
     Unassigned,
 }
@@ -222,6 +227,28 @@ impl ExternalModParams {
         u8::try_from(i16::from_le_bytes([lo, hi]))
             .ok()
             .map(|v| v.min(127))
+    }
+
+    /// Whether this external modulator assignment is bypassed (`+0x53c`,
+    /// [ref]): always the second-to-last
+    /// byte of `unknown_source_data` (index 2 for category 1, index 0 for
+    /// categories 0 and 2).
+    pub fn bypass(&self) -> bool {
+        self.unknown_source_data
+            .len()
+            .checked_sub(2)
+            .and_then(|i| self.unknown_source_data.get(i))
+            .is_some_and(|&b| b != 0)
+    }
+
+    /// Legacy Kontakt 2 envelope-time compatibility flag (`+0x53d`,
+    /// [ref]
+    /// [ref]): always the last byte of
+    /// `unknown_source_data`. When false (modern K3–K8), envelope-time routes
+    /// scale the logarithmic time knob; when true (K2 compat), they scale the
+    /// duration linearly by the cubed modulation multiplier.
+    pub fn simulate_k2_env_time(&self) -> bool {
+        self.unknown_source_data.last().is_some_and(|&b| b != 0)
     }
 }
 
@@ -294,6 +321,7 @@ impl TryFrom<&Chunk> for ExternalMod {
 /// carry no extra payload, which the exact-length check would expose.
 fn read_source(reader: &mut Cursor<&[u8]>) -> Result<ModSource, Error> {
     Ok(match reader.read_u32_le()? {
+        0 => ModSource::Unassigned,
         1 => ModSource::PitchBend,
         2 => ModSource::PolyAftertouch,
         3 => ModSource::MonoAftertouch,
@@ -306,6 +334,7 @@ fn read_source(reader: &mut Cursor<&[u8]>) -> Result<ModSource, Error> {
         10 => ModSource::RandomUnipolar,
         11 => ModSource::RandomBipolar,
         12 => ModSource::Script(reader.read_u32_le()?),
+        code @ 13..=18 => ModSource::PolyExpression(code as u8),
         other => {
             return Err(Error::Generic(format!(
                 "Unknown external modulation source {other}"
@@ -735,5 +764,54 @@ mod tests {
             modulator.params().is_err(),
             "v0x103 does not accept the v0x104 footer"
         );
+    }
+
+    #[test]
+    fn external_mod_decodes_category_0_source_0_poly_expression_and_flags() {
+        let build = |category: u32, source_code: Option<u32>, source_data: &[u8]| {
+            let mut private = Vec::new();
+            private.extend(1u32.to_le_bytes());
+            private.extend(6u32.to_le_bytes());
+            private.extend(b"volume");
+            private.extend(0.5f32.to_le_bytes());
+            private.extend((-1i16).to_le_bytes());
+            private.push(0);
+            private.extend(0i16.to_le_bytes());
+            private.extend(0u32.to_le_bytes());
+            private.extend([0, 0]);
+            private.extend(4u32.to_le_bytes());
+            private.extend(b"TEST");
+            private.extend(category.to_le_bytes());
+            if let Some(code) = source_code {
+                private.extend(code.to_le_bytes());
+            }
+            private.extend(source_data);
+            private.extend(0u32.to_le_bytes());
+            ExternalMod(StructuredObject {
+                version: 0x102,
+                private_data: private,
+                public_data: Vec::new(),
+                children: Vec::new(),
+            })
+            .params()
+            .unwrap()
+        };
+
+        let cat0 = build(0, None, &[1, 0]);
+        assert_eq!(cat0.source, ModSource::Unassigned);
+        assert!(cat0.bypass());
+        assert!(!cat0.simulate_k2_env_time());
+
+        let src0 = build(1, Some(0), &[0xff, 0xff, 0, 1]);
+        assert_eq!(src0.source, ModSource::Unassigned);
+        assert!(!src0.bypass());
+        assert!(src0.simulate_k2_env_time());
+
+        for code in 13..=18u32 {
+            let poly = build(1, Some(code), &[0, 0, 1, 1]);
+            assert_eq!(poly.source, ModSource::PolyExpression(code as u8));
+            assert!(poly.bypass());
+            assert!(poly.simulate_k2_env_time());
+        }
     }
 }

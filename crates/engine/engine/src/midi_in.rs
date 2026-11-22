@@ -37,9 +37,18 @@ impl Engine {
                 note.key,
                 ((velocity * 127.0).round() as u8).clamp(1, 127),
             ]),
-            Event::NoteOff(p) | Event::NoteOffVelocity(p, _) => {
+            Event::NoteOff(p) => {
                 let (channel, key) = (u8::try_from(p.channel).ok()?, u8::try_from(p.key).ok()?);
                 Some([midi::NOTE_OFF, channel, key, 0])
+            }
+            Event::NoteOffVelocity(p, v) => {
+                let (channel, key) = (u8::try_from(p.channel).ok()?, u8::try_from(p.key).ok()?);
+                Some([
+                    midi::NOTE_OFF,
+                    channel,
+                    key,
+                    ((v * 127.0).round() as u8).min(127),
+                ])
             }
             Event::Ump([word, _]) if word >> 28 == 0x2 => {
                 let status = (word >> 16) as u8;
@@ -83,16 +92,23 @@ impl Engine {
                     _ => 0.0,
                 },
             },
-            midi::NOTE_ON | midi::NOTE_OFF => Event::NoteOff(HostPattern {
-                port: i32::from(port),
-                channel: i32::from(channel),
-                key: i32::from(d1),
-                id: match like {
-                    Event::NoteOff(p) | Event::NoteOffVelocity(p, _) => p.id,
-                    _ => -1,
-                },
-                clap: false,
-            }),
+            midi::NOTE_ON | midi::NOTE_OFF => {
+                let pattern = HostPattern {
+                    port: i32::from(port),
+                    channel: i32::from(channel),
+                    key: i32::from(d1),
+                    id: match like {
+                        Event::NoteOff(p) | Event::NoteOffVelocity(p, _) => p.id,
+                        _ => -1,
+                    },
+                    clap: false,
+                };
+                if cmd == midi::NOTE_OFF && (d2 > 0 || matches!(like, Event::NoteOffVelocity(..))) {
+                    Event::NoteOffVelocity(pattern, f64::from(d2) / 127.0)
+                } else {
+                    Event::NoteOff(pattern)
+                }
+            }
             _ => match Event::midi1(cmd | channel, d1, d2) {
                 Event::Ump([word, extra]) => Event::Ump([word | u32::from(port) << 24, extra]),
                 other => other,
@@ -146,8 +162,10 @@ impl Engine {
     /// any port, so the moved note still ends on ports B–D.
     fn rebuilt(m: [u8; 4], heard: [u8; 4], like: &Event) -> Event {
         let mut out = Self::event_from(m, like);
-        if let (Event::NoteOff(was) | Event::NoteOffVelocity(was, _), Event::NoteOff(now)) =
-            (like, &mut out)
+        if let (
+            Event::NoteOff(was) | Event::NoteOffVelocity(was, _),
+            Event::NoteOff(now) | Event::NoteOffVelocity(now, _),
+        ) = (like, &mut out)
             && was.port < 0
             && m[1] == heard[1]
         {

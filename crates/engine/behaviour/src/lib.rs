@@ -41,6 +41,12 @@ pub struct RrDraw {
 }
 
 impl RrDraw {
+    /// Per-note deterministic seed derived from this draw.
+    #[must_use]
+    pub fn seed(self) -> u32 {
+        self.random
+    }
+
     /// The note's random modulation value, 0..=1: the draw through the
     /// splitmix64 finalizer, so it does not follow the round-robin choice
     /// and the generator's sequence stays as it was.

@@ -2,6 +2,27 @@
 
 use kontra_ir as ir;
 
+/// Per-voice envelope stage time multipliers and sustain scale, latched at
+/// note-on (and release at note-off) for breakpoint envelopes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvScale {
+    pub attack: f32,
+    pub hold: f32,
+    pub decay: f32,
+    pub release: f32,
+    pub sustain: f32,
+}
+
+impl EnvScale {
+    pub const UNITY: Self = Self {
+        attack: 1.0,
+        hold: 1.0,
+        decay: 1.0,
+        release: 1.0,
+        sustain: 1.0,
+    };
+}
+
 /// When a voice is being read, in seconds.
 #[derive(Clone, Copy, Debug)]
 pub struct Age {
@@ -16,9 +37,10 @@ pub struct Age {
     pub warp: [f32; WARPS],
     /// The voice's chaotic LFOs' levels this span (at the current span).
     pub chaos: [f32; WARPS],
-    /// How much the voice's attack routes stretched the group's first
-    /// [`WARPS`] envelopes' first segment, fixed at note-on (1: as drawn).
-    pub stretch: [f32; WARPS],
+    /// How much envelope modulation routes scaled the group's first
+    /// [`WARPS`] breakpoint envelopes (attack/hold/decay/sustain at note-on,
+    /// release at note-off).
+    pub stretch: [EnvScale; WARPS],
     /// Voice position at note-on, in source frames.
     pub start_frame: f64,
     /// Voice position in source frames (start frame + playback travel), for
@@ -38,7 +60,7 @@ impl Age {
         now: 0.0,
         warp: [0.0; WARPS],
         chaos: [0.0; WARPS],
-        stretch: [1.0; WARPS],
+        stretch: [EnvScale::UNITY; WARPS],
         start_frame: 0.0,
         sample_pos: 0.0,
         unpitched_pos: 0.0,
@@ -172,37 +194,64 @@ pub fn hz(l: &ir::Lfo, tempo: f32) -> f32 {
 
 /// The envelope's level at `age`.
 pub fn envelope(e: &ir::Breakpoints, age: Age) -> f32 {
-    stretched(e, age, 1.0)
+    stretched(e, age, EnvScale::UNITY)
 }
 
-/// [`envelope`] with its first segment (the attack) `attack` times as long,
-/// as a voice's attack routes set it at note-on; what follows keeps its own
-/// times, shifted by the change.
-pub fn stretched(e: &ir::Breakpoints, age: Age, attack: f32) -> f32 {
-    let a = e.points.first().map_or(0.0, |p| p.ms.max(0.0) / 1000.0);
-    let s = attack.max(0.0);
-    let unstretch = |t: f32| if t < a * s { t / s } else { t + a * (1.0 - s) };
-    let Some((sustain, released)) = e.sustain.zip(age.released) else {
-        return held(e, unstretch(age.held));
+/// [`envelope`] with its stage durations and sustain scaled by `scale`.
+/// For staged (AHDSR) envelopes, points 0/1/2/3 scale by attack/hold/decay/release
+/// and point 2's sustain level scales by `scale.sustain`. For free breakpoint
+/// envelopes, point 0 scales by `scale.attack` and post-sustain points by
+/// `scale.release`.
+pub fn stretched(e: &ir::Breakpoints, age: Age, scale: EnvScale) -> f32 {
+    let held_time_scale = |i: usize| -> f32 {
+        match (e.stages, i) {
+            (_, 0) => scale.attack.max(0.0),
+            (true, 1) => scale.hold.max(0.0),
+            (true, 2) => scale.decay.max(0.0),
+            _ => 1.0,
+        }
     };
+    let held_level = |i: usize, level: f32| -> f32 {
+        if e.stages && i == 2 {
+            (level * scale.sustain).clamp(0.0, 1.0)
+        } else {
+            level
+        }
+    };
+    let Some((sustain, released)) = e.sustain.zip(age.released) else {
+        return held_scaled(e, age.held, held_time_scale, held_level);
+    };
+    let start_level = held_scaled(e, released, held_time_scale, held_level);
     let after = e.points.get(sustain + 1..).unwrap_or_default();
-    walk(held(e, unstretch(released)), after, age.held - released).0
+    let rel = scale.release.max(0.0);
+    walk_scaled(start_level, after, age.held - released, |_| rel, |_, l| l).0
 }
 
 /// The level `t` seconds after the start with the key down: through the
 /// points to the sustain point, then holding there or cycling its loop.
-fn held(e: &ir::Breakpoints, t: f32) -> f32 {
+fn held_scaled(
+    e: &ir::Breakpoints,
+    t: f32,
+    time_scale: impl Fn(usize) -> f32,
+    level_of: impl Fn(usize, f32) -> f32,
+) -> f32 {
     let Some(sustain) = e.sustain else {
-        return walk(e.start, &e.points, t).0;
+        return walk_scaled(e.start, &e.points, t, time_scale, level_of).0;
     };
-    let (level, left) = walk(e.start, e.points.get(..=sustain).unwrap_or(&e.points), t);
+    let (level, left) = walk_scaled(
+        e.start,
+        e.points.get(..=sustain).unwrap_or(&e.points),
+        t,
+        time_scale,
+        level_of,
+    );
     let cycle = e.loop_from.and_then(|from| e.points.get(from..=sustain));
     let (Some(left), Some(cycle)) = (left, cycle) else {
         return level;
     };
     let period: f32 = cycle.iter().map(|p| p.ms / 1000.0).sum();
     if period > 0.0 {
-        walk(level, cycle, left % period).0
+        walk_scaled(level, cycle, left % period, |_| 1.0, |_, l| l).0
     } else {
         level
     }
@@ -210,14 +259,21 @@ fn held(e: &ir::Breakpoints, t: f32) -> f32 {
 
 /// From `level`, through `points` for `t` seconds: the level reached, and the
 /// time left over once past the last point.
-fn walk(mut level: f32, points: &[ir::Breakpoint], mut t: f32) -> (f32, Option<f32>) {
-    for p in points {
-        let span = p.ms.max(0.0) / 1000.0;
+fn walk_scaled(
+    mut level: f32,
+    points: &[ir::Breakpoint],
+    mut t: f32,
+    time_scale: impl Fn(usize) -> f32,
+    level_of: impl Fn(usize, f32) -> f32,
+) -> (f32, Option<f32>) {
+    for (i, p) in points.iter().enumerate() {
+        let span = p.ms.max(0.0) * time_scale(i) / 1000.0;
+        let to = level_of(i, p.level);
         if t < span {
-            return (segment(level, p.level, t / span, p.curve), None);
+            return (segment(level, to, t / span, p.curve), None);
         }
         t -= span;
-        level = p.level;
+        level = to;
     }
     (level, Some(t))
 }

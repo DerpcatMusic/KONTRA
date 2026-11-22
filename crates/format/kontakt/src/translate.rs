@@ -28,6 +28,21 @@ const VOICE_GROUPS: u16 = 0x32;
 const START_CRITERIA: u16 = 0x38;
 /// The browser's preview data.
 const QUICK_BROWSE: u16 = 0x4e;
+
+fn zone_loops(
+    chunk: Option<&ni_file::kontakt::Chunk>,
+    muted: bool,
+    notes: &mut Notes,
+) -> Result<Option<LoopArray>, ni_file::Error> {
+    match chunk.map(LoopArray::try_from).transpose() {
+        Ok(loops) => Ok(loops),
+        Err(e) if muted => {
+            notes.add(ir::Impact::Audible, "muted zone loops", e);
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
 /// Stored fields the translator maps, and those that are editor state only.
 // `unknown_tail` is the opaque public suffix every program stores.
 const COSMETIC_PROGRAM: &[&str] = &[
@@ -57,10 +72,11 @@ const USED_GROUP: &[&str] = &[
     "start_criteria",
     "voice_group_index",
     "muted",
+    "soloed",
     "fx_idx_amp_split_point",
     "release_trigger_note_monophonic",
 ];
-const COSMETIC_GROUP: &[&str] = &["soloed"];
+const COSMETIC_GROUP: &[&str] = &[];
 const USED_ZONE: &[&str] = &[
     "sample_start",
     "sample_end",
@@ -320,24 +336,31 @@ pub(crate) fn instrument(
         .transpose()
         .map_err(decode("voice groups"))?;
     voice_groups(&mut out, &groups, limits.as_ref());
-    let muted: Vec<bool> = groups
+    // Effective group mute: when any group is soloed, every non-soloed group
+    // is muted (`soloed` overrides `muted`); otherwise each group keeps its
+    // own `muted` flag. Zones still load so scripts and future un-muting see them.
+    let any_soloed = groups
         .groups
         .iter()
-        .map(|g| g.params().map(|p| p.muted).unwrap_or(true))
-        .collect();
+        .any(|g| g.params().is_ok_and(|p| p.soloed));
+    for (out_group, raw_group) in out.groups.iter_mut().zip(&groups.groups) {
+        if let Ok(p) = raw_group.params() {
+            out_group.muted = if any_soloed { !p.soloed } else { p.muted };
+        }
+    }
     let zones = program
         .0
         .find_first(ZONE_LIST)
         .ok_or_else(|| Error::new(path, "zone list", "missing"))
         .and_then(|c| ZoneList::try_from(c).map_err(decode("zone list")))?;
     let mut sample_of: HashMap<u32, Option<usize>> = HashMap::new();
-    resolver.warm_zones(&zones, &muted, &table);
+    resolver.warm_zones(&zones, &table);
     // A zone's id is its place in the zone list, saved or not.
     for (zone_id, (zone, &group)) in (0u32..).zip(zones.zones().iter().zip(&zones.group_ids)) {
         let z = zone.params().map_err(decode("zone"))?;
         notes.ignored_fields("zone", &z, USED_ZONE, COSMETIC_ZONE);
         crate::ignored::chunks(&mut notes, "zone", &zone.0, &[LOOPS], &[QUICK_BROWSE]);
-        if !z.sample_present || muted.get(group as usize).copied().unwrap_or(true) {
+        if !z.sample_present {
             continue;
         }
         let id = u32::try_from(z.filename_id).unwrap_or(u32::MAX);
@@ -381,12 +404,8 @@ pub(crate) fn instrument(
             continue;
         };
         let frames = out.samples.get(sample).map_or(0, |s| s.frames);
-        let loops = zone
-            .0
-            .find_first(LOOPS)
-            .map(LoopArray::try_from)
-            .transpose();
-        let loops = loops.map_err(decode("zone loops"))?;
+        let loops = zone_loops(zone.0.find_first(LOOPS), g.muted, &mut notes)
+            .map_err(decode("zone loops"))?;
         let reverse =
             g.zones.first().is_some_and(|z| z.reverse) || criteria_reverse(group, &groups);
         let streaming = g.stream.is_some();
@@ -806,11 +825,13 @@ fn translate_group(
                     .mods
                     .iter()
                     .any(|m| matches!(m.kind, ir::ModKind::Envelope));
-            let reads_flags = matches!(p.modulator, Modulator::Flex(_) | Modulator::Lfo(_))
-                || (matches!(p.modulator, Modulator::Ahdsr(_)) && !amp_env);
+            let reads_flags = matches!(
+                p.modulator,
+                Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Dbd(_)
+            ) || (matches!(p.modulator, Modulator::Ahdsr(_)) && !amp_env);
             if !reads_flags {
                 for (flag, what) in [(1, "bypass"), (2, "retrigger"), (3, "flag 3")] {
-                    if amp_env && flag == 3 {
+                    if amp_env && matches!(flag, 1 | 3) {
                         continue;
                     }
                     if p.unknown_flags.get(flag).is_some_and(|&b| b != 0) {
@@ -822,8 +843,9 @@ fn translate_group(
                 notes.ignored("internal modulator id", p.unknown_id);
             }
             match &p.modulator {
-                // The first volume AHDSR is the amplitude envelope; others route
-                // as breakpoint envelopes (`timed`).
+                // The first volume AHDSR is the amplitude envelope; if it also
+                // has secondary targets (e.g. filterCutoff, pitch), those route
+                // as a breakpoint copy via `timed`.
                 Modulator::Ahdsr(e)
                     if volume
                         && !out
@@ -832,7 +854,11 @@ fn translate_group(
                             .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
                 {
                     out.envelope = laws::envelope(e);
-                    if let Some(t) = p.targets.iter().find(|t| t.param == "volume") {
+                    if let Some(t) = p
+                        .targets
+                        .iter()
+                        .find(|t| t.param == "volume" && t.slot.is_none())
+                    {
                         let scaled = p.unknown_flags.get(3).is_some_and(|&b| b != 0);
                         laws::envelope_depth(&mut out.envelope, t.signed_intensity(), scaled);
                     }
@@ -842,18 +868,49 @@ fn translate_group(
                         input: format!("{e:?}"),
                         output: format!("{:?}", out.envelope),
                     });
-                    let target = p.targets.iter().position(|t| t.param == "volume");
+                    let target = p
+                        .targets
+                        .iter()
+                        .position(|t| t.param == "volume" && t.slot.is_none());
                     out.mods.push(ir::Mod {
                         name: p.name.clone(),
                         slot: slot(n),
                         target: target.map_or(0, slot),
-                        bypass: false,
+                        bypass: p.unknown_flags.get(1).is_some_and(|&b| b != 0),
                         kind: ir::ModKind::Envelope,
                     });
+                    if p.targets.len() > 1 {
+                        let envelopes = out.envelopes.len();
+                        timed(
+                            &mut out,
+                            &p,
+                            group_index,
+                            slot(n),
+                            target,
+                            notes,
+                            &mut modulated,
+                        );
+                        if out.envelopes.len() > envelopes
+                            && let Ok(env_idx) = u8::try_from(envelopes)
+                        {
+                            timed_slots.push((n, ir::Source::Envelope(env_idx)));
+                        }
+                    }
                 }
-                Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => {
+                Modulator::Flex(_)
+                | Modulator::Lfo(_)
+                | Modulator::Ahdsr(_)
+                | Modulator::Dbd(_) => {
                     let (lfos, envelopes) = (out.lfos.len(), out.envelopes.len());
-                    timed(&mut out, &p, group_index, slot(n), notes, &mut modulated);
+                    timed(
+                        &mut out,
+                        &p,
+                        group_index,
+                        slot(n),
+                        None,
+                        notes,
+                        &mut modulated,
+                    );
                     let made = if out.lfos.len() > lfos {
                         u8::try_from(lfos).ok().map(ir::Source::Lfo)
                     } else if out.envelopes.len() > envelopes {
@@ -888,10 +945,13 @@ fn translate_group(
                 }
                 m => {
                     let kind = match m {
-                        Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => "timed",
-                        Modulator::Dbd(_) => "DBD envelope",
+                        Modulator::Flex(_)
+                        | Modulator::Lfo(_)
+                        | Modulator::Ahdsr(_)
+                        | Modulator::Dbd(_) => "timed",
                         Modulator::Glide(_) => "glide",
                         Modulator::Follower(_) => "envelope follower",
+                        Modulator::Other { chunk_id: 0x09 } => "step modulator",
                         Modulator::Other { .. } => "other",
                     };
                     for t in &p.targets {
@@ -1082,6 +1142,29 @@ fn translate_zone(
 #[cfg(test)]
 mod tests {
     use kontra_ir as ir;
+
+    #[test]
+    fn malformed_muted_loops_are_diagnosed_and_active_loops_fail() {
+        let chunk = ni_file::kontakt::Chunk {
+            id: super::LOOPS,
+            data: vec![1, 0, 0x61, 0],
+        };
+        let mut notes = kontra_format::Notes::default();
+        assert!(
+            super::zone_loops(Some(&chunk), true, &mut notes)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            notes
+                .finish()
+                .iter()
+                .any(|d| d.feature == "muted zone loops")
+        );
+        assert!(
+            super::zone_loops(Some(&chunk), false, &mut kontra_format::Notes::default()).is_err()
+        );
+    }
 
     #[test]
     fn empty_and_unknown_loop_modes_are_audible_notes() {

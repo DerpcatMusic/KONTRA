@@ -349,7 +349,7 @@ fn onset_route_trace_records_sample_and_envelope_values() {
             kind: ir::ModKind::Attack {
                 source: ir::Source::Controller(1),
                 intensity: 1.0,
-                floor_ms: 0.0,
+                scale: ir::TimeScale::Linear { power: 1 },
                 envelope: None,
             },
         },

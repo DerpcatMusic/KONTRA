@@ -160,8 +160,10 @@ struct Slot {
     warp: [f32; modulators::WARPS],
     /// Its chaotic LFOs' states ([`modulators::Chaos`]).
     chaos: [modulators::Chaos; modulators::WARPS],
-    /// Its envelopes' attack stretch, fixed at note-on ([`modulators::Age::stretch`]).
-    stretch: [f32; modulators::WARPS],
+    /// Its envelopes' stage stretches ([`modulators::Age::stretch`]).
+    stretch: [modulators::EnvScale; modulators::WARPS],
+    /// Unmodulated amplitude release at voice start.
+    release_base: u32,
     /// Its portamento, while it slides ([`glide::Slide`]).
     slide: Option<glide::Slide>,
     /// Starting sample frame (or reverse distance from zone end) for zone envelopes.
@@ -277,6 +279,7 @@ pub struct Engine {
     unanswered_pars: Box<[([i32; 4], u32)]>,
     called: Box<[u32]>,
     memo: modulators::Memo,
+    evaluation: voice_gain::Evaluation,
     /// The instrument's level, pan and tune (a script's group -1); level and
     /// pan move [`Self::output`], after every effect.
     instrument: Level,
@@ -401,7 +404,8 @@ impl Engine {
                 pan: [0.0; 2],
                 warp: [0.0; modulators::WARPS],
                 chaos: [modulators::CHAOS_START; modulators::WARPS],
-                stretch: [1.0; modulators::WARPS],
+                stretch: [modulators::EnvScale::UNITY; modulators::WARPS],
+                release_base: 0,
                 slide: None,
                 start_frame: 0.0,
                 #[cfg(feature = "trace")]
@@ -513,6 +517,7 @@ impl Engine {
             unanswered_pars: vec![([0; 4], 0); 64].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
             memo: Default::default(),
+            evaluation: Default::default(),
             ui,
             ids: callbacks::Ids::START,
             wall_start: std::time::SystemTime::now()
@@ -688,7 +693,8 @@ impl Engine {
                 velocity,
                 tune,
             } => self.note_on(note, velocity, tune),
-            Event::NoteOff(pattern) | Event::NoteOffVelocity(pattern, _) => self.note_off(pattern),
+            Event::NoteOff(pattern) => self.note_off(pattern, None),
+            Event::NoteOffVelocity(pattern, velocity) => self.note_off(pattern, Some(velocity)),
             Event::Choke(pattern) => self.choke(pattern),
             Event::Expression(pattern, expression) => self.expression(pattern, expression),
             // ponytail: per-note controllers are dropped until modulation
@@ -761,7 +767,7 @@ impl Engine {
         }
     }
 
-    fn note_off(&mut self, pattern: HostPattern) {
+    fn note_off(&mut self, pattern: HostPattern, release_velocity: Option<f64>) {
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.matching(pattern, &mut hits);
         for &note in &hits {
@@ -771,9 +777,22 @@ impl Engine {
             if n.is_up() {
                 continue;
             }
+            if let Some(v) = release_velocity {
+                n.release_velocity = v.clamp(0.0, 1.0) as f32;
+            }
+            let since = self
+                .behaviour
+                .rls_reset
+                .get(usize::from(n.key))
+                .copied()
+                .unwrap_or(n.at.0);
+            n.held = self.now.0.saturating_sub(since) as f32 / self.rate as f32;
             let channel = n.host.port_channel();
             // `%KEY_DOWN` reads 0 in the key's own `on release`.
             n.key_up = true;
+            if release_velocity.is_some() {
+                self.refresh_note(note, None);
+            }
             if let Some(slot) = self.release_callbacks(note) {
                 // The key is up whatever the script does with its event:
                 // a `play_note(.., -1)` child still ends (KSP manual,
@@ -863,19 +882,47 @@ impl Engine {
         n.released = true;
         n.pedal_held = false;
         n.sostenuto_held = false;
+        let snapshot = *n;
         self.mono_release(note);
-        for slot in self
-            .voices
-            .iter_mut()
-            .filter(|s| s.note == Some(note) && !s.voice.is_released())
-        {
-            let one_shot = self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot);
+        for i in 0..self.voices.len() {
+            let Some((zone_idx, age, release_base)) = self
+                .voices
+                .get(i)
+                .filter(|s| s.note == Some(note) && !s.voice.is_released())
+                .map(|s| (s.zone, self.slot_age(s), s.release_base))
+            else {
+                continue;
+            };
+            let one_shot = self.plan.zones.get(zone_idx).is_some_and(|z| z.one_shot);
             let key_up = if one_shot {
                 KeyUp::PlayOn
             } else {
                 KeyUp::Release
             };
-            slot.voice.key_up(self.now.0, key_up);
+            let (rel_frames, rel_stretches) = self
+                .plan
+                .zones
+                .get(zone_idx)
+                .map(|z| {
+                    (
+                        self.release_frames(z, &snapshot, age, release_base),
+                        self.release_stretches(z, &snapshot, age),
+                    )
+                })
+                .unwrap_or((None, None));
+            if let Some(slot) = self.voices.get_mut(i) {
+                if let Some(frames) = rel_frames {
+                    slot.voice.set_release_frames(frames);
+                }
+                if let Some(rel) = rel_stretches {
+                    for (s, r) in slot.stretch.iter_mut().zip(rel) {
+                        if let Some(r) = r {
+                            s.release = r;
+                        }
+                    }
+                }
+                slot.voice.key_up(self.now.0, key_up);
+            }
         }
         if self.plan.release_zones == ReleaseZones::AtRelease
             && self.notes.get(note).map(|n| n.releases) == Some(Releases::OnRelease)
@@ -948,5 +995,68 @@ impl Engine {
             // A note's own expression is the host's: it stands either way.
             let _ = self.run_poly_at(key);
         }
+    }
+}
+
+#[cfg(test)]
+extern crate self as kontra_engine;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod regression_common;
+
+#[cfg(test)]
+mod release_regression {
+    use super::*;
+    use crate::regression_common::{RATE, cc, level, off, on, zone};
+    use kontra_stream::{Store, StoreConfig};
+
+    #[test]
+    fn release_routes_only_replace_scales_for_envelopes_with_hits() {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+        let env = ir::Breakpoints {
+            start: 1.0,
+            points: vec![
+                ir::Breakpoint {
+                    ms: 0.0,
+                    level: 1.0,
+                    curve: 0.0,
+                },
+                ir::Breakpoint {
+                    ms: 100.0,
+                    level: 0.0,
+                    curve: 0.0,
+                },
+            ],
+            sustain: Some(0),
+            loop_from: None,
+            stages: false,
+        };
+        plan.groups[0].envelopes = vec![env.clone(), env];
+        plan.groups[0].mods = [ir::Source::Controller(1), ir::Source::Constant]
+            .into_iter()
+            .enumerate()
+            .map(|(i, source)| ir::Mod {
+                name: String::new(),
+                slot: i as u16,
+                target: 0,
+                bypass: false,
+                kind: ir::ModKind::Release {
+                    source,
+                    intensity: 1.0,
+                    scale: ir::TimeScale::Linear { power: 1 },
+                    envelope: Some(i as u8),
+                },
+            })
+            .collect();
+        let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut engine, &[cc(1, 64), on(60, 1.0)]);
+        let i = engine.voices.iter().position(|s| s.note.is_some()).unwrap();
+        let original = engine.voices[i].stretch[0].release;
+        assert!((original - 64.0 / 127.0).abs() < 0.001);
+        engine.groups[0].mods[0].bypass = true;
+        level(&mut engine, &[off(60)]);
+        assert!((engine.voices[i].stretch[0].release - original).abs() < 0.001);
+        assert!((engine.voices[i].stretch[1].release - 1.0).abs() < 0.001);
     }
 }

@@ -68,6 +68,9 @@ pub struct Note {
     pub key: u8,
     /// 0..=1.
     pub velocity: f64,
+    /// Note-off release velocity, 0..=1 (defaults to 0.5 until a note-off with
+    /// velocity arrives).
+    pub release_velocity: f32,
     /// MIDI velocity 1..=127, what zones and crossfades select on.
     pub velocity_byte: u8,
     pub at: SampleTime,
@@ -143,6 +146,7 @@ impl Note {
             origin: Origin::Host,
             key: host.key,
             velocity,
+            release_velocity: 0.5,
             velocity_byte: (velocity * 127.0).round().max(1.0) as u8,
             at,
             draw,

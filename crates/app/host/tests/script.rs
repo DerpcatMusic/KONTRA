@@ -818,9 +818,17 @@ fn route_intensities_follow_kontakts_laws() {
     // Real Kontakt 8 (probes/mod_par_laws.lua): the knob's depth is x², the
     // bipolar writers' (2x − 1)³; generic -1 is route 0.
     assert_eq!(e.last_message(), "500000 250000 0");
-    // Route 1 at depth 0.25 and route 0 at -0.125, with the controller at 0.
+    // Route 1 at depth 0.25 and route 0 at -0.125 (inverted):
+    // at CC=0, route 1 attenuates to 0.75 and inverted route 0 stays at 1.0 (never boosts).
     let l = level(&mut e, &[on(60)]);
-    assert!((l - 0.5 * 0.75 * 1.125).abs() < 1e-3, "{l}");
+    assert!((l - 0.5 * 0.75 * 1.0).abs() < 1e-3, "{l}");
+    // At CC=127, route 1 is 1.0 and inverted route 0 attenuates to 1 - 0.125 = 0.875.
+    level(&mut e, &[cc(110, 127)]);
+    for _ in 0..10 {
+        level(&mut e, &[]);
+    }
+    let hi = level(&mut e, &[]);
+    assert!((hi - 0.5 * 1.0 * 0.875).abs() < 1e-3, "{hi}");
 }
 
 #[test]

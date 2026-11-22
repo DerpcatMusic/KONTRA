@@ -13,11 +13,10 @@ use super::{
 
 const CHUNK_ID: u16 = 0x0D;
 const ENVELOPE_ID: u16 = 0x07;
-/// Category stored after the name: 2 wraps the modulator in an 0x07
-/// envelope wrapper; 1 stores it directly (an 0x08 LFO object in ANALOG
-/// STRINGS); 5 stores a Glide (0x0B) directly (a Glide saved by Kontakt 8.13).
-/// External assignments store 1 or 2 there too.
-const CATEGORIES: [u32; 3] = [1, 2, 5];
+/// Category stored after the name:
+/// 1 = LFO (0x08), 2 = Envelope wrapper (0x07 -> AHDSR/Flex/DBD),
+/// 3 = StepMod (0x09), 4 = EnvelopeFollower (0x0A), 5 = Glide (0x0B).
+const CATEGORIES: [u32; 5] = [1, 2, 3, 4, 5];
 
 /// # InternalMod
 ///
@@ -136,5 +135,65 @@ impl std::convert::TryFrom<&Chunk> for InternalMod {
             .into());
         }
         Ok(Self(chunk.try_into()?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn internal_mod_with(category: u32, child: Chunk) -> InternalMod {
+        let mut private = Vec::new();
+        private.extend(1u32.to_le_bytes());
+        private.extend(5u32.to_le_bytes());
+        private.extend(b"pitch");
+        private.extend(0.5f32.to_le_bytes());
+        private.extend((-1i16).to_le_bytes());
+        private.push(0);
+        private.extend(0i16.to_le_bytes());
+        private.extend(0u32.to_le_bytes());
+        private.extend([0, 0]);
+        private.extend([0u8; 4]);
+        private.extend(0u32.to_le_bytes());
+        private.extend(4u32.to_le_bytes());
+        private.extend(b"MOD0");
+        private.extend(category.to_le_bytes());
+        InternalMod(StructuredObject {
+            version: 0x81,
+            private_data: private,
+            public_data: Vec::new(),
+            children: vec![child],
+        })
+    }
+
+    #[test]
+    fn categories_3_and_4_parse_step_mod_and_envelope_follower() {
+        let step_chunk = Chunk {
+            id: 0x09,
+            data: vec![0, 0x10, 0x00],
+        };
+        let step = internal_mod_with(3, step_chunk).params().unwrap();
+        assert_eq!(step.modulator, Modulator::Other { chunk_id: 0x09 });
+
+        let mut envf_data = vec![0];
+        envf_data.extend(0x60u16.to_le_bytes());
+        for v in [1.0f32, 2.0, 3.0, 4.0] {
+            envf_data.extend(v.to_le_bytes());
+        }
+        let envf = internal_mod_with(
+            4,
+            Chunk {
+                id: 0x0A,
+                data: envf_data,
+            },
+        )
+        .params()
+        .unwrap();
+        assert_eq!(
+            envf.modulator,
+            Modulator::Follower(EnvelopeFollower {
+                values: [1.0, 2.0, 3.0, 4.0],
+            })
+        );
     }
 }
