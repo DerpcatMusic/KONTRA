@@ -84,6 +84,8 @@ pub struct Note {
     pub expression_brightness: Option<f32>,
     /// Key released while the sustain pedal was down.
     pub pedal_held: bool,
+    /// Held by the sostenuto pedal (CC 66) pressed while this note was held.
+    pub sostenuto_held: bool,
     /// Key released (directly or by the pedal coming up).
     pub released: bool,
     /// Key up, but a release callback ignored it: the voices play on.
@@ -151,6 +153,7 @@ impl Note {
             expression_pressure: None,
             expression_brightness: None,
             pedal_held: false,
+            sostenuto_held: false,
             released: false,
             key_up: false,
             started: false,
@@ -434,11 +437,15 @@ impl Ledger {
     }
 
     /// Marks every live note released: a pending end of one then starts no
-    /// release zones and runs no release callback.
+    /// release zones and runs no release callback. Clears pedal holds.
     pub fn release_all(&mut self) {
         self.version += 1;
         let notes = self.entries.iter_mut().filter_map(|e| e.note.as_mut());
-        notes.for_each(|n| n.released = true);
+        notes.for_each(|n| {
+            n.released = true;
+            n.pedal_held = false;
+            n.sostenuto_held = false;
+        });
     }
 
     /// Every live note with its reference.

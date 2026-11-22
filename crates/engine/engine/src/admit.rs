@@ -172,10 +172,9 @@ impl Engine {
                 .iter()
                 .any(|s| s.note == Some(note) && s.voice.is_active());
             let waiting = release_triggers
-                && self
-                    .notes
-                    .get(note)
-                    .is_some_and(|n| n.origin == Origin::Host && (!n.is_up() || n.pedal_held));
+                && self.notes.get(note).is_some_and(|n| {
+                    n.origin == Origin::Host && (!n.is_up() || n.pedal_held || n.sostenuto_held)
+                });
             if !sounding
                 && !waiting
                 // A silent parent stays addressable while a child waits on it.

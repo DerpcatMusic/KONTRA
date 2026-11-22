@@ -478,9 +478,26 @@ fn load_samples(
             frames: sample.frames,
             pin: zones
                 .iter()
-                .map(|&(z, stream)| match stream {
-                    Some(stream) => window(z, sample.frames, fmt, head(stream, fast)),
-                    None => 0..sample.frames,
+                .flat_map(|&(z, stream)| match stream {
+                    Some(stream) => {
+                        let s = head(stream, fast);
+                        let win = window(z, sample.frames, fmt, s);
+                        let head_frames = (win.end.saturating_sub(win.start)).max(1);
+                        let mut ranges = vec![win.clone()];
+                        // When a zone starts inside a loop (`l.start < z.start` forward or
+                        // `l.end > z.end` reverse), pin a head at the loop wrap target too.
+                        for l in &z.loops {
+                            if z.reverse && l.end > z.end && l.end <= sample.frames {
+                                let lo = l.end.saturating_sub(head_frames);
+                                ranges.push(lo..l.end);
+                            } else if !z.reverse && l.start < z.start && l.start < sample.frames {
+                                let hi = l.start.saturating_add(head_frames).min(sample.frames);
+                                ranges.push(l.start..hi);
+                            }
+                        }
+                        ranges
+                    }
+                    None => std::iter::once(0..sample.frames).collect(),
                 })
                 .collect(),
         });
@@ -767,6 +784,7 @@ fn zone(
                 count: l.count,
                 alternating: l.alternating,
                 until_release: l.until_release,
+                tune_ratio: l.tune_ratio,
             })
             .collect(),
         reverse: z.reverse,
@@ -866,8 +884,10 @@ pub fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
         attack_shape: e.attack_shape,
         fall_shape: e.fall_shape,
         lag: frames(e.lag),
+        delay: frames(e.delay),
         floor: e.floor,
         depth: e.depth,
+        one_shot: e.one_shot,
     }
 }
 

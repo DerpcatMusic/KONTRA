@@ -1166,3 +1166,415 @@ fn a_retriggering_line_restarts_the_older_key_when_the_newer_goes_up() {
         "a new voice from the sample's start: {start}"
     );
 }
+
+fn on_ch(channel: u8, key: u8, velocity: f64) -> Timed<Event> {
+    Timed {
+        at: SampleTime(0),
+        body: Event::NoteOn {
+            note: kontra_events::HostNote {
+                port: 0,
+                channel,
+                key,
+                id: -1,
+                clap: true,
+            },
+            velocity,
+            tune: 0.0,
+        },
+    }
+}
+
+fn cc_ch(channel: u8, controller: u8, value: u8) -> Timed<Event> {
+    Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0 | (channel & 0x0F), controller, value),
+    }
+}
+
+#[test]
+fn midi_cc120_all_sound_off_silences_only_its_channel_bypassing_sustain_and_release() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 16);
+    plan.groups[0].envelope.release = RATE * 4;
+    let mut e = engine(&store, plan);
+    level(
+        &mut e,
+        &[cc_ch(0, 64, 127), on_ch(0, 60, 1.0), on_ch(1, 64, 1.0)],
+    );
+    assert_eq!(e.active_voices(), 2);
+    // CC 120 on channel 0 stops ch 0 in ~2 ms even with sustain down & 4 s release.
+    level(&mut e, &[cc_ch(0, 120, 0)]);
+    let [after, _] = level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 1, "only ch 1 survives");
+    assert!(close(after, 0.5), "ch 1 still sounds at 0.5: {after}");
+}
+
+#[test]
+fn midi_cc123_all_notes_off_releases_channel_notes() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 16);
+    plan.groups[0].envelope.release = 16;
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on_ch(0, 60, 1.0), on_ch(1, 64, 1.0)]);
+    assert_eq!(e.active_voices(), 2);
+    level(&mut e, &[cc_ch(0, 123, 0)]);
+    let [after, _] = level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 1, "ch 0 released, ch 1 still held");
+    assert!(close(after, 0.5), "{after}");
+}
+
+#[test]
+fn midi_cc123_waits_for_either_pedal_only_on_its_channel() {
+    for pedal in [64, 66] {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+        plan.groups[0].envelope.release = 16;
+        let mut e = engine(&store, plan);
+        level(
+            &mut e,
+            &[on_ch(0, 60, 1.0), on_ch(1, 64, 1.0), cc_ch(0, pedal, 127)],
+        );
+        level(&mut e, &[cc_ch(0, 123, 0)]);
+        assert_eq!(e.active_voices(), 2, "CC{pedal} must hold channel 0");
+        let [after, _] = level(&mut e, &[cc_ch(0, pedal, 0)]);
+        assert_eq!(e.active_voices(), 1);
+        assert!(close(after, 0.5), "{after}");
+    }
+}
+
+#[test]
+fn midi_cc121_restores_expression_for_zone_admission() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut gated = zone(&mut store, 0.5);
+    gated.start = vec![(Join::And, Atom::Cc(11, 127..=127))];
+    let mut e = engine(&store, Plan::new(vec![gated], 8));
+    assert_eq!(level(&mut e, &[cc(11, 40), on(60, 1.0)])[0], 0.0);
+    assert!(close(level(&mut e, &[cc(121, 0), on(64, 1.0)])[0], 0.5));
+}
+
+#[test]
+fn midi_cc121_reset_all_controllers_resets_mod_bend_pedals_and_preserves_volume_pan_bank() {
+    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].envelope.release = 16;
+    // CC1 scales volume; CC7 and CC10 also read by routes so we verify RP-015 preservation.
+    plan.groups[0].mods = vec![
+        Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ModKind::Volume {
+                source: Source::Controller(1),
+                intensity: 1.0,
+                curve: Curve::Depth { power: 1 },
+                tau_ms: 0.0,
+            },
+        },
+        Mod {
+            name: String::new(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: ModKind::Pitch {
+                source: Source::PitchBend,
+                semitones: 12.0,
+                depth: 1.0,
+                tau_ms: 0.0,
+            },
+        },
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let bend = Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xE0, 0x7F, 0x7F),
+    };
+    level(
+        &mut e,
+        &[
+            cc(0, 5),
+            cc(32, 9),
+            cc(7, 100),
+            cc(10, 90),
+            cc(1, 127),
+            cc(64, 127),
+            bend,
+            on(60, 1.0),
+            on(64, 1.0),
+        ],
+    );
+    // Release key 64 while sustain holds it; keep key 60 held.
+    level(&mut e, &[off(64)]);
+    assert_eq!(e.active_voices(), 2);
+    // CC 121 resets CC1 -> 0, bend -> 0, releases pedal-held key 64, keeps CC0/32/7/10.
+    level(&mut e, &[cc(121, 0)]);
+    // Allow ~2 ms gain smoother (GAIN_SMOOTH = 0.01) to settle near 0.
+    for _ in 0..3 {
+        level(&mut e, &[]);
+    }
+    let [lvl, _] = level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 1, "pedal-held key 64 released by CC121");
+    assert!(
+        lvl.abs() < 1e-3,
+        "CC1 reset to 0 silenced volume route: {lvl}"
+    );
+    // Verify pitch bend returned to unity (step = 1.0).
+    let step = advance(&mut e, 256, 256);
+    assert!((step - 1.0).abs() < 1e-4, "bend reset to 0: step={step}");
+    // Verify CC7/CC10/CC0/CC32 were preserved in engine CC state via a new plan-less check:
+    // re-raise CC1 and check that volume route responds cleanly while CC7/10/0/32 remain.
+    assert_eq!(e.controller(0), Some(5));
+    assert_eq!(e.controller(32), Some(9));
+    assert_eq!(e.controller(7), Some(100));
+    assert_eq!(e.controller(10), Some(90));
+    assert_eq!(e.controller(1), Some(0));
+    assert_eq!(e.controller(11), Some(127));
+}
+
+#[test]
+fn midi_cc66_sostenuto_holds_only_notes_held_at_press_and_interacts_with_cc64() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].envelope.release = 16;
+    let mut e = engine(&store, plan);
+
+    // Hold key 60, press sostenuto (CC66), then play key 64.
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[cc(66, 127)]);
+    level(&mut e, &[on(64, 1.0)]);
+    // Release both keys: 60 stays held by sostenuto, 64 finishes its short release.
+    level(&mut e, &[off(60), off(64)]);
+    let [lvl, _] = level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 1, "only key 60 held by sostenuto");
+    assert!(close(lvl, 0.5), "{lvl}");
+
+    // Press CC64, then release CC64 while CC66 is still down: 60 stays alive.
+    level(&mut e, &[cc(64, 127)]);
+    level(&mut e, &[cc(64, 0)]);
+    assert_eq!(e.active_voices(), 1, "CC64 up must not drop sostenuto note");
+
+    // Sostenuto hands the released key to sustain if it is now down.
+    level(&mut e, &[cc(64, 127), cc(66, 0)]);
+    assert_eq!(e.active_voices(), 1, "sustain takes over the hold");
+    level(&mut e, &[cc(64, 0)]);
+    level(&mut e, &[]);
+    assert_eq!(
+        e.active_voices(),
+        0,
+        "CC64 up releases the transferred note"
+    );
+}
+
+#[test]
+fn reset_retires_pedal_held_host_notes_with_release_triggers() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let attack = zone(&mut store, 0.5);
+    let mut tail = zone(&mut store, 0.4);
+    tail.trigger = Trigger::Release;
+    let mut e = engine(&store, Plan::new(vec![attack, tail], 8));
+    level(&mut e, &[on(60, 1.0), cc(66, 127), off(60)]);
+    assert_eq!(e.active_voices(), 1);
+    assert!(e.ended().is_empty());
+    e.reset();
+    let mut ended = 0;
+    for _ in 0..4 {
+        level(&mut e, &[]);
+        ended += e.ended().len();
+    }
+    assert_eq!(e.active_voices(), 0);
+    assert_eq!(ended, 1, "reset must retire the captured host note");
+}
+
+#[test]
+fn stealing_honors_prefer_released_and_quietest_and_skips_self_note_exclusive_choke() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+
+    // 1. prefer_released: true vs false.
+    let mut run_prefer = |prefer_released: bool| {
+        let mut z1 = zone(&mut store, 0.2);
+        z1.keys = 60..=60;
+        let mut z2 = zone(&mut store, 0.4);
+        z2.keys = 62..=62;
+        let mut z3 = zone(&mut store, 0.1);
+        z3.keys = 64..=64;
+        let mut plan = Plan::new(vec![z1, z2, z3], 2);
+        plan.groups[0].envelope.release = RATE * 2;
+        plan.steal = kontra_ir::VoiceGroup {
+            steal: kontra_ir::Steal::Oldest,
+            prefer_released,
+            fade_ms: 1.0,
+            ..kontra_ir::VoiceGroup::DEFAULT
+        };
+        let mut e = engine(&store, plan);
+        // Key 60 is older and held; key 62 is newer and released.
+        level(&mut e, &[on(60, 1.0)]);
+        level(&mut e, &[on(62, 1.0)]);
+        level(&mut e, &[off(62)]);
+        // Key 64 triggers steal: prefer_released=true steals 62 (leaving 60+64 ≈ 0.3),
+        // prefer_released=false steals oldest 60 (leaving 62+64 ≈ 0.5).
+        level(&mut e, &[on(64, 1.0)]);
+        level(&mut e, &[])[0]
+    };
+    let prefer_true = run_prefer(true);
+    let prefer_false = run_prefer(false);
+    assert!(
+        close(prefer_true, 0.3),
+        "prefer_released=true should steal released 62: {prefer_true}"
+    );
+    assert!(
+        prefer_false > 0.45,
+        "prefer_released=false should steal oldest held 60: {prefer_false}"
+    );
+
+    // 2. Steal::Quietest steals the quietest sounding voice regardless of age.
+    let mut loud = zone(&mut store, 1.0);
+    loud.gain = 0.6;
+    loud.keys = 60..=60;
+    let mut quiet = zone(&mut store, 1.0);
+    quiet.gain = 0.1;
+    quiet.keys = 62..=62;
+    let mut fresh = zone(&mut store, 1.0);
+    fresh.gain = 0.3;
+    fresh.keys = 64..=64;
+    let mut plan = Plan::new(vec![loud, quiet, fresh], 2);
+    plan.steal = kontra_ir::VoiceGroup {
+        steal: kontra_ir::Steal::Quietest,
+        prefer_released: false,
+        fade_ms: 1.0,
+        ..kontra_ir::VoiceGroup::DEFAULT
+    };
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[on(62, 1.0)]);
+    level(&mut e, &[on(64, 1.0)]);
+    let [lvl, _] = level(&mut e, &[]);
+    assert!(
+        close(lvl, 0.9),
+        "Steal::Quietest should steal 0.1 (leaving 0.6 + 0.3 = 0.9): {lvl}"
+    );
+
+    // 3. Exclusive group choke must NOT self-choke two zones triggered by the same note.
+    let mut a = zone(&mut store, 0.2);
+    a.voice_group = Some(0);
+    let mut b = zone(&mut store, 0.3);
+    b.voice_group = Some(1);
+    let mut plan = Plan::new(vec![a, b], 8);
+    let ex = kontra_ir::VoiceGroup {
+        voices: 8,
+        exclusive: Some(1),
+        fade_ms: 1.0,
+        ..kontra_ir::VoiceGroup::DEFAULT
+    };
+    plan.voice_groups = vec![ex, ex];
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0)]);
+    let [same_note, _] = level(&mut e, &[]);
+    assert!(
+        close(same_note, 0.5),
+        "same note in exclusive groups keeps both voices: {same_note}"
+    );
+}
+
+#[test]
+fn reverse_start_offset_and_negative_s_mod_clamp_and_offset_limited() {
+    use kontra_engine::ir::{Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let frames = 4096u64;
+    let bytes = (0..frames)
+        .flat_map(|i| (i as f32 / 4096.0).to_le_bytes())
+        .collect();
+    let key = BlobKey {
+        file: "ramp-rev-smod".into(),
+        offset: frames,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+
+    // 1. Reverse zone with positive SampleStart mod shifts region.end inward by 500.
+    let mut rev = Zone::new(
+        Region {
+            mix: None,
+            table: None,
+            sample: sample.clone(),
+            start: 0,
+            end: frames,
+            loops: Default::default(),
+            reverse: true,
+        },
+        60,
+        RATE,
+    );
+    rev.start_mod = 500;
+    let mut plan = Plan::new(vec![rev], 8);
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::SampleStart {
+            source: Source::Constant,
+            depth: 1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // At frame 128 in reverse from end = 4096 - 500 = 3596: plays 3595 - 128 = 3467.
+    let frame = level(&mut e, &[on(60, 1.0)])[0] * 4096.0;
+    assert!((frame - 3467.0).abs() < 1.0, "reverse start mod: {frame}");
+
+    // 2. Forward zone with negative SampleStart mod clamps at zone.region.start (200),
+    // never reading before it.
+    let mut fwd = Zone::new(
+        Region {
+            mix: None,
+            table: None,
+            sample,
+            start: 200,
+            end: frames,
+            loops: Default::default(),
+            reverse: false,
+        },
+        60,
+        RATE,
+    );
+    fwd.start_mod = 500;
+    let mut plan = Plan::new(vec![fwd], 8);
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::SampleStart {
+            source: Source::Constant,
+            depth: -1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // Clamped to 200: at frame 128 reads 328 (NOT 0 + 128).
+    let frame = level(&mut e, &[on(60, 1.0)])[0] * 4096.0;
+    assert!((frame - 328.0).abs() < 1.0, "negative S.Mod clamp: {frame}");
+}
+
+#[test]
+fn zone_range_crossfade_at_key_zero_sounds_at_one_over_f_plus_one() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 1.0);
+    z.keys = 0..=127;
+    z.root = 0;
+    z.fades = [(0, 0), (3, 0)];
+    z.range_crossfades();
+    assert_eq!(z.crossfades[0].fade_in, Some((-1, 3)));
+    let mut e = engine(&store, Plan::new(vec![z], 8));
+    let [lvl, _] = level(&mut e, &[on(0, 1.0)]);
+    assert!(
+        close(lvl, 0.25),
+        "key 0 with fade_low_key=3 must sound at 1/(3+1)=0.25, got {lvl}"
+    );
+}

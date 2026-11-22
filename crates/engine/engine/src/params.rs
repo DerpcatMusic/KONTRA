@@ -796,12 +796,31 @@ impl Engine {
             EnginePar::AttackCurve => e.attack_shape = attack_shape(x),
             _ => return false,
         }
+        if let Ok(group_id) = u32::try_from(group) {
+            let plan = std::sync::Arc::clone(&self.plan);
+            for i in 0..self.voices.len() {
+                let target = self.voices.get(i).and_then(|slot| {
+                    if !slot.voice.is_active() {
+                        return None;
+                    }
+                    let zone = plan.zones.get(slot.zone)?;
+                    if zone.group != group_id {
+                        return None;
+                    }
+                    let n = slot.note.and_then(|note| self.notes.get(note))?;
+                    Some(self.envelope(zone, n, crate::modulators::Age::at_start(slot.start_frame)))
+                });
+                if let (Some(env), Some(slot)) = (target, self.voices.get_mut(i)) {
+                    slot.voice.update_envelope(env);
+                }
+            }
+        }
         true
     }
 
     /// A group's amplitude envelope in seconds, level and shapes, as a
     /// format's script runtime computes it: attack, hold, decay, sustain,
-    /// release, attack shape, fall shape, lag. Its floor and depth (a
+    /// release, attack shape, fall shape, explicit delay. Its floor and depth (a
     /// volume route's) stay. New voices play it.
     pub(crate) fn set_amp_envelope(&mut self, group: i32, v: [f32; 8]) -> bool {
         let rate = f64::from(self.rate);
@@ -809,7 +828,16 @@ impl Engine {
             return false;
         };
         let frames = |s: f32| (f64::from(s.max(0.0)) * rate).round() as u32;
-        let [attack, hold, decay, sustain, release, attack_shape, fall_shape, lag] = v;
+        let [
+            attack,
+            hold,
+            decay,
+            sustain,
+            release,
+            attack_shape,
+            fall_shape,
+            delay,
+        ] = v;
         let e = &mut g.envelope;
         e.attack = frames(attack);
         e.hold = frames(hold);
@@ -818,7 +846,8 @@ impl Engine {
         e.release = frames(release).max(1);
         e.attack_shape = attack_shape;
         e.fall_shape = fall_shape;
-        e.lag = frames(lag);
+        e.delay = frames(delay);
+        e.lag = 0;
         true
     }
 
@@ -854,15 +883,17 @@ impl Engine {
         rate: Option<ir::Rate>,
         clock: Option<ir::Clock>,
     ) -> bool {
-        let lfo = (self.group_mut(group))
-            .and_then(|g| g.lfos.get_mut(usize::try_from(index).ok()?));
+        let lfo =
+            (self.group_mut(group)).and_then(|g| g.lfos.get_mut(usize::try_from(index).ok()?));
         let Some(lfo) = lfo else {
             return false;
         };
         if let Some(wave) = wave {
             lfo.wave = wave;
         }
-        if let Some(rate) = rate.filter(|r| matches!(r, ir::Rate::Hz(x) | ir::Rate::Beats(x) if *x > 0.0)) {
+        if let Some(rate) =
+            rate.filter(|r| matches!(r, ir::Rate::Hz(x) | ir::Rate::Beats(x) if *x > 0.0))
+        {
             lfo.rate = rate;
         }
         if let Some(clock) = clock {

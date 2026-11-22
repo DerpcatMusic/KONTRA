@@ -866,13 +866,12 @@ local function set_envelope(p, env)
 	for i = 2, #env do
 		local group, index = env[i][1], env[i][2]
 		if index < 0 then
-			-- The delay lengthens the attack and stays silent at its start;
-			-- decay and release share the release's curve, the decay's when
+			-- Decay and release share the release's curve, the decay's when
 			-- only it moves.
 			local delay = points[1][1]
 			local decays = sustain < 1 and points[4][1] > 0
 			local fall = curve((decays and points[5][1] == 0) and "DecayCurve" or "ReleaseCurve")
-			host_call("AmpEnvelope", group, micro(delay + points[2][1]), micro(points[3][1]),
+			host_call("AmpEnvelope", group, micro(points[2][1]), micro(points[3][1]),
 				micro(points[4][1]), micro(sustain), micro(points[5][1]), micro(points[2][3]),
 				micro(fall), micro(delay))
 		else

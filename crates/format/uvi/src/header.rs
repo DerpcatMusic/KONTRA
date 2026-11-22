@@ -127,18 +127,18 @@ fn smpl(body: &[u8], frames: u64) -> Vec<kontra_ir::Loop> {
             let kind = le32(body, at + 4)?;
             let start = u64::from(le32(body, at + 8)?);
             let end = (u64::from(le32(body, at + 12)?) + 1).min(frames);
-            let repeats = match le32(body, at + 20)? {
-                0 => 0,           // Infinite in both formats.
-                1 => return None, // One traversal needs no repeat.
-                plays => plays - 1,
-            };
+            let count = le32(body, at + 20)?;
+            if count == 1 {
+                return None; // One traversal needs no repeat.
+            }
             (kind <= 1 && start < end).then_some(kontra_ir::Loop {
                 start,
                 end,
                 crossfade: 0,
-                count: repeats,
+                count,
                 alternating: kind == 1,
                 until_release: false,
+                tune_ratio: 1.0,
             })
         })
         .take(INLINE_LOOPS)
@@ -401,14 +401,14 @@ mod tests {
             assert_eq!(
                 loops,
                 [
-                    (200, 1),
+                    (200, 2),
                     (300, 0),
-                    (400, 2),
-                    (500, 2),
-                    (600, 2),
-                    (700, 2),
-                    (800, 2),
-                    (900, 2)
+                    (400, 3),
+                    (500, 3),
+                    (600, 3),
+                    (700, 3),
+                    (800, 3),
+                    (900, 3)
                 ]
             );
         }

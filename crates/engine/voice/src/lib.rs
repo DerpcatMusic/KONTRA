@@ -47,6 +47,9 @@ const MAX_SPEED: f64 = 8.0;
 const HEAD_WAIT: u32 = 2400;
 const GRAIN: u64 = 2048;
 const HALF_GRAIN: u64 = GRAIN / 2;
+/// Silence tail threshold (-120 dBFS) and consecutive frames before culling a releasing voice.
+const TAIL_SILENCE: f32 = 1e-6;
+const TAIL_FRAMES: u32 = 512;
 
 /// How each output channel (row) takes each source channel (column).
 pub type Gain = [[f32; 2]; 2];
@@ -142,6 +145,10 @@ pub struct Voice {
     waited: u32,
     /// See [`VoiceStart::speed`]; the cursor moves at `step · speed`.
     speed: f64,
+    /// Active loop tuning multiplier (1.0 outside tuned loop repeats).
+    loop_tune: f64,
+    /// Consecutive frames below `-120 dB` while releasing/ending.
+    silent_tail: u32,
     /// A stretching voice's two read heads, each a pitch-rate cursor that
     /// restarts at the cursor once a grain, half a grain apart.
     heads: [f64; 2],
@@ -203,6 +210,8 @@ impl Voice {
             missing: 0,
             waited: 0,
             speed: 1.0,
+            loop_tune: 1.0,
+            silent_tail: 0,
             heads: [0.0; 2],
             grain: 0,
             #[cfg(feature = "trace")]
@@ -241,6 +250,8 @@ impl Voice {
         } else {
             1.0
         };
+        self.loop_tune = 1.0;
+        self.silent_tail = 0;
         self.heads = [0.0; 2];
         self.grain = 0;
         #[cfg(feature = "trace")]
@@ -273,7 +284,9 @@ impl Voice {
     pub fn end_by_release(&mut self, now: u64) -> bool {
         let first = !self.is_ending();
         let at = self.released_at().unwrap_or(now);
-        self.release();
+        let position = self.at(0) as u64;
+        self.released = self.released.or(Some(position));
+        self.env.force_release();
         self.life = Life::Ending(Some(at));
         first
     }
@@ -371,10 +384,15 @@ impl Voice {
         }
     }
 
+    /// Updates the running amplitude envelope smoothly without clicks.
+    pub fn update_envelope(&mut self, settings: Ahdsr) {
+        self.env.update_params(settings);
+    }
+
     /// Current gain matrix including its envelope and lag, before sample and effects.
     #[must_use]
     pub fn current_gain(&self) -> Gain {
-        let level = self.lagged * self.env.level() * self.fade.level();
+        let level = self.lagged * self.env.output_gain() * self.fade.level();
         self.gain.map(|row| row.map(|gain| gain * level))
     }
 
@@ -425,10 +443,10 @@ impl Voice {
         self.missing
     }
 
-    /// Source frames per output frame at the current pitch.
+    /// Source frames per output frame at the current pitch (including active loop tuning).
     #[must_use]
     pub fn step(&self) -> f64 {
-        self.ramp.step_at(self.step, self.elapsed)
+        self.ramp.step_at(self.step, self.elapsed) * self.loop_tune
     }
 
     /// Frames played so far, in source frames from the region start.
@@ -446,7 +464,8 @@ impl Voice {
 
     /// Cursor position `ahead` output frames from now.
     fn at(&self, ahead: u64) -> f64 {
-        self.anchor + self.ramp.travel(self.step, self.elapsed + ahead) * self.speed
+        self.anchor
+            + self.ramp.travel(self.step, self.elapsed + ahead) * self.speed * self.loop_tune
     }
 
     /// Mixes the next `out.len()` frames into `out`. `now` is the sample time of
@@ -501,9 +520,16 @@ impl Voice {
             let due = now + (offset as f64 / step) as u64;
             let count = run.count as u64;
             sample.prefetch(client, low, count, due, step, run.descending);
-            if let Some((at, partner, n, _, _)) = run.crossfade() {
-                let due = due + (at as f64 / step) as u64;
-                sample.prefetch(client, partner, n as u64, due, step, false);
+            if let Some(xf) = run.crossfade() {
+                let due = due + (xf.offset as f64 / step) as u64;
+                sample.prefetch(
+                    client,
+                    xf.partner_low,
+                    xf.count as u64,
+                    due,
+                    step,
+                    xf.descending,
+                );
             }
         });
 
@@ -527,13 +553,32 @@ impl Voice {
                 return;
             }
         }
+        let has_tuned = !table && region.has_tuned_loop();
         let mut done = 0;
         let mut alive = true;
         while done < out.len() && alive {
+            let mut tune_boundary = None;
+            if has_tuned {
+                let pos = self.at(0);
+                if let Some((target_tune, run_left)) =
+                    region.tune_span(pos.max(0.0) as u64, released)
+                {
+                    if (target_tune - self.loop_tune).abs() > 1e-9 {
+                        self.anchor = pos;
+                        self.step = self.ramp.step_at(self.step, self.elapsed);
+                        self.ramp.frames = self.ramp.frames.saturating_sub(self.elapsed);
+                        self.elapsed = 0;
+                        self.loop_tune = target_tune;
+                    }
+                    tune_boundary = Some(pos.max(0.0).floor() + run_left as f64);
+                }
+            }
             let fit = if table {
                 SCRATCH
             } else {
-                (((SCRATCH - 4) as f64 / self.ramp.peak(self.step)).floor() as usize).max(1)
+                (((SCRATCH - 4) as f64 / (self.ramp.peak(self.step) * self.loop_tune)).floor()
+                    as usize)
+                    .max(1)
             };
             let mut n = fit.min(out.len() - done);
             let stretched = self.speed != 1.0;
@@ -541,6 +586,23 @@ impl Voice {
                 // Heads restart only at a chunk's start.
                 n = n.min((HALF_GRAIN - self.grain % HALF_GRAIN) as usize);
             }
+            if let Some(boundary) = tune_boundary
+                && self.at(n as u64) >= boundary
+            {
+                // The first cursor at or beyond the boundary belongs to the
+                // next chunk. Search the same ramp positions that rendering uses.
+                let (mut lo, mut hi) = (1, n);
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    if self.at(mid as u64) >= boundary {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+                n = lo;
+            }
+            let missing_before = self.missing;
             let filled = if let Some(table) = region.table.as_mut() {
                 let raw = scratch.raw.get_mut(..n).unwrap_or_default();
                 // Each frame's own cursor: a gliding table moves pitch every
@@ -550,11 +612,17 @@ impl Voice {
             } else if stretched {
                 self.read_stretched(scratch, client, &region, n)
             } else {
-                let cursor = (self.anchor, self.elapsed, self.step);
-                self.read_window(scratch, client, &region, n, cursor, self.ramp)
+                let cursor = (self.anchor, self.elapsed, self.step * self.loop_tune);
+                let ramp = Ramp {
+                    per_frame: self.ramp.per_frame * self.loop_tune,
+                    frames: self.ramp.frames,
+                };
+                self.read_window(scratch, client, &region, n, cursor, ramp)
             };
+            let chunk_missing = self.missing != missing_before;
             let raw = scratch.raw.get_mut(..filled).unwrap_or_default();
             insert(raw);
+            let releasing = self.released.is_some() || self.is_ending();
             for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
                 self.lagged += (self.lag.gain - self.lagged) * self.lag.coef;
                 let level = self.env.tick() * self.fade.next() * self.lagged;
@@ -579,6 +647,19 @@ impl Voice {
                 if self.env.is_off() || self.fade.ended() {
                     alive = false;
                     break;
+                }
+                if releasing && !chunk_missing {
+                    if left.abs().max(right.abs()) < TAIL_SILENCE {
+                        self.silent_tail += 1;
+                        if self.silent_tail >= TAIL_FRAMES {
+                            alive = false;
+                            break;
+                        }
+                    } else {
+                        self.silent_tail = 0;
+                    }
+                } else {
+                    self.silent_tail = 0;
                 }
             }
             self.elapsed += n as u64;
@@ -679,8 +760,15 @@ impl Voice {
                     run.first
                 };
                 sample.prefetch(client, low, run.count as u64, 0, step, run.descending);
-                if let Some((_, partner, n, _, _)) = run.crossfade() {
-                    sample.prefetch(client, partner, n as u64, 0, step, false);
+                if let Some(xf) = run.crossfade() {
+                    sample.prefetch(
+                        client,
+                        xf.partner_low,
+                        xf.count as u64,
+                        0,
+                        step,
+                        xf.descending,
+                    );
                 }
             });
             if !client.settle(std::time::Duration::from_secs(5)) {
@@ -705,19 +793,23 @@ impl Voice {
                     missing += sample
                         .read_cached(client, run.first, dst, mix, Some(main))
                         .missing;
-                    if let Some((at, from, n, fade_start, fade)) = run.crossfade()
-                        && let (Some(blend), Some(head)) =
-                            (partner.get_mut(..n), dst.get_mut(at..at + n))
-                    {
-                        missing += sample
-                            .read_cached(client, from, blend, mix, Some(blend_cache))
-                            .missing;
-                        let p0 = run.first + at as u64 - fade_start;
-                        for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
-                            let w = (p0 + k as u64) as f32 / fade as f32;
-                            d[0] += (b[0] - d[0]) * w;
-                            d[1] += (b[1] - d[1]) * w;
-                        }
+                }
+                if let Some(xf) = run.crossfade()
+                    && let (Some(blend), Some(head)) = (
+                        partner.get_mut(..xf.count),
+                        dst.get_mut(xf.offset..xf.offset + xf.count),
+                    )
+                {
+                    missing += sample
+                        .read_cached(client, xf.partner_low, blend, mix, Some(blend_cache))
+                        .missing;
+                    if xf.descending {
+                        blend.reverse();
+                    }
+                    for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
+                        let w = (xf.progress + k as u64) as f32 / xf.len as f32;
+                        d[0] += (b[0] - d[0]) * w;
+                        d[1] += (b[1] - d[1]) * w;
                     }
                 }
             }
@@ -733,9 +825,15 @@ impl Voice {
         let mut filled = 0;
         for (i, frame) in scratch.raw.iter_mut().take(n).enumerate() {
             let x = at(i as u64) - lo as f64;
+            if !x.is_finite() || x < 1.0 {
+                break;
+            }
             let base = x.floor() as usize;
             let t = (x - base as f64) as f32;
-            let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
+            let Some(start) = base.checked_sub(1) else {
+                break;
+            };
+            let Some(&[y0, y1, y2, y3]) = window.get(start..base + 3) else {
                 break;
             };
             *frame = [

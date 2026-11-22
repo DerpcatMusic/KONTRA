@@ -28,8 +28,10 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         attack_shape: ATTACK_CURVE.eval_unclamped(e.attack_curve),
         fall_shape: FALL,
         lag: ENVELOPE_LAG_S,
+        delay: 0.0,
         floor: 0.0,
         depth: 1.0,
+        one_shot: e.unknown_flag != 0,
     }
 }
 
@@ -240,7 +242,9 @@ pub(crate) const AUTO_GAIN: ir::Normalize = ir::Normalize {
 };
 
 /// An AHDSR as breakpoints, for targets other than the amplitude: the same
-/// times, shapes and cubed sustain as [`envelope`].
+/// times, shapes and cubed sustain as [`envelope`]. In AHD-only mode
+/// (`one_shot`, [ref], `4197-4205`), sustain is `None` and
+/// decay targets `0.0`.
 pub(crate) fn ahdsr(e: &EnvelopeAhdsr) -> ir::Breakpoints {
     let a = envelope(e);
     let point = |s: f32, level, curve| ir::Breakpoint {
@@ -248,15 +252,20 @@ pub(crate) fn ahdsr(e: &EnvelopeAhdsr) -> ir::Breakpoints {
         level,
         curve,
     };
+    let (decay_level, release_ms, sustain) = if a.one_shot {
+        (0.0, 0.0, None)
+    } else {
+        (a.sustain, a.release, Some(2))
+    };
     ir::Breakpoints {
         start: 0.0,
         points: vec![
             point(a.attack, 1.0, a.attack_shape),
             point(a.hold, 1.0, 0.0),
-            point(a.decay, a.sustain, a.fall_shape),
-            point(a.release, 0.0, a.fall_shape),
+            point(a.decay, decay_level, a.fall_shape),
+            point(release_ms, 0.0, a.fall_shape),
         ],
-        sustain: Some(2),
+        sustain,
         loop_from: None,
         stages: true,
     }
@@ -1022,6 +1031,26 @@ mod tests {
         assert_eq!(eq_band_index("eqGain3"), Some(2));
         assert_eq!(eq_band_index("eqGain4"), None);
         assert_eq!(eq_band_index("filterQ"), None);
+    }
+
+    #[test]
+    fn one_shot_flag_sets_ahd_mode_on_envelope_and_ahdsr() {
+        let saved = EnvelopeAhdsr {
+            attack_curve: 0.0,
+            attack_ms: 10.0,
+            decay_ms: 50.0,
+            hold_ms: 20.0,
+            release_ms: 100.0,
+            sustain: 0.7,
+            unknown_flag: 1,
+            unknown_tail: Vec::new(),
+        };
+        let env = envelope(&saved);
+        assert!(env.one_shot);
+        let bp = ahdsr(&saved);
+        assert_eq!(bp.sustain, None);
+        assert_eq!(bp.points[2].level, 0.0);
+        assert_eq!(bp.points[3].ms, 0.0);
     }
 
     #[test]

@@ -117,6 +117,7 @@ impl ZoneFacts {
             522 => int(l.end.saturating_sub(l.start)),
             523 => int(l.crossfade),
             524 => int(l.count.into()),
+            525 => (l.tune_ratio.max(1e-6).log2() * 1200.0).round() as i32,
             _ => 0,
         }
     }
@@ -431,6 +432,7 @@ pub fn user_loops(f: &ZoneFacts) -> kontra_voice::Loops {
             // reading back is measured.
             alternating: l.mode >= 3,
             until_release: matches!(l.mode, 2 | 4),
+            tune_ratio: 2f32.powf(l.tuning as f32 / 1200.0),
         })
         .collect()
 }

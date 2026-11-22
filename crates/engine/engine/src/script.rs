@@ -535,7 +535,7 @@ impl HostApi for Engine {
             }
             Action::FadeOut | Action::FadeIn => {
                 let (target, curve) = match call.action {
-                    Action::FadeIn => (FadeTarget::Hold(1.0), int(2)),
+                    Action::FadeIn => (FadeTarget::In, int(2)),
                     _ if int(2) != 0 => (FadeTarget::End, int(3)),
                     _ => (FadeTarget::Hold(0.0), int(3)),
                 };

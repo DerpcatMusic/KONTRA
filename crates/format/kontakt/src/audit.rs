@@ -251,9 +251,6 @@ fn instrument(path: &Path, tally: &mut Tally, headers: &mut Headers) -> u64 {
             if l.x_fade_length < 0 {
                 hit("crossfade negative", format!("{at}: {}", l.x_fade_length));
             }
-            if l.loop_tuning != 0.0 {
-                hit("loop tuning dropped", format!("{at}: {}", l.loop_tuning));
-            }
             if l.loop_count < 0 {
                 hit("loop count negative", format!("{at}: {}", l.loop_count));
             }

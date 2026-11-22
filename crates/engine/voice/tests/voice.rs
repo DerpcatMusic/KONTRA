@@ -224,13 +224,13 @@ fn loops_play_in_sequence() {
             Loop {
                 start: 100,
                 end: 200,
-                count: 1,
+                count: 2,
                 ..Loop::default()
             },
             Loop {
                 start: 300,
                 end: 400,
-                count: 1,
+                count: 2,
                 ..Loop::default()
             },
         ],
@@ -262,7 +262,7 @@ fn a_counted_loop_repeats_that_many_times() {
         vec![Loop {
             start: 100,
             end: 200,
-            count: 2,
+            count: 3,
             ..Loop::default()
         }],
         500,
@@ -284,7 +284,7 @@ fn an_alternating_loop_plays_backward_on_each_turn() {
         vec![Loop {
             start: 100,
             end: 110,
-            count: 1,
+            count: 2,
             alternating: true,
             ..Loop::default()
         }],
@@ -535,4 +535,329 @@ fn a_stretching_voice_keeps_its_pitch_and_takes_its_speeds_time() {
         render(&mut voice, &client, 1024);
         assert!(!voice.is_active(), "speed {speed}: ended on time");
     }
+}
+
+#[test]
+fn starting_inside_a_loop_plays_to_loop_end_and_wraps() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
+    region.start = 550;
+    region.loops = vec![Loop {
+        start: 500,
+        end: 600,
+        ..Loop::default()
+    }]
+    .into();
+    let mut voice = Voice::allocate();
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    let out = render(&mut voice, &client, 200);
+    assert_eq!(out[0], at(550));
+    assert_eq!(out[49], at(599));
+    assert_eq!(out[50], at(500), "wrapped to loop start");
+    assert_eq!(out[149], at(599));
+    assert_eq!(out[150], at(500), "second wrap");
+}
+
+#[test]
+fn finite_loop_count_is_total_passes() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    // count = 1: one pass through 100..200 (0 wraps), continues past 200.
+    let one = looped_output(
+        &mut store,
+        vec![Loop {
+            start: 100,
+            end: 200,
+            count: 1,
+            ..Loop::default()
+        }],
+        300,
+    )
+    .unwrap();
+    assert_eq!(one[199], at(199));
+    assert_eq!(one[200], at(200), "count=1 exits without wrapping");
+
+    // count = 2: two passes through 100..200 (1 wrap), then continues past 200.
+    let two = looped_output(
+        &mut store,
+        vec![Loop {
+            start: 100,
+            end: 200,
+            count: 2,
+            ..Loop::default()
+        }],
+        400,
+    )
+    .unwrap();
+    assert_eq!(two[200], at(100), "count=2 wraps once");
+    assert_eq!(two[300], at(200), "count=2 exits after second pass");
+}
+
+#[test]
+fn reverse_loops_crossfade_and_start_inside_loop() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+
+    // Reverse forward loop 500..600 in a 1000-frame sample: plays 999..500,
+    // then wraps back to 599..500.
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
+    region.reverse = true;
+    region.loops = vec![Loop {
+        start: 500,
+        end: 600,
+        ..Loop::default()
+    }]
+    .into();
+    let mut voice = Voice::allocate();
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    let out = render(&mut voice, &client, 700);
+    assert_eq!(out[0], at(999));
+    assert_eq!(out[499], at(500));
+    assert_eq!(out[500], at(599), "reverse loop wrapped to physical 599");
+    assert_eq!(out[599], at(500));
+    assert_eq!(out[600], at(599));
+
+    // Reverse alternating loop: 999..500, then bounces 501..598, then 599..500.
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
+    region.reverse = true;
+    region.loops = vec![Loop {
+        start: 500,
+        end: 600,
+        alternating: true,
+        ..Loop::default()
+    }]
+    .into();
+    let mut voice = Voice::allocate();
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    let out = render(&mut voice, &client, 700);
+    assert_eq!(out[499], at(500));
+    assert_eq!(out[500], at(501), "reverse alternating bounces up");
+    assert_eq!(out[597], at(598));
+    assert_eq!(out[598], at(599));
+    assert_eq!(out[599], at(598));
+
+    // Reverse loop with crossfade 40: near physical 500 (logical 480 = physical 519),
+    // blends half of 519 with half of 619 (= 569).
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
+    region.reverse = true;
+    region.loops = vec![Loop {
+        start: 500,
+        end: 600,
+        crossfade: 40,
+        ..Loop::default()
+    }]
+    .into();
+    let mut voice = Voice::allocate();
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    let out = render(&mut voice, &client, 620);
+    assert_eq!(out[459], at(540), "before reverse crossfade");
+    assert!(
+        (out[480] - at(569)).abs() < 1e-6,
+        "halfway fade: {}",
+        out[480] * 65_536.0
+    );
+    assert_eq!(out[500], at(599), "wrapped seamlessly");
+
+    // Reverse start inside loop (region.end = 550): plays 549..500, wraps to 599.
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
+    region.reverse = true;
+    region.end = 550;
+    region.loops = vec![Loop {
+        start: 500,
+        end: 600,
+        ..Loop::default()
+    }]
+    .into();
+    let mut voice = Voice::allocate();
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    let out = render(&mut voice, &client, 160);
+    assert_eq!(out[0], at(549));
+    assert_eq!(out[49], at(500));
+    assert_eq!(out[50], at(599));
+}
+
+#[test]
+fn tuned_loop_applies_ratio_on_repeats_and_is_block_size_invariant() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let make = |store: &mut Store| {
+        let mut region = ramp_region(store, 1000, 1000).unwrap();
+        region.loops = vec![Loop {
+            start: 500,
+            end: 600,
+            tune_ratio: 2.0,
+            ..Loop::default()
+        }]
+        .into();
+        region
+    };
+    let run_block = |region: Region, block: usize, ramp: bool| -> Vec<f32> {
+        let mut voice = Voice::allocate();
+        voice.start(start(region, 1.0, Ahdsr::GATE));
+        if ramp {
+            voice.set_step_ramp(1.0, 2.0, 600);
+        }
+        let mut out = vec![[0.0; 2]; 768];
+        let mut scratch = Scratch::allocate();
+        let mut done = 0;
+        while done < out.len() {
+            let take = block.min(out.len() - done);
+            voice.render(
+                &mut scratch,
+                &client,
+                done as u64,
+                &mut out[done..done + take],
+            );
+            done += take;
+        }
+        out.iter().map(|f| f[0]).collect()
+    };
+    let region = make(&mut store);
+    let reference = run_block(region.clone(), 128, false);
+    // Initial pass (0..600) steps at 1.0; repeats (600+) step at 2.0.
+    assert_eq!(reference[100], at(100));
+    assert_eq!(reference[599], at(599));
+    assert!((reference[600] - at(500)).abs() < 1e-5);
+    assert!((reference[601] - at(502)).abs() < 1e-5);
+    assert!((reference[602] - at(504)).abs() < 1e-5);
+    for block in [1, 32, 97] {
+        let got = run_block(region.clone(), block, false);
+        for (i, (a, b)) in reference.iter().zip(&got).enumerate() {
+            assert!((a - b).abs() < 1e-5, "block {block} frame {i}: {a} vs {b}");
+        }
+    }
+    // A one-frame render checks loop tuning at each cursor, independently
+    // of the chunk bound. Here the pitch glide crosses the first wrap.
+    let per_frame = run_block(region.clone(), 1, true);
+    for block in [32, 97, 128, 512] {
+        let got = run_block(region.clone(), block, true);
+        assert_eq!(got, per_frame, "pitch glide differs at block {block}");
+    }
+}
+
+#[test]
+fn forced_release_ends_a_voice_whose_one_shot_ignores_key_up() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let mut voice = Voice::allocate();
+    let mut region = ramp_region(&mut store, 4096, 4096).unwrap();
+    region.start = 512;
+    voice.start(start(
+        region,
+        1.0,
+        Ahdsr {
+            hold: 1024,
+            decay: 512,
+            release: 64,
+            one_shot: true,
+            ..Ahdsr::GATE
+        },
+    ));
+    voice.key_up(0, kontra_voice::KeyUp::Release);
+    assert_eq!(voice.envelope_stage(), "hold");
+    assert!(voice.end_by_release(0));
+    assert_eq!(voice.envelope_stage(), "release");
+    let out = render(&mut voice, &client, 64);
+    assert!(out[0] > 0.0);
+    assert_eq!(out[63], 0.0);
+    assert!(!voice.is_active());
+}
+
+#[test]
+fn until_release_released_mid_crossfade_finishes_wrap_without_click() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
+    region.loops = vec![Loop {
+        start: 500,
+        end: 600,
+        crossfade: 40,
+        until_release: true,
+        ..Loop::default()
+    }]
+    .into();
+    let mut voice = Voice::allocate();
+    voice.start(start(
+        region,
+        1.0,
+        Ahdsr {
+            release: 1000,
+            ..Ahdsr::GATE
+        },
+    ));
+    let mut out = vec![[0.0; 2]; 800];
+    let mut scratch = Scratch::allocate();
+    // Render up to frame 580 (halfway into crossfade 560..600), then release.
+    voice.render(&mut scratch, &client, 0, &mut out[..580]);
+    voice.release();
+    voice.render(&mut scratch, &client, 580, &mut out[580..]);
+    // Frame 580 must continue the active wrap crossfade (NOT jump back to unblended 580).
+    let raw_580 = out[580][0] / (1.0 - 1.0 / 1000.0);
+    assert!(
+        (raw_580 - at(530)).abs() < 2e-4,
+        "frame 580 should be blended (~530), got {}",
+        raw_580 * 65_536.0
+    );
+    // Wraps to 500 at frame 600, then exits cleanly at frame 700 into 600..1000.
+    let raw_600 = out[600][0] / (1.0 - 21.0 / 1000.0);
+    assert!(
+        (raw_600 - at(500)).abs() < 2e-4,
+        "frame 600 should wrap to 500, got {}",
+        raw_600 * 65_536.0
+    );
+    let raw_700 = out[700][0] / (1.0 - 121.0 / 1000.0);
+    assert!(
+        (raw_700 - at(600)).abs() < 2e-4,
+        "frame 700 should exit past loop to 600, got {}",
+        raw_700 * 65_536.0
+    );
+}
+
+#[test]
+fn silent_tail_culls_releasing_voice_but_not_held_voice() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let frames = 48_000u64;
+    let bytes = vec![0u8; frames as usize * 4];
+    let key = BlobKey {
+        file: "silence".into(),
+        offset: 0,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+    let mut voice = Voice::allocate();
+    voice.start(start(
+        region,
+        1.0,
+        Ahdsr {
+            release: 48_000,
+            ..Ahdsr::GATE
+        },
+    ));
+    // Held voice stays alive even through >512 silent frames.
+    render(&mut voice, &client, 1024);
+    assert!(voice.is_active(), "held silent voice must not be culled");
+    // Once released, 512+ consecutive silent frames cull the voice early.
+    voice.release();
+    render(&mut voice, &client, 640);
+    assert!(
+        !voice.is_active(),
+        "releasing silent tail should cull early"
+    );
 }

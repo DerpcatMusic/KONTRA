@@ -99,32 +99,175 @@ impl Engine {
         self.behaviour.set_cc(channel, controller, value);
         self.output_controller(controller, value);
         let mut hits = std::mem::take(&mut self.hits);
-        if controller == 64 {
-            let down = value >= 64 && self.plan.sustain_pedal == SustainPedal::Holds;
-            if let Some(p) = self.pedal.get_mut(usize::from(channel)) {
-                *p = down;
-            }
-            if !down {
-                self.notes.select(&mut hits, |n| {
-                    n.pedal_held && n.host.port_channel() == channel
-                });
-                // Kontakt runs `on release` again at pedal-up for every note
-                // the pedal held, after `on controller` (oracle, sine probe,
-                // Kontakt 8, 2026-11-13); one that ignores it keeps playing.
-                for &note in &hits {
-                    if let Some(slot) = self.release_callbacks(note) {
-                        if let Some(n) = self.notes.get_mut(note) {
+        match controller {
+            64 => {
+                let down = value >= 64 && self.plan.sustain_pedal == SustainPedal::Holds;
+                if let Some(p) = self.pedal.get_mut(usize::from(channel)) {
+                    *p = down;
+                }
+                if !down {
+                    self.notes.select(&mut hits, |n| {
+                        n.pedal_held && n.host.port_channel() == channel
+                    });
+                    // Kontakt runs `on release` again at pedal-up for every note
+                    // the pedal held, after `on controller` (oracle, sine probe,
+                    // Kontakt 8, 2026-11-13); one that ignores it keeps playing.
+                    for &note in &hits {
+                        let still_sostenuto = self.notes.get_mut(note).is_some_and(|n| {
                             n.pedal_held = false;
+                            n.sostenuto_held
+                        });
+                        if still_sostenuto {
+                            continue;
                         }
-                        let script = self.plan.scripts.get(usize::from(slot));
-                        if script.is_some_and(|s| s.held_release_ends_children) {
-                            self.end_children(note);
+                        if let Some(slot) = self.release_callbacks(note) {
+                            let script = self.plan.scripts.get(usize::from(slot));
+                            if script.is_some_and(|s| s.held_release_ends_children) {
+                                self.end_children(note);
+                            }
+                        } else {
+                            self.release(note);
                         }
-                    } else {
-                        self.release(note);
                     }
                 }
             }
+            66 => {
+                let was_down = self
+                    .sostenuto
+                    .get(usize::from(channel))
+                    .copied()
+                    .unwrap_or(false);
+                let down = value >= 64;
+                if let Some(s) = self.sostenuto.get_mut(usize::from(channel)) {
+                    *s = down;
+                }
+                if !was_down && down {
+                    self.notes.select(&mut hits, |n| {
+                        n.host.port_channel() == channel
+                            && !n.is_up()
+                            && !n.released
+                            && !n.pedal_held
+                    });
+                    for &note in &hits {
+                        if let Some(n) = self.notes.get_mut(note) {
+                            n.sostenuto_held = true;
+                        }
+                    }
+                } else if was_down && !down {
+                    self.notes.select(&mut hits, |n| {
+                        n.sostenuto_held && n.host.port_channel() == channel
+                    });
+                    let sustain_down = self.pedal.get(usize::from(channel)) == Some(&true);
+                    for &note in &hits {
+                        let should_release = self.notes.get_mut(note).is_some_and(|n| {
+                            n.sostenuto_held = false;
+                            if !n.key_up || n.released {
+                                return false;
+                            }
+                            n.pedal_held = sustain_down;
+                            !sustain_down
+                        });
+                        if !should_release {
+                            continue;
+                        }
+                        if let Some(slot) = self.release_callbacks(note) {
+                            let script = self.plan.scripts.get(usize::from(slot));
+                            if script.is_some_and(|s| s.held_release_ends_children) {
+                                self.end_children(note);
+                            }
+                        } else {
+                            self.release(note);
+                        }
+                    }
+                }
+            }
+            120 => {
+                // All Sound Off: fast-fade and stop all sounding voices on `channel`,
+                // bypassing sustain, sostenuto, and envelope release.
+                let fast_fade = (0.002 * f64::from(self.rate)).round().max(2.0) as u32;
+                self.notes
+                    .select(&mut hits, |n| n.host.port_channel() == channel);
+                for &note in &hits {
+                    if let Some(n) = self.notes.get_mut(note) {
+                        n.released = true;
+                        n.key_up = true;
+                        n.pedal_held = false;
+                        n.sostenuto_held = false;
+                    }
+                }
+                self.fade_where(fast_fade, |slot| {
+                    slot.note.is_some_and(|n| hits.contains(&n))
+                });
+                self.hits = hits;
+                return;
+            }
+            121 => {
+                // Reset All Controllers (MIDI RP-015): reset CCs (preserving bank
+                // CC 0/32, volume CC 7/39, pan CC 10/42), pitch bend, pressure,
+                // and pedal latches on `channel`.
+                self.behaviour.reset_controllers(channel);
+                self.expression = 1.0;
+                const KEEP_MASK: u128 = (1u128 << 0)
+                    | (1u128 << 7)
+                    | (1u128 << 10)
+                    | (1u128 << 32)
+                    | (1u128 << 39)
+                    | (1u128 << 42);
+                for (cc, slot) in self.cc_values.iter_mut().enumerate().take(128) {
+                    if (KEEP_MASK >> cc) & 1 == 0 {
+                        *slot = if cc == 11 { 127 } else { 0 };
+                    }
+                }
+                if let Some(v) = self.cc_values.get_mut(usize::from(VCC_MONO_AT)) {
+                    *v = 0;
+                }
+                if let Some(p) = self.pedal.get_mut(usize::from(channel)) {
+                    *p = false;
+                }
+                if let Some(s) = self.sostenuto.get_mut(usize::from(channel)) {
+                    *s = false;
+                }
+                self.notes
+                    .select(&mut hits, |n| n.host.port_channel() == channel);
+                for &note in &hits {
+                    let release = self.notes.get_mut(note).is_some_and(|n| {
+                        n.expression_pressure = None;
+                        if let Some(p) = self.poly_at.get_mut(usize::from(n.key)) {
+                            *p = 0;
+                        }
+                        let held_by_pedal = n.pedal_held || n.sostenuto_held;
+                        n.pedal_held = false;
+                        n.sostenuto_held = false;
+                        held_by_pedal && n.key_up && !n.released
+                    });
+                    if release {
+                        self.release(note);
+                    }
+                }
+                self.refresh_voices(None, |slot, _| slot.note.is_some_and(|n| hits.contains(&n)));
+                self.hits = hits;
+                return;
+            }
+            123 => {
+                // All Notes Off: lift the keys on `channel`, respecting pedal holds.
+                let sustain_down = self.pedal.get(usize::from(channel)) == Some(&true);
+                self.notes.select(&mut hits, |n| {
+                    !n.released && n.host.port_channel() == channel
+                });
+                for &note in &hits {
+                    let should_release = self.notes.get_mut(note).is_some_and(|n| {
+                        n.key_up = true;
+                        n.pedal_held = sustain_down;
+                        !sustain_down && !n.sostenuto_held
+                    });
+                    if should_release {
+                        self.release(note);
+                    }
+                }
+                self.hits = hits;
+                return;
+            }
+            _ => {}
         }
         self.notes
             .select(&mut hits, |n| n.host.port_channel() == channel);

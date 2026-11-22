@@ -5808,3 +5808,180 @@ fn play_note_glide_engine(store: &mut Store, source: &str) -> Engine {
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
+
+#[test]
+fn live_set_engine_par_updates_active_voice_envelope() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0, 0)], 16);
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "ENV_AHDSR".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Envelope,
+    }];
+    let script = kontra_ksp::compile(
+        "on controller
+            if ($CC_NUM = 1)
+                set_engine_par($ENGINE_PAR_SUSTAIN, 500000, 0, 0, -1)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let before = level(&mut e, &[on(60)]);
+    assert!((before - 1.0).abs() < 1e-3, "{before}");
+    // Lower sustain to 0.5 (gain = 0.5^3 = 0.125) while note is held.
+    let after = level(&mut e, &[cc(1, 127)]);
+    assert!(
+        (after - 0.125).abs() < 1e-3,
+        "live sustain update should reach active voice: {after}"
+    );
+}
+
+#[test]
+fn ksp_fade_in_on_sounding_note_restarts_from_zero() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id
+        end on
+        on note
+            $id := $EVENT_ID
+        end on
+        on controller
+            if ($CC_NUM = 1)
+                fade_in($id, 50000)
+            end if
+        end on",
+    );
+    let initial = level(&mut e, &[on(60)]);
+    assert!((initial - 0.5).abs() < 1e-3, "{initial}");
+    // Trigger 50 ms fade_in (2400 frames): first frame after CC must drop near 0
+    // and ramp back up to 0.5 by the end of a 4096-frame block.
+    let mut out = vec![[0.0; 2]; 4096];
+    let now = e.now();
+    e.process(
+        &mut out,
+        &[Timed {
+            at: now,
+            body: Event::midi1(0xB0, 1, 127),
+        }],
+    );
+    assert!(
+        out[0][0] < 0.01,
+        "fade_in on active voice should restart near 0: {}",
+        out[0][0]
+    );
+    assert!(
+        (out[1200][0] - 0.25).abs() < 0.05,
+        "midpoint of fade_in: {}",
+        out[1200][0]
+    );
+    assert!(
+        (out[4095][0] - 0.5).abs() < 1e-3,
+        "finished fade_in: {}",
+        out[4095][0]
+    );
+}
+
+#[test]
+fn ksp_note_off_on_held_host_note_runs_on_release_once() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id
+            declare $releases := 0
+        end on
+        on note
+            $id := $EVENT_ID
+        end on
+        on controller
+            if ($CC_NUM = 1)
+                note_off($id)
+            end if
+        end on
+        on release
+            $releases := $releases + 1
+            message($releases)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "");
+    // Script calls note_off on the held host note -> runs `on release` once.
+    level(&mut e, &[cc(1, 127)]);
+    assert_eq!(e.last_message(), "1");
+    // Later host key-up must not double-fire `on release`.
+    level(&mut e, &[off(60)]);
+    assert_eq!(e.last_message(), "1");
+}
+
+#[test]
+fn play_note_offset_clamps_to_start_mod_only_when_offset_limited() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let frames = 4096u64;
+    let bytes = (0..frames)
+        .flat_map(|i| (i as f32 / 4096.0).to_le_bytes())
+        .collect();
+    let key = BlobKey {
+        file: "ramp-offset-limited".into(),
+        offset: frames,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    let run = |offset_limited: bool| {
+        let mut z = Zone::new(
+            Region {
+                mix: None,
+                table: None,
+                sample: sample.clone(),
+                start: 0,
+                end: frames,
+                loops: Default::default(),
+                reverse: false,
+            },
+            60,
+            RATE,
+        );
+        z.start_mod = 500;
+        z.offset_limited = offset_limited;
+        let script = kontra_ksp::compile(
+            "on note
+                ignore_event($EVENT_ID)
+                play_note(60, 127, 25000, 0)
+            end on",
+            &[],
+        )
+        .unwrap();
+        let mut plan = Plan::new(vec![z], 8);
+        plan.groups[0].mods.clear();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0; 2]; 16];
+        e.process(&mut out, &[on(60)]);
+        out[0][0] * 4096.0
+    };
+    // 25_000 us at 48 kHz = 1200 frames (> start_mod = 500):
+    // DFD (offset_limited=true) resets to 0; Sampler (offset_limited=false) plays from 1200.
+    assert!(run(true) < 1.0, "DFD offset > start_mod resets to 0");
+    assert!(
+        (run(false) - 1200.0).abs() < 1.0,
+        "Sampler allows offset past start_mod up to region span"
+    );
+}
