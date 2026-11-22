@@ -95,6 +95,12 @@ pub fn read_saved(
     }
     if path
         .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("kontra"))
+    {
+        return Ok(kontra_format_native::load(path)?);
+    }
+    if path
+        .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("sfz"))
     {
         return Ok(kontra_format_sfz::load(path)?);

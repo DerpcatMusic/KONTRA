@@ -1258,7 +1258,7 @@ fn is_instrument(path: &std::path::Path) -> bool {
         .map(str::to_ascii_lowercase);
     matches!(
         ext.as_deref(),
-        Some("nki" | "nksn" | "uvip" | "sfz" | "dspreset" | "sf2")
+        Some("nki" | "nksn" | "uvip" | "sfz" | "dspreset" | "sf2" | "kontra")
     )
 }
 
