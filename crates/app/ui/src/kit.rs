@@ -75,6 +75,7 @@ pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: b
     };
     let el = stack![glyph(icon, TEXT + TIGHT, tint).centered()]
         .square(CONTROL)
+        .shrink(0)
         .when(on, |e| e.fill(Role::Raised))
         .focusable()
         .a11y(A11y::Button)
@@ -163,7 +164,13 @@ pub fn knob(
 ) -> Response {
     let r = mui::widgets::knob(ui, id, name, value, Domain::new(range).default(default));
     Response {
-        el: r.el.quiet().look(mui::widgets::Knob::k()).value_text(readout).px(CONTROL / 1.25).el(),
+        el: r
+            .el
+            .quiet()
+            .look(mui::widgets::Knob::k())
+            .value_text(readout)
+            .px(CONTROL / 1.25)
+            .el(),
         changed: r.changed,
     }
 }
@@ -244,7 +251,13 @@ pub fn field(ui: &mut Ui, id: impl Into<Id>, hint: &str, value: &mut String) -> 
     let id: Id = id.into();
     let empty = value.is_empty();
     let edit = text_edit(ui, id, value, TextOpts::default());
-    let mut body_layers = vec![edit.el.radius(0.).no_fill().w(Len::Pct(100.))];
+    let mut body_layers = vec![
+        edit.el
+            .radius(0.)
+            .no_fill()
+            .w(Len::Pct(100.))
+            .named(hint.to_owned()),
+    ];
     if empty {
         let hint = caption(hint.to_owned()).fill(secondary()).lines(1);
         body_layers.push(
@@ -495,6 +508,7 @@ pub fn sheet(ui: &mut Ui, id: &str, title_text: &str, content: El) -> Response {
     .stroke_width(1)
     .captures_wheel()
     .focusable()
+    .named(title_text.to_owned())
     .appear(Appear::Slide(0., TEXT))
     .id(id.to_owned());
     Response {

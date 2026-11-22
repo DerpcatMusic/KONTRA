@@ -854,7 +854,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let dragged: Arc<std::sync::Mutex<Option<kontra_ui::input::FileDrag>>> = Arc::default();
     let dragging_files = Arc::clone(&dragged);
     let owner = Arc::clone(&params);
+    #[cfg(target_os = "linux")]
+    let x11_owner = Arc::clone(&params);
     let closing = Arc::clone(&params);
+    let log_params = Arc::clone(&params);
+    let cancel_params = Arc::clone(&params);
     let mut app = App {
         build: crate::BUILD.into(),
         ..App::default()
@@ -878,13 +882,25 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // still closes the open menu or sheet.
     let escape = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let pressed = Arc::clone(&escape);
-    MuiEditor::new(params, kontra_ui::ui(), SIZE, move |ui, bridge| {
+    // Host input cancellation (focus loss, Wayland leave, modal dialog):
+    // clears any in-flight library-face gesture and macro drag.
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let on_cancelled = Arc::clone(&cancelled);
+    let editor = MuiEditor::new(params, kontra_ui::ui(), SIZE, move |ui, bridge| {
         let start = std::time::Instant::now();
         if let Some(tasks) = bridge.context().and_then(|c| c.tasks::<crate::Tick>()) {
             p.shared.set_tasks(Some(tasks));
         }
         if escape.swap(false, Ordering::AcqRel) {
             app.view.dismiss();
+        }
+        if cancelled.swap(false, Ordering::AcqRel) {
+            for part in &mut app.parts {
+                if let Some(face) = part.face.as_mut() {
+                    face.gesture.cancel();
+                }
+            }
+            dragging = None;
         }
         if let Some(t) = last.replace(start) {
             crate::frames::note("between", start - t);
@@ -949,7 +965,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             if let Action::Scale(percent) = action {
                 // The tree scales to fit its window: a size is a window size.
                 let [w, h] = [SIZE.0, SIZE.1].map(|n| n * percent / 100);
-                let _ = bridge.context().is_some_and(|c| c.request_resize(w, h));
+                let _ = bridge.request_resize(w, h);
                 continue;
             }
             if let Action::Master(db) = action {
@@ -1154,8 +1170,22 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
-    .on_close(move || closing.shared.shown.store(false, Ordering::Release))
-    .into_editor()
+    .on_cancel(move |_| {
+        on_cancelled.store(true, Ordering::Release);
+        cancel_params.shared.dirty.store(true, Ordering::Release);
+    })
+    .on_log(move |line| {
+        eprintln!("[kontra editor] {line}");
+        if line.starts_with("Wayland:") || line.contains("failed") || line.contains("error") {
+            log_params
+                .shared
+                .request(Request::Notice(format!("Display: {line}")));
+        }
+    })
+    .on_close(move || closing.shared.shown.store(false, Ordering::Release));
+    #[cfg(target_os = "linux")]
+    let editor = editor.on_x11_window(move |xid| x11_owner.shared.folder.set_x11_parent(xid));
+    editor.into_editor()
 }
 
 /// The port the editor's notes come from: no host port, so a host note-off
@@ -1219,13 +1249,17 @@ fn is_dropped(path: &std::path::Path) -> bool {
 }
 
 /// Whether a dropped file is an instrument the rack loads: a Kontakt
-/// instrument or snapshot, an SFZ file, or a UVI program in its bank.
+/// instrument or snapshot, a UVI program in its bank, an SFZ file, a
+/// DecentSampler preset, or a SoundFont 2 bank.
 fn is_instrument(path: &std::path::Path) -> bool {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
-    matches!(ext.as_deref(), Some("nki" | "nksn" | "uvip" | "sfz"))
+    matches!(
+        ext.as_deref(),
+        Some("nki" | "nksn" | "uvip" | "sfz" | "dspreset" | "sf2")
+    )
 }
 
 #[cfg(test)]
@@ -1312,6 +1346,8 @@ mod tests {
     #[test]
     fn sfz_files_can_be_dropped_into_the_player() {
         assert!(super::is_instrument(std::path::Path::new("instrument.SFZ")));
+        assert!(super::is_instrument(std::path::Path::new("piano.dspreset")));
+        assert!(super::is_instrument(std::path::Path::new("bank.SF2")));
     }
 
     #[test]

@@ -152,6 +152,17 @@ impl Gesture {
         self.press.is_some() || self.xy.is_some() || self.arrow.is_some()
     }
 
+    /// Release any pointer or drag gesture in flight (e.g. when the native
+    /// host cancels input or loses window focus). File-selector browsing state
+    /// is preserved.
+    pub fn cancel(&mut self) {
+        self.press = None;
+        self.tap = None;
+        self.arrow = None;
+        self.xy = None;
+        self.dragged_over = None;
+    }
+
     /// Finds what is in flight in this frame's tree: a drag, a held button,
     /// the open menu and the field typed into follow their widget when the
     /// tree is rebuilt, and end when it is hidden, disabled or gone (a

@@ -8,7 +8,8 @@ import shutil
 import subprocess
 
 BUNDLES = {'clap': 'Library/Audio/Plug-Ins/CLAP/KONTRA.clap',
-           'vst3': 'Library/Audio/Plug-Ins/VST3/KONTRA.vst3'}
+           'vst3': 'Library/Audio/Plug-Ins/VST3/KONTRA.vst3',
+           'component': 'Library/Audio/Plug-Ins/Components/KONTRA.component'}
 
 
 def compose(arm64, x86_64, stage, revision, version):

@@ -72,7 +72,11 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                     secondary()
                 ),
                 glyph(Icon::Warning, TEXT, secondary()),
-                body(first).lines(1).min_w(0).grow(1).tip(entry.clone()),
+                body(first.clone())
+                    .lines(1)
+                    .min_w(0)
+                    .grow(1)
+                    .tip(entry.clone()),
             ]
             .gap(SPACE)
             .align(Align::Center)
@@ -93,6 +97,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             interactive(col(lines).w(Len::Pct(100.)).pad((0., SPACE)))
                 .focusable()
                 .a11y(A11y::Button)
+                .named(first)
                 .id(id),
         );
     }

@@ -548,3 +548,119 @@ fn the_presets_walk_and_load_by_keys() {
     key(&mut ui, &mut app, Key::Escape);
     assert_eq!(app.view.preset_search, "");
 }
+
+/// MUI's built-in layout/accessibility/occlusion/idle-rebuild audit across
+/// KONTRA's design size and key tabs/sheets.
+#[test]
+fn mui_audit_passes_across_sizes_and_views() {
+    let sizes = [Size::new(1180., 780.), Size::new(1475., 975.)];
+
+    // 1. Default Rack view with a loaded library and part.
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![Library {
+            name: "Areia".into(),
+            format: Format::Kontakt,
+            presets: vec!["Violins".into(), "Celli".into()],
+            recalls: Vec::new(),
+            starred: false,
+            favorites: Vec::new(),
+            art: Vec::new(),
+        }],
+        parts: vec![Part {
+            name: "Violins".into(),
+            library: "Areia".into(),
+            channel: 1,
+            output: 1,
+            open: true,
+            ..Part::default()
+        }],
+        folders: vec!["/music/libraries".into()],
+        build: "Version 3.0.0 · test".into(),
+        ..App::default()
+    };
+    let findings = mui::audit::audit(&mut ui, sizes, |ui| app::view(ui, &mut app).el);
+    assert!(
+        findings.is_empty(),
+        "Rack view audit findings:\n{}",
+        findings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // 2. Mixer tab.
+    app.view.tab = app::Tab::Mixer;
+    let findings = mui::audit::audit(&mut ui, sizes, |ui| app::view(ui, &mut app).el);
+    assert!(
+        findings.is_empty(),
+        "Mixer view audit findings:\n{}",
+        findings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // 3. Report tab.
+    app.view.tab = app::Tab::Report;
+    app.report.push("Sample notice for audit".into());
+    let findings = mui::audit::audit(&mut ui, sizes, |ui| app::view(ui, &mut app).el);
+    assert!(
+        findings.is_empty(),
+        "Report view audit findings:\n{}",
+        findings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // 4. Settings and About sheets (modal over main view).
+    app.view.tab = app::Tab::Rack;
+    for (name, sheet) in [
+        ("Settings", app::Sheet::Settings),
+        ("About", app::Sheet::About),
+    ] {
+        app.view.sheet = Some(sheet);
+        let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
+            app::view(ui, &mut app).el
+        });
+        assert!(
+            findings.is_empty(),
+            "{name} sheet audit findings:\n{}",
+            findings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    // 5. Part sub-tabs (Sound, Mapping, Articulations, Info) & collapsed browser.
+    app.view.sheet = None;
+    app.view.browser_hidden = true;
+    for tab in [
+        PartTab::Sound,
+        PartTab::Mapping,
+        PartTab::Articulations,
+        PartTab::Info,
+    ] {
+        if let Some(p) = app.parts.first_mut() {
+            p.tab = tab;
+        }
+        let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
+            app::view(ui, &mut app).el
+        });
+        assert!(
+            findings.is_empty(),
+            "PartTab::{tab:?} audit findings:\n{}",
+            findings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
