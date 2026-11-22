@@ -111,15 +111,16 @@ pub enum Control {
 pub struct Crossfade {
     pub control: Control,
     /// Silent at or below `.0`, full at or above `.1`.
-    pub fade_in: Option<(u8, u8)>,
+    pub fade_in: Option<(i16, i16)>,
     /// Full at or below `.0`, silent at or above `.1`.
-    pub fade_out: Option<(u8, u8)>,
+    pub fade_out: Option<(i16, i16)>,
 }
 
 impl Crossfade {
     #[must_use]
     pub fn gain(&self, value: u8) -> f32 {
-        let ramp = |(lo, hi): (u8, u8)| -> f32 {
+        let value = i16::from(value);
+        let ramp = |(lo, hi): (i16, i16)| -> f32 {
             if value <= lo {
                 0.0
             } else if value >= hi {
@@ -419,13 +420,11 @@ impl Zone {
         let ranged: Vec<_> = (ranged.into_iter())
             .filter(|&(_, _, (fade_in, fade_out))| fade_in > 0 || fade_out > 0)
             .map(|(control, range, (fade_in, fade_out))| {
-                let (low, high) = (*range.start(), *range.end());
+                let (low, high) = (i16::from(*range.start()), i16::from(*range.end()));
                 Crossfade {
                     control,
-                    fade_in: (fade_in > 0)
-                        .then(|| (low.saturating_sub(1), low.saturating_add(fade_in))),
-                    fade_out: (fade_out > 0)
-                        .then(|| (high.saturating_sub(fade_out), high.saturating_add(1))),
+                    fade_in: (fade_in > 0).then(|| (low - 1, low + i16::from(fade_in))),
+                    fade_out: (fade_out > 0).then(|| (high - i16::from(fade_out), high + 1)),
                 }
             })
             .collect();
@@ -712,5 +711,30 @@ mod route_dependency_tests {
         assert!(!group.reads_modulated(ir::Source::Controller(2), 1));
         group.mods[0].bypass = true;
         assert!(!group.reads_modulated(ir::Source::Lfo(0), 1));
+    }
+
+    #[test]
+    fn crossfade_at_key_zero_uses_low_minus_one_bound() {
+        let xf = Crossfade {
+            control: Control::Key,
+            fade_in: Some((-1, 3)),
+            fade_out: None,
+        };
+        assert!(
+            (xf.gain(0) - 0.25).abs() < 1e-6,
+            "key 0 gain should be 1/(F+1)=0.25, got {}",
+            xf.gain(0)
+        );
+        assert!((xf.gain(3) - 1.0).abs() < 1e-6);
+        let xf_hi = Crossfade {
+            control: Control::Key,
+            fade_in: None,
+            fade_out: Some((124, 128)),
+        };
+        assert!(
+            (xf_hi.gain(127) - 0.25).abs() < 1e-6,
+            "key 127 fade-out gain should be 1/(F+1)=0.25, got {}",
+            xf_hi.gain(127)
+        );
     }
 }

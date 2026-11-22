@@ -59,6 +59,7 @@ impl Library for Stub {
                 count: 0,
                 alternating: false,
                 until_release: false,
+                tune_ratio: 1.0,
             }]
         } else {
             Vec::new()
@@ -1262,6 +1263,17 @@ fn an_amp_envelopes_curves_shape_its_stages() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let e = out.groups[0].envelope;
+    let delayed = xml.replace(
+        "DelayTime=\"0\" AttackTime=\"0.1\"",
+        "DelayTime=\"0.1\" AttackTime=\"0\"",
+    );
+    let doc = roxmltree::Document::parse(&delayed).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let delayed = out.groups[0].envelope;
+    assert_eq!(
+        (delayed.delay, delayed.attack, delayed.lag),
+        (0.1, 0.0, 0.0)
+    );
     // Half way through a stage, (1 − c)/2 of it is done: 1/(1 + e^(k/2)).
     let half = |k: f32| 1.0 / (1.0 + (k / 2.0).exp());
     assert!((half(e.attack_shape) - 0.25).abs() < 1e-4, "{e:?}");
@@ -2542,10 +2554,18 @@ fn the_tree_names_each_envelope_and_lfo_a_script_may_set() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     // Alike AHDs a script may set apart: a copy each.
-    assert_eq!(out.groups[0].envelopes.len(), 2, "{:?}", out.groups[0].envelopes);
+    assert_eq!(
+        out.groups[0].envelopes.len(),
+        2,
+        "{:?}",
+        out.groups[0].envelopes
+    );
     // UVI's RampUp is the rising ramp.
     assert_eq!(out.groups[0].lfos[0].wave, ir::Wave::Ramp);
-    let tree = out.scripts[0].data.iter().find(|(name, _)| name == "__program.lua");
+    let tree = out.scripts[0]
+        .data
+        .iter()
+        .find(|(name, _)| name == "__program.lua");
     let tree = String::from_utf8_lossy(&tree.unwrap().1).into_owned();
     for copy in [
         r#"env={"DAHDSR",{0,-1}}"#,

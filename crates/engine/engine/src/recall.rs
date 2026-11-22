@@ -49,6 +49,8 @@ impl Engine {
     pub fn reset(&mut self) {
         self.steal_where(self.fade_frames(), |_| true);
         self.notes.release_all();
+        self.pedal.fill(false);
+        self.sostenuto.fill(false);
         self.lines.fill(crate::mono::Line::default());
         let mut queue = std::mem::replace(&mut self.queue, EventQueue::new(0));
         queue.retain(|work| match *work {

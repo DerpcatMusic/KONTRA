@@ -42,6 +42,8 @@ pub enum FadeTarget {
     End,
     /// To this gain (0 silent, 1 full), where the voice plays on.
     Hold(f32),
+    /// To full gain from silence, or from the current gain if already fading in.
+    In,
 }
 
 /// The fade gain and where it is going.
@@ -81,14 +83,24 @@ impl Fade {
         let frames = frames.max(2);
         let (to, stop) = match target {
             FadeTarget::End => (0.0, true),
+            FadeTarget::In => (1.0, false),
             FadeTarget::Hold(level) if level.is_nan() => return,
             FadeTarget::Hold(level) => (level.clamp(0.0, 1.0), false),
         };
         if self.stop && !(stop && frames < self.left) {
             return;
         }
+        // Kontakt `fade_in` (0140840000.c:9590-9604): starting a fade-in on a
+        // voice that is not already mid-fade-in resets its level to 0 first.
+        let mid_fade_in = !self.stop && self.left > 0 && self.to > self.from;
+        let from = if target == FadeTarget::In && !mid_fade_in {
+            self.level = 0.0;
+            0.0
+        } else {
+            self.level
+        };
         *self = Self {
-            from: self.level,
+            from,
             to,
             frames,
             left: frames,
@@ -162,6 +174,13 @@ mod tests {
     }
 
     #[test]
+    fn positive_attenuation_ramps_from_full_gain() {
+        let mut fade = Fade::NONE;
+        fade.start(FadeTarget::Hold(0.5), 4, FadeCurve::Linear);
+        assert_eq!(run(&mut fade, 4), [0.875, 0.75, 0.625, 0.5]);
+    }
+
+    #[test]
     fn a_held_fade_comes_back_with_a_fade_in() {
         let mut fade = Fade::NONE;
         fade.start(FadeTarget::Hold(0.0), 2, FadeCurve::Linear);
@@ -185,5 +204,18 @@ mod tests {
         fade.start(FadeTarget::End, 4, FadeCurve::Linear);
         run(&mut fade, 4);
         assert!(fade.ended());
+    }
+
+    #[test]
+    fn fade_in_resets_full_voice_to_zero_but_preserves_mid_fade_in() {
+        let mut fade = Fade::NONE;
+        fade.start(FadeTarget::In, 4, FadeCurve::Linear);
+        assert_eq!(run(&mut fade, 2), [0.25, 0.5]);
+        // Re-triggering fade_in while already fading in continues smoothly from 0.5.
+        fade.start(FadeTarget::In, 4, FadeCurve::Linear);
+        assert_eq!(run(&mut fade, 4), [0.625, 0.75, 0.875, 1.0]);
+        // Once settled at full level, a new fade_in resets to 0.0 and ramps up.
+        fade.start(FadeTarget::In, 4, FadeCurve::Linear);
+        assert_eq!(run(&mut fade, 4), [0.25, 0.5, 0.75, 1.0]);
     }
 }

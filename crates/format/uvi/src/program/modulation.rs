@@ -28,8 +28,6 @@ impl<L: Library> Translator<'_, '_, L> {
         let at = (self.out.groups.len(), -1);
         self.envelopes.entry(env.id()).or_default().push(at);
         let seconds = |name| num(env, name, 0.0).map(|t| t.clamp(0.0, 30.0) as f32);
-        // The delay holds silence before the attack: a lag the attack is
-        // lengthened by, so the attack still runs its whole time after it.
         let delay = seconds("DelayTime")?;
         // One shape serves decay and release: the release's, and the decay's
         // when it is what moves (AO's two are equal).
@@ -46,16 +44,18 @@ impl<L: Library> Translator<'_, '_, L> {
                 .add(ir::Impact::Audible, "envelope decay curve", source);
         }
         let result = ir::Envelope {
-            attack: delay + seconds("AttackTime")?,
+            attack: seconds("AttackTime")?,
             hold: seconds("HoldTime")?,
             decay: seconds("DecayTime")?,
             sustain,
             release: seconds("ReleaseTime")?,
             attack_shape: shape("AttackCurve"),
             fall_shape: fall,
-            lag: delay,
+            lag: 0.0,
+            delay,
             floor: 0.0,
             depth: 1.0,
+            one_shot: false,
         };
         super::provenance::record("uvi.amp_envelope.v1", env, &source, &result);
         Ok(Some(result))

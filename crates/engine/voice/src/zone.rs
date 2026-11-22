@@ -10,7 +10,7 @@ use kontra_stream::{Mix, Sample};
 pub type Loops = smallvec::SmallVec<[Loop; 8]>;
 
 /// A loop over source frames `start..end`, inside the region.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Loop {
     pub start: u64,
     pub end: u64,
@@ -20,13 +20,30 @@ pub struct Loop {
     /// Kontakt's loop X-Fade (linear complementary, measured against Kontakt
     /// to −70 dBFS residual, docs/re/engine/LOOP_XFADE_HOLD_PROBES.md §1).
     pub crossfade: u64,
-    /// Repeats after the first pass; 0 repeats forever (or until release).
+    /// Total passes through the loop; 0 repeats forever (or until release),
+    /// 1 plays once without wrapping.
     pub count: u32,
     /// Each repeat plays backward, then forward again. Endpoints are visited
     /// once per turn (docs/ALTERNATING_LOOPS.md). No crossfade.
     pub alternating: bool,
     /// Repeats until the note is released, then plays on past `end`.
     pub until_release: bool,
+    /// Linear playback-rate multiplier applied on loop repeats (1.0 untuned).
+    pub tune_ratio: f32,
+}
+
+impl Default for Loop {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            end: 0,
+            crossfade: 0,
+            count: 0,
+            alternating: false,
+            until_release: false,
+            tune_ratio: 1.0,
+        }
+    }
 }
 
 impl Loop {
@@ -48,13 +65,20 @@ impl Loop {
         }
     }
 
-    /// Repeats after the first pass that starts at logical `at`, counting until
+    /// Repeats after the first pass that ends at logical `at`, counting until
     /// `released` if the loop ends on release. `None` repeats forever.
+    ///
+    /// `count` is total passes (`0` = infinite, `1` = 1 pass / 0 repeats).
+    /// If `released` lands inside an active wrap crossfade, that wrap completes
+    /// smoothly and the loop exits on the following pass without crossfading.
     fn repeats(&self, at: u64, released: Option<u64>) -> Option<u64> {
-        let count = (self.count > 0).then_some(u64::from(self.count));
-        let held = released
-            .filter(|_| self.until_release)
-            .map(|r| r.saturating_sub(at).div_ceil(self.turn().0));
+        let count = self.count.checked_sub(1).map(u64::from);
+        let fade = if self.alternating { 0 } else { self.fade() };
+        let held = released.filter(|_| self.until_release).map(|r| {
+            r.saturating_add(fade)
+                .saturating_sub(at)
+                .div_ceil(self.turn().0)
+        });
         match (count, held) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -70,12 +94,11 @@ pub struct Region {
     pub start: u64,
     /// One past the last source frame played.
     pub end: u64,
-    /// Loops in play order. Each is entered when the playhead first reaches its
-    /// end; a loop ending before the playhead or past the region is skipped.
-    // ponytail: a release inside a crossfade drops the blend at once; fade the
-    // blend out when a library's release clicks.
+    /// Loops in slot order. Each is entered when the playhead reaches its end
+    /// (in mirrored coordinates when reversed); a loop ending before the
+    /// playhead or past the region is skipped.
     pub loops: Loops,
-    /// Plays `end - 1` down to `start`; loops are ignored.
+    /// Plays `end - 1` down to `start` (loops run in mirrored coordinates).
     pub reverse: bool,
     /// How the sample's channels reach the voice's left and right; `None`
     /// plays mono on both sides and two or more channels as left and right.
@@ -93,32 +116,61 @@ pub(crate) struct Run {
     pub count: usize,
     /// Plays `first`, `first - 1`, … down to `first + 1 - count`.
     pub descending: bool,
+    /// Playback-rate multiplier for this run (1.0 outside tuned loop repeats).
+    pub tune_ratio: f32,
     /// Set when the pass wraps at `end`: see [`Run::crossfade`].
     fade: Option<Fade>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Fade {
+    /// Start of this run in forward (or mirrored) coordinates.
+    run_origin: u64,
     end: u64,
     len: u64,
     span: u64,
+    /// `Some(total_frames)` when the run is mirrored for reverse playback.
+    mirror: Option<u64>,
+}
+
+/// The crossfade slice overlapping a [`Run`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CrossfadeRun {
+    /// Offset into the run's decoded slice where blending begins.
+    pub offset: usize,
+    /// Lowest physical sample frame of the partner audio to read.
+    pub partner_low: u64,
+    /// Number of frames to blend.
+    pub count: usize,
+    /// Frames already elapsed in the crossfade before `offset`.
+    pub progress: u64,
+    /// Total crossfade length in frames.
+    pub len: u64,
+    /// Whether the partner audio plays descending (reverse loop).
+    pub descending: bool,
 }
 
 impl Run {
-    /// The part of the run inside its wrap crossfade: `(offset in the run,
-    /// partner first frame, frames, fade start, fade length)`.
-    pub(crate) fn crossfade(&self) -> Option<(usize, u64, usize, u64, u64)> {
+    /// The part of the run inside its wrap crossfade.
+    pub(crate) fn crossfade(&self) -> Option<CrossfadeRun> {
         let fade = self.fade?;
-        let from = (fade.end - fade.len).max(self.first);
-        let to = fade.end.min(self.first + self.count as u64);
+        let from = (fade.end - fade.len).max(fade.run_origin);
+        let to = fade.end.min(fade.run_origin + self.count as u64);
         (fade.len > 0 && from < to).then(|| {
-            (
-                (from - self.first) as usize,
-                from - fade.span,
-                (to - from) as usize,
-                fade.end - fade.len,
-                fade.len,
-            )
+            let count = (to - from) as usize;
+            let partner_origin = from - fade.span;
+            let (partner_low, descending) = match fade.mirror {
+                Some(total) => (total - (partner_origin + count as u64), true),
+                None => (partner_origin, false),
+            };
+            CrossfadeRun {
+                offset: (from - fade.run_origin) as usize,
+                partner_low,
+                count,
+                progress: from - (fade.end - fade.len),
+                len: fade.len,
+                descending,
+            }
         })
     }
 }
@@ -168,41 +220,83 @@ impl Region {
         self.locate(logical, released).map(|run| run.first)
     }
 
+    /// Whether any loop in this region changes playback rate on repeats.
+    pub(crate) fn has_tuned_loop(&self) -> bool {
+        self.loops.iter().any(|l| {
+            l.tune_ratio > 0.0 && l.tune_ratio.is_finite() && (l.tune_ratio - 1.0).abs() > 1e-6
+        })
+    }
+
+    /// Playback-rate multiplier at `logical`, and how many logical source
+    /// frames remain in the current run before it can change.
+    pub(crate) fn tune_span(&self, logical: u64, released: Option<u64>) -> Option<(f64, u64)> {
+        self.locate(logical, released)
+            .map(|run| (f64::from(run.tune_ratio), run.count as u64))
+    }
+
     fn locate(&self, logical: u64, released: Option<u64>) -> Option<Run> {
-        if self.reverse {
-            if logical >= self.end.saturating_sub(self.start) {
-                return None;
-            }
-            let first = self.end - 1 - logical;
-            return Some(Run {
-                first,
-                count: usize::try_from(first - self.start + 1).unwrap_or(usize::MAX),
-                descending: true,
-                fade: None,
-            });
-        }
+        let mirror = self.reverse.then(|| self.sample.frames().max(self.end));
+        let (r_start, r_end) = match mirror {
+            Some(total) => (total - self.end, total - self.start),
+            None => (self.start, self.end),
+        };
+        let map_run =
+            |m_first: u64, count: usize, m_desc: bool, tune_ratio: f32, fade: Option<Fade>| {
+                let (first, descending) = match mirror {
+                    Some(total) => (total - 1 - m_first, !m_desc),
+                    None => (m_first, m_desc),
+                };
+                Run {
+                    first,
+                    count,
+                    descending,
+                    tune_ratio,
+                    fade,
+                }
+            };
         // `at` is the logical position at which the playhead reaches `src`.
-        let (mut at, mut src) = (0u64, self.start);
-        for l in &self.loops {
-            if l.start < self.start || l.end <= l.start || l.end > self.end || l.end <= src {
+        let (mut at, mut src) = (0u64, r_start);
+        for raw in &self.loops {
+            let (l_start, l_end) = match mirror {
+                Some(total) => {
+                    if raw.end <= raw.start || raw.end > total {
+                        continue;
+                    }
+                    (total - raw.end, total - raw.start)
+                }
+                None => (raw.start, raw.end),
+            };
+            // Allow starting inside a loop (`l_start < r_start < l_end`): plays
+            // from `src` to `l_end`, then wraps to `l_start` (0140960000.c:661-701).
+            if l_end <= l_start || l_end > r_end || l_end <= src {
                 continue;
             }
-            // Play forward to the loop's end; the arrival wraps unless it is the last pass.
+            let l = Loop {
+                start: l_start,
+                end: l_end,
+                ..*raw
+            };
+            // Play forward (or descending in mirrored coords) to the loop's end;
+            // the arrival wraps unless it is the last pass.
             let arrive = l.end - src;
             let b0 = at + arrive;
             let repeats = l.repeats(b0, released);
-            let fade = (!l.alternating && l.fade() > 0 && repeats != Some(0)).then_some(Fade {
-                end: l.end,
-                len: l.fade(),
-                span: l.end - l.start,
-            });
             if logical < b0 {
-                return Some(Run {
-                    first: src + (logical - at),
-                    count: usize::try_from(b0 - logical).unwrap_or(usize::MAX),
-                    descending: false,
-                    fade,
+                let run_origin = src + (logical - at);
+                let fade = (!l.alternating && l.fade() > 0 && repeats != Some(0)).then_some(Fade {
+                    run_origin,
+                    end: l.end,
+                    len: l.fade(),
+                    span: l.end - l.start,
+                    mirror,
                 });
+                return Some(map_run(
+                    run_origin,
+                    usize::try_from(b0 - logical).unwrap_or(usize::MAX),
+                    false,
+                    1.0,
+                    fade,
+                ));
             }
             // Then the repeats, one turn each, until the count or the release.
             let (turn, back) = l.turn();
@@ -215,37 +309,50 @@ impl Region {
                 at = end;
                 continue;
             }
+            let tune = if l.tune_ratio > 0.0 && l.tune_ratio.is_finite() {
+                l.tune_ratio
+            } else {
+                1.0
+            };
             let o = logical - at;
             let (t, u) = (o / turn, o % turn);
             if u < back {
-                return Some(Run {
-                    first: l.end - 2 - u,
-                    count: usize::try_from(back - u).unwrap_or(usize::MAX),
-                    descending: true,
-                    fade: None,
-                });
+                return Some(map_run(
+                    l.end - 2 - u,
+                    usize::try_from(back - u).unwrap_or(usize::MAX),
+                    true,
+                    tune,
+                    None,
+                ));
             }
             let wraps = repeats.is_none_or(|n| t + 1 < n);
+            let run_origin = l.start + (u - back);
             let fade = (!l.alternating && l.fade() > 0 && wraps).then_some(Fade {
+                run_origin,
                 end: l.end,
                 len: l.fade(),
                 span: l.end - l.start,
+                mirror,
             });
-            return Some(Run {
-                first: l.start + (u - back),
-                count: usize::try_from(turn - u).unwrap_or(usize::MAX),
-                descending: false,
+            return Some(map_run(
+                run_origin,
+                usize::try_from(turn - u).unwrap_or(usize::MAX),
+                false,
+                tune,
                 fade,
-            });
+            ));
         }
-        // The rest of the region plays forward.
-        let rest = self.end - src;
+        // The rest of the region plays through to its end.
+        let rest = r_end - src;
         let into = logical.checked_sub(at)?;
-        (into < rest).then(|| Run {
-            first: src + into,
-            count: usize::try_from(rest - into).unwrap_or(usize::MAX),
-            descending: false,
-            fade: None,
+        (into < rest).then(|| {
+            map_run(
+                src + into,
+                usize::try_from(rest - into).unwrap_or(usize::MAX),
+                false,
+                1.0,
+                None,
+            )
         })
     }
 

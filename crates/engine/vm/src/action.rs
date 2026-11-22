@@ -511,7 +511,7 @@ actions! {
     GlideKnob,
     // A group's amplitude envelope as a script sets it: ints (group,
     // attack, hold, decay, sustain level, release, attack shape, fall
-    // shape, silent lag at the attack's start); times in microseconds,
+    // shape, silent delay before the attack); times in microseconds,
     // the rest in millionths.
     AmpEnvelope,
     // A point of breakpoint envelope `index` of a group: ints (group,

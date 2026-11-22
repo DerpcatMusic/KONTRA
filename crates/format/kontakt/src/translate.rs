@@ -389,9 +389,16 @@ pub(crate) fn instrument(
         let loops = loops.map_err(decode("zone loops"))?;
         let reverse =
             g.zones.first().is_some_and(|z| z.reverse) || criteria_reverse(group, &groups);
-        if let Some(mut translated) =
-            translate_zone(&z, loops.as_ref(), sample, frames, reverse, &mut notes)
-        {
+        let streaming = g.stream.is_some();
+        if let Some(mut translated) = translate_zone(
+            &z,
+            loops.as_ref(),
+            sample,
+            frames,
+            reverse,
+            streaming,
+            &mut notes,
+        ) {
             translated.id = zone_id;
             if !zone.0.private_data.is_empty() {
                 match zone.zone_envelopes() {
@@ -601,7 +608,7 @@ fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&Vo
 fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
     ir::VoiceGroup {
         voices: u16::try_from(v.max_num_voices.max(1)).unwrap_or(u16::MAX),
-        // 0 is "Any": the oldest, as Kontakt's default.
+        // Kontakt 8.13 "Any" (0) selects the oldest voice in the measured case.
         steal: match v.kill_mode {
             2 => ir::Steal::Newest,
             3 => ir::Steal::Highest,
@@ -988,6 +995,7 @@ fn translate_zone(
     sample: usize,
     frames: u64,
     reverse: bool,
+    streaming: bool,
     notes: &mut Notes,
 ) -> Option<ir::Zone> {
     let midi = |v: i16| u8::try_from(v.clamp(0, 127)).unwrap_or(0);
@@ -1024,6 +1032,13 @@ fn translate_zone(
             }
         }
         let from = l.loop_start as u64;
+        // Kontakt stores `loop_tuning` directly as a linear pitch ratio
+        // (`0140cf0000.c:10366`, multiplied into playback step at `0140870000.c:7251`).
+        let tune_ratio = if l.loop_tuning > 0.0 && l.loop_tuning.is_finite() {
+            l.loop_tuning
+        } else {
+            1.0
+        };
         found.push(ir::Loop {
             start: from,
             end: from + l.loop_length as u64,
@@ -1031,10 +1046,17 @@ fn translate_zone(
             count: u32::try_from(l.loop_count.max(0)).unwrap_or(0),
             alternating: l.alternating_loop,
             until_release: l.mode == 2,
+            tune_ratio,
         });
     }
-    // The slots are in no particular order; the model wants play order.
-    found.sort_by_key(|l| l.end);
+    // Preserve LoopArray slot order, matching Kontakt's loop-slot walk (`0140960000.c:661-701`).
+    // Sentinel `sample_start_mod_range < 0` (`0140880000.c:3435-3450`): full zone
+    // span when non-streaming (Sampler), 0 when streaming (DFD).
+    let start_mod = if z.sample_start_mod_range < 0 {
+        if streaming { 0 } else { end - start }
+    } else {
+        z.sample_start_mod_range as u64
+    };
     Some(ir::Zone {
         id: 0,
         mix: Vec::new(),
@@ -1049,7 +1071,7 @@ fn translate_zone(
         pan: z.zone_pan.clamp(-1.0, 1.0),
         start,
         end,
-        start_mod: u64::try_from(z.sample_start_mod_range).unwrap_or(0),
+        start_mod,
         loops: found,
         reverse,
         slot: 0,
@@ -1116,7 +1138,7 @@ mod tests {
             ],
         };
         let mut notes = kontra_format::Notes::default();
-        let zone = super::translate_zone(&z, Some(&loops), 0, 1000, false, &mut notes)
+        let zone = super::translate_zone(&z, Some(&loops), 0, 1000, false, false, &mut notes)
             .expect("zone translated");
         assert_eq!(zone.loops.len(), 2);
         assert!(!zone.loops[0].until_release);
@@ -1169,5 +1191,95 @@ mod tests {
         super::slot_shapes(&mut out, slots, &mut []);
         assert_eq!(out.slot_shapes.held, [(ir::RackAt::Inserts, 0, bits, 8)]);
         assert_eq!(out.slot_shapes.saved_types, [(ir::RackAt::Inserts, 0, 52)]);
+    }
+
+    #[test]
+    fn negative_start_mod_range_sentinel_and_loop_order_and_tuning() {
+        let z = ni_file::kontakt::objects::ZoneParams {
+            sample_start: 100,
+            sample_end: -100,
+            sample_start_mod_range: -1,
+            low_velocity: 1,
+            high_velocity: 127,
+            low_key: 0,
+            high_key: 127,
+            fade_low_velocity: 0,
+            fade_high_velocity: 0,
+            fade_low_key: 0,
+            fade_high_key: 0,
+            root_key: 60,
+            zone_volume: 1.0,
+            zone_pan: 0.0,
+            zone_tune: 1.0,
+            sample_present: true,
+            filename_id: 0,
+            filename_prefix: None,
+            sample_data_type: 0,
+            sample_rate: 48_000,
+            num_channels: 2,
+            num_frames: 1000,
+            reserved1: 0,
+            reserved2: None,
+            root_note: 60,
+            tuning: 0.0,
+            reserved3: 0,
+            reserved4: 0,
+            unknown_tail: Vec::new(),
+        };
+        let loops = ni_file::kontakt::objects::LoopArray {
+            mask: 0b0000_0011,
+            slots: vec![0, 1],
+            items: vec![
+                // Slot 0 ends LATER than slot 1; slot order must be preserved.
+                ni_file::kontakt::objects::Loop {
+                    mode: 1,
+                    loop_start: 500,
+                    loop_length: 200,
+                    loop_count: 2,
+                    alternating_loop: false,
+                    loop_tuning: 2.0,
+                    x_fade_length: 0,
+                },
+                ni_file::kontakt::objects::Loop {
+                    mode: 1,
+                    loop_start: 150,
+                    loop_length: 50,
+                    loop_count: 0,
+                    alternating_loop: false,
+                    loop_tuning: 0.5,
+                    x_fade_length: 0,
+                },
+            ],
+        };
+        let mut notes = kontra_format::Notes::default();
+        let sampler = super::translate_zone(&z, Some(&loops), 0, 1000, false, false, &mut notes)
+            .expect("sampler zone");
+        assert_eq!(
+            sampler.start_mod, 800,
+            "-1 sentinel -> end - start in Sampler"
+        );
+        assert_eq!(sampler.loops.len(), 2);
+        assert_eq!((sampler.loops[0].start, sampler.loops[0].end), (500, 700));
+        assert_eq!((sampler.loops[1].start, sampler.loops[1].end), (150, 200));
+        assert_eq!(sampler.loops[0].tune_ratio, 2.0);
+        assert_eq!(sampler.loops[1].tune_ratio, 0.5);
+
+        let dfd = super::translate_zone(&z, Some(&loops), 0, 1000, false, true, &mut notes)
+            .expect("dfd zone");
+        assert_eq!(dfd.start_mod, 0, "-1 sentinel -> 0 in DFD streaming");
+    }
+
+    #[test]
+    fn kontakt_any_uses_oldest_without_released_preference() {
+        let vg = super::voice_group(&ni_file::kontakt::objects::VoiceLimit {
+            name: String::new(),
+            max_num_voices: 4,
+            kill_mode: 0,
+            prefer_released: false,
+            ms_fade_time: 10,
+            exclusion_group: -1,
+        });
+        assert_eq!(vg.steal, ir::Steal::Oldest);
+        assert!(!vg.prefer_released);
     }
 }

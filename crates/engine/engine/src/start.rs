@@ -90,25 +90,36 @@ impl Engine {
                 trace.routes.begin_onset(index);
             }
             let mut region = zone.region.clone();
-            if !region.reverse {
-                let script = u64::from(n.offset) * u64::from(zone.sample_rate) / 1_000_000;
-                let script = if zone.offset_limited && script > zone.start_mod {
-                    0
-                } else {
-                    script
-                };
-                let frames = self.start_offset(zone, &n);
+            let span = region.end.saturating_sub(region.start);
+            let script = u64::from(n.offset) * u64::from(zone.sample_rate) / 1_000_000;
+            let script = if zone.offset_limited {
+                if script > zone.start_mod { 0 } else { script }
+            } else {
+                script.min(span)
+            };
+            let frames = self.start_offset(zone, &n);
+            if region.reverse {
+                // Kontakt reverse offset (0140840000.c:9557-9568): subtract from end.
+                region.end = region
+                    .end
+                    .saturating_sub(script)
+                    .saturating_add_signed(frames.saturating_neg())
+                    .clamp(region.start, zone.region.end);
+            } else {
                 region.start = region
                     .start
                     .saturating_add(script)
                     .saturating_add_signed(frames)
-                    .min(region.end);
+                    .clamp(zone.region.start, region.end);
             }
             if let [start, length] = self.loop_shift(zone, &n)
                 && (start != 0.0 || length != 0.0)
-                && !region.reverse
             {
-                region.shift_loops(start, length);
+                if region.reverse {
+                    region.shift_loops(-start, -length);
+                } else {
+                    region.shift_loops(start, length);
+                }
             }
             let start_frame = if region.reverse {
                 zone.region.end.saturating_sub(region.end) as f64

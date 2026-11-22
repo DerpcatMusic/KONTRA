@@ -263,6 +263,35 @@ impl Behaviour {
         }
     }
 
+    /// Resets controllers on `channel` per MIDI RP-015 (CC 121): resets pitch
+    /// bend, channel pressure, and channel CCs except bank (0/32), volume
+    /// (7/39) and pan (10/42).
+    pub fn reset_controllers(&mut self, channel: u8) {
+        let ch = usize::from(channel & 63);
+        const KEEP_MASK: u128 = (1u128 << 0)
+            | (1u128 << 7)
+            | (1u128 << 10)
+            | (1u128 << 32)
+            | (1u128 << 39)
+            | (1u128 << 42);
+        if let Some(ccs) = self.cc.get_mut(ch) {
+            for (cc, value) in ccs.iter_mut().enumerate() {
+                if (KEEP_MASK >> cc) & 1 == 0 {
+                    *value = if cc == 11 { 127 } else { 0 };
+                }
+            }
+        }
+        if let Some(bits) = self.cc_set.get_mut(ch) {
+            *bits = (*bits & KEEP_MASK) | (1 << 11);
+        }
+        if let Some(bend) = self.bend.get_mut(ch) {
+            *bend = 0.0;
+        }
+        if let Some(pressure) = self.pressure.get_mut(ch) {
+            *pressure = 0;
+        }
+    }
+
     /// One draw per note-on: the counters it reads and a fresh random value.
     pub fn draw(&mut self, key: u8) -> RrDraw {
         let random = self.random();

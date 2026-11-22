@@ -219,6 +219,8 @@ pub struct Engine {
     buses: Vec<BusState>,
     /// Sustain pedal down, per port and channel.
     pedal: [bool; kontra_behaviour::CHANNELS],
+    /// Sostenuto pedal (CC 66) down, per port and channel.
+    sostenuto: [bool; kontra_behaviour::CHANNELS],
     /// Scratch for ledger queries, capacity = note table size.
     hits: Vec<NoteRef>,
     ended: Vec<HostNote>,
@@ -467,6 +469,7 @@ impl Engine {
             voice_scratch: Scratch::allocate(),
             buses,
             pedal: [false; kontra_behaviour::CHANNELS],
+            sostenuto: [false; kontra_behaviour::CHANNELS],
             stats: Stats::default(),
             vms,
             routes_moved: None,
@@ -778,12 +781,14 @@ impl Engine {
                 }
                 continue;
             }
-            if self.pedal.get(usize::from(channel)) == Some(&true) {
+            let sustain_down = self.pedal.get(usize::from(channel)) == Some(&true);
+            let sostenuto_held = self.notes.get(note).is_some_and(|n| n.sostenuto_held);
+            if sustain_down {
                 // The key is up (KSP manual): only its sound is held.
                 if let Some(n) = self.notes.get_mut(note) {
                     n.pedal_held = true;
                 }
-            } else {
+            } else if !sostenuto_held {
                 self.release(note);
             }
         }
@@ -794,13 +799,20 @@ impl Engine {
     /// release): like a key-up it runs the release callback, which cannot
     /// ignore it, then releases the note (KSP manual, note_off and play_note).
     fn end_note(&mut self, note: NoteRef) {
-        let Some(n) = self.notes.get(note) else {
+        let Some(n) = self.notes.get(note).copied() else {
             return;
         };
         if n.released {
             return;
         }
         if n.origin != Origin::Host {
+            self.release_callbacks(note);
+        } else if !n.key_up {
+            // A script `note_off` on a held host note runs `on release` once
+            // and marks the key up so the later host note-off won't double-fire.
+            if let Some(live) = self.notes.get_mut(note) {
+                live.key_up = true;
+            }
             self.release_callbacks(note);
         }
         self.release(note);
@@ -847,6 +859,7 @@ impl Engine {
         }
         n.released = true;
         n.pedal_held = false;
+        n.sostenuto_held = false;
         self.mono_release(note);
         for slot in self
             .voices

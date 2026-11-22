@@ -9,19 +9,37 @@ use crate::{Engine, NoteRef, Slot};
 
 impl Engine {
     /// The order `rule` gives up voices in, the least first.
-    pub(crate) fn steal_order(&self, rule: &ir::VoiceGroup, s: &Slot) -> (bool, i64) {
+    pub(crate) fn steal_order(&self, rule: &ir::VoiceGroup, s: &Slot) -> (bool, i64, u64) {
         let key = || {
             s.note
                 .and_then(|n| self.notes.get(n))
                 .map_or(0, |n| i64::from(n.key))
+        };
+        let level = || {
+            let peak = s
+                .voice
+                .current_gain()
+                .as_flattened()
+                .iter()
+                .fold(0.0f32, |a, &b| a.max(b.abs()));
+            i64::from(if peak.is_finite() {
+                peak.max(0.0).to_bits()
+            } else {
+                0
+            })
         };
         let order = match rule.steal {
             ir::Steal::Oldest => s.started.0 as i64,
             ir::Steal::Newest => -(s.started.0 as i64),
             ir::Steal::Highest => -key(),
             ir::Steal::Lowest => key(),
+            ir::Steal::Quietest => level(),
         };
-        (!(rule.prefer_released && s.voice.is_released()), order)
+        (
+            !(rule.prefer_released && s.voice.is_released()),
+            order,
+            s.started.0,
+        )
     }
 
     /// Stops voice `index` as `rule` stops voices: through its release, or a
@@ -85,6 +103,7 @@ impl Engine {
         if let Some(set) = group.exclusive {
             for i in 0..self.voices.len() {
                 let other = (self.voices.get(i))
+                    .filter(|s| s.note != Some(note))
                     .and_then(|s| self.voice_group_of(s))
                     .filter(|&o| o != vg)
                     .and_then(|o| self.voice_groups.get(o as usize));

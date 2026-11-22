@@ -543,10 +543,14 @@ pub struct Envelope {
     /// Seconds an attack stays silent before its curve runs in the rest of
     /// the attack time; none without an attack.
     pub lag: f32,
+    /// Silent time before the attack, independent of its duration.
+    pub delay: f32,
     /// The voice gain is `floor + depth·level`: a volume route's intensity
     /// below full either scales the envelope or keeps a floor under it.
     pub floor: f32,
     pub depth: f32,
+    /// AHD-only one-shot mode: ignores note-off, decays to 0, and ends after decay.
+    pub one_shot: bool,
 }
 
 impl Envelope {
@@ -560,8 +564,10 @@ impl Envelope {
         attack_shape: 0.0,
         fall_shape: 0.0,
         lag: 0.0,
+        delay: 0.0,
         floor: 0.0,
         depth: 1.0,
+        one_shot: false,
     };
 }
 
@@ -706,6 +712,7 @@ pub enum Steal {
     Newest,
     Highest,
     Lowest,
+    Quietest,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -805,18 +812,35 @@ pub struct ZonePoint {
     pub curve: f32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Loop {
     pub start: u64,
     pub end: u64,
     /// Frames before `end` that fade linearly into the frames before `start`.
     pub crossfade: u64,
-    /// Repeats after the first pass; 0 repeats forever (or until release).
+    /// Total passes through the loop; 0 repeats forever (or until release),
+    /// 1 plays once without wrapping.
     pub count: u32,
     /// Each repeat plays the loop backwards, then forwards again.
     pub alternating: bool,
     /// Repeats until the note is released, then plays on past `end`.
     pub until_release: bool,
+    /// Linear playback-rate multiplier applied on loop repeats (1.0 untuned).
+    pub tune_ratio: f32,
+}
+
+impl Default for Loop {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            end: 0,
+            crossfade: 0,
+            count: 0,
+            alternating: false,
+            until_release: false,
+            tune_ratio: 1.0,
+        }
+    }
 }
 
 /// An effect slot.
