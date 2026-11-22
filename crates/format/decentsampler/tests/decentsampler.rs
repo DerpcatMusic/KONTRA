@@ -224,7 +224,7 @@ fn translates_effects_lfo_envelope_and_midi_cc_bindings() {
         Some(ir::EffectKind::Gain(_))
     ));
 
-    // Group 0: 4-pole lowpass + velocity mod + LFO cutoff + LFO pitch + Env cutoff + CC1 cutoff + CC7 volume
+    // Group 0: legacy lowpass_4pl (the 2-pole lowpass) + velocity mod + LFO cutoff + LFO pitch + Env cutoff + CC1 cutoff + CC7 volume
     let g = &inst.groups[0];
     let Some(Some(fx)) = g.inserts.first() else {
         panic!("expected group filter");
@@ -232,7 +232,7 @@ fn translates_effects_lfo_envelope_and_midi_cc_bindings() {
     let ir::EffectKind::Filter(f) = fx.kind else {
         panic!("expected filter, got {:?}", fx.kind);
     };
-    assert_eq!((f.pass, f.stages), (ir::Pass::Low, 2));
+    assert_eq!((f.pass, f.stages), (ir::Pass::Low, 1));
     assert!(near(f.hz, 1800.0));
     assert!(near(f.damping[0], 0.5));
 
@@ -333,7 +333,7 @@ fn reports_unsupported_features_and_missing_samples_without_silent_drops() {
 }
 
 #[test]
-fn effect_units_preserve_seconds_and_linear_gain_without_guessing_tempo_divisions() {
+fn effect_units_carry_seconds_musical_time_and_linear_gain() {
     let xml = r#"<DecentSampler><effects>
         <effect type="delay" delayTimeFormat="musical_time" delayTime="10"/>
         <effect type="delay" delayTimeFormat="seconds" delayTime="0.25"/>
@@ -343,16 +343,14 @@ fn effect_units_preserve_seconds_and_linear_gain_without_guessing_tempo_division
     </effects></DecentSampler>"#;
     let inst = translate_xml(xml, Path::new("/lib"), &fake_probe).unwrap();
     let fx = |i: usize| inst.inserts[i].clone().unwrap();
-    assert!(fx(0).bypass);
-    assert!(
-        inst.diagnostics
-            .iter()
-            .any(|d| d.feature == "unsupported delay timing mode")
-    );
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+    // Index 10 is an eighth note.
+    assert!(matches!(fx(0).kind, ir::EffectKind::Delay(d) if d.time == ir::DelayTime::Beats(0.5)));
     assert!(matches!(fx(1).kind, ir::EffectKind::Delay(d) if d.time == ir::DelayTime::Ms(250.0)));
     assert_eq!(fx(2).kind, ir::EffectKind::Gain(0.5));
     assert!(matches!(fx(3).kind, ir::EffectKind::Gain(g) if near(g, 0.501187)));
-    assert_eq!(fx(4).kind, ir::EffectKind::Gain(1.0));
+    // The documented default level, -6 dB (0.5 linear).
+    assert_eq!(fx(4).kind, ir::EffectKind::Gain(0.5));
 }
 
 #[test]
@@ -488,4 +486,260 @@ fn promoting_global_filter_after_delay_reports_reordering_approximation() {
         "{:?}",
         inst.diagnostics
     );
+}
+
+fn effects(xml: &str) -> (Vec<ir::Effect>, ir::Instrument) {
+    let inst = translate_xml(xml, Path::new("/lib"), &fake_probe).unwrap();
+    (inst.inserts.iter().flatten().cloned().collect(), inst)
+}
+
+#[test]
+fn filters_reverb_and_delay_take_the_documented_defaults() {
+    let (fx, inst) = effects(
+        r#"<DecentSampler><effects>
+        <effect type="notch"/>
+        <effect type="notch" frequency="300" Q="4"/>
+        <effect type="reverb"/>
+        <effect type="delay" stereoOffset="0.02" feedbackCutoff="3000"/>
+        <effect type="delay"/>
+    </effects></DecentSampler>"#,
+    );
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+    let ir::EffectKind::Filter(notch) = fx[0].kind else {
+        panic!("{:?}", fx[0].kind)
+    };
+    assert_eq!((notch.pass, notch.hz), (ir::Pass::Notch, 10_000.0));
+    assert!(near(notch.damping[0], 1.0 / 0.7));
+    assert!(
+        matches!(fx[1].kind, ir::EffectKind::Filter(f) if f.hz == 300.0 && near(f.damping[0], 0.25))
+    );
+    let ir::EffectKind::Reverb(r) = &fx[2].kind else {
+        panic!()
+    };
+    assert!(near(r.damping, 0.3) && near(r.seconds, 0.4 + 0.7 * 5.6));
+    assert_eq!((fx[2].output, fx[2].dry), (0.0, 1.0));
+    let ir::EffectKind::Delay(d) = &fx[3].kind else {
+        panic!()
+    };
+    assert_eq!(
+        (d.time, d.spread_ms, d.damping_hz),
+        (ir::DelayTime::Ms(700.0), 10.0, 3000.0)
+    );
+    assert!(matches!(&fx[4].kind, ir::EffectKind::Delay(d) if d.damping_hz.is_infinite()));
+}
+
+#[test]
+fn peak_and_shelves_are_eq_bands_in_linear_or_db_gain() {
+    let (fx, _) = effects(
+        r#"<DecentSampler><effects>
+        <effect type="peak" frequency="2000" Q="2" gain="2.0"/>
+        <effect type="low_shelf" gain="-6" gainUnit="decibels"/>
+        <effect type="high_shelf" q="0.7071" gain="0.5"/>
+    </effects></DecentSampler>"#,
+    );
+    let band = |i: usize| match fx[i].kind {
+        ir::EffectKind::Eq(b) => {
+            assert_eq!(&b[1..], &[ir::Bell::FLAT; 3]);
+            b[0]
+        }
+        ref k => panic!("{k:?}"),
+    };
+    let peak = band(0);
+    assert_eq!(
+        (peak.shape, peak.hz, peak.q),
+        (ir::Shape::Peak, 2000.0, 2.0)
+    );
+    assert!(near(peak.gain_db, 6.0206));
+    let low = band(1);
+    assert_eq!(
+        (low.shape, low.hz, low.gain_db),
+        (ir::Shape::LowShelf, 200.0, -6.0)
+    );
+    let high = band(2);
+    assert_eq!((high.shape, high.hz), (ir::Shape::HighShelf, 5000.0));
+    // Q 1/√2 is the cookbook slope 1, whatever the gain.
+    assert!(near(high.q, 1.0) && near(high.gain_db, -6.0206));
+}
+
+#[test]
+fn compressor_folds_input_gain_into_threshold_and_makeup() {
+    let (fx, _) = effects(
+        r#"<DecentSampler><effects>
+        <effect type="compressor"/>
+        <effect type="compressor" threshold="-20" ratio="8" attack="1" release="300" inputGain="6" outputGain="-3"/>
+    </effects></DecentSampler>"#,
+    );
+    let ir::EffectKind::Compressor(c) = fx[0].kind else {
+        panic!()
+    };
+    assert_eq!(
+        (
+            c.threshold_db,
+            c.ratio,
+            c.attack_ms,
+            c.release_ms,
+            c.makeup_db,
+            c.knee_db
+        ),
+        (-12.0, 4.0, 5.0, 100.0, 0.0, 0.0)
+    );
+    assert!(c.link);
+    let ir::EffectKind::Compressor(c) = fx[1].kind else {
+        panic!()
+    };
+    assert_eq!(
+        (
+            c.threshold_db,
+            c.ratio,
+            c.attack_ms,
+            c.release_ms,
+            c.makeup_db
+        ),
+        (-26.0, 8.0, 1.0, 300.0, 3.0)
+    );
+}
+
+#[test]
+fn phaser_sweeps_its_centre_by_a_thousandfold_per_unit_depth() {
+    let (fx, _) = effects(
+        r#"<DecentSampler><effects><effect type="phaser" modDepth="0.5" feedback="-0.4" mix="0.25"/></effects></DecentSampler>"#,
+    );
+    let ir::EffectKind::Phaser(p) = fx[0].kind else {
+        panic!()
+    };
+    assert_eq!(
+        (p.stages, p.hz, p.spread_hz, p.feedback),
+        (6, 400.0, 400.0, -0.4)
+    );
+    assert_eq!(p.rate, ir::Rate::Hz(0.2));
+    // At the LFO's peak the corner is the centre times 1000^(depth/2).
+    assert!(near(400.0 * p.exponent.exp(), 400.0 * 1000f32.powf(0.25)));
+    assert_eq!((fx[0].output, fx[0].dry), (0.25, 0.75));
+}
+
+#[test]
+fn convolution_loads_its_ir_file_as_a_sample_and_impulse() {
+    let (fx, inst) = effects(
+        r#"<DecentSampler><effects>
+        <effect type="convolution" mix="0.3" irFile="Samples\Hall 3.wav"/>
+        <effect type="convolution" irFile="missing.wav"/>
+    </effects></DecentSampler>"#,
+    );
+    assert_eq!(fx[0].kind, ir::EffectKind::Convolution { impulse: 0 });
+    assert_eq!((fx[0].output, fx[0].dry), (0.3, 0.7));
+    assert_eq!(inst.impulses.len(), 1);
+    let sample = &inst.samples[inst.impulses[0].sample];
+    assert!(
+        sample.file.ends_with("Samples/Hall 3.wav"),
+        "{:?}",
+        sample.file
+    );
+    assert_eq!(sample.channels, 2);
+    // A missing response plays only the dry share.
+    assert_eq!(
+        (fx[1].kind.clone(), fx[1].dry),
+        (ir::EffectKind::OtherWet, 0.5)
+    );
+}
+
+#[test]
+fn wave_folder_and_shaper_are_shaper_curves() {
+    let (fx, inst) = effects(
+        r#"<DecentSampler><effects>
+        <effect type="wave_folder" drive="10" threshold="0.5"/>
+        <effect type="wave_shaper" drive="40" outputLevel="0.3"/>
+    </effects></DecentSampler>"#,
+    );
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+    let curve = |i: usize| match &fx[i].kind {
+        ir::EffectKind::Shaper(s) => s.curve.clone(),
+        k => panic!("{k:?}"),
+    };
+    // Folds at ±0.5: d = π·10/(2·0.5), scaled back by 2·0.5/π.
+    let ir::DriveCurve::Fold(d) = curve(0) else {
+        panic!()
+    };
+    assert!(near(d, 10.0 * std::f32::consts::PI) && near(fx[0].output, 1.0 / std::f32::consts::PI));
+    assert_eq!((curve(1), fx[1].output), (ir::DriveCurve::Tanh(40.0), 0.3));
+}
+
+#[test]
+fn bit_crusher_holds_its_reduction_factor_and_bits() {
+    let (fx, _) = effects(
+        r#"<DecentSampler><effects>
+        <effect type="bit_crusher" bitDepth="8" sampleRateReduction="4" mix="0.5"/>
+        <effect type="bit_crusher"/>
+    </effects></DecentSampler>"#,
+    );
+    let crush = |i: usize| match fx[i].kind {
+        ir::EffectKind::Crush(c) => c,
+        ref k => panic!("{k:?}"),
+    };
+    // The engine holds 1/rate + 1 frames: 4.
+    assert_eq!((crush(0).bits, crush(0).rate), (8.0, 1.0 / 3.0));
+    assert_eq!((fx[0].output, fx[0].dry), (0.5, 0.5));
+    assert_eq!((crush(1).bits, crush(1).rate, fx[1].dry), (24.0, 1.0, 0.0));
+}
+
+#[test]
+fn pitch_shift_glides_its_heads_by_the_semitone_ratio() {
+    let (fx, _) = effects(
+        r#"<DecentSampler><effects><effect type="pitch_shift" pitchShift="-12"/></effects></DecentSampler>"#,
+    );
+    let ir::EffectKind::Shifter(s) = fx[0].kind else {
+        panic!()
+    };
+    assert_eq!((s.speed, s.feedback), ([0.5, 0.5], 0.0));
+    assert_eq!((fx[0].output, fx[0].dry), (0.5, 0.5));
+}
+
+#[test]
+fn effect_bindings_move_voice_eq_crusher_and_folder_controls() {
+    let xml = r#"
+<DecentSampler>
+  <groups>
+    <group>
+      <sample path="a.wav"/>
+      <effects>
+        <effect type="bit_crusher"/>
+        <effect type="wave_folder" threshold="0.5"/>
+      </effects>
+    </group>
+  </groups>
+  <effects><effect type="high_shelf" gain="0" gainUnit="decibels"/></effects>
+  <midi>
+    <cc number="20"><binding type="effect" level="instrument" position="0" parameter="FX_FILTER_GAIN" translationOutputMin="-6" translationOutputMax="6"/></cc>
+    <cc number="21"><binding type="effect" level="group" groupIndex="0" effectIndex="0" parameter="FX_BIT_DEPTH" translationOutputMin="1" translationOutputMax="24"/></cc>
+    <cc number="22"><binding type="effect" level="group" position="0" effectIndex="1" parameter="FX_DRIVE" translationOutputMin="1" translationOutputMax="11"/></cc>
+  </midi>
+</DecentSampler>"#;
+    let inst = translate_xml(xml, Path::new("/lib"), &fake_probe).unwrap();
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+    // The instrument shelf runs per voice now; its global copy is bypassed.
+    assert!(inst.inserts[0].as_ref().unwrap().bypass);
+    let g = &inst.groups[0];
+    let route = |cc: u8| {
+        g.mods
+            .iter()
+            .find_map(|m| match m.kind {
+                ir::ModKind::EffectParam {
+                    source: ir::Source::Controller(c),
+                    insert,
+                    param,
+                    depth,
+                    ..
+                } if c == cc => Some((insert, param, depth)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(route(20), (2, ir::EffectParam::BellGain(0), 12.0));
+    assert_eq!(route(21), (0, ir::EffectParam::CrushBits, 23.0));
+    let (insert, param, depth) = route(22);
+    assert_eq!((insert, param), (1, ir::EffectParam::ShaperAmount));
+    assert!(near(depth, 10.0 * std::f32::consts::PI));
+    // Each controller sets its control outright from the range's bottom.
+    let fx = |i: usize| g.inserts[i].clone().unwrap().kind;
+    assert!(matches!(fx(0), ir::EffectKind::Crush(c) if c.bits == 1.0));
+    assert!(matches!(fx(2), ir::EffectKind::Eq(b) if b[0].gain_db == -6.0));
 }

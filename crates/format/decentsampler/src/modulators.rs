@@ -4,10 +4,11 @@
 use std::collections::HashMap;
 
 use kontra_format::Notes;
+use kontra_format::math::gain_to_db;
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use crate::effects::{FILTER_OCTAVES, attr_f32};
+use crate::effects::{FILTER_OCTAVES, attr_f32, gain_in_db};
 
 /// Mapping context from DecentSampler XML positions/tags to emitted IR groups.
 pub(crate) struct TargetMap<'a> {
@@ -260,16 +261,22 @@ fn apply_binding(
 
     let out_min = attr_f32(binding, "translationOutputMin");
     let out_max = attr_f32(binding, "translationOutputMax");
+    // At instrument level `position` names the effect; at group level, the group.
     let effect_index = binding
         .attribute("effectIndex")
+        .or_else(|| {
+            matches!(level.as_str(), "instrument" | "")
+                .then(|| binding.attribute("position"))
+                .flatten()
+        })
         .and_then(|s| s.trim().parse::<u8>().ok())
         .unwrap_or(0);
 
     let normalized_param = param.to_ascii_uppercase();
-    // If an instrument-level filter is modulated, promote it to per-voice group inserts
-    // so ModKind::Cutoff can modulate it on every voice.
-    let slots = if normalized_param == "FX_FILTER_FREQUENCY" {
-        let Some(slot) = ensure_voice_filter(
+    // A modulated instrument-level filter or EQ is promoted to per-voice
+    // group inserts, where cutoff and effect routes move it on every voice.
+    let slots = if VOICE_PARAMS.contains(&normalized_param.as_str()) {
+        let Some(slot) = ensure_voice_effect(
             &target_indices,
             effect_index,
             &level,
@@ -280,8 +287,8 @@ fn apply_binding(
         ) else {
             notes.add(
                 ir::Impact::Audible,
-                "filter cutoff binding without filter",
-                format!("{label} -> slot {effect_index}"),
+                "effect binding without a per-voice filter, EQ, shaper or reducer",
+                format!("{label}:{param} -> slot {effect_index}"),
             );
             return;
         };
@@ -309,6 +316,16 @@ fn apply_binding(
             }
         };
 
+        let target = group
+            .inserts
+            .get(usize::from(resolved_insert))
+            .and_then(Option::as_ref);
+        let is_filter = target.is_some_and(|e| matches!(e.kind, ir::EffectKind::Filter(_)));
+        let effect_route = target.and_then(|e| {
+            let decibels = effect_node(binding, &level, effect_index).is_some_and(gain_in_db);
+            effect_route(&normalized_param, e, decibels)
+        });
+
         let kind = match normalized_param.as_str() {
             "AMP_VOLUME" | "GROUP_VOLUME" => {
                 let span = match (out_min, out_max) {
@@ -327,7 +344,8 @@ fn apply_binding(
                 }
             }
             "FX_FILTER_FREQUENCY"
-                if binding.attribute("modBehavior") == Some("add")
+                if is_filter
+                    && binding.attribute("modBehavior") == Some("add")
                     && let (Some(lo), Some(hi)) = (out_min, out_max) =>
             {
                 ir::ModKind::CutoffHz {
@@ -337,7 +355,7 @@ fn apply_binding(
                     max_hz: hi * mod_amount,
                 }
             }
-            "FX_FILTER_FREQUENCY" => {
+            "FX_FILTER_FREQUENCY" if is_filter => {
                 let octaves = group
                     .inserts
                     .get(usize::from(resolved_insert))
@@ -387,8 +405,29 @@ fn apply_binding(
                 }
             }
             _ => {
-                unsupported = true;
-                break;
+                let Some(law) = &effect_route else {
+                    unsupported = true;
+                    break;
+                };
+                let param = law.param;
+                let (lo, hi) = (
+                    law.at(out_min.unwrap_or(0.0)),
+                    law.at(out_max.unwrap_or(1.0)),
+                );
+                // A controller sets the value outright, from `lo` up.
+                if matches!(source, ir::Source::Controller(_))
+                    && let Some(Some(fx)) = group.inserts.get_mut(usize::from(resolved_insert))
+                {
+                    param.set(fx, lo);
+                }
+                ir::ModKind::EffectParam {
+                    source,
+                    insert: resolved_insert,
+                    param,
+                    depth: (hi - lo) * mod_amount,
+                    span: 1.0,
+                    unipolar: false,
+                }
             }
         };
 
@@ -415,13 +454,11 @@ fn resolve_target_groups(
 ) -> Vec<usize> {
     match level {
         "instrument" | "" => (0..groups.len()).collect(),
-        "group" => {
-            let pos = binding
-                .attribute("position")
-                .and_then(|s| s.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            targets.group_indices.get(pos).cloned().unwrap_or_default()
-        }
+        "group" => targets
+            .group_indices
+            .get(group_position(binding))
+            .cloned()
+            .unwrap_or_default(),
         "tag" => {
             let tag = binding.attribute("tags").unwrap_or("").trim();
             let Some(&vg_idx) = targets.tag_ids.get(tag) else {
@@ -440,10 +477,12 @@ fn resolve_target_groups(
     }
 }
 
-/// Ensures target groups have a filter insert to receive [`ir::ModKind::Cutoff`].
-/// If targeting an instrument-level filter, promotes that filter into each target
-/// group's insert rack and bypasses the global copy so it is not applied twice.
-fn ensure_voice_filter(
+/// Ensures target groups have an insert at `effect_index` for a cutoff or
+/// effect route. An instrument-level filter or EQ (linear, so per voice it
+/// sums the same) is promoted into every group's insert rack and the global
+/// copy bypassed so it is not applied twice; other instrument effects stay
+/// where they are, unmodulated.
+fn ensure_voice_effect(
     target_indices: &[usize],
     effect_index: u8,
     level: &str,
@@ -461,7 +500,7 @@ fn ensure_voice_filter(
                     .get(g_idx)
                     .and_then(|group| group.inserts.get(idx))
                     .and_then(Option::as_ref)
-                    .is_some_and(|e| matches!(e.kind, ir::EffectKind::Filter(_)))
+                    .is_some()
             })
             .then(|| vec![effect_index; target_indices.len()]);
     }
@@ -484,7 +523,10 @@ fn ensure_voice_filter(
         .any(|fx| !fx.bypass);
 
     let global_fx = global_inserts.get_mut(idx)?.as_mut()?;
-    if !matches!(global_fx.kind, ir::EffectKind::Filter(_)) {
+    if !matches!(
+        global_fx.kind,
+        ir::EffectKind::Filter(_) | ir::EffectKind::Eq(_)
+    ) {
         return None;
     }
 
@@ -510,4 +552,94 @@ fn ensure_voice_filter(
     }
     promoted_filters.insert(effect_index, slots);
     Some(resolved)
+}
+
+/// Effect parameters a route can move on a voice's own filter, EQ, shaper
+/// or reducer.
+const VOICE_PARAMS: [&str; 5] = [
+    "FX_FILTER_FREQUENCY",
+    "FX_FILTER_Q",
+    "FX_FILTER_GAIN",
+    "FX_BIT_DEPTH",
+    "FX_DRIVE",
+];
+
+/// The control `param` moves on `effect` and its law from DecentSampler's
+/// value `v`: `v·scale`, or a linear gain's dB (`decibels` false; a range is
+/// then carried in dB between its ends). `None` when the engine cannot move
+/// it per voice.
+fn effect_route(param: &str, effect: &ir::Effect, decibels: bool) -> Option<EffectLaw> {
+    use ir::EffectKind as K;
+    let law = |param, scale| EffectLaw {
+        param,
+        scale,
+        to_db: false,
+    };
+    Some(match (param, &effect.kind) {
+        ("FX_FILTER_FREQUENCY", K::Eq(_)) => law(ir::EffectParam::BellHz(0), 1.0),
+        ("FX_FILTER_Q", K::Eq(b)) if b[0].shape == ir::Shape::Peak => {
+            law(ir::EffectParam::BellQ(0), 1.0)
+        }
+        ("FX_FILTER_GAIN", K::Eq(_)) => EffectLaw {
+            to_db: !decibels,
+            ..law(ir::EffectParam::BellGain(0), 1.0)
+        },
+        ("FX_BIT_DEPTH", K::Crush(_)) => law(ir::EffectParam::CrushBits, 1.0),
+        ("FX_DRIVE", K::Shaper(s)) => match s.curve {
+            ir::DriveCurve::Tanh(_) => law(ir::EffectParam::ShaperAmount, 1.0),
+            // The fold's drive over its threshold, as its output gain holds it.
+            ir::DriveCurve::Fold(_) => {
+                law(ir::EffectParam::ShaperAmount, 1.0 / effect.output.max(1e-6))
+            }
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+struct EffectLaw {
+    param: ir::EffectParam,
+    scale: f32,
+    to_db: bool,
+}
+
+impl EffectLaw {
+    fn at(&self, v: f32) -> f32 {
+        if self.to_db {
+            gain_to_db(v.clamp(0.0001, 10.0))
+        } else {
+            v * self.scale
+        }
+    }
+}
+
+/// A group binding's group: `position`, or its alias `groupIndex`.
+fn group_position(binding: Node<'_, '_>) -> usize {
+    binding
+        .attribute("position")
+        .or_else(|| binding.attribute("groupIndex"))
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+/// The `<effect>` element a binding at `level` addresses, for attributes the
+/// IR does not keep (a gain's unit).
+fn effect_node<'a, 'i>(binding: Node<'a, 'i>, level: &str, index: u8) -> Option<Node<'a, 'i>> {
+    let root = binding.document().root_element();
+    let owner = match level {
+        "instrument" | "" => root,
+        "group" => root
+            .children()
+            .filter(|n| n.has_tag_name("groups"))
+            .flat_map(|g| g.children())
+            .filter(|n| n.has_tag_name("group"))
+            .nth(group_position(binding))?,
+        _ => return None,
+    };
+    owner
+        .children()
+        .filter(|n| n.has_tag_name("effects"))
+        .flat_map(|e| e.children())
+        .filter(|n| n.has_tag_name("effect"))
+        .nth(usize::from(index))
 }

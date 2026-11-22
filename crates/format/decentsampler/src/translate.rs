@@ -12,7 +12,7 @@ use kontra_format::math::{clamp_midi, gain_to_db, parse_midi_note};
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use crate::effects::{attr_bool, attr_f32, translate_effects};
+use crate::effects::{Assets, attr_bool, attr_f32, translate_effects};
 use crate::modulators::{TargetMap, translate_midi, translate_modulators};
 
 /// Shared inheritable settings (`<groups>` -> `<group>` -> `<sample>`).
@@ -116,7 +116,11 @@ pub(crate) fn translate(
     probe: &dyn Fn(&Path) -> io::Result<AudioHeader>,
 ) -> ir::Instrument {
     let mut notes = Notes::default();
-    let mut pool = SamplePool::with_prober(probe);
+    let mut assets = Assets {
+        base_dir,
+        pool: SamplePool::with_prober(probe),
+        impulses: Vec::new(),
+    };
     let mut tags = TagRegistry::default();
     let mut builder = InstrumentBuilder::new("");
 
@@ -139,7 +143,7 @@ pub(crate) fn translate(
 
     // Global effects
     for fx_node in effects_nodes {
-        for effect in translate_effects(fx_node, &mut notes) {
+        for effect in translate_effects(fx_node, &mut assets, &mut notes) {
             builder = builder.add_insert(effect);
         }
     }
@@ -182,8 +186,7 @@ pub(crate) fn translate(
                 child,
                 &global_defaults,
                 inferred_group_seq_len,
-                base_dir,
-                &mut pool,
+                &mut assets,
                 &mut tags,
                 &mut builder,
                 &mut notes,
@@ -226,7 +229,9 @@ pub(crate) fn translate(
         builder = builder.add_voice_group(vg);
     }
 
-    builder.samples(pool.into_samples()).build(notes)
+    let mut instrument = builder.samples(assets.pool.into_samples()).build(notes);
+    instrument.impulses = assets.impulses;
+    instrument
 }
 
 fn parse_tags_section(node: Node<'_, '_>, tags: &mut TagRegistry, notes: &mut Notes) {
@@ -257,13 +262,11 @@ fn parse_tags_section(node: Node<'_, '_>, tags: &mut TagRegistry, notes: &mut No
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn translate_group(
     group_node: Node<'_, '_>,
     global_defaults: &Inherited,
     inferred_group_seq_len: u8,
-    base_dir: &Path,
-    pool: &mut SamplePool<'_>,
+    assets: &mut Assets<'_, '_>,
     tags: &mut TagRegistry,
     builder: &mut InstrumentBuilder,
     notes: &mut Notes,
@@ -285,7 +288,7 @@ fn translate_group(
     for child in group_node.children().filter(Node::is_element) {
         match child.tag_name().name() {
             "sample" => sample_nodes.push(child),
-            "effects" => group_effects.extend(translate_effects(child, notes)),
+            "effects" => group_effects.extend(translate_effects(child, assets, notes)),
             other => notes.add(
                 ir::Impact::Audible,
                 &format!("element <{other}>"),
@@ -309,8 +312,8 @@ fn translate_group(
             continue;
         };
         let norm_path = raw_path.replace('\\', "/");
-        let full_path = base_dir.join(&norm_path);
-        let (sample_idx, hdr) = pool.add(norm_path, &full_path, notes);
+        let full_path = assets.base_dir.join(&norm_path);
+        let (sample_idx, hdr) = assets.pool.add(norm_path, &full_path, notes);
         let total_frames = hdr.map_or(0, |h| h.frames);
         let embedded_loops = hdr.map(|h| h.loops.clone()).unwrap_or_default();
 
