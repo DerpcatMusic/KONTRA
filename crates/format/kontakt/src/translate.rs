@@ -999,8 +999,18 @@ fn translate_zone(
     // row 16; KSP's $LOOP_PAR_MODE numbers differ, docs-txt/ksp.txt:12944).
     let mut found = Vec::new();
     for l in loops.into_iter().flat_map(|l| &l.items) {
-        if !matches!(l.mode, 1 | 2) || l.loop_length <= 0 || l.loop_start < 0 {
-            continue;
+        match l.mode {
+            0 => continue,
+            1 | 2 if l.loop_length > 0 && l.loop_start >= 0 => {}
+            1 | 2 => {
+                let span = format!("{}+{}", l.loop_start, l.loop_length);
+                notes.add(ir::Impact::Audible, "empty loop", span);
+                continue;
+            }
+            mode => {
+                notes.add(ir::Impact::Audible, "loop mode", format!("mode {mode}"));
+                continue;
+            }
         }
         let from = l.loop_start as u64;
         found.push(ir::Loop {
@@ -1038,6 +1048,89 @@ fn translate_zone(
 #[cfg(test)]
 mod tests {
     use kontra_ir as ir;
+
+    #[test]
+    fn empty_and_unknown_loop_modes_are_audible_notes() {
+        let z = ni_file::kontakt::objects::ZoneParams {
+            sample_start: 0,
+            sample_end: 0,
+            sample_start_mod_range: 0,
+            low_velocity: 1,
+            high_velocity: 127,
+            low_key: 0,
+            high_key: 127,
+            fade_low_velocity: 0,
+            fade_high_velocity: 0,
+            fade_low_key: 0,
+            fade_high_key: 0,
+            root_key: 60,
+            zone_volume: 1.0,
+            zone_pan: 0.0,
+            zone_tune: 1.0,
+            sample_present: true,
+            filename_id: 0,
+            filename_prefix: None,
+            sample_data_type: 0,
+            sample_rate: 48_000,
+            num_channels: 2,
+            num_frames: 1000,
+            reserved1: 0,
+            reserved2: None,
+            root_note: 60,
+            tuning: 0.0,
+            reserved3: 0,
+            reserved4: 0,
+            unknown_tail: Vec::new(),
+        };
+        let entry = |mode, loop_start, loop_length| ni_file::kontakt::objects::Loop {
+            mode,
+            loop_start,
+            loop_length,
+            loop_count: 0,
+            alternating_loop: false,
+            loop_tuning: 0.0,
+            x_fade_length: 0,
+        };
+        let loops = ni_file::kontakt::objects::LoopArray {
+            mask: 0b0011_1111,
+            slots: vec![0, 1, 2, 3, 4, 5],
+            items: vec![
+                entry(0, 0, 0),    // disabled: ignored silently
+                entry(1, 10, 50),  // valid until-end
+                entry(2, 100, 40), // valid until-release
+                entry(1, 10, 0),   // empty length -> Audible note
+                entry(2, -5, 20),  // negative start -> Audible note
+                entry(3, 10, 20),  // unknown mode -> Audible note
+            ],
+        };
+        let mut notes = kontra_format::Notes::default();
+        let zone = super::translate_zone(&z, Some(&loops), 0, 1000, false, &mut notes)
+            .expect("zone translated");
+        assert_eq!(zone.loops.len(), 2);
+        assert!(!zone.loops[0].until_release);
+        assert!(zone.loops[1].until_release);
+        let mut found: Vec<_> = notes
+            .finish()
+            .into_iter()
+            .map(|d| (d.impact, d.feature, d.detail))
+            .collect();
+        found.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(
+            found,
+            [
+                (
+                    ir::Impact::Audible,
+                    "empty loop".into(),
+                    "2× (first: 10+0)".into()
+                ),
+                (
+                    ir::Impact::Audible,
+                    "loop mode".into(),
+                    "1× (first: mode 3)".into()
+                ),
+            ]
+        );
+    }
 
     /// A script that only reads a saved module's control, with no
     /// `$ENGINE_PAR_EFFECT_` anywhere, still gets the saved value and the

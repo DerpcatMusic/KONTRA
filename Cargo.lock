@@ -2007,6 +2007,7 @@ dependencies = [
  "kontra-kontakt-effects",
  "kontra-law",
  "kontra-params",
+ "kontra-stream",
  "ni-file",
  "thiserror 2.0.21",
 ]

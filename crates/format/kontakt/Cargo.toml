@@ -21,3 +21,4 @@ thiserror.workspace = true
 
 [dev-dependencies]
 kontra-effects = { path = "../../engine/effects" }
+kontra-stream = { path = "../../engine/stream" }
