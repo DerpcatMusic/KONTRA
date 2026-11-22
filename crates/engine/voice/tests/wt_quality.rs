@@ -89,6 +89,7 @@ fn saw(quality: Quality, step: f64) -> (Store, Voice) {
         loop_shift: [0.0; 2],
         mix: None,
         read: None,
+        oscillator: None,
         step,
         gain: [[1.0, 0.0], [0.0, 1.0]],
         lag: kontra_voice::Lag::NONE,

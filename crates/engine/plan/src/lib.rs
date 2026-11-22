@@ -211,6 +211,9 @@ pub struct Group {
     /// Its zones play as wavetables, read so. A zone `set_zone_par` moves
     /// in gets its table built off the audio thread.
     pub wavetable: Option<kontra_voice::Read>,
+    /// Its zones synthesize audio via a real-time polyBLEP oscillator
+    /// ([`kontra_ir::Generator::Oscillator`]).
+    pub oscillator: Option<kontra_voice::Oscillator>,
     /// The speed its voices start at when its source stretches time
     /// ([`kontra_ir::Group::speed`]).
     pub speed: Option<f32>,
@@ -313,6 +316,7 @@ impl Group {
             release_trigger: false,
             bus: 0,
             wavetable: None,
+            oscillator: None,
             speed: None,
             glide: None,
             zones: ZoneRules::PLAIN,
@@ -585,6 +589,8 @@ pub struct Plan {
     /// zone whose [`ZoneFacts::source`] differs is built again
     /// (`kontra_prepare::user_zones`).
     pub user_loaded: Vec<(u32, std::sync::Arc<ir::Sample>)>,
+    /// Optional dynamic multi-channel audio routing DAG ([`ir::Instrument::graph`]).
+    pub graph: Option<ir::AudioGraph>,
 }
 
 /// A purged group as saved: its zones and the samples they play, kept as the
@@ -661,6 +667,7 @@ impl Plan {
             user_loop_pars: Vec::new(),
             dormant: std::sync::Arc::default(),
             user_loaded: Vec::new(),
+            graph: None,
         }
     }
 }

@@ -2,7 +2,10 @@
 //! zone ranges, bus send cycles, and engine modulation limits without mutating
 //! the IR.
 
-use crate::{CrossfadeControl, Diagnostic, Impact, Instrument, ModKind, Source, StartRule};
+use crate::{
+    CrossfadeControl, Diagnostic, Generator, GraphNodeKind, Impact, Instrument, ModKind, Source,
+    StartRule,
+};
 
 /// Maximum per-group LFOs or breakpoint envelopes the engine tracks per voice
 /// (`kontra_plan::modulation::WARPS`).
@@ -66,8 +69,86 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
             });
         }
 
+        if let Some(generator) = &g.generator {
+            match generator {
+                Generator::Pcm {
+                    sample, start, end, ..
+                } => {
+                    if *sample >= sample_count {
+                        out.push(Diagnostic {
+                            impact: Impact::Broken,
+                            feature: "ir.generator.sample_out_of_bounds".into(),
+                            detail: format!(
+                                "group {gi} PCM generator references sample {sample} (samples: {sample_count})"
+                            ),
+                        });
+                    }
+                    if *end > 0 && *start > *end {
+                        out.push(Diagnostic {
+                            impact: Impact::Broken,
+                            feature: "ir.generator.invalid_bounds".into(),
+                            detail: format!(
+                                "group {gi} PCM generator has start {start} > end {end}"
+                            ),
+                        });
+                    }
+                }
+                Generator::Oscillator {
+                    tune_semitones,
+                    phase,
+                    ..
+                } => {
+                    if !tune_semitones.is_finite() || !phase.is_finite() {
+                        out.push(Diagnostic {
+                            impact: Impact::Broken,
+                            feature: "ir.generator.non_finite_param".into(),
+                            detail: format!(
+                                "group {gi} oscillator generator has non-finite tune ({tune_semitones}) or phase ({phase})"
+                            ),
+                        });
+                    }
+                }
+                Generator::Granular {
+                    sample,
+                    grain_ms,
+                    density,
+                    position,
+                    pitch_semitones,
+                    spread,
+                } => {
+                    if *sample >= sample_count {
+                        out.push(Diagnostic {
+                            impact: Impact::Broken,
+                            feature: "ir.generator.sample_out_of_bounds".into(),
+                            detail: format!(
+                                "group {gi} granular generator references sample {sample} (samples: {sample_count})"
+                            ),
+                        });
+                    }
+                    if !grain_ms.is_finite()
+                        || *grain_ms <= 0.0
+                        || !density.is_finite()
+                        || *density <= 0.0
+                        || !position.is_finite()
+                        || !pitch_semitones.is_finite()
+                        || !spread.is_finite()
+                    {
+                        out.push(Diagnostic {
+                            impact: Impact::Broken,
+                            feature: "ir.generator.invalid_granular".into(),
+                            detail: format!(
+                                "group {gi} granular generator has invalid parameters (grain_ms={grain_ms}, density={density})"
+                            ),
+                        });
+                    }
+                }
+                Generator::Wavetable(_) => {}
+            }
+        }
+
+        let is_oscillator = matches!(g.generator, Some(Generator::Oscillator { .. }));
         for (zi, z) in g.zones.iter().enumerate() {
-            if z.sample >= sample_count {
+            if !is_oscillator && z.sample >= sample_count {
                 out.push(Diagnostic {
                     impact: Impact::Broken,
                     feature: "ir.zone.sample_out_of_bounds".into(),
@@ -230,6 +311,35 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
     };
     for (ki, km) in instrument.knob_mods.iter().enumerate() {
         check_source(km.source, knob_limits, &format!("knob_mod {ki}"), &mut out);
+    }
+
+    if let Some(graph) = &instrument.graph {
+        out.extend(graph.validate());
+        let has_legacy_racks = instrument.inserts.iter().any(Option::is_some)
+            || instrument.sends.iter().any(Option::is_some)
+            || instrument.main.iter().any(Option::is_some);
+        if has_legacy_racks {
+            out.push(Diagnostic {
+                impact: Impact::Broken,
+                feature: "ir.graph.conflicts_with_legacy_racks".into(),
+                detail: "instrument defines both an audio graph and legacy insert/send/main racks"
+                    .into(),
+            });
+        }
+        let group_count = instrument.groups.len();
+        for (ni, node) in graph.nodes.iter().enumerate() {
+            if let GraphNodeKind::GroupInput { group } = node.kind
+                && usize::from(group) >= group_count
+            {
+                out.push(Diagnostic {
+                    impact: Impact::Broken,
+                    feature: "ir.graph.group_out_of_bounds".into(),
+                    detail: format!(
+                        "graph node {ni} references group {group} (groups: {group_count})"
+                    ),
+                });
+            }
+        }
     }
 
     out
@@ -682,5 +792,88 @@ mod tests {
                 "ir.mod.blend_out_of_bounds",
             ]
         );
+    }
+
+    #[test]
+    fn validates_phase3_generators_and_audio_graph() {
+        // Valid oscillator group needs no samples in `instrument.samples`.
+        let mut graph = crate::AudioGraph::default();
+        let g0 = graph.push_node(GraphNodeKind::GroupInput { group: 0 });
+        let out = graph.push_node(GraphNodeKind::Output {
+            bus_index: 0,
+            layout: crate::ChannelLayout::Stereo,
+        });
+        graph.connect(g0, out, 1.0, true);
+        let valid_osc = Instrument {
+            groups: vec![Group {
+                generator: Some(Generator::Oscillator {
+                    wave: Wave::Saw,
+                    tune_semitones: 0.0,
+                    phase: 0.0,
+                }),
+                zones: vec![zone(0)],
+                ..Group::DEFAULT
+            }],
+            graph: Some(graph),
+            ..Instrument::DEFAULT
+        };
+        assert!(validate(&valid_osc).is_empty());
+
+        // Invalid generator parameters & out-of-bounds graph group input.
+        let mut bad_graph = crate::AudioGraph::default();
+        let bad_in = bad_graph.push_node(GraphNodeKind::GroupInput { group: 5 });
+        let bad_out = bad_graph.push_node(GraphNodeKind::Output {
+            bus_index: 0,
+            layout: crate::ChannelLayout::Stereo,
+        });
+        bad_graph.connect(bad_in, bad_out, f32::NAN, true);
+        let bad_inst = Instrument {
+            groups: vec![
+                Group {
+                    generator: Some(Generator::Oscillator {
+                        wave: Wave::Sine,
+                        tune_semitones: f32::INFINITY,
+                        phase: 0.0,
+                    }),
+                    ..Group::DEFAULT
+                },
+                Group {
+                    generator: Some(Generator::Granular {
+                        sample: 2,
+                        grain_ms: 0.0,
+                        density: -1.0,
+                        position: 0.0,
+                        pitch_semitones: 0.0,
+                        spread: 0.0,
+                    }),
+                    ..Group::DEFAULT
+                },
+            ],
+            graph: Some(bad_graph),
+            ..Instrument::DEFAULT
+        };
+        let features: Vec<_> = validate(&bad_inst).into_iter().map(|d| d.feature).collect();
+        assert_eq!(
+            features,
+            [
+                "ir.generator.non_finite_param",
+                "ir.generator.sample_out_of_bounds",
+                "ir.generator.invalid_granular",
+                "ir.graph.non_finite_gain",
+                "ir.graph.group_out_of_bounds",
+            ]
+        );
+
+        // Defining legacy insert/send/main racks alongside an explicit graph is flagged.
+        let mut conflict = valid_osc;
+        conflict.inserts.push(Some(crate::Effect {
+            kind: crate::EffectKind::Gain(0.5),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        }));
+        let conflict_features: Vec<_> =
+            validate(&conflict).into_iter().map(|d| d.feature).collect();
+        assert_eq!(conflict_features, ["ir.graph.conflicts_with_legacy_racks"]);
     }
 }

@@ -99,6 +99,74 @@ impl Engine {
         for rack in racks {
             rack.rebuild(rate, Responses(&plan.impulses, &self.loaded));
         }
+        if let Some(graph) = self.graph.as_mut() {
+            graph.rebuild(rate, Responses(&plan.impulses, &self.loaded));
+        }
+    }
+
+    /// Adds the buses (or compiled [`ir::AudioGraph`]) into `outputs[..][from..from+len]`.
+    /// Zero heap allocations on the audio thread.
+    pub(crate) fn mix_out_multi(
+        &mut self,
+        outputs: &mut [&mut [[f32; 2]]],
+        from: usize,
+        len: usize,
+    ) {
+        if let Some(graph) = self.graph.as_mut() {
+            const MAX_STEMS: usize = 16;
+            let count = outputs.len().min(MAX_STEMS);
+            let mut stems: [&mut [[f32; 2]]; MAX_STEMS] = std::array::from_fn(|_| &mut [][..]);
+            for (dst, out) in stems.iter_mut().zip(outputs.iter_mut().take(count)) {
+                if let Some(slice) = out.get_mut(from..from + len) {
+                    *dst = slice;
+                }
+            }
+            graph.clear(len);
+            for (gi, gmix) in self.group_mix.iter().enumerate() {
+                if let Some(slice) = gmix.get(..len) {
+                    graph.add_group_audio(u16::try_from(gi).unwrap_or(u16::MAX), slice);
+                }
+            }
+            if self.graph_redirected {
+                for (bi, bus) in self.buses.iter().enumerate() {
+                    if let Some(slice) = bus.mix.get(..len) {
+                        graph.add_bus_audio(bi, slice);
+                    }
+                }
+            }
+            if let Some(active) = stems.get_mut(..count) {
+                graph.process(len, self.tempo, active);
+            }
+            if let Some(main_span) = stems.first_mut() {
+                if self.rack.active() || self.sends.iter().any(Rack::active) || self.main.active() {
+                    let tempo = self.tempo;
+                    for tap in &mut self.taps {
+                        tap.fill([0.0; 2]);
+                    }
+                    self.rack.process(main_span, &mut self.taps, tempo);
+                    for (send, tap) in self.sends.iter_mut().zip(self.taps.iter_mut()) {
+                        if let Some(tap) = tap.get_mut(..len).filter(|_| send.active()) {
+                            send.process(tap, &mut [], tempo);
+                            for (o, t) in main_span.iter_mut().zip(tap.iter()) {
+                                o[0] += t[0];
+                                o[1] += t[1];
+                            }
+                        }
+                    }
+                    self.main.process(main_span, &mut [], tempo);
+                }
+                let (gain, pan) = (self.instrument.gain * self.expression, self.instrument.pan);
+                self.output
+                    .process(main_span, gain, self.balance.gains(pan));
+            }
+            return;
+        }
+        if let Some(span) = outputs
+            .first_mut()
+            .and_then(|out| out.get_mut(from..from + len))
+        {
+            self.mix_out(span);
+        }
     }
 
     /// Adds the buses into `span` through their racks, then runs the

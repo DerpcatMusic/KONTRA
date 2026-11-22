@@ -3,6 +3,7 @@
 //! slots between its voices and its sum.
 
 pub mod chain;
+pub mod graph;
 pub mod group_racks;
 pub mod rack;
 pub mod voice_rack;

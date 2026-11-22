@@ -236,6 +236,15 @@ fn an_additive_cutoff_route_interpolates_in_hertz() {
 
 #[test]
 fn a_write_after_init_opens_a_shared_group_filter_while_the_note_sounds() {
+    check_group_filter_write(false);
+}
+
+#[test]
+fn a_graph_group_input_follows_filter_writes_while_the_note_sounds() {
+    check_group_filter_write(true);
+}
+
+fn check_group_filter_write(with_graph: bool) {
     use kontra_engine::ir::{Effect, EffectKind, Filter, Pass};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
@@ -256,6 +265,16 @@ fn a_write_after_init_opens_a_shared_group_filter_while_the_note_sounds() {
         dry: 0.0,
     };
     plan.groups[0].inserts = vec![Some(filter(100.0))];
+    if with_graph {
+        let mut graph = kontra_ir::AudioGraph::default();
+        let input = graph.push_node(kontra_ir::GraphNodeKind::GroupInput { group: 0 });
+        let out = graph.push_node(kontra_ir::GraphNodeKind::Output {
+            bus_index: 0,
+            layout: kontra_ir::ChannelLayout::Stereo,
+        });
+        graph.connect(input, out, 1.0, true);
+        plan.graph = Some(graph);
+    }
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let peak = |e: &mut Engine, events: &[Timed<Event>]| {
         let mut out = vec![[0.0f32; 2]; 4800];

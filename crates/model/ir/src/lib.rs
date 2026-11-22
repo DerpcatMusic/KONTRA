@@ -11,6 +11,8 @@ mod bus;
 mod drive;
 mod effects;
 mod engine_par;
+mod generator;
+mod graph;
 mod link;
 mod mods;
 mod output;
@@ -34,6 +36,8 @@ pub use effects::{
     ScanShape, Scanner, Shifter, Strip, Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar, held_key};
+pub use generator::{EffectFamily, EffectSpec, Generator};
+pub use graph::{AudioGraph, ChannelLayout, EffectId, GraphEdge, GraphNode, GraphNodeKind, NodeId};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, KnobMod, Linked};
 pub use mods::{
@@ -105,6 +109,9 @@ pub struct Instrument {
     /// read.
     pub knob_blends: Vec<Blend>,
     pub knob_lfos: Vec<Lfo>,
+    /// Optional dynamic multi-channel audio routing DAG (IR vNext Phase 3).
+    /// When `None`, the engine runs the standard bus/insert/send/main racks.
+    pub graph: Option<AudioGraph>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -137,6 +144,7 @@ impl Instrument {
         knob_mods: Vec::new(),
         knob_blends: Vec::new(),
         knob_lfos: Vec::new(),
+        graph: None,
         diagnostics: Vec::new(),
     };
 }
@@ -321,6 +329,9 @@ pub struct Group {
     pub stream: Option<Stream>,
     /// Its zones are wavetables.
     pub wavetable: Option<Wavetable>,
+    /// Optional unified generator descriptor (real-time oscillator, granular,
+    /// or explicit PCM/wavetable override; IR vNext Phase 3).
+    pub generator: Option<Generator>,
     /// Its source stretches time: voices play at this speed (1 as
     /// recorded) at their own pitch. `None`: speed follows pitch.
     pub speed: Option<f32>,
@@ -378,6 +389,7 @@ impl Group {
         muted: false,
         stream: None,
         wavetable: None,
+        generator: None,
         speed: None,
         voice_group: None,
         glide: None,

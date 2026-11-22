@@ -93,8 +93,248 @@ pub struct InstrumentSpec {
     pub voice_groups: Vec<VoiceGroupSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub buses: Vec<BusSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<AudioGraphSpec>,
     #[serde(default)]
     pub groups: Vec<GroupSpec>,
+}
+
+/// Wave shape for a native [`GeneratorSpec::Oscillator`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "wave", rename_all = "snake_case")]
+pub enum OscWaveSpec {
+    Sine,
+    Saw,
+    Ramp,
+    Square {
+        #[serde(default = "default_half_f32")]
+        width: f32,
+    },
+    Triangle,
+    Noise,
+}
+
+fn default_half_f32() -> f32 {
+    0.5
+}
+
+/// Declarative group generator descriptor (IR vNext Phase 3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GeneratorSpec {
+    Pcm {
+        sample: String,
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        start: u64,
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        end: u64,
+        #[serde(default, skip_serializing_if = "is_false")]
+        reverse: bool,
+    },
+    Oscillator {
+        #[serde(flatten)]
+        wave: OscWaveSpec,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        tune_semitones: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        phase: f32,
+    },
+    Granular {
+        sample: String,
+        grain_ms: f32,
+        density: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        position: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        pitch_semitones: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        spread: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelLayoutSpec {
+    Mono,
+    #[default]
+    Stereo,
+    Multi {
+        channels: u8,
+    },
+    Surround51,
+    Surround71,
+    Ambisonics {
+        order: u8,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassSpec {
+    Low,
+    High,
+    Band,
+    Notch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EqShapeSpec {
+    Peak,
+    LowShelf,
+    HighShelf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BellSpec {
+    pub shape: EqShapeSpec,
+    pub hz: f32,
+    pub q: f32,
+    pub gain_db: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GraphEffectSpec {
+    Gain {
+        gain: f32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        bypass: bool,
+        #[serde(default = "default_one_f32")]
+        output: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        dry: f32,
+    },
+    Invert {
+        #[serde(default, skip_serializing_if = "is_false")]
+        phase: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        swap: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        bypass: bool,
+        #[serde(default = "default_one_f32")]
+        output: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        dry: f32,
+    },
+    Stereo {
+        width: f32,
+        pan: f32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        bypass: bool,
+        #[serde(default = "default_one_f32")]
+        output: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        dry: f32,
+    },
+    Filter {
+        pass: PassSpec,
+        hz: f32,
+        stages: u8,
+        damping: [f32; 3],
+        #[serde(default = "default_one_f32")]
+        gain: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        octaves: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        q_octaves: f32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        bypass: bool,
+        #[serde(default = "default_one_f32")]
+        output: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        dry: f32,
+    },
+    Eq {
+        bands: [BellSpec; 4],
+        #[serde(default, skip_serializing_if = "is_false")]
+        bypass: bool,
+        #[serde(default = "default_one_f32")]
+        output: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        dry: f32,
+    },
+    Sends {
+        levels: [f32; 8],
+        #[serde(default, skip_serializing_if = "is_false")]
+        bypass: bool,
+        #[serde(default = "default_one_f32")]
+        output: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        dry: f32,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GraphNodeSpec {
+    GroupInput {
+        group: u16,
+    },
+    Bus {
+        #[serde(default)]
+        name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        effects: Vec<u32>,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        gain_db: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        pan: f32,
+        #[serde(default)]
+        layout: ChannelLayoutSpec,
+        #[serde(default = "default_true")]
+        to_main: bool,
+    },
+    Rack {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        effects: Vec<u32>,
+        #[serde(default)]
+        layout: ChannelLayoutSpec,
+    },
+    Split {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pre_amp: Vec<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        post_amp: Vec<u32>,
+        #[serde(default = "default_one_f32")]
+        amp_gain: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        amp_pan: f32,
+    },
+    Mix {
+        #[serde(default = "default_one_f32")]
+        gain: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        pan: f32,
+    },
+    Output {
+        #[serde(default)]
+        bus_index: u8,
+        #[serde(default)]
+        layout: ChannelLayoutSpec,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphEdgeSpec {
+    pub from: u16,
+    pub to: u16,
+    #[serde(default = "default_one_f32")]
+    pub gain: f32,
+    #[serde(default = "default_true")]
+    pub post_fader: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sidechain: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AudioGraphSpec {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<GraphNodeSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<GraphEdgeSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<GraphEffectSpec>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -413,6 +653,7 @@ pub struct LoopSpec {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ZoneSpec {
+    #[serde(default)]
     pub sample: String,
     #[serde(default = "default_keys")]
     pub keys: [u8; 2],
@@ -468,6 +709,8 @@ pub struct GroupSpec {
     pub off_by: Option<usize>,
     #[serde(default)]
     pub bus: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator: Option<GeneratorSpec>,
     #[serde(default)]
     pub envelope: EnvelopeSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

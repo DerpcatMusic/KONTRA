@@ -463,6 +463,60 @@ fn group_numbers_become_voice_groups_with_their_limits_and_off_modes() {
 }
 
 #[test]
+fn builtin_oscillator_samples_translate_into_generators() {
+    let dir = scratch("builtin_osc");
+    let text = "\
+<region> sample=*sine lokey=36 hikey=47
+<region> sample=*saw lokey=48 hikey=59
+<region> sample=*square lokey=60 hikey=71
+<region> sample=*tri lokey=72 hikey=83
+<region> sample=*noise lokey=84 hikey=95
+<region> sample=*unknown_wave key=96
+";
+    let inst = parse(text, &dir);
+    assert_eq!(inst.samples.len(), 0);
+    assert_eq!(inst.groups.len(), 5);
+    assert!(matches!(
+        inst.groups[0].generator,
+        Some(kontra_ir::Generator::Oscillator {
+            wave: kontra_ir::Wave::Sine,
+            ..
+        })
+    ));
+    assert!(matches!(
+        inst.groups[1].generator,
+        Some(kontra_ir::Generator::Oscillator {
+            wave: kontra_ir::Wave::Saw,
+            ..
+        })
+    ));
+    assert!(matches!(
+        inst.groups[2].generator,
+        Some(kontra_ir::Generator::Oscillator {
+            wave: kontra_ir::Wave::Square { .. },
+            ..
+        })
+    ));
+    assert!(matches!(
+        inst.groups[3].generator,
+        Some(kontra_ir::Generator::Oscillator {
+            wave: kontra_ir::Wave::Triangle,
+            ..
+        })
+    ));
+    assert!(matches!(
+        inst.groups[4].generator,
+        Some(kontra_ir::Generator::Oscillator {
+            wave: kontra_ir::Wave::Random,
+            ..
+        })
+    ));
+    assert_eq!(inst.diagnostics.len(), 1);
+    assert_eq!(inst.diagnostics[0].feature, "built-in sample");
+    assert!(kontra_ir::validate(&inst).is_empty());
+}
+
+#[test]
 fn probes_flac_and_aiff_samples_without_hound() {
     let dir = scratch("flac_aiff");
     flac(&dir.join("pad.flac"), 48_000).expect("flac");
