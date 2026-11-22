@@ -130,6 +130,7 @@ fn translates_round_robin_random_trigger_and_choke_tags() {
         vec![(
             ir::Join::And,
             ir::StartRule::RoundRobin {
+                scope: ir::RrScope::Global,
                 position: 0,
                 length: 2,
                 random: false,
@@ -141,6 +142,7 @@ fn translates_round_robin_random_trigger_and_choke_tags() {
         vec![(
             ir::Join::And,
             ir::StartRule::RoundRobin {
+                scope: ir::RrScope::Global,
                 position: 1,
                 length: 2,
                 random: false,
@@ -152,6 +154,7 @@ fn translates_round_robin_random_trigger_and_choke_tags() {
         vec![(
             ir::Join::And,
             ir::StartRule::RoundRobin {
+                scope: ir::RrScope::Global,
                 position: 0,
                 length: 2,
                 random: true,
@@ -438,6 +441,7 @@ fn disabled_groups_keep_binding_indices_and_split_zones_keep_their_sequence() {
             vec![(
                 ir::Join::And,
                 ir::StartRule::RoundRobin {
+                    scope: ir::RrScope::Global,
                     position: pos as u8,
                     length: 2,
                     random: false,

@@ -459,6 +459,7 @@ fn build_ir_group(
             gb = gb.add_start_rule(
                 ir::Join::And,
                 ir::StartRule::RoundRobin {
+                    scope: ir::RrScope::Global,
                     position: pos,
                     length,
                     random: mode == SeqMode::Random,

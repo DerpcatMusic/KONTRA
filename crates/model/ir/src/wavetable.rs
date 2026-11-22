@@ -147,7 +147,7 @@ impl Inharmonic {
 }
 
 /// A value of a [`Wavetable`] that routes and scripts move, each 0..=1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TableValue {
     Position,
     /// The amount of warp n (0 or 1).

@@ -377,11 +377,16 @@ impl Engine {
             ir::Source::Lfo(n) => self.memo.lfo(n, age, || self.lfo_value(zone, n, note, age)),
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::ReleaseVelocity => Some(note.release_velocity),
-            // A note's own brightness is its controller 74 (MPE's timbre).
+            // A note's own brightness/expression override CC 74 and CC 11.
             ir::Source::Controller(74) | ir::Source::ControllerFrom { cc: 74, .. }
                 if note.expression_brightness.is_some() =>
             {
                 note.expression_brightness
+            }
+            ir::Source::Controller(11) | ir::Source::ControllerFrom { cc: 11, .. }
+                if note.expression_expression.is_some() =>
+            {
+                note.expression_expression
             }
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
             ir::Source::ControllerFrom { cc, start } => {
@@ -395,6 +400,26 @@ impl Engine {
             ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
             ir::Source::Pressure => {
                 Some((note.expression_pressure).unwrap_or_else(|| self.behaviour.pressure(channel)))
+            }
+            ir::Source::NoteExpr(expr) => Some(match expr {
+                ir::NoteExpr::Pressure => note
+                    .expression_pressure
+                    .unwrap_or_else(|| self.behaviour.pressure(channel)),
+                ir::NoteExpr::Brightness => note
+                    .expression_brightness
+                    .unwrap_or_else(|| f32::from(self.behaviour.cc(channel, 74)) / 127.0),
+                ir::NoteExpr::Vibrato => note
+                    .expression_vibrato
+                    .unwrap_or_else(|| f32::from(self.behaviour.cc(channel, 1)) / 127.0),
+                ir::NoteExpr::Expression => note
+                    .expression_expression
+                    .unwrap_or_else(|| f32::from(self.behaviour.cc(channel, 11)) / 127.0),
+                ir::NoteExpr::Tune => ((note.expression_tune as f32) / 12.0).clamp(-1.0, 1.0),
+                ir::NoteExpr::Gain => note.expression_gain,
+                ir::NoteExpr::Pan => note.expression_pan,
+            }),
+            ir::Source::PerNoteCc { registered, index } => {
+                Some(note.per_note_cc(registered, index).unwrap_or(0.0))
             }
             ir::Source::Key => Some(f32::from(note.key) / 127.0),
             ir::Source::Constant => Some(1.0),
@@ -473,6 +498,7 @@ impl Engine {
         let bend = matches!(
             t.source,
             ir::Source::PitchBend
+                | ir::Source::NoteExpr(ir::NoteExpr::Tune | ir::NoteExpr::Pan)
                 | ir::Source::Random { bipolar: true }
                 | ir::Source::ZoneEnvelope(_)
         ) && !t.table.is_empty();
@@ -501,6 +527,7 @@ impl Engine {
         Some(match s {
             ir::Source::Lfo(_)
             | ir::Source::PitchBend
+            | ir::Source::NoteExpr(ir::NoteExpr::Tune | ir::NoteExpr::Pan)
             | ir::Source::Random { bipolar: true }
             | ir::Source::ZoneEnvelope(_) => (x + 1.0) * 0.5,
             _ => x,

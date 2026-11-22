@@ -697,9 +697,12 @@ impl Engine {
             Event::NoteOffVelocity(pattern, velocity) => self.note_off(pattern, Some(velocity)),
             Event::Choke(pattern) => self.choke(pattern),
             Event::Expression(pattern, expression) => self.expression(pattern, expression),
-            // ponytail: per-note controllers are dropped until modulation
-            // sources take them.
-            Event::PerNoteCc { .. } => {}
+            Event::PerNoteCc {
+                pattern,
+                registered,
+                index,
+                value,
+            } => self.per_note_cc(pattern, registered, index, value),
             Event::Ump(words) => self.ump(words),
         }
     }
@@ -970,6 +973,8 @@ impl Engine {
                 NoteExpression::Tune(semitones) => n.expression_tune = semitones,
                 NoteExpression::Gain(g) => n.expression_gain = g as f32,
                 NoteExpression::Pan(p) => n.expression_pan = p as f32,
+                NoteExpression::Vibrato(v) => n.expression_vibrato = Some(v as f32),
+                NoteExpression::Expression(e) => n.expression_expression = Some(e as f32),
                 NoteExpression::Pressure(p) => n.expression_pressure = Some(p as f32),
                 NoteExpression::Brightness(b) => n.expression_brightness = Some(b as f32),
             }
@@ -995,6 +1000,19 @@ impl Engine {
             // A note's own expression is the host's: it stands either way.
             let _ = self.run_poly_at(key);
         }
+    }
+
+    fn per_note_cc(&mut self, pattern: HostPattern, registered: bool, index: u8, value: f32) {
+        let mut hits = std::mem::take(&mut self.hits);
+        self.notes.matching(pattern, &mut hits);
+        for &note in &hits {
+            let Some(n) = self.notes.get_mut(note) else {
+                continue;
+            };
+            n.set_per_note_cc(registered, index, value);
+            self.refresh_note(note, None);
+        }
+        self.hits = hits;
     }
 }
 

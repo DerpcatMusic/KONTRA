@@ -103,8 +103,7 @@ pub fn exact(e: ExactEventRef<'_>) -> Option<Event> {
             f64::from(tuning) / 100.0,
         ),
         // CLAP: 0 volume (linear 0..=4), 1 pan (0..=1), 2 tuning (semitones),
-        // 5 brightness, 6 pressure. Vibrato (3) and expression (4) have no
-        // engine consumer: they keep moose's per-note CC fallback.
+        // 3 vibrato, 4 expression, 5 brightness, 6 pressure.
         ExactEventBody::NoteExpression {
             expression_id,
             address,
@@ -116,14 +115,15 @@ pub fn exact(e: ExactEventRef<'_>) -> Option<Event> {
                 0 if (0.0..=4.0).contains(&value) => Some(NoteExpression::Gain(value)),
                 1 => unit(value).map(|v| NoteExpression::Pan(v * 2.0 - 1.0)),
                 2 if (-120.0..=120.0).contains(&value) => Some(NoteExpression::Tune(value)),
+                3 => unit(value).map(NoteExpression::Vibrato),
+                4 => unit(value).map(NoteExpression::Expression),
                 5 => unit(value).map(NoteExpression::Brightness),
                 6 => unit(value).map(NoteExpression::Pressure),
                 _ => None,
             },
         ),
         // VST3, normalized: 0 volume (0.25 unity, 1 is +12 dB), 1 pan,
-        // 2 tuning (0.5 centre, ±120 semitones), 5 brightness. Vibrato (3) and
-        // expression (4) have no engine consumer.
+        // 2 tuning (0.5 centre, ±120 semitones), 3 vibrato, 4 expression, 5 brightness.
         ExactEventBody::NormalizedNoteExpression {
             expression_id,
             address,
@@ -135,6 +135,8 @@ pub fn exact(e: ExactEventRef<'_>) -> Option<Event> {
                 0 => Some(NoteExpression::Gain(v * 4.0)),
                 1 => Some(NoteExpression::Pan(v * 2.0 - 1.0)),
                 2 => Some(NoteExpression::Tune((v - 0.5) * 240.0)),
+                3 => Some(NoteExpression::Vibrato(v)),
+                4 => Some(NoteExpression::Expression(v)),
                 5 => Some(NoteExpression::Brightness(v)),
                 _ => None,
             }),
@@ -329,6 +331,24 @@ mod tests {
         assert!(
             matches!(tune, Some(Event::Expression(p, NoteExpression::Tune(t))) if p.id == 117 && t == -1.5),
             "{tune:?}"
+        );
+        let vibrato = decode(ExactEventBody::NoteExpression {
+            expression_id: 3,
+            address,
+            value: 0.65,
+        });
+        assert!(
+            matches!(vibrato, Some(Event::Expression(p, NoteExpression::Vibrato(v))) if p.id == 117 && (v - 0.65).abs() < 1e-6),
+            "{vibrato:?}"
+        );
+        let expr = decode(ExactEventBody::NormalizedNoteExpression {
+            expression_id: 4,
+            address,
+            value: 0.4,
+        });
+        assert!(
+            matches!(expr, Some(Event::Expression(p, NoteExpression::Expression(v))) if p.id == 117 && (v - 0.4).abs() < 1e-6),
+            "{expr:?}"
         );
         let vst3 = decode(ExactEventBody::DetailedNote {
             kind: ExactNoteKind::On,

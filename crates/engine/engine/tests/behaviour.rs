@@ -379,6 +379,170 @@ fn complementary_random_start_rules_partition_every_note_on() {
 }
 
 #[test]
+fn per_note_cc_and_note_expr_modulate_each_sounding_note_independently() {
+    use kontra_engine::{Event, HostNote, HostPattern, NoteExpression};
+    use kontra_ir::{Curve, Mod, ModKind, NoteExpr, Source};
+
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut left = zone(&mut store, 1.0);
+    left.keys = 60..=60;
+    left.pan = -1.0;
+    let mut right = zone(&mut store, 1.0);
+    right.keys = 64..=64;
+    right.pan = 1.0;
+
+    let mut plan = Plan::new(vec![left, right], 8);
+    plan.groups[0].mods = vec![
+        Mod {
+            name: "pnc".into(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ModKind::Volume {
+                source: Source::PerNoteCc {
+                    registered: true,
+                    index: 74,
+                },
+                intensity: 1.0,
+                curve: Curve::Depth { power: 1 },
+                tau_ms: 0.0,
+            },
+        },
+        Mod {
+            name: "expr".into(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: ModKind::Volume {
+                source: Source::NoteExpr(NoteExpr::Expression),
+                intensity: 1.0,
+                curve: Curve::Depth { power: 1 },
+                tau_ms: 0.0,
+            },
+        },
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+
+    let note_a = HostNote {
+        port: 0,
+        channel: 0,
+        key: 60,
+        id: 101,
+        clap: true,
+    };
+    let note_b = HostNote {
+        port: 0,
+        channel: 0,
+        key: 64,
+        id: 202,
+        clap: true,
+    };
+    let pat = |n: HostNote| HostPattern {
+        port: i32::from(n.port),
+        channel: i32::from(n.channel),
+        key: i32::from(n.key),
+        id: n.id,
+        clap: true,
+    };
+    let at0 = |body| Timed {
+        at: kontra_engine::SampleTime(0),
+        body,
+    };
+
+    // Start both notes; send high PerNoteCc + Expression only to note A, low to note B.
+    level(
+        &mut e,
+        &[
+            at0(Event::NoteOn {
+                note: note_a,
+                velocity: 1.0,
+                tune: 0.0,
+            }),
+            at0(Event::NoteOn {
+                note: note_b,
+                velocity: 1.0,
+                tune: 0.0,
+            }),
+            at0(Event::PerNoteCc {
+                pattern: pat(note_a),
+                registered: true,
+                index: 74,
+                value: 1.0,
+            }),
+            at0(Event::Expression(
+                pat(note_a),
+                NoteExpression::Expression(1.0),
+            )),
+            at0(Event::PerNoteCc {
+                pattern: pat(note_b),
+                registered: true,
+                index: 74,
+                value: 0.5,
+            }),
+            at0(Event::Expression(
+                pat(note_b),
+                NoteExpression::Expression(0.5),
+            )),
+        ],
+    );
+    // Let the voice gain smoother settle to its per-note targets.
+    for _ in 0..3 {
+        level(&mut e, &[]);
+    }
+    let [l, r] = level(&mut e, &[]);
+    assert!(close(l, 1.0), "note A should be at unity: {l}");
+    assert!(close(r, 0.25), "note B should be at 0.5 * 0.5 = 0.25: {r}");
+}
+
+#[test]
+fn per_key_round_robin_counters_advance_independently_per_midi_key() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut step0 = zone(&mut store, 1.0);
+    step0.pan = -1.0;
+    step0.start = vec![(
+        kontra_ir::Join::And,
+        Atom::RoundRobin(RoundRobin {
+            counter: RrCounter::Key,
+            position: 0,
+            length: 2,
+            random: false,
+        }),
+    )];
+    let mut step1 = zone(&mut store, 1.0);
+    step1.pan = 1.0;
+    step1.start = vec![(
+        kontra_ir::Join::And,
+        Atom::RoundRobin(RoundRobin {
+            counter: RrCounter::Key,
+            position: 1,
+            length: 2,
+            random: false,
+        }),
+    )];
+    let mut e = engine(&store, Plan::new(vec![step0, step1], 8));
+
+    // C4 first hit -> step 0 (left)
+    let [l, r] = level(&mut e, &[on(60, 1.0)]);
+    assert!(l > 0.5 && r < 0.1, "C4 #1 should be step 0: {l}/{r}");
+    level(&mut e, &[off(60)]);
+    for _ in 0..4 {
+        level(&mut e, &[]);
+    }
+
+    // D4 first hit -> ALSO step 0 (left), unaffected by C4!
+    let [l, r] = level(&mut e, &[on(62, 1.0)]);
+    assert!(l > 0.5 && r < 0.1, "D4 #1 should be step 0: {l}/{r}");
+    level(&mut e, &[off(62)]);
+    for _ in 0..4 {
+        level(&mut e, &[]);
+    }
+
+    // C4 second hit -> step 1 (right)
+    let [l, r] = level(&mut e, &[on(60, 1.0)]);
+    assert!(r > 0.5 && l < 0.1, "C4 #2 should be step 1: {l}/{r}");
+}
+
+#[test]
 fn a_disabled_mic_bus_starts_no_voices() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let close_mic = zone(&mut store, 0.5);

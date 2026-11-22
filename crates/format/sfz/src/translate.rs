@@ -128,6 +128,7 @@ fn bits_f64(v: f64) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum StartRuleKey {
     RoundRobin {
+        scope: ir::RrScope,
         position: u8,
         length: u8,
         random: bool,
@@ -176,10 +177,12 @@ impl GroupKey {
             .iter()
             .filter_map(|(_, rule)| match rule {
                 ir::StartRule::RoundRobin {
+                    scope,
                     position,
                     length,
                     random,
                 } => Some(StartRuleKey::RoundRobin {
+                    scope: *scope,
                     position: *position,
                     length: *length,
                     random: *random,
@@ -446,6 +449,7 @@ impl Build {
             rules.push((
                 ir::Join::And,
                 ir::StartRule::RoundRobin {
+                    scope: ir::RrScope::Key,
                     position: u8::try_from(position).unwrap_or(0),
                     length: u8::try_from(length).unwrap_or(u8::MAX),
                     random: false,

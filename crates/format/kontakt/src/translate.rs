@@ -1071,6 +1071,7 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
                     _ => continue,
                 },
                 CYCLE => ir::StartRule::RoundRobin {
+                    scope: ir::RrScope::Global,
                     position: u8::try_from(c.cycle_class).unwrap_or(0),
                     length: u8::try_from(cycle).unwrap_or(u8::MAX),
                     random: false,
@@ -1078,6 +1079,7 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
                 RANDOM => {
                     random_position += 1;
                     ir::StartRule::RoundRobin {
+                        scope: ir::RrScope::Global,
                         position: random_position - 1,
                         length: u8::try_from(randoms).unwrap_or(u8::MAX),
                         random: true,
