@@ -580,3 +580,233 @@ fn a_hover_area_answers_the_pointer_over_it() {
         .collect();
     assert_eq!(set, [&Set::Value(1.), &Set::Value(0.)]);
 }
+
+/// A page that rebuilds while a control is dragged moves every widget
+/// after a changed one (Conflux shows its assign toggles beside the macro
+/// being dragged): the drag goes on with the same control, and a held
+/// tap still reports its release.
+#[test]
+fn a_drag_and_a_held_tap_survive_a_rebuild_that_moves_them() {
+    let mut f = Face::new();
+    if let Some(knob) = f.tree.widgets.first_mut() {
+        knob.source_id = Some(32768);
+    }
+    let rect = Rect::new(250, 150, 40, 40);
+    f.tree.widgets.push(Widget::new(
+        "native_ui tap 1 2",
+        PageRef(0),
+        rect,
+        Kind::Button { momentary: true },
+    ));
+    let tap = f.tree.widgets.len() - 1;
+    f.frame(Input::default());
+    let knob = f.at(&input::surface(0, 0));
+    let held = f.at(&input::surface(0, tap));
+    // The knob: pressed, then the page puts a label before it.
+    f.pointer(knob, true, Mods::default());
+    f.pointer(Point::new(knob.x, knob.y - 20.), true, Mods::default());
+    let label = Widget::new("", PageRef(0), Rect::new(0, 280, 10, 10), Kind::Label);
+    f.tree.widgets.insert(0, label.clone());
+    f.pointer(Point::new(knob.x, knob.y - 40.), true, Mods::default());
+    f.pointer(Point::new(knob.x, knob.y - 40.), false, Mods::default());
+    f.frame(Input::default());
+    assert_eq!(
+        f.value(1),
+        20.,
+        "the knob, now widget 1, went on to 40 points up"
+    );
+    assert!(!f.gesture.held(), "and let go");
+    // The tap: held, the page puts another label before it, let go.
+    let mut edits = f.pointer(held, true, Mods::default());
+    edits.extend(f.pointer(held, true, Mods::default()));
+    f.tree.widgets.insert(0, label);
+    edits.extend(f.pointer(held, false, Mods::default()));
+    edits.extend(f.frame(Input::default()));
+    let moved = WidgetRef(tap + 2);
+    let set: Vec<_> = (edits.iter())
+        .filter(|e| e.widget == WidgetRef(tap + 1) || e.widget == moved)
+        .map(|e| (e.widget, &e.to))
+        .collect();
+    assert_eq!(
+        set,
+        [
+            (WidgetRef(tap + 1), &Set::Value(1.)),
+            (moved, &Set::Value(0.))
+        ]
+    );
+}
+
+/// A menu floated open closes when the page hides its control, rather than
+/// pick for whatever widget takes its place.
+#[test]
+fn an_open_menu_closes_when_its_control_is_hidden() {
+    let mut f = Face::new();
+    f.frame(Input::default());
+    f.click(&input::surface(0, 2), Mods::default());
+    assert_eq!(f.gesture.menu, Some(2));
+    if let Some(menu) = f.tree.widgets.get_mut(2) {
+        menu.hidden = true;
+    }
+    f.frame(Input::default());
+    assert_eq!(f.gesture.menu, None);
+}
+
+/// A hover area hidden while the pointer is over it hears the pointer
+/// leave, so the page does not stay hovered.
+#[test]
+fn a_hover_area_hidden_under_the_pointer_hears_it_leave() {
+    let mut f = Face::new();
+    let mut area = Widget::new(
+        "native_ui tap 1 2",
+        PageRef(0),
+        Rect::new(300, 150, 60, 30),
+        Kind::Button { momentary: true },
+    );
+    area.intercepts_mouse = false;
+    f.tree.widgets.push(area);
+    let n = f.tree.widgets.len() - 1;
+    f.frame(Input::default());
+    let at = f.at(&input::surface(0, n));
+    let inside = Point::new(at.x + 20., at.y + 10.);
+    let mut edits = f.pointer(inside, false, Mods::default());
+    edits.extend(f.pointer(inside, false, Mods::default()));
+    if let Some(w) = f.tree.widgets.get_mut(n) {
+        w.hidden = true;
+    }
+    edits.extend(f.pointer(inside, false, Mods::default()));
+    edits.extend(f.pointer(inside, false, Mods::default()));
+    let set: Vec<_> = (edits.iter())
+        .filter(|e| e.widget == WidgetRef(n))
+        .map(|e| &e.to)
+        .collect();
+    assert_eq!(set, [&Set::Value(1.), &Set::Value(0.)]);
+}
+
+#[test]
+fn a_replacement_tap_at_the_same_panel_offset_does_not_hear_the_release() {
+    let mut f = Face::new();
+    let left = f.tree.widgets.len();
+    for x in [10, 210] {
+        f.tree.widgets.push(Widget::new(
+            "",
+            PageRef(0),
+            Rect::new(x, 200, 150, 80),
+            Kind::Panel,
+        ));
+    }
+    let tap = f.tree.widgets.len();
+    for parent in [left, left + 1] {
+        let mut area = Widget::new(
+            "native_ui tap 1 2",
+            PageRef(0),
+            Rect::new(10, 10, 40, 20),
+            Kind::Button { momentary: true },
+        );
+        area.parent = Some(WidgetRef(parent));
+        f.tree.widgets.push(area);
+    }
+    f.frame(Input::default());
+    let at = f.at(&input::surface(0, tap));
+    f.pointer(at, true, Mods::default());
+    let press = f.pointer(at, true, Mods::default());
+    assert!(
+        press
+            .iter()
+            .any(|e| e.widget == WidgetRef(tap) && e.to == Set::Value(1.))
+    );
+
+    f.tree.widgets.remove(tap);
+    let mut release = f.pointer(at, false, Mods::default());
+    release.extend(f.frame(Input::default()));
+    assert!(release.is_empty(), "{release:?}");
+}
+
+#[test]
+fn an_entry_keeps_its_focus_and_target_if_the_tree_changes_just_after_opening() {
+    let mut f = Face::new();
+    let a = f.tree.widgets.len() - 1;
+    f.tree.widgets[a].text = "first".into();
+    f.tree.widgets[a].source_id = Some(1);
+    let b = a + 1;
+    let mut second = Widget::new(
+        "@second",
+        PageRef(0),
+        Rect::new(230, 100, 80, 18),
+        Kind::TextEdit,
+    );
+    second.text = "second".into();
+    second.source_id = Some(2);
+    f.tree.widgets.push(second);
+    f.frame(Input::default());
+    f.click(&input::surface(0, b), Mods::default());
+    let focus =
+        f.ui.focus_key()
+            .expect("the open entry is focused")
+            .to_owned();
+
+    // The next read sees A at B's old index, before it has revisited the open entry.
+    f.tree.widgets.insert(
+        a,
+        Widget::new("", PageRef(0), Rect::new(0, 280, 10, 10), Kind::Label),
+    );
+    f.frame(Input {
+        text: "!".into(),
+        ..Input::default()
+    });
+    assert_eq!(f.ui.focus_key(), Some(focus.as_str()));
+    f.frame(Input {
+        keys: vec![KeyPress {
+            key: Key::Enter,
+            mods: Mods::default(),
+        }],
+        ..Input::default()
+    });
+    let edits = f.frame(Input::default());
+    assert_eq!(
+        edits.iter().map(|e| (e.widget, &e.to)).collect::<Vec<_>>(),
+        [(WidgetRef(b + 1), &Set::Text("second!".into()))]
+    );
+    assert_eq!(f.tree.widgets[b].text, "first");
+}
+
+#[test]
+fn a_hidden_hover_area_in_another_panel_does_not_hear_the_other_hovered() {
+    let mut f = Face::new();
+    let left = f.tree.widgets.len();
+    for x in [10, 210] {
+        f.tree.widgets.push(Widget::new(
+            "",
+            PageRef(0),
+            Rect::new(x, 200, 150, 80),
+            Kind::Panel,
+        ));
+    }
+    let first = f.tree.widgets.len();
+    for (i, parent) in [left, left + 1].into_iter().enumerate() {
+        let mut area = Widget::new(
+            "native_ui hover",
+            PageRef(0),
+            Rect::new(10, 10, 40, 20),
+            Kind::Button { momentary: true },
+        );
+        area.parent = Some(WidgetRef(parent));
+        area.intercepts_mouse = false;
+        area.hidden = i == 1;
+        f.tree.widgets.push(area);
+    }
+    let hidden = first + 1;
+    f.frame(Input::default());
+    let at = f.at(&input::surface(0, first));
+    let inside = Point::new(at.x + 10., at.y + 10.);
+    let mut edits = f.pointer(inside, false, Mods::default());
+    edits.extend(f.pointer(inside, false, Mods::default()));
+    assert!(
+        edits
+            .iter()
+            .any(|e| e.widget == WidgetRef(first) && e.to == Set::Value(1.))
+    );
+    assert!(
+        edits.iter().all(|e| e.widget != WidgetRef(hidden)),
+        "hidden sibling in another panel got hover edits: {edits:?}"
+    );
+}

@@ -59,11 +59,11 @@ pub struct FileDrag {
 /// menu floated open, and what is being typed into a value or text edit.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Gesture {
-    press: Option<(usize, f64)>,
+    press: Option<Press>,
+    /// The momentary button held, whose release runs the source's own.
+    tap: Option<(usize, Ident)>,
     pub menu: Option<usize>,
-    /// The control typed into, the text so far, and the selection (in
-    /// characters) still to make once the field is on screen.
-    entry: Option<(usize, String, Option<Span>)>,
+    entry: Option<Entry>,
     /// The value edit whose arrow is held, its step, and when it steps next.
     arrow: Option<(usize, f64, f64)>,
     /// The XY pad being dragged, its cursor, and where that cursor's
@@ -80,16 +80,108 @@ pub struct Gesture {
     hovered: Vec<[i64; 4]>,
     /// The mouse area a file drag is over.
     dragged_over: Option<WidgetRef>,
+    /// What the open menu is, found again each frame (see [`Ident`]).
+    menu_of: Option<Ident>,
 }
 
 /// A run of characters, from and to.
 type Span = (usize, usize);
+
+#[derive(Clone, Debug, PartialEq)]
+struct Entry {
+    n: usize,
+    of: Ident,
+    /// Keep MUI's focus, selection and text input tied to this popup as its
+    /// anchor follows the control's current index.
+    ui_id: String,
+    text: String,
+    pending: Option<Span>,
+}
+
+/// A range control dragged: which, its value at the press, where the
+/// pointer went down, and whether Shift was held then (fine travel).
+#[derive(Clone, Debug, PartialEq)]
+struct Press {
+    n: usize,
+    of: Ident,
+    start: f64,
+    from: Point,
+    fine: bool,
+}
+
+/// What a gesture in flight holds on to. A native page re-renders its
+/// views as they change (a hover shows Conflux's assign toggles beside
+/// the macro being dragged), and every widget after a changed one moves
+/// in the tree: by number alone, the drag would stop or move another
+/// control. A script's control is its id and name; an area of the page's
+/// own (a tap) is where it sits.
+#[derive(Clone, Debug, PartialEq)]
+enum Ident {
+    Control(i32, String),
+    Area([i64; 4]),
+}
+
+fn ident(tree: &Interface, n: WidgetRef, w: &model::Widget) -> Ident {
+    match w.source_id {
+        Some(id) => Ident::Control(id, w.name.clone()),
+        None => Ident::Area(area(tree.page_rect(n))),
+    }
+}
+
+/// A rectangle in sixteenths of a point.
+fn area(r: model::Rect) -> [i64; 4] {
+    [r.x, r.y, r.width, r.height].map(|v| (v * 16.).round() as i64)
+}
+
+/// Where `of`, last seen as widget `at`, is now: still there, or the first
+/// shown widget taking input that is the same. `None` once it is hidden,
+/// disabled or gone.
+fn find(tree: &Interface, at: usize, of: &Ident) -> Option<usize> {
+    let live = |n: usize| {
+        let w = tree.widgets.get(n)?;
+        (tree.visible(WidgetRef(n)) && takes_input(w) && ident(tree, WidgetRef(n), w) == *of)
+            .then_some(n)
+    };
+    live(at).or_else(|| (0..tree.widgets.len()).find_map(live))
+}
 
 impl Gesture {
     /// Whether a control is still pressed: dragged, or its arrow held.
     #[must_use]
     pub fn held(&self) -> bool {
         self.press.is_some() || self.xy.is_some() || self.arrow.is_some()
+    }
+
+    /// Finds what is in flight in this frame's tree: a drag, a held button,
+    /// the open menu and the field typed into follow their widget when the
+    /// tree is rebuilt, and end when it is hidden, disabled or gone (a
+    /// menu left open would pick for whatever widget took its number).
+    fn follow(&mut self, tree: &Interface) {
+        let at = |n: usize| {
+            let n = WidgetRef(n);
+            tree.widgets.get(n.0).map(|w| ident(tree, n, w))
+        };
+        if let Some(p) = &mut self.press {
+            match find(tree, p.n, &p.of) {
+                Some(n) => p.n = n,
+                None => self.press = None,
+            }
+        }
+        self.tap = (self.tap.take()).and_then(|(n, of)| Some((find(tree, n, &of)?, of)));
+        if let Some(m) = self.menu {
+            let of = self.menu_of.take().or_else(|| at(m));
+            self.menu = of.as_ref().and_then(|of| find(tree, m, of));
+            self.menu_of = of.filter(|_| self.menu.is_some());
+            if self.menu.is_none() {
+                self.branch.clear();
+            }
+        } else {
+            self.menu_of = None;
+        }
+        self.entry = self.entry.take().and_then(|mut e| {
+            e.n = find(tree, e.n, &e.of)?;
+            Some(e)
+        });
     }
 }
 
@@ -249,15 +341,32 @@ pub fn read(
     {
         edits.push(left(n));
     }
+    let down = ui.pointer().buttons.contains(mui::input::Button::Primary);
+    g.follow(tree);
     let mut over = Vec::new();
     for (i, &n) in order.iter().enumerate() {
         if let Some(w) = tree.widgets.get(n.0).filter(|w| hovers(w)) {
-            if tree.visible(n)
-                && let Some(edit) =
-                    hover(ui, surface(face, n.0), (n, w), scale, pointer, g, &mut over)
-            {
-                edits.push(edit);
-            }
+            let key = area(tree.page_rect(n));
+            let edit = if tree.visible(n) {
+                hover(
+                    ui,
+                    surface(face, n.0),
+                    (n, w, key),
+                    scale,
+                    pointer,
+                    g,
+                    &mut over,
+                )
+            } else {
+                // Hidden under the pointer: it hears the pointer leave, as
+                // SwiftUI's hover ends when its view goes away.
+                g.hovered.contains(&key).then(|| Edit {
+                    widget: n,
+                    to: Set::Value(0.),
+                    keys: model::UiModifiers::default(),
+                })
+            };
+            edits.extend(edit);
             continue;
         }
         let Some(w) = tree.widgets.get(n.0).filter(|w| takes_input(w)) else {
@@ -354,21 +463,28 @@ pub fn read(
                 } else {
                     now
                 };
-                g.press = Some((n.0, start));
+                g.press = pointer.map(|from| Press {
+                    n: n.0,
+                    of: ident(tree, n, w),
+                    start,
+                    from,
+                    fine: r.press_mods.shift,
+                });
                 if reset {
                     set(start);
                 }
             }
-            match g.press {
-                Some((p, start)) if p == n.0 && r.held => {
-                    // Sub-pixel: the pointer's travel is a float, so a
-                    // high-resolution mouse or trackpad moves it finely.
-                    let fine = if r.press_mods.shift { 0.1 } else { 1. };
-                    // The travel is in position space, so a mapper bends it.
-                    let by = along(r.drag_total) / points * fine;
-                    set(snap(range, slide(w, range, start, by)));
-                }
-                _ => {}
+            // From the pointer, not the widget's own held state: a page
+            // that re-renders the control mid-drag gives it a new surface.
+            if let Some(p) = g.press.as_ref().filter(|p| p.n == n.0 && down)
+                && let Some(at) = pointer
+            {
+                // Sub-pixel: the pointer's travel is a float, so a
+                // high-resolution mouse or trackpad moves it finely.
+                let fine = if p.fine { 0.1 } else { 1. };
+                // The travel is in position space, so a mapper bends it.
+                let by = along(at - p.from) / points * fine;
+                set(snap(range, slide(w, range, p.start, by)));
             }
             // Claimed, so the rack under the knob does not scroll with it.
             if let Some(wheel) = ui.wheel(id.as_str()).filter(|_| !r.held) {
@@ -393,9 +509,9 @@ pub fn read(
                 };
                 let shown = shown.to_string();
                 let all = (0, shown.chars().count());
-                type_into(ui, g, n.0, &id, shown, all);
+                type_into(ui, g, (face, n), ident(tree, n, w), shown, all);
             }
-            if r.released && g.press.is_some_and(|(p, _)| p == n.0) {
+            if !down && g.press.as_ref().is_some_and(|p| p.n == n.0) {
                 g.press = None;
                 // The source runs its callback on release, moved or not.
                 if w.reports_release && edits.len() == before {
@@ -411,7 +527,9 @@ pub fn read(
                 // the source's own callback (a tab switching its page).
                 if r.pressed {
                     set(1.);
-                } else if r.released {
+                    g.tap = Some((n.0, ident(tree, n, w)));
+                } else if !down && g.tap.as_ref().is_some_and(|t| t.0 == n.0) {
+                    g.tap = None;
                     edits.push(edit(Set::Value(0.)));
                 }
             }
@@ -427,6 +545,7 @@ pub fn read(
             }
             Kind::Menu { .. } if r.clicked || r.key_activated => {
                 g.menu = (g.menu != Some(n.0)).then_some(n.0);
+                g.menu_of = g.menu.map(|_| ident(tree, n, w));
                 g.branch.clear();
             }
             // A double-click selects the word under the pointer (Kontakt 8
@@ -440,11 +559,25 @@ pub fn read(
                 let at = ui.local(id.as_str()).zip(size).map_or(0, |(p, s)| {
                     kontra_ui_view::char_at(ui, tree, w, (s.width, s.height, scale), p.x)
                 });
-                type_into(ui, g, n.0, &id, w.text.clone(), word(&w.text, at));
+                type_into(
+                    ui,
+                    g,
+                    (face, n),
+                    ident(tree, n, w),
+                    w.text.clone(),
+                    word(&w.text, at),
+                );
             }
             Kind::TextEdit if (r.clicked || r.key_activated) && g.entry.is_none() => {
                 let end = w.text.chars().count();
-                type_into(ui, g, n.0, &id, w.text.clone(), (end, end));
+                type_into(
+                    ui,
+                    g,
+                    (face, n),
+                    ident(tree, n, w),
+                    w.text.clone(),
+                    (end, end),
+                );
             }
             _ => {}
         }
@@ -462,14 +595,13 @@ pub fn read(
 fn hover(
     ui: &Ui,
     id: String,
-    (n, w): (WidgetRef, &model::Widget),
+    (n, w, key): (WidgetRef, &model::Widget, [i64; 4]),
     scale: f64,
     pointer: Option<Point>,
     g: &Gesture,
     over: &mut Vec<[i64; 4]>,
 ) -> Option<Edit> {
     let r = w.rect;
-    let key = [r.x, r.y, r.width, r.height].map(|v| (v * 16.).round() as i64);
     let at = ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame);
     let inside = pointer.zip(at).is_some_and(|(p, f)| {
         p.x >= f.x && p.y >= f.y && p.x < f.x + r.width * scale && p.y < f.y + r.height * scale
@@ -944,20 +1076,27 @@ fn sub_menu(
     Some(menu.el)
 }
 
-/// Opens typed entry on control `n` (surface `id`), starting from `text`:
+/// Opens typed entry on the control, starting from `text`:
 /// a value edit's selected whole, so what the user types replaces it; a
 /// text edit's with the caret at its end, as Kontakt 8 opens one (oracle
 /// probe fs3.ksp: a click then "x" turned "abc" into "abcx").
 fn type_into(
     ui: &mut Ui,
     g: &mut Gesture,
-    n: usize,
-    id: &str,
+    (face, n): (usize, WidgetRef),
+    of: Ident,
     text: String,
-    select: (usize, usize),
+    select: Span,
 ) {
-    ui.focus(format!("{id}-entry"));
-    g.entry = Some((n, text, Some(select)));
+    let ui_id = surface(face, n.0);
+    ui.focus(format!("{ui_id}-entry"));
+    g.entry = Some(Entry {
+        n: n.0,
+        of,
+        ui_id,
+        text,
+        pending: Some(select),
+    });
 }
 
 /// The word of `text` around character `i`, as a character range: the run
@@ -988,31 +1127,32 @@ fn entry(
     g: &mut Gesture,
     edits: &mut Vec<Edit>,
 ) -> Option<El> {
-    let (m, mut text, mut pending) = g.entry.take()?;
-    let w = tree.widgets.get(m)?;
-    let id = surface(face, m);
-    let field = format!("{id}-entry");
+    let mut entry = g.entry.take()?;
+    let w = tree.widgets.get(entry.n)?;
+    let id = surface(face, entry.n);
+    let field = format!("{0}-entry", entry.ui_id);
+    let popup = format!("{0}-popup", entry.ui_id);
     let words = matches!(w.kind, Kind::TextEdit);
-    let away = ui.dismissed(&[&id, &format!("{id}-popup")]);
+    let away = ui.dismissed(&[&id, &popup]);
     if (away && !words) || ui.keys(field.as_str()).iter().any(|k| k.key == Key::Escape) {
         return None;
     }
     if !away {
-        if let Some((from, to)) = pending
+        if let Some((from, to)) = entry.pending
             && ui.request_action(SemanticAction::set_selection(field.as_str(), from, to))
         {
-            pending = None;
+            entry.pending = None;
         }
-        let typed = text_edit(ui, field.as_str(), &mut text, TextOpts::default());
+        let typed = text_edit(ui, field.as_str(), &mut entry.text, TextOpts::default());
         if !typed.changed.submitted {
-            g.entry = Some((m, text, pending));
+            g.entry = Some(entry);
             // In a row: the popup names its content, and the field keeps its own id.
-            return Some(kit::popup(&id, row![typed.el.w(TEXT * 6.)]));
+            return Some(kit::popup(&id, row![typed.el.w(TEXT * 6.)]).id(popup));
         }
     }
     ui.blur();
     let set = |to| Edit {
-        widget: WidgetRef(m),
+        widget: WidgetRef(entry.n),
         to,
         keys: model::UiModifiers::default(),
     };
@@ -1023,10 +1163,15 @@ fn entry(
             } else {
                 display.ratio
             };
-            let typed = text.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+            let typed = entry
+                .text
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite());
             edits.extend(typed.map(|v| set(Set::Value(snap(*range, v * ratio)))));
         }
-        Kind::TextEdit => edits.push(set(Set::Text(text))),
+        Kind::TextEdit => edits.push(set(Set::Text(entry.text))),
         _ => {}
     }
     None
