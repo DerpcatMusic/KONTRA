@@ -43,6 +43,7 @@ impl AudioLoop {
             count: self.count,
             alternating: self.ping_pong,
             until_release,
+            tune_ratio: 1.0,
         }
     }
 }
