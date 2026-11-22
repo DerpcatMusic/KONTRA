@@ -133,6 +133,13 @@ pub enum Command {
         envelope: kontra_engine::Ahdsr,
         insert: Box<Option<(usize, ir::Effect)>>,
     },
+    /// Format-neutral live parameter write routed to `Engine::set_param`.
+    SetParam {
+        part: usize,
+        scope: ir::Scope,
+        addr: ir::ParamAddr,
+        value: f32,
+    },
 }
 
 /// A recall of saved values (by script slot) into a part's running

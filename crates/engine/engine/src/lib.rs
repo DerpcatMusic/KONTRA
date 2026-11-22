@@ -629,6 +629,13 @@ impl Engine {
         self.process_multi(&mut [out], input);
     }
 
+    /// Number of stereo output stems addressed by this engine's compiled
+    /// [`ir::AudioGraph`] (1 when running the standard stereo bus path).
+    #[must_use]
+    pub fn output_count(&self) -> usize {
+        self.graph.as_ref().map_or(1, |g| g.output_count())
+    }
+
     /// Renders multi-output stereo stems (up to 16 buses: `outputs[0]` is Main Out,
     /// `outputs[1..]` are aux/stem outputs driven by [`ir::GraphNodeKind::Output`]).
     /// Zero heap allocations on the audio thread.

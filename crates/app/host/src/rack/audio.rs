@@ -49,6 +49,8 @@ pub struct RackAudio {
     parts: Vec<Option<Playing>>,
     outputs: Vec<Box<[[f32; 2]]>>,
     scratch: Box<[[f32; 2]]>,
+    /// Per-stem scratch buffers for multi-output [`kontra_ir::AudioGraph`] parts.
+    stem_scratch: Vec<Box<[[f32; 2]]>>,
     /// What an outgoing engine renders, before it is added in.
     tail: Box<[[f32; 2]]>,
     /// [`FADE`] in frames.
@@ -103,6 +105,9 @@ impl RackAudio {
                 .map(|_| vec![[0.0; 2]; block].into_boxed_slice())
                 .collect(),
             scratch: vec![[0.0; 2]; block].into_boxed_slice(),
+            stem_scratch: (0..OUTPUTS)
+                .map(|_| vec![[0.0; 2]; block].into_boxed_slice())
+                .collect(),
             tail: vec![[0.0; 2]; block].into_boxed_slice(),
             fade: (FADE * f64::from(rate)).max(1.0) as u32,
             events: Vec::with_capacity(4096),
@@ -312,26 +317,53 @@ impl RackAudio {
                 let play = p.held.heard(play, now.0, frames as u64);
                 p.engine.set_transport(play, quarters - late, signature);
             }
-            let Some(scratch) = self.scratch.get_mut(..frames) else {
-                continue;
-            };
-            p.engine.process(scratch, &self.events);
-            for slot in &mut p.outgoing {
-                let Some(f) = slot else { continue };
-                if let Some(tail) = self.tail.get_mut(..frames) {
-                    f.engine.process(tail, &[]);
-                    for (s, t) in scratch.iter_mut().zip(tail.iter()) {
-                        let g = f.left as f32 / self.fade as f32;
-                        f.left = f.left.saturating_sub(1);
-                        (s[0], s[1]) = (s[0] + t[0] * g, s[1] + t[1] * g);
+            let stems = p.engine.output_count().min(OUTPUTS);
+            let multi_stem = stems > 1;
+            if multi_stem {
+                let mut stem_slices: [&mut [[f32; 2]]; OUTPUTS] =
+                    std::array::from_fn(|_| &mut [][..]);
+                for (dst, buf) in stem_slices
+                    .iter_mut()
+                    .zip(self.stem_scratch.iter_mut().take(stems))
+                {
+                    if let Some(slice) = buf.get_mut(..frames) {
+                        *dst = slice;
                     }
                 }
-                if f.left == 0
-                    && let Some(f) = slot.take()
-                    && let Err(engine) = self.channels.retired.send(f.engine)
-                {
-                    // No room this block: it stays, silent, until there is.
-                    *slot = Some(Fading { engine, left: 0 });
+                if let Some(active) = stem_slices.get_mut(..stems) {
+                    p.engine.process_multi(active, &self.events);
+                }
+            } else {
+                let Some(scratch) = self.scratch.get_mut(..frames) else {
+                    continue;
+                };
+                p.engine.process(scratch, &self.events);
+            }
+            let main_scratch = if multi_stem {
+                self.stem_scratch
+                    .first_mut()
+                    .and_then(|b| b.get_mut(..frames))
+            } else {
+                self.scratch.get_mut(..frames)
+            };
+            if let Some(main_buf) = main_scratch {
+                for slot in &mut p.outgoing {
+                    let Some(f) = slot else { continue };
+                    if let Some(tail) = self.tail.get_mut(..frames) {
+                        f.engine.process(tail, &[]);
+                        for (s, t) in main_buf.iter_mut().zip(tail.iter()) {
+                            let g = f.left as f32 / self.fade as f32;
+                            f.left = f.left.saturating_sub(1);
+                            (s[0], s[1]) = (s[0] + t[0] * g, s[1] + t[1] * g);
+                        }
+                    }
+                    if f.left == 0
+                        && let Some(f) = slot.take()
+                        && let Err(engine) = self.channels.retired.send(f.engine)
+                    {
+                        // No room this block: it stays, silent, until there is.
+                        *slot = Some(Fading { engine, left: 0 });
+                    }
                 }
             }
             let (requests, generation) = (&self.channels.requests, p.generation);
@@ -367,21 +399,44 @@ impl RackAudio {
                     }
                 }
             }
-            let peak = self.meters.parts.get_mut(n);
-            let out = self.outputs.get_mut(usize::from(p.mix.output));
-            let (Some(peak), Some(out)) = (peak, out) else {
+            let Some(peak) = self.meters.parts.get_mut(n) else {
                 continue;
             };
             if p.mix.silent {
                 continue;
             }
             let (l, r) = pan_gains(p.mix.gain, p.mix.pan);
-            for (o, s) in out.iter_mut().zip(scratch.iter()) {
-                let (a, b) = (s[0] * l, s[1] * r);
-                peak[0] = peak[0].max(a.abs());
-                peak[1] = peak[1].max(b.abs());
-                o[0] += a * self.master;
-                o[1] += b * self.master;
+            let base_out = usize::from(p.mix.output);
+            if multi_stem {
+                for (stem_idx, stem_buf) in self.stem_scratch.iter().take(stems).enumerate() {
+                    let Some(out) = self
+                        .outputs
+                        .get_mut(base_out + stem_idx)
+                        .and_then(|o| o.get_mut(..frames))
+                    else {
+                        continue;
+                    };
+                    let Some(src) = stem_buf.get(..frames) else {
+                        continue;
+                    };
+                    for (o, s) in out.iter_mut().zip(src.iter()) {
+                        let (a, b) = (s[0] * l, s[1] * r);
+                        peak[0] = peak[0].max(a.abs());
+                        peak[1] = peak[1].max(b.abs());
+                        o[0] += a * self.master;
+                        o[1] += b * self.master;
+                    }
+                }
+            } else if let (Some(out), Some(scratch)) =
+                (self.outputs.get_mut(base_out), self.scratch.get(..frames))
+            {
+                for (o, s) in out.iter_mut().zip(scratch.iter()) {
+                    let (a, b) = (s[0] * l, s[1] * r);
+                    peak[0] = peak[0].max(a.abs());
+                    peak[1] = peak[1].max(b.abs());
+                    o[0] += a * self.master;
+                    o[1] += b * self.master;
+                }
             }
         }
         self.routed = routed;
@@ -728,6 +783,16 @@ impl RackAudio {
                         p.engine.set_widget(slot, n, value, cell);
                     }
                     self.ui_scripts_ns += ns_since(t);
+                }
+                Command::SetParam {
+                    part,
+                    scope,
+                    addr,
+                    value,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part) {
+                        p.engine.set_param(scope, addr, value);
+                    }
                 }
             }
         }

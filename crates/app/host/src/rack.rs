@@ -824,6 +824,16 @@ impl Rack {
         }
     }
 
+    /// Writes a format-neutral live parameter on `part` via `Engine::set_param`.
+    pub fn set_param(&mut self, part: usize, scope: ir::Scope, addr: ir::ParamAddr, value: f32) {
+        self.send(Command::SetParam {
+            part,
+            scope,
+            addr,
+            value,
+        });
+    }
+
     pub fn set_master(&mut self, gain: f32) {
         self.send(Command::Master(gain));
     }
