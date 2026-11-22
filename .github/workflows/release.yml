@@ -22,7 +22,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_TARGET_DIR: target
-  MOOSE_REV: 545fb8cec3e43bc4a257577142c0f0acd91c1b3e
 
 jobs:
   check:
@@ -97,7 +96,22 @@ jobs:
           cache-on-failure: true
       - name: Install cargo-moose
         shell: bash
-        run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
+        run: |
+          MOOSE_REV=$(python3 -c '
+          import re, tomllib
+          lock = tomllib.load(open("Cargo.lock", "rb"))
+          for pkg in lock.get("package", []):
+              if pkg.get("name") == "moose":
+                  m = re.search(r"#([0-9a-f]+)$", pkg.get("source", ""))
+                  if m:
+                      print(m.group(1))
+                      break
+          ')
+          if [ -n "$MOOSE_REV" ]; then
+            cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
+          else
+            cargo install --locked --git https://github.com/Matari-Audio/moose cargo-moose
+          fi
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'

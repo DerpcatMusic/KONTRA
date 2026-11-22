@@ -230,6 +230,11 @@ impl Snapshot {
         reported
     }
 
+    #[cfg(test)]
+    pub(crate) fn reports(&self) -> &[String] {
+        &self.report
+    }
+
     /// What a frame draws of this, as it reads on screen: the CPU load in
     /// whole percent; a part's interface by its load and revision.
     fn shown(&self) -> impl PartialEq + use<> {
@@ -875,6 +880,9 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let pressed = Arc::clone(&escape);
     MuiEditor::new(params, kontra_ui::ui(), SIZE, move |ui, bridge| {
         let start = std::time::Instant::now();
+        if let Some(tasks) = bridge.context().and_then(|c| c.tasks::<crate::Tick>()) {
+            p.shared.set_tasks(Some(tasks));
+        }
         if escape.swap(false, Ordering::AcqRel) {
             app.view.dismiss();
         }
@@ -952,10 +960,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 // The browser's first folder, from the editor's own copy.
                 let from = app.folders.first().map(PathBuf::from);
                 p.shared.folder.ask(crate::folder::Wanted::Libraries, from);
+                if p.shared.folder.has_result() {
+                    p.shared.wake_tick();
+                }
                 continue;
             }
             if action == Action::ChooseSnapshotFolder {
                 p.shared.folder.ask(crate::folder::Wanted::Snapshots, None);
+                if p.shared.folder.has_result() {
+                    p.shared.wake_tick();
+                }
                 continue;
             }
             if let Some(event) = played(&action) {
@@ -1107,7 +1121,23 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     })
     .changed({
         let previous = std::sync::atomic::AtomicU64::new(u64::MAX);
+        let last_scan_wake = std::sync::atomic::AtomicU64::new(0);
         move || {
+            // Keep UI requests, folder-picker completions, and active library
+            // scans moving even when the host suspends audio processing.
+            if watched.shared.has_pending_work() {
+                watched.shared.wake_tick();
+            } else if watched.shared.scanning.load(Ordering::Acquire) {
+                let now = crate::macros::now();
+                let prev = last_scan_wake.load(Ordering::Relaxed);
+                if now.saturating_sub(prev) >= 100
+                    && last_scan_wake
+                        .compare_exchange(prev, now, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    watched.shared.wake_tick();
+                }
+            }
             let progress = watched.shared.progress.snapshot();
             let visible = ((progress.stage as u64) << 56)
                 | (u64::from(progress.percent) << 48)

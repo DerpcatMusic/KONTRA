@@ -26,7 +26,7 @@ jobs:
           - layer: engine-script
             crates: "-p kontra-stream -p kontra-voice -p kontra-vm -p kontra-effects -p kontra-plan -p kontra-prepare -p kontra-trace -p kontra-script-ui -p kontra-engine -p kontra-ksp -p kontra-lua"
           - layer: formats
-            crates: "-p kontra-format -p kontra-format-kontakt -p kontra-format-uvi -p kontra-format-sfz -p kontra-format-native"
+            crates: "-p kontra-format -p kontra-format-kontakt -p kontra-format-uvi -p kontra-format-sfz -p kontra-format-decentsampler -p kontra-format-sf2 -p kontra-format-native"
           - layer: app
             crates: "-p kontra-library -p kontra-align -p kontra-ui -p kontra-host -p kontra-plugin -p kontra-inspect"
     steps:

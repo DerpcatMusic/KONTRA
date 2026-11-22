@@ -2407,3 +2407,62 @@ fn prepare_for_test(dsp: &mut Dsp, params: &KontraParams, audio: &AudioConfig) {
     <Kontra as Plugin>::deactivate(std::mem::take(dsp));
     *dsp = <Kontra as Plugin>::activate(params, audio, &InitContext::default()).expect("activate");
 }
+
+/// UI actions still wake `Tick` via the editor's task spawner even when the
+/// host suspends audio processing (e.g. Bitwig track sleep or stopped engine).
+#[test]
+fn ui_requests_wake_tick_when_audio_is_suspended() {
+    moose::core::tasks::warm_pool();
+    let (params, _dsp) = activate("");
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let spawner = moose::prelude::TaskSpawner::<Tick>::new(move |_| {
+        let _ = tx.send(());
+    });
+    params.shared.set_tasks(Some(spawner));
+
+    params
+        .shared
+        .request(crate::Request::Browse(kontra_ui::app::Action::Refresh));
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok(),
+        "Request::Browse did not wake Tick while audio was suspended"
+    );
+
+    params.shared.request_ui(crate::editor::Edit {
+        slot: None,
+        action: kontra_ui::app::Action::Refresh,
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok(),
+        "Request::Ui did not wake Tick while audio was suspended"
+    );
+}
+
+/// A folder picker failure on Linux (missing/broken xdg-desktop-portal) is
+/// reported in the editor notices instead of silently disappearing.
+#[test]
+fn folder_picker_error_surfaces_as_a_visible_notice() {
+    let (params, mut dsp) = activate("");
+    settle(&params, &mut dsp);
+    params.shared.shown.store(true, Ordering::Release);
+    params.shared.dirty.store(false, Ordering::Release);
+
+    params
+        .shared
+        .folder
+        .record_error_for_test("portal unavailable");
+    assert!(params.shared.has_pending_work());
+
+    Tick.run(&params);
+    assert!(!params.shared.has_pending_work());
+    assert!(params.shared.dirty.load(Ordering::Acquire));
+
+    let view = crate::lock(&params.shared.view);
+    assert!(
+        view.reports()
+            .iter()
+            .any(|line| line.contains("portal unavailable") && line.contains("drag and drop")),
+        "expected portal error notice in report, got: {:?}",
+        view.reports()
+    );
+}

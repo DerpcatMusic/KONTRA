@@ -61,12 +61,12 @@ edition = "2024"
 mui = { git = "https://github.com/Matari-Audio/MUI" }
 mui-headless = { git = "https://github.com/Matari-Audio/MUI" }
 mui-native-dialog = { git = "https://github.com/Matari-Audio/MUI" }
-moose = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108", default-features = false }
-moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
-moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
-moose-test = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
-moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
-moose-dsp = { git = "https://github.com/Matari-Audio/moose", rev = "9f4fc1e108" }
+moose = { git = "https://github.com/Matari-Audio/moose", default-features = false }
+moose-clap = { git = "https://github.com/Matari-Audio/moose" }
+moose-vst3 = { git = "https://github.com/Matari-Audio/moose" }
+moose-test = { git = "https://github.com/Matari-Audio/moose" }
+moose-standalone = { git = "https://github.com/Matari-Audio/moose" }
+moose-dsp = { git = "https://github.com/Matari-Audio/moose" }
 thiserror = "2"
 smallvec = "1"
 serde = { version = "1", features = ["derive"] }
@@ -103,35 +103,3 @@ codegen-units = 256
 incremental = true
 strip = "none"
 debug = "line-tables-only"
-
-# BEGIN tools/patches.py --manifests: blaze reads only manifest [patch] tables
-[patch."https://github.com/Matari-Audio/MUI"]
-moose-baseview = { path = "../../frameworks/mui/vendor/moose-baseview" }
-mui = { path = "../../frameworks/mui/crates/mui" }
-mui-baseview = { path = "../../frameworks/mui/crates/mui-baseview" }
-mui-headless = { path = "../../frameworks/mui/crates/mui-headless" }
-mui-native-dialog = { path = "../../frameworks/mui/crates/mui-native-dialog" }
-mui-text = { path = "../../frameworks/mui/crates/mui-text" }
-mui-vello = { path = "../../frameworks/mui/crates/mui-vello" }
-
-[patch."https://github.com/Matari-Audio/Matari-Access"]
-derpcat-access = { path = "../../licensing/matari-access" }
-
-[patch."https://github.com/Matari-Audio/matari-audio-drag-and-drop"]
-matari-audio-drag-and-drop = { path = "../../frameworks/drag-and-drop" }
-
-[patch."https://github.com/Matari-Audio/moose"]
-moose = { path = "../../frameworks/moose/crates/moose" }
-moose-au = { path = "../../frameworks/moose/crates/moose-au" }
-moose-clap = { path = "../../frameworks/moose/crates/moose-clap" }
-moose-core = { path = "../../frameworks/moose/crates/moose-core" }
-moose-derive = { path = "../../frameworks/moose/crates/moose-derive" }
-moose-dsp = { path = "../../frameworks/moose/crates/moose-dsp" }
-moose-egui = { path = "../../frameworks/moose/crates/moose-egui" }
-moose-font = { path = "../../frameworks/moose/crates/moose-font" }
-moose-params = { path = "../../frameworks/moose/crates/moose-params" }
-moose-standalone = { path = "../../frameworks/moose/crates/moose-standalone" }
-moose-test = { path = "../../frameworks/moose/crates/moose-test" }
-moose-utils = { path = "../../frameworks/moose/crates/moose-utils" }
-moose-vst3 = { path = "../../frameworks/moose/crates/moose-vst3" }
-# END tools/patches.py --manifests

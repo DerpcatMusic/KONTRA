@@ -75,6 +75,19 @@ class NotesTest(unittest.TestCase):
                                           body='Release note: Smoother playback.', author='ada'))
         run.assert_called_once_with(['gh', 'api', 'repos/DerpcatMusic/KONTRA/pulls/42'], text=True)
 
+    def test_monorepo_entry_credits_number_without_broken_public_pr_link(self):
+        entry = dict(
+            number='101',
+            body='Release note: Load SoundFont 2 banks.\nArea: libraries\nGitOrigin-RevId: deadbeef',
+            paths=['crates/format/sf2/src/lib.rs'],
+            title='feat(kontra): load and play .sf2 banks (#101)',
+            author='',
+            monorepo=True,
+        )
+        result = render([entry])
+        self.assertIn('- Load SoundFont 2 banks. (#101)', result)
+        self.assertNotIn('DerpcatMusic/KONTRA/pull/101', result)
+
 
 if __name__ == '__main__':
     unittest.main()

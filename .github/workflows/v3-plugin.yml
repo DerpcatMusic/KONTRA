@@ -34,8 +34,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_TARGET_DIR: target
-  # The MOOSE revision Cargo.toml pins; cargo-moose must match it.
-  MOOSE_REV: 545fb8cec3e43bc4a257577142c0f0acd91c1b3e
 
 jobs:
   bundle:
@@ -73,7 +71,22 @@ jobs:
           cache-on-failure: true
       - name: Install cargo-moose
         shell: bash
-        run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
+        run: |
+          MOOSE_REV=$(python3 -c '
+          import re, tomllib
+          lock = tomllib.load(open("Cargo.lock", "rb"))
+          for pkg in lock.get("package", []):
+              if pkg.get("name") == "moose":
+                  m = re.search(r"#([0-9a-f]+)$", pkg.get("source", ""))
+                  if m:
+                      print(m.group(1))
+                      break
+          ')
+          if [ -n "$MOOSE_REV" ]; then
+            cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
+          else
+            cargo install --locked --git https://github.com/Matari-Audio/moose cargo-moose
+          fi
       - name: CLAP and VST3 bundles
         shell: bash
         run: |
