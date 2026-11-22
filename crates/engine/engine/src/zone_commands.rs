@@ -87,23 +87,30 @@ impl Engine {
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         Some(match call.action {
             GetSample => {
-                let path = self
-                    .facts_of(int(0))
-                    .and_then(|z| z.source.as_ref())
-                    .map(|s| s.file.clone());
-                let text = path.map_or(String::new(), |p| match int(1) {
-                    // $NI_FILE_NAME: without folder or extension.
-                    0 => p
-                        .file_stem()
-                        .map_or(String::new(), |s| s.to_string_lossy().into_owned()),
+                let what = int(1);
+                let mut text = Text::EMPTY;
+                if let Some(p) = self.facts_of(int(0)).and_then(|z| z.source.as_ref()) {
+                    let p = &p.file;
+                    // A lossy name borrows unless the path is not UTF-8.
+                    let part = match what {
+                        // $NI_FILE_NAME: without folder or extension.
+                        0 => p.file_stem().map(|s| s.to_string_lossy()),
+                        1 | 2 => Some(p.to_string_lossy()),
+                        _ => p.extension().map(|e| e.to_string_lossy()),
+                    };
+                    let part = part.as_deref().unwrap_or("");
                     // $NI_FILE_FULL_PATH uses forward slashes, the _OS one the system's.
-                    1 => p.to_string_lossy().replace('\\', "/"),
-                    2 => p.to_string_lossy().into_owned(),
-                    _ => p
-                        .extension()
-                        .map_or(String::new(), |e| e.to_string_lossy().into_owned()),
-                });
-                *call.text_out = Text::from_str_cut(&text).0;
+                    if what == 1 {
+                        for (i, piece) in part.split('\\').enumerate() {
+                            if i > 0 && !text.push("/") || !text.push(piece) {
+                                break;
+                            }
+                        }
+                    } else {
+                        text = Text::from_str_cut(part).0;
+                    }
+                }
+                *call.text_out = text;
                 HostValue::Text
             }
             // The zone at an index of the instrument's list; -1 past its end.
@@ -146,22 +153,17 @@ impl Engine {
                 let user = u32::try_from(int(0))
                     .ok()
                     .filter(|&z| self.facts_of(int(0)).is_some_and(|f| f.user && f.id == z));
-                let path = call
-                    .texts
-                    .first()
-                    .map_or(String::new(), |t| t.as_str().to_owned());
+                let path = call.texts.first().copied().unwrap_or(Text::EMPTY);
                 match (user, self.building) {
                     (None, true) => HostValue::Int(-1),
                     (None, false) => HostValue::Int(self.start_async(Exit::Failed)),
                     (Some(z), true) => {
-                        if let Some(sample) = crate::zone_edits::describe(&path) {
+                        if let Some(sample) = crate::zone_edits::describe(path.as_str()) {
                             Arc::make_mut(&mut self.plan).set_user_sample(z, Arc::new(sample));
                         }
                         HostValue::Int(-1)
                     }
-                    (Some(z), false) => HostValue::Int(
-                        self.queue_zone_edit(z, Edit::Sample(Text::from_str_cut(&path).0)),
-                    ),
+                    (Some(z), false) => HostValue::Int(self.queue_zone_edit(z, Edit::Sample(path))),
                 }
             }
             SetLoopPar => {

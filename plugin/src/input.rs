@@ -48,18 +48,29 @@ pub fn event(e: &moose::prelude::Event) -> Option<Event> {
             velocity,
             ..
         } => on(channel, note, f64::from(velocity) / 127.0),
-        EventBody::NoteOn2 {
-            channel,
-            note,
-            velocity,
-            ..
-        } => on(channel, note, f64::from(velocity) / 65535.0),
         _ => {
             let [a, b, ..] = encode_ump_channel_voice_1(&e.body)
                 .or_else(|| encode_ump_channel_voice_2(&e.body))?;
             // The port rides as the packet's group.
             let group = u32::from(port & 15) << 24;
-            Event::Ump([a & !(15 << 24) | group, b])
+            let words = [a & !(15 << 24) | group, b];
+            // MIDI 2.0 voice packets become notes, expressions and MIDI 1.0
+            // controllers the engine plays.
+            // The group is 4 bits, so a note-on takes back its full port to
+            // match its note-off.
+            match Event::midi2(words) {
+                Some(Event::NoteOn {
+                    note,
+                    velocity,
+                    tune,
+                }) => Event::NoteOn {
+                    note: HostNote { port, ..note },
+                    velocity,
+                    tune,
+                },
+                Some(x) => x,
+                None => Event::Ump(words),
+            }
         }
     })
 }
@@ -92,7 +103,8 @@ pub fn exact(e: ExactEventRef<'_>) -> Option<Event> {
             f64::from(tuning) / 100.0,
         ),
         // CLAP: 0 volume (linear 0..=4), 1 pan (0..=1), 2 tuning (semitones),
-        // 5 brightness, 6 pressure.
+        // 5 brightness, 6 pressure. Vibrato (3) and expression (4) have no
+        // engine consumer: they keep moose's per-note CC fallback.
         ExactEventBody::NoteExpression {
             expression_id,
             address,
@@ -110,7 +122,8 @@ pub fn exact(e: ExactEventRef<'_>) -> Option<Event> {
             },
         ),
         // VST3, normalized: 0 volume (0.25 unity, 1 is +12 dB), 1 pan,
-        // 2 tuning (0.5 centre, ±120 semitones), 5 brightness.
+        // 2 tuning (0.5 centre, ±120 semitones), 5 brightness. Vibrato (3) and
+        // expression (4) have no engine consumer.
         ExactEventBody::NormalizedNoteExpression {
             expression_id,
             address,
@@ -234,6 +247,54 @@ mod tests {
         assert_eq!(e.channel(), Some(1));
         let param = HostEvent::new(0, EventBody::ParamChange { id: 0, value: 1.0 });
         assert!(event(&param).is_none());
+    }
+
+    #[test]
+    fn midi2_note_on_carries_pitch_attribute_and_velocity() {
+        let plain = event(&HostEvent::new(
+            0,
+            EventBody::NoteOn2 {
+                group: 0,
+                channel: 4,
+                note: 60,
+                velocity: 0x8000,
+                attribute_type: 0,
+                attribute: 0,
+            },
+        ));
+        let Some(Event::NoteOn {
+            note,
+            velocity,
+            tune,
+        }) = plain
+        else {
+            panic!("{plain:?}");
+        };
+        assert_eq!((note.channel, note.key), (4, 60));
+        assert!((velocity - f64::from(0x8000u16) / f64::from(u16::MAX)).abs() < 1e-12);
+        assert_eq!(tune, 0.0);
+
+        let pitched = event(&HostEvent::new(
+            0,
+            EventBody::NoteOn2 {
+                group: 0,
+                channel: 4,
+                note: 60,
+                velocity: 0,
+                attribute_type: 3,
+                attribute: (60 << 9) + 256,
+            },
+        ));
+        let Some(Event::NoteOn {
+            note,
+            velocity,
+            tune,
+        }) = pitched
+        else {
+            panic!("{pitched:?}");
+        };
+        assert_eq!((note.channel, note.key, velocity), (4, 60, 0.0));
+        assert!((tune - 0.5).abs() < 1e-12);
     }
 
     #[test]

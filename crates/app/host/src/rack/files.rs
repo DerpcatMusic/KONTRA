@@ -172,13 +172,21 @@ impl Rack {
 pub(super) fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
     let len = request.len as usize;
     let text = request.kind == ArrayKind::Text;
+    let (save, midi) = (request.save, request.midi.is_some());
     let mut reply = FileReply {
         request,
         loaded: None,
-        ints: Vec::with_capacity(if request.save && !text { len } else { 0 }),
-        texts: Vec::with_capacity(if request.save && text { len } else { 0 }),
+        ints: Vec::with_capacity(if save && !midi && !text { len } else { 0 }),
+        texts: Vec::with_capacity(if save && !midi && text { len } else { 0 }),
         written: None,
-        midi: None,
+        // A MIDI save's room: the engine copies its events in without
+        // allocating on the audio thread.
+        midi: (save && midi).then(|| kontra_engine::midi_file::Smf {
+            events: Vec::with_capacity(len),
+            division: 0,
+            tracks: 0,
+            area: kontra_engine::midi_file::Area::WHOLE,
+        }),
         detected: None,
     };
     if request.save {

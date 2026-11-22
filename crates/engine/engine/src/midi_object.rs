@@ -17,6 +17,9 @@ use crate::script::Kind;
 /// Most export areas (the manual's limit).
 const AREAS: usize = 512;
 
+/// Tracks a file read in measures without allocating.
+const TRACKS: usize = 256;
+
 #[derive(Debug)]
 pub(crate) struct MidiObject {
     events: Vec<Event>,
@@ -30,6 +33,8 @@ pub(crate) struct MidiObject {
     /// Export area 0 is the edit buffer `save_midi_file` writes.
     areas: Vec<(Area, Text)>,
     filename: Text,
+    /// Scratch for [`Self::insert_file`]: per track, its first and last tick.
+    spans: Vec<(i32, i32, i32)>,
 }
 
 impl MidiObject {
@@ -42,8 +47,15 @@ impl MidiObject {
             next_id: 2,
             tracks: 0,
             division: 960,
-            areas: vec![(Area::WHOLE, Text::EMPTY)],
+            areas: {
+                // Room for every area, so `mf_set_num_export_areas`
+                // allocates nothing on the audio thread.
+                let mut areas = Vec::with_capacity(AREAS);
+                areas.push((Area::WHOLE, Text::EMPTY));
+                areas
+            },
             filename: Text::EMPTY,
+            spans: Vec::with_capacity(TRACKS),
         }
     }
 }
@@ -93,21 +105,31 @@ fn set(e: &mut Event, par: i32, value: i32) {
     }
 }
 
+/// Whether `selector` (`$ALL_EVENTS`, `$CURRENT_EVENT`, `by_track`,
+/// `by_marks` or an event id) names `e`, the marker on `selected`.
+fn names(selected: Option<i32>, selector: i32, e: &Event) -> bool {
+    match selector {
+        event::ALL => true,
+        event::CURRENT => selected == Some(e.id),
+        s if s & event::BY_TRACK != 0 => e.track == s & !event::BY_TRACK,
+        s if s & event::BY_MARKS != 0 => e.marks & (s & !event::BY_MARKS) as u32 != 0,
+        id => e.id == id,
+    }
+}
+
 impl MidiObject {
-    /// Whether `selector` (`$ALL_EVENTS`, `$CURRENT_EVENT`, `by_track`,
-    /// `by_marks` or an event id) names `e`.
-    fn names(&self, selector: i32, e: &Event) -> bool {
-        match selector {
-            event::ALL => true,
-            event::CURRENT => self.selected == Some(e.id),
-            s if s & event::BY_TRACK != 0 => e.track == s & !event::BY_TRACK,
-            s if s & event::BY_MARKS != 0 => e.marks & (s & !event::BY_MARKS) as u32 != 0,
-            id => e.id == id,
-        }
+    fn first_named(&self, selector: i32) -> Option<&Event> {
+        self.events
+            .iter()
+            .find(|e| names(self.selected, selector, e))
     }
 
-    fn first_named(&self, selector: i32) -> Option<&Event> {
-        self.events.iter().find(|e| self.names(selector, e))
+    /// The events `selector` names, to edit in place.
+    fn named_mut(&mut self, selector: i32) -> impl Iterator<Item = &mut Event> {
+        let selected = self.selected;
+        self.events
+            .iter_mut()
+            .filter(move |e| names(selected, selector, e))
     }
 
     /// Moves the marker among the events of `track` (-1: all) in time order.
@@ -157,15 +179,8 @@ impl MidiObject {
     }
 
     fn remove(&mut self, selector: i32) {
-        let before = self.events.len();
-        let this = &*self;
-        let keep: Vec<bool> = this
-            .events
-            .iter()
-            .map(|e| !this.names(selector, e))
-            .collect();
-        let mut keep = keep.into_iter();
-        self.events.retain(|_| keep.next().unwrap_or(true));
+        let (before, selected) = (self.events.len(), self.selected);
+        self.events.retain(|e| !names(selected, selector, e));
         self.buffer += before - self.events.len();
         if self
             .selected
@@ -176,11 +191,13 @@ impl MidiObject {
     }
 
     fn reset(&mut self) {
-        *self = Self {
-            areas: std::mem::take(&mut self.areas),
-            next_id: self.next_id,
-            ..Self::new()
-        };
+        self.events.clear();
+        self.selected = None;
+        self.buffer = 0;
+        self.tracks = 0;
+        self.division = 960;
+        self.filename = Text::EMPTY;
+        self.spans.clear();
     }
 
     /// Takes a read file in: `mode` 0 replaces every event, 1 only those
@@ -195,7 +212,8 @@ impl MidiObject {
             return false;
         }
         // Per track the file covers: its first and last tick, shifted.
-        let mut spans: Vec<(i32, i32, i32)> = Vec::new();
+        let mut spans = std::mem::take(&mut self.spans);
+        spans.clear();
         for e in &smf.events {
             let (track, from, to) = (
                 e.track + track_by,
@@ -217,9 +235,12 @@ impl MidiObject {
             1 => self.events.retain(|e| !overlaps(e)),
             _ => {}
         }
+        self.spans = spans;
         if self.events.len() + smf.events.len() > MAX_EVENTS {
             return false;
         }
+        // ponytail: allocates when the file outgrows the room
+        // `mf_set_buffer_size` reserved; a pool sized at load if that shows.
         self.events.reserve(smf.events.len());
         for e in smf.events {
             let id = self.next_id;
@@ -243,10 +264,16 @@ impl MidiObject {
         true
     }
 
-    /// The object as an export: events, resolution and area 0.
-    fn export(&self) -> Smf {
+    /// The object as an export: events, resolution and area 0, written into
+    /// `room`'s events when the control side sent room for them.
+    fn export(&self, room: Option<Smf>) -> Smf {
+        let mut events = room.map(|s| s.events).unwrap_or_default();
+        events.clear();
+        // ponytail: allocates only when the object grew past the room the
+        // control side sized from the request.
+        events.extend_from_slice(&self.events);
         Smf {
-            events: self.events.clone(),
+            events,
             division: self.division,
             tracks: self.tracks,
             area: self.areas.first().map_or(Area::WHOLE, |a| a.0),
@@ -292,17 +319,7 @@ impl Engine {
         let current =
             |m: &MidiObject, par| m.first_named(event::CURRENT).map_or(0, |e| get(e, par));
         let edit = |m: &mut MidiObject, selector, par, value| {
-            let this = &*m;
-            let hit: Vec<bool> = this
-                .events
-                .iter()
-                .map(|e| this.names(selector, e))
-                .collect();
-            m.events
-                .iter_mut()
-                .zip(hit)
-                .filter(|(_, h)| *h)
-                .for_each(|(e, _)| set(e, par, value));
+            m.named_mut(selector).for_each(|e| set(e, par, value));
             HostValue::Nothing
         };
         Some(match call.action {
@@ -342,9 +359,7 @@ impl Engine {
             MfGetMark => HostValue::Int(0),
             MfSetMark => {
                 let (mark, on) = (int(1) as u32, int(2) != 0);
-                let this = &*m;
-                let hit: Vec<bool> = this.events.iter().map(|e| this.names(int(0), e)).collect();
-                for (e, _) in m.events.iter_mut().zip(hit).filter(|(_, h)| *h) {
+                for e in m.named_mut(int(0)) {
                     e.marks = if on { e.marks | mark } else { e.marks & !mark };
                 }
                 HostValue::Nothing
@@ -421,8 +436,13 @@ impl Engine {
             slot: self.running.slot,
             id: 0,
             base: 0,
-            // Not zero: zero asks the player to pick a file.
-            len: 1,
+            // Not zero: zero asks the player to pick a file. A save's is the
+            // room the control side sends for the events.
+            len: if save {
+                u32::try_from(self.midi.events.len().max(1)).unwrap_or(u32::MAX)
+            } else {
+                1
+            },
             kind: kontra_plan::files::ArrayKind::Int,
             path,
             name,
@@ -440,9 +460,8 @@ impl Engine {
         let r = reply.request;
         let Some(args) = r.midi else { return false };
         let exit = match (r.save, reply.written, reply.midi.take()) {
-            (true, None, _) => {
-                // ponytail: the copy allocates on the audio thread; a save is rare.
-                reply.midi = Some(self.midi.export());
+            (true, None, room) => {
+                reply.midi = Some(self.midi.export(room));
                 return true;
             }
             (true, Some(written), _) => Exit::from(written),

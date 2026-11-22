@@ -3,7 +3,9 @@
 //! KONTRA crate is a dependency.
 
 mod event;
+mod midi2;
 mod wire;
 
 pub use event::*;
+pub use midi2::PER_NOTE_BEND_SEMITONES;
 pub use wire::*;

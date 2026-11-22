@@ -15,4 +15,6 @@ vst3_subcategory = "Sampler"
 midi_input = true
 # Kontakt's ports A to D: a part listens on A1..D16.
 midi_input_ports = 4
+# MIDI 2.0 voice packets (CLAP_NOTE_DIALECT_MIDI2) reach the engine at full resolution.
+midi2 = true
 midi_output = false
