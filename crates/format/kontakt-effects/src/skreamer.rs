@@ -46,9 +46,8 @@ pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
     use ir::SlotKnob::{Knob, Mix};
     let saved = (0..5)
         .map(|i| {
-            Some(f32::from_le_bytes(
-                public.get(4 * i..4 * i + 4)?.try_into().ok()?,
-            ))
+            let bytes = public.get(4 * i..4 * i + 4)?.try_into().ok()?;
+            Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
         })
         .collect::<Option<Box<[f32]>>>()?;
     Some(ir::KnobModel {

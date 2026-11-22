@@ -177,8 +177,11 @@ pub fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
 /// them: every move rebuilds the shaper through [`tape`].
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
     use ir::SlotKnob::Knob;
-    let f = |n: usize| Some(f32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?));
-    let quality = f32::from(*public.get(12)?);
+    let f = |n: usize| {
+        let bytes = public.get(n..n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let quality = f32::from(*public.get(12)? != 0);
     Some(ir::KnobModel {
         knobs: [Knob(0), Knob(1), Knob(2), Knob(3)].into(),
         saved: [f(0)?, f(4)?, f(8)?, quality].into(),
@@ -191,17 +194,18 @@ pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
     })
 }
 
-/// The KSP names of [`model`]'s knobs; each is the record's field as set
-/// (bindings table; Quality stores 1 at any value ≥ 1).
+/// The KSP names of [`model`]'s knobs; each continuous knob is 0..1, and
+/// Quality is a raw boolean switch (`bool: stored=1 when value>=1`).
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 4] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
     [
         ("$ENGINE_PAR_TP_GAIN", Slot(Knob(0)), unit()),
         ("$ENGINE_PAR_TP_WARMTH", Slot(Knob(1)), unit()),
         ("$ENGINE_PAR_TP_HF_ROLLOFF", Slot(Knob(2)), unit()),
-        ("$ENGINE_PAR_TP_QUALITY", Slot(Knob(3)), unit()),
+        ("$ENGINE_PAR_TP_QUALITY", Slot(Knob(3)), raw()),
     ]
 }
 

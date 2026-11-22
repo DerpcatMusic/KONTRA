@@ -60,8 +60,10 @@ pub fn phasis(p: [f32; 13]) -> ir::EffectKind {
     let ultra = if ultra > 0.0 { 1.0 } else { 0.0 };
     let stages = notches.round().clamp(2.0, 12.0);
     // The ramps of [ref] ([ref]..f4), Ultra off to on.
+    // Invert Mod Mix polarity ([ref] row 14, [ref]..efa8):
+    // base = -1.0, mult = +2.0 => 2*switch - 1 (so INIT switch=1 gives +mod_mix).
     let reach = amount * amount * (1.0 + ultra * ((2.0 / stages).powf(0.7) - 1.0));
-    let mm = (mod_mix * (1.0 - 2.0 * invert_mod.clamp(0.0, 1.0))).clamp(-1.0, 1.0);
+    let mm = (mod_mix * (2.0 * invert_mod.clamp(0.0, 1.0) - 1.0)).clamp(-1.0, 1.0);
     let note = lerp(lerp(30.0, -30.0, ultra), lerp(120.0, 190.0, ultra), centre);
     let rate_note = lerp(-120.0, lerp(20.0, 111.0, ultra), rate);
     let lfo_hz = 440.0 * ((rate_note - 69.0) / 12.0).exp2();
@@ -91,13 +93,66 @@ pub fn phasis(p: [f32; 13]) -> ir::EffectKind {
     })
 }
 
-/// A Phasis's knobs as a script moves them: every move rebuilds it from all.
-pub fn model() -> ir::KnobModel {
+/// Decode a saved `BParFXPhasis` (`0x5b`, v0x51, 52 bytes) into [`INIT`]'s
+/// knob order (`Kontakt 8.exe` [ref] & `fx_raum_delight_psyche_vibrato_phasis_replika.tsv`):
+/// 9 floats (`rate`, `center`, `spread`, `feedback`, `mix`, `notches_norm`,
+/// `amount`, `stereo`, `mod_mix`), 3 bools (`ultra`, `invert_phase`,
+/// `invert_mod_mix`), then 3 sync floats + 1 sync bool.
+#[must_use]
+pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 13]> {
+    if version != 0x51 || public.len() < 52 {
+        return None;
+    }
+    let f = |offset: usize| {
+        let bytes = public.get(offset..offset + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let flag = |offset: usize| public.get(offset).map(|&b| if b != 0 { 1.0 } else { 0.0 });
+    let rate = f(0)?;
+    let centre = f(4)?;
+    let spread = f(8)?;
+    let feedback = f(12)?;
+    let mix = f(16)?;
+    let notches_norm = f(20)?.clamp(0.0, 1.0);
+    // Native [ref] ([ref] = -11.0f): `clamp(trunc(2 + 11 * notches_norm), 2, 12)`.
+    let notches = (2.0 + 11.0 * notches_norm).trunc().clamp(2.0, 12.0);
+    let amount = f(24)?;
+    let stereo = f(28)?;
+    let mod_mix = f(32)?;
+    let ultra = flag(36)?;
+    let invert_phase = flag(37)?;
+    let invert_mod_mix = flag(38)?;
+    let rate_unit_beats = f(39)?;
+    let unit = if rate_unit_beats > 1e-9 { 1.0 } else { 0.0 };
+    Some([
+        rate,
+        unit,
+        ultra,
+        amount,
+        centre,
+        stereo,
+        spread,
+        feedback,
+        mod_mix,
+        notches,
+        invert_phase,
+        invert_mod_mix,
+        mix,
+    ])
+}
+
+/// A Phasis's knobs from saved positions `p` as a script moves them.
+pub fn model_from(saved: [f32; 13]) -> ir::KnobModel {
     ir::KnobModel {
         knobs: (0..13).map(ir::SlotKnob::Knob).collect(),
-        saved: INIT.into(),
+        saved: saved.into(),
         build: |p| Some(phasis(p.try_into().ok()?)),
     }
+}
+
+/// A Phasis's knobs as a script moves them: every move rebuilds it from all.
+pub fn model() -> ir::KnobModel {
+    model_from(INIT)
 }
 
 /// What `$EFFECT_TYPE_PHASIS` (41) loads, as Morphology Evolved, Conflux
@@ -162,5 +217,38 @@ mod tests {
         assert!(n.spread.abs() < 1e-3);
         assert!(matches!(n.rate, ir::Rate::Hz(hz) if (hz - 0.19).abs() < 0.01));
         assert!((n.feedback - 0.95 * 0.210_526).abs() < 1e-4);
+    }
+
+    #[test]
+    fn invert_mod_mix_follows_binary_polarity_and_saved_decodes_v51() {
+        let mut p = INIT;
+        p[8] = 0.5; // mod_mix
+        p[11] = 1.0; // invert_mod_mix = 1 (INIT) -> positive spread_swing
+        let ir::EffectKind::Notches(pos) = phasis(p) else {
+            panic!("notches");
+        };
+        assert!(pos.spread_swing > 0.0, "{}", pos.spread_swing);
+        p[11] = 0.0; // invert_mod_mix = 0 -> negative spread_swing
+        let ir::EffectKind::Notches(neg) = phasis(p) else {
+            panic!("notches");
+        };
+        assert!((neg.spread_swing + pos.spread_swing).abs() < 1e-6);
+
+        let mut public = Vec::new();
+        // rate, center, spread, feedback, mix, notches_norm (0.4 -> 6), amount, stereo, mod_mix
+        for v in [0.5f32, 0.4, 0.6, 0.3, 0.8, 0.4, 0.9, 0.25, 0.5] {
+            public.extend(v.to_le_bytes());
+        }
+        public.extend([1u8, 1, 0]); // ultra, invert_phase, invert_mod_mix
+        for v in [-1.0f32, 0.0, 0.0] {
+            public.extend(v.to_le_bytes());
+        }
+        public.push(0);
+        let decoded = saved(0x51, &public).unwrap();
+        assert_eq!(decoded[9], 6.0);
+        assert_eq!(decoded[2], 1.0);
+        assert_eq!(decoded[10], 1.0);
+        assert_eq!(decoded[11], 0.0);
+        assert_eq!(decoded[12], 0.8);
     }
 }

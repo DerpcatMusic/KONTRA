@@ -203,13 +203,59 @@ pub fn choral(p: [f32; 10]) -> ir::EffectKind {
     })
 }
 
-/// A Choral's knobs as a script moves them: every move rebuilds it from all.
-pub fn model() -> ir::KnobModel {
+/// Decode a saved `BParFXChoral` (`0x5d`, v0x51, 34 bytes) into [`INIT`]'s
+/// knob order (`Kontakt 8.exe` [ref] & `fx_other.tsv:65-73`):
+/// 7 floats (`amount`, `rate`, `delay`, `voices`, `width`, `feedback`, `mix`),
+/// 2 bools (`invert_phase`, `scatter`), 1 `i32` (`mode` in `0..=3`).
+#[must_use]
+pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 10]> {
+    if version != 0x51 || public.len() < 34 {
+        return None;
+    }
+    let f = |offset: usize| {
+        let bytes = public.get(offset..offset + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let flag = |offset: usize| public.get(offset).map(|&b| if b != 0 { 1.0 } else { 0.0 });
+    let amount = f(0)?;
+    let rate = f(4)?;
+    let delay = f(8)?;
+    let voices = f(12)?;
+    let width = f(16)?;
+    let feedback = f(20)?;
+    let mix = f(24)?;
+    let invert = flag(28)?;
+    let scatter = flag(29)?;
+    let mode = i32::from_le_bytes(public.get(30..34)?.try_into().ok()?);
+    if !(0..=3).contains(&mode) {
+        return None;
+    }
+    Some([
+        rate,
+        mode as f32,
+        amount,
+        voices,
+        delay,
+        width,
+        feedback,
+        scatter,
+        invert,
+        mix,
+    ])
+}
+
+/// A Choral's knobs from saved positions as a script moves them.
+pub fn model_from(saved: [f32; 10]) -> ir::KnobModel {
     ir::KnobModel {
         knobs: (0..10).map(ir::SlotKnob::Knob).collect(),
-        saved: INIT.into(),
+        saved: saved.into(),
         build: |p| Some(choral(p.try_into().ok()?)),
     }
+}
+
+/// A Choral's knobs as a script moves them: every move rebuilds it from all.
+pub fn model() -> ir::KnobModel {
+    model_from(INIT)
 }
 
 /// What `$EFFECT_TYPE_CHORAL` (43) loads, as Morphology Evolved, Conflux
@@ -268,5 +314,26 @@ mod tests {
         assert!((e.hz - 0.25).abs() < 1e-6 && (e.voices.start[1] - 0.5).abs() < 1e-6);
         assert_eq!(e.levels[2..], [0.0; 5]);
         assert_eq!(e.scatter, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn saved_decodes_v51_choral_record() {
+        let mut public = Vec::new();
+        // amount, rate, delay, voices, width, feedback, mix
+        for v in [0.6f32, 0.25, 0.4, 0.5, 0.75, 0.2, 0.8] {
+            public.extend(v.to_le_bytes());
+        }
+        public.extend([1u8, 1]); // invert, scatter
+        public.extend(2i32.to_le_bytes()); // mode = 2
+        let decoded = saved(0x51, &public).unwrap();
+        assert_eq!(
+            decoded,
+            [0.25, 2.0, 0.6, 0.5, 0.4, 0.75, 0.2, 1.0, 1.0, 0.8]
+        );
+        let ir::EffectKind::Ensemble(e) = choral(decoded) else {
+            panic!("ensemble");
+        };
+        assert_eq!(e.polarity, ir::Polarity::Inverted);
+        assert!(saved(0x50, &public).is_none());
     }
 }

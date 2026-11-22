@@ -46,6 +46,13 @@ impl BParScript {
     }
 
     pub fn params(&self) -> Result<BParScriptParams, Error> {
+        // Native BParScript reader [ref] accepts only v0x50 and v0x60.
+        if !matches!(self.0.version, 0x50 | 0x60) {
+            return Err(Error::Generic(format!(
+                "Unsupported BParScript version 0x{:X}",
+                self.0.version
+            )));
+        }
         let mut reader = Cursor::new(&self.0.public_data);
 
         let mut params = BParScriptParams {
@@ -64,7 +71,14 @@ impl BParScript {
             bypass: reader.read_bool()?,
             password_hash: {
                 let length = reader.read_u32_le()?;
-                reader.read_bytes(length as usize)?
+                // In v0x50, password_hash is an optional string
+                // ([ref]: negative i32 means absent); in v0x60 it is a
+                // u32-counted byte vector.
+                if self.0.version == 0x50 && (length as i32) < 0 {
+                    Vec::new()
+                } else {
+                    reader.read_bytes(length as usize)?
+                }
             },
             description: reader.read_optional_sized_utf8()?,
             textfile_name: reader.read_optional_sized_utf8()?,
@@ -74,15 +88,26 @@ impl BParScript {
         // v0x50 and v0x60; a truncated count or entry is a parse fault.
         let mut entries = || -> Result<Vec<String>, Error> {
             let count = reader.read_u32_le()? as usize;
+            let remaining = self
+                .0
+                .public_data
+                .len()
+                .saturating_sub(reader.position() as usize);
+            if count > remaining / 4 {
+                return Err(Error::Static("Invalid script persistence count"));
+            }
             let mut out = Vec::with_capacity(count.min(65536));
             for _ in 0..count {
                 let length = reader.read_u32_le()? as usize;
                 let bytes = reader.read_bytes(length)?;
-                out.push(String::from_utf8_lossy(&bytes).into_owned());
+                out.push(Self::decode_source(bytes));
             }
             Ok(out)
         };
         params.persistent = entries()?;
+        if reader.position() as usize != self.0.public_data.len() {
+            return Err(Error::Static("Unexpected trailing bytes in BParScript"));
+        }
         Ok(params)
     }
 }
@@ -131,5 +156,42 @@ mod tests {
         script.0.public_data.extend(1u32.to_le_bytes());
         assert!(script.params().is_err()); // Count1 without its entry.
         assert_eq!(BParScript::decode_source(vec![b'{', 0xe9, b'}']), "{é}");
+
+        // v0x50 password_hash uses optional string semantics (-1 = absent).
+        let mut v50 = Vec::new();
+        v50.extend(u32::MAX.to_le_bytes()); // text absent
+        v50.extend([0, 0, 0]);
+        v50.extend(u32::MAX.to_le_bytes()); // password_hash absent (-1)
+        v50.extend(u32::MAX.to_le_bytes()); // description absent
+        v50.extend(u32::MAX.to_le_bytes()); // textfile_name absent
+        v50.extend(0u32.to_le_bytes()); // persistent count = 0
+        let v50_script = BParScript(StructuredObject {
+            version: 0x50,
+            public_data: v50.clone(),
+            private_data: vec![],
+            children: vec![],
+        });
+        assert!(v50_script.params().unwrap().password_hash.is_empty());
+
+        // Unsupported version is rejected.
+        let bad_ver = BParScript(StructuredObject {
+            version: 0x70,
+            public_data: v50.clone(),
+            private_data: vec![],
+            children: vec![],
+        });
+        assert!(bad_ver.params().is_err());
+
+        // Trailing bytes are rejected.
+        let mut trailing = v50;
+        trailing.push(0);
+        assert!(BParScript(StructuredObject {
+            version: 0x50,
+            public_data: trailing,
+            private_data: vec![],
+            children: vec![],
+        })
+        .params()
+        .is_err());
     }
 }

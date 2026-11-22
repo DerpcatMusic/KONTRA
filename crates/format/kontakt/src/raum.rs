@@ -63,13 +63,75 @@ pub(crate) fn raum(p: [f32; 10]) -> ir::Reverb {
     }
 }
 
-/// A Raum's knobs as a script moves them: every move rebuilds it from all.
-pub(crate) fn model() -> ir::KnobModel {
+/// Decode a saved `BParFXRaum` (`0x65`, v0x10, 67 bytes) into [`INIT`]'s knob
+/// order plus any unmodeled switches (`Kontakt 8.exe` [ref] and
+/// `fx_raum_delight_psyche_vibrato_phasis_replika.tsv:78-97`).
+pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], Vec<&'static str>)> {
+    if version != 0x10 || public.len() < 67 {
+        return None;
+    }
+    let kind = i32::from_le_bytes(public.get(0..4)?.try_into().ok()?);
+    if !(0..=2).contains(&kind) {
+        return None;
+    }
+    let f = |offset: usize| {
+        let bytes = public.get(offset..offset + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let flag = |offset: usize| public.get(offset).map(|&b| b != 0);
+    let predelay = f(4)?;
+    let _feedback = f(8)?;
+    let low_shelf = f(12)?;
+    let high_cut = f(16)?;
+    let _reverb = f(20)?;
+    let diffusion = f(24)?;
+    let decay = f(28)?;
+    let modulation = f(32)?;
+    let size = f(36)?;
+    let damping = f(40)?;
+    let rate = f(44)?;
+    let freeze = flag(52)?;
+    let sparse = flag(53)?;
+    let synced = f(54)? > 1e-9;
+    let mut lost = Vec::new();
+    if freeze {
+        lost.push("Raum freeze");
+    }
+    if sparse {
+        lost.push("Raum sparse");
+    }
+    if synced {
+        lost.push("Raum tempo sync");
+    }
+    Some((
+        [
+            kind as f32,
+            decay,
+            size,
+            damping,
+            diffusion,
+            predelay,
+            high_cut,
+            low_shelf,
+            modulation,
+            rate,
+        ],
+        lost,
+    ))
+}
+
+/// A Raum's knobs from saved positions as a script moves them.
+pub(crate) fn model_from(saved: [f32; 10]) -> ir::KnobModel {
     ir::KnobModel {
         knobs: (0..10).map(ir::SlotKnob::Knob).collect(),
-        saved: INIT.into(),
+        saved: saved.into(),
         build: |p| Some(ir::EffectKind::Reverb(raum(p.try_into().ok()?))),
     }
+}
+
+/// A Raum's knobs as a script moves them: every move rebuilds it from all.
+pub(crate) fn model() -> ir::KnobModel {
+    model_from(INIT)
 }
 
 /// What `$EFFECT_TYPE_RAUM` (51) loads, as Conflux loads it from its

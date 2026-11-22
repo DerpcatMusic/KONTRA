@@ -6,11 +6,13 @@ const FC_TOC_MARKER_END: u64 = 0xF1F1F1F1F1F1F1F1;
 const FC_MTD_MARKER_START: &[u8; 16] = b"/\\ NI FC MTD  /\\";
 
 /// Kontakt archive that bundles a preset, samples and other files.
+#[derive(Debug, Clone)]
 pub struct NIFileContainer {
     pub file_section_offset: u64,
     pub items: Vec<FileContainerItem>,
 }
 
+#[derive(Debug, Clone)]
 pub struct FileContainerItem {
     pub index: u64,
     pub filename: String,

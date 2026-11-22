@@ -13,10 +13,10 @@ use super::{
 
 const CHUNK_ID: u16 = 0x0D;
 const ENVELOPE_ID: u16 = 0x07;
-/// Category stored after the name:
-/// 1 = LFO (0x08), 2 = Envelope wrapper (0x07 -> AHDSR/Flex/DBD),
-/// 3 = StepMod (0x09), 4 = EnvelopeFollower (0x0A), 5 = Glide (0x0B).
-const CATEGORIES: [u32; 5] = [1, 2, 3, 4, 5];
+/// Category stored after the name ([ref] accepts `0..=6`; [ref]):
+/// 0 = Unassigned, 1 = LFO (0x08), 2 = Envelope wrapper (0x07 -> AHDSR/Flex/DBD),
+/// 3 = StepMod (0x09), 4 = EnvelopeFollower (0x0A), 5 = Glide (0x0B), 6 = Reserved/Other.
+const CATEGORIES: [u32; 7] = [0, 1, 2, 3, 4, 5, 6];
 
 /// # InternalMod
 ///
@@ -87,7 +87,11 @@ impl InternalMod {
         Ok(InternalModParams {
             name,
             targets,
-            modulator: self.modulator()?,
+            modulator: if category == 0 && self.0.children.is_empty() {
+                Modulator::Other { chunk_id: 0 }
+            } else {
+                self.modulator()?
+            },
             unknown_flags,
             unknown_id,
         })

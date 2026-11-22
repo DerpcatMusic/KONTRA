@@ -43,7 +43,15 @@ impl Snapshot {
     /// The snapshot `chunk` with `persistent` (five script slots) in place
     /// of the values it saved; all before them is kept byte for byte.
     pub fn with_persistent(chunk: &Chunk, persistent: &[Vec<String>]) -> Result<Chunk, Error> {
-        let saved = persistence(&Self::try_from(chunk)?.persistent)?;
+        let parsed = Self::try_from(chunk)?;
+        if parsed.version == 2 {
+            // In v2, the main FX rack follows the 5 script slots,
+            // so persistence is not at the tail of public_data.
+            return Err(Error::Static(
+                "Rewriting persistence on snapshot v2 is not supported",
+            ));
+        }
+        let saved = persistence(&parsed.persistent)?;
         let object = StructuredObject::try_from(chunk)?;
         let mut public = (object.public_data.len().checked_sub(saved.len()))
             .and_then(|end| object.public_data.get(..end))
@@ -104,7 +112,8 @@ impl TryFrom<&Chunk> for Snapshot {
             return Err(Error::Static("Expected Kontakt snapshot"));
         }
         let object = StructuredObject::try_from(chunk)?;
-        if !matches!(object.version, 1 | 3)
+        // Native BSnapshot reader [ref] accepts versions 1, 2 and 3.
+        if !matches!(object.version, 1 | 2 | 3)
             || !object.private_data.is_empty()
             || !object.children.is_empty()
         {
@@ -113,20 +122,20 @@ impl TryFrom<&Chunk> for Snapshot {
             ));
         }
         let mut reader = Cursor::new(object.public_data.as_slice());
-        // The verified v3 layouts use flags 0 for native+script state or 3
-        // for script-only state. Other flags remain unsupported.
+        // Native [ref]: in v3, flags < 2 (0 or 1) carry native+script state,
+        // while flags 3 is script-only state.
         let script_only = if object.version == 3 {
             let flags = reader.read_u32_le()?;
-            if !matches!(flags, 0 | 3) {
+            if !matches!(flags, 0 | 1 | 3) {
                 return Err(Error::Generic(format!(
-                    "Unsupported Kontakt snapshot v3 native state flags {flags}; compact group/source layout is not decoded"
+                    "Unsupported Kontakt snapshot v3 native state flags {flags}"
                 )));
             }
             flags == 3
         } else {
             false
         };
-        let (groups, group_count, effect_children) = if script_only {
+        let (groups, group_count, mut effect_children) = if script_only {
             (None, 0, Vec::new())
         } else {
             let groups = Chunk::read(&mut reader)?;
@@ -138,7 +147,7 @@ impl TryFrom<&Chunk> for Snapshot {
                 return Err(Error::Static("Invalid snapshot group count"));
             }
             let mut effect_children = Vec::new();
-            // Snapshot v1 serializes instrument inserts, sends, then 16 buses.
+            // Snapshot v1/v2/v3 serialize instrument inserts, sends, then 16 buses.
             for _ in 0..2 {
                 let start = reader.position() as usize;
                 BParamArrayBParFX8::read(&mut reader, 8)?;
@@ -151,7 +160,7 @@ impl TryFrom<&Chunk> for Snapshot {
             for _ in 0..16 {
                 let start = reader.position() as usize;
                 let bus = StructuredObject::read(&mut reader)?;
-                if bus.version != if object.version == 3 { 0x12 } else { 0x11 } {
+                if !matches!(bus.version, 0x11 | 0x12) {
                     return Err(Error::Static("Unsupported snapshot bus version"));
                 }
                 let end = reader.position() as usize;
@@ -185,12 +194,19 @@ impl TryFrom<&Chunk> for Snapshot {
             for _ in 0..count {
                 let length = reader.read_u32_le()? as usize;
                 let bytes = reader.read_bytes(length)?;
-                entries.push(
-                    String::from_utf8(bytes)
-                        .map_err(|_| Error::Static("Invalid snapshot persistence UTF-8"))?,
-                );
+                entries.push(super::BParScript::decode_source(bytes));
             }
             persistent.push(entries);
+        }
+        // Native [ref]: v2 places the main FX rack after the 5 script slots.
+        if object.version == 2 {
+            let start = reader.position() as usize;
+            BParamArrayBParFX8::read(&mut reader, 8)?;
+            let end = reader.position() as usize;
+            effect_children.push(Chunk {
+                id: 0x3a,
+                data: object.public_data[start..end].to_vec(),
+            });
         }
         if reader.position() as usize != object.public_data.len() {
             return Err(Error::Static("Unsupported trailing Kontakt snapshot state"));
@@ -222,9 +238,9 @@ pub fn snapshot_metadata_names(chunk: &Chunk) -> Result<(String, String), Error>
         return Err(Error::Static("Unsupported snapshot metadata version"));
     }
     let mut reader = Cursor::new(&object.public_data);
-    if reader.read_u32_le()? != 0 {
-        return Err(Error::Static("Unsupported snapshot metadata flags"));
-    }
+    // Native BSnapshotMetaData [ref]: leading i32 is a
+    // filename table index (< 0 = absent, >= 0 = table index).
+    let _filename_index = reader.read_i32_le()?;
     let name = reader.read_widestring_utf16()?;
     let content_name = reader.read_widestring_utf16()?;
     if reader.position() as usize != object.public_data.len() || name.is_empty() {
@@ -331,5 +347,52 @@ mod tests {
         let count_offset = 3 + 10 + 22 + 16 * 15 + 8;
         chunk.data[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Snapshot::try_from(&chunk).is_err());
+    }
+
+    #[test]
+    fn reads_snapshot_v2_and_nonzero_metadata_filename_index() {
+        // v2: groups, inserts, sends, 16 buses, 5 scripts, then main FX rack.
+        let mut data = vec![0, 2, 0];
+        Chunk {
+            id: 0x33,
+            data: 0u32.to_le_bytes().to_vec(),
+        }
+        .write(&mut data)
+        .unwrap();
+        for _ in 0..2 {
+            data.extend([0, 0x12, 0]);
+            data.extend([0; 8]);
+        }
+        for _ in 0..16 {
+            data.extend([1, 0x12, 0]);
+            data.extend([0; 12]);
+        }
+        for _ in 0..5 {
+            data.extend(0u32.to_le_bytes());
+        }
+        // Main FX rack after the 5 scripts.
+        data.extend([0, 0x12, 0]);
+        data.extend([0; 8]);
+        let parsed = Snapshot::try_from(&Chunk { id: 0x4f, data }).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.effect_children.len(), 19);
+
+        // Metadata with non-zero filename index (-1 = absent, 7 = table index).
+        for idx in [-1i32, 0, 7] {
+            let mut meta = vec![0, 1, 0];
+            meta.extend(idx.to_le_bytes());
+            for s in ["Piano", "Base"] {
+                meta.extend((s.len() as u32).to_le_bytes());
+                for u in s.encode_utf16() {
+                    meta.extend(u.to_le_bytes());
+                }
+            }
+            let (name, content) = snapshot_metadata_names(&Chunk {
+                id: 0x51,
+                data: meta,
+            })
+            .unwrap();
+            assert_eq!((name.as_str(), content.as_str()), ("Piano", "Base"));
+        }
     }
 }

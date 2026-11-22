@@ -4,6 +4,8 @@ use crate::{read_bytes::ReadBytesExt, Error, NIFileError};
 
 use super::{ItemData, ItemHeader, ItemType};
 
+const MAX_NIS_DEPTH: usize = 64;
+
 /// NISound documents are made up of nested [`Item`]s.
 #[derive(Clone, Debug)]
 pub struct ItemContainer {
@@ -39,7 +41,7 @@ impl ItemContainer {
                 e,
             )
         })?;
-        Self::read_body(header, &body).map_err(|e| {
+        Self::read_body(header, &body, 0).map_err(|e| {
             Error::context(
                 format!(
                     "NIS item body at offset {}, declared body length {length}/version 1",
@@ -51,6 +53,13 @@ impl ItemContainer {
     }
 
     pub(crate) fn read_cursor(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
+        Self::read_cursor_depth(reader, 0)
+    }
+
+    fn read_cursor_depth(reader: &mut Cursor<&[u8]>, depth: usize) -> Result<Self, Error> {
+        if depth > MAX_NIS_DEPTH {
+            return Err(Error::Static("NIS item nesting depth exceeded"));
+        }
         let at = reader.position();
         let header = ItemHeader::read(&mut *reader).map_err(|e| {
             Error::context(
@@ -74,7 +83,7 @@ impl ItemContainer {
                 e,
             )
         })?;
-        Self::read_body(header, body).map_err(|e| {
+        Self::read_body(header, body, depth).map_err(|e| {
             Error::context(
                 format!(
                     "NIS child body at body-relative offset {}, declared length {length}/version 1",
@@ -85,10 +94,10 @@ impl ItemContainer {
         })
     }
 
-    fn read_body(header: ItemHeader, body: &[u8]) -> Result<Self, Error> {
+    fn read_body(header: ItemHeader, body: &[u8], depth: usize) -> Result<Self, Error> {
         let mut chunk_data = Cursor::new(body);
         let data = ItemData::read_cursor(&mut chunk_data)?;
-        let (children, child_headers) = Self::read_children(&mut chunk_data)?;
+        let (children, child_headers) = Self::read_children(&mut chunk_data, depth)?;
         let trailing_data = chunk_data.read_all()?;
         Ok(Self {
             header,
@@ -252,6 +261,7 @@ impl ItemContainer {
 
     fn read_children(
         buf: &mut Cursor<&[u8]>,
+        depth: usize,
     ) -> Result<(Vec<ItemContainer>, Vec<[u8; 12]>), Error> {
         let version = buf.read_u32_le()?;
         if version != 1 {
@@ -267,7 +277,7 @@ impl ItemContainer {
             let mut header = [0; 12];
             let at = buf.position();
             buf.read_exact(&mut header).map_err(|e| Error::context(format!("NIS child table row {index}/{num_children} at body-relative offset {at}, expected 12 bytes/version {version}"), e))?;
-            children.push(ItemContainer::read_cursor(buf).map_err(|e| Error::context(format!("NIS child {index}/{num_children} after table row at body-relative offset {at}/version {version}"), e))?);
+            children.push(ItemContainer::read_cursor_depth(buf, depth + 1).map_err(|e| Error::context(format!("NIS child {index}/{num_children} after table row at body-relative offset {at}/version {version}"), e))?);
             headers.push(header);
         }
         Ok((children, headers))

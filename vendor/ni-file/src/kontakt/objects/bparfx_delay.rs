@@ -21,31 +21,57 @@ const CHUNK_ID: u16 = 0x10;
 #[derive(Debug)]
 pub struct FXDelay(pub StructuredObject);
 
-#[derive(Debug)]
+/// Decoded `BParFXDelay` (`0x10`) parameters (`Kontakt 8.exe` [ref]):
+/// v0x50 stores 5 floats (`time_ms`, `damping`, `pan`, `feedback`, `sync_beats`);
+/// v0x51 appends 2 sync floats (`sync_f1`, `sync_f2`) and a `sync_flag` bool.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FXDelayParams {
-    a: f32,
-    b: f32,
-    c: f32,
-    d: f32,
-    e: f32,
-    f: f32,
-    g: f32,
-    h: bool,
+    pub time_ms: f32,
+    pub damping: f32,
+    pub pan: f32,
+    pub feedback: f32,
+    pub sync_beats: f32,
+    pub sync_f1: Option<f32>,
+    pub sync_f2: Option<f32>,
+    pub sync_flag: bool,
 }
 
 impl FXDelay {
     pub fn params(&self) -> Result<FXDelayParams, Error> {
-        let mut reader = Cursor::new(&self.0.public_data);
-
+        if !matches!(self.0.version, 0x50 | 0x51) {
+            return Err(Error::Generic(format!(
+                "Unsupported BParFXDelay version 0x{:X}",
+                self.0.version
+            )));
+        }
+        let mut reader = Cursor::new(self.0.public_data.as_slice());
+        let time_ms = reader.read_f32_le()?;
+        let damping = reader.read_f32_le()?;
+        let pan = reader.read_f32_le()?;
+        let feedback = reader.read_f32_le()?;
+        let sync_beats = reader.read_f32_le()?;
+        let (sync_f1, sync_f2, sync_flag) = if self.0.version == 0x51 {
+            (
+                Some(reader.read_f32_le()?),
+                Some(reader.read_f32_le()?),
+                reader.read_bool()?,
+            )
+        } else {
+            // Native [ref] sets +0x19 = 1 in v0x50.
+            (None, None, true)
+        };
+        if reader.position() as usize != self.0.public_data.len() {
+            return Err(Error::Static("Unexpected trailing bytes in BParFXDelay"));
+        }
         Ok(FXDelayParams {
-            a: reader.read_f32_le()?,
-            b: reader.read_f32_le()?,
-            c: reader.read_f32_le()?,
-            d: reader.read_f32_le()?,
-            e: reader.read_f32_le()?,
-            f: reader.read_f32_le()?,
-            g: reader.read_f32_le()?,
-            h: reader.read_bool()?,
+            time_ms,
+            damping,
+            pan,
+            feedback,
+            sync_beats,
+            sync_f1,
+            sync_f2,
+            sync_flag,
         })
     }
 }
@@ -67,27 +93,46 @@ impl std::convert::TryFrom<&Chunk> for FXDelay {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
-    // use crate::Error;
-    // use std::fs::File;
-    //
-    // #[test]
-    // fn test_bank() -> Result<(), Error> {
-    //     let chunk = Chunk::read(File::open(
-    //         "tests/data/Objects/Kontakt/0x29-ProgramContainer/ProgramContainerV51-000.kon",
-    //     )?)?;
-    //     let pc = InsertBus::try_from(&chunk)?;
-    //
-    //     assert_eq!(pc.0.version, 0x51);
-    //     assert_eq!(pc.0.children.len(), 3);
-    //     assert_eq!(pc.0.children[0].id, 0x2B); // VoiceGroup
-    //     assert_eq!(pc.0.children[1].id, 0x47); // SaveSettings
-    //     assert_eq!(pc.0.children[2].id, 0x36); // ProgramList
-    //
-    //     pc.params()?;
-    //     pc.voice_group()?;
-    //     pc.program_list()?;
-    //     // println!("{:X}", pc.0.children[2].id);
-    //     Ok(())
-    // }
+    use super::*;
+
+    #[test]
+    fn reads_v50_and_v51_delay_records() {
+        let mut v50 = Vec::new();
+        for v in [250.0f32, 0.4, 0.5, 0.3, -1.0] {
+            v50.extend(v.to_le_bytes());
+        }
+        let d50 = FXDelay(StructuredObject {
+            version: 0x50,
+            public_data: v50.clone(),
+            private_data: vec![],
+            children: vec![],
+        });
+        let p50 = d50.params().unwrap();
+        assert_eq!(
+            (
+                p50.time_ms,
+                p50.damping,
+                p50.pan,
+                p50.feedback,
+                p50.sync_beats
+            ),
+            (250.0, 0.4, 0.5, 0.3, -1.0)
+        );
+        assert!(p50.sync_flag);
+        assert_eq!((p50.sync_f1, p50.sync_f2), (None, None));
+
+        let mut v51 = v50;
+        v51.extend(0.125f32.to_le_bytes());
+        v51.extend(0.0f32.to_le_bytes());
+        v51.push(0);
+        let d51 = FXDelay(StructuredObject {
+            version: 0x51,
+            public_data: v51,
+            private_data: vec![],
+            children: vec![],
+        });
+        let p51 = d51.params().unwrap();
+        assert!(!p51.sync_flag);
+        assert_eq!((p51.sync_f1, p51.sync_f2), (Some(0.125), Some(0.0)));
+    }
 }

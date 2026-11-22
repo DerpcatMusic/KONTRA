@@ -48,13 +48,41 @@ pub(crate) fn wow_flutter(p: [f32; 5]) -> ir::Delay {
     }
 }
 
-/// A Wow/Flutter's knobs as a script moves them: every move rebuilds it.
-pub(crate) fn model() -> ir::KnobModel {
+/// Decode a saved `BParFXWowFlutter` (`0x6a`, v0x10, 33 bytes) into [`INIT`]'s
+/// knob order plus `mix` (`Kontakt 8.exe` [ref] and
+/// `fx_bite_dirt_freak_wowflutter_twindelay.tsv:88-96`).
+pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 5], f32)> {
+    if version != 0x10 || public.len() < 33 {
+        return None;
+    }
+    let f = |offset: usize| {
+        let bytes = public.get(offset..offset + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let wow = f(0)?;
+    let flutter = f(4)?;
+    let _scrape = f(8)?;
+    let speed = f(12)?;
+    let stereo = f(16)?;
+    let age = f(20)?;
+    let _saturation = f(24)?;
+    let _gate = *public.get(28)?;
+    let mix = f(29)?;
+    Some(([wow, flutter, speed, stereo, age], mix))
+}
+
+/// A Wow/Flutter's knobs from saved positions as a script moves them.
+pub(crate) fn model_from(saved: [f32; 5]) -> ir::KnobModel {
     ir::KnobModel {
         knobs: (0..5).map(ir::SlotKnob::Knob).collect(),
-        saved: INIT.into(),
+        saved: saved.into(),
         build: |p| Some(ir::EffectKind::Delay(wow_flutter(p.try_into().ok()?))),
     }
+}
+
+/// A Wow/Flutter's knobs as a script moves them: every move rebuilds it.
+pub(crate) fn model() -> ir::KnobModel {
+    model_from(INIT)
 }
 
 /// What `$EFFECT_TYPE_WOWFLUTTER` (56) loads: [`INIT`], fully wet.

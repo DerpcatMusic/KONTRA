@@ -38,18 +38,18 @@ impl Display for Uuid {
     ///   {hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh}
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "{:x}-{:x}-{:x}-{:x}{:x}-{:x}{:x}{:x}{:x}{:x}{:x}",
+            "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
             self.time_low,
             self.time_mid,
             self.time_high,
             self.clock_sequence_high,
             self.clock_sequence_low,
             self.node_1,
-            self.node_1,
-            self.node_1,
-            self.node_1,
-            self.node_1,
-            self.node_1,
+            self.node_2,
+            self.node_3,
+            self.node_4,
+            self.node_5,
+            self.node_6,
         ))
     }
 }
@@ -69,5 +69,22 @@ impl Uuid {
             node_5: reader.read_u8()?,
             node_6: reader.read_u8()?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn formats_all_six_node_bytes_with_zero_padding() {
+        let mut raw = Vec::new();
+        raw.extend(0x0123_4567u32.to_le_bytes());
+        raw.extend(0x00ab_u16.to_le_bytes());
+        raw.extend(0x0cde_u16.to_le_bytes());
+        raw.extend([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        let uuid = Uuid::read(Cursor::new(raw)).unwrap();
+        assert_eq!(uuid.to_string(), "01234567-00ab-0cde-0102-030405060708");
     }
 }

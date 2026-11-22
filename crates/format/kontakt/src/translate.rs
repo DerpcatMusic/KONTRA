@@ -75,6 +75,7 @@ const USED_GROUP: &[&str] = &[
     "soloed",
     "fx_idx_amp_split_point",
     "release_trigger_note_monophonic",
+    "reverse",
 ];
 const COSMETIC_GROUP: &[&str] = &[];
 #[cfg(test)]
@@ -260,7 +261,26 @@ pub(crate) fn instrument(
         let script = BParScript::try_from(chunk)
             .and_then(|s| s.params())
             .map_err(decode("script"))?;
-        match script.text {
+        let inline = script.text.filter(|t| !t.trim().is_empty());
+        let linked = if !script.bypass && inline.is_none() {
+            script
+                .textfile_name
+                .as_deref()
+                .filter(|n| !n.is_empty())
+                .and_then(|file| {
+                    let res = resources.get_or_insert_with(|| Resources::open(path));
+                    let clean = file.replace('\\', "/");
+                    let clean = clean.trim_start_matches('/');
+                    let bytes = res
+                        .read(&format!("scripts/{clean}"))
+                        .or_else(|| res.read(&format!("scripts/{clean}.txt")))
+                        .or_else(|| res.read(clean))?;
+                    Some(BParScript::decode_source(bytes))
+                })
+        } else {
+            None
+        };
+        match inline.or(linked) {
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => out.scripts.push(ir::Script {
                 name: script.description.unwrap_or_default(),
@@ -321,17 +341,6 @@ pub(crate) fn instrument(
         let fx = saved.map(|s| s.fx);
         g.inserts = crate::effects::group(group, fx, index, &mut impulses, &mut notes, &mut slots);
         crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
-        // ponytail: a filter a modulator moves passes unfiltered until filters
-        // run per voice; its routes are reported.
-        for slot in t.modulated {
-            let insert = g
-                .inserts
-                .get_mut(usize::from(slot))
-                .and_then(Option::as_mut);
-            if let Some(e) = insert.filter(|e| matches!(e.kind, ir::EffectKind::Filter(_))) {
-                e.kind = ir::EffectKind::Other;
-            }
-        }
         out.groups.push(g);
         criteria.push(t.criteria);
     }
@@ -351,7 +360,7 @@ pub(crate) fn instrument(
     if out
         .scripts
         .iter()
-        .any(|s| s.source.contains("load_ir_sample"))
+        .any(|s| contains_ascii_ci(&s.source, "load_ir_sample"))
     {
         out.responses = impulses.library();
     }
@@ -408,7 +417,14 @@ pub(crate) fn instrument(
         }
         let id = u32::try_from(z.filename_id).unwrap_or(u32::MAX);
         let sample = *sample_of.entry(id).or_insert_with(|| {
-            let name = table.get(&id)?;
+            let Some(name) = table.get(&id) else {
+                notes.add(
+                    ir::Impact::Broken,
+                    "missing sample table entry",
+                    format!("zone {zone_id} filename_id {}", z.filename_id),
+                );
+                return None;
+            };
             let found = resolver
                 .resolve(name)
                 .and_then(|at| at.ok_or("not found".into()));
@@ -516,7 +532,8 @@ fn slot_shapes(out: &mut ir::Instrument, slots: crate::effects::Slots, buses: &m
     out.slot_shapes.saved_types = slots.types;
     out.slot_shapes.held = slots.held;
     let loads = |s: &ir::Script| {
-        s.source.contains("$ENGINE_PAR_EFFECT_") || s.source.contains("$ENGINE_PAR_SEND_EFFECT_")
+        contains_ascii_ci(&s.source, "$ENGINE_PAR_EFFECT_")
+            || contains_ascii_ci(&s.source, "$ENGINE_PAR_SEND_EFFECT_")
     };
     if out.scripts.iter().any(loads) {
         // Every Kontakt rack has 8 slots, and a script may load into an
@@ -688,6 +705,35 @@ fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
     }
 }
 
+/// ASCII case-insensitive substring check (KSP identifiers and keywords are case-insensitive).
+fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {
+    let n = needle.len();
+    if n == 0 {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(n)
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// Split `source` on ASCII case-insensitive occurrences of `needle`, returning
+/// the slices immediately after each match (preserving original casing in payloads).
+fn split_ascii_ci<'a>(source: &'a str, needle: &str) -> Vec<&'a str> {
+    let lower = source.to_ascii_lowercase();
+    let pat = needle.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find(&pat) {
+        let after = from + rel + pat.len();
+        if let Some(rest) = source.get(after..) {
+            out.push(rest);
+        }
+        from = after;
+    }
+    out
+}
+
 /// The library data files a script loads with a literal `load_array(%x, 2)`:
 /// `Resources/data/x.nka`, by lowercase array name without its sigil.
 fn data_files(
@@ -696,7 +742,7 @@ fn data_files(
     resources: &mut Option<Resources>,
 ) -> Vec<(String, Vec<u8>)> {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    for call in source.split("load_array(").skip(1) {
+    for call in split_ascii_ci(source, "load_array(") {
         let Some((array, mode)) = call.split_once(')').and_then(|(a, _)| a.split_once(',')) else {
             continue;
         };
@@ -713,7 +759,7 @@ fn data_files(
     }
     // A Creator Tools performance view the script loads by a literal name:
     // `Resources/performance_view/<name>.nckp`, kept as `<name>.nckp`.
-    for call in source.split("load_performance_view(").skip(1) {
+    for call in split_ascii_ci(source, "load_performance_view(") {
         let Some(name) = call
             .split_once(')')
             .map(|(a, _)| a.trim().trim_matches('"'))
@@ -737,16 +783,20 @@ fn data_files(
     // A Kontakt 8 `native_ui` page the script loads by a literal name: every
     // module under `Resources/native_ui/`, kept as `native_ui/<path>`, and
     // the entry's name as `native_ui.entry`.
-    if let Some(entry) = source
-        .split("load_native_ui(")
-        .nth(1)
+    if let Some(entry) = split_ascii_ci(source, "load_native_ui(")
+        .into_iter()
+        .next()
         .and_then(|call| call.split_once(')'))
         .map(|(a, _)| a.trim().trim_matches('"').to_owned())
         .filter(|e| !e.is_empty() && !e.contains(['"', '\\']))
     {
         let resources = resources.get_or_insert_with(|| Resources::open(path));
         for module in resources.under("native_ui") {
-            if !module.ends_with(".nui") {
+            if !module
+                .rsplit('.')
+                .next()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("nui"))
+            {
                 continue;
             }
             if let Some(bytes) = resources.read(&format!("native_ui/{module}")) {
@@ -761,8 +811,6 @@ fn data_files(
 struct Translated {
     group: ir::Group,
     criteria: Vec<StartCriteriaParams>,
-    /// Insert slots whose cutoff a route not carried moves.
-    modulated: Vec<u8>,
 }
 
 fn translate_group(
@@ -784,7 +832,30 @@ fn translate_group(
         &[INTERNAL_MODS, 0x3c, 0x3a, 0x45, 0x3d, 0x4b, START_CRITERIA],
         &[],
     );
-    let stream_mode = group.source_identity().map_or(0, |s| s.mode);
+    let source_identity = match group.source_identity() {
+        Ok(id) => Some(id),
+        Err(e) => {
+            notes.add(
+                ir::Impact::Audible,
+                "unreadable source mode",
+                format!("{}: {e}", v.name),
+            );
+            None
+        }
+    };
+    let stream_mode = source_identity.map_or(0, |s| s.mode);
+    match stream_mode {
+        1 => notes.add(ir::Impact::Audible, "Tone Machine source", &v.name),
+        4 => notes.add(ir::Impact::Audible, "Beat Machine source", &v.name),
+        6 => notes.add(ir::Impact::Audible, "MP60 source", &v.name),
+        7 => notes.add(ir::Impact::Audible, "S1200 source", &v.name),
+        0 | 2 | 3 | 5 | 8 | 9 => {}
+        other => notes.add(
+            ir::Impact::Audible,
+            &format!("source mode {other}"),
+            &v.name,
+        ),
+    }
     let mut out = ir::Group {
         name: v.name.clone(),
         volume_db: db(v.volume),
@@ -803,7 +874,7 @@ fn translate_group(
         // KSP manual, play_note(): in DFD mode a sample offset greater than
         // the zone's S.Mod is ignored and no offset applies.
         offset_limited: stream_mode == 3,
-        purged: group.source_identity().is_ok_and(|s| s.flag == 1),
+        purged: source_identity.is_some_and(|s| s.flag == 1),
         stream: laws::stream(stream_mode, base.preload),
         speed: matches!(stream_mode, 2 | 5 | 8).then_some(1.0), // Time Machine 1, 2, Pro
         ..ir::Group::DEFAULT
@@ -826,13 +897,20 @@ fn translate_group(
             out.volume_db, out.pan, out.tune
         ),
     });
-    if let Ok(Some(source)) = group.wavetable_source() {
-        out.wavetable = Some(crate::wavetable::wavetable(&source, &v.name, notes));
-        // A voice reads anywhere in its table at once.
-        out.stream = None;
+    match group.wavetable_source() {
+        Ok(Some(source)) => {
+            out.wavetable = Some(crate::wavetable::wavetable(&source, &v.name, notes));
+            // A voice reads anywhere in its table at once.
+            out.stream = None;
+        }
+        Ok(None) => {}
+        Err(e) => notes.add(
+            ir::Impact::Broken,
+            "unreadable wavetable source",
+            format!("{}: {e}", v.name),
+        ),
     }
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
-    let mut modulated = Vec::new();
     let release_counter = laws::release_counter(v.release_trigger, v.rls_trig_counter);
     kontra_law::record(|| kontra_law::Application {
         id: kontra_law::LawId("kontakt.release_counter.v1"),
@@ -874,8 +952,9 @@ fn translate_group(
                 Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Dbd(_)
             ) || (matches!(p.modulator, Modulator::Ahdsr(_)) && !amp_env);
             if !reads_flags {
+                let is_glide = matches!(p.modulator, Modulator::Glide(_));
                 for (flag, what) in [(1, "bypass"), (2, "retrigger"), (3, "flag 3")] {
-                    if amp_env && matches!(flag, 1 | 3) {
+                    if (amp_env && matches!(flag, 1 | 3)) || (is_glide && flag == 1) {
                         continue;
                     }
                     if p.unknown_flags.get(flag).is_some_and(|&b| b != 0) {
@@ -925,15 +1004,7 @@ fn translate_group(
                     });
                     if p.targets.len() > 1 {
                         let envelopes = out.envelopes.len();
-                        timed(
-                            &mut out,
-                            &p,
-                            group_index,
-                            slot(n),
-                            target,
-                            notes,
-                            &mut modulated,
-                        );
+                        timed(&mut out, &p, group_index, slot(n), target, notes);
                         if out.envelopes.len() > envelopes
                             && let Ok(env_idx) = u8::try_from(envelopes)
                         {
@@ -946,15 +1017,7 @@ fn translate_group(
                 | Modulator::Ahdsr(_)
                 | Modulator::Dbd(_) => {
                     let (lfos, envelopes) = (out.lfos.len(), out.envelopes.len());
-                    timed(
-                        &mut out,
-                        &p,
-                        group_index,
-                        slot(n),
-                        None,
-                        notes,
-                        &mut modulated,
-                    );
+                    timed(&mut out, &p, group_index, slot(n), None, notes);
                     let made = if out.lfos.len() > lfos {
                         u8::try_from(lfos).ok().map(ir::Source::Lfo)
                     } else if out.envelopes.len() > envelopes {
@@ -970,14 +1033,17 @@ fn translate_group(
                         .iter()
                         .find(|t| t.param == "pitch" && t.slot.is_none()) =>
                 {
-                    let law = laws::glide(g, t.signed_intensity());
-                    kontra_law::record(|| kontra_law::Application {
-                        id: kontra_law::LawId("kontakt.glide.v1"),
-                        location: format!("groups/{group_index}/glide"),
-                        input: format!("{g:?}"),
-                        output: format!("{law:?}"),
-                    });
-                    out.glide = Some(law);
+                    let bypassed = p.unknown_flags.get(1).is_some_and(|&b| b != 0);
+                    if !bypassed {
+                        let law = laws::glide(g, t.signed_intensity());
+                        kontra_law::record(|| kontra_law::Application {
+                            id: kontra_law::LawId("kontakt.glide.v1"),
+                            location: format!("groups/{group_index}/glide"),
+                            input: format!("{g:?}"),
+                            output: format!("{law:?}"),
+                        });
+                        out.glide = Some(law);
+                    }
                     for t in p
                         .targets
                         .iter()
@@ -999,9 +1065,6 @@ fn translate_group(
                         Modulator::Other { .. } => "other",
                     };
                     for t in &p.targets {
-                        if t.param == "filterCutoff" {
-                            modulated.extend(t.slot);
-                        }
                         let to = if t.slot.is_some() { "module " } else { "" };
                         let feature = format!("internal modulator {kind} -> {to}{}", t.param);
                         notes.add(ir::Impact::Audible, &feature, &p.name);
@@ -1021,12 +1084,10 @@ fn translate_group(
         release_counter,
         &mut out,
         notes,
-        &mut modulated,
     )?;
     Ok(Translated {
         group: out,
         criteria: v.start_criteria.items,
-        modulated,
     })
 }
 
@@ -1046,18 +1107,19 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
         .unwrap_or(0);
     // One draw over every random row of the instrument (binary [ref]).
     let randoms = rows().filter(|c| c.mode == RANDOM).count();
-    let mut random_position = 0;
+    let mut random_position: usize = 0;
     for (group, rows) in groups.iter_mut().zip(criteria) {
-        // A row's next_criteria joins it to the row after it. ponytail: joins
-        // fold left to right; Kontakt's mixed AND/OR precedence is untraced.
+        // A row's next_criteria joins it to the next active row (KONTAKT_START_CONDITIONS.md:79).
+        // ponytail: joins fold left to right; Kontakt's mixed AND/OR precedence is untraced.
         let mut join = ir::Join::And;
         for c in rows {
-            let this = join;
-            join = match c.next_criteria {
-                1 => ir::Join::AndNot,
-                2 => ir::Join::Or,
-                _ => ir::Join::And,
-            };
+            if c.sequencer_only {
+                notes.add(
+                    ir::Impact::Audible,
+                    "start option sequencer_only",
+                    format!("group {} mode {}", group.name, c.mode),
+                );
+            }
             let rule = match c.mode {
                 0 => continue,
                 ON_KEY => match (midi(c.key_min), midi(c.key_max)) {
@@ -1077,10 +1139,11 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
                     random: false,
                 },
                 RANDOM => {
+                    let pos = random_position;
                     random_position += 1;
                     ir::StartRule::RoundRobin {
                         scope: ir::RrScope::Global,
-                        position: random_position - 1,
+                        position: u8::try_from(pos).unwrap_or(u8::MAX),
                         length: u8::try_from(randoms).unwrap_or(u8::MAX),
                         random: true,
                     }
@@ -1090,7 +1153,17 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
                     continue;
                 }
             };
+            let this = if group.start.is_empty() {
+                ir::Join::And
+            } else {
+                join
+            };
             group.start.push((this, rule));
+            join = match c.next_criteria {
+                1 => ir::Join::AndNot,
+                2 => ir::Join::Or,
+                _ => ir::Join::And,
+            };
         }
     }
 }
@@ -1432,5 +1505,82 @@ mod tests {
             slow.ignored_fields("zone", &z, super::USED_ZONE, super::COSMETIC_ZONE);
             assert_eq!(fast.finish(), slow.finish());
         }
+    }
+
+    #[test]
+    fn start_rules_ignore_skipped_join_handle_many_randoms_and_note_sequencer_only() {
+        let row = |mode, next_criteria, key_min, key_max, sequencer_only| {
+            ni_file::kontakt::objects::StartCriteriaParams {
+                mode,
+                next_criteria,
+                key_min,
+                key_max,
+                controller: 0,
+                cc_min: 0,
+                cc_max: 0,
+                cycle_class: 0,
+                sequencer_only,
+                slice_zone_idx: 0,
+                slice_zone_slice_idx: 0,
+            }
+        };
+        let mut groups = vec![ir::Group::DEFAULT];
+        let mut notes = kontra_format::Notes::default();
+        // Leading disabled row (mode 0) with next_criteria = 2 (Or) must not leak Or
+        // onto the first active row; sequencer_only must emit a diagnostic.
+        let criteria = vec![vec![
+            row(0, 2, 0, 0, false),
+            row(1, 0, 36, 36, true),
+            row(0, 2, 0, 0, false),
+            row(1, 0, 38, 38, false),
+        ]];
+        super::start_rules(&mut groups, &criteria, &mut notes);
+        assert_eq!(
+            groups[0].start,
+            vec![
+                (ir::Join::And, ir::StartRule::Keyswitch { range: 36..=36 }),
+                (ir::Join::And, ir::StartRule::Keyswitch { range: 38..=38 }),
+            ]
+        );
+        assert!(
+            notes
+                .finish()
+                .iter()
+                .any(|d| d.feature == "start option sequencer_only")
+        );
+
+        // > 255 RANDOM rows must not overflow u8.
+        let mut many_groups = vec![ir::Group::DEFAULT; 260];
+        let many_criteria = vec![vec![row(4, 0, 0, 0, false)]; 260];
+        super::start_rules(
+            &mut many_groups,
+            &many_criteria,
+            &mut kontra_format::Notes::default(),
+        );
+        assert_eq!(
+            many_groups[259].start[0].1,
+            ir::StartRule::RoundRobin {
+                scope: ir::RrScope::Global,
+                position: u8::MAX,
+                length: u8::MAX,
+                random: true,
+            }
+        );
+    }
+
+    #[test]
+    fn ascii_ci_script_helpers_match_uppercase_ksp() {
+        assert!(super::contains_ascii_ci(
+            "LOAD_IR_SAMPLE(\"hall\")",
+            "load_ir_sample"
+        ));
+        assert!(super::contains_ascii_ci(
+            "set_engine_par($engine_par_effect_type, 1, -1, 0, 1)",
+            "$ENGINE_PAR_EFFECT_"
+        ));
+        assert_eq!(
+            super::split_ascii_ci("LOAD_ARRAY(%Tbl, 2)", "load_array("),
+            vec!["%Tbl, 2)"]
+        );
     }
 }

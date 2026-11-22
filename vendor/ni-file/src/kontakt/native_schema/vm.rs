@@ -1045,7 +1045,11 @@ fn attempt(
     };
     // A reader does bounded work per byte it reads; a path that spins on host state does not.
     let steps = match stream.data {
-        Some(d) => 4_000 + 600 * d.len() as u32,
+        Some(d) => 4_000u32.saturating_add(
+            u32::try_from(d.len())
+                .unwrap_or(u32::MAX)
+                .saturating_mul(600),
+        ),
         None => 120_000,
     };
     let mut m = Machine::new(lib, stream, chooser, values, element_of(r), steps);

@@ -50,6 +50,9 @@ use crate::nis::{ItemContainer, ItemData, ItemType};
 use crate::read_bytes::ReadBytesExt;
 use crate::Error;
 
+/// Cap expanded FastLZ subtree allocations at 128 MiB (matching NKSContainer).
+const MAX_EXPANDED_SUBTREE_BYTES: usize = 128 * 1024 * 1024;
+
 #[derive(Debug)]
 pub struct SubtreeItem {
     pub inner_data: Vec<u8>,
@@ -59,7 +62,13 @@ impl std::convert::TryFrom<&ItemData> for SubtreeItem {
     type Error = Error;
 
     fn try_from(frame: &ItemData) -> Result<Self, Error> {
-        debug_assert_eq!(frame.header.item_type(), ItemType::SubtreeItem);
+        let got = frame.header.item_type();
+        if got != ItemType::SubtreeItem {
+            return Err(Error::ItemWrapError {
+                expected: ItemType::SubtreeItem,
+                got,
+            });
+        }
         Self::read(Cursor::new(&frame.data))
     }
 }
@@ -79,7 +88,10 @@ impl SubtreeItem {
         }
         let inner_data = if reader.read_bool()? {
             let expanded = reader.read_u32_le()? as usize;
-            if expanded == 0 || i32::try_from(expanded).is_err() {
+            if expanded == 0
+                || expanded > MAX_EXPANDED_SUBTREE_BYTES
+                || i32::try_from(expanded).is_err()
+            {
                 return Err(Error::Static("Invalid expanded subtree size"));
             }
             let compressed_size = reader.read_u32_le()? as usize;

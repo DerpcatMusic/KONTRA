@@ -150,31 +150,41 @@ impl TryFrom<&Chunk> for MultiSlots {
 
     fn try_from(chunk: &Chunk) -> Result<Self, Error> {
         expect(chunk, 0x48)?;
-        let extra = match chunk.data.len() {
-            n if n == SLOTS * 24 => 2,
-            n if n == SLOTS * 28 => 6,
-            n => {
-                return Err(Error::Generic(format!(
-                    "Unexpected multi slot table of {n} bytes"
-                )))
+        let parse = |extra_len: usize| -> Result<Vec<SlotMidi>, Error> {
+            let mut r = Cursor::new(chunk.data.as_slice());
+            let mut slots = Vec::with_capacity(SLOTS);
+            for _ in 0..SLOTS {
+                let midi_channel = r.read_u8()?;
+                let flag = r.read_u8()?;
+                let extra = r.read_bytes(extra_len)?;
+                let values = counted(&mut r, 4)?;
+                slots.push(SlotMidi {
+                    midi_channel,
+                    flag,
+                    extra,
+                    values,
+                });
             }
+            ensure_consumed(&r)?;
+            Ok(slots)
         };
-        let mut r = Cursor::new(chunk.data.as_slice());
-        let mut slots = Vec::with_capacity(SLOTS);
-        for _ in 0..SLOTS {
-            let midi_channel = r.read_u8()?;
-            let flag = r.read_u8()?;
-            let extra = r.read_bytes(extra)?;
-            let values = counted(&mut r, 4)?;
-            slots.push(SlotMidi {
-                midi_channel,
-                flag,
-                extra,
-                values,
-            });
+        // Native 0x48 stores either 2 or 6 extra bytes per slot, followed by a
+        // variable-length counted list of 0..=4 u32 values.
+        match (parse(2), parse(6)) {
+            (Ok(slots), Err(_)) | (Err(_), Ok(slots)) => Ok(Self(slots)),
+            (Ok(slots), Ok(_)) => {
+                // Prefer the standard 24-byte / 28-byte fixed table when exact.
+                if chunk.data.len() == SLOTS * 28 {
+                    parse(6).map(Self)
+                } else {
+                    Ok(Self(slots))
+                }
+            }
+            (Err(_), Err(_)) => Err(Error::Generic(format!(
+                "Unexpected multi slot table of {} bytes",
+                chunk.data.len()
+            ))),
         }
-        ensure_consumed(&r)?;
-        Ok(Self(slots))
     }
 }
 
@@ -230,6 +240,20 @@ mod tests {
             assert_eq!(slots.0[63].midi_channel, 64);
             assert_eq!(slots.0[0].extra.len(), extra);
         }
+        // Variable-length counted lists (< 4 values per slot) must also parse.
+        let mut var = Vec::new();
+        for slot in 0..SLOTS as u8 {
+            var.extend([slot + 1, 0, 0xff, 0xff]);
+            let vals: &[u32] = if slot % 2 == 0 { &[1, 2] } else { &[] };
+            var.extend(counted_bytes(vals));
+        }
+        let slots = MultiSlots::try_from(&Chunk {
+            id: 0x48,
+            data: var,
+        })
+        .unwrap();
+        assert_eq!(slots.0[0].values, [1, 2]);
+        assert!(slots.0[1].values.is_empty());
     }
 
     #[test]

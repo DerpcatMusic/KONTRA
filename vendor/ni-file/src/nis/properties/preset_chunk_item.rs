@@ -14,7 +14,13 @@ impl std::convert::TryFrom<&ItemData> for PresetChunkItemProperties {
     type Error = NIFileError;
 
     fn try_from(frame: &ItemData) -> std::result::Result<Self, Self::Error> {
-        debug_assert_eq!(frame.header.item_type(), ItemType::PresetChunkItem);
+        let got = frame.header.item_type();
+        if got != ItemType::PresetChunkItem {
+            return Err(NIFileError::ItemWrapError {
+                expected: ItemType::PresetChunkItem,
+                got,
+            });
+        }
         PresetChunkItemProperties::read(Cursor::new(&frame.data))
     }
 }

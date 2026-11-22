@@ -46,6 +46,7 @@ pub(crate) struct Replika {
     pub depth: f32,
     pub rate: f32,
     pub stereo: bool,
+    pub noise: bool,
     pub pingpong: bool,
     pub flip: bool,
     /// A synced TIME's beats per unit (the field is −1 when free); TIME is
@@ -69,6 +70,7 @@ pub(crate) const INIT: Replika = Replika {
     depth: 0.0,
     rate: 0.1,
     stereo: true,
+    noise: false,
     pingpong: false,
     flip: false,
     beats: None,
@@ -100,6 +102,7 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
         depth: f(36)?,
         rate: f(40)?,
         stereo: flag(44)?,
+        noise: flag(45)?,
         pingpong: flag(46)?,
         beats: Some(f(47)?).filter(|&b| b >= 0.0),
         pan: f(89)?,
@@ -356,10 +359,14 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
             3 => &VINTAGE_SHAPE,
             _ => &[],
         }),
-        noise: match r.mode {
-            1 => ANALOGUE_NOISE,
-            2 => TAPE_NOISE,
-            _ => [0.0; 2],
+        noise: if r.noise {
+            match r.mode {
+                1 => ANALOGUE_NOISE,
+                2 => TAPE_NOISE,
+                _ => [0.0; 2],
+            }
+        } else {
+            [0.0; 2]
         },
         high_shelf: Some(ir::Bell {
             shape: ir::Shape::HighShelf,
@@ -508,5 +515,30 @@ mod tests {
             },
         );
         assert!(matches!(&*old.body, [_, s] if (s.hz - 3568.0).abs() < 0.5));
+    }
+
+    #[test]
+    fn analogue_and_tape_noise_obey_saved_noise_switch() {
+        let off = delay(Replika {
+            mode: 1,
+            noise: false,
+            ..INIT
+        })
+        .expect("analogue");
+        assert_eq!(off.noise, [0.0; 2]);
+        let on = delay(Replika {
+            mode: 1,
+            noise: true,
+            ..INIT
+        })
+        .expect("analogue");
+        assert_eq!(on.noise, ANALOGUE_NOISE);
+        let tape_on = delay(Replika {
+            mode: 2,
+            noise: true,
+            ..INIT
+        })
+        .expect("tape");
+        assert_eq!(tape_on.noise, TAPE_NOISE);
     }
 }

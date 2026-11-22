@@ -145,13 +145,77 @@ pub fn flair(p: [f32; 15]) -> ir::EffectKind {
     })
 }
 
-/// A Flair's knobs as a script moves them: every move rebuilds it from all.
-pub fn model() -> ir::KnobModel {
+/// Decode a saved `BParFXFlair` (`0x5c`, v0x51, 66 bytes) into [`INIT`]'s
+/// knob order (`Kontakt 8.exe` [ref] ([ref] = 97.0`),
+/// and `.rdata` parameter table [ref]..[ref]):
+/// 10 floats (`amount`, `pitch_norm`, `rate`, `width`, `mix`, `voices`,
+/// `feedback`, `damping`, `detune`, `offset`), 1 bool (`invert_phase`),
+/// 3 `i32`s (`mode` 0..=2, `scan_mode` 0..=2, `chord` 0..=23), then 3 sync
+/// floats + 1 sync bool.
+#[must_use]
+pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 15]> {
+    if version != 0x51 || public.len() < 66 {
+        return None;
+    }
+    let f = |offset: usize| {
+        let bytes = public.get(offset..offset + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let i = |offset: usize| {
+        Some(i32::from_le_bytes(
+            public.get(offset..offset + 4)?.try_into().ok()?,
+        ))
+    };
+    let amount = f(0)?;
+    // Native [ref] ([ref] = 97.0f): `clamp(trunc(97 * pitch_norm), 0, 96)`.
+    let pitch = (97.0 * f(4)?.clamp(0.0, 1.0)).trunc().clamp(0.0, 96.0);
+    let rate = f(8)?;
+    let width = f(12)?;
+    let mix = f(16)?;
+    let voices = f(20)?;
+    let feedback = f(24)?;
+    let damping = f(28)?;
+    let detune = f(32)?;
+    let offset = f(36)?;
+    let invert = if *public.get(40)? != 0 { 1.0 } else { 0.0 };
+    let mode = i(41)?;
+    let scan_mode = i(45)?;
+    let chord = i(49)?;
+    if !(0..=2).contains(&mode) || !(0..=2).contains(&scan_mode) || !(0..=23).contains(&chord) {
+        return None;
+    }
+    let unit = if f(53)? > 1e-9 { 1.0 } else { 0.0 };
+    Some([
+        mode as f32,
+        chord as f32,
+        invert,
+        rate,
+        unit,
+        feedback,
+        amount,
+        width,
+        pitch,
+        damping,
+        voices,
+        detune,
+        mix,
+        offset,
+        scan_mode as f32,
+    ])
+}
+
+/// A Flair's knobs from saved positions as a script moves them.
+pub fn model_from(saved: [f32; 15]) -> ir::KnobModel {
     ir::KnobModel {
         knobs: (0..15).map(ir::SlotKnob::Knob).collect(),
-        saved: INIT.into(),
+        saved: saved.into(),
         build: |p| Some(flair(p.try_into().ok()?)),
     }
+}
+
+/// A Flair's knobs as a script moves them: every move rebuilds it from all.
+pub fn model() -> ir::KnobModel {
+    model_from(INIT)
 }
 
 /// What `$EFFECT_TYPE_FLAIR` (42) loads, as Morphology Evolved, Conflux
@@ -228,6 +292,40 @@ mod tests {
         assert_eq!(
             (c.mode, c.polarity, c.mix),
             (ir::CombMode::Standard, ir::Polarity::Normal, 0.5)
+        );
+    }
+
+    #[test]
+    fn saved_decodes_v51_flair_record() {
+        let mut public = Vec::new();
+        // amount, pitch (0.5 -> trunc(48.5) = 48), rate, width, mix, voices, feedback, damping, detune, offset
+        for v in [1.0f32, 0.5, 0.360_584, 0.25, 0.5, 0.5, 0.4, 0.1, 0.2, 0.3] {
+            public.extend(v.to_le_bytes());
+        }
+        public.push(1); // invert_phase
+        public.extend(1i32.to_le_bytes()); // mode = ThruZero
+        public.extend(2i32.to_le_bytes()); // scan_mode = SawDown
+        public.extend(3i32.to_le_bytes()); // chord = 3
+        for v in [-1.0f32, 0.0, 0.0] {
+            public.extend(v.to_le_bytes());
+        }
+        public.push(0);
+        let decoded = saved(0x51, &public).unwrap();
+        assert_eq!(decoded[0], 1.0); // mode
+        assert_eq!(decoded[1], 3.0); // chord
+        assert_eq!(decoded[2], 1.0); // invert
+        assert_eq!(decoded[8], 48.0); // pitch
+        assert_eq!(decoded[14], 2.0); // scan_mode
+        let ir::EffectKind::CombBank(c) = flair(decoded) else {
+            panic!("comb bank");
+        };
+        assert_eq!(
+            (c.mode, c.scan_shape, c.polarity),
+            (
+                ir::CombMode::ThruZero,
+                ir::ScanShape::SawDown,
+                ir::Polarity::Inverted
+            )
         );
     }
 }
