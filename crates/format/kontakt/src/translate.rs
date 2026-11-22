@@ -380,6 +380,7 @@ pub(crate) fn instrument(
                         frames: u64::try_from(z.num_frames).unwrap_or(0),
                         rate: u32::try_from(z.sample_rate).unwrap_or(0),
                         keystream: at.keystream,
+                        raw: None,
                     });
                     Some(out.samples.len() - 1)
                 }

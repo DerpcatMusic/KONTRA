@@ -127,6 +127,7 @@ impl<'a> SamplePool<'a> {
             frames,
             rate,
             keystream: None,
+            raw: None,
         });
         self.headers.push(header);
         self.index.insert(key, idx);

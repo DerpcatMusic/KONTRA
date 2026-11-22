@@ -286,6 +286,7 @@ fn an_ncw_head_stays_compressed_and_plays_exactly() {
         frames,
         rate: 48_000,
         keystream: None,
+        raw: None,
     };
     let (source, fmt) = kontra_stream::open(&sample).unwrap();
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -347,6 +348,7 @@ fn the_samples_of_one_file_open_it_once() {
         frames,
         rate: 48_000,
         keystream: None,
+        raw: None,
     };
     let handles = || {
         (std::fs::read_dir("/proc/self/fd").unwrap().flatten())

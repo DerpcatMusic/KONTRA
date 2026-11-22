@@ -503,6 +503,7 @@ impl Build<'_> {
                 frames,
                 rate,
                 keystream: None,
+                raw: Some(ir::RawPcm::I16Le),
             });
             Some(self.samples.len() - 1)
         };

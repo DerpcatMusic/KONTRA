@@ -46,6 +46,7 @@ pub fn describe(path: &Path) -> io::Result<ir::Sample> {
         frames: 0,
         rate: 0,
         keystream: None,
+        raw: None,
     };
     (sample.channels, sample.frames, sample.rate) = header(&sample)?;
     Ok(sample)
@@ -153,7 +154,21 @@ fn opened_in(sample: &ir::Sample, file: Arc<File>) -> io::Result<Opened> {
         keystream: sample.keystream.clone(),
     };
     let size = region.len;
-    match sniff(size, |pos, out| region.read_at(pos, out))? {
+    let layout = match sample.raw {
+        Some(ir::RawPcm::I16Le) => Layout::Pcm {
+            offset: 0,
+            len: size,
+            channels: sample.channels,
+            pcm: Pcm {
+                bits: 16,
+                float: false,
+                big_endian: false,
+            },
+            rate: sample.rate,
+        },
+        None => sniff(size, |pos, out| region.read_at(pos, out))?,
+    };
+    match layout {
         Layout::Pcm {
             offset,
             len,
@@ -680,6 +695,7 @@ mod tests {
             frames,
             rate: 48_000,
             keystream: None,
+            raw: None,
         }
     }
 

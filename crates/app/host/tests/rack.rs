@@ -571,6 +571,7 @@ fn loading_response(wav: &[u8], name: &str) -> (Rack, RackAudio) {
         frames: 0,
         rate: 0,
         keystream: None,
+        raw: None,
     };
     plan.responses = vec![("half".into(), sample)];
     let script = kontra_ksp::compile(
@@ -626,6 +627,7 @@ fn a_recall_reloads_a_response_into_a_script_made_convolution() {
             frames: 0,
             rate: 0,
             keystream: None,
+            raw: None,
         },
     )];
     assert!(plan.load_response(ir::RackAt::Inserts, 0, "Half", RATE));

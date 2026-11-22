@@ -2078,6 +2078,7 @@ dependencies = [
  "kontra-format-decentsampler",
  "kontra-format-kontakt",
  "kontra-format-native",
+ "kontra-format-sf2",
  "kontra-format-sfz",
  "kontra-format-uvi",
  "kontra-ksp",

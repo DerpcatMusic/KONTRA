@@ -47,6 +47,7 @@ fn sample(name: &str, level_milli: u64) -> ir::Sample {
         frames: 48_000,
         rate: RATE,
         keystream: None,
+        raw: None,
     }
 }
 

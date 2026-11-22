@@ -2826,6 +2826,7 @@ fn a_script_loads_a_library_response_into_a_convolution() {
             frames: 0,
             rate: 0,
             keystream: None,
+            raw: None,
         },
     )];
     let script = kontra_ksp::compile(
@@ -2958,6 +2959,7 @@ fn a_time_after_a_load_in_one_callback_keeps_the_new_response() {
         frames: 0,
         rate: 0,
         keystream: None,
+        raw: None,
     };
     plan.responses = vec![
         ("room".into(), sample("Room.wav")),
@@ -3045,6 +3047,7 @@ fn a_scripts_convolution_predelay_prepares_its_response_again() {
             frames: 0,
             rate: 0,
             keystream: None,
+            raw: None,
         },
     )];
     let script = kontra_ksp::compile(
@@ -5264,6 +5267,7 @@ fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
         frames: u64::from(frames),
         rate,
         keystream: None,
+        raw: None,
     };
     let script = kontra_ksp::compile(source, &[]).unwrap();
     let mut plan = Plan::new(vec![zone(store, 0.5, 0)], 16);

@@ -383,6 +383,7 @@ fn run_sample(path: &Path, store: &mut Store) {
         frames: 2_000_000,
         rate: 48_000,
         keystream: None,
+        raw: None,
     };
     let _ = kontra_stream::decode(&sample, 1 << 22);
     let Ok((source, fmt)) = kontra_stream::open(&sample) else {
