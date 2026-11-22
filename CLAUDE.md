@@ -4,6 +4,11 @@
 > Faithful where it is audible, modern everywhere else. Then go beyond what
 > the originals can do.**
 
+**Current plan:** [docs/architecture-v3/13-IR-VNEXT.md](docs/architecture-v3/13-IR-VNEXT.md),
+which gives the IR vNext phases, their status on main and the lanes now
+running. Work from a lane there, not from GitHub issues. The P0–P8 board in
+TASKS.md is finished apart from P4.6a.
+
 Before designing or changing anything in v3, read
 [docs/architecture-v3/VISION.md](docs/architecture-v3/VISION.md):
 - why KONTRA exists (one universal sampler that plays Kontakt, UVI, SFZ and
