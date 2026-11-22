@@ -2032,6 +2032,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-format-sf2"
+version = "0.0.0"
+dependencies = [
+ "kontra-format",
+ "kontra-ir",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "kontra-format-sfz"
 version = "0.0.0"
 dependencies = [
