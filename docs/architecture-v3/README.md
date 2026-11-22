@@ -26,7 +26,7 @@ Read in order:
 | [09-BUILD.md](09-BUILD.md) | Compile-time plan, profiles, CI |
 | [10-TESTING.md](10-TESTING.md) | Contracts, vectors, test layout |
 | [11-MIGRATION.md](11-MIGRATION.md) | PR-by-PR order with gates, and what gets deleted when |
-| [13-IR-VNEXT.md](13-IR-VNEXT.md) | **Current plan.** IR vNext phases 0–3: status on main and the lanes now running |
+| [13-IR-VNEXT.md](13-IR-VNEXT.md) | **Current plan.** IR vNext phases 0–3: what is done on main, what is left, and the done rule |
 
 Background: [../audit-2026-10-24/](../audit-2026-10-24/) (playback audit,
 sampler landscape, one-engine audit, future plan).

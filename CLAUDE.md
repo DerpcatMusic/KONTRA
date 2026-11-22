@@ -5,8 +5,8 @@
 > the originals can do.**
 
 **Current plan:** [docs/architecture-v3/13-IR-VNEXT.md](docs/architecture-v3/13-IR-VNEXT.md),
-which gives the IR vNext phases, their status on main and the lanes now
-running. Work from a lane there, not from GitHub issues. The P0–P8 board in
+which gives the IR vNext phases, their status on main, the next lanes
+and the rule for when a step is done. Work from a lane there, not from GitHub issues. The P0–P8 board in
 TASKS.md is finished apart from P4.6a.
 
 Before designing or changing anything in v3, read
