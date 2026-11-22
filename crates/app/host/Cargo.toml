@@ -15,6 +15,7 @@ kontra-format = { path = "../../format/common" }
 kontra-format-decentsampler = { path = "../../format/decentsampler" }
 kontra-format-kontakt = { path = "../../format/kontakt" }
 kontra-format-native = { path = "../../format/native" }
+kontra-format-sf2 = { path = "../../format/sf2" }
 kontra-format-sfz = { path = "../../format/sfz" }
 kontra-format-uvi = { path = "../../format/uvi" }
 kontra-ksp = { path = "../../script/ksp" }

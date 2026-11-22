@@ -118,3 +118,119 @@ fn a_dspreset_loads_and_sounds() {
     }
     assert!(peak > 1e-3, "a held A4 sounds, peak {peak}");
 }
+
+/// A SoundFont bank: one preset, one instrument, one looped 480 Hz sine
+/// rooted at A4, its PCM read straight from the bank's `smpl` chunk.
+#[test]
+fn an_sf2_preset_loads_and_sounds_at_pitch() {
+    fn chunk(id: &[u8], body: &[u8]) -> Vec<u8> {
+        let mut out = id.to_vec();
+        out.extend((body.len() as u32).to_le_bytes());
+        out.extend(body);
+        out
+    }
+    fn list(kind: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
+        chunk(b"LIST", &[kind.to_vec(), chunks.concat()].concat())
+    }
+    fn name(s: &str) -> Vec<u8> {
+        let mut b = s.as_bytes().to_vec();
+        b.resize(20, 0);
+        b
+    }
+    fn words(ws: &[u16]) -> Vec<u8> {
+        ws.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+    const FRAMES: u32 = 4_800;
+    let mut smpl: Vec<u8> = (0..FRAMES)
+        .flat_map(|i| {
+            let s = (std::f32::consts::TAU * 480.0 * i as f32 / RATE as f32).sin();
+            ((s * 16_384.0) as i16).to_le_bytes()
+        })
+        .collect();
+    smpl.resize(smpl.len() + 2 * 46, 0);
+    let header = |n: &str, start: u32, end: u32, loop_: (u32, u32), rate: u32, kind: u16| {
+        let mut h = name(n);
+        for v in [start, end, loop_.0, loop_.1, rate] {
+            h.extend(v.to_le_bytes());
+        }
+        h.extend([69, 0, 0, 0]); // original pitch A4, no correction, no link
+        h.extend(kind.to_le_bytes());
+        h
+    };
+    let phdr = [
+        [name("Sine"), words(&[0, 0, 0]), vec![0; 12]].concat(),
+        [name("EOP"), words(&[0, 0, 1]), vec![0; 12]].concat(),
+    ]
+    .concat();
+    let pdta = list(
+        b"pdta",
+        &[
+            chunk(b"phdr", &phdr),
+            chunk(b"pbag", &words(&[0, 0, 1, 0])),
+            chunk(b"pmod", &[0; 10]),
+            chunk(b"pgen", &words(&[41, 0, 0, 0])), // instrument 0
+            chunk(
+                b"inst",
+                &[name("Sine"), words(&[0]), name("EOI"), words(&[1])].concat(),
+            ),
+            chunk(b"ibag", &words(&[0, 0, 2, 0])),
+            chunk(b"imod", &[0; 10]),
+            chunk(b"igen", &words(&[54, 1, 53, 0, 0, 0])), // loop, sample 0
+            chunk(
+                b"shdr",
+                &[
+                    header("sine", 0, FRAMES, (100, 4_700), RATE, 1),
+                    header("EOS", 0, 0, (0, 0), 0, 0),
+                ]
+                .concat(),
+            ),
+        ],
+    );
+    let body = [
+        b"sfbk".to_vec(),
+        list(
+            b"INFO",
+            &[chunk(b"ifil", &words(&[2, 1])), chunk(b"INAM", b"Test\0\0")],
+        ),
+        list(b"sdta", &[chunk(b"smpl", &smpl)]),
+        pdta,
+    ]
+    .concat();
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("sf2_e2e");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bank = dir.join("Sine.sf2");
+    std::fs::write(&bank, chunk(b"RIFF", &body)).unwrap();
+
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let loaded = kontra_host::instrument::load(&bank, RATE, &mut store).unwrap();
+    for d in &loaded.diagnostics {
+        eprintln!("  {:?} {}: {}", d.impact, d.feature, d.detail);
+    }
+    let mut e = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; 512];
+    e.process(&mut out, &[note(69, true)]);
+    // Past the attack, well into the loop: 0.5 s of held note.
+    let mut held = vec![];
+    for block in 0..(RATE as usize / 512) {
+        e.process(&mut out, &[]);
+        if block >= 20 {
+            held.extend(out.iter().map(|f| f[0]));
+        }
+    }
+    let peak = held.iter().fold(0f32, |p, s| p.max(s.abs()));
+    let rises = held
+        .windows(2)
+        .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+        .count();
+    let hz = rises as f32 * RATE as f32 / held.len() as f32;
+    eprintln!("sf2: peak {peak}, {hz} Hz");
+    assert!(
+        (470.0..490.0).contains(&hz),
+        "A4 plays the 480 Hz root, got {hz} Hz"
+    );
+    // The half-scale sine at velocity 0.8, squared by the velocity curve.
+    assert!(
+        (0.30..0.34).contains(&peak),
+        "0.5 × 0.8² = 0.32, peak {peak}"
+    );
+}

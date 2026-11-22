@@ -218,6 +218,16 @@ pub struct Sample {
     pub rate: u32,
     /// Set when the bytes on disk are encrypted.
     pub keystream: Option<Keystream>,
+    /// Set when the bytes are bare PCM with no header (a SoundFont's `smpl`):
+    /// `len` bytes from `offset` hold `frames` of `channels` at `rate`.
+    pub raw: Option<RawPcm>,
+}
+
+/// The encoding of a headerless sample ([`Sample::raw`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawPcm {
+    /// Signed 16-bit little-endian, interleaved.
+    I16Le,
 }
 
 /// XOR keying of bytes a sample file stores encrypted: decrypts (or encrypts)

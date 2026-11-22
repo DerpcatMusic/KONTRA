@@ -205,6 +205,7 @@ impl<'a> Impulses<'a> {
             frames: 0,
             rate: 0,
             keystream: location.keystream,
+            raw: None,
         });
         Ok(self.samples.len() - 1)
     }

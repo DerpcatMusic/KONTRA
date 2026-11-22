@@ -75,6 +75,7 @@ impl Library for Stub {
             frames: 1000,
             rate: 48_000,
             keystream: None,
+            raw: None,
         };
         Ok(Sampled { sample, loops })
     }

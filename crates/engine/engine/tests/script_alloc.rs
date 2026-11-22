@@ -67,6 +67,7 @@ fn midi_object_and_zone_commands_after_init_allocate_nothing() {
             frames: 48_000,
             rate: 48_000,
             keystream: None,
+            raw: None,
         }));
         plan.zone_facts.push(saved);
     }

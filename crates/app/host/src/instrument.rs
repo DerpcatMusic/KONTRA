@@ -34,7 +34,7 @@ pub struct Loaded {
     pub symbols: Vec<Box<[Box<str>]>>,
 }
 
-/// Reads an SFZ file, a UVI program inside a `.ufs` bank, or a Kontakt instrument.
+/// Reads an SFZ file, a SoundFont's first preset, a UVI program inside a `.ufs` bank, or a Kontakt instrument.
 ///
 /// # Errors
 /// When the file is not an instrument this can read.
@@ -105,6 +105,12 @@ pub fn read_saved(
     {
         return Ok(kontra_format_decentsampler::read_file(path)?);
     }
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("sf2"))
+    {
+        return sf2(path);
+    }
     if let Some((multi, slot)) = multi_slot(path) {
         let (slots, failed) = kontra_format_kontakt::multi(multi, Some(slot))?;
         let mut out = (slots.into_iter().next())
@@ -127,6 +133,23 @@ pub fn read_saved(
     } else {
         Ok(kontra_format_kontakt::load_known(path, known)?)
     }
+}
+
+/// A SoundFont bank's first preset; the others are listed as a diagnostic.
+// ponytail: first preset only, add a `Bank.sf2/<n>` slot path (as `multi_slot`) when the browser lists presets.
+fn sf2(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+    let mut out = kontra_format_sf2::read_first(path)?;
+    let rest: Vec<String> = (kontra_format_sf2::list_presets(path)?.into_iter().skip(1))
+        .map(|p| format!("{}:{} {}", p.bank, p.program, p.name))
+        .collect();
+    if !rest.is_empty() {
+        out.diagnostics.push(ir::Diagnostic {
+            impact: ir::Impact::Cosmetic,
+            feature: "SoundFont presets not loaded".into(),
+            detail: rest.join(", "),
+        });
+    }
+    Ok(out)
 }
 
 /// Saved script values for an instrument held in another file, which

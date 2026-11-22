@@ -302,6 +302,7 @@ impl Bank {
             frames: format.frames,
             rate: format.rate,
             keystream,
+            raw: None,
         };
         Ok(Sampled {
             sample,
