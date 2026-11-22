@@ -69,6 +69,8 @@ def pull(number):
 
 
 def credit(entry):
+    if entry.get('monorepo'):
+        return f'#{entry["number"]}'
     link = f'[#{entry["number"]}]({REPO}/pull/{entry["number"]})'
     return f'{link} by @{entry["author"]}' if entry.get('author') else link
 
@@ -129,7 +131,15 @@ def main():
         match = re.search(r'\(#(\d+)\)\s*$', title)
         if match:
             paths = git('diff-tree', '--root', '--first-parent', '-m', '--no-commit-id', '--name-only', '-r', sha).splitlines()
-            entries.append(dict(pull(match.group(1)), paths=paths))
+            body = git('show', '-s', '--format=%b', sha)
+            if 'GitOrigin-RevId:' in body:
+                entry = dict(number=match.group(1), title=title, body=body, author='', monorepo=True)
+            else:
+                try:
+                    entry = pull(match.group(1))
+                except subprocess.CalledProcessError:
+                    entry = dict(number=match.group(1), title=title, body=body, author='', monorepo=True)
+            entries.append(dict(entry, paths=paths))
     print(render(entries, args.version, base))
 
 

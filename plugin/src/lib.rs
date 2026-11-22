@@ -141,6 +141,12 @@ pub struct Shared {
     parked: Arc<Mutex<Option<(f64, RackAudio)>>>,
     /// The "Add folder" dialog; dropping it closes an open one.
     folder: folder::Dialog,
+    /// Task spawner captured from the editor context so UI actions still run
+    /// [`Tick`] when the host suspends audio processing (e.g. Bitwig track sleep
+    /// or stopped audio engine).
+    tasks: Mutex<Option<moose::prelude::TaskSpawner<Tick>>>,
+    /// Whether the library browser has a background scan running.
+    scanning: AtomicBool,
     /// The editor is open: the tick keeps its copy of the rack current.
     shown: AtomicBool,
     /// A load holds the rack; `saved` is the state from just before it.
@@ -171,6 +177,22 @@ pub enum Request {
 }
 
 impl Shared {
+    pub fn set_tasks(&self, tasks: Option<moose::prelude::TaskSpawner<Tick>>) {
+        if let Some(tasks) = tasks {
+            *lock(&self.tasks) = Some(tasks);
+        }
+    }
+
+    pub fn wake_tick(&self) {
+        if let Some(tasks) = lock(&self.tasks).as_ref() {
+            tasks.spawn_coalescing(Tick);
+        }
+    }
+
+    pub fn has_pending_work(&self) -> bool {
+        !lock(&self.requests).is_empty() || self.folder.has_result()
+    }
+
     pub fn request(&self, r: Request) {
         if let Request::Ui(edit) = r {
             self.request_ui(edit);
@@ -183,14 +205,19 @@ impl Shared {
             self.asked.fetch_add(1, Ordering::AcqRel);
         }
         lock(&self.requests).push(r);
+        self.wake_tick();
     }
 
     /// Asks for the editor's `edit`; its number in order, which the
     /// editor's copy of the rack shows once it is carried out.
     pub fn request_ui(&self, edit: editor::Edit) -> u64 {
-        let mut requests = lock(&self.requests);
-        let seq = self.ui_sent.fetch_add(1, Ordering::AcqRel) + 1;
-        requests.push(Request::Ui(edit));
+        let seq = {
+            let mut requests = lock(&self.requests);
+            let seq = self.ui_sent.fetch_add(1, Ordering::AcqRel) + 1;
+            requests.push(Request::Ui(edit));
+            seq
+        };
+        self.wake_tick();
         seq
     }
 
@@ -429,8 +456,11 @@ impl BackgroundTask for Tick {
         notices.extend(rack.take_notices());
         report.extend(notices);
         match p.shared.folder.picked() {
-            Some((folder::Wanted::Libraries, path)) => browser.add_root(path),
-            Some((folder::Wanted::Snapshots, path)) => browser.set_kontakt(path),
+            Some(Ok((folder::Wanted::Libraries, path))) => browser.add_root(path),
+            Some(Ok((folder::Wanted::Snapshots, path))) => browser.set_kontakt(path),
+            Some(Err(err)) => report.push(format!(
+                "Could not open folder picker ({err}). You can also drag and drop a library folder onto KONTRA."
+            )),
             None => {}
         }
         let latency = align::update(p.align.value(), rack);
@@ -466,6 +496,9 @@ impl BackgroundTask for Tick {
         // The looks the scripts sent (a native_ui rebuild among them).
         frames::time("tick", || rack.tick());
         follow::follow(rack, browser);
+        p.shared
+            .scanning
+            .store(browser.scanning(), Ordering::Release);
         let mut view = lock(&p.shared.view);
         view.applied = p.shared.ui_applied.load(Ordering::Acquire);
         // A closed editor's copy only keeps the report; it catches up on

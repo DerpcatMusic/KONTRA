@@ -49,7 +49,9 @@ pub struct Dialog {
     job: Mutex<Option<mui_native_dialog::DialogJob>>,
     #[cfg(not(target_os = "linux"))]
     job: Mutex<Option<std::thread::JoinHandle<Option<PathBuf>>>>,
-    /// The host's Win32 window the editor is open in; 0 when none.
+    /// An immediate error starting the picker, reported on the next [`crate::Tick`].
+    error: Mutex<Option<String>>,
+    /// The host's Win32 window the editor opened in; 0 when none.
     owner: AtomicIsize,
     /// What the open picker's folder is for.
     wanted: Mutex<Wanted>,
@@ -70,11 +72,23 @@ impl Dialog {
         }
         *lock(&self.wanted) = wanted;
         let from = from.or_else(dirs::home_dir);
-        *job = self.open(wanted.title(), from);
+        match self.open(wanted.title(), from) {
+            Ok(started) => {
+                *lock(&self.error) = None;
+                *job = Some(started);
+            }
+            Err(err) => {
+                *lock(&self.error) = Some(err);
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
-    fn open(&self, title: &str, from: Option<PathBuf>) -> Option<mui_native_dialog::DialogJob> {
+    fn open(
+        &self,
+        title: &str,
+        from: Option<PathBuf>,
+    ) -> Result<mui_native_dialog::DialogJob, String> {
         use mui_native_dialog::{DialogKind, DialogRequest};
         let request = DialogRequest {
             parent: None,
@@ -83,7 +97,7 @@ impl Dialog {
             directory: from,
             filters: Vec::new(),
         };
-        self.service.spawn(request).ok()
+        self.service.spawn(request)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -91,7 +105,7 @@ impl Dialog {
         &self,
         title: &'static str,
         from: Option<PathBuf>,
-    ) -> Option<std::thread::JoinHandle<Option<PathBuf>>> {
+    ) -> Result<std::thread::JoinHandle<Option<PathBuf>>, String> {
         let owner = self.owner.load(Ordering::Acquire);
         std::thread::Builder::new()
             .name("kontra-folder-dialog".into())
@@ -105,18 +119,41 @@ impl Dialog {
                 }
                 d.pick_folder()
             })
-            .ok()
+            .map_err(|err| err.to_string())
     }
 
-    /// The folder picked and what for, once the picker closed.
-    pub fn picked(&self) -> Option<(Wanted, PathBuf)> {
-        let path = self.closed()?;
-        Some((*lock(&self.wanted), path))
+    /// Whether a picker answer or error is waiting for [`Self::picked`].
+    pub fn has_result(&self) -> bool {
+        if lock(&self.error).is_some() {
+            return true;
+        }
+        let job = lock(&self.job);
+        let Some(job) = job.as_ref() else {
+            return false;
+        };
+        #[cfg(target_os = "linux")]
+        {
+            job.is_finished() || job.try_result().is_some()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            job.is_finished()
+        }
     }
 
-    /// The folder picked, once the picker closed.
+    /// The folder picked (or a portal/spawn error) and what for, once the
+    /// picker closed. `None` while still open or if the user cancelled.
+    pub fn picked(&self) -> Option<Result<(Wanted, PathBuf), String>> {
+        if let Some(err) = lock(&self.error).take() {
+            return Some(Err(err));
+        }
+        let result = self.closed()?;
+        Some(result.map(|path| (*lock(&self.wanted), path)))
+    }
+
+    /// The folder picked (or error), once the picker closed.
     #[cfg(target_os = "linux")]
-    fn closed(&self) -> Option<PathBuf> {
+    fn closed(&self) -> Option<Result<PathBuf, String>> {
         let mut job = lock(&self.job);
         // Finished first: the worker sends its answer before it finishes.
         let finished = job.as_ref()?.is_finished();
@@ -125,16 +162,25 @@ impl Dialog {
             return None;
         }
         job.take();
-        result?.ok()??.into_iter().next()
+        match result? {
+            Ok(Some(paths)) => paths.into_iter().next().map(Ok),
+            Ok(None) => None,
+            Err(err) => Some(Err(err)),
+        }
     }
 
     /// The folder picked, once the picker closed.
     #[cfg(not(target_os = "linux"))]
-    fn closed(&self) -> Option<PathBuf> {
+    fn closed(&self) -> Option<Result<PathBuf, String>> {
         let mut job = lock(&self.job);
         if !job.as_ref()?.is_finished() {
             return None;
         }
-        job.take()?.join().ok().flatten()
+        job.take()?.join().ok().flatten().map(Ok)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_error_for_test(&self, err: impl Into<String>) {
+        *lock(&self.error) = Some(err.into());
     }
 }
