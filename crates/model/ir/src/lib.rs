@@ -504,8 +504,10 @@ pub struct Envelope {
     pub release: f32,
     /// Attack shape k of `expm1(k·t)/expm1(k)`: 0 is linear, positive starts slowly.
     pub attack_shape: f32,
-    /// Decay and release shape, the same law.
-    pub fall_shape: f32,
+    /// Decay shape k of `expm1(k·t)/expm1(k)`.
+    pub decay_shape: f32,
+    /// Release shape k of `expm1(k·t)/expm1(k)`.
+    pub release_shape: f32,
     /// Seconds an attack stays silent before its curve runs in the rest of
     /// the attack time; none without an attack.
     pub lag: f32,
@@ -528,7 +530,8 @@ impl Envelope {
         sustain: 1.0,
         release: 0.001_3,
         attack_shape: 0.0,
-        fall_shape: 0.0,
+        decay_shape: 0.0,
+        release_shape: 0.0,
         lag: 0.0,
         delay: 0.0,
         floor: 0.0,
@@ -716,6 +719,39 @@ pub enum StartRule {
     },
     /// One zone slot of the group per note, in turn or at random (no repeat), per group.
     Cycle { random: bool },
+    /// Random probability window on `[0, 10_000)` (`lorand`/`hirand` × 10,000);
+    /// matches when `lo <= draw < hi`.
+    Random { lo: u16, hi: u16 },
+}
+
+/// Gain curve of a [`Crossfade`] across its ramp.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CrossfadeLaw {
+    /// Linear amplitude ramp: `t` fading in, `1 − t` fading out (Kontakt's measured law).
+    #[default]
+    Linear,
+    /// Equal-power sine/cosine ramp: `sin(π/2 · t)` fading in, `cos(π/2 · t)` fading out.
+    EqualPower,
+}
+
+/// What a [`Crossfade`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CrossfadeControl {
+    Velocity,
+    Key,
+    /// A MIDI CC (0..=127), evaluated live on sounding voices.
+    Cc(u8),
+}
+
+/// A crossfade over 0..=127 values of `control`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Crossfade {
+    pub control: CrossfadeControl,
+    /// Silent at or below `.0`, full at or above `.1`.
+    pub fade_in: Option<(i16, i16)>,
+    /// Full at or below `.0`, silent at or above `.1`.
+    pub fade_out: Option<(i16, i16)>,
+    pub law: CrossfadeLaw,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -731,6 +767,10 @@ pub struct Zone {
     pub velocity_fade: (u8, u8),
     /// The same over keys.
     pub key_fade: (u8, u8),
+    /// Explicit crossfades (equal-power velocity/key fades or live MIDI CC crossfades).
+    /// When present for `Velocity` or `Key`, overrides [`Self::velocity_fade`] or
+    /// [`Self::key_fade`] at prepare time.
+    pub crossfades: Vec<Crossfade>,
     pub root: u8,
     pub tune: f64,
     pub volume_db: f32,

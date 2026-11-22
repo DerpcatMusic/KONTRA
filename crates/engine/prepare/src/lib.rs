@@ -16,8 +16,8 @@ use kontra_stream::{
 use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp};
 
 use kontra_engine::{
-    Atom, Bus, Dormant, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone, ZoneRules,
-    response,
+    Atom, Bus, Control, Crossfade, Dormant, Group, Level, Plan, RoundRobin, RrCounter, Trigger,
+    Zone, ZoneRules, response,
 };
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
@@ -334,6 +334,7 @@ pub fn user_zones(
             velocities: f.velocities.clone(),
             velocity_fade: (byte(f.fades[2]), byte(f.fades[3])),
             key_fade: (byte(f.fades[0]), byte(f.fades[1])),
+            crossfades: Vec::new(),
             root: f.root,
             tune: f64::from(f.tune) / 100.0,
             volume_db: f.volume as f32 / 100.0,
@@ -804,8 +805,30 @@ fn zone(
     out.id = z.id;
     out.keys = z.keys.clone();
     out.velocities = z.velocities.clone();
-    out.fades = [z.velocity_fade, z.key_fade];
+    let has_vel_xf = z
+        .crossfades
+        .iter()
+        .any(|xf| xf.control == ir::CrossfadeControl::Velocity);
+    let has_key_xf = z
+        .crossfades
+        .iter()
+        .any(|xf| xf.control == ir::CrossfadeControl::Key);
+    out.fades = [
+        if has_vel_xf { (0, 0) } else { z.velocity_fade },
+        if has_key_xf { (0, 0) } else { z.key_fade },
+    ];
     out.range_crossfades();
+    out.crossfades
+        .extend(z.crossfades.iter().map(|xf| Crossfade {
+            control: match xf.control {
+                ir::CrossfadeControl::Velocity => Control::Velocity,
+                ir::CrossfadeControl::Key => Control::Key,
+                ir::CrossfadeControl::Cc(cc) => Control::Cc(cc),
+            },
+            fade_in: xf.fade_in,
+            fade_out: xf.fade_out,
+            law: xf.law,
+        }));
     out.group = group_id;
     rules.apply(&mut out);
     // The group's own level, pan and tune are its plan group's.
@@ -854,6 +877,7 @@ fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
                     length: u8::try_from(slots.len()).unwrap_or(u8::MAX),
                     random: *random,
                 }),
+                ir::StartRule::Random { lo, hi } => Atom::Random { lo: *lo, hi: *hi },
             };
             Some((*join, atom))
         })
@@ -882,7 +906,8 @@ pub fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
         sustain: e.sustain.clamp(0.0, 1.0),
         release: frames(e.release).max(1),
         attack_shape: e.attack_shape,
-        fall_shape: e.fall_shape,
+        decay_shape: e.decay_shape,
+        release_shape: e.release_shape,
         lag: frames(e.lag),
         delay: frames(e.delay),
         floor: e.floor,
@@ -922,6 +947,7 @@ mod tests {
             velocities: 1..=127,
             velocity_fade: (0, 0),
             key_fade: (0, 0),
+            crossfades: Vec::new(),
             root: 60,
             tune: 0.0,
             volume_db: 0.0,

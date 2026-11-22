@@ -213,6 +213,65 @@ fn key_velocity_ranges_and_keycenter() {
         "xfin_lovel=0 widens the zone down"
     );
     assert_eq!(ranged.velocity_fade, (1, 36), "fade in from 0 to lovel 1");
+    assert_eq!(
+        ranged.crossfades,
+        vec![ir::Crossfade {
+            control: ir::CrossfadeControl::Velocity,
+            fade_in: Some((0, 1)),
+            fade_out: Some((64, 100)),
+            law: ir::CrossfadeLaw::EqualPower,
+        }]
+    );
+}
+
+#[test]
+fn cc_crossfades_lorand_hirand_and_ampeg_delay_translate_cleanly() {
+    let dir = scratch("xf_cc_rand_delay");
+    wav(&dir.join("a.wav"), 10).expect("wav");
+    let text = "\
+<region> sample=a.wav ampeg_delay=0.05 lorand=0.0 hirand=0.5 xfin_locc1=20 xfin_hicc1=60 xfout_locc1=80 xfout_hicc1=120
+<region> sample=a.wav lorand=0.5 hirand=1.0 xf_cccurve=gain xfin_locc1=60 xfin_hicc1=100
+";
+    let inst = parse(text, &dir);
+    assert!(
+        inst.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        inst.diagnostics
+    );
+    assert_eq!(inst.groups.len(), 2);
+    assert!(near(inst.groups[0].envelope.delay, 0.05));
+    assert_eq!(
+        inst.groups[0].start,
+        vec![(ir::Join::And, StartRule::Random { lo: 0, hi: 5000 })]
+    );
+    assert_eq!(
+        inst.groups[1].start,
+        vec![(
+            ir::Join::And,
+            StartRule::Random {
+                lo: 5000,
+                hi: 10_000
+            }
+        )]
+    );
+    assert_eq!(
+        inst.groups[0].zones[0].crossfades,
+        vec![ir::Crossfade {
+            control: ir::CrossfadeControl::Cc(1),
+            fade_in: Some((20, 60)),
+            fade_out: Some((80, 120)),
+            law: ir::CrossfadeLaw::EqualPower,
+        }]
+    );
+    assert_eq!(
+        inst.groups[1].zones[0].crossfades,
+        vec![ir::Crossfade {
+            control: ir::CrossfadeControl::Cc(1),
+            fade_in: Some((60, 100)),
+            fade_out: None,
+            law: ir::CrossfadeLaw::Linear,
+        }]
+    );
 }
 
 #[test]
@@ -340,12 +399,12 @@ fn loop_sustain_loops_until_release() {
 fn unknown_opcodes_are_collected_not_fatal() {
     let dir = scratch("unknown");
     wav(&dir.join("a.wav"), 10).expect("wav");
-    let inst = parse("<region> sample=a.wav lorand=0 hirand=0.5\n", &dir);
-    let lorand = inst
+    let inst = parse("<region> sample=a.wav lfo01_freq=2\n", &dir);
+    let unknown = inst
         .diagnostics
         .iter()
-        .find(|d| d.feature == "opcode lorand");
-    assert_eq!(lorand.map(|d| d.impact), Some(Impact::Audible));
+        .find(|d| d.feature == "opcode lfo01_freq");
+    assert_eq!(unknown.map(|d| d.impact), Some(Impact::Audible));
     assert_eq!(
         inst.groups.first().map(|g| g.zones.len()),
         Some(1),

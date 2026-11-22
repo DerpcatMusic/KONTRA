@@ -20,11 +20,18 @@ const MAPPED: &[&str] = &[
     "lokey",
     "hikey",
     "xfin_lokey",
+    "xfin_hikey",
+    "xfout_lokey",
     "xfout_hikey",
+    "xf_keycurve",
     "lovel",
     "hivel",
     "xfin_lovel",
+    "xfin_hivel",
+    "xfout_lovel",
     "xfout_hivel",
+    "xf_velcurve",
+    "xf_cccurve",
     "pitch_keycenter",
     "pitch_keytrack",
     "tune",
@@ -43,6 +50,8 @@ const MAPPED: &[&str] = &[
     "trigger",
     "seq_length",
     "seq_position",
+    "lorand",
+    "hirand",
     "group",
     "off_by",
     "off_mode",
@@ -56,6 +65,7 @@ const MAPPED: &[&str] = &[
     "resonance",
     "fil_type",
     "default_path",
+    "ampeg_delay",
     "ampeg_attack",
     "ampeg_hold",
     "ampeg_decay",
@@ -64,7 +74,13 @@ const MAPPED: &[&str] = &[
 ];
 
 fn mapped(name: &str) -> bool {
-    MAPPED.contains(&name) || cc_number(name, "locc").is_some() || cc_number(name, "hicc").is_some()
+    MAPPED.contains(&name)
+        || cc_number(name, "locc").is_some()
+        || cc_number(name, "hicc").is_some()
+        || cc_number(name, "xfin_locc").is_some()
+        || cc_number(name, "xfin_hicc").is_some()
+        || cc_number(name, "xfout_locc").is_some()
+        || cc_number(name, "xfout_hicc").is_some()
 }
 
 /// The controller of `locc5` or `hicc5`.
@@ -121,6 +137,10 @@ enum StartRuleKey {
         lo: u8,
         hi: u8,
     },
+    Random {
+        lo: u16,
+        hi: u16,
+    },
 }
 
 /// Hashable exact key for deduplicating SFZ groups in `O(1)` amortized time.
@@ -129,7 +149,7 @@ struct GroupKey {
     number: u32,
     off_by: Option<u32>,
     polyphony: Option<u16>,
-    envelope: [u32; 5],
+    envelope: [u32; 6],
     veltrack: Option<u32>,
     keytrack: u64,
     trigger: u8,
@@ -169,6 +189,7 @@ impl GroupKey {
                     lo: *range.start(),
                     hi: *range.end(),
                 }),
+                ir::StartRule::Random { lo, hi } => Some(StartRuleKey::Random { lo: *lo, hi: *hi }),
                 _ => None,
             })
             .collect();
@@ -204,6 +225,7 @@ impl GroupKey {
             off_by,
             polyphony: settings.polyphony,
             envelope: [
+                bits_f32(env.delay),
                 bits_f32(env.attack),
                 bits_f32(env.hold),
                 bits_f32(env.decay),
@@ -266,19 +288,54 @@ impl Build {
             .read(ops, &["hikey"], parse_midi_note)
             .or(key)
             .unwrap_or(127);
-        let xfin = self
-            .read(ops, &["xfin_lokey"], parse_midi_note)
-            .unwrap_or(lo);
-        let xfout = self
-            .read(ops, &["xfout_hikey"], parse_midi_note)
-            .unwrap_or(hi);
-        let (keys, key_fade) = laws::span(lo, hi, xfin, xfout);
+        let xfin_lokey = self.read(ops, &["xfin_lokey"], parse_midi_note);
+        let xfin_hikey = self.read(ops, &["xfin_hikey"], parse_midi_note);
+        let xfout_lokey = self.read(ops, &["xfout_lokey"], parse_midi_note);
+        let xfout_hikey = self.read(ops, &["xfout_hikey"], parse_midi_note);
+        let (keys, key_fade) =
+            laws::span(lo, hi, xfin_lokey.unwrap_or(lo), xfout_hikey.unwrap_or(hi));
 
         let vlo = self.number(ops, &["lovel"]).map_or(0, midi);
         let vhi = self.number(ops, &["hivel"]).map_or(127, midi);
-        let vxin = self.number(ops, &["xfin_lovel"]).map_or(vlo, midi);
-        let vxout = self.number(ops, &["xfout_hivel"]).map_or(vhi, midi);
-        let (velocities, velocity_fade) = laws::span(vlo, vhi, vxin, vxout);
+        let xfin_lovel = self.number(ops, &["xfin_lovel"]).map(midi);
+        let xfin_hivel = self.number(ops, &["xfin_hivel"]).map(midi);
+        let xfout_lovel = self.number(ops, &["xfout_lovel"]).map(midi);
+        let xfout_hivel = self.number(ops, &["xfout_hivel"]).map(midi);
+        let (velocities, velocity_fade) = laws::span(
+            vlo,
+            vhi,
+            xfin_lovel.unwrap_or(vlo),
+            xfout_hivel.unwrap_or(vhi),
+        );
+
+        let mut crossfades = Vec::new();
+        let key_law = self.xf_law(ops, "xf_keycurve");
+        if let Some(xf) = build_crossfade(
+            ir::CrossfadeControl::Key,
+            xfin_lokey,
+            xfin_hikey,
+            lo,
+            xfout_lokey,
+            xfout_hikey,
+            hi,
+            key_law,
+        ) {
+            crossfades.push(xf);
+        }
+        let vel_law = self.xf_law(ops, "xf_velcurve");
+        if let Some(xf) = build_crossfade(
+            ir::CrossfadeControl::Velocity,
+            xfin_lovel,
+            xfin_hivel,
+            vlo,
+            xfout_lovel,
+            xfout_hivel,
+            vhi,
+            vel_law,
+        ) {
+            crossfades.push(xf);
+        }
+        self.cc_crossfades(ops, &mut crossfades);
 
         let start = self.number(ops, &["offset"]).map_or(0, frames).min(total);
         let end = self
@@ -303,6 +360,7 @@ impl Build {
             velocities,
             velocity_fade,
             key_fade,
+            crossfades,
             root: self
                 .read(ops, &["pitch_keycenter"], parse_midi_note)
                 .or(key)
@@ -346,6 +404,7 @@ impl Build {
     fn settings(&mut self, ops: &Opcodes) -> ir::Group {
         let mut envelope = laws::ENVELOPE;
         let times = [
+            ("ampeg_delay", &mut envelope.delay),
             ("ampeg_attack", &mut envelope.attack),
             ("ampeg_hold", &mut envelope.hold),
             ("ampeg_decay", &mut envelope.decay),
@@ -409,7 +468,92 @@ impl Build {
                     .add(ir::Impact::Audible, "cc range", format!("cc{cc}"));
             }
         }
+        let lorand = self.number(ops, &["lorand"]);
+        let hirand = self.number(ops, &["hirand"]);
+        if lorand.is_some() || hirand.is_some() {
+            let lo_f = lorand.unwrap_or(0.0).clamp(0.0, 1.0);
+            let hi_f = hirand.unwrap_or(1.0).clamp(0.0, 1.0);
+            let lo = (lo_f * 10_000.0).round() as u16;
+            let hi = (hi_f * 10_000.0).round() as u16;
+            if lo > hi {
+                self.notes.add(
+                    ir::Impact::Audible,
+                    "random range",
+                    format!("{lo_f}..{hi_f}"),
+                );
+            } else if !(lo == 0 && hi == 10_000) {
+                rules.push((ir::Join::And, ir::StartRule::Random { lo, hi }));
+            }
+        }
         rules
+    }
+
+    /// SFZ crossfade law opcode (`xf_keycurve`, `xf_velcurve`, `xf_cccurve`):
+    /// defaults to `"power"` (equal-power sine/cosine); `"gain"` is linear.
+    fn xf_law(&mut self, ops: &Opcodes, name: &str) -> ir::CrossfadeLaw {
+        match raw(ops, &[name]) {
+            None | Some("power") => ir::CrossfadeLaw::EqualPower,
+            Some("gain") => ir::CrossfadeLaw::Linear,
+            Some(other) => {
+                self.notes.add(
+                    ir::Impact::Audible,
+                    "invalid value",
+                    format!("{name}={other}"),
+                );
+                ir::CrossfadeLaw::EqualPower
+            }
+        }
+    }
+
+    /// `xfin_loccN`/`xfin_hiccN`/`xfout_loccN`/`xfout_hiccN` crossfades.
+    fn cc_crossfades(&mut self, ops: &Opcodes, out: &mut Vec<ir::Crossfade>) {
+        let ccs: BTreeSet<u8> = ops
+            .keys()
+            .filter_map(|k| {
+                cc_number(k, "xfin_locc")
+                    .or_else(|| cc_number(k, "xfin_hicc"))
+                    .or_else(|| cc_number(k, "xfout_locc"))
+                    .or_else(|| cc_number(k, "xfout_hicc"))
+            })
+            .collect();
+        if ccs.is_empty() {
+            return;
+        }
+        let law = self.xf_law(ops, "xf_cccurve");
+        for cc in ccs {
+            let in_lo_k = format!("xfin_locc{cc}");
+            let in_hi_k = format!("xfin_hicc{cc}");
+            let out_lo_k = format!("xfout_locc{cc}");
+            let out_hi_k = format!("xfout_hicc{cc}");
+            let in_lo = self.number(ops, &[in_lo_k.as_str()]).map(midi);
+            let in_hi = self.number(ops, &[in_hi_k.as_str()]).map(midi);
+            let out_lo = self.number(ops, &[out_lo_k.as_str()]).map(midi);
+            let out_hi = self.number(ops, &[out_hi_k.as_str()]).map(midi);
+            let fade_in = (in_lo.is_some() || in_hi.is_some())
+                .then(|| {
+                    let lo = in_lo.unwrap_or(0);
+                    let hi = in_hi.unwrap_or(0);
+                    (lo, hi)
+                })
+                .filter(|(lo, hi)| hi > lo)
+                .map(|(lo, hi)| (i16::from(lo), i16::from(hi)));
+            let fade_out = (out_lo.is_some() || out_hi.is_some())
+                .then(|| {
+                    let lo = out_lo.unwrap_or(127);
+                    let hi = out_hi.unwrap_or(127);
+                    (lo, hi)
+                })
+                .filter(|(lo, hi)| hi > lo)
+                .map(|(lo, hi)| (i16::from(lo), i16::from(hi)));
+            if fade_in.is_some() || fade_out.is_some() {
+                out.push(ir::Crossfade {
+                    control: ir::CrossfadeControl::Cc(cc),
+                    fade_in,
+                    fade_out,
+                    law,
+                });
+            }
+        }
     }
 
     /// `loop_start`/`loop_end` as the zone's loops, SFZ's inclusive end made
@@ -588,6 +732,35 @@ impl Build {
             ..ir::Instrument::DEFAULT
         }
     }
+}
+
+/// Builds an explicit key or velocity crossfade when any `xfin_*`/`xfout_*`
+/// opcode is present on the region.
+#[allow(clippy::too_many_arguments)]
+fn build_crossfade(
+    control: ir::CrossfadeControl,
+    in_lo: Option<u8>,
+    in_hi: Option<u8>,
+    default_in_hi: u8,
+    out_lo: Option<u8>,
+    out_hi: Option<u8>,
+    default_out_lo: u8,
+    law: ir::CrossfadeLaw,
+) -> Option<ir::Crossfade> {
+    let fade_in = (in_lo.is_some() || in_hi.is_some())
+        .then(|| (in_lo.unwrap_or(0), in_hi.unwrap_or(default_in_hi)))
+        .filter(|(lo, hi)| hi > lo)
+        .map(|(lo, hi)| (i16::from(lo), i16::from(hi)));
+    let fade_out = (out_lo.is_some() || out_hi.is_some())
+        .then(|| (out_lo.unwrap_or(default_out_lo), out_hi.unwrap_or(127)))
+        .filter(|(lo, hi)| hi > lo)
+        .map(|(lo, hi)| (i16::from(lo), i16::from(hi)));
+    (fade_in.is_some() || fade_out.is_some()).then_some(ir::Crossfade {
+        control,
+        fade_in,
+        fade_out,
+        law,
+    })
 }
 
 /// The first of `names` that is present, as written.

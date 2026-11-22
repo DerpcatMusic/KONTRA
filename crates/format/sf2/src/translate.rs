@@ -243,6 +243,7 @@ impl Build<'_> {
             velocities,
             velocity_fade: (0, 0),
             key_fade: (0, 0),
+            crossfades: Vec::new(),
             root,
             tune: f64::from(v(gens::COARSE_TUNE))
                 + f64::from(v(gens::FINE_TUNE) + i32::from(head.pitch_correction)) / 100.0,
@@ -281,7 +282,8 @@ impl Build<'_> {
                 sustain: laws::sustain(v(gens::SUSTAIN_VOL_ENV)),
                 release: laws::timecents(v(gens::RELEASE_VOL_ENV)),
                 attack_shape: 0.0,
-                fall_shape: laws::FALL_SHAPE,
+                decay_shape: laws::FALL_SHAPE,
+                release_shape: laws::FALL_SHAPE,
                 floor: 0.0,
                 depth: 1.0,
                 // ponytail: the SF2 delay still rides attack + lag as before;

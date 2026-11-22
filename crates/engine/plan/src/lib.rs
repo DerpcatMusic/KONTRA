@@ -93,6 +93,11 @@ pub enum Atom {
     /// The controller's value is in range.
     Cc(u8, RangeInclusive<u8>),
     RoundRobin(RoundRobin),
+    /// Random probability window on `[0, 10_000)` (`lorand`/`hirand`).
+    Random {
+        lo: u16,
+        hi: u16,
+    },
 }
 
 /// What a crossfade or a range reads.
@@ -104,9 +109,10 @@ pub enum Control {
     Cc(u8),
 }
 
-/// A crossfade over 0..=127 values of `control`: a linear amplitude ramp,
-/// Kontakt's measured zone fade (`(v − L + 1)/(F + 1)` with `fade_in` =
-/// (L − 1, L + F), KONTAKT_REFERENCE.md §11 and §15).
+/// A crossfade over 0..=127 values of `control`: linear amplitude ramp
+/// (Kontakt's measured zone fade: `(v − L + 1)/(F + 1)` with `fade_in` =
+/// (L − 1, L + F), KONTAKT_REFERENCE.md §11 and §15) or equal-power sine/cosine
+/// (SFZ default).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Crossfade {
     pub control: Control,
@@ -114,6 +120,7 @@ pub struct Crossfade {
     pub fade_in: Option<(i16, i16)>,
     /// Full at or below `.0`, silent at or above `.1`.
     pub fade_out: Option<(i16, i16)>,
+    pub law: ir::CrossfadeLaw,
 }
 
 impl Crossfade {
@@ -129,8 +136,16 @@ impl Crossfade {
                 f32::from(value - lo) / f32::from(hi - lo)
             }
         };
-        let fade_in = self.fade_in.map_or(1.0, ramp);
-        let fade_out = self.fade_out.map_or(1.0, |r| 1.0 - ramp(r));
+        let shape_in = |t: f32| match self.law {
+            ir::CrossfadeLaw::Linear => t,
+            ir::CrossfadeLaw::EqualPower => (t * std::f32::consts::FRAC_PI_2).sin(),
+        };
+        let shape_out = |t: f32| match self.law {
+            ir::CrossfadeLaw::Linear => 1.0 - t,
+            ir::CrossfadeLaw::EqualPower => (t * std::f32::consts::FRAC_PI_2).cos(),
+        };
+        let fade_in = self.fade_in.map_or(1.0, |r| shape_in(ramp(r)));
+        let fade_out = self.fade_out.map_or(1.0, |r| shape_out(ramp(r)));
         fade_in * fade_out
     }
 }
@@ -428,6 +443,7 @@ impl Zone {
                     control,
                     fade_in: (fade_in > 0).then(|| (low - 1, low + i16::from(fade_in))),
                     fade_out: (fade_out > 0).then(|| (high - i16::from(fade_out), high + 1)),
+                    law: ir::CrossfadeLaw::Linear,
                 }
             })
             .collect();
@@ -731,6 +747,7 @@ mod route_dependency_tests {
             control: Control::Key,
             fade_in: Some((-1, 3)),
             fade_out: None,
+            law: ir::CrossfadeLaw::Linear,
         };
         assert!(
             (xf.gain(0) - 0.25).abs() < 1e-6,
@@ -742,11 +759,36 @@ mod route_dependency_tests {
             control: Control::Key,
             fade_in: None,
             fade_out: Some((124, 128)),
+            law: ir::CrossfadeLaw::Linear,
         };
         assert!(
             (xf_hi.gain(127) - 0.25).abs() < 1e-6,
             "key 127 fade-out gain should be 1/(F+1)=0.25, got {}",
             xf_hi.gain(127)
         );
+    }
+
+    #[test]
+    fn equal_power_crossfade_preserves_unity_power_at_midpoint() {
+        let fade_in = Crossfade {
+            control: Control::Cc(1),
+            fade_in: Some((40, 80)),
+            fade_out: None,
+            law: ir::CrossfadeLaw::EqualPower,
+        };
+        let fade_out = Crossfade {
+            control: Control::Cc(1),
+            fade_in: None,
+            fade_out: Some((40, 80)),
+            law: ir::CrossfadeLaw::EqualPower,
+        };
+        let g_in = fade_in.gain(60);
+        let g_out = fade_out.gain(60);
+        assert!((g_in * g_in + g_out * g_out - 1.0).abs() < 1e-6);
+        assert!((g_in - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert_eq!(fade_in.gain(40), 0.0);
+        assert!((fade_in.gain(80) - 1.0).abs() < 1e-6);
+        assert!((fade_out.gain(40) - 1.0).abs() < 1e-6);
+        assert!(fade_out.gain(80).abs() < 1e-6);
     }
 }

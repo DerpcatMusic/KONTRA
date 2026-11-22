@@ -60,6 +60,7 @@ fn zone(sample: usize) -> ir::Zone {
         velocities: 1..=127,
         velocity_fade: (0, 0),
         key_fade: (0, 0),
+        crossfades: Vec::new(),
         root: 60,
         tune: 0.0,
         volume_db: 0.0,

@@ -1169,6 +1169,7 @@ fn translate_zone(
         velocities: midi(lv).max(1)..=midi(hv),
         velocity_fade: (midi(z.fade_low_velocity), midi(z.fade_high_velocity)),
         key_fade: (midi(z.fade_low_key), midi(z.fade_high_key)),
+        crossfades: Vec::new(),
         root: midi(z.root_key),
         tune: laws::semitones(z.zone_tune),
         volume_db: db(z.zone_volume),
