@@ -23,9 +23,9 @@ pub(crate) fn external(
 ) -> Result<(), ni_file::Error> {
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
-        for (n, m) in ExternalModArray32::try_from(chunk)?.slots()? {
+        for (ext_idx, m) in ExternalModArray32::try_from(chunk)?.slots()? {
             let p = m.params()?;
-            let n = n.saturating_add(usize::from(laws::EXTERNAL_MOD_BASE));
+            let n = ext_idx.saturating_add(usize::from(laws::EXTERNAL_MOD_BASE));
             out.routes.push(ir::Routes {
                 slot: slot(n),
                 name: p.name.clone(),
@@ -61,7 +61,10 @@ pub(crate) fn external(
                 // note" (Kontakt manual, external sources).
                 ModSource::RandomUnipolar => Some(ir::Source::Random { bipolar: false }),
                 ModSource::RandomBipolar => Some(ir::Source::Random { bipolar: true }),
-                _ => None,
+                // Per-zone sample-position envelope (BZEnvMod, BParExternalMod
+                // category 2); matches each zone's BZoneLevelEnv by ext_mod_idx.
+                ModSource::ZoneEnvelope => u8::try_from(ext_idx).ok().map(ir::Source::ZoneEnvelope),
+                ModSource::ReleaseVelocity | ModSource::Unassigned => None,
             };
             for (target, t) in p.targets.iter().enumerate() {
                 // The loop consumer is off for a streamed sample (its preload
@@ -72,8 +75,13 @@ pub(crate) fn external(
                 let raw = source;
                 let source = match (raw, t.shaper.as_ref().filter(|s| s.enabled)) {
                     (Some(s), Some(shaper)) => {
-                        let bipolar = [ir::Source::PitchBend, ir::Source::Random { bipolar: true }];
-                        let signed = bipolar.contains(&s) && signed_route(&t.param);
+                        let bipolar = matches!(
+                            s,
+                            ir::Source::PitchBend
+                                | ir::Source::Random { bipolar: true }
+                                | ir::Source::ZoneEnvelope(_)
+                        );
+                        let signed = bipolar && signed_route(&t.param);
                         let result = shaped(&mut out.shapers, s, &shaper.curve, signed);
                         kontra_law::record(|| kontra_law::Application {
                             id: kontra_law::LawId("kontakt.mod_shaper.v1"),

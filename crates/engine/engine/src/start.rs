@@ -110,11 +110,18 @@ impl Engine {
             {
                 region.shift_loops(start, length);
             }
+            let start_frame = if region.reverse {
+                zone.region.end.saturating_sub(region.end) as f64
+            } else {
+                region.start as f64
+            };
+            let timing_age = modulators::Age::at_start(start_frame);
             // Read first: the onset targets below see the stretched envelopes.
-            let stretch = self.stretches(zone, &n);
+            let stretch = self.stretches(zone, &n, timing_age);
             let onset = modulators::Age {
                 stretch,
-                ..self.age(self.now, None)
+                now: self.now.0 as f32 / self.rate as f32,
+                ..timing_age
             };
             if let Some(mix) = self.voice_mix(zone, &n, onset) {
                 region.mix = Some(mix);
@@ -136,7 +143,7 @@ impl Engine {
                 ),
                 gain,
                 lag,
-                envelope: self.envelope(zone, &n),
+                envelope: self.envelope(zone, &n, timing_age),
                 fade: n.fade.filter(|_| attack),
                 speed: (self.groups.get(zone.group as usize))
                     .and_then(|g| g.speed)
@@ -175,6 +182,13 @@ impl Engine {
                             ir::ModKind::LfoPhase { .. } | ir::ModKind::LfoRate { .. },
                             ir::Source::Lfo(_),
                         ) => None,
+                        (
+                            ir::ModKind::Attack { .. }
+                            | ir::ModKind::Release { .. }
+                            | ir::ModKind::LfoPhase { .. }
+                            | ir::ModKind::LfoRate { .. },
+                            _,
+                        ) => self.source(zone, s, &n, timing_age),
                         _ => self.source(zone, s, &n, modulators::Age::START),
                     });
                     if let Some(trace) = &mut self.trace {
@@ -216,6 +230,7 @@ impl Engine {
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
             slot.stretch = stretch;
             slot.slide = slide;
+            slot.start_frame = start_frame;
             #[cfg(feature = "trace")]
             slot.pending_trace_cc.set(0);
             if slide.is_some() {

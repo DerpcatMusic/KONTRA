@@ -164,6 +164,8 @@ struct Slot {
     stretch: [f32; modulators::WARPS],
     /// Its portamento, while it slides ([`glide::Slide`]).
     slide: Option<glide::Slide>,
+    /// Starting sample frame (or reverse distance from zone end) for zone envelopes.
+    start_frame: f64,
     #[cfg(feature = "trace")]
     pending_trace_cc: std::cell::Cell<u128>,
 }
@@ -399,6 +401,7 @@ impl Engine {
                 chaos: [modulators::CHAOS_START; modulators::WARPS],
                 stretch: [1.0; modulators::WARPS],
                 slide: None,
+                start_frame: 0.0,
                 #[cfg(feature = "trace")]
                 pending_trace_cc: std::cell::Cell::new(0),
             })

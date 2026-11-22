@@ -185,6 +185,7 @@ impl Build {
             loops: self.looped(ops, total).into_iter().collect(),
             reverse: raw(ops, &["direction"]) == Some("reverse"),
             slot: 0,
+            envelopes: Vec::new(),
         };
 
         let mut settings = self.settings(ops);

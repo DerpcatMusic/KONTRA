@@ -2,7 +2,7 @@
 
 #[cfg(feature = "trace")]
 use crate::script::Kind;
-use crate::{Engine, NoteRef, SampleTime, Slot, Zone, modulators, voice_gain};
+use crate::{Engine, NoteRef, Slot, Zone, voice_gain};
 
 impl Engine {
     /// Recomputes pitch and gain of a note's voices; with `cc`, only the gain
@@ -44,12 +44,7 @@ impl Engine {
             if cc.is_some_and(|cc| !self.follows(zone, cc)) {
                 continue;
             }
-            let age = modulators::Age {
-                warp: slot.warp,
-                stretch: slot.stretch,
-                chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
-            };
+            let age = self.slot_age(slot);
             #[cfg(feature = "trace")]
             if let (Some(trace), Some(cc)) = (&self.trace, trace_cc) {
                 trace.routes.begin(i, slot.zone, cc);

@@ -776,6 +776,33 @@ pub struct Zone {
     /// The zone's place among the zones of its group that share its keys; a
     /// note that names a slot starts only the zones in it.
     pub slot: u16,
+    /// Per-zone sample-position envelopes read by [`Source::ZoneEnvelope`].
+    pub envelopes: Vec<ZoneEnvelope>,
+}
+
+/// A per-zone modulation envelope indexed by sample frames, bipolar −1..=1.
+/// Matches [`Source::ZoneEnvelope`] routes with the same `slot`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoneEnvelope {
+    pub slot: u8,
+    pub points: Vec<ZonePoint>,
+    /// Optional loop `(start, length)` in sample frames (`length > 0`).
+    pub loop_range: Option<(i32, i32)>,
+    /// When true, advances with the voice's sample playback cursor (pitch-locked);
+    /// when false, advances at one frame per output sample from the voice's start.
+    pub speed_lock: bool,
+}
+
+/// One breakpoint of a [`ZoneEnvelope`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZonePoint {
+    /// Position in sample frames.
+    pub frame: i32,
+    /// Bipolar level, −1..=1.
+    pub value: f32,
+    /// Exponential curvature `k` of the segment starting here:
+    /// `(e^(k·t) − 1)/(e^k − 1)` (0 is linear).
+    pub curve: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

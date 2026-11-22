@@ -11,6 +11,7 @@ pub fn source(s: Source) -> Value {
         Source::Shaped(id) => json!({"type": "shaped", "id": id}),
         Source::Blend(id) => json!({"type": "blend", "id": id}),
         Source::Envelope(id) => json!({"type": "envelope", "id": id}),
+        Source::ZoneEnvelope(id) => json!({"type": "zone_envelope", "id": id}),
         Source::Lfo(id) => json!({"type": "lfo", "id": id}),
         Source::Script(id) => json!({"type": "script", "id": id}),
         other => json!({"type": format!("{other:?}")}),

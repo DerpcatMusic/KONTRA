@@ -278,15 +278,7 @@ impl Engine {
             let Some(group) = self.groups.get(zone.group as usize) else {
                 continue;
             };
-            let age = crate::modulators::Age {
-                warp: slot.warp,
-                stretch: slot.stretch,
-                chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(
-                    slot.started,
-                    slot.voice.released_at().map(kontra_time::SampleTime),
-                )
-            };
+            let age = self.slot_age(slot);
             for m in group.mods.iter().filter(|m| !m.bypass) {
                 if let kontra_ir::ModKind::EqGain {
                     source,
@@ -351,15 +343,7 @@ impl Engine {
             let Some(group) = self.groups.get(zone.group as usize) else {
                 continue;
             };
-            let age = crate::modulators::Age {
-                warp: slot.warp,
-                stretch: slot.stretch,
-                chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(
-                    slot.started,
-                    slot.voice.released_at().map(kontra_time::SampleTime),
-                )
-            };
+            let age = self.slot_age(slot);
             for m in group.mods.iter().filter(|m| !m.bypass) {
                 let input = kontra_plan::route_source(m.kind);
                 out.push(RouteObservation {
@@ -423,15 +407,7 @@ impl Engine {
             else {
                 continue;
             };
-            let age = crate::modulators::Age {
-                warp: slot.warp,
-                stretch: slot.stretch,
-                chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(
-                    slot.started,
-                    slot.voice.released_at().map(kontra_time::SampleTime),
-                )
-            };
+            let age = self.slot_age(slot);
             for unit in &slot.rack {
                 let Some(mut target) = self.voice_effect(zone, unit.insert, note, age) else {
                     continue;

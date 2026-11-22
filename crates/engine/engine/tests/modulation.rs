@@ -1462,3 +1462,267 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
     assert_eq!(at(&mut all), 5);
     assert_eq!(all[4], (8, 0.0, 0.25));
 }
+
+#[test]
+fn zone_envelope_ramps_volume_respects_speed_lock_and_skips_zones_without_it() {
+    use kontra_engine::ir::{Curve, Mod, ModKind, Source, Transfer, ZoneEnvelope, ZonePoint};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+
+    // Zone 0 (key 60): has a zone envelope in slot 4 ramping -1 -> +1 over 4800 frames,
+    // routed through a linear shaper table [0.0, 1.0] to volume.
+    let mut z_with = Zone::new(region(&mut store, 1.0, 48_000).unwrap(), 60, RATE);
+    z_with.keys = 60..=72;
+    z_with.envelopes.push(ZoneEnvelope {
+        slot: 4,
+        points: vec![
+            ZonePoint {
+                frame: 0,
+                value: -1.0,
+                curve: 0.0,
+            },
+            ZonePoint {
+                frame: 4800,
+                value: 1.0,
+                curve: 0.0,
+            },
+        ],
+        loop_range: None,
+        speed_lock: false,
+    });
+
+    // Zone 1 (key 48): in the same group, WITHOUT a matching zone envelope; must play at unity.
+    let mut z_without = Zone::new(region(&mut store, 1.0, 48_000).unwrap(), 48, RATE);
+    z_without.keys = 48..=48;
+
+    let mut plan = Plan::new(vec![z_with, z_without], 8);
+    plan.groups[0].shapers = vec![Transfer {
+        source: Source::ZoneEnvelope(4),
+        table: vec![0.0, 1.0],
+        stepped: false,
+        smooth_s: 0.0,
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::from("ZENV"),
+        slot: 20,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Volume {
+            source: Source::Shaped(0),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+            tau_ms: 0.0,
+        },
+    }];
+
+    // Unpitched (speed_lock = false): key 72 (+12 st) advances at 1 frame/sample,
+    // so after 2400 output frames it is at ~0.5 gain, reaching ~1.0 by 5600 frames.
+    let mut e = Engine::new(Arc::new(plan.clone()), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 6000];
+    e.process(&mut out, &[on(72, 1.0)]);
+    assert!(out[10][0] < 0.05, "starts muted: {}", out[10][0]);
+    assert!(
+        (out[2560][0] - 0.5).abs() < 0.1,
+        "mid ramp unpitched: {}",
+        out[2560][0]
+    );
+    assert!(
+        (out[5800][0] - 1.0).abs() < 0.02,
+        "reaches unity: {}",
+        out[5800][0]
+    );
+
+    // Pitch-locked (speed_lock = true): key 72 (+12 st, 2x playback rate) reaches
+    // sample frame 4800 after only 2400 output frames!
+    let mut locked_plan = plan.clone();
+    locked_plan.zones[0].envelopes[0].speed_lock = true;
+    let mut e_locked = Engine::new(Arc::new(locked_plan), store.client(), RATE);
+    let mut out_locked = vec![[0.0f32; 2]; 4000];
+    e_locked.process(&mut out_locked, &[on(72, 1.0)]);
+    assert!(
+        out_locked[3000][0] > 0.95,
+        "speed_lock advances at 2x on +12st: {}",
+        out_locked[3000][0]
+    );
+
+    // Zone without a matching zone envelope ignores the route and sounds at unity immediately.
+    let mut e_none = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out_none = vec![[0.0f32; 2]; 512];
+    e_none.process(&mut out_none, &[on(48, 1.0)]);
+    assert!(
+        (out_none[10][0] - 1.0).abs() < 0.02,
+        "missing zone envelope skips route: {}",
+        out_none[10][0]
+    );
+}
+
+#[test]
+fn zone_envelope_sets_lfo_phase_and_rate_from_the_voice_onset() {
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave, ZoneEnvelope, ZonePoint,
+    };
+
+    let levels = |speed_lock, source, phase| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut z = zone(&mut store, 1.0);
+        z.region.start = 2400;
+        z.envelopes.push(ZoneEnvelope {
+            slot: 4,
+            points: vec![
+                ZonePoint {
+                    frame: 0,
+                    value: 0.0,
+                    curve: 0.0,
+                },
+                ZonePoint {
+                    frame: 2400,
+                    value: 1.0,
+                    curve: 0.0,
+                },
+                ZonePoint {
+                    frame: 2464,
+                    value: 0.0,
+                    curve: 0.0,
+                },
+            ],
+            loop_range: None,
+            speed_lock,
+        });
+        let mut plan = Plan::new(vec![z], 8);
+        plan.groups[0].lfos = vec![Lfo {
+            wave: Wave::Sine,
+            rate: Rate::Hz(20.0),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: Clock::Voice,
+        }];
+        let route = |kind| Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind,
+        };
+        plan.groups[0].mods = vec![
+            route(ModKind::Volume {
+                source: Source::Lfo(0),
+                intensity: 1.0,
+                curve: Curve::Depth { power: 1 },
+                tau_ms: 0.0,
+            }),
+            route(if phase {
+                ModKind::LfoPhase {
+                    source,
+                    lfo: 0,
+                    depth: 0.25,
+                }
+            } else {
+                ModKind::LfoRate {
+                    source,
+                    lfo: 0,
+                    depth: 1.0,
+                    octaves: 1.0,
+                    range_hz: [0.0, 100.0],
+                }
+            }),
+        ];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        [level(&mut e, &[on(60, 1.0)])[0], level(&mut e, &[])[0]]
+    };
+
+    for speed_lock in [false, true] {
+        for phase in [true, false] {
+            // The envelope is 1 at onset, like Constant, even though it reads
+            // 0 at frame zero and again after the voice advances 64 frames.
+            let got = levels(speed_lock, Source::ZoneEnvelope(4), phase);
+            let want = levels(speed_lock, Source::Constant, phase);
+            for (got, want) in got.into_iter().zip(want) {
+                assert!(
+                    (got - want).abs() < 0.001,
+                    "phase route={phase}, speed lock={speed_lock}: {got} vs {want}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn zone_envelope_times_attacks_and_release_at_the_voice_onset() {
+    use kontra_engine::ir::{Mod, ModKind, Source, ZoneEnvelope, ZonePoint};
+
+    for speed_lock in [false, true] {
+        for start in [0, 2400] {
+            let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+            let mut plan = a_rise_timed_by(&mut store, Source::ZoneEnvelope(4));
+            plan.zones[0].region.start = start;
+            plan.zones[0].envelopes.push(ZoneEnvelope {
+                slot: 4,
+                points: vec![
+                    ZonePoint {
+                        frame: 0,
+                        value: -1.0,
+                        curve: 0.0,
+                    },
+                    ZonePoint {
+                        frame: 4800,
+                        value: 1.0,
+                        curve: 0.0,
+                    },
+                ],
+                loop_range: None,
+                speed_lock,
+            });
+            let mut e = Engine::new(Arc::new(plan.clone()), store.client(), RATE);
+            level(&mut e, &[on(60, 1.0)]);
+            let bend = bends_at(&mut e, 10, &[60])[0];
+            if start == 0 {
+                assert!((bend - 12.0).abs() < 0.1, "zero onset: {bend}");
+            } else {
+                assert!((bend - 2.4).abs() < 0.5, "half onset: {bend}");
+            }
+
+            let route = |kind| Mod {
+                name: String::new(),
+                slot: 0,
+                target: 0,
+                bypass: false,
+                kind,
+            };
+            plan.groups[0].mods = vec![route(ModKind::Attack {
+                source: Source::ZoneEnvelope(4),
+                intensity: 1.0,
+                floor_ms: 0.0,
+                envelope: None,
+            })];
+            plan.groups[0].envelope.attack = 4800;
+            let mut e = Engine::new(Arc::new(plan.clone()), store.client(), RATE);
+            let attack = level(&mut e, &[on(60, 1.0)])[0];
+            if start == 0 {
+                assert!(attack > 0.95, "zero onset attack: {attack}");
+            } else {
+                assert!(
+                    (attack - 128.0 / 2400.0).abs() < 0.01,
+                    "half onset attack: {attack}"
+                );
+            }
+
+            plan.groups[0].mods = vec![route(ModKind::Release {
+                source: Source::ZoneEnvelope(4),
+                intensity: 1.0,
+                floor_ms: 0.0,
+            })];
+            plan.groups[0].envelope.attack = 0;
+            plan.groups[0].envelope.release = 4800;
+            let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+            level(&mut e, &[on(60, 1.0)]);
+            let release = level(&mut e, &[off(60)])[0];
+            if start == 0 {
+                assert!(release.abs() < 0.01, "zero onset release: {release}");
+            } else {
+                assert!(
+                    (release - (1.0 - 128.0 / 2400.0)).abs() < 0.02,
+                    "half onset release: {release}"
+                );
+            }
+        }
+    }
+}

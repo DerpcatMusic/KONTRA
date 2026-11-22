@@ -329,9 +329,14 @@ impl<L: Library> Translator<'_, '_, L> {
         let mode = num(layer, "PlayMode", 0.0)? as u8;
         let mono = matches!(mode, 2..=4);
         let slides = matches!(mode, 1 | 3 | 4);
-        let live = ["PlayMode", "PortamentoTime", "PortamentoMode", "PortamentoCurve"]
-            .iter()
-            .any(|w| self.script_words.contains(*w));
+        let live = [
+            "PlayMode",
+            "PortamentoTime",
+            "PortamentoMode",
+            "PortamentoCurve",
+        ]
+        .iter()
+        .any(|w| self.script_words.contains(*w));
         let glide = (slides || live).then(|| -> Result<_, String> {
             Ok(ir::Glide {
                 scope: self.glide_scopes,
@@ -648,6 +653,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 loops: if has_options { Vec::new() } else { loops },
                 reverse: flag(player, "Reverse"),
                 slot,
+                envelopes: Vec::new(),
             };
             provenance::record(
                 "uvi.zone_gain_pan_tune.v1",

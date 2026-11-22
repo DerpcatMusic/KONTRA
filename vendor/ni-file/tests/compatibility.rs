@@ -1133,7 +1133,7 @@ mod modulation {
     }
 
     #[test]
-    fn unassigned_external_mod_has_a_shorter_tail() {
+    fn zone_envelope_external_mod_has_a_shorter_tail() {
         let mut data = 1u32.to_le_bytes().to_vec();
         target_header(&mut data, "volume", None, false);
         data.push(0);
@@ -1143,7 +1143,7 @@ mod modulation {
         data.extend(33u32.to_le_bytes());
         let chunk = structured(0x0C, 0x101, &data, &[], &[]);
         let params = ExternalMod::try_from(&chunk).unwrap().params().unwrap();
-        assert_eq!(params.source, ModSource::Unassigned);
+        assert_eq!(params.source, ModSource::ZoneEnvelope);
         assert_eq!(params.unknown_id, 33);
     }
 

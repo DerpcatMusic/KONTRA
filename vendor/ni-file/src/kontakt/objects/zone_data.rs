@@ -140,6 +140,142 @@ impl Zone {
         params.unknown_tail = reader.read_all()?;
         Ok(params)
     }
+
+    /// Per-zone modulation envelopes (`BZoneLevelEnv`, Kontakt 8.13.1
+    /// [ref] -> [ref] -> [ref]), stored inside
+    /// `private_data` at byte offset 56 as a 16-slot bitmask followed by each
+    /// present envelope record.
+    pub fn zone_envelopes(&self) -> Result<Vec<ZoneEnvelope>, Error> {
+        if self.0.version == 0x96 || !(0x92..=0x9c).contains(&self.0.version) {
+            return Err(Error::Static("Unsupported zone version for zone envelopes"));
+        }
+        let private = &self.0.private_data;
+        const PREFIX_LEN: usize = 56;
+        let tail_len = match self.0.version {
+            0x92 => 4,
+            0x93..=0x94 => 12,
+            0x95 | 0x97 | 0x98 => 25,
+            0x99..=0x9c => 29,
+            _ => unreachable!(),
+        };
+        if private.len() < PREFIX_LEN + 2 + tail_len {
+            return Err(Error::Static("Truncated zone private data"));
+        }
+        let mut reader = Cursor::new(&private[PREFIX_LEN..]);
+        let mask_lo = reader.read_u8()?;
+        let mask_hi = reader.read_u8()?;
+        let mask = u16::from_le_bytes([mask_lo, mask_hi]);
+        let mut envelopes = Vec::new();
+        for slot in 0u8..16 {
+            if mask & (1u16 << slot) == 0 {
+                continue;
+            }
+            // BZoneLevelEnv::read header: chunk type byte (0) and version (1).
+            let kind = reader.read_u8()?;
+            if kind != 0 {
+                return Err(Error::Generic(format!(
+                    "Unexpected zone envelope type byte {kind}"
+                )));
+            }
+            let version = reader.read_u16_le()?;
+            if version != 1 {
+                return Err(Error::Generic(format!(
+                    "Unsupported zone envelope version {version}"
+                )));
+            }
+            let present = reader.read_u8()? != 0;
+            if !present {
+                continue;
+            }
+            let ext_mod_idx = reader.read_i16_le()?;
+            let loop_start = reader.read_i32_le()?;
+            let loop_length = reader.read_i32_le()?;
+            let loop_active = reader.read_u8()? != 0;
+            let speed_lock = reader.read_u8()? != 0;
+            let target_len = reader.read_u32_le()? as usize;
+            if target_len > 256 {
+                return Err(Error::Static("Zone envelope target name too long"));
+            }
+            let target_bytes = reader.read_bytes(target_len)?;
+            let target = String::from_utf8_lossy(&target_bytes).into_owned();
+            let target_idx = reader.read_u8()?;
+            let count = reader.read_i16_le()?;
+            if count < 0 || count > 32_000 {
+                return Err(Error::Generic(format!(
+                    "Invalid zone envelope point count {count}"
+                )));
+            }
+            let mut points: Vec<ZoneEnvelopePoint> = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                let mut x = reader.read_i32_le()?;
+                let y = reader.read_f32_le()?;
+                let curve = reader.read_f32_le()?;
+                if !y.is_finite() || !curve.is_finite() {
+                    return Err(Error::Static("Non-finite zone envelope point"));
+                }
+                // Kontakt [ref] enforces a minimum 32-frame spacing.
+                if let Some(prev) = points.last() {
+                    let min_x = prev.x.saturating_add(32);
+                    if x < min_x {
+                        x = min_x;
+                    }
+                }
+                points.push(ZoneEnvelopePoint { x, y, curve });
+            }
+            envelopes.push(ZoneEnvelope {
+                slot,
+                ext_mod_idx,
+                loop_start,
+                loop_length,
+                loop_active,
+                speed_lock,
+                target,
+                target_idx,
+                points,
+            });
+        }
+        let remaining = private.len() - PREFIX_LEN - reader.position() as usize;
+        if remaining != tail_len {
+            return Err(Error::Generic(format!(
+                "Zone private tail length mismatch: expected {tail_len}, got {remaining}"
+            )));
+        }
+        Ok(envelopes)
+    }
+}
+
+/// One per-zone envelope (`BZoneLevelEnv`) attached to a zone.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ZoneEnvelope {
+    /// Slot in the zone's 16-entry envelope array (`0..16`).
+    pub slot: u8,
+    /// 0-based external modulator index in the owning group (`ExternalModArray32`),
+    /// matching `BZEnvMod` (`BParExternalMod` category 2).
+    pub ext_mod_idx: i16,
+    /// Loop start in sample frames.
+    pub loop_start: i32,
+    /// Loop length in sample frames.
+    pub loop_length: i32,
+    pub loop_active: bool,
+    /// When true, envelope advances with the voice's sample playback rate
+    /// (pitch and sample-rate ratio); when false, at 1 frame per host sample.
+    pub speed_lock: bool,
+    pub target: String,
+    pub target_idx: u8,
+    pub points: Vec<ZoneEnvelopePoint>,
+}
+
+/// One breakpoint of a [`ZoneEnvelope`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ZoneEnvelopePoint {
+    /// Position in sample frames.
+    pub x: i32,
+    /// Bipolar output value (`-1.0..=1.0` in Kontakt).
+    pub y: f32,
+    /// Segment curvature (`-1.0..=1.0`, `0.0` linear).
+    pub curve: f32,
 }
 
 impl Zone {
@@ -246,6 +382,156 @@ mod source_identity_tests {
         let n = z.0.private_data.len();
         z.0.private_data[n - 4..].copy_from_slice(&(-2i32).to_le_bytes());
         assert!(z.source_id().is_err());
+    }
+}
+
+#[cfg(test)]
+mod zone_envelope_tests {
+    use super::*;
+
+    fn push_env(
+        buf: &mut Vec<u8>,
+        present: bool,
+        ext_mod_idx: i16,
+        loop_start: i32,
+        loop_length: i32,
+        loop_active: bool,
+        speed_lock: bool,
+        target: &str,
+        target_idx: u8,
+        points: &[(i32, f32, f32)],
+    ) {
+        buf.push(0); // kind == 0
+        buf.extend_from_slice(&1u16.to_le_bytes()); // version == 1
+        buf.push(u8::from(present));
+        if !present {
+            return;
+        }
+        buf.extend_from_slice(&ext_mod_idx.to_le_bytes());
+        buf.extend_from_slice(&loop_start.to_le_bytes());
+        buf.extend_from_slice(&loop_length.to_le_bytes());
+        buf.push(u8::from(loop_active));
+        buf.push(u8::from(speed_lock));
+        buf.extend_from_slice(&(target.len() as u32).to_le_bytes());
+        buf.extend_from_slice(target.as_bytes());
+        buf.push(target_idx);
+        buf.extend_from_slice(&(points.len() as i16).to_le_bytes());
+        for &(x, y, curve) in points {
+            buf.extend_from_slice(&x.to_le_bytes());
+            buf.extend_from_slice(&y.to_le_bytes());
+            buf.extend_from_slice(&curve.to_le_bytes());
+        }
+    }
+
+    fn make_zone(version: u16, mask: u16, body: &[u8]) -> Zone {
+        let tail_len = match version {
+            0x92 => 4,
+            0x93..=0x94 => 12,
+            0x95 | 0x97 | 0x98 => 25,
+            0x99..=0x9c => 29,
+            _ => 29,
+        };
+        let mut private_data = vec![0u8; 56];
+        private_data.extend_from_slice(&mask.to_le_bytes());
+        private_data.extend_from_slice(body);
+        private_data.extend(std::iter::repeat_n(0u8, tail_len));
+        Zone(StructuredObject {
+            version,
+            private_data,
+            public_data: vec![0; 48],
+            children: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn empty_bitmask_parses_across_all_admitted_versions() {
+        for version in 0x92..=0x9c {
+            let z = make_zone(version, 0, &[]);
+            if version == 0x96 {
+                assert!(z.zone_envelopes().is_err());
+            } else {
+                assert!(
+                    z.zone_envelopes().unwrap().is_empty(),
+                    "version {version:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_slots_flags_and_min_spacing_decode_cleanly() {
+        let mut body = Vec::new();
+        // Slot 2: absent marker (present == 0)
+        push_env(&mut body, false, 0, 0, 0, false, false, "", 0, &[]);
+        // Slot 5: active envelope with points closer than 32 frames
+        push_env(
+            &mut body,
+            true,
+            4,
+            1000,
+            2048,
+            true,
+            true,
+            "volume",
+            0,
+            &[(0, -1.0, 0.25), (10, 0.0, 0.0), (5000, 1.0, -0.5)],
+        );
+        let mask = (1u16 << 2) | (1u16 << 5);
+        let envs = make_zone(0x9c, mask, &body).zone_envelopes().unwrap();
+        assert_eq!(envs.len(), 1);
+        let e = &envs[0];
+        assert_eq!(e.slot, 5);
+        assert_eq!(e.ext_mod_idx, 4);
+        assert_eq!((e.loop_start, e.loop_length), (1000, 2048));
+        assert!(e.loop_active && e.speed_lock);
+        assert_eq!(e.target, "volume");
+        assert_eq!(e.points.len(), 3);
+        assert_eq!(e.points[0].x, 0);
+        // Enforced 32-frame minimum spacing from previous point (0 -> 32).
+        assert_eq!(e.points[1].x, 32);
+        assert_eq!(e.points[2].x, 5000);
+    }
+
+    #[test]
+    fn malformed_headers_and_tail_mismatches_return_errors() {
+        // Bad chunk kind byte
+        let mut bad_kind = Vec::new();
+        push_env(&mut bad_kind, false, 0, 0, 0, false, false, "", 0, &[]);
+        bad_kind[0] = 7;
+        assert!(make_zone(0x9c, 1, &bad_kind).zone_envelopes().is_err());
+
+        // Bad version word
+        let mut bad_ver = Vec::new();
+        push_env(&mut bad_ver, false, 0, 0, 0, false, false, "", 0, &[]);
+        bad_ver[1] = 2;
+        assert!(make_zone(0x9c, 1, &bad_ver).zone_envelopes().is_err());
+
+        // Trailing garbage changes tail length
+        let mut z = make_zone(0x9c, 0, &[]);
+        z.0.private_data.push(0);
+        assert!(z.zone_envelopes().is_err());
+    }
+
+    #[test]
+    fn non_finite_point_values_are_rejected() {
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for (y, curve) in [(invalid, 0.0), (0.0, invalid)] {
+                let mut body = Vec::new();
+                push_env(
+                    &mut body,
+                    true,
+                    0,
+                    0,
+                    0,
+                    false,
+                    false,
+                    "",
+                    0,
+                    &[(0, y, curve)],
+                );
+                assert!(make_zone(0x9c, 1, &body).zone_envelopes().is_err());
+            }
+        }
     }
 }
 

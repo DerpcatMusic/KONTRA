@@ -19,6 +19,13 @@ pub struct Age {
     /// How much the voice's attack routes stretched the group's first
     /// [`WARPS`] envelopes' first segment, fixed at note-on (1: as drawn).
     pub stretch: [f32; WARPS],
+    /// Voice position at note-on, in source frames.
+    pub start_frame: f64,
+    /// Voice position in source frames (start frame + playback travel), for
+    /// pitch-locked zone envelopes.
+    pub sample_pos: f64,
+    /// Voice start frame + output frames elapsed, for unpitched zone envelopes.
+    pub unpitched_pos: f64,
 }
 
 /// How many of a group's LFOs a live rate route can move.
@@ -32,7 +39,20 @@ impl Age {
         warp: [0.0; WARPS],
         chaos: [0.0; WARPS],
         stretch: [1.0; WARPS],
+        start_frame: 0.0,
+        sample_pos: 0.0,
+        unpitched_pos: 0.0,
     };
+
+    /// Note-on timing at the voice's initial sample position.
+    pub fn at_start(start_frame: f64) -> Self {
+        Self {
+            start_frame,
+            sample_pos: start_frame,
+            unpitched_pos: start_frame,
+            ..Self::START
+        }
+    }
 }
 
 /// `state` of `l`, a chaotic LFO, `span` seconds on: one Euler step; any
@@ -212,6 +232,38 @@ fn segment(from: f32, to: f32, x: f32, k: f32) -> f32 {
     from + (to - from) * covered
 }
 
+/// A per-zone sample-position envelope's bipolar output (−1..=1) at frame `pos`.
+/// Points must be in nondecreasing frame order, as enforced by Kontakt decoding.
+#[must_use]
+pub fn zone_envelope(e: &ir::ZoneEnvelope, mut pos: f64) -> f32 {
+    let Some(first) = e.points.first() else {
+        return 0.0;
+    };
+    if let Some((ls, ll)) = e.loop_range
+        && ll > 0
+        && pos >= f64::from(ls) + f64::from(ll)
+    {
+        pos = f64::from(ls) + (pos - f64::from(ls)).rem_euclid(f64::from(ll));
+    }
+    if pos <= f64::from(first.frame) {
+        return first.value;
+    }
+    if let Some(last) = e.points.last()
+        && (pos >= f64::from(last.frame) || pos.is_nan())
+    {
+        return last.value;
+    }
+    // At an interior breakpoint, use the last point at that frame. Duplicate
+    // frames are possible when Kontakt's minimum spacing saturates at i32::MAX.
+    let right = e.points.partition_point(|p| f64::from(p.frame) <= pos);
+    let (Some(a), Some(b)) = (e.points.get(right.saturating_sub(1)), e.points.get(right)) else {
+        return 0.0;
+    };
+    let x0 = f64::from(a.frame);
+    let t = ((pos - x0) / (f64::from(b.frame) - x0)) as f32;
+    segment(a.value, b.value, t, a.curve)
+}
+
 /// The oscillator's output at `age`, −1..=1, faded in.
 pub fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
     let t = clock_time(l, age);
@@ -294,5 +346,75 @@ mod tests {
         assert!((segment(0.0, 1.0, 0.0, 3.0)).abs() < 1e-6);
         assert!((segment(0.0, 1.0, 1.0, 3.0) - 1.0).abs() < 1e-6);
         assert!(segment(0.0, 1.0, 0.5, 3.0) < 0.5);
+    }
+
+    #[test]
+    fn a_large_zone_envelope_keeps_late_segments_and_duplicate_endpoints() {
+        let points = (0..32_000)
+            .map(|i| ir::ZonePoint {
+                frame: i * 32,
+                value: if i % 2 == 0 { 1.0 } else { -1.0 },
+                curve: 0.0,
+            })
+            .collect();
+        let end = 31_999 * 32;
+        let mut e = ir::ZoneEnvelope {
+            slot: 4,
+            points,
+            loop_range: None,
+            speed_lock: false,
+        };
+        assert_eq!(zone_envelope(&e, f64::from(end - 16)), 0.0);
+        assert_eq!(zone_envelope(&e, f64::from(end + 1)), -1.0);
+        e.points.push(ir::ZonePoint {
+            frame: end,
+            value: 0.5,
+            curve: 0.0,
+        });
+        assert_eq!(zone_envelope(&e, f64::from(end - 16)), 0.0);
+        assert_eq!(zone_envelope(&e, f64::from(end)), 0.5);
+        e.loop_range = Some((end - 32, 32));
+        assert_eq!(zone_envelope(&e, f64::from(end)), 1.0);
+        assert_eq!(zone_envelope(&e, f64::from(end + 16)), 0.0);
+    }
+
+    #[test]
+    fn zone_envelope_interpolates_curves_clamps_ends_and_loops() {
+        let e = ir::ZoneEnvelope {
+            slot: 4,
+            points: vec![
+                ir::ZonePoint {
+                    frame: 100,
+                    value: -1.0,
+                    curve: 0.0,
+                },
+                ir::ZonePoint {
+                    frame: 300,
+                    value: 1.0,
+                    curve: 4.0,
+                },
+                ir::ZonePoint {
+                    frame: 500,
+                    value: 0.0,
+                    curve: 0.0,
+                },
+            ],
+            loop_range: None,
+            speed_lock: false,
+        };
+        assert_eq!(zone_envelope(&e, 0.0), -1.0);
+        assert!((zone_envelope(&e, 200.0) - 0.0).abs() < 1e-6);
+        // Curve +4 bows below linear midpoint (0.5) on a falling segment too:
+        // segment(1.0, 0.0, 0.5, 4.0) > 0.5 because (e^2 - 1)/(e^4 - 1) < 0.5.
+        assert!(zone_envelope(&e, 400.0) > 0.5);
+        assert_eq!(zone_envelope(&e, 999.0), 0.0);
+
+        let looped = ir::ZoneEnvelope {
+            loop_range: Some((100, 200)),
+            ..e
+        };
+        // Position 350 wraps into 100 + ((350 - 100) % 200) = 150 -> -0.5.
+        assert!((zone_envelope(&looped, 350.0) - (-0.5)).abs() < 1e-6);
+        assert!((zone_envelope(&looped, 550.0) - (-0.5)).abs() < 1e-6);
     }
 }
