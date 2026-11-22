@@ -71,7 +71,27 @@ impl Browser {
             .name("kontra-scan".into())
             .spawn(move || {
                 let mut cache = cache_path.as_deref().map(Cache::load).unwrap_or_default();
-                let programs = |b: &Path| kontra_format_uvi::programs(b).map_err(|e| e.to_string());
+                let programs = |b: &Path| {
+                    if b.extension().is_some_and(|e| e.eq_ignore_ascii_case("sf2")) {
+                        kontra_format_sf2::list_presets(b)
+                            .map(|list| {
+                                list.into_iter()
+                                    .map(|p| {
+                                        let trimmed = p.name.trim();
+                                        let safe = if trimmed.is_empty() {
+                                            "Preset".to_string()
+                                        } else {
+                                            trimmed.replace(['/', '\\'], "-")
+                                        };
+                                        format!("{:03}:{:03} {safe}.sf2p", p.bank, p.program)
+                                    })
+                                    .collect()
+                            })
+                            .map_err(|e| e.to_string())
+                    } else {
+                        kontra_format_uvi::programs(b).map_err(|e| e.to_string())
+                    }
+                };
                 if let Some(catalog) =
                     kontra_library::scan(&roots, &scanning, &mut cache, &programs)
                 {

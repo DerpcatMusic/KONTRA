@@ -349,3 +349,29 @@ fn a_preset_folder_inside_a_library_stays_inside_it() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn sfz_decentsampler_and_sf2_banks_are_scanned_as_libraries() {
+    let dir = tree(
+        "multi_format",
+        &[
+            ("Pads/Warm.sfz", ""),
+            ("Keys/Felt.dspreset", ""),
+            ("GM.sf2", "000:000 Piano.sf2p\n000:001 Rhodes.sf2p"),
+        ],
+    );
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    let names: Vec<_> = catalog.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["GM", "Keys", "Pads"]);
+
+    let gm = catalog.libraries.iter().find(|l| l.name == "GM").unwrap();
+    assert_eq!(
+        gm.presets,
+        [
+            dir.join("GM.sf2/000:000 Piano.sf2p"),
+            dir.join("GM.sf2/000:001 Rhodes.sf2p"),
+        ]
+    );
+    assert!(gm.art.is_empty(), "SF2 banks do not carry cover art");
+    std::fs::remove_dir_all(dir).unwrap();
+}
