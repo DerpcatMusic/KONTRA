@@ -18,8 +18,10 @@ pub struct Ahdsr {
     pub release: u32,
     /// Shape of the attack: 0 is linear, positive starts slowly.
     pub attack_shape: f32,
-    /// Shape of decay and release.
-    pub fall_shape: f32,
+    /// Shape of the decay.
+    pub decay_shape: f32,
+    /// Shape of the release.
+    pub release_shape: f32,
     /// Silent frames at the start of an attack, taken out of its length.
     pub lag: u32,
     /// Silent frames before the attack, even if the attack is instantaneous.
@@ -40,7 +42,8 @@ impl Ahdsr {
         sustain: 1.0,
         release: 64,
         attack_shape: 0.0,
-        fall_shape: 0.0,
+        decay_shape: 0.0,
+        release_shape: 0.0,
         lag: 0,
         delay: 0,
         floor: 0.0,
@@ -219,7 +222,7 @@ impl Envelope {
                         / f64::from(old.decay.max(1)))
                     .round() as u32;
                     self.segment =
-                        Segment::new(self.level, target, left.max(1), settings.fall_shape);
+                        Segment::new(self.level, target, left.max(1), settings.decay_shape);
                 }
             }
             Stage::Sustain => {
@@ -240,11 +243,12 @@ impl Envelope {
                 }
             }
             Stage::Release => {
-                if settings.release != old.release || settings.fall_shape != old.fall_shape {
+                if settings.release != old.release || settings.release_shape != old.release_shape {
                     let left = (f64::from(self.segment.left) * f64::from(settings.release.max(1))
                         / f64::from(old.release.max(1)))
                     .round() as u32;
-                    self.segment = Segment::new(self.level, 0.0, left.max(1), settings.fall_shape);
+                    self.segment =
+                        Segment::new(self.level, 0.0, left.max(1), settings.release_shape);
                 }
             }
             Stage::Off => {}
@@ -282,7 +286,7 @@ impl Envelope {
                 Stage::Sustain
             };
         } else {
-            self.segment = Segment::new(self.level, target, s.decay, s.fall_shape);
+            self.segment = Segment::new(self.level, target, s.decay, s.decay_shape);
             self.stage = Stage::Decay;
         }
     }
@@ -321,7 +325,7 @@ impl Envelope {
         let current_gain = self.output_gain();
         self.wait = 0;
         self.level = current_gain;
-        self.segment = Segment::new(current_gain, 0.0, s.release.max(1), s.fall_shape);
+        self.segment = Segment::new(current_gain, 0.0, s.release.max(1), s.release_shape);
         self.stage = Stage::Release;
     }
 
@@ -429,7 +433,7 @@ mod tests {
     fn a_shaped_release_follows_its_curve_and_ends_on_time() {
         let mut env = Envelope::new(Ahdsr {
             release: 1000,
-            fall_shape: (3.0f32 / 43.0).ln(),
+            release_shape: (3.0f32 / 43.0).ln(),
             ..Ahdsr::GATE
         });
         env.tick();
@@ -439,6 +443,34 @@ mod tests {
         assert!((levels[499] - half).abs() < 1e-4, "{}", levels[499]);
         assert_eq!(levels[999], 0.0);
         assert!(env.is_off());
+    }
+
+    #[test]
+    fn decay_and_release_follow_independent_shapes() {
+        let mut env = Envelope::new(Ahdsr {
+            attack: 0,
+            decay: 100,
+            sustain: 0.5,
+            release: 100,
+            decay_shape: 4.0,
+            release_shape: -4.0,
+            ..Ahdsr::GATE
+        });
+        let decay: Vec<f32> = (0..100).map(|_| env.tick()).collect();
+        env.release();
+        let release: Vec<f32> = (0..100).map(|_| env.tick()).collect();
+        // Positive shape starts slowly (stays high past midpoint); negative drops fast.
+        let decay_mid = decay[49];
+        let release_mid = release[49];
+        assert!(
+            decay_mid > 0.85,
+            "expected concave decay > 0.85, got {decay_mid}"
+        );
+        assert!(
+            release_mid < 0.15,
+            "expected convex release < 0.15, got {release_mid}"
+        );
+        assert_eq!(release[99], 0.0);
     }
 
     /// Measured on Kontakt 8.13 (lag 33): an attack is silent 33 frames and

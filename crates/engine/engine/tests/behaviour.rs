@@ -262,6 +262,7 @@ fn velocity_layers_crossfade_linearly() {
         control: Control::Velocity,
         fade_in: None,
         fade_out: Some((40, 80)),
+        law: kontra_ir::CrossfadeLaw::Linear,
     }];
     let mut loud = zone(&mut store, 1.0);
     loud.pan = 1.0;
@@ -269,6 +270,7 @@ fn velocity_layers_crossfade_linearly() {
         control: Control::Velocity,
         fade_in: Some((40, 80)),
         fade_out: None,
+        law: kontra_ir::CrossfadeLaw::Linear,
     }];
     let mut e = engine(&store, Plan::new(vec![soft, loud], 8));
     let [l, r] = level(&mut e, &[on(60, 60.0 / 127.0)]);
@@ -287,6 +289,7 @@ fn a_cc_crossfade_moves_sounding_voices() {
         control: Control::Cc(1),
         fade_in: Some((0, 127)),
         fade_out: None,
+        law: kontra_ir::CrossfadeLaw::Linear,
     }];
     let mut looped = z.region.clone();
     looped.loops = Region::pack_loops([kontra_voice::Loop {
@@ -303,6 +306,76 @@ fn a_cc_crossfade_moves_sounding_voices() {
     }
     let loud = level(&mut e, &[])[0];
     assert!(quiet < 0.2 && close(loud, 1.0), "{quiet} -> {loud}");
+}
+
+#[test]
+fn equal_power_cc_crossfade_holds_constant_power_at_midpoint() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut soft = zone(&mut store, 1.0);
+    soft.pan = -1.0;
+    soft.crossfades = vec![Crossfade {
+        control: Control::Cc(1),
+        fade_in: None,
+        fade_out: Some((20, 100)),
+        law: kontra_ir::CrossfadeLaw::EqualPower,
+    }];
+    let mut loud = zone(&mut store, 1.0);
+    loud.pan = 1.0;
+    loud.crossfades = vec![Crossfade {
+        control: Control::Cc(1),
+        fade_in: Some((20, 100)),
+        fade_out: None,
+        law: kontra_ir::CrossfadeLaw::EqualPower,
+    }];
+    let mut e = engine(&store, Plan::new(vec![soft, loud], 8));
+    let [l, r] = level(&mut e, &[cc(1, 60), on(60, 1.0)]);
+    assert!(
+        close(l * l + r * r, 1.0),
+        "equal power at midpoint: l={l}, r={r}, l^2+r^2={}",
+        l * l + r * r
+    );
+    assert!(close(l, r), "equal parts at midpoint: l={l}, r={r}");
+}
+
+#[test]
+fn complementary_random_start_rules_partition_every_note_on() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut left = zone(&mut store, 1.0);
+    left.pan = -1.0;
+    left.start = vec![(kontra_ir::Join::And, Atom::Random { lo: 0, hi: 5000 })];
+    let mut right = zone(&mut store, 1.0);
+    right.pan = 1.0;
+    right.start = vec![(
+        kontra_ir::Join::And,
+        Atom::Random {
+            lo: 5000,
+            hi: 10_000,
+        },
+    )];
+    let mut e = engine(&store, Plan::new(vec![left, right], 16));
+    let mut left_hits = 0usize;
+    let mut right_hits = 0usize;
+    for _ in 0..64 {
+        let [l, r] = level(&mut e, &[on(60, 1.0)]);
+        level(&mut e, &[off(60)]);
+        // Advance past short release so notes don't overlap.
+        for _ in 0..4 {
+            level(&mut e, &[]);
+        }
+        assert!(
+            (l > 0.5) ^ (r > 0.5),
+            "every note-on must trigger exactly one side: l={l}, r={r}"
+        );
+        if l > 0.5 {
+            left_hits += 1;
+        } else {
+            right_hits += 1;
+        }
+    }
+    assert!(
+        left_hits > 10 && right_hits > 10,
+        "both halves must fire: {left_hits}/{right_hits}"
+    );
 }
 
 #[test]

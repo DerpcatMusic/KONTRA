@@ -1284,7 +1284,20 @@ fn an_amp_envelopes_curves_shape_its_stages() {
     // Half way through a stage, (1 − c)/2 of it is done: 1/(1 + e^(k/2)).
     let half = |k: f32| 1.0 / (1.0 + (k / 2.0).exp());
     assert!((half(e.attack_shape) - 0.25).abs() < 1e-4, "{e:?}");
-    assert!((half(e.fall_shape) - 0.985).abs() < 1e-4, "{e:?}");
+    assert!((half(e.decay_shape) - 0.985).abs() < 1e-4, "{e:?}");
+    assert!((half(e.release_shape) - 0.985).abs() < 1e-4, "{e:?}");
+    assert!(!out.diagnostics.iter().any(|d| d.feature.contains("curve")));
+
+    // Distinct DecayCurve and ReleaseCurve are preserved independently with zero diagnostics.
+    let split = xml.replace(
+        "DecayTime=\"0\" DecayCurve=\"-0.97\" SustainLevel=\"1\"",
+        "DecayTime=\"0.4\" DecayCurve=\"0.5\" SustainLevel=\"0.5\"",
+    );
+    let doc = roxmltree::Document::parse(&split).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let e = out.groups[0].envelope;
+    assert!((half(e.decay_shape) - 0.25).abs() < 1e-4, "{e:?}");
+    assert!((half(e.release_shape) - 0.985).abs() < 1e-4, "{e:?}");
     assert!(!out.diagnostics.iter().any(|d| d.feature.contains("curve")));
 }
 

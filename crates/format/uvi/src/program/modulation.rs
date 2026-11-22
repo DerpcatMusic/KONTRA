@@ -29,20 +29,8 @@ impl<L: Library> Translator<'_, '_, L> {
         self.envelopes.entry(env.id()).or_default().push(at);
         let seconds = |name| num(env, name, 0.0).map(|t| t.clamp(0.0, 30.0) as f32);
         let delay = seconds("DelayTime")?;
-        // One shape serves decay and release: the release's, and the decay's
-        // when it is what moves (AO's two are equal).
         let sustain = num(env, "SustainLevel", 1.0)?.clamp(0.0, 1.0) as f32;
         let shape = |name| curve(env, name).unwrap_or(0.0);
-        let decays = sustain < 1.0 && seconds("DecayTime")? > 0.0;
-        let fall = shape(if decays && seconds("ReleaseTime")? == 0.0 {
-            "DecayCurve"
-        } else {
-            "ReleaseCurve"
-        });
-        if decays && shape("DecayCurve") != fall {
-            self.notes
-                .add(ir::Impact::Audible, "envelope decay curve", source);
-        }
         let result = ir::Envelope {
             attack: seconds("AttackTime")?,
             hold: seconds("HoldTime")?,
@@ -50,7 +38,8 @@ impl<L: Library> Translator<'_, '_, L> {
             sustain,
             release: seconds("ReleaseTime")?,
             attack_shape: shape("AttackCurve"),
-            fall_shape: fall,
+            decay_shape: shape("DecayCurve"),
+            release_shape: shape("ReleaseCurve"),
             lag: 0.0,
             delay,
             floor: 0.0,

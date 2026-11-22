@@ -26,7 +26,8 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
         sustain: e.sustain_level(),
         release: seconds(e.release_ms),
         attack_shape: ATTACK_CURVE.eval_unclamped(e.attack_curve),
-        fall_shape: FALL,
+        decay_shape: FALL,
+        release_shape: FALL,
         lag: ENVELOPE_LAG_S,
         delay: 0.0,
         floor: 0.0,
@@ -273,8 +274,8 @@ pub(crate) fn ahdsr(e: &EnvelopeAhdsr) -> ir::Breakpoints {
         points: vec![
             point(a.attack, 1.0, a.attack_shape),
             point(a.hold, 1.0, 0.0),
-            point(a.decay, decay_level, a.fall_shape),
-            point(release_ms, 0.0, a.fall_shape),
+            point(a.decay, decay_level, a.decay_shape),
+            point(release_ms, 0.0, a.release_shape),
         ],
         sustain,
         loop_from: None,
@@ -368,7 +369,7 @@ pub(crate) fn flex_gate(e: &ir::Breakpoints) -> ir::Envelope {
     ir::Envelope {
         release: release.max(ir::Envelope::GATE.release),
         // Stays near full until the end of the release, then falls.
-        fall_shape: 20.0,
+        release_shape: 20.0,
         ..ir::Envelope::GATE
     }
 }

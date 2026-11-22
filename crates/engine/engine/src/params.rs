@@ -846,7 +846,8 @@ impl Engine {
         e.sustain = sustain.clamp(0.0, 1.0);
         e.release = frames(release).max(1);
         e.attack_shape = attack_shape;
-        e.fall_shape = fall_shape;
+        e.decay_shape = fall_shape;
+        e.release_shape = fall_shape;
         e.delay = frames(delay);
         e.lag = 0;
         true

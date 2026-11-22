@@ -2,7 +2,7 @@
 //! zone ranges, bus send cycles, and engine modulation limits without mutating
 //! the IR.
 
-use crate::{Diagnostic, Impact, Instrument, ModKind, Source};
+use crate::{CrossfadeControl, Diagnostic, Impact, Instrument, ModKind, Source, StartRule};
 
 /// Maximum per-group LFOs or breakpoint envelopes the engine tracks per voice
 /// (`kontra_plan::modulation::WARPS`).
@@ -98,6 +98,45 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
                         ),
                     });
                 }
+            }
+            for (xi, xf) in z.crossfades.iter().enumerate() {
+                if let CrossfadeControl::Cc(cc) = xf.control
+                    && cc > 127
+                {
+                    out.push(Diagnostic {
+                        impact: Impact::Broken,
+                        feature: "ir.zone.cc_out_of_bounds".into(),
+                        detail: format!(
+                            "group {gi} zone {zi} (id {}) crossfade {xi} references cc {cc} (> 127)",
+                            z.id
+                        ),
+                    });
+                }
+                if xf.fade_in.is_some_and(|(lo, hi)| lo > hi)
+                    || xf.fade_out.is_some_and(|(lo, hi)| lo > hi)
+                {
+                    out.push(Diagnostic {
+                        impact: Impact::Broken,
+                        feature: "ir.zone.invalid_crossfade".into(),
+                        detail: format!(
+                            "group {gi} zone {zi} (id {}) crossfade {xi} has inverted bounds",
+                            z.id
+                        ),
+                    });
+                }
+            }
+        }
+        for (ri, (_, rule)) in g.start.iter().enumerate() {
+            if let StartRule::Random { lo, hi } = rule
+                && (lo > hi || *hi > 10_000)
+            {
+                out.push(Diagnostic {
+                    impact: Impact::Broken,
+                    feature: "ir.start.invalid_random_range".into(),
+                    detail: format!(
+                        "group {gi} start rule {ri} has invalid random range [{lo}, {hi})"
+                    ),
+                });
             }
         }
 
@@ -399,6 +438,7 @@ mod tests {
             velocities: 1..=127,
             velocity_fade: (0, 0),
             key_fade: (0, 0),
+            crossfades: Vec::new(),
             root: 60,
             tune: 0.0,
             volume_db: 0.0,

@@ -547,8 +547,7 @@ fn starting_inside_a_loop_plays_to_loop_end_and_wraps() {
         start: 500,
         end: 600,
         ..Loop::default()
-    }])
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 200);
@@ -606,8 +605,7 @@ fn reverse_loops_crossfade_and_start_inside_loop() {
         start: 500,
         end: 600,
         ..Loop::default()
-    }])
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 700);
@@ -625,8 +623,7 @@ fn reverse_loops_crossfade_and_start_inside_loop() {
         end: 600,
         alternating: true,
         ..Loop::default()
-    }])
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 700);
@@ -645,8 +642,7 @@ fn reverse_loops_crossfade_and_start_inside_loop() {
         end: 600,
         crossfade: 40,
         ..Loop::default()
-    }])
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 620);
@@ -666,8 +662,7 @@ fn reverse_loops_crossfade_and_start_inside_loop() {
         start: 500,
         end: 600,
         ..Loop::default()
-    }])
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 160);
@@ -687,8 +682,7 @@ fn tuned_loop_applies_ratio_on_repeats_and_is_block_size_invariant() {
             end: 600,
             tune_ratio: 2.0,
             ..Loop::default()
-        }])
-        .into();
+        }]);
         region
     };
     let run_block = |region: Region, block: usize, ramp: bool| -> Vec<f32> {
@@ -774,8 +768,7 @@ fn until_release_released_mid_crossfade_finishes_wrap_without_click() {
         crossfade: 40,
         until_release: true,
         ..Loop::default()
-    }])
-    .into();
+    }]);
     let mut voice = Voice::allocate();
     voice.start(start(
         region,

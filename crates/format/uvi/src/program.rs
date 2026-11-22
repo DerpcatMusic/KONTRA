@@ -638,6 +638,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 velocities: span.velocities.0..=span.velocities.1,
                 velocity_fade: span.velocity_fade,
                 key_fade: span.key_fade,
+                crossfades: Vec::new(),
                 root: midi_or(player, "BaseNote", 60),
                 tune: num(player, "CoarseTune", 0.0)?
                     + num(player, "FineTune", 0.0)? / 100.0

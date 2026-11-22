@@ -205,6 +205,10 @@ impl Behaviour {
                 Atom::Switch(i) => self.switches.get(usize::from(*i)).copied() == Some(true),
                 Atom::Cc(cc, range) => range.contains(&self.cc(channel, *cc)),
                 Atom::RoundRobin(rr) => self.round_robin_plays(rr, zone.group, key, draw, step),
+                Atom::Random { lo, hi } => {
+                    let p = (draw.unit() * 10_000.0).min(9_999.0) as u16;
+                    p >= *lo && p < *hi
+                }
             };
             result = match join {
                 Join::And => result && value,

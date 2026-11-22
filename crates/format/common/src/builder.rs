@@ -190,6 +190,7 @@ impl ZoneBuilder {
                 velocities: 1..=127,
                 velocity_fade: (0, 0),
                 key_fade: (0, 0),
+                crossfades: Vec::new(),
                 root: 60,
                 tune: 0.0,
                 volume_db: 0.0,
@@ -234,6 +235,12 @@ impl ZoneBuilder {
     #[must_use]
     pub fn velocity_fade(mut self, fade: (u8, u8)) -> Self {
         self.zone.velocity_fade = fade;
+        self
+    }
+
+    #[must_use]
+    pub fn crossfade(mut self, crossfade: ir::Crossfade) -> Self {
+        self.zone.crossfades.push(crossfade);
         self
     }
 
