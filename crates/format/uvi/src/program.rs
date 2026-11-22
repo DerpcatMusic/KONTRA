@@ -34,10 +34,17 @@ mod values;
 pub use load::Swap;
 use values::{db, flag, midi_or, num};
 
+/// A sample and the loops its own file declares.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Sampled {
+    pub(crate) sample: ir::Sample,
+    pub(crate) loops: Vec<ir::Loop>,
+}
+
 /// The samples a program names, looked up in the bank it came from.
 pub(crate) trait Library {
     /// The sample `reference` names, relative to the program's folder `program_dir`.
-    fn sample(&self, program_dir: &str, reference: &str) -> Result<ir::Sample, String>;
+    fn sample(&self, program_dir: &str, reference: &str) -> Result<Sampled, String>;
     /// Every Lua member of the bank, by its path: what `require` may load.
     fn modules(&self) -> Vec<(String, Vec<u8>)>;
     /// Members a script may read as data after it loads, by path
@@ -112,6 +119,7 @@ pub(crate) fn unfinished<'a, L: Library>(
         dry_of: HashMap::new(),
         entry: HashMap::new(),
         script_dirs: Vec::new(),
+        playback_overrides: HashSet::new(),
         carried: HashSet::new(),
         routed: HashMap::new(),
         units: HashMap::new(),
@@ -155,16 +163,17 @@ pub(crate) fn unfinished<'a, L: Library>(
         samples: t.samples,
         lookups: t.lookups,
         script_dirs: t.script_dirs,
+        playback_overrides: t.playback_overrides,
     })
 }
 
 /// The sample `path` names, one bank read per reference.
 fn lookup(
-    lookups: &mut HashMap<String, Result<ir::Sample, String>>,
+    lookups: &mut HashMap<String, Result<Sampled, String>>,
     library: &impl Library,
     program_dir: &str,
     path: &str,
-) -> Result<ir::Sample, String> {
+) -> Result<Sampled, String> {
     lookups
         .entry(path.into())
         .or_insert_with(|| library.sample(program_dir, path))
@@ -203,7 +212,7 @@ struct Translator<'a, 'input, L> {
     samples: HashMap<(PathBuf, u64), usize>,
     /// Each sample reference to what the bank made of it: one header read
     /// per file, however many zones share it.
-    lookups: HashMap<String, Result<ir::Sample, String>>,
+    lookups: HashMap<String, Result<Sampled, String>>,
     base: Base,
     /// The engine group each keygroup made, for scripts.
     made: HashMap<roxmltree::NodeId, usize>,
@@ -226,6 +235,7 @@ struct Translator<'a, 'input, L> {
     entry: HashMap<roxmltree::NodeId, usize>,
     /// Each script's folder in the bank, relative to the program's.
     script_dirs: Vec<String>,
+    playback_overrides: HashSet<(usize, u16)>,
     /// Matrix cell connections carried, held or live (matrix.rs).
     carried: HashSet<roxmltree::NodeId>,
     /// Each connection a route carries, to the route's key, for scripts.
@@ -447,14 +457,12 @@ impl<L: Library> Translator<'_, '_, L> {
         {
             let slot = u16::try_from(slot).unwrap_or(u16::MAX);
             if first {
-                // Note tracking of the first enabled player; mixed tracking is reported.
-                group.keytrack = if num(player, "NoteTracking", 1.0)? == 0.0 {
-                    0.0
-                } else {
-                    1.0
-                };
+                // Note tracking of the first enabled player, semitones per
+                // key (VWinds' contrabassoon tracks 1.008203); mixed
+                // tracking is reported.
+                group.keytrack = num(player, "NoteTracking", 1.0)?;
                 first = false;
-            } else if (num(player, "NoteTracking", 1.0)? == 0.0) != (group.keytrack == 0.0) {
+            } else if num(player, "NoteTracking", 1.0)? != group.keytrack {
                 self.notes.add(
                     ir::Impact::Audible,
                     "note tracking differs within a keygroup",
@@ -563,7 +571,10 @@ impl<L: Library> Translator<'_, '_, L> {
         if let Some(start) = player.attribute("SampleStart").filter(|s| s.trim() != "0") {
             self.notes.add(ir::Impact::Audible, "sample start", start);
         }
-        if player.children().any(|n| n.has_tag_name("PlaybackOptions")) {
+        let has_options = player.children().any(|n| n.has_tag_name("PlaybackOptions"));
+        if has_options {
+            self.playback_overrides
+                .insert((self.out.groups.len(), slot));
             // ponytail: loop and start points of PlaybackOptions are not carried yet.
             self.notes
                 .add(ir::Impact::Audible, "playback options (loops, start)", "");
@@ -572,8 +583,8 @@ impl<L: Library> Translator<'_, '_, L> {
         // The bundle's channel the next member starts at.
         let mut first = 0;
         for path in members {
-            let sample = match self.sample(&path) {
-                Ok(sample) => sample,
+            let Sampled { sample, loops } = match self.sampled(&path) {
+                Ok(sampled) => sampled,
                 Err(e) => {
                     self.notes.add(ir::Impact::Broken, "missing sample", e);
                     continue;
@@ -631,7 +642,10 @@ impl<L: Library> Translator<'_, '_, L> {
                 start: 0,
                 end: frames,
                 start_mod: 0,
-                loops: Vec::new(),
+                // A player without playback options plays its file's
+                // loops (UVIWorkstation's `sampleInfo` carries them,
+                // [ref]); AO's sustains loop from the second second on.
+                loops: if has_options { Vec::new() } else { loops },
                 reverse: flag(player, "Reverse"),
                 slot,
             };
@@ -724,6 +738,11 @@ impl<L: Library> Translator<'_, '_, L> {
     /// The sample at `path`, read from the bank, and its index in the
     /// instrument. One file and offset is one entry, however many zones use it.
     fn sample(&mut self, path: &str) -> Result<ir::Sample, String> {
+        self.sampled(path).map(|s| s.sample)
+    }
+
+    /// [`Self::sample`] with the loops its file declares.
+    fn sampled(&mut self, path: &str) -> Result<Sampled, String> {
         lookup(&mut self.lookups, self.library, self.program_dir, path)
     }
 

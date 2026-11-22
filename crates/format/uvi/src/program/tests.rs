@@ -46,11 +46,24 @@ fn a_mixed_lfo_uses_the_native_normalization_candidates() {
 struct Stub;
 
 impl Library for Stub {
-    fn sample(&self, _: &str, reference: &str) -> Result<ir::Sample, String> {
+    fn sample(&self, _: &str, reference: &str) -> Result<Sampled, String> {
         if reference.contains("missing") {
             return Err(format!("{reference}: not in this bank"));
         }
-        Ok(ir::Sample {
+        // One whose file declares a forward loop over its second half.
+        let loops = if reference.contains("looped") {
+            vec![ir::Loop {
+                start: 500,
+                end: 1000,
+                crossfade: 0,
+                count: 0,
+                alternating: false,
+                until_release: false,
+            }]
+        } else {
+            Vec::new()
+        };
+        let sample = ir::Sample {
             name: reference.into(),
             file: "bank.ufs".into(),
             offset: reference
@@ -61,7 +74,8 @@ impl Library for Stub {
             frames: 1000,
             rate: 48_000,
             keystream: None,
-        })
+        };
+        Ok(Sampled { sample, loops })
     }
 
     fn modules(&self) -> Vec<(String, Vec<u8>)> {
@@ -2541,4 +2555,78 @@ fn the_tree_names_each_envelope_and_lfo_a_script_may_set() {
     ] {
         assert!(tree.contains(copy), "{copy} in {tree}");
     }
+}
+
+#[test]
+fn a_zone_plays_the_loop_its_sample_file_declares() {
+    // AO's sustains: no playback options, a forward loop in the file.
+    let xml = r#"<Program Name="p"><Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./looped.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers></Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let loops = &out.groups[0].zones[0].loops;
+    assert_eq!(
+        loops.iter().map(|l| (l.start, l.end)).collect::<Vec<_>>(),
+        [(500, 1000)]
+    );
+    assert!(!loops[0].until_release);
+}
+
+#[test]
+fn a_players_note_tracking_is_kept_as_saved() {
+    // VWinds' contrabassoon: 1.008203 semitones a key, not 1.
+    let xml = r#"<Program Name="p"><Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" NoteTracking="1.008203" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers></Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    assert_eq!(out.groups[0].keytrack, 1.008203);
+}
+
+#[test]
+fn authored_playback_options_suppress_file_loops_on_load_and_swap() {
+    let xml = r#"<Program Name="p">
+        <Scripts><ScriptProcessor Bypass="0"><script><![CDATA[--]]></script></ScriptProcessor></Scripts>
+        <Layers><Layer><Keygroups><Keygroup><Oscillators>
+          <SamplePlayer Bypass="0" SamplePath="./looped.wav"><PlaybackOptions/></SamplePlayer>
+          <SamplePlayer Bypass="0" SamplePath="./plain.wav"/>
+          <SamplePlayer Bypass="0" SamplePath="./looped.wav"/>
+        </Oscillators></Keygroup></Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let initial = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let zones = &initial.groups[0].zones;
+    assert!(zones[0].loops.is_empty());
+    assert!(zones[1].loops.is_empty());
+    assert_eq!(zones[2].loops.len(), 1);
+    let swapped = translate(doc.root_element(), "Presets", &Stub, &|_| {
+        [
+            (0, "new-looped.wav"),
+            (1, "new-looped.wav"),
+            (2, "new-plain.wav"),
+        ]
+        .into_iter()
+        .map(|(slot, path)| Swap {
+            group: 0,
+            slot,
+            path: path.into(),
+            root: None,
+        })
+        .collect()
+    })
+    .unwrap();
+    let zones = &swapped.groups[0].zones;
+    assert!(
+        swapped.samples[zones[0].sample]
+            .name
+            .ends_with("new-looped.wav")
+    );
+    assert!(zones[0].loops.is_empty());
+    assert_eq!(zones[1].loops, initial.groups[0].zones[2].loops);
+    assert!(zones[2].loops.is_empty());
 }

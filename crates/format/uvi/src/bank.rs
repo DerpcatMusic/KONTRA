@@ -11,10 +11,7 @@ use uvi_file::access::Namespaces;
 use uvi_file::ufs::{Directory, Member, Protection, Ufs};
 
 use crate::header;
-
-/// Member bytes read to find a sample's header. WAV headers can put the data
-/// chunk well past the first kilobytes; this covers everything in the banks.
-const HEADER_BYTES: u64 = 64 << 10;
+use crate::program::Sampled;
 
 /// UVI keys member bytes in 512-byte blocks (uvi-file's `transform_blocks`).
 const BLOCK: u32 = 512;
@@ -232,7 +229,7 @@ impl crate::program::Library for Bank {
         out
     }
 
-    fn sample(&self, program_dir: &str, reference: &str) -> Result<ir::Sample, String> {
+    fn sample(&self, program_dir: &str, reference: &str) -> Result<Sampled, String> {
         let index = self
             .resolve(program_dir, reference)
             .ok_or_else(|| format!("{reference}: not in this bank"))?;
@@ -246,7 +243,11 @@ impl crate::program::Library for Bank {
     }
 
     fn path_of(&self, program_dir: &str, reference: &str) -> Option<String> {
-        self.directory.files.get(self.resolve(program_dir, reference)?)?.path.clone()
+        self.directory
+            .files
+            .get(self.resolve(program_dir, reference)?)?
+            .path
+            .clone()
     }
 
     fn audio_under(&self, folder: &str) -> Vec<String> {
@@ -265,7 +266,7 @@ impl crate::program::Library for Bank {
 }
 
 impl Bank {
-    fn open_sample(&self, member: &Member) -> Result<ir::Sample> {
+    fn open_sample(&self, member: &Member) -> Result<Sampled> {
         let (offset, size, key) =
             self.ufs
                 .locate(member, self.directory.metadata_key, self.content_key)?;
@@ -274,15 +275,25 @@ impl Bank {
             origin: offset,
             block: BLOCK,
         });
-        let mut head = vec![0; size.min(HEADER_BYTES) as usize];
-        self.ufs.read_exact_at(offset, &mut head)?;
-        if let Some(keystream) = &keystream {
-            keystream.apply(offset, &mut head);
+        let mut read_error = None;
+        let format = header::probe(size, |at, bytes| {
+            let at = offset.checked_add(at)?;
+            if let Err(err) = self.ufs.read_exact_at(at, bytes) {
+                read_error = Some(err);
+                return None;
+            }
+            if let Some(keystream) = &keystream {
+                keystream.apply(at, bytes);
+            }
+            Some(())
+        });
+        if let Some(err) = read_error {
+            return Err(err);
         }
-        let format = header::probe(&head, size)
+        let format = format
             .context("sample format: WAV (PCM) and FLAC are read; AIFF and CAF are not yet")?;
         ensure!(format.frames > 0, "sample has no frames");
-        Ok(ir::Sample {
+        let sample = ir::Sample {
             name: member.path.clone().unwrap_or_else(|| member.name.clone()),
             file: self.path.clone(),
             offset,
@@ -291,6 +302,10 @@ impl Bank {
             frames: format.frames,
             rate: format.rate,
             keystream,
+        };
+        Ok(Sampled {
+            sample,
+            loops: format.loops,
         })
     }
 }

@@ -3,13 +3,13 @@
 //! (`loadSample` from `onLoad`); the caller runs the script once and hands
 //! back the samples it loaded, which go on their oscillators' zones here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use kontra_format::Notes;
 use kontra_ir as ir;
 
-use super::{Library, lookup, sample_entry};
+use super::{Library, Sampled, lookup, sample_entry};
 
 /// A sample a script puts on an oscillator as the program loads: the engine
 /// group of the oscillator's keygroup, the oscillator's slot there, the path
@@ -32,8 +32,10 @@ pub(crate) struct Unfinished<'a, L> {
     pub(super) out: ir::Instrument,
     pub(super) notes: Notes,
     pub(super) samples: HashMap<(PathBuf, u64), usize>,
-    pub(super) lookups: HashMap<String, Result<ir::Sample, String>>,
+    pub(super) lookups: HashMap<String, Result<super::Sampled, String>>,
     pub(super) script_dirs: Vec<String>,
+    /// Group and oscillator slots with authored playback geometry.
+    pub(super) playback_overrides: HashSet<(usize, u16)>,
 }
 
 impl<L: Library> Unfinished<'_, L> {
@@ -56,24 +58,30 @@ impl<L: Library> Unfinished<'_, L> {
         for (dir, list) in runs {
             for swap in list {
                 let path = format!("{dir}/{}", swap.path);
-                let sample = match lookup(&mut self.lookups, self.library, self.program_dir, &path)
-                {
-                    Ok(sample) => sample,
-                    Err(e) => {
-                        self.notes.add(ir::Impact::Broken, "script sample", e);
-                        continue;
-                    }
-                };
+                let Sampled { sample, loops } =
+                    match lookup(&mut self.lookups, self.library, self.program_dir, &path) {
+                        Ok(sampled) => sampled,
+                        Err(e) => {
+                            self.notes.add(ir::Impact::Broken, "script sample", e);
+                            continue;
+                        }
+                    };
                 let frames = sample.frames;
                 let index = sample_entry(&mut self.samples, &mut self.out.samples, sample);
-                let Some(group) = self.out.groups.get_mut(swap.group as usize) else {
+                let group_index = swap.group as usize;
+                let has_options = self.playback_overrides.contains(&(group_index, swap.slot));
+                let Some(group) = self.out.groups.get_mut(group_index) else {
                     continue;
                 };
                 for zone in group.zones.iter_mut().filter(|z| z.slot == swap.slot) {
                     zone.sample = index;
                     zone.start = 0;
                     zone.end = frames;
-                    zone.loops.clear();
+                    if has_options {
+                        zone.loops.clear();
+                    } else {
+                        zone.loops.clone_from(&loops);
+                    }
                     zone.root = swap.root.unwrap_or(zone.root);
                 }
             }
