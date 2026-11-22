@@ -63,10 +63,10 @@ pub struct ModTarget {
     /// Modulation shaper curve, when one was ever edited.
     pub shaper: Option<ModShaper>,
     /// Always -1 in local presets.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_i16: i16,
     /// Bit field; 0x02 is negative depth, other bits retain unassigned meaning.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_flags: u8,
 }
 
@@ -197,17 +197,17 @@ pub struct ExternalModParams {
     pub source: ModSource,
     pub targets: Vec<ModTarget>,
     /// Numeric id stored after the source; meaning unknown.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_id: u32,
     /// Source bytes of unknown meaning: four with a source (e.g. `7f000000`
     /// for some CCs), two when unassigned.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_source_data: Vec<u8>,
     /// Additional private footer bytes: one in v0x103, two in v0x104/0x105
     /// (Kontakt 8.13.1 FUN_140d09620 stores them as two flag bytes at +0x550/+0x551;
     /// +0x550 defaults to 1 before v0x103).
     /// Their semantics are unknown; retain them without treating them as flags.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_tail: Vec<u8>,
 }
 
@@ -350,7 +350,8 @@ pub(crate) fn read_targets(
     legacy: bool,
 ) -> Result<Vec<ModTarget>, Error> {
     let count = reader.read_u32_le()?;
-    if !(1..=MAX_TARGETS).contains(&count) {
+    // Native 0x140d09d50 permits 0 targets.
+    if count > MAX_TARGETS {
         return Err(Error::Generic(format!(
             "Invalid modulation target count {count}"
         )));
@@ -406,19 +407,26 @@ fn read_shaper(reader: &mut Cursor<&[u8]>) -> Result<Option<ModShaper>, Error> {
             let table = (0..SHAPER_TABLE_LEN)
                 .map(|_| reader.read_f32_le())
                 .collect::<Result<Vec<_>, _>>()?;
+            if !table.iter().all(|v| v.is_finite()) {
+                return Err(Error::Static("Non-finite modulation shaper value"));
+            }
             ShaperCurve::Table(table)
         }
         2 => {
-            let count = reader.read_u8()?;
+            // Native 0x140cfbc00 reads a signed i8 count (< 0 => 0 breakpoints).
+            let raw_count = reader.read_u8()? as i8;
+            let count = usize::try_from(raw_count).unwrap_or(0);
             let points = (0..count)
                 .map(|_| {
-                    Ok(Breakpoint {
-                        x: reader.read_f32_le()?,
-                        y: reader.read_f32_le()?,
-                        curve: reader.read_f32_le()?,
-                    })
+                    let x = reader.read_f32_le()?;
+                    let y = reader.read_f32_le()?;
+                    let curve = reader.read_f32_le()?;
+                    if !x.is_finite() || !y.is_finite() || !curve.is_finite() {
+                        return Err(Error::Static("Non-finite modulation shaper breakpoint"));
+                    }
+                    Ok(Breakpoint { x, y, curve })
                 })
-                .collect::<Result<Vec<_>, std::io::Error>>()?;
+                .collect::<Result<Vec<_>, Error>>()?;
             ShaperCurve::Breakpoints(points)
         }
         other => {
@@ -813,5 +821,58 @@ mod tests {
             assert!(poly.bypass());
             assert!(poly.simulate_k2_env_time());
         }
+    }
+
+    #[test]
+    fn zero_targets_and_signed_shaper_breakpoint_counts_are_handled() {
+        // 0 targets is valid in native 0x140d09d50.
+        let mut zero_targets = Vec::new();
+        zero_targets.extend(0u32.to_le_bytes()); // target count = 0
+        zero_targets.extend(4u32.to_le_bytes());
+        zero_targets.extend(b"NONE");
+        zero_targets.extend(0u32.to_le_bytes()); // category 0 (Unassigned)
+        zero_targets.extend([0u8; 2]);
+        zero_targets.extend(0u32.to_le_bytes());
+        let parsed = ExternalMod(StructuredObject {
+            version: 0x102,
+            private_data: zero_targets,
+            public_data: Vec::new(),
+            children: Vec::new(),
+        })
+        .params()
+        .unwrap();
+        assert!(parsed.targets.is_empty());
+
+        // Shaper kind 2 with signed i8 count = -1 (0xff) decodes as 0 breakpoints (0x140cfbc00).
+        let mut neg_shaper = Vec::new();
+        neg_shaper.extend(1u32.to_le_bytes());
+        neg_shaper.extend(6u32.to_le_bytes());
+        neg_shaper.extend(b"volume");
+        neg_shaper.extend(0.5f32.to_le_bytes());
+        neg_shaper.extend((-1i16).to_le_bytes());
+        neg_shaper.push(0);
+        neg_shaper.extend(0i16.to_le_bytes());
+        neg_shaper.extend(0u32.to_le_bytes());
+        neg_shaper.push(0); // invert
+        neg_shaper.extend([2u8, 1, 0xff]); // kind=2, enabled=1, count=-1i8
+        neg_shaper.extend(0u32.to_le_bytes());
+        neg_shaper.extend(0u32.to_le_bytes());
+        neg_shaper.extend([0u8; 2]);
+        neg_shaper.extend(0u32.to_le_bytes());
+        let p = ExternalMod(StructuredObject {
+            version: 0x102,
+            private_data: neg_shaper,
+            public_data: Vec::new(),
+            children: Vec::new(),
+        })
+        .params()
+        .unwrap();
+        assert_eq!(
+            p.targets[0].shaper,
+            Some(ModShaper {
+                enabled: true,
+                curve: ShaperCurve::Breakpoints(Vec::new()),
+            })
+        );
     }
 }

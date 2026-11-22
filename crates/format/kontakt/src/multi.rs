@@ -52,7 +52,7 @@ pub struct Slot {
 /// When the file is not a multi this can read; a slot whose instrument
 /// cannot be translated is left out of the list with its reason.
 pub fn slots(path: &Path, only: Option<u16>) -> Result<(Vec<Slot>, Vec<String>), Error> {
-    let (chunks, _, encrypted) = container::opened(path)?;
+    let (chunks, monolith, encrypted) = container::opened(path)?;
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let bank = chunks
         .find_first(ni_file::kontakt::objects::KONTAKT_BANK_ID)
@@ -91,7 +91,7 @@ pub fn slots(path: &Path, only: Option<u16>) -> Result<(Vec<Slot>, Vec<String>),
             data: t.data.clone(),
         });
         let stream = KontaktChunks([Some(program), table].into_iter().flatten().collect());
-        match translate::instrument(path, &stream, None, &[], encrypted, None) {
+        match translate::instrument(path, &stream, monolith.clone(), &[], encrypted, None) {
             Ok(instrument) => slots.push(Slot {
                 index,
                 instrument,

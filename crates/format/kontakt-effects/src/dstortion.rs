@@ -160,7 +160,10 @@ pub fn dstortion(
 /// shaper through [`dstortion`].
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
     use ir::SlotKnob::Knob;
-    let f = |n: usize| Some(f32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?));
+    let f = |n: usize| {
+        let bytes = public.get(n..n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
     Some(ir::KnobModel {
         knobs: (0..6).map(Knob).collect(),
         saved: [f(0)?, f(4)?, f(8)?, f(12)?, f(16)?, f(20)?].into(),

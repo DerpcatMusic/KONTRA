@@ -7,6 +7,8 @@ pub use item_type::*;
 use crate::{read_bytes::ReadBytesExt, Error};
 use std::io::{Cursor, Write};
 
+const MAX_ITEM_DATA_DEPTH: usize = 64;
+
 #[derive(Clone, Debug)]
 pub struct ItemData {
     pub header: ItemDataHeader,
@@ -84,10 +86,17 @@ impl ItemData {
         }
         let (domain, item) = (header.domain_id, header.item_id);
         let version = header.version;
-        Self::read_body(header, &body).map_err(|e| Error::context(format!("NIS domain {} item 0x{item:08x} data body at offset {}, declared length {length}/version {version}", String::from_utf8_lossy(&domain), at + 20), e))
+        Self::read_body(header, &body, 0).map_err(|e| Error::context(format!("NIS domain {} item 0x{item:08x} data body at offset {}, declared length {length}/version {version}", String::from_utf8_lossy(&domain), at + 20), e))
     }
 
     pub(crate) fn read_cursor(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
+        Self::read_cursor_depth(reader, 0)
+    }
+
+    fn read_cursor_depth(reader: &mut Cursor<&[u8]>, depth: usize) -> Result<Self, Error> {
+        if depth > MAX_ITEM_DATA_DEPTH {
+            return Err(Error::Static("NIS item data nesting depth exceeded"));
+        }
         let at = reader.position();
         let header = ItemDataHeader::read(&mut *reader).map_err(|e| {
             Error::context(
@@ -105,15 +114,15 @@ impl ItemData {
         let (domain, item) = (header.domain_id, header.item_id);
         let version = header.version;
         let body = super::read_slice(reader, length).map_err(|e| Error::context(format!("NIS domain {} item 0x{item:08x} data body at body-relative offset {}, declared length {length}/version {version}", String::from_utf8_lossy(&domain), at + 20), e))?;
-        Self::read_body(header, body).map_err(|e| Error::context(format!("NIS domain {} item 0x{item:08x} data body at body-relative offset {}, declared length {length}/version {version}", String::from_utf8_lossy(&domain), at + 20), e))
+        Self::read_body(header, body, depth).map_err(|e| Error::context(format!("NIS domain {} item 0x{item:08x} data body at body-relative offset {}, declared length {length}/version {version}", String::from_utf8_lossy(&domain), at + 20), e))
     }
 
-    fn read_body(header: ItemDataHeader, body: &[u8]) -> Result<Self, Error> {
+    fn read_body(header: ItemDataHeader, body: &[u8], depth: usize) -> Result<Self, Error> {
         let mut reader = Cursor::new(body);
         let inner = if header.item_type() == ItemType::Item {
             None
         } else {
-            Some(Box::new(Self::read_cursor(&mut reader)?))
+            Some(Box::new(Self::read_cursor_depth(&mut reader, depth + 1)?))
         };
         let remaining = body.len() - reader.position() as usize;
         let data = reader.read_bytes(remaining)?;

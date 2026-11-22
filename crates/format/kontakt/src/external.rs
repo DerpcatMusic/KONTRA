@@ -9,9 +9,9 @@ use crate::laws;
 
 const EXTERNAL_MODS: u16 = 0x3c;
 
-/// Adds `group`'s external modulators to `out` as routes; filter inserts a
-/// route moves land in `modulated`. `timed_slots` are the internal
-/// modulator slots that made an LFO or envelope, with the source each made.
+/// Adds `group`'s external modulators to `out` as routes. `timed_slots` are
+/// the internal modulator slots that made an LFO or envelope, with the source
+/// each made.
 pub(crate) fn external(
     group: &Group,
     group_index: usize,
@@ -19,7 +19,6 @@ pub(crate) fn external(
     release_counter: ir::Source,
     out: &mut ir::Group,
     notes: &mut Notes,
-    modulated: &mut Vec<u8>,
 ) -> Result<(), ni_file::Error> {
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
@@ -82,6 +81,7 @@ pub(crate) fn external(
                                 | ir::Source::Random { bipolar: true }
                                 | ir::Source::ZoneEnvelope(_)
                                 | ir::Source::Key
+                                | ir::Source::Script(_)
                         );
                         let signed = bipolar && signed_route(&t.param);
                         let result = shaped(&mut out.shapers, s, &shaper.curve, signed);
@@ -304,9 +304,6 @@ pub(crate) fn external(
                         kind,
                     });
                 } else {
-                    if t.param == "filterCutoff" {
-                        modulated.extend(t.slot);
-                    }
                     let to = if t.slot.is_some() { "module " } else { "" };
                     let feature = format!("external modulator {:?} -> {to}{}", p.source, t.param);
                     notes.add(ir::Impact::Audible, &feature, &p.name);
@@ -443,6 +440,7 @@ pub(crate) fn signed_route(param: &str) -> bool {
             | "ahdsr_release"
             | "intensity"
             | "filterQ"
+            | "distortionIntensity"
     )
 }
 

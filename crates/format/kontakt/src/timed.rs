@@ -37,17 +37,13 @@ pub(crate) fn timed(
     slot: u16,
     skip_target: Option<usize>,
     notes: &mut Notes,
-    unmapped: &mut Vec<u8>,
 ) {
     // The modulator's flags: [router open, bypass, retrigger, unknown].
     const RETRIGGER: usize = 2;
-    let report = |notes: &mut Notes, unmapped: &mut Vec<u8>, what: &str| {
+    let report = |notes: &mut Notes, what: &str| {
         for (i, t) in p.targets.iter().enumerate() {
             if skip_target == Some(i) {
                 continue;
-            }
-            if t.param == "filterCutoff" {
-                unmapped.extend(t.slot);
             }
             let feature = format!("internal modulator {what} -> {}", t.param);
             notes.add(ir::Impact::Audible, &feature, &p.name);
@@ -60,6 +56,13 @@ pub(crate) fn timed(
     };
     let (raw_source, what, pitch_semitones) = match &p.modulator {
         Modulator::Flex(e) => {
+            if e.unknown_version_word().is_some_and(|w| w & 0xFF00 != 0) {
+                notes.add(
+                    ir::Impact::Audible,
+                    "flex envelope release-adjustment bypass",
+                    &p.name,
+                );
+            }
             let result = laws::flex(e);
             trace_timed(
                 "kontakt.flex_envelope.v1",
@@ -117,7 +120,7 @@ pub(crate) fn timed(
                 &result,
             );
             let (Some(lfo), Ok(n)) = (result, u8::try_from(out.lfos.len())) else {
-                return report(notes, unmapped, "LFO (synced fade or unknown wave)");
+                return report(notes, "LFO (synced fade or unknown wave)");
             };
             out.lfos.push(lfo);
             (Some(ir::Source::Lfo(n)), "LFO", laws::PITCH_SEMITONES)
@@ -125,7 +128,7 @@ pub(crate) fn timed(
         _ => return,
     };
     let Some(raw_source) = raw_source else {
-        return report(notes, unmapped, what);
+        return report(notes, what);
     };
     let flex = what == "flex envelope";
     let amp = out
@@ -260,8 +263,10 @@ pub(crate) fn timed(
         if t.lag_ms < 0 {
             notes.add(ir::Impact::Audible, "negative modulation lag", &p.name);
         }
+        let bypassed = p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0);
         if flex
             && !amp
+            && !bypassed
             && matches!(kind, ir::ModKind::Volume { .. })
             && let Some(e) = out.envelopes.last()
         {
@@ -279,7 +284,7 @@ pub(crate) fn timed(
             name: p.name.clone(),
             slot,
             target: u16::try_from(target).unwrap_or(u16::MAX),
-            bypass: p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0),
+            bypass: bypassed,
             kind,
         });
     }
@@ -458,7 +463,6 @@ mod tests {
         };
         let mut group = ir::Group::DEFAULT;
         let mut notes = Notes::default();
-        let mut unmapped = Vec::new();
         let p = InternalModParams {
             name: "DBD_MOD".into(),
             targets: vec![
@@ -475,7 +479,7 @@ mod tests {
             unknown_flags: [0; 4],
             unknown_id: 0,
         };
-        timed(&mut group, &p, 0, 0, None, &mut notes, &mut unmapped);
+        timed(&mut group, &p, 0, 0, None, &mut notes);
         assert_eq!(group.envelopes.len(), 1);
         assert_eq!(group.shapers.len(), 1);
         assert_eq!(group.mods.len(), 2);
@@ -521,12 +525,57 @@ mod tests {
             unknown_flags: [0, 1, 0, 0], // bypass set
             unknown_id: 0,
         };
-        timed(&mut g2, &ahdsr, 0, 0, Some(0), &mut notes2, &mut unmapped);
+        timed(&mut g2, &ahdsr, 0, 0, Some(0), &mut notes2);
         assert_eq!(g2.mods.len(), 1);
         assert!(g2.mods[0].bypass);
         assert!(matches!(
             g2.mods[0].kind,
             ir::ModKind::Cutoff { insert: 2, .. }
         ));
+    }
+
+    #[test]
+    fn bypassed_flex_does_not_overwrite_amp_envelope_and_high_byte_is_diagnosed() {
+        let flex = ni_file::kontakt::objects::EnvelopeFlex {
+            points: vec![
+                ni_file::kontakt::objects::FlexPoint {
+                    time_ms: 0.0,
+                    level: 0.0,
+                    curve: 0.0,
+                },
+                ni_file::kontakt::objects::FlexPoint {
+                    time_ms: 50.0,
+                    level: 1.0,
+                    curve: 0.0,
+                },
+                ni_file::kontakt::objects::FlexPoint {
+                    time_ms: 200.0,
+                    level: 0.0,
+                    curve: 0.0,
+                },
+            ],
+            sustain: 1,
+            unknown_index: 0,
+            // v0x12 tail (15 bytes): high byte 0x01 in leading u16 triggers diagnostic.
+            unknown_tail: vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        };
+        let mut group = ir::Group::DEFAULT;
+        let original_env = group.envelope;
+        let mut notes = Notes::default();
+        let p = InternalModParams {
+            name: "FLEX_BYPASSED".into(),
+            targets: vec![target("volume", None, 0, None)],
+            modulator: Modulator::Flex(flex),
+            unknown_flags: [0, 1, 0, 0], // bypassed
+            unknown_id: 0,
+        };
+        timed(&mut group, &p, 0, 0, None, &mut notes);
+        assert_eq!(group.envelope, original_env);
+        assert!(
+            notes
+                .finish()
+                .iter()
+                .any(|d| d.feature == "flex envelope release-adjustment bypass")
+        );
     }
 }

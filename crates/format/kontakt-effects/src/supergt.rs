@@ -438,7 +438,10 @@ fn timing_db(attack: f32, release: f32) -> f32 {
 /// The saved record.
 #[must_use]
 pub fn saved(public: &[u8]) -> Option<Knobs> {
-    let f = |n: usize| Some(f32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?));
+    let f = |n: usize| {
+        let bytes = public.get(n..n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
     let mode = |n: usize| {
         let saved = i32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?);
         Some((2 - saved).clamp(0, 2) as f32)
@@ -518,7 +521,7 @@ pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
 
 /// The KSP names of [`model`]'s knobs: the floats as set, the modes by their
 /// index (a script sets SAT_MODE 1 as the raw value 1).
-pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 9] {
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
@@ -536,5 +539,6 @@ pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 9] {
         ("$ENGINE_PAR_SUPERGT_ATTACK", Slot(Knob(6)), unit()),
         ("$ENGINE_PAR_SUPERGT_RELEASE", Slot(Knob(7)), unit()),
         ("$ENGINE_PAR_SUPERGT_HPF_MODE", Slot(Knob(8)), index()),
+        ("$ENGINE_PAR_SUPERGT_MIX", Slot(Knob(9)), unit()),
     ]
 }

@@ -325,7 +325,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             lin(-115.0, 115.0),
         ),
         (
-            "$ENGINE_PAR_TR_GAIN",
+            "$ENGINE_PAR_TR_INPUT",
             Effect(E::TransientGain),
             ir::Law::Breakpoints([(0.0, -24.0, 0.0), (0.5, 0.0, 0.0), (1.0, 6.0, 0.0)].into()),
         ),
@@ -705,6 +705,7 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
             id,
             version,
             public,
+            false,
             "",
             &mut kontra_format::Notes::default(),
         )

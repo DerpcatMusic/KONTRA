@@ -23,14 +23,19 @@ const CHUNK_ID: u16 = 0x25;
 #[derive(Debug)]
 pub struct BParFX(pub StructuredObject);
 
-/// Slot state from the BParFX private data (22 bytes, version 0x50).
+/// Slot state from the BParFX private data (version 0x50).
 ///
-/// Layout verified against 1,700 local slots:
-/// `u32 effect_type, u32 0, u8 0, u8 bypass, f32 output_gain, f32 dry_level, i32 -1`.
+/// Layout verified against `Kontakt 8.exe` `0x140d09aa0`:
+/// - Empty slot: 4 bytes (`u32 effect_type == 0`).
+/// - Occupied slot (22 bytes, `IBIBFFI`):
+///   `u32 effect_type` (`0..4`), `u8 unknown_flag` (`4`, `+0x2c`),
+///   `u32 reserved` (`5..9`, `+0x0c`), `u8 bypass` (`9`, `+0x24`),
+///   `f32 output_gain` (`10..14`), `f32 dry_level` (`14..18`),
+///   `i32 unknown_id` (`18..22`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BParFXParams {
-    /// Kontakt's internal effect enum (not the serialization ID): 2 compressor,
-    /// 11 send levels, 19 convolution, 20 gainer, 39 reverb, ...
+    /// Kontakt's internal effect enum (not the serialization ID): 0 empty,
+    /// 2 compressor, 11 send levels, 19 convolution, 20 gainer, 39 reverb, ...
     pub effect_type: u32,
     pub bypass: bool,
     /// Linear gain applied to the processed ("wet") signal.
@@ -53,17 +58,38 @@ impl BParFX {
 
     pub fn params(&self) -> Result<BParFXParams, Error> {
         let data = &self.0.private_data;
-        if self.0.version != 0x50 || data.len() != 22 {
+        if self.0.version != 0x50 {
             return Err(NIFileError::Generic(format!(
-                "BParFX v0x{:x} private data is {} bytes; supported v0x50 needs 22",
+                "BParFX v0x{:x} unsupported; expected v0x50",
+                self.0.version
+            )));
+        }
+        if data.len() == 4 {
+            let mut r = Cursor::new(data);
+            let effect_type = r.read_u32_le()?;
+            if effect_type == 0 {
+                return Ok(BParFXParams {
+                    effect_type: 0,
+                    bypass: false,
+                    output_gain: 1.0,
+                    dry_level: 0.0,
+                    reserved: 0,
+                    unknown_flag: 0,
+                    unknown_id: -1,
+                });
+            }
+        }
+        if data.len() != 22 {
+            return Err(NIFileError::Generic(format!(
+                "BParFX v0x{:x} private data is {} bytes; supported v0x50 needs 4 (empty) or 22",
                 self.0.version,
                 data.len()
             )));
         }
         let mut r = Cursor::new(data);
         let effect_type = r.read_u32_le()?;
-        let reserved = r.read_u32_le()?;
         let unknown_flag = r.read_u8()?;
+        let reserved = r.read_u32_le()?;
         let bypass = match r.read_u8()? {
             0 => false,
             1 => true,
@@ -254,7 +280,9 @@ mod tests {
     #[test]
     fn slot_state_is_read_from_private_data() {
         let mut private = 19u32.to_le_bytes().to_vec();
-        private.extend([0, 0, 0, 0, 0, 1]);
+        private.push(0x42); // byte 4: unknown_flag (+0x2c)
+        private.extend(0x1122_3344u32.to_le_bytes()); // bytes 5..9: reserved (+0x0c)
+        private.push(1); // byte 9: bypass (+0x24)
         private.extend(0.5f32.to_le_bytes());
         private.extend(1f32.to_le_bytes());
         private.extend((-1i32).to_le_bytes());
@@ -266,7 +294,29 @@ mod tests {
         });
         let p = fx.params().unwrap();
         assert_eq!(p.effect_type, 19);
+        assert_eq!(p.unknown_flag, 0x42);
+        assert_eq!(p.reserved, 0x1122_3344);
         assert!(p.bypass);
-        assert_eq!((p.output_gain, p.dry_level), (0.5, 1.0));
+        assert_eq!((p.output_gain, p.dry_level, p.unknown_id), (0.5, 1.0, -1));
+
+        // Native 0x140d09aa0 stops after 4 bytes when effect_type == 0.
+        let empty = BParFX(StructuredObject {
+            version: 0x50,
+            public_data: Vec::new(),
+            private_data: 0u32.to_le_bytes().to_vec(),
+            children: Vec::new(),
+        });
+        let ep = empty.params().unwrap();
+        assert_eq!(ep.effect_type, 0);
+        assert!(!ep.bypass);
+
+        // Non-zero effect_type cannot end at 4 bytes.
+        let short_occupied = BParFX(StructuredObject {
+            version: 0x50,
+            public_data: Vec::new(),
+            private_data: 19u32.to_le_bytes().to_vec(),
+            children: Vec::new(),
+        });
+        assert!(short_occupied.params().is_err());
     }
 }

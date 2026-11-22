@@ -6,12 +6,18 @@ pub trait StringReader: ReadBytesExt {
         let mut buffer = [0u8; 2]; // 2 bytes for each UTF-16 character
 
         loop {
-            let bytes_read = self.read(&mut buffer)?;
-            if bytes_read == 0 {
+            let first = self.read(&mut buffer[..1])?;
+            if first == 0 {
                 break; // End of file reached
             }
+            if let Err(err) = self.read_exact(&mut buffer[1..]) {
+                if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                return Err(err.into());
+            }
 
-            let u16_char = u16::from_le_bytes([buffer[0], buffer[1]]);
+            let u16_char = u16::from_le_bytes(buffer);
 
             if u16_char == 0 {
                 break; // Null character found

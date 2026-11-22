@@ -19,7 +19,13 @@ impl std::convert::TryFrom<&ItemData> for EncryptionItem {
     type Error = NIFileError;
 
     fn try_from(frame: &ItemData) -> Result<Self, NIFileError> {
-        debug_assert_eq!(frame.header.item_type(), ItemType::EncryptionItem);
+        let got = frame.header.item_type();
+        if got != ItemType::EncryptionItem {
+            return Err(NIFileError::ItemWrapError {
+                expected: ItemType::EncryptionItem,
+                got,
+            });
+        }
 
         Self::read_with_key(frame, None)
     }

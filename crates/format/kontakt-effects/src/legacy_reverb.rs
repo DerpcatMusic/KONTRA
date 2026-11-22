@@ -1,8 +1,9 @@
 //! Kontakt's legacy Reverb (0x15) onto `ir::Reverb` as its own comb
 //! network: Freeverb's tunings, per channel eight combs into four allpasses.
 //!
-//! Saved fields, version 0x50 (v2 sampler-kontakt effects/mod.rs): predelay
-//! ms, size, colour, stereo, damping. Laws from setter case 0x3e of
+//! Saved fields, version 0x50 (`fx_legacy_delay_reverb_mod.tsv:64, 68` and
+//! `held_fields.tsv:3, 6`): predelay ms (0), size (4), stereo (8), colour (12),
+//! damping (16). Laws from setter case 0x3e of
 //! 0x1409619b0, reset 0x14094c760 and audio 0x140aa3d10:
 //! - combs of 25.31..36.67 ms (doubles 0x144f38aa8..0x144f38af0) and
 //!   allpasses of 12.61, 10, 7.73, 5.10 ms (0x144f38a90, 0x1447149c8,
@@ -42,7 +43,10 @@ pub fn effect(version: u16, public: &[u8]) -> Option<ir::EffectKind> {
     Some(ir::EffectKind::Reverb(reverb(predelay_ms, knobs)))
 }
 
-/// The saved predelay ms and size, colour, stereo, damping knobs.
+/// The saved predelay ms and `[size, colour, stereo, damping]` knobs.
+/// Wire order in `BParFXReverb` v0x50 is `[predelay, size, stereo, colour, damping]`
+/// (`fx_legacy_delay_reverb_mod.tsv:64, 68`), so field 2 (`stereo`) and field 3
+/// (`colour`) are swapped into [`reverb`]'s `[size, colour, stereo, damping]` order.
 pub fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
     if version != 0x50 {
         return None;
@@ -51,7 +55,7 @@ pub fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
         let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
-    Some((f(0)?, [f(1)?, f(2)?, f(3)?, f(4)?]))
+    Some((f(0)?, [f(1)?, f(3)?, f(2)?, f(4)?]))
 }
 
 // ponytail: the native lines hold 0x1fff frames, so it drops a predelay past
@@ -97,5 +101,22 @@ mod tests {
         );
         // No damping: open.
         assert!(reverb(0.0, [0.0; 4]).high_cut_hz > 20_000.0);
+    }
+
+    #[test]
+    fn saved_wire_order_reads_stereo_at_offset_8_and_colour_at_offset_12() {
+        // Wire order: predelay(0), size(4), stereo(8), colour(12), damping(16).
+        let public: Vec<u8> = [15.0f32, 0.5, 0.25, 0.8, 0.4]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let (predelay, knobs) = saved(0x50, &public).unwrap();
+        assert_eq!(predelay, 15.0);
+        assert_eq!(knobs, [0.5, 0.8, 0.25, 0.4]);
+        let Some(ir::EffectKind::Reverb(r)) = effect(0x50, &public) else {
+            panic!("a reverb");
+        };
+        assert_eq!(r.stereo, 0.25);
+        assert!((r.damping - 0.35 * (1.0 - 0.8)).abs() < 1e-6);
     }
 }

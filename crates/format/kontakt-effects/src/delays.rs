@@ -59,13 +59,13 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 5]> {
     Some(out)
 }
 
-/// The LFO speed: Hz, or synced, `unit·max(speed, 1)` beats per cycle
-/// (getter 0x140a736a0).
+/// The LFO speed: Hz (0..=8 Hz, matching legacy Chorus/Flanger/Phaser), or
+/// synced, `unit·max(speed, 1)` beats per cycle (getter 0x140a736a0).
 fn rate(speed: f32, unit: f32) -> ir::Rate {
     if unit > SYNC {
         ir::Rate::Beats(unit * speed.max(1.0))
     } else {
-        ir::Rate::Hz(speed.max(0.0))
+        ir::Rate::Hz(speed.clamp(0.0, 8.0))
     }
 }
 

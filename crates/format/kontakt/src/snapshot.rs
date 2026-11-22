@@ -381,9 +381,20 @@ fn find(
 
 /// The instrument's saved values with a snapshot's over them by variable:
 /// a snapshot has no `make_instr_persistent` ones, which keep the base's.
+/// Matches variable names case-insensitively (sigil-exact or bare-name, consistent
+/// with [`resaved`]).
 pub(crate) fn over(own: Vec<String>, snapshot: &[String]) -> Vec<String> {
-    let name = |v: &str| v.split_once(' ').map_or(v, |(n, _)| n).to_owned();
-    let mine = |v: &String| !snapshot.iter().any(|s| name(s) == name(v));
+    fn key(v: &str) -> &str {
+        v.split_once(' ').map_or(v, |(n, _)| n)
+    }
+    fn bare(n: &str) -> &str {
+        n.trim_start_matches(['$', '%', '@', '!'])
+    }
+    let matches = |a: &str, b: &str| {
+        let (ka, kb) = (key(a), key(b));
+        ka.eq_ignore_ascii_case(kb) || bare(ka).eq_ignore_ascii_case(bare(kb))
+    };
+    let mine = |v: &String| !snapshot.iter().any(|s| matches(s, v));
     (own.into_iter().filter(mine))
         .chain(snapshot.iter().cloned())
         .collect()
@@ -508,5 +519,12 @@ mod tests {
         assert!(base(&snap, &names, &known(&["A/Strings.nki", "B/Strings.nki"])).is_err());
         assert!(base(&snap, &names, &[]).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn over_matches_variable_names_case_insensitively() {
+        let own = vec!["$Level 1".to_owned(), "$Keep 2".to_owned()];
+        let snap = vec!["$LEVEL 9".to_owned()];
+        assert_eq!(over(own, &snap), ["$Keep 2", "$LEVEL 9"]);
     }
 }

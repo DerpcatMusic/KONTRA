@@ -22,9 +22,15 @@ pub(crate) fn effect(
     id: u16,
     version: u16,
     public: &[u8],
+    bypass: bool,
     at: &str,
     notes: &mut Notes,
 ) -> Option<ir::EffectKind> {
+    let impact = if bypass {
+        ir::Impact::Cosmetic
+    } else {
+        ir::Impact::Audible
+    };
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
@@ -32,11 +38,11 @@ pub(crate) fn effect(
     let i = |n: usize| Some(i32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?));
     match id {
         // Version 0x70 of the same id is the Surround Panner.
-        0x1d if version != 0x70 => saturation(f(0)?, i(4)?, at, notes),
+        0x1d if version != 0x70 => saturation(f(0)?, i(4)?, impact, at, notes),
         0x1e => distortion(i(0)?, f(4)?, f(8)?),
         0x20 => {
             if public.get(8).is_some_and(|&b| b != 0) {
-                notes.add(ir::Impact::Audible, "Lo-Fi flag (law unknown)", at);
+                notes.add(impact, "Lo-Fi flag (law unknown)", at);
             }
             Some(lofi(f(0)?, f(4)?, f(9)?, f(13)?))
         }
@@ -50,7 +56,7 @@ pub(crate) fn effect(
         0x42 => Some(crate::tape::tape(f(0)?, f(4)?, f(8)?)),
         0x56 if version == 0x10 => {
             if crate::dstortion::mono(public) {
-                notes.add(ir::Impact::Audible, "DStortion mono", at);
+                notes.add(impact, "DStortion mono", at);
             }
             Some(crate::dstortion::dstortion(
                 f(0)?,
@@ -69,11 +75,17 @@ pub(crate) fn effect(
 }
 
 /// Shape −1..=1; algorithm 0 Classic, 1 Enhanced, 2 Drums.
-fn saturation(shape: f32, algorithm: i32, at: &str, notes: &mut Notes) -> Option<ir::EffectKind> {
+fn saturation(
+    shape: f32,
+    algorithm: i32,
+    impact: ir::Impact,
+    at: &str,
+    notes: &mut Notes,
+) -> Option<ir::EffectKind> {
     if algorithm != 0 {
         // ponytail: Enhanced and Drums are a table and a peak follower (v2
         // sampler-core dsp/color/saturator.rs); none in the corpus yet.
-        notes.add(ir::Impact::Audible, "Saturation Enhanced or Drums", at);
+        notes.add(impact, "Saturation Enhanced or Drums", at);
         return None;
     }
     Some(ir::EffectKind::Shaper(ir::Shaper {
@@ -214,7 +226,7 @@ mod tests {
             "bus 0/inserts/2",
             "instrument/inserts/1",
         ] {
-            let kind = effect(0x21, 0, &public, at, &mut Notes::default());
+            let kind = effect(0x21, 0, &public, false, at, &mut Notes::default());
             assert!(matches!(kind, Some(ir::EffectKind::Overdrive(_))), "{at}");
         }
     }

@@ -230,11 +230,11 @@ pub struct EnvelopeFlex {
     /// Index into `points` held while the key is down.
     pub sustain: u32,
     /// Index into `points`, `sustain - 1` in every local preset (loop start?).
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_index: u32,
     /// Trailing bytes, all of unknown meaning: v0x10 has four (an `f32`); v0x11
     /// one `(f32, f32, f32)` record and a byte; v0x12 a `u16` before those.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_tail: Vec<u8>,
 }
 

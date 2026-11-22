@@ -368,7 +368,7 @@ fn slot_effect(
             })
         }
         0x17 => sends(&public),
-        0x44 => solid_eq(object.version, &public, at, notes, model),
+        0x44 => solid_eq(object.version, &public, params.bypass, at, notes, model),
         0x16 => impulses
             .convolution(object.version, &public, at, notes)
             .map(|impulse| ir::EffectKind::Convolution { impulse }),
@@ -393,6 +393,34 @@ fn slot_effect(
             }
             crate::legacy_reverb::effect(object.version, &public)
         }
+        0x5b => crate::phasis::saved(object.version, &public).map(|p| {
+            *model = Some(crate::phasis::model_from(p));
+            crate::phasis::phasis(p)
+        }),
+        0x5c => crate::flair::saved(object.version, &public).map(|p| {
+            *model = Some(crate::flair::model_from(p));
+            crate::flair::flair(p)
+        }),
+        0x5d => crate::choral::saved(object.version, &public).map(|p| {
+            *model = Some(crate::choral::model_from(p));
+            crate::choral::choral(p)
+        }),
+        0x65 => crate::raum::saved(object.version, &public).map(|(p, lost)| {
+            let impact = if params.bypass {
+                ir::Impact::Cosmetic
+            } else {
+                ir::Impact::Audible
+            };
+            for feature in lost {
+                notes.add(impact, feature, at.to_owned());
+            }
+            *model = Some(crate::raum::model_from(p));
+            ir::EffectKind::Reverb(crate::raum::raum(p))
+        }),
+        0x6a => crate::wowflutter::saved(object.version, &public).map(|(p, _mix)| {
+            *model = Some(crate::wowflutter::model_from(p));
+            ir::EffectKind::Delay(crate::wowflutter::wow_flutter(p))
+        }),
         0x69 => crate::vibrato::saved(object.version, &public).map(|v| {
             *model = Some(crate::vibrato::model(v));
             ir::EffectKind::Scanner(crate::vibrato::scanner(v))
@@ -429,27 +457,39 @@ fn slot_effect(
             match id {
                 0x21 => *model = crate::skreamer::model(&public),
                 0x42 => *model = crate::tape::model(&public),
-                0x56 => *model = crate::dstortion::model(&public),
-                0x60 => *model = crate::supergt::model(&public),
+                0x56 if object.version == 0x10 => *model = crate::dstortion::model(&public),
+                0x60 if object.version == 0x51 => *model = crate::supergt::model(&public),
                 0x66 => *model = crate::bite::saved(&public).map(crate::bite::model),
                 0x68 => *model = crate::freak::saved(&public).map(crate::freak::model),
                 _ => {}
             }
-            crate::drive::effect(id, object.version, &public, at, notes)
+            crate::drive::effect(id, object.version, &public, params.bypass, at, notes)
         }
     };
-    // The legacy delay, chorus and flanger, Replika, Psyche, the Gainer and Convolution mix
-    // their slot's dry level back in; other modules' stored dry is unused
-    // (trims store 1 there). v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
+    // The legacy delay, chorus, flanger and phaser, Replika, Psyche, Twin Delay,
+    // Plate Reverb, Raum, the Gainer and Convolution mix their slot's dry level
+    // back in; other modules' stored dry is unused (trims store 1 there).
+    // v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
     // The reverbs run fully wet; Return and Dry carry their mix (v2 effects/space.rs).
-    let parallel = matches!(effect.id, 0x10..=0x12 | 0x15 | 0x16 | 0x59 | 0x5a | 0x63);
-    // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
-    // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
-    // 12,918 EQ slots).
-    let eq = matches!(
-        kind,
-        Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Clocked(_))
+    let parallel = matches!(
+        effect.id,
+        0x10..=0x12 | 0x14 | 0x15 | 0x16 | 0x57 | 0x59 | 0x5a | 0x63 | 0x65 | 0x6b
     );
+    // Legacy 1/2/3-band EQ (Filter 0x18 kinds 22..=24) has no Output control:
+    // ANALOG STRINGS stores 0 on one that plays in Kontakt (v2 sampler-kontakt
+    // effects/mod.rs, corpus of 12,918 EQ slots). Solid G-EQ (0x44) and other
+    // filters have an Output gain (`filters_eq.tsv:4, 13, 28, 32, 35`), so keep
+    // their `output_gain` (falling back to 1.0 only when a legacy 0x18 filter
+    // stores exact 0.0).
+    let legacy_eq = effect.id == 0x18
+        && (matches!(kind_id, Some(22..=24))
+            || (matches!(
+                kind,
+                Some(ir::EffectKind::Filter(_) | ir::EffectKind::Clocked(_))
+            ) && params.output_gain == 0.0));
+    let wow_mix = (effect.id == 0x6a)
+        .then(|| crate::wowflutter::saved(object.version, &public).map(|(_, m)| m.clamp(0.0, 1.0)))
+        .flatten();
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {
             ir::EffectKind::OtherWet
@@ -457,11 +497,19 @@ fn slot_effect(
             ir::EffectKind::Other
         }),
         bypass: params.bypass,
-        output: if eq { 1.0 } else { params.output_gain },
+        output: if legacy_eq {
+            1.0
+        } else if let Some(mix) = wow_mix {
+            params.output_gain * mix
+        } else {
+            params.output_gain
+        },
         dry: if parallel || effect.id == 0x13 {
             params.dry_level
         } else if effect.id == 0x60 && object.version == 0x51 {
             crate::supergt::mix_dry(&public, params.output_gain)
+        } else if let Some(mix) = wow_mix {
+            params.output_gain * (1.0 - mix)
         } else {
             0.0
         },
@@ -511,6 +559,7 @@ fn eq(
 fn solid_eq(
     version: u16,
     public: &[u8],
+    bypass: bool,
     at: &str,
     notes: &mut Notes,
     model: &mut Option<ir::KnobModel>,
@@ -523,11 +572,12 @@ fn solid_eq(
     let bell = |on: bool, shelf| if on { ir::Shape::Peak } else { shelf };
     // ponytail: v0x11's pass filters are reported, not run (no corpus slot uses them yet).
     if version > 0x10 && (flag(50)? || flag(51)?) {
-        notes.add(
-            ir::Impact::Audible,
-            "Solid G-EQ pass filters",
-            at.to_string(),
-        );
+        let impact = if bypass {
+            ir::Impact::Cosmetic
+        } else {
+            ir::Impact::Audible
+        };
+        notes.add(impact, "Solid G-EQ pass filters", at.to_string());
     }
     let saved = [0, 4, 9, 13, 17, 21, 25, 29, 33, 37].map(f);
     let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
@@ -823,5 +873,222 @@ mod tests {
         replace_racks(&mut children, vec![chunk(RACK, 11)]);
         assert_eq!(tags(&children, RACK), [11, 13]);
         assert_eq!(tags(&children, BUS), [20]);
+    }
+
+    fn fx_slot(
+        effect_type: u32,
+        bypass: bool,
+        output_gain: f32,
+        dry_level: f32,
+        child_id: u16,
+        child_version: u16,
+        child_public: Vec<u8>,
+    ) -> Chunk {
+        let mut child_body = vec![0];
+        child_body.extend(child_version.to_le_bytes());
+        child_body.extend(child_public);
+        let child = Chunk {
+            id: child_id,
+            data: child_body,
+        };
+        let mut child_bytes = Vec::new();
+        child.write(&mut child_bytes).expect("write child chunk");
+
+        let mut private = effect_type.to_le_bytes().to_vec();
+        private.push(0); // byte 4: unknown_flag
+        private.extend(0u32.to_le_bytes()); // bytes 5..9: reserved
+        private.push(u8::from(bypass)); // byte 9: bypass
+        private.extend(output_gain.to_le_bytes());
+        private.extend(dry_level.to_le_bytes());
+        private.extend((-1i32).to_le_bytes());
+
+        let mut data = vec![1]; // structured object
+        data.extend(0x50u16.to_le_bytes());
+        data.extend((private.len() as u32).to_le_bytes());
+        data.extend(private);
+        data.extend(0u32.to_le_bytes()); // public_data len
+        data.extend((child_bytes.len() as u32).to_le_bytes());
+        data.extend(child_bytes);
+        Chunk { id: 0x25, data }
+    }
+
+    #[test]
+    fn legacy_phaser_preserves_dry_and_solid_eq_preserves_output_gain() {
+        let mut resolver =
+            crate::samples::Resolver::new(std::path::Path::new("."), None).expect("resolver");
+        let mut impulses = crate::impulse::Impulses::new(
+            std::collections::HashMap::new(),
+            &mut resolver,
+            std::path::Path::new("."),
+            None,
+        );
+        let mut notes = Notes::default();
+        let mut knobs = Vec::new();
+        let mut model = None;
+        let mut held = Vec::new();
+
+        // Legacy Phaser (0x14) must keep its dry_level (parallel wet/dry mix).
+        let phaser_pub: Vec<u8> = [0.5f32, 0.3, 1.0, 0.25, -1.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let fx = fx_slot(18, false, 0.8, 0.6, 0x14, 0x50, phaser_pub);
+        let (e, _, _) = slot_effect(
+            &fx,
+            &mut impulses,
+            "slot",
+            &mut notes,
+            (&mut knobs, &mut model, &mut held),
+        )
+        .expect("phaser");
+        assert!(matches!(e.kind, ir::EffectKind::Phaser(_)));
+        assert_eq!((e.output, e.dry), (0.8, 0.6));
+
+        // Solid G-EQ (0x44) must preserve its BParFX output_gain rather than clobbering to 1.0.
+        let mut seq_pub = Vec::new();
+        seq_pub.extend(0.5f32.to_le_bytes()); // LF gain
+        seq_pub.extend(0.5f32.to_le_bytes()); // LF freq
+        seq_pub.push(0); // LF bell
+        for _ in 0..8 {
+            seq_pub.extend(0.5f32.to_le_bytes());
+        }
+        seq_pub.push(0); // HF bell
+        let fx = fx_slot(29, false, 0.42, 0.0, 0x44, 0x10, seq_pub);
+        let (e, _, _) = slot_effect(
+            &fx,
+            &mut impulses,
+            "slot",
+            &mut notes,
+            (&mut knobs, &mut model, &mut held),
+        )
+        .expect("solid eq");
+        assert!(matches!(e.kind, ir::EffectKind::Eq(_)));
+        assert_eq!(e.output, 0.42);
+    }
+
+    #[test]
+    fn saved_phasis_flair_choral_raum_and_wowflutter_decode_with_models() {
+        let mut resolver =
+            crate::samples::Resolver::new(std::path::Path::new("."), None).expect("resolver");
+        let mut impulses = crate::impulse::Impulses::new(
+            std::collections::HashMap::new(),
+            &mut resolver,
+            std::path::Path::new("."),
+            None,
+        );
+        let mut notes = Notes::default();
+        let mut knobs = Vec::new();
+        let mut held = Vec::new();
+
+        // Phasis (0x5b v0x51, 52 bytes)
+        let mut phasis_pub = Vec::new();
+        for v in [0.4f32, 0.5, 0.5, 0.2, 0.8, 0.5, 1.0, 0.5, 0.3] {
+            phasis_pub.extend(v.to_le_bytes());
+        }
+        phasis_pub.extend([0u8, 0, 1]);
+        for v in [-1.0f32, 0.0, 0.0] {
+            phasis_pub.extend(v.to_le_bytes());
+        }
+        phasis_pub.push(0);
+        let mut model = None;
+        let (e, _, _) = slot_effect(
+            &fx_slot(41, false, 1.0, 0.0, 0x5b, 0x51, phasis_pub),
+            &mut impulses,
+            "phasis",
+            &mut notes,
+            (&mut knobs, &mut model, &mut held),
+        )
+        .expect("phasis");
+        assert!(matches!(e.kind, ir::EffectKind::Notches(_)));
+        assert!(model.is_some());
+
+        // Flair (0x5c v0x51, 66 bytes)
+        let mut flair_pub = Vec::new();
+        for v in [1.0f32, 0.5, 0.36, 0.0, 0.5, 0.0, 0.4, 0.0, 0.0, 0.0] {
+            flair_pub.extend(v.to_le_bytes());
+        }
+        flair_pub.push(0);
+        flair_pub.extend(0i32.to_le_bytes());
+        flair_pub.extend(0i32.to_le_bytes());
+        flair_pub.extend(0i32.to_le_bytes());
+        for v in [-1.0f32, 0.0, 0.0] {
+            flair_pub.extend(v.to_le_bytes());
+        }
+        flair_pub.push(0);
+        let mut model = None;
+        let (e, _, _) = slot_effect(
+            &fx_slot(42, false, 1.0, 0.0, 0x5c, 0x51, flair_pub),
+            &mut impulses,
+            "flair",
+            &mut notes,
+            (&mut knobs, &mut model, &mut held),
+        )
+        .expect("flair");
+        assert!(matches!(e.kind, ir::EffectKind::CombBank(_)));
+        assert!(model.is_some());
+
+        // Choral (0x5d v0x51, 34 bytes)
+        let mut choral_pub = Vec::new();
+        for v in [0.5f32, 0.2, 0.3, 0.4, 0.5, 0.1, 0.9] {
+            choral_pub.extend(v.to_le_bytes());
+        }
+        choral_pub.extend([0u8, 0]);
+        choral_pub.extend(1i32.to_le_bytes());
+        let mut model = None;
+        let (e, _, _) = slot_effect(
+            &fx_slot(43, false, 1.0, 0.0, 0x5d, 0x51, choral_pub),
+            &mut impulses,
+            "choral",
+            &mut notes,
+            (&mut knobs, &mut model, &mut held),
+        )
+        .expect("choral");
+        assert!(matches!(e.kind, ir::EffectKind::Ensemble(_)));
+        assert!(model.is_some());
+
+        // Raum (0x65 v0x10, 67 bytes)
+        let mut raum_pub = 1i32.to_le_bytes().to_vec();
+        for v in [
+            0.1f32, 0.2, 0.0, 0.8, 0.5, 0.8, 0.5, 0.3, 0.5, 0.5, 0.3, 0.0,
+        ] {
+            raum_pub.extend(v.to_le_bytes());
+        }
+        raum_pub.extend([0u8, 0]);
+        for v in [-1.0f32, 0.0, 0.0] {
+            raum_pub.extend(v.to_le_bytes());
+        }
+        raum_pub.push(0);
+        let mut model = None;
+        let (e, _, _) = slot_effect(
+            &fx_slot(51, false, 0.7, 0.9, 0x65, 0x10, raum_pub),
+            &mut impulses,
+            "raum",
+            &mut notes,
+            (&mut knobs, &mut model, &mut held),
+        )
+        .expect("raum");
+        assert!(matches!(e.kind, ir::EffectKind::Reverb(_)));
+        assert_eq!((e.output, e.dry), (0.7, 0.9));
+        assert!(model.is_some());
+
+        // Wow/Flutter (0x6a v0x10, 33 bytes)
+        let mut wow_pub = Vec::new();
+        for v in [0.5f32, 0.3, 0.0, 0.5, 0.5, 0.3, 0.0] {
+            wow_pub.extend(v.to_le_bytes());
+        }
+        wow_pub.push(0);
+        wow_pub.extend(0.25f32.to_le_bytes()); // mix = 0.25
+        let mut model = None;
+        let (e, _, _) = slot_effect(
+            &fx_slot(56, false, 1.0, 0.0, 0x6a, 0x10, wow_pub),
+            &mut impulses,
+            "wow",
+            &mut notes,
+            (&mut knobs, &mut model, &mut held),
+        )
+        .expect("wowflutter");
+        assert!(matches!(e.kind, ir::EffectKind::Delay(_)));
+        assert_eq!((e.output, e.dry), (0.25, 0.75));
+        assert!(model.is_some());
     }
 }

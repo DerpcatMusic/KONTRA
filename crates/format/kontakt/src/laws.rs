@@ -535,17 +535,23 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
             legacy(&mut f, u, r);
             f.hz *= ONE_POLE_HIGH_PASS;
         }
-        ..=17 if kind != 16 => legacy(&mut f, u, r),
+        // Legacy Ladder (kind 17) uses the note law `100u + 20` (filt-legacy.md:123),
+        // not the legacy Butterworth warp.
+        ..=15 => legacy(&mut f, u, r),
         50..=62 => sv(&mut f, u, r),
         // The note each family's cutoff knob reaches (index `5n + 1381.88`
         // into the shared 2^(i/60 − 20) table): Ladder `115u + 20`
         // (filt-ladder-monark.md, its gain `2^(1.993g)`), Daft `125u + 20`
-        // (filt-ar-daft.md), AR `min(145u, 140)`, Pro-53 `100u + 20`.
+        // (filt-ar-daft.md, gain `2^(119.589409/60 * g)` = `LADDER_GAIN`),
+        // AR `min(145u, 140)`, Pro-53 & Legacy Ladder `100u + 20`.
         30..=41 => {
             note(&mut f, 115.0 * u + 20.0, 115.0, r);
             f.gain = LADDER_GAIN.eval_unclamped(gain.clamp(-1.0, 1.0));
         }
-        70 | 71 => note(&mut f, 125.0 * u + 20.0, 125.0, r),
+        70 | 71 => {
+            note(&mut f, 125.0 * u + 20.0, 125.0, r);
+            f.gain = LADDER_GAIN.eval_unclamped(gain.clamp(-1.0, 1.0));
+        }
         100..=108 => note(&mut f, (145.0 * u).min(140.0), 145.0, r),
         _ => note(&mut f, 100.0 * u + 20.0, 100.0, r),
     }
@@ -743,7 +749,7 @@ pub(crate) fn solid_eq(
     } else {
         ir::Bell {
             shape: ir::Shape::HighShelf,
-            hz: t(HF_CORNER, hf_gain) * 2.0 * hf_hz,
+            hz: t(C_6780, hf_gain) * t(HF_SHELF_FREQ, hf_hz),
             q: 0.55,
             gain_db: t(HF_SHELF_GAIN, hf_gain),
         }
@@ -1154,5 +1160,49 @@ mod tests {
         let mut unassigned = raw;
         unassigned.ext_mod_idx = -1;
         assert!(zone_envelope(&unassigned).is_none());
+    }
+
+    #[test]
+    fn legacy_ladder_daft_gain_and_solid_hf_shelf_follow_binary_laws() {
+        // Legacy Ladder (kind 17) uses 100u + 20 note law, not legacy Butterworth warp.
+        let ll = filter(17, 0.5, 0.0, 0.0).unwrap();
+        let expected_ll = FILTER_NOTE_HZ.eval_unclamped(70.0);
+        assert!((ll.hz - expected_ll).abs() < 0.05, "{}", ll.hz);
+        assert!((ll.octaves - 100.0 / 12.0).abs() < 1e-4);
+
+        // Daft (70/71) wires its leading gain through LADDER_GAIN (unity at 0, +12 dB at 1).
+        let daft_unity = filter(70, 0.5, 0.0, 0.0).unwrap();
+        let daft_boost = filter(70, 0.5, 0.0, 1.0).unwrap();
+        assert!((daft_unity.gain - 1.0).abs() < 1e-4, "{}", daft_unity.gain);
+        assert!(
+            (daft_boost.gain - LADDER_GAIN.eval_unclamped(1.0)).abs() < 1e-4,
+            "{}",
+            daft_boost.gain
+        );
+
+        // Solid G-EQ HF shelf uses +0x6350 (490..4500 Hz) * +0x6780 (0.6284..1.0),
+        // never collapsing to 0 Hz at hf_hz == 0.
+        let bands_min = solid_eq(
+            [0.5, 0.5],
+            ir::Shape::LowShelf,
+            [0.5, 0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [1.0, 0.0],
+            ir::Shape::HighShelf,
+        );
+        assert!((bands_min[3].hz - 490.0).abs() < 1.0, "{}", bands_min[3].hz);
+        let bands_max = solid_eq(
+            [0.5, 0.5],
+            ir::Shape::LowShelf,
+            [0.5, 0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [1.0, 1.0],
+            ir::Shape::HighShelf,
+        );
+        assert!(
+            (bands_max[3].hz - 4500.0).abs() < 1.0,
+            "{}",
+            bands_max[3].hz
+        );
     }
 }

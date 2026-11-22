@@ -60,16 +60,16 @@ fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
 }
 
 /// The Feedback Compressor's script knobs (`$ENGINE_PAR_FCOMP_*`): every
-/// move rebuilds the compressor from all six through [`feedback`], as the
+/// move rebuilds the compressor from all seven through [`feedback`], as the
 /// native setter derives each field from all of them (the input drives the
 /// threshold down and the make-up up; the ratio moves the knee).
 pub fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
-    use ir::SlotKnob::{Attack, Input, Makeup, Mix, Ratio, Release};
+    use ir::SlotKnob::{Attack, Input, Knob, Makeup, Mix, Ratio, Release};
     let (saved, link) = feedback_saved(public)?;
     let mut positions = saved.to_vec();
     positions.push(f32::from(u8::from(link)));
     Some(ir::KnobModel {
-        knobs: [Input, Makeup, Attack, Release, Ratio, Mix].into(),
+        knobs: [Input, Makeup, Attack, Release, Ratio, Mix, Knob(6)].into(),
         saved: positions.into(),
         build: |p| {
             let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
@@ -79,10 +79,11 @@ pub fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
 }
 
 /// The Feedback Compressor's KSP names, each a knob of [`feedback_model`].
-pub fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 6] {
+pub fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
     use ir::KnobTarget::Slot;
-    use ir::SlotKnob::{Attack, Input, Makeup, Mix, Ratio, Release};
+    use ir::SlotKnob::{Attack, Input, Knob, Makeup, Mix, Ratio, Release};
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
     [
         ("$ENGINE_PAR_FCOMP_INPUT", Slot(Input), unit()),
         ("$ENGINE_PAR_FCOMP_MAKEUP", Slot(Makeup), unit()),
@@ -90,6 +91,7 @@ pub fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 6] {
         ("$ENGINE_PAR_FCOMP_RELEASE", Slot(Release), unit()),
         ("$ENGINE_PAR_FCOMP_RATIO", Slot(Ratio), unit()),
         ("$ENGINE_PAR_FCOMP_MIX", Slot(Mix), unit()),
+        ("$ENGINE_PAR_FCOMP_LINK", Slot(Knob(6)), raw()),
     ]
 }
 

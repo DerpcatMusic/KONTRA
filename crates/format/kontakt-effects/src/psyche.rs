@@ -171,6 +171,7 @@ pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 9] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
     [
         (
             "$ENGINE_PAR_PSYDL_TIME",
@@ -185,9 +186,9 @@ pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 9] {
         ("$ENGINE_PAR_PSYDL_PITCH", Slot(Knob(3)), unit()),
         ("$ENGINE_PAR_PSYDL_LR_OFFSET", Slot(Knob(4)), unit()),
         ("$ENGINE_PAR_PSYDL_CROSS_FEEDBACK", Slot(Knob(5)), unit()),
-        ("$ENGINE_PAR_PSYDL_REVERSE_STEREO", Slot(Knob(6)), unit()),
-        ("$ENGINE_PAR_PSYDL_DETUNE_STEREO", Slot(Knob(7)), unit()),
-        ("$ENGINE_PAR_PSYDL_REVERSE", Slot(Knob(8)), unit()),
+        ("$ENGINE_PAR_PSYDL_REVERSE_STEREO", Slot(Knob(6)), raw()),
+        ("$ENGINE_PAR_PSYDL_DETUNE_STEREO", Slot(Knob(7)), raw()),
+        ("$ENGINE_PAR_PSYDL_REVERSE", Slot(Knob(8)), raw()),
     ]
 }
 
