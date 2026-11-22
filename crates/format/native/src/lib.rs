@@ -20,11 +20,11 @@ use kontra_ir as ir;
 
 pub use schema::{
     AudioGraphSpec, BINARY_MAGIC, BellSpec, BusSpec, ChannelLayoutSpec, CrossfadeControlSpec,
-    CrossfadeLawSpec, CrossfadeSpec, CurveSpec, EnvelopeSpec, EqShapeSpec, FORMAT_VERSION,
-    GeneratorSpec, GraphEdgeSpec, GraphEffectSpec, GraphNodeSpec, GroupSpec, InstrumentSpec,
-    JoinSpec, LoopSpec, ModKindSpec, ModSpec, NoteExprSpec, OscWaveSpec, PassSpec, RrScopeSpec,
-    SourceSpec, StartRuleKindSpec, StartRuleSpec, StealSpec, TimeScaleSpec, TriggerSpec,
-    VoiceGroupSpec, ZoneSpec,
+    CrossfadeLawSpec, CrossfadeSpec, CurveSpec, DetectorSpec, EnvelopeSpec, EqShapeSpec,
+    FORMAT_VERSION, GeneratorSpec, GraphEdgeSpec, GraphEffectSpec, GraphNodeSpec, GroupSpec,
+    InstrumentSpec, JoinSpec, LoopSpec, ModKindSpec, ModSpec, NoteExprSpec, OscWaveSpec, PassSpec,
+    RrScopeSpec, SourceSpec, StartRuleKindSpec, StartRuleSpec, StealSpec, TimeScaleSpec,
+    TriggerSpec, VoiceGroupSpec, ZoneSpec,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -875,6 +875,43 @@ fn map_graph(spec: &AudioGraphSpec) -> ir::AudioGraph {
                 output,
                 dry,
             },
+            GraphEffectSpec::Compressor {
+                threshold_db,
+                ratio,
+                knee_db,
+                attack_ms,
+                release_ms,
+                makeup_db,
+                makeup_slope,
+                link,
+                mix,
+                detector,
+                sidechain_hz,
+                bypass,
+                output,
+                dry,
+            } => ir::Effect {
+                kind: ir::EffectKind::Compressor(ir::Compressor {
+                    threshold_db,
+                    ratio,
+                    knee_db,
+                    attack_ms,
+                    release_ms,
+                    makeup_db,
+                    makeup_slope,
+                    link,
+                    mix,
+                    detector: match detector {
+                        DetectorSpec::Input => ir::Detector::Input,
+                        DetectorSpec::Output => ir::Detector::Output,
+                        DetectorSpec::Trigger => ir::Detector::Trigger,
+                    },
+                    sidechain_hz,
+                }),
+                bypass,
+                output,
+                dry,
+            },
             GraphEffectSpec::Invert {
                 phase,
                 swap,
@@ -1029,6 +1066,26 @@ fn unmap_graph(graph: &ir::AudioGraph) -> Result<AudioGraphSpec, Error> {
         let mapped = match &e.kind {
             ir::EffectKind::Gain(gain) => GraphEffectSpec::Gain {
                 gain: *gain,
+                bypass: e.bypass,
+                output: e.output,
+                dry: e.dry,
+            },
+            ir::EffectKind::Compressor(c) => GraphEffectSpec::Compressor {
+                threshold_db: c.threshold_db,
+                ratio: c.ratio,
+                knee_db: c.knee_db,
+                attack_ms: c.attack_ms,
+                release_ms: c.release_ms,
+                makeup_db: c.makeup_db,
+                makeup_slope: c.makeup_slope,
+                link: c.link,
+                mix: c.mix,
+                detector: match c.detector {
+                    ir::Detector::Input => DetectorSpec::Input,
+                    ir::Detector::Output => DetectorSpec::Output,
+                    ir::Detector::Trigger => DetectorSpec::Trigger,
+                },
+                sidechain_hz: c.sidechain_hz,
                 bypass: e.bypass,
                 output: e.output,
                 dry: e.dry,

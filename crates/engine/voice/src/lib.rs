@@ -6,6 +6,7 @@
 
 mod envelope;
 mod fade;
+mod granular;
 mod mod_waves;
 mod oscillator;
 mod wavetable;
@@ -14,6 +15,7 @@ mod zone;
 use kontra_stream::{Mix, StreamClient};
 
 pub use envelope::{Ahdsr, Envelope};
+pub use granular::{Granular, GranularSpec, MAX_GRAINS};
 pub use oscillator::{OSC_PERIOD, OscWave, Oscillator};
 pub use wavetable::{
     CYCLE, Inharmonic, LEVELS, ModKind, ModOsc, Osc, PERIOD, Quality, Read, SIZE, Shape, Shaper,
@@ -98,6 +100,8 @@ pub struct VoiceStart {
     pub read: Option<Read>,
     /// Optional real-time synth oscillator overriding sample playback (zero allocation).
     pub oscillator: Option<Oscillator>,
+    /// Optional real-time granular cloud generator reading from `region` (zero allocation).
+    pub granular: Option<Granular>,
     /// Source frames per output frame: pitch and sample-rate ratio together.
     pub step: f64,
     pub gain: Gain,
@@ -142,6 +146,7 @@ pub struct Voice {
     mix: Option<Mix>,
     table: Option<Table>,
     osc: Option<Oscillator>,
+    granular: Option<Granular>,
     /// Position at `elapsed == 0`; moved only when the step changes, so the
     /// cursor is the same whatever block sizes rendered it (rule 3).
     anchor: f64,
@@ -218,6 +223,7 @@ impl Voice {
             mix: None,
             table: None,
             osc: None,
+            granular: None,
             anchor: 0.0,
             elapsed: 0,
             step: 1.0,
@@ -266,6 +272,7 @@ impl Voice {
         self.mix = start.mix.or_else(|| start.region.mix.as_deref().copied());
         self.table = start.region.table.as_deref().cloned();
         self.osc = start.oscillator;
+        self.granular = start.granular;
         if let (Some(read), Some(table)) = (start.read, self.table.as_mut()) {
             table.read = read;
         }
@@ -386,6 +393,7 @@ impl Voice {
         self.mix = None;
         self.table = None;
         self.osc = None;
+        self.granular = None;
     }
 
     /// Changes pitch from the next frame.
@@ -569,7 +577,7 @@ impl Voice {
             self.heads.iter().fold(self.at(0), |a, &h| a.min(h))
         };
         let ahead = (LOOKAHEAD * step) as usize + (self.at(0) - from) as usize;
-        let synth = self.table.is_some() || self.osc.is_some();
+        let synth = self.table.is_some() || self.osc.is_some() || self.granular.is_some();
         let ahead = if synth { 0 } else { ahead };
         region.runs_with(&self.loops, from as i64, ahead, released, |offset, run| {
             let low = if run.descending {
@@ -671,6 +679,23 @@ impl Voice {
                 osc.render(|i| ramp.step_at(base_step, elapsed + i) * loop_tune, raw);
                 self.osc = Some(osc);
                 raw.len()
+            } else if let Some(mut gran) = self.granular.take() {
+                let raw = scratch.raw.get_mut(..n).unwrap_or_default();
+                let cur_step = self.step();
+                let mix = self.mix.as_ref();
+                let [main_decoded, _] = &mut self.decoded;
+                let miss = gran.render(
+                    &region,
+                    client,
+                    mix,
+                    main_decoded,
+                    &mut scratch.window,
+                    cur_step,
+                    raw,
+                );
+                self.missing += u64::from(miss);
+                self.granular = Some(gran);
+                raw.len()
             } else if let Some(mut tbl) = self.table.take() {
                 let raw = scratch.raw.get_mut(..n).unwrap_or_default();
                 // Each frame's own cursor: a gliding table moves pitch every
@@ -744,6 +769,7 @@ impl Voice {
             self.mix = None;
             self.table = None;
             self.osc = None;
+            self.granular = None;
         }
     }
 

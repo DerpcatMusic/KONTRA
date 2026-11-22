@@ -473,16 +473,6 @@ impl AudioGraph {
                     detail: format!("edge {ei} has non-finite gain {}", edge.gain),
                 });
             }
-            if edge.sidechain && edge.gain != 0.0 {
-                out.push(Diagnostic {
-                    impact: Impact::Audible,
-                    feature: "ir.graph.sidechain_unsupported".into(),
-                    detail: format!(
-                        "edge {ei} ({} -> {}) sidechain feed is not carried by the runtime",
-                        edge.from.0, edge.to.0
-                    ),
-                });
-            }
         }
 
         if let Err(cyclic) = self.topological_order() {
@@ -608,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn active_sidechain_edge_is_reported_by_validation() {
+    fn active_sidechain_edge_passes_validation() {
         let mut graph = AudioGraph::default();
         let a = graph.push_node(GraphNodeKind::Mix {
             gain: 1.0,
@@ -619,12 +609,6 @@ mod tests {
             pan: 0.0,
         });
         graph.connect_sidechain(a, b, 1.0);
-        let diags = graph.validate();
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.feature == "ir.graph.sidechain_unsupported"),
-            "{diags:?}"
-        );
+        assert!(graph.validate().is_empty(), "{:?}", graph.validate());
     }
 }

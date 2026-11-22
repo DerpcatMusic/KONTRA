@@ -193,11 +193,46 @@ pub struct BellSpec {
     pub gain_db: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectorSpec {
+    #[default]
+    Input,
+    Output,
+    Trigger,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GraphEffectSpec {
     Gain {
         gain: f32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        bypass: bool,
+        #[serde(default = "default_one_f32")]
+        output: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        dry: f32,
+    },
+    Compressor {
+        threshold_db: f32,
+        ratio: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        knee_db: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        makeup_db: f32,
+        #[serde(default, skip_serializing_if = "is_zero_f32")]
+        makeup_slope: f32,
+        #[serde(default = "default_true")]
+        link: bool,
+        #[serde(default = "default_one_f32")]
+        mix: f32,
+        #[serde(default)]
+        detector: DetectorSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sidechain_hz: Option<f32>,
         #[serde(default, skip_serializing_if = "is_false")]
         bypass: bool,
         #[serde(default = "default_one_f32")]

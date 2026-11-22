@@ -152,6 +152,11 @@ impl Engine {
                     .groups
                     .get(zone.group as usize)
                     .and_then(|g| g.oscillator),
+                granular: self
+                    .groups
+                    .get(zone.group as usize)
+                    .and_then(|g| g.granular)
+                    .map(|spec| kontra_voice::Granular::new(spec, self.rate)),
                 step: voice_gain::bent(
                     self.plan.route_pitch,
                     step,

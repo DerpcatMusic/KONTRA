@@ -93,16 +93,27 @@ impl Compressor {
             .map_or(0.0, |hz| (-std::f32::consts::TAU * hz / rate).exp());
     }
 
-    /// Compresses `io` in place.
+    /// Compresses `io` in place using `io` as the detector signal.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        self.process_inner(io, None);
+    }
+
+    /// Compresses `io` in place using an external sidechain `key` signal for
+    /// level detection (falls back to `io` past `key.len()`).
+    pub fn process_sidechain(&mut self, io: &mut [[f32; 2]], key: &[[f32; 2]]) {
+        self.process_inner(io, Some(key));
+    }
+
+    fn process_inner(&mut self, io: &mut [[f32; 2]], sidechain: Option<&[[f32; 2]]>) {
         if self.s.detector == Detector::Trigger {
-            self.trigger(io);
+            self.trigger_inner(io, sidechain);
             return;
         }
         let mix = self.s.mix.clamp(0.0, 1.0);
-        for frame in io {
-            let key = self.highpass(*frame);
-            let [l, r] = if self.s.detector == Detector::Output {
+        for (i, frame) in io.iter_mut().enumerate() {
+            let det_in = sidechain.and_then(|k| k.get(i).copied()).unwrap_or(*frame);
+            let key = self.highpass(det_in);
+            let [l, r] = if self.s.detector == Detector::Output && sidechain.is_none() {
                 let ([a, b], [ra, rb]) = (key, self.reduction);
                 [(a * gain(-ra)).abs(), (b * gain(-rb)).abs()]
             } else {
@@ -152,11 +163,12 @@ impl Compressor {
     /// by the attack, never above the hold. While it lags well behind a
     /// fresh trigger, the hold restarts just above it ([`CATCH`]). The gain
     /// is `1 − (1 − depth)·envelope`.
-    fn trigger(&mut self, io: &mut [[f32; 2]]) {
+    fn trigger_inner(&mut self, io: &mut [[f32; 2]], sidechain: Option<&[[f32; 2]]>) {
         let mix = self.s.mix.clamp(0.0, 1.0);
         let (rise, fall) = (1.0 - self.attack, 1.0 - self.release);
-        for frame in io.iter_mut() {
-            let [l, r] = self.highpass(*frame);
+        for (i, frame) in io.iter_mut().enumerate() {
+            let det_in = sidechain.and_then(|k| k.get(i).copied()).unwrap_or(*frame);
+            let [l, r] = self.highpass(det_in);
             let levels = if self.s.link {
                 [((l + r) * 0.5).abs(); 2]
             } else {

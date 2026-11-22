@@ -15,7 +15,8 @@ use kontra_stream::{
     StreamClient,
 };
 use kontra_voice::{
-    Ahdsr, Loop, OSC_PERIOD, OscWave, Oscillator, PERIOD, Read, Region, Shape, Shaper, Side, Warp,
+    Ahdsr, GranularSpec, Loop, OSC_PERIOD, OscWave, Oscillator, PERIOD, Read, Region, Shape,
+    Shaper, Side, Warp,
 };
 
 use kontra_engine::{
@@ -52,11 +53,14 @@ pub fn prepare(
     // per sample, only for instruments whose scripts ask.
     let mut group_rules = Vec::with_capacity(instrument.groups.len());
     let mut group_oscs = Vec::with_capacity(instrument.groups.len());
+    let mut group_granulars = Vec::with_capacity(instrument.groups.len());
     let mut dormant = Vec::new();
     for (index, group) in instrument.groups.iter().enumerate() {
         let group_id = u32::try_from(index).unwrap_or(u32::MAX);
         let osc_info = oscillator_of(group, &mut diagnostics);
+        let granular_info = granular_of(group);
         group_oscs.push(osc_info.map(|(osc, _)| osc));
+        group_granulars.push(granular_info.map(|(_, spec)| spec));
         if let Some(voices) = group.polyphony {
             polyphony.push((group_id, voices));
         }
@@ -110,7 +114,8 @@ pub fn prepare(
                 zones.push(zone);
                 continue;
             }
-            let Some(source) = instrument.samples.get(z.sample) else {
+            let sample_idx = granular_info.map_or(z.sample, |(s, _)| s);
+            let Some(source) = instrument.samples.get(sample_idx) else {
                 continue;
             };
             // A script sees every saved zone, played or not (a purged group,
@@ -126,7 +131,7 @@ pub fn prepare(
                 end: z.end,
                 start_range: z.start_mod,
                 rate: source.rate,
-                source: shared.get(z.sample).cloned(),
+                source: shared.get(sample_idx).cloned(),
                 loops: z.loops.clone(),
                 user: false,
                 volume: (z.volume_db * 100.0).round() as i32,
@@ -143,10 +148,14 @@ pub fn prepare(
             if group.purged {
                 continue;
             }
-            let Some(Some(sample)) = loaded.get(z.sample) else {
+            let Some(Some(sample)) = loaded.get(sample_idx) else {
                 continue;
             };
-            let mut zone = zone((group, group_id, &rules), z, source, sample, &client);
+            let mut z_eff = z.clone();
+            if granular_info.is_some() && z_eff.end == 0 {
+                z_eff.end = source.frames;
+            }
+            let mut zone = zone((group, group_id, &rules), &z_eff, source, sample, &client);
             zone.member = u16::try_from(member).unwrap_or(u16::MAX);
             zones.push(zone);
         }
@@ -158,33 +167,39 @@ pub fn prepare(
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
     plan.dormant = Arc::new(dormant);
     plan.zone_facts = facts;
-    plan.groups = (instrument.groups.iter().zip(group_rules).zip(group_oscs))
-        .map(|((g, zones), oscillator)| Group {
-            name: g.name.clone(),
-            level: Level {
-                gain: gain(g.volume_db),
-                pan: g.pan,
-                tune: g.tune,
-            },
-            purged: g.purged,
-            muted: g.muted,
-            inserts: Vec::new(),
-            mods: g.mods.clone(),
-            envelope: envelope(g.envelope, rate),
-            envelopes: g.envelopes.clone(),
-            lfos: g.lfos.clone(),
-            shapers: g.shapers.clone(),
-            blends: g.blends.clone(),
-            routes: g.routes.clone(),
-            release_trigger: g.trigger == ir::Trigger::Release,
-            bus: g.bus,
-            wavetable: g.wavetable.map(read),
-            oscillator,
-            speed: g.speed,
-            glide: g.glide,
-            zones,
-        })
-        .collect();
+    plan.groups = (instrument
+        .groups
+        .iter()
+        .zip(group_rules)
+        .zip(group_oscs)
+        .zip(group_granulars))
+    .map(|(((g, zones), oscillator), granular)| Group {
+        name: g.name.clone(),
+        level: Level {
+            gain: gain(g.volume_db),
+            pan: g.pan,
+            tune: g.tune,
+        },
+        purged: g.purged,
+        muted: g.muted,
+        inserts: Vec::new(),
+        mods: g.mods.clone(),
+        envelope: envelope(g.envelope, rate),
+        envelopes: g.envelopes.clone(),
+        lfos: g.lfos.clone(),
+        shapers: g.shapers.clone(),
+        blends: g.blends.clone(),
+        routes: g.routes.clone(),
+        release_trigger: g.trigger == ir::Trigger::Release,
+        bus: g.bus,
+        wavetable: g.wavetable.map(read),
+        oscillator,
+        granular,
+        speed: g.speed,
+        glide: g.glide,
+        zones,
+    })
+    .collect();
     if !instrument.buses.is_empty() {
         plan.buses = instrument
             .buses
@@ -354,15 +369,21 @@ pub fn wake(
         );
         return Some((out, diagnostics, 0));
     }
+    let granular_info = granular_of(source);
     let loaded = load_samples(&instrument, store, open, &mut diagnostics);
     let client = store.client();
     for (member, z) in source.zones.iter().enumerate() {
+        let sample_idx = granular_info.map_or(z.sample, |(s, _)| s);
         let (Some(from), Some(Some(sample))) =
-            (instrument.samples.get(z.sample), loaded.get(z.sample))
+            (instrument.samples.get(sample_idx), loaded.get(sample_idx))
         else {
             continue;
         };
-        let mut zone = zone((source, group, &rules), z, from, sample, &client);
+        let mut z_eff = z.clone();
+        if granular_info.is_some() && z_eff.end == 0 {
+            z_eff.end = from.frames;
+        }
+        let mut zone = zone((source, group, &rules), &z_eff, from, sample, &client);
         zone.member = u16::try_from(member).unwrap_or(u16::MAX);
         out.zones.push(zone);
     }
@@ -482,6 +503,13 @@ fn load_samples(
         .iter()
         .filter(|g| !g.purged && !matches!(g.generator, Some(ir::Generator::Oscillator { .. })))
     {
+        if let Some(ir::Generator::Granular { sample, .. }) = group.generator {
+            for z in &group.zones {
+                // Pin the full sample window in memory for random-access granular reads.
+                used.entry(sample).or_default().push((z, None));
+            }
+            continue;
+        }
         for z in &group.zones {
             used.entry(z.sample).or_default().push((z, group.stream));
         }
@@ -850,6 +878,30 @@ fn oscillator_of(
         0.0
     };
     Some((Oscillator::new(osc_wave, *phase), tune))
+}
+
+fn granular_of(group: &ir::Group) -> Option<(usize, GranularSpec)> {
+    let ir::Generator::Granular {
+        sample,
+        grain_ms,
+        density,
+        position,
+        pitch_semitones,
+        spread,
+    } = *group.generator.as_ref()?
+    else {
+        return None;
+    };
+    Some((
+        sample,
+        GranularSpec {
+            grain_ms,
+            density,
+            position,
+            pitch_semitones,
+            spread,
+        },
+    ))
 }
 
 fn load_osc_sentinel(store: &mut Store) -> Option<Arc<Sample>> {
