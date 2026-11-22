@@ -75,6 +75,15 @@ impl Vm {
         }
     }
 
+    /// Whether the control's loaded value already includes its routes.
+    #[must_use]
+    pub fn control_has_route_base(&self, id: i32) -> bool {
+        match self {
+            Self::Code(_) => true,
+            Self::Foreign(f) => f.control_has_route_base(id),
+        }
+    }
+
     /// A foreign machine's control `id` moves by a route ([`Machine::control_mod`]).
     pub fn control_mod(&mut self, id: i32, scale: f64, m: f64, context: u64) -> Option<CoId> {
         match self {

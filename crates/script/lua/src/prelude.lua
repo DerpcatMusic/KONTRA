@@ -214,20 +214,63 @@ local widget
 -- A widget's value lives in `__value`: assigning `w.value` runs its
 -- `changed`, as UVIWorkstation's setter does (VWinds' preset arrows set
 -- `menu.value` and rely on it), except from inside its own `changed`.
--- Every write of a widget's value counts: a route knows its own by it.
+-- Widget work may suspend inside changed. The machine clears a cancelled
+-- thread's scope before reusing it; any widget still holding that scope can
+-- then accept a new changed callback.
+local route_scopes = setmetatable({}, {__mode = "k"})
+local route_generation = 0
+__route_scopes = route_scopes
+local function enter_route_scope(co)
+	local scope = route_scopes[co]
+	if not scope then
+		scope = {}
+		route_scopes[co] = scope
+	end
+	if not scope[1] then
+		-- A cancelled widget can still refer to this reused scope.
+		route_generation += 1
+		scope[2] = route_generation
+	end
+	scope[1] = (scope[1] or 0) + 1
+	return scope
+end
+local function leave_route_scope(scope)
+	scope[1] -= 1
+	if scope[1] == 0 then
+		scope[1] = nil
+		scope[2] = nil
+	end
+end
+
+-- Every write counts except one made by this control's routing coroutine,
+-- including echoes in changed. A write by another coroutine still counts.
 local function wrote(w, v)
 	rawset(w, "__value", v)
-	rawset(w, "__writes", (rawget(w, "__writes") or 0) + 1)
+	local co = coroutine.running()
+	local scope = co and route_scopes[co]
+	if not (scope and scope[w]) then
+		rawset(w, "__writes", (rawget(w, "__writes") or 0) + 1)
+	end
 end
 local function run_changed(w, mods)
 	local changed = rawget(w, "changed")
-	if type(changed) == "function" and not rawget(w, "__changing") then
+	local owner = rawget(w, "__changing")
+	local generation = rawget(w, "__changing_generation")
+	if type(changed) ~= "function" or owner == true or (owner and generation and generation == owner[2]) then
+		return
+	end
+	local co = coroutine.running()
+	local scope = co and route_scopes[co]
+	if scope and scope[2] then
+		rawset(w, "__changing_generation", scope[2])
+		rawset(w, "__changing", scope)
+	else
 		rawset(w, "__changing", true)
-		local ok, err = pcall(changed, w, mods)
-		rawset(w, "__changing", nil)
-		if not ok then
-			error(err, 0)
-		end
+	end
+	local ok, err = pcall(changed, w, mods)
+	rawset(w, "__changing", nil)
+	if not ok then
+		error(err, 0)
 	end
 end
 
@@ -405,14 +448,8 @@ local function table_widget(w, name, fields)
 		if i then
 			values[i] = v
 			-- `changed(self, index)`, unless the script asked it not to.
-			local changed = rawget(self, "changed")
-			if call ~= false and type(changed) == "function" and not rawget(self, "__changing") then
-				rawset(self, "__changing", true)
-				local ok, err = pcall(changed, self, i)
-				rawset(self, "__changing", nil)
-				if not ok then
-					error(err, 0)
-				end
+			if call ~= false then
+				run_changed(self, i)
 			end
 		end
 	end
@@ -473,11 +510,23 @@ function __control_mod(id, scale, m)
 	if rawget(c, "integer") == true then
 		v = math.floor(v + 0.5)
 	end
-	-- Kept before the write: a `changed` that fails or waits leaves it,
-	-- and an edit while it waits counts past it.
+	-- Kept before the write: a `changed` that fails or waits leaves it.
 	rawset(c, "__route_base", base)
-	rawset(c, "__routed_at", writes + 1)
-	c:setValue(v)
+	rawset(c, "__routed_at", writes)
+	local co = coroutine.running()
+	local scope = co and enter_route_scope(co)
+	if scope then
+		scope[c] = (scope[c] or 0) + 1
+	end
+	local ok, err = pcall(c.setValue, c, v)
+	if scope then
+		local n = scope[c] - 1
+		scope[c] = n > 0 and n or nil
+		leave_route_scope(scope)
+	end
+	if not ok then
+		error(err, 0)
+	end
 end
 -- The UI the script builds, for the editor: every widget in the order the
 -- script made it (its index there names it), the page's size, picture and
@@ -504,6 +553,7 @@ function __restore()
 		-- Each `changed` runs on its own: one that fails (VWinds' `dynamics`
 		-- names a Macro 7 its Bb Clarinet lacks) leaves the rest restored.
 		if w.persistent ~= false then
+			rawset(w, "__restored", true)
 			local ok, err = pcall(w.setValue, w, restored(w.name, w.value))
 			if not ok then
 				table.insert(__restore_errors, tostring(w.name) .. ": " .. tostring(err))
@@ -533,7 +583,10 @@ widget = function(kind, name, value, ...)
 	if type(value) ~= "number" and type(value) ~= "boolean" then
 		value = kind ~= "OnOffButton" and kind ~= "Button" and 0
 	end
-	local w = setmetatable({ kind = kind, name = name, alpha = 1, enabled = true, visible = true }, widget_meta)
+	-- Reserve the restore flag at creation; loading a preset can run in a callback.
+	local w = setmetatable({
+		kind = kind, name = name, alpha = 1, enabled = true, visible = true, __restored = false,
+	}, widget_meta)
 	for k, v in pairs(fields) do
 		if type(k) == "string" and k ~= "value" and not geometry[k] then
 			rawset(w, k, v)
@@ -1758,6 +1811,7 @@ local function land(file, done, pace)
 			end
 			ok, err = pcall(run_changed, w)
 		elseif text ~= nil and w.persistent ~= false then
+			rawset(w, "__restored", true)
 			ok, err = pcall(w.setValue, w, parsed(text, w.value))
 		end
 		if not ok then
