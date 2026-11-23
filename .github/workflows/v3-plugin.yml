@@ -15,12 +15,18 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/v3-plugin.yml'
+      - '.github/scripts/check_*.py'
+      - '.github/scripts/locked_moose_revision.py'
   pull_request:
     branches: [main, v3]
     paths:
       - 'plugin/**'
       - 'moose.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/v3-plugin.yml'
+      - '.github/scripts/check_*.py'
+      - '.github/scripts/locked_moose_revision.py'
   workflow_dispatch:
 
 concurrency:
@@ -33,7 +39,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  CARGO_TARGET_DIR: target
 
 jobs:
   bundle:
@@ -63,34 +68,26 @@ jobs:
             build-essential pkg-config \
             libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
-            libgl1-mesa-dev libvulkan-dev \
+            libgl1-mesa-dev libvulkan-dev libwayland-dev \
             libasound2-dev libjack-jackd2-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: v3-plugin-${{ matrix.os }}-${{ matrix.target }}
           cache-on-failure: true
-      - name: Install cargo-moose
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Install cargo-moose from the locked Moose revision
         shell: bash
         run: |
-          MOOSE_REV=$(python3 -c '
-          import re
-          text = open("Cargo.lock", encoding="utf-8").read()
-          m = re.search(
-              r"(?ms)^\[\[package\]\]\s*\nname = \"moose\"\n(?:(?!\[\[package\]\]).)*?source = \"git\+https://github\.com/Matari-Audio/moose[^\"#]*#([0-9a-f]+)\"",
-              text,
-          )
-          if m:
-              print(m.group(1))
-          ')
-          unset CARGO_TARGET_DIR
-          if [ -n "$MOOSE_REV" ]; then
-            cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
-          else
-            cargo install --locked --git https://github.com/Matari-Audio/moose cargo-moose
-          fi
+          set -euo pipefail
+          MOOSE_REV=$(python3 .github/scripts/locked_moose_revision.py Cargo.lock)
+          cargo metadata --locked --format-version 1 --filter-platform ${{ matrix.target }} >/dev/null
+          cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
       - name: CLAP, VST3, and AU bundles
         shell: bash
         run: |
+          set -euo pipefail
           if [ "$RUNNER_OS" = macOS ]; then
             cargo moose build --clap --vst3 --au2 -p kontra-plugin --target ${{ matrix.target }}
           else
@@ -103,8 +100,14 @@ jobs:
           ls -la "target/bundles/${{ matrix.target }}"
           test -e "target/bundles/${{ matrix.target }}/KONTRA.clap"
           test -e "target/bundles/${{ matrix.target }}/KONTRA.vst3"
+          bundles="target/bundles/${{ matrix.target }}"
           if [ "$RUNNER_OS" = macOS ]; then
-            test -e "target/bundles/${{ matrix.target }}/KONTRA.component"
+            test -f "$bundles/KONTRA.component/Contents/MacOS/KONTRA"
+          else
+            python3 .github/scripts/check_plugin_load.py --platform "${{ matrix.name }}" --bundles "$bundles"
+            if [ "$RUNNER_OS" = Linux ]; then
+              python3 .github/scripts/check_glibc.py "$bundles/KONTRA.clap" "$bundles/KONTRA.vst3/Contents/x86_64-linux/KONTRA.so"
+            fi
           fi
       - name: clap-validator
         if: runner.os == 'Linux'

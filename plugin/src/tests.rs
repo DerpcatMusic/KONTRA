@@ -1238,6 +1238,28 @@ fn the_same_state_restored_again_loads_nothing_twice() {
     }
 }
 
+#[test]
+fn reopened_editor_waits_for_a_fresh_snapshot_even_when_the_rack_is_unchanged() {
+    let (params, mut dsp) = activate("");
+    settle(&params, &mut dsp);
+    params.shared.shown.store(false, Ordering::Release);
+    params.shared.dirty.store(false, Ordering::Release);
+
+    // Reopening must not need the rack lock; a background load can hold it.
+    {
+        let _rack = crate::lock(&params.shared.rack);
+        params.shared.open_editor();
+        assert!(!crate::lock(&params.shared.view).ready());
+    }
+
+    Tick.run(&params);
+    assert!(crate::lock(&params.shared.view).ready());
+    assert!(
+        params.shared.dirty.load(Ordering::Acquire),
+        "a fresh snapshot must draw even if the rack did not change"
+    );
+}
+
 /// An idle rack asks the editor for no frames: a tick that changes nothing
 /// it shows leaves it clean, and one that does marks it.
 #[test]
