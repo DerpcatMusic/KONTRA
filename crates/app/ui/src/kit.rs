@@ -177,8 +177,8 @@ pub fn knob(
 
 /// A slider `size` big, vertical when taller than wide: a drag anywhere on
 /// it sweeps `range`, a double click puts back `default`. A range centred
-/// on 0 (pan) fills from the middle. `name` is its tooltip. MUI's slider,
-/// quiet.
+/// on 0 (pan) fills from the middle and marks it. `name` is its tooltip.
+/// MUI's slider, quiet and flat.
 pub fn slider(
     ui: &mut Ui,
     id: impl Into<Id>,
@@ -193,6 +193,7 @@ pub fn slider(
     Response {
         el: control
             .quiet()
+            .flat()
             .px(w.min(h) / LANE_SHARE)
             .el()
             .w(w)
