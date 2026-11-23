@@ -38,7 +38,7 @@ dependencies = [
 [[package]]
 name = "accesskit_macos"
 version = "0.26.3"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -51,7 +51,7 @@ dependencies = [
 [[package]]
 name = "accesskit_unix"
 version = "0.22.1"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
@@ -435,15 +435,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "bit-set"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34ddef2995421ab6a5c779542c81ee77c115206f4ad9d5a8e05f4ff49716a3dd"
-dependencies = [
- "bit-vec",
 ]
 
 [[package]]
@@ -1201,12 +1192,6 @@ checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 
 [[package]]
 name = "foldhash"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
-
-[[package]]
-name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
@@ -1321,28 +1306,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
-name = "gl_generator"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d"
-dependencies = [
- "khronos_api",
- "log",
- "xml-rs",
-]
-
-[[package]]
 name = "glifo"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "bytemuck",
- "foldhash 0.2.0",
+ "foldhash",
  "hashbrown 0.17.1",
  "log",
  "peniko",
  "png",
- "skrifa 0.44.0",
+ "skrifa",
  "smallvec",
  "vello_common",
 ]
@@ -1352,27 +1326,6 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
-
-[[package]]
-name = "glow"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29038e1c483364cc6bb3cf78feee1816002e127c331a1eec55a4d202b9e1adb5"
-dependencies = [
- "js-sys",
- "slotmap",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "glutin_wgl_sys"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c4ee00b289aba7a9e5306d57c2d05499b2e5dc427f84ac708bd2c090212cf3e"
-dependencies = [
- "gl_generator",
-]
 
 [[package]]
 name = "gpu-allocator"
@@ -1386,26 +1339,6 @@ dependencies = [
  "presser",
  "thiserror 2.0.21",
  "windows 0.62.2",
-]
-
-[[package]]
-name = "gpu-descriptor"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b89c83349105e3732062a895becfc71a8f921bb71ecbbdd8ff99263e3b53a0ca"
-dependencies = [
- "bitflags 2.13.2",
- "gpu-descriptor-types",
- "hashbrown 0.15.5",
-]
-
-[[package]]
-name = "gpu-descriptor-types"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
-dependencies = [
- "bitflags 2.13.2",
 ]
 
 [[package]]
@@ -1438,7 +1371,7 @@ dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
  "once_cell",
- "read-fonts 0.43.3",
+ "read-fonts",
  "smallvec",
 ]
 
@@ -1450,22 +1383,13 @@ checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
-version = "0.15.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
-dependencies = [
- "foldhash 0.1.5",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash 0.2.0",
+ "foldhash",
 ]
 
 [[package]]
@@ -1474,7 +1398,7 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "foldhash 0.2.0",
+ "foldhash",
 ]
 
 [[package]]
@@ -1488,12 +1412,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hexf-parse"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hound"
@@ -1803,23 +1721,6 @@ dependencies = [
  "bitflags 2.13.2",
  "serde",
 ]
-
-[[package]]
-name = "khronos-egl"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
-dependencies = [
- "libc",
- "libloading",
- "pkg-config",
-]
-
-[[package]]
-name = "khronos_api"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kontra-align"
@@ -2340,7 +2241,7 @@ dependencies = [
  "png",
  "resvg",
  "sha2",
- "skrifa 0.46.2",
+ "skrifa",
  "tempfile",
  "zune-jpeg",
 ]
@@ -2627,7 +2528,7 @@ dependencies = [
 [[package]]
 name = "moose"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "moose-aax",
  "moose-au",
@@ -2645,7 +2546,7 @@ dependencies = [
 [[package]]
 name = "moose-aax"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "moose-core",
  "moose-params",
@@ -2654,7 +2555,7 @@ dependencies = [
 [[package]]
 name = "moose-au"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "cc",
  "crossbeam-queue",
@@ -2666,7 +2567,7 @@ dependencies = [
 [[package]]
 name = "moose-baseview"
 version = "0.4.1-moose.1"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "block2 0.6.2",
  "bytemuck",
@@ -2701,7 +2602,7 @@ dependencies = [
 [[package]]
 name = "moose-build"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "base64",
  "moose-utils",
@@ -2712,7 +2613,7 @@ dependencies = [
 [[package]]
 name = "moose-clap"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "clap-sys",
  "crossbeam-queue",
@@ -2725,7 +2626,7 @@ dependencies = [
 [[package]]
 name = "moose-core"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "backtrace",
  "bitflags 2.13.2",
@@ -2739,20 +2640,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "moose-cpu"
-version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
-dependencies = [
- "moose-core",
- "moose-font",
- "moose-gui-types",
- "tiny-skia",
-]
-
-[[package]]
 name = "moose-derive"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "moose-build",
  "moose-params",
@@ -2766,7 +2656,7 @@ dependencies = [
 [[package]]
 name = "moose-driver"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "moose-core",
  "moose-params",
@@ -2775,64 +2665,21 @@ dependencies = [
 [[package]]
 name = "moose-dsp"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
-
-[[package]]
-name = "moose-font"
-version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
-dependencies = [
- "skrifa 0.43.2",
- "tiny-skia",
-]
-
-[[package]]
-name = "moose-gui"
-version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
-dependencies = [
- "log",
- "moose-baseview",
- "moose-core",
- "moose-cpu",
- "moose-gui-types",
- "moose-gui-utils",
- "moose-params",
- "moose-plugin",
- "objc",
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
- "objc2-quartz-core 0.3.2",
- "objc2-ui-kit",
- "pollster",
- "raw-window-handle",
- "wgpu 29.0.4",
- "windows-sys 0.61.2",
-]
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 
 [[package]]
 name = "moose-gui-types"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "moose-core",
  "objc2 0.6.4",
-]
-
-[[package]]
-name = "moose-gui-utils"
-version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
-dependencies = [
- "objc",
- "raw-window-handle",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "moose-loader"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "crc32fast",
  "log",
@@ -2845,7 +2692,7 @@ dependencies = [
 [[package]]
 name = "moose-mui"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "moose-core",
  "moose-params",
@@ -2857,7 +2704,7 @@ dependencies = [
 [[package]]
 name = "moose-params"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -2865,7 +2712,7 @@ dependencies = [
 [[package]]
 name = "moose-plugin"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "moose-core",
  "moose-gui-types",
@@ -2875,12 +2722,12 @@ dependencies = [
 [[package]]
 name = "moose-shim-types"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 
 [[package]]
 name = "moose-standalone"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "cpal",
  "crossbeam-queue",
@@ -2888,7 +2735,6 @@ dependencies = [
  "midir",
  "moose-baseview",
  "moose-core",
- "moose-gui",
  "moose-params",
  "moose-utils",
  "objc",
@@ -2902,7 +2748,7 @@ dependencies = [
 [[package]]
 name = "moose-test"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "moose-build",
  "moose-core",
@@ -2916,12 +2762,12 @@ dependencies = [
 [[package]]
 name = "moose-utils"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 
 [[package]]
 name = "moose-vst3"
 version = "7.0.0"
-source = "git+https://github.com/Matari-Audio/moose#2dfe232eda11156f932341b52eb16165cf64ed00"
+source = "git+https://github.com/Matari-Audio/moose#b6186b4a1139b2c06d747889cfbdbf218282c5e7"
 dependencies = [
  "crossbeam-queue",
  "libc",
@@ -2933,7 +2779,7 @@ dependencies = [
 [[package]]
 name = "mui"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "color",
  "mui-geometry",
@@ -2951,7 +2797,7 @@ dependencies = [
 [[package]]
 name = "mui-access"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "accesskit",
  "mui-geometry",
@@ -2962,7 +2808,7 @@ dependencies = [
 [[package]]
 name = "mui-baseview"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "accesskit_macos",
  "accesskit_unix",
@@ -2978,7 +2824,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "raw-window-handle",
  "serde_json",
- "wgpu 30.0.1",
+ "wgpu",
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "x11-dl",
@@ -2988,7 +2834,7 @@ dependencies = [
 [[package]]
 name = "mui-geometry"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "i_overlay",
  "kurbo",
@@ -2998,7 +2844,7 @@ dependencies = [
 [[package]]
 name = "mui-headless"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "mui",
  "png",
@@ -3008,7 +2854,7 @@ dependencies = [
 [[package]]
 name = "mui-input"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "mui-geometry",
  "mui-layout",
@@ -3018,7 +2864,7 @@ dependencies = [
 [[package]]
 name = "mui-layout"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "arrayvec",
  "rustc-hash 2.1.3",
@@ -3028,7 +2874,7 @@ dependencies = [
 [[package]]
 name = "mui-material"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "mui-scene",
 ]
@@ -3036,12 +2882,12 @@ dependencies = [
 [[package]]
 name = "mui-motion"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 
 [[package]]
 name = "mui-native-dialog"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "async-channel",
  "futures-lite",
@@ -3053,7 +2899,7 @@ dependencies = [
 [[package]]
 name = "mui-scene"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "mui-geometry",
  "mui-layout",
@@ -3069,7 +2915,7 @@ dependencies = [
 [[package]]
 name = "mui-style"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "color",
  "kurbo",
@@ -3082,16 +2928,16 @@ dependencies = [
 [[package]]
 name = "mui-symbols"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 
 [[package]]
 name = "mui-text"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "harfrust",
  "mui-geometry",
- "skrifa 0.46.2",
+ "skrifa",
  "smallvec",
  "unicode-bidi",
  "unicode-linebreak",
@@ -3101,7 +2947,7 @@ dependencies = [
 [[package]]
 name = "mui-vello"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "glifo",
  "mach-dxcompiler-rs",
@@ -3115,13 +2961,13 @@ dependencies = [
  "softbuffer",
  "vello_common",
  "vello_cpu",
- "wgpu 30.0.1",
+ "wgpu",
 ]
 
 [[package]]
 name = "mui-weld"
 version = "0.4.2"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "color",
  "kurbo",
@@ -3136,38 +2982,12 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "naga"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2bf919621e7975acb27d881bae2fb993e0d45c8e0446e85e6272971e00dc8df"
-dependencies = [
- "arrayvec",
- "bit-set 0.9.1",
- "bitflags 2.13.2",
- "cfg-if",
- "cfg_aliases",
- "codespan-reporting",
- "half",
- "hashbrown 0.16.1",
- "hexf-parse",
- "indexmap",
- "libm",
- "log",
- "num-traits",
- "once_cell",
- "rustc-hash 1.1.0",
- "spirv",
- "thiserror 2.0.21",
- "unicode-ident",
-]
-
-[[package]]
-name = "naga"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
 dependencies = [
  "arrayvec",
- "bit-set 0.10.0",
+ "bit-set",
  "bitflags 2.13.2",
  "cfg-if",
  "cfg_aliases",
@@ -3359,8 +3179,8 @@ dependencies = [
  "block2 0.5.1",
  "libc",
  "objc2 0.5.2",
- "objc2-core-data 0.2.2",
- "objc2-core-image 0.2.2",
+ "objc2-core-data",
+ "objc2-core-image",
  "objc2-foundation 0.2.2",
  "objc2-quartz-core 0.2.2",
 ]
@@ -3406,17 +3226,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc2-cloud-kit"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73ad74d880bb43877038da939b7427bba67e9dd42004a18b809ba7d87cee241c"
-dependencies = [
- "bitflags 2.13.2",
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
-]
-
-[[package]]
 name = "objc2-core-audio"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3449,16 +3258,6 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
-]
-
-[[package]]
-name = "objc2-core-data"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b402a653efbb5e82ce4df10683b6b28027616a2715e90009947d50b8dd298fa"
-dependencies = [
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -3497,51 +3296,6 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-metal 0.2.2",
-]
-
-[[package]]
-name = "objc2-core-image"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5d563b38d2b97209f8e861173de434bd0214cf020e3423a52624cd1d989f006"
-dependencies = [
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
-]
-
-[[package]]
-name = "objc2-core-location"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca347214e24bc973fc025fd0d36ebb179ff30536ed1f80252706db19ee452009"
-dependencies = [
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
-]
-
-[[package]]
-name = "objc2-core-text"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
-dependencies = [
- "bitflags 2.13.2",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-graphics",
-]
-
-[[package]]
-name = "objc2-core-video"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
-dependencies = [
- "bitflags 2.13.2",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-io-surface",
 ]
 
 [[package]]
@@ -3630,45 +3384,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
 dependencies = [
  "bitflags 2.13.2",
- "block2 0.6.2",
- "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-core-graphics",
- "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
-]
-
-[[package]]
-name = "objc2-ui-kit"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d87d638e33c06f577498cbcc50491496a3ed4246998a7fbba7ccb98b1e7eab22"
-dependencies = [
- "bitflags 2.13.2",
- "block2 0.6.2",
- "objc2 0.6.4",
- "objc2-cloud-kit",
- "objc2-core-data 0.3.2",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-image 0.3.2",
- "objc2-core-location",
- "objc2-core-text",
- "objc2-foundation 0.3.2",
- "objc2-quartz-core 0.3.2",
- "objc2-user-notifications",
-]
-
-[[package]]
-name = "objc2-user-notifications"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
-dependencies = [
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -3991,28 +3711,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
-]
-
-[[package]]
-name = "read-fonts"
-version = "0.40.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "487889119a5f19ff7c0a20637196bdc76b9f54ebec17e3588b5d75e4999f8773"
-dependencies = [
- "bytemuck",
- "font-types",
- "once_cell",
-]
-
-[[package]]
-name = "read-fonts"
-version = "0.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
-dependencies = [
- "bytemuck",
- "font-types",
- "once_cell",
 ]
 
 [[package]]
@@ -4360,32 +4058,12 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skrifa"
-version = "0.43.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cbe997d0f2480442d727488fbe2150779114cbe480ecdbadef58b33e0318ffb"
-dependencies = [
- "bytemuck",
- "read-fonts 0.40.2",
-]
-
-[[package]]
-name = "skrifa"
-version = "0.44.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68"
-dependencies = [
- "bytemuck",
- "read-fonts 0.41.0",
-]
-
-[[package]]
-name = "skrifa"
 version = "0.46.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4febebda507fb889c545a37a135517769d1391941013561292897961d1887d6"
 dependencies = [
  "bytemuck",
- "read-fonts 0.43.3",
+ "read-fonts",
 ]
 
 [[package]]
@@ -4393,15 +4071,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "slotmap"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
-dependencies = [
- "version_check",
-]
 
 [[package]]
 name = "smallvec"
@@ -5085,7 +4754,7 @@ dependencies = [
 [[package]]
 name = "vello_cpu"
 version = "0.3.0"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "bytemuck",
  "glifo",
@@ -5315,30 +4984,6 @@ dependencies = [
 
 [[package]]
 name = "wgpu"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
-dependencies = [
- "arrayvec",
- "bitflags 2.13.2",
- "bytemuck",
- "cfg-if",
- "cfg_aliases",
- "document-features",
- "hashbrown 0.16.1",
- "log",
- "portable-atomic",
- "profiling",
- "raw-window-handle",
- "smallvec",
- "static_assertions",
- "wgpu-core 29.0.4",
- "wgpu-hal 29.0.4",
- "wgpu-types 29.0.4",
-]
-
-[[package]]
-name = "wgpu"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"
@@ -5360,42 +5005,9 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "wgpu-core 30.0.1",
- "wgpu-hal 30.0.1",
- "wgpu-types 30.0.1",
-]
-
-[[package]]
-name = "wgpu-core"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f519832254e56965a9940c4af57dcb75f702b6f6fa4a0b172f685395843a4d7"
-dependencies = [
- "arrayvec",
- "bit-set 0.9.1",
- "bit-vec",
- "bitflags 2.13.2",
- "bytemuck",
- "cfg_aliases",
- "document-features",
- "hashbrown 0.16.1",
- "indexmap",
- "log",
- "naga 29.0.4",
- "once_cell",
- "parking_lot",
- "portable-atomic",
- "profiling",
- "raw-window-handle",
- "rustc-hash 1.1.0",
- "smallvec",
- "thiserror 2.0.21",
- "wgpu-core-deps-apple 29.0.4",
- "wgpu-core-deps-emscripten 29.0.4",
- "wgpu-core-deps-windows-linux-android 29.0.4",
- "wgpu-hal 29.0.4",
- "wgpu-naga-bridge 29.0.4",
- "wgpu-types 29.0.4",
+ "wgpu-core",
+ "wgpu-hal",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -5405,7 +5017,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14c018fce9b6270aa203c2fdd56f3cce996713534bd757e4ea58c8560b121f14"
 dependencies = [
  "arrayvec",
- "bit-set 0.10.0",
+ "bit-set",
  "bit-vec",
  "bitflags 2.13.2",
  "bytemuck",
@@ -5414,7 +5026,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "log",
- "naga 30.0.1",
+ "naga",
  "naga-types",
  "once_cell",
  "parking_lot",
@@ -5424,21 +5036,11 @@ dependencies = [
  "rustc-hash 1.1.0",
  "smallvec",
  "thiserror 2.0.21",
- "wgpu-core-deps-apple 30.0.1",
- "wgpu-core-deps-emscripten 30.0.2",
- "wgpu-core-deps-windows-linux-android 30.0.1",
- "wgpu-hal 30.0.1",
- "wgpu-naga-bridge 30.0.1",
- "wgpu-types 30.0.1",
-]
-
-[[package]]
-name = "wgpu-core-deps-apple"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5e39e26c4c0e07589e67d18546cf79ff45383659fc72fca4dd293358a0347f3"
-dependencies = [
- "wgpu-hal 29.0.4",
+ "wgpu-core-deps-apple",
+ "wgpu-core-deps-windows-linux-android",
+ "wgpu-hal",
+ "wgpu-naga-bridge",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -5447,34 +5049,7 @@ version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "061f3d319a40d39d00b1ecc2c33b89fe21d4e6fe01859df3500a3a8ecccd6b68"
 dependencies = [
- "wgpu-hal 30.0.1",
-]
-
-[[package]]
-name = "wgpu-core-deps-emscripten"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01e09be551dc939498bdd5f6b2c66e55ab275dad25825267a08605a80fc9f0af"
-dependencies = [
- "wgpu-hal 29.0.4",
-]
-
-[[package]]
-name = "wgpu-core-deps-emscripten"
-version = "30.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55ccf093bd215ae9dc4f96df293e675513ac1f2569f8293a2911cc34ca3505d1"
-dependencies = [
- "wgpu-hal 30.0.1",
-]
-
-[[package]]
-name = "wgpu-core-deps-windows-linux-android"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e592c1bbef6ad047647ae6e666ebd8cee7a32bb4544d9700ec96cbf73230257"
-dependencies = [
- "wgpu-hal 29.0.4",
+ "wgpu-hal",
 ]
 
 [[package]]
@@ -5483,61 +5058,7 @@ version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7586165fd5f6d881cb9ce4bb71f40d6caab2c0f1837e3fc1d9788a197fb6004f"
 dependencies = [
- "wgpu-hal 30.0.1",
-]
-
-[[package]]
-name = "wgpu-hal"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97ace1c17727311c22a46e4e3faf56ea6de81af99dcc839bdfb54857b94d448d"
-dependencies = [
- "android_system_properties",
- "arrayvec",
- "ash",
- "bit-set 0.9.1",
- "bitflags 2.13.2",
- "block2 0.6.2",
- "bytemuck",
- "cfg-if",
- "cfg_aliases",
- "glow",
- "glutin_wgl_sys",
- "gpu-allocator",
- "gpu-descriptor",
- "hashbrown 0.16.1",
- "js-sys",
- "khronos-egl",
- "libc",
- "libloading",
- "log",
- "naga 29.0.4",
- "ndk-sys",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-foundation 0.3.2",
- "objc2-metal 0.3.2",
- "objc2-quartz-core 0.3.2",
- "once_cell",
- "ordered-float",
- "parking_lot",
- "portable-atomic",
- "portable-atomic-util",
- "profiling",
- "range-alloc",
- "raw-window-handle",
- "raw-window-metal",
- "renderdoc-sys",
- "smallvec",
- "thiserror 2.0.21",
- "wasm-bindgen",
- "wayland-sys",
- "web-sys",
- "wgpu-naga-bridge 29.0.4",
- "wgpu-types 29.0.4",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "windows-result 0.4.1",
+ "wgpu-hal",
 ]
 
 [[package]]
@@ -5549,25 +5070,20 @@ dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash",
- "bit-set 0.10.0",
+ "bit-set",
  "bitflags 2.13.2",
  "block2 0.6.2",
  "bytemuck",
  "cfg-if",
  "cfg_aliases",
- "glow",
- "glutin_wgl_sys",
  "gpu-allocator",
  "hashbrown 0.17.1",
- "js-sys",
- "khronos-egl",
  "libc",
  "libloading",
  "log",
  "mach-dxcompiler-rs",
- "naga 30.0.1",
+ "naga",
  "naga-types",
- "ndk-sys",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -5587,24 +5103,10 @@ dependencies = [
  "smallvec",
  "static_assertions",
  "thiserror 2.0.21",
- "wasm-bindgen",
- "wayland-sys",
- "web-sys",
- "wgpu-naga-bridge 30.0.1",
- "wgpu-types 30.0.1",
+ "wgpu-naga-bridge",
+ "wgpu-types",
  "windows 0.62.2",
  "windows-core 0.62.2",
- "windows-result 0.4.1",
-]
-
-[[package]]
-name = "wgpu-naga-bridge"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95226013f547544b223281cd16a4fb549aa9dcb562adbda0faae4c73ffbbc161"
-dependencies = [
- "naga 29.0.4",
- "wgpu-types 29.0.4",
 ]
 
 [[package]]
@@ -5613,22 +5115,8 @@ version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f62e73117bb7a62bfd9c5a5841438a823f6566c6442a808ee269d2d055c081"
 dependencies = [
- "naga 30.0.1",
- "wgpu-types 30.0.1",
-]
-
-[[package]]
-name = "wgpu-types"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84bf84cd9ca8ca45e2b223a3868f1adf9bfc0c66aeac212e76ee7e40fdadf8f5"
-dependencies = [
- "bitflags 2.13.2",
- "bytemuck",
- "js-sys",
- "log",
- "raw-window-handle",
- "web-sys",
+ "naga",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -6096,7 +5584,7 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 [[package]]
 name = "xim-ctext"
 version = "0.3.0"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "encoding_rs",
 ]
@@ -6104,7 +5592,7 @@ dependencies = [
 [[package]]
 name = "xim-parser"
 version = "0.2.1"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -6141,12 +5629,6 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 dependencies = [
  "bytemuck",
 ]
-
-[[package]]
-name = "xml-rs"
-version = "0.8.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
@@ -6291,7 +5773,7 @@ dependencies = [
 [[package]]
 name = "zed-xim"
 version = "0.4.0-zed"
-source = "git+https://github.com/Matari-Audio/MUI#c91adff71c77b87dfd8cac234ac523aec80fdaf7"
+source = "git+https://github.com/Matari-Audio/MUI#7c5834ccd71fcd688d94b42dc2456810d39f207d"
 dependencies = [
  "ahash",
  "hashbrown 0.14.5",
