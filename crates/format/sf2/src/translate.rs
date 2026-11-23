@@ -295,21 +295,13 @@ impl Build<'_> {
         };
         g.mods.push(route(
             "velocity",
-            ir::ModKind::Volume {
-                source: ir::Source::Velocity,
-                intensity: 1.0,
-                curve: ir::Curve::Squared,
-                tau_ms: 0.0,
-            },
+            ir::ModRoute::new(ir::Source::Velocity, ir::ParamAddr::Volume, 1.0)
+                .law(ir::RouteLaw::Gain(ir::Curve::Squared)),
         ));
         g.mods.push(route(
             "pitch wheel",
-            ir::ModKind::Pitch {
-                source: ir::Source::PitchBend,
-                semitones: BEND_SEMITONES,
-                depth: 1.0,
-                tau_ms: 0.0,
-            },
+            ir::ModRoute::new(ir::Source::PitchBend, ir::ParamAddr::Pitch, 1.0)
+                .span(BEND_SEMITONES),
         ));
 
         // The modulation LFO, when anything reads it.
@@ -332,12 +324,8 @@ impl Build<'_> {
                 swing_db = a;
                 g.mods.push(route(
                     "mod LFO volume",
-                    ir::ModKind::Volume {
-                        source: lfo,
-                        intensity: a.signum(),
-                        curve: ir::Curve::Decibels(2.0 * a.abs()),
-                        tau_ms: 0.0,
-                    },
+                    ir::ModRoute::new(lfo, ir::ParamAddr::Volume, a.signum())
+                        .law(ir::RouteLaw::Gain(ir::Curve::Decibels(2.0 * a.abs()))),
                 ));
             }
         }
@@ -372,12 +360,12 @@ impl Build<'_> {
         });
         g.mods.push(route(
             "mod wheel vibrato",
-            ir::ModKind::Pitch {
-                source: ir::Source::Blend(index(g.blends.len() - 1)),
-                semitones: WHEEL_VIBRATO_CENTS / 100.0,
-                depth: 1.0,
-                tau_ms: 0.0,
-            },
+            ir::ModRoute::new(
+                ir::Source::Blend(index(g.blends.len() - 1)),
+                ir::ParamAddr::Pitch,
+                1.0,
+            )
+            .span(WHEEL_VIBRATO_CENTS / 100.0),
         ));
 
         // The modulation envelope, when anything reads it.
@@ -534,7 +522,7 @@ impl Build<'_> {
     }
 
     fn finish(self, name: String) -> ir::Instrument {
-        ir::Instrument {
+        let mut out = ir::Instrument {
             name,
             source_path: Some(self.path.to_path_buf()),
             samples: self.samples,
@@ -548,7 +536,10 @@ impl Build<'_> {
             },
             diagnostics: self.notes.finish(),
             ..ir::Instrument::DEFAULT
-        }
+        };
+        let issues = ir::validate(&out);
+        out.diagnostics.extend(issues);
+        out
     }
 }
 
@@ -617,25 +608,20 @@ fn mod_envelope(v: &impl Fn(u16) -> i32) -> ir::Breakpoints {
     }
 }
 
-fn route(name: &str, kind: ir::ModKind) -> ir::Mod {
+fn route(name: &str, kind: ir::ModRoute) -> ir::Mod {
     ir::Mod {
         name: name.to_owned(),
         slot: 0,
         target: 0,
         bypass: false,
-        kind,
+        route: kind,
     }
 }
 
 fn pitch(name: &str, source: ir::Source, cents: i32) -> ir::Mod {
     route(
         name,
-        ir::ModKind::Pitch {
-            source,
-            semitones: laws::semitones(cents),
-            depth: 1.0,
-            tau_ms: 0.0,
-        },
+        ir::ModRoute::new(source, ir::ParamAddr::Pitch, 1.0).span(laws::semitones(cents)),
     )
 }
 
@@ -643,15 +629,79 @@ fn pitch(name: &str, source: ir::Source, cents: i32) -> ir::Mod {
 fn cutoff(name: &str, source: ir::Source, cents: f32) -> ir::Mod {
     route(
         name,
-        ir::ModKind::Cutoff {
+        ir::ModRoute::new(
             source,
-            insert: 0,
-            depth: cents / 1200.0 / CUTOFF_OCTAVES,
-        },
+            ir::ParamAddr::FilterCutoff { insert: 0 },
+            cents / 1200.0 / CUTOFF_OCTAVES,
+        ),
     )
 }
 
 /// A group list index as a source index (a group holds a handful).
 fn index(i: usize) -> u8 {
     u8::try_from(i).unwrap_or(u8::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn finish_reports_invalid_references() {
+        let sf = SoundFont {
+            name: String::new(),
+            version: (2, 1),
+            smpl: None,
+            sm24: None,
+            presets: Vec::new(),
+            pbag: Vec::new(),
+            pmod: Vec::new(),
+            pgen: Vec::new(),
+            inst: Vec::new(),
+            ibag: Vec::new(),
+            imod: Vec::new(),
+            igen: Vec::new(),
+            samples: Vec::new(),
+        };
+        let zone = ir::Zone {
+            id: 0,
+            sample: 9,
+            keys: 0..=127,
+            velocities: 1..=127,
+            velocity_fade: (0, 0),
+            key_fade: (0, 0),
+            crossfades: Vec::new(),
+            root: 60,
+            tune: 0.0,
+            volume_db: 0.0,
+            pan: 0.0,
+            start: 0,
+            end: 1000,
+            start_mod: 0,
+            loops: Vec::new(),
+            reverse: false,
+            mix: Vec::new(),
+            slot: 0,
+            envelopes: Vec::new(),
+        };
+        let build = Build {
+            sf: &sf,
+            path: Path::new("t.sf2"),
+            samples: Vec::new(),
+            sample_index: HashMap::new(),
+            groups: vec![(ir::Group::DEFAULT, vec![zone])],
+            classes: Vec::new(),
+            notes: Notes::default(),
+            zone_id: 0,
+            zone_visits: 0,
+            record_visits: 0,
+        };
+        let out = build.finish("t".into());
+        let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
+        assert!(
+            features.contains(&"ir.zone.sample_out_of_bounds"),
+            "{features:?}"
+        );
+    }
 }

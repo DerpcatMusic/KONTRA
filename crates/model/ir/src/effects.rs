@@ -390,7 +390,7 @@ pub struct Comb {
     pub feedback: f32,
     /// Feed-forward: the input delayed, not the output (no ringing).
     pub forward: bool,
-    /// Octaves a [`crate::ModKind::Cutoff`] depth of 1 moves `hz` (the range
+    /// Octaves a [`crate::ParamAddr::FilterCutoff`] depth of 1 moves `hz` (the range
     /// of the format's frequency control).
     pub octaves: f32,
 }

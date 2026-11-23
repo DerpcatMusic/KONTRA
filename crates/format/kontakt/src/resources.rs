@@ -107,14 +107,18 @@ impl Resources {
 
     /// `Resources/<name>` (`data/x.nka`), matched without case; `None` if absent.
     pub fn read(&mut self, name: &str) -> Option<Vec<u8>> {
-        let want = format!("/{}", name.to_lowercase());
+        let normalized = kontra_format::paths::normalize_separators(name);
+        let want = format!(
+            "/{}",
+            normalized.trim_start_matches('/').to_ascii_lowercase()
+        );
         let matches = |stored: &str| {
-            format!("/{}", stored.replace(['|', '\\'], "/").to_lowercase()).ends_with(&want)
+            format!("/{}", stored.replace(['|', '\\'], "/").to_ascii_lowercase()).ends_with(&want)
         };
         for i in 0..self.sources.len() {
             let found = match self.sources.get_mut(i)? {
                 Source::Loose(dir) => {
-                    let file = loose_path(dir, name).and_then(|path| File::open(path).ok());
+                    let file = loose_path(dir, &normalized).and_then(|path| File::open(path).ok());
                     file.and_then(|f| {
                         let mut bytes = Vec::new();
                         f.take(LIMIT).read_to_end(&mut bytes).ok()?;
@@ -165,10 +169,14 @@ impl Resources {
     /// Where `Resources/<name>` sits in a loose folder or a `.nicnt`, for a
     /// reader that opens it itself (a convolution response).
     pub(crate) fn locate(&self, name: &str) -> Option<crate::samples::Location> {
-        let want = format!("/{}", name.replace(['|', '\\'], "/").to_lowercase());
+        let normalized = kontra_format::paths::normalize_separators(name);
+        let want = format!(
+            "/{}",
+            normalized.trim_start_matches('/').to_ascii_lowercase()
+        );
         self.sources.iter().find_map(|source| match source {
             Source::Loose(dir) => {
-                let file = loose_path(dir, name)?;
+                let file = loose_path(dir, &normalized)?;
                 // Inside the folder, `..` and symlinks resolved.
                 let real = |p: &Path| p.canonicalize().ok();
                 let inside = real(&file)
@@ -212,17 +220,23 @@ impl Resources {
     /// The files anywhere under `Resources/<folder>/` of every source, by
     /// their path from it (`a/b.nui`).
     pub(crate) fn under(&self, folder: &str) -> Vec<String> {
-        let want = format!("resources/{}/", folder.to_lowercase());
+        let folder_norm = kontra_format::paths::normalize_separators(folder);
+        let folder_trimmed = folder_norm.trim_matches('/');
+        let want = format!("resources/{}/", folder_trimmed.to_ascii_lowercase());
         let inside = |stored: &str| {
             let stored = stored.replace(['|', '\\'], "/");
-            let at = stored.to_lowercase().find(&want)? + want.len();
+            let at = stored.to_ascii_lowercase().find(&want)? + want.len();
             let name = stored.get(at..)?;
             (!name.is_empty()).then(|| name.to_string())
         };
         let mut names: Vec<String> = Vec::new();
         for source in &self.sources {
             let found: Vec<String> = match source {
-                Source::Loose(dir) => walk(&dir.join(folder), ""),
+                Source::Loose(dir) => {
+                    kontra_format::paths::resolve_case_insensitive(dir, folder_trimmed, None)
+                        .map(|sub| walk(&sub, ""))
+                        .unwrap_or_default()
+                }
                 Source::Nicnt(_, table, _) => table
                     .items
                     .iter()
@@ -303,18 +317,54 @@ pub(crate) fn known_root(path: &Path) -> Option<PathBuf> {
 }
 
 fn find_root(path: &Path) -> Option<PathBuf> {
-    path.ancestors()
-        .skip(1)
-        .take(DEPTH)
-        .find(|dir| {
-            entries(dir).iter().any(|p| {
-                named(p, "Samples")
-                    || named(p, "Resources")
-                    || p.extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
-            })
+    let ancestors: Vec<&Path> = path.ancestors().skip(1).take(DEPTH).collect();
+    // 1. Prefer the nearest ancestor holding a `.nicnt` registration file so
+    //    libraries with nested `Instruments/Sub/Samples` folders still resolve
+    //    their root `.nicnt` and `Resources/`.
+    if let Some(&dir) = ancestors.iter().find(|dir| {
+        entries(dir).iter().any(|p| {
+            p.is_file()
+                && p.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
         })
-        .map(Path::to_path_buf)
+    }) {
+        return Some(dir.to_path_buf());
+    }
+    // 2. Prefer structural markers anywhere among the ancestors. Only fall
+    //    back to an archive or cache marker when no such structure exists.
+    let mut archive_root = None;
+    for dir in ancestors {
+        let children = entries(dir);
+        let has_core = children
+            .iter()
+            .any(|p| p.is_dir() && (named(p, "Samples") || named(p, "Resources")));
+        let has_instruments = children
+            .iter()
+            .any(|p| p.is_dir() && (named(p, "Instruments") || named(p, "Multis")));
+        let has_named_samples = children.iter().any(|p| {
+            p.is_dir()
+                && p.file_name().is_some_and(|n| {
+                    let lower = n.to_string_lossy().to_ascii_lowercase();
+                    lower.ends_with(" samples") || lower == "audio"
+                })
+        });
+        if has_core || (has_instruments && has_named_samples) {
+            return Some(dir.to_path_buf());
+        }
+        if archive_root.is_none()
+            && children.iter().any(|p| {
+                p.is_file()
+                    && p.extension().is_some_and(|e| {
+                        ["nkr", "nkx", "nkc"]
+                            .iter()
+                            .any(|ext| e.eq_ignore_ascii_case(ext))
+                    })
+            })
+        {
+            archive_root = Some(dir.to_path_buf());
+        }
+    }
+    archive_root
 }
 
 /// The files under `dir`, by their path from it after `prefix`.
@@ -342,24 +392,13 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Match every component of a loose resource as archive members are matched.
-fn loose_path(root: &Path, name: &str) -> Option<PathBuf> {
-    let normalized = name.replace(['|', '\\'], "/");
-    let mut path = root.to_path_buf();
-    for component in Path::new(&normalized).components() {
-        let std::path::Component::Normal(part) = component else {
-            return None;
-        };
-        let exact = path.join(part);
-        path = if exact.exists() {
-            exact
-        } else {
-            entries(&path)
-                .into_iter()
-                .find(|p| p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(part)))?
-        };
-    }
-    Some(path)
+/// A loose resource name consists of normal components relative to Resources.
+fn loose_path(root: &Path, normalized: &str) -> Option<PathBuf> {
+    Path::new(normalized)
+        .components()
+        .all(|part| matches!(part, std::path::Component::Normal(_)))
+        .then(|| kontra_format::paths::resolve_case_insensitive(root, normalized, None))
+        .flatten()
 }
 
 fn named(path: &Path, name: &str) -> bool {
@@ -410,4 +449,20 @@ mod tests {
         assert_eq!(super::known_root(&instrument), None);
         drop(scratch);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn structural_library_roots_outrank_a_nearer_archive_cache() {
+    let dir = std::env::temp_dir().join(format!("kontra-kontakt-root-{}", std::process::id()));
+    let instruments = dir.join("Instruments");
+    let samples = dir.join("Samples");
+    std::fs::create_dir_all(&instruments).unwrap();
+    std::fs::create_dir_all(&samples).unwrap();
+    std::fs::write(instruments.join("Cache.nkc"), b"").unwrap();
+    let preset = instruments.join("Patch.nki");
+    assert_eq!(find_root(&preset), Some(dir.clone()));
+    std::fs::remove_dir(&samples).unwrap();
+    assert_eq!(find_root(&preset), Some(instruments));
+    std::fs::remove_dir_all(dir).unwrap();
 }

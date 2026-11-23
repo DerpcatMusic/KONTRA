@@ -1,189 +1,4 @@
-//! What a group modulation moves and by how much.
-
-use crate::EffectParam;
-
-/// What a [`crate::Mod`] does.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ModKind {
-    /// The group's [`Group::envelope`](crate::Group::envelope), shaping its level.
-    Envelope,
-    /// `source` scales the level along `curve`; `intensity` is −1..=1 and live.
-    /// A bipolar source (an LFO, pitch bend) enters as `(x + 1)/2`: it swings the level
-    /// down from unity and back. The route's gain follows as a one-pole with
-    /// time constant `tau_ms` (0: at once), so a controller ride glides.
-    Volume {
-        source: Source,
-        intensity: f32,
-        curve: Curve,
-        tau_ms: f32,
-    },
-    /// `source × depth × semitones` added to the pitch: `semitones` is the
-    /// route's range, `depth` (−1..=1) its live intensity. The semitones
-    /// follow as a one-pole with time constant `tau_ms` (0: at once).
-    Pitch {
-        source: Source,
-        semitones: f32,
-        depth: f32,
-        tau_ms: f32,
-    },
-    /// `source × amount` added to the pan (−1..=1).
-    Pan { source: Source, amount: f32 },
-    /// Moves the cutoff of the [`Filter`](crate::Filter) in group insert slot `insert` by
-    /// `source × depth × Filter::octaves` octaves; that filter runs per voice.
-    Cutoff {
-        source: Source,
-        insert: u8,
-        depth: f32,
-    },
-    /// Adds an interpolated Hz offset to a per-voice filter's cutoff.
-    /// Bipolar sources are mapped to the unit interval before interpolation.
-    CutoffHz {
-        source: Source,
-        insert: u8,
-        min_hz: f32,
-        max_hz: f32,
-    },
-    /// Moves the resonance of the [`Filter`](crate::Filter) in group insert slot `insert` by
-    /// `source × depth × Filter::q_octaves` octaves of Q; that filter runs per voice.
-    /// On a [ladder](crate::Filter::ladder) it scales the resonance `1 − k/2` by
-    /// [`Curve::Signed`](crate::Curve::Signed) at `depth` instead, a bipolar
-    /// source read as `(x + 1)/2`.
-    Resonance {
-        source: Source,
-        insert: u8,
-        depth: f32,
-    },
-    /// Moves the gain of band `band` of the [`Eq`] in group insert slot
-    /// `insert` by `source × depth_db` dB, clamped to `±limit_db`, per voice;
-    /// `span_db` is the depth at the intensity knob's full travel.
-    ///
-    /// [`Eq`]: crate::EffectKind::Eq
-    EqGain {
-        source: Source,
-        insert: u8,
-        band: u8,
-        depth_db: f32,
-        limit_db: f32,
-        span_db: f32,
-    },
-    /// `source × depth` of the zone's [`Zone::start_mod`](crate::Zone::start_mod) frames added to
-    /// where its voices start, read at note-on.
-    SampleStart { source: Source, depth: f32 },
-    /// Scales the attack `t` of the [`Group::envelope`](crate::Group::envelope)
-    /// (`envelope` none) or of the group's breakpoint envelope `envelope`
-    /// (its first segment) at note-on by `m = 1 − (1 − x)·|intensity|`
-    /// (`x` read at note-on, `1 − x` for a negative intensity) under `scale`.
-    Attack {
-        source: Source,
-        intensity: f32,
-        scale: TimeScale,
-        envelope: Option<u8>,
-    },
-    /// As [`ModKind::Attack`], on the hold time of the amplitude envelope
-    /// (`envelope` none) or a staged breakpoint envelope.
-    Hold {
-        source: Source,
-        intensity: f32,
-        scale: TimeScale,
-        envelope: Option<u8>,
-    },
-    /// As [`ModKind::Attack`], on the decay time of the amplitude envelope
-    /// (`envelope` none) or a staged breakpoint envelope.
-    Decay {
-        source: Source,
-        intensity: f32,
-        scale: TimeScale,
-        envelope: Option<u8>,
-    },
-    /// Scales the sustain level of the amplitude envelope (`envelope` none) or
-    /// a staged breakpoint envelope at note-on via [`Curve::gain`].
-    Sustain {
-        source: Source,
-        intensity: f32,
-        curve: Curve,
-        envelope: Option<u8>,
-    },
-    /// As [`ModKind::Attack`], on the release time of the amplitude envelope
-    /// (`envelope` none) or a breakpoint envelope, evaluated live at note-off.
-    Release {
-        source: Source,
-        intensity: f32,
-        scale: TimeScale,
-        envelope: Option<u8>,
-    },
-    /// Adds `source × depth` cycles (`depth` −1..=1) to the start phase of
-    /// the group's LFO `lfo`, `source` read at note-on.
-    LfoPhase { source: Source, lfo: u8, depth: f32 },
-    /// Moves the rate of the group's LFO `lfo` along its knob by
-    /// `source × depth` (knob units, `source` read at note-on): the rate
-    /// scales by `2^(source × depth × octaves)`, held within `range_hz`.
-    LfoRate {
-        source: Source,
-        lfo: u8,
-        depth: f32,
-        octaves: f32,
-        range_hz: [f32; 2],
-    },
-    /// Adds `source × depth × (hi − lo)` Hz to the rate of the group's
-    /// free-running (Hz) LFO `lfo`, `source` live: the LFO's phase integrates
-    /// the moving rate, held within `range_hz` `[lo, hi]`.
-    LfoHz {
-        source: Source,
-        lfo: u8,
-        depth: f32,
-        range_hz: [f32; 2],
-    },
-    /// Moves the rate of the group's tempo-synced LFO `lfo` along the
-    /// note-value ladder ([`NOTE_LADDER`]) by `source × depth × 29` places
-    /// (rounded, held on the ladder), `source` live: the phase integrates the
-    /// moving rate.
-    LfoDivision { source: Source, lfo: u8, depth: f32 },
-    /// Scales every route of the group's timed source `of` (an LFO or an
-    /// envelope) by `1 − (1 − x)·depth`, `x` the live `source`, a bipolar one
-    /// as `(x + 1)/2`.
-    Intensity {
-        source: Source,
-        of: Source,
-        depth: f32,
-    },
-    /// Moves the zone's loops by `source × depth` of the sample's frames,
-    /// read at note-on: start and end together, or the end only (`length`).
-    LoopShift {
-        source: Source,
-        length: bool,
-        depth: f32,
-    },
-    /// Adds `source × depth` to the voice's wavetable `value` (0..=1), live;
-    /// the sum is held within 0..=1, not wrapped.
-    Wavetable {
-        source: Source,
-        value: crate::TableValue,
-        depth: f32,
-    },
-    /// Scales cell `row` (a sample channel), `side` (0 left, 1 right) of
-    /// the [`Zone::mix`](crate::Zone::mix) of the group's zone `zone` (its
-    /// index in [`Group::zones`](crate::Group::zones)) by the live `source`,
-    /// 0..=1: a channel matrix that crossfades variants.
-    Mix {
-        source: Source,
-        zone: u16,
-        row: u8,
-        side: u8,
-    },
-    /// Adds `source × depth` (knob × `span`) to `param` of the per-voice
-    /// effect in group slot `insert`; `unipolar` reads an LFO as 0..=1.
-    EffectParam {
-        source: Source,
-        insert: u8,
-        param: EffectParam,
-        depth: f32,
-        span: f32,
-        unipolar: bool,
-    },
-    /// Scales the level of send `send` (its index in
-    /// [`Bus::sends`](crate::Bus::sends)) by the live `source`; a bus route.
-    Send { source: Source, send: u8 },
-}
+//! The sources a modulation route reads, and the laws it moves by.
 
 /// A sum of live sources, as a macro knob and what moves it:
 /// `base + Σ amount × input × Π factors`. [`Source::Blend`] reads it.
@@ -475,6 +290,9 @@ pub enum Source {
     /// The value a script sent this note for "from script" modulator `id`,
     /// −1..=1; 0 until sent.
     Script(u16),
+    /// Macro `n` of a scripted program, −1..=1 as its script sets it: the
+    /// script writes it on script channel [`Source::MACRO_CHANNELS`]` + n`.
+    Macro(u16),
     /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
     /// key-up, so a release sample is quieter the longer its key was held.
     HeldTime {
@@ -490,11 +308,42 @@ pub enum Source {
 }
 
 impl Source {
-    /// The controller it reads, if any.
+    /// The first script channel a [`Source::Macro`] is sent on, above every
+    /// "from script" modulator id.
+    pub const MACRO_CHANNELS: u16 = 0x8000;
+
+    /// The controller it reads, if any: a note expression's fallback CC too.
     #[must_use]
     pub fn controller(self) -> Option<u8> {
         match self {
             Self::Controller(cc) | Self::ControllerFrom { cc, .. } => Some(cc),
+            Self::NoteExpr(NoteExpr::Brightness) => Some(74),
+            Self::NoteExpr(NoteExpr::Vibrato) => Some(1),
+            Self::NoteExpr(NoteExpr::Expression) => Some(11),
+            _ => None,
+        }
+    }
+
+    /// Whether it reads the same for the whole of a note (what the note
+    /// started with), so a route can read it once at note-on.
+    #[must_use]
+    pub fn fixed_for_note(self) -> bool {
+        matches!(
+            self,
+            Self::Velocity
+                | Self::ReleaseVelocity
+                | Self::Key
+                | Self::Constant
+                | Self::Random { .. }
+        )
+    }
+
+    /// The script channel it reads (a script modulator or a macro), if any.
+    #[must_use]
+    pub fn script_channel(self) -> Option<u16> {
+        match self {
+            Self::Script(id) => Some(id),
+            Self::Macro(n) => Some(Self::MACRO_CHANNELS.saturating_add(n)),
             _ => None,
         }
     }

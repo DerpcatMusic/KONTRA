@@ -148,8 +148,16 @@ fn a_lookahead_limiter_turns_down_before_the_peak_without_clipping() {
     // 96 frames of delay; the last quiet frames out are already turned down.
     let (quiet, loud) = io.split_at(960 + 96);
     assert!(quiet[96..960].iter().all(|f| f[0] == 0.1));
-    assert!((quiet[1055][0] - 0.1 * gain(-6.0)).abs() < 1e-4, "{:?}", quiet[1055]);
-    assert!(loud.iter().all(|f| f[0] <= gain(-6.0) + 1e-4), "{}", peak_db(loud));
+    assert!(
+        (quiet[1055][0] - 0.1 * gain(-6.0)).abs() < 1e-4,
+        "{:?}",
+        quiet[1055]
+    );
+    assert!(
+        loud.iter().all(|f| f[0] <= gain(-6.0) + 1e-4),
+        "{}",
+        peak_db(loud)
+    );
 }
 
 #[test]

@@ -1,24 +1,36 @@
-//! What a scan read once (a `.nicnt`'s product, a bank's program list),
-//! kept by path and reused while the file's size and time are unchanged.
-//! Only metadata: no instrument, script or sample is ever held.
+//! What a scan read once (a `.nicnt`'s product, a bank's program list and
+//! protection status), kept by path and reused while the file's size and time
+//! are unchanged. Only metadata: no instrument, script or sample is ever held.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use kontra_format::ProtectionStatus;
 use serde::{Deserialize, Serialize};
 
-use crate::Programs;
+use crate::{BankError, BankInspector, BankListing};
 
 /// Bumped when what is kept, or how it is read, changes; an older file is
 /// dropped whole.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+
+static SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum Metadata {
     Product(String, String),
     NoProduct,
-    Programs(Vec<String>),
-    Failed(String),
+    Programs {
+        members: Vec<String>,
+        #[serde(default)]
+        protection: ProtectionStatus,
+    },
+    Failed {
+        reason: String,
+        #[serde(default)]
+        protection: ProtectionStatus,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -77,7 +89,8 @@ impl Cache {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        let seq = SAVE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("tmp.{}.{seq}", std::process::id()));
         let written = std::fs::write(&tmp, serde_json::to_vec(self)?)
             .and_then(|()| std::fs::rename(&tmp, path));
         if written.is_err() {
@@ -125,17 +138,33 @@ impl Cache {
         }
     }
 
-    pub(crate) fn programs(
+    pub(crate) fn bank_listing(
         &mut self,
         bank: &Path,
-        list: Programs<'_>,
-    ) -> Result<Vec<String>, String> {
-        match self.memo(bank, || {
-            list(bank).map_or_else(Metadata::Failed, Metadata::Programs)
+        inspect: BankInspector<'_>,
+    ) -> Result<BankListing, BankError> {
+        match self.memo(bank, || match inspect(bank) {
+            Ok(listing) => Metadata::Programs {
+                members: listing.presets,
+                protection: listing.protection,
+            },
+            Err(err) => Metadata::Failed {
+                reason: err.reason,
+                protection: err.protection,
+            },
         }) {
-            Metadata::Programs(members) => Ok(members),
-            Metadata::Failed(reason) => Err(reason),
-            Metadata::Product(..) | Metadata::NoProduct => Err("not a bank".to_owned()),
+            Metadata::Programs {
+                members,
+                protection,
+            } => Ok(BankListing {
+                presets: members,
+                protection,
+            }),
+            Metadata::Failed { reason, protection } => Err(BankError { reason, protection }),
+            Metadata::Product(..) | Metadata::NoProduct => Err(BankError {
+                reason: "not a bank".to_owned(),
+                protection: ProtectionStatus::Open,
+            }),
         }
     }
 }

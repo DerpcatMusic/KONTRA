@@ -163,8 +163,12 @@ struct GroupKey {
 impl GroupKey {
     fn of(number: u32, off_by: Option<u32>, settings: &ir::Group) -> Self {
         let env = settings.envelope;
-        let veltrack = settings.mods.first().and_then(|m| match m.kind {
-            ir::ModKind::Volume { intensity, .. } => Some(bits_f32(intensity)),
+        let veltrack = settings.mods.first().and_then(|m| match m.route {
+            ir::ModRoute {
+                target: ir::ParamAddr::Volume,
+                depth: intensity,
+                ..
+            } => Some(bits_f32(intensity)),
             _ => None,
         });
         let trigger = match settings.trigger {
@@ -762,13 +766,16 @@ impl Build {
                 ..e.settings
             })
             .collect();
-        ir::Instrument {
+        let mut out = ir::Instrument {
             samples: self.samples.into_samples(),
             groups,
             voice_groups: limits.into_values().collect(),
             diagnostics: self.notes.finish(),
             ..ir::Instrument::DEFAULT
-        }
+        };
+        let issues = ir::validate(&out);
+        out.diagnostics.extend(issues);
+        out
     }
 }
 
@@ -837,4 +844,53 @@ fn voices(value: f64) -> u16 {
 
 fn whole(value: f64) -> u32 {
     value.clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A zone naming sample 9 of an instrument with none.
+    fn dangling_zone() -> ir::Zone {
+        ir::Zone {
+            id: 0,
+            sample: 9,
+            keys: 0..=127,
+            velocities: 1..=127,
+            velocity_fade: (0, 0),
+            key_fade: (0, 0),
+            crossfades: Vec::new(),
+            root: 60,
+            tune: 0.0,
+            volume_db: 0.0,
+            pan: 0.0,
+            start: 0,
+            end: 1000,
+            start_mod: 0,
+            loops: Vec::new(),
+            reverse: false,
+            mix: Vec::new(),
+            slot: 0,
+            envelopes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn finish_reports_invalid_references() {
+        let mut build = Build::default();
+        build.entries.push(Entry {
+            number: 0,
+            off_by: None,
+            settings: ir::Group::DEFAULT,
+            zones: vec![dangling_zone()],
+        });
+        build.notes.add(ir::Impact::Cosmetic, "kept", "");
+        let out = build.finish();
+        let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
+        assert!(features.contains(&"kept"), "{features:?}");
+        assert!(
+            features.contains(&"ir.zone.sample_out_of_bounds"),
+            "{features:?}"
+        );
+    }
 }

@@ -30,22 +30,21 @@ moving callers onto them. The numbers come from `git grep -c` on main.
 | Phase | PRs | Landed | Still to do |
 |---|---|---|---|
 | 0: hygiene, vendor leaks | #102 | `ByteTransform` keystream, `Cow` tables, `ir::validate`, compact regions, typed fast path for zone `ignored_fields` | group `ignored_fields` still formats Debug text; only the `.kontra` loader runs `validate`; the translators and prepare don't |
-| 1: one modulation and envelope core | #109, #110 | separate decay/release curves, equal-power and CC crossfades, `lorand`/`hirand`, `PerNoteCc`, `NoteExpr`, `RrScope::Key`, and `ParamAddr`/`ModRoute` declared | **`ModRoute` has 0 users; `ModKind::` has 458.** `WARPS = 8` cap (36 uses), the CC74 brightness hack in `voice_gain.rs`, UVI macros as `Script(0x8000+…)`, UVI `PROBE_GRID` (23 rebuilds per attribute) |
+| 1: one modulation and envelope core | #109, #110 | separate decay/release curves, equal-power and CC crossfades, `lorand`/`hirand`, `PerNoteCc`, `NoteExpr`, `RrScope::Key`, and `ParamAddr`/`ModRoute` declared | UVI `PROBE_GRID` (23 rebuilds per attribute, L2). Done in #128 (L1): every route is a `ModRoute`, `ModKind` is deleted, the `WARPS = 8` cap is lifted, brightness reads only `NoteExpr`, and UVI macros are `Source::Macro` |
 | 2: compact zones, SDK, native | #96, #111, #116 | `ZoneMatch`/`ZonePlay` SoA used by `ZoneIndex`, format SDK (DecentSampler translator, every documented effect), `.kontra` native format | `plan.zone_facts` still duplicates every zone (`ZoneFacts`, `loop_pars` per zone); no Areia RAM measurement of the result |
 | 3: graph, generators, effect families | #112, #113, #114 | `AudioGraph` with sidechain and multi-stem output, `Generator` (PCM, oscillator, granular), `Engine::set_param(ParamAddr)` | `EffectFamily`/`EffectSpec` are read only by the `.kontra` schema; the engine still runs the 31-variant `EffectKind` |
 
-## Next wave: lanes (not started)
+## Next wave: lanes
 
-Nothing in this table is running yet. There is one lane per row. Lanes own
-disjoint paths. Each lane finishes by
-deleting what it replaces, and proves the result with scoped tests plus one
-real-library load (Areia, Conflux or VWinds).
+Lanes own disjoint paths. Each lane finishes by deleting what it replaces, and
+proves the result with scoped tests plus one real-library load (Areia, Conflux
+or VWinds).
 
 | Lane | Goal | Owns | Number to move |
 |---|---|---|---|
-| L1 modulation core | Every translator emits `ModRoute`; plan and engine read it. Delete `ModKind`. Lift the `WARPS = 8` cap. Brightness becomes `NoteExpr`, and UVI macros become `Macro` | `model/ir`, `engine/plan/src/modulation.rs`, `engine/engine/src/{modulators,voice_gain,start}.rs`, the modulation emitters in each `format/*` | `ModKind::` uses: 458 → 0 |
-| L2 UVI parameter names | Replace `PROBE_GRID` with a declared name → `ParamAddr` + law table | `format/uvi/src/program/routing.rs` | rebuilds per attribute at load: 23 → 0 |
-| L3 one zone table | Drop the `zone_facts` copy; scripts read zones from the SoA tables; `loop_pars` only for user zones | `engine/plan/src/zones.rs`, the zone parts of `engine/prepare`, `engine/engine/src/zone_commands.rs` | Areia metadata RAM, measured before and after |
+| L1 modulation core | Every translator emits `ModRoute`; plan and engine read it. Delete `ModKind`. Lift the `WARPS = 8` cap. Brightness becomes `NoteExpr`, and UVI macros become `Macro` | `model/ir`, `engine/plan/src/modulation.rs`, `engine/engine/src/{modulators,voice_gain,start}.rs`, the modulation emitters in each `format/*` | `ModKind::` uses: 458 → 0 ✅ #128 |
+| L2 UVI parameter names | Replace `PROBE_GRID` with a declared name → `ParamAddr` + law table | `format/uvi/src/program/routing.rs` | ✅ #123 — rebuilds per attribute at load: 23 → 0 (`PROBE_GRID` & `values::probing` deleted; verified on VWinds Bb Clarinet) |
+| L3 one zone table | Drop the `zone_facts` copy; scripts read zones from the SoA tables; `loop_pars` only for user zones | `engine/plan/src/zones.rs`, the zone parts of `engine/prepare`, `engine/engine/src/zone_commands.rs` | ✅ #123 — Areia (49,152 saved zones): ~8.11 MiB & 55,380+ heap allocs → 2.93 MiB (`3,076,368` B) & 0 per-zone allocs (`ZoneFacts`/`zone_facts` deleted; 0 B `user_zones`) |
 | L4 Kontakt parity | Continue the #115 audit: each translator law is checked against the oracle or the binary, not assumed | `format/kontakt` (not its modulation emitter, which L1 owns), `vendor/ni-file` | translator laws with no evidence → 0 |
 
 Deferred: consolidating `EffectKind` into families. VISION and the KISS caveat
@@ -64,11 +63,11 @@ These items are still open on main:
 
 | Item | What | Evidence on main |
 |---|---|---|
-| A P1.9 | Aliasing on upward pitch shift, sample-rate-dependent `GAIN_SMOOTH`, `HEAD_WAIT` stall | `HEAD_WAIT = 2400` still in voice/src/lib.rs |
-| B P0-9 | `fx_idx_amp_split_point`: group inserts run on the wrong side of the amp envelope | translate.rs reports it as ignored; group_racks.rs says "not carried" |
-| B P1-5 | Several lagged routes on volume or pitch collapse into one smoother | to check |
-| B P1-7 | Block-rate modulation stepping (`MAX_SPAN = 256` frames) | `MAX_SPAN` still in effects/src/lib.rs |
-| B P1-8 | Pan law is linear balance for every format | to check |
+| A P1.9 | Aliasing on upward pitch shift, sample-rate-dependent `GAIN_SMOOTH`, `HEAD_WAIT` stall | ✅ #123 — `HEAD_WAIT` deleted (0-frame live stall), `GAIN_SMOOTH_MS = 1.0` derived from sample rate, 4-lobe Kaiser-windowed sinc (`step > 1.0`, >50 dB alias suppression) |
+| B P0-9 | ✅ (#120) `fx_idx_amp_split_point`: group inserts run on their true side of the amp envelope | `amp_split: u8` on `ir::Group`/`plan::Group`, `Voice::render_through_stages`, `Kind::Matrix` around drives, `group_racks::split`; `ignored("group.fx_idx_amp_split_point")` uses: 1 → 0 (verified on ANALOG STRINGS `amp_split = 6`) |
+| B P1-5 | Several lagged routes on volume or pitch collapse into one smoother | ✅ #128: one lag per route (`LAGS = 4` per voice, later ones folded in), live `LfoParam::Rate` routes integrated into the warp |
+| B P1-7 | Block-rate modulation stepping (`MAX_SPAN = 256` frames) | ✅ #123 — `MAX_SPAN` lowered 256 → 64 (750 Hz / 1.33 ms at 48 kHz; `Dsp::Wet` chunks > `wet.len()`) |
+| B P1-8 | Pan law is linear balance for every format | ✅ #128: voices balance by `Output.balance` (Kontakt linear, UVI cosine); UVI's mono-to-stereo laws are still open |
 | B P2-2 | Kontakt vendor leaks in ir and plan | this plan's Phases 0–1 |
-| B P2-3 | Per-note vs per-channel separation for pitch bend and CC (MPE) | to check |
+| B P2-3 | Per-note vs per-channel separation for pitch bend and CC (MPE) | ✅ #128: `Source::PitchBend` adds the note's own bend (48-semitone wheel) on non-pitch targets |
 | B P2-4 | `BParGroupDynamics` (0x4A) is not read | parsed in ni-file, not translated |

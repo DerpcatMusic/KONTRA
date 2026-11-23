@@ -389,19 +389,16 @@ fn filter_and_lfos_become_inserts_and_routes() {
         .iter()
         .find(|m| m.name == "vibrato LFO pitch")
         .unwrap();
-    assert!(matches!(
-        vibrato.kind,
-        ir::ModKind::Pitch { source: ir::Source::Lfo(1), semitones, .. } if (semitones - 0.5).abs() < 1e-6
+    assert!(matches!(vibrato.route,
+        ir::ModRoute { target: ir::ParamAddr::Pitch, source: ir::Source::Lfo(1), span: semitones, .. } if (semitones - 0.5).abs() < 1e-6
     ));
     let lfo_cut = g.mods.iter().find(|m| m.name == "mod LFO cutoff").unwrap();
-    assert!(matches!(
-        lfo_cut.kind,
-        ir::ModKind::Cutoff { source: ir::Source::Lfo(0), depth, .. } if (depth * f.octaves - 1.0).abs() < 1e-6
+    assert!(matches!(lfo_cut.route,
+        ir::ModRoute { target: ir::ParamAddr::FilterCutoff { .. }, source: ir::Source::Lfo(0), depth, law: ir::RouteLaw::Linear, .. } if (depth * f.octaves - 1.0).abs() < 1e-6
     ));
     // The default velocity curve is (v/127)² in amplitude.
-    assert!(g.mods.iter().any(|m| matches!(
-        m.kind,
-        ir::ModKind::Volume { source: ir::Source::Velocity, curve: ir::Curve::Squared, intensity, .. } if intensity == 1.0
+    assert!(g.mods.iter().any(|m| matches!(m.route,
+        ir::ModRoute { target: ir::ParamAddr::Volume, source: ir::Source::Velocity, depth: intensity, law: ir::RouteLaw::Gain(ir::Curve::Squared), .. } if intensity == 1.0
     )));
 }
 
@@ -671,9 +668,12 @@ fn tremolo_gain_is_centered_for_either_direction() {
             .iter()
             .find(|m| m.name == "mod LFO volume")
             .unwrap();
-        let ir::ModKind::Volume {
-            intensity, curve, ..
-        } = route.kind
+        let ir::ModRoute {
+            target: ir::ParamAddr::Volume,
+            depth: intensity,
+            law: ir::RouteLaw::Gain(curve),
+            ..
+        } = route.route
         else {
             panic!("expected a volume route");
         };

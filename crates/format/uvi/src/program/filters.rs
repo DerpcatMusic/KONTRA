@@ -61,16 +61,8 @@ impl<L: Library> Translator<'_, '_, L> {
             .collect::<Vec<_>>();
         for (insert, c, r, q) in routes {
             self.add_route(group, c, r, |source, depth| match q {
-                true => ir::ModKind::Resonance {
-                    source,
-                    insert,
-                    depth,
-                },
-                false => ir::ModKind::Cutoff {
-                    source,
-                    insert,
-                    depth,
-                },
+                true => ir::ModRoute::new(source, ir::ParamAddr::FilterResonance { insert }, depth),
+                false => ir::ModRoute::new(source, ir::ParamAddr::FilterCutoff { insert }, depth),
             });
         }
     }

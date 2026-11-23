@@ -8,18 +8,24 @@ use std::sync::Arc;
 
 use ni_file::nis::LibraryKey;
 
+/// Maximum `.nicnt` prefix scanned for `<JDX>` / `<HU>` registration tags.
+const NICNT_SCAN_BYTES: u64 = 256 * 1024;
+
 /// The keystream of the library `path` belongs to, for presets.
 pub(crate) fn library_key(path: &Path) -> Result<Arc<dyn LibraryKey>, String> {
     Ok(Arc::new(Key(keystream(path)?)))
 }
 
-/// The 64 KiB keystream of the library `path` belongs to; the search stops at
-/// the library root (the folder holding `Samples`).
+/// The 64 KiB keystream of the library `path` belongs to; searches ancestors up
+/// to the library root depth for a `.nicnt` carrying `<JDX>` and `<HU>` tags.
 pub(crate) fn keystream(path: &Path) -> Result<Arc<[u8]>, String> {
     let path = std::path::absolute(path).map_err(|e| e.to_string())?;
-    for parent in path.ancestors().skip(1) {
-        let mut files: Vec<_> = std::fs::read_dir(parent)
-            .map_err(|e| format!("reading {}: {e}", parent.display()))?
+    let mut saw_nicnt = None;
+    for parent in path.ancestors().skip(1).take(crate::resources::DEPTH) {
+        let Ok(read_dir) = std::fs::read_dir(parent) else {
+            continue;
+        };
+        let mut files: Vec<_> = read_dir
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|f| {
                 f.extension()
@@ -31,18 +37,33 @@ pub(crate) fn keystream(path: &Path) -> Result<Arc<[u8]>, String> {
             // Product XML precedes artwork.
             let mut bytes = Vec::new();
             File::open(&file)
-                .and_then(|f| f.take(64 * 1024).read_to_end(&mut bytes))
+                .and_then(|f| f.take(NICNT_SCAN_BYTES).read_to_end(&mut bytes))
                 .map_err(|e| format!("reading {}: {e}", file.display()))?;
             if let (Some(key), Some(iv)) = (field::<32>(&bytes, b"JDX"), field::<16>(&bytes, b"HU"))
             {
                 return Ok(expand(key, iv));
             }
+            if saw_nicnt.is_none() {
+                saw_nicnt = Some(file);
+            }
         }
-        if parent.join("Samples").is_dir() {
+        // Stop climbing once we found a library `.nicnt` at this level.
+        if saw_nicnt.is_some() {
             break;
         }
     }
-    Err(format!("no .nicnt access data for {}", path.display()))
+    if let Some(nicnt) = saw_nicnt {
+        Err(format!(
+            "{} has no <JDX>/<HU> library access keys for {}",
+            nicnt.display(),
+            path.display()
+        ))
+    } else {
+        Err(format!(
+            "no .nicnt access data found for {}",
+            path.display()
+        ))
+    }
 }
 
 /// Exactly `N` hex-encoded bytes inside `<tag>…</tag>`.
@@ -158,5 +179,25 @@ mod tests {
             field::<16>(format!("<HU>{hex}ab</HU>").as_bytes(), b"HU"),
             None
         );
+    }
+
+    #[test]
+    fn finds_nicnt_even_when_nested_subfolder_has_samples_dir() {
+        let root =
+            std::env::temp_dir().join(format!("kontra-access-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sub = root.join("Instruments/4 Tonality");
+        std::fs::create_dir_all(sub.join("Samples")).unwrap();
+        let hex32 = "11".repeat(32);
+        let hex16 = "22".repeat(16);
+        std::fs::write(
+            root.join("Lib.nicnt"),
+            format!("<ProductHints><JDX>{hex32}</JDX><HU>{hex16}</HU></ProductHints>"),
+        )
+        .unwrap();
+        let patch = sub.join("Patch.nki");
+        std::fs::write(&patch, b"").unwrap();
+        assert!(keystream(&patch).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

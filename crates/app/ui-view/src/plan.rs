@@ -32,7 +32,9 @@ pub(super) struct Widget<'a> {
     pub picture: Option<Picture<'a>>,
     /// A slider's handle, drawn over its picture at its value.
     pub handle: Option<Picture<'a>>,
+    pub style_ref: Option<model::StyleRef>,
     pub style: Option<&'a model::TextStyle>,
+    pub text_shift: bool,
     pub position: f64,
     pub look: Option<stock::Look>,
     pub stock: bool,
@@ -68,19 +70,14 @@ pub(super) fn page<'a>(
             if !tree.visible(index) || (!on_page(raw) && tree.scroller(index).is_none()) {
                 return None;
             }
+            let held = pressed.binary_search(&index).is_ok();
             let picture = |use_: &ImageUse| {
                 let (path, meta) = image_asset(tree, use_.asset)?;
                 Some(Picture {
                     use_: *use_,
                     path,
                     meta,
-                    frame: frame(
-                        w,
-                        use_,
-                        meta.frames as usize,
-                        pressed.binary_search(&index).is_ok(),
-                        over,
-                    ),
+                    frame: frame(w, use_, meta.frames as usize, held, over),
                     size: {
                         // A handle keeps its own size to ride its track; a
                         // picture stretched across its control takes the
@@ -120,7 +117,11 @@ pub(super) fn page<'a>(
                 .find(|u| over && u.role == hover)
                 .or(faces.first());
             let picture = shown.filter(|_| !bare).and_then(|u| picture(u));
-            let style = w.style.and_then(|s| tree.styles.get(s.0));
+            let style_ref = resolve_style(w, held, over);
+            let style = style_ref.and_then(|s| tree.styles.get(s.0));
+            let text_shift = held
+                && w.text_shift_on_press
+                && matches!(w.kind, Kind::Button { .. } | Kind::Switch);
             let position = w.position();
             let look = stock::Look::of(
                 tree,
@@ -129,6 +130,7 @@ pub(super) fn page<'a>(
                 readout(w, tree.source),
                 knob_name(w),
                 bare,
+                text_shift,
             );
             let stock = look.is_none() && stock::shows(tree, w, bare);
             let words = if look.is_some() {
@@ -142,7 +144,9 @@ pub(super) fn page<'a>(
                 rect: snapped(raw.x, raw.y + above, raw.width, raw.height, scale),
                 picture,
                 handle,
+                style_ref,
                 style,
+                text_shift,
                 position,
                 look,
                 stock,
@@ -158,6 +162,28 @@ pub(super) fn page<'a>(
         },
         widgets,
     })
+}
+
+/// Selects the active text style for `w` across Kontakt's 6 control states
+/// (`[off, on, off_pressed, on_pressed, off_hover, on_hover]`), falling back
+/// to the on/off base state, slot 0, and finally `w.style`.
+fn resolve_style(w: &model::Widget, held: bool, over: bool) -> Option<model::StyleRef> {
+    let toggle = matches!(w.kind, Kind::Button { .. } | Kind::Switch);
+    let on = usize::from(toggle && w.number() != 0.);
+    let state = if held {
+        2 + on
+    } else if over {
+        4 + on
+    } else {
+        on
+    };
+    w.state_styles
+        .get(state)
+        .copied()
+        .flatten()
+        .or_else(|| w.state_styles.get(on).copied().flatten())
+        .or(w.state_styles[0])
+        .or(w.style)
 }
 
 /// The frame `w` shows of a picture with `frames`: the script's

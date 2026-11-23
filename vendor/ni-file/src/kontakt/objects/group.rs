@@ -158,6 +158,14 @@ const PRIVATE_RECORDS: usize = 136;
 const PRIVATE_TRAILER: usize = 24;
 
 impl Group {
+    /// The group's optional `BParGroupDynamics` (`0x4A`) child chunk, if present.
+    pub fn dynamics(&self) -> Result<Option<super::GroupDynamics>, Error> {
+        let Some(chunk) = self.0.find_first(0x4A) else {
+            return Ok(None);
+        };
+        super::GroupDynamics::try_from(chunk).map(Some)
+    }
+
     /// The group insert effect rack (8 slots), stored in the private data.
     pub fn insert_fx(&self) -> Result<super::BParamArrayBParFX8, Error> {
         super::BParamArrayBParFX8::read(self.private_rack_reader()?, 8)
@@ -450,5 +458,29 @@ mod tests {
         group.0.private_data[source + 1..source + 3].copy_from_slice(&0x104u16.to_le_bytes());
         group.0.private_data[source] = 1;
         assert!(group.source_identity().is_err());
+    }
+
+    #[test]
+    fn group_dynamics_reads_optional_0x4a_child_and_detects_nonzero_values() {
+        let mut group = Group(StructuredObject {
+            version: 1,
+            private_data: Vec::new(),
+            public_data: Vec::new(),
+            children: Vec::new(),
+        });
+        assert_eq!(group.dynamics().unwrap(), None);
+
+        let mut data = vec![0, 0x10, 0];
+        for i in 0..64 {
+            let v: f32 = if i == 5 { 0.5 } else { 0.0 };
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        group
+            .0
+            .children
+            .push(crate::kontakt::Chunk { id: 0x4A, data });
+        let dyn_chunk = group.dynamics().unwrap().unwrap();
+        assert!(dyn_chunk.has_nonzero());
+        assert_eq!(dyn_chunk.values[5], 0.5);
     }
 }

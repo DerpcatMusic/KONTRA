@@ -14,11 +14,13 @@ pub struct LfoRecord {
 }
 
 /// SerType: 0x08
-/// Versions: 0x71, 0x72, 0x73
-/// BParLFO. Version 0x70 (no sync records) is decoded by `native_schema` only.
+/// Versions: 0x70, 0x71, 0x72, 0x73
+/// BParLFO (verified against Kontakt 8.13.1 [ref]).
 /// The first public integer selects the waveform, not the payload layout:
-/// sine 0, rectangle 1, triangle 2, sawtooth 3, random 4, Multi 5.
-/// Type 6 has the same packed fields as Multi; its name remains unverified.
+/// sine 0, rectangle 1, triangle 2, sawtooth 3, random 4, Multi 5, type 6.
+/// Version 0x70 stores two legacy f32 note values (`noteValue_frequency`,
+/// `noteValue_delay`) in place of the two 13-byte sync records, and only
+/// serializes Multi mix levels when `waveform == 5`.
 /// Unknown numeric bits and the remaining unnamed flags are retained.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lfo {
@@ -73,7 +75,7 @@ impl Lfo {
         if reader.position() as usize != chunk.data.len() {
             return Err(Error::Static("Trailing LFO object data"));
         }
-        if !matches!(object.version, 0x71..=0x73)
+        if !matches!(object.version, 0x70..=0x73)
             || !object.private_data.is_empty()
             || !object.children.is_empty()
         {
@@ -83,6 +85,43 @@ impl Lfo {
         let waveform = reader.read_u32_le()?;
         if waveform > 6 {
             return Ok(None);
+        }
+        if object.version == 0x70 {
+            let multi = waveform == 5;
+            let public_len = 29 + usize::from(multi) * 20;
+            if object.public_data.len() != public_len {
+                return Err(Error::Static("Invalid LFO waveform payload length"));
+            }
+            let initial_values = values(&mut reader)?;
+            let normalize_multi = flag(&mut reader)?;
+            let freq_note_value = reader.read_f32_le()?;
+            let delay_note_value = reader.read_f32_le()?;
+            let trailing_values = if multi {
+                Some(values(&mut reader)?)
+            } else {
+                None
+            };
+            return Ok(Some(Self {
+                structured: chunk.data[0] == 1,
+                version: object.version,
+                waveform,
+                initial_values,
+                // Matches [ref] v0x70: sets sync-record flag byte to 1
+                // and stores the two legacy note-value floats in values[0].
+                records: [
+                    LfoRecord {
+                        flag: normalize_multi,
+                        values: [freq_note_value, 0.0, 0.0],
+                    },
+                    LfoRecord {
+                        flag: true,
+                        values: [delay_note_value, 0.0, 0.0],
+                    },
+                ],
+                trailing_flag: true,
+                trailing_values,
+                additional_flag: None,
+            }));
         }
         let multi = waveform >= 5;
         let additional = object.version == 0x73;
@@ -121,17 +160,25 @@ impl Lfo {
 
     /// Encode the known layout without interpreting or normalizing its values.
     pub fn to_chunk(&self) -> Result<Chunk, Error> {
-        if !matches!(self.version, 0x71..=0x73) || self.waveform > 6 {
+        if !matches!(self.version, 0x70..=0x73) || self.waveform > 6 {
             return Err(Error::Static("Unsupported LFO version/waveform"));
         }
-        if self.trailing_values.is_some() != (self.waveform >= 5)
+        let expect_multi = if self.version == 0x70 {
+            self.waveform == 5
+        } else {
+            self.waveform >= 5
+        };
+        if self.trailing_values.is_some() != expect_multi
             || self.additional_flag.is_some() != (self.version == 0x73)
         {
             return Err(Error::Static("LFO fields do not match version/waveform"));
         }
-        let public_len = 47
-            + usize::from(self.trailing_values.is_some()) * 20
-            + usize::from(self.additional_flag.is_some());
+        let public_len = if self.version == 0x70 {
+            29 + usize::from(self.trailing_values.is_some()) * 20
+        } else {
+            47 + usize::from(self.trailing_values.is_some()) * 20
+                + usize::from(self.additional_flag.is_some())
+        };
         let mut data = Vec::new();
         data.try_reserve_exact(public_len + if self.structured { 15 } else { 3 })
             .map_err(|_| Error::Static("LFO allocation failed"))?;
@@ -145,13 +192,19 @@ impl Lfo {
         for value in self.initial_values {
             data.extend_from_slice(&value.to_le_bytes());
         }
-        for record in &self.records {
-            data.push(u8::from(record.flag));
-            for value in record.values {
-                data.extend_from_slice(&value.to_le_bytes());
+        if self.version == 0x70 {
+            data.push(u8::from(self.records[0].flag));
+            data.extend_from_slice(&self.records[0].values[0].to_le_bytes());
+            data.extend_from_slice(&self.records[1].values[0].to_le_bytes());
+        } else {
+            for record in &self.records {
+                data.push(u8::from(record.flag));
+                for value in record.values {
+                    data.extend_from_slice(&value.to_le_bytes());
+                }
             }
+            data.push(u8::from(self.trailing_flag));
         }
-        data.push(u8::from(self.trailing_flag));
         if let Some(levels) = self.trailing_values {
             for value in levels {
                 data.extend_from_slice(&value.to_le_bytes());
@@ -261,7 +314,7 @@ mod tests {
                     data.push(0);
                     assert!(Lfo::try_from(&Chunk { id: 8, data }).is_err());
                     let mut data = original.data.clone();
-                    data[1] = 0x70;
+                    data[1] = 0x6f;
                     assert!(Lfo::read_supported(&Chunk { id: 8, data })
                         .unwrap()
                         .is_none());
@@ -273,5 +326,87 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn legacy_v70_lfo_roundtrips_and_gates_multi_levels_on_waveform_5() {
+        for structured in [false, true] {
+            for waveform in 0u32..=6 {
+                let multi = waveform == 5;
+                let public_len = 29 + usize::from(multi) * 20;
+                let mut public = vec![0; public_len];
+                public[..4].copy_from_slice(&waveform.to_le_bytes());
+                public[4..8].copy_from_slice(&0x8000_0000u32.to_le_bytes()); // -0.0
+                public[8..12].copy_from_slice(&5.0f32.to_le_bytes());
+                public[12..16].copy_from_slice(&0.5f32.to_le_bytes());
+                public[16..20].copy_from_slice(&0x7fc0_1234u32.to_le_bytes()); // NaN payload
+                public[20] = 1; // normalizeMultiLFO
+                public[21..25].copy_from_slice(&(-1.0f32).to_le_bytes());
+                public[25..29].copy_from_slice(&0.5f32.to_le_bytes());
+                if multi {
+                    for i in 0..5 {
+                        let at = 29 + i * 4;
+                        public[at..at + 4].copy_from_slice(&(0.2 * (i + 1) as f32).to_le_bytes());
+                    }
+                }
+                let mut data = Vec::new();
+                if structured {
+                    data.push(1);
+                    data.extend_from_slice(&0x70u16.to_le_bytes());
+                    data.extend_from_slice(&0u32.to_le_bytes());
+                    data.extend_from_slice(&(public.len() as u32).to_le_bytes());
+                    data.extend_from_slice(&public);
+                    data.extend_from_slice(&0u32.to_le_bytes());
+                } else {
+                    data.push(0);
+                    data.extend_from_slice(&0x70u16.to_le_bytes());
+                    data.extend_from_slice(&public);
+                }
+                let public_offset = if structured { 11 } else { 3 };
+                let original = Chunk { id: 8, data };
+                let parsed = Lfo::try_from(&original).unwrap();
+                assert_eq!(parsed.structured, structured);
+                assert_eq!(parsed.version, 0x70);
+                assert_eq!(parsed.waveform, waveform);
+                assert_eq!(parsed.initial_values[0].to_bits(), 0x8000_0000);
+                assert_eq!(parsed.initial_values[3].to_bits(), 0x7fc0_1234);
+                assert!(parsed.records[0].flag);
+                assert_eq!(parsed.records[0].values[0], -1.0);
+                assert_eq!(parsed.records[1].values[0], 0.5);
+                assert_eq!(parsed.trailing_values.is_some(), multi);
+                assert_eq!(parsed.additional_flag, None);
+                let rewritten = parsed.to_chunk().unwrap();
+                assert_eq!(rewritten.data, original.data);
+
+                // Bad flag byte rejected.
+                let mut bad_flag = original.data.clone();
+                bad_flag[public_offset + 20] = 2;
+                assert!(Lfo::try_from(&Chunk {
+                    id: 8,
+                    data: bad_flag
+                })
+                .is_err());
+                // Truncated payload rejected.
+                let truncated = original.data[..original.data.len() - 1].to_vec();
+                assert!(Lfo::try_from(&Chunk {
+                    id: 8,
+                    data: truncated
+                })
+                .is_err());
+                // Trailing byte rejected.
+                let mut extra = original.data.clone();
+                extra.push(0);
+                assert!(Lfo::try_from(&Chunk { id: 8, data: extra }).is_err());
+            }
+        }
+        // Waveform 6 with v0x70 multi payload (49 bytes instead of 29) is rejected.
+        let mut wf6_multi = vec![0, 0x70, 0];
+        wf6_multi.extend_from_slice(&6u32.to_le_bytes());
+        wf6_multi.resize(3 + 49, 0);
+        assert!(Lfo::try_from(&Chunk {
+            id: 8,
+            data: wf6_multi
+        })
+        .is_err());
     }
 }

@@ -1,5 +1,5 @@
 //! Machine-readable modulation routes from the translated model.
-use kontra_engine::ir::{ModKind, Source, TimeScale};
+use kontra_engine::ir::{EnvStage, LfoParam, ModRoute, ParamAddr, RouteLaw, Source, TimeScale};
 use serde_json::{Value, json};
 
 pub fn source(s: Source) -> Value {
@@ -14,6 +14,7 @@ pub fn source(s: Source) -> Value {
         Source::ZoneEnvelope(id) => json!({"type": "zone_envelope", "id": id}),
         Source::Lfo(id) => json!({"type": "lfo", "id": id}),
         Source::Script(id) => json!({"type": "script", "id": id}),
+        Source::Macro(n) => json!({"type": "macro", "id": n}),
         other => json!({"type": format!("{other:?}")}),
     }
 }
@@ -27,164 +28,66 @@ fn time_scale(scale: TimeScale) -> Value {
     }
 }
 
-pub fn route(kind: ModKind) -> Value {
-    match kind {
-        ModKind::Envelope => json!({"target": "envelope", "source": null}),
-        ModKind::Volume {
-            source: s,
-            intensity,
-            curve,
-            tau_ms,
-        } => {
-            json!({"target":"volume", "source":source(s), "intensity":intensity, "curve":format!("{curve:?}"), "tau_ms":tau_ms})
-        }
-        ModKind::Pitch {
-            source: s,
-            semitones,
-            depth,
-            tau_ms,
-        } => {
-            json!({"target":"pitch", "source":source(s), "semitones":semitones, "depth":depth, "tau_ms":tau_ms})
-        }
-        ModKind::Pan { source: s, amount } => {
-            json!({"target":"pan", "source":source(s), "amount":amount})
-        }
-        ModKind::Cutoff {
-            source: s,
-            insert,
-            depth,
-        } => json!({"target":"cutoff", "source":source(s), "insert":insert, "depth":depth}),
-        ModKind::CutoffHz {
-            source: s,
-            insert,
-            min_hz,
-            max_hz,
-        } => json!({
-            "target": "cutoff_hz", "source": source(s), "insert": insert,
-            "min_hz": min_hz, "max_hz": max_hz
-        }),
-        ModKind::Resonance {
-            source: s,
-            insert,
-            depth,
-        } => json!({"target":"resonance", "source":source(s), "insert":insert, "depth":depth}),
-        ModKind::EqGain {
-            source: s,
-            insert,
-            band,
-            depth_db,
-            limit_db,
-            span_db,
-        } => {
-            json!({"target":"eq_gain", "source":source(s), "insert":insert, "band":band, "depth_db":depth_db, "limit_db":limit_db, "span_db":span_db})
-        }
-        ModKind::Wavetable {
-            source: s,
-            value,
-            depth,
-        } => {
-            json!({"target":"wavetable", "source":source(s), "value":format!("{value:?}"), "depth":depth})
-        }
-        ModKind::SampleStart { source: s, depth } => {
-            json!({"target":"sample_start", "source":source(s), "depth":depth})
-        }
-        ModKind::Attack {
-            source: s,
-            intensity,
-            scale,
-            envelope,
-        } => {
-            json!({"target":"attack", "source":source(s), "intensity":intensity, "scale":time_scale(scale), "envelope":envelope})
-        }
-        ModKind::Hold {
-            source: s,
-            intensity,
-            scale,
-            envelope,
-        } => {
-            json!({"target":"hold", "source":source(s), "intensity":intensity, "scale":time_scale(scale), "envelope":envelope})
-        }
-        ModKind::Decay {
-            source: s,
-            intensity,
-            scale,
-            envelope,
-        } => {
-            json!({"target":"decay", "source":source(s), "intensity":intensity, "scale":time_scale(scale), "envelope":envelope})
-        }
-        ModKind::Sustain {
-            source: s,
-            intensity,
-            curve,
-            envelope,
-        } => {
-            json!({"target":"sustain", "source":source(s), "intensity":intensity, "curve":format!("{curve:?}"), "envelope":envelope})
-        }
-        ModKind::Release {
-            source: s,
-            intensity,
-            scale,
-            envelope,
-        } => {
-            json!({"target":"release", "source":source(s), "intensity":intensity, "scale":time_scale(scale), "envelope":envelope})
-        }
-        ModKind::LfoPhase {
-            source: s,
-            lfo,
-            depth,
-        } => json!({"target":"lfo_phase", "source":source(s), "lfo":lfo, "depth":depth}),
-        ModKind::LfoRate {
-            source: s,
-            lfo,
-            depth,
-            octaves,
-            range_hz,
-        } => {
-            json!({"target":"lfo_rate", "source":source(s), "lfo":lfo, "depth":depth, "octaves":octaves, "range_hz":range_hz})
-        }
-        ModKind::LfoHz {
-            source: s,
-            lfo,
-            depth,
-            range_hz,
-        } => {
-            json!({"target":"lfo_hz", "source":source(s), "lfo":lfo, "depth":depth, "range_hz":range_hz})
-        }
-        ModKind::LfoDivision {
-            source: s,
-            lfo,
-            depth,
-        } => json!({"target":"lfo_division", "source":source(s), "lfo":lfo, "depth":depth}),
-        ModKind::Intensity {
-            source: s,
-            of,
-            depth,
-        } => json!({"target":"intensity", "source":source(s), "of":source(of), "depth":depth}),
-        ModKind::LoopShift {
-            source: s,
-            length,
-            depth,
-        } => json!({"target":"loop_shift", "source":source(s), "length":length, "depth":depth}),
-        ModKind::Mix {
-            source: s,
-            zone,
-            row,
-            side,
-        } => json!({"target":"mix", "source":source(s), "zone":zone, "row":row, "side":side}),
-        ModKind::EffectParam {
-            source: s,
-            insert,
-            param,
-            depth,
-            span,
-            unipolar,
-        } => {
-            json!({"target":"effect_param", "source":source(s), "insert":insert, "param":format!("{param:?}"), "depth":depth, "span":span, "unipolar":unipolar})
-        }
-        ModKind::Send { source: s, send } => {
-            json!({"target":"send", "source":source(s), "send":send})
-        }
+fn law(law: RouteLaw) -> Value {
+    match law {
+        RouteLaw::Linear => json!({"type":"linear"}),
+        RouteLaw::Unipolar => json!({"type":"unipolar"}),
+        RouteLaw::Gain(curve) => json!({"type":"gain", "curve":format!("{curve:?}")}),
+        RouteLaw::Time(scale) => json!({"type":"time", "scale":time_scale(scale)}),
+        RouteLaw::Range([lo, hi]) => json!({"type":"range", "lo":lo, "hi":hi}),
+        RouteLaw::Clamp(limit) => json!({"type":"clamp", "limit":limit}),
     }
+}
+
+fn target(addr: ParamAddr) -> Value {
+    let stage = |s: EnvStage| match s {
+        EnvStage::Attack => "attack",
+        EnvStage::Hold => "hold",
+        EnvStage::Decay => "decay",
+        EnvStage::Sustain => "sustain",
+        EnvStage::Release => "release",
+    };
+    let param = |p: LfoParam| match p {
+        LfoParam::Phase => "phase",
+        LfoParam::Rate => "rate",
+        LfoParam::Hz => "hz",
+        LfoParam::Division => "division",
+    };
+    match addr {
+        ParamAddr::AmpEnvelope => json!({"type":"envelope"}),
+        ParamAddr::Volume => json!({"type":"volume"}),
+        ParamAddr::Pitch => json!({"type":"pitch"}),
+        ParamAddr::Pan => json!({"type":"pan"}),
+        ParamAddr::SampleStart => json!({"type":"sample_start"}),
+        ParamAddr::LoopShift { length } => json!({"type":"loop_shift", "length":length}),
+        ParamAddr::EnvelopeStage { envelope, stage: s } => {
+            json!({"type":stage(s), "envelope":envelope})
+        }
+        ParamAddr::LfoParam { lfo, param: p } => {
+            json!({"type":format!("lfo_{}", param(p)), "lfo":lfo})
+        }
+        ParamAddr::FilterCutoff { insert } => json!({"type":"cutoff", "insert":insert}),
+        ParamAddr::FilterResonance { insert } => json!({"type":"resonance", "insert":insert}),
+        ParamAddr::EqBandGain { insert, band } => {
+            json!({"type":"eq_gain", "insert":insert, "band":band})
+        }
+        ParamAddr::EffectParam { insert, param } => {
+            json!({"type":"effect_param", "insert":insert, "param":format!("{param:?}")})
+        }
+        ParamAddr::Wavetable(value) => json!({"type":"wavetable", "value":format!("{value:?}")}),
+        ParamAddr::ZoneMix { zone, row, side } => {
+            json!({"type":"mix", "zone":zone, "row":row, "side":side})
+        }
+        ParamAddr::RouteIntensity { of } => json!({"type":"intensity", "of":source(of)}),
+        ParamAddr::BusSend { send } => json!({"type":"send", "send":send}),
+    }
+}
+
+pub fn route(r: ModRoute) -> Value {
+    json!({
+        "target": target(r.target), "source": r.driver().map(source),
+        "depth": r.depth, "span": r.span, "law": law(r.law), "smooth_ms": r.smooth_ms,
+    })
 }
 
 /// Concise controller-driven contribution ranges from exact engine records.
@@ -237,48 +140,48 @@ mod tests {
 
     #[test]
     fn controller_to_eq_retains_its_target_and_units() {
-        let out = route(ModKind::EqGain {
-            source: Source::Controller(1),
-            insert: 2,
-            band: 1,
-            depth_db: 3.0,
-            limit_db: 12.0,
-            span_db: 12.0,
-        });
+        let out = route(
+            ModRoute::new(
+                Source::Controller(1),
+                ParamAddr::EqBandGain { insert: 2, band: 1 },
+                3.0,
+            )
+            .span(12.0)
+            .law(RouteLaw::Clamp(12.0)),
+        );
         assert_eq!(out["source"]["cc"], 1);
-        assert_eq!(out["target"], "eq_gain");
-        assert_eq!(out["insert"], 2);
-        assert_eq!(out["band"], 1);
-        assert_eq!(out["depth_db"], 3.0);
+        assert_eq!(
+            out["target"],
+            json!({"type":"eq_gain", "insert":2, "band":1})
+        );
+        assert_eq!(out["depth"], 3.0);
+        assert_eq!(out["law"], json!({"type":"clamp", "limit":12.0}));
     }
-}
-
-#[cfg(test)]
-mod route_tests {
-    use super::*;
 
     #[test]
     fn timing_routes_report_scale_and_envelope() {
-        let attack = route(ModKind::Attack {
-            source: Source::Velocity,
-            intensity: 0.5,
-            scale: TimeScale::Linear { power: 3 },
-            envelope: None,
-        });
-        let release = route(ModKind::Release {
-            source: Source::ReleaseVelocity,
-            intensity: 1.0,
-            scale: TimeScale::LogKnob {
+        let stage = |stage, envelope| ParamAddr::EnvelopeStage { envelope, stage };
+        let attack = route(
+            ModRoute::new(Source::Velocity, stage(EnvStage::Attack, None), 0.5)
+                .law(RouteLaw::Time(TimeScale::Linear { power: 3 })),
+        );
+        let release = route(
+            ModRoute::new(
+                Source::ReleaseVelocity,
+                stage(EnvStage::Release, Some(2)),
+                1.0,
+            )
+            .law(RouteLaw::Time(TimeScale::LogKnob {
                 floor_ms: 2.0,
                 power: 1,
-            },
-            envelope: Some(2),
-        });
-        assert_eq!(attack["scale"], json!({"type":"linear", "power":3}));
+            })),
+        );
+        assert_eq!(attack["law"]["scale"], json!({"type":"linear", "power":3}));
         assert_eq!(
-            release["scale"],
+            release["law"]["scale"],
             json!({"type":"log_knob", "floor_ms":2.0, "power":1})
         );
-        assert_eq!(release["envelope"], 2);
+        assert_eq!(release["target"]["envelope"], 2);
+        assert_eq!(route(ModRoute::AMP_ENVELOPE)["source"], Value::Null);
     }
 }

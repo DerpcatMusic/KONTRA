@@ -125,7 +125,7 @@ mod tests {
         let plan = plan::Plan::new(Vec::new(), 1);
         let rate = 48_000;
         let mut bus = BusState::new(plan.buses.first().expect("one bus"), rate);
-        let len = 256;
+        let len = MAX_SPAN as usize;
         let rest = (SETTLE_S * rate as f32) as usize / len + 1;
         assert!(
             (0..rest).all(|_| !bus.idle(len)),

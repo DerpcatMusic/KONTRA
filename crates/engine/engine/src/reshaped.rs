@@ -22,36 +22,25 @@ impl Reshaped {
         let routes = group.mods.iter().enumerate();
         Self {
             intensity: (routes.clone())
-                .filter_map(|(i, m)| match m.kind {
-                    ir::ModKind::Intensity { of, .. } => Some((of, i)),
+                .filter_map(|(i, m)| match m.route.target {
+                    ir::ParamAddr::RouteIntensity { of } => Some((of, i)),
                     _ => None,
                 })
                 .collect(),
             envelope: (routes.clone())
-                .filter_map(|(i, m)| match m.kind {
-                    ir::ModKind::Attack {
-                        envelope: Some(n), ..
-                    }
-                    | ir::ModKind::Hold {
-                        envelope: Some(n), ..
-                    }
-                    | ir::ModKind::Decay {
-                        envelope: Some(n), ..
-                    }
-                    | ir::ModKind::Sustain {
-                        envelope: Some(n), ..
-                    }
-                    | ir::ModKind::Release {
+                .filter_map(|(i, m)| match m.route.target {
+                    ir::ParamAddr::EnvelopeStage {
                         envelope: Some(n), ..
                     } => Some((n, i)),
                     _ => None,
                 })
                 .collect(),
             lfo: routes
-                .filter_map(|(i, m)| match m.kind {
-                    ir::ModKind::LfoPhase { lfo, .. } | ir::ModKind::LfoRate { lfo, .. } => {
-                        Some((lfo, i))
-                    }
+                .filter_map(|(i, m)| match m.route.target {
+                    ir::ParamAddr::LfoParam {
+                        lfo,
+                        param: ir::LfoParam::Phase | ir::LfoParam::Rate,
+                    } => Some((lfo, i)),
                     _ => None,
                 })
                 .collect(),
@@ -87,26 +76,29 @@ mod tests {
     #[test]
     fn a_route_is_found_under_its_source_bypassed_or_not() {
         let mut group = Group::standard();
-        let route = |kind| ir::Mod {
+        let route = |r: ir::ModRoute| ir::Mod {
             name: String::new(),
             slot: 0,
             target: 0,
             bypass: true,
-            kind,
+            route: r,
         };
         let (velocity, depth) = (ir::Source::Velocity, 1.0);
         let envelope = ir::Source::Envelope(40);
         group.mods = vec![
-            route(ir::ModKind::LfoPhase {
-                source: velocity,
-                lfo: 2,
+            route(ir::ModRoute::new(
+                velocity,
+                ir::ParamAddr::LfoParam {
+                    lfo: 2,
+                    param: ir::LfoParam::Phase,
+                },
                 depth,
-            }),
-            route(ir::ModKind::Intensity {
-                source: velocity,
-                of: envelope,
+            )),
+            route(ir::ModRoute::new(
+                velocity,
+                ir::ParamAddr::RouteIntensity { of: envelope },
                 depth,
-            }),
+            )),
         ];
         let r = Reshaped::of(&group);
         assert_eq!(r.moving(2).collect::<Vec<_>>(), [0]);

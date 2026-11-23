@@ -276,21 +276,44 @@ impl Engine {
                     .render(&mut self.voice_scratch, &self.stream, self.now.0, mix);
             } else {
                 let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
-                let inserts = group
+                let (inserts, amp_split) = group
                     .and_then(|g| self.groups.get(g))
-                    .map(|g| &g.inserts[..])
-                    .unwrap_or_default();
-                let (rack, spare, rate) = (&mut slot.rack, &mut *self.scratch, self.rate);
+                    .map_or((&[][..], u8::MAX), |g| (&g.inserts[..], g.amp_split));
+                let split_at = slot.rack.partition_point(|u| u.insert < amp_split);
+                let (pre_rack, post_rack) = slot.rack.split_at_mut(split_at);
+                let (spare, rate) = (&mut *self.scratch, self.rate);
                 let lines = &mut slot.comb_lines;
-                slot.voice.render_through(
-                    &mut self.voice_scratch,
-                    &self.stream,
-                    self.now.0,
-                    mix,
-                    |io| {
-                        crate::voice_rack::process(rack, inserts, io, spare, lines, rate);
-                    },
-                );
+                if post_rack.is_empty() {
+                    slot.voice.render_through(
+                        &mut self.voice_scratch,
+                        &self.stream,
+                        self.now.0,
+                        mix,
+                        |io| {
+                            crate::voice_rack::process(pre_rack, inserts, io, spare, lines, rate);
+                        },
+                    );
+                } else {
+                    slot.voice.render_through_stages(
+                        &mut self.voice_scratch,
+                        &self.stream,
+                        self.now.0,
+                        mix,
+                        |stage, io| match stage {
+                            kontra_voice::VoiceStage::PreAmp if !pre_rack.is_empty() => {
+                                crate::voice_rack::process(
+                                    pre_rack, inserts, io, spare, lines, rate,
+                                );
+                            }
+                            kontra_voice::VoiceStage::PostAmp => {
+                                crate::voice_rack::process(
+                                    post_rack, inserts, io, spare, lines, rate,
+                                );
+                            }
+                            _ => {}
+                        },
+                    );
+                }
             }
             self.stats.missing_frames += slot.voice.missing_frames() - before;
             #[cfg(feature = "trace")]

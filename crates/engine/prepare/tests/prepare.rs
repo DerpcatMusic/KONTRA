@@ -332,11 +332,11 @@ fn a_velocity_route_moves_each_voices_table_position() {
                 slot: 0,
                 target: 0,
                 bypass: false,
-                kind: ir::ModKind::Wavetable {
-                    source: ir::Source::Velocity,
-                    value: ir::TableValue::Position,
-                    depth: 1.0,
-                },
+                route: ir::ModRoute::new(
+                    ir::Source::Velocity,
+                    ir::ParamAddr::Wavetable(ir::TableValue::Position),
+                    1.0,
+                ),
             }],
             zones: vec![z],
             ..ir::Group::DEFAULT
@@ -456,9 +456,9 @@ fn oscillator_facts_and_cycle_positions_survive_purge_and_wake() {
         inst.groups[0].purged = purged;
         let (plan, diagnostics) = prepare(&inst, RATE, &mut store, &open);
         assert!(diagnostics.is_empty());
-        assert_eq!(plan.zone_facts.len(), 2);
-        assert_eq!(plan.zone_facts[1].id, 9);
-        assert!(plan.zone_facts[1].source.is_none());
+        assert_eq!(plan.zone_table.len(), 2);
+        assert_eq!(plan.zone_table.ids[1], 9);
+        assert!(plan.zone_sample(9).is_none());
         let plan = if purged {
             assert!(plan.zones.is_empty());
             let (plan, diagnostics, loaded) =

@@ -304,7 +304,19 @@ fn base(path: &Path, names: &(String, String), known: &[PathBuf]) -> Result<Path
                 wanted.join(" or ")
             ),
         )),
-        _ => Err(Error::new(path, "base instrument", "ambiguous")),
+        many => Err(Error::new(
+            path,
+            "base instrument",
+            format!(
+                "ambiguous ({} candidates, e.g. {})",
+                many.len(),
+                many.iter()
+                    .take(3)
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
     }
 }
 
@@ -343,7 +355,21 @@ fn near(path: &Path, wanted: &mut Vec<String>) -> Result<Option<PathBuf>, Error>
         match found.as_slice() {
             [] => {}
             [one] => return Ok(Some(one.clone())),
-            _ => return Err(Error::new(path, "base instrument", "ambiguous")),
+            many => {
+                return Err(Error::new(
+                    path,
+                    "base instrument",
+                    format!(
+                        "ambiguous ({} candidates, e.g. {})",
+                        many.len(),
+                        many.iter()
+                            .take(3)
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
         }
     }
     Ok(None)

@@ -70,8 +70,8 @@ pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{
-    EnginePar, EnginePars, LoopPar, Recall, Saved, ZoneFacts, ZoneRules, files, midi_file,
-    user_loops, zone_name,
+    EnginePar, EnginePars, LoopPar, Recall, Saved, SavedZoneDesc, UserZone, ZoneRules, ZoneTable,
+    files, midi_file, user_loops, zone_name,
 };
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_script_ui::{ENTRY, FIRST_FONT};
@@ -153,16 +153,19 @@ struct Slot {
     rack: Vec<voice_rack::Unit>,
     /// The delay lines its combs run on, sized at build.
     comb_lines: Vec<[f32; 2]>,
-    /// Its lagging pitch routes' semitones: where they are, where they go.
-    bend: [f32; 2],
+    /// Its lagging pitch routes' semitones, each where it is and where it
+    /// goes ([`voice_gain::Bend`]).
+    bend: [[f32; 2]; kontra_voice::LAGS],
     /// Its group's pan, gliding the same way.
     pan: [f32; 2],
-    /// Cycles its LFOs' live rate routes added ([`modulators::Age::warp`]).
-    warp: [f32; modulators::WARPS],
+    /// Cycles its LFOs' live rate routes added ([`modulators::Age::warp`]),
+    /// one per LFO of the group with the most (chaos too; stretch: one per
+    /// envelope of the group with the most).
+    warp: Box<[f32]>,
     /// Its chaotic LFOs' states ([`modulators::Chaos`]).
-    chaos: [modulators::Chaos; modulators::WARPS],
+    chaos: Box<[modulators::Chaos]>,
     /// Its envelopes' stage stretches ([`modulators::Age::stretch`]).
-    stretch: [modulators::EnvScale; modulators::WARPS],
+    stretch: Box<[modulators::EnvScale]>,
     /// Unmodulated amplitude release at voice start.
     release_base: u32,
     /// Its portamento, while it slides ([`glide::Slide`]).
@@ -244,6 +247,11 @@ pub struct Engine {
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
+    /// A voice's next warps while its current ones are read (one per LFO,
+    /// as [`Slot::warp`]), and its envelopes' stretches while they are
+    /// worked out at note-on and note-off (as [`Slot::stretch`]).
+    warp_scratch: Box<[f32]>,
+    stretch_scratch: Box<[modulators::EnvScale]>,
     /// Notes a running callback changed; their voices refresh when it ends.
     refresh_later: Vec<NoteRef>,
     /// Latest controller values on any channel, as scripts read them.
@@ -398,25 +406,32 @@ impl Engine {
         // a spare per voice no fade is cut short (a click) unless more than
         // the limit are fading at once (tests/playability.rs).
         let pool = 2 * plan.voices + 1;
+        let lfos = plan.groups.iter().map(|g| g.lfos.len()).max().unwrap_or(0);
+        let envelopes = plan.groups.iter().map(|g| g.envelopes.len());
+        let envelopes = envelopes.max().unwrap_or(0);
         let voices = (0..pool)
-            .map(|_| Slot {
-                voice: Voice::allocate(),
-                note: None,
-                zone: 0,
-                started: SampleTime(0),
-                factor: 1.0,
-                rack: Vec::new(),
-                comb_lines: Vec::new(),
-                bend: [0.0; 2],
-                pan: [0.0; 2],
-                warp: [0.0; modulators::WARPS],
-                chaos: [modulators::CHAOS_START; modulators::WARPS],
-                stretch: [modulators::EnvScale::UNITY; modulators::WARPS],
-                release_base: 0,
-                slide: None,
-                start_frame: 0.0,
-                #[cfg(feature = "trace")]
-                pending_trace_cc: std::cell::Cell::new(0),
+            .map(|_| {
+                let mut voice = Voice::allocate();
+                voice.set_sample_rate(rate);
+                Slot {
+                    voice,
+                    note: None,
+                    zone: 0,
+                    started: SampleTime(0),
+                    factor: 1.0,
+                    rack: Vec::new(),
+                    comb_lines: Vec::new(),
+                    bend: [[0.0; 2]; kontra_voice::LAGS],
+                    pan: [0.0; 2],
+                    warp: vec![0.0; lfos].into(),
+                    chaos: vec![modulators::CHAOS_START; lfos].into(),
+                    stretch: vec![modulators::EnvScale::UNITY; envelopes].into(),
+                    release_base: 0,
+                    slide: None,
+                    start_frame: 0.0,
+                    #[cfg(feature = "trace")]
+                    pending_trace_cc: std::cell::Cell::new(0),
+                }
             })
             .collect();
         let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
@@ -516,6 +531,8 @@ impl Engine {
             stop_waits: Vec::with_capacity(16),
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
+            warp_scratch: vec![0.0; lfos].into(),
+            stretch_scratch: vec![modulators::EnvScale::UNITY; envelopes].into(),
             refresh_later: Vec::with_capacity(64),
             cc_values: [0; 130],
             poly_at: [0; 128],
@@ -924,6 +941,8 @@ impl Engine {
         n.sostenuto_held = false;
         let snapshot = *n;
         self.mono_release(note);
+        // Each voice's envelope stretches with their releases read again.
+        let mut stretch = std::mem::take(&mut self.stretch_scratch);
         for i in 0..self.voices.len() {
             let Some((zone_idx, age, release_base)) = self
                 .voices
@@ -939,31 +958,31 @@ impl Engine {
             } else {
                 KeyUp::Release
             };
-            let (rel_frames, rel_stretches) = self
+            for (s, was) in stretch.iter_mut().zip(age.stretch) {
+                *s = *was;
+            }
+            let (rel_frames, restretched) = self
                 .plan
                 .zones
                 .get(zone_idx)
                 .map(|z| {
                     (
                         self.release_frames(z, &snapshot, age, release_base),
-                        self.release_stretches(z, &snapshot, age),
+                        self.release_stretches(z, &snapshot, age, &mut stretch),
                     )
                 })
-                .unwrap_or((None, None));
+                .unwrap_or((None, false));
             if let Some(slot) = self.voices.get_mut(i) {
                 if let Some(frames) = rel_frames {
                     slot.voice.set_release_frames(frames);
                 }
-                if let Some(rel) = rel_stretches {
-                    for (s, r) in slot.stretch.iter_mut().zip(rel) {
-                        if let Some(r) = r {
-                            s.release = r;
-                        }
-                    }
+                if restretched {
+                    stretch = std::mem::replace(&mut slot.stretch, stretch);
                 }
                 slot.voice.key_up(self.now.0, key_up);
             }
         }
+        self.stretch_scratch = stretch;
         if self.plan.release_zones == ReleaseZones::AtRelease
             && self.notes.get(note).map(|n| n.releases) == Some(Releases::OnRelease)
         {
@@ -1096,12 +1115,15 @@ mod release_regression {
                 slot: i as u16,
                 target: 0,
                 bypass: false,
-                kind: ir::ModKind::Release {
+                route: ir::ModRoute::new(
                     source,
-                    intensity: 1.0,
-                    scale: ir::TimeScale::Linear { power: 1 },
-                    envelope: Some(i as u8),
-                },
+                    ir::ParamAddr::EnvelopeStage {
+                        envelope: Some(i as u8),
+                        stage: ir::EnvStage::Release,
+                    },
+                    1.0,
+                )
+                .law(ir::RouteLaw::Time(ir::TimeScale::Linear { power: 1 })),
             })
             .collect();
         let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);

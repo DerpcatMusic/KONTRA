@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use kontra_engine::{Engine, Plan, Saved, ZoneEdit, ZoneFacts};
+use kontra_engine::{Engine, Plan, Saved, SavedZoneDesc, ZoneEdit};
 use kontra_stream::{Store, StoreConfig};
 
 /// An engine running `source` over one zone (id 0, group 0) in two groups;
@@ -27,25 +27,28 @@ fn engine(source: &str) -> (Engine, u32, i32) {
         kontra_engine::Group::standard(),
         kontra_engine::Group::standard(),
     ];
-    plan.zone_facts = vec![ZoneFacts {
-        id: 0,
-        name: "z".into(),
-        group: 0,
-        keys: 0..=127,
-        velocities: 1..=127,
-        root: 60,
-        start: 0,
-        end: 0,
-        start_range: 0,
-        rate: 48_000,
-        source: None,
-        loops: Vec::new(),
-        user: false,
-        volume: 0,
-        pan: 0,
-        tune: 0,
-        fades: [0; 4],
-    }];
+    plan.push_saved_zone(
+        SavedZoneDesc {
+            id: 0,
+            group: 0,
+            keys: 0..=127,
+            velocities: 1..=127,
+            root: 60,
+            start: 0,
+            end: 0,
+            start_mod: 0,
+            sample_rate: 48_000,
+            volume_db: 0.0,
+            pan: 0.0,
+            tune_semitones: 0.0,
+            key_fade: (0, 0),
+            velocity_fade: (0, 0),
+            sample_idx: None,
+            custom_name: Some("z"),
+            loops: &[],
+        },
+        None,
+    );
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
     (
@@ -73,7 +76,7 @@ fn drained(e: &mut Engine) -> Vec<ZoneEdit> {
 }
 
 fn group(e: &Engine) -> u32 {
-    e.plan().zone_facts[0].group
+    e.plan().zone_group(0).unwrap()
 }
 
 /// A recall that keeps the scripts runs `persistence_changed` as a load

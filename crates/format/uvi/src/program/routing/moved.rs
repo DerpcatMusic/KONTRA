@@ -75,7 +75,10 @@ impl<L: Library> Translator<'_, '_, L> {
                 };
                 let readable = matches!(
                     term.input.source,
-                    ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::Lfo(_)
+                    ir::Source::Controller(_)
+                        | ir::Source::Script(_)
+                        | ir::Source::Macro(_)
+                        | ir::Source::Lfo(_)
                 );
                 let Some(saved) = node.attribute(name).and_then(|v| v.parse().ok()) else {
                     continue;
@@ -101,6 +104,7 @@ impl<L: Library> Translator<'_, '_, L> {
                                     t.input.source,
                                     ir::Source::Controller(_)
                                         | ir::Source::Script(_)
+                                        | ir::Source::Macro(_)
                                         | ir::Source::Lfo(_)
                                 )
                         }) {
@@ -133,11 +137,14 @@ impl<L: Library> Translator<'_, '_, L> {
             b.lfos = lfos;
             for (lfo, blend, id) in divisions {
                 let source = ir::Source::Blend(index_of(&mut b.blends, blend));
-                b.mods.push(ir::ModKind::LfoDivision {
+                b.mods.push(ir::ModRoute::new(
                     source,
-                    lfo,
-                    depth: 1.0,
-                });
+                    ir::ParamAddr::LfoParam {
+                        lfo,
+                        param: ir::LfoParam::Division,
+                    },
+                    1.0,
+                ));
                 extra.push(id);
             }
         }
@@ -196,14 +203,11 @@ impl<L: Library> Translator<'_, '_, L> {
                     terms: vec![term],
                 };
                 let source = ir::Source::Blend(index_of(&mut b.blends, blend));
-                b.mods.push(ir::ModKind::EffectParam {
+                b.mods.push(ir::ModRoute::new(
                     source,
-                    insert,
-                    param,
-                    depth: 1.0,
-                    span: 1.0,
-                    unipolar: false,
-                });
+                    ir::ParamAddr::EffectParam { insert, param },
+                    1.0,
+                ));
             }
             self.carried.extend(moved.iter().map(|m| m.3));
         }

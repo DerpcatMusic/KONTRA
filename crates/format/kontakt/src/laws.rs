@@ -381,15 +381,18 @@ pub(crate) fn flex_gate(e: &ir::Breakpoints) -> ir::Envelope {
 pub(crate) const LFO_RATE_HZ: [f32; 2] = [0.010_415, 213.14];
 
 /// A route on an LFO's rate knob, `intensity` in knob units.
-pub(crate) fn lfo_rate(source: ir::Source, lfo: u8, intensity: f32) -> ir::ModKind {
+pub(crate) fn lfo_rate(source: ir::Source, lfo: u8, intensity: f32) -> ir::ModRoute {
     let [lo, hi] = LFO_RATE_HZ;
-    ir::ModKind::LfoRate {
+    ir::ModRoute::new(
         source,
-        lfo,
-        depth: intensity,
-        octaves: (hi / lo).log2(),
-        range_hz: LFO_RATE_HZ,
-    }
+        ir::ParamAddr::LfoParam {
+            lfo,
+            param: ir::LfoParam::Rate,
+        },
+        intensity,
+    )
+    .span((hi / lo).log2())
+    .law(ir::RouteLaw::Range(LFO_RATE_HZ))
 }
 
 /// A free-running (unsynced) LFO. Waveforms by id: sine 0, rectangle 1,
@@ -572,14 +575,15 @@ pub(crate) fn eq_gain(
     insert: u8,
     param: &str,
     intensity: f32,
-) -> Option<ir::ModKind> {
-    eq_band_index(param).map(|band| ir::ModKind::EqGain {
-        source,
-        insert,
-        band,
-        depth_db: intensity * EQ_GAIN_SPAN_DB,
-        limit_db: EQ_GAIN_LIMIT_DB,
-        span_db: EQ_GAIN_SPAN_DB,
+) -> Option<ir::ModRoute> {
+    eq_band_index(param).map(|band| {
+        ir::ModRoute::new(
+            source,
+            ir::ParamAddr::EqBandGain { insert, band },
+            intensity * EQ_GAIN_SPAN_DB,
+        )
+        .span(EQ_GAIN_SPAN_DB)
+        .law(ir::RouteLaw::Clamp(EQ_GAIN_LIMIT_DB))
     })
 }
 
@@ -934,7 +938,7 @@ mod tests {
     fn a_full_eq_gain_route_moves_its_band_24_db() {
         let kind = eq_gain(ir::Source::Velocity, 0, "eqGain1", 1.0);
         assert!(
-            matches!(kind, Some(ir::ModKind::EqGain { depth_db, limit_db, .. })
+            matches!(kind, Some(ir::ModRoute { target: ir::ParamAddr::EqBandGain { .. }, depth: depth_db, law: ir::RouteLaw::Clamp(limit_db), .. })
             if depth_db == 24.0 && limit_db == 36.0)
         );
     }

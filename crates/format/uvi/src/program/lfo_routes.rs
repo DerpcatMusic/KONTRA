@@ -8,7 +8,7 @@ use super::{Library, Translator, flag, matrix, source_node};
 
 impl<L: Library> Translator<'_, '_, L> {
     /// The connections on the `Depth` of the LFO `connection` reads, as
-    /// [`ir::ModKind::Intensity`] routes on its group copy `of`: the
+    /// [`ir::ParamAddr::RouteIntensity`] routes on its group copy `of`: the
     /// connection law (UVIWorkstation [ref]) scales the depth by
     /// `1 − r(1 − x)`, or `1 + r·x` below zero, where Intensity reads `1 − x`
     /// at `−r` (unit −1, so a script's ratio keeps its sign). ponytail: a
@@ -57,16 +57,14 @@ impl<L: Library> Translator<'_, '_, L> {
             .filter_map(|c| Some((c, depth_route(self.program, c, owner)?)))
             .collect::<Vec<_>>();
         for (c, r) in depths {
-            self.add_route(group, c, r, |source, depth| ir::ModKind::Intensity {
-                source,
-                of,
-                depth,
+            self.add_route(group, c, r, |source, depth| {
+                ir::ModRoute::new(source, ir::ParamAddr::RouteIntensity { of }, depth)
             });
         }
     }
 
     /// The connections on the `Freq` of the free-running `lfo`, as
-    /// [`ir::ModKind::LfoHz`] routes on its group copy `of`. `Freq` is a
+    /// [`ir::LfoParam::Hz`] routes on its group copy `of`. `Freq` is a
     /// normalized 0..=1 parameter (default 0.5, LFO constructor [ref])
     /// over 0..=20 Hz (range [ref]), linear when unsynced;
     /// a connection adds `r·m` to it, held within the range.
@@ -84,10 +82,15 @@ impl<L: Library> Translator<'_, '_, L> {
             // A synced `Freq` is a place on the note ladder (the 30-way table
             // at [ref]): the connection adds `r·m` to its 0..=1 knob.
             if synced {
-                self.add_route(group, c, r, |source, depth| ir::ModKind::LfoDivision {
-                    source,
-                    lfo: n,
-                    depth,
+                self.add_route(group, c, r, |source, depth| {
+                    ir::ModRoute::new(
+                        source,
+                        ir::ParamAddr::LfoParam {
+                            lfo: n,
+                            param: ir::LfoParam::Division,
+                        },
+                        depth,
+                    )
                 });
                 continue;
             }
@@ -96,11 +99,16 @@ impl<L: Library> Translator<'_, '_, L> {
                 Some(l) if l.wave == ir::Wave::Random => 10.0,
                 _ => 20.0,
             };
-            self.add_route(group, c, r, |source, depth| ir::ModKind::LfoHz {
-                source,
-                lfo: n,
-                depth,
-                range_hz: [0.0, top],
+            self.add_route(group, c, r, |source, depth| {
+                ir::ModRoute::new(
+                    source,
+                    ir::ParamAddr::LfoParam {
+                        lfo: n,
+                        param: ir::LfoParam::Hz,
+                    },
+                    depth,
+                )
+                .law(ir::RouteLaw::Range([0.0, top]))
             });
         }
     }

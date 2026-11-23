@@ -147,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .plan
             .groups
             .get(z.group as usize)
-            .map(|g| g.mods.iter().map(|m| format!("{:?}", m.kind)).collect())
+            .map(|g| g.mods.iter().map(|m| format!("{:?}", m.route)).collect())
             .unwrap_or_default();
         let what = format!(
             "{:?} {:?} gain {:.2} mods {mods:?}",
@@ -194,9 +194,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("KONTRA_MODS").is_some() {
         let mut seen = Vec::new();
         for m in loaded.plan.groups.iter().flat_map(|g| &g.mods) {
-            if !seen.contains(&m.kind) {
-                seen.push(m.kind);
-                println!("mod {:?}", m.kind);
+            if !seen.contains(&m.route) {
+                seen.push(m.route);
+                println!("mod {:?}", m.route);
             }
         }
         let mut timed = Vec::new();
@@ -287,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("KONTRA_MODS").is_some() {
         let mut seen = Vec::new();
         for m in engine.mods().filter(|m| !m.bypass) {
-            let line = format!("{} {:?}", m.name, m.kind);
+            let line = format!("{} {:?}", m.name, m.route);
             if !seen.contains(&line) {
                 println!("live mod {line}");
                 seen.push(line);
@@ -599,7 +599,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let t = (n + 1) as f64 * 512.0 / f64::from(RATE);
             for v in engine.inspect_voices() {
                 let group = plan.zones.get(v.zone).map(|z| z.group);
-                println!("trace\t{t:.4}\t{}\t{group:?}\t{}\t{:.4}\t{:?}\t{v:?}", v.zone, v.envelope_stage, v.envelope_level, v.gain);
+                println!(
+                    "trace\t{t:.4}\t{}\t{group:?}\t{}\t{:.4}\t{:?}\t{v:?}",
+                    v.zone, v.envelope_stage, v.envelope_level, v.gain
+                );
             }
         }
         // KONTRA_POSITIONS=1: each voice's source position after every block

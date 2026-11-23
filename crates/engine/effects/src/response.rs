@@ -68,7 +68,9 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
 /// silence by `(1 + cos(π·i/(n + 1)))/2`; gains under 1e-10 are silence.
 fn window(channels: [&mut Vec<f32>; 2], length: f32) {
     for c in channels {
-        let n = ((c.len() as f32 * length.max(0.0)).round() as usize).max(2).min(c.len());
+        let n = ((c.len() as f32 * length.max(0.0)).round() as usize)
+            .max(2)
+            .min(c.len());
         c.truncate(n);
         let step = std::f32::consts::PI / (n + 1) as f32;
         for (i, x) in c.iter_mut().enumerate() {

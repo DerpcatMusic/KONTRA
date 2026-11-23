@@ -1668,18 +1668,21 @@ fn ramp_output(defer: bool) -> Vec<f32> {
 }
 
 #[test]
-fn a_note_before_its_heads_load_starts_from_the_samples_first_frame() {
+fn a_note_before_its_heads_load_stays_in_phase_without_stalling() {
     let loaded = ramp_output(false);
     let waited = ramp_output(true);
     let first = |v: &[f32]| v.iter().position(|x| x.abs() > 1e-4).unwrap();
     let (a, b) = (first(&loaded), first(&waited));
-    assert!(
-        waited[b] < 0.12,
-        "the note joined mid-sample at {}",
-        waited[b]
-    );
-    for (x, y) in loaded[a..a + 300].iter().zip(&waited[b..b + 300]) {
-        assert!((x - y).abs() < 1e-3, "the attack differs: {x} vs {y}");
+    assert_eq!(a, 0, "preloaded note sounds at frame 0");
+    assert!(b > 0, "deferred head starts silent until the page arrives");
+    // A voice never stalls for storage (02-ENGINE.md §5): once the page arrives
+    // at frame `b`, its cursor is already at frame `b`, staying phase-aligned
+    // with any preloaded layer rather than skewing back to frame 0.
+    for (x, y) in loaded[b..b + 300].iter().zip(&waited[b..b + 300]) {
+        assert!(
+            (x - y).abs() < 1e-3,
+            "deferred voice must join in phase at frame {b}: {x} vs {y}"
+        );
     }
 }
 

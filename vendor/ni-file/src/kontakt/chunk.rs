@@ -9,7 +9,8 @@ use super::{
         FileNameListPreK51, Glide, GroupDynamics, GroupList, InsertBus, InternalMod,
         InternalModArray16, Lfo, LoopArray, MidiPortMaps, MultiSlots, OutputConfiguration,
         PrivateRawObject, Program, ProgramContainer, ProgramList, QuickBrowseData, SaveSettings,
-        SlotList, Snapshot, StartCriteria, StartCriteriaList, VoiceGroup, VoiceGroups, ZoneList,
+        SlotList, Snapshot, StartCriteria, StartCriteriaList, StepMod, VoiceGroup, VoiceGroups,
+        ZoneList,
     },
     structured_object::StructuredObject,
 };
@@ -71,7 +72,7 @@ pub enum KontaktObject {
     /// Wrapper whose only child is the concrete modulator.
     BParEnv(StructuredObject),
     BParLFO(Lfo),
-    BParArp,
+    BParArp(StepMod),
     BParEnvF(EnvelopeFollower),
     BParGlide(Glide),
     BParExternalMod(ExternalMod),
@@ -221,7 +222,7 @@ impl TryFrom<&Chunk> for KontaktObject {
             0x06 => KontaktObject::BParScript(chunk.try_into()?),
             0x07 => KontaktObject::BParEnv(chunk.try_into()?),
             0x08 => KontaktObject::BParLFO(chunk.try_into()?),
-            0x09 => KontaktObject::BParArp,
+            0x09 => KontaktObject::BParArp(chunk.try_into()?),
             0x0a => KontaktObject::BParEnvF(chunk.try_into()?),
             0x0b => KontaktObject::BParGlide(chunk.try_into()?),
             0x0c => KontaktObject::BParExternalMod(chunk.try_into()?),

@@ -11,3 +11,6 @@ description = "Repository measurements and checks for the v3 refactor (docs/arch
 cargo_metadata = "0.23"
 serde_json = "1"
 toml = "1"
+
+[lints]
+workspace = true

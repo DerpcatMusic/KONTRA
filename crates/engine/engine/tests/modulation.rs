@@ -16,7 +16,7 @@ use common::*;
 
 #[test]
 fn a_controller_opens_a_voice_filter() {
-    use kontra_engine::ir::{Effect, EffectKind, Filter, Mod, ModKind, Pass, Source};
+    use kontra_engine::ir::{Effect, EffectKind, Filter, Mod, ModRoute, ParamAddr, Pass, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
     // A 4-pole low pass at 100 Hz that a controller opens by 6 octaves.
@@ -40,11 +40,11 @@ fn a_controller_opens_a_voice_filter() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Cutoff {
-            source: Source::Controller(74),
-            insert: 0,
-            depth: 1.0,
-        },
+        route: ModRoute::new(
+            Source::Controller(74),
+            ParamAddr::FilterCutoff { insert: 0 },
+            1.0,
+        ),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let peak = |e: &mut Engine, events: &[Timed<Event>]| {
@@ -70,7 +70,9 @@ fn a_controller_opens_a_voice_filter() {
 
 #[test]
 fn an_additive_cutoff_route_interpolates_in_hertz() {
-    use kontra_engine::ir::{Effect, EffectKind, Filter, Mod, ModKind, Pass, Source};
+    use kontra_engine::ir::{
+        Effect, EffectKind, Filter, Mod, ModRoute, ParamAddr, Pass, RouteLaw, Source,
+    };
 
     for maximum in [2000.0, 6000.0] {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -95,12 +97,12 @@ fn an_additive_cutoff_route_interpolates_in_hertz() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::CutoffHz {
-                source: Source::Controller(1),
-                insert: 0,
-                min_hz: 0.0,
-                max_hz: maximum,
-            },
+            route: ModRoute::new(
+                Source::Controller(1),
+                ParamAddr::FilterCutoff { insert: 0 },
+                1.0,
+            )
+            .law(RouteLaw::Range([0.0, maximum])),
         }];
         let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
         let mut out = [[0.0; 2]; 512];
@@ -144,12 +146,12 @@ fn an_additive_cutoff_route_interpolates_in_hertz() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::CutoffHz {
-            source: Source::Script(0),
-            insert: 0,
-            min_hz: 0.0,
-            max_hz: 2000.0,
-        },
+        route: ModRoute::new(
+            Source::Script(0),
+            ParamAddr::FilterCutoff { insert: 0 },
+            1.0,
+        )
+        .law(RouteLaw::Range([0.0, 2000.0])),
     }];
     let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
     let mut out = [[0.0; 2]; 512];
@@ -192,23 +194,19 @@ fn an_additive_cutoff_route_interpolates_in_hertz() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::CutoffHz {
-                source: Source::Lfo(0),
-                insert: 0,
-                min_hz: 0.0,
-                max_hz: 2000.0,
-            },
+            route: ModRoute::new(Source::Lfo(0), ParamAddr::FilterCutoff { insert: 0 }, 1.0)
+                .law(RouteLaw::Range([0.0, 2000.0])),
         },
         Mod {
             name: String::new(),
             slot: 1,
             target: 0,
             bypass: false,
-            kind: ModKind::Intensity {
-                source: Source::Controller(1),
-                of: Source::Lfo(0),
-                depth: 1.0,
-            },
+            route: ModRoute::new(
+                Source::Controller(1),
+                ParamAddr::RouteIntensity { of: Source::Lfo(0) },
+                1.0,
+            ),
         },
     ];
     let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -351,7 +349,7 @@ fn eq_group(
 
 #[test]
 fn a_velocity_moved_eq_band_makes_a_hard_note_louder_at_its_frequency() {
-    use kontra_engine::ir::{Bell, Mod, ModKind, Source};
+    use kontra_engine::ir::{Bell, Mod, ModRoute, ParamAddr, RouteLaw, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let region = sine(&mut store);
     // The 1 kHz band moves +24 dB across velocity: 12 dB at 0.5, 24 dB at 1.
@@ -360,14 +358,13 @@ fn a_velocity_moved_eq_band_makes_a_hard_note_louder_at_its_frequency() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::EqGain {
-            source: Source::Velocity,
-            insert: 0,
-            band: 0,
-            depth_db: 24.0,
-            limit_db: 36.0,
-            span_db: 72.0,
-        },
+        route: ModRoute::new(
+            Source::Velocity,
+            ParamAddr::EqBandGain { insert: 0, band: 0 },
+            24.0,
+        )
+        .span(72.0)
+        .law(RouteLaw::Clamp(36.0)),
     };
     let bell = Bell {
         hz: 1000.0,
@@ -400,7 +397,7 @@ fn a_velocity_moved_eq_band_makes_a_hard_note_louder_at_its_frequency() {
 #[test]
 fn an_lfo_moved_resonance_changes_the_response_over_time() {
     use kontra_engine::ir::{
-        Clock, Effect, EffectKind, Filter, Lfo, Mod, ModKind, Pass, Rate, Source, Wave,
+        Clock, Effect, EffectKind, Filter, Lfo, Mod, ModRoute, ParamAddr, Pass, Rate, Source, Wave,
     };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
@@ -433,11 +430,11 @@ fn an_lfo_moved_resonance_changes_the_response_over_time() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Resonance {
-            source: Source::Lfo(0),
-            insert: 0,
-            depth: 1.0,
-        },
+        route: ModRoute::new(
+            Source::Lfo(0),
+            ParamAddr::FilterResonance { insert: 0 },
+            1.0,
+        ),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let mut out = vec![[0.0f32; 2]; 48_000];
@@ -454,7 +451,8 @@ fn an_lfo_moved_resonance_changes_the_response_over_time() {
 #[test]
 fn a_ladders_resonance_route_scales_its_resonance() {
     use kontra_engine::ir::{
-        Clock, Effect, EffectKind, Filter, Ladder, Lfo, Mod, ModKind, Pass, Rate, Source, Wave,
+        Clock, Effect, EffectKind, Filter, Ladder, Lfo, Mod, ModRoute, ParamAddr, Pass, Rate,
+        Source, Wave,
     };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
@@ -488,11 +486,11 @@ fn a_ladders_resonance_route_scales_its_resonance() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Resonance {
-            source: Source::Lfo(0),
-            insert: 0,
-            depth: 1.0,
-        },
+        route: ModRoute::new(
+            Source::Lfo(0),
+            ParamAddr::FilterResonance { insert: 0 },
+            1.0,
+        ),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let mut out = vec![[0.0f32; 2]; 48_000];
@@ -542,15 +540,18 @@ fn a_velocity_attack_route_shortens_soft_attacks() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Attack {
-            source: ir::Source::Velocity,
-            intensity: 1.0,
-            scale: ir::TimeScale::LogKnob {
-                floor_ms: 2.0,
-                power: 1,
+        route: ir::ModRoute::new(
+            ir::Source::Velocity,
+            ir::ParamAddr::EnvelopeStage {
+                envelope: None,
+                stage: ir::EnvStage::Attack,
             },
-            envelope: None,
-        },
+            1.0,
+        )
+        .law(ir::RouteLaw::Time(ir::TimeScale::LogKnob {
+            floor_ms: 2.0,
+            power: 1,
+        })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let [hard, _] = level(&mut e, &[on(60, 1.0)]);
@@ -568,7 +569,9 @@ fn a_velocity_attack_route_shortens_soft_attacks() {
 
 #[test]
 fn timed_modulation_does_not_depend_on_the_block_size() {
-    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+    };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.groups[0].lfos = vec![Lfo {
@@ -583,12 +586,8 @@ fn timed_modulation_does_not_depend_on_the_block_size() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::Lfo(0),
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
     }];
     let plan = Arc::new(plan);
     let render = |block: usize| {
@@ -792,7 +791,7 @@ fn a_group_lofis_noise_fades_with_the_voice() {
 #[test]
 fn a_route_moves_a_group_waveshapers_amount_per_voice() {
     use kontra_engine::ir::{
-        DriveCurve, Effect, EffectKind, EffectParam, Mod, ModKind, Shaper, Source,
+        DriveCurve, Effect, EffectKind, EffectParam, Mod, ModRoute, ParamAddr, Shaper, Source,
     };
     let peak = |bypass: bool| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -814,14 +813,14 @@ fn a_route_moves_a_group_waveshapers_amount_per_voice() {
             slot: 0,
             target: 0,
             bypass,
-            kind: ModKind::EffectParam {
-                source: Source::Velocity,
-                insert: 0,
-                param: EffectParam::ShaperAmount,
-                depth: 1.0,
-                span: 1.0,
-                unipolar: false,
-            },
+            route: ModRoute::new(
+                Source::Velocity,
+                ParamAddr::EffectParam {
+                    insert: 0,
+                    param: EffectParam::ShaperAmount,
+                },
+                1.0,
+            ),
         }];
         let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
         let mut out = vec![[0.0f32; 2]; 9600];
@@ -835,7 +834,9 @@ fn a_route_moves_a_group_waveshapers_amount_per_voice() {
 
 #[test]
 fn a_route_moves_an_eq_bands_centre_per_voice() {
-    use kontra_engine::ir::{Bell, Effect, EffectKind, EffectParam, Mod, ModKind, Shape, Source};
+    use kontra_engine::ir::{
+        Bell, Effect, EffectKind, EffectParam, Mod, ModRoute, ParamAddr, Shape, Source,
+    };
     let peak = |octaves: f32| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
@@ -856,14 +857,14 @@ fn a_route_moves_an_eq_bands_centre_per_voice() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::EffectParam {
-                source: Source::Constant,
-                insert: 0,
-                param: EffectParam::BellOctaves(0),
-                depth: octaves,
-                span: 1.0,
-                unipolar: false,
-            },
+            route: ModRoute::new(
+                Source::Constant,
+                ParamAddr::EffectParam {
+                    insert: 0,
+                    param: EffectParam::BellOctaves(0),
+                },
+                octaves,
+            ),
         }];
         let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
         let mut out = vec![[0.0f32; 2]; 4800];
@@ -880,8 +881,8 @@ fn a_route_moves_an_eq_bands_centre_per_voice() {
 #[test]
 fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
     use kontra_engine::ir::{
-        Clock, DriveCurve, Effect, EffectKind, EffectParam, Lfo, Mod, ModKind, Rate, Shaper,
-        Source, Wave,
+        Clock, DriveCurve, Effect, EffectKind, EffectParam, Lfo, Mod, ModRoute, ParamAddr, Rate,
+        Shaper, Source, Wave,
     };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.1)], 8);
@@ -909,14 +910,14 @@ fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::EffectParam {
-            source: Source::Lfo(0),
-            insert: 0,
-            param: EffectParam::ShaperAmount,
-            depth: 1.0,
-            span: 1.0,
-            unipolar: false,
-        },
+        route: ModRoute::new(
+            Source::Lfo(0),
+            ParamAddr::EffectParam {
+                insert: 0,
+                param: EffectParam::ShaperAmount,
+            },
+            1.0,
+        ),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let mut out = vec![[0.0f32; 2]; 1024];
@@ -1016,12 +1017,15 @@ fn a_pitch_bend_release_route_reads_the_wheel_from_zero_to_one() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Release {
-            source: ir::Source::PitchBend,
-            intensity: 1.0,
-            scale: ir::TimeScale::Linear { power: 1 },
-            envelope: None,
-        },
+        route: ir::ModRoute::new(
+            ir::Source::PitchBend,
+            ir::ParamAddr::EnvelopeStage {
+                envelope: None,
+                stage: ir::EnvStage::Release,
+            },
+            1.0,
+        )
+        .law(ir::RouteLaw::Time(ir::TimeScale::Linear { power: 1 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[on(60, 1.0)]);
@@ -1041,7 +1045,7 @@ fn a_pitch_bend_release_route_reads_the_wheel_from_zero_to_one() {
 
 #[test]
 fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
-    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    use kontra_engine::ir::{Curve, Mod, ModRoute, ParamAddr, RouteLaw, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
     plan.groups[0].mods = vec![Mod {
@@ -1049,12 +1053,8 @@ fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::PitchBend,
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::PitchBend, ParamAddr::Volume, 1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let bend = |lsb, msb| Timed {
@@ -1073,26 +1073,75 @@ fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
 }
 
 #[test]
+fn a_notes_own_bend_moves_its_pitch_bend_routes() {
+    use kontra_engine::ir::{Mod, ModRoute, ParamAddr, Source};
+    use kontra_events::{HostPattern, NoteExpression};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        route: ModRoute::new(Source::PitchBend, ParamAddr::Pan, 1.0),
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60, 1.0)]);
+    // Its own bend up 24 of the per-note 48 semitones: half the wheel up,
+    // the voice panned half right (the left at half, a balance).
+    let tune = Timed {
+        at: SampleTime(0),
+        body: Event::Expression(
+            HostPattern {
+                port: 0,
+                channel: 0,
+                key: 60,
+                id: -1,
+                clap: true,
+            },
+            NoteExpression::Tune(24.0),
+        ),
+    };
+    level(&mut e, &[tune]);
+    let [l, r] = (0..8).map(|_| level(&mut e, &[])).last().unwrap();
+    assert!((l / r - 0.5).abs() < 1e-3, "{l} {r}");
+}
+
+#[test]
 fn a_lagging_controller_route_glides_as_a_one_pole() {
-    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    a_lagging_cc11_route(false);
+}
+
+#[test]
+fn a_fast_lag_keeps_its_own_time_beside_a_slow_one() {
+    a_lagging_cc11_route(true);
+}
+
+/// CC 11 lagging its 120 ms on the level; `slow`: beside the wheel, held,
+/// lagging 2 s (Kontakt lags each route on its own).
+fn a_lagging_cc11_route(slow: bool) {
+    use kontra_engine::ir::{Curve, Mod, ModRoute, ParamAddr, RouteLaw, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
     // Kontakt's lag 120 ms: τ = 120 / ln 100.
     let tau_ms = 120.0 / 100f32.ln();
-    plan.groups[0].mods = vec![Mod {
-        name: "CC11".into(),
+    let route = |cc, tau_ms| Mod {
+        name: String::new(),
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::Controller(11),
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms,
-        },
-    }];
+        route: ModRoute::new(Source::Controller(cc), ParamAddr::Volume, 1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 }))
+            .smooth(tau_ms),
+    };
+    plan.groups[0].mods = vec![route(11, tau_ms)];
+    if slow {
+        plan.groups[0]
+            .mods
+            .insert(0, route(1, 2000.0 / 100f32.ln()));
+    }
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
-    level(&mut e, &[cc(11, 127), on(60, 1.0)]);
+    level(&mut e, &[cc(1, 127), cc(11, 127), on(60, 1.0)]);
     let mut out = vec![[0.0; 2]; 9600];
     e.process(&mut out, &[]);
     let from = out[9599][0];
@@ -1112,7 +1161,7 @@ fn a_lagging_controller_route_glides_as_a_one_pole() {
 
 #[test]
 fn a_lagging_pitch_route_glides_its_semitones() {
-    use kontra_engine::ir::{Mod, ModKind, Source};
+    use kontra_engine::ir::{Mod, ModRoute, ParamAddr, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
     // Kontakt's pitch-bend route, lag 250 ms: τ = 250 / ln 100.
@@ -1122,12 +1171,9 @@ fn a_lagging_pitch_route_glides_its_semitones() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Pitch {
-            source: Source::PitchBend,
-            semitones: 2.0,
-            depth: 1.0,
-            tau_ms: tau_ms as f32,
-        },
+        route: ModRoute::new(Source::PitchBend, ParamAddr::Pitch, 1.0)
+            .span(2.0)
+            .smooth(tau_ms as f32),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[on(60, 1.0)]);
@@ -1162,7 +1208,9 @@ fn a_lagging_pitch_route_glides_its_semitones() {
 
 #[test]
 fn a_constant_start_phase_route_shifts_a_voices_lfo() {
-    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, LfoParam, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+    };
     let first = |phase_route: Option<f32>| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
@@ -1178,20 +1226,21 @@ fn a_constant_start_phase_route_shifts_a_voices_lfo() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind,
+            route: kind,
         };
-        plan.groups[0].mods = vec![route(ModKind::Volume {
-            source: Source::Lfo(0),
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        })];
+        plan.groups[0].mods = vec![route(
+            ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 1.0)
+                .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
+        )];
         plan.groups[0].mods.extend(phase_route.map(|depth| {
-            route(ModKind::LfoPhase {
-                source: Source::Constant,
-                lfo: 0,
+            route(ModRoute::new(
+                Source::Constant,
+                ParamAddr::LfoParam {
+                    lfo: 0,
+                    param: LfoParam::Phase,
+                },
                 depth,
-            })
+            ))
         }));
         let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
         level(&mut e, &[on(60, 1.0)])[0]
@@ -1207,7 +1256,9 @@ fn a_constant_start_phase_route_shifts_a_voices_lfo() {
 
 #[test]
 fn an_intensity_route_scales_its_lfos_routes() {
-    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+    };
     let first = |by: Source| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
@@ -1223,20 +1274,18 @@ fn an_intensity_route_scales_its_lfos_routes() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind,
+            route: kind,
         };
         plan.groups[0].mods = vec![
-            route(ModKind::Volume {
-                source: Source::Lfo(0),
-                intensity: 1.0,
-                curve: Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            }),
-            route(ModKind::Intensity {
-                source: by,
-                of: Source::Lfo(0),
-                depth: 1.0,
-            }),
+            route(
+                ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 1.0)
+                    .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
+            ),
+            route(ModRoute::new(
+                by,
+                ParamAddr::RouteIntensity { of: Source::Lfo(0) },
+                1.0,
+            )),
         ];
         let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
         level(&mut e, &[on(60, 1.0)])[0]
@@ -1249,7 +1298,9 @@ fn an_intensity_route_scales_its_lfos_routes() {
 
 #[test]
 fn a_velocity_rate_route_speeds_a_voices_lfo() {
-    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, LfoParam, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+    };
     let at_half_a_second = |octaves: f32| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
@@ -1265,22 +1316,25 @@ fn a_velocity_rate_route_speeds_a_voices_lfo() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind,
+            route: kind,
         };
         plan.groups[0].mods = vec![
-            route(ModKind::Volume {
-                source: Source::Lfo(0),
-                intensity: 1.0,
-                curve: Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            }),
-            route(ModKind::LfoRate {
-                source: Source::Velocity,
-                lfo: 0,
-                depth: 1.0,
-                octaves,
-                range_hz: [0.01, 213.0],
-            }),
+            route(
+                ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 1.0)
+                    .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
+            ),
+            route(
+                ModRoute::new(
+                    Source::Velocity,
+                    ParamAddr::LfoParam {
+                        lfo: 0,
+                        param: LfoParam::Rate,
+                    },
+                    1.0,
+                )
+                .span(octaves)
+                .law(RouteLaw::Range([0.01, 213.0])),
+            ),
         ];
         let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
         let blocks = (f64::from(RATE) / 512.0).round() as usize;
@@ -1300,37 +1354,57 @@ fn a_velocity_rate_route_speeds_a_voices_lfo() {
 
 #[test]
 fn a_live_controller_moves_an_lfos_rate_mid_note() {
-    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    an_lfos_rate_moved_mid_note(0, ir::LfoParam::Hz);
+}
+
+#[test]
+fn a_live_controller_moves_an_lfos_rate_knob_mid_note() {
+    // One octave up at full travel: 2 Hz, as the Hz route's.
+    an_lfos_rate_moved_mid_note(0, ir::LfoParam::Rate);
+}
+
+#[test]
+fn a_rate_route_reaches_an_lfo_past_the_eighth() {
+    an_lfos_rate_moved_mid_note(11, ir::LfoParam::Hz);
+}
+
+/// LFO `n` of a group (the ones before it idle), its rate moved by the
+/// wheel through `param` (Hz added, or octaves on its knob).
+fn an_lfos_rate_moved_mid_note(n: u8, param: ir::LfoParam) {
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+    };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
-    plan.groups[0].lfos = vec![Lfo {
+    let lfo = Lfo {
         wave: Wave::Sine,
         rate: Rate::Hz(1.0),
         phase: 0.0,
         fade_ms: 0.0,
         clock: Clock::Voice,
-    }];
+    };
+    plan.groups[0].lfos = vec![lfo; usize::from(n) + 1];
     let route = |kind| Mod {
         name: String::new(),
         slot: 0,
         target: 0,
         bypass: false,
-        kind,
+        route: kind,
     };
     plan.groups[0].mods = vec![
-        route(ModKind::Volume {
-            source: Source::Lfo(0),
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        }),
+        route(
+            ModRoute::new(Source::Lfo(n), ParamAddr::Volume, 1.0)
+                .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
+        ),
         // The wheel adds up to 2 Hz, the rate held within 0..=2 Hz.
-        route(ModKind::LfoHz {
-            source: Source::Controller(1),
-            lfo: 0,
-            depth: 1.0,
-            range_hz: [0.0, 2.0],
-        }),
+        route(
+            ModRoute::new(
+                Source::Controller(1),
+                ParamAddr::LfoParam { lfo: n, param },
+                1.0,
+            )
+            .law(RouteLaw::Range([0.0, 2.0])),
+        ),
     ];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[on(60, 1.0)]);
@@ -1381,14 +1455,14 @@ fn a_controller_moves_a_bus_eq_band_while_it_plays() {
         to_main: true,
         enabled: true,
         // CC 7 pulls the 1 kHz band down 20 dB at full travel.
-        mods: vec![ir::ModKind::EffectParam {
-            source: ir::Source::Controller(7),
-            insert: 0,
-            param: ir::EffectParam::BellGain(0),
-            depth: -20.0,
-            span: 1.0,
-            unipolar: false,
-        }],
+        mods: vec![ir::ModRoute::new(
+            ir::Source::Controller(7),
+            ir::ParamAddr::EffectParam {
+                insert: 0,
+                param: ir::EffectParam::BellGain(0),
+            },
+            -20.0,
+        )],
         blends: Vec::new(),
         lfos: Vec::new(),
     });
@@ -1422,13 +1496,15 @@ fn a_controller_moves_a_bus_eq_band_while_it_plays() {
 /// One zone whose envelope 0 rises over 100 ms and bends pitch up an octave,
 /// its attack timed by `source`.
 fn a_rise_timed_by(store: &mut Store, source: kontra_engine::ir::Source) -> Plan {
-    use kontra_engine::ir::{Breakpoint, Breakpoints, Mod, ModKind, Source};
+    use kontra_engine::ir::{
+        Breakpoint, Breakpoints, EnvStage, Mod, ModRoute, ParamAddr, RouteLaw, Source,
+    };
     let route = |kind| Mod {
         name: String::new(),
         slot: 0,
         target: 0,
         bypass: false,
-        kind,
+        route: kind,
     };
     let mut plan = Plan::new(vec![zone(store, 1.0)], 8);
     plan.groups[0].envelopes = vec![Breakpoints {
@@ -1443,18 +1519,20 @@ fn a_rise_timed_by(store: &mut Store, source: kontra_engine::ir::Source) -> Plan
         stages: false,
     }];
     plan.groups[0].mods = vec![
-        route(ModKind::Pitch {
-            source: Source::Envelope(0),
-            semitones: 12.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        }),
-        route(ModKind::Attack {
-            source,
-            intensity: 1.0,
-            scale: kontra_engine::ir::TimeScale::Linear { power: 1 },
-            envelope: Some(0),
-        }),
+        route(ModRoute::new(Source::Envelope(0), ParamAddr::Pitch, 1.0).span(12.0)),
+        route(
+            ModRoute::new(
+                source,
+                ParamAddr::EnvelopeStage {
+                    envelope: Some(0),
+                    stage: EnvStage::Attack,
+                },
+                1.0,
+            )
+            .law(RouteLaw::Time(kontra_engine::ir::TimeScale::Linear {
+                power: 1,
+            })),
+        ),
     ];
     plan
 }
@@ -1488,7 +1566,11 @@ fn an_attack_route_stretches_a_modulation_envelopes_attack() {
         "a 50 ms rise is at the top: {soft}"
     );
     let hard = semitones_at_60_ms(1.0);
-    assert!((hard - 7.2).abs() < 0.5, "a 100 ms rise is at 0.6: {hard}");
+    // Measured across 3,072..3,328 frames (midpoint 3,200 = 66.67 ms into 100 ms rise).
+    assert!(
+        (hard - 12.0 * (3200.0 / 4800.0)).abs() < 0.2,
+        "a 100 ms rise at 64..69.3 ms is ~8.0 st: {hard}"
+    );
 }
 
 #[test]
@@ -1499,38 +1581,43 @@ fn a_controller_times_the_next_attack_not_the_rising_one() {
     level(&mut e, &[cc(1, 127), on(60, 1.0)]);
     bends_at(&mut e, 30, &[60]);
     level(&mut e, &[cc(1, 64), on(72, 1.0)]);
-    // Read 3,072..3,328 frames in: the first voice is 64 ms into its
-    // 100 ms rise; the next started at 1,792 (37.3 ms), so 26.7 ms into
-    // 50.4 ms. Re-timed live, the first would sit at the top (12).
+    // Read 3,072..3,328 frames in (midpoint 3,200 = 66.67 ms): the first voice
+    // is ~66.7 ms into its 100 ms rise; the next started at 1,792 (37.3 ms), so
+    // ~29.3 ms into 50.4 ms. Re-timed live, the first would sit at the top (12).
     let [first, next] = bends_at(&mut e, 60, &[60, 72])[..] else {
         panic!("two voices");
     };
     assert!(
-        (first - 12.0 * 0.64).abs() < 0.3,
+        (first - 12.0 * (3200.0 / 4800.0)).abs() < 0.2,
         "the rising voice keeps its 100 ms: {first}"
     );
-    let x = (3072.0 - 1792.0) / 48.0 / (100.0 * 64.0 / 127.0);
+    let x = (3200.0 - 1792.0) / 48.0 / (100.0 * 64.0 / 127.0);
     assert!(
-        (next - 12.0 * x).abs() < 0.3,
+        (next - 12.0 * x).abs() < 0.2,
         "the next note rises over 50 ms: {next}"
     );
 }
 
 #[test]
 fn an_envelope_timing_its_own_attack_renders() {
-    use kontra_engine::ir::{ModKind, Source};
+    use kontra_engine::ir::{EnvStage, ModRoute, ParamAddr, RouteLaw, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = a_rise_timed_by(&mut store, Source::Envelope(0));
     // A second envelope and the first time each other's attack too.
     let rise = plan.groups[0].envelopes[0].clone();
     plan.groups[0].envelopes.push(rise);
     let mut cross = plan.groups[0].mods[1].clone();
-    cross.kind = ModKind::Attack {
-        source: Source::Envelope(1),
-        intensity: 1.0,
-        scale: kontra_engine::ir::TimeScale::Linear { power: 1 },
-        envelope: Some(0),
-    };
+    cross.route = ModRoute::new(
+        Source::Envelope(1),
+        ParamAddr::EnvelopeStage {
+            envelope: Some(0),
+            stage: EnvStage::Attack,
+        },
+        1.0,
+    )
+    .law(RouteLaw::Time(kontra_engine::ir::TimeScale::Linear {
+        power: 1,
+    }));
     plan.groups[0].mods.push(cross);
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[on(60, 1.0)]);
@@ -1695,7 +1782,9 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
 
 #[test]
 fn zone_envelope_ramps_volume_respects_speed_lock_and_skips_zones_without_it() {
-    use kontra_engine::ir::{Curve, Mod, ModKind, Source, Transfer, ZoneEnvelope, ZonePoint};
+    use kontra_engine::ir::{
+        Curve, Mod, ModRoute, ParamAddr, RouteLaw, Source, Transfer, ZoneEnvelope, ZonePoint,
+    };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
 
     // Zone 0 (key 60): has a zone envelope in slot 4 ramping -1 -> +1 over 4800 frames,
@@ -1736,12 +1825,8 @@ fn zone_envelope_ramps_volume_respects_speed_lock_and_skips_zones_without_it() {
         slot: 20,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::Shaped(0),
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::Shaped(0), ParamAddr::Volume, 1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
     }];
 
     // Unpitched (speed_lock = false): key 72 (+12 st) advances at 1 frame/sample,
@@ -1786,9 +1871,10 @@ fn zone_envelope_ramps_volume_respects_speed_lock_and_skips_zones_without_it() {
 }
 
 #[test]
-fn zone_envelope_sets_lfo_phase_and_rate_from_the_voice_onset() {
+fn zone_envelope_sets_lfo_phase_at_onset_and_moves_its_rate_live() {
     use kontra_engine::ir::{
-        Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave, ZoneEnvelope, ZonePoint,
+        Clock, Curve, Lfo, LfoParam, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+        ZoneEnvelope, ZonePoint,
     };
 
     let levels = |speed_lock, source, phase| {
@@ -1830,29 +1916,32 @@ fn zone_envelope_sets_lfo_phase_and_rate_from_the_voice_onset() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind,
+            route: kind,
         };
         plan.groups[0].mods = vec![
-            route(ModKind::Volume {
-                source: Source::Lfo(0),
-                intensity: 1.0,
-                curve: Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            }),
+            route(
+                ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 1.0)
+                    .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
+            ),
             route(if phase {
-                ModKind::LfoPhase {
+                ModRoute::new(
                     source,
-                    lfo: 0,
-                    depth: 0.25,
-                }
+                    ParamAddr::LfoParam {
+                        lfo: 0,
+                        param: LfoParam::Phase,
+                    },
+                    0.25,
+                )
             } else {
-                ModKind::LfoRate {
+                ModRoute::new(
                     source,
-                    lfo: 0,
-                    depth: 1.0,
-                    octaves: 1.0,
-                    range_hz: [0.0, 100.0],
-                }
+                    ParamAddr::LfoParam {
+                        lfo: 0,
+                        param: LfoParam::Rate,
+                    },
+                    1.0,
+                )
+                .law(RouteLaw::Range([0.0, 100.0]))
             }),
         ];
         let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -1860,24 +1949,33 @@ fn zone_envelope_sets_lfo_phase_and_rate_from_the_voice_onset() {
     };
 
     for speed_lock in [false, true] {
-        for phase in [true, false] {
-            // The envelope is 1 at onset, like Constant, even though it reads
-            // 0 at frame zero and again after the voice advances 64 frames.
-            let got = levels(speed_lock, Source::ZoneEnvelope(4), phase);
-            let want = levels(speed_lock, Source::Constant, phase);
-            for (got, want) in got.into_iter().zip(want) {
-                assert!(
-                    (got - want).abs() < 0.001,
-                    "phase route={phase}, speed lock={speed_lock}: {got} vs {want}"
-                );
-            }
+        // The phase is read once at onset: the envelope is 1 there, like
+        // Constant, even though it reads 0 at frame zero and again after the
+        // voice advances 64 frames.
+        let got = levels(speed_lock, Source::ZoneEnvelope(4), true);
+        let want = levels(speed_lock, Source::Constant, true);
+        for (got, want) in got.into_iter().zip(want) {
+            assert!(
+                (got - want).abs() < 0.001,
+                "phase, speed lock={speed_lock}: {got} vs {want}"
+            );
         }
+        // The rate follows a live source (#128): once the envelope falls to 0
+        // the LFO slows, so the voice no longer matches a fixed Constant rate.
+        let got = levels(speed_lock, Source::ZoneEnvelope(4), false);
+        let want = levels(speed_lock, Source::Constant, false);
+        assert!(
+            (got[1] - want[1]).abs() > 0.01,
+            "rate, speed lock={speed_lock}: a live envelope must move the rate: {got:?} vs {want:?}"
+        );
     }
 }
 
 #[test]
 fn zone_envelope_times_attacks_at_onset_and_release_at_note_off() {
-    use kontra_engine::ir::{Mod, ModKind, Source, TimeScale, ZoneEnvelope, ZonePoint};
+    use kontra_engine::ir::{
+        EnvStage, Mod, ModRoute, ParamAddr, RouteLaw, Source, TimeScale, ZoneEnvelope, ZonePoint,
+    };
 
     for speed_lock in [false, true] {
         for start in [0, 2400] {
@@ -1907,7 +2005,11 @@ fn zone_envelope_times_attacks_at_onset_and_release_at_note_off() {
             if start == 0 {
                 assert!((bend - 12.0).abs() < 0.1, "zero onset: {bend}");
             } else {
-                assert!((bend - 2.4).abs() < 0.5, "half onset: {bend}");
+                // Measured across 512..768 frames (midpoint 640 = 13.33 ms into 50 ms rise).
+                assert!(
+                    (bend - 12.0 * (640.0 / 2400.0)).abs() < 0.2,
+                    "half onset: {bend}"
+                );
             }
 
             let route = |kind| Mod {
@@ -1915,14 +2017,19 @@ fn zone_envelope_times_attacks_at_onset_and_release_at_note_off() {
                 slot: 0,
                 target: 0,
                 bypass: false,
-                kind,
+                route: kind,
             };
-            plan.groups[0].mods = vec![route(ModKind::Attack {
-                source: Source::ZoneEnvelope(4),
-                intensity: 1.0,
-                scale: TimeScale::Linear { power: 1 },
-                envelope: None,
-            })];
+            plan.groups[0].mods = vec![route(
+                ModRoute::new(
+                    Source::ZoneEnvelope(4),
+                    ParamAddr::EnvelopeStage {
+                        envelope: None,
+                        stage: EnvStage::Attack,
+                    },
+                    1.0,
+                )
+                .law(RouteLaw::Time(TimeScale::Linear { power: 1 })),
+            )];
             plan.groups[0].envelope.attack = 4800;
             let mut e = Engine::new(Arc::new(plan.clone()), store.client(), RATE);
             let attack = level(&mut e, &[on(60, 1.0)])[0];
@@ -1935,12 +2042,17 @@ fn zone_envelope_times_attacks_at_onset_and_release_at_note_off() {
                 );
             }
 
-            plan.groups[0].mods = vec![route(ModKind::Release {
-                source: Source::ZoneEnvelope(4),
-                intensity: 1.0,
-                scale: TimeScale::Linear { power: 1 },
-                envelope: None,
-            })];
+            plan.groups[0].mods = vec![route(
+                ModRoute::new(
+                    Source::ZoneEnvelope(4),
+                    ParamAddr::EnvelopeStage {
+                        envelope: None,
+                        stage: EnvStage::Release,
+                    },
+                    1.0,
+                )
+                .law(RouteLaw::Time(TimeScale::Linear { power: 1 })),
+            )];
             plan.groups[0].envelope.attack = 0;
             plan.groups[0].envelope.release = 4800;
             let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -1960,7 +2072,7 @@ fn zone_envelope_times_attacks_at_onset_and_release_at_note_off() {
 
 #[test]
 fn negative_depth_on_volume_and_intensity_inverts_without_boosting() {
-    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    use kontra_engine::ir::{Curve, Mod, ModRoute, ParamAddr, RouteLaw, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.groups[0].mods = vec![Mod {
@@ -1968,12 +2080,8 @@ fn negative_depth_on_volume_and_intensity_inverts_without_boosting() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::Controller(1),
-            intensity: -1.0,
-            curve: Curve::Depth { power: 3 },
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::Controller(1), ParamAddr::Volume, -1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 3 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     // At CC=0, inverted source is 1.0 -> unity gain (0.5), never boosted!
@@ -2002,23 +2110,19 @@ fn negative_depth_on_volume_and_intensity_inverts_without_boosting() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::Volume {
-                source: Source::Lfo(0),
-                intensity: 0.5,
-                curve: Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            },
+            route: ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 0.5)
+                .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
         },
         Mod {
             name: "INV_INT".into(),
             slot: 1,
             target: 0,
             bypass: false,
-            kind: ModKind::Intensity {
-                source: Source::Controller(1),
-                of: Source::Lfo(0),
-                depth: -1.0,
-            },
+            route: ModRoute::new(
+                Source::Controller(1),
+                ParamAddr::RouteIntensity { of: Source::Lfo(0) },
+                -1.0,
+            ),
         },
     ];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -2037,7 +2141,7 @@ fn negative_depth_on_volume_and_intensity_inverts_without_boosting() {
 
 #[test]
 fn live_release_modulation_reads_cc_and_release_velocity_at_note_off() {
-    use kontra_engine::ir::{Mod, ModKind, Source, TimeScale};
+    use kontra_engine::ir::{EnvStage, Mod, ModRoute, ParamAddr, RouteLaw, Source, TimeScale};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.groups[0].envelope.release = 48_000; // 1 s
@@ -2046,12 +2150,15 @@ fn live_release_modulation_reads_cc_and_release_velocity_at_note_off() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Release {
-            source: Source::Controller(1),
-            intensity: 1.0,
-            scale: TimeScale::Linear { power: 1 },
-            envelope: None,
-        },
+        route: ModRoute::new(
+            Source::Controller(1),
+            ParamAddr::EnvelopeStage {
+                envelope: None,
+                stage: EnvStage::Release,
+            },
+            1.0,
+        )
+        .law(RouteLaw::Time(TimeScale::Linear { power: 1 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     // Start note with CC1 = 127 (would be 1 s release), then drop CC1 to 0 BEFORE note-off!
@@ -2064,7 +2171,7 @@ fn live_release_modulation_reads_cc_and_release_velocity_at_note_off() {
         "expected immediate silence after CC1=0 note-off"
     );
 
-    // ReleaseVelocity drives ModKind::Release via Event::NoteOffVelocity.
+    // ReleaseVelocity drives release routes via Event::NoteOffVelocity.
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.groups[0].envelope.release = 48_000; // 1 s
     plan.groups[0].mods = vec![Mod {
@@ -2072,12 +2179,15 @@ fn live_release_modulation_reads_cc_and_release_velocity_at_note_off() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Release {
-            source: Source::ReleaseVelocity,
-            intensity: 1.0,
-            scale: TimeScale::Linear { power: 1 },
-            envelope: None,
-        },
+        route: ModRoute::new(
+            Source::ReleaseVelocity,
+            ParamAddr::EnvelopeStage {
+                envelope: None,
+                stage: EnvStage::Release,
+            },
+            1.0,
+        )
+        .law(RouteLaw::Time(TimeScale::Linear { power: 1 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let note_off_vel = |key, vel| Timed {
@@ -2112,7 +2222,7 @@ fn live_release_modulation_reads_cc_and_release_velocity_at_note_off() {
 
 #[test]
 fn amp_envelope_bypass_muted_group_and_sustain_modulation() {
-    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    use kontra_engine::ir::{Curve, EnvStage, Mod, ModRoute, ParamAddr, RouteLaw, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
 
     // Bypassed primary amp envelope falls back to Ahdsr::GATE (ignores 1 s attack).
@@ -2123,7 +2233,7 @@ fn amp_envelope_bypass_muted_group_and_sustain_modulation() {
         slot: 0,
         target: 0,
         bypass: true,
-        kind: ModKind::Envelope,
+        route: ModRoute::AMP_ENVELOPE,
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let [bypassed, _] = level(&mut e, &[on(60, 1.0)]);
@@ -2151,12 +2261,15 @@ fn amp_envelope_bypass_muted_group_and_sustain_modulation() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Sustain {
-            source: Source::Velocity,
-            intensity: 1.0,
-            curve: Curve::Depth { power: 3 },
-            envelope: None,
-        },
+        route: ModRoute::new(
+            Source::Velocity,
+            ParamAddr::EnvelopeStage {
+                envelope: None,
+                stage: EnvStage::Sustain,
+            },
+            1.0,
+        )
+        .law(RouteLaw::Gain(Curve::Depth { power: 3 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let [sustain_level, _] = level(&mut e, &[on(60, 0.5)]);
@@ -2166,7 +2279,9 @@ fn amp_envelope_bypass_muted_group_and_sustain_modulation() {
 
 #[test]
 fn random_lfo_varies_across_same_key_notes_for_voice_clock_and_syncs_for_free() {
-    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+    };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
 
     // Voice clock: repeated hits on the same key get distinct per-note seeds.
@@ -2183,12 +2298,8 @@ fn random_lfo_varies_across_same_key_notes_for_voice_clock_and_syncs_for_free() 
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::Lfo(0),
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let mut hits = Vec::new();
@@ -2219,12 +2330,8 @@ fn random_lfo_varies_across_same_key_notes_for_voice_clock_and_syncs_for_free() 
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::Lfo(0),
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
     }];
     let mut e1 = Engine::new(Arc::new(plan.clone()), store.client(), RATE);
     let mut e2 = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -2238,7 +2345,7 @@ fn random_lfo_varies_across_same_key_notes_for_voice_clock_and_syncs_for_free() 
 
 #[test]
 fn k2_compat_attack_scales_linearly_cubed() {
-    use kontra_engine::ir::{Mod, ModKind, Source, TimeScale};
+    use kontra_engine::ir::{EnvStage, Mod, ModRoute, ParamAddr, RouteLaw, Source, TimeScale};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.groups[0].envelope.attack = 4800; // 100 ms
@@ -2247,12 +2354,15 @@ fn k2_compat_attack_scales_linearly_cubed() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Attack {
-            source: Source::Velocity,
-            intensity: 1.0,
-            scale: TimeScale::Linear { power: 3 },
-            envelope: None,
-        },
+        route: ModRoute::new(
+            Source::Velocity,
+            ParamAddr::EnvelopeStage {
+                envelope: None,
+                stage: EnvStage::Attack,
+            },
+            1.0,
+        )
+        .law(RouteLaw::Time(TimeScale::Linear { power: 3 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     // Velocity 0.5 -> 0.5^3 = 0.125 -> 12.5 ms = 600 frames.
@@ -2262,7 +2372,7 @@ fn k2_compat_attack_scales_linearly_cubed() {
 
 #[test]
 fn release_velocity_refreshes_a_pedal_held_voice_without_timed_modulators() {
-    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    use kontra_engine::ir::{Curve, Mod, ModRoute, ParamAddr, RouteLaw, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.groups[0].mods = vec![Mod {
@@ -2270,12 +2380,8 @@ fn release_velocity_refreshes_a_pedal_held_voice_without_timed_modulators() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::ReleaseVelocity,
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::ReleaseVelocity, ParamAddr::Volume, 1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let [onset, _] = level(&mut e, &[cc(64, 127), on(60, 1.0)]);
@@ -2303,7 +2409,7 @@ fn release_velocity_refreshes_a_pedal_held_voice_without_timed_modulators() {
 
 #[test]
 fn release_route_uses_each_voices_original_amplitude_release() {
-    use kontra_engine::ir::{Mod, ModKind, Source, TimeScale};
+    use kontra_engine::ir::{EnvStage, Mod, ModRoute, ParamAddr, RouteLaw, Source, TimeScale};
     let run = |change_after_start: bool| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
@@ -2313,12 +2419,15 @@ fn release_route_uses_each_voices_original_amplitude_release() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::Release {
-                source: Source::Constant,
-                intensity: 1.0,
-                scale: TimeScale::Linear { power: 1 },
-                envelope: None,
-            },
+            route: ModRoute::new(
+                Source::Constant,
+                ParamAddr::EnvelopeStage {
+                    envelope: None,
+                    stage: EnvStage::Release,
+                },
+                1.0,
+            )
+            .law(RouteLaw::Time(TimeScale::Linear { power: 1 })),
         }];
         let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
         let mut envelope = e.group_sounds()[0].0;
@@ -2347,7 +2456,7 @@ fn release_route_uses_each_voices_original_amplitude_release() {
 
 #[test]
 fn release_counter_is_latched_at_key_up_before_pedal_delay() {
-    use kontra_engine::ir::{Mod, ModKind, Source, TimeScale};
+    use kontra_engine::ir::{EnvStage, Mod, ModRoute, ParamAddr, RouteLaw, Source, TimeScale};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.groups[0].envelope.release = RATE * 2 / 5;
@@ -2356,12 +2465,15 @@ fn release_counter_is_latched_at_key_up_before_pedal_delay() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Release {
-            source: Source::HeldTime { span_ms: 400 },
-            intensity: 1.0,
-            scale: TimeScale::Linear { power: 1 },
-            envelope: None,
-        },
+        route: ModRoute::new(
+            Source::HeldTime { span_ms: 400 },
+            ParamAddr::EnvelopeStage {
+                envelope: None,
+                stage: EnvStage::Release,
+            },
+            1.0,
+        )
+        .law(RouteLaw::Time(TimeScale::Linear { power: 1 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[cc(64, 127), on(60, 1.0)]);
@@ -2393,5 +2505,251 @@ fn release_counter_is_latched_at_key_up_before_pedal_delay() {
     assert!(
         late.abs() < 0.001,
         "the key-up release should finish: {late}"
+    );
+}
+
+#[test]
+fn post_amp_waveshaper_sees_amp_scaled_signal() {
+    use kontra_engine::ir::{DriveCurve, Effect, EffectKind, Shaper};
+    let peak = |amp_split: u8| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+        plan.groups[0].level.gain = 0.25;
+        plan.groups[0].amp_split = amp_split;
+        plan.groups[0].inserts = vec![Some(Effect {
+            kind: EffectKind::Shaper(Shaper {
+                pre_lowpass_hz: None,
+                curve: DriveCurve::Soft(1.0),
+                lowpass_hz: None,
+                highpass_hz: None,
+                sections: ir::Sections::NONE,
+            }),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0f32; 2]; 9600];
+        e.process(&mut out, &[on(60, 1.0)]);
+        out[4800..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    // Pre-amp (split = 1): 0.1 sine clips to 0.64, then * 0.25 = 0.16.
+    // Post-amp (split = 0): 0.1 * 0.25 = 0.025, then 4x = 0.1 -> 2*0.1 - 0.01 = 0.19.
+    let pre = peak(1);
+    let post = peak(0);
+    assert!((pre - 0.16).abs() < 0.01, "pre-amp peak {pre}");
+    assert!((post - 0.19).abs() < 0.01, "post-amp peak {post}");
+}
+
+#[test]
+fn post_amp_lofi_noise_stays_unattenuated_during_release_then_stops() {
+    use kontra_engine::ir::{Crush, Effect, EffectKind};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    plan.groups[0].envelope.release = 2400;
+    plan.groups[0].amp_split = 0;
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Crush(Crush {
+            rate: 1.0,
+            bits: 16.0,
+            noise: 0.075,
+            noise_tone: 1.0,
+            converter: None,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 4800];
+    e.process(&mut out, &[on(60, 1.0)]);
+    out.fill([0.0; 2]);
+    e.process(&mut out, &[off(60)]);
+    // Post-amp Lo-Fi sits after the amp envelope, so its noise floor stays
+    // active right up to the end of the 2400-frame release...
+    let late_release = out[2100..2350]
+        .iter()
+        .map(|s| s[0].abs())
+        .fold(0.0, f32::max);
+    assert!(
+        late_release > 0.03,
+        "expected post-amp noise {late_release}"
+    );
+    // ...and drops cleanly to zero once the envelope finishes.
+    let after_end = out[2600..3000]
+        .iter()
+        .map(|s| s[0].abs())
+        .fold(0.0, f32::max);
+    assert_eq!(after_end, 0.0, "expected voice stopped {after_end}");
+}
+
+#[test]
+fn gain_slot_stays_on_its_side_of_a_drive_insert() {
+    use kontra_engine::ir::{DriveCurve, Effect, EffectKind, Shaper};
+    let shaper = Effect {
+        kind: EffectKind::Shaper(Shaper {
+            pre_lowpass_hz: None,
+            curve: DriveCurve::Soft(1.0),
+            lowpass_hz: None,
+            highpass_hz: None,
+            sections: ir::Sections::NONE,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    let gain = |g: f32| Effect {
+        kind: EffectKind::Gain(g),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    let peak = |inserts: Vec<Option<Effect>>, amp_split: u8| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+        plan.groups[0].amp_split = amp_split;
+        plan.groups[0].inserts = inserts;
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0f32; 2]; 9600];
+        e.process(&mut out, &[on(60, 1.0)]);
+        out[4800..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    // Pre-amp: Gain(2.0) before Shaper saturates harder (0.2 * 4 = 0.8 -> 0.96)
+    // than Shaper before Gain(2.0) (0.1 -> 0.64, then * 2 = 1.28).
+    let pre_gain_before = peak(vec![Some(gain(2.0)), Some(shaper.clone())], 2);
+    let pre_gain_after = peak(vec![Some(shaper.clone()), Some(gain(2.0))], 2);
+    assert!(
+        (pre_gain_before - 0.96).abs() < 0.02,
+        "pre gain->shaper {pre_gain_before}"
+    );
+    assert!(
+        (pre_gain_after - 1.28).abs() < 0.02,
+        "pre shaper->gain {pre_gain_after}"
+    );
+    // Post-amp: same ordering holds after amp_split = 0.
+    let post_gain_before = peak(vec![Some(gain(2.0)), Some(shaper.clone())], 0);
+    let post_gain_after = peak(vec![Some(shaper), Some(gain(2.0))], 0);
+    assert!(
+        (post_gain_before - 0.96).abs() < 0.02,
+        "post gain->shaper {post_gain_before}"
+    );
+    assert!(
+        (post_gain_after - 1.28).abs() < 0.02,
+        "post shaper->gain {post_gain_after}"
+    );
+}
+
+#[test]
+fn amp_split_orders_pre_and_post_swap_around_amp_pan() {
+    use kontra_engine::ir::{Effect, EffectKind};
+    let swap = Effect {
+        kind: EffectKind::Invert {
+            phase: false,
+            swap: true,
+        },
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    let render = |amp_split: u8| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        // Left-only stereo source: [0.5, 0.0].
+        let frames = 2048u64;
+        let fmt = kontra_stream::SampleFmt {
+            encoding: kontra_stream::Encoding::F32,
+            channels: 2,
+        };
+        let bytes: Vec<u8> = (0..frames)
+            .flat_map(|_| {
+                [0.5f32.to_le_bytes(), 0.0f32.to_le_bytes()]
+                    .into_iter()
+                    .flatten()
+            })
+            .collect();
+        let key = kontra_stream::BlobKey {
+            file: "stereo_left_only".into(),
+            offset: frames,
+            fmt,
+        };
+        let sample = store
+            .load(
+                &key,
+                Arc::new(kontra_stream::MemSource::new(fmt, bytes)),
+                frames,
+                std::slice::from_ref(&(0..frames)),
+            )
+            .unwrap();
+        let reg = kontra_voice::Region {
+            mix: None,
+            table: None,
+            sample,
+            start: 0,
+            end: frames,
+            loops: Default::default(),
+            reverse: false,
+        };
+        let mut plan = Plan::new(vec![Zone::new(reg, 60, RATE)], 8);
+        plan.groups[0].level.pan = -1.0; // hard left: keeps L, silences R
+        plan.groups[0].amp_split = amp_split;
+        plan.groups[0].inserts = vec![Some(swap.clone())];
+        let mut e = engine(&store, plan);
+        level(&mut e, &[on(60, 1.0)])
+    };
+    // Pre-amp swap moves L->R before hard-left pan, so output is silent.
+    let pre = render(1);
+    assert!(
+        pre[0].abs() < 1e-4 && pre[1].abs() < 1e-4,
+        "pre-amp swap {pre:?}"
+    );
+    // Post-amp swap moves L->R after hard-left pan, so signal lands on R.
+    let post = render(0);
+    assert!(
+        post[0].abs() < 1e-4 && (post[1] - 0.5).abs() < 0.02,
+        "post-amp swap {post:?}"
+    );
+}
+
+#[test]
+fn modulation_cadence_updates_every_64_frames() {
+    use kontra_engine::ir::{Clock, Lfo, Mod, ModRoute, ParamAddr, Rate, Source, Wave};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    // 137 Hz sine LFO on pitch: at the old 256-frame cadence (187.5 Hz) it stayed
+    // frozen for the whole 256-frame block; at 64-frame cadence (750 Hz) it updates
+    // 4 times across a single 256-frame block.
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Sine,
+        rate: Rate::Hz(137.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Voice,
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        route: ModRoute::new(Source::Lfo(0), ParamAddr::Pitch, 1.0).span(12.0),
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = [[0.0; 2]; 64];
+    e.process(&mut out, &[on(60, 1.0)]);
+    let mut steps = Vec::with_capacity(4);
+    let mut prev_pos = e.voices().next().unwrap().1;
+    for _ in 0..4 {
+        e.process(&mut out, &[]);
+        let pos = e.voices().next().unwrap().1;
+        steps.push((pos - prev_pos) / 64.0);
+        prev_pos = pos;
+    }
+    // Every consecutive 64-frame sub-span within one 256-frame block must see a
+    // distinct instantaneous pitch step as the 137 Hz LFO sweeps.
+    let distinct_transitions = steps
+        .windows(2)
+        .filter(|w| (w[1] - w[0]).abs() > 1e-3)
+        .count();
+    assert_eq!(
+        distinct_transitions, 3,
+        "expected 3 distinct 64-frame pitch transitions across 256 frames, got {distinct_transitions}: {steps:?}"
     );
 }

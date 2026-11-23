@@ -280,14 +280,9 @@ impl Engine {
             };
             let age = self.slot_age(slot);
             for m in group.mods.iter().filter(|m| !m.bypass) {
-                if let kontra_ir::ModKind::EqGain {
-                    source,
-                    insert,
-                    band,
-                    depth_db,
-                    ..
-                } = m.kind
-                {
+                let r = m.route;
+                if let kontra_ir::ParamAddr::EqBandGain { insert, band } = r.target {
+                    let (source, depth_db) = (r.source, r.depth);
                     let x = self.routed(zone, source, note, age);
                     let band_gain_db = self
                         .voice_bells(zone, insert, note, age)
@@ -315,7 +310,7 @@ pub struct RouteObservation {
     pub voice_slot: usize,
     pub zone: usize,
     pub name: String,
-    pub kind: kontra_ir::ModKind,
+    pub route: kontra_ir::ModRoute,
     /// Current raw source; `None` if the source cannot be observed.
     pub source: Option<f32>,
     /// Current source after timed-source intensity scaling.
@@ -345,12 +340,13 @@ impl Engine {
             };
             let age = self.slot_age(slot);
             for m in group.mods.iter().filter(|m| !m.bypass) {
-                let input = kontra_plan::route_source(m.kind);
+                let route = m.route;
+                let input = route.driver();
                 out.push(RouteObservation {
                     voice_slot,
                     zone: slot.zone,
                     name: m.name.clone(),
-                    kind: m.kind,
+                    route,
                     source: input.and_then(|s| self.source(zone, s, note, age)),
                     routed: input.and_then(|s| self.routed(zone, s, note, age)),
                 });
@@ -364,7 +360,7 @@ impl Engine {
 #[derive(Clone, Copy, Debug)]
 pub struct BusRouteObservation {
     pub bus: usize,
-    pub kind: kontra_ir::ModKind,
+    pub route: kontra_ir::ModRoute,
     pub amount: f32,
 }
 
@@ -375,7 +371,11 @@ impl Engine {
             state
                 .rack
                 .route_amounts()
-                .map(move |(kind, amount)| BusRouteObservation { bus, kind, amount })
+                .map(move |(kind, amount)| BusRouteObservation {
+                    bus,
+                    route: kind,
+                    amount,
+                })
         })
     }
 }

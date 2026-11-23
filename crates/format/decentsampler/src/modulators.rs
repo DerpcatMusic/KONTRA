@@ -336,24 +336,23 @@ fn apply_binding(
                     ir::Source::Controller(_) => ir::Curve::Depth { power: 1 },
                     _ => ir::Curve::Signed,
                 };
-                ir::ModKind::Volume {
-                    source,
-                    intensity: span.clamp(-1.0, 1.0),
-                    curve,
-                    tau_ms,
-                }
+                ir::ModRoute::new(source, ir::ParamAddr::Volume, span.clamp(-1.0, 1.0))
+                    .law(ir::RouteLaw::Gain(curve))
+                    .smooth(tau_ms)
             }
             "FX_FILTER_FREQUENCY"
                 if is_filter
                     && binding.attribute("modBehavior") == Some("add")
                     && let (Some(lo), Some(hi)) = (out_min, out_max) =>
             {
-                ir::ModKind::CutoffHz {
+                ir::ModRoute::new(
                     source,
-                    insert: resolved_insert,
-                    min_hz: lo * mod_amount,
-                    max_hz: hi * mod_amount,
-                }
+                    ir::ParamAddr::FilterCutoff {
+                        insert: resolved_insert,
+                    },
+                    1.0,
+                )
+                .law(ir::RouteLaw::Range([lo * mod_amount, hi * mod_amount]))
             }
             "FX_FILTER_FREQUENCY" if is_filter => {
                 let octaves = group
@@ -371,11 +370,13 @@ fn apply_binding(
                     }
                     _ => mod_amount,
                 };
-                ir::ModKind::Cutoff {
+                ir::ModRoute::new(
                     source,
-                    insert: resolved_insert,
-                    depth: depth.clamp(-1.0, 1.0),
-                }
+                    ir::ParamAddr::FilterCutoff {
+                        insert: resolved_insert,
+                    },
+                    depth.clamp(-1.0, 1.0),
+                )
             }
             "PITCH" | "GROUP_TUNING" | "GLOBAL_TUNING" => {
                 let semitones = match (out_min, out_max) {
@@ -387,22 +388,16 @@ fn apply_binding(
                     }
                     _ => mod_amount,
                 };
-                ir::ModKind::Pitch {
-                    source,
-                    semitones,
-                    depth: 1.0,
-                    tau_ms,
-                }
+                ir::ModRoute::new(source, ir::ParamAddr::Pitch, 1.0)
+                    .span(semitones)
+                    .smooth(tau_ms)
             }
             "PAN" | "GROUP_PAN" => {
                 let amount = match (out_min, out_max) {
                     (Some(lo), Some(hi)) => ((hi - lo) / 100.0) * mod_amount,
                     _ => mod_amount,
                 };
-                ir::ModKind::Pan {
-                    source,
-                    amount: amount.clamp(-1.0, 1.0),
-                }
+                ir::ModRoute::new(source, ir::ParamAddr::Pan, amount.clamp(-1.0, 1.0))
             }
             _ => {
                 let Some(law) = &effect_route else {
@@ -420,14 +415,14 @@ fn apply_binding(
                 {
                     param.set(fx, lo);
                 }
-                ir::ModKind::EffectParam {
+                ir::ModRoute::new(
                     source,
-                    insert: resolved_insert,
-                    param,
-                    depth: (hi - lo) * mod_amount,
-                    span: 1.0,
-                    unipolar: false,
-                }
+                    ir::ParamAddr::EffectParam {
+                        insert: resolved_insert,
+                        param,
+                    },
+                    (hi - lo) * mod_amount,
+                )
             }
         };
 
@@ -436,7 +431,7 @@ fn apply_binding(
             slot: 0,
             target: 0,
             bypass: false,
-            kind,
+            route: kind,
         });
     }
 

@@ -8,6 +8,7 @@ pub struct Output {
     pub volume_db: f32,
     /// -1..=1 balance.
     pub pan: f32,
+    /// How it balances, and how every voice balances its pans.
     pub balance: Balance,
     pub volume_tau_ms: f32,
     pub pan_slew_ms: f32,

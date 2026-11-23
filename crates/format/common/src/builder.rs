@@ -393,12 +393,8 @@ impl GroupBuilder {
                 slot: 0,
                 target: 0,
                 bypass: false,
-                kind: ir::ModKind::Volume {
-                    source: ir::Source::Velocity,
-                    intensity,
-                    curve,
-                    tau_ms: 0.0,
-                },
+                route: ir::ModRoute::new(ir::Source::Velocity, ir::ParamAddr::Volume, intensity)
+                    .law(ir::RouteLaw::Gain(curve)),
             });
         }
         self

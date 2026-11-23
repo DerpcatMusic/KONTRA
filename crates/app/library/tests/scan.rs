@@ -375,3 +375,203 @@ fn sfz_decentsampler_and_sf2_banks_are_scanned_as_libraries() {
     assert!(gm.art.is_empty(), "SF2 banks do not carry cover art");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn protected_banks_carry_structured_protection_status_and_cache_it() {
+    use kontra_library::{
+        BankError, BankListing, ProtectionStatus, ProtectionSystem, scan_with_inspector,
+    };
+
+    let dir = tree(
+        "protected",
+        &[
+            ("OpenBank.ufs", "Lead.uvip"),
+            ("LockedReadableDir.ufs", "Pad.uvip"),
+            ("LockedOpaque.ufs", "locked"),
+        ],
+    );
+    let inspect = |bank: &Path| {
+        let name = bank.file_name().unwrap().to_string_lossy();
+        if name == "LockedReadableDir.ufs" {
+            Ok(BankListing {
+                presets: vec!["Pad.uvip".into()],
+                protection: ProtectionStatus::protected(
+                    ProtectionSystem::PaceIlok,
+                    "PACE/iLok content encryption",
+                ),
+            })
+        } else if name == "LockedOpaque.ufs" {
+            Err(BankError::protected(ProtectionStatus::protected(
+                ProtectionSystem::PaceIlok,
+                "PACE/iLok directory encryption",
+            )))
+        } else {
+            Ok(BankListing {
+                presets: vec!["Lead.uvip".into()],
+                protection: ProtectionStatus::Open,
+            })
+        }
+    };
+
+    let mut cache = Cache::default();
+    let catalog =
+        scan_with_inspector(&[root(&dir)], &Progress::default(), &mut cache, &inspect).unwrap();
+
+    let open = catalog
+        .libraries
+        .iter()
+        .find(|l| l.name == "OpenBank")
+        .unwrap();
+    assert!(open.protection.is_open());
+
+    let locked_dir = catalog
+        .libraries
+        .iter()
+        .find(|l| l.name == "LockedReadableDir")
+        .unwrap();
+    assert!(locked_dir.protection.is_protected());
+    assert_eq!(
+        locked_dir.protection.system(),
+        Some(&ProtectionSystem::PaceIlok)
+    );
+    assert_eq!(locked_dir.presets.len(), 1);
+
+    let locked_opaque = catalog
+        .libraries
+        .iter()
+        .find(|l| l.name == "LockedOpaque")
+        .unwrap();
+    assert!(locked_opaque.protection.is_protected());
+    assert!(locked_opaque.presets.is_empty());
+    assert_eq!(locked_opaque.format, Format::Uvi);
+
+    assert_eq!(catalog.issues.len(), 2);
+    assert!(catalog.issues.iter().all(|i| i.protection.is_protected()));
+
+    // Cached roundtrip preserves ProtectionStatus with 0 re-reads
+    let cache_file = dir.join("cache.json");
+    cache.save(&cache_file).unwrap();
+    let mut warm = Cache::load(&cache_file);
+    let again =
+        scan_with_inspector(&[root(&dir)], &Progress::default(), &mut warm, &inspect).unwrap();
+    assert_eq!(warm.reads, 0);
+    assert_eq!(again, catalog);
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_libraries_are_discovered_and_symlink_cycles_do_not_loop() {
+    use std::os::unix::fs::symlink;
+
+    let external = tree(
+        "symlink-target",
+        &[
+            ("LinkedLib/LinkedLib.nicnt", NICNT),
+            ("LinkedLib/Instruments/Solo.nki", ""),
+        ],
+    );
+    let root_dir = tree("symlink-root", &[("Normal/Patch.nki", "")]);
+    symlink(external.join("LinkedLib"), root_dir.join("LinkedLib")).unwrap();
+    // Create a symlink cycle inside the root
+    symlink(&root_dir, root_dir.join("LoopBack")).unwrap();
+    // And a broken symlink
+    symlink(root_dir.join("DoesNotExist"), root_dir.join("BrokenLink")).unwrap();
+
+    let catalog = run(&[root(&root_dir)], &mut Cache::default());
+    let names: Vec<_> = catalog.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["Areia", "Normal"]);
+    assert!(
+        catalog
+            .issues
+            .iter()
+            .any(|i| i.reason.contains("broken symlink"))
+    );
+
+    std::fs::remove_dir_all(root_dir).unwrap();
+    std::fs::remove_dir_all(external).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn native_backslashes_and_virtual_bank_separators_are_distinct() {
+    let dir = tree(
+        "native-paths",
+        &[
+            (r"Lib/Instruments/Strings\Pads/P.nki", ""),
+            ("Lib/Instruments/Strings/Pads/P.nki", ""),
+            ("Bank.ufs", r"Strings\Pads\P.uvip"),
+        ],
+    );
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    let lib = catalog.libraries.iter().find(|l| l.name == "Lib").unwrap();
+    let instruments = &Folder::tree(&lib.dir, lib.presets.iter().map(PathBuf::as_path)).folders[0];
+    assert_eq!(instruments.folders.len(), 2);
+    assert!(
+        instruments
+            .folders
+            .iter()
+            .any(|f| f.path == lib.dir.join(r"Instruments/Strings\Pads") && f.count == 1)
+    );
+    let bank = catalog.libraries.iter().find(|l| l.name == "Bank").unwrap();
+    assert_eq!(bank.presets, [bank.dir.join("Strings/Pads/P.uvip")]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn ordinary_bank_failures_are_not_protection_diagnostics() {
+    use kontra_library::{BankError, ProtectionSystem};
+    for reason in [
+        "failed to read /workspace/Bank.ufs: invalid header",
+        "/lib/PACE/iLok/Bank.ufs: bank: malformed header",
+    ] {
+        assert!(BankError::failed(reason).protection.is_open());
+    }
+    assert_eq!(
+        BankError::failed("/lib/Bank.ufs: bank: protected (PACE / iLok): unavailable")
+            .protection
+            .system(),
+        Some(&ProtectionSystem::PaceIlok)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn aliases_neither_duplicate_targets_nor_cross_nested_library_boundaries() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tree(
+        "alias-ownership",
+        &[
+            ("Outer/Instruments/P.nki", ""),
+            ("Outer/Instruments/Bank.ufs", "X.uvip"),
+            ("Outer/Child/Child.nicnt", NICNT_INNER),
+            ("Outer/Child/OnlyThere.nki", ""),
+        ],
+    );
+    let outer_dir = dir.join("Outer");
+    symlink("Child", outer_dir.join("Alias")).unwrap();
+    symlink("P.nki", outer_dir.join("Instruments/Copy.nki")).unwrap();
+    symlink("Bank.ufs", outer_dir.join("Instruments/Copy.ufs")).unwrap();
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    let outer = catalog
+        .libraries
+        .iter()
+        .find(|l| l.dir == outer_dir)
+        .unwrap();
+    let child = catalog
+        .libraries
+        .iter()
+        .find(|l| l.name == "Bundle Library")
+        .unwrap();
+    assert_eq!(outer.presets.len(), 2);
+    assert_eq!(child.presets.len(), 1);
+    assert!(
+        outer
+            .presets
+            .iter()
+            .all(|p| p.starts_with(outer_dir.join("Instruments")))
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -29,7 +29,7 @@ fn trace_timed(
 /// Routes a timed envelope or LFO and reports unmapped targets and cutoff slots.
 /// `skip_target`, when set, omits one target index (used when the primary
 /// amplitude AHDSR already handles its first `volume` target via
-/// `ir::ModKind::Envelope` and routes any secondary targets here).
+/// `ir::ModRoute::AMP_ENVELOPE` and routes any secondary targets here).
 pub(crate) fn timed(
     out: &mut ir::Group,
     p: &InternalModParams,
@@ -131,10 +131,15 @@ pub(crate) fn timed(
         return report(notes, what);
     };
     let flex = what == "flex envelope";
-    let amp = out
-        .mods
-        .iter()
-        .any(|m| matches!(m.kind, ir::ModKind::Envelope));
+    let amp = out.mods.iter().any(|m| {
+        matches!(
+            m.route,
+            ir::ModRoute {
+                target: ir::ParamAddr::AmpEnvelope,
+                ..
+            }
+        )
+    });
     for (target, t) in p.targets.iter().enumerate() {
         if skip_target == Some(target) {
             continue;
@@ -183,12 +188,9 @@ pub(crate) fn timed(
                     t.lag_ms,
                     tau_ms,
                 );
-                ir::ModKind::Volume {
-                    source,
-                    intensity: t.signed_intensity(),
-                    curve: ir::Curve::Depth { power: 1 },
-                    tau_ms,
-                }
+                ir::ModRoute::new(source, ir::ParamAddr::Volume, t.signed_intensity())
+                    .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 }))
+                    .smooth(tau_ms)
             }
             ("pitch", None) => {
                 crate::external::record_lag(
@@ -198,33 +200,27 @@ pub(crate) fn timed(
                     t.lag_ms,
                     tau_ms,
                 );
-                ir::ModKind::Pitch {
-                    source,
-                    semitones: pitch_semitones,
-                    depth: t.signed_intensity(),
-                    tau_ms,
-                }
+                ir::ModRoute::new(source, ir::ParamAddr::Pitch, t.signed_intensity())
+                    .span(pitch_semitones)
+                    .smooth(tau_ms)
             }
-            ("pan", None) => ir::ModKind::Pan {
+            ("pan", None) => ir::ModRoute::new(source, ir::ParamAddr::Pan, t.signed_intensity()),
+            ("filterCutoff", Some(insert)) => ir::ModRoute::new(
                 source,
-                amount: t.signed_intensity(),
-            },
-            ("filterCutoff", Some(insert)) => ir::ModKind::Cutoff {
+                ir::ParamAddr::FilterCutoff { insert },
+                t.signed_intensity(),
+            ),
+            ("filterQ", Some(insert)) => ir::ModRoute::new(
                 source,
-                insert,
-                depth: t.signed_intensity(),
-            },
-            ("filterQ", Some(insert)) => ir::ModKind::Resonance {
-                source,
-                insert,
-                depth: t.signed_intensity(),
-            },
+                ir::ParamAddr::FilterResonance { insert },
+                t.signed_intensity(),
+            ),
             (param, None) if let Some(value) = crate::wavetable::target(param) => {
-                ir::ModKind::Wavetable {
+                ir::ModRoute::new(
                     source,
-                    value,
-                    depth: t.signed_intensity(),
-                }
+                    ir::ParamAddr::Wavetable(value),
+                    t.signed_intensity(),
+                )
             }
             (param, Some(insert))
                 if crate::provenance::eq_band_index(
@@ -267,7 +263,13 @@ pub(crate) fn timed(
         if flex
             && !amp
             && !bypassed
-            && matches!(kind, ir::ModKind::Volume { .. })
+            && matches!(
+                kind,
+                ir::ModRoute {
+                    target: ir::ParamAddr::Volume,
+                    ..
+                }
+            )
             && let Some(e) = out.envelopes.last()
         {
             out.envelope = laws::flex_gate(e);
@@ -285,7 +287,7 @@ pub(crate) fn timed(
             slot,
             target: u16::try_from(target).unwrap_or(u16::MAX),
             bypass: bypassed,
-            kind,
+            route: kind,
         });
     }
 }
@@ -342,7 +344,7 @@ pub(crate) fn knob_routes(
                         slot: u16::try_from(*n).unwrap_or(u16::MAX),
                         target: u16::try_from(target).unwrap_or(u16::MAX),
                         bypass: p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0),
-                        kind,
+                        route: kind,
                     });
                 }
                 None => {
@@ -416,8 +418,12 @@ mod tests {
         assert_eq!(group.shapers.len(), 256);
         assert_eq!(group.mods.len(), 1);
         assert!(matches!(
-            group.mods[0].kind,
-            ir::ModKind::LfoRate {
+            group.mods[0].route,
+            ir::ModRoute {
+                target: ir::ParamAddr::LfoParam {
+                    param: ir::LfoParam::Rate,
+                    ..
+                },
                 source: ir::Source::Shaped(255),
                 ..
             }
@@ -437,7 +443,7 @@ mod tests {
             lag_ms,
             name: String::new(),
             slot,
-            invert: false,
+            table_open: false,
             shaper,
             unknown_i16: -1,
             unknown_flags: 0,
@@ -483,11 +489,12 @@ mod tests {
         assert_eq!(group.envelopes.len(), 1);
         assert_eq!(group.shapers.len(), 1);
         assert_eq!(group.mods.len(), 2);
-        match group.mods[0].kind {
-            ir::ModKind::Pitch {
+        match group.mods[0].route {
+            ir::ModRoute {
+                target: ir::ParamAddr::Pitch,
                 source,
-                semitones,
-                tau_ms,
+                span: semitones,
+                smooth_ms: tau_ms,
                 ..
             } => {
                 assert_eq!(source, ir::Source::Shaped(0));
@@ -496,8 +503,12 @@ mod tests {
             }
             other => panic!("expected pitch route, got {other:?}"),
         }
-        match group.mods[1].kind {
-            ir::ModKind::Volume { tau_ms, .. } => assert_eq!(tau_ms, 0.0),
+        match group.mods[1].route {
+            ir::ModRoute {
+                target: ir::ParamAddr::Volume,
+                smooth_ms: tau_ms,
+                ..
+            } => assert_eq!(tau_ms, 0.0),
             other => panic!("expected volume route, got {other:?}"),
         }
         let diags = notes.finish();
@@ -529,8 +540,12 @@ mod tests {
         assert_eq!(g2.mods.len(), 1);
         assert!(g2.mods[0].bypass);
         assert!(matches!(
-            g2.mods[0].kind,
-            ir::ModKind::Cutoff { insert: 2, .. }
+            g2.mods[0].route,
+            ir::ModRoute {
+                target: ir::ParamAddr::FilterCutoff { insert: 2 },
+                law: ir::RouteLaw::Linear,
+                ..
+            }
         ));
     }
 

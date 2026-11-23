@@ -2,8 +2,9 @@
 //! (`get_sample`, `get_zone_status`, `get_loop_par`), the music-information
 //! `detect_*` commands, and `redirect_output`.
 //!
-//! User zones (`set_num_user_zones`, `set_sample`, `set_loop_par`) live in the
-//! plan's zone facts; the host builds their playing zones off the audio
+//! User zones (`set_num_user_zones`, `set_sample`, `set_loop_par`) live
+//! sparsely in [`Plan::user_zones`] (while saved zones live in
+//! [`Plan::zone_table`]); the host builds their playing zones off the audio
 //! thread (`kontra_prepare::user_zones`).
 
 use kontra_ir as ir;
@@ -76,11 +77,6 @@ fn cell_value(what: u8, value: Option<f64>) -> i64 {
 }
 
 impl Engine {
-    fn facts_of(&self, zone: i32) -> Option<&kontra_plan::ZoneFacts> {
-        let id = u32::try_from(zone).ok()?;
-        self.plan.zone_facts.iter().find(|z| z.id == id)
-    }
-
     /// The zone commands above; None for any other action.
     pub(crate) fn zone_call(&mut self, call: &mut HostCall<'_>) -> Option<HostValue> {
         use Action::*;
@@ -89,7 +85,10 @@ impl Engine {
             GetSample => {
                 let what = int(1);
                 let mut text = Text::EMPTY;
-                if let Some(p) = self.facts_of(int(0)).and_then(|z| z.source.as_ref()) {
+                if let Some(p) = u32::try_from(int(0))
+                    .ok()
+                    .and_then(|id| self.plan.zone_sample(id))
+                {
                     let p = &p.file;
                     // A lossy name borrows unless the path is not UTF-8.
                     let part = match what {
@@ -117,27 +116,27 @@ impl Engine {
             GetZoneId => HostValue::Int(
                 usize::try_from(int(0))
                     .ok()
-                    .and_then(|i| self.plan.zone_facts.get(i))
-                    .map_or(-1, |z| i32::try_from(z.id).unwrap_or(-1)),
+                    .and_then(|i| self.plan.zone_id_at(i))
+                    .map_or(-1, |id| i32::try_from(id).unwrap_or(-1)),
             ),
             // Every zone the instrument saved, played or not.
-            GetNumZones => {
-                HostValue::Int(self.plan.zone_facts.len().max(self.plan.zones.len()) as i32)
-            }
+            GetNumZones => HostValue::Int(self.plan.zone_count() as i32),
             // The whole sample, microseconds; -1 for a zone the instrument lacks.
-            GetSampleLength => HostValue::Int(self.facts_of(int(0)).map_or(-1, |z| {
-                let frames = z.source.as_ref().map_or(z.end, |s| s.frames);
-                i32::try_from(frames * 1_000_000 / u64::from(z.rate.max(1))).unwrap_or(i32::MAX)
-            })),
+            GetSampleLength => HostValue::Int(
+                u32::try_from(int(0))
+                    .ok()
+                    .and_then(|id| self.plan.zone_sample_length_us(id))
+                    .unwrap_or(-1),
+            ),
             GetZoneStatus => {
-                let zone = self.facts_of(int(0));
-                let group = zone.map(|z| z.group as usize);
+                let id = u32::try_from(int(0)).ok();
+                let group = id.and_then(|z| self.plan.zone_group(z)).map(|g| g as usize);
                 // $NI_ZONE_STATUS_EMPTY 0 (a user zone with no sample), _LOADED 1,
                 // _PURGED 2; a zone the instrument lacks reads purged (measured,
                 // probes/ksp/zone_and_detect.kspp).
                 HostValue::Int(match group {
                     None => 2,
-                    Some(_) if zone.is_some_and(|z| z.user && z.source.is_none()) => 0,
+                    Some(_) if id.is_some_and(|z| self.plan.is_empty_user_zone(z)) => 0,
                     Some(g) if self.groups.get(g).is_some_and(|g| g.purged) => 2,
                     Some(_) => 1,
                 })
@@ -153,7 +152,7 @@ impl Engine {
             SetSample => {
                 let user = u32::try_from(int(0))
                     .ok()
-                    .filter(|&z| self.facts_of(int(0)).is_some_and(|f| f.user && f.id == z));
+                    .filter(|&z| self.plan.is_user_zone(z));
                 let path = call.texts.first().copied().unwrap_or(Text::EMPTY);
                 match (user, self.building) {
                     (None, true) => HostValue::Int(-1),
@@ -170,7 +169,7 @@ impl Engine {
             SetLoopPar => {
                 let user = u32::try_from(int(0))
                     .ok()
-                    .filter(|&z| self.facts_of(int(0)).is_some_and(|f| f.user && f.id == z));
+                    .filter(|&z| self.plan.is_user_zone(z));
                 let what = Edit::Loop(int(1), int(2), int(3));
                 match (user, self.building) {
                     (None, true) => HostValue::Int(-1),
@@ -226,7 +225,10 @@ impl Engine {
                 if what == 6 {
                     self.count_unhandled(call.action);
                 }
-                let sample = self.facts_of(zone).and_then(|z| z.source.clone());
+                let sample = u32::try_from(zone)
+                    .ok()
+                    .and_then(|id| self.plan.zone_sample(id))
+                    .cloned();
                 if self.building {
                     // Under construction (off the audio thread): measured at once.
                     let value = sample.and_then(|s| detect_sample(&s, what));

@@ -25,22 +25,23 @@ impl EnvScale {
 
 /// When a voice is being read, in seconds.
 #[derive(Clone, Copy, Debug)]
-pub struct Age {
+pub struct Age<'a> {
     /// Since the voice started.
     pub held: f32,
     /// Its age at key-up, once the key is up.
     pub released: Option<f32>,
     /// Since the engine started (free-running LFOs).
     pub now: f32,
-    /// Cycles added to the group's first [`WARPS`] LFOs by their live rate
-    /// routes ([`ir::ModKind::LfoHz`]), integrated span by span.
-    pub warp: [f32; WARPS],
-    /// The voice's chaotic LFOs' levels this span (at the current span).
-    pub chaos: [f32; WARPS],
-    /// How much envelope modulation routes scaled the group's first
-    /// [`WARPS`] breakpoint envelopes (attack/hold/decay/sustain at note-on,
-    /// release at note-off).
-    pub stretch: [EnvScale; WARPS],
+    /// Cycles added to each of the group's LFOs by its live rate routes
+    /// ([`ir::LfoParam::Hz`], [`ir::LfoParam::Division`]), integrated span
+    /// by span; none past the slice's end.
+    pub warp: &'a [f32],
+    /// The voice's chaotic LFOs' states this span ([`Chaos`], its level last).
+    pub chaos: &'a [Chaos],
+    /// How much envelope modulation routes scaled each of the group's
+    /// breakpoint envelopes (attack/hold/decay/sustain at note-on, release at
+    /// note-off); unity past the slice's end.
+    pub stretch: &'a [EnvScale],
     /// Voice position at note-on, in source frames.
     pub start_frame: f64,
     /// Voice position in source frames (start frame + playback travel), for
@@ -50,17 +51,14 @@ pub struct Age {
     pub unpitched_pos: f64,
 }
 
-/// How many of a group's LFOs a live rate route can move.
-pub const WARPS: usize = 8;
-
-impl Age {
+impl Age<'static> {
     pub const START: Self = Self {
         held: 0.0,
         released: None,
         now: 0.0,
-        warp: [0.0; WARPS],
-        chaos: [0.0; WARPS],
-        stretch: [EnvScale::UNITY; WARPS],
+        warp: &[],
+        chaos: &[],
+        stretch: &[],
         start_frame: 0.0,
         sample_pos: 0.0,
         unpitched_pos: 0.0,

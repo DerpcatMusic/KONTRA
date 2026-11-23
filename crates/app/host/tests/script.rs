@@ -483,11 +483,11 @@ fn a_script_bypass_takes_a_playing_voices_filter_out() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Cutoff {
-            source: ir::Source::Controller(74),
-            insert: 0,
-            depth: 0.0,
-        },
+        route: ir::ModRoute::new(
+            ir::Source::Controller(74),
+            ir::ParamAddr::FilterCutoff { insert: 0 },
+            0.0,
+        ),
     }];
     let script = kontra_ksp::compile(
         "on controller
@@ -733,12 +733,8 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
         slot: 3,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Volume {
-            source: ir::Source::Controller(110),
-            intensity: 0.0,
-            curve: ir::Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Controller(110), ir::ParamAddr::Volume, 0.0)
+            .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 })),
     }];
     let script = kontra_ksp::compile(
         "on init
@@ -791,12 +787,8 @@ fn route_intensities_follow_kontakts_laws() {
         slot: 3,
         target,
         bypass: false,
-        kind: ir::ModKind::Volume {
-            source: ir::Source::Controller(110),
-            intensity: 0.5,
-            curve: ir::Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Controller(110), ir::ParamAddr::Volume, 0.5)
+            .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 })),
     };
     plan.groups[0].mods = vec![route(1), route(0)];
     let script = kontra_ksp::compile(
@@ -865,22 +857,15 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Volume {
-            source: ir::Source::Envelope(0),
-            intensity: 1.0,
-            curve: ir::Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Envelope(0), ir::ParamAddr::Volume, 1.0)
+            .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 })),
     }];
     g.mods.push(ir::Mod {
         name: "ENV_FLEX".into(),
         slot: 1,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Pan {
-            source: ir::Source::Envelope(1),
-            amount: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Envelope(1), ir::ParamAddr::Pan, 0.0),
     });
     let script = kontra_ksp::compile(
         "on init
@@ -925,10 +910,7 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
         slot: 3,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Pan {
-            source: ir::Source::Lfo(0),
-            amount: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Lfo(0), ir::ParamAddr::Pan, 0.0),
     }];
     g.inserts = vec![Some(ir::Effect {
         kind: ir::EffectKind::Crush(ir::Crush {
@@ -1004,10 +986,7 @@ fn a_stepped_lfos_rate_knob_sets_a_whole_count() {
         slot: 3,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Pan {
-            source: ir::Source::Lfo(0),
-            amount: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Lfo(0), ir::ParamAddr::Pan, 0.0),
     }];
     // 48 / (0.010415 · 20465^0.5) Hz = 32.2: count 32, read back as 500679.
     let script = kontra_ksp::compile(
@@ -1286,12 +1265,8 @@ fn a_script_sends_a_note_its_modulation_value() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Volume {
-            source: ir::Source::Script(1),
-            intensity: 1.0,
-            curve: ir::Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Script(1), ir::ParamAddr::Volume, 1.0)
+            .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 })),
     }];
     let script = kontra_ksp::compile(
         "on note
@@ -1888,12 +1863,12 @@ fn a_release_the_script_plays_reads_how_long_the_key_was_held() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Volume {
-            source: ir::Source::HeldTime { span_ms: 1000 },
-            intensity: 1.0,
-            curve: ir::Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ir::ModRoute::new(
+            ir::Source::HeldTime { span_ms: 1000 },
+            ir::ParamAddr::Volume,
+            1.0,
+        )
+        .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 })),
     }];
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -1993,12 +1968,14 @@ fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
             slot: 1,
             target: 0,
             bypass: false,
-            kind: kontra_engine::ir::ModKind::Volume {
-                source: kontra_engine::ir::Source::Script(1),
-                intensity: 1.0,
-                curve: kontra_engine::ir::Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            },
+            route: kontra_engine::ir::ModRoute::new(
+                kontra_engine::ir::Source::Script(1),
+                kontra_engine::ir::ParamAddr::Volume,
+                1.0,
+            )
+            .law(kontra_engine::ir::RouteLaw::Gain(
+                kontra_engine::ir::Curve::Depth { power: 1 },
+            )),
         }];
     }
     let source = "function onInit() sendScriptModulation(1, 0.5) end
@@ -2020,12 +1997,14 @@ fn a_script_modulation_index_keeps_its_value_after_many_others() {
             slot: 1,
             target: 0,
             bypass: false,
-            kind: kontra_engine::ir::ModKind::Volume {
-                source: kontra_engine::ir::Source::Script(20),
-                intensity: 1.0,
-                curve: kontra_engine::ir::Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            },
+            route: kontra_engine::ir::ModRoute::new(
+                kontra_engine::ir::Source::Script(20),
+                kontra_engine::ir::ParamAddr::Volume,
+                1.0,
+            )
+            .law(kontra_engine::ir::RouteLaw::Gain(
+                kontra_engine::ir::Curve::Depth { power: 1 },
+            )),
         }];
     }
     // Twelve indices no route reads go first; the one a route reads still lands.
@@ -2069,12 +2048,14 @@ fn a_script_modulation_ramps_to_its_value() {
             slot: 1,
             target: 0,
             bypass: false,
-            kind: kontra_engine::ir::ModKind::Volume {
-                source: kontra_engine::ir::Source::Script(1),
-                intensity: 1.0,
-                curve: kontra_engine::ir::Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            },
+            route: kontra_engine::ir::ModRoute::new(
+                kontra_engine::ir::Source::Script(1),
+                kontra_engine::ir::ParamAddr::Volume,
+                1.0,
+            )
+            .law(kontra_engine::ir::RouteLaw::Gain(
+                kontra_engine::ir::Curve::Depth { power: 1 },
+            )),
         }];
     }
     // Silent at the note, then up to full over 200 ms.
@@ -2087,7 +2068,13 @@ fn a_script_modulation_ramps_to_its_value() {
         level(&mut e, &[]);
     }
     let late = level(&mut e, &[]);
-    assert!(early < 0.2, "early {early}");
+    // At frame 4,095 of a 200 ms (9,600-frame) ramp on a 0.5 DC sample, the
+    // exact level is 0.5 * 4095 / 9600 ≈ 0.2133 (minus ~1 ms gain smoothing).
+    let expected_early = 0.5 * 4095.0 / 9600.0;
+    assert!(
+        (early - expected_early).abs() < 0.02,
+        "early {early} vs expected {expected_early}"
+    );
     assert!((late - 0.5).abs() < 1e-3, "late {late}");
 }
 
@@ -2109,12 +2096,14 @@ fn a_uvi_script_renders_the_same_at_any_block_size() {
                 slot: 1,
                 target: 0,
                 bypass: false,
-                kind: kontra_engine::ir::ModKind::Volume {
-                    source: kontra_engine::ir::Source::Script(1),
-                    intensity: 1.0,
-                    curve: kontra_engine::ir::Curve::Depth { power: 1 },
-                    tau_ms: 0.0,
-                },
+                route: kontra_engine::ir::ModRoute::new(
+                    kontra_engine::ir::Source::Script(1),
+                    kontra_engine::ir::ParamAddr::Volume,
+                    1.0,
+                )
+                .law(kontra_engine::ir::RouteLaw::Gain(
+                    kontra_engine::ir::Curve::Depth { power: 1 },
+                )),
             }];
         }
         let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
@@ -4052,28 +4041,31 @@ fn a_route_not_carried_keeps_its_depth_for_the_script() {
 /// -1; ANALOG's Jump slot reads 31 and an empty one 0).
 #[test]
 fn a_script_finds_zones_and_reads_their_slots_types() {
-    use kontra_engine::{ZoneFacts, ir};
+    use kontra_engine::{SavedZoneDesc, ir};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
-    plan.zone_facts = vec![ZoneFacts {
-        id: 3494,
-        name: "Warmth".into(),
-        group: 932,
-        keys: 24..=108,
-        velocities: 1..=127,
-        root: 36,
-        start: 0,
-        end: 204_800,
-        start_range: 204_800,
-        rate: 44_100,
-        source: None,
-        loops: Vec::new(),
-        user: false,
-        volume: 0,
-        pan: 0,
-        tune: 0,
-        fades: [0; 4],
-    }];
+    plan.push_saved_zone(
+        SavedZoneDesc {
+            id: 3494,
+            group: 932,
+            keys: 24..=108,
+            velocities: 1..=127,
+            root: 36,
+            start: 0,
+            end: 204_800,
+            start_mod: 204_800,
+            sample_rate: 44_100,
+            volume_db: 0.0,
+            pan: 0.0,
+            tune_semitones: 0.0,
+            key_fade: (0, 0),
+            velocity_fade: (0, 0),
+            sample_idx: None,
+            custom_name: Some("Warmth"),
+            loops: &[],
+        },
+        None,
+    );
     plan.inserts = vec![
         Some(ir::Effect {
             kind: ir::EffectKind::Gain(1.0),
@@ -4221,10 +4213,7 @@ fn lfo_and_wavetable_controls_read_as_kontakt_shows_them() {
         slot: 3,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Pan {
-            source: ir::Source::Lfo(0),
-            amount: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Lfo(0), ir::ParamAddr::Pan, 0.0),
     }];
     let script = kontra_ksp::compile(
         "on init
@@ -4276,10 +4265,7 @@ fn an_lfo_rate_unit_switches_between_hz_and_note_counts() {
         slot: 3,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Pan {
-            source: ir::Source::Lfo(0),
-            amount: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Lfo(0), ir::ParamAddr::Pan, 0.0),
     }];
     let script = kontra_ksp::compile(
         "on init
@@ -5244,7 +5230,7 @@ fn the_midi_object_inserts_into_its_buffer() {
 /// A zone whose facts carry a one-second 440 Hz mono WAV, for the zone and
 /// detection commands.
 fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
-    use kontra_engine::{ZoneFacts, ir};
+    use kontra_engine::{SavedZoneDesc, ir};
     let (rate, frames) = (44_100u32, 44_100u32);
     let mut wav = b"RIFF".to_vec();
     wav.extend((36 + frames * 2).to_le_bytes());
@@ -5276,31 +5262,34 @@ fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
     let script = kontra_ksp::compile(source, &[]).unwrap();
     let mut plan = Plan::new(vec![zone(store, 0.5, 0)], 16);
     plan.groups = vec![kontra_engine::Group::standard()];
-    plan.zone_facts = vec![ZoneFacts {
-        id: 0,
-        name: "tone440".into(),
-        group: 0,
-        keys: 0..=127,
-        velocities: 1..=127,
-        root: 69,
-        start: 0,
-        end: u64::from(frames),
-        start_range: 0,
-        rate,
-        source: Some(Arc::new(sample)),
-        loops: vec![ir::Loop {
-            start: 100,
-            end: 600,
-            crossfade: 20,
-            count: 3,
-            ..Default::default()
-        }],
-        user: false,
-        volume: 0,
-        pan: 0,
-        tune: 0,
-        fades: [0; 4],
-    }];
+    plan.push_saved_zone(
+        SavedZoneDesc {
+            id: 0,
+            group: 0,
+            keys: 0..=127,
+            velocities: 1..=127,
+            root: 69,
+            start: 0,
+            end: u64::from(frames),
+            start_mod: 0,
+            sample_rate: rate,
+            volume_db: 0.0,
+            pan: 0.0,
+            tune_semitones: 0.0,
+            key_fade: (0, 0),
+            velocity_fade: (0, 0),
+            sample_idx: None,
+            custom_name: None,
+            loops: &[ir::Loop {
+                start: 100,
+                end: 600,
+                crossfade: 20,
+                count: 3,
+                ..Default::default()
+            }],
+        },
+        Some(Arc::new(sample)),
+    );
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
@@ -5408,7 +5397,7 @@ fn a_user_zone_takes_parameters_a_sample_and_a_loop_in_init() {
     );
     assert_eq!(e.plan().user_zone_ids().collect::<Vec<_>>(), [1, 2]);
     // The saved zone is not a user zone: set_sample and set_loop_par leave it be.
-    assert_eq!(e.plan().zone_facts.first().map(|z| z.loops.len()), Some(1));
+    assert_eq!(e.plan().zone_table.loops_at(0).len(), 1);
     // The host builds the zone that plays the sample.
     attach_user_zones(&mut e, &mut store, &[]);
     assert!(e.plan().zones.iter().any(|z| z.id == 1));
@@ -5834,7 +5823,7 @@ fn live_set_engine_par_updates_active_voice_envelope() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Envelope,
+        route: ir::ModRoute::AMP_ENVELOPE,
     }];
     let script = kontra_ksp::compile(
         "on controller

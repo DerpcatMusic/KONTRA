@@ -360,7 +360,13 @@ fn print(frames: &[[f32; 2]]) -> (Vec<f64>, f64) {
     ];
     let mut sums = vec![0.0f64; centers.len() * 2];
     let mut buf = vec![Complex::new(0.0, 0.0); N];
-    for chunk in frames.as_chunks::<{ N / 2 }>().0.iter().collect::<Vec<_>>().windows(2) {
+    for chunk in frames
+        .as_chunks::<{ N / 2 }>()
+        .0
+        .iter()
+        .collect::<Vec<_>>()
+        .windows(2)
+    {
         for c in 0..2 {
             for (i, (b, w)) in buf.iter_mut().zip(&window).enumerate() {
                 let f = if i < N / 2 {

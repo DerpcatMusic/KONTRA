@@ -277,14 +277,11 @@ pub fn script_ramps(plan: &kontra_plan::Plan) -> Box<[Option<(u16, Ramp)>]> {
                 .flat_map(|g| &g.shapers)
                 .map(|t| t.source),
         );
-    let routes = (plan.groups.iter().flat_map(|g| &g.mods).map(|m| &m.kind))
+    let routes = (plan.groups.iter().flat_map(|g| &g.mods).map(|m| &m.route))
         .chain(plan.buses.iter().flat_map(|b| &b.mods));
-    let mut indices: Vec<u16> = (routes.filter_map(kontra_plan::source))
+    let mut indices: Vec<u16> = (routes.filter_map(kontra_ir::ModRoute::driver))
         .chain(inputs)
-        .filter_map(|s| match s {
-            Source::Script(i) => Some(i),
-            _ => None,
-        })
+        .filter_map(Source::script_channel)
         .collect();
     indices.sort_unstable();
     indices.dedup();

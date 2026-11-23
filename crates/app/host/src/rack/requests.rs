@@ -61,7 +61,7 @@ impl Rack {
             let Some(Some(p)) = self.parts.get_mut(part) else {
                 continue;
             };
-            let Some(plan) = p.plan.as_deref().filter(|p| !p.user_facts().is_empty()) else {
+            let Some(plan) = p.plan.as_deref().filter(|p| !p.user_zones.is_empty()) else {
                 continue;
             };
             let Some((grown, diagnostics)) =

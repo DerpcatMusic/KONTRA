@@ -1112,7 +1112,7 @@ mod modulation {
         assert_eq!(velocity.source, ModSource::Velocity);
         let target = &velocity.targets[0];
         assert_eq!(
-            (target.param.as_str(), target.slot, target.invert),
+            (target.param.as_str(), target.slot, target.table_open),
             ("volume", None, false)
         );
         assert_eq!((target.intensity, target.lag_ms), (0.5, 250));
@@ -1124,7 +1124,7 @@ mod modulation {
         assert_eq!(cc.source, ModSource::MidiCc(11));
         let target = &cc.targets[0];
         assert_eq!(
-            (target.param.as_str(), target.slot, target.invert),
+            (target.param.as_str(), target.slot, target.table_open),
             ("eqGain1", Some(2), true)
         );
         let shaper = target.shaper.as_ref().unwrap();

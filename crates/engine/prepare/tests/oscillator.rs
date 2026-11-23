@@ -1,5 +1,5 @@
-//! Regression tests for oscillator preparation: ZoneFacts retention (active
-//! and purged), waking purged oscillator groups, and Cycle slot assignment.
+//! Regression tests for oscillator preparation: SoA zone_table retention
+//! (active and purged), waking purged oscillator groups, and Cycle slot assignment.
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -39,7 +39,7 @@ fn osc_zone(id: u32, slot: u16) -> ir::Zone {
 }
 
 #[test]
-fn oscillator_zones_keep_zone_facts_cycle_positions_and_wake_from_purged() {
+fn oscillator_zones_keep_zone_table_cycle_positions_and_wake_from_purged() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let inst = ir::Instrument {
         groups: vec![
@@ -73,9 +73,8 @@ fn oscillator_zones_keep_zone_facts_cycle_positions_and_wake_from_purged() {
     let (plan, diags) = prepare(&inst, 48_000, &mut store, &open);
     assert!(diags.is_empty(), "{diags:?}");
 
-    // All three oscillator zones (2 active + 1 purged) are present in `plan.zone_facts`.
-    let fact_ids: Vec<u32> = plan.zone_facts.iter().map(|f| f.id).collect();
-    assert_eq!(fact_ids, [10, 11, 20]);
+    // All three oscillator zones (2 active + 1 purged) are present in `plan.zone_table`.
+    assert_eq!(plan.zone_table.ids, [10, 11, 20]);
 
     // Cycle positions from `zone.slot` are assigned via `ZoneRules::apply`.
     assert_eq!(plan.zones.len(), 2);

@@ -126,7 +126,7 @@ fn reader_versions_legacy_nullable_names_do_not_shift_assignment_fields() {
     assert_eq!(parsed.targets[0].name, "");
     assert_eq!(
         (
-            parsed.targets[0].invert,
+            parsed.targets[0].table_open,
             parsed.targets[0].lag_ms,
             parsed.unknown_id
         ),
@@ -134,14 +134,14 @@ fn reader_versions_legacy_nullable_names_do_not_shift_assignment_fields() {
     );
     roundtrip(&external);
     let mut invalid = private.clone();
-    // Target invert follows count, parameter, depth, i16, flags, lag and name.
+    // Target table_open follows count, parameter, depth, i16, flags, lag and name.
     invalid[27] = 2;
     let error = ExternalMod::try_from(&structured(0x0c, 0x100, &invalid, &[], &[]))
         .unwrap()
         .params()
         .unwrap_err()
         .to_string();
-    assert!(error.contains("volume invert"), "{error}");
+    assert!(error.contains("volume table_open"), "{error}");
     let modern = structured(0x0c, 0x101, &private, &[], &[]);
     assert!(ExternalMod::try_from(&modern).unwrap().params().is_err());
     for end in 0..private.len() {
@@ -169,7 +169,7 @@ fn reader_versions_legacy_nullable_names_do_not_shift_assignment_fields() {
     assert_eq!(parsed.name, "");
     assert_eq!(parsed.unknown_flags, [0, 1, 0, 0]);
     assert_eq!(parsed.unknown_id, 19);
-    assert!(parsed.targets[0].invert);
+    assert!(parsed.targets[0].table_open);
     roundtrip(&chunk);
     assert!(
         InternalMod::try_from(&structured(0x0d, 0x81, &internal, &[], &children))

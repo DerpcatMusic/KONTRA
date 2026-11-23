@@ -1,6 +1,6 @@
 [profile.default]
-# Real library tests can each load gigabytes; avoid exhausting a workstation.
-test-threads = 2
+# Balanced parallelism for workstation test throughput (46G RAM).
+test-threads = 8
 retries = 0
 failure-output = "immediate-final"
 

@@ -8,7 +8,7 @@ use crate::{
 
 use super::{
     modulation::{ensure_consumed, read_assignment_name, read_targets},
-    EnvelopeAhdsr, EnvelopeDbd, EnvelopeFlex, EnvelopeFollower, Glide, Lfo, ModTarget,
+    EnvelopeAhdsr, EnvelopeDbd, EnvelopeFlex, EnvelopeFollower, Glide, Lfo, ModTarget, StepMod,
 };
 
 const CHUNK_ID: u16 = 0x0D;
@@ -97,6 +97,14 @@ impl InternalMod {
         })
     }
 
+    /// Decodes a nested Step Modulator (`BParArp`, chunk `0x09`) when present.
+    pub fn step_mod(&self) -> Result<Option<StepMod>, Error> {
+        let Some(chunk) = self.0.find_first(0x09) else {
+            return Ok(None);
+        };
+        StepMod::try_from(chunk).map(Some)
+    }
+
     /// The envelope wrapper (0x07) holds the concrete modulator chunk.
     fn modulator(&self) -> Result<Modulator, Error> {
         let wrapper;
@@ -172,12 +180,23 @@ mod tests {
 
     #[test]
     fn categories_3_and_4_parse_step_mod_and_envelope_follower() {
-        let step_chunk = Chunk {
-            id: 0x09,
-            data: vec![0, 0x10, 0x00],
+        let step_model = StepMod {
+            version: 0x81,
+            snap_to_12: false,
+            num_steps: 8,
+            single_trigger: true,
+            steps: vec![0.25, 0.75],
+            frequency: 2.0,
+            legacy_note_value: None,
+            frequency_sync: Some(super::super::PackedRecord {
+                values: [-1.0, 0.0, 0.0],
+                flag: 1,
+            }),
         };
-        let step = internal_mod_with(3, step_chunk).params().unwrap();
+        let step_mod_obj = internal_mod_with(3, step_model.to_chunk().unwrap());
+        let step = step_mod_obj.params().unwrap();
         assert_eq!(step.modulator, Modulator::Other { chunk_id: 0x09 });
+        assert_eq!(step_mod_obj.step_mod().unwrap(), Some(step_model));
 
         let mut envf_data = vec![0];
         envf_data.extend(0x60u16.to_le_bytes());

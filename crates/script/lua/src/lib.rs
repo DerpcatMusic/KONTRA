@@ -1963,6 +1963,44 @@ mod tests {
     }
 
     #[test]
+    fn script_writes_move_rack_shares_and_address_the_correct_eq_slot() {
+        let tree = "return {params={},db=0,pan=0,layers={{params={},inserts={
+            {params={Mix='1'},rack_mix={3,4},bus=5,dry=6},
+            {params={},routed_knobs={7,{2,{GainScale={{25,0,0,1,2}}}},
+                {3,{GainScale={{25,0,0,1,3}},Freq5={{26,20,20,20000,20000}}}}}}
+        }}}}";
+        let source = "local i = Program.layers[1].inserts
+            i[1]:setParameter('Mix', 0.25)
+            i[2]:setParameter('Freq5', 2000)
+            i[2]:setParameter('GainScale', 0.5)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).unwrap();
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+        let calls = |action| {
+            log.0
+                .iter()
+                .filter(|(a, _)| *a == action)
+                .map(|(_, args)| args.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            calls(Action::EffectGain),
+            [vec![1, 3, 0, 250_000], vec![1, 4, 0, 750_000]]
+        );
+        assert_eq!(
+            calls(Action::EffectField),
+            [
+                vec![1, 7, 3, 26, 2_000_000],
+                vec![1, 7, 2, 25, 1000],
+                vec![1, 7, 3, 25, 1500],
+            ]
+        );
+    }
+
+    #[test]
     fn a_layers_fader_and_an_auxs_gain_are_bus_volumes() {
         // The fader leaves the groups at their own gain; muting silences them.
         let log = run("", Callbacks::INIT);

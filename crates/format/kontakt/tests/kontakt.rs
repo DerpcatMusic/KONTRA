@@ -59,6 +59,19 @@ fn an_analog_strings_snapshot_is_its_instrument_with_its_saved_values() {
     };
     assert_eq!(snap.scripts.len(), base.scripts.len());
     assert_ne!(saved(&snap), saved(&base));
+    // B P0-9: ANALOG STRINGS saves fx_idx_amp_split_point = 6; carried into IR, not ignored.
+    assert!(
+        base.groups.iter().any(|g| g.amp_split == 6),
+        "expected ANALOG STRINGS groups to carry amp_split = 6"
+    );
+    assert!(
+        !base
+            .diagnostics
+            .iter()
+            .any(|d| d.detail.contains("fx_idx_amp_split_point")
+                || d.feature.contains("fx_idx_amp_split_point")),
+        "fx_idx_amp_split_point must not be logged as ignored"
+    );
 }
 
 const MORPHOLOGY: &str = "/data/main/Libraries/Kontakt/Morphology Evolved [Zero-G] rutracker.org";

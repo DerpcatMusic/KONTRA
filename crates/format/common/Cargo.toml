@@ -10,3 +10,5 @@ workspace = true
 
 [dependencies]
 kontra-ir = { path = "../../model/ir" }
+serde.workspace = true
+thiserror.workspace = true

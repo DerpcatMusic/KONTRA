@@ -3,33 +3,59 @@
 
 use std::cell::Cell;
 
+use ir::{EnvStage as S, RouteLaw as L};
 use kontra_ir as ir;
 
 use crate::ledger::Note;
 use ir::TableValue::{Inharmonic, ModAmount, ModTune, Phase, PhaseRandom, Position, Warp};
 use kontra_stream::Mix;
-use kontra_voice::{Ahdsr, Gain, Lag, Read};
+use kontra_voice::{Ahdsr, Gain, LAGS, Lag, Lags, Read};
 
 use crate::effects::{self, product};
 use crate::modulators::{self, Age};
 use crate::{Control, Engine, Level, Zone};
 
-/// A voice's lagging pitch routes: their semitones and longest time constant.
-/// The voice glides toward them a control step at a time.
+/// A voice's lagging pitch routes, each its semitones and time constant
+/// ([`lag_into`]); the voice glides toward each a control step at a time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Bend {
-    pub(crate) semitones: f32,
-    pub(crate) tau_ms: f32,
+    pub(crate) lagging: [(f32, f32); LAGS],
     /// The routes that do not lag.
     pub(crate) instant: f32,
 }
 
 impl Bend {
     pub(crate) const NONE: Self = Self {
-        semitones: 0.0,
-        tau_ms: 0.0,
+        lagging: [(0.0, 0.0); LAGS],
         instant: 0.0,
     };
+
+    /// Every lagging route's semitones, as they will be once glided.
+    pub(crate) fn lagged(&self) -> f32 {
+        self.lagging.iter().map(|&(st, _)| st).sum()
+    }
+}
+
+/// The `k`th lagging route's `value` and time constant into `lags`, each
+/// route its own one-pole; past the last, folded into it (`fold`) at the
+/// longer time constant.
+fn lag_into(
+    lags: &mut [(f32, f32); LAGS],
+    k: &mut usize,
+    value: f32,
+    tau_ms: f32,
+    fold: fn(f32, f32) -> f32,
+) {
+    let fresh = *k < LAGS;
+    if let Some(slot) = lags.get_mut((*k).min(LAGS - 1)) {
+        let (v, tau) = *slot;
+        *slot = if fresh {
+            (value, tau_ms)
+        } else {
+            (fold(v, value), tau.max(tau_ms))
+        };
+    }
+    *k += 1;
 }
 
 /// A script's group pan glides as a one-pole of this time constant
@@ -100,8 +126,8 @@ impl Drop for Active<'_> {
 }
 
 impl Engine {
-    /// The voice's gain, and the slower gain of its routes that lag (their
-    /// product, at the longest time constant among them).
+    /// The voice's gain, and the slower gains of its routes that lag, each
+    /// at its own time constant ([`lag_into`]).
     /// `group_pan` is where the voice's glide of its group's pan is.
     pub(crate) fn voice_gain(
         &self,
@@ -110,7 +136,7 @@ impl Engine {
         factor: f32,
         age: Age,
         group_pan: f32,
-    ) -> (Gain, Lag) {
+    ) -> (Gain, Lags) {
         let channel = note.host.port_channel();
         let crossfade: f32 = zone
             .crossfades
@@ -122,17 +148,17 @@ impl Engine {
                 )
             })
             .product();
-        // ponytail: one lag per voice, the longest of its routes'; a
-        // route of its own when a group mixes two lags audibly.
-        let (mut mods, mut lagged, mut tau) = (1.0f32, 1.0f32, 0.0f32);
+        let (mut mods, mut lags, mut k) = (1.0f32, [(1.0f32, 0.0f32); LAGS], 0);
         let groups = self.groups.get(zone.group as usize);
         for m in groups.iter().flat_map(|g| &g.mods).filter(|m| !m.bypass) {
-            if let ir::ModKind::Volume {
+            if let ir::ModRoute {
                 source,
-                intensity,
-                curve,
-                tau_ms,
-            } = m.kind
+                target: ir::ParamAddr::Volume,
+                depth: intensity,
+                law: ir::RouteLaw::Gain(curve),
+                smooth_ms: tau_ms,
+                ..
+            } = m.route
             {
                 let intensity = intensity * self.scale(zone, source, note, age);
                 let input = self.unit(zone, source, note, age);
@@ -140,7 +166,7 @@ impl Engine {
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, input, g, crate::RouteUnit::GainMultiplier);
                 if tau_ms > 0.0 {
-                    (lagged, tau) = (lagged * g, tau.max(tau_ms));
+                    lag_into(&mut lags, &mut k, g, tau_ms, |a, b| a * b);
                 } else {
                     mods *= g;
                 }
@@ -150,8 +176,13 @@ impl Engine {
             g.mods
                 .iter()
                 .filter(|m| !m.bypass)
-                .filter_map(|m| match m.kind {
-                    ir::ModKind::Pan { source, amount } => {
+                .filter_map(|m| match m.route {
+                    ir::ModRoute {
+                        source,
+                        target: ir::ParamAddr::Pan,
+                        depth: amount,
+                        ..
+                    } => {
                         let input = self.routed(zone, source, note, age)?;
                         let value = input * amount;
                         #[cfg(feature = "trace")]
@@ -166,37 +197,63 @@ impl Engine {
             pan: group_pan,
             ..self.level(zone)
         };
-        let [l, r] = gain(zone, note, level, pan);
+        let [l, r] = gain(zone, note, level, pan, self.plan.output.balance);
         let g = crossfade * mods * factor;
-        let group = self
-            .groups
-            .get(zone.group as usize)
-            .map_or(effects::IDENTITY, |g| {
-                // The group's sum runs the slots from its split on.
-                let split = self.group_split.get(zone.group as usize).copied().flatten();
-                effects::rack(
-                    g.inserts
-                        .get(..split.unwrap_or(g.inserts.len()))
-                        .unwrap_or_default(),
-                )
-            });
         let amp = [[l * g, 0.0], [0.0, r * g]];
-        (product(group, amp), Lag::new(lagged, tau, self.rate))
+        let gain = self.groups.get(zone.group as usize).map_or(amp, |g| {
+            // The group's sum runs the slots from its split on; matrix slots
+            // already placed in the per-voice rack (`Kind::Matrix`) run there
+            // in exact slot order around drives rather than commuting here.
+            let group_idx = zone.group as usize;
+            let group_split = self
+                .group_split
+                .get(group_idx)
+                .copied()
+                .flatten()
+                .unwrap_or(g.inserts.len())
+                .min(g.inserts.len());
+            let amp_split = g.amp_split_index().min(group_split);
+            let units = self
+                .voice_units
+                .get(group_idx)
+                .map_or(&[][..], |u| u.as_ref());
+            let in_voice_rack = |slot: usize| {
+                units.iter().any(|u| {
+                    usize::from(u.insert) == slot
+                        && matches!(u.kind, crate::voice_rack::Kind::Matrix)
+                })
+            };
+            let fold_range = |start: usize, end: usize| {
+                g.inserts
+                    .get(start..end)
+                    .unwrap_or_default()
+                    .iter()
+                    .enumerate()
+                    .filter(|&(rel, _)| !in_voice_rack(start + rel))
+                    .filter_map(|(_, e)| e.as_ref())
+                    .filter(|e| !e.bypass && !effects::rack_only(&e.kind))
+                    .fold(effects::IDENTITY, |m, e| product(effects::matrix(e), m))
+            };
+            let pre = fold_range(0, amp_split);
+            let post = fold_range(amp_split, group_split);
+            product(post, product(amp, pre))
+        });
+        let lags = lags.map(|(g, tau)| Lag::new(g, tau, self.rate));
+        (gain, lags)
     }
 
-    /// The zone's channel matrix with its live cells ([`ir::ModKind::Mix`])
+    /// The zone's channel matrix with its live cells ([`ir::ParamAddr::ZoneMix`])
     /// read for this note; `None` when no route moves it.
     pub(crate) fn voice_mix(&self, zone: &Zone, note: &Note, age: Age) -> Option<Mix> {
         let g = self.groups.get(zone.group as usize)?;
         let mut mix = *zone.region.mix.as_deref()?;
         let mut moved = false;
         for m in g.mods.iter().filter(|m| !m.bypass) {
-            if let ir::ModKind::Mix {
+            if let ir::ModRoute {
                 source,
-                zone: z,
-                row,
-                side,
-            } = m.kind
+                target: ir::ParamAddr::ZoneMix { zone: z, row, side },
+                ..
+            } = m.route
                 && z == zone.member
                 && let Some(cell) = mix
                     .get_mut(usize::from(row))
@@ -222,11 +279,12 @@ impl Engine {
         read.phase = (read.phase + note.draw.unit() * read.phase_random).fract();
         read.rate = self.rate as f32;
         for m in g.mods.iter().filter(|m| !m.bypass) {
-            if let ir::ModKind::Wavetable {
+            if let ir::ModRoute {
                 source,
-                value,
+                target: ir::ParamAddr::Wavetable(value),
                 depth,
-            } = m.kind
+                ..
+            } = m.route
             {
                 let input = self.routed(zone, source, note, age);
                 let moved = input.unwrap_or(0.0) * depth;
@@ -267,7 +325,7 @@ impl Engine {
     fn lfo_value(&self, zone: &Zone, n: u8, note: &Note, age: Age) -> Option<f32> {
         let lfo = self.moved_lfo(zone, n, note, age)?;
         if let ir::Wave::Chaos { .. } = lfo.wave {
-            return age.chaos.get(usize::from(n)).copied();
+            return age.chaos.get(usize::from(n)).map(|c| c[3]);
         }
         let seed = match lfo.clock {
             ir::Clock::Voice => note.draw.seed(),
@@ -286,31 +344,35 @@ impl Engine {
         let moving = (self.reshaped.get(zone.group as usize).into_iter())
             .flat_map(|r| r.moving(n))
             .filter_map(|i| g.mods.get(i));
-        // ponytail: phase and rate routes read their source at
-        // note-on (exact for velocity and note-on values); a live
-        // controller moving the rate needs a per-voice phase accumulator.
+        // Phase routes read their source at note-on, and so do rate routes
+        // whose source is fixed for the note; a live one's rate is
+        // integrated into the warp from note-on on (`Engine::warp`).
         let onset = Age::at_start(age.start_frame);
         for m in moving.filter(|m| !m.bypass) {
-            match m.kind {
-                // An LFO source here would recurse.
-                ir::ModKind::LfoPhase {
-                    source,
-                    lfo: l,
-                    depth,
-                } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
+            let ir::ModRoute {
+                source,
+                target: ir::ParamAddr::LfoParam { lfo: l, param },
+                depth,
+                span: octaves,
+                law,
+                ..
+            } = m.route
+            else {
+                continue;
+            };
+            // An LFO source here would recurse.
+            if l != n || matches!(source, ir::Source::Lfo(_)) {
+                continue;
+            }
+            match (param, law) {
+                (ir::LfoParam::Phase, _) => {
                     let input = self.source(zone, source, note, onset);
                     let value = input.unwrap_or(0.0) * depth;
                     #[cfg(feature = "trace")]
                     self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
                     lfo.phase += value;
                 }
-                ir::ModKind::LfoRate {
-                    source,
-                    lfo: l,
-                    depth,
-                    octaves,
-                    range_hz: [lo, hi],
-                } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
+                (ir::LfoParam::Rate, ir::RouteLaw::Range([lo, hi])) if source.fixed_for_note() => {
                     let input = self.source(zone, source, note, onset);
                     let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
                     #[cfg(feature = "trace")]
@@ -377,17 +439,6 @@ impl Engine {
             ir::Source::Lfo(n) => self.memo.lfo(n, age, || self.lfo_value(zone, n, note, age)),
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::ReleaseVelocity => Some(note.release_velocity),
-            // A note's own brightness/expression override CC 74 and CC 11.
-            ir::Source::Controller(74) | ir::Source::ControllerFrom { cc: 74, .. }
-                if note.expression_brightness.is_some() =>
-            {
-                note.expression_brightness
-            }
-            ir::Source::Controller(11) | ir::Source::ControllerFrom { cc: 11, .. }
-                if note.expression_expression.is_some() =>
-            {
-                note.expression_expression
-            }
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
             ir::Source::ControllerFrom { cc, start } => {
                 let v = if self.behaviour.cc_arrived(channel, cc) {
@@ -397,7 +448,7 @@ impl Engine {
                 };
                 Some(f32::from(v) / 127.0)
             }
-            ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
+            ir::Source::PitchBend => Some(self.bend(note, channel)),
             ir::Source::Pressure => {
                 Some((note.expression_pressure).unwrap_or_else(|| self.behaviour.pressure(channel)))
             }
@@ -423,11 +474,14 @@ impl Engine {
             }
             ir::Source::Key => Some(f32::from(note.key) / 127.0),
             ir::Source::Constant => Some(1.0),
-            ir::Source::Script(index) => Some(
-                note.mod_value(index, self.now)
-                    .unwrap_or_else(|| self.script_mod(index)) as f32
-                    / 1_000_000.0,
-            ),
+            ir::Source::Script(_) | ir::Source::Macro(_) => {
+                let index = source.script_channel()?;
+                Some(
+                    note.mod_value(index, self.now)
+                        .unwrap_or_else(|| self.script_mod(index)) as f32
+                        / 1_000_000.0,
+                )
+            }
             ir::Source::HeldTime { span_ms } => Some(kontra_plan::held_time(span_ms, note.held)),
             ir::Source::Random { bipolar } => {
                 let u = note.draw.unit();
@@ -443,6 +497,14 @@ impl Engine {
                 Some(kontra_plan::modulation::zone_envelope(env, pos))
             }),
         }
+    }
+
+    /// `note`'s pitch bend, −1..=1: its channel's wheel, and its own bend
+    /// (per-note MIDI 2.0 or MPE, a host's tune expression) as a wheel of
+    /// [`PER_NOTE_BEND_SEMITONES`](kontra_events::PER_NOTE_BEND_SEMITONES).
+    fn bend(&self, note: &Note, channel: u8) -> f32 {
+        let own = note.expression_tune / kontra_events::PER_NOTE_BEND_SEMITONES;
+        (self.behaviour.bend(channel) + own as f32).clamp(-1.0, 1.0)
     }
 
     /// `t`'s source through its table. A shaper may read a blend; a blend's
@@ -510,7 +572,7 @@ impl Engine {
         Some(t.apply(x))
     }
 
-    /// A route's source scaled by the [`ir::ModKind::Intensity`] routes on it.
+    /// A route's source scaled by the [`ir::ParamAddr::RouteIntensity`] routes on it.
     pub(crate) fn routed(
         &self,
         zone: &Zone,
@@ -534,7 +596,7 @@ impl Engine {
         })
     }
 
-    /// The product of the [`ir::ModKind::Intensity`] routes on the timed source `of`.
+    /// The product of the [`ir::ParamAddr::RouteIntensity`] routes on the timed source `of`.
     pub(crate) fn scale(&self, zone: &Zone, of: ir::Source, note: &Note, age: Age) -> f32 {
         self.intensity_scale(zone, of, note, age).unwrap_or(1.0)
     }
@@ -555,11 +617,12 @@ impl Engine {
                 .scaling(of)
                 .filter_map(|i| group.mods.get(i))
                 .filter(|m| !m.bypass)
-                .filter_map(|m| match m.kind {
-                    ir::ModKind::Intensity {
+                .filter_map(|m| match m.route {
+                    ir::ModRoute {
                         source,
-                        of: o,
+                        target: ir::ParamAddr::RouteIntensity { of: o },
                         depth,
+                        ..
                     } if o == of => {
                         let input = self.unit(zone, source, note, age)?;
                         let x = if depth < 0.0 { 1.0 - input } else { input };
@@ -583,23 +646,32 @@ impl Engine {
     /// The voice's step without its pitch routes, and those routes: the
     /// voice glides toward the lagging ones ([`Bend`]).
     pub(crate) fn step(&self, zone: &Zone, note: &Note, age: Age) -> (f64, Bend) {
-        let mut bend = Bend::NONE;
+        let (mut bend, mut k) = (Bend::NONE, 0);
         let groups = self.groups.get(zone.group as usize);
         for m in groups.iter().flat_map(|g| &g.mods).filter(|m| !m.bypass) {
-            if let ir::ModKind::Pitch {
+            if let ir::ModRoute {
                 source,
-                semitones,
+                target: ir::ParamAddr::Pitch,
                 depth,
-                tau_ms,
-            } = m.kind
+                span: semitones,
+                smooth_ms: tau_ms,
+                ..
+            } = m.route
             {
-                let input = self.routed(zone, source, note, age);
+                // A note's own bend tunes it at once (`expression_tune`
+                // below), not again through its wheel's route.
+                let input = match source {
+                    ir::Source::PitchBend => {
+                        let wheel = self.behaviour.bend(note.host.port_channel());
+                        Some(wheel * self.scale(zone, source, note, age))
+                    }
+                    _ => self.routed(zone, source, note, age),
+                };
                 let st = input.unwrap_or(0.0) * semitones * depth;
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, input, st, crate::RouteUnit::Semitones);
                 if tau_ms > 0.0 {
-                    bend.semitones += st;
-                    bend.tau_ms = bend.tau_ms.max(tau_ms);
+                    lag_into(&mut bend.lagging, &mut k, st, tau_ms, |a, b| a + b);
                 } else {
                     bend.instant += st;
                 }
@@ -623,11 +695,12 @@ impl Engine {
             return shift;
         };
         for m in g.mods.iter().filter(|m| !m.bypass) {
-            if let ir::ModKind::LoopShift {
+            if let ir::ModRoute {
                 source,
-                length,
+                target: ir::ParamAddr::LoopShift { length },
                 depth,
-            } = m.kind
+                ..
+            } = m.route
                 && let Some(x) = self.source(zone, source, note, Age::START)
                 && let Some(s) = shift.get_mut(usize::from(length))
             {
@@ -649,8 +722,13 @@ impl Engine {
             .mods
             .iter()
             .filter(|m| !m.bypass)
-            .filter_map(|m| match m.kind {
-                ir::ModKind::SampleStart { source, depth } => {
+            .filter_map(|m| match m.route {
+                ir::ModRoute {
+                    source,
+                    target: ir::ParamAddr::SampleStart,
+                    depth,
+                    ..
+                } => {
                     let x = self.source(zone, source, note, Age::START)?;
                     let value = x * depth;
                     #[cfg(feature = "trace")]
@@ -670,25 +748,24 @@ impl Engine {
         (f64::from(x) * range).round().clamp(-range, range) as i64
     }
 
-    /// How much envelope modulation routes scale each of the group's first
-    /// [`modulators::WARPS`] breakpoint envelopes for a voice starting now:
-    /// attack, hold, decay, sustain (and initial release) are latched at
-    /// note-on; release is refreshed live at note-off via
+    /// How much envelope modulation routes scale each of the group's
+    /// breakpoint envelopes for a voice starting now, into `out` (one per
+    /// envelope): attack, hold, decay, sustain (and initial release) are
+    /// latched at note-on; release is refreshed live at note-off via
     /// [`Self::release_stretches`].
-    // ponytail: envelopes past the eighth keep their drawn times; widen
-    // WARPS if a group routes one.
     pub(crate) fn stretches(
         &self,
         zone: &Zone,
         note: &Note,
         age: Age,
-    ) -> [modulators::EnvScale; modulators::WARPS] {
-        let mut out = [modulators::EnvScale::UNITY; modulators::WARPS];
+        out: &mut [modulators::EnvScale],
+    ) {
+        out.fill(modulators::EnvScale::UNITY);
         let Some(g) = self.groups.get(zone.group as usize) else {
-            return out;
+            return;
         };
         let reshaped = self.reshaped.get(zone.group as usize);
-        for ((n, scale), e) in (0u8..).zip(&mut out).zip(&g.envelopes) {
+        for ((n, scale), e) in (0u8..=u8::MAX).zip(out).zip(&g.envelopes) {
             let drawn = |i: usize| e.points.get(i).map_or(0.0, |p| p.ms.max(0.0));
             let mut attack_ms = drawn(0);
             let mut hold_ms = if e.stages { drawn(1) } else { 0.0 };
@@ -702,56 +779,29 @@ impl Engine {
                 // envelope source is then its start level: its arm reads
                 // the voice's latched stretch, never these routes, so an
                 // envelope timing itself (or another) cannot recurse.
-                match m.kind {
-                    ir::ModKind::Attack {
-                        source,
-                        intensity,
-                        scale: ts,
-                        ..
-                    } if drawn(0) > 0.0 => {
-                        if let Some(x) = self.unit(zone, source, note, age) {
-                            attack_ms = time_route(attack_ms, x, intensity, ts);
-                        }
+                let r = m.route;
+                let ir::ParamAddr::EnvelopeStage { stage, .. } = r.target else {
+                    continue;
+                };
+                let Some(x) = self.unit(zone, r.source, note, age) else {
+                    continue;
+                };
+                let intensity = r.depth;
+                match (stage, r.law) {
+                    (S::Attack, L::Time(ts)) if drawn(0) > 0.0 => {
+                        attack_ms = time_route(attack_ms, x, intensity, ts);
                     }
-                    ir::ModKind::Hold {
-                        source,
-                        intensity,
-                        scale: ts,
-                        ..
-                    } if e.stages && drawn(1) > 0.0 => {
-                        if let Some(x) = self.unit(zone, source, note, age) {
-                            hold_ms = time_route(hold_ms, x, intensity, ts);
-                        }
+                    (S::Hold, L::Time(ts)) if e.stages && drawn(1) > 0.0 => {
+                        hold_ms = time_route(hold_ms, x, intensity, ts);
                     }
-                    ir::ModKind::Decay {
-                        source,
-                        intensity,
-                        scale: ts,
-                        ..
-                    } if e.stages && drawn(2) > 0.0 => {
-                        if let Some(x) = self.unit(zone, source, note, age) {
-                            decay_ms = time_route(decay_ms, x, intensity, ts);
-                        }
+                    (S::Decay, L::Time(ts)) if e.stages && drawn(2) > 0.0 => {
+                        decay_ms = time_route(decay_ms, x, intensity, ts);
                     }
-                    ir::ModKind::Sustain {
-                        source,
-                        intensity,
-                        curve,
-                        ..
-                    } if e.stages => {
-                        if let Some(x) = self.unit(zone, source, note, age) {
-                            sustain *= curve.gain(intensity, x);
-                        }
+                    (S::Sustain, L::Gain(curve)) if e.stages => {
+                        sustain *= curve.gain(intensity, x);
                     }
-                    ir::ModKind::Release {
-                        source,
-                        intensity,
-                        scale: ts,
-                        ..
-                    } if drawn(rel_idx) > 0.0 => {
-                        if let Some(x) = self.unit(zone, source, note, age) {
-                            release_ms = time_route(release_ms, x, intensity, ts);
-                        }
+                    (S::Release, L::Time(ts)) if drawn(rel_idx) > 0.0 => {
+                        release_ms = time_route(release_ms, x, intensity, ts);
                     }
                     _ => {}
                 }
@@ -770,22 +820,27 @@ impl Engine {
             }
             scale.sustain = sustain;
         }
-        out
     }
 
-    /// Re-evaluates breakpoint envelope release stretches live at note-off.
-    /// Returns `None` when the group has no active breakpoint release routes.
+    /// Re-evaluates breakpoint envelope release stretches live at note-off,
+    /// into `out`'s releases (one per envelope; the rest as they were).
+    /// False when the group has no active breakpoint release routes.
     pub(crate) fn release_stretches(
         &self,
         zone: &Zone,
         note: &Note,
         age: Age,
-    ) -> Option<[Option<f32>; modulators::WARPS]> {
-        let g = self.groups.get(zone.group as usize)?;
-        let reshaped = self.reshaped.get(zone.group as usize)?;
+        out: &mut [modulators::EnvScale],
+    ) -> bool {
+        let Some((g, reshaped)) = self
+            .groups
+            .get(zone.group as usize)
+            .zip(self.reshaped.get(zone.group as usize))
+        else {
+            return false;
+        };
         let mut any = false;
-        let mut out = [None; modulators::WARPS];
-        for ((n, rel_scale), e) in (0u8..).zip(&mut out).zip(&g.envelopes) {
+        for ((n, rel_scale), e) in (0u8..=u8::MAX).zip(out).zip(&g.envelopes) {
             let rel_idx = e.sustain.map_or(usize::MAX, |s| s + 1);
             let drawn = e.points.get(rel_idx).map_or(0.0, |p| p.ms.max(0.0));
             if drawn <= 0.0 {
@@ -798,12 +853,16 @@ impl Engine {
                 .filter_map(|i| g.mods.get(i))
                 .filter(|m| !m.bypass)
             {
-                if let ir::ModKind::Release {
+                if let ir::ModRoute {
                     source,
-                    intensity,
-                    scale,
+                    target:
+                        ir::ParamAddr::EnvelopeStage {
+                            stage: S::Release, ..
+                        },
+                    depth: intensity,
+                    law: L::Time(scale),
                     ..
-                } = m.kind
+                } = m.route
                     && let Some(x) = self.unit(zone, source, note, age)
                 {
                     ms = time_route(ms, x, intensity, scale);
@@ -811,18 +870,18 @@ impl Engine {
                 }
             }
             if env_hit {
-                *rel_scale = Some(ms / drawn);
+                rel_scale.release = ms / drawn;
                 any = true;
             }
         }
-        any.then_some(out)
+        any
     }
 
     /// Whether the group's primary amplitude envelope is bypassed.
     fn amp_envelope_bypassed(g: &crate::Group) -> bool {
         let mut has_env = false;
         for m in &g.mods {
-            if m.kind == ir::ModKind::Envelope {
+            if m.route.target == ir::ParamAddr::AmpEnvelope {
                 has_env = true;
                 if !m.bypass {
                     return false;
@@ -844,45 +903,31 @@ impl Engine {
         let mut e = g.envelope;
         let rate = self.rate as f32;
         for m in g.mods.iter().filter(|m| !m.bypass) {
-            if let ir::ModKind::Sustain {
-                source,
-                intensity,
-                curve,
+            let r = m.route;
+            let ir::ParamAddr::EnvelopeStage {
                 envelope: None,
-            } = m.kind
-            {
+                stage,
+            } = r.target
+            else {
+                continue;
+            };
+            let (source, intensity) = (r.source, r.depth);
+            if let (S::Sustain, L::Gain(curve)) = (stage, r.law) {
                 let Some(x) = self.unit(zone, source, note, age) else {
                     continue;
                 };
                 e.sustain = (e.sustain * curve.gain(intensity, x)).clamp(0.0, 1.0);
                 continue;
             }
-            let (source, intensity, scale, frames) = match m.kind {
-                ir::ModKind::Attack {
-                    source,
-                    intensity,
-                    scale,
-                    envelope: None,
-                } => (source, intensity, scale, &mut e.attack),
-                ir::ModKind::Hold {
-                    source,
-                    intensity,
-                    scale,
-                    envelope: None,
-                } => (source, intensity, scale, &mut e.hold),
-                ir::ModKind::Decay {
-                    source,
-                    intensity,
-                    scale,
-                    envelope: None,
-                } => (source, intensity, scale, &mut e.decay),
-                ir::ModKind::Release {
-                    source,
-                    intensity,
-                    scale,
-                    envelope: None,
-                } => (source, intensity, scale, &mut e.release),
-                _ => continue,
+            let L::Time(scale) = r.law else {
+                continue;
+            };
+            let frames = match stage {
+                S::Attack => &mut e.attack,
+                S::Hold => &mut e.hold,
+                S::Decay => &mut e.decay,
+                S::Release => &mut e.release,
+                S::Sustain => continue,
             };
             let Some(x) = self.unit(zone, source, note, age) else {
                 continue;
@@ -901,7 +946,7 @@ impl Engine {
         e
     }
 
-    /// Evaluates active [`ir::ModKind::Release`] routes on the amplitude
+    /// Evaluates active release routes on the amplitude
     /// envelope live at note-off (so CCs, pitch bend, LFOs, and release
     /// velocity moved while the key was held take effect). Returns `None`
     /// when the amplitude envelope is bypassed or has no active release routes.
@@ -920,12 +965,17 @@ impl Engine {
         let mut frames = release_base;
         let mut hit = false;
         for m in g.mods.iter().filter(|m| !m.bypass) {
-            let ir::ModKind::Release {
+            let ir::ModRoute {
                 source,
-                intensity,
-                scale,
-                envelope: None,
-            } = m.kind
+                target:
+                    ir::ParamAddr::EnvelopeStage {
+                        envelope: None,
+                        stage: S::Release,
+                    },
+                depth: intensity,
+                law: L::Time(scale),
+                ..
+            } = m.route
             else {
                 continue;
             };
@@ -943,31 +993,27 @@ impl Engine {
     pub(crate) fn follows(&self, zone: &Zone, cc: u8) -> bool {
         zone.crossfades.iter().any(|x| x.control == Control::Cc(cc))
             || self.groups.get(zone.group as usize).is_some_and(|g| {
-                g.mods.iter().any(|m| match m.kind {
-                    ir::ModKind::Volume { source, .. }
-                    | ir::ModKind::Pitch { source, .. }
-                    | ir::ModKind::Pan { source, .. }
-                    | ir::ModKind::Cutoff { source, .. }
-                    | ir::ModKind::CutoffHz { source, .. }
-                    | ir::ModKind::Resonance { source, .. }
-                    | ir::ModKind::EqGain { source, .. }
-                    | ir::ModKind::EffectParam { source, .. }
-                    | ir::ModKind::Mix { source, .. }
-                    | ir::ModKind::Intensity { source, .. }
-                    | ir::ModKind::Wavetable { source, .. } => g.reads(source, cc),
-                    ir::ModKind::Envelope
-                    | ir::ModKind::SampleStart { .. }
-                    | ir::ModKind::Attack { .. }
-                    | ir::ModKind::Hold { .. }
-                    | ir::ModKind::Decay { .. }
-                    | ir::ModKind::Sustain { .. }
-                    | ir::ModKind::Release { .. }
-                    | ir::ModKind::LfoPhase { .. }
-                    | ir::ModKind::LfoRate { .. }
-                    | ir::ModKind::LfoHz { .. }
-                    | ir::ModKind::LfoDivision { .. }
-                    | ir::ModKind::Send { .. }
-                    | ir::ModKind::LoopShift { .. } => false,
+                g.mods.iter().any(|m| {
+                    let r = m.route;
+                    let live = match r.target {
+                        ir::ParamAddr::Volume
+                        | ir::ParamAddr::Pitch
+                        | ir::ParamAddr::Pan
+                        | ir::ParamAddr::FilterCutoff { .. }
+                        | ir::ParamAddr::FilterResonance { .. }
+                        | ir::ParamAddr::EqBandGain { .. }
+                        | ir::ParamAddr::EffectParam { .. }
+                        | ir::ParamAddr::ZoneMix { .. }
+                        | ir::ParamAddr::RouteIntensity { .. }
+                        | ir::ParamAddr::Wavetable(_) => true,
+                        ir::ParamAddr::AmpEnvelope
+                        | ir::ParamAddr::SampleStart
+                        | ir::ParamAddr::EnvelopeStage { .. }
+                        | ir::ParamAddr::LfoParam { .. }
+                        | ir::ParamAddr::BusSend { .. }
+                        | ir::ParamAddr::LoopShift { .. } => false,
+                    };
+                    live && g.reads(r.source, cc)
                 })
             })
     }
@@ -976,22 +1022,27 @@ impl Engine {
     pub(crate) fn pitch_follows(&self, zone: &Zone, cc: u8) -> bool {
         self.groups.get(zone.group as usize).is_some_and(|g| {
             g.mods.iter().any(|m| {
-                matches!(m.kind, ir::ModKind::Pitch { source, .. }
-                    | ir::ModKind::Intensity { source, .. } if g.reads(source, cc))
+                let r = m.route;
+                matches!(
+                    r.target,
+                    ir::ParamAddr::Pitch | ir::ParamAddr::RouteIntensity { .. }
+                ) && g.reads(r.source, cc)
             })
         })
     }
 }
 
-// ponytail: balance pan law only; equal-power and Kontakt's raised cosine
-// when a library's measured stereo image needs them.
-fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
+/// A voice's left and right gains: its levels, and its pans summed and
+/// balanced by the instrument's law (Kontakt's linear, UVI's cosine).
+// ponytail: a stereo balance only; UVI's mono-to-stereo laws (PanLaw 0, 1:
+// routing.rs `PART_BALANCE`) when a mono library's image needs them.
+fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32, law: ir::Balance) -> [f32; 2] {
     let script = ir::common::MILLIBEL_GAIN.eval_unclamped(note.script_volume as f32);
     let g = zone.gain * level.gain * note.expression_gain * script;
     let pan =
         (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
             .clamp(-1.0, 1.0);
-    [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
+    law.gains(pan).map(|side| g * side)
 }
 
 /// An envelope stage duration `ms` as a time route sets it from its source

@@ -417,19 +417,13 @@ fn granular_cloud_sidechain_ducking_and_param_addr_allocate_nothing_on_audio_thr
     // Live zero-alloc ParamAddr API: close group 0 filter cutoff and verify get_param matches.
     assert!(engine.set_param(
         ir::Scope::Group(0),
-        ir::ParamAddr::FilterCutoff {
-            insert: 0,
-            hz_range: true,
-        },
+        ir::ParamAddr::FilterCutoff { insert: 0 },
         150.0,
     ));
     assert_eq!(
         engine.get_param(
             ir::Scope::Group(0),
-            ir::ParamAddr::FilterCutoff {
-                insert: 0,
-                hz_range: true,
-            },
+            ir::ParamAddr::FilterCutoff { insert: 0 },
         ),
         Some(150.0)
     );

@@ -93,20 +93,24 @@ impl Engine {
             // (Kontakt 8.13.1, Morphology: "warmth" finds nothing).
             Action::FindZone => {
                 let name = call.texts.first().map_or("", Text::as_str);
-                let found = self.plan.zone_facts.iter().find(|z| &*z.name == name);
-                HostValue::Int(found.map_or(-1, |z| i32::try_from(z.id).unwrap_or(-1)))
+                HostValue::Int(
+                    self.plan
+                        .find_zone(name)
+                        .map_or(-1, |id| i32::try_from(id).unwrap_or(-1)),
+                )
             }
             // A zone that is not there reads -1 for every parameter (measured).
             Action::GetZonePar => {
-                let zone =
-                    (self.plan.zone_facts.iter()).find(|z| i64::from(z.id) == i64::from(int(0)));
-                match (zone, self.engine_par(int(1))) {
-                    (None, _) => HostValue::Int(-1),
-                    (Some(z), Some(crate::EnginePar::Zone(par))) => HostValue::Int(z.get(par)),
-                    (Some(_), _) => {
+                let id = u32::try_from(int(0)).ok();
+                match (id, self.engine_par(int(1))) {
+                    (Some(id), Some(crate::EnginePar::Zone(par))) => {
+                        HostValue::Int(self.plan.zone_par(id, par).unwrap_or(-1))
+                    }
+                    (Some(id), _) if self.plan.zone_group(id).is_some() => {
                         self.count_unhandled(Action::GetZonePar);
                         HostValue::Int(0)
                     }
+                    _ => HostValue::Int(-1),
                 }
             }
             Action::SetZonePar => match (u32::try_from(int(0)), self.engine_par(int(1))) {

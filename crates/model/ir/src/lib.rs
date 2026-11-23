@@ -21,9 +21,7 @@ mod reverb;
 mod route_names;
 mod validate;
 mod wavetable;
-pub use address::{
-    CombineOp, EnvStage, LawId, LawSpec, LfoParam, ModRoute, ParamAddr, RouteFlags, Scope,
-};
+pub use address::{EnvStage, LfoParam, ModRoute, ParamAddr, RouteLaw, Scope};
 pub use bus::{Bus, BusSend};
 pub use drive::{
     Clipper, Converter, Crush, Curve as DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive,
@@ -41,8 +39,7 @@ pub use graph::{AudioGraph, ChannelLayout, EffectId, GraphEdge, GraphNode, Graph
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, KnobMod, Linked};
 pub use mods::{
-    Attractor, Blend, Curve, Exp2, Factor, ModKind, NoteExpr, Source, Term, TimeScale, Transfer,
-    Wave,
+    Attractor, Blend, Curve, Exp2, Factor, NoteExpr, Source, Term, TimeScale, Transfer, Wave,
 };
 pub use output::{Balance, Output, OutputControllers};
 pub use readout::{Form, Readout};
@@ -341,6 +338,10 @@ pub struct Group {
     pub glide: Option<Glide>,
     /// Effects on this group's voices, by slot.
     pub inserts: Vec<Option<Effect>>,
+    /// First insert slot that runs after the voice's amplitude envelope,
+    /// volume and pan (`0..amp_split` are pre-amp; `amp_split..` are
+    /// post-amp). Values `>= inserts.len()` place every insert pre-amp.
+    pub amp_split: u8,
     /// Shapes [`Source::Envelope`] reads, by index.
     pub envelopes: Vec<Breakpoints>,
     /// Oscillators [`Source::Lfo`] reads, by index.
@@ -394,6 +395,7 @@ impl Group {
         voice_group: None,
         glide: None,
         inserts: Vec::new(),
+        amp_split: u8::MAX,
         envelopes: Vec::new(),
         lfos: Vec::new(),
         shapers: Vec::new(),
@@ -401,6 +403,12 @@ impl Group {
         routes: Vec::new(),
         zones: Vec::new(),
     };
+
+    /// Slot index where the amplitude stage sits, clamped to `self.inserts.len()`.
+    #[must_use]
+    pub fn amp_split_index(&self) -> usize {
+        usize::from(self.amp_split).min(self.inserts.len())
+    }
 }
 
 /// A per-voice envelope of free breakpoints, 0..=1. It starts at `start`,
@@ -568,7 +576,7 @@ pub struct Mod {
     pub target: u16,
     /// Its modulator is switched off (scripts may switch it on).
     pub bypass: bool,
-    pub kind: ModKind,
+    pub route: ModRoute,
 }
 
 /// A streamed zone's resident head: `bytes_per_channel` of stored audio
@@ -1022,10 +1030,10 @@ pub struct Filter {
     pub ladder: Option<Ladder>,
     pub damping: [f32; 3],
     pub gain: f32,
-    /// Octaves a [`ModKind::Cutoff`] depth of 1 moves the cutoff (the range
+    /// Octaves a [`ParamAddr::FilterCutoff`] depth of 1 moves the cutoff (the range
     /// of the format's cutoff control).
     pub octaves: f32,
-    /// Octaves of Q a [`ModKind::Resonance`] depth of 1 moves the damping
+    /// Octaves of Q a [`ParamAddr::FilterResonance`] depth of 1 moves the damping
     /// (the range of the format's resonance control); 0 when it has none.
     pub q_octaves: f32,
 }

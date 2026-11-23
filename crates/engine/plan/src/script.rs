@@ -46,7 +46,7 @@ pub struct ScriptPlan {
     pub warp_modes: Vec<Option<(kontra_voice::Shape, kontra_voice::Shaper)>>,
     /// The mod oscillator kind each [`EnginePar::ModOscKind`] value picks,
     /// by value.
-    pub mod_kinds: Vec<Option<kontra_voice::ModKind>>,
+    pub mod_kinds: Vec<Option<kontra_voice::ModOscKind>>,
     /// What each [`EnginePar::Knob`] sets, through the translator's law.
     pub knobs: Vec<(kontra_ir::KnobTarget, kontra_ir::Law)>,
     /// Code in another language, run by its own machine instead of `program`.
