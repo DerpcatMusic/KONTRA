@@ -70,7 +70,12 @@ class Gates(unittest.TestCase):
         self.assertNotIn("gh release delete", release)
         self.assertIn("uses: ./.github/workflows/v3-verify.yml", release)
         self.assertIn("needs.check.outputs.released == 'false'", release)
-        self.assertIn("    needs: [verify, bundle, macos-universal]", release)
+        freeze = release.split("  freeze-release:\n", 1)[1].split("  validate-pc:\n", 1)[0]
+        self.assertIn("    needs: [bundle, macos-universal, licenses]", freeze)
+        publish = release.split("  publish:\n", 1)[1]
+        self.assertIn("    needs: [verify, freeze-release, validate-pc, validate-macos]", publish)
+        self.assertIn("artifact-ids:", publish)
+        self.assertNotIn("pattern: release-", publish)
         self.assertIn("cargo moose build --clap --vst3 -p kontra-plugin", release)
         self.assertIn("gh release create", release)
         ci = (ROOT / ".github/workflows/ci.yml").read_text()

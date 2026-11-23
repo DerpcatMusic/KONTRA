@@ -118,6 +118,9 @@ impl Mine {
 #[derive(Debug, Default)]
 pub struct Snapshot {
     parts: Vec<PartView>,
+    /// The opening that needs a new copy and the one this copy is ready for.
+    pub(crate) open_epoch: u64,
+    pub(crate) ready_epoch: u64,
     /// The browser as lane D's app lists it, and which change of it.
     libraries: (u64, Arc<Vec<app::Library>>),
     recent: Vec<(usize, usize)>,
@@ -137,6 +140,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    pub(crate) fn ready(&self) -> bool {
+        self.ready_epoch == self.open_epoch
+    }
+
     /// Copies what the editor shows from `rack`, with this tick's `report`;
     /// whether any of it changed, so an idle editor draws no frames.
     pub fn refresh(&mut self, rack: &Rack, browser: &Browser, report: Vec<String>) -> bool {
@@ -836,16 +843,21 @@ fn part_of(action: &Action) -> Option<usize> {
 /// The size the editor is designed at, in logical points.
 const SIZE: (u32, u32) = (1180, 780);
 
+fn request_scale(app: &mut App, previous: u8, percent: u32, resize: impl FnOnce(u32, u32) -> bool) {
+    // The tree fits its window, so changing this setting requests a window resize.
+    let accepted =
+        app::SCALES.contains(&percent) && resize(SIZE.0 * percent / 100, SIZE.1 * percent / 100);
+    if !accepted {
+        app.view.scale = u32::from(previous);
+    }
+}
+
 pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
-    #[expect(
-        clippy::expect_used,
-        reason = "the shared notch scale is a positive compile-time constant"
-    )]
     let wheel = WheelPolicy::new(
         moose::mui::mui::host::NOTCH_LINES as f32,
         WheelAcceleration::Fling,
     )
-    .expect("the shared notch scale must be finite and positive");
+    .unwrap_or_default();
     let p = Arc::clone(&params);
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
@@ -888,9 +900,6 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let on_cancelled = Arc::clone(&cancelled);
     let editor = MuiEditor::new(params, kontra_ui::ui(), SIZE, move |ui, bridge| {
         let start = std::time::Instant::now();
-        if let Some(tasks) = bridge.context().and_then(|c| c.tasks::<crate::Tick>()) {
-            p.shared.set_tasks(Some(tasks));
-        }
         if escape.swap(false, Ordering::AcqRel) {
             app.view.dismiss();
         }
@@ -905,13 +914,19 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         if let Some(t) = last.replace(start) {
             crate::frames::note("between", start - t);
         }
-        // Opening: one tick here brings the copy a closed editor let lapse
-        // up to date, though the host runs no audio to spawn one (a load
-        // in progress shows on its own tick).
-        if !p.shared.shown.swap(true, Ordering::AcqRel) && !p.shared.holding.load(Ordering::Acquire)
-        {
-            crate::Tick.run(&p);
+        // Refresh the closed editor's stale snapshot on Moose's background
+        // worker. Opening the window must return even if a load holds the rack.
+        if let Some(tasks) = bridge.context().and_then(|c| c.tasks::<crate::Tick>()) {
+            p.shared.set_tasks(Some(tasks));
+            if !p.shared.shown.load(Ordering::Acquire) {
+                p.shared.open_editor();
+            }
         }
+        // Moose's changed hook needs a frame tick to see external changes.
+        // Keep a deadline for telemetry and async completions when the host
+        // is idle. A dedicated wake hook could remove this periodic deadline.
+        let busy = p.shared.loading() || p.shared.scanning.load(Ordering::Acquire);
+        ui.repaint_in(if busy { 0.05 } else { 0.25 });
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
         if restored != Some(now) {
@@ -922,6 +937,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         let slots: Vec<usize> = {
             let view = lock(&p.shared.view);
+            // An older tick may still publish while the editor reopens.
+            // Build no interactive rows until a tick for this opening finishes.
+            if !p.shared.shown.load(Ordering::Acquire) || !view.ready() {
+                return moose::mui::mui::prelude::body("Refreshing rack…");
+            }
             view.fill(&mut app, &mut shown, &mine, Instant::now());
             view.parts.iter().map(|v| v.slot).collect()
         };
@@ -963,9 +983,9 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 p.shared.dirty.store(true, Ordering::Release);
             }
             if let Action::Scale(percent) = action {
-                // The tree scales to fit its window: a size is a window size.
-                let [w, h] = [SIZE.0, SIZE.1].map(|n| n * percent / 100);
-                let _ = bridge.request_resize(w, h);
+                request_scale(&mut app, look.scale, percent, |w, h| {
+                    bridge.request_resize(w, h)
+                });
                 continue;
             }
             if let Action::Master(db) = action {
@@ -1182,7 +1202,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 .request(Request::Notice(format!("Display: {line}")));
         }
     })
-    .on_close(move || closing.shared.shown.store(false, Ordering::Release));
+    .on_close(move || {
+        closing.shared.shown.store(false, Ordering::Release);
+        #[cfg(target_os = "linux")]
+        closing.shared.folder.cancel();
+    });
     #[cfg(target_os = "linux")]
     let editor = editor.on_x11_window(move |xid| x11_owner.shared.folder.set_x11_parent(xid));
     editor.into_editor()
@@ -1265,6 +1289,28 @@ fn is_instrument(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_uses_design_points_and_rolls_back_when_rejected() {
+        let mut app = App::default();
+        app.view.scale = 125;
+        request_scale(&mut app, 100, 125, |w, h| {
+            assert_eq!((w, h), (1475, 975));
+            true
+        });
+        assert_eq!(app.view.scale, 125);
+
+        app.view.scale = 200;
+        request_scale(&mut app, 125, 200, |_, _| false);
+        assert_eq!(app.view.scale, 125);
+
+        let mut called = false;
+        request_scale(&mut app, 125, u32::MAX, |_, _| {
+            called = true;
+            true
+        });
+        assert!(!called);
+    }
 
     /// A drag's frames come faster than the rack's copy: a copy taken
     /// before the editor's last edit keeps the editor's value, and the

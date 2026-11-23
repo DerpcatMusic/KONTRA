@@ -16,6 +16,7 @@ class StageTests(unittest.TestCase):
             (bundles / 'KONTRA.clap').write_text('clap')
             stage = root / 'stage'
             stage_nightly.stage('linux-x86_64', stage, bundles)
+            self.assertIn('libxkbcommon0', (stage / 'README.txt').read_text())
             home = root / 'home'
             home.mkdir()
             env = dict(os.environ, HOME=str(home))
@@ -34,7 +35,9 @@ class StageTests(unittest.TestCase):
             stage_nightly.stage('windows-x86_64', root / 'stage', root / 'bundles')
             self.assertTrue((root / 'stage/install.ps1').is_file())
             self.assertTrue((root / 'stage/uninstall.ps1').is_file())
-            self.assertIn('install.ps1', (root / 'stage/README.txt').read_text())
+            instructions = (root / 'stage/README.txt').read_text()
+            self.assertIn('install.ps1', instructions)
+            self.assertIn('%CommonProgramFiles%', instructions)
 
 
 if __name__ == '__main__':

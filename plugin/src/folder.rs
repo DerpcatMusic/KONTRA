@@ -2,18 +2,13 @@
 //! thread, so no frame waits on it. [`crate::Tick`] takes what was picked
 //! and scans it.
 //!
-//! On Linux the picker is the desktop portal (v2's `mui-native-dialog`):
-//! dropping [`Dialog`] at plugin teardown cancels an open picker and joins
-//! its worker, so no thread is left running in an unloaded binary.
+//! On Linux the picker uses the desktop portal through `mui-native-dialog`.
+//! Closing the editor cancels its request. The dialog service joins its
+//! workers at plugin teardown.
 //!
-//! Elsewhere it is rfd's, which has no cancel, so it is modal to the host
-//! instead: on macOS rfd runs it on the host's main thread; on Windows it is
-//! owned by the host's window the editor opened in, which stays disabled
-//! while it is open. Either way the host cannot unload the plugin under it.
-//!
-// ponytail: a Windows host that unloads the plugin on its own (not from its
-// window) while the picker is open is the ceiling: the worker is left to
-// finish. Post WM_CLOSE to the picker's thread at teardown if one shows.
+//! On macOS rfd runs the picker on the host's main thread. On Windows the
+//! dialog disables its Win32 owner while open. A host that forcibly unloads
+//! the plugin during a Windows dialog may leave the worker running.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -42,24 +37,29 @@ impl Wanted {
     }
 }
 
+#[cfg(target_os = "linux")]
+type Job = mui_native_dialog::DialogJob;
+#[cfg(not(target_os = "linux"))]
+type Job = std::thread::JoinHandle<Option<PathBuf>>;
+
+enum Picker {
+    Open(Wanted, Job),
+    #[cfg(target_os = "linux")]
+    Ready(Wanted, PathBuf),
+    Failed(String),
+}
+
 /// The "Add folder" picker while it is open.
 #[derive(Default)]
 pub struct Dialog {
     #[cfg(target_os = "linux")]
     service: mui_native_dialog::DialogService,
-    #[cfg(target_os = "linux")]
-    job: Mutex<Option<mui_native_dialog::DialogJob>>,
-    #[cfg(not(target_os = "linux"))]
-    job: Mutex<Option<std::thread::JoinHandle<Option<PathBuf>>>>,
-    /// An immediate error starting the picker, reported on the next [`crate::Tick`].
-    error: Mutex<Option<String>>,
+    picker: Mutex<Option<Picker>>,
     /// The host's Win32 window the editor opened in; 0 when none.
     owner: AtomicIsize,
     /// The editor's X11 window on Linux; 0 when none or running native Wayland.
     #[cfg(target_os = "linux")]
     x11_parent: AtomicU32,
-    /// What the open picker's folder is for.
-    wanted: Mutex<Wanted>,
 }
 
 impl Dialog {
@@ -77,29 +77,20 @@ impl Dialog {
     /// Opens the picker at `from` for a folder `wanted` for, unless one is
     /// open.
     pub fn ask(&self, wanted: Wanted, from: Option<PathBuf>) {
-        let mut job = lock(&self.job);
-        if job.is_some() {
+        let mut picker = lock(&self.picker);
+        if matches!(*picker, Some(Picker::Open(..))) {
             return;
         }
-        *lock(&self.wanted) = wanted;
-        let from = from.or_else(dirs::home_dir);
-        match self.open(wanted.title(), from) {
-            Ok(started) => {
-                *lock(&self.error) = None;
-                *job = Some(started);
-            }
-            Err(err) => {
-                *lock(&self.error) = Some(err);
-            }
-        }
+        *picker = Some(
+            match self.open(wanted.title(), from.or_else(dirs::home_dir)) {
+                Ok(job) => Picker::Open(wanted, job),
+                Err(err) => Picker::Failed(err),
+            },
+        );
     }
 
     #[cfg(target_os = "linux")]
-    fn open(
-        &self,
-        title: &str,
-        from: Option<PathBuf>,
-    ) -> Result<mui_native_dialog::DialogJob, String> {
+    fn open(&self, title: &str, from: Option<PathBuf>) -> Result<Job, String> {
         use mui_native_dialog::{DialogKind, DialogRequest, Parent};
         let xid = self.x11_parent.load(Ordering::Acquire);
         let request = DialogRequest {
@@ -113,11 +104,7 @@ impl Dialog {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn open(
-        &self,
-        title: &'static str,
-        from: Option<PathBuf>,
-    ) -> Result<std::thread::JoinHandle<Option<PathBuf>>, String> {
+    fn open(&self, title: &'static str, from: Option<PathBuf>) -> Result<Job, String> {
         let owner = self.owner.load(Ordering::Acquire);
         std::thread::Builder::new()
             .name("kontra-folder-dialog".into())
@@ -136,63 +123,121 @@ impl Dialog {
 
     /// Whether a picker answer or error is waiting for [`Self::picked`].
     pub fn has_result(&self) -> bool {
-        if lock(&self.error).is_some() {
-            return true;
-        }
-        let job = lock(&self.job);
-        let Some(job) = job.as_ref() else {
-            return false;
-        };
-        #[cfg(target_os = "linux")]
-        {
-            job.is_finished() || job.try_result().is_some()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            job.is_finished()
+        match lock(&self.picker).as_ref() {
+            Some(Picker::Open(_, job)) => job.is_finished(),
+            #[cfg(target_os = "linux")]
+            Some(Picker::Ready(..)) => true,
+            Some(Picker::Failed(_)) => true,
+            None => false,
         }
     }
 
     /// The folder picked (or a portal/spawn error) and what for, once the
     /// picker closed. `None` while still open or if the user cancelled.
     pub fn picked(&self) -> Option<Result<(Wanted, PathBuf), String>> {
-        if let Some(err) = lock(&self.error).take() {
-            return Some(Err(err));
-        }
-        let result = self.closed()?;
-        Some(result.map(|path| (*lock(&self.wanted), path)))
+        let picker = {
+            let mut slot = lock(&self.picker);
+            if matches!(slot.as_ref(), Some(Picker::Open(_, job)) if !job.is_finished()) {
+                return None;
+            }
+            slot.take()?
+        };
+        let (wanted, job) = match picker {
+            Picker::Open(wanted, job) => (wanted, job),
+            #[cfg(target_os = "linux")]
+            Picker::Ready(wanted, path) => return Some(Ok((wanted, path))),
+            Picker::Failed(err) => return Some(Err(err)),
+        };
+        #[cfg(target_os = "linux")]
+        let result = job
+            .try_result()?
+            .map(|paths| paths.and_then(|paths| paths.into_iter().next()));
+        #[cfg(not(target_os = "linux"))]
+        let result = job
+            .join()
+            .map_err(|_| "Folder picker worker stopped unexpectedly".into());
+        result
+            .map(|path| path.map(|path| (wanted, path)))
+            .transpose()
     }
 
-    /// The folder picked (or error), once the picker closed.
+    /// Cancel an in-flight portal request without waiting on the GUI thread.
+    /// Any answer or error already queued by the worker is retained so the
+    /// background tick still consumes it even if `is_finished()` has not yet
+    /// flipped.
     #[cfg(target_os = "linux")]
-    fn closed(&self) -> Option<Result<PathBuf, String>> {
-        let mut job = lock(&self.job);
-        // Finished first: the worker sends its answer before it finishes.
-        let finished = job.as_ref()?.is_finished();
-        let result = job.as_ref()?.try_result();
-        if result.is_none() && !finished {
-            return None;
+    pub fn cancel(&self) {
+        let mut slot = lock(&self.picker);
+        if !matches!(slot.as_ref(), Some(Picker::Open(..))) {
+            return;
         }
-        job.take();
-        match result? {
-            Ok(Some(paths)) => paths.into_iter().next().map(Ok),
-            Ok(None) => None,
-            Err(err) => Some(Err(err)),
+        let Some(Picker::Open(wanted, job)) = slot.take() else {
+            return;
+        };
+        match job.try_result() {
+            Some(Ok(Some(paths))) => {
+                if let Some(path) = paths.into_iter().next() {
+                    *slot = Some(Picker::Ready(wanted, path));
+                }
+            }
+            Some(Err(err)) => {
+                *slot = Some(Picker::Failed(err));
+            }
+            // User cancelled (`Some(Ok(None))`) or still in-flight (`None`):
+            // drop `job` to cancel any active portal request without blocking.
+            Some(Ok(None)) | None => {}
         }
-    }
-
-    /// The folder picked, once the picker closed.
-    #[cfg(not(target_os = "linux"))]
-    fn closed(&self) -> Option<Result<PathBuf, String>> {
-        let mut job = lock(&self.job);
-        if !job.as_ref()?.is_finished() {
-            return None;
-        }
-        job.take()?.join().ok().flatten().map(Ok)
     }
 
     #[cfg(test)]
     pub(crate) fn record_error_for_test(&self, err: impl Into<String>) {
-        *lock(&self.error) = Some(err.into());
+        *lock(&self.picker) = Some(Picker::Failed(err.into()));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use mui_native_dialog::{DialogKind, DialogRequest, Parent};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn portal_readiness_preserves_the_result() -> Result<(), String> {
+        let dialog = Dialog::default();
+        let job = dialog.service.spawn(DialogRequest {
+            // Invalid before contacting D-Bus, so this needs no desktop session.
+            parent: Some(Parent::X11(0)),
+            title: "Pick a folder".into(),
+            kind: DialogKind::PickFolder { multiple: false },
+            directory: None,
+            filters: Vec::new(),
+        })?;
+        *lock(&dialog.picker) = Some(Picker::Open(Wanted::Libraries, job));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !dialog.has_result() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(dialog.has_result());
+        assert_eq!(
+            dialog.picked(),
+            Some(Err("File picker parent has no X11 window".into()))
+        );
+        assert!(!dialog.has_result());
+        Ok(())
+    }
+
+    #[test]
+    fn cancel_preserves_ready_and_failed_results() {
+        let dialog = Dialog::default();
+        let ready_path = std::path::PathBuf::from("/tmp/kontra-lib");
+        *lock(&dialog.picker) = Some(Picker::Ready(Wanted::Libraries, ready_path.clone()));
+        dialog.cancel();
+        assert!(dialog.has_result());
+        assert_eq!(dialog.picked(), Some(Ok((Wanted::Libraries, ready_path))));
+
+        dialog.record_error_for_test("portal error");
+        dialog.cancel();
+        assert!(dialog.has_result());
+        assert_eq!(dialog.picked(), Some(Err("portal error".into())));
     }
 }

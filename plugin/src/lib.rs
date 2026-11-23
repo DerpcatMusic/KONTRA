@@ -177,6 +177,15 @@ pub enum Request {
 }
 
 impl Shared {
+    fn open_editor(&self) {
+        {
+            let mut view = lock(&self.view);
+            view.open_epoch = view.open_epoch.wrapping_add(1);
+            self.shown.store(true, Ordering::Release);
+        }
+        self.wake_tick();
+    }
+
     pub fn set_tasks(&self, tasks: Option<moose::prelude::TaskSpawner<Tick>>) {
         if let Some(tasks) = tasks {
             *lock(&self.tasks) = Some(tasks);
@@ -386,13 +395,22 @@ impl BackgroundTask for Tick {
         let Some(rack) = guard.as_mut() else {
             return;
         };
-        let requests = std::mem::take(&mut *lock(&p.shared.requests));
-        let changed = !requests.is_empty();
-        let interfaces = if p.shared.shown.load(Ordering::Acquire) {
+        // Capture the opening before taking requests, so a tick that began
+        // before reopening cannot mark its older snapshot ready.
+        let open_epoch = {
+            let view = lock(&p.shared.view);
+            p.shared
+                .shown
+                .load(Ordering::Acquire)
+                .then_some(view.open_epoch)
+        };
+        let interfaces = if open_epoch.is_some() {
             Interfaces::Shown
         } else {
             Interfaces::Hidden
         };
+        let requests = std::mem::take(&mut *lock(&p.shared.requests));
+        let changed = !requests.is_empty();
         let mut report = Vec::new();
         if p.shared.fault.swap(false, Ordering::AcqRel) {
             report.push(
@@ -503,9 +521,14 @@ impl BackgroundTask for Tick {
         view.applied = p.shared.ui_applied.load(Ordering::Acquire);
         // A closed editor's copy only keeps the report; it catches up on
         // the first tick after the editor opens.
-        let refreshed = match interfaces {
-            Interfaces::Shown => frames::time("copy", || view.refresh(rack, browser, report)),
-            Interfaces::Hidden => view.report(report),
+        let refreshed = match open_epoch {
+            Some(epoch) if epoch == view.open_epoch => {
+                let opened = !view.ready();
+                let changed = frames::time("copy", || view.refresh(rack, browser, report));
+                view.ready_epoch = epoch;
+                opened || changed
+            }
+            _ => view.report(report),
         };
         // What the requests did shows, whether or not the editor's copy
         // of the rack noticed (a script's answer to a click).
@@ -778,6 +801,11 @@ fn build_rack(p: &KontraParams, c: &AudioConfig) -> Option<RackAudio> {
         if !requests.iter().any(|r| matches!(r, Request::Restore(_))) {
             requests.insert(0, Request::Restore(saved));
         }
+    }
+    // An editor opened before the host prepared audio is waiting for its
+    // first snapshot. The host need not process an audio block to get it.
+    if p.shared.shown.load(Ordering::Acquire) {
+        p.shared.wake_tick();
     }
     Some(audio)
 }
