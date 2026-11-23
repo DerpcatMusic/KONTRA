@@ -52,7 +52,7 @@ pub enum TraceEvent {
         zone: usize,
         mod_slot: u16,
         target: u16,
-        kind: kontra_ir::ModKind,
+        route: kontra_ir::ModRoute,
         source: Option<f32>,
     },
     /// A voice was started, stolen, cut or ended.
@@ -108,7 +108,7 @@ pub struct RouteValue {
     pub controller: u8,
     pub mod_slot: u16,
     pub target: u16,
-    pub kind: kontra_ir::ModKind,
+    pub route: kontra_ir::ModRoute,
     pub source: Option<f32>,
     pub value: f64,
     pub unit: RouteUnit,
@@ -126,7 +126,7 @@ pub struct RouteSample {
     pub controller: u8,
     pub mod_slot: u16,
     pub target: u16,
-    pub kind: kontra_ir::ModKind,
+    pub route: kontra_ir::ModRoute,
     pub source: Option<f32>,
     pub value: f64,
     pub unit: RouteUnit,
@@ -234,7 +234,7 @@ impl RouteBuffer {
                 controller: sample.controller,
                 mod_slot: sample.mod_slot,
                 target: sample.target,
-                kind: sample.kind,
+                route: sample.route,
                 source: sample.source,
                 value: sample.value,
                 unit: sample.unit,
@@ -276,10 +276,11 @@ mod route_tests {
             slot: 1,
             target: 0,
             bypass: false,
-            kind: kontra_ir::ModKind::Pan {
-                source: kontra_ir::Source::Controller(1),
-                amount: 1.0,
-            },
+            route: kontra_ir::ModRoute::new(
+                kontra_ir::Source::Controller(1),
+                kontra_ir::ParamAddr::Pan,
+                1.0,
+            ),
         };
         buffer.begin_onset(12);
         let sample = RouteSample {
@@ -287,7 +288,7 @@ mod route_tests {
             controller: 1,
             mod_slot: route.slot,
             target: route.target,
-            kind: route.kind,
+            route: route.route,
             source: Some(0.5),
             value: 0.5,
             unit: RouteUnit::Pan,

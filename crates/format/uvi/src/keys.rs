@@ -15,17 +15,42 @@ use uvi_file::access::recover_content_key;
 use uvi_file::ufs::{Directory, Ufs};
 
 /// A bank file's size and modification time in nanoseconds.
-type Stamp = (u64, u128);
+pub(crate) type Stamp = (u64, u128);
 
 /// Tags the file layout; another first word is a miss.
 const FORMAT: &str = "kontra-uvi-key-1";
 
-pub(crate) fn content_key(path: &Path, ufs: &Ufs, directory: &Directory) -> Result<u64> {
-    type Keys = Mutex<HashMap<(PathBuf, Stamp), u64>>;
-    static KEYS: OnceLock<Keys> = OnceLock::new();
+type Keys = Mutex<HashMap<(PathBuf, Stamp), u64>>;
+static KEYS: OnceLock<Keys> = OnceLock::new();
+
+pub(crate) fn file_id(path: &Path) -> Result<(PathBuf, Stamp)> {
     let meta = std::fs::metadata(path)?;
     let time = meta.modified()?.duration_since(std::time::UNIX_EPOCH)?;
-    let id = (path.to_path_buf(), (meta.len(), time.as_nanos()));
+    Ok((path.to_path_buf(), (meta.len(), time.as_nanos())))
+}
+
+/// Fast read-only check for whether a verified content key is already cached
+/// for `path` (in memory or on disk). Never performs key recovery.
+pub(crate) fn has_cached_key(path: &Path) -> bool {
+    let Ok(id) = file_id(path) else {
+        return false;
+    };
+    let keys = KEYS.get_or_init(Keys::default);
+    if keys.lock().ok().is_some_and(|k| k.contains_key(&id)) {
+        return true;
+    }
+    dirs::cache_dir()
+        .map(|d| d.join("kontra").join("uvi-keys"))
+        .and_then(|d| load(&d, &id.0, id.1))
+        .is_some()
+}
+
+pub(crate) fn content_key(
+    path: &Path,
+    ufs: &Ufs,
+    directory: &Directory,
+    id: (PathBuf, Stamp),
+) -> Result<u64> {
     let keys = KEYS.get_or_init(Keys::default);
     if let Some(&key) = keys.lock().ok().as_ref().and_then(|k| k.get(&id)) {
         return Ok(key);

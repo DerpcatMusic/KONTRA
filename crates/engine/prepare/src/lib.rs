@@ -43,12 +43,19 @@ pub fn prepare(
         .iter()
         .any(|g| !g.purged && matches!(g.generator, Some(ir::Generator::Oscillator { .. })));
     let osc_sentinel: Option<Arc<Sample>> = has_osc.then(|| load_osc_sentinel(store)).flatten();
-    let shared: Vec<Arc<ir::Sample>> = instrument.samples.iter().cloned().map(Arc::new).collect();
+    let shared: Arc<[Arc<ir::Sample>]> = instrument
+        .samples
+        .iter()
+        .cloned()
+        .map(Arc::new)
+        .collect::<Vec<_>>()
+        .into();
+    let total_zones: usize = instrument.groups.iter().map(|g| g.zones.len()).sum();
     let client = store.client();
     let mut zones = Vec::new();
     let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
     let mut polyphony = Vec::new();
-    let mut facts = Vec::new();
+    let mut zone_table = kontra_engine::ZoneTable::with_capacity(total_zones, Arc::clone(&shared));
     // `detect_*` reads the samples' music information: measured here, once
     // per sample, only for instruments whose scripts ask.
     let mut group_rules = Vec::with_capacity(instrument.groups.len());
@@ -79,29 +86,24 @@ pub fn prepare(
                 } else {
                     group.name.as_str()
                 };
-                facts.push(kontra_engine::ZoneFacts {
+                zone_table.push_saved(kontra_engine::SavedZoneDesc {
                     id: z.id,
-                    name: name.into(),
                     group: group_id,
                     keys: z.keys.clone(),
                     velocities: z.velocities.clone(),
                     root: z.root,
                     start: z.start,
                     end: z.end,
-                    start_range: z.start_mod,
-                    rate,
-                    source: None,
-                    loops: z.loops.clone(),
-                    user: false,
-                    volume: (z.volume_db * 100.0).round() as i32,
-                    pan: (z.pan * 1000.0).round() as i32,
-                    tune: ((z.tune + tune_semitones) * 100.0).round() as i32,
-                    fades: [
-                        i32::from(z.key_fade.0),
-                        i32::from(z.key_fade.1),
-                        i32::from(z.velocity_fade.0),
-                        i32::from(z.velocity_fade.1),
-                    ],
+                    start_mod: z.start_mod,
+                    sample_rate: rate,
+                    volume_db: z.volume_db,
+                    pan: z.pan,
+                    tune_semitones: (z.tune + tune_semitones) as f32,
+                    key_fade: z.key_fade,
+                    velocity_fade: z.velocity_fade,
+                    sample_idx: None,
+                    custom_name: Some(name),
+                    loops: &z.loops,
                 });
                 if group.purged {
                     continue;
@@ -120,29 +122,24 @@ pub fn prepare(
             };
             // A script sees every saved zone, played or not (a purged group,
             // a sample that failed to open).
-            facts.push(kontra_engine::ZoneFacts {
+            zone_table.push_saved(kontra_engine::SavedZoneDesc {
                 id: z.id,
-                name: kontra_engine::zone_name(&source.name).into(),
                 group: group_id,
                 keys: z.keys.clone(),
                 velocities: z.velocities.clone(),
                 root: z.root,
                 start: z.start,
                 end: z.end,
-                start_range: z.start_mod,
-                rate: source.rate,
-                source: shared.get(sample_idx).cloned(),
-                loops: z.loops.clone(),
-                user: false,
-                volume: (z.volume_db * 100.0).round() as i32,
-                pan: (z.pan * 1000.0).round() as i32,
-                tune: (z.tune * 100.0).round() as i32,
-                fades: [
-                    i32::from(z.key_fade.0),
-                    i32::from(z.key_fade.1),
-                    i32::from(z.velocity_fade.0),
-                    i32::from(z.velocity_fade.1),
-                ],
+                start_mod: z.start_mod,
+                sample_rate: source.rate,
+                volume_db: z.volume_db,
+                pan: z.pan,
+                tune_semitones: z.tune as f32,
+                key_fade: z.key_fade,
+                velocity_fade: z.velocity_fade,
+                sample_idx: u32::try_from(sample_idx).ok(),
+                custom_name: None,
+                loops: &z.loops,
             });
             // A purged group loads nothing: a script's un-purge builds it.
             if group.purged {
@@ -166,7 +163,7 @@ pub fn prepare(
     }
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
     plan.dormant = Arc::new(dormant);
-    plan.zone_facts = facts;
+    plan.zone_table = Arc::new(zone_table);
     plan.groups = (instrument
         .groups
         .iter()
@@ -183,6 +180,7 @@ pub fn prepare(
         purged: g.purged,
         muted: g.muted,
         inserts: Vec::new(),
+        amp_split: g.amp_split,
         mods: g.mods.clone(),
         envelope: envelope(g.envelope, rate),
         envelopes: g.envelopes.clone(),
@@ -248,6 +246,7 @@ pub fn effects(
 ) {
     for (g, from) in plan.groups.iter_mut().zip(&instrument.groups) {
         g.inserts.clone_from(&from.inserts);
+        g.amp_split = from.amp_split;
     }
     for (b, from) in plan.buses.iter_mut().zip(&instrument.buses) {
         b.inserts.clone_from(&from.inserts);
@@ -407,7 +406,7 @@ pub fn user_zones(
     store: &mut Store,
     open: &Open<'_>,
 ) -> Option<(Plan, Vec<ir::Diagnostic>)> {
-    let due: Vec<&kontra_engine::ZoneFacts> = (plan.user_facts().iter())
+    let due: Vec<&kontra_engine::UserZone> = (plan.user_zones.iter())
         .filter(|f| {
             f.source.as_ref().is_some_and(|s| {
                 !(plan.user_loaded.iter()).any(|(id, l)| *id == f.id && Arc::ptr_eq(l, s))
@@ -785,8 +784,8 @@ pub fn warp(w: ir::Warp) -> Warp {
 
 /// The voice's kind of mod oscillator.
 #[must_use]
-pub fn mod_kind(k: ir::ModOscKind) -> kontra_voice::ModKind {
-    use kontra_voice::ModKind as V;
+pub fn mod_kind(k: ir::ModOscKind) -> kontra_voice::ModOscKind {
+    use kontra_voice::ModOscKind as V;
     match k {
         ir::ModOscKind::Off => V::Off,
         ir::ModOscKind::Fm => V::Fm,

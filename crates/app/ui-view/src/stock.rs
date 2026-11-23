@@ -23,6 +23,7 @@ pub(super) enum Look {
     Button {
         on: bool,
         caption: String,
+        shift: bool,
     },
     Field {
         title: String,
@@ -90,6 +91,7 @@ impl Look {
         shown: String,
         name: String,
         bare: bool,
+        shift: bool,
     ) -> Option<Self> {
         if !bare && !unpictured(tree, w) {
             return None;
@@ -98,6 +100,7 @@ impl Look {
             Kind::Button { .. } | Kind::Switch => Self::Button {
                 on: t >= 1.,
                 caption: super::caption(w, tree.source),
+                shift,
             },
             Kind::Menu { .. } => Self::Menu {
                 caption: super::caption(w, tree.source),
@@ -148,7 +151,7 @@ impl Look {
         let bg = bare || !wd.hide.background;
         let ink = |default: u32| style.map_or(rgb(default), |s| super::color(s.color));
         match self {
-            Self::Button { on, caption } => {
+            Self::Button { on, caption, shift } => {
                 let mut parts = Vec::new();
                 if bg {
                     let fill: Fill = if *on {
@@ -194,7 +197,8 @@ impl Look {
                 } else {
                     ink(0xfe_fefe)
                 };
-                if *on
+                let offset = if *shift { scale } else { 0. };
+                let label = if *on
                     && button.is_some()
                     && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
                 {
@@ -204,7 +208,7 @@ impl Look {
                     } else {
                         StockMetrics::Field
                     };
-                    parts.push(field_words(
+                    field_words(
                         caption,
                         ink,
                         model::Align::Center,
@@ -216,10 +220,23 @@ impl Look {
                             style.map_or(model::Rgba::rgb(DARK), |s| s.color)
                         },
                         metrics,
-                    ));
+                        wd.text_y,
+                    )
                 } else {
-                    parts.push(words(caption, ink, model::Align::Center, w, h, scale));
-                }
+                    words_at(
+                        caption,
+                        ink,
+                        model::Align::Center,
+                        (w, h, scale),
+                        wd.text_y,
+                        style.and_then(|s| s.size),
+                    )
+                };
+                parts.push(if offset > 0. {
+                    stack([label.at(offset, offset)]).w(w).h(h).clip()
+                } else {
+                    label
+                });
                 parts
             }
             Self::Field { title, value } => {
@@ -257,6 +274,7 @@ impl Look {
                     font,
                     color,
                     StockMetrics::Field,
+                    wd.text_y,
                 ));
                 if !wd.hide.value {
                     parts.push(field_words(
@@ -267,6 +285,7 @@ impl Look {
                         font,
                         color,
                         StockMetrics::Field,
+                        wd.value_y.or(wd.text_y),
                     ));
                 }
                 parts
@@ -286,15 +305,24 @@ impl Look {
                     );
                 }
                 let ink = ink(0xfe_fefe);
-                parts.push(words(caption, ink, model::Align::Left, w, h, scale));
-                parts.extend(arrow(ink, w, h, scale));
+                parts.push(words_at(
+                    caption,
+                    ink,
+                    model::Align::Left,
+                    (w, h, scale),
+                    wd.text_y,
+                    None,
+                ));
+                if wd.menu_arrow {
+                    parts.extend(arrow(ink, w, h, scale));
+                }
                 parts
             }
             Self::Knob {
                 title, value, turn, ..
             } => {
                 if let Some(art) = artwork.filter(|_| !wd.hide.title && !wd.hide.value) {
-                    bitmap_knob(title, value, scale, art, glyphs)
+                    bitmap_knob(wd, title, value, scale, art, glyphs)
                 } else {
                     knob(wd, title, value, *turn, scale, bare)
                 }
@@ -413,6 +441,7 @@ enum StockMetrics {
     Button12,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn field_words(
     text: &str,
     ink: Color,
@@ -421,15 +450,16 @@ fn field_words(
     glyphs: Option<&kontra_ui_pictures::Glyphs>,
     color: model::Rgba,
     metrics: StockMetrics,
+    y_override: Option<i32>,
 ) -> El {
     let Some(glyphs) = glyphs else {
-        return words(text, ink, align, w, h, s);
+        return words_at(text, ink, align, (w, h, s), y_override, None);
     };
     if text
         .chars()
         .any(|c| c != '?' && kontra_ui_pictures::glyph(c) == usize::from(b'?'))
     {
-        return words(text, ink, align, w, h, s);
+        return words_at(text, ink, align, (w, h, s), y_override, None);
     }
     let advance = |c: char, glyph: &Image| {
         (if c == ' ' {
@@ -482,13 +512,14 @@ fn field_words(
             if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels)
                 .and_then(|image| kontra_ui_pictures::at(image, device as f32))
             {
-                layers.push(super::image(&Arc::new(image), width, height).at(
-                    x,
-                    match metrics {
+                let y = y_override.map_or_else(
+                    || match metrics {
                         StockMetrics::Field => (h - height) / 2. - s,
                         StockMetrics::Button12 => (h - height) / 2.,
                     },
-                ));
+                    |y| f64::from(y) * s,
+                );
+                layers.push(super::image(&Arc::new(image), width, height).at(x, y));
             }
             x += advance(c, glyph);
         }
@@ -529,6 +560,7 @@ fn field_skin(image: &Image, width: f64, height: f64, scale: f64) -> Option<Arc<
 }
 
 fn bitmap_knob(
+    wd: &Widget,
     title: &str,
     value: &str,
     s: f64,
@@ -536,12 +568,14 @@ fn bitmap_knob(
     glyphs: Option<&kontra_ui_pictures::Glyphs>,
 ) -> Vec<El> {
     let [base, cap, light] = art;
+    let title_y = wd.text_y.map_or(2., f64::from) * s;
+    let value_y = wd.value_y.map_or(22., f64::from) * s;
     vec![
         super::image(base, 87. * s, 39. * s).at(0., 0.),
         super::image(cap, 25. * s, 29. * s).at(7. * s, 7. * s),
         super::image(light, 39. * s, 39. * s).at(0., 0.),
-        stock_words(title, s, glyphs).at(42. * s, 2. * s),
-        stock_words(value, s, glyphs).at(42. * s, 22. * s),
+        stock_words(title, s, glyphs).at(42. * s, title_y),
+        stock_words(value, s, glyphs).at(42. * s, value_y),
     ]
 }
 
@@ -610,6 +644,8 @@ fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) ->
             .at((x - 1.5) * s, (y - 1.5) * s),
     );
     let side = (KNOB.0 - 36.) * s;
+    let title_y = wd.text_y.map_or(1., f64::from) * s;
+    let value_y = wd.value_y.map_or(21., f64::from) * s;
     if !wd.hide.title {
         parts.push(
             stack([words(title, light, model::Align::Left, side, 16. * s, s)])
@@ -617,7 +653,7 @@ fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) ->
                 .h(16. * s)
                 .radius(3. * s)
                 .fill(rgb(0x8f_8e88))
-                .at(36. * s, s),
+                .at(36. * s, title_y),
         );
     }
     if !wd.hide.value {
@@ -634,7 +670,7 @@ fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) ->
             .h(17. * s)
             .radius(3. * s)
             .fill(rgb(0x5f_5f5a))
-            .at(36. * s, 21. * s),
+            .at(36. * s, value_y),
         );
     }
     parts
@@ -691,11 +727,19 @@ fn boxed(w: f64, h: f64, s: f64, fill: Fill, edge: u32) -> El {
         .at(0., 0.)
 }
 
-/// One line of `text` across the box, padded from its sides.
-fn words(text: &str, ink: Color, align: model::Align, w: f64, h: f64, s: f64) -> El {
+/// One line of `text` across the box, padded from its sides, vertically
+/// positioned at `y_override` (in source points) when set or centered otherwise.
+fn words_at(
+    text: &str,
+    ink: Color,
+    align: model::Align,
+    (w, h, s): (f64, f64, f64),
+    y_override: Option<i32>,
+    size: Option<f32>,
+) -> El {
     // Kontakt's stock font runs a size under a label's.
-    let size = (super::TEXT - 1.) * s;
-    row([text_el(text, size, ink)])
+    let size = size.map_or(super::TEXT - 1., f64::from) * s;
+    let row = row([text_el(text, size, ink)])
         .align(Align::Center)
         .justify(match align {
             model::Align::Left => Justify::Start,
@@ -703,9 +747,19 @@ fn words(text: &str, ink: Color, align: model::Align, w: f64, h: f64, s: f64) ->
             model::Align::Right => Justify::End,
         })
         .w(w)
-        .h(h)
-        .pad((4. * s, 0.))
-        .at(0., 0.)
+        .pad((4. * s, 0.));
+    match y_override {
+        Some(y) => stack([row.h(size * 1.25).at(0., f64::from(y) * s)])
+            .w(w)
+            .h(h)
+            .clip(),
+        None => row.h(h).at(0., 0.),
+    }
+}
+
+/// One line of `text` across the box, padded from its sides.
+fn words(text: &str, ink: Color, align: model::Align, w: f64, h: f64, s: f64) -> El {
+    words_at(text, ink, align, (w, h, s), None, None)
 }
 
 fn text_el(t: &str, size: f64, ink: Color) -> El {
@@ -736,15 +790,15 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> Path {
     )
 }
 
-/// Whether `w` draws a stock fader, text field or table: an unpictured
-/// script one whose background the script has not hidden.
+/// Whether `w` draws a stock fader, shape or canvas: an unpictured
+/// script slider whose background the script has not hidden, or a shape/canvas.
+/// Tables render through [`table`] so bars still draw over custom pictures or
+/// `HIDE_PART_BG`.
 pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
     (bare || !w.hide.background)
-        && (bare
-            || unpictured(tree, w)
-            || (matches!(tree.source, Source::FalconLua) && matches!(w.kind, Kind::Table { .. })))
+        && (bare || unpictured(tree, w))
         // A text edit draws no field: its words sit on the page (probe/wave.ksp).
-        && matches!(w.kind, Kind::Slider { .. } | Kind::Table { .. })
+        && matches!(w.kind, Kind::Slider { .. })
         || matches!(w.kind, Kind::Shape(_) | Kind::Canvas(_))
 }
 
@@ -783,34 +837,10 @@ fn unpictured(tree: &Interface, w: &Widget) -> bool {
 
 /// `w`'s stock face at `t` (0..1 of its range), `width` by `height`
 /// view points.
-pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, uvi: bool) -> El {
+pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool) -> El {
     let kind = w.kind.clone();
-    let bars: Vec<f64> = match (&w.kind, &w.value) {
-        (Kind::Table { range, .. }, Some(model::Value::Integers(v))) => {
-            let span = (range.max - range.min).max(f64::EPSILON);
-            v.iter()
-                .map(|&n| ((f64::from(n) - range.min) / span).clamp(0., 1.))
-                .collect()
-        }
-        (Kind::Table { range, .. }, Some(model::Value::Reals(v))) => {
-            let span = (range.max - range.min).max(f64::EPSILON);
-            v.iter()
-                .map(|&n| ((n - range.min) / span).clamp(0., 1.))
-                .collect()
-        }
-        _ => Vec::new(),
-    };
     let (background, page_width) = (w.colors.background, w.rect.width);
     let bar = w.colors.bar;
-    // UVI draws a table's inner edges unless told not to (Augmented
-    // Orchestra's arpeggiator steps leave `drawInnerEdge` unset).
-    let edges = w.table_inner_edge.is_none_or(|edge| edge.visible);
-    let zero = match &w.kind {
-        Kind::Table { range, .. } => {
-            ((0. - range.min) / (range.max - range.min).max(f64::EPSILON)).clamp(0., 1.)
-        }
-        _ => 0.,
-    };
     canvas(move |z| {
         let (w, h) = (z.width, z.height);
         let field = |d: &mut Vec<Draw>, l: f32| {
@@ -836,67 +866,164 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool, 
                         rect(along, off, l, th)
                     }
                 };
+                let track = background.map_or(grey(EDGE), |c| Fill::from(super::color(c)));
+                let active = bar.map_or(grey(VALUE), |c| Fill::from(super::color(c)));
                 d.push(Draw::fill(
                     place(thumb / 2., mid - 1., len - thumb, 2.),
-                    grey(EDGE),
+                    track,
                 ));
                 d.push(Draw::fill(
                     place(thumb / 2., mid - 1., at - thumb / 2., 2.),
-                    grey(VALUE),
+                    active.clone(),
                 ));
                 let th = (across - 2.).min(thumb * 1.4).max(2.);
                 d.push(Draw::fill(
                     place(at - thumb / 2., mid - th / 2., thumb, th),
-                    grey(VALUE),
+                    active,
                 ));
-            }
-            Kind::Table { .. } if uvi => {
-                let ink = bar.map_or(grey(VALUE), |c| Fill::from(super::color(c)));
-                let bw = w / bars.len().max(1) as f64;
-                let base = h * (1. - zero);
-                // An inner edge is a gap through the cell and its bar; without
-                // one, each bar overlaps the next a little, so 128 thin bars
-                // (VWinds' air curve) leave no seams.
-                let (gap, over) = if edges { (1., 0.) } else { (0., 0.5) };
-                let cell = (bw - gap).max(0.);
-                if let Some(c) = background {
-                    let fill = Fill::from(super::color(c));
-                    if edges {
-                        for n in 0..bars.len() {
-                            d.push(Draw::fill(rect(n as f64 * bw, 0., cell, h), fill.clone()));
-                        }
-                    } else {
-                        d.push(Draw::fill(rect(0., 0., w, h), fill));
-                    }
-                }
-                for (n, v) in bars.iter().enumerate() {
-                    let y = h * (1. - v);
-                    // A bipolar step at zero still shows a line (the pan row).
-                    let least = if zero > 0. && zero < 1. { 1. } else { 0. };
-                    let tall = (base - y).abs().max(least);
-                    let top = if y < base { y } else { base.min(h - 1.) };
-                    d.push(Draw::fill(
-                        rect(n as f64 * bw, top.min(base), cell + over, tall),
-                        ink.clone(),
-                    ));
-                }
-            }
-            Kind::Table { .. } => {
-                field(&mut d, FIELD);
-                let bw = w / bars.len().max(1) as f64;
-                for (n, v) in bars.iter().enumerate() {
-                    let bh = v * (h - 2.);
-                    d.push(Draw::fill(
-                        rect(n as f64 * bw + 1., h - 1. - bh, (bw - 1.).max(1.), bh),
-                        grey(VALUE),
-                    ));
-                }
             }
             Kind::Shape(shape) => {
                 d.extend(super::shape::fill(shape, page_width, (w, h), background))
             }
             Kind::Canvas(ref p) => d.extend(kontra_ui_pictures::canvas(p, w / page_width)),
             _ => field(&mut d, FIELD),
+        }
+        d
+    })
+    .w(width)
+    .h(height)
+}
+
+/// Draws a `Kind::Table` widget's background (unless hidden or pictured),
+/// zero line (for bipolar tables), and value bars, honoring `steps_shown`,
+/// `bipolar`, `colors.bar`, `colors.background`, and `colors.zero_line`.
+pub(super) fn table(
+    w: &Widget,
+    (width, height): (f64, f64),
+    bare: bool,
+    has_picture: bool,
+    uvi: bool,
+) -> El {
+    let Kind::Table {
+        columns,
+        range,
+        bipolar,
+        steps_shown,
+        ..
+    } = w.kind
+    else {
+        return block(width, height);
+    };
+    let span = (range.max - range.min).max(f64::EPSILON);
+    let mut bars: Vec<f64> = match &w.value {
+        Some(model::Value::Integers(v)) => v
+            .iter()
+            .map(|&n| ((f64::from(n) - range.min) / span).clamp(0., 1.))
+            .collect(),
+        Some(model::Value::Reals(v)) => v
+            .iter()
+            .map(|&n| ((n - range.min) / span).clamp(0., 1.))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let shown = if columns > 0 {
+        steps_shown
+            .filter(|&s| s > 0)
+            .unwrap_or(columns)
+            .min(columns) as usize
+    } else {
+        steps_shown
+            .filter(|&s| s > 0)
+            .map_or(bars.len(), |s| (s as usize).min(bars.len()))
+    };
+    bars.truncate(shown);
+    let cols = shown.max(1) as f64;
+    let background = w.colors.background;
+    let bar = w.colors.bar;
+    let zero_line = w.colors.zero_line;
+    let draw_bg = !has_picture && (bare || !w.hide.background);
+    // UVI draws a table's inner edges unless told not to (Augmented
+    // Orchestra's arpeggiator steps leave `drawInnerEdge` unset).
+    let edges = w.table_inner_edge.is_none_or(|edge| edge.visible);
+    let zero = ((0. - range.min) / span).clamp(0., 1.);
+    canvas(move |z| {
+        let (w, h) = (z.width, z.height);
+        let mut d = Vec::new();
+        if uvi {
+            let ink = bar.map_or(grey(VALUE), |c| Fill::from(super::color(c)));
+            let bw = w / cols;
+            let base = h * (1. - zero);
+            // An inner edge is a gap through the cell and its bar; without
+            // one, each bar overlaps the next a little, so 128 thin bars
+            // (VWinds' air curve) leave no seams.
+            let (gap, over) = if edges { (1., 0.) } else { (0., 0.5) };
+            let cell = (bw - gap).max(0.);
+            if draw_bg && let Some(c) = background {
+                let fill = Fill::from(super::color(c));
+                if edges {
+                    for n in 0..shown {
+                        d.push(Draw::fill(rect(n as f64 * bw, 0., cell, h), fill.clone()));
+                    }
+                } else {
+                    d.push(Draw::fill(rect(0., 0., w, h), fill));
+                }
+            }
+            for (n, v) in bars.iter().enumerate() {
+                let y = h * (1. - v);
+                // A bipolar step at zero still shows a line (the pan row).
+                let least = if zero > 0. && zero < 1. { 1. } else { 0. };
+                let tall = (base - y).abs().max(least);
+                let top = if y < base { y } else { base.min(h - 1.) };
+                d.push(Draw::fill(
+                    rect(n as f64 * bw, top.min(base), cell + over, tall),
+                    ink.clone(),
+                ));
+            }
+            return d;
+        }
+        let inset = if draw_bg {
+            let bg_fill = background.map_or(grey(FIELD), |c| Fill::from(super::color(c)));
+            d.push(Draw::fill(rect(0., 0., w, h), bg_fill));
+            d.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), grey(EDGE), 1.));
+            1.
+        } else {
+            0.
+        };
+        let (ix, iy, iw, ih) = (
+            inset,
+            inset,
+            (w - 2. * inset).max(0.),
+            (h - 2. * inset).max(0.),
+        );
+        if iw <= 0. || ih <= 0. {
+            return d;
+        }
+        let ink = bar.map_or(grey(VALUE), |c| Fill::from(super::color(c)));
+        let is_bipolar = bipolar && zero > 0. && zero < 1.;
+        let base = iy + ih * (1. - zero);
+        if is_bipolar {
+            let line_fill = zero_line.map_or(grey(EDGE), |c| Fill::from(super::color(c)));
+            let ly = base.round().clamp(iy, (iy + ih - 1.).max(iy));
+            d.push(Draw::fill(rect(ix, ly, iw, 1.), line_fill));
+        }
+        let bw = iw / cols;
+        let gap = if bw >= 3. { 1. } else { 0. };
+        let cell_w = (bw - gap).max(1.).min(bw);
+        for (n, &v) in bars.iter().enumerate() {
+            let x = ix + n as f64 * bw;
+            if is_bipolar {
+                let y = iy + ih * (1. - v);
+                let top = y.min(base);
+                let bh = (base - y).abs();
+                if bh > 0. {
+                    d.push(Draw::fill(rect(x, top, cell_w, bh), ink.clone()));
+                }
+            } else {
+                let bh = v * ih;
+                if bh > 0. {
+                    d.push(Draw::fill(rect(x, iy + ih - bh, cell_w, bh), ink.clone()));
+                }
+            }
         }
         d
     })

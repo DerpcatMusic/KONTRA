@@ -59,7 +59,8 @@ pub struct ModTarget {
     /// UI shaper-table open toggle (`tableOpen`, native `+0x16`,
     /// `0140920000.c:7098-7111`). Audio polarity inversion is stored in
     /// `unknown_flags & 2` (see [`Self::signed_intensity`]), not here.
-    pub invert: bool,
+    #[cfg_attr(feature = "serde", serde(alias = "invert"))]
+    pub table_open: bool,
     /// Modulation shaper curve, when one was ever edited.
     pub shaper: Option<ModShaper>,
     /// Always -1 in local presets.
@@ -373,15 +374,16 @@ pub(crate) fn read_targets(
         } else {
             Some(reader.read_u8()?)
         };
-        let invert = read_flag(reader)
-            .map_err(|error| Error::context(format!("Modulation target {param} invert"), error))?;
+        let table_open = read_flag(reader).map_err(|error| {
+            Error::context(format!("Modulation target {param} table_open"), error)
+        })?;
         targets.push(ModTarget {
             param,
             intensity,
             lag_ms,
             name,
             slot,
-            invert,
+            table_open,
             shaper: None,
             unknown_i16,
             unknown_flags,
@@ -575,7 +577,7 @@ mod tests {
                 });
                 let p = object.params().unwrap();
                 assert_eq!(p.targets[0].signed_intensity(), -0.25);
-                assert!(p.targets[0].invert);
+                assert!(p.targets[0].table_open);
                 assert_eq!(
                     p.targets[0].lag_ms,
                     if source % 2 == 0 { -250 } else { 250 }
@@ -644,7 +646,7 @@ mod tests {
                 (
                     parsed.targets[0].param.as_str(),
                     parsed.targets[0].slot,
-                    parsed.targets[0].invert
+                    parsed.targets[0].table_open
                 ),
                 (*param, None, true)
             );
@@ -652,7 +654,7 @@ mod tests {
                 (
                     parsed.targets[1].param.as_str(),
                     parsed.targets[1].slot,
-                    parsed.targets[1].invert
+                    parsed.targets[1].table_open
                 ),
                 ("filterCutoff", Some(7), false)
             );

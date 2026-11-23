@@ -112,6 +112,16 @@ impl<L: Library> Translator<'_, '_, L> {
         if let Some(dry) = self.dry_of.get(&node.id()) {
             out.push_str(&format!(",dry={dry}"));
         }
+        if let Some((chains, direct)) = self.rack_mix_of.get(&node.id()) {
+            out.push_str(&format!(",rack_mix={{{chains},{direct}}}"));
+        }
+        if let Some((bus, slots)) = self.routed_knobs.get(&node.id()) {
+            out.push_str(&format!(",routed_knobs={{{bus}"));
+            for &(slot, set) in slots {
+                out.push_str(&format!(",{{{slot},K[{}]}}", set + 1));
+            }
+            out.push('}');
+        }
         // An insert's effect: `{0 keygroup's voices | 1 bus | 2 program, group
         // or bus, slot}`.
         let fx = self.fx_of.get(&node.id()).and_then(|&fx| match fx {
@@ -150,9 +160,14 @@ impl<L: Library> Translator<'_, '_, L> {
                 at.extend(self.envelopes.get(&node.id()).into_iter().flatten());
             }
             at.sort_unstable();
-            at.iter().map(|(g, i)| format!("{{{g},{i}}}")).collect::<Vec<_>>()
+            at.iter()
+                .map(|(g, i)| format!("{{{g},{i}}}"))
+                .collect::<Vec<_>>()
         };
-        for (key, kind) in [("env", modulation::Slot::Envelope), ("lfo", modulation::Slot::Lfo)] {
+        for (key, kind) in [
+            ("env", modulation::Slot::Envelope),
+            ("lfo", modulation::Slot::Lfo),
+        ] {
             let at = copies(kind);
             // A user-table LFO's wave is its table.
             let fixed = num(node, "WaveFormType", 0.0).is_ok_and(|w| w == 9.0);
@@ -162,7 +177,10 @@ impl<L: Library> Translator<'_, '_, L> {
             }
         }
         if let Some(id) = matrix::live_macro(self.program, node) {
-            out.push_str(&format!(",mod={id}"));
+            let channel = kontra_ir::Source::Macro(id)
+                .script_channel()
+                .unwrap_or_default();
+            out.push_str(&format!(",mod={channel}"));
         }
         // The connections a route carries: their places in `connections`.
         let linked: Vec<String> = node

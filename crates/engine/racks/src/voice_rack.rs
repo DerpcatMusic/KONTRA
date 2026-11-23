@@ -1,15 +1,14 @@
 //! A group's inserts that run on each voice alone. A group insert acts on
 //! each voice; a linear one with fixed settings commutes with the sum,
 //! so it stays on the shared chain (filters.rs). An insert runs here when a
-//! route moves it (it differs per note), or when it sits at or before the
+//! route moves it (it differs per note), when it sits at or before the
 //! group's last drive effect (a nonlinear stage sees one voice, not the
-//! sum). A bypassed insert is built too and skipped while bypassed, so a
-//! script may switch it on. Each group's units are built once, after the
-//! init callback; a note copies them into its slot's preallocated rack, so
-//! the audio thread never allocates, and their state ends with the voice.
-//!
-//! ponytail: gain, inverter and stereo inserts after a drive effect still
-//! fold into the voice's matrix, before it.
+//! sum), or when it is a gain/stereo/matrix slot whose position relative to
+//! a drive effect prevents commuting it into the voice's amp matrix. A
+//! bypassed insert is built too and skipped while bypassed, so a script may
+//! switch it on. Each group's units are built once, after the init callback;
+//! a note copies them into its slot's preallocated rack, so the audio thread
+//! never allocates, and their state ends with the voice.
 
 use std::sync::Arc;
 
@@ -75,6 +74,31 @@ pub enum Kind {
     Crush(Crush),
     Overdrive(Overdrive),
     Comb(Comb),
+    /// A stateless 2×2 gain/pan/stereo/invert slot that cannot commute past a
+    /// drive effect into the voice's amp matrix; its matrix is read live from
+    /// `inserts[u.insert]` on each chunk.
+    Matrix,
+}
+
+fn is_drive(kind: &ir::EffectKind) -> bool {
+    matches!(
+        kind,
+        ir::EffectKind::Shaper(_)
+            | ir::EffectKind::Strip(_)
+            | ir::EffectKind::Crush(_)
+            | ir::EffectKind::Overdrive(_)
+            | ir::EffectKind::Comb(_)
+    )
+}
+
+fn is_matrix_effect(kind: &ir::EffectKind) -> bool {
+    matches!(
+        kind,
+        ir::EffectKind::Gain(_)
+            | ir::EffectKind::Matrix(_)
+            | ir::EffectKind::Invert { .. }
+            | ir::EffectKind::Stereo { .. }
+    )
 }
 
 /// The unit for an insert, at its saved settings, and a shaper's base-rate
@@ -119,26 +143,49 @@ fn vowels(f: ir::Formant) -> Vowels {
 
 /// A group's per-voice units in slot order; empty when all of it is shared.
 pub fn template(group: &kontra_plan::Group, rate: u32) -> Arc<[Unit]> {
-    let last_drive = group.inserts.iter().rposition(|e| {
-        e.as_ref().is_some_and(|e| {
-            matches!(
-                e.kind,
-                ir::EffectKind::Shaper(_)
-                    | ir::EffectKind::Strip(_)
-                    | ir::EffectKind::Crush(_)
-                    | ir::EffectKind::Overdrive(_)
-                    | ir::EffectKind::Comb(_)
-            )
-        })
-    });
+    let split = group.amp_split_index();
+    let last_drive = group
+        .inserts
+        .iter()
+        .rposition(|e| e.as_ref().is_some_and(|e| is_drive(&e.kind)));
+    let last_pre_drive = group
+        .inserts
+        .get(..split)
+        .unwrap_or_default()
+        .iter()
+        .rposition(|e| e.as_ref().is_some_and(|e| is_drive(&e.kind)));
+    let last_post_drive = group
+        .inserts
+        .get(split..)
+        .unwrap_or_default()
+        .iter()
+        .rposition(|e| e.as_ref().is_some_and(|e| is_drive(&e.kind)))
+        .map(|rel| split + rel);
     let mut combs = 0;
     group
         .inserts
         .iter()
         .enumerate()
-        .filter(|&(n, _)| last_drive.is_some_and(|l| n <= l) || route_depth::moved(&group.mods, n))
         .filter_map(|(n, e)| {
             let e = e.as_ref()?;
+            if is_matrix_effect(&e.kind) {
+                let keep_in_rack = (n < split && last_pre_drive.is_some_and(|d| n < d))
+                    || (n >= split && last_post_drive.is_some());
+                if !keep_in_rack {
+                    return None;
+                }
+                return Some(Unit {
+                    insert: u8::try_from(n).ok()?,
+                    kind: Kind::Matrix,
+                    outer: Outer::empty(),
+                    line: combs,
+                    ramp: None,
+                    tuned: None,
+                });
+            }
+            if !(last_drive.is_some_and(|l| n <= l) || route_depth::moved(&group.mods, n)) {
+                return None;
+            }
             let (kind, outer) = unit(&e.kind, rate)?;
             let line = combs;
             combs += usize::from(matches!(kind, Kind::Comb(_)));
@@ -229,6 +276,14 @@ pub fn process(
                             c.process(io, line);
                         }
                     });
+                }
+                Kind::Matrix => {
+                    let [[ll, lr], [rl, rr]] = kontra_effects::matrix::matrix(e);
+                    for [l, r] in chunk.iter_mut() {
+                        let (in_l, in_r) = (*l, *r);
+                        *l = ll * in_l + lr * in_r;
+                        *r = rl * in_l + rr * in_r;
+                    }
                 }
             }
             if let Some(r) = &mut u.ramp

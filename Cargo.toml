@@ -73,7 +73,6 @@ smallvec = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 crossbeam-queue = "0.3"
-crossbeam-utils = "0.8"
 syn = { version = "2", features = ["derive", "parsing", "printing", "proc-macro"] }
 quote = "1"
 proc-macro2 = "1"

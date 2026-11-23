@@ -62,10 +62,11 @@ impl Engine {
             };
             let mut ramp = None;
             let effect = match u.kind {
-                Kind::Filter(_) | Kind::Eq(_) | Kind::Comb(_) => None,
+                Kind::Filter(_) | Kind::Eq(_) | Kind::Comb(_) | Kind::Matrix => None,
                 _ => self.voice_effect(zone, u.insert, note, age),
             };
             let tune = match u.kind {
+                Kind::Matrix => None,
                 Kind::Filter(_) => self
                     .voice_filter(zone, u.insert, note, age)
                     .map(|(hz, k)| Tune::Filter(hz, k)),
@@ -122,26 +123,29 @@ impl Engine {
         let mut offset_hz = 0.0;
         let (mut octaves, mut q, mut resonance) = (0.0f32, 0.0f32, 1.0f32);
         for m in group.mods.iter().filter(|m| !m.bypass) {
-            match m.kind {
-                ir::ModKind::Cutoff {
-                    source,
-                    insert: i,
-                    depth,
-                } if i == insert => {
+            let ir::ModRoute {
+                source,
+                target,
+                depth,
+                law,
+                ..
+            } = m.route;
+            match (target, law) {
+                (ir::ParamAddr::FilterCutoff { insert: i }, ir::RouteLaw::Linear)
+                    if i == insert =>
+                {
                     let input = self.routed(zone, source, note, age);
                     let value = input.unwrap_or(0.0) * depth;
                     #[cfg(feature = "trace")]
                     self.trace_route(zone, m, input, value, crate::RouteUnit::CutoffDepth);
                     octaves += value;
                 }
-                ir::ModKind::CutoffHz {
-                    source,
-                    insert: i,
-                    min_hz,
-                    max_hz,
-                } if i == insert => {
+                (
+                    ir::ParamAddr::FilterCutoff { insert: i },
+                    ir::RouteLaw::Range([min_hz, max_hz]),
+                ) if i == insert => {
                     if let Some(x) = self.unit(zone, source, note, age) {
-                        let x = if matches!(source, ir::Source::Script(_)) {
+                        let x = if source.script_channel().is_some() {
                             (x + 1.0) * 0.5
                         } else {
                             x
@@ -150,27 +154,37 @@ impl Engine {
                         offset_hz += delta * self.scale(zone, source, note, age);
                     }
                 }
-                ir::ModKind::Resonance {
-                    source,
-                    insert: i,
-                    depth,
-                } if i == insert => match f.ladder {
-                    Some(_) => {
-                        let depth = depth * self.scale(zone, source, note, age);
-                        let x = self.unit(zone, source, note, age);
-                        let value = x.map_or(1.0, |x| ir::Curve::Signed.gain(depth, x));
-                        #[cfg(feature = "trace")]
-                        self.trace_route(zone, m, x, value, crate::RouteUnit::ResonanceMultiplier);
-                        resonance *= value;
+                (ir::ParamAddr::FilterResonance { insert: i }, _) if i == insert => {
+                    match f.ladder {
+                        Some(_) => {
+                            let depth = depth * self.scale(zone, source, note, age);
+                            let x = self.unit(zone, source, note, age);
+                            let value = x.map_or(1.0, |x| ir::Curve::Signed.gain(depth, x));
+                            #[cfg(feature = "trace")]
+                            self.trace_route(
+                                zone,
+                                m,
+                                x,
+                                value,
+                                crate::RouteUnit::ResonanceMultiplier,
+                            );
+                            resonance *= value;
+                        }
+                        None => {
+                            let input = self.routed(zone, source, note, age);
+                            let value = input.unwrap_or(0.0) * depth;
+                            #[cfg(feature = "trace")]
+                            self.trace_route(
+                                zone,
+                                m,
+                                input,
+                                value,
+                                crate::RouteUnit::ResonanceDepth,
+                            );
+                            q += value;
+                        }
                     }
-                    None => {
-                        let input = self.routed(zone, source, note, age);
-                        let value = input.unwrap_or(0.0) * depth;
-                        #[cfg(feature = "trace")]
-                        self.trace_route(zone, m, input, value, crate::RouteUnit::ResonanceDepth);
-                        q += value;
-                    }
-                },
+                }
                 _ => {}
             }
         }
@@ -202,12 +216,17 @@ impl Engine {
         };
         let (mut octaves, mut resonance) = (0.0f32, 1.0f32);
         for m in group.mods.iter().filter(|m| !m.bypass) {
-            match m.kind {
-                ir::ModKind::Cutoff {
-                    source,
-                    insert: i,
-                    depth,
-                } if i == insert => {
+            let ir::ModRoute {
+                source,
+                target,
+                depth,
+                law,
+                ..
+            } = m.route;
+            match (target, law) {
+                (ir::ParamAddr::FilterCutoff { insert: i }, ir::RouteLaw::Linear)
+                    if i == insert =>
+                {
                     let input = self.routed(zone, source, note, age);
                     let value = input.unwrap_or(0.0) * depth;
                     #[cfg(feature = "trace")]
@@ -215,11 +234,7 @@ impl Engine {
                     octaves += value;
                 }
                 // `Q` is the loop gain: scaled as a ladder's resonance is.
-                ir::ModKind::Resonance {
-                    source,
-                    insert: i,
-                    depth,
-                } if i == insert => {
+                (ir::ParamAddr::FilterResonance { insert: i }, _) if i == insert => {
                     let depth = depth * self.scale(zone, source, note, age);
                     let x = self.unit(zone, source, note, age);
                     resonance *= x.map_or(1.0, |x| ir::Curve::Signed.gain(depth, x));
@@ -249,16 +264,12 @@ impl Engine {
             .kind
             .clone();
         for m in group.mods.iter().filter(|m| !m.bypass) {
-            if let ir::ModKind::EffectParam {
-                source,
-                insert: i,
-                param,
-                depth,
-                unipolar,
-                ..
-            } = m.kind
+            let r = m.route;
+            if let ir::ParamAddr::EffectParam { insert: i, param } = r.target
                 && i == insert
             {
+                let (source, depth, unipolar) =
+                    (r.source, r.depth, r.law == ir::RouteLaw::Unipolar);
                 let input = self.source(zone, source, note, age);
                 let x = input.unwrap_or(0.0);
                 let x = match source {
@@ -290,16 +301,15 @@ impl Engine {
         };
         let (mut shift, mut limit) = ([0.0f32; 4], [f32::INFINITY; 4]);
         for m in group.mods.iter().filter(|m| !m.bypass) {
-            if let ir::ModKind::EqGain {
-                source,
-                insert: i,
-                band,
-                depth_db,
-                limit_db,
-                ..
-            } = m.kind
+            let r = m.route;
+            if let ir::ParamAddr::EqBandGain { insert: i, band } = r.target
                 && i == insert
             {
+                let (source, depth_db) = (r.source, r.depth);
+                let limit_db = match r.law {
+                    ir::RouteLaw::Clamp(l) => l,
+                    _ => f32::INFINITY,
+                };
                 let input = self.routed(zone, source, note, age);
                 let amount = input.unwrap_or(0.0) * depth_db;
                 #[cfg(feature = "trace")]

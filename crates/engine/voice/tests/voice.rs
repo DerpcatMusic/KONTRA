@@ -48,7 +48,7 @@ fn start(region: Region, step: f64, envelope: Ahdsr) -> VoiceStart {
         granular: None,
         step,
         gain: [[1.0, 0.0], [0.0, 1.0]],
-        lag: kontra_voice::Lag::NONE,
+        lag: [kontra_voice::Lag::NONE; kontra_voice::LAGS],
         envelope,
         fade: None,
     }
@@ -711,11 +711,25 @@ fn tuned_loop_applies_ratio_on_repeats_and_is_block_size_invariant() {
     let region = make(&mut store);
     let reference = run_block(region.clone(), 128, false);
     // Initial pass (0..600) steps at 1.0; repeats (600+) step at 2.0.
+    // Past the anti-aliased loop-wrap discontinuity, the band-limited sinc
+    // tracks the linear ramp at exactly 2 source frames per output frame.
     assert_eq!(reference[100], at(100));
     assert_eq!(reference[599], at(599));
-    assert!((reference[600] - at(500)).abs() < 1e-5);
-    assert!((reference[601] - at(502)).abs() < 1e-5);
-    assert!((reference[602] - at(504)).abs() < 1e-5);
+    assert!(
+        (reference[605] - at(510)).abs() < 1e-5,
+        "{}",
+        reference[605]
+    );
+    assert!(
+        (reference[606] - at(512)).abs() < 1e-5,
+        "{}",
+        reference[606]
+    );
+    assert!(
+        (reference[607] - at(514)).abs() < 1e-5,
+        "{}",
+        reference[607]
+    );
     for block in [1, 32, 97] {
         let got = run_block(region.clone(), block, false);
         for (i, (a, b)) in reference.iter().zip(&got).enumerate() {
@@ -855,4 +869,173 @@ fn silent_tail_culls_releasing_voice_but_not_held_voice() {
         !voice.is_active(),
         "releasing silent tail should cull early"
     );
+}
+
+#[test]
+fn upward_pitch_shift_suppresses_aliasing_above_nyquist() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let frames = 32_768u64;
+    let rate = 48_000.0f64;
+
+    let render_sine = |store: &mut Store, tag: &str, freq_hz: f64, step: f64| -> Vec<f32> {
+        let bytes: Vec<u8> = (0..frames)
+            .flat_map(|n| {
+                let s = (std::f64::consts::TAU * freq_hz * n as f64 / rate).sin() as f32;
+                s.to_le_bytes()
+            })
+            .collect();
+        let key = BlobKey {
+            file: tag.into(),
+            offset: 0,
+            fmt: FMT,
+        };
+        let sample = store
+            .load(
+                &key,
+                Arc::new(MemSource::new(FMT, bytes)),
+                frames,
+                std::slice::from_ref(&(0..frames)),
+            )
+            .unwrap();
+        let region = Region {
+            mix: None,
+            table: None,
+            sample,
+            start: 0,
+            end: frames,
+            loops: Default::default(),
+            reverse: false,
+        };
+        let mut voice = Voice::allocate();
+        voice.start(start(region, step, Ahdsr::GATE));
+        render(&mut voice, &client, 2048)
+    };
+
+    // Steady-state RMS over interior frames (avoiding startup/ending edge effects).
+    let rms = |buf: &[f32]| -> f32 {
+        let slice = &buf[64..1984];
+        (slice.iter().map(|x| x * x).sum::<f32>() / slice.len() as f32).sqrt()
+    };
+
+    // 18 kHz shifted up +1 octave (step = 2.0) exceeds Nyquist (36 kHz > 24 kHz)
+    // and would fold to 12 kHz at ~0 dB under unfiltered Hermite.
+    let aliased = render_sine(&mut store, "sine_18k", 18_000.0, 2.0);
+    let alias_db = 20.0 * rms(&aliased).max(1e-10).log10() - 20.0 * (0.5f32.sqrt()).log10();
+    assert!(
+        alias_db < -50.0,
+        "18 kHz tone shifted +1 oct should be attenuated >50 dB, got {alias_db:.1} dB"
+    );
+
+    // At step 16 the tap radius is capped, but a 2 kHz input still
+    // becomes an out-of-band 32 kHz tone rather than a passband tone.
+    let capped = render_sine(&mut store, "sine_2k_capped", 2_000.0, 16.0);
+    assert!(rms(&capped) < 0.08, "capped filter leaked the 2 kHz tone");
+
+    // 2 kHz shifted up +1 octave -> 4 kHz stays in passband within 0.2 dB.
+    let passband = render_sine(&mut store, "sine_2k", 2_000.0, 2.0);
+    let pass_db = 20.0 * rms(&passband).max(1e-10).log10() - 20.0 * (0.5f32.sqrt()).log10();
+    assert!(
+        pass_db.abs() < 0.2,
+        "2 kHz tone shifted +1 oct should stay flat in passband, got {pass_db:.3} dB"
+    );
+}
+
+#[test]
+fn gain_smoothing_is_sample_rate_invariant() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let frames = 4096u64;
+    let bytes: Vec<u8> = (0..frames).flat_map(|_| 1.0f32.to_le_bytes()).collect();
+    let key = BlobKey {
+        file: "dc_smooth".into(),
+        offset: 0,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+
+    let gain_after_1ms = |rate: u32| -> f32 {
+        let mut voice = Voice::allocate();
+        voice.set_sample_rate(rate);
+        let mut vs = start(region.clone(), 1.0, Ahdsr::GATE);
+        vs.gain = [[0.0; 2]; 2];
+        voice.start(vs);
+        voice.set_gain([[1.0, 0.0], [0.0, 1.0]]);
+        let n = (rate / 1000) as usize;
+        let out = render(&mut voice, &client, n);
+        out[n - 1]
+    };
+
+    let at_48k = gain_after_1ms(48_000);
+    let at_96k = gain_after_1ms(96_000);
+    let at_192k = gain_after_1ms(192_000);
+    // 1 - e^-1 ≈ 0.6321 across all sample rates.
+    let target = 1.0 - (-1.0f32).exp();
+    for (rate, got) in [(48_000, at_48k), (96_000, at_96k), (192_000, at_192k)] {
+        assert!(
+            (got - target).abs() < 0.02,
+            "rate {rate}: gain at 1 ms = {got:.4} vs {target:.4}"
+        );
+    }
+    assert!(
+        (at_48k - at_192k).abs() < 0.01,
+        "48k ({at_48k:.4}) and 192k ({at_192k:.4}) diverged"
+    );
+}
+
+#[test]
+fn live_voice_never_stalls_when_heads_are_pending() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    store.defer_heads(true);
+    let frames = 4096u64;
+    let bytes: Vec<u8> = (0..frames)
+        .flat_map(|n| (n as f32 / 65_536.0).to_le_bytes())
+        .collect();
+    let key = BlobKey {
+        file: "deferred_head".into(),
+        offset: 0,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    assert!(sample.heads_pending(), "head load should be deferred");
+    let client = store.client();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+    let mut voice = Voice::allocate();
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    let mut out = [[0.0; 2]; 128];
+    voice.render(&mut Scratch::allocate(), &client, 0, &mut out);
+    // Cursor MUST advance immediately by 128 frames instead of stalling at 0!
+    assert_eq!(voice.position(), 128.0);
+    // A background prefetch can arrive during render, so misses are not asserted.
 }

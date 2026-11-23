@@ -157,7 +157,7 @@ pub(crate) fn route(
     insert: u8,
     name: &str,
     intensity: f32,
-) -> Option<ir::ModKind> {
+) -> Option<ir::ModRoute> {
     // A release-trigger counter is read at note-on only; a voice's effect
     // never sees it, so it is reported instead.
     if matches!(source, ir::Source::HeldTime { .. }) {
@@ -180,14 +180,21 @@ pub(crate) fn route(
             _ => return None,
         },
     };
-    Some(ir::ModKind::EffectParam {
-        source,
-        insert,
-        param,
-        depth: intensity * scale,
-        span: scale,
-        unipolar: param == ir::EffectParam::ShaperAmount && name == "distortionIntensity",
-    })
+    Some(
+        ir::ModRoute::new(
+            source,
+            ir::ParamAddr::EffectParam { insert, param },
+            intensity * scale,
+        )
+        .span(scale)
+        .law(
+            if param == ir::EffectParam::ShaperAmount && name == "distortionIntensity" {
+                ir::RouteLaw::Unipolar
+            } else {
+                ir::RouteLaw::Linear
+            },
+        ),
+    )
 }
 
 /// Reports the routes the engine cannot apply: an effect route to an empty
@@ -197,15 +204,17 @@ pub(crate) fn route(
 pub(crate) fn unmoved(inserts: &[Option<ir::Effect>], mods: &[ir::Mod], notes: &mut Notes) {
     let at = |insert: u8| inserts.get(usize::from(insert)).and_then(Option::as_ref);
     for m in mods {
-        let gap = match m.kind {
-            ir::ModKind::Resonance { insert, .. }
-                if at(insert).is_some_and(|e| matches!(e.kind, ir::EffectKind::Formant(_))) =>
-            {
+        let gap = match m.route {
+            ir::ModRoute {
+                target: ir::ParamAddr::FilterResonance { insert },
+                ..
+            } if at(insert).is_some_and(|e| matches!(e.kind, ir::EffectKind::Formant(_))) => {
                 "modulator -> formant filterQ"
             }
-            ir::ModKind::EffectParam { insert, param, .. }
-                if !at(insert).is_some_and(|e| param.add(&mut e.kind.clone(), 0.0)) =>
-            {
+            ir::ModRoute {
+                target: ir::ParamAddr::EffectParam { insert, param },
+                ..
+            } if !at(insert).is_some_and(|e| param.add(&mut e.kind.clone(), 0.0)) => {
                 "modulator -> effect without that control"
             }
             _ => continue,
@@ -264,8 +273,10 @@ mod tests {
     #[test]
     fn module_routes_move_the_effect_through_its_knob_law() {
         let depth = |param| match route(ir::Source::Velocity, 2, param, 0.5) {
-            Some(ir::ModKind::EffectParam {
-                insert: 2, depth, ..
+            Some(ir::ModRoute {
+                target: ir::ParamAddr::EffectParam { insert: 2, .. },
+                depth,
+                ..
             }) => Some(depth),
             _ => None,
         };

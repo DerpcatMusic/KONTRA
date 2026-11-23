@@ -128,9 +128,10 @@ impl Engine {
             };
             let timing_age = modulators::Age::at_start(start_frame);
             // Read first: the onset targets below see the stretched envelopes.
-            let stretch = self.stretches(zone, &n, timing_age);
+            let mut stretch = std::mem::take(&mut self.stretch_scratch);
+            self.stretches(zone, &n, timing_age, &mut stretch);
             let onset = modulators::Age {
-                stretch,
+                stretch: &stretch,
                 now: self.now.0 as f32 / self.rate as f32,
                 ..timing_age
             };
@@ -160,7 +161,7 @@ impl Engine {
                 step: voice_gain::bent(
                     self.plan.route_pitch,
                     step,
-                    bend.instant + bend.semitones + slide.map_or(0.0, |s| s.offset(self.now.0)),
+                    bend.instant + bend.lagged() + slide.map_or(0.0, |s| s.offset(self.now.0)),
                 ),
                 gain,
                 lag,
@@ -176,6 +177,7 @@ impl Engine {
                 if let Some(trace) = &self.trace {
                     trace.routes.finish_onset(None);
                 }
+                self.stretch_scratch = stretch;
                 continue;
             };
             #[cfg(feature = "trace")]
@@ -186,33 +188,26 @@ impl Engine {
             if self.trace.is_some()
                 && let Some(group) = self.groups.get(zone.group as usize)
             {
-                for m in group.mods.iter().filter(|m| {
-                    !m.bypass
-                        && matches!(
-                            m.kind,
-                            ir::ModKind::SampleStart { .. }
-                                | ir::ModKind::Attack { .. }
-                                | ir::ModKind::Hold { .. }
-                                | ir::ModKind::Decay { .. }
-                                | ir::ModKind::Sustain { .. }
-                                | ir::ModKind::Release { .. }
-                                | ir::ModKind::LoopShift { .. }
-                                | ir::ModKind::LfoPhase { .. }
-                                | ir::ModKind::LfoRate { .. }
-                        )
-                }) {
-                    let source = plan::route_source(m.kind).and_then(|s| match (m.kind, s) {
-                        (
-                            ir::ModKind::LfoPhase { .. } | ir::ModKind::LfoRate { .. },
-                            ir::Source::Lfo(_),
-                        ) => None,
-                        (
-                            ir::ModKind::Attack { .. }
-                            | ir::ModKind::Release { .. }
-                            | ir::ModKind::LfoPhase { .. }
-                            | ir::ModKind::LfoRate { .. },
-                            _,
-                        ) => self.source(zone, s, &n, timing_age),
+                use ir::{EnvStage as S, LfoParam as L, ParamAddr as A};
+                for m in group.mods.iter().filter(|m| !m.bypass) {
+                    let route = m.route;
+                    let (onset_timed, lfo_start) = match route.target {
+                        A::EnvelopeStage {
+                            stage: S::Attack | S::Release,
+                            ..
+                        } => (true, false),
+                        A::LfoParam {
+                            param: L::Phase | L::Rate,
+                            ..
+                        } => (true, true),
+                        A::SampleStart | A::LoopShift { .. } | A::EnvelopeStage { .. } => {
+                            (false, false)
+                        }
+                        _ => continue,
+                    };
+                    let source = route.driver().and_then(|s| match s {
+                        ir::Source::Lfo(_) if lfo_start => None,
+                        _ if onset_timed => self.source(zone, s, &n, timing_age),
                         _ => self.source(zone, s, &n, modulators::Age::START),
                     });
                     if let Some(trace) = &mut self.trace {
@@ -222,13 +217,14 @@ impl Engine {
                             zone: index,
                             mod_slot: m.slot,
                             target: m.target,
-                            kind: m.kind,
+                            route,
                             source,
                         });
                     }
                 }
             }
             let Some(slot) = self.voices.get_mut(i) else {
+                self.stretch_scratch = stretch;
                 continue;
             };
             #[cfg(feature = "trace")]
@@ -240,7 +236,10 @@ impl Engine {
                     event: VoiceEvent::Start,
                     position: start.region.start as f64,
                     step: start.step,
-                    gain: start.gain.map(|row| row.map(|v| v * start.lag.gain)),
+                    gain: start.gain.map(|row| {
+                        let lagged: f32 = start.lag.iter().map(|l| l.gain).product();
+                        row.map(|v| v * lagged)
+                    }),
                 });
             }
             slot.voice.start(start);
@@ -248,24 +247,27 @@ impl Engine {
             slot.zone = index;
             slot.started = now;
             slot.factor = factor;
-            slot.bend = [bend.semitones; 2];
+            slot.bend = bend.lagging.map(|(st, _)| [st; 2]);
             slot.pan = [pan; 2];
-            slot.warp = [0.0; modulators::WARPS];
-            slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
-            slot.stretch = stretch;
+            slot.warp.fill(0.0);
+            slot.chaos.fill(modulators::CHAOS_START);
             slot.release_base = release_base;
             slot.slide = slide;
             slot.start_frame = start_frame;
             #[cfg(feature = "trace")]
             slot.pending_trace_cc.set(0);
             if slide.is_some() {
-                self.set_pitch(i, step, bend.instant + bend.semitones);
+                self.set_pitch(i, step, bend.instant + bend.lagged());
             }
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {
                 trace.routes.begin_onset(index);
             }
             self.start_rack(i, zone, &n, onset);
+            if let Some(slot) = self.voices.get_mut(i) {
+                std::mem::swap(&mut slot.stretch, &mut stretch);
+            }
+            self.stretch_scratch = stretch;
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {
                 trace.routes.finish_onset(Some(i));

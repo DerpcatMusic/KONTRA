@@ -1073,3 +1073,388 @@ fn a_wavetable_keeps_its_spikes_and_its_raster_is_bounded() {
     let size = big.as_ref().map(|i| i.rgba.len() / 4);
     assert!(size.is_some_and(|n| n <= 2_000_000), "{size:?}");
 }
+
+#[test]
+fn state_styles_select_on_hover_and_pressed_fonts_with_fallback() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 40.,
+            height: 20.,
+        },
+        ..Page::default()
+    });
+    let mk_style = |rgb: u32| model::TextStyle {
+        font: model::Font::Stock(1),
+        size: Some(12.),
+        color: Rgba::rgb(rgb),
+        align: model::Align::Center,
+    };
+    // 0: off, 1: on, 2: off_pressed, 3: on_hover
+    tree.styles.push(mk_style(0x11_1111));
+    tree.styles.push(mk_style(0xFF_0000));
+    tree.styles.push(mk_style(0x00_FF00));
+    tree.styles.push(mk_style(0x00_00FF));
+
+    let mut sw = Widget::new("$sw", PageRef(0), Rect::new(0, 0, 40, 20), Kind::Switch);
+    sw.text = "ON".into();
+    sw.style = Some(model::StyleRef(0));
+    sw.state_styles = [
+        Some(model::StyleRef(0)),
+        Some(model::StyleRef(1)),
+        Some(model::StyleRef(2)),
+        None, // on_pressed falls back to state_styles[1] (on)
+        None, // off_hover falls back to state_styles[0] (off)
+        Some(model::StyleRef(3)),
+    ];
+    sw.value = Some(model::Value::Integer(0));
+    tree.widgets.push(sw);
+
+    let style_of =
+        |tree: &Interface, pressed: &[model::WidgetRef], hovered: &[model::WidgetRef]| {
+            plan::page(tree, PageRef(0), false, 1., (pressed, hovered))
+                .and_then(|p| p.widgets.into_iter().next()?.style_ref)
+        };
+    let r0 = model::WidgetRef(0);
+    assert_eq!(style_of(&tree, &[], &[]), Some(model::StyleRef(0)));
+    assert_eq!(style_of(&tree, &[r0], &[]), Some(model::StyleRef(2)));
+    assert_eq!(style_of(&tree, &[], &[r0]), Some(model::StyleRef(0)));
+
+    tree.widgets[0].value = Some(model::Value::Integer(1));
+    assert_eq!(style_of(&tree, &[], &[]), Some(model::StyleRef(1)));
+    assert_eq!(style_of(&tree, &[r0], &[]), Some(model::StyleRef(1)));
+    assert_eq!(style_of(&tree, &[], &[r0]), Some(model::StyleRef(3)));
+}
+
+#[test]
+fn pictureless_switch_caption_uses_the_selected_state_size() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 80.,
+            height: 40.,
+        },
+        background: model::Background {
+            color: Some(Rgba::rgb(0)),
+            ..Default::default()
+        },
+        ..Page::default()
+    });
+    for size in [Some(10.), Some(20.), None] {
+        tree.styles.push(model::TextStyle {
+            font: model::Font::Default,
+            size,
+            color: Rgba::rgb(0xff_ffff),
+            align: model::Align::Center,
+        });
+    }
+    let mut sw = Widget::new("$sw", PageRef(0), Rect::new(0, 0, 80, 40), Kind::Switch);
+    sw.text = "ON".into();
+    sw.hide.background = true;
+    sw.state_styles = [
+        Some(model::StyleRef(0)),
+        Some(model::StyleRef(1)),
+        None,
+        None,
+        None,
+        None,
+    ];
+    tree.widgets.push(sw);
+
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let mut ui = crate::ui();
+    let mut ink_rows = |tree: &mut Interface, value, on_style| {
+        if let Some(sw) = tree.widgets.first_mut() {
+            sw.value = Some(model::Value::Integer(value));
+            sw.state_styles[1] = Some(model::StyleRef(on_style));
+        }
+        let (el, _) = page(&mut ui, 0, tree, PageRef(0), &mut pictures, (1., &[]));
+        paint(&mut ui, el, 80, 40)
+            .as_chunks::<80>()
+            .0
+            .iter()
+            .filter(|row| row.iter().any(|p| p[0] > 128))
+            .count()
+    };
+    let off = ink_rows(&mut tree, 0, 1);
+    let on = ink_rows(&mut tree, 1, 1);
+    let fallback = ink_rows(&mut tree, 1, 2);
+
+    assert!(0 < off && off < on, "off={off}, on={on}");
+    assert_eq!(fallback, off, "the unspecified size defaults to 10 points");
+}
+
+#[test]
+fn pressed_button_shifts_caption_only_when_text_shift_on_press_is_enabled() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 40.,
+            height: 20.,
+        },
+        ..Page::default()
+    });
+    let mut btn = Widget::new(
+        "$b",
+        PageRef(0),
+        Rect::new(0, 0, 40, 20),
+        Kind::Button { momentary: false },
+    );
+    btn.text = "GO".into();
+    btn.text_shift_on_press = true;
+    tree.widgets.push(btn);
+
+    let r0 = model::WidgetRef(0);
+    let plan_idle = plan::page(&tree, PageRef(0), false, 1., (&[], &[])).unwrap();
+    assert!(!plan_idle.widgets[0].text_shift);
+    let plan_held = plan::page(&tree, PageRef(0), false, 1., (&[r0], &[])).unwrap();
+    assert!(plan_held.widgets[0].text_shift);
+
+    tree.widgets[0].text_shift_on_press = false;
+    let plan_disabled = plan::page(&tree, PageRef(0), false, 1., (&[r0], &[])).unwrap();
+    assert!(!plan_disabled.widgets[0].text_shift);
+}
+
+#[test]
+fn kontakt_table_honors_steps_shown_bipolar_colors_hide_bg_and_picture() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 40.,
+            height: 20.,
+        },
+        background: model::Background {
+            color: Some(Rgba::rgb(0x10_2030)),
+            ..model::Background::default()
+        },
+        ..Page::default()
+    });
+    // 4-column bipolar table with steps_shown = 2: col 0 (+100) fills left half
+    // above center, col 1 (-100) fills right half below center; cols 2..4 hidden.
+    let mut table = Widget::new(
+        "%t",
+        PageRef(0),
+        Rect::new(0, 0, 40, 20),
+        Kind::Table {
+            columns: 4,
+            range: Range {
+                min: -100.,
+                max: 100.,
+                default: 0.,
+                step: Some(1.),
+            },
+            bipolar: true,
+            cells: vec![100., -100., 100., 100.],
+            steps_shown: Some(2),
+        },
+    );
+    table.value = Some(model::Value::Integers(vec![100, -100, 100, 100]));
+    table.colors.bar = Some(Rgba::rgb(0xFF_0000));
+    table.colors.zero_line = Some(Rgba::rgb(0x00_FF00));
+    table.hide.background = true;
+    tree.widgets.push(table);
+
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let px = paint(&mut ui, el, 40, 20);
+    let at = |x: usize, y: usize| px.get(y * 40 + x).copied();
+
+    // HIDE_PART_BG lets page color show in empty half while still drawing bars!
+    assert_eq!(at(5, 3), Some([0xFF, 0, 0, 255]), "col 0 positive bar");
+    assert_eq!(
+        at(5, 16),
+        Some([0x10, 0x20, 0x30, 255]),
+        "col 0 lower shows page"
+    );
+    assert_eq!(
+        at(25, 3),
+        Some([0x10, 0x20, 0x30, 255]),
+        "col 1 upper shows page"
+    );
+    assert_eq!(at(25, 16), Some([0xFF, 0, 0, 255]), "col 1 negative bar");
+    assert_eq!(at(19, 10), Some([0, 0xFF, 0, 255]), "bipolar zero line");
+
+    // Adding a custom background picture draws both picture AND bars on top.
+    tree.assets.push(Asset {
+        path: "tbl.png".into(),
+        kind: AssetKind::Image(ImageMeta {
+            frames: 1,
+            size: Some(Size {
+                width: 40.,
+                height: 20.,
+            }),
+            ..ImageMeta::default()
+        }),
+    });
+    tree.widgets[0]
+        .images
+        .push(ImageUse::new(AssetRef(0), Role::Background));
+    let blue = png(40, 20, [0, 0, 255, 255].repeat(40 * 20).as_slice());
+    let mut pictures = Pictures::new(Box::new(move |p| (p == "tbl.png").then(|| blue.clone())));
+    let mut ui = crate::ui();
+    settle(&mut ui, &tree, &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let px = paint(&mut ui, el, 40, 20);
+    let at = |x: usize, y: usize| px.get(y * 40 + x).copied();
+    assert_eq!(at(5, 3), Some([0xFF, 0, 0, 255]), "bar draws over picture");
+    assert_eq!(
+        at(5, 16),
+        Some([0, 0, 255, 255]),
+        "picture shows behind bars"
+    );
+}
+
+#[test]
+fn stock_menu_respects_menu_arrow_flag() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 40.,
+            height: 20.,
+        },
+        ..Page::default()
+    });
+    let mut menu = Widget::new(
+        "$m",
+        PageRef(0),
+        Rect::new(0, 0, 40, 20),
+        Kind::Menu { items: Vec::new() },
+    );
+    menu.menu_arrow = false;
+    tree.widgets.push(menu);
+
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let without_arrow = paint(&mut ui, el, 40, 20);
+
+    tree.widgets[0].menu_arrow = true;
+    let (el, built) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    assert_eq!(built, 1, "menu_arrow change invalidates memo");
+    let with_arrow = paint(&mut ui, el, 40, 20);
+    assert_ne!(without_arrow, with_arrow, "arrow renders only when enabled");
+}
+
+#[test]
+fn style_font_and_value_y_invalidate_memo_and_table_columns_align_to_steps_shown() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 80.,
+            height: 40.,
+        },
+        background: model::Background {
+            color: Some(Rgba::rgb(0x10_2030)),
+            ..model::Background::default()
+        },
+        ..Page::default()
+    });
+    tree.styles.push(model::TextStyle {
+        font: model::Font::Stock(1),
+        size: Some(12.),
+        color: Rgba::rgb(0xFF_FFFF),
+        align: model::Align::Center,
+    });
+    let mut label = Widget::new("$l", PageRef(0), Rect::new(0, 0, 40, 20), Kind::Label);
+    label.text = "HI".into();
+    label.style = Some(model::StyleRef(0));
+    tree.widgets.push(label);
+
+    let mut field = Widget::new(
+        "$v",
+        PageRef(0),
+        Rect::new(40, 0, 40, 20),
+        Kind::ValueEdit {
+            range: Range {
+                min: 0.,
+                max: 100.,
+                default: 50.,
+                step: Some(1.),
+            },
+            display: model::Display::default(),
+            arrows: false,
+        },
+    );
+    field.value = Some(model::Value::Integer(50));
+    field.value_y = Some(1);
+    tree.widgets.push(field);
+
+    // 4-column table with only 2 stored values and steps_shown = 8 (clamped to 4):
+    // bars must occupy only the left half, leaving columns 2..4 empty.
+    let mut tbl = Widget::new(
+        "%t",
+        PageRef(0),
+        Rect::new(0, 20, 40, 20),
+        Kind::Table {
+            columns: 4,
+            range: Range {
+                min: 0.,
+                max: 100.,
+                default: 0.,
+                step: Some(1.),
+            },
+            bipolar: false,
+            cells: vec![100., 100.],
+            steps_shown: Some(8),
+        },
+    );
+    tbl.hide.background = true;
+    tbl.colors.bar = Some(Rgba::rgb(0x00_FF00));
+    tbl.value = Some(model::Value::Integers(vec![100, 100]));
+    tree.widgets.push(tbl);
+
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let px = paint(&mut ui, el, 80, 40);
+    let at = |x: usize, y: usize| px.get(y * 80 + x).copied();
+    assert_eq!(
+        at(5, 30),
+        Some([0, 0xFF, 0, 255]),
+        "col 0 draws in first quarter"
+    );
+    assert_eq!(
+        at(15, 30),
+        Some([0, 0xFF, 0, 255]),
+        "col 1 draws in second quarter"
+    );
+    assert_eq!(
+        at(25, 30),
+        Some([0x10, 0x20, 0x30, 255]),
+        "col 2 stays empty rather than stretching 2 bars across 4 columns"
+    );
+
+    // Changing only `style.font` (keeping StyleRef(0) and color/align/size identical)
+    // must invalidate the label's memo.
+    tree.styles[0].font = model::Font::Stock(12);
+    let (_, built) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    assert_eq!(built, 1, "style.font change invalidates memo");
+
+    // Changing `value_y` on the ValueEdit must invalidate and move the painted pixels.
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let before = paint(&mut ui, el, 80, 40);
+    tree.widgets[1].value_y = Some(6);
+    let (el, built) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    assert_eq!(built, 1, "value_y change invalidates memo");
+    let after = paint(&mut ui, el, 80, 40);
+    assert_ne!(before, after, "value_y changes painted pixels");
+}

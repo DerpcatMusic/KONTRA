@@ -2,7 +2,7 @@
 //! nothing: they run on the audio thread.
 
 use kontra_engine::ir::Sample;
-use kontra_engine::{Action, Engine, Plan, Text};
+use kontra_engine::{Action, Engine, Plan, SavedZoneDesc, Text};
 use kontra_stream::{Store, StoreConfig};
 use kontra_vm::{HostApi, HostCall, HostValue, event};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -49,29 +49,46 @@ fn call(e: &mut Engine, action: Action, ints: &[i64], texts: &[Text]) -> (HostVa
 fn midi_object_and_zone_commands_after_init_allocate_nothing() {
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![], 0);
-    plan.make_user_zones(1);
     // Zone 99's sample, and zone 98's saved with Windows separators.
     for (id, file) in [
         (99, "Lib/Samples/Piano C3.wav"),
         (98, r"Lib\Samples\Piano C3.wav"),
     ] {
-        let mut saved = plan.zone_facts[0].clone();
-        saved.id = id;
-        saved.user = false;
-        saved.source = Some(Arc::new(Sample {
-            name: "Piano C3".into(),
-            file: file.into(),
-            offset: 0,
-            len: None,
-            channels: 2,
-            frames: 48_000,
-            rate: 48_000,
-            keystream: None,
-            raw: None,
-        }));
-        plan.zone_facts.push(saved);
+        plan.push_saved_zone(
+            SavedZoneDesc {
+                id,
+                group: 0,
+                keys: 0..=127,
+                velocities: 1..=127,
+                root: 60,
+                start: 0,
+                end: 48_000,
+                start_mod: 0,
+                sample_rate: 48_000,
+                volume_db: 0.0,
+                pan: 0.0,
+                tune_semitones: 0.0,
+                key_fade: (0, 0),
+                velocity_fade: (0, 0),
+                sample_idx: None,
+                custom_name: None,
+                loops: &[],
+            },
+            Some(Arc::new(Sample {
+                name: "Piano C3".into(),
+                file: file.into(),
+                offset: 0,
+                len: None,
+                channels: 2,
+                frames: 48_000,
+                rate: 48_000,
+                keystream: None,
+                raw: None,
+            })),
+        );
     }
-    let user = i64::from(plan.zone_facts[0].id);
+    plan.make_user_zones(1);
+    let user = i64::from(plan.user_zone_ids().next().unwrap());
     let mut e = Engine::new(Arc::new(plan), store.client(), 48_000);
     // Sizing the buffer reserves, as a script does in `on init`.
     call(&mut e, Action::MfSetBufferSize, &[16], &[]);

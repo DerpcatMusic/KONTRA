@@ -53,11 +53,11 @@ pub fn event(e: &TraceEvent, plan: &Plan, samples: &[Option<String>], rate: u32)
             zone,
             mod_slot,
             target,
-            kind,
+            route,
             source,
         } => json!({
             "type":"route_onset", "frame":frame, "voice_slot":voice_slot, "zone":zone,
-            "mod_slot":mod_slot, "target":target, "route":super::routes::route(*kind), "source_at_onset":source,
+            "mod_slot":mod_slot, "target":target, "route":super::routes::route(*route), "source_at_onset":source,
         }),
         TraceEvent::Voice {
             frame,
@@ -110,7 +110,7 @@ pub fn route(value: &RouteValue, plan: &Plan, samples: &[Option<String>]) -> Val
         .filter(|m| {
             m.slot == value.mod_slot
                 && m.target == value.target
-                && std::mem::discriminant(&m.kind) == std::mem::discriminant(&value.kind)
+                && m.route.target == value.route.target
         })
         .map(|m| m.name.as_str())
         .collect();
@@ -135,6 +135,6 @@ pub fn route(value: &RouteValue, plan: &Plan, samples: &[Option<String>]) -> Val
     json!({"frame":value.frame,"voice_slot":value.voice_slot,"zone":value.zone,"sample":samples.get(value.zone),
         "controller":value.controller,"direct_controller_source":value.direct_controller_source,"controller_can_affect":value.controller_can_affect,"script_callback":value.script_callback,
         "evaluation":if value.note_onset {"note_onset"} else if value.timed_refresh {"timed_span_after_controller"} else {"controller_refresh"},
-        "mod_slot":value.mod_slot,"target":value.target,"name":name,"route":super::routes::route(value.kind),
+        "mod_slot":value.mod_slot,"target":value.target,"name":name,"route":super::routes::route(value.route),
         "input":value.source,"input_domain":input_domain,"contribution":value.value,"unit":format!("{:?}",value.unit)})
 }

@@ -16,11 +16,12 @@ pub mod soa;
 mod zones;
 
 pub use engine_pars::{EnginePar, EnginePars};
-pub use route::{held_time, route_source};
+pub use route::held_time;
 pub use script::{
     Callbacks, CcLink, Controls, Holder, KnobModPlan, LookPars, Recall, Saved, ScriptPlan,
 };
-pub use zones::{LoopPar, ZoneFacts, ZoneRules, user_loops, zone_name};
+pub use soa::{SavedZoneDesc, ZoneMatch, ZonePlay, ZoneTable};
+pub use zones::{LoopPar, UserZone, ZoneRules, user_loops, zone_name};
 
 use std::ops::RangeInclusive;
 
@@ -193,6 +194,10 @@ pub struct Group {
     pub muted: bool,
     /// Effects on its voices, by slot.
     pub inserts: Vec<Option<ir::Effect>>,
+    /// First insert slot that runs after the voice's amplitude envelope,
+    /// volume and pan (`0..amp_split` are pre-amp; `amp_split..` are
+    /// post-amp). Values `>= inserts.len()` place every insert pre-amp.
+    pub amp_split: u8,
     pub mods: Vec<ir::Mod>,
     pub envelope: Ahdsr,
     /// Read by `Source::Envelope(n)` and `Source::Lfo(n)`.
@@ -232,6 +237,12 @@ pub fn bus(groups: &[Group], zone: &Zone) -> usize {
 }
 
 impl Group {
+    /// Slot index where the amplitude stage sits, clamped to `self.inserts.len()`.
+    #[must_use]
+    pub fn amp_split_index(&self) -> usize {
+        usize::from(self.amp_split).min(self.inserts.len())
+    }
+
     /// Whether `source` moves with controller `cc`, through its shaper or
     /// any input of its blend.
     pub fn reads(&self, source: ir::Source, cc: u8) -> bool {
@@ -265,26 +276,16 @@ impl Group {
         self.mods
             .iter()
             .filter(|m| !m.bypass)
-            .any(|m| match m.kind {
-                ir::ModKind::Intensity {
-                    source: input, of, ..
-                } if of == source
-                    && matches!(source, ir::Source::Lfo(_) | ir::Source::Envelope(_)) =>
+            .any(|m| match m.route.target {
+                ir::ParamAddr::RouteIntensity { of }
+                    if of == source
+                        && matches!(source, ir::Source::Lfo(_) | ir::Source::Envelope(_)) =>
                 {
-                    self.reads(input, cc)
+                    self.reads(m.route.source, cc)
                 }
-                ir::ModKind::LfoPhase {
-                    source: input, lfo, ..
+                ir::ParamAddr::LfoParam { lfo, .. } if source == ir::Source::Lfo(lfo) => {
+                    self.reads(m.route.source, cc)
                 }
-                | ir::ModKind::LfoRate {
-                    source: input, lfo, ..
-                }
-                | ir::ModKind::LfoDivision {
-                    source: input, lfo, ..
-                }
-                | ir::ModKind::LfoHz {
-                    source: input, lfo, ..
-                } if source == ir::Source::Lfo(lfo) => self.reads(input, cc),
                 _ => false,
             })
     }
@@ -298,17 +299,14 @@ impl Group {
             purged: false,
             muted: false,
             inserts: Vec::new(),
+            amp_split: u8::MAX,
             mods: vec![ir::Mod {
                 name: String::new(),
                 slot: 0,
                 target: 0,
                 bypass: false,
-                kind: ir::ModKind::Volume {
-                    source: ir::Source::Velocity,
-                    intensity: 1.0,
-                    curve: ir::Curve::Decibels(24.0),
-                    tau_ms: 0.0,
-                },
+                route: ir::ModRoute::new(ir::Source::Velocity, ir::ParamAddr::Volume, 1.0)
+                    .law(ir::RouteLaw::Gain(ir::Curve::Decibels(24.0))),
             }],
             envelope: Ahdsr::GATE,
             envelopes: Vec::new(),
@@ -369,7 +367,7 @@ impl Group {
         self.mods
             .iter()
             .filter(|m| i32::from(m.slot) == slot)
-            .find_map(|m| match source(&m.kind) {
+            .find_map(|m| match m.route.driver() {
                 Some(ir::Source::Lfo(n)) => Some(usize::from(n)),
                 _ => None,
             })
@@ -399,7 +397,7 @@ pub struct Zone {
     // Voice group.
     /// Voice group, for polyphony limits, choke and group round robins.
     pub group: u32,
-    /// Its index among its group's zones ([`ir::ModKind::Mix`] names it).
+    /// Its index among its group's zones ([`ir::ParamAddr::ZoneMix`] names it).
     pub member: u16,
     /// A voice of this zone stops when a voice of voice group `off_by`
     /// starts (hi-hat choke), as its own voice group stops voices.
@@ -420,7 +418,7 @@ pub struct Zone {
     /// The sample's own rate, for the step against the engine rate.
     pub sample_rate: u32,
     pub region: Region,
-    /// Frames a [`ir::ModKind::SampleStart`] may move the start either way.
+    /// Frames a [`ir::ParamAddr::SampleStart`] route may move the start either way.
     pub start_mod: u64,
     /// Linear gain at full velocity.
     pub gain: f32,
@@ -510,7 +508,7 @@ pub struct Bus {
     /// A disabled bus starts no voices (purged mic): it costs no CPU.
     pub enabled: bool,
     /// Routes moving its inserts ([`ir::Bus::mods`]) and the blends they read.
-    pub mods: Vec<ir::ModKind>,
+    pub mods: Vec<ir::ModRoute>,
     pub blends: Vec<ir::Blend>,
     /// Read by `Source::Lfo(n)` in those routes ([`ir::Bus::lfos`]).
     pub lfos: Vec<ir::Lfo>,
@@ -580,17 +578,18 @@ pub struct Plan {
     pub knob_lfos: Vec<ir::Lfo>,
     /// Slots loaded with a [`ir::SlotShapes::types`] entry ([`Plan::load_type`]).
     pub loaded: Vec<(ir::RackAt, u8, u16)>,
-    /// Every zone as scripts find and read it (`find_zone`, `get_zone_par`).
-    pub zone_facts: Vec<ZoneFacts>,
-    /// Sparse loop parameters for user zones (`set_num_user_zones` /
-    /// `set_loop_par`), sorted by zone id so audio-thread `get_loop_par`
-    /// binary-searches with zero allocation while saved zones pay 0 bytes.
-    pub user_loop_pars: Vec<(u32, [LoopPar; 8])>,
+    /// Compact SoA table of every saved zone (active, purged, or oscillator)
+    /// read by scripts (`find_zone`, `get_zone_par`, `get_loop_par`) with zero
+    /// per-zone heap allocations and O(1) clone via `Arc`.
+    pub zone_table: std::sync::Arc<soa::ZoneTable>,
+    /// Sparse script-created user zones (`set_num_user_zones` / `set_sample` /
+    /// `set_loop_par`); empty (0 bytes) for instruments without user zones.
+    pub user_zones: Vec<UserZone>,
     /// Saved-purged groups, nothing of them loaded: what a script's
     /// `purge_group(g, 1)` builds ([`Dormant`]).
     pub dormant: std::sync::Arc<Vec<Dormant>>,
     /// The sample each user zone's playing [`Zone`] was built from; a
-    /// zone whose [`ZoneFacts::source`] differs is built again
+    /// zone whose [`UserZone::source`] differs is built again
     /// (`kontra_prepare::user_zones`).
     pub user_loaded: Vec<(u32, std::sync::Arc<ir::Sample>)>,
     /// Optional dynamic multi-channel audio routing DAG ([`ir::Instrument::graph`]).
@@ -667,43 +666,12 @@ impl Plan {
             knob_blends: Vec::new(),
             knob_lfos: Vec::new(),
             loaded: Vec::new(),
-            zone_facts: Vec::new(),
-            user_loop_pars: Vec::new(),
+            zone_table: std::sync::Arc::default(),
+            user_zones: Vec::new(),
             dormant: std::sync::Arc::default(),
             user_loaded: Vec::new(),
             graph: None,
         }
-    }
-}
-
-/// What drives a route; the amplitude envelope has no source.
-pub fn source(kind: &ir::ModKind) -> Option<ir::Source> {
-    use ir::ModKind as K;
-    match *kind {
-        K::Volume { source, .. }
-        | K::Pitch { source, .. }
-        | K::Pan { source, .. }
-        | K::Cutoff { source, .. }
-        | K::CutoffHz { source, .. }
-        | K::Resonance { source, .. }
-        | K::EqGain { source, .. }
-        | K::EffectParam { source, .. }
-        | K::Mix { source, .. }
-        | K::Send { source, .. }
-        | K::SampleStart { source, .. }
-        | K::Attack { source, .. }
-        | K::Hold { source, .. }
-        | K::Decay { source, .. }
-        | K::Sustain { source, .. }
-        | K::Release { source, .. }
-        | K::LfoPhase { source, .. }
-        | K::LfoRate { source, .. }
-        | K::LfoHz { source, .. }
-        | K::LfoDivision { source, .. }
-        | K::Intensity { source, .. }
-        | K::Wavetable { source, .. }
-        | K::LoopShift { source, .. } => Some(source),
-        K::Envelope => None,
     }
 }
 
@@ -726,23 +694,28 @@ mod route_dependency_tests {
                 slot: 1,
                 target: 0,
                 bypass: false,
-                kind: ir::ModKind::Intensity {
-                    source: ir::Source::Controller(1),
-                    of: ir::Source::Lfo(0),
-                    depth: 1.0,
-                },
+                route: ir::ModRoute::new(
+                    ir::Source::Controller(1),
+                    ir::ParamAddr::RouteIntensity {
+                        of: ir::Source::Lfo(0),
+                    },
+                    1.0,
+                ),
             },
             ir::Mod {
                 name: "rate".into(),
                 slot: 2,
                 target: 0,
                 bypass: false,
-                kind: ir::ModKind::LfoHz {
-                    source: ir::Source::Controller(11),
-                    lfo: 0,
-                    depth: 1.0,
-                    range_hz: [0.0, 4.0],
-                },
+                route: ir::ModRoute::new(
+                    ir::Source::Controller(11),
+                    ir::ParamAddr::LfoParam {
+                        lfo: 0,
+                        param: ir::LfoParam::Hz,
+                    },
+                    1.0,
+                )
+                .law(ir::RouteLaw::Range([0.0, 4.0])),
             },
         ];
         assert!(group.reads_modulated(ir::Source::Lfo(0), 1));

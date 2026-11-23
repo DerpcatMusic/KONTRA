@@ -10,7 +10,7 @@ use kontra_plan::par_laws::{
     CUBE, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S, attack_shape, attack_x,
     routed_envelope, routed_index, setting, stage_point, stage_setting,
 };
-use kontra_plan::route_depth::{depth, set_signed, signed};
+use kontra_plan::route_depth::{has_depth, set_signed, signed};
 
 pub(crate) use kontra_plan::par_values::{BUS_OFFSET, LevelPar, effect_par, level_par};
 
@@ -451,7 +451,7 @@ impl Engine {
         // A carried route's depth, else the saved one of a route not carried.
         let route = || {
             let carried = g.mods.iter().find(|m| addressed(m, slot, generic));
-            carried.and_then(|m| signed(&m.kind)).or_else(|| {
+            carried.and_then(|m| signed(&m.route)).or_else(|| {
                 let r = g.routes.iter().find(|r| i32::from(r.slot) == slot)?;
                 r.depths.get(usize::try_from(generic.max(0)).ok()?).copied()
             })
@@ -507,13 +507,28 @@ impl Engine {
             let Some(m) = self.groups.get_mut(g).and_then(|g| g.mods.get_mut(m)) else {
                 continue;
             };
-            let set = match &mut m.kind {
-                ir::ModKind::Pitch { semitones, .. } => {
-                    *semitones = v;
+            let mut r = m.route;
+            // A pitch route's amount is its range; a scaled or bipolar one
+            // (EQ gain, effect, start phase, loop shift) takes none here.
+            let set = match r.target {
+                ir::ParamAddr::Pitch => {
+                    r.span = v;
                     true
                 }
-                kind => depth(kind).map(|d| *d = v).is_some(),
+                ir::ParamAddr::EqBandGain { .. }
+                | ir::ParamAddr::EffectParam { .. }
+                | ir::ParamAddr::LoopShift { .. }
+                | ir::ParamAddr::LfoParam {
+                    param: ir::LfoParam::Phase,
+                    ..
+                } => false,
+                _ if has_depth(&r) => {
+                    r.depth = v;
+                    true
+                }
+                _ => false,
             };
+            m.route = r;
             if set {
                 many |= one.is_some_and(|o| o != g);
                 one = Some(g);
@@ -614,8 +629,11 @@ impl Engine {
                 });
                 match g.mod_mut(slot, generic) {
                     Some(m) => {
-                        let sign = signed(&m.kind).unwrap_or(1.0).signum();
-                        set_signed(&mut m.kind, sign * SQUARE.eval_f64(x) as f32)
+                        let mut r = m.route;
+                        let sign = signed(&r).unwrap_or(1.0).signum();
+                        let set = set_signed(&mut r, sign * SQUARE.eval_f64(x) as f32);
+                        m.route = r;
+                        set
                     }
                     None => saved.is_some(),
                 }
@@ -624,7 +642,12 @@ impl Engine {
                 let saved =
                     uncarried(g, slot, generic).map(|d| *d = SIGNED_CUBE.eval_f64(x) as f32);
                 match g.mod_mut(slot, generic) {
-                    Some(m) => set_signed(&mut m.kind, SIGNED_CUBE.eval_f64(x) as f32),
+                    Some(m) => {
+                        let mut r = m.route;
+                        let set = set_signed(&mut r, SIGNED_CUBE.eval_f64(x) as f32);
+                        m.route = r;
+                        set
+                    }
                     None => saved.is_some(),
                 }
             }
@@ -782,7 +805,8 @@ impl Engine {
                 updated = true;
             }
         }
-        let amplitude = |m: &ir::Mod| i32::from(m.slot) == slot && m.kind == ir::ModKind::Envelope;
+        let amplitude =
+            |m: &ir::Mod| i32::from(m.slot) == slot && m.route.target == ir::ParamAddr::AmpEnvelope;
         if !g.mods.iter().any(amplitude) {
             return updated;
         }

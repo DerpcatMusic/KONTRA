@@ -338,6 +338,27 @@ fn equal_power_cc_crossfade_holds_constant_power_at_midpoint() {
 }
 
 #[test]
+fn a_voice_pans_by_its_instruments_balance_law() {
+    // The far (left) side over the near: a quarter right, Kontakt's linear
+    // balance keeps 3/4, UVI's cosine 0.854; half right, the cosine half.
+    for (balance, pan, want) in [
+        (kontra_ir::Balance::Linear, 0.25, 0.75),
+        (kontra_ir::Balance::Cosine, 0.25, 0.853_553),
+        (kontra_ir::Balance::Cosine, 0.5, 0.5),
+    ] {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut z = zone(&mut store, 1.0);
+        z.pan = pan;
+        let mut plan = Plan::new(vec![z], 16);
+        plan.output.balance = balance;
+        let mut e = engine(&store, plan);
+        level(&mut e, &[on(60, 1.0)]);
+        let [l, r] = (0..8).map(|_| level(&mut e, &[])).last().unwrap();
+        assert!((l / r - want).abs() < 1e-3, "{balance:?} {pan}: {l} {r}");
+    }
+}
+
+#[test]
 fn complementary_random_start_rules_partition_every_note_on() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut left = zone(&mut store, 1.0);
@@ -381,7 +402,7 @@ fn complementary_random_start_rules_partition_every_note_on() {
 #[test]
 fn per_note_cc_and_note_expr_modulate_each_sounding_note_independently() {
     use kontra_engine::{Event, HostNote, HostPattern, NoteExpression};
-    use kontra_ir::{Curve, Mod, ModKind, NoteExpr, Source};
+    use kontra_ir::{Curve, Mod, ModRoute, NoteExpr, ParamAddr, RouteLaw, Source};
 
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut left = zone(&mut store, 1.0);
@@ -398,27 +419,27 @@ fn per_note_cc_and_note_expr_modulate_each_sounding_note_independently() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::Volume {
-                source: Source::PerNoteCc {
+            route: ModRoute::new(
+                Source::PerNoteCc {
                     registered: true,
                     index: 74,
                 },
-                intensity: 1.0,
-                curve: Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            },
+                ParamAddr::Volume,
+                1.0,
+            )
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
         },
         Mod {
             name: "expr".into(),
             slot: 1,
             target: 0,
             bypass: false,
-            kind: ModKind::Volume {
-                source: Source::NoteExpr(NoteExpr::Expression),
-                intensity: 1.0,
-                curve: Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            },
+            route: ModRoute::new(
+                Source::NoteExpr(NoteExpr::Expression),
+                ParamAddr::Volume,
+                1.0,
+            )
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
         },
     ];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -659,10 +680,11 @@ fn a_controller_scales_a_send_level_live() {
         level: 1.0,
         post_fader: false,
     };
-    let route = ir::ModKind::Send {
-        source: ir::Source::Blend(0),
-        send: 0,
-    };
+    let route = ir::ModRoute::new(
+        ir::Source::Blend(0),
+        ir::ParamAddr::BusSend { send: 0 },
+        1.0,
+    );
     plan.buses.push(bus(vec![send], vec![route], vec![blend]));
     plan.buses.push(Bus {
         gain: 1.0,
@@ -721,10 +743,11 @@ fn a_free_lfo_scales_a_send_level_live() {
         }],
         to_main: true,
         enabled: true,
-        mods: vec![ir::ModKind::Send {
-            source: ir::Source::Blend(0),
-            send: 0,
-        }],
+        mods: vec![ir::ModRoute::new(
+            ir::Source::Blend(0),
+            ir::ParamAddr::BusSend { send: 0 },
+            1.0,
+        )],
         blends: vec![blend],
         lfos: vec![lfo],
     });
@@ -878,12 +901,12 @@ fn pitch_bend_moves_sounding_voices_by_its_route() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: kontra_engine::ir::ModKind::Pitch {
-            source: kontra_engine::ir::Source::PitchBend,
-            semitones: 2.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        },
+        route: kontra_engine::ir::ModRoute::new(
+            kontra_engine::ir::Source::PitchBend,
+            kontra_engine::ir::ParamAddr::Pitch,
+            1.0,
+        )
+        .span(2.0),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let bend = |lsb, msb| Timed {
@@ -923,12 +946,7 @@ fn a_mapped_bend_bends_pitch_by_its_table_as_is() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Pitch {
-            source: ir::Source::Shaped(0),
-            semitones: 2.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Shaped(0), ir::ParamAddr::Pitch, 1.0).span(2.0),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let bend = |lsb, msb| Timed {
@@ -950,7 +968,7 @@ fn a_mapped_bend_bends_pitch_by_its_table_as_is() {
 
 #[test]
 fn a_sample_start_route_moves_the_start_within_its_range() {
-    use kontra_engine::ir::{Mod, ModKind, Source};
+    use kontra_engine::ir::{Mod, ModRoute, ParamAddr, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     // A ramp: each frame's value is its index / 4096, so the output names the frame.
     let frames = 4096u64;
@@ -991,10 +1009,7 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::SampleStart {
-                source: Source::Constant,
-                depth,
-            },
+            route: ModRoute::new(Source::Constant, ParamAddr::SampleStart, depth),
         }];
         let mut e = Engine::new(Arc::new(plan.clone()), store.client(), RATE);
         let frame = level(&mut e, &[on(60, 1.0)])[0] * 4096.0;
@@ -1040,7 +1055,7 @@ fn a_group_eq_shapes_its_voices() {
 
 #[test]
 fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
-    use kontra_engine::ir::{Curve, Mod, ModKind, Source, Transfer};
+    use kontra_engine::ir::{Curve, Mod, ModRoute, ParamAddr, RouteLaw, Source, Transfer};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
     plan.groups[0].shapers = vec![Transfer {
@@ -1053,12 +1068,8 @@ fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Volume {
-            source: Source::Shaped(0),
-            intensity: 1.0,
-            curve: Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::Shaped(0), ParamAddr::Volume, 1.0)
+            .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     // No message yet: the wheel reads 127, which the table halves.
@@ -1073,7 +1084,7 @@ fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
 
 #[test]
 fn a_blended_macro_moves_one_cell_of_a_sounding_voices_matrix() {
-    use kontra_engine::ir::{Blend, Factor, Mod, ModKind, Source, Term, Transfer};
+    use kontra_engine::ir::{Blend, Factor, Mod, ModRoute, ParamAddr, Source, Term, Transfer};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = zone(&mut store, 1.0);
     let mut mix = [[0.0; 2]; 16];
@@ -1103,12 +1114,15 @@ fn a_blended_macro_moves_one_cell_of_a_sounding_voices_matrix() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Mix {
-            source: Source::Shaped(0),
-            zone: 0,
-            row: 0,
-            side: 0,
-        },
+        route: ModRoute::new(
+            Source::Shaped(0),
+            ParamAddr::ZoneMix {
+                zone: 0,
+                row: 0,
+                side: 0,
+            },
+            1.0,
+        ),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[cc(1, 127), cc(2, 127)]);
@@ -1121,7 +1135,7 @@ fn a_blended_macro_moves_one_cell_of_a_sounding_voices_matrix() {
 
 #[test]
 fn a_controller_pitch_route_moves_sounding_voices() {
-    use kontra_engine::ir::{Mod, ModKind, Source};
+    use kontra_engine::ir::{Mod, ModRoute, ParamAddr, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
     plan.groups[0].mods = vec![Mod {
@@ -1129,12 +1143,7 @@ fn a_controller_pitch_route_moves_sounding_voices() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Pitch {
-            source: Source::Controller(1),
-            semitones: 12.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::Controller(1), ParamAddr::Pitch, 1.0).span(12.0),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
@@ -1150,7 +1159,7 @@ fn a_controller_pitch_route_moves_sounding_voices() {
 
 #[test]
 fn an_envelope_pitch_route_rises_holds_and_releases() {
-    use kontra_engine::ir::{Breakpoint, Breakpoints, Mod, ModKind, Source};
+    use kontra_engine::ir::{Breakpoint, Breakpoints, Mod, ModRoute, ParamAddr, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
     let point = |level| Breakpoint {
@@ -1171,12 +1180,7 @@ fn an_envelope_pitch_route_rises_holds_and_releases() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::Pitch {
-            source: Source::Envelope(0),
-            semitones: 12.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        },
+        route: ModRoute::new(Source::Envelope(0), ParamAddr::Pitch, 1.0).span(12.0),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let advance = |e: &mut Engine, events: &[Timed<Event>]| {
@@ -1281,12 +1285,7 @@ fn a_bend_in_a_glides_last_span_keeps_the_rest_of_the_slide() {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ir::ModKind::Pitch {
-                source: ir::Source::PitchBend,
-                semitones: 2.0,
-                depth: 1.0,
-                tau_ms: 0.0,
-            },
+            route: ir::ModRoute::new(ir::Source::PitchBend, ir::ParamAddr::Pitch, 1.0).span(2.0),
         }];
         let mut e = engine(&store, plan);
         level(&mut e, &[on(60, 1.0)]);
@@ -1490,7 +1489,7 @@ fn midi_cc121_restores_expression_for_zone_admission() {
 
 #[test]
 fn midi_cc121_reset_all_controllers_resets_mod_bend_pedals_and_preserves_volume_pan_bank() {
-    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    use kontra_engine::ir::{Curve, Mod, ModRoute, ParamAddr, RouteLaw, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
     plan.groups[0].envelope.release = 16;
@@ -1501,24 +1500,15 @@ fn midi_cc121_reset_all_controllers_resets_mod_bend_pedals_and_preserves_volume_
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::Volume {
-                source: Source::Controller(1),
-                intensity: 1.0,
-                curve: Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            },
+            route: ModRoute::new(Source::Controller(1), ParamAddr::Volume, 1.0)
+                .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
         },
         Mod {
             name: String::new(),
             slot: 1,
             target: 0,
             bypass: false,
-            kind: ModKind::Pitch {
-                source: Source::PitchBend,
-                semitones: 12.0,
-                depth: 1.0,
-                tau_ms: 0.0,
-            },
+            route: ModRoute::new(Source::PitchBend, ParamAddr::Pitch, 1.0).span(12.0),
         },
     ];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -1714,7 +1704,7 @@ fn stealing_honors_prefer_released_and_quietest_and_skips_self_note_exclusive_ch
 
 #[test]
 fn reverse_start_offset_and_negative_s_mod_clamp_and_offset_limited() {
-    use kontra_engine::ir::{Mod, ModKind, Source};
+    use kontra_engine::ir::{Mod, ModRoute, ParamAddr, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let frames = 4096u64;
     let bytes = (0..frames)
@@ -1755,10 +1745,7 @@ fn reverse_start_offset_and_negative_s_mod_clamp_and_offset_limited() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::SampleStart {
-            source: Source::Constant,
-            depth: 1.0,
-        },
+        route: ModRoute::new(Source::Constant, ParamAddr::SampleStart, 1.0),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     // At frame 128 in reverse from end = 4096 - 500 = 3596: plays 3595 - 128 = 3467.
@@ -1787,10 +1774,7 @@ fn reverse_start_offset_and_negative_s_mod_clamp_and_offset_limited() {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ModKind::SampleStart {
-            source: Source::Constant,
-            depth: -1.0,
-        },
+        route: ModRoute::new(Source::Constant, ParamAddr::SampleStart, -1.0),
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     // Clamped to 200: at frame 128 reads 328 (NOT 0 + 128).

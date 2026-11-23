@@ -190,7 +190,7 @@ impl Graph {
             .flat_map(|from| {
                 from.deps
                     .iter()
-                    .map(|&to| &self.nodes[to])
+                    .filter_map(|&to| self.nodes.get(to))
                     .filter(|to| to.workspace)
                     .map(|to| (from.name.clone(), to.name.clone()))
             })
@@ -199,23 +199,27 @@ impl Graph {
 
     /// Shortest dependency path from `start` to a node matching `is_target`, by name.
     fn path_to(&self, start: usize, is_target: impl Fn(&Node) -> bool) -> Option<Vec<String>> {
+        // Each reached node's parent on the path (itself for `start`).
         let mut parent: Vec<Option<usize>> = vec![None; self.nodes.len()];
-        let mut seen = vec![false; self.nodes.len()];
+        *parent.get_mut(start)? = Some(start);
         let mut queue = VecDeque::from([start]);
-        seen[start] = true;
         while let Some(current) = queue.pop_front() {
-            for &next in &self.nodes[current].deps {
-                if seen[next] {
+            for &next in &self.nodes.get(current)?.deps {
+                let slot = parent.get_mut(next)?;
+                if slot.is_some() {
                     continue;
                 }
-                seen[next] = true;
-                parent[next] = Some(current);
-                if is_target(&self.nodes[next]) {
+                *slot = Some(current);
+                if is_target(self.nodes.get(next)?) {
                     let mut names = Vec::new();
-                    let mut at = Some(next);
-                    while let Some(node) = at {
-                        names.push(self.nodes[node].name.clone());
-                        at = parent[node];
+                    let mut at = next;
+                    loop {
+                        names.push(self.nodes.get(at)?.name.clone());
+                        let up = (*parent.get(at)?)?;
+                        if up == at {
+                            break;
+                        }
+                        at = up;
                     }
                     names.reverse();
                     return Some(names);

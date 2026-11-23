@@ -281,12 +281,18 @@ fn an_idled_chorus_plays_on_in_step_with_one_that_ran() {
     let mut s = echo();
     (s.ms, s.depth_ms, s.lfo_hz, s.phase, s.second_head) = (12.0, 4.0, 0.7, 0.25, true);
     s.feedback = diagonal(0.2);
-    let (mut ran, mut idled) = (ModDelay::new(s.clone(), RATE, 12.0), ModDelay::new(s.clone(), RATE, 12.0));
+    let (mut ran, mut idled) = (
+        ModDelay::new(s.clone(), RATE, 12.0),
+        ModDelay::new(s.clone(), RATE, 12.0),
+    );
     for d in [&mut ran, &mut idled] {
         let mut io = impulse(RATE as usize);
         d.process(&mut io);
         // A new time while silent: the head glides there unheard.
-        d.set(Settings { ms: 7.0, ..s.clone() });
+        d.set(Settings {
+            ms: 7.0,
+            ..s.clone()
+        });
     }
     let quiet = 30_011;
     let mut silence = vec![[0.0; 2]; quiet];

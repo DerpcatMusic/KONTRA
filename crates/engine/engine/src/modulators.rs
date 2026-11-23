@@ -17,8 +17,8 @@ use std::cell::Cell;
 #[derive(Default)]
 pub(crate) struct Memo {
     live: Cell<bool>,
-    lfo: [Slot; WARPS],
-    envelope: [Slot; WARPS],
+    lfo: [Slot; MEMO],
+    envelope: [Slot; MEMO],
     zone_envelope: [Cell<Option<ZoneRead>>; 16],
 }
 
@@ -110,34 +110,75 @@ impl Memo {
 }
 
 pub(crate) use kontra_plan::modulation::{
-    Age, CHAOS_START, Chaos, EnvScale, WARPS, chaos_step, lfo, smoothed_shared, stretched,
+    Age, CHAOS_START, Chaos, EnvScale, chaos_step, lfo, smoothed_shared, stretched,
 };
 
+/// How many of a group's LFOs and envelopes [`Memo`] remembers; later
+/// ones are read afresh each time.
+const MEMO: usize = 8;
+
+/// A voice's timed state ([`crate::Slot::warp`], `chaos`, `stretch`), lent
+/// out of its slot while the engine reads it and changes the voice.
+#[derive(Default)]
+pub(crate) struct Timed {
+    pub(crate) warp: Box<[f32]>,
+    pub(crate) chaos: Box<[Chaos]>,
+    pub(crate) stretch: Box<[EnvScale]>,
+}
+
+impl Timed {
+    /// `timing` reading this state.
+    pub(crate) fn age<'a>(&'a self, timing: Age<'static>) -> Age<'a> {
+        Age {
+            warp: &self.warp,
+            chaos: &self.chaos,
+            stretch: &self.stretch,
+            ..timing
+        }
+    }
+}
+
 impl Engine {
+    /// Voice `i`'s timed state, taken out of its slot (no allocation): give
+    /// it back by assigning the slot's fields.
+    pub(crate) fn lend_timed(&mut self, i: usize) -> Timed {
+        let Some(s) = self.voices.get_mut(i) else {
+            return Timed::default();
+        };
+        Timed {
+            warp: std::mem::take(&mut s.warp),
+            chaos: std::mem::take(&mut s.chaos),
+            stretch: std::mem::take(&mut s.stretch),
+        }
+    }
+
     /// A voice's age now, from when it started and when its key went up.
-    pub(crate) fn age(&self, started: SampleTime, released: Option<SampleTime>) -> Age {
+    pub(crate) fn age(&self, started: SampleTime, released: Option<SampleTime>) -> Age<'static> {
         let seconds = |t: SampleTime| t.0 as f32 / self.rate as f32;
         Age {
             held: seconds(SampleTime(self.now.0.saturating_sub(started.0))),
             released: released.map(|r| seconds(SampleTime(r.0.saturating_sub(started.0)))),
             now: seconds(self.now),
-            warp: [0.0; WARPS],
-            chaos: [0.0; WARPS],
-            stretch: [EnvScale::UNITY; WARPS],
-            start_frame: 0.0,
-            sample_pos: 0.0,
-            unpitched_pos: 0.0,
+            ..Age::START
         }
     }
 
     /// The full modulation age of an active voice slot, including its
     /// sample-position coordinates for per-zone envelopes.
-    pub(crate) fn slot_age(&self, slot: &crate::Slot) -> Age {
+    pub(crate) fn slot_age<'a>(&self, slot: &'a crate::Slot) -> Age<'a> {
+        Age {
+            warp: &slot.warp,
+            chaos: &slot.chaos,
+            stretch: &slot.stretch,
+            ..self.slot_timing(slot)
+        }
+    }
+
+    /// [`Self::slot_age`] without the slot's timed state, for a caller that
+    /// lends that out ([`Self::lend_timed`]) while it changes the engine.
+    pub(crate) fn slot_timing(&self, slot: &crate::Slot) -> Age<'static> {
         let elapsed = self.now.0.saturating_sub(slot.started.0) as f64;
         Age {
-            warp: slot.warp,
-            chaos: slot.chaos.map(|c| c[3]),
-            stretch: slot.stretch,
             start_frame: slot.start_frame,
             sample_pos: slot.start_frame + slot.voice.position(),
             unpitched_pos: slot.start_frame + elapsed,
@@ -158,8 +199,9 @@ impl Engine {
             let Some(zone) = plan.zones.get(slot.zone) else {
                 continue;
             };
-            let gliding =
-                slot.bend[0] != slot.bend[1] || slot.pan[0] != slot.pan[1] || slot.slide.is_some();
+            let gliding = slot.bend.iter().any(|b| b[0] != b[1])
+                || slot.pan[0] != slot.pan[1]
+                || slot.slide.is_some();
             let timed = ramping
                 || gliding
                 || !zone.envelopes.is_empty()
@@ -173,6 +215,12 @@ impl Engine {
             let (Some(n), true, true) = (n, timed, slot.voice.is_active()) else {
                 continue;
             };
+            // This span's warps, worked out beside the current ones.
+            let mut next = std::mem::take(&mut self.warp_scratch);
+            let mut timed = self.lend_timed(i);
+            let Some(slot) = self.voices.get(i) else {
+                continue;
+            };
             #[cfg(feature = "trace")]
             if pending != 0
                 && let Some(trace) = &self.trace
@@ -182,12 +230,9 @@ impl Engine {
             self.memo.begin();
             let rate = self.rate;
             let span = (MAX_SPAN - self.now.0 % MAX_SPAN) as f32 / rate as f32;
-            let chaos = self.chaos(zone, slot.chaos, span);
-            let age = Age {
-                chaos: chaos.map(|c| c[3]),
-                ..self.slot_age(slot)
-            };
-            let warp = self.warp(zone, &n, age, span);
+            self.chaos(zone, &mut timed.chaos, span);
+            let age = timed.age(self.slot_timing(slot));
+            self.warp(zone, &n, age, span, &mut next);
             let to = self.group_pan(zone);
             let pan = voice_gain::glide(slot.pan[0], to, GROUP_PAN_TAU_MS, MAX_SPAN as f32, rate);
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan);
@@ -210,17 +255,17 @@ impl Engine {
                 if let Some(read) = read {
                     slot.voice.set_read(read);
                 }
-                let at = voice_gain::glide(
-                    slot.bend[0],
-                    bend.semitones,
-                    bend.tau_ms,
-                    MAX_SPAN as f32,
-                    rate,
-                );
-                slot.bend = [at, bend.semitones];
+                let mut at = 0.0;
+                for (b, (st, tau_ms)) in slot.bend.iter_mut().zip(bend.lagging) {
+                    *b = [
+                        voice_gain::glide(b[0], st, tau_ms, MAX_SPAN as f32, rate),
+                        st,
+                    ];
+                    at += b[0];
+                }
                 slot.pan = [pan, to];
-                slot.warp = warp;
-                slot.chaos = chaos;
+                self.warp_scratch = std::mem::replace(&mut timed.warp, next);
+                (slot.warp, slot.chaos, slot.stretch) = (timed.warp, timed.chaos, timed.stretch);
                 slot.voice
                     .set_step(voice_gain::bent(law, step, bend.instant + at));
                 if slot.slide.is_some() {
@@ -232,43 +277,77 @@ impl Engine {
 }
 
 impl Engine {
-    /// `age`'s warps `span` seconds on: each LFO's live rate routes, read
-    /// now, held over the span (the rate steps, the phase stays continuous).
-    fn warp(&self, zone: &crate::Zone, note: &Note, age: Age, span: f32) -> [f32; WARPS] {
-        let mut warp = age.warp;
-        let Some(g) = self.groups.get(zone.group as usize) else {
-            return warp;
-        };
-        // Per LFO: Hz added, and its range once a route reaches it.
-        let mut added = [(0.0, None); WARPS];
-        // Places each synced LFO's rate has moved along the note ladder.
-        let mut shifted = [0.0f32; WARPS];
-        for m in g.mods.iter().filter(|m| !m.bypass) {
-            if let ir::ModKind::LfoDivision { source, lfo, depth } = m.kind
-                && let Some(places) = shifted.get_mut(usize::from(lfo))
-            {
-                let input = self.source(zone, source, note, age);
-                *places += input.unwrap_or(0.0) * depth * 29.0;
-            }
-            if let ir::ModKind::LfoHz {
-                source,
-                lfo,
-                depth,
-                range_hz: [lo, hi],
-            } = m.kind
-                && let Some((hz, range)) = added.get_mut(usize::from(lfo))
-            {
-                let input = self.source(zone, source, note, age);
-                let value = input.unwrap_or(0.0) * depth * (hi - lo);
-                #[cfg(feature = "trace")]
-                self.trace_route(zone, m, input, value, crate::RouteUnit::LfoHertz);
-                *hz += value;
-                *range = Some([lo, hi.max(lo)]);
-            }
+    /// `age`'s warps `span` seconds on, into `out` (one per LFO): each
+    /// LFO's live rate routes, read now, held over the span (the rate steps,
+    /// the phase stays continuous).
+    fn warp(&self, zone: &crate::Zone, note: &Note, age: Age, span: f32, out: &mut [f32]) {
+        for (w, was) in out.iter_mut().zip(age.warp) {
+            *w = *was;
         }
-        for (((w, (hz, range)), lfo), places) in
-            warp.iter_mut().zip(added).zip(&g.lfos).zip(shifted)
-        {
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return;
+        };
+        for (n, (w, lfo)) in out.iter_mut().zip(&g.lfos).enumerate() {
+            // Hz added and its range once a route reaches it, places its
+            // synced rate moves along the note ladder, and its rate as its
+            // knob routes move it: by the sources fixed for the note (as it
+            // starts, `moved_lfo`) and by every source now.
+            let (mut hz, mut range, mut places) = (0.0, None, 0.0f32);
+            let nominal = kontra_plan::modulation::hz(lfo, self.tempo);
+            let mut rated = [nominal; 2];
+            let onset = Age::at_start(age.start_frame);
+            for m in g.mods.iter().filter(|m| !m.bypass) {
+                let ir::ModRoute {
+                    source,
+                    target: ir::ParamAddr::LfoParam { lfo: of, param },
+                    depth,
+                    law,
+                    ..
+                } = m.route
+                else {
+                    continue;
+                };
+                if usize::from(of) != n {
+                    continue;
+                }
+                match (param, law) {
+                    (ir::LfoParam::Division, _) => {
+                        let input = self.source(zone, source, note, age);
+                        places += input.unwrap_or(0.0) * depth * 29.0;
+                    }
+                    // An LFO source here would recurse.
+                    (ir::LfoParam::Rate, ir::RouteLaw::Range([lo, hi]))
+                        if !matches!(source, ir::Source::Lfo(_)) =>
+                    {
+                        let octaves = m.route.span;
+                        let fixed = source.fixed_for_note();
+                        for (live, (r, at)) in [false, true]
+                            .into_iter()
+                            .zip(rated.iter_mut().zip([onset, age]))
+                        {
+                            if !(live || fixed) {
+                                continue;
+                            }
+                            let x = self.source(zone, source, note, at).unwrap_or(0.0);
+                            *r *= (x * depth * octaves).exp2();
+                            if let ir::Rate::Hz(_) = lfo.rate {
+                                *r = r.clamp(lo, hi.max(lo));
+                            }
+                        }
+                    }
+                    (ir::LfoParam::Hz, ir::RouteLaw::Range([lo, hi])) => {
+                        let input = self.source(zone, source, note, age);
+                        let value = input.unwrap_or(0.0) * depth * (hi - lo);
+                        #[cfg(feature = "trace")]
+                        self.trace_route(zone, m, input, value, crate::RouteUnit::LfoHertz);
+                        hz += value;
+                        range = Some([lo, hi.max(lo)]);
+                    }
+                    _ => {}
+                }
+            }
+            // The phase follows the live rate from note-on on.
+            *w = (*w + (rated[1] - rated[0]) * span).rem_euclid(1.0);
             if let (Some([lo, hi]), ir::Rate::Hz(f)) = (range, lfo.rate) {
                 *w = (*w + ((f + hz).clamp(lo, hi) - f) * span).rem_euclid(1.0);
             }
@@ -284,26 +363,19 @@ impl Engine {
                 *w = (*w + extra * span).rem_euclid(1.0);
             }
         }
-        warp
     }
 }
 
 impl Engine {
     /// A voice's chaotic LFOs `span` seconds on: each attractor's state
     /// (x, y, z) one Euler step further, and its level last.
-    pub(crate) fn chaos(
-        &self,
-        zone: &crate::Zone,
-        mut states: [Chaos; WARPS],
-        span: f32,
-    ) -> [Chaos; WARPS] {
+    pub(crate) fn chaos(&self, zone: &crate::Zone, states: &mut [Chaos], span: f32) {
         let Some(g) = self.groups.get(zone.group as usize) else {
-            return states;
+            return;
         };
         for (state, l) in states.iter_mut().zip(&g.lfos) {
             *state = chaos_step(l, *state, span, self.tempo);
         }
-        states
     }
 }
 
@@ -370,7 +442,7 @@ mod tests {
         memo.end();
     }
 
-    fn at(held: f32, released: Option<f32>) -> Age {
+    fn at(held: f32, released: Option<f32>) -> Age<'static> {
         Age {
             held,
             released,

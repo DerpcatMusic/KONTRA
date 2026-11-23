@@ -1,16 +1,25 @@
 //! Compact Structure-of-Arrays (SoA) zone table for cache-hot note-on
-//! matching and compact cold playback metadata (IR vNext Phase 2).
+//! matching, compact cold playback metadata, and zero-duplication script zone
+//! queries (IR vNext Phase 2 / Lane L3).
 //!
 //! Hot note-on scans touch only the 8-byte [`ZoneMatch`] records (8 zones per
 //! 64-byte cache line — 50,000 zones occupy just 400 KB and fit in L2 cache).
-//! Cold playback fields live in 40-byte [`ZonePlay`] records, with variable-
-//! length crossfades, zone envelopes, and start rules stored sparsely so
-//! instruments with tens of thousands of plain zones pay zero per-zone heap
-//! overhead for unused features.
+//! Cold playback fields live in 40-byte [`ZonePlay`] records, with zone IDs
+//! (`4 B`), deduplicated sample indices (`4 B`), flat loop arenas, crossfades,
+//! zone envelopes, start rules, and optional sampleless zone names stored
+//! sparsely so instruments with tens of thousands of plain zones pay zero
+//! per-zone heap allocations.
 
-use kontra_ir as ir;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
 
+use kontra_ir::{self as ir, ZonePar};
+
+use crate::zones::{PAN_RANGE, TUNE_RANGE, VOLUME_RANGE, zone_name};
 use crate::{Atom, Crossfade, Trigger, Zone};
+
+/// Sentinel in [`ZoneTable::sample_idx`] indicating a sampleless (e.g. oscillator) zone.
+pub const NO_SAMPLE: u32 = u32::MAX;
 
 /// 8-byte hot note-on scan record (8 zones per 64-byte cache line).
 #[repr(C)]
@@ -93,7 +102,7 @@ impl ZoneMatch {
     }
 }
 
-/// 40-byte cold playback record (read only for matched zones).
+/// 40-byte cold playback record (read only for matched zones and script queries).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ZonePlay {
@@ -124,22 +133,124 @@ impl ZonePlay {
     pub const OFFSET_LIMITED: u8 = 1 << 3;
 }
 
-/// Compact SoA view of a plan's zones plus sparse side-tables.
-#[derive(Clone, Debug, Default)]
+/// Parameters for inserting a saved zone row into [`ZoneTable`].
+#[derive(Clone, Debug)]
+pub struct SavedZoneDesc<'a> {
+    pub id: u32,
+    pub group: u32,
+    pub keys: RangeInclusive<u8>,
+    pub velocities: RangeInclusive<u8>,
+    pub root: u8,
+    pub start: u64,
+    pub end: u64,
+    pub start_mod: u64,
+    pub sample_rate: u32,
+    pub volume_db: f32,
+    pub pan: f32,
+    pub tune_semitones: f32,
+    pub key_fade: (u8, u8),
+    pub velocity_fade: (u8, u8),
+    pub sample_idx: Option<u32>,
+    /// Stored only when `sample_idx` is `None` (e.g. oscillator or test stub).
+    pub custom_name: Option<&'a str>,
+    pub loops: &'a [ir::Loop],
+}
+
+/// Compact SoA view of every saved zone (active, purged, or oscillator) plus
+/// sparse side-tables, shared by scripts and host with zero duplication.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ZoneTable {
     pub matches: Vec<ZoneMatch>,
     pub play: Vec<ZonePlay>,
+    /// Saved zone IDs parallel to `matches` and `play` (4 B/zone).
+    pub ids: Vec<u32>,
+    /// Deduplicated sample index per zone, or [`NO_SAMPLE`] (4 B/zone).
+    pub sample_idx: Vec<u32>,
+    /// Shared deduplicated sample descriptors for saved zones.
+    pub samples: Arc<[Arc<ir::Sample>]>,
+    /// Flat loop arena shared across all saved zones (zero per-zone heap allocs).
+    pub loops: Vec<ir::Loop>,
+    /// Sparse `(zone_row, offset, len)` sorted by `zone_row` (0 B for unlooped zones).
+    pub loop_spans: Vec<(u32, u32, u16)>,
+    /// Sparse `(zone_row, name)` sorted by `zone_row` for sampleless zones only.
+    pub custom_names: Vec<(u32, Box<str>)>,
     pub crossfades: Vec<Crossfade>,
     pub envelopes: Vec<(u32, ir::ZoneEnvelope)>,
     pub start_rules: Vec<(u32, Vec<(ir::Join, Atom)>)>,
 }
 
 impl ZoneTable {
+    /// Pre-allocates columns for `cap` saved zones sharing `samples`.
+    #[must_use]
+    pub fn with_capacity(cap: usize, samples: Arc<[Arc<ir::Sample>]>) -> Self {
+        Self {
+            matches: Vec::with_capacity(cap),
+            play: Vec::with_capacity(cap),
+            ids: Vec::with_capacity(cap),
+            sample_idx: Vec::with_capacity(cap),
+            samples,
+            loops: Vec::new(),
+            loop_spans: Vec::new(),
+            custom_names: Vec::new(),
+            crossfades: Vec::new(),
+            envelopes: Vec::new(),
+            start_rules: Vec::new(),
+        }
+    }
+
+    /// Appends one saved zone row (active, purged, or oscillator) with zero
+    /// per-zone string or loop `Vec` allocations when backed by a sample.
+    pub fn push_saved(&mut self, desc: SavedZoneDesc<'_>) {
+        let row = u32::try_from(self.ids.len()).unwrap_or(u32::MAX);
+        self.ids.push(desc.id);
+        self.sample_idx.push(desc.sample_idx.unwrap_or(NO_SAMPLE));
+        if desc.sample_idx.is_none()
+            && let Some(name) = desc.custom_name
+            && !name.is_empty()
+        {
+            self.custom_names.push((row, name.into()));
+        }
+        if !desc.loops.is_empty() {
+            let offset = u32::try_from(self.loops.len()).unwrap_or(u32::MAX);
+            let len = u16::try_from(desc.loops.len()).unwrap_or(u16::MAX);
+            self.loops.extend_from_slice(desc.loops);
+            self.loop_spans.push((row, offset, len));
+        }
+        self.matches.push(ZoneMatch {
+            key_lo: *desc.keys.start(),
+            key_hi: *desc.keys.end(),
+            vel_lo: *desc.velocities.start(),
+            vel_hi: *desc.velocities.end(),
+            group: u16::try_from(desc.group).unwrap_or(u16::MAX),
+            flags: 0,
+            _pad: 0,
+        });
+        self.play.push(ZonePlay {
+            sample_rate: desc.sample_rate,
+            start: u32::try_from(desc.start).unwrap_or(u32::MAX),
+            end: u32::try_from(desc.end).unwrap_or(u32::MAX),
+            start_mod: u32::try_from(desc.start_mod).unwrap_or(u32::MAX),
+            gain: 10f32.powf(desc.volume_db / 20.0),
+            pan: desc.pan,
+            tune_semitones: desc.tune_semitones,
+            root: desc.root,
+            flags: 0,
+            vel_fade: [desc.velocity_fade.0, desc.velocity_fade.1],
+            key_fade: [desc.key_fade.0, desc.key_fade.1],
+            slot: 0,
+            crossfade_offset: 0,
+            crossfade_len: 0,
+            env_len: 0,
+        });
+    }
+
     /// Packs a slice of [`Zone`]s into compact SoA arrays + sparse side-tables.
     #[must_use]
     pub fn from_zones(zones: &[Zone]) -> Self {
         let mut matches = Vec::with_capacity(zones.len());
         let mut play = Vec::with_capacity(zones.len());
+        let mut ids = Vec::with_capacity(zones.len());
+        let mut sample_idx = Vec::with_capacity(zones.len());
         let mut crossfades = Vec::new();
         let mut envelopes = Vec::new();
         let mut start_rules = Vec::new();
@@ -147,6 +258,8 @@ impl ZoneTable {
         for (idx, z) in zones.iter().enumerate() {
             let zone_idx = u32::try_from(idx).unwrap_or(u32::MAX);
             matches.push(ZoneMatch::from_zone(z));
+            ids.push(z.id);
+            sample_idx.push(NO_SAMPLE);
 
             let xf_offset = u16::try_from(crossfades.len()).unwrap_or(u16::MAX);
             let xf_len = u8::try_from(z.crossfades.len()).unwrap_or(u8::MAX);
@@ -195,22 +308,212 @@ impl ZoneTable {
         Self {
             matches,
             play,
+            ids,
+            sample_idx,
+            samples: Arc::from([]),
+            loops: Vec::new(),
+            loop_spans: Vec::new(),
+            custom_names: Vec::new(),
             crossfades,
             envelopes,
             start_rules,
         }
     }
 
-    /// Number of zones in the table.
+    /// Number of saved zones in the table.
     #[must_use]
     pub fn len(&self) -> usize {
         self.matches.len()
     }
 
-    /// Whether the table contains zero zones.
+    /// Whether the table contains zero saved zones.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.matches.is_empty()
+    }
+
+    /// Row index for saved zone `id`, if present. Zero allocation.
+    #[must_use]
+    pub fn row_of(&self, id: u32) -> Option<usize> {
+        self.ids.iter().position(|&z| z == id)
+    }
+
+    /// Saved zone's stem name (derived on the fly from `samples` with zero allocation).
+    #[must_use]
+    pub fn name_at(&self, row: usize) -> &str {
+        if let Some(sample) = self.sample_at(row) {
+            return zone_name(&sample.name);
+        }
+        let Ok(key) = u32::try_from(row) else {
+            return "";
+        };
+        self.custom_names
+            .binary_search_by_key(&key, |(r, _)| *r)
+            .ok()
+            .and_then(|i| self.custom_names.get(i))
+            .map_or("", |(_, name)| name.as_ref())
+    }
+
+    /// Saved zone's sample descriptor, if sample-backed.
+    #[must_use]
+    pub fn sample_at(&self, row: usize) -> Option<&Arc<ir::Sample>> {
+        let idx = *self.sample_idx.get(row)?;
+        if idx == NO_SAMPLE {
+            return None;
+        }
+        self.samples.get(idx as usize)
+    }
+
+    /// Saved zone's loops slice in the flat loop arena (zero allocation).
+    #[must_use]
+    pub fn loops_at(&self, row: usize) -> &[ir::Loop] {
+        let Ok(key) = u32::try_from(row) else {
+            return &[];
+        };
+        let Ok(pos) = self.loop_spans.binary_search_by_key(&key, |(r, _, _)| *r) else {
+            return &[];
+        };
+        let Some(&(_, off, len)) = self.loop_spans.get(pos) else {
+            return &[];
+        };
+        let start = off as usize;
+        let end = start.saturating_add(usize::from(len));
+        self.loops.get(start..end).unwrap_or_default()
+    }
+
+    /// Finds the first saved zone whose name matches `name` exactly.
+    #[must_use]
+    pub fn find_by_name(&self, name: &str) -> Option<u32> {
+        (0..self.len())
+            .find(|&row| self.name_at(row) == name)
+            .and_then(|row| self.ids.get(row).copied())
+    }
+
+    /// Reads a KSP `$ZONE_PAR_*` value directly from the SoA columns.
+    #[must_use]
+    pub fn get_par(&self, row: usize, par: ZonePar) -> Option<i32> {
+        let m = *self.matches.get(row)?;
+        let p = *self.play.get(row)?;
+        let i32_u32 = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+        Some(match par {
+            ZonePar::LowKey => i32::from(m.key_lo),
+            ZonePar::HighKey => i32::from(m.key_hi),
+            ZonePar::LowVelocity => i32::from(m.vel_lo),
+            ZonePar::HighVelocity => i32::from(m.vel_hi),
+            ZonePar::RootKey => i32::from(p.root),
+            ZonePar::Group => i32::from(m.group),
+            ZonePar::SampleStart => i32_u32(p.start),
+            ZonePar::SampleEnd => i32_u32(p.end),
+            ZonePar::StartRange => i32_u32(p.start_mod),
+            ZonePar::SampleRate => i32_u32(p.sample_rate),
+            ZonePar::Selected | ZonePar::Bpm => 0,
+            ZonePar::Volume => (p.gain.max(1e-6).log10() * 2000.0).round() as i32,
+            ZonePar::Pan => (p.pan * 1000.0).round() as i32,
+            ZonePar::Tune => (p.tune_semitones * 100.0).round() as i32,
+            ZonePar::FadeLowKey => i32::from(p.key_fade[0]),
+            ZonePar::FadeHighKey => i32::from(p.key_fade[1]),
+            ZonePar::FadeLowVelocity => i32::from(p.vel_fade[0]),
+            ZonePar::FadeHighVelocity => i32::from(p.vel_fade[1]),
+        })
+    }
+
+    /// Applies `set_zone_par` to a saved zone row in the SoA columns with
+    /// Kontakt's clamps. Returns `false` for read-only parameters or invalid group.
+    pub fn set_par(&mut self, row: usize, par: ZonePar, value: i32, group: Option<u32>) -> bool {
+        let frames = self.sample_at(row).map_or_else(
+            || u64::from(self.play.get(row).map_or(0, |p| p.end)),
+            |s| s.frames,
+        );
+        let (Some(m), Some(p)) = (self.matches.get_mut(row), self.play.get_mut(row)) else {
+            return false;
+        };
+        let key = u8::try_from(value.clamp(0, 127)).unwrap_or(0);
+        let width = i32::from(m.key_hi) - i32::from(m.key_lo) + 1;
+        let vwidth = i32::from(m.vel_hi) - i32::from(m.vel_lo) + 1;
+        let bound =
+            |v: i32| u32::try_from(u64::try_from(v).unwrap_or(0).min(frames)).unwrap_or(u32::MAX);
+        match par {
+            ZonePar::LowKey => {
+                m.key_lo = key;
+                m.key_hi = m.key_hi.max(key);
+            }
+            ZonePar::HighKey => {
+                m.key_lo = m.key_lo.min(key);
+                m.key_hi = key;
+            }
+            ZonePar::LowVelocity => {
+                m.vel_lo = key;
+                m.vel_hi = m.vel_hi.max(key);
+            }
+            ZonePar::HighVelocity => {
+                m.vel_lo = m.vel_lo.min(key);
+                m.vel_hi = key;
+            }
+            ZonePar::Group => match group {
+                Some(g) => m.group = u16::try_from(g).unwrap_or(u16::MAX),
+                None => return false,
+            },
+            ZonePar::RootKey => p.root = key,
+            ZonePar::Volume => {
+                let v = value.clamp(VOLUME_RANGE.0, VOLUME_RANGE.1);
+                p.gain = 10f32.powf(v as f32 / 2000.0);
+            }
+            ZonePar::Pan => {
+                let v = value.clamp(PAN_RANGE.0, PAN_RANGE.1);
+                p.pan = v as f32 / 1000.0;
+            }
+            ZonePar::Tune => {
+                let v = value.clamp(TUNE_RANGE.0, TUNE_RANGE.1);
+                p.tune_semitones = v as f32 / 100.0;
+            }
+            ZonePar::FadeLowKey => {
+                p.key_fade[0] = u8::try_from(value.clamp(0, width)).unwrap_or(u8::MAX)
+            }
+            ZonePar::FadeHighKey => {
+                p.key_fade[1] = u8::try_from(value.clamp(0, width)).unwrap_or(u8::MAX)
+            }
+            ZonePar::FadeLowVelocity => {
+                p.vel_fade[0] = u8::try_from(value.clamp(0, vwidth)).unwrap_or(u8::MAX)
+            }
+            ZonePar::FadeHighVelocity => {
+                p.vel_fade[1] = u8::try_from(value.clamp(0, vwidth)).unwrap_or(u8::MAX)
+            }
+            ZonePar::SampleStart => {
+                p.start = bound(value).min(p.end.saturating_sub(4));
+            }
+            ZonePar::SampleEnd => {
+                let cap = u32::try_from(frames).unwrap_or(u32::MAX);
+                p.end = bound(value).max(p.start.saturating_add(4).min(cap));
+            }
+            ZonePar::StartRange | ZonePar::SampleRate | ZonePar::Selected | ZonePar::Bpm => {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Reads `$LOOP_PAR_*` for saved zone at `row` from the flat loop arena.
+    #[must_use]
+    pub fn loop_par(&self, row: usize, index: i32, par: i32) -> i32 {
+        let Ok(i) = usize::try_from(index) else {
+            return -1;
+        };
+        if i >= 8 {
+            return -1;
+        }
+        let Some(l) = self.loops_at(row).get(i) else {
+            return 0;
+        };
+        let int = |n: u64| i32::try_from(n).unwrap_or(i32::MAX);
+        match par {
+            520 => 1,
+            521 => int(l.start),
+            522 => int(l.end.saturating_sub(l.start)),
+            523 => int(l.crossfade),
+            524 => int(l.count.into()),
+            525 => (l.tune_ratio.max(1e-6).log2() * 1200.0).round() as i32,
+            _ => 0,
+        }
     }
 
     /// Total heap bytes held by the SoA arrays and sparse side-tables.
@@ -218,6 +521,16 @@ impl ZoneTable {
     pub fn heap_bytes(&self) -> usize {
         self.matches.len() * std::mem::size_of::<ZoneMatch>()
             + self.play.len() * std::mem::size_of::<ZonePlay>()
+            + self.ids.len() * std::mem::size_of::<u32>()
+            + self.sample_idx.len() * std::mem::size_of::<u32>()
+            + self.loops.len() * std::mem::size_of::<ir::Loop>()
+            + self.loop_spans.len() * std::mem::size_of::<(u32, u32, u16)>()
+            + self.custom_names.len() * std::mem::size_of::<(u32, Box<str>)>()
+            + self
+                .custom_names
+                .iter()
+                .map(|(_, s)| s.len())
+                .sum::<usize>()
             + self.crossfades.len() * std::mem::size_of::<Crossfade>()
             + self.envelopes.len() * std::mem::size_of::<(u32, ir::ZoneEnvelope)>()
             + self.start_rules.len() * std::mem::size_of::<(u32, Vec<(ir::Join, Atom)>)>()
@@ -271,7 +584,7 @@ mod tests {
         }
         let table = ZoneTable::from_zones(&zones);
         assert_eq!(table.len(), 42_636);
-        // 42,636 * (8 + 40) = 2,046,528 bytes (~1.95 MiB) — well under 2.5 MB!
+        // 42,636 * (8 + 40 + 4 + 4) = 2,387,616 bytes (~2.28 MiB) — under 2.5 MB!
         assert!(
             table.heap_bytes() < 2_500_000,
             "Areia-scale SoA table took {} bytes (limit 2.5 MB)",
@@ -280,5 +593,41 @@ mod tests {
         assert!(table.matches[0].matches(21, 64, |t| t == Trigger::Attack));
         assert!(!table.matches[0].matches(22, 64, |t| t == Trigger::Attack));
         assert!(!table.matches[0].matches(21, 64, |t| t == Trigger::Release));
+    }
+
+    #[test]
+    fn soa_volume_pan_tune_round_trip_exactly_across_ksp_ranges() {
+        let mut table = ZoneTable::with_capacity(1, Arc::from([]));
+        table.push_saved(SavedZoneDesc {
+            id: 42,
+            group: 0,
+            keys: 0..=127,
+            velocities: 1..=127,
+            root: 60,
+            start: 0,
+            end: 1000,
+            start_mod: 0,
+            sample_rate: 48_000,
+            volume_db: 0.0,
+            pan: 0.0,
+            tune_semitones: 0.0,
+            key_fade: (0, 0),
+            velocity_fade: (0, 0),
+            sample_idx: None,
+            custom_name: Some("test"),
+            loops: &[],
+        });
+        for v in VOLUME_RANGE.0..=VOLUME_RANGE.1 {
+            assert!(table.set_par(0, ZonePar::Volume, v, None));
+            assert_eq!(table.get_par(0, ZonePar::Volume), Some(v), "vol {v}");
+        }
+        for p in PAN_RANGE.0..=PAN_RANGE.1 {
+            assert!(table.set_par(0, ZonePar::Pan, p, None));
+            assert_eq!(table.get_par(0, ZonePar::Pan), Some(p), "pan {p}");
+        }
+        for t in TUNE_RANGE.0..=TUNE_RANGE.1 {
+            assert!(table.set_par(0, ZonePar::Tune, t, None));
+            assert_eq!(table.get_par(0, ZonePar::Tune), Some(t), "tune {t}");
+        }
     }
 }

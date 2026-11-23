@@ -133,14 +133,14 @@ pub(super) fn gain_scale<'a, 'i>(
     }
     let source = ir::Source::Blend(index_of(&mut bus.blends, blend));
     for &(eq, band, gain) in &bands.gains {
-        bus.mods.push(ir::ModKind::EffectParam {
+        bus.mods.push(ir::ModRoute::new(
             source,
-            insert: insert + eq,
-            param: ir::EffectParam::BellGain(band),
-            depth: gain,
-            span: 1.0,
-            unipolar: false,
-        });
+            ir::ParamAddr::EffectParam {
+                insert: insert + eq,
+                param: ir::EffectParam::BellGain(band),
+            },
+            gain,
+        ));
     }
     carried
 }

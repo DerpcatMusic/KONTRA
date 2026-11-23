@@ -123,8 +123,8 @@ impl Rack {
             // A detection reads the zone's own sample, not a named file.
             if let Some(job) = request.detect {
                 let sample = (p.plan.as_ref())
-                    .and_then(|plan| plan.zone_facts.iter().find(|z| z.id == job.zone))
-                    .and_then(|z| z.source.clone());
+                    .and_then(|plan| plan.zone_sample(job.zone))
+                    .cloned();
                 let detected = sample.and_then(|s| kontra_engine::detect_sample(&s, job.what));
                 let reply = Box::new(FileReply {
                     request,

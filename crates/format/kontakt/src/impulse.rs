@@ -178,9 +178,8 @@ impl<'a> Impulses<'a> {
             Some(l) => Ok(l),
             // A container's own resources (`.nicnt`): the name after `Resources/`.
             None => {
-                let inner = name
-                    .rsplit_once("Resources/")
-                    .map_or(name.as_str(), |(_, n)| n);
+                let norm = kontra_format::paths::normalize_separators(&name);
+                let inner = resources_relative(&norm);
                 let resources = self.resources();
                 if let Some(found) = resources.locate(inner) {
                     return Ok(found);
@@ -279,4 +278,29 @@ pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
             size(),
         ),
     ]
+}
+
+fn resources_relative(path: &str) -> &str {
+    path.match_indices('/')
+        .rev()
+        .find_map(|(end, _)| {
+            let component = path[..end].rsplit('/').next()?;
+            component
+                .eq_ignore_ascii_case("Resources")
+                .then(|| &path[end + 1..])
+        })
+        .unwrap_or(path)
+}
+
+#[cfg(test)]
+#[test]
+fn resource_suffix_keeps_components_that_only_end_in_resources() {
+    assert_eq!(
+        resources_relative("prefix/ReSoUrCeS/IRs/customresources/Hall.wav"),
+        "IRs/customresources/Hall.wav"
+    );
+    assert_eq!(
+        resources_relative("customresources/Hall.wav"),
+        "customresources/Hall.wav"
+    );
 }

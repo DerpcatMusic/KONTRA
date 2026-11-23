@@ -72,7 +72,7 @@ impl Quality {
 /// read or joins its output by `amount`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModOsc {
-    pub kind: ModKind,
+    pub kind: ModOscKind,
     pub amount: f32,
     pub tune: f32,
     pub tune_range: (f32, f32),
@@ -100,7 +100,7 @@ const RATIO_REACH: f32 = 15.0;
 
 impl ModOsc {
     pub const OFF: Self = Self {
-        kind: ModKind::Off,
+        kind: ModOscKind::Off,
         amount: 0.0,
         tune: 0.5,
         tune_range: (1.0, 1.0),
@@ -167,7 +167,7 @@ impl ModOsc {
 
 /// What the oscillator `m` does at amount `a` (see `kontra_ir::ModOscKind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModKind {
+pub enum ModOscKind {
     Off,
     Fm,
     FmBy,
@@ -473,8 +473,8 @@ impl Table {
             let m = osc.wave_at(st.phase);
             let y = f64::from(st.last);
             let pm = match osc.kind {
-                ModKind::Pm => a64 * m,
-                ModKind::PmFeedback => FEEDBACK * a64 * y,
+                ModOscKind::Pm => a64 * m,
+                ModOscKind::PmFeedback => FEEDBACK * a64 * y,
                 _ => 0.0,
             };
             let p = (cursor * rate + f64::from(self.read.phase) + st.offset + pm).rem_euclid(1.0)
@@ -490,21 +490,21 @@ impl Table {
             st.last = s;
             let m32 = m as f32;
             let s = match osc.kind {
-                ModKind::FmBy => gain * m32,
-                ModKind::Ring => s * (1.0 - a + RING * a * m32),
-                ModKind::Mix => s + 2.0 * a * gain * m32,
-                ModKind::Blend => s + (gain * m32 - s) * a,
+                ModOscKind::FmBy => gain * m32,
+                ModOscKind::Ring => s * (1.0 - a + RING * a * m32),
+                ModOscKind::Mix => s + 2.0 * a * gain * m32,
+                ModOscKind::Blend => s + (gain * m32 - s) * a,
                 _ => s,
             };
             st.offset = (st.offset
                 + match osc.kind {
-                    ModKind::Fm => hz * a64 * m,
-                    ModKind::FmFeedback => FM_FEEDBACK * hz * a64 * f64::from(st.last),
+                    ModOscKind::Fm => hz * a64 * m,
+                    ModOscKind::FmFeedback => FM_FEEDBACK * hz * a64 * f64::from(st.last),
                     _ => 0.0,
                 })
             .rem_euclid(1.0);
             let by = match osc.kind {
-                ModKind::FmBy => 2.0 * hz * a64 * f64::from(st.last),
+                ModOscKind::FmBy => 2.0 * hz * a64 * f64::from(st.last),
                 _ => 0.0,
             };
             st.phase = (st.phase + mod_step + by).rem_euclid(1.0);

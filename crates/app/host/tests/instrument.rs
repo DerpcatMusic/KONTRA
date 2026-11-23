@@ -49,10 +49,25 @@ fn areia_violins_sound_on_the_fresh_engine() {
     let loaded = kontra_host::instrument::load(path, RATE, &mut store).unwrap();
     let load = t.elapsed();
     eprintln!(
-        "{}: {} zones, {} scripts, loaded in {load:?}",
+        "{}: {} active zones, {} saved zones in ZoneTable ({} bytes = {:.2} MiB, {} loops, {} custom names, {} user zones), {} scripts, loaded in {load:?}",
         loaded.name,
         loaded.plan.zones.len(),
-        loaded.plan.scripts.len()
+        loaded.plan.zone_table.len(),
+        loaded.plan.zone_table.heap_bytes(),
+        loaded.plan.zone_table.heap_bytes() as f64 / (1024.0 * 1024.0),
+        loaded.plan.zone_table.loops.len(),
+        loaded.plan.zone_table.custom_names.len(),
+        loaded.plan.user_zones.len(),
+        loaded.plan.scripts.len(),
+    );
+    assert!(
+        loaded.plan.user_zones.is_empty(),
+        "saved-only instrument allocates 0 user zones"
+    );
+    assert!(
+        loaded.plan.zone_table.heap_bytes() < 4_000_000,
+        "Areia ZoneTable metadata exceeded 4 MB: {} bytes",
+        loaded.plan.zone_table.heap_bytes()
     );
     for d in &loaded.diagnostics {
         eprintln!("  {:?} {}: {}", d.impact, d.feature, d.detail);

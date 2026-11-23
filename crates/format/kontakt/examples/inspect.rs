@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut mods = std::collections::BTreeMap::new();
     for m in i.groups.iter().filter(|g| !g.purged).flat_map(|g| &g.mods) {
         *mods
-            .entry(format!("{} @{} {:?}", m.name, m.slot, m.kind))
+            .entry(format!("{} @{} {:?}", m.name, m.slot, m.route))
             .or_insert(0) += 1;
     }
     for (m, n) in mods {
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for m in &group.mods {
                 println!(
                     "  group {g} {} @{} bypass {} {:?}",
-                    m.name, m.slot, m.bypass, m.kind
+                    m.name, m.slot, m.bypass, m.route
                 );
             }
         }

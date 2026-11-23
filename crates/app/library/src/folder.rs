@@ -1,6 +1,6 @@
 //! A library's presets as the folders they sit in, for the browser's tree.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// A folder of presets.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -25,15 +25,22 @@ impl Folder {
         };
         for (n, preset) in presets.into_iter().enumerate() {
             let inside = preset.parent().and_then(|p| p.strip_prefix(dir).ok());
+            let segments: Vec<_> = inside
+                .into_iter()
+                .flat_map(Path::components)
+                .filter_map(|part| match part {
+                    Component::Normal(os_name) => Some(os_name),
+                    _ => None,
+                })
+                .collect();
             let mut at = &mut root;
-            for part in inside.into_iter().flat_map(Path::components) {
-                let name = part.as_os_str().to_string_lossy();
-                let i = match at.folders.iter().rposition(|f| f.name == name) {
+            for segment in segments {
+                let path = at.path.join(segment);
+                let i = match at.folders.iter().rposition(|f| f.path == path) {
                     Some(i) => i,
                     None => {
-                        let path = at.path.join(name.as_ref());
                         at.folders.push(Folder {
-                            name: name.into_owned(),
+                            name: segment.to_string_lossy().into_owned(),
                             path,
                             ..Folder::default()
                         });

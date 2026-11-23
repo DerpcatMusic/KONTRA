@@ -176,8 +176,11 @@ fn read_through(
     if flag(connection, "Inverted") {
         let bipolar = source_node(program, connection).is_some_and(|n| flag(n, "Bipolar"));
         let swing = matches!(t.source, ir::Source::PitchBend | ir::Source::Lfo(_));
-        let unipolar =
-            !bipolar && matches!(t.source, ir::Source::Controller(_) | ir::Source::Script(_));
+        let unipolar = !bipolar
+            && matches!(
+                t.source,
+                ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::Macro(_)
+            );
         if !unipolar && !(swing && !t.table.is_empty()) {
             return None;
         }
@@ -217,10 +220,10 @@ fn ratio(program: Node, connection: Node, keys: bool, macros: bool) -> Option<f3
         // live: on a factor's own ratio, one level down.
         let input = match transfer(program, f, None)? {
             ir::Transfer {
-                source: ir::Source::Script(id),
+                source: ir::Source::Macro(_),
                 table,
                 ..
-            } if id >= MACROS => {
+            } => {
                 let node = source_node(program, f)?;
                 let x = num(node, "Value", 0.0).ok()? as f32;
                 ir::Transfer {
@@ -302,7 +305,7 @@ pub(super) fn macro_factor(program: Node, connection: Node) -> Option<ir::Factor
         return None;
     }
     let input = transfer(program, connection, None)?;
-    matches!(input.source, ir::Source::Script(id) if id >= MACROS).then_some(())?;
+    matches!(input.source, ir::Source::Macro(_)).then_some(())?;
     Some(ir::Factor {
         input,
         depth: held_ratio(program, connection)?.clamp(-1.0, 1.0),
@@ -460,7 +463,7 @@ pub(super) fn transfer(
             });
         } else if let Some(id) = live_macro(program, node) {
             // Its script sends its position ([`live_macro`]).
-            ir::Source::Script(id)
+            ir::Source::Macro(id)
         } else if node.has_tag_name("ConstantModulation") && inputs(node).next().is_none() {
             let x = num(node, "Value", 0.0).ok()? as f32;
             let value = match table.is_empty() {
@@ -525,13 +528,10 @@ fn discrete(connection: Node) -> bool {
     mapper_node(connection).is_some_and(|m| flag(m, "Discrete"))
 }
 
-/// The first script modulation id [`live_macro`] gives.
-const MACROS: u16 = 0x8000;
-
-/// The script modulation a macro with no inputs of its own is read live
+/// The [`ir::Source::Macro`] a macro with no inputs of its own is read live
 /// as, in a program a script runs: its scripts set its `Value`
 /// (`setParameter`), sent as its table position, the saved one at init.
-/// `MACROS + 128·owner + n`, `n` its place among its container's macros and
+/// `128·owner + n`, `n` its place among its container's macros and
 /// `owner` 0 for the program's, `k + 1` for layer `k`'s; None for one a
 /// keygroup holds.
 pub(super) fn live_macro(program: Node, node: Node) -> Option<u16> {
@@ -560,7 +560,7 @@ pub(super) fn live_macro(program: Node, node: Node) -> Option<u16> {
         1 + layers().position(|l| l == owner)?
     };
     let n = node.prev_siblings().filter(Node::is_element).count();
-    (n < 128 && owner < 256).then(|| MACROS + 128 * owner as u16 + n as u16)
+    (n < 128 && owner < 256).then(|| 128 * owner as u16 + n as u16)
 }
 
 /// A macro's live inputs: connections onto its `Value`.

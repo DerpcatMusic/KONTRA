@@ -270,7 +270,7 @@ fn run_events(
                 .iter()
                 .map(|r| {
                     json!({
-                        "voice_slot":r.voice_slot, "zone":r.zone, "name":r.name, "route":super::routes::route(r.kind),
+                        "voice_slot":r.voice_slot, "zone":r.zone, "name":r.name, "route":super::routes::route(r.route),
                         "current_source":r.source, "current_routed_source":r.routed,
                     })
                 })
@@ -279,7 +279,7 @@ fn run_events(
                 .inspect_bus_routes()
                 .map(|r| {
                     json!({"bus":r.bus,
-                "route":super::routes::route(r.kind), "last_applied_amount":r.amount})
+                "route":super::routes::route(r.route), "last_applied_amount":r.amount})
                 })
                 .collect();
             let voice_effect_targets: Vec<_> = engine.inspect_voice_effects().iter().map(|v| json!({

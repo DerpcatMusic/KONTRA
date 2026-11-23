@@ -53,7 +53,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                 })).collect::<Vec<_>>(),
                 "modulators": g.mods.iter().map(|m| json!({
                     "name": m.name, "slot": m.slot, "target": m.target,
-                    "bypass": m.bypass, "route": super::routes::route(m.kind),
+                    "bypass": m.bypass, "route": super::routes::route(m.route),
                 })).collect::<Vec<_>>(),
                 "route_names": g.routes.iter().map(|r| json!({"slot":r.slot, "name":r.name, "names":r.names})).collect::<Vec<_>>(),
                 "shapers": g.shapers.iter().map(|s| json!({"source":super::routes::source(s.source), "table":s.table})).collect::<Vec<_>>(),

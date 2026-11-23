@@ -60,10 +60,7 @@ fn note_on_route_trace_keeps_the_controller_value_at_start() {
         slot: 3,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::SampleStart {
-            source: ir::Source::Controller(1),
-            depth: 1.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Controller(1), ir::ParamAddr::SampleStart, 1.0),
     }];
     let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
     level(&mut engine, &[cc(1, 64), on(60, 1.0)]);
@@ -97,10 +94,11 @@ fn release_route_trace_uses_the_key_held_time() {
         slot: 7,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::SampleStart {
-            source: ir::Source::HeldTime { span_ms: 1000 },
-            depth: 1.0,
-        },
+        route: ir::ModRoute::new(
+            ir::Source::HeldTime { span_ms: 1000 },
+            ir::ParamAddr::SampleStart,
+            1.0,
+        ),
     }];
     let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
     let mut output = vec![[0.0; 2]; 24_000];
@@ -142,10 +140,7 @@ fn shaped_release_counter_reads_the_key_held_time() {
         slot: 7,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::SampleStart {
-            source: ir::Source::Shaped(0),
-            depth: 1.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Shaped(0), ir::ParamAddr::SampleStart, 1.0),
     }];
     let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
     let mut output = vec![[0.0; 2]; 24_000];
@@ -198,34 +193,23 @@ fn controller_route_trace_is_the_value_used_and_preserves_audio() {
             slot: 1,
             target: 0,
             bypass: false,
-            kind: ir::ModKind::Volume {
-                source: ir::Source::Controller(1),
-                intensity: 1.0,
-                curve: ir::Curve::Depth { power: 1 },
-                tau_ms: 0.0,
-            },
+            route: ir::ModRoute::new(ir::Source::Controller(1), ir::ParamAddr::Volume, 1.0)
+                .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 })),
         },
         ir::Mod {
             name: "pan".into(),
             slot: 2,
             target: 0,
             bypass: false,
-            kind: ir::ModKind::Pan {
-                source: ir::Source::Controller(1),
-                amount: 0.5,
-            },
+            route: ir::ModRoute::new(ir::Source::Controller(1), ir::ParamAddr::Pan, 0.5),
         },
         ir::Mod {
             name: "pitch".into(),
             slot: 3,
             target: 0,
             bypass: false,
-            kind: ir::ModKind::Pitch {
-                source: ir::Source::Controller(1),
-                semitones: 12.0,
-                depth: 1.0,
-                tau_ms: 0.0,
-            },
+            route: ir::ModRoute::new(ir::Source::Controller(1), ir::ParamAddr::Pitch, 1.0)
+                .span(12.0),
         },
     ];
     let plan = Arc::new(plan);
@@ -284,24 +268,30 @@ fn timed_lfo_route_retains_all_ccs_received_before_the_span() {
         slot: 9,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::LfoHz {
-            source: ir::Source::Controller(1),
-            lfo: 0,
-            depth: 1.0,
-            range_hz: [1.0, 5.0],
-        },
+        route: ir::ModRoute::new(
+            ir::Source::Controller(1),
+            ir::ParamAddr::LfoParam {
+                lfo: 0,
+                param: ir::LfoParam::Hz,
+            },
+            1.0,
+        )
+        .law(ir::RouteLaw::Range([1.0, 5.0])),
     }];
     plan.groups[0].mods.push(ir::Mod {
         name: "rate11".into(),
         slot: 10,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::LfoHz {
-            source: ir::Source::Controller(11),
-            lfo: 0,
-            depth: 0.5,
-            range_hz: [1.0, 5.0],
-        },
+        route: ir::ModRoute::new(
+            ir::Source::Controller(11),
+            ir::ParamAddr::LfoParam {
+                lfo: 0,
+                param: ir::LfoParam::Hz,
+            },
+            0.5,
+        )
+        .law(ir::RouteLaw::Range([1.0, 5.0])),
     });
     let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
     level(&mut engine, &[on(60, 1.0)]);
@@ -336,22 +326,22 @@ fn onset_route_trace_records_sample_and_envelope_values() {
             slot: 4,
             target: 0,
             bypass: false,
-            kind: ir::ModKind::SampleStart {
-                source: ir::Source::Controller(1),
-                depth: 0.5,
-            },
+            route: ir::ModRoute::new(ir::Source::Controller(1), ir::ParamAddr::SampleStart, 0.5),
         },
         ir::Mod {
             name: "attack".into(),
             slot: 5,
             target: 0,
             bypass: false,
-            kind: ir::ModKind::Attack {
-                source: ir::Source::Controller(1),
-                intensity: 1.0,
-                scale: ir::TimeScale::Linear { power: 1 },
-                envelope: None,
-            },
+            route: ir::ModRoute::new(
+                ir::Source::Controller(1),
+                ir::ParamAddr::EnvelopeStage {
+                    envelope: None,
+                    stage: ir::EnvStage::Attack,
+                },
+                1.0,
+            )
+            .law(ir::RouteLaw::Time(ir::TimeScale::Linear { power: 1 })),
         },
     ];
     let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
@@ -392,12 +382,8 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         slot: 2,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Volume {
-            source: ir::Source::Velocity,
-            intensity: 1.0,
-            curve: ir::Curve::Depth { power: 1 },
-            tau_ms: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Velocity, ir::ParamAddr::Volume, 1.0)
+            .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 })),
     }];
     plan.scripts.push(ScriptPlan {
         program: Program {

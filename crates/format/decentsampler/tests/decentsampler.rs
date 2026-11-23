@@ -240,39 +240,44 @@ fn translates_effects_lfo_envelope_and_midi_cc_bindings() {
     assert_eq!(g.lfos[0].wave, ir::Wave::Triangle);
     assert_eq!(g.envelopes.len(), 1);
     assert!(g.mods.iter().any(|m| matches!(
-        m.kind,
-        ir::ModKind::Cutoff {
+        m.route,
+        ir::ModRoute {
+            target: ir::ParamAddr::FilterCutoff { insert: 0 },
             source: ir::Source::Lfo(0),
-            insert: 0,
+            law: ir::RouteLaw::Linear,
             ..
         }
     )));
     assert!(g.mods.iter().any(|m| matches!(
-        m.kind,
-        ir::ModKind::Pitch {
+        m.route,
+        ir::ModRoute {
+            target: ir::ParamAddr::Pitch,
             source: ir::Source::Lfo(1),
             ..
         }
     )));
     assert!(g.mods.iter().any(|m| matches!(
-        m.kind,
-        ir::ModKind::Cutoff {
+        m.route,
+        ir::ModRoute {
+            target: ir::ParamAddr::FilterCutoff { insert: 0 },
             source: ir::Source::Envelope(0),
-            insert: 0,
+            law: ir::RouteLaw::Linear,
             ..
         }
     )));
     assert!(g.mods.iter().any(|m| matches!(
-        m.kind,
-        ir::ModKind::Cutoff {
+        m.route,
+        ir::ModRoute {
+            target: ir::ParamAddr::FilterCutoff { insert: 0 },
             source: ir::Source::Controller(1),
-            insert: 0,
+            law: ir::RouteLaw::Linear,
             ..
         }
     )));
     assert!(g.mods.iter().any(|m| matches!(
-        m.kind,
-        ir::ModKind::Volume {
+        m.route,
+        ir::ModRoute {
+            target: ir::ParamAddr::Volume,
             source: ir::Source::Controller(7),
             ..
         }
@@ -390,17 +395,13 @@ fn instrument_cutoff_bindings_share_the_same_promoted_filter_per_group() {
                     group
                         .mods
                         .iter()
-                        .any(|m| matches!(m.kind, ir::ModKind::CutoffHz {
-                    source: ir::Source::Controller(1), insert, min_hz: 0.0, max_hz,
-                } if usize::from(insert) == slot && max_hz == maximum as f32))
+                        .any(|m| matches!(m.route, ir::ModRoute { target: ir::ParamAddr::FilterCutoff { insert }, source: ir::Source::Controller(1), law: ir::RouteLaw::Range([0.0, max_hz]), .. } if usize::from(insert) == slot && max_hz == maximum as f32))
                 );
                 assert!(
                     group
                         .mods
                         .iter()
-                        .any(|m| matches!(m.kind, ir::ModKind::Cutoff {
-                    source: ir::Source::Controller(2), insert, ..
-                } if usize::from(insert) == slot))
+                        .any(|m| matches!(m.route, ir::ModRoute { target: ir::ParamAddr::FilterCutoff { insert }, source: ir::Source::Controller(2), law: ir::RouteLaw::Linear, .. } if usize::from(insert) == slot))
                 );
             }
         }
@@ -447,10 +448,11 @@ fn disabled_groups_keep_binding_indices_and_split_zones_keep_their_sequence() {
             )]
         );
         assert!(group.mods.iter().any(|m| matches!(
-            m.kind,
-            ir::ModKind::Pitch {
+            m.route,
+            ir::ModRoute {
+                target: ir::ParamAddr::Pitch,
                 source: ir::Source::Controller(1),
-                semitones: 24.0,
+                span: 24.0,
                 depth: 1.0,
                 ..
             }
@@ -729,11 +731,10 @@ fn effect_bindings_move_voice_eq_crusher_and_folder_controls() {
     let route = |cc: u8| {
         g.mods
             .iter()
-            .find_map(|m| match m.kind {
-                ir::ModKind::EffectParam {
+            .find_map(|m| match m.route {
+                ir::ModRoute {
+                    target: ir::ParamAddr::EffectParam { insert, param },
                     source: ir::Source::Controller(c),
-                    insert,
-                    param,
                     depth,
                     ..
                 } if c == cc => Some((insert, param, depth)),

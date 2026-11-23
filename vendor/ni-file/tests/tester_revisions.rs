@@ -160,7 +160,7 @@ fn tester_legacy_modulation_nullable_names_keep_target_alignment() {
     let params = ExternalMod::try_from(&chunk).unwrap().params().unwrap();
     assert!(params.name.is_empty());
     assert!(params.targets[0].name.is_empty());
-    assert!(params.targets[0].invert);
+    assert!(params.targets[0].table_open);
     assert_eq!(params.unknown_id, 2);
     roundtrip(&chunk);
     let modern = Chunk {
@@ -330,7 +330,7 @@ fn tester_source_targets_do_not_consume_graphical_shaper_kind_as_boolean() {
         };
         let params = ExternalMod::try_from(&chunk).unwrap().params().unwrap();
         assert_eq!(params.targets[0].slot, None);
-        assert!(!params.targets[0].invert);
+        assert!(!params.targets[0].table_open);
         assert!(params.targets[0].shaper.as_ref().unwrap().enabled);
         assert_eq!(params.unknown_id, 7);
         roundtrip(&chunk);

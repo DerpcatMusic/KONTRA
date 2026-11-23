@@ -87,11 +87,7 @@ impl Limiter {
         let frames = |ms: f32| ms.max(0.0) * 0.001 * rate as f32;
         // Covers all but a third of a step in `n` frames; 0 is at once.
         let third = |n: f32| {
-            if n > 0.0 {
-                (-3f32.ln() / n).exp()
-            } else {
-                0.0
-            }
+            if n > 0.0 { (-3f32.ln() / n).exp() } else { 0.0 }
         };
         self.input = gain(s.input_db);
         // A NaN ceiling would make `clamp` panic: full scale instead.
@@ -169,7 +165,11 @@ impl Limiter {
                 self.maxima.pop_back();
             }
             self.maxima.push_back((self.frame, r));
-            if self.maxima.front().is_some_and(|&(t, _)| t + window < self.frame) {
+            if self
+                .maxima
+                .front()
+                .is_some_and(|&(t, _)| t + window < self.frame)
+            {
                 self.maxima.pop_front();
             }
             let r = self.maxima.front().map_or(0.0, |&(_, v)| v);

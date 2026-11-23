@@ -66,7 +66,11 @@ fn render(case: &Case, late: usize) -> (Vec<f32>, usize) {
     let onset = out.iter().position(|x| *x != 0.0).unwrap_or(usize::MAX);
     let db = out
         .chunks(48)
-        .map(|ms| 10.0 * (ms.iter().map(|x| x * x).sum::<f32>() / 48.0 / 0.5).max(1e-20).log10())
+        .map(|ms| {
+            10.0 * (ms.iter().map(|x| x * x).sum::<f32>() / 48.0 / 0.5)
+                .max(1e-20)
+                .log10()
+        })
         .collect();
     (db, onset)
 }
@@ -79,7 +83,10 @@ fn kontakt_envelopes_match_kontakt_per_millisecond() {
             let (db, onset) = render(&case, late);
             let mut out = Vec::new();
             if onset != case.onset {
-                out.push(format!("case {}: first frame {onset}, Kontakt {}", case.n, case.onset));
+                out.push(format!(
+                    "case {}: first frame {onset}, Kontakt {}",
+                    case.n, case.onset
+                ));
             }
             for &(ms, want) in &case.levels {
                 let got = db[ms];
@@ -89,7 +96,10 @@ fn kontakt_envelopes_match_kontakt_per_millisecond() {
                 // last frames of a release.
                 let tolerance = if want >= -40.0 { 0.6 } else { 1.5 };
                 if (got - want).abs() > tolerance {
-                    out.push(format!("case {} at {ms} ms: {got:.2} dB, Kontakt {want:.1}", case.n));
+                    out.push(format!(
+                        "case {} at {ms} ms: {got:.2} dB, Kontakt {want:.1}",
+                        case.n
+                    ));
                 }
             }
             out
@@ -97,5 +107,10 @@ fn kontakt_envelopes_match_kontakt_per_millisecond() {
         let best = (0..48).map(misses).min_by_key(Vec::len).unwrap_or_default();
         failures.extend(best);
     }
-    assert!(failures.is_empty(), "{} misses:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} misses:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

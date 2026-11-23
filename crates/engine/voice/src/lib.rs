@@ -18,7 +18,7 @@ pub use envelope::{Ahdsr, Envelope};
 pub use granular::{Granular, GranularSpec, MAX_GRAINS};
 pub use oscillator::{OSC_PERIOD, OscWave, Oscillator};
 pub use wavetable::{
-    CYCLE, Inharmonic, LEVELS, ModKind, ModOsc, Osc, PERIOD, Quality, Read, SIZE, Shape, Shaper,
+    CYCLE, Inharmonic, LEVELS, ModOsc, ModOscKind, Osc, PERIOD, Quality, Read, SIZE, Shape, Shaper,
     Side, TOP, Table, Unit, Warp, shape, warp,
 };
 pub use zone::{Loop, Loops, Region};
@@ -35,28 +35,127 @@ pub enum RenderMode {
     Offline,
 }
 
+/// Which side of a voice's amplitude envelope and gain stage an insert callback
+/// runs on ([`Voice::render_through_stages`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceStage {
+    /// Before the amplitude envelope, fade, lag, and voice gain/pan matrix.
+    PreAmp,
+    /// After the amplitude envelope, fade, lag, and voice gain/pan matrix.
+    PostAmp,
+}
+
 /// Source frames decoded per inner chunk. Bounds per-voice memory, not pitch.
 const SCRATCH: usize = 512;
 /// Highest pitch step (source frames per output frame): +4 octaves at 4× rate.
 pub const MAX_STEP: f64 = 64.0;
 /// Output frames of source asked for ahead of the cursor each render.
 pub const LOOKAHEAD: f64 = 8192.0;
-/// One-pole gain smoothing per frame (~2 ms at 48 kHz).
-const GAIN_SMOOTH: f32 = 0.01;
+/// One-pole gain smoothing time constant (ms), rate-invariant across host rates.
+const GAIN_SMOOTH_MS: f32 = 1.0;
+/// Default sample rate assumed by [`Voice::allocate`] until [`Voice::set_sample_rate`] is called.
+const DEFAULT_RATE: u32 = 48_000;
 /// The fastest a stretching voice plays (the stretch law's top).
 const MAX_SPEED: f64 = 8.0;
 /// A stretching voice's grain, output frames (43 ms at 48 kHz).
-/// Output frames a note waits for the pages under its first block (about
-/// 50 ms at 48 kHz); then it starts from its first frame with what is there.
-const HEAD_WAIT: u32 = 2400;
 const GRAIN: u64 = 2048;
 const HALF_GRAIN: u64 = GRAIN / 2;
 /// Silence tail threshold (-120 dBFS) and consecutive frames before culling a releasing voice.
 const TAIL_SILENCE: f32 = 1e-6;
 const TAIL_FRAMES: u32 = 512;
 
+/// Windowed-sinc anti-aliasing resampler parameters for upward pitch shifts (`step > 1.0`).
+const SINC_LOBES: usize = 4;
+/// Cutoff fraction of output Nyquist (`0.90 * Fs_out / 2`) for >60 dB alias suppression.
+const SINC_CUTOFF: f64 = 0.90;
+/// Kaiser window beta parameter (~67 dB stopband attenuation).
+const KAISER_BETA: f64 = 6.5;
+/// Maximum source tap radius per side (limits work at high ratios).
+const MAX_SINC_HALF: usize = 32;
+/// Lookup table resolution over `[0, SINC_LOBES]`.
+const SINC_TABLE_LEN: usize = 2048;
+
+static SINC_TABLE: std::sync::LazyLock<[f32; SINC_TABLE_LEN + 1]> =
+    std::sync::LazyLock::new(build_sinc_table);
+
+/// Per-frame one-pole gain smoothing coefficient for [`GAIN_SMOOTH_MS`] at `rate` Hz.
+#[must_use]
+fn gain_smooth_coef(rate: u32) -> f32 {
+    let frames = GAIN_SMOOTH_MS * rate.max(1) as f32 / 1000.0;
+    if frames > 1.0 {
+        1.0 - (-1.0 / frames).exp()
+    } else {
+        1.0
+    }
+}
+
+/// Zeroth-order modified Bessel function of the first kind `I_0(x)` for the Kaiser window.
+fn bessel_i0(x: f64) -> f64 {
+    let mut sum = 1.0;
+    let mut term = 1.0;
+    let half_x = 0.5 * x;
+    for k in 1..=25 {
+        let ratio = half_x / f64::from(k);
+        term *= ratio * ratio;
+        sum += term;
+        if term < 1e-15 * sum {
+            break;
+        }
+    }
+    sum
+}
+
+/// Precomputes the half-sided Kaiser-windowed sinc table over `u in [0, SINC_LOBES]`.
+fn build_sinc_table() -> [f32; SINC_TABLE_LEN + 1] {
+    let inv_i0 = 1.0 / bessel_i0(KAISER_BETA);
+    std::array::from_fn(|i| {
+        if i == 0 {
+            return 1.0;
+        }
+        if i == SINC_TABLE_LEN {
+            return 0.0;
+        }
+        let u = (i as f64 / SINC_TABLE_LEN as f64) * SINC_LOBES as f64;
+        let x = std::f64::consts::PI * u;
+        let sinc = x.sin() / x;
+        let r = u / SINC_LOBES as f64;
+        let win = bessel_i0(KAISER_BETA * (1.0 - r * r).max(0.0).sqrt()) * inv_i0;
+        (sinc * win) as f32
+    })
+}
+
+/// Evaluates the precomputed Kaiser-windowed sinc at `u >= 0` using linear interpolation.
+#[inline]
+fn sinc_lookup(table: &[f32; SINC_TABLE_LEN + 1], u: f64) -> f32 {
+    let pos = u * (SINC_TABLE_LEN as f64 / SINC_LOBES as f64);
+    if !pos.is_finite() || pos < 0.0 || pos >= SINC_TABLE_LEN as f64 {
+        return 0.0;
+    }
+    let idx = pos as usize;
+    let frac = (pos - idx as f64) as f32;
+    let a = table.get(idx).copied().unwrap_or(0.0);
+    let b = table.get(idx + 1).copied().unwrap_or(0.0);
+    a + (b - a) * frac
+}
+
+/// Tap radius (source frames per side) and frequency scale for upward shift `step > 1.0`.
+#[inline]
+fn sinc_params(step: f64) -> (usize, f64) {
+    let ideal_scale = SINC_CUTOFF / step;
+    let ideal_half = (SINC_LOBES as f64 / ideal_scale).ceil() as usize;
+    // At extreme ratios we truncate the kernel; raising its cutoff would
+    // let frequencies above the output Nyquist through.
+    (ideal_half.min(MAX_SINC_HALF), ideal_scale)
+}
+
 /// How each output channel (row) takes each source channel (column).
 pub type Gain = [[f32; 2]; 2];
+
+/// How many lagging gains a voice glides, each a one-pole of its own.
+pub const LAGS: usize = 4;
+
+/// A voice's lagging gains ([`Lag`]), multiplied.
+pub type Lags = [Lag; LAGS];
 
 /// A gain gliding as a one-pole toward `gain`, `coef` of the way each frame
 /// (1: at once).
@@ -105,8 +204,8 @@ pub struct VoiceStart {
     /// Source frames per output frame: pitch and sample-rate ratio together.
     pub step: f64,
     pub gain: Gain,
-    /// A slower gain on top of `gain`: the routes that lag.
-    pub lag: Lag,
+    /// Slower gains on top of `gain`: the routes that lag, each its own.
+    pub lag: Lags,
     pub envelope: Ahdsr,
     /// A fade its event asked for before it started; one up to a gain starts
     /// it from silence.
@@ -156,8 +255,10 @@ pub struct Voice {
     ramp: Ramp,
     gain: Gain,
     target: Gain,
-    lagged: f32,
-    lag: Lag,
+    /// Per-frame one-pole gain smoothing coefficient derived from the host sample rate.
+    gain_smooth: f32,
+    lagged: [f32; LAGS],
+    lag: Lags,
     env: Envelope,
     fade: Fade,
     life: Life,
@@ -166,8 +267,6 @@ pub struct Voice {
     /// Cursor position of the note's release, once it came.
     released: Option<u64>,
     missing: u64,
-    /// Output frames this note has waited for its first pages.
-    waited: u32,
     /// See [`VoiceStart::speed`]; the cursor moves at `step · speed`.
     speed: f64,
     /// Active loop tuning multiplier (1.0 outside tuned loop repeats).
@@ -217,6 +316,8 @@ impl Voice {
     /// Allocates the voice's state; call at prepare, never on the audio thread.
     #[must_use]
     pub fn allocate() -> Self {
+        // Eagerly initialize the static windowed-sinc table off the audio thread.
+        let _ = std::sync::LazyLock::force(&SINC_TABLE);
         Self {
             region: None,
             loops: Loops::new(),
@@ -230,15 +331,15 @@ impl Voice {
             ramp: Ramp::NONE,
             gain: [[0.0; 2]; 2],
             target: [[0.0; 2]; 2],
-            lagged: 1.0,
-            lag: Lag::NONE,
+            gain_smooth: gain_smooth_coef(DEFAULT_RATE),
+            lagged: [1.0; LAGS],
+            lag: [Lag::NONE; LAGS],
             env: Envelope::new(Ahdsr::GATE),
             fade: Fade::NONE,
             life: Life::Held,
             decoded: [kontra_stream::Decoded::new(), kontra_stream::Decoded::new()],
             released: None,
             missing: 0,
-            waited: 0,
             speed: 1.0,
             loop_tune: 1.0,
             silent_tail: 0,
@@ -249,6 +350,11 @@ impl Voice {
             mode: RenderMode::Live,
             offline_wait_timeouts: 0,
         }
+    }
+
+    /// Configures host sample rate for rate-invariant gain smoothing.
+    pub fn set_sample_rate(&mut self, rate: u32) {
+        self.gain_smooth = gain_smooth_coef(rate);
     }
 
     /// Starts playing. No allocation. The previous region's sample reference is
@@ -283,7 +389,7 @@ impl Voice {
         self.ramp = Ramp::NONE;
         self.gain = start.gain;
         self.target = start.gain;
-        self.lagged = start.lag.gain;
+        self.lagged = start.lag.map(|l| l.gain);
         self.lag = start.lag;
         self.env = Envelope::new(start.envelope);
         self.fade = match start.fade {
@@ -296,7 +402,6 @@ impl Voice {
         }
         self.released = None;
         self.missing = 0;
-        self.waited = 0;
         self.speed = if start.speed.is_finite() {
             start.speed.clamp(0.0, MAX_SPEED)
         } else {
@@ -423,8 +528,18 @@ impl Voice {
     }
 
     /// Changes the lagging gain, gliding at its own pace.
-    pub fn set_lag(&mut self, lag: Lag) {
+    pub fn set_lag(&mut self, lag: Lags) {
         self.lag = lag;
+    }
+
+    /// Steps each route's lag one frame and returns their product.
+    fn tick_lags(&mut self) -> f32 {
+        let mut lagged = 1.0;
+        for (at, l) in self.lagged.iter_mut().zip(&self.lag) {
+            *at += (l.gain - *at) * l.coef;
+            lagged *= *at;
+        }
+        lagged
     }
 
     /// Changes the channel matrix (live cells) from the next chunk read.
@@ -454,14 +569,16 @@ impl Voice {
     /// Current gain matrix including its envelope and lag, before sample and effects.
     #[must_use]
     pub fn current_gain(&self) -> Gain {
-        let level = self.lagged * self.env.output_gain() * self.fade.level();
+        let lagged: f32 = self.lagged.iter().product();
+        let level = lagged * self.env.output_gain() * self.fade.level();
         self.gain.map(|row| row.map(|gain| gain * level))
     }
 
     /// The gain the voice is moving to, its lagging gain included.
     #[must_use]
     pub fn target_gain(&self) -> Gain {
-        self.target.map(|row| row.map(|g| g * self.lag.gain))
+        let lagged: f32 = self.lag.iter().map(|l| l.gain).product();
+        self.target.map(|row| row.map(|g| g * lagged))
     }
 
     #[must_use]
@@ -546,7 +663,7 @@ impl Voice {
         now: u64,
         out: &mut [[f32; 2]],
     ) {
-        self.render_through(scratch, client, now, out, |_| {});
+        self.render_inner::<false>(scratch, client, now, out, |_, _| {});
     }
 
     /// As [`Self::render`], with `insert` run on the interpolated signal
@@ -559,6 +676,36 @@ impl Voice {
         now: u64,
         out: &mut [[f32; 2]],
         mut insert: impl FnMut(&mut [[f32; 2]]),
+    ) {
+        self.render_inner::<false>(scratch, client, now, out, |stage, io| {
+            if stage == VoiceStage::PreAmp {
+                insert(io);
+            }
+        });
+    }
+
+    /// As [`Self::render`], with `insert` invoked on both sides of the voice's
+    /// amplitude envelope, fade, lag and gain/pan stage: [`VoiceStage::PreAmp`]
+    /// on the interpolated chunk before amp, and [`VoiceStage::PostAmp`] on the
+    /// amp-shaped chunk before mixing into `out`.
+    pub fn render_through_stages(
+        &mut self,
+        scratch: &mut Scratch,
+        client: &StreamClient,
+        now: u64,
+        out: &mut [[f32; 2]],
+        insert: impl FnMut(VoiceStage, &mut [[f32; 2]]),
+    ) {
+        self.render_inner::<true>(scratch, client, now, out, insert);
+    }
+
+    fn render_inner<const POST: bool>(
+        &mut self,
+        scratch: &mut Scratch,
+        client: &StreamClient,
+        now: u64,
+        out: &mut [[f32; 2]],
+        mut insert: impl FnMut(VoiceStage, &mut [[f32; 2]]),
     ) {
         #[cfg(feature = "trace")]
         {
@@ -602,26 +749,10 @@ impl Voice {
             }
         });
 
-        // A note whose first pages are not in yet because their heads are still
-        // loading (a streaming miss keeps time instead) holds still, so its attack plays whole when they land instead of the note
-        // joining mid-sample; the requests above are already queued, due now.
-        if self.elapsed == 0 && !synth && self.waited < HEAD_WAIT && sample.heads_pending() {
-            let block = (out.len() as f64 * step) as usize + 4;
-            let mut ready = true;
-            region.runs_with(&self.loops, from as i64, block, released, |_, run| {
-                let low = if run.descending {
-                    run.first + 1 - run.count as u64
-                } else {
-                    run.first
-                };
-                ready &= sample.is_resident(low, run.count as u64);
-            });
-            if !ready {
-                self.waited += out.len() as u32;
-                self.region = Some(region);
-                return;
-            }
-        }
+        // A live voice never stalls waiting on storage (02-ENGINE.md §5): any
+        // unresident frames render as silence while the cursor keeps exact time,
+        // preserving phase alignment across multi-mic layers. Offline bounces
+        // settle inside `read_window`.
         let has_tuned = !synth && zone::Region::has_tuned_loop(&self.loops);
         let mut done = 0;
         let mut alive = true;
@@ -645,9 +776,13 @@ impl Voice {
             let fit = if synth {
                 SCRATCH
             } else {
-                (((SCRATCH - 4) as f64 / (self.ramp.peak(self.step) * self.loop_tune)).floor()
-                    as usize)
-                    .max(1)
+                let peak = self.ramp.peak(self.step) * self.loop_tune;
+                let margin = if peak > 1.0 {
+                    2 * (sinc_params(peak).0 + 1) + 2
+                } else {
+                    4
+                };
+                (((SCRATCH.saturating_sub(margin)) as f64 / peak).floor() as usize).max(1)
             };
             let mut n = fit.min(out.len() - done);
             let stretched = self.speed != 1.0;
@@ -714,46 +849,97 @@ impl Voice {
                 self.read_window(scratch, client, &region, n, cursor, ramp)
             };
             let chunk_missing = self.missing != missing_before;
-            let raw = scratch.raw.get_mut(..filled).unwrap_or_default();
-            insert(raw);
+            let limit = filled.min(out.len().saturating_sub(done));
+            let raw = scratch.raw.get_mut(..limit).unwrap_or_default();
+            if !raw.is_empty() {
+                insert(VoiceStage::PreAmp, raw);
+            }
             let releasing = self.released.is_some() || self.is_ending();
-            for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
-                self.lagged += (self.lag.gain - self.lagged) * self.lag.coef;
-                let level = self.env.tick() * self.fade.next() * self.lagged;
-                for (g, target) in self
-                    .gain
-                    .as_flattened_mut()
-                    .iter_mut()
-                    .zip(self.target.as_flattened())
-                {
-                    *g += (target - *g) * GAIN_SMOOTH;
+            if POST {
+                let mut amp_frames = 0usize;
+                for sample in raw.iter_mut() {
+                    let level = self.env.tick() * self.fade.next() * self.tick_lags();
+                    for (g, target) in self
+                        .gain
+                        .as_flattened_mut()
+                        .iter_mut()
+                        .zip(self.target.as_flattened())
+                    {
+                        *g += (target - *g) * self.gain_smooth;
+                    }
+                    let (l, r) = (sample[0] * level, sample[1] * level);
+                    let [[ll, lr], [rl, rr]] = self.gain;
+                    sample[0] = ll * l + lr * r;
+                    sample[1] = rl * l + rr * r;
+                    amp_frames += 1;
+                    if self.env.is_off() || self.fade.ended() {
+                        alive = false;
+                        break;
+                    }
                 }
-                let (l, r) = (l * level, r * level);
-                let [[ll, lr], [rl, rr]] = self.gain;
-                let left = ll * l + lr * r;
-                let right = rl * l + rr * r;
-                #[cfg(feature = "trace")]
-                {
-                    self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                let post = raw.get_mut(..amp_frames).unwrap_or_default();
+                if !post.is_empty() {
+                    insert(VoiceStage::PostAmp, post);
                 }
-                frame[0] += left;
-                frame[1] += right;
-                if self.env.is_off() || self.fade.ended() {
-                    alive = false;
-                    break;
-                }
-                if releasing && !chunk_missing {
-                    if left.abs().max(right.abs()) < TAIL_SILENCE {
-                        self.silent_tail += 1;
-                        if self.silent_tail >= TAIL_FRAMES {
-                            alive = false;
-                            break;
+                for (frame, &[left, right]) in out.iter_mut().skip(done).zip(post.iter()) {
+                    #[cfg(feature = "trace")]
+                    {
+                        self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                    }
+                    frame[0] += left;
+                    frame[1] += right;
+                    if releasing && !chunk_missing {
+                        if left.abs().max(right.abs()) < TAIL_SILENCE {
+                            self.silent_tail += 1;
+                            if self.silent_tail >= TAIL_FRAMES {
+                                alive = false;
+                                break;
+                            }
+                        } else {
+                            self.silent_tail = 0;
                         }
                     } else {
                         self.silent_tail = 0;
                     }
-                } else {
-                    self.silent_tail = 0;
+                }
+            } else {
+                for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
+                    let level = self.env.tick() * self.fade.next() * self.tick_lags();
+                    for (g, target) in self
+                        .gain
+                        .as_flattened_mut()
+                        .iter_mut()
+                        .zip(self.target.as_flattened())
+                    {
+                        *g += (target - *g) * self.gain_smooth;
+                    }
+                    let (l, r) = (l * level, r * level);
+                    let [[ll, lr], [rl, rr]] = self.gain;
+                    let left = ll * l + lr * r;
+                    let right = rl * l + rr * r;
+                    #[cfg(feature = "trace")]
+                    {
+                        self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                    }
+                    frame[0] += left;
+                    frame[1] += right;
+                    if self.env.is_off() || self.fade.ended() {
+                        alive = false;
+                        break;
+                    }
+                    if releasing && !chunk_missing {
+                        if left.abs().max(right.abs()) < TAIL_SILENCE {
+                            self.silent_tail += 1;
+                            if self.silent_tail >= TAIL_FRAMES {
+                                alive = false;
+                                break;
+                            }
+                        } else {
+                            self.silent_tail = 0;
+                        }
+                    } else {
+                        self.silent_tail = 0;
+                    }
                 }
             }
             self.elapsed += n as u64;
@@ -845,9 +1031,16 @@ impl Voice {
         let loops = &self.loops;
         let released = self.released;
         let step = ramp.step_at(first_step, frames);
+        let peak_step = ramp.peak(first_step);
         let at = |i: u64| base + ramp.travel(first_step, frames + i);
-        let lo = at(0).floor() as i64 - 1;
-        let span = (at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
+        let (left_pad, right_pad) = if peak_step > 1.0 {
+            let h = sinc_params(peak_step).0 as i64 + 1;
+            (h, h + 1)
+        } else {
+            (1, 3)
+        };
+        let lo = at(0).floor() as i64 - left_pad;
+        let span = (at(n as u64 - 1).floor() as i64 + right_pad - lo) as usize;
         let partner = &mut scratch.partner;
         let [main, blend_cache] = &mut self.decoded;
         let Some(window) = scratch.window.get_mut(..span.min(SCRATCH)) else {
@@ -923,24 +1116,69 @@ impl Voice {
             window.get_mut(end..).unwrap_or_default().fill([0.0; 2]);
         }
 
+        let sinc_table = &*SINC_TABLE;
         let mut filled = 0;
         for (i, frame) in scratch.raw.iter_mut().take(n).enumerate() {
+            let cur_step = ramp.step_at(first_step, frames + i as u64);
             let x = at(i as u64) - lo as f64;
             if !x.is_finite() || x < 1.0 {
                 break;
             }
-            let base = x.floor() as usize;
-            let t = (x - base as f64) as f32;
-            let Some(start) = base.checked_sub(1) else {
-                break;
-            };
-            let Some(&[y0, y1, y2, y3]) = window.get(start..base + 3) else {
-                break;
-            };
-            *frame = [
-                hermite(y0[0], y1[0], y2[0], y3[0], t),
-                hermite(y0[1], y1[1], y2[1], y3[1], t),
-            ];
+            if cur_step > 1.0 {
+                let (half, scale) = sinc_params(cur_step);
+                let center_i = x.round() as isize;
+                let frac = x - center_i as f64;
+                let Ok(center) = usize::try_from(center_i) else {
+                    break;
+                };
+                if center < half || center + half >= window.len() {
+                    break;
+                }
+                let w0 = f64::from(sinc_lookup(sinc_table, frac.abs() * scale));
+                let Some(&c_frame) = window.get(center) else {
+                    break;
+                };
+                let mut acc_l = f64::from(c_frame[0]) * w0;
+                let mut acc_r = f64::from(c_frame[1]) * w0;
+                let mut w_sum = w0;
+                for d in 1..=half {
+                    let (Some(&lo_f), Some(&hi_f)) =
+                        (window.get(center - d), window.get(center + d))
+                    else {
+                        break;
+                    };
+                    if frac == 0.0 {
+                        let w = f64::from(sinc_lookup(sinc_table, d as f64 * scale));
+                        acc_l += (f64::from(lo_f[0]) + f64::from(hi_f[0])) * w;
+                        acc_r += (f64::from(lo_f[1]) + f64::from(hi_f[1])) * w;
+                        w_sum += 2.0 * w;
+                    } else {
+                        let w_lo = f64::from(sinc_lookup(sinc_table, (d as f64 + frac) * scale));
+                        let w_hi = f64::from(sinc_lookup(sinc_table, (d as f64 - frac) * scale));
+                        acc_l += f64::from(lo_f[0]) * w_lo + f64::from(hi_f[0]) * w_hi;
+                        acc_r += f64::from(lo_f[1]) * w_lo + f64::from(hi_f[1]) * w_hi;
+                        w_sum += w_lo + w_hi;
+                    }
+                }
+                *frame = if w_sum.abs() > 1e-12 {
+                    [(acc_l / w_sum) as f32, (acc_r / w_sum) as f32]
+                } else {
+                    [0.0, 0.0]
+                };
+            } else {
+                let base = x.floor() as usize;
+                let t = (x - base as f64) as f32;
+                let Some(start) = base.checked_sub(1) else {
+                    break;
+                };
+                let Some(&[y0, y1, y2, y3]) = window.get(start..base + 3) else {
+                    break;
+                };
+                *frame = [
+                    hermite(y0[0], y1[0], y2[0], y3[0], t),
+                    hermite(y0[1], y1[1], y2[1], y3[1], t),
+                ];
+            }
             filled += 1;
         }
         filled
@@ -988,9 +1226,8 @@ fn clamp_step(step: f64) -> f64 {
     }
 }
 
-/// 4-point, 3rd-order Hermite between `y1` and `y2`.
-// ponytail: cubic Hermite for every pitch; a band-limited (sinc) kernel for
-// steps above 1 when an aliasing measurement on real pitched-up material needs it.
+/// 4-point, 3rd-order Hermite between `y1` and `y2` (used for `step <= 1.0`;
+/// upward shifts `step > 1.0` use the band-limited Kaiser-windowed sinc kernel).
 fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
     let c1 = 0.5 * (y2 - y0);
     let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;

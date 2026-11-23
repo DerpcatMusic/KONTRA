@@ -5,10 +5,12 @@
 //! I/O — never decoding audio frames or allocating proportional to file size.
 
 use std::fs::File;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io;
 use std::path::Path;
 
 use kontra_ir as ir;
+
+use crate::io::{ReadAt, SliceReader};
 
 /// Metadata extracted from an audio file header without decoding sample data.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,13 +36,21 @@ pub struct AudioLoop {
 
 impl AudioLoop {
     /// Converts this probed loop into an IR [`ir::Loop`].
+    ///
+    /// [`AudioLoop::count`] stores repeats after the first traversal (`0` =
+    /// infinite), whereas [`ir::Loop::count`] stores total passes (`0` =
+    /// infinite, `n` = `n - 1` repeats).
     #[must_use]
     pub const fn to_ir_loop(self, until_release: bool) -> ir::Loop {
         ir::Loop {
             start: self.start,
             end: self.end,
             crossfade: 0,
-            count: self.count,
+            count: if self.count == 0 {
+                0
+            } else {
+                self.count.saturating_add(1)
+            },
             alternating: self.ping_pong,
             until_release,
             tune_ratio: 1.0,
@@ -68,7 +78,11 @@ pub fn probe_header(path: &Path) -> io::Result<AudioHeader> {
 }
 
 /// Probes a container at `offset`, with reads bounded to `len` bytes (or EOF).
-pub(crate) fn probe_region(path: &Path, offset: u64, len: Option<u64>) -> io::Result<AudioHeader> {
+///
+/// # Errors
+/// Returns an [`io::Error`] if the file cannot be opened/read, the region falls
+/// outside EOF, or the audio header is unsupported, truncated, or malformed.
+pub fn probe_region(path: &Path, offset: u64, len: Option<u64>) -> io::Result<AudioHeader> {
     let file = File::open(path)?;
     let available = file
         .metadata()?
@@ -79,34 +93,8 @@ pub(crate) fn probe_region(path: &Path, offset: u64, len: Option<u64>) -> io::Re
     if len > available {
         return Err(invalid_data("audio slice extends past EOF"));
     }
-    probe_reader(&mut Region { file, offset }, len)
-}
-
-// All parser reads go through read_at, which bounds each read to the region.
-struct Region {
-    file: File,
-    offset: u64,
-}
-
-impl Read for Region {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.file.read(buf)
-    }
-}
-
-impl Seek for Region {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let SeekFrom::Start(pos) = pos else {
-            return Err(io::ErrorKind::Unsupported.into());
-        };
-        let absolute = self
-            .offset
-            .checked_add(pos)
-            .ok_or_else(|| invalid_data("audio slice offset overflow"))?;
-        self.file
-            .seek(SeekFrom::Start(absolute))
-            .map(|at| at - self.offset)
-    }
+    let region = SliceReader::new(file, offset, len);
+    probe_read_at(&region, len)
 }
 
 /// Probes an in-memory audio byte slice for sample rate, channel count, frame
@@ -115,12 +103,16 @@ impl Seek for Region {
 /// # Errors
 /// Returns an [`io::Error`] if the bytes are unsupported, truncated, or malformed.
 pub fn probe_bytes(bytes: &[u8]) -> io::Result<AudioHeader> {
-    let file_len = bytes.len() as u64;
-    let mut cursor = Cursor::new(bytes);
-    probe_reader(&mut cursor, file_len)
+    probe_read_at(&bytes, bytes.len() as u64)
 }
 
-fn probe_reader<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<AudioHeader> {
+/// Probes any positioned [`ReadAt`] source of `file_len` bytes (e.g. a file,
+/// in-memory buffer, archive slice, or keystream-transformed container member).
+///
+/// # Errors
+/// Returns an [`io::Error`] if reads fail or the audio header is unsupported,
+/// truncated, or malformed.
+pub fn probe_read_at(reader: &dyn ReadAt, file_len: u64) -> io::Result<AudioHeader> {
     let mut magic = [0u8; 4];
     read_at(reader, file_len, 0, &mut magic)?;
     match &magic {
@@ -137,12 +129,7 @@ fn invalid_data(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
-fn read_at<R: Read + Seek>(
-    reader: &mut R,
-    file_len: u64,
-    offset: u64,
-    buf: &mut [u8],
-) -> io::Result<()> {
+fn read_at(reader: &dyn ReadAt, file_len: u64, offset: u64, buf: &mut [u8]) -> io::Result<()> {
     let end = offset
         .checked_add(buf.len() as u64)
         .ok_or_else(|| invalid_data("file offset overflow"))?;
@@ -152,8 +139,7 @@ fn read_at<R: Read + Seek>(
             "truncated audio header",
         ));
     }
-    reader.seek(SeekFrom::Start(offset))?;
-    reader.read_exact(buf)
+    reader.read_exact_at(offset, buf)
 }
 
 fn le16(bytes: &[u8], at: usize) -> Option<u16> {
@@ -187,11 +173,7 @@ fn be32(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 /// Parses a RIFF or RF64 WAVE container: `ds64`, `fmt `, `fact`, `data`, and `smpl`.
-fn probe_wav<R: Read + Seek>(
-    reader: &mut R,
-    file_len: u64,
-    is_rf64: bool,
-) -> io::Result<AudioHeader> {
+fn probe_wav(reader: &dyn ReadAt, file_len: u64, is_rf64: bool) -> io::Result<AudioHeader> {
     let mut wave = [0u8; 4];
     read_at(reader, file_len, 8, &mut wave)?;
     if &wave != b"WAVE" {
@@ -344,8 +326,8 @@ fn probe_wav<R: Read + Seek>(
 }
 
 /// Reads and parses a WAV `smpl` chunk payload (bounded to [`SMPL_PREFIX_BYTES`]).
-fn read_smpl_loops<R: Read + Seek>(
-    reader: &mut R,
+fn read_smpl_loops(
+    reader: &dyn ReadAt,
     file_len: u64,
     at: u64,
     len: u32,
@@ -395,7 +377,7 @@ fn parse_smpl_loops(body: &[u8], frames: u64) -> Vec<AudioLoop> {
 }
 
 /// Parses a FLAC container: `STREAMINFO` plus optional `APPLICATION` (`riff`) `smpl` loops.
-fn probe_flac<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<AudioHeader> {
+fn probe_flac(reader: &dyn ReadAt, file_len: u64) -> io::Result<AudioHeader> {
     let mut pos = 4u64;
     let mut stream_info: Option<(u32, u16, u64)> = None;
     let mut smpl_loc: Option<(u64, u32)> = None;
@@ -466,7 +448,7 @@ fn probe_flac<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<Audio
 
 /// Parses an AIFF or AIFC container: `COMM` (with 80-bit IEEE 754 extended sample rate)
 /// plus optional `MARK` and `INST` sustain loops.
-fn probe_aiff<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<AudioHeader> {
+fn probe_aiff(reader: &dyn ReadAt, file_len: u64) -> io::Result<AudioHeader> {
     let mut form_type = [0u8; 4];
     read_at(reader, file_len, 8, &mut form_type)?;
     if &form_type != b"AIFF" && &form_type != b"AIFC" {
@@ -668,7 +650,7 @@ fn parse_aiff_markers(buf: &[u8]) -> Vec<(u16, u64)> {
 
 /// Parses an OGG/Vorbis container: identification header (`\x01vorbis`) and
 /// bounded tail scan for the last Ogg page's granule position.
-fn probe_ogg_vorbis<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<AudioHeader> {
+fn probe_ogg_vorbis(reader: &dyn ReadAt, file_len: u64) -> io::Result<AudioHeader> {
     let mut page_hdr = [0u8; 27];
     read_at(reader, file_len, 0, &mut page_hdr)?;
     if page_hdr.get(4).copied() != Some(0) {
@@ -1081,5 +1063,134 @@ mod tests {
         assert!(probe_bytes(b"fLaC\x80\x00\x00\x04\x00\x00\x00\x00").is_err());
         assert!(probe_bytes(b"FORM\x00\x00\x00\x04AIFF").is_err());
         assert!(probe_bytes(b"OggS\x00\x02").is_err());
+    }
+
+    #[test]
+    fn to_ir_loop_converts_repeats_to_total_passes() {
+        let inf = AudioLoop {
+            start: 10,
+            end: 20,
+            count: 0,
+            ping_pong: false,
+        }
+        .to_ir_loop(false);
+        assert_eq!(inf.count, 0);
+
+        let finite = AudioLoop {
+            start: 10,
+            end: 20,
+            count: 2,
+            ping_pong: true,
+        }
+        .to_ir_loop(true);
+        assert_eq!(finite.count, 3);
+        assert!(finite.alternating);
+        assert!(finite.until_release);
+    }
+
+    #[test]
+    fn probe_read_at_skips_flac_padding_and_wav_audio_payload() {
+        use std::cell::Cell;
+
+        struct CheckedSlice<'a> {
+            bytes: &'a [u8],
+            forbid: std::ops::Range<u64>,
+            reads: Cell<usize>,
+        }
+
+        impl ReadAt for CheckedSlice<'_> {
+            fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+                self.reads.set(self.reads.get() + 1);
+                let end = offset + buf.len() as u64;
+                assert!(
+                    end <= self.forbid.start || offset >= self.forbid.end,
+                    "read overlapped forbidden range {offset}..{end} vs {:?}",
+                    self.forbid
+                );
+                self.bytes.read_at(offset, buf)
+            }
+        }
+
+        // FLAC with 65 KiB padding before riff/smpl block
+        let mut flac = build_flac(2, 48_000, 12_345, false);
+        flac[4] = 0x00; // STREAMINFO is no longer last
+        let padding: u32 = 65_536;
+        flac.push(1); // PADDING
+        flac.extend(&padding.to_be_bytes()[1..]);
+        let pad_start = flac.len() as u64;
+        let pad_end = pad_start + u64::from(padding);
+        flac.resize(pad_end as usize, 0);
+        let mut smpl = vec![0u8; 36];
+        smpl[28..32].copy_from_slice(&1u32.to_le_bytes());
+        for word in [0u32, 0, 100, 199, 0, 0] {
+            smpl.extend(word.to_le_bytes());
+        }
+        let mut app = b"riffsmpl".to_vec();
+        app.extend((smpl.len() as u32).to_le_bytes());
+        app.extend(smpl);
+        flac.push(0x82);
+        flac.extend(&(app.len() as u32).to_be_bytes()[1..]);
+        flac.extend(app);
+
+        let reader = CheckedSlice {
+            bytes: &flac,
+            forbid: pad_start..pad_end,
+            reads: Cell::new(0),
+        };
+        let hdr = probe_read_at(&reader, flac.len() as u64).unwrap();
+        assert_eq!(
+            (hdr.channels, hdr.sample_rate, hdr.frames),
+            (2, 48_000, 12_345)
+        );
+        assert_eq!(hdr.loops.len(), 1);
+        assert_eq!(
+            (hdr.loops[0].start, hdr.loops[0].end, hdr.loops[0].count),
+            (100, 200, 0)
+        );
+
+        // WAV with 80 KiB audio data skipped before smpl chunk
+        let wav = build_wav(
+            2,
+            48_000,
+            20_000,
+            &[(0, 100, 199, 1), (0, 200, 299, 2), (0, 300, 399, 0)],
+        );
+        let audio_start = 44u64;
+        let audio_end = audio_start + 80_000;
+        let reader = CheckedSlice {
+            bytes: &wav,
+            forbid: audio_start..audio_end,
+            reads: Cell::new(0),
+        };
+        let hdr = probe_read_at(&reader, wav.len() as u64).unwrap();
+        assert_eq!(hdr.frames, 20_000);
+        let ir_counts: Vec<_> = hdr
+            .loops
+            .iter()
+            .map(|l| (l.start, l.to_ir_loop(false).count))
+            .collect();
+        assert_eq!(ir_counts, [(200, 2), (300, 0)]);
+    }
+
+    #[test]
+    fn probe_read_at_caps_metadata_chunk_reads() {
+        use std::cell::Cell;
+
+        struct CountingSlice<'a>(&'a [u8], Cell<usize>);
+        impl ReadAt for CountingSlice<'_> {
+            fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+                self.1.set(self.1.get() + 1);
+                self.0.read_at(offset, buf)
+            }
+        }
+
+        let mut flac = build_flac(2, 48_000, 12_345, false);
+        flac[4] = 0x00;
+        flac.extend(b"\x01\x00\x00\x00".repeat(1024));
+        flac.extend(b"\x81\x00\x00\x00");
+        let counter = CountingSlice(&flac, Cell::new(0));
+        let hdr = probe_read_at(&counter, flac.len() as u64).unwrap();
+        assert_eq!(hdr.frames, 12_345);
+        assert!(counter.1.get() <= 260, "made {} reads", counter.1.get());
     }
 }

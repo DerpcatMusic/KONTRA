@@ -38,7 +38,7 @@ impl crate::Engine {
         while controllers != 0 {
             let cc = controllers.trailing_zeros() as u8;
             controllers &= controllers - 1;
-            let source_kind = kontra_plan::route_source(route.kind);
+            let source_kind = route.route.driver();
             let group = self.groups.get(zone.group as usize);
             let direct = group.is_some_and(|g| source_kind.is_some_and(|s| g.reads(s, cc)));
             let related =
@@ -50,14 +50,16 @@ impl crate::Engine {
             }
             if related
                 || callback.is_some()
-                || matches!(source_kind, Some(kontra_ir::Source::Script(_)))
+                || source_kind
+                    .and_then(kontra_ir::Source::script_channel)
+                    .is_some()
             {
                 trace.routes.push(kontra_trace::RouteSample {
                     frame: self.now.0,
                     controller: cc,
                     mod_slot: route.slot,
                     target: route.target,
-                    kind: route.kind,
+                    route: route.route,
                     source,
                     value,
                     unit,

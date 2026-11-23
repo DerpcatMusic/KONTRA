@@ -113,10 +113,12 @@ pub(crate) fn unfinished<'a, L: Library>(
         bus_of: HashMap::new(),
         fx_of: HashMap::new(),
         knobs_of: HashMap::new(),
+        routed_knobs: HashMap::new(),
         knob_sets: Vec::new(),
         knob_cache: HashMap::new(),
         script_words: HashSet::new(),
         dry_of: HashMap::new(),
+        rack_mix_of: HashMap::new(),
         entry: HashMap::new(),
         script_dirs: Vec::new(),
         playback_overrides: HashSet::new(),
@@ -222,15 +224,19 @@ struct Translator<'a, 'input, L> {
     fx_of: HashMap<roxmltree::NodeId, routing::Fx>,
     /// What each insert's numbers move, for scripts (routing.rs).
     knobs_of: HashMap<roxmltree::NodeId, usize>,
+    /// A routed EQ's bus and the (slot, knob set) pairs for its band chunks.
+    routed_knobs: HashMap<roxmltree::NodeId, routing::RoutedKnobs>,
     /// The distinct answers, which [`Self::knobs_of`] index, and each one's
     /// insert type and saved attributes.
     knob_sets: Vec<Vec<routing::Knob>>,
-    knob_cache: HashMap<String, Option<usize>>,
+    knob_cache: HashMap<routing::KnobKey, Option<usize>>,
     /// Every name the program's scripts quote: only those numbers can be
-    /// set by name, so only those are probed (routing.rs).
+    /// set by name, so only those are mapped (routing.rs).
     script_words: HashSet<String>,
     /// Each effect rack's dry bus, open while it is bypassed (routing.rs).
     dry_of: HashMap<roxmltree::NodeId, usize>,
+    /// The chain and direct gain buses of a script-addressable feedback rack.
+    rack_mix_of: HashMap<roxmltree::NodeId, (usize, usize)>,
     /// Each layer's first bus, where its voices play.
     entry: HashMap<roxmltree::NodeId, usize>,
     /// Each script's folder in the bank, relative to the program's.
@@ -436,9 +442,8 @@ impl<L: Library> Translator<'_, '_, L> {
             .filter_map(|c| Some((c, modulation::route(program, c, PAN)?)))
             .collect::<Vec<_>>();
         for (c, r) in pans {
-            self.add_route(&mut group, c, r, |source, amount| ir::ModKind::Pan {
-                source,
-                amount,
+            self.add_route(&mut group, c, r, |source, amount| {
+                ir::ModRoute::new(source, ir::ParamAddr::Pan, amount)
             });
         }
         self.gain_routes(&mut group, kg);
@@ -483,11 +488,8 @@ impl<L: Library> Translator<'_, '_, L> {
                 .filter_map(|c| Some((c, modulation::route(program, c, PITCH)?)))
                 .collect::<Vec<_>>();
             for (c, r) in routes {
-                self.add_route(&mut group, c, r, |source, semitones| ir::ModKind::Pitch {
-                    source,
-                    semitones,
-                    depth: 1.0,
-                    tau_ms: 0.0,
+                self.add_route(&mut group, c, r, |source, semitones| {
+                    ir::ModRoute::new(source, ir::ParamAddr::Pitch, 1.0).span(semitones)
                 });
             }
             self.player(player, placement, &span, &mut group, slot)?;
@@ -507,7 +509,7 @@ impl<L: Library> Translator<'_, '_, L> {
         group: &mut ir::Group,
         connection: Node,
         r: modulation::Route,
-        kind: impl Fn(ir::Source, f32) -> ir::ModKind,
+        kind: impl Fn(ir::Source, f32) -> ir::ModRoute,
     ) {
         if r.ratio == 0.0 && self.out.scripts.is_empty() {
             return;
@@ -522,7 +524,7 @@ impl<L: Library> Translator<'_, '_, L> {
         let kind = kind(source, r.unit * r.ratio);
         let alike = group.mods.iter().find_map(|m| {
             let key = m.name.strip_prefix('#')?.parse().ok()?;
-            (m.kind == kind && self.units.get(&key) == Some(&r.unit)).then_some(key)
+            (m.route == kind && self.units.get(&key) == Some(&r.unit)).then_some(key)
         });
         let key = alike.unwrap_or_else(|| {
             let key = connection.id().get_usize();
@@ -532,7 +534,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 slot: 0,
                 target: 0,
                 bypass: false,
-                kind,
+                route: kind,
             });
             key
         });
@@ -621,12 +623,15 @@ impl<L: Library> Translator<'_, '_, L> {
                     slot: 0,
                     target: 0,
                     bypass: false,
-                    kind: ir::ModKind::Mix {
+                    route: ir::ModRoute::new(
                         source,
-                        zone: member,
-                        row,
-                        side,
-                    },
+                        ir::ParamAddr::ZoneMix {
+                            zone: member,
+                            row,
+                            side,
+                        },
+                        1.0,
+                    ),
                 });
             }
             // No UVI script addresses a zone by id.
@@ -851,6 +856,7 @@ impl<L: Library> Translator<'_, '_, L> {
                         ir::Source::Controller(_)
                             | ir::Source::ControllerFrom { .. }
                             | ir::Source::Script(_)
+                            | ir::Source::Macro(_)
                             | ir::Source::PitchBend
                             | ir::Source::Lfo(_)
                     )

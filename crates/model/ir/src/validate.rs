@@ -1,15 +1,11 @@
 //! Structural validation of an [`Instrument`]: checks index bounds, loop and
-//! zone ranges, bus send cycles, and engine modulation limits without mutating
+//! zone ranges and bus send cycles without mutating
 //! the IR.
 
 use crate::{
-    CrossfadeControl, Diagnostic, Generator, GraphNodeKind, Impact, Instrument, ModKind, Source,
-    StartRule,
+    CrossfadeControl, Diagnostic, Generator, GraphNodeKind, Impact, Instrument, ModRoute,
+    ParamAddr, Source, StartRule,
 };
-
-/// Maximum per-group LFOs or breakpoint envelopes the engine tracks per voice
-/// (`kontra_plan::modulation::WARPS`).
-const MAX_TIMED: usize = 8;
 
 /// Validates structural invariants of `instrument`, returning a diagnostic for
 /// every violation found. A well-formed instrument yields an empty vector.
@@ -48,27 +44,6 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
                 detail: format!("group {gi} references off_by {vg} (voice_groups: {vg_count})"),
             });
         }
-        if g.lfos.len() > MAX_TIMED {
-            out.push(Diagnostic {
-                impact: Impact::Audible,
-                feature: "ir.group.too_many_lfos".into(),
-                detail: format!(
-                    "group {gi} has {} LFOs (engine limit {MAX_TIMED})",
-                    g.lfos.len()
-                ),
-            });
-        }
-        if g.envelopes.len() > MAX_TIMED {
-            out.push(Diagnostic {
-                impact: Impact::Audible,
-                feature: "ir.group.too_many_envelopes".into(),
-                detail: format!(
-                    "group {gi} has {} envelopes (engine limit {MAX_TIMED})",
-                    g.envelopes.len()
-                ),
-            });
-        }
-
         if let Some(generator) = &g.generator {
             match generator {
                 Generator::Pcm {
@@ -228,8 +203,8 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
             blends: g.blends.len(),
         };
         for (mi, m) in g.mods.iter().enumerate() {
-            check_mod_kind(
-                &m.kind,
+            check_route(
+                &m.route,
                 limits,
                 g.zones.len(),
                 &format!("group {gi} mod {mi}"),
@@ -285,7 +260,7 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
             blends: bus.blends.len(),
         };
         for (mi, kind) in bus.mods.iter().enumerate() {
-            check_mod_kind(kind, limits, 0, &format!("bus {bi} mod {mi}"), &mut out);
+            check_route(kind, limits, 0, &format!("bus {bi} mod {mi}"), &mut out);
         }
     }
     detect_bus_cycles(instrument, &mut out);
@@ -385,83 +360,46 @@ fn check_source(source: Source, limits: SourceLimits, where_: &str, out: &mut Ve
     }
 }
 
-fn check_mod_kind(
-    kind: &ModKind,
+fn check_route(
+    route: &ModRoute,
     limits: SourceLimits,
     zones: usize,
     where_: &str,
     out: &mut Vec<Diagnostic>,
 ) {
-    match *kind {
-        ModKind::Envelope => {}
-        ModKind::Volume { source, .. }
-        | ModKind::Pitch { source, .. }
-        | ModKind::Pan { source, .. }
-        | ModKind::Cutoff { source, .. }
-        | ModKind::CutoffHz { source, .. }
-        | ModKind::Resonance { source, .. }
-        | ModKind::EqGain { source, .. }
-        | ModKind::SampleStart { source, .. }
-        | ModKind::LoopShift { source, .. }
-        | ModKind::Wavetable { source, .. }
-        | ModKind::EffectParam { source, .. }
-        | ModKind::Send { source, .. } => check_source(source, limits, where_, out),
-        ModKind::Attack {
-            source, envelope, ..
-        }
-        | ModKind::Hold {
-            source, envelope, ..
-        }
-        | ModKind::Decay {
-            source, envelope, ..
-        }
-        | ModKind::Sustain {
-            source, envelope, ..
-        }
-        | ModKind::Release {
-            source, envelope, ..
-        } => {
-            check_source(source, limits, where_, out);
-            if let Some(e) = envelope
-                && usize::from(e) >= limits.envelopes
-            {
-                out.push(Diagnostic {
-                    impact: Impact::Broken,
-                    feature: "ir.mod.envelope_out_of_bounds".into(),
-                    detail: format!(
-                        "{where_} targets envelope {e} (envelopes: {})",
-                        limits.envelopes
-                    ),
-                });
-            }
-        }
-        ModKind::LfoPhase { source, lfo, .. }
-        | ModKind::LfoRate { source, lfo, .. }
-        | ModKind::LfoHz { source, lfo, .. }
-        | ModKind::LfoDivision { source, lfo, .. } => {
-            check_source(source, limits, where_, out);
-            if usize::from(lfo) >= limits.lfos {
-                out.push(Diagnostic {
-                    impact: Impact::Broken,
-                    feature: "ir.mod.lfo_out_of_bounds".into(),
-                    detail: format!("{where_} targets LFO {lfo} (lfos: {})", limits.lfos),
-                });
-            }
-        }
-        ModKind::Intensity { source, of, .. } => {
-            check_source(source, limits, where_, out);
-            check_source(of, limits, where_, out);
-        }
-        ModKind::Mix { source, zone, .. } => {
-            check_source(source, limits, where_, out);
-            if usize::from(zone) >= zones {
-                out.push(Diagnostic {
-                    impact: Impact::Broken,
-                    feature: "ir.mod.zone_out_of_bounds".into(),
-                    detail: format!("{where_} targets zone {zone} (zones: {zones})"),
-                });
-            }
-        }
+    let Some(source) = route.driver() else {
+        return;
+    };
+    check_source(source, limits, where_, out);
+    if let ParamAddr::RouteIntensity { of } = route.target {
+        check_source(of, limits, where_, out);
+    }
+    let mut broken = |feature: &str, detail: String| {
+        out.push(Diagnostic {
+            impact: Impact::Broken,
+            feature: feature.into(),
+            detail,
+        });
+    };
+    match route.target {
+        ParamAddr::EnvelopeStage {
+            envelope: Some(e), ..
+        } if usize::from(e) >= limits.envelopes => broken(
+            "ir.mod.envelope_out_of_bounds",
+            format!(
+                "{where_} targets envelope {e} (envelopes: {})",
+                limits.envelopes
+            ),
+        ),
+        ParamAddr::LfoParam { lfo, .. } if usize::from(lfo) >= limits.lfos => broken(
+            "ir.mod.lfo_out_of_bounds",
+            format!("{where_} targets LFO {lfo} (lfos: {})", limits.lfos),
+        ),
+        ParamAddr::ZoneMix { zone, .. } if usize::from(zone) >= zones => broken(
+            "ir.mod.zone_out_of_bounds",
+            format!("{where_} targets zone {zone} (zones: {zones})"),
+        ),
+        _ => {}
     }
 }
 
@@ -522,8 +460,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        Blend, Breakpoints, Bus, BusSend, Clock, Curve, Group, Lfo, Loop, Mod, Rate, Sample,
-        Transfer, Wave, Zone,
+        Blend, Breakpoints, Bus, BusSend, Clock, Curve, Group, Lfo, Loop, Mod, ParamAddr, Rate,
+        RouteLaw, Sample, Transfer, Wave, Zone,
     };
 
     fn sample() -> Sample {
@@ -590,12 +528,8 @@ mod tests {
             slot: 0,
             target: 0,
             bypass: false,
-            kind: ModKind::Volume {
-                source,
-                intensity: 1.0,
-                curve: Curve::Decibels(24.0),
-                tau_ms: 0.0,
-            },
+            route: ModRoute::new(source, ParamAddr::Volume, 1.0)
+                .law(RouteLaw::Gain(Curve::Decibels(24.0))),
         }
     }
 
@@ -765,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_mod_source_out_of_bounds_and_excess_timed_modulators() {
+    fn reports_mod_source_out_of_bounds_but_not_many_timed_modulators() {
         let inst = Instrument {
             groups: vec![Group {
                 lfos: vec![lfo(); 9],
@@ -784,8 +718,6 @@ mod tests {
         assert_eq!(
             features,
             [
-                "ir.group.too_many_lfos",
-                "ir.group.too_many_envelopes",
                 "ir.mod.lfo_out_of_bounds",
                 "ir.mod.envelope_out_of_bounds",
                 "ir.mod.shaper_out_of_bounds",

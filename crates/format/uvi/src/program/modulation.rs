@@ -78,24 +78,16 @@ impl<L: Library> Translator<'_, '_, L> {
             let pitch = connection.attribute("Destination") == Some("Pitch");
             let kind = |source| {
                 if pitch {
-                    ir::ModKind::Pitch {
-                        source,
-                        semitones: ratio,
-                        depth: 1.0,
-                        tau_ms: 0.0,
-                    }
+                    ir::ModRoute::new(source, ir::ParamAddr::Pitch, 1.0).span(ratio)
                 } else {
                     // A negative ratio turns the gain down as the value rises.
-                    ir::ModKind::Volume {
-                        source,
-                        intensity: ratio.abs(),
-                        curve: if ratio < 0.0 {
+                    ir::ModRoute::new(source, ir::ParamAddr::Volume, ratio.abs()).law(
+                        ir::RouteLaw::Gain(if ratio < 0.0 {
                             ir::Curve::Falling
                         } else {
                             ir::Curve::Depth { power: 1 }
-                        },
-                        tau_ms: 0.0,
-                    }
+                        }),
+                    )
                 }
             };
             let mapped = matrix::transfer(self.program, connection, None)
@@ -109,7 +101,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 slot: id,
                 target: 0,
                 bypass: false,
-                kind,
+                route: kind,
             };
             let scope = if owner.has_tag_name("SamplePlayer") {
                 owner.ancestors().find(|n| n.has_tag_name("Keygroup"))
@@ -223,7 +215,10 @@ pub(super) fn reach(
     {
         let t = matrix::transfer(program, connection, None)?;
         // A script's modulation is [`script_route`]'s.
-        let held = matches!(t.source, ir::Source::Constant | ir::Source::Script(_));
+        let held = matches!(
+            t.source,
+            ir::Source::Constant | ir::Source::Script(_) | ir::Source::Macro(_)
+        );
         let route = Route {
             source: ir::Source::Constant,
             timed: Some(Timed::Mapped(t)),
@@ -399,7 +394,7 @@ pub(super) fn slot<T: PartialEq>(
 
 /// The source `timed` (or `source`) is in `group`, its modulator `at`
 /// (group index, node) copied onto it: a rising LFO is the LFO under an
-/// [`ir::ModKind::Intensity`] from its rise.
+/// [`ir::ParamAddr::RouteIntensity`] from its rise.
 pub(super) fn group_source(
     group: &mut ir::Group,
     source: ir::Source,
@@ -414,18 +409,14 @@ pub(super) fn group_source(
             let of = ir::Source::Lfo(slot(&mut group.lfos, lfo, at, Slot::Lfo, slots));
             let source =
                 ir::Source::Envelope(slot(&mut group.envelopes, rise, at, Slot::Rise, slots));
-            let kind = ir::ModKind::Intensity {
-                source,
-                of,
-                depth: 1.0,
-            };
-            if !group.mods.iter().any(|m| m.kind == kind) {
+            let kind = ir::ModRoute::new(source, ir::ParamAddr::RouteIntensity { of }, 1.0);
+            if !group.mods.iter().any(|m| m.route == kind) {
                 group.mods.push(ir::Mod {
                     name: String::new(),
                     slot: 0,
                     target: 0,
                     bypass: false,
-                    kind,
+                    route: kind,
                 });
             }
             if table.is_empty() {

@@ -21,7 +21,7 @@ pub struct Rack {
     dsp: Box<[Dsp]>,
     /// Routes moving the slots ([`ir::Bus::mods`]), the blends they read,
     /// and each route's amount for this span.
-    mods: Box<[ir::ModKind]>,
+    mods: Box<[ir::ModRoute]>,
     blends: Box<[ir::Blend]>,
     /// The oscillators `Source::Lfo` reads, free-running.
     lfos: Box<[ir::Lfo]>,
@@ -31,6 +31,9 @@ pub struct Rack {
     /// rack last followed.
     lfo_t: Box<[f32]>,
     lfo_cycles: Box<[f64]>,
+    /// Per oscillator, the places its synced rate moves along the note
+    /// ladder this span (scratch).
+    lfo_places: Box<[f32]>,
     last_seconds: f32,
     /// Per route, whether it reads an oscillator (a send's level then moves
     /// every frame: [`Self::send_scales`]).
@@ -86,8 +89,12 @@ impl Live<'_> {
                 f32::from(if arrived { b.cc(channel, cc) } else { start }) / 127.0
             }
             ir::Source::PitchBend => b.bend(channel),
-            ir::Source::Script(i) => {
-                ledger::ramp_at(self.scripts, i, self.now).unwrap_or(0) as f32 / 1_000_000.0
+            ir::Source::Script(_) | ir::Source::Macro(_) => {
+                source
+                    .script_channel()
+                    .and_then(|i| ledger::ramp_at(self.scripts, i, self.now))
+                    .unwrap_or(0) as f32
+                    / 1_000_000.0
             }
             ir::Source::Constant => 1.0,
             ir::Source::Lfo(n) => {
@@ -170,7 +177,7 @@ impl Rack {
         slots: &[Option<ir::Effect>],
         rate: u32,
         impulses: Responses<'_>,
-        mods: &[ir::ModKind],
+        mods: &[ir::ModRoute],
         blends: &[ir::Blend],
     ) -> Self {
         let dsp = slots
@@ -185,11 +192,12 @@ impl Rack {
             lfos: Box::default(),
             lfo_t: Box::default(),
             lfo_cycles: Box::default(),
+            lfo_places: Box::default(),
             last_seconds: 0.0,
             live: mods
                 .iter()
                 .map(
-                    |m| matches!(m, ir::ModKind::Send { source, .. } if reads_lfo(*source, blends)),
+                    |m| matches!(m, ir::ModRoute { target: ir::ParamAddr::BusSend { .. }, source, .. } if reads_lfo(*source, blends)),
                 )
                 .collect(),
             amounts: vec![0.0; mods.len()].into(),
@@ -216,6 +224,7 @@ impl Rack {
         self.lfos = lfos.into();
         self.lfo_t = vec![0.0; lfos.len()].into();
         self.lfo_cycles = vec![0.0; lfos.len()].into();
+        self.lfo_places = vec![0.0; lfos.len()].into();
         self
     }
 
@@ -247,9 +256,19 @@ impl Rack {
         let dt = f64::from((live.seconds - self.last_seconds).max(0.0));
         self.last_seconds = live.seconds;
         // Places each synced LFO's rate is moved along the note ladder.
-        let mut places = [0.0f32; kontra_plan::modulation::WARPS];
+        let mut places = std::mem::take(&mut self.lfo_places);
+        places.fill(0.0);
         for m in &self.mods {
-            if let ir::ModKind::LfoDivision { source, lfo, depth } = *m
+            if let ir::ModRoute {
+                target:
+                    ir::ParamAddr::LfoParam {
+                        param: ir::LfoParam::Division,
+                        lfo,
+                    },
+                source,
+                depth,
+                ..
+            } = *m
                 && let Some(p) = places.get_mut(usize::from(lfo))
             {
                 let clock = Clock {
@@ -265,7 +284,7 @@ impl Rack {
             .iter()
             .zip(self.lfo_cycles.iter_mut())
             .zip(self.lfo_t.iter_mut())
-            .zip(places.into_iter().chain(std::iter::repeat(0.0)))
+            .zip(places.iter().copied())
         {
             let moved = match l.rate {
                 ir::Rate::Beats(b) if p != 0.0 => ir::Lfo {
@@ -284,6 +303,7 @@ impl Rack {
                 }
             };
         }
+        self.lfo_places = places;
         let clock = Clock {
             lfos: &self.lfos,
             t: &self.lfo_t,
@@ -291,12 +311,17 @@ impl Rack {
         };
         for (m, amount) in self.mods.iter().zip(self.amounts.iter_mut()) {
             *amount = match *m {
-                ir::ModKind::EffectParam { source, depth, .. } => {
-                    live.read(source, &self.blends, clock).unwrap_or(0.0) * depth
-                }
-                ir::ModKind::Send { source, .. } => {
-                    live.read(source, &self.blends, clock).unwrap_or(1.0)
-                }
+                ir::ModRoute {
+                    target: ir::ParamAddr::EffectParam { .. },
+                    source,
+                    depth,
+                    ..
+                } => live.read(source, &self.blends, clock).unwrap_or(0.0) * depth,
+                ir::ModRoute {
+                    target: ir::ParamAddr::BusSend { .. },
+                    source,
+                    ..
+                } => live.read(source, &self.blends, clock).unwrap_or(1.0),
                 _ => continue,
             };
         }
@@ -313,7 +338,7 @@ impl Rack {
     /// Whether send `n`'s level reads an oscillator, so it moves within a span.
     pub fn send_moves(&self, n: usize) -> bool {
         self.mods.iter().zip(self.live.iter()).any(|(m, &l)| {
-            l && matches!(m, ir::ModKind::Send { send, .. } if usize::from(*send) == n)
+            l && matches!(m, ir::ModRoute { target: ir::ParamAddr::BusSend { send }, .. } if usize::from(*send) == n)
         })
     }
 
@@ -329,13 +354,15 @@ impl Rack {
                 .zip(self.amounts.iter());
             *o = routes
                 .filter_map(|((m, &moves), &held)| match *m {
-                    ir::ModKind::Send { source, send } if usize::from(send) == n => {
-                        Some(if moves {
-                            live.read(source, &self.blends, clock).unwrap_or(1.0)
-                        } else {
-                            held
-                        })
-                    }
+                    ir::ModRoute {
+                        target: ir::ParamAddr::BusSend { send },
+                        source,
+                        ..
+                    } if usize::from(send) == n => Some(if moves {
+                        live.read(source, &self.blends, clock).unwrap_or(1.0)
+                    } else {
+                        held
+                    }),
                     _ => None,
                 })
                 .product();
@@ -351,7 +378,10 @@ impl Rack {
             .map(|(n, slot)| {
                 let mut effect = slot?;
                 for (m, &amount) in self.mods.iter().zip(self.amounts.iter()) {
-                    if let ir::ModKind::EffectParam { insert, param, .. } = *m
+                    if let ir::ModRoute {
+                        target: ir::ParamAddr::EffectParam { insert, param },
+                        ..
+                    } = *m
                         && usize::from(insert) == n
                     {
                         param.add_to(&mut effect, amount);
@@ -363,7 +393,7 @@ impl Rack {
     }
 
     /// Route values last applied to this rack, for offline inspection.
-    pub fn route_amounts(&self) -> impl Iterator<Item = (ir::ModKind, f32)> + '_ {
+    pub fn route_amounts(&self) -> impl Iterator<Item = (ir::ModRoute, f32)> + '_ {
         self.mods.iter().copied().zip(self.amounts.iter().copied())
     }
 
@@ -372,7 +402,7 @@ impl Rack {
         self.mods
             .iter()
             .zip(self.amounts.iter())
-            .filter(|(m, _)| matches!(m, ir::ModKind::Send { send, .. } if usize::from(*send) == n))
+            .filter(|(m, _)| matches!(m, ir::ModRoute { target: ir::ParamAddr::BusSend { send }, .. } if usize::from(*send) == n))
             .map(|(_, a)| a)
             .product()
     }
@@ -398,7 +428,10 @@ impl Rack {
             };
             let mut modulated = None;
             for (m, &amount) in self.mods.iter().zip(self.amounts.iter()) {
-                if let ir::ModKind::EffectParam { insert, param, .. } = *m
+                if let ir::ModRoute {
+                    target: ir::ParamAddr::EffectParam { insert, param },
+                    ..
+                } = *m
                     && usize::from(insert) == n
                 {
                     param.add_to(modulated.get_or_insert_with(|| base.clone()), amount);
@@ -418,43 +451,56 @@ impl Rack {
                 }
                 // The wet path from the input, then the dry level, then the wet at the output gain.
                 (Dsp::Wet(processor, wet), kind) => {
-                    let Some(wet) = wet.get_mut(..io.len()) else {
-                        continue;
-                    };
                     // A script or the tempo may have moved it since the last block.
                     processor.set(kind, tempo);
-                    // Silence in (or an input it cannot hear) and nothing but
-                    // silence stored for longer than it remembers: its state is
-                    // silent, so its clocks move on alone.
-                    let deaf = processor.deaf();
-                    let key_silent = sidechain.is_none_or(is_silent);
-                    let still = deaf || (is_silent(io) && key_silent);
-                    if still && processor.memory().is_some_and(|m| *quiet >= m) {
-                        processor.idle(wet);
-                        if deaf {
-                            // The input still passes at the dry level.
-                            wet.fill([0.0; 2]);
-                            levels.mix(io, wet, e.dry, e.output);
-                        } else {
-                            levels.idle(e.dry, e.output, io.len());
-                        }
+                    let max_chunk = wet.len();
+                    if max_chunk == 0 {
                         continue;
                     }
-                    wet.copy_from_slice(io);
-                    if let Some(key) = sidechain {
-                        processor.process_sidechain(wet, key);
-                    } else {
-                        processor.process(wet);
+                    let mut offset = 0;
+                    while offset < io.len() {
+                        let end = (offset + max_chunk).min(io.len());
+                        let (Some(io_chunk), Some(wet_chunk)) =
+                            (io.get_mut(offset..end), wet.get_mut(..end - offset))
+                        else {
+                            break;
+                        };
+                        let key_chunk = sidechain.and_then(|s| s.get(offset..end));
+                        // Silence in (or an input it cannot hear) and nothing but
+                        // silence stored for longer than it remembers: its state is
+                        // silent, so its clocks move on alone.
+                        let deaf = processor.deaf();
+                        let key_silent = key_chunk.is_none_or(is_silent);
+                        let still = deaf || (is_silent(io_chunk) && key_silent);
+                        if still && processor.memory().is_some_and(|m| *quiet >= m) {
+                            processor.idle(wet_chunk);
+                            if deaf {
+                                // The input still passes at the dry level.
+                                wet_chunk.fill([0.0; 2]);
+                                levels.mix(io_chunk, wet_chunk, e.dry, e.output);
+                            } else {
+                                levels.idle(e.dry, e.output, io_chunk.len());
+                            }
+                            offset = end;
+                            continue;
+                        }
+                        wet_chunk.copy_from_slice(io_chunk);
+                        if let Some(key) = key_chunk {
+                            processor.process_sidechain(wet_chunk, key);
+                        } else {
+                            processor.process(wet_chunk);
+                        }
+                        // Its state, not only what it let out: a closed filter or
+                        // a zero output may hide a tail still ringing inside.
+                        let settled = processor.written() < SILENT;
+                        *quiet = if still && settled && is_silent(wet_chunk) {
+                            quiet.saturating_add(io_chunk.len())
+                        } else {
+                            0
+                        };
+                        levels.mix(io_chunk, wet_chunk, e.dry, e.output);
+                        offset = end;
                     }
-                    // Its state, not only what it let out: a closed filter or
-                    // a zero output may hide a tail still ringing inside.
-                    let settled = processor.written() < SILENT;
-                    *quiet = if still && settled && is_silent(wet) {
-                        quiet.saturating_add(io.len())
-                    } else {
-                        0
-                    };
-                    levels.mix(io, wet, e.dry, e.output);
                     continue;
                 }
                 (_, ir::EffectKind::Sends(levels)) => {

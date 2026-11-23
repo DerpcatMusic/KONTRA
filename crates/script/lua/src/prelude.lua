@@ -935,6 +935,27 @@ end
 -- An insert's `Bypass`, a Gain insert's `Volume` and the numbers its format
 -- mapped (`knobs`) reach the effect the engine plays for it (`fx`: where,
 -- group or bus, slot).
+local function write_effect_knobs(at, index, slot, knobs, name, value)
+	-- Any other number the format mapped: each control it moves,
+	-- `{control, x1, y1, ...}`, by the number, straight between points.
+	local x = tonumber(value)
+	for _, knob in ipairs(x and (knobs or EMPTY)[name] or EMPTY) do
+		local y = knob[3]
+		if x >= knob[#knob - 1] then
+			y = knob[#knob]
+		else
+			for i = 4, #knob - 1, 2 do
+				if x < knob[i] then
+					local x0, y0, x1, y1 = knob[i - 2], knob[i - 1], knob[i], knob[i + 1]
+					y = x <= x0 and y0 or y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+					break
+				end
+			end
+		end
+		host_call("EffectField", at, index, slot, knob[1], math.floor(y * 1000 + 0.5))
+	end
+end
+
 function Element.setParameter(self, name, value)
 	local was = self.params[name]
 	self.params[name] = value
@@ -956,6 +977,20 @@ function Element.setParameter(self, name, value)
 		set_line(line, name, value)
 		return
 	end
+	local rack_mix = fields_of(self).rack_mix
+	if name == "Mix" and rack_mix and tonumber(value) then
+		local wet = math.clamp(tonumber(value), 0, 1)
+		host_call("EffectGain", 1, rack_mix[1], 0, math.floor(wet * 1e6 + 0.5))
+		host_call("EffectGain", 1, rack_mix[2], 0, math.floor((1 - wet) * 1e6 + 0.5))
+		return
+	end
+	local routed = fields_of(self).routed_knobs
+	if routed then
+		for i = 2, #routed do
+			write_effect_knobs(1, routed[1], routed[i][1], routed[i][2], name, value)
+		end
+		return
+	end
 	local fx = fields_of(self).fx
 	if not fx then
 		return
@@ -970,24 +1005,7 @@ function Element.setParameter(self, name, value)
 	if knob and tonumber(value) then
 		host_call("ImpulseKnob", fx[1], fx[2], fx[3], knob, math.floor(tonumber(value) * 1e6 + 0.5))
 	end
-	-- Any other number the format mapped: each control it moves,
-	-- `{control, x1, y1, ...}`, by the number, straight between points.
-	local x = tonumber(value)
-	for _, knob in ipairs(x and (fields_of(self).knobs or EMPTY)[name] or EMPTY) do
-		local y = knob[3]
-		if x >= knob[#knob - 1] then
-			y = knob[#knob]
-		else
-			for i = 4, #knob - 1, 2 do
-				if x < knob[i] then
-					local x0, y0, x1, y1 = knob[i - 2], knob[i - 1], knob[i], knob[i + 1]
-					y = x <= x0 and y0 or y0 + (y1 - y0) * (x - x0) / (x1 - x0)
-					break
-				end
-			end
-		end
-		host_call("EffectField", fx[1], fx[2], fx[3], knob[1], math.floor(y * 1000 + 0.5))
-	end
+	write_effect_knobs(fx[1], fx[2], fx[3], fields_of(self).knobs, name, value)
 end
 
 local element
@@ -1085,6 +1103,8 @@ function element(node)
 		mod = node.mod,
 		fx = node.fx,
 		knobs = node.knobs,
+		routed_knobs = node.routed_knobs,
+		rack_mix = node.rack_mix,
 		impulse = node.impulse,
 		line = node.line,
 		env = node.env,
@@ -1214,6 +1234,9 @@ end
 local levels = { Gain = true, Pan = true, Mute = true, Bypass = true }
 
 local function set_level(self, name, value)
+	if name == "Mix" and fields_of(self).rack_mix then
+		return Element.setParameter(self, name, value)
+	end
 	self.params[name] = value
 	local line = fields_of(self).line
 	if levels[name] then

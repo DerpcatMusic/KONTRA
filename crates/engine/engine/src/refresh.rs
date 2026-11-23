@@ -44,7 +44,12 @@ impl Engine {
             if cc.is_some_and(|cc| !self.follows(zone, cc)) {
                 continue;
             }
-            let age = self.slot_age(slot);
+            let timing = self.slot_timing(slot);
+            let timed = self.lend_timed(i);
+            let Some(slot) = self.voices.get(i) else {
+                continue;
+            };
+            let age = timed.age(timing);
             #[cfg(feature = "trace")]
             if let (Some(trace), Some(cc)) = (&self.trace, trace_cc) {
                 trace.routes.begin(i, slot.zone, cc);
@@ -64,6 +69,7 @@ impl Engine {
                 trace.routes.end();
             }
             if let Some(slot) = self.voices.get_mut(i) {
+                (slot.warp, slot.chaos, slot.stretch) = (timed.warp, timed.chaos, timed.stretch);
                 slot.pan = pan;
                 slot.voice.set_gain(gain);
                 slot.voice.set_lag(lag);
@@ -74,11 +80,14 @@ impl Engine {
                     slot.voice.set_read(read);
                 }
                 if pitch {
-                    slot.bend[1] = bend.semitones;
+                    for (b, (st, _)) in slot.bend.iter_mut().zip(bend.lagging) {
+                        b[1] = st;
+                    }
+                    let at: f32 = slot.bend.iter().map(|b| b[0]).sum();
                     slot.voice
-                        .set_step(voice_gain::bent(law, step, bend.instant + slot.bend[0]));
+                        .set_step(voice_gain::bent(law, step, bend.instant + at));
                     if slot.slide.is_some() {
-                        let semitones = bend.instant + slot.bend[0];
+                        let semitones = bend.instant + at;
                         self.set_pitch(i, step, semitones);
                     }
                 }

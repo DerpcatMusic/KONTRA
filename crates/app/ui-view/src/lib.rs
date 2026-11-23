@@ -146,12 +146,17 @@ fn drawn_page(
             tree.source,
             model::Source::Ksp { .. } | model::Source::PerformanceView
         ) && matches!(w.kind, Kind::Button { .. } | Kind::Switch);
+        let state_font = w.state_styles[1..].iter().any(Option::is_some);
+        let shifts = w.text_shift_on_press && matches!(w.kind, Kind::Button { .. } | Kind::Switch);
         let art = (w.images.iter()).any(|i| matches!(i.role, Role::Hover | Role::HoverPressed));
-        if !(strip || art) || !tree.visible(model::WidgetRef(n)) {
+        if !(strip || state_font || shifts || art) || !tree.visible(model::WidgetRef(n)) {
             continue;
         }
         let response = ui.get(surface(face, n));
-        if strip && response.held && response.button == Some(Button::Primary) {
+        if (strip || state_font || shifts)
+            && response.held
+            && response.button == Some(Button::Primary)
+        {
             pressed.push(model::WidgetRef(n));
         }
         if response.hovered {
@@ -424,9 +429,28 @@ fn drawn_page(
                     wd.colors.bar,
                     wd.colors.overload,
                     wd.colors.wave,
+                    wd.colors.zero_line,
                     wd.meter_range,
                 ),
-                wd.table_inner_edge.map(|edge| edge.visible),
+                (
+                    wd.table_inner_edge.map(|edge| edge.visible),
+                    match wd.kind {
+                        Kind::Table {
+                            columns,
+                            range,
+                            bipolar,
+                            steps_shown,
+                            ..
+                        } => Some((
+                            columns,
+                            range.min.to_bits(),
+                            range.max.to_bits(),
+                            bipolar,
+                            steps_shown,
+                        )),
+                        _ => None,
+                    },
+                ),
                 wd.hide.background,
                 bare,
                 (
@@ -449,6 +473,9 @@ fn drawn_page(
             ),
             (
                 wd.text_y,
+                wd.value_y,
+                wd.menu_arrow,
+                item.text_shift,
                 wd.active_index,
                 browse_key,
                 (cursors.iter())
@@ -460,7 +487,19 @@ fn drawn_page(
                     })
                     .collect::<Vec<_>>(),
             ),
-            style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
+            (
+                item.style_ref,
+                style.map(|s| {
+                    let font = match &s.font {
+                        model::Font::Default => (0u8, 0i64, None),
+                        model::Font::Stock(id) => (1, i64::from(*id), None),
+                        model::Font::Named(name) => (2, 0, Some(name.as_str())),
+                        model::Font::Bitmap(a) => (3, a.0 as i64, None),
+                        model::Font::File(a) => (4, a.0 as i64, None),
+                    };
+                    (font, s.color, s.align as u8, s.size.map(f32::to_bits))
+                }),
+            ),
             (wd.opacity.to_bits(), wd.rotation.to_bits()),
         );
         let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |ui| {
@@ -494,12 +533,15 @@ fn drawn_page(
             } else if let Some(face) = stock::label_face(tree, wd, (w, h, scale)) {
                 parts.push(face);
             } else if stock {
+                parts.push(stock::face(wd, t, (w, h), bare).at(0., 0.));
+            }
+            if matches!(wd.kind, Kind::Table { .. }) {
                 parts.push(
-                    stock::face(
+                    stock::table(
                         wd,
-                        t,
                         (w, h),
                         bare,
+                        picture.is_some(),
                         matches!(tree.source, model::Source::FalconLua),
                     )
                     .at(0., 0.),
@@ -514,8 +556,8 @@ fn drawn_page(
                 };
                 parts.push(sliced(img, meta, (a.width, a.height), scale).at(x, y));
             }
-            if let Some(glyphs) = &glyphs {
-                parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
+            let text_layer = if let Some(glyphs) = &glyphs {
+                Some(bitmap_words(&words, style, wd, (w, h), scale, glyphs))
             } else if !words.is_empty() {
                 if let (Some(glyphs), Some(style)) = (&stock_glyphs, style)
                     && matches!(wd.kind, Kind::Label | Kind::TextEdit)
@@ -526,27 +568,33 @@ fn drawn_page(
                     && matches!(style.font, model::Font::Stock(id) if stock_atlas(id).is_some())
                     && plan::label_fits(&words, glyphs, w, scale)
                 {
-                    parts.push(stock::label(
+                    Some(stock::label(
                         &words,
                         style,
                         wd.text_y,
                         (w, h, scale, device),
                         glyphs,
-                    ));
+                    ))
                 } else {
-                    parts.push(
-                        words_el(
-                            &words,
-                            style,
-                            wd,
-                            (w, h),
-                            (scale, device),
-                            outline.as_ref(),
-                            tree.source,
-                        )
-                        .at(0., 0.),
-                    );
+                    Some(words_el(
+                        &words,
+                        style,
+                        wd,
+                        (w, h),
+                        (scale, device),
+                        outline.as_ref(),
+                        tree.source,
+                    ))
                 }
+            } else {
+                None
+            };
+            if let Some(el) = text_layer {
+                parts.push(if item.text_shift {
+                    stack([el.at(scale, scale)]).w(w).h(h).clip().at(0., 0.)
+                } else {
+                    el.at(0., 0.)
+                });
             }
             if let Some((cols, listed, tops, lay)) = &browser {
                 let at = (w / scale, h / scale, scale);

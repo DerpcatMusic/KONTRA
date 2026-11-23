@@ -56,12 +56,8 @@ pub fn velocity_track(percent: f64) -> Option<ir::Mod> {
         slot: 0,
         target: 0,
         bypass: false,
-        kind: ir::ModKind::Volume {
-            source: ir::Source::Velocity,
-            intensity,
-            curve: ir::Curve::Squared,
-            tau_ms: 0.0,
-        },
+        route: ir::ModRoute::new(ir::Source::Velocity, ir::ParamAddr::Volume, intensity)
+            .law(ir::RouteLaw::Gain(ir::Curve::Squared)),
     })
 }
 

@@ -298,12 +298,12 @@ fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
     assert_eq!(g.shapers[0].apply(64.0 / 127.0), 0.5);
     assert_eq!(g.shapers[0].apply(1.0), 0.0);
     assert_eq!(
-        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
-        [ir::ModKind::Cutoff {
-            source: ir::Source::Shaped(0),
-            insert: 1,
-            depth: -0.6,
-        }]
+        g.mods.iter().map(|m| m.route).collect::<Vec<_>>(),
+        [ir::ModRoute::new(
+            ir::Source::Shaped(0),
+            ir::ParamAddr::FilterCutoff { insert: 1 },
+            -0.6
+        )]
     );
     assert!(g.mods[0].name.starts_with('#'), "{:?}", g.mods[0].name);
     let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
@@ -347,10 +347,14 @@ fn a_filters_envelope_and_lfo_routes_are_named_and_a_bypassed_one_waits_for_its_
     let cutoffs: Vec<_> = g
         .mods
         .iter()
-        .filter_map(|m| match m.kind {
-            ir::ModKind::Cutoff { source, depth, .. } => {
-                Some((source, depth, m.name.starts_with('#')))
-            }
+        .filter_map(|m| match m.route {
+            ir::ModRoute {
+                target: ir::ParamAddr::FilterCutoff { .. },
+                source,
+                depth,
+                law: ir::RouteLaw::Linear,
+                ..
+            } => Some((source, depth, m.name.starts_with('#'))),
             _ => None,
         })
         .collect();
@@ -409,19 +413,19 @@ fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
     assert!((f.damping[0] - 1.6).abs() < 1e-6);
     assert!((f.gain - 0.1).abs() < 1e-6);
     assert_eq!(
-        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        g.mods.iter().map(|m| m.route).collect::<Vec<_>>(),
         [
-            ir::ModKind::Cutoff {
-                source: ir::Source::Controller(1),
-                insert: 0,
-                depth: 0.5,
-            },
+            ir::ModRoute::new(
+                ir::Source::Controller(1),
+                ir::ParamAddr::FilterCutoff { insert: 0 },
+                0.5
+            ),
             // Q scales the resonance by the connection law, its ratio clamped.
-            ir::ModKind::Resonance {
-                source: ir::Source::Controller(1),
-                insert: 0,
-                depth: 1.0,
-            }
+            ir::ModRoute::new(
+                ir::Source::Controller(1),
+                ir::ParamAddr::FilterResonance { insert: 0 },
+                1.0
+            )
         ]
     );
     // Algorithm II is the zero-delay ladder, with nothing left unsaid.
@@ -492,17 +496,13 @@ fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
     </Program>"#;
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-    let pitch = |source, semitones| ir::ModKind::Pitch {
-        source,
-        semitones,
-        depth: 1.0,
-        tau_ms: 0.0,
-    };
+    let pitch =
+        |source, semitones| ir::ModRoute::new(source, ir::ParamAddr::Pitch, 1.0).span(semitones);
     assert_eq!(
         out.groups[0]
             .mods
             .iter()
-            .map(|m| m.kind)
+            .map(|m| m.route)
             .collect::<Vec<_>>(),
         [
             pitch(ir::Source::PitchBend, 2.0),
@@ -588,11 +588,12 @@ fn a_held_macro_on_a_bends_ratio_sets_its_range() {
     </Program>"#;
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-    let kinds: Vec<_> = out.groups[0].mods.iter().map(|m| m.kind).collect();
+    let kinds: Vec<_> = out.groups[0].mods.iter().map(|m| m.route).collect();
     let [
-        ir::ModKind::Pitch {
+        ir::ModRoute {
+            target: ir::ParamAddr::Pitch,
             source: ir::Source::PitchBend,
-            semitones,
+            span: semitones,
             ..
         },
     ] = kinds[..]
@@ -631,13 +632,8 @@ fn a_layer_ahd_bends_its_oscillators_pitch_through_breakpoints() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
     assert_eq!(
-        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
-        [ir::ModKind::Pitch {
-            source: ir::Source::Envelope(0),
-            semitones: -2.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        }]
+        g.mods.iter().map(|m| m.route).collect::<Vec<_>>(),
+        [ir::ModRoute::new(ir::Source::Envelope(0), ir::ParamAddr::Pitch, 1.0).span(-2.0)]
     );
     let e = &g.envelopes[0];
     let (ms, levels): (Vec<_>, Vec<_>) = e.points.iter().map(|p| (p.ms, p.level)).unzip();
@@ -675,13 +671,8 @@ fn a_step_envelope_bends_pitch_through_a_held_step_table() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
     assert_eq!(
-        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
-        [ir::ModKind::Pitch {
-            source: ir::Source::Shaped(0),
-            semitones: 12.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        }]
+        g.mods.iter().map(|m| m.route).collect::<Vec<_>>(),
+        [ir::ModRoute::new(ir::Source::Shaped(0), ir::ParamAddr::Pitch, 1.0).span(12.0)]
     );
     // Four sixteenths a cycle, on the song clock.
     assert_eq!(
@@ -869,12 +860,11 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
     let g = &out.groups[0];
     // b keeps its saved cell; the route moves it.
     assert_eq!(g.zones[1].mix, vec![[0.0, 1.0]]);
-    let route = g.mods.iter().find_map(|m| match m.kind {
-        ir::ModKind::Mix {
+    let route = g.mods.iter().find_map(|m| match m.route {
+        ir::ModRoute {
+            target: ir::ParamAddr::ZoneMix { zone, row, side },
             source,
-            zone,
-            row,
-            side,
+            ..
         } => Some((source, zone, row, side)),
         _ => None,
     });
@@ -963,10 +953,9 @@ fn an_aux_eqs_gain_scale_connections_move_its_bands_live() {
         .mods
         .iter()
         .map(|m| match *m {
-            ir::ModKind::EffectParam {
+            ir::ModRoute {
+                target: ir::ParamAddr::EffectParam { insert: 0, param },
                 source: ir::Source::Blend(0),
-                insert: 0,
-                param,
                 depth,
                 ..
             } => (param, depth),
@@ -1009,11 +998,12 @@ fn a_step_envelope_pans_its_keygroup() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
     assert_eq!(
-        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
-        [ir::ModKind::Pan {
-            source: ir::Source::Shaped(0),
-            amount: 0.5,
-        }]
+        g.mods.iter().map(|m| m.route).collect::<Vec<_>>(),
+        [ir::ModRoute::new(
+            ir::Source::Shaped(0),
+            ir::ParamAddr::Pan,
+            0.5
+        )]
     );
     assert_eq!(
         (g.lfos[0].rate, g.lfos[0].clock),
@@ -1044,13 +1034,8 @@ fn a_mapped_bend_bends_pitch_through_its_mapper() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
     assert_eq!(
-        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
-        [ir::ModKind::Pitch {
-            source: ir::Source::Shaped(0),
-            semitones: 2.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        }]
+        g.mods.iter().map(|m| m.route).collect::<Vec<_>>(),
+        [ir::ModRoute::new(ir::Source::Shaped(0), ir::ParamAddr::Pitch, 1.0).span(2.0)]
     );
     assert_eq!(g.shapers[0].source, ir::Source::PitchBend);
     assert_eq!(g.shapers[0].table, vec![-1.0, 0.0, 1.0, 2.0]);
@@ -1075,13 +1060,8 @@ fn a_mapped_script_modulation_bends_pitch_through_its_mapper() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
     assert_eq!(
-        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
-        [ir::ModKind::Pitch {
-            source: ir::Source::Shaped(0),
-            semitones: 2.0,
-            depth: 1.0,
-            tau_ms: 0.0,
-        }]
+        g.mods.iter().map(|m| m.route).collect::<Vec<_>>(),
+        [ir::ModRoute::new(ir::Source::Shaped(0), ir::ParamAddr::Pitch, 1.0).span(2.0)]
     );
     assert_eq!(g.shapers[0].source, ir::Source::Script(2));
     assert_eq!(g.shapers[0].table, vec![0.0, 0.25, 1.0]);
@@ -1144,7 +1124,7 @@ fn an_aux_eq_past_four_bands_runs_as_eqs_in_series() {
     // Band 5 is the second EQ's first.
     assert!(aux.mods.iter().any(|m| matches!(
         *m,
-        ir::ModKind::EffectParam { insert: 1, param: ir::EffectParam::BellGain(0), depth, .. } if depth == 5.0
+        ir::ModRoute { target: ir::ParamAddr::EffectParam { insert: 1, param: ir::EffectParam::BellGain(0) }, depth, .. } if depth == 5.0
     )));
     assert!(!out.diagnostics.iter().any(|d| d.feature.contains("fourth")));
 }
@@ -1229,14 +1209,12 @@ fn velocity_controllers_and_lfos_scale_a_keygroups_gain_by_the_signed_law() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
-    let volume = |source, intensity| ir::ModKind::Volume {
-        source,
-        intensity,
-        curve: ir::Curve::Signed,
-        tau_ms: 0.0,
+    let volume = |source, intensity| {
+        ir::ModRoute::new(source, ir::ParamAddr::Volume, intensity)
+            .law(ir::RouteLaw::Gain(ir::Curve::Signed))
     };
     assert_eq!(
-        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        g.mods.iter().map(|m| m.route).collect::<Vec<_>>(),
         [
             volume(ir::Source::Shaped(0), 0.75),
             volume(ir::Source::Controller(1), -0.4),
@@ -1320,12 +1298,14 @@ fn a_delayed_rising_lfo_reaches_pitch_through_its_rise() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
-    assert!(g.mods.iter().any(|m| m.kind
-        == ir::ModKind::Intensity {
-            source: ir::Source::Envelope(0),
-            of: ir::Source::Lfo(0),
-            depth: 1.0,
-        }));
+    assert!(g.mods.iter().any(|m| m.route
+        == ir::ModRoute::new(
+            ir::Source::Envelope(0),
+            ir::ParamAddr::RouteIntensity {
+                of: ir::Source::Lfo(0)
+            },
+            1.0
+        )));
     let levels: Vec<_> = g.envelopes[0]
         .points
         .iter()
@@ -1366,10 +1346,13 @@ fn a_controller_on_an_lfos_depth_scales_its_routes_by_the_connection_law() {
     let scales: Vec<_> = g
         .mods
         .iter()
-        .filter_map(|m| match m.kind {
-            ir::ModKind::Intensity { source, of, depth } => {
-                Some((source, of, depth, m.name.starts_with('#')))
-            }
+        .filter_map(|m| match m.route {
+            ir::ModRoute {
+                target: ir::ParamAddr::RouteIntensity { of },
+                source,
+                depth,
+                ..
+            } => Some((source, of, depth, m.name.starts_with('#'))),
             _ => None,
         })
         .collect();
@@ -1431,12 +1414,17 @@ fn an_lfo_on_an_lfos_freq_moves_its_rate_live() {
     let rates: Vec<_> = g
         .mods
         .iter()
-        .filter_map(|m| match m.kind {
-            ir::ModKind::LfoHz {
+        .filter_map(|m| match m.route {
+            ir::ModRoute {
+                target:
+                    ir::ParamAddr::LfoParam {
+                        param: ir::LfoParam::Hz,
+                        lfo,
+                    },
                 source,
-                lfo,
                 depth,
-                range_hz,
+                law: ir::RouteLaw::Range(range_hz),
+                ..
             } => Some((source, lfo, depth, range_hz)),
             _ => None,
         })
@@ -1500,29 +1488,28 @@ fn a_macro_a_script_can_set_is_read_live_on_a_ratio_too() {
         };
         Some(f.input.source)
     };
-    let Some(ir::Source::Script(depth)) = factor_of(ir::Source::Controller(1)) else {
+    let Some(wheel_range @ ir::Source::Macro(_)) = factor_of(ir::Source::Controller(1)) else {
         panic!("{:?}", g.blends)
     };
-    assert!(depth >= 0x8000, "{depth:#x}");
     let lfo = g
         .blends
         .iter()
         .flat_map(|b| &b.terms)
         .flat_map(|t| &t.factors);
-    let id = lfo
-        .map(|f| f.input.source)
-        .find(|&s| s != ir::Source::Script(depth));
-    let Some(ir::Source::Script(id)) = id else {
+    let id = lfo.map(|f| f.input.source).find(|&s| s != wheel_range);
+    let Some(id @ ir::Source::Macro(_)) = id else {
         panic!("{:?}", g.blends)
     };
+    let id = id.script_channel().unwrap();
     // The tree the script sees names it.
     assert!(out.scripts[0].data.iter().any(|(name, text)| {
         name == "__program.lua" && String::from_utf8_lossy(text).contains(&format!("mod={id}"))
     }));
-    let wheel = g.mods.iter().find_map(|m| match m.kind {
-        ir::ModKind::Pitch {
+    let wheel = g.mods.iter().find_map(|m| match m.route {
+        ir::ModRoute {
+            target: ir::ParamAddr::Pitch,
             source: ir::Source::Blend(n),
-            semitones,
+            span: semitones,
             ..
         } if g.blends[usize::from(n)].terms[0].input.source == ir::Source::Controller(1) => {
             Some(semitones)
@@ -1574,7 +1561,14 @@ fn a_wheel_on_a_send_scales_its_level_live() {
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let layer = &out.buses[1];
     assert_eq!(layer.sends[0].level, 0.5);
-    let [ir::ModKind::Send { source, send: 0 }] = layer.mods[..] else {
+    let [
+        ir::ModRoute {
+            source,
+            target: ir::ParamAddr::BusSend { send: 0 },
+            ..
+        },
+    ] = layer.mods[..]
+    else {
         panic!("{:?}", layer.mods);
     };
     assert_eq!(source, ir::Source::Blend(0));
@@ -1669,11 +1663,13 @@ fn a_unipolar_lfo_scales_a_keygroups_gain_by_its_own_m() {
     );
     // At rest (wave −1) the first route leaves the gain alone: `1 + r·0`.
     assert!((ir::Curve::Signed.gain(-1.0, tables[0].1[0]) - 1.0).abs() < 1e-6);
-    assert!(
-        !g.mods
-            .iter()
-            .any(|m| matches!(m.kind, ir::ModKind::Intensity { .. }))
-    );
+    assert!(!g.mods.iter().any(|m| matches!(
+        m.route,
+        ir::ModRoute {
+            target: ir::ParamAddr::RouteIntensity { .. },
+            ..
+        }
+    )));
     assert!(
         out.diagnostics
             .iter()
@@ -1706,15 +1702,17 @@ fn a_rising_lfo_scales_a_keygroups_gain_through_its_rise() {
         g.envelopes[0].points.last().map(|p| (p.ms, p.level)),
         Some((500.0, 1.0))
     );
-    let kinds: Vec<_> = g.mods.iter().map(|m| m.kind).collect();
-    assert!(kinds.contains(&ir::ModKind::Intensity {
-        source: ir::Source::Envelope(0),
-        of: ir::Source::Lfo(0),
-        depth: 1.0,
-    }));
+    let kinds: Vec<_> = g.mods.iter().map(|m| m.route).collect();
+    assert!(kinds.contains(&ir::ModRoute::new(
+        ir::Source::Envelope(0),
+        ir::ParamAddr::RouteIntensity {
+            of: ir::Source::Lfo(0)
+        },
+        1.0
+    )));
     assert!(kinds.iter().any(|k| matches!(
         k,
-        ir::ModKind::Volume { source: ir::Source::Shaped(0), intensity, .. } if *intensity == -1.0
+        ir::ModRoute { target: ir::ParamAddr::Volume, source: ir::Source::Shaped(0), depth: intensity, .. } if *intensity == -1.0
     )));
 }
 
@@ -1757,9 +1755,8 @@ fn a_key_on_a_routes_ratio_scales_it_per_voice() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
-    assert!(g.mods.iter().any(|m| matches!(
-        m.kind,
-        ir::ModKind::Pitch { source: ir::Source::Blend(0), semitones, .. } if semitones == 3.0
+    assert!(g.mods.iter().any(|m| matches!(m.route,
+        ir::ModRoute { target: ir::ParamAddr::Pitch, source: ir::Source::Blend(0), span: semitones, .. } if semitones == 3.0
     )));
     let term = &g.blends[0].terms[0];
     assert_eq!(term.input.source, ir::Source::Controller(103));
@@ -1823,16 +1820,19 @@ fn a_user_table_lfo_growls_on_every_player_through_its_table_and_depth() {
     let doc = roxmltree::Document::parse(&xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
-    let blend = |want: fn(&ir::ModKind) -> Option<ir::Source>| {
-        let source = g.mods.iter().find_map(|m| want(&m.kind)).unwrap();
+    let blend = |want: fn(&ir::ModRoute) -> Option<ir::Source>| {
+        let source = g.mods.iter().find_map(|m| want(&m.route)).unwrap();
         let ir::Source::Blend(n) = source else {
             panic!("{source:?}")
         };
         g.blends[usize::from(n)].clone()
     };
     let pitch = blend(|k| match k {
-        ir::ModKind::Pitch {
-            source, semitones, ..
+        ir::ModRoute {
+            target: ir::ParamAddr::Pitch,
+            source,
+            span: semitones,
+            ..
         } if *semitones == 2.0 => Some(*source),
         _ => None,
     });
@@ -1849,8 +1849,11 @@ fn a_user_table_lfo_growls_on_every_player_through_its_table_and_depth() {
     assert_eq!(growl.factors[0].depth, 1.0);
     // Gain: `1 − rk + rk·(m + 1)/2` as `1 − r + r·x'`, `x' = 1 − k/2 + (k/2)·m`.
     let gain = blend(|k| match k {
-        ir::ModKind::Volume {
-            source, intensity, ..
+        ir::ModRoute {
+            target: ir::ParamAddr::Volume,
+            source,
+            depth: intensity,
+            ..
         } if *intensity == 0.5 => Some(*source),
         _ => None,
     });
@@ -1871,7 +1874,13 @@ fn a_user_table_lfo_growls_on_every_player_through_its_table_and_depth() {
     assert_eq!(
         g.mods
             .iter()
-            .filter(|m| matches!(m.kind, ir::ModKind::Volume { .. }))
+            .filter(|m| matches!(
+                m.route,
+                ir::ModRoute {
+                    target: ir::ParamAddr::Volume,
+                    ..
+                }
+            ))
             .count(),
         1
     );
@@ -1999,9 +2008,8 @@ fn a_live_macro_on_a_players_gain_scales_it_through_its_bipolar_mapper() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
-    assert!(g.mods.iter().any(|m| matches!(
-        m.kind,
-        ir::ModKind::Volume { source: ir::Source::Shaped(0), intensity, curve: ir::Curve::Signed, .. }
+    assert!(g.mods.iter().any(|m| matches!(m.route,
+        ir::ModRoute { target: ir::ParamAddr::Volume, source: ir::Source::Shaped(0), depth: intensity, law: ir::RouteLaw::Gain(ir::Curve::Signed), .. }
             if intensity == 1.0
     )));
     assert_eq!(g.shapers[0].table, [0.0, 0.0, 1.0]);
@@ -2038,12 +2046,11 @@ fn a_gain_one_player_has_alone_scales_its_zones_cells() {
     let cells: Vec<_> = g
         .mods
         .iter()
-        .filter_map(|m| match m.kind {
-            ir::ModKind::Mix {
+        .filter_map(|m| match m.route {
+            ir::ModRoute {
+                target: ir::ParamAddr::ZoneMix { zone, row, side },
                 source,
-                zone,
-                row,
-                side,
+                ..
             } => Some((source, zone, row, side)),
             _ => None,
         })
@@ -2089,10 +2096,11 @@ fn a_macro_held_on_a_script_modulations_ratio_scales_its_bend() {
     let semitones: Vec<_> = out.groups[0]
         .mods
         .iter()
-        .filter_map(|m| match m.kind {
-            ir::ModKind::Pitch {
+        .filter_map(|m| match m.route {
+            ir::ModRoute {
+                target: ir::ParamAddr::Pitch,
                 source: ir::Source::Script(2),
-                semitones,
+                span: semitones,
                 ..
             } => Some(semitones),
             _ => None,
@@ -2173,9 +2181,9 @@ fn a_wheel_opens_a_phasor_through_its_power_law() {
         .mods
         .iter()
         .map(|m| {
-            let ir::ModKind::EffectParam {
+            let ir::ModRoute {
+                target: ir::ParamAddr::EffectParam { param, .. },
                 source: ir::Source::Blend(n),
-                param,
                 ..
             } = *m
             else {
@@ -2275,6 +2283,117 @@ fn a_feedback_machine_runs_its_chain_and_mixes_it_with_its_input() {
         "{:?}",
         out.diagnostics
     );
+}
+
+#[test]
+fn a_scripted_feedback_machine_keeps_both_routes_at_full_wet() {
+    let xml = r#"<Program>
+      <Scripts><ScriptProcessor Bypass="0"><script><![CDATA[
+        Program.layers[1].inserts[1]:setParameter("Mix", 0.25)
+      ]]></script></ScriptProcessor></Scripts>
+      <Layers><Layer><Inserts><FeedbackMachine Mix="1"><Chains>
+        <AuxEffect Name="Chain"><Inserts><Gain Volume="0.5"/></Inserts></AuxEffect>
+      </Chains></FeedbackMachine></Inserts></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let tree = &out.scripts[0]
+        .data
+        .iter()
+        .find(|(n, _)| n == "__program.lua")
+        .unwrap()
+        .1;
+    let rest = std::str::from_utf8(tree)
+        .unwrap()
+        .split_once("rack_mix={")
+        .unwrap()
+        .1;
+    let (shares, _) = rest.split_once('}').unwrap();
+    let (chains, direct) = shares.split_once(',').unwrap();
+    let chains: usize = chains.parse().unwrap();
+    let direct: usize = direct.parse().unwrap();
+    for (bus, gain) in [(chains, 1.0), (direct, 0.0)] {
+        assert!(matches!(out.buses[bus].inserts[0].as_ref().unwrap().kind,
+            ir::EffectKind::Gain(g) if g == gain));
+        assert!(
+            out.buses
+                .iter()
+                .take(bus)
+                .any(|b| b.sends.iter().any(|s| s.bus == bus))
+        );
+        assert!(
+            out.buses[bus].sends[0].bus > bus,
+            "engine only sends forward"
+        );
+    }
+    assert_eq!(
+        out.buses[chains].sends[0].bus,
+        out.buses[direct].sends[0].bus
+    );
+}
+
+#[test]
+fn a_routed_eq_exposes_band_five_after_the_first_slot() {
+    let xml = r#"<Program>
+      <Scripts><ScriptProcessor Bypass="0"><script><![CDATA[
+        Program.auxs[1].inserts[2]:setParameter("Freq6", 2000)
+      ]]></script></ScriptProcessor></Scripts>
+      <Auxs><AuxEffect PreInsert="1"><Inserts>
+        <Gain Volume="1"/>
+        <DigitalEq Enabled1="1" Type1="0" Enabled2="1" Enabled3="1" Enabled4="1"
+          Enabled5="1" Enabled6="1" Freq6="1100" Slope6="1"/>
+      </Inserts></AuxEffect></Auxs>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let tree = &out.scripts[0]
+        .data
+        .iter()
+        .find(|(n, _)| n == "__program.lua")
+        .unwrap()
+        .1;
+    let tree = std::str::from_utf8(tree).unwrap();
+    let code = ir::EffectParam::BellHz(0).code().unwrap();
+    assert!(
+        tree.contains(&format!(r#"["Freq6"]={{{{{code},20,20,20000,20000}},"#)),
+        "{tree}"
+    );
+    assert!(tree.contains("routed_knobs={1,{2,K[1]}}"), "{tree}");
+}
+
+#[test]
+fn sampled_reverb_cache_keeps_distinct_attribute_boundaries() {
+    let xml = r#"<Program>
+      <Scripts><ScriptProcessor Bypass="0"><script><![CDATA[
+        Program.inserts[1]:setParameter("Wet", 0.5)
+      ]]></script></ScriptProcessor></Scripts>
+      <Inserts>
+        <SampledReverb SamplePath="./a.wav" Wet="0.5" DisplayName="Hall NormalizePower=1"/>
+        <SampledReverb SamplePath="./a.wav" Wet="0.5" DisplayName="Hall" NormalizePower="1"/>
+        <SampledReverb SamplePath="./a.wav" Wet="0.5" DisplayName="Hall" NormalizePower="1"/>
+      </Inserts>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let tree = &out.scripts[0]
+        .data
+        .iter()
+        .find(|(n, _)| n == "__program.lua")
+        .unwrap()
+        .1;
+    let sets: Vec<_> = std::str::from_utf8(tree)
+        .unwrap()
+        .match_indices("knobs=K[")
+        .map(|(i, _)| {
+            std::str::from_utf8(tree).unwrap()[i + 8..]
+                .split_once(']')
+                .unwrap()
+                .0
+        })
+        .collect();
+    assert_eq!(sets.len(), 3);
+    assert_ne!(sets[0], sets[1]);
+    assert_eq!(sets[1], sets[2]);
 }
 
 #[test]
@@ -2404,8 +2523,11 @@ fn an_lfo_on_a_bus_flangers_mix_and_speed_moves_them_live() {
     let params: Vec<_> = bus
         .mods
         .iter()
-        .filter_map(|m| match m {
-            ir::ModKind::EffectParam { param, .. } => Some(*param),
+        .filter_map(|m| match *m {
+            ir::ModRoute {
+                target: ir::ParamAddr::EffectParam { param, .. },
+                ..
+            } => Some(param),
             _ => None,
         })
         .collect();
@@ -2435,11 +2557,14 @@ fn a_keygroup_comb_runs_per_voice_with_its_freq_routed() {
         g.inserts[0].as_ref().map(|e| &e.kind),
         Some(ir::EffectKind::Comb(c)) if (c.hz - 1008.4754).abs() < 1e-2 && c.feedback == 0.5
     ));
-    assert!(
-        g.mods
-            .iter()
-            .any(|m| matches!(m.kind, ir::ModKind::Cutoff { insert: 0, .. }))
-    );
+    assert!(g.mods.iter().any(|m| matches!(
+        m.route,
+        ir::ModRoute {
+            target: ir::ParamAddr::FilterCutoff { insert: 0 },
+            law: ir::RouteLaw::Linear,
+            ..
+        }
+    )));
     assert!(
         out.diagnostics
             .iter()

@@ -137,7 +137,7 @@ pub fn clippy_problems(json: &str, changed: &[String]) -> Vec<String> {
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|value| value["reason"] == "compiler-message")
         .filter_map(|value| {
-            let message = &value["message"];
+            let message = value.get("message")?;
             let level = message["level"].as_str()?;
             if level != "warning" && level != "error" {
                 return None;

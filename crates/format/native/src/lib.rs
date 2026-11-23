@@ -290,52 +290,47 @@ pub fn to_ir(spec: &InstrumentSpec, base: &Path) -> Result<ir::Instrument, Error
                 slot: u16::try_from(slot).unwrap_or(u16::MAX),
                 target: 0,
                 bypass: m.bypass,
-                kind: match m.kind {
+                route: match m.kind {
                     ModKindSpec::Volume {
                         source,
                         intensity,
                         curve,
                         tau_ms,
-                    } => ir::ModKind::Volume {
-                        source: map_source(source),
-                        intensity,
-                        curve: map_curve(curve),
-                        tau_ms,
-                    },
+                    } => ir::ModRoute::new(map_source(source), ir::ParamAddr::Volume, intensity)
+                        .law(ir::RouteLaw::Gain(map_curve(curve)))
+                        .smooth(tau_ms),
                     ModKindSpec::Pitch {
                         source,
                         semitones,
                         depth,
                         tau_ms,
-                    } => ir::ModKind::Pitch {
-                        source: map_source(source),
-                        semitones,
-                        depth,
-                        tau_ms,
-                    },
-                    ModKindSpec::Pan { source, amount } => ir::ModKind::Pan {
-                        source: map_source(source),
-                        amount,
-                    },
-                    ModKindSpec::SampleStart { source, depth } => ir::ModKind::SampleStart {
-                        source: map_source(source),
-                        depth,
-                    },
+                    } => ir::ModRoute::new(map_source(source), ir::ParamAddr::Pitch, depth)
+                        .span(semitones)
+                        .smooth(tau_ms),
+                    ModKindSpec::Pan { source, amount } => {
+                        ir::ModRoute::new(map_source(source), ir::ParamAddr::Pan, amount)
+                    }
+                    ModKindSpec::SampleStart { source, depth } => {
+                        ir::ModRoute::new(map_source(source), ir::ParamAddr::SampleStart, depth)
+                    }
                     ModKindSpec::Release {
                         source,
                         intensity,
                         scale,
-                    } => ir::ModKind::Release {
-                        source: map_source(source),
-                        intensity,
-                        scale: match scale {
-                            TimeScaleSpec::Linear { power } => ir::TimeScale::Linear { power },
-                            TimeScaleSpec::LogKnob { floor_ms, power } => {
-                                ir::TimeScale::LogKnob { floor_ms, power }
-                            }
+                    } => ir::ModRoute::new(
+                        map_source(source),
+                        ir::ParamAddr::EnvelopeStage {
+                            envelope: None,
+                            stage: ir::EnvStage::Release,
                         },
-                        envelope: None,
-                    },
+                        intensity,
+                    )
+                    .law(ir::RouteLaw::Time(match scale {
+                        TimeScaleSpec::Linear { power } => ir::TimeScale::Linear { power },
+                        TimeScaleSpec::LogKnob { floor_ms, power } => {
+                            ir::TimeScale::LogKnob { floor_ms, power }
+                        }
+                    })),
                 },
             })
             .collect();
@@ -564,42 +559,61 @@ pub fn from_ir(instrument: &ir::Instrument, base: Option<&Path>) -> Result<Instr
                 .mods
                 .iter()
                 .filter_map(|m| {
-                    let kind = match m.kind {
-                        ir::ModKind::Volume {
+                    let kind = match m.route {
+                        ir::ModRoute {
+                            target: ir::ParamAddr::Volume,
                             source,
-                            intensity,
-                            curve,
-                            tau_ms,
+                            depth: intensity,
+                            smooth_ms: tau_ms,
+                            law: ir::RouteLaw::Gain(curve),
+                            ..
                         } => ModKindSpec::Volume {
                             source: unmap_source(source)?,
                             intensity,
                             curve: unmap_curve(curve),
                             tau_ms,
                         },
-                        ir::ModKind::Pitch {
+                        ir::ModRoute {
+                            target: ir::ParamAddr::Pitch,
                             source,
-                            semitones,
+                            span: semitones,
                             depth,
-                            tau_ms,
+                            smooth_ms: tau_ms,
+                            ..
                         } => ModKindSpec::Pitch {
                             source: unmap_source(source)?,
                             semitones,
                             depth,
                             tau_ms,
                         },
-                        ir::ModKind::Pan { source, amount } => ModKindSpec::Pan {
+                        ir::ModRoute {
+                            target: ir::ParamAddr::Pan,
+                            source,
+                            depth: amount,
+                            ..
+                        } => ModKindSpec::Pan {
                             source: unmap_source(source)?,
                             amount,
                         },
-                        ir::ModKind::SampleStart { source, depth } => ModKindSpec::SampleStart {
+                        ir::ModRoute {
+                            target: ir::ParamAddr::SampleStart,
+                            source,
+                            depth,
+                            ..
+                        } => ModKindSpec::SampleStart {
                             source: unmap_source(source)?,
                             depth,
                         },
-                        ir::ModKind::Release {
+                        ir::ModRoute {
+                            target:
+                                ir::ParamAddr::EnvelopeStage {
+                                    stage: ir::EnvStage::Release,
+                                    envelope: None,
+                                },
                             source,
-                            intensity,
-                            scale,
-                            envelope: None,
+                            depth: intensity,
+                            law: ir::RouteLaw::Time(scale),
+                            ..
                         } => ModKindSpec::Release {
                             source: unmap_source(source)?,
                             intensity,
@@ -1277,6 +1291,7 @@ const fn unmap_source(s: ir::Source) -> Option<SourceSpec> {
         | ir::Source::Lfo(_)
         | ir::Source::Blend(_)
         | ir::Source::Script(_)
+        | ir::Source::Macro(_)
         | ir::Source::ZoneEnvelope(_) => return None,
     })
 }

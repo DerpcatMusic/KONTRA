@@ -301,11 +301,14 @@ fn velocity_tracking_defaults_to_full_on_the_squared_velocity() {
     let inst = parse("<region> sample=a.wav seq_length=3 seq_position=2\n", &dir);
     let group = inst.groups.first().expect("group");
     assert_eq!(group.mods.len(), 1, "amp_veltrack defaults to 100");
-    let ir::ModKind::Volume {
-        intensity, curve, ..
-    } = group.mods[0].kind
+    let ir::ModRoute {
+        target: ir::ParamAddr::Volume,
+        depth: intensity,
+        law: ir::RouteLaw::Gain(curve),
+        ..
+    } = group.mods[0].route
     else {
-        panic!("{:?}", group.mods[0].kind);
+        panic!("{:?}", group.mods[0].route);
     };
     // sfizz: half velocity plays at a quarter.
     assert_eq!(curve.gain(intensity, 0.5), 0.25);

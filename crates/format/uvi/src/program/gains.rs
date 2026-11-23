@@ -24,11 +24,9 @@ impl<L: Library> Translator<'_, '_, L> {
         for (c, r, twins) in gains {
             let rides = twins.iter().flat_map(|t| blend::carries(*t, &r));
             self.carried.extend(rides.collect::<Vec<_>>());
-            self.add_route(group, c, r, |source, intensity| ir::ModKind::Volume {
-                source,
-                intensity,
-                curve: ir::Curve::Signed,
-                tau_ms: 0.0,
+            self.add_route(group, c, r, |source, intensity| {
+                ir::ModRoute::new(source, ir::ParamAddr::Volume, intensity)
+                    .law(ir::RouteLaw::Gain(ir::Curve::Signed))
             });
             if let Some(&key) = self.routed.get(&c.id()) {
                 twins
@@ -127,12 +125,15 @@ pub(super) fn own_mix(
                 slot: 0,
                 target: 0,
                 bypass: false,
-                kind: ir::ModKind::Mix {
+                route: ir::ModRoute::new(
                     source,
-                    zone,
-                    row: u8::try_from(row).unwrap_or(u8::MAX),
-                    side: side as u8,
-                },
+                    ir::ParamAddr::ZoneMix {
+                        zone,
+                        row: u8::try_from(row).unwrap_or(u8::MAX),
+                        side: side as u8,
+                    },
+                    1.0,
+                ),
             })
         })
         .collect()

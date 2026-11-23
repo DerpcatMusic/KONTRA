@@ -61,6 +61,7 @@ const COSMETIC_PROGRAM: &[&str] = &[
     "resource_container_filename",
     "wallpaper_filename",
 ];
+#[cfg(test)]
 const USED_GROUP: &[&str] = &[
     "name",
     "volume",
@@ -77,6 +78,7 @@ const USED_GROUP: &[&str] = &[
     "release_trigger_note_monophonic",
     "reverse",
 ];
+#[cfg(test)]
 const COSMETIC_GROUP: &[&str] = &[];
 #[cfg(test)]
 const USED_ZONE: &[&str] = &[
@@ -155,6 +157,50 @@ fn check_ignored_zone_fields(notes: &mut Notes, z: &ni_file::kontakt::objects::Z
     if !unknown_tail.is_empty() {
         notes.ignored("zone.unknown_tail", "(nested)");
     }
+}
+
+/// Fast typed equivalent of `notes.ignored_fields("group", v, USED_GROUP, COSMETIC_GROUP)`,
+/// exhaustively destructuring [`GroupParams`](ni_file::kontakt::objects::GroupParams)
+/// so a new field fails to compile until classified.
+fn check_ignored_group_fields(notes: &mut Notes, v: &ni_file::kontakt::objects::GroupParams) {
+    let ni_file::kontakt::objects::GroupParams {
+        name: _,
+        volume: _,
+        pan: _,
+        tune: _,
+        key_tracking: _,
+        reverse: _,
+        release_trigger: _,
+        release_trigger_note_monophonic: _,
+        rls_trig_counter: _,
+        midi_channel,
+        voice_group_index: _,
+        fx_idx_amp_split_point: _,
+        muted: _,
+        soloed: _,
+        interp_quality,
+        start_criteria: _,
+        unknown_tail,
+    } = v;
+    // `ignored_fields` treats 0 and -1 as unset.
+    if !matches!(midi_channel, 0 | -1) {
+        notes.ignored("group.midi_channel", midi_channel);
+    }
+    if !matches!(interp_quality, 0 | -1) {
+        notes.ignored("group.interp_quality", interp_quality);
+    }
+    if !unknown_tail.is_empty() {
+        notes.ignored("group.unknown_tail", "(nested)");
+    }
+}
+
+/// The translated instrument with its notes and every structural issue
+/// [`ir::validate`] finds, so a bad reference is reported at load.
+fn finish(mut out: ir::Instrument, notes: Notes) -> ir::Instrument {
+    out.diagnostics = notes.finish();
+    let issues = ir::validate(&out);
+    out.diagnostics.extend(issues);
+    out
 }
 
 /// `saved`: a snapshot's persistent values per script slot, over the
@@ -511,8 +557,7 @@ pub(crate) fn instrument(
         *sample += first;
     }
     out.samples.extend(responses);
-    out.diagnostics = notes.finish();
-    Ok(out)
+    Ok(finish(out, notes))
 }
 
 /// The slots a script may read, load into or switch shapes on.
@@ -820,11 +865,7 @@ fn translate_group(
     notes: &mut Notes,
 ) -> Result<Translated, ni_file::Error> {
     let v = group.params()?;
-    notes.ignored_fields("group", &v, USED_GROUP, COSMETIC_GROUP);
-    // Defaults: the amp after all 8 insert slots, release notes monophonic.
-    if v.fx_idx_amp_split_point != 8 {
-        notes.ignored("group.fx_idx_amp_split_point", v.fx_idx_amp_split_point);
-    }
+    check_ignored_group_fields(notes, &v);
     crate::ignored::chunks(
         notes,
         "group",
@@ -877,6 +918,7 @@ fn translate_group(
         purged: source_identity.is_some_and(|s| s.flag == 1),
         stream: laws::stream(stream_mode, base.preload),
         speed: matches!(stream_mode, 2 | 5 | 8).then_some(1.0), // Time Machine 1, 2, Pro
+        amp_split: u8::try_from(v.fx_idx_amp_split_point.clamp(0, 8)).unwrap_or(8),
         ..ir::Group::DEFAULT
     };
     kontra_law::record(|| kontra_law::Application {
@@ -943,10 +985,15 @@ fn translate_group(
             // kinds not carried do not.
             let amp_env = volume
                 && matches!(p.modulator, Modulator::Ahdsr(_))
-                && !out
-                    .mods
-                    .iter()
-                    .any(|m| matches!(m.kind, ir::ModKind::Envelope));
+                && !out.mods.iter().any(|m| {
+                    matches!(
+                        m.route,
+                        ir::ModRoute {
+                            target: ir::ParamAddr::AmpEnvelope,
+                            ..
+                        }
+                    )
+                });
             let reads_flags = matches!(
                 p.modulator,
                 Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Dbd(_)
@@ -971,10 +1018,15 @@ fn translate_group(
                 // as a breakpoint copy via `timed`.
                 Modulator::Ahdsr(e)
                     if volume
-                        && !out
-                            .mods
-                            .iter()
-                            .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
+                        && !out.mods.iter().any(|m| {
+                            matches!(
+                                m.route,
+                                ir::ModRoute {
+                                    target: ir::ParamAddr::AmpEnvelope,
+                                    ..
+                                }
+                            )
+                        }) =>
                 {
                     out.envelope = laws::envelope(e);
                     if let Some(t) = p
@@ -1000,7 +1052,7 @@ fn translate_group(
                         slot: slot(n),
                         target: target.map_or(0, slot),
                         bypass: p.unknown_flags.get(1).is_some_and(|&b| b != 0),
-                        kind: ir::ModKind::Envelope,
+                        route: ir::ModRoute::AMP_ENVELOPE,
                     });
                     if p.targets.len() > 1 {
                         let envelopes = out.envelopes.len();
@@ -1505,6 +1557,64 @@ mod tests {
             slow.ignored_fields("zone", &z, super::USED_ZONE, super::COSMETIC_ZONE);
             assert_eq!(fast.finish(), slow.finish());
         }
+    }
+
+    #[test]
+    fn group_ignored_fields_fast_path_matches_debug_reflection() {
+        for (midi_channel, interp_quality, tail) in [
+            (0, 0, Vec::new()),
+            (-1, -1, Vec::new()),
+            (3, 2, vec![1, 2]),
+            (-2, 7, Vec::new()),
+        ] {
+            let v = ni_file::kontakt::objects::GroupParams {
+                name: "g".into(),
+                volume: 0.5,
+                pan: 0.1,
+                tune: 1.0,
+                key_tracking: true,
+                reverse: false,
+                release_trigger: true,
+                release_trigger_note_monophonic: true,
+                rls_trig_counter: 4,
+                midi_channel,
+                voice_group_index: -1,
+                fx_idx_amp_split_point: 8,
+                muted: false,
+                soloed: false,
+                interp_quality,
+                start_criteria: ni_file::kontakt::objects::StartCriteriaList {
+                    mask: 1,
+                    ..Default::default()
+                },
+                unknown_tail: tail,
+            };
+            let mut fast = kontra_format::Notes::default();
+            super::check_ignored_group_fields(&mut fast, &v);
+            let mut slow = kontra_format::Notes::default();
+            slow.ignored_fields("group", &v, super::USED_GROUP, super::COSMETIC_GROUP);
+            assert_eq!(fast.finish(), slow.finish());
+        }
+    }
+
+    #[test]
+    fn finish_reports_invalid_references() {
+        let out = ir::Instrument {
+            groups: vec![ir::Group {
+                voice_group: Some(2),
+                ..ir::Group::DEFAULT
+            }],
+            ..ir::Instrument::DEFAULT
+        };
+        let mut notes = kontra_format::Notes::default();
+        notes.ignored("kept", 1);
+        let out = super::finish(out, notes);
+        let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
+        assert!(features.contains(&"ignored kept"), "{features:?}");
+        assert!(
+            features.contains(&"ir.group.voice_group_out_of_bounds"),
+            "{features:?}"
+        );
     }
 
     #[test]

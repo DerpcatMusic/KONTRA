@@ -12,5 +12,6 @@ pub mod summed;
 pub use processors::stem;
 pub use response::{Response, response};
 
-/// Frames rendered per inner span; sizes the bus buffers.
-pub const MAX_SPAN: u64 = 256;
+/// Frames rendered per inner control/audio span (~1.33 ms / 750 Hz at 48 kHz,
+/// 4× finer than 256 frames); sizes the bus buffers.
+pub const MAX_SPAN: u64 = 64;

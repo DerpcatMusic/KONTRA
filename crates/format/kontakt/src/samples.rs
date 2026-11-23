@@ -5,8 +5,16 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+use kontra_format::io::ReadAt;
+use kontra_format::paths::{
+    DirCache, lexical_clean, normalize_separators, resolve_case_insensitive_bounded,
+    resolve_container_path, split_container_path, split_container_reference, strip_foreign_root,
+    suffix_match_components,
+};
 use kontra_ir as ir;
 use ni_file::nkr::Archive;
+
+const ARCHIVE_EXTS: &[&str] = &["nkx", "nkr"];
 
 /// A sample's bytes: a whole file, or a member of a monolith or archive.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,27 +34,14 @@ pub(crate) struct Resolver {
     monolith: HashMap<String, Location>,
     /// Each archive opened once, with its member index.
     archives: HashMap<PathBuf, Option<(File, Archive)>>,
+    /// Per-directory listing cache for fast case-insensitive lookups on Linux.
+    dir_cache: DirCache,
     /// Lower-case basename to files under `root`, built on the first miss.
     loose: Option<HashMap<String, Vec<PathBuf>>>,
-    /// The library's keystream, read on the first encrypted member.
-    key: Option<std::sync::Arc<[u8]>>,
+    /// Streams by archive folder; moved archives can belong to another library.
+    keys: HashMap<PathBuf, std::sync::Arc<[u8]>>,
     /// Each name resolved once: a large table names the same file many times.
     resolved: HashMap<String, Option<Location>>,
-}
-
-/// `path` with `.` and `..` resolved by name, without touching the disk.
-fn lexical(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 impl Resolver {
@@ -57,7 +52,10 @@ impl Resolver {
     ) -> Result<Self, String> {
         // Canonical, so an empty or `./` parent, `..` or a symlink still
         // contains its candidates.
-        let instrument = &instrument.canonicalize().map_err(|e| e.to_string())?;
+        let instrument = &instrument
+            .canonicalize()
+            .or_else(|_| std::path::absolute(instrument))
+            .map_err(|e| e.to_string())?;
         let parent = instrument.parent().unwrap_or(Path::new("/"));
         let root = crate::resources::root(instrument);
         let root = root.canonicalize().unwrap_or(root);
@@ -85,8 +83,9 @@ impl Resolver {
             bases,
             monolith: members,
             archives: HashMap::new(),
+            dir_cache: DirCache::new(),
             loose: None,
-            key: None,
+            keys: HashMap::new(),
             resolved: HashMap::new(),
         })
     }
@@ -112,44 +111,139 @@ impl Resolver {
     }
 
     fn find(&mut self, name: &str) -> Result<Option<Location>, String> {
-        let name = name.replace(['\\', '|'], "/");
-        if let Some(found) = self.member(&name)? {
+        let normalized = normalize_separators(name);
+        if let Some(found) = self.member(&normalized)? {
             return Ok(Some(found));
         }
+
+        // Direct moved-folder remapping on absolute or Windows-authored paths
+        // (supports both loose files and moved `.nkx`/`.nkr` archives).
+        if let Some(found) = self.try_moved(Path::new(&normalized))? {
+            return Ok(Some(found));
+        }
+
+        // Candidate relative forms to test under each library base:
+        // the normalized path itself (with any leading `/` stripped so `join`
+        // stays inside the base) plus a stripped foreign-OS prefix (`C:/...`,
+        // `/Volumes/...`, `Macintosh HD:...`) if present.
+        let mut rels: Vec<String> = Vec::with_capacity(2);
+        let stripped_leading = normalized.trim_start_matches('/');
+        if !stripped_leading.is_empty() {
+            rels.push(stripped_leading.to_owned());
+        }
+        if let Some(foreign) = strip_foreign_root(&normalized)
+            && !foreign.is_empty()
+            && !rels.iter().any(|r| r == &foreign)
+        {
+            rels.push(foreign);
+        }
+
         // Relative to the instrument folder, then each folder above it in the library.
         for at in 0..self.bases.len() {
-            // `..` is normal in Kontakt's tables, but never past the root.
-            let Some(candidate) = self.bases.get(at).map(|b| lexical(&b.join(&name))) else {
+            let Some(base) = self.bases.get(at).cloned() else {
                 break;
             };
-            // Where the player said the folder moved to, root or not.
-            let moved = kontra_format::moved(&candidate);
-            if moved != candidate && moved.is_file() {
-                return Ok(Some(whole(moved)));
-            }
-            if !candidate.starts_with(&self.root) {
-                continue;
-            }
-            if let Some((archive, member)) = archive_member(&candidate, &self.archives) {
-                if self.can_open_archive(&archive)
-                    && let Some(found) = self.archive_entry(&archive, &member)?
-                {
+            for rel in &rels {
+                // `..` is normal in Kontakt's tables, but never past the root.
+                let candidate = lexical_clean(&base.join(rel));
+                if let Some(found) = self.try_moved(&candidate)? {
                     return Ok(Some(found));
                 }
-            } else if candidate.is_file() && self.inside(&candidate) {
-                return Ok(Some(whole(candidate)));
+                if !candidate.starts_with(&self.root) {
+                    continue;
+                }
+                if let Some((archive, member)) = self.resolve_archive(&base, &candidate, rel) {
+                    if self.can_open_archive(&archive)
+                        && let Some(found) = self.archive_entry(&archive, &member)?
+                    {
+                        return Ok(Some(found));
+                    }
+                } else if candidate.is_file() && self.inside(&candidate) {
+                    return Ok(Some(whole(candidate)));
+                } else if let Some(resolved) = resolve_case_insensitive_bounded(
+                    &base,
+                    &self.root,
+                    rel,
+                    Some(&mut self.dir_cache),
+                ) && resolved.is_file()
+                    && self.inside(&resolved)
+                {
+                    return Ok(Some(whole(resolved)));
+                }
             }
         }
-        // A moved archive: find the archive by name, keep the member exact.
-        if let Some((prefix, member)) = archive_reference(&name)
+
+        // A moved or relocated archive: find the archive by name, keep the member exact.
+        if let Some((prefix, member)) = split_container_reference(&normalized, ARCHIVE_EXTS)
             && let Some(archive) = self.by_name(prefix)?
         {
             return self.archive_entry(&archive, member);
         }
-        match self.by_name(&name)? {
+        match self.by_name(&normalized)? {
             Some(file) => Ok(Some(whole(file))),
             None => Ok(None),
         }
+    }
+
+    /// Checks whether `candidate` remaps via `kontra_format::moved_with_case`
+    /// to an existing loose file or an `.nkx`/`.nkr` archive member.
+    fn try_moved(&mut self, candidate: &Path) -> Result<Option<Location>, String> {
+        let Some(moved) = kontra_format::moved_with_case(candidate, Some(&mut self.dir_cache))
+        else {
+            return Ok(None);
+        };
+        if moved == candidate {
+            return Ok(None);
+        }
+        if let Some((archive, member)) =
+            split_container_path(&moved, ARCHIVE_EXTS, |p| self.archives.contains_key(p))
+            && let Some(found) = self.archive_entry(&archive, &member)?
+        {
+            return Ok(Some(found));
+        }
+        // Handle moved archive whose path differs in case on Linux
+        let moved_str = normalize_separators(&moved.to_string_lossy());
+        if let Some((prefix, member)) = split_container_reference(&moved_str, ARCHIVE_EXTS) {
+            let prefix_path = Path::new(prefix);
+            if prefix_path.is_file()
+                && let Some(found) = self.archive_entry(prefix_path, member)?
+            {
+                return Ok(Some(found));
+            }
+            if let Some(parent) = prefix_path.parent()
+                && let Some(file_name) = prefix_path.file_name().and_then(|n| n.to_str())
+                && let Some(found_archive) = self.dir_cache.find_child(parent, file_name)
+                && found_archive.is_file()
+                && let Some(found) = self.archive_entry(&found_archive, member)?
+            {
+                return Ok(Some(found));
+            }
+        }
+        if moved.is_file() {
+            return Ok(Some(whole(moved)));
+        }
+        Ok(None)
+    }
+
+    /// Resolves an archive path either directly or case-insensitively on Linux.
+    fn resolve_archive(
+        &mut self,
+        base: &Path,
+        candidate: &Path,
+        rel: &str,
+    ) -> Option<(PathBuf, String)> {
+        if let Some(found) =
+            split_container_path(candidate, ARCHIVE_EXTS, |p| self.archives.contains_key(p))
+        {
+            return Some(found);
+        }
+        resolve_container_path(
+            base,
+            &self.root,
+            rel,
+            ARCHIVE_EXTS,
+            Some(&mut self.dir_cache),
+        )
     }
 
     /// A monolith member: the exact path, else a unique match of its basename.
@@ -233,15 +327,24 @@ impl Resolver {
     fn warm<'a>(&mut self, names: impl Iterator<Item = &'a str>) {
         let mut named: Vec<(PathBuf, String)> = Vec::new();
         for name in names {
-            let name = name.replace(['\\', '|'], "/");
-            let found = self.bases.iter().find_map(|base| {
-                let candidate = lexical(&base.join(&name));
+            let normalized = normalize_separators(name);
+            let rel = normalized.trim_start_matches('/');
+            let mut found = None;
+            for at in 0..self.bases.len() {
+                let Some(base) = self.bases.get(at).cloned() else {
+                    break;
+                };
+                let candidate = lexical_clean(&base.join(rel));
                 if !candidate.starts_with(&self.root) {
-                    return None;
+                    continue;
                 }
-                archive_member(&candidate, &self.archives)
-                    .filter(|(archive, _)| self.can_open_archive(archive))
-            });
+                if let Some((archive, member)) = self.resolve_archive(&base, &candidate, rel)
+                    && self.can_open_archive(&archive)
+                {
+                    found = Some((archive, member));
+                    break;
+                }
+            }
             named.extend(found);
         }
         // Open the archives (each reads its directory) side by side.
@@ -285,7 +388,7 @@ impl Resolver {
                     for (archive, offset) in wanted.iter().skip(lane).step_by(lanes) {
                         if let Some(Some((file, _))) = archives.get(archive) {
                             // Only the page cache matters; a short or failed read is fine.
-                            let _ = read_at(file, &mut header, *offset);
+                            let _ = file.read_at(*offset, &mut header);
                         }
                     }
                 });
@@ -307,13 +410,24 @@ impl Resolver {
         let keystream = match (entry.encoded, entry.key_index) {
             (false, _) | (true, 0xff) => None,
             (true, 0x100) => {
-                let stream = match &self.key {
-                    Some(key) => key.clone(),
-                    None => self.key.insert(crate::access::keystream(archive)?).clone(),
+                let stream = match self
+                    .keys
+                    .entry(archive.parent().unwrap_or(archive).to_path_buf())
+                {
+                    std::collections::hash_map::Entry::Occupied(key) => key.get().clone(),
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        let key = crate::access::keystream(archive)
+                            .map_err(|e| format!("protected archive (Native Access): {e}"))?;
+                        slot.insert(key).clone()
+                    }
                 };
                 Some(crate::access::repeat_keystream(stream, entry.offset))
             }
-            (true, other) => return Err(format!("archive cipher {other:#x}")),
+            (true, other) => {
+                return Err(format!(
+                    "protected archive (Native Access): unsupported archive cipher {other:#x}"
+                ));
+            }
         };
         Ok(Some(Location {
             file: archive.to_path_buf(),
@@ -324,14 +438,17 @@ impl Resolver {
     }
 
     /// A file under the root with this name: the only one, else the one whose
-    /// folders match the most trailing components of `name`.
+    /// folders match the most trailing components of `name` (respecting
+    /// path-component boundaries).
     fn by_name(&mut self, name: &str) -> Result<Option<PathBuf>, String> {
-        let base = name.rsplit('/').next().unwrap_or(name).to_lowercase();
+        let base = name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase();
         let root = &self.root;
         let loose = self.loose.get_or_insert_with(|| {
             let mut index = HashMap::<String, Vec<PathBuf>>::new();
             walk(root, &mut |file| {
-                let key = file.file_name().map(|n| n.to_string_lossy().to_lowercase());
+                let key = file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_ascii_lowercase());
                 index.entry(key.unwrap_or_default()).or_default().push(file);
             });
             index
@@ -344,17 +461,15 @@ impl Resolver {
         }
         let parts: Vec<_> = name
             .split('/')
-            .filter(|s| !s.is_empty() && *s != "..")
+            .filter(|s| !s.is_empty() && *s != ".." && *s != ".")
             .collect();
         for n in (2..=parts.len()).rev() {
-            let suffix = parts
-                .get(parts.len() - n..)
-                .unwrap_or_default()
-                .join("/")
-                .to_lowercase();
+            let Some(suffix) = parts.get(parts.len() - n..) else {
+                continue;
+            };
             let mut found = matches
                 .iter()
-                .filter(|p| p.to_string_lossy().to_lowercase().ends_with(&suffix));
+                .filter(|p| suffix_match_components(p, suffix));
             if let (Some(only), None) = (found.next(), found.next()) {
                 return Ok(Some(only.clone()));
             }
@@ -372,37 +487,6 @@ fn whole(file: PathBuf) -> Location {
     }
 }
 
-/// `…/x.nkx/member` split into the archive and its member, when x.nkx is a file.
-/// An archive already opened is a file: no stat to say so again.
-fn archive_member(
-    path: &Path,
-    opened: &HashMap<PathBuf, Option<(File, Archive)>>,
-) -> Option<(PathBuf, String)> {
-    path.ancestors().skip(1).find_map(|parent| {
-        let is_archive = parent
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"));
-        (is_archive && (opened.contains_key(parent) || parent.is_file())).then(|| {
-            let member = path
-                .strip_prefix(parent)
-                .ok()?
-                .to_string_lossy()
-                .replace('\\', "/");
-            Some((parent.to_path_buf(), member))
-        })?
-    })
-}
-
-fn archive_reference(name: &str) -> Option<(&str, &str)> {
-    name.match_indices('/').find_map(|(at, _)| {
-        let (prefix, rest) = (name.get(..at)?, name.get(at + 1..)?);
-        Path::new(prefix)
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"))
-            .then_some((prefix, rest))
-    })
-}
-
 fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -416,14 +500,67 @@ fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
     }
 }
 
-/// Reads at `at` without moving the file's cursor, so lanes can share a file.
-#[cfg(unix)]
-fn read_at(file: &std::fs::File, out: &mut [u8], at: u64) -> std::io::Result<usize> {
-    std::os::unix::fs::FileExt::read_at(file, out, at)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Reads at `at` (Windows moves the cursor; header warming never uses it).
-#[cfg(windows)]
-fn read_at(file: &std::fs::File, out: &mut [u8], at: u64) -> std::io::Result<usize> {
-    std::os::windows::fs::FileExt::seek_read(file, out, at)
+    #[test]
+    fn resolves_case_insensitive_windows_and_foreign_paths_on_linux() {
+        let root =
+            std::env::temp_dir().join(format!("kontra-samples-linux-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Instruments")).unwrap();
+        std::fs::create_dir_all(root.join("Samples/Close")).unwrap();
+        std::fs::create_dir_all(root.join("Samples/NotClose")).unwrap();
+        let inst = root.join("Instruments/Patch.nki");
+        std::fs::write(&inst, b"").unwrap();
+        let close_wav = root.join("Samples/Close/C4.WAV");
+        let not_close_wav = root.join("Samples/NotClose/C4.WAV");
+        std::fs::write(&close_wav, b"riff").unwrap();
+        std::fs::write(&not_close_wav, b"riff").unwrap();
+
+        let mut resolver = Resolver::new(&inst, None).unwrap();
+
+        // Case-insensitive relative Windows path with backslashes
+        let found = resolver
+            .resolve(r"..\samples\close\c4.wav")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.file, close_wav.canonicalize().unwrap());
+
+        // Windows drive-letter absolute path falling back to component-boundary suffix
+        let found = resolver
+            .resolve(r"D:\OldDrive\MyLib\Samples\Close\c4.wav")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.file, close_wav.canonicalize().unwrap());
+
+        // Component boundary check: `Close/c4.wav` must NOT falsely match `NotClose/C4.WAV`
+        let found = resolver.resolve("Close/c4.wav").unwrap().unwrap();
+        assert_eq!(found.file, close_wav.canonicalize().unwrap());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resolves_samples_in_non_standard_samples_folder_name() {
+        let root =
+            std::env::temp_dir().join(format!("kontra-samples-altroot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Instruments")).unwrap();
+        std::fs::create_dir_all(root.join("Morphology Samples/Drones")).unwrap();
+        let inst = root.join("Instruments/Patch.nki");
+        std::fs::write(&inst, b"").unwrap();
+        let wav = root.join("Morphology Samples/Drones/Pad.WAV");
+        std::fs::write(&wav, b"riff").unwrap();
+
+        let mut resolver = Resolver::new(&inst, None).unwrap();
+        let found = resolver
+            .resolve(r"..\morphology samples\drones\pad.wav")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.file, wav.canonicalize().unwrap());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

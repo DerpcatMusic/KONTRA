@@ -6,7 +6,7 @@ use kontra_ir::{self as ir, Law};
 use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;
 
-use crate::{EnginePar, EnginePars, Group, source};
+use crate::{EnginePar, EnginePars, Group};
 
 pub use kontra_ir::common::{
     ATTACK_CURVE, BIPOLAR, CUBE, LFO_FADE_IN, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S,
@@ -105,7 +105,7 @@ pub fn stage_point(par: EnginePar) -> Option<(usize, ir::Law)> {
 /// The index of the breakpoints modulator `slot` of `g` routes from.
 #[must_use]
 pub fn routed_index(g: &Group, slot: i32) -> Option<usize> {
-    g.mods.iter().find_map(|m| match source(&m.kind) {
+    g.mods.iter().find_map(|m| match m.route.driver() {
         Some(ir::Source::Envelope(n)) if i32::from(m.slot) == slot => Some(usize::from(n)),
         _ => None,
     })

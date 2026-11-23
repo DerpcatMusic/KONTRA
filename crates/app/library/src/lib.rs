@@ -6,9 +6,9 @@
 //! `.nicnt` (registered), an `Instruments` or `Multis` folder, presets beside
 //! a `Samples` folder or a monolith (`.nkx`/`.nkc`/`.nkr`), or, below the
 //! root, presets of its own. Loose `.ufs` banks at a root are libraries of
-//! their own. The search stops at a library, skips sample folders, and gives
-//! up on a folder of many audio files with no presets. A library shows only
-//! when it holds a preset.
+//! their own. The search stops at a library, skips sample folders, follows
+//! symlinks safely with canonical-directory cycle guards, and gives up on a
+//! folder of many audio files with no presets.
 //!
 //! Each is named from its `.nicnt` product, else its folder name cleaned of
 //! versions, brackets and underscores; the vendor comes from the product, a
@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub use cache::Cache;
 pub use folder::{Folder, natural};
+pub use kontra_format::{ProtectionStatus, ProtectionSystem};
 pub use name::{clean_name, product};
 pub use prefs::Prefs;
 
@@ -63,6 +64,8 @@ pub struct Library {
     pub format: Format,
     /// It has a `.nicnt`; otherwise it was recognised from its folders.
     pub registered: bool,
+    /// Whether this library is open or guarded by DRM (e.g., PACE/iLok-locked UFS).
+    pub protection: ProtectionStatus,
     /// Its instruments and snapshots, sorted naturally by path. A UVI
     /// program is `bank.ufs/Folder/Name.uvip`.
     pub presets: Vec<PathBuf>,
@@ -86,11 +89,12 @@ impl Library {
     }
 }
 
-/// Something under a root that could not be read, and why.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Something under a root that could not be read (or is DRM-protected), and why.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Issue {
     pub path: PathBuf,
     pub reason: String,
+    pub protection: ProtectionStatus,
 }
 
 /// Every library a scan found, sorted by name.
@@ -127,6 +131,41 @@ impl Progress {
 /// Lists a bank's programs as paths inside it, or says why it can't.
 pub type Programs<'a> = &'a dyn Fn(&Path) -> Result<Vec<String>, String>;
 
+/// Result of inspecting a bank (`.ufs` or `.sf2`): its preset member paths
+/// together with its structured [`ProtectionStatus`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BankListing {
+    pub presets: Vec<String>,
+    pub protection: ProtectionStatus,
+}
+
+/// Failure inspecting a bank, separating DRM protection from corrupt/I/O errors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BankError {
+    pub reason: String,
+    pub protection: ProtectionStatus,
+}
+
+impl BankError {
+    #[must_use]
+    pub fn failed(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        let protection = infer_protection(&reason);
+        Self { reason, protection }
+    }
+
+    #[must_use]
+    pub fn protected(status: ProtectionStatus) -> Self {
+        Self {
+            reason: status.to_string(),
+            protection: status,
+        }
+    }
+}
+
+/// Lists a bank's programs with structured [`ProtectionStatus`] reporting.
+pub type BankInspector<'a> = &'a dyn Fn(&Path) -> Result<BankListing, BankError>;
+
 /// How many levels under a root libraries are looked for.
 const DEPTH: usize = 4;
 /// A folder with this many audio files and no presets holds samples only.
@@ -148,6 +187,24 @@ pub fn scan(
     cache: &mut Cache,
     programs: Programs<'_>,
 ) -> Option<Catalog> {
+    let inspect = |bank: &Path| match programs(bank) {
+        Ok(presets) => Ok(BankListing {
+            presets,
+            protection: ProtectionStatus::Open,
+        }),
+        Err(reason) => Err(BankError::failed(reason)),
+    };
+    scan_with_inspector(roots, progress, cache, &inspect)
+}
+
+/// Like [`scan`], but receives structured [`ProtectionStatus`] per bank from
+/// `inspect` so DRM-protected banks carry an explicit protection badge state.
+pub fn scan_with_inspector(
+    roots: &[Root],
+    progress: &Progress,
+    cache: &mut Cache,
+    inspect: BankInspector<'_>,
+) -> Option<Catalog> {
     let mut issues = Vec::new();
     let mut libraries = Vec::new();
     let mut seen = BTreeSet::new();
@@ -157,13 +214,13 @@ pub fn scan(
         // inside another is catalogued as itself, so the outer one's walk stops
         // at it rather than listing its presets a second time
         // ([`visit_within`]).
-        let dirs: BTreeSet<PathBuf> = founds.iter().map(|f| f.dir.clone()).collect();
+        let dirs: BTreeSet<PathBuf> = founds.iter().map(|f| path_identity(&f.dir)).collect();
         for found in founds {
-            let key = std::fs::canonicalize(&found.dir).unwrap_or_else(|_| found.dir.clone());
+            let key = path_identity(&found.dir);
             if !seen.insert(key) {
                 continue;
             }
-            let library = catalog(found, &dirs, progress, cache, programs, &mut issues);
+            let library = catalog(found, &dirs, progress, cache, inspect, &mut issues);
             if progress.canceled() {
                 return None;
             }
@@ -175,6 +232,39 @@ pub fn scan(
         libraries: unique(libraries),
         issues,
     })
+}
+
+/// Infers a structured [`ProtectionStatus`] from a plain string error returned
+/// by legacy [`Programs`] callbacks.
+fn infer_protection(reason: &str) -> ProtectionStatus {
+    let lower = reason.to_ascii_lowercase();
+    let diagnostic = lower
+        .rsplit(": ")
+        .find(|part| part.starts_with("protected ("));
+    if diagnostic.is_some_and(|part| {
+        matches!(
+            part.split_once(')').map(|(kind, _)| kind),
+            Some(
+                "protected (pace / ilok"
+                    | "protected (pace/ilok"
+                    | "protected (pace"
+                    | "protected (ilok"
+            )
+        )
+    }) || lower.contains("requires pace/ilok license")
+    {
+        ProtectionStatus::protected(ProtectionSystem::PaceIlok, reason)
+    } else if lower.contains("native access") || lower.contains("no .nicnt access") {
+        ProtectionStatus::protected(ProtectionSystem::NativeAccess, reason)
+    } else if lower.starts_with("protected (") {
+        ProtectionStatus::protected(ProtectionSystem::Unknown("DRM".into()), reason)
+    } else {
+        ProtectionStatus::Open
+    }
+}
+
+fn path_identity(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// A library folder or loose bank found under a root.
@@ -217,20 +307,33 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_lowercase();
-        // Symbolic links are not followed: a loop would never end.
+        if name.starts_with('.') {
+            continue;
+        }
         let Ok(kind) = entry.file_type() else {
             continue;
         };
-        if name.starts_with('.') || kind.is_symlink() {
-            continue;
-        }
-        if kind.is_dir() {
+        let (is_dir, is_file) = if kind.is_symlink() {
+            match std::fs::metadata(&path) {
+                Ok(meta) => (meta.is_dir(), meta.is_file()),
+                Err(e) => {
+                    issues.push(issue(&path, format!("broken symlink: {e}")));
+                    continue;
+                }
+            }
+        } else {
+            (kind.is_dir(), kind.is_file())
+        };
+        if is_dir {
             match name.as_str() {
                 "instruments" | "multis" => out.instruments = true,
                 "samples" => out.samples = true,
                 _ => {}
             }
             out.folders.push(path);
+            continue;
+        }
+        if !is_file {
             continue;
         }
         match ext(&path).as_str() {
@@ -240,7 +343,7 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
                 out.presets += 1;
                 out.banks.push(path);
             }
-            "nki" | "nkm" | "uvip" | "sfz" | "dspreset" | "kontra" => out.presets += 1,
+            "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" => out.presets += 1,
             "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => out.audio += 1,
             _ => {}
         }
@@ -251,9 +354,24 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
 }
 
 fn issue(path: &Path, reason: impl ToString) -> Issue {
+    let reason = reason.to_string();
+    let protection = infer_protection(&reason);
+    Issue {
+        path: path.to_path_buf(),
+        reason,
+        protection,
+    }
+}
+
+fn issue_with_protection(
+    path: &Path,
+    reason: impl ToString,
+    protection: ProtectionStatus,
+) -> Issue {
     Issue {
         path: path.to_path_buf(),
         reason: reason.to_string(),
+        protection,
     }
 }
 
@@ -277,51 +395,41 @@ fn detect(root: &Root, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Foun
                 vendor: None,
             });
         }
-        Ok(_) => visit(&dir, 0, None, &mut out, progress, issues),
+        Ok(_) => {
+            let mut visited = BTreeSet::new();
+            visit_within(
+                &dir,
+                0,
+                None,
+                false,
+                &mut visited,
+                &mut out,
+                progress,
+                issues,
+            );
+        }
     }
     out
 }
 
-fn visit(
-    dir: &Path,
-    depth: usize,
-    vendor: Option<String>,
-    out: &mut Vec<Found>,
-    progress: &Progress,
-    issues: &mut Vec<Issue>,
-) {
-    visit_within(dir, depth, vendor, false, out, progress, issues);
-}
-
-/// [`visit`], `within` saying whether `dir` already sits inside a library.
-///
-/// A library is not the end of the search. A bundle one level down can be a
-/// library of its own — Action Strings 2 v1.2.0 is a `.nicnt` folder holding a
-/// second `.nicnt` library, and AudioBro's LASS bundle holds three — and
-/// stopping at the outer one made the inner ones unreachable: the browser
-/// showed `Action Strings 2` once, with both copies' presets in it, where
-/// Kontakt lists two libraries.
-///
-/// Inside a library none of that is true of its own subfolders. Below the root,
-/// a folder of presets is a library (that is how a folder added without a
-/// `.nicnt` is recognised at all); inside a library, the same rule would turn
-/// every preset folder into a library — Evolve R2's `Instruments/4 Tonality and
-/// FX` holds presets beside a `Samples` folder, so it would become a library
-/// and take its instruments out of Evolve R2. So inside a library only a
-/// `.nicnt` makes a folder a library of its own: that is the file Kontakt
-/// registers a product by, and it is what identifies Action Strings 2's inner
-/// library and LASS's three. The parent's walk prunes it ([`catalog`]), so a
-/// preset is listed under exactly one library.
+/// Visits `dir`, `within` saying whether `dir` already sits inside a library.
+/// Uses `visited` (canonicalized paths) so symlinked directory graphs never loop.
+#[allow(clippy::too_many_arguments)]
 fn visit_within(
     dir: &Path,
     depth: usize,
     vendor: Option<String>,
     within: bool,
+    visited: &mut BTreeSet<PathBuf>,
     out: &mut Vec<Found>,
     progress: &Progress,
     issues: &mut Vec<Issue>,
 ) {
     if progress.canceled() {
+        return;
+    }
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canonical) {
         return;
     }
     progress.folders.fetch_add(1, Ordering::Relaxed);
@@ -342,8 +450,6 @@ fn visit_within(
         out.push(Found {
             dir: dir.into(),
             nicnt: l.nicnt,
-            // A nested library is named from its own folder, not the outer
-            // one's: it is a different publisher entry in Kontakt's list.
             vendor: vendor.clone(),
         });
     } else if depth == 0 {
@@ -372,6 +478,7 @@ fn visit_within(
                 depth + 1,
                 vendor.clone(),
                 within || library,
+                visited,
                 out,
                 progress,
                 issues,
@@ -388,20 +495,28 @@ fn file_name(path: &Path) -> String {
 }
 
 /// What a library folder holds: its presets (banks opened through
-/// `programs`) and its banner candidates, from one walk that skips samples.
+/// `inspect`) and its banner candidates, from one walk that skips samples.
 fn catalog(
     found: Found,
     nested: &BTreeSet<PathBuf>,
     progress: &Progress,
     cache: &mut Cache,
-    programs: Programs<'_>,
+    inspect: BankInspector<'_>,
     issues: &mut Vec<Issue>,
 ) -> Option<Library> {
     let mut presets = Vec::new();
     let mut art = Vec::new();
+    let mut protection = ProtectionStatus::Open;
     let bank = found.dir.is_file();
     if bank {
-        bank_presets(&found.dir, cache, programs, issues, &mut presets);
+        bank_presets(
+            &found.dir,
+            cache,
+            inspect,
+            issues,
+            &mut presets,
+            &mut protection,
+        );
         art.extend(
             ["png", "jpg", "jpeg"]
                 .iter()
@@ -416,14 +531,15 @@ fn catalog(
             nested,
             progress,
             cache,
-            programs,
+            inspect,
             issues,
+            protection: &mut protection,
         };
         walk(&found.dir, &mut state, &mut presets, &mut art);
         art.sort_by_cached_key(|p| (art_rank(p), p.clone()));
     }
     let multis = presets.iter().filter(|p| ext(p) == "nkm").count();
-    if presets.is_empty() {
+    if presets.is_empty() && !protection.is_protected() {
         return None;
     }
     presets.sort_by_cached_key(|p| {
@@ -450,16 +566,18 @@ fn catalog(
         .into_iter()
         .find(|v| !v.is_empty())
         .unwrap_or_default();
+    let uvi_bank = bank && ext(&found.dir) == "ufs";
     let uvi = presets.iter().filter(|p| ext(p) == "uvip").count();
     Some(Library {
         name: if name.is_empty() { folder_name } else { name },
         vendor,
-        format: if uvi * 2 > presets.len() {
+        format: if uvi_bank || uvi * 2 > presets.len() {
             Format::Uvi
         } else {
             Format::Kontakt
         },
         registered: found.nicnt.is_some(),
+        protection,
         multis,
         presets,
         art,
@@ -473,18 +591,25 @@ struct Walk<'a> {
     nested: &'a BTreeSet<PathBuf>,
     progress: &'a Progress,
     cache: &'a mut Cache,
-    programs: Programs<'a>,
+    inspect: BankInspector<'a>,
     issues: &'a mut Vec<Issue>,
+    protection: &'a mut ProtectionStatus,
 }
 
 /// The presets and banner candidates under `dir`, skipping sample folders and
-/// the folders of libraries nested inside it (`state.nested`): those are
-/// libraries of their own and their presets are listed under them.
+/// the folders of libraries nested inside it (`state.nested`). Follows
+/// symlinks safely with canonical-path cycle tracking.
 fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut Vec<PathBuf>) {
+    let mut visited = BTreeSet::new();
+    let mut files = BTreeSet::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if state.progress.canceled() {
             return;
+        }
+        let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited.insert(canonical) {
+            continue;
         }
         state.progress.folders.fetch_add(1, Ordering::Relaxed);
         let entries = match std::fs::read_dir(&dir) {
@@ -499,37 +624,57 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                 continue;
             };
             let name = entry.file_name().to_string_lossy().to_lowercase();
-            if name.starts_with('.') || kind.is_symlink() {
+            if name.starts_with('.') {
                 continue;
             }
             let path = entry.path();
-            if kind.is_dir() {
-                if name != "samples" && !state.nested.contains(&path) {
+            let (is_dir, is_file) = if kind.is_symlink() {
+                match std::fs::metadata(&path) {
+                    Ok(meta) => (meta.is_dir(), meta.is_file()),
+                    Err(e) => {
+                        state
+                            .issues
+                            .push(issue(&path, format!("broken symlink: {e}")));
+                        continue;
+                    }
+                }
+            } else {
+                (kind.is_dir(), kind.is_file())
+            };
+            if is_dir {
+                if name != "samples" && !state.nested.contains(&path_identity(&path)) {
                     stack.push(path);
                 }
                 continue;
             }
+            if !is_file {
+                continue;
+            }
             match ext(&path).as_str() {
                 "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" => {
-                    presets.push(path)
+                    if files.insert(path_identity(&path)) {
+                        presets.push(path);
+                    }
                 }
-                "ufs" => {
+                "ufs" if files.insert(path_identity(&path)) => {
                     bank_presets(
                         &path,
                         &mut *state.cache,
-                        state.programs,
+                        state.inspect,
                         &mut *state.issues,
                         presets,
+                        &mut *state.protection,
                     );
                     art.push(path);
                 }
-                "sf2" => {
+                "sf2" if files.insert(path_identity(&path)) => {
                     bank_presets(
                         &path,
                         &mut *state.cache,
-                        state.programs,
+                        state.inspect,
                         &mut *state.issues,
                         presets,
+                        &mut *state.protection,
                     );
                 }
                 "png" | "jpg" | "jpeg" | "nicnt" | "nkr" => art.push(path),
@@ -542,13 +687,36 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
 fn bank_presets(
     bank: &Path,
     cache: &mut Cache,
-    programs: Programs<'_>,
+    inspect: BankInspector<'_>,
     issues: &mut Vec<Issue>,
     presets: &mut Vec<PathBuf>,
+    library_protection: &mut ProtectionStatus,
 ) {
-    match cache.programs(bank, programs) {
-        Ok(members) => presets.extend(members.iter().map(|m| bank.join(m))),
-        Err(reason) => issues.push(issue(bank, reason)),
+    match cache.bank_listing(bank, inspect) {
+        Ok(listing) => {
+            presets.extend(
+                listing
+                    .presets
+                    .iter()
+                    .map(|m| bank.join(m.replace('\\', "/"))),
+            );
+            if listing.protection.is_protected() {
+                issues.push(issue_with_protection(
+                    bank,
+                    listing.protection.to_string(),
+                    listing.protection.clone(),
+                ));
+                if library_protection.is_open() {
+                    *library_protection = listing.protection;
+                }
+            }
+        }
+        Err(err) => {
+            if err.protection.is_protected() && library_protection.is_open() {
+                *library_protection = err.protection.clone();
+            }
+            issues.push(issue_with_protection(bank, err.reason, err.protection));
+        }
     }
 }
 
@@ -560,8 +728,6 @@ fn art_rank(path: &Path) -> usize {
         _ if name.contains("libbrowser") => 1,
         "nicnt" => 2,
         "nkr" => 3,
-        // A bank chooses its own cover: after pictures named for the part,
-        // before loose ones that may be anything.
         "ufs" => 10,
         _ => {
             5 + ["cover", "artwork", "banner", "logo", "background"]
