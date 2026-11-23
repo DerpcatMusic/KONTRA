@@ -4,7 +4,7 @@ use std::io;
 use std::path::Path;
 
 use kontra_format::header::{AudioHeader, AudioLoop};
-use kontra_format_decentsampler::translate_xml;
+use kontra_format_decentsampler::{Error, translate_xml};
 use kontra_ir as ir;
 
 fn fake_probe(path: &Path) -> io::Result<AudioHeader> {
@@ -488,9 +488,9 @@ fn promoting_global_filter_after_delay_reports_reordering_approximation() {
     );
 }
 
-fn effects(xml: &str) -> (Vec<ir::Effect>, ir::Instrument) {
-    let inst = translate_xml(xml, Path::new("/lib"), &fake_probe).unwrap();
-    (inst.inserts.iter().flatten().cloned().collect(), inst)
+fn effects(xml: &str) -> Result<(Vec<ir::Effect>, ir::Instrument), Error> {
+    let inst = translate_xml(xml, Path::new("/lib"), &fake_probe)?;
+    Ok((inst.inserts.iter().flatten().cloned().collect(), inst))
 }
 
 #[test]
@@ -503,7 +503,8 @@ fn filters_reverb_and_delay_take_the_documented_defaults() {
         <effect type="delay" stereoOffset="0.02" feedbackCutoff="3000"/>
         <effect type="delay"/>
     </effects></DecentSampler>"#,
-    );
+    )
+    .unwrap();
     assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
     let ir::EffectKind::Filter(notch) = fx[0].kind else {
         panic!("{:?}", fx[0].kind)
@@ -536,7 +537,8 @@ fn peak_and_shelves_are_eq_bands_in_linear_or_db_gain() {
         <effect type="low_shelf" gain="-6" gainUnit="decibels"/>
         <effect type="high_shelf" q="0.7071" gain="0.5"/>
     </effects></DecentSampler>"#,
-    );
+    )
+    .unwrap();
     let band = |i: usize| match fx[i].kind {
         ir::EffectKind::Eq(b) => {
             assert_eq!(&b[1..], &[ir::Bell::FLAT; 3]);
@@ -568,7 +570,8 @@ fn compressor_folds_input_gain_into_threshold_and_makeup() {
         <effect type="compressor"/>
         <effect type="compressor" threshold="-20" ratio="8" attack="1" release="300" inputGain="6" outputGain="-3"/>
     </effects></DecentSampler>"#,
-    );
+    )
+    .unwrap();
     let ir::EffectKind::Compressor(c) = fx[0].kind else {
         panic!()
     };
@@ -603,7 +606,8 @@ fn compressor_folds_input_gain_into_threshold_and_makeup() {
 fn phaser_sweeps_its_centre_by_a_thousandfold_per_unit_depth() {
     let (fx, _) = effects(
         r#"<DecentSampler><effects><effect type="phaser" modDepth="0.5" feedback="-0.4" mix="0.25"/></effects></DecentSampler>"#,
-    );
+    )
+    .unwrap();
     let ir::EffectKind::Phaser(p) = fx[0].kind else {
         panic!()
     };
@@ -624,7 +628,8 @@ fn convolution_loads_its_ir_file_as_a_sample_and_impulse() {
         <effect type="convolution" mix="0.3" irFile="Samples\Hall 3.wav"/>
         <effect type="convolution" irFile="missing.wav"/>
     </effects></DecentSampler>"#,
-    );
+    )
+    .unwrap();
     assert_eq!(fx[0].kind, ir::EffectKind::Convolution { impulse: 0 });
     assert_eq!((fx[0].output, fx[0].dry), (0.3, 0.7));
     assert_eq!(inst.impulses.len(), 1);
@@ -649,7 +654,8 @@ fn wave_folder_and_shaper_are_shaper_curves() {
         <effect type="wave_folder" drive="10" threshold="0.5"/>
         <effect type="wave_shaper" drive="40" outputLevel="0.3"/>
     </effects></DecentSampler>"#,
-    );
+    )
+    .unwrap();
     assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
     let curve = |i: usize| match &fx[i].kind {
         ir::EffectKind::Shaper(s) => s.curve.clone(),
@@ -670,7 +676,8 @@ fn bit_crusher_holds_its_reduction_factor_and_bits() {
         <effect type="bit_crusher" bitDepth="8" sampleRateReduction="4" mix="0.5"/>
         <effect type="bit_crusher"/>
     </effects></DecentSampler>"#,
-    );
+    )
+    .unwrap();
     let crush = |i: usize| match fx[i].kind {
         ir::EffectKind::Crush(c) => c,
         ref k => panic!("{k:?}"),
@@ -685,7 +692,8 @@ fn bit_crusher_holds_its_reduction_factor_and_bits() {
 fn pitch_shift_glides_its_heads_by_the_semitone_ratio() {
     let (fx, _) = effects(
         r#"<DecentSampler><effects><effect type="pitch_shift" pitchShift="-12"/></effects></DecentSampler>"#,
-    );
+    )
+    .unwrap();
     let ir::EffectKind::Shifter(s) = fx[0].kind else {
         panic!()
     };

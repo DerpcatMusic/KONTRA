@@ -138,7 +138,8 @@ fn translate_effect(
             let time = attr_f32(node, "delayTime").unwrap_or(0.7);
             let time = match node.attribute("delayTimeFormat").map(str::trim) {
                 Some("musical_time") => {
-                    ir::DelayTime::Beats(MUSICAL_BEATS[time.round().clamp(0.0, 20.0) as usize])
+                    let step = time.round().clamp(0.0, 20.0) as usize;
+                    ir::DelayTime::Beats(MUSICAL_BEATS.get(step).copied().unwrap_or(1.0 / 24.0))
                 }
                 None | Some("seconds") => ir::DelayTime::Ms(time.clamp(0.001, 20.0) * 1000.0),
                 Some(mode) => {
