@@ -1,11 +1,10 @@
 //! Raum (`$EFFECT_TYPE_RAUM`, 51) onto the generic [`ir::Reverb`] network.
 //!
-//! Good-enough laws, not yet measured against Kontakt: the three types
-//! (Grounded, Airy, Cosmic) set the room's base size; decay runs 0.2..20 s
-//! exponentially, predelay 0..500 ms on a square curve, high cut 1..90 kHz
-//! (clamped by the engine), low shelf 0..−24 dB, modulation 0..2 ms at
-//! 0.1..5 Hz. Feedback, Freeze, Sparse and the predelay's tempo sync are not
-//! played.
+//! Predelay, high-cut, low-shelf,
+//! dry/wet mix, and predelay feedback
+//! follow the Kontakt 8 binary laws in `docs/re/engine/k-raum-cosmic-laws.md`.
+//! Feedback (when predelay ≥ 0.1 ms), Freeze, Sparse, and tempo-synced predelay
+//! are reported via `lost` until wired in the shared reverb DSP.
 
 use kontra_ir as ir;
 
@@ -13,8 +12,71 @@ use kontra_ir as ir;
 /// diffusion, predelay, high cut, low shelf, modulation, rate.
 pub(crate) const INIT: [f32; 10] = [0.0, 0.5, 0.5, 0.5, 0.8, 0.0, 0.8, 0.0, 0.3, 0.3];
 
+/// Default Raum mix (`$ENGINE_PAR_RAUM_REVERB`) for a freshly loaded unit.
+const INIT_MIX: f32 = 0.5;
+
 /// Each type's base size: Grounded, Airy, Cosmic.
 const BASE: [f32; 3] = [0.7, 1.2, 2.0];
+
+/// Raum predelay law (`Kontakt8.exe` [ref]), in milliseconds:
+/// `x <= 0.5` → `80·(2x)²` ms (0..80 ms);
+/// `x > 0.5` → `1920·(2x − 1)² + 80` ms (80..2000 ms).
+pub(crate) fn predelay_ms(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.5 {
+        let t = 2.0 * x;
+        80.0 * t * t
+    } else {
+        let t = 2.0 * x - 1.0;
+        1920.0 * t * t + 80.0
+    }
+}
+
+/// Raum post-loop high-cut law (`Kontakt8.exe` [ref]), in Hz:
+/// `x <= 0.95` → `1000 + 23324.1·x²` Hz (1000..22050 Hz);
+/// `x > 0.95` → `22050 + 1764000·(x − 0.95)` Hz.
+pub(crate) fn high_cut_hz(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.95 {
+        1000.0 + 23_324.1 * x * x
+    } else {
+        22_050.0 + 1_764_000.0 * (x - 0.95)
+    }
+}
+
+/// Raum post-loop low-shelf moving corner frequency (`Kontakt8.exe` [ref]):
+/// `(200 + 200·max(0, x − 0.5)) / A^(1/4)` Hz, where `A = 10^(−24x / 20)`.
+// Note: `ir::Reverb` currently fixes the shelf corner at 200 Hz; keep this
+// binary-verified law ready to wire once `ir::Reverb` carries a shelf corner.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn low_shelf_hz(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    let a = 10f32.powf(-24.0 * x / 20.0);
+    (200.0 + 200.0 * (x - 0.5).max(0.0)) / a.sqrt().sqrt()
+}
+
+/// Raum dry/wet mix law (`Kontakt8.exe` [ref]) for `$ENGINE_PAR_RAUM_REVERB`:
+/// `m <= 0.5` → `(dry = 1, wet = (2m)^(3/2))`;
+/// `m > 0.5` → `(dry = 2 − 2m, wet = 1)`.
+pub(crate) fn mix_gains(mix: f32) -> (f32, f32) {
+    let m = mix.clamp(0.0, 1.0);
+    if m <= 0.5 {
+        let t = 2.0 * m;
+        (1.0, t * t.sqrt())
+    } else {
+        (2.0 - 2.0 * m, 1.0)
+    }
+}
+
+/// Raum predelay feedback loop gain (`Kontakt8.exe` [ref]):
+/// `0.5·sqrt(clamp(F, 0, 1))` when `predelay_ms >= 0.1` (`1e-4` s gate), else `0`.
+pub(crate) fn feedback_gain(feedback: f32, predelay_ms: f32) -> f32 {
+    if predelay_ms < 0.1 {
+        0.0
+    } else {
+        0.5 * feedback.clamp(0.0, 1.0).sqrt()
+    }
+}
 
 /// The reverb at knob positions `p` (see [`INIT`]).
 pub(crate) fn raum(p: [f32; 10]) -> ir::Reverb {
@@ -54,8 +116,8 @@ pub(crate) fn raum(p: [f32; 10]) -> ir::Reverb {
         network: None,
         damping,
         diffusion,
-        predelay_ms: 500.0 * predelay * predelay,
-        high_cut_hz: 1000.0 * 90f32.powf(high_cut),
+        predelay_ms: predelay_ms(predelay),
+        high_cut_hz: high_cut_hz(high_cut),
         low_shelf_db: -24.0 * low_shelf,
         stereo: 1.0,
         modulation_ms: 2.0 * modulation,
@@ -64,9 +126,10 @@ pub(crate) fn raum(p: [f32; 10]) -> ir::Reverb {
 }
 
 /// Decode a saved `BParFXRaum` (`0x65`, v0x10, 67 bytes) into [`INIT`]'s knob
-/// order plus any unmodeled switches (`Kontakt 8.exe` [ref] and
+/// order, saved mix (`$ENGINE_PAR_RAUM_REVERB`), and any unmodeled switches
+/// (`Kontakt 8.exe` [ref] and
 /// `fx_raum_delight_psyche_vibrato_phasis_replika.tsv:78-97`).
-pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], Vec<&'static str>)> {
+pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], f32, Vec<&'static str>)> {
     if version != 0x10 || public.len() < 67 {
         return None;
     }
@@ -80,10 +143,10 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], Vec<&'sta
     };
     let flag = |offset: usize| public.get(offset).map(|&b| b != 0);
     let predelay = f(4)?;
-    let _feedback = f(8)?;
+    let feedback = f(8)?;
     let low_shelf = f(12)?;
     let high_cut = f(16)?;
-    let _reverb = f(20)?;
+    let reverb = f(20)?;
     let diffusion = f(24)?;
     let decay = f(28)?;
     let modulation = f(32)?;
@@ -94,6 +157,9 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], Vec<&'sta
     let sparse = flag(53)?;
     let synced = f(54)? > 1e-9;
     let mut lost = Vec::new();
+    if feedback_gain(feedback, predelay_ms(predelay)) > 1e-6 {
+        lost.push("Raum predelay feedback");
+    }
     if freeze {
         lost.push("Raum freeze");
     }
@@ -116,6 +182,7 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], Vec<&'sta
             modulation,
             rate,
         ],
+        reverb,
         lost,
     ))
 }
@@ -144,13 +211,15 @@ pub(crate) fn model() -> ir::KnobModel {
 }
 
 /// What `$EFFECT_TYPE_RAUM` (51) loads, as Conflux loads it from its
-/// script: [`INIT`], wet over the dry signal, every knob through [`model`].
+/// script: [`INIT`], wet over the dry signal by [`mix_gains`], every knob
+/// through [`model`].
 pub(crate) fn slot_type() -> ir::SlotType {
+    let (dry, output) = mix_gains(INIT_MIX);
     let effect = ir::Effect {
         kind: ir::EffectKind::Reverb(raum(INIT)),
         bypass: false,
-        output: 0.5,
-        dry: 1.0,
+        output,
+        dry,
     };
     ir::SlotType {
         id: 51,
@@ -181,4 +250,87 @@ pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
         ("$ENGINE_PAR_RAUM_MOD", Slot(Knob(8)), unit()),
         ("$ENGINE_PAR_RAUM_RATE", Slot(Knob(9)), unit()),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kt03_raum_laws_match_binary_predelay_highcut_and_feedback_diagnostics() {
+        // Predelay: 0 -> 0, 0.25 -> 20, 0.5 -> 80, 0.75 -> 560, 1.0 -> 2000 ms.
+        for (x, want) in [
+            (0.0, 0.0),
+            (0.25, 20.0),
+            (0.5, 80.0),
+            (0.75, 560.0),
+            (1.0, 2000.0),
+        ] {
+            let mut p = INIT;
+            p[5] = x;
+            let got = raum(p).predelay_ms;
+            assert!((got - want).abs() < 1e-2, "predelay({x}): {got} vs {want}");
+        }
+
+        // High cut: 0 -> 1000, 0.5 -> 6831.025, 0.95 -> 22050, 1.0 -> 110250 Hz.
+        for (x, want) in [
+            (0.0, 1000.0),
+            (0.5, 6831.025),
+            (0.95, 22_050.0),
+            (1.0, 110_250.0),
+        ] {
+            let mut p = INIT;
+            p[6] = x;
+            let got = raum(p).high_cut_hz;
+            assert!((got - want).abs() < 1.0, "high_cut({x}): {got} vs {want}");
+        }
+
+        // Low shelf: gain -24*x dB, moving corner (200 + 200*max(0, x-0.5)) / A^(1/4).
+        for (x, want_hz) in [(0.0, 200.0), (0.5, 282.5075), (1.0, 598.5787)] {
+            let got = low_shelf_hz(x);
+            assert!(
+                (got - want_hz).abs() < 0.05,
+                "low_shelf_hz({x}): {got} vs {want_hz}"
+            );
+        }
+
+        // Mix: m <= 0.5 => (1, (2m)^(3/2)); m > 0.5 => (2 - 2m, 1).
+        for (m, want_dry, want_wet) in [
+            (0.0, 1.0, 0.0),
+            (0.25, 1.0, 0.5f32.powf(1.5)),
+            (0.5, 1.0, 1.0),
+            (0.75, 0.5, 1.0),
+            (1.0, 0.0, 1.0),
+        ] {
+            let (dry, wet) = mix_gains(m);
+            assert!((dry - want_dry).abs() < 1e-5, "dry({m}): {dry}");
+            assert!((wet - want_wet).abs() < 1e-5, "wet({m}): {wet}");
+        }
+
+        // Feedback: gated off below 0.1 ms, else 0.5 * sqrt(F).
+        assert_eq!(feedback_gain(1.0, 0.05), 0.0);
+        assert!((feedback_gain(0.25, 80.0) - 0.25).abs() < 1e-6);
+        assert!((feedback_gain(1.0, 80.0) - 0.5).abs() < 1e-6);
+
+        // Saved record decode: returns reverb mix and diagnoses active predelay feedback.
+        let mut raw = [0u8; 67];
+        raw[4..8].copy_from_slice(&0.5f32.to_le_bytes()); // predelay = 80 ms
+        raw[8..12].copy_from_slice(&0.25f32.to_le_bytes()); // feedback = 0.25
+        raw[20..24].copy_from_slice(&0.75f32.to_le_bytes()); // reverb mix = 0.75
+        let (knobs, mix, lost) = saved(0x10, &raw).expect("valid Raum record");
+        assert!((knobs[5] - 0.5).abs() < 1e-6);
+        assert!((mix - 0.75).abs() < 1e-6);
+        assert!(
+            lost.contains(&"Raum predelay feedback"),
+            "active feedback must be diagnosed: {lost:?}"
+        );
+
+        // Feedback with predelay = 0 ms is gated off in Kontakt, so nothing is lost.
+        raw[4..8].copy_from_slice(&0.0f32.to_le_bytes());
+        let (_, _, lost_zero) = saved(0x10, &raw).expect("valid Raum record");
+        assert!(
+            !lost_zero.contains(&"Raum predelay feedback"),
+            "gated-off feedback must not be diagnosed: {lost_zero:?}"
+        );
+    }
 }

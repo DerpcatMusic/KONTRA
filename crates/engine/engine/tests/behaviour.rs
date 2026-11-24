@@ -31,6 +31,8 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
                     position,
                     length: 2,
                     random: false,
+                    no_repeat: false,
+                    release_redraws: false,
                 }),
             )];
             z.group = bus as u32;
@@ -89,6 +91,8 @@ fn the_global_round_robin_steps_on_every_note() {
                 position,
                 length: 2,
                 random: false,
+                no_repeat: false,
+                release_redraws: false,
             }),
         )];
         zones.push(z);
@@ -120,6 +124,8 @@ fn random_round_robin_never_repeats_a_step() {
                     position,
                     length: 3,
                     random: true,
+                    no_repeat: true,
+                    release_redraws: false,
                 }),
             )];
             z
@@ -137,6 +143,85 @@ fn random_round_robin_never_repeats_a_step() {
             level(&mut e, &[]);
         }
     }
+}
+
+#[test]
+fn kt08_cycle_random_allows_repeats_and_redraws_on_release() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut zones = Vec::new();
+    for position in 0..2u8 {
+        let mut atk = zone(&mut store, 0.1 * f32::from(position + 1));
+        atk.pan = -1.0;
+        atk.start = vec![(
+            Join::And,
+            Atom::RoundRobin(RoundRobin {
+                counter: RrCounter::Global,
+                position,
+                length: 2,
+                random: true,
+                no_repeat: false,
+                release_redraws: true,
+            }),
+        )];
+        zones.push(atk);
+
+        let mut rel = zone(&mut store, 0.3 + 0.1 * f32::from(position));
+        rel.region.end = 600;
+        rel.pan = 1.0;
+        rel.trigger = Trigger::Release;
+        rel.start = vec![(
+            Join::And,
+            Atom::RoundRobin(RoundRobin {
+                counter: RrCounter::Global,
+                position,
+                length: 2,
+                random: true,
+                no_repeat: false,
+                release_redraws: true,
+            }),
+        )];
+        zones.push(rel);
+    }
+    let mut e = engine(&store, Plan::new(zones, 16));
+    let mut prev_attack = None;
+    let mut repeats = 0u32;
+    let mut release_differs = 0u32;
+    for _ in 0..60 {
+        let [atk, _] = level(&mut e, &[on(60, 1.0)]);
+        let atk_step = if close(atk, 0.1) {
+            0u8
+        } else if close(atk, 0.2) {
+            1u8
+        } else {
+            panic!("unexpected attack level {atk}");
+        };
+        if prev_attack == Some(atk_step) {
+            repeats += 1;
+        }
+        prev_attack = Some(atk_step);
+        let [_, rel] = level(&mut e, &[off(60)]);
+        let rel_step = if close(rel, 0.3) {
+            0u8
+        } else if close(rel, 0.4) {
+            1u8
+        } else {
+            panic!("unexpected release level {rel}");
+        };
+        if rel_step != atk_step {
+            release_differs += 1;
+        }
+        for _ in 0..8 {
+            level(&mut e, &[]);
+        }
+    }
+    assert!(
+        repeats > 0,
+        "KT-08: uniform cycle random must allow consecutive repeats (got 0 in 60 draws)"
+    );
+    assert!(
+        release_differs > 0,
+        "KT-08: cycle random release trigger must redraw instead of reusing attack draw"
+    );
 }
 
 /// Kontakt's key latch: switch keys select the articulation, a key in a gap
@@ -527,6 +612,8 @@ fn per_key_round_robin_counters_advance_independently_per_midi_key() {
             position: 0,
             length: 2,
             random: false,
+            no_repeat: false,
+            release_redraws: false,
         }),
     )];
     let mut step1 = zone(&mut store, 1.0);
@@ -538,6 +625,8 @@ fn per_key_round_robin_counters_advance_independently_per_midi_key() {
             position: 1,
             length: 2,
             random: false,
+            no_repeat: false,
+            release_redraws: false,
         }),
     )];
     let mut e = engine(&store, Plan::new(vec![step0, step1], 8));

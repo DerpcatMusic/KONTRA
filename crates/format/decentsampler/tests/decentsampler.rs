@@ -134,6 +134,8 @@ fn translates_round_robin_random_trigger_and_choke_tags() {
                 position: 0,
                 length: 2,
                 random: false,
+                no_repeat: false,
+                release_redraws: false,
             }
         )]
     );
@@ -146,6 +148,8 @@ fn translates_round_robin_random_trigger_and_choke_tags() {
                 position: 1,
                 length: 2,
                 random: false,
+                no_repeat: false,
+                release_redraws: false,
             }
         )]
     );
@@ -158,6 +162,8 @@ fn translates_round_robin_random_trigger_and_choke_tags() {
                 position: 0,
                 length: 2,
                 random: true,
+                no_repeat: true,
+                release_redraws: false,
             }
         )]
     );
@@ -444,6 +450,8 @@ fn disabled_groups_keep_binding_indices_and_split_zones_keep_their_sequence() {
                     position: pos as u8,
                     length: 2,
                     random: false,
+                    no_repeat: false,
+                    release_redraws: false,
                 }
             )]
         );

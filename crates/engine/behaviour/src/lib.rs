@@ -9,12 +9,13 @@ use kontra_plan::{Atom, Control, Plan, RoundRobin, RrCounter, Zone};
 pub enum Step {
     /// An attack: the counter steps once after the note-on.
     Advance,
-    /// A release trigger: it re-reads the attack's draw. A per-group counter
+    /// A release trigger: re-reads the attack's draw, or uses `release_random`
+    /// when a random round-robin rule sets `release_redraws`. A per-group counter
     /// reads its current count less one, so a note on the same group between
     /// the attack and the release moves it.
     // ponytail: the group count is not kept per note; store it in `RrDraw`
     // if a library's release samples must follow interleaved notes.
-    Reuse,
+    Reuse { release_random: u32 },
 }
 
 /// Slots that may hold a loaded effect type at once.
@@ -352,14 +353,18 @@ impl Behaviour {
         let Some(counter) = self.counter(rr, group, key) else {
             return true;
         };
-        let advance = step == Step::Advance;
+        let advance = matches!(step, Step::Advance);
         counter.used |= advance;
-        let step = if rr.random {
-            let mut step = (draw.random % u32::from(length)) as u8;
-            if length > 1 && counter.last_random == Some(step) {
-                step = (step + 1 + ((draw.random >> 16) % u32::from(length - 1)) as u8) % length;
+        let chosen = if rr.random {
+            let raw = match step {
+                Step::Reuse { release_random } if rr.release_redraws => release_random,
+                _ => draw.random,
+            };
+            let mut s = (raw % u32::from(length)) as u8;
+            if rr.no_repeat && length > 1 && counter.last_random == Some(s) {
+                s = (s + 1 + ((raw >> 16) % u32::from(length - 1)) as u8) % length;
             }
-            step
+            s
         } else {
             let count = match rr.counter {
                 RrCounter::Global => draw.global,
@@ -369,10 +374,10 @@ impl Behaviour {
             };
             (count % u32::from(length)) as u8
         };
-        if rr.random && advance {
-            counter.pending = Some(step);
+        if rr.random && rr.no_repeat && advance {
+            counter.pending = Some(chosen);
         }
-        step == rr.position
+        chosen == rr.position
     }
 
     /// Steps every counter a note-on read, once. The global counter is

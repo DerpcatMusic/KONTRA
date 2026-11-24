@@ -124,6 +124,8 @@ law = "equal_power"
                     position: 0,
                     length: 2,
                     random: false,
+                    no_repeat: false,
+                    release_redraws: false,
                 }
             ),
             (ir::Join::And, ir::StartRule::Random { lo: 0, hi: 5000 }),

@@ -72,17 +72,15 @@ pub(crate) fn external(
                 if matches!(t.param.as_str(), "loopStart" | "loopLength") && out.stream.is_some() {
                     continue;
                 }
-                let raw = source;
+                let raw = match source {
+                    Some(ir::Source::Script(id)) if signed_route(&t.param) => {
+                        Some(ir::Source::ScriptBipolar(id))
+                    }
+                    other => other,
+                };
                 let source = match (raw, t.shaper.as_ref().filter(|s| s.enabled)) {
                     (Some(s), Some(shaper)) => {
-                        let bipolar = matches!(
-                            s,
-                            ir::Source::PitchBend
-                                | ir::Source::Random { bipolar: true }
-                                | ir::Source::ZoneEnvelope(_)
-                                | ir::Source::Key
-                                | ir::Source::Script(_)
-                        );
+                        let bipolar = s.is_bipolar() || matches!(s, ir::Source::Key);
                         let signed = bipolar && signed_route(&t.param);
                         let result = shaped(&mut out.shapers, s, &shaper.curve, signed);
                         kontra_law::record(|| kontra_law::Application {
@@ -125,14 +123,18 @@ pub(crate) fn external(
                     let timed_env = staged_envelope(out, timed_slots, at, &t.param);
                     if is_amp || timed_env.is_some() {
                         let intensity = t.signed_intensity();
-                        let scale = laws::time_scale(p.simulate_k2_env_time());
+                        let raw_source = raw.unwrap_or(source);
+                        let scale = laws::time_scale(raw_source, p.simulate_k2_env_time());
                         if t.param != "ahdsr_sustain" {
                             kontra_law::record(|| kontra_law::Application {
                                 id: kontra_law::LawId("kontakt.time_scale.v1"),
                                 location: format!(
                                     "groups/{group_index}/routes/{n}/targets/{target}/time_scale"
                                 ),
-                                input: format!("simulate_k2={}", p.simulate_k2_env_time()),
+                                input: format!(
+                                    "source={raw_source:?}, simulate_k2={}",
+                                    p.simulate_k2_env_time()
+                                ),
                                 output: format!("{scale:?}"),
                             });
                         }
@@ -142,7 +144,7 @@ pub(crate) fn external(
                         let bypass = p.bypass();
                         if is_amp
                             && let Some(kind) =
-                                ahdsr_route(&t.param, source, intensity, scale, None)
+                                ahdsr_route(&t.param, source, raw_source, intensity, scale, None)
                         {
                             out.mods.push(ir::Mod {
                                 name: p.name.clone(),
@@ -153,8 +155,14 @@ pub(crate) fn external(
                             });
                         }
                         if let Some(env) = timed_env
-                            && let Some(kind) =
-                                ahdsr_route(&t.param, source, intensity, scale, Some(env))
+                            && let Some(kind) = ahdsr_route(
+                                &t.param,
+                                source,
+                                raw_source,
+                                intensity,
+                                scale,
+                                Some(env),
+                            )
                         {
                             out.mods.push(ir::Mod {
                                 name: p.name.clone(),
@@ -371,6 +379,7 @@ pub(crate) fn modulator_route(
 fn ahdsr_route(
     stage: &str,
     source: ir::Source,
+    raw_source: ir::Source,
     intensity: f32,
     scale: ir::TimeScale,
     envelope: Option<u8>,
@@ -403,8 +412,10 @@ fn ahdsr_route(
             intensity,
         )
         .law(ir::RouteLaw::Time(scale)),
-        // Sustain scales knob `u` linearly (`m`), and Kontakt sustain level is
-        // `S = u³`, so `S' = (u·m)³ = S·m³`.
+        // Sustain scales knob `u` by `m^p` (`p = 3` for external source types
+        // 7..=13 via `fcubic`, `p = 1` for types 1..=5 / ZoneEnvelope), and
+        // Kontakt sustain level is `S = u³`, so `S' = (u·m^p)³ = S·m^(3p)`
+        //.
         "ahdsr_sustain" => ir::ModRoute::new(
             source,
             ir::ParamAddr::EnvelopeStage {
@@ -413,7 +424,9 @@ fn ahdsr_route(
             },
             intensity,
         )
-        .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 3 })),
+        .law(ir::RouteLaw::Gain(ir::Curve::Depth {
+            power: 3 * laws::source_power(raw_source),
+        })),
         "ahdsr_release" => ir::ModRoute::new(
             source,
             ir::ParamAddr::EnvelopeStage {
@@ -637,14 +650,77 @@ mod tests {
             laws::volume(ir::Source::ReleaseVelocity),
             ir::Curve::Depth { power: 3 }
         );
-        assert_eq!(
-            laws::time_scale(false),
-            ir::TimeScale::LogKnob {
-                floor_ms: 2.0,
-                power: 1
-            }
-        );
-        assert_eq!(laws::time_scale(true), ir::TimeScale::Linear { power: 3 });
+        for cubed in [
+            ir::Source::Key,
+            ir::Source::Velocity,
+            ir::Source::ReleaseVelocity,
+            ir::Source::HeldTime { span_ms: 1000 },
+            ir::Source::Constant,
+            ir::Source::Random { bipolar: false },
+            ir::Source::Random { bipolar: true },
+        ] {
+            assert_eq!(
+                laws::time_scale(cubed, false),
+                ir::TimeScale::LogKnob {
+                    floor_ms: 2.0,
+                    power: 3
+                },
+                "KT-01: modern AHDSR time must apply fcubic (power 3) for {cubed:?}"
+            );
+            assert_eq!(
+                laws::time_scale(cubed, true),
+                ir::TimeScale::Linear { power: 3 }
+            );
+            let sustain = ahdsr_route(
+                "ahdsr_sustain",
+                ir::Source::Shaped(0),
+                cubed,
+                1.0,
+                laws::time_scale(cubed, false),
+                None,
+            )
+            .expect("cubed sustain route");
+            assert_eq!(
+                sustain.law,
+                ir::RouteLaw::Gain(ir::Curve::Depth { power: 9 }),
+                "KT-01: cubed source {cubed:?} -> Sustain must compose to power 9"
+            );
+        }
+        for plain in [
+            ir::Source::PitchBend,
+            ir::Source::Pressure,
+            ir::Source::Controller(1),
+            ir::Source::ControllerFrom { cc: 11, start: 127 },
+            ir::Source::Script(0),
+            ir::Source::ZoneEnvelope(0),
+        ] {
+            assert_eq!(
+                laws::time_scale(plain, false),
+                ir::TimeScale::LogKnob {
+                    floor_ms: 2.0,
+                    power: 1
+                },
+                "KT-01: modern AHDSR time stays power 1 for {plain:?}"
+            );
+            assert_eq!(
+                laws::time_scale(plain, true),
+                ir::TimeScale::Linear { power: 3 }
+            );
+            let sustain = ahdsr_route(
+                "ahdsr_sustain",
+                plain,
+                plain,
+                1.0,
+                laws::time_scale(plain, false),
+                None,
+            )
+            .expect("plain sustain route");
+            assert_eq!(
+                sustain.law,
+                ir::RouteLaw::Gain(ir::Curve::Depth { power: 3 }),
+                "KT-01: plain source {plain:?} -> Sustain stays power 3"
+            );
+        }
 
         let dbd = ni_file::kontakt::objects::EnvelopeDbd {
             version: 0x12,

@@ -973,17 +973,14 @@ fn translate_group(
         }
     };
     let stream_mode = source_identity.map_or(0, |s| s.mode);
-    match stream_mode {
-        1 => notes.add(ir::Impact::Audible, "Tone Machine source", &v.name),
-        4 => notes.add(ir::Impact::Audible, "Beat Machine source", &v.name),
-        6 => notes.add(ir::Impact::Audible, "MP60 source", &v.name),
-        7 => notes.add(ir::Impact::Audible, "S1200 source", &v.name),
-        0 | 2 | 3 | 5 | 8 | 9 => {}
-        other => notes.add(
+    if let Some(label) = unsupported_source_mode(stream_mode) {
+        notes.add(ir::Impact::Audible, label, &v.name);
+    } else if !matches!(stream_mode, 0 | 2 | 3 | 5 | 8 | 9) {
+        notes.add(
             ir::Impact::Audible,
-            &format!("source mode {other}"),
+            &format!("source mode {stream_mode}"),
             &v.name,
-        ),
+        );
     }
     let mut out = ir::Group {
         name: v.name.clone(),
@@ -1270,15 +1267,21 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
                     position: u8::try_from(c.cycle_class).unwrap_or(0),
                     length: u8::try_from(cycle).unwrap_or(u8::MAX),
                     random: false,
+                    no_repeat: false,
+                    release_redraws: false,
                 },
                 RANDOM => {
                     let pos = random_position;
                     random_position += 1;
+                    // Binary [ref] (KONTAKT_START_CONDITIONS.md:60):
+                    // uniform draw with no no-repeat check and fresh draw on release.
                     ir::StartRule::RoundRobin {
                         scope: ir::RrScope::Global,
                         position: u8::try_from(pos).unwrap_or(u8::MAX),
                         length: u8::try_from(randoms).unwrap_or(u8::MAX),
                         random: true,
+                        no_repeat: false,
+                        release_redraws: true,
                     }
                 }
                 other => {
@@ -1299,6 +1302,18 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
             };
         }
     }
+}
+
+/// Unmodeled `BParSrcMode` values (`docs/re/engine/k-beat-s1200-mp60.md:10-11`):
+/// `6` = S1200 Machine, `7` = MP60 Machine.
+fn unsupported_source_mode(mode: u32) -> Option<&'static str> {
+    Some(match mode {
+        1 => "Tone Machine source",
+        4 => "Beat Machine source",
+        6 => "S1200 source",
+        7 => "MP60 source",
+        _ => return None,
+    })
 }
 
 fn translate_zone(
@@ -1779,8 +1794,28 @@ mod tests {
                 position: u8::MAX,
                 length: u8::MAX,
                 random: true,
+                no_repeat: false,
+                release_redraws: true,
             }
         );
+    }
+
+    #[test]
+    fn kt11_s1200_and_mp60_source_modes_match_binary_ids() {
+        // Binary BParSrcMode (docs/re/engine/k-beat-s1200-mp60.md:10-11):
+        // 1 = Tone Machine, 4 = Beat Machine, 6 = S1200 Machine, 7 = MP60 Machine.
+        assert_eq!(
+            super::unsupported_source_mode(1),
+            Some("Tone Machine source")
+        );
+        assert_eq!(
+            super::unsupported_source_mode(4),
+            Some("Beat Machine source")
+        );
+        assert_eq!(super::unsupported_source_mode(6), Some("S1200 source"));
+        assert_eq!(super::unsupported_source_mode(7), Some("MP60 source"));
+        assert_eq!(super::unsupported_source_mode(0), None);
+        assert_eq!(super::unsupported_source_mode(3), None);
     }
 
     #[test]

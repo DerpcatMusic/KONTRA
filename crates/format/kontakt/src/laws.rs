@@ -122,21 +122,32 @@ pub(crate) fn route_tau_ms(lag_ms: i16) -> f32 {
 /// 7..=13; pitch bend (1), poly/mono aftertouch (2, 3), controllers (4) and
 /// scripts (5) stay plain. The cube at 50/127 matches the measured velocity
 /// table to 0.03 dB RMS.
+/// Family H `fcubic` exponent selected by external source type (`Kontakt8.exe`
+/// [ref]):
+/// - External types 7..=13 (key, velocity, release velocity, release counter,
+///   constant, unipolar/bipolar random) apply `fcubic` (`power = 3`).
+/// - Types 1..=4 (pitch bend, poly/mono aftertouch, MIDI CC), Script (5), and
+///   ZoneEnvelope stay linear (`power = 1`).
+pub(crate) fn source_power(source: ir::Source) -> u8 {
+    if matches!(
+        source,
+        ir::Source::Controller(_)
+            | ir::Source::ControllerFrom { .. }
+            | ir::Source::Script(_)
+            | ir::Source::ScriptBipolar(_)
+            | ir::Source::PitchBend
+            | ir::Source::ZoneEnvelope(_)
+            | ir::Source::Pressure
+    ) {
+        kontra_law::kontakt::CONTROLLER_VOLUME_POWER
+    } else {
+        kontra_law::kontakt::VOICE_VOLUME_POWER
+    }
+}
+
 pub(crate) fn volume(source: ir::Source) -> ir::Curve {
     ir::Curve::Depth {
-        power: if matches!(
-            source,
-            ir::Source::Controller(_)
-                | ir::Source::ControllerFrom { .. }
-                | ir::Source::Script(_)
-                | ir::Source::PitchBend
-                | ir::Source::ZoneEnvelope(_)
-                | ir::Source::Pressure
-        ) {
-            kontra_law::kontakt::CONTROLLER_VOLUME_POWER
-        } else {
-            kontra_law::kontakt::VOICE_VOLUME_POWER
-        },
+        power: source_power(source),
     }
 }
 
@@ -180,17 +191,20 @@ pub(crate) fn zone_envelope(
 pub(crate) const ATTACK_FLOOR_MS: f32 = 2.0;
 
 /// Envelope-time scaling law selected by external modulator flag `+0x53d`
-/// (`simulate_k2_env_time`, [ref]):
-/// - `false` (modern K3–K8): scales the logarithmic time knob by `m` (`LogKnob { floor_ms: 2.0, power: 1 }`).
+/// (`simulate_k2_env_time`, [ref]) and source type
+///:
+/// - `false` (modern K3–K8): scales the logarithmic time knob by `m^power`
+///   (`LogKnob { floor_ms: 2.0, power }`), with `power = 3` (`fcubic`) for
+///   external source types 7..=13 and `power = 1` for types 1..=5 / ZoneEnvelope.
 /// - `true` (Kontakt 2 compat): wraps in `fconv_u2n`/`fconv_n2u` with `fcubic`,
 ///   scaling duration linearly by `m³` (`Linear { power: 3 }`).
-pub(crate) fn time_scale(simulate_k2: bool) -> ir::TimeScale {
+pub(crate) fn time_scale(source: ir::Source, simulate_k2: bool) -> ir::TimeScale {
     if simulate_k2 {
         ir::TimeScale::Linear { power: 3 }
     } else {
         ir::TimeScale::LogKnob {
             floor_ms: ATTACK_FLOOR_MS,
-            power: 1,
+            power: source_power(source),
         }
     }
 }

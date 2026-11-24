@@ -89,7 +89,7 @@ impl Live<'_> {
                 f32::from(if arrived { b.cc(channel, cc) } else { start }) / 127.0
             }
             ir::Source::PitchBend => b.bend(channel),
-            ir::Source::Script(_) | ir::Source::Macro(_) => {
+            ir::Source::Script(_) | ir::Source::ScriptBipolar(_) | ir::Source::Macro(_) => {
                 source
                     .script_channel()
                     .and_then(|i| ledger::ramp_at(self.scripts, i, self.now))

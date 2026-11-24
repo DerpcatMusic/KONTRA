@@ -137,7 +137,8 @@ fn mod_kind(kind: u32) -> Option<ir::ModOscKind> {
         3 => K::FmFeedback,
         4 => K::Ring,
         5 => K::Mix,
-        6 | 7 => K::Pm,
+        6 => K::Pm,
+        7 => K::PmPost,
         8 => K::PmFeedback,
         9 => K::Blend,
         _ => return None,
@@ -253,5 +254,12 @@ mod tests {
         assert_eq!(wt.inharmonic.amount, 0.0);
         assert_eq!(wt.modosc.amount, 1.0);
         assert_eq!(wt.modosc.tune, 0.5);
+    }
+
+    #[test]
+    fn kt09_pm1_and_pm2_map_to_distinct_pre_and_post_form_kinds() {
+        let kinds = mod_kinds();
+        assert_eq!(kinds[6], Some(ir::ModOscKind::Pm));
+        assert_eq!(kinds[7], Some(ir::ModOscKind::PmPost));
     }
 }

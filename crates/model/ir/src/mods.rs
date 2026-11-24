@@ -287,9 +287,13 @@ pub enum Source {
     /// Always 1.
     #[default]
     Constant,
-    /// The value a script sent this note for "from script" modulator `id`,
-    /// −1..=1; 0 until sent.
+    /// The value a script sent this note for script modulator `id`,
+    /// 0..=1 for unipolar targets; 0 until sent.
     Script(u16),
+    /// The value a script sent this note for script modulator `id` on a
+    /// bipolar route, −1..=1 (center 0 maps to 0.5 on unit/shaper domains);
+    /// 0 until sent.
+    ScriptBipolar(u16),
     /// Macro `n` of a scripted program, −1..=1 as its script sets it: the
     /// script writes it on script channel [`Source::MACRO_CHANNELS`]` + n`.
     Macro(u16),
@@ -338,11 +342,26 @@ impl Source {
         )
     }
 
+    /// Whether this source produces a bipolar value in `−1..=1` that maps
+    /// onto `0..=1` via `(x + 1) / 2` for unit targets and shaper tables.
+    #[must_use]
+    pub fn is_bipolar(self) -> bool {
+        matches!(
+            self,
+            Self::Lfo(_)
+                | Self::PitchBend
+                | Self::NoteExpr(NoteExpr::Tune | NoteExpr::Pan)
+                | Self::Random { bipolar: true }
+                | Self::ZoneEnvelope(_)
+                | Self::ScriptBipolar(_)
+        )
+    }
+
     /// The script channel it reads (a script modulator or a macro), if any.
     #[must_use]
     pub fn script_channel(self) -> Option<u16> {
         match self {
-            Self::Script(id) => Some(id),
+            Self::Script(id) | Self::ScriptBipolar(id) => Some(id),
             Self::Macro(n) => Some(Self::MACRO_CHANNELS.saturating_add(n)),
             _ => None,
         }

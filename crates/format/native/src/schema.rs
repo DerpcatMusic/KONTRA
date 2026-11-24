@@ -466,6 +466,10 @@ pub enum StartRuleKindSpec {
         length: u8,
         #[serde(default)]
         random: bool,
+        #[serde(default)]
+        no_repeat: bool,
+        #[serde(default)]
+        release_redraws: bool,
     },
     Cycle {
         #[serde(default)]

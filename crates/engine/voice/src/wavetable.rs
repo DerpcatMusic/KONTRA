@@ -173,6 +173,7 @@ pub enum ModOscKind {
     FmBy,
     FmFeedback,
     Pm,
+    PmPost,
     PmFeedback,
     Ring,
     Mix,
@@ -472,14 +473,18 @@ impl Table {
             let cursor = cursor_at(i as u64) / PERIOD;
             let m = osc.wave_at(st.phase);
             let y = f64::from(st.last);
-            let pm = match osc.kind {
+            let pm_pre = match osc.kind {
                 ModOscKind::Pm => a64 * m,
                 ModOscKind::PmFeedback => FEEDBACK * a64 * y,
                 _ => 0.0,
             };
-            let p = (cursor * rate + f64::from(self.read.phase) + st.offset + pm).rem_euclid(1.0)
-                as f32;
-            let q = warp(w2, warp(w1, p));
+            let p = (cursor * rate + f64::from(self.read.phase) + st.offset + pm_pre)
+                .rem_euclid(1.0) as f32;
+            let warped = warp(w2, warp(w1, p));
+            let q = match osc.kind {
+                ModOscKind::PmPost => (f64::from(warped) + a64 * m).rem_euclid(1.0) as f32,
+                _ => warped,
+            };
             let mut s = read(&self.data, q);
             if let Some(quad) = quad {
                 let (sin, cos) =
@@ -789,5 +794,78 @@ mod tests {
         assert!((wave(1, 0.25) - 0.7).abs() < 0.02);
         // Past TX8 plays the sine.
         assert!((wave(12, 0.25) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn kt09_pre_and_post_form_phase_mod_diverge_with_warp_and_match_without() {
+        // Build a single-cycle sine table across all mip levels.
+        let mut data = Vec::new();
+        let mut spans = Vec::new();
+        for &len in &SIZE {
+            let first = data.len() as u32;
+            for i in 0..len {
+                let ph = f64::from(i) / f64::from(len);
+                let s = (std::f64::consts::TAU * ph).sin();
+                data.push((s * 32_767.0).round() as i16);
+            }
+            spans.push((first, len));
+        }
+        let data: std::sync::Arc<[i16]> = data.into();
+        let spans: std::sync::Arc<[(u32, u32)]> = spans.into();
+        let render = |kind, w1| {
+            let read = Read {
+                position: 0.0,
+                phase: 0.0,
+                phase_random: 0.0,
+                gain: 1.0,
+                inharmonic: Inharmonic::OFF,
+                modosc: ModOsc {
+                    kind,
+                    amount: 0.25,
+                    tune: 0.5,
+                    tune_range: (0.125, 8.0),
+                    fm_hz: 2000.0,
+                    wave: 0,
+                    unit: Unit::Semitones,
+                },
+                rate: 48_000.0,
+                quality: Quality::Medium,
+                warps: [w1, Warp::OFF],
+            };
+            let mut table = Table::new((data.clone(), 1.0 / 32_767.0), spans.clone(), read)
+                .expect("valid single-cycle table");
+            let mut out = vec![[0.0f32; 2]; 128];
+            let step = PERIOD * 440.0 / 48_000.0;
+            table.render(|i| i as f64 * step, step, &mut out);
+            out
+        };
+
+        // Without form warps, pre-form (Pm) and post-form (PmPost) are identical.
+        let pre_off = render(ModOscKind::Pm, Warp::OFF);
+        let post_off = render(ModOscKind::PmPost, Warp::OFF);
+        let diff_off = pre_off
+            .iter()
+            .zip(&post_off)
+            .map(|(a, b)| (a[0] - b[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(diff_off < 1e-6, "without warp max diff {diff_off}");
+
+        // With a nonlinear phase warp active, pre-form and post-form PM must differ.
+        let exp_warp = Warp {
+            shape: Shape::Exp,
+            shaper: Shaper::Off,
+            amount: 0.8,
+        };
+        let pre_on = render(ModOscKind::Pm, exp_warp);
+        let post_on = render(ModOscKind::PmPost, exp_warp);
+        let diff_on = pre_on
+            .iter()
+            .zip(&post_on)
+            .map(|(a, b)| (a[0] - b[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            diff_on > 0.05,
+            "with Exp warp active, pre-form and post-form PM must diverge (max diff {diff_on})"
+        );
     }
 }

@@ -145,7 +145,7 @@ impl Engine {
                     ir::RouteLaw::Range([min_hz, max_hz]),
                 ) if i == insert => {
                     if let Some(x) = self.unit(zone, source, note, age) {
-                        let x = if source.script_channel().is_some() {
+                        let x = if !source.is_bipolar() && source.script_channel().is_some() {
                             (x + 1.0) * 0.5
                         } else {
                             x

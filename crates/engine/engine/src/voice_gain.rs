@@ -513,7 +513,7 @@ impl Engine {
             }
             ir::Source::Key => Some(f32::from(note.key) / 127.0),
             ir::Source::Constant => Some(1.0),
-            ir::Source::Script(_) | ir::Source::Macro(_) => {
+            ir::Source::Script(_) | ir::Source::ScriptBipolar(_) | ir::Source::Macro(_) => {
                 let index = source.script_channel()?;
                 Some(
                     note.mod_value(index, self.now)
@@ -596,18 +596,9 @@ impl Engine {
             s => self.source(zone, s, note, age)?,
         };
         // An LFO spans the table as `(x + 1)/2`, and bipolar sources a table.
-        let bend = matches!(
-            t.source,
-            ir::Source::PitchBend
-                | ir::Source::NoteExpr(ir::NoteExpr::Tune | ir::NoteExpr::Pan)
-                | ir::Source::Random { bipolar: true }
-                | ir::Source::ZoneEnvelope(_)
-        ) && !t.table.is_empty();
-        let x = if bend || matches!(t.source, ir::Source::Lfo(_)) {
-            (x + 1.0) / 2.0
-        } else {
-            x
-        };
+        let normalize = t.source.is_bipolar()
+            && (!t.table.is_empty() || matches!(t.source, ir::Source::Lfo(_)));
+        let x = if normalize { (x + 1.0) * 0.5 } else { x };
         Some(t.apply(x))
     }
 
@@ -625,14 +616,7 @@ impl Engine {
     /// `s` on 0..=1: a bipolar source read as `(x + 1)/2`.
     pub(crate) fn unit(&self, zone: &Zone, s: ir::Source, note: &Note, age: Age) -> Option<f32> {
         let x = self.source(zone, s, note, age)?;
-        Some(match s {
-            ir::Source::Lfo(_)
-            | ir::Source::PitchBend
-            | ir::Source::NoteExpr(ir::NoteExpr::Tune | ir::NoteExpr::Pan)
-            | ir::Source::Random { bipolar: true }
-            | ir::Source::ZoneEnvelope(_) => (x + 1.0) * 0.5,
-            _ => x,
-        })
+        Some(if s.is_bipolar() { (x + 1.0) * 0.5 } else { x })
     }
 
     /// The product of the [`ir::ParamAddr::RouteIntensity`] routes on the timed source `of`.
@@ -1146,5 +1130,150 @@ mod tests {
         drop(root);
         // The next root read starts a fresh budget.
         assert!(evaluation.enter(Dependency::LfoMotion, 0).is_some());
+    }
+
+    #[test]
+    fn kt01_ahdsr_time_route_and_sustain_match_binary_fcubic_values() {
+        // Binary [ref]: 1000 ms attack at x = 0.5, i = 1.0:
+        // - types 7..=13 (power 3): 2 * 501^(0.5^3) - 2 = 2.35023 ms
+        // - types 1..=5  (power 1): 2 * 501^0.5 - 2     = 42.76606 ms
+        let cubed = time_route(
+            1000.0,
+            0.5,
+            1.0,
+            ir::TimeScale::LogKnob {
+                floor_ms: 2.0,
+                power: 3,
+            },
+        );
+        let expected_cubed = 2.0 * 501.0f32.powf(0.125) - 2.0;
+        assert!(
+            (cubed - expected_cubed).abs() < 1e-4,
+            "got {cubed}, want {expected_cubed}"
+        );
+        let plain = time_route(
+            1000.0,
+            0.5,
+            1.0,
+            ir::TimeScale::LogKnob {
+                floor_ms: 2.0,
+                power: 1,
+            },
+        );
+        let expected_plain = 2.0 * 501.0f32.sqrt() - 2.0;
+        assert!(
+            (plain - expected_plain).abs() < 1e-3,
+            "got {plain}, want {expected_plain}"
+        );
+
+        // Sustain with cubed source: S' = (u * m^3)^3 = S * m^9 (0.5^9 = 1/512).
+        let sustain_cubed = ir::Curve::Depth { power: 9 }.gain(1.0, 0.5);
+        assert!(
+            (sustain_cubed - (1.0 / 512.0)).abs() < 1e-6,
+            "got {sustain_cubed}, want {}",
+            1.0 / 512.0
+        );
+        let sustain_plain = ir::Curve::Depth { power: 3 }.gain(1.0, 0.5);
+        assert!(
+            (sustain_plain - 0.125).abs() < 1e-6,
+            "got {sustain_plain}, want 0.125"
+        );
+    }
+
+    #[test]
+    fn kt04_bipolar_script_source_normalizes_through_shaper_and_unit() {
+        use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
+        use std::sync::Arc;
+
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let fmt = SampleFmt {
+            encoding: Encoding::F32,
+            channels: 1,
+        };
+        let key = BlobKey {
+            file: "kt04".into(),
+            offset: 0,
+            fmt,
+        };
+        let sample = store
+            .load(
+                &key,
+                Arc::new(MemSource::new(fmt, vec![0u8; 4 * 64])),
+                64,
+                std::slice::from_ref(&(0..64)),
+            )
+            .unwrap();
+        let region = kontra_voice::Region {
+            mix: None,
+            table: None,
+            sample,
+            start: 0,
+            end: 64,
+            loops: Default::default(),
+            reverse: false,
+        };
+        let zone = Zone::new(region, 60, 48_000);
+        let mut plan = crate::Plan::new(vec![zone.clone()], 8);
+        let shaper = ir::Transfer {
+            source: ir::Source::ScriptBipolar(0),
+            table: vec![-1.0, 0.0, 1.0],
+            smooth_s: 0.0,
+            stepped: false,
+        };
+        plan.groups[0].shapers.push(shaper.clone());
+        let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+        let mut note = Note::new(
+            kontra_events::HostNote {
+                port: 0,
+                channel: 0,
+                key: 60,
+                id: 1,
+                clap: false,
+            },
+            1.0,
+            0.0,
+            kontra_time::SampleTime(0),
+            kontra_behaviour::RrDraw::default(),
+        );
+
+        // At rest (0), bipolar script maps to midpoint 0.5 in unit() and 0.0 through [-1, 0, 1].
+        let u_zero = engine
+            .unit(&zone, shaper.source, &note, Age::START)
+            .unwrap();
+        let t_zero = engine
+            .through(&zone, &shaper, &note, Age::START, false)
+            .unwrap();
+        assert!(
+            (u_zero - 0.5).abs() < 1e-6,
+            "unit(0): got {u_zero}, want 0.5"
+        );
+        assert!(t_zero.abs() < 1e-6, "through(0): got {t_zero}, want 0.0");
+
+        // Negative script value (-500_000 -> -0.5) must not clamp to 0.0.
+        note.set_mod_value(0, -500_000, kontra_time::SampleTime(0), 0, 0);
+        let u_neg = engine
+            .unit(&zone, shaper.source, &note, Age::START)
+            .unwrap();
+        let t_neg = engine
+            .through(&zone, &shaper, &note, Age::START, false)
+            .unwrap();
+        assert!(
+            (u_neg - 0.25).abs() < 1e-6,
+            "unit(-0.5): got {u_neg}, want 0.25"
+        );
+        assert!(
+            (t_neg - -0.5).abs() < 1e-6,
+            "through(-0.5): got {t_neg}, want -0.5"
+        );
+
+        // Unipolar Script(0) stays 0..=1 so volume routes keep 250_000 -> 0.25.
+        note.set_mod_value(0, 250_000, kontra_time::SampleTime(0), 0, 0);
+        let u_uni = engine
+            .unit(&zone, ir::Source::Script(0), &note, Age::START)
+            .unwrap();
+        assert!(
+            (u_uni - 0.25).abs() < 1e-6,
+            "unipolar unit(0.25): got {u_uni}, want 0.25"
+        );
     }
 }

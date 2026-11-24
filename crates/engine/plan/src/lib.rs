@@ -83,8 +83,12 @@ pub struct RoundRobin {
     pub counter: RrCounter,
     pub position: u8,
     pub length: u8,
-    /// Random step, never the same twice in a row; else sequential.
+    /// Random step; else sequential.
     pub random: bool,
+    /// When `random`, exclude the previous winner so consecutive notes do not repeat.
+    pub no_repeat: bool,
+    /// When `random`, redraw on release triggers instead of reusing the attack's draw.
+    pub release_redraws: bool,
 }
 
 /// One start condition of a zone.

@@ -275,6 +275,8 @@ pub fn to_ir(spec: &InstrumentSpec, base: &Path) -> Result<ir::Instrument, Error
                         position,
                         length,
                         random,
+                        no_repeat,
+                        release_redraws,
                     } => ir::StartRule::RoundRobin {
                         scope: match scope {
                             RrScopeSpec::Global => ir::RrScope::Global,
@@ -284,6 +286,8 @@ pub fn to_ir(spec: &InstrumentSpec, base: &Path) -> Result<ir::Instrument, Error
                         position,
                         length,
                         random,
+                        no_repeat,
+                        release_redraws,
                     },
                     StartRuleKindSpec::Cycle { random } => ir::StartRule::Cycle { random },
                     StartRuleKindSpec::Random { lo, hi } => ir::StartRule::Random { lo, hi },
@@ -547,6 +551,8 @@ pub fn from_ir(instrument: &ir::Instrument, base: Option<&Path>) -> Result<Instr
                             position,
                             length,
                             random,
+                            no_repeat,
+                            release_redraws,
                         } => StartRuleKindSpec::RoundRobin {
                             scope: match scope {
                                 ir::RrScope::Global => RrScopeSpec::Global,
@@ -556,6 +562,8 @@ pub fn from_ir(instrument: &ir::Instrument, base: Option<&Path>) -> Result<Instr
                             position: *position,
                             length: *length,
                             random: *random,
+                            no_repeat: *no_repeat,
+                            release_redraws: *release_redraws,
                         },
                         ir::StartRule::Cycle { random } => {
                             StartRuleKindSpec::Cycle { random: *random }
@@ -1309,6 +1317,7 @@ const fn unmap_source(s: ir::Source) -> Option<SourceSpec> {
         | ir::Source::Lfo(_)
         | ir::Source::Blend(_)
         | ir::Source::Script(_)
+        | ir::Source::ScriptBipolar(_)
         | ir::Source::Macro(_)
         | ir::Source::ZoneEnvelope(_) => return None,
     })

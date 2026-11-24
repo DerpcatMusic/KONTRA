@@ -186,6 +186,7 @@ impl GroupKey {
                     position,
                     length,
                     random,
+                    ..
                 } => Some(StartRuleKey::RoundRobin {
                     scope: *scope,
                     position: *position,
@@ -491,6 +492,8 @@ impl Build {
                     position: u8::try_from(position).unwrap_or(0),
                     length: u8::try_from(length).unwrap_or(u8::MAX),
                     random: false,
+                    no_repeat: false,
+                    release_redraws: false,
                 },
             ));
         }
