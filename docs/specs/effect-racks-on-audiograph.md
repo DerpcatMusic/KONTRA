@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: implemented
 project: plugins/kontra
 owner: claude-opus-5-5
 created: 2026-11-24
@@ -68,13 +68,19 @@ The graph schedules and routes; a bus stays one processor.
    to an earlier bus is dropped), and each `to_main` bus into one `Output`.
    The instrument insert, send and main racks and the output stage stay after
    the graph on the main stem, as in graph mode today.
-4. **(b)** `prepare` sets `plan.graph = lower_graph(&plan)` for every format
-   without a graph of its own; `mix_out` keeps only the instrument racks; the
-   bus loop goes.
+4. **(b)** The engine always routes through a graph: the plan's own, else
+   (and for a cyclic one, with `graph_error` set) `GraphRuntime::lowered`,
+   its buses lowered by `kontra_racks::graph::lower` when the engine is
+   built (load time, off the audio thread, next to `GraphRuntime::new`).
+   Lowering lives beside the runtime, not in `prepare`, so every plan, also
+   a test's or a snapshot's, routes the same way. `mix_out` and its bus
+   loop are deleted.
 
 ### Departures from the brief, and why
 
-- **No translator codemod.** Translators write slotted racks
+- **No codemod.** (b) deletes one function and an `if let`; nothing repeats
+  across call sites, so it was hand-edited (0 scripted, 9 files).
+- **No translator edits.** Translators write slotted racks
   (`Group/Bus/Instrument::inserts`): that is the format's model and where KSP
   slot numbering lives. Lowering in `prepare` reaches every format with zero
   translator edits, so there are no rack-construction call sites to script.
@@ -110,7 +116,7 @@ The graph schedules and routes; a bus stays one processor.
 
 - `ir::GraphNodeKind::InstrumentBus { bus: u16 }`; `AudioGraph::validate`
   accepts it. The `.kontra` schema does not save it: `prepare` makes it.
-- `kontra_prepare::lower_graph(&Plan) -> ir::AudioGraph`.
+- `kontra_racks::graph::lower(&Plan) -> ir::AudioGraph`, `GraphRuntime::lowered` (infallible: its node order is topological).
 - `kontra_racks::BusState` (moved from kontra-engine).
 - Harness: `cargo run --release -p kontra-host --example ab_routing -- <file> [keys] [seconds]`;
   `KONTRA_AB_WAV=<dir>` writes both renders, `KONTRA_AB_BUSES=1` lists buses.
@@ -127,11 +133,12 @@ same run. Rounding measured today is −136 dB.
 | A/B Areia | Validator/Runtime | linux-x86_64 | `ab_routing "<Areia>/01 Areia - 16 Violins - Core Techniques.nki"` | floor −inf, peak ≤ −120 dB | PASS (2026-11-24, linux-x86_64, e42e7354a) |
 | A/B Conflux | Validator/Runtime | linux-x86_64 | `ab_routing "<Conflux>.nki"` | floor −inf, peak ≤ −120 dB | PASS (2026-11-24, linux-x86_64, e42e7354a) |
 | A/B VWinds | Validator/Runtime | linux-x86_64 | `ab_routing "<VWinds C Flute>" 72,76,79,84` | floor −inf, peak ≤ −120 dB | PASS (2026-11-24, linux-x86_64, e42e7354a) |
+| A/B after deletion | Validator/Runtime | linux-x86_64 | `KONTRA_AB_REF=<PluginArtifacts>/kontra-ab-rack-e42e7354a ab_routing <each of the four>` | floor −inf, vs reference ≤ −120 dB | PASS (2026-11-24, linux-x86_64, 1208799ed) |
 | A/B UVI insert FX | Validator/Runtime | linux-x86_64 | `ab_routing "<V Strings Bartok>.uvip"` | floor −inf, peak ≤ −120 dB | PASS (2026-11-24, linux-x86_64, e42e7354a) |
 | Lowering + runtime tests | Compile/ABI | linux-x86_64 | `build-slot cargo test -p kontra-prepare -p kontra-racks -p kontra-ir graph` | Exit 0 | PASS (2026-11-24, linux-x86_64, e42e7354a) |
 | RT-safety | Validator/Runtime | linux-x86_64 | `matari check --project kontra` (rt-paranoid stage) | Zero RT violations | PASS (2026-11-24, linux-x86_64, e42e7354a) |
 | Fast unit/lib tests | Compile/ABI | linux-x86_64 | `matari fast kontra` | Exit 0 | PASS (2026-11-24, linux-x86_64, e42e7354a) |
-| Arch guard (b) | Compile/ABI | linux-x86_64 | `build-slot cargo test -p kontra-engine --test arch_guards` | old bus loop absent | PENDING |
+| Arch guard (b) | Compile/ABI | linux-x86_64 | `build-slot cargo test -p kontra-engine --test arch_guards` (and once with `fn mix_out(` appended to `racks.rs`: fails) | old bus loop absent | PASS (2026-11-24, linux-x86_64, 1208799ed) |
 
 ## Unverified Boundaries & Promotion Gate
 
@@ -145,8 +152,8 @@ None — all verification tiers execute on the current host.
 
 - [x] (a) The four A/B renders meet the null threshold through `InstrumentBus` nodes.
 - [x] (a) `GraphRuntime::process` allocates nothing with instrument buses (rt-paranoid).
-- [ ] (b) Every format's plan carries a graph; `mix_out` has no bus loop; arch guard added.
-- [ ] (b) The A/B renders after the deletion match the last rack-path renders (WAVs kept in PluginArtifacts) within the threshold.
+- [x] (b) Every instrument routes through a graph; `mix_out` is gone; arch guard added.
+- [x] (b) The A/B renders after the deletion match the last rack-path renders (WAVs kept in PluginArtifacts) within the threshold.
 
 ## Task Decomposition
 

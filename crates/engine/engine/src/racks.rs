@@ -1,5 +1,5 @@
 //! The engine's side of its racks (kontra-racks): response loads and the
-//! mix through the buses, sends and main rack.
+//! mix through the audio graph, then the instrument send and main racks.
 
 use std::sync::Arc;
 
@@ -100,12 +100,12 @@ impl Engine {
         for rack in racks {
             rack.rebuild(rate, Responses(&plan.impulses, &self.loaded));
         }
-        if let Some(graph) = self.graph.as_mut() {
-            graph.rebuild(rate, Responses(&plan.impulses, &self.loaded));
-        }
+        (self.graph).rebuild(rate, Responses(&plan.impulses, &self.loaded));
     }
 
-    /// Adds the buses (or compiled [`ir::AudioGraph`]) into `outputs[..][from..from+len]`.
+    /// Routes the span through the compiled [`ir::AudioGraph`] (buses, sends,
+    /// stems) into `outputs[..][from..from+len]`, then runs the instrument
+    /// racks and output stage on the main stem.
     /// Zero heap allocations on the audio thread.
     pub(crate) fn mix_out_multi(
         &mut self,
@@ -113,82 +113,30 @@ impl Engine {
         from: usize,
         len: usize,
     ) {
-        if let Some(graph) = self.graph.as_mut() {
-            const MAX_STEMS: usize = 16;
-            let count = outputs.len().min(MAX_STEMS);
-            let mut stems: [&mut [[f32; 2]]; MAX_STEMS] = std::array::from_fn(|_| &mut [][..]);
-            for (dst, out) in stems.iter_mut().zip(outputs.iter_mut().take(count)) {
-                if let Some(slice) = out.get_mut(from..from + len) {
-                    *dst = slice;
-                }
+        let graph = &mut self.graph;
+        const MAX_STEMS: usize = 16;
+        let count = outputs.len().min(MAX_STEMS);
+        let mut stems: [&mut [[f32; 2]]; MAX_STEMS] = std::array::from_fn(|_| &mut [][..]);
+        for (dst, out) in stems.iter_mut().zip(outputs.iter_mut().take(count)) {
+            if let Some(slice) = out.get_mut(from..from + len) {
+                *dst = slice;
             }
-            graph.clear(len);
-            if graph.has_group_inputs() {
-                for (gi, gmix) in self.group_mix.iter().enumerate() {
-                    if let Some(slice) = gmix.get(..len) {
-                        graph.add_group_audio(u16::try_from(gi).unwrap_or(u16::MAX), slice);
-                    }
-                }
-                if self.graph_redirected {
-                    for (bi, bus) in self.buses.iter().enumerate() {
-                        if let Some(slice) = bus.mix.get(..len) {
-                            graph.add_bus_audio(bi, slice);
-                        }
-                    }
-                }
-            }
-            for tap in &mut self.taps {
-                tap.fill([0.0; 2]);
-            }
-            let live = Live {
-                behaviour: &self.behaviour,
-                scripts: &self.script_mods,
-                now: self.now,
-                seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
-                tempo: self.tempo,
-            };
-            let buses = kontra_racks::graph::Buses {
-                buses: &mut self.buses,
-                live: &live,
-                taps: &mut self.taps,
-                rate: self.rate,
-            };
-            if let Some(active) = stems.get_mut(..count) {
-                graph.process(len, self.tempo, Some(buses), active);
-            }
-            if let Some(main_span) = stems.first_mut() {
-                if self.rack.active() || self.sends.iter().any(Rack::active) || self.main.active() {
-                    let tempo = self.tempo;
-                    self.rack.process(main_span, &mut self.taps, tempo);
-                    for (send, tap) in self.sends.iter_mut().zip(self.taps.iter_mut()) {
-                        if let Some(tap) = tap.get_mut(..len).filter(|_| send.active()) {
-                            send.process(tap, &mut [], tempo);
-                            for (o, t) in main_span.iter_mut().zip(tap.iter()) {
-                                o[0] += t[0];
-                                o[1] += t[1];
-                            }
-                        }
-                    }
-                    self.main.process(main_span, &mut [], tempo);
-                }
-                let (gain, pan) = (self.instrument.gain * self.expression, self.instrument.pan);
-                self.output
-                    .process(main_span, gain, self.balance.gains(pan));
-            }
-            return;
         }
-        if let Some(span) = outputs
-            .first_mut()
-            .and_then(|out| out.get_mut(from..from + len))
-        {
-            self.mix_out(span);
+        graph.clear(len);
+        if graph.has_group_inputs() {
+            for (gi, gmix) in self.group_mix.iter().enumerate() {
+                if let Some(slice) = gmix.get(..len) {
+                    graph.add_group_audio(u16::try_from(gi).unwrap_or(u16::MAX), slice);
+                }
+            }
+            if self.graph_redirected {
+                for (bi, bus) in self.buses.iter().enumerate() {
+                    if let Some(slice) = bus.mix.get(..len) {
+                        graph.add_bus_audio(bi, slice);
+                    }
+                }
+            }
         }
-    }
-
-    /// Adds the buses into `span` through their racks, then runs the
-    /// instrument's insert, send and main racks on it.
-    pub(crate) fn mix_out(&mut self, span: &mut [[f32; 2]]) {
-        let (len, tempo) = (span.len(), self.tempo);
         for tap in &mut self.taps {
             tap.fill([0.0; 2]);
         }
@@ -197,30 +145,35 @@ impl Engine {
             scripts: &self.script_mods,
             now: self.now,
             seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
-            tempo,
+            tempo: self.tempo,
         };
-        for at in 0..self.buses.len() {
-            kontra_racks::bus::run(&mut self.buses, at, &live, &mut self.taps, self.rate, len);
-            let Some(bus) = self.buses.get(at).filter(|b| b.to_main) else {
-                continue;
-            };
-            for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
-                o[0] += m[0];
-                o[1] += m[1];
-            }
+        let buses = kontra_racks::graph::Buses {
+            buses: &mut self.buses,
+            live: &live,
+            taps: &mut self.taps,
+            rate: self.rate,
+        };
+        if let Some(active) = stems.get_mut(..count) {
+            graph.process(len, self.tempo, Some(buses), active);
         }
-        self.rack.process(span, &mut self.taps, tempo);
-        for (send, tap) in self.sends.iter_mut().zip(self.taps.iter_mut()) {
-            if let Some(tap) = tap.get_mut(..len).filter(|_| send.active()) {
-                send.process(tap, &mut [], tempo);
-                for (o, t) in span.iter_mut().zip(tap.iter()) {
-                    o[0] += t[0];
-                    o[1] += t[1];
+        if let Some(main_span) = stems.first_mut() {
+            if self.rack.active() || self.sends.iter().any(Rack::active) || self.main.active() {
+                let tempo = self.tempo;
+                self.rack.process(main_span, &mut self.taps, tempo);
+                for (send, tap) in self.sends.iter_mut().zip(self.taps.iter_mut()) {
+                    if let Some(tap) = tap.get_mut(..len).filter(|_| send.active()) {
+                        send.process(tap, &mut [], tempo);
+                        for (o, t) in main_span.iter_mut().zip(tap.iter()) {
+                            o[0] += t[0];
+                            o[1] += t[1];
+                        }
+                    }
                 }
+                self.main.process(main_span, &mut [], tempo);
             }
+            let (gain, pan) = (self.instrument.gain * self.expression, self.instrument.pan);
+            self.output
+                .process(main_span, gain, self.balance.gains(pan));
         }
-        self.main.process(span, &mut [], tempo);
-        let (gain, pan) = (self.instrument.gain * self.expression, self.instrument.pan);
-        self.output.process(span, gain, self.balance.gains(pan));
     }
 }

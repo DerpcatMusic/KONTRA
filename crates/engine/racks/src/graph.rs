@@ -9,7 +9,7 @@
 
 use kontra_effects::matrix as effects;
 use kontra_ir as ir;
-use kontra_plan::Response;
+use kontra_plan::{Plan, Response};
 
 use crate::bus::{self, BusState};
 use crate::rack::{Live, Rack};
@@ -88,7 +88,32 @@ impl GraphRuntime {
         impulses: &[Option<Response>],
     ) -> Result<Self, ir::NodeId> {
         let topo = graph.topological_order()?;
-        let order: Box<[usize]> = topo.into_iter().map(|n| usize::from(n.0)).collect();
+        let order = topo.into_iter().map(|n| usize::from(n.0)).collect();
+        Ok(Self::compile(graph, order, rate, max_frames, impulses))
+    }
+
+    /// `plan`'s buses as a graph ([`lower`]). Its nodes are already in
+    /// order (a send only reaches a later bus, all reach the output last),
+    /// so it cannot fail.
+    #[must_use]
+    pub fn lowered(
+        plan: &Plan,
+        rate: u32,
+        max_frames: usize,
+        impulses: &[Option<Response>],
+    ) -> Self {
+        let graph = lower(plan);
+        let order = (0..graph.nodes.len()).collect();
+        Self::compile(&graph, order, rate, max_frames, impulses)
+    }
+
+    fn compile(
+        graph: &ir::AudioGraph,
+        order: Box<[usize]>,
+        rate: u32,
+        max_frames: usize,
+        impulses: &[Option<Response>],
+    ) -> Self {
         let node_count = graph.nodes.len();
 
         let mut outgoing: Vec<Vec<CompiledEdge>> = (0..node_count).map(|_| Vec::new()).collect();
@@ -179,11 +204,11 @@ impl GraphRuntime {
             });
         }
 
-        Ok(Self {
+        Self {
             nodes: nodes.into_boxed_slice(),
             order,
             max_frames,
-        })
+        }
     }
 
     /// Rebuilds every node's effect rack with updated convolution responses.
@@ -469,6 +494,39 @@ impl GraphRuntime {
     }
 }
 
+/// Lowers `plan`'s buses to a graph: one `InstrumentBus` node per plan bus
+/// (node `b` is plan bus `b`, which runs its own racks, faders and sends),
+/// each send to a later bus as an edge, and every bus that plays on main
+/// into one `Output`. Voices and group chains sum into the buses as before;
+/// the instrument's insert, send and main racks run after the graph.
+#[must_use]
+pub fn lower(plan: &Plan) -> ir::AudioGraph {
+    let mut graph = ir::AudioGraph::default();
+    let buses: Vec<ir::NodeId> = (0..plan.buses.len())
+        .map_while(|b| u16::try_from(b).ok())
+        .map(|bus| graph.push_node(ir::GraphNodeKind::InstrumentBus { bus }))
+        .collect();
+    let out = graph.push_node(ir::GraphNodeKind::Output {
+        bus_index: 0,
+        layout: ir::ChannelLayout::Stereo,
+    });
+    for (b, bus) in plan.buses.iter().enumerate() {
+        let Some(&from) = buses.get(b) else {
+            continue;
+        };
+        // A send to an earlier bus would come a span late: the engine drops it.
+        for send in bus.sends.iter().filter(|s| s.bus > b) {
+            if let Some(&to) = buses.get(send.bus) {
+                graph.connect(from, to, send.level, send.post_fader);
+            }
+        }
+        if bus.to_main {
+            graph.connect(from, out, 1.0, true);
+        }
+    }
+    graph
+}
+
 fn apply_gain_pan(buf: &mut [[f32; 2]], gain: f32, pan: f32) {
     let [[l, _], [_, r]] = effects::balance(pan);
     let (gl, gr) = (gain * l, gain * r);
@@ -575,6 +633,30 @@ mod tests {
             (aux_buf[31][0] - 0.5).abs() < 1e-4,
             "aux {}",
             aux_buf[31][0]
+        );
+    }
+
+    #[test]
+    fn buses_lower_in_order_with_forward_sends_only() {
+        let mut plan = kontra_plan::Plan::new(Vec::new(), 1);
+        let main = plan.buses.first().cloned().expect("one bus");
+        plan.buses = vec![main.clone(), main.clone(), main];
+        let send = |bus| ir::BusSend {
+            bus,
+            level: 0.5,
+            post_fader: true,
+        };
+        plan.buses[1].sends = vec![send(0), send(2)];
+        plan.buses[1].to_main = false;
+        let graph = lower(&plan);
+        assert!(graph.validate().is_empty(), "{:?}", graph.validate());
+        let kinds: Vec<_> = graph.nodes.iter().map(|n| n.kind.clone()).collect();
+        assert_eq!(kinds[1], ir::GraphNodeKind::InstrumentBus { bus: 1 });
+        let edges: Vec<_> = graph.edges.iter().map(|e| (e.from.0, e.to.0)).collect();
+        assert_eq!(
+            edges,
+            [(0, 3), (1, 2), (2, 3)],
+            "bus 1 -> 0 dropped, 1 not on main"
         );
     }
 

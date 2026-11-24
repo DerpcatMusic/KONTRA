@@ -362,11 +362,13 @@ pub struct Engine {
     group_split: Box<[Option<usize>]>,
     /// One voice's audio on its way through its filter.
     scratch: Box<[[f32; 2]]>,
-    /// Optional compiled [`ir::AudioGraph`] executor (allocated only when `plan.graph` is `Some`).
-    graph: Option<kontra_racks::graph::GraphRuntime>,
+    /// The compiled [`ir::AudioGraph`] every span routes through: the plan's
+    /// own, or its buses lowered ([`kontra_racks::graph::lower`]).
+    graph: kontra_racks::graph::GraphRuntime,
     /// Validation/compilation error captured if `plan.graph` failed to compile (e.g. a cycle).
     graph_error: Option<String>,
-    /// Per-group stereo sum buffers feeding [`Self::graph`] (empty when `graph` is `None`).
+    /// Per-group stereo sum buffers feeding [`Self::graph`]'s group inputs
+    /// (empty when it has none).
     group_mix: Box<[Box<[[f32; 2]]>]>,
     /// True during a span when any voice redirected its output to a bus in graph mode.
     graph_redirected: bool,
@@ -493,27 +495,21 @@ impl Engine {
         );
         let zone_index = Arc::new(zone_index::ZoneIndex::new(&plan.zones));
         let release_zones = plan.zones.iter().any(|z| z.trigger == Trigger::Release);
-        let (graph, graph_error) = match plan.graph.as_ref() {
-            Some(g) => {
-                match kontra_racks::graph::GraphRuntime::new(
-                    g,
-                    rate,
-                    MAX_SPAN as usize,
-                    &plan.impulses,
-                ) {
-                    Ok(rt) => (Some(rt), None),
-                    Err(node) => (
-                        None,
-                        Some(format!("audio graph contains a cycle at node {}", node.0)),
-                    ),
-                }
-            }
-            None => (None, None),
+        // A plan without a graph of its own routes its buses: the lowered
+        // graph, which a cyclic one also falls back to.
+        use kontra_racks::graph::GraphRuntime;
+        let span = MAX_SPAN as usize;
+        let compile = |g: &ir::AudioGraph| GraphRuntime::new(g, rate, span, &plan.impulses);
+        let lowered = || GraphRuntime::lowered(&plan, rate, span, &plan.impulses);
+        let (graph, graph_error) = match plan.graph.as_ref().map(compile) {
+            Some(Ok(rt)) => (rt, None),
+            Some(Err(node)) => (
+                lowered(),
+                Some(format!("audio graph contains a cycle at node {}", node.0)),
+            ),
+            None => (lowered(), None),
         };
-        let group_mix: Box<[Box<[[f32; 2]]>]> = if graph
-            .as_ref()
-            .is_some_and(kontra_racks::graph::GraphRuntime::has_group_inputs)
-        {
+        let group_mix: Box<[Box<[[f32; 2]]>]> = if graph.has_group_inputs() {
             (0..groups)
                 .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into_boxed_slice())
                 .collect()
@@ -696,7 +692,7 @@ impl Engine {
     /// [`ir::AudioGraph`] (1 when running the standard stereo bus path).
     #[must_use]
     pub fn output_count(&self) -> usize {
-        self.graph.as_ref().map_or(1, |g| g.output_count())
+        self.graph.output_count()
     }
 
     /// Renders multi-output stereo stems (up to 16 buses: `outputs[0]` is Main Out,
