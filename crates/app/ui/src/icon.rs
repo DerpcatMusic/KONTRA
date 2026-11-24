@@ -29,6 +29,8 @@ pub enum Icon {
     Output,
     /// A tuning fork.
     Tune,
+    /// A padlock: a DRM-protected library.
+    Lock,
 }
 
 /// `icon` in `ink`, `size` points square.
@@ -160,6 +162,19 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(6., 2.5), (6., 8.5), (10., 8.5), (10., 2.5)], false),
                 line(&[(8., 8.5), (8., 13.5)], false),
             ],
+            Icon::Lock => {
+                let mut shackle: Vec<(f64, f64)> = vec![(5.2, 7.5)];
+                shackle.extend((0..=12).map(|n| {
+                    let a = PI + f64::from(n) * PI / 12.;
+                    (8. + 2.8 * a.cos(), 6.0 + 2.8 * a.sin())
+                }));
+                shackle.push((10.8, 7.5));
+                vec![
+                    line(&shackle, false),
+                    line(&[(3.8, 7.5), (12.2, 7.5), (12.2, 13.5), (3.8, 13.5)], true),
+                    dot(8., 10.5),
+                ]
+            }
         }
     })
     .square(size)

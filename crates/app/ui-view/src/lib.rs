@@ -142,10 +142,10 @@ fn drawn_page(
     // `overImage`, `overPressedImage`).
     let (mut pressed, mut hovered) = (Vec::new(), Vec::new());
     for (n, w) in tree.widgets.iter().enumerate() {
-        let strip = matches!(
-            tree.source,
-            model::Source::Ksp { .. } | model::Source::PerformanceView
-        ) && matches!(w.kind, Kind::Button { .. } | Kind::Switch);
+        let strip = w
+            .images
+            .iter()
+            .any(|i| i.strip_mode == model::StripMode::SixStateKontakt);
         let state_font = w.state_styles[1..].iter().any(Option::is_some);
         let shifts = w.text_shift_on_press && matches!(w.kind, Kind::Button { .. } | Kind::Switch);
         let art = (w.images.iter()).any(|i| matches!(i.role, Role::Hover | Role::HoverPressed));
@@ -330,10 +330,7 @@ fn drawn_page(
                 _ => None,
             });
             match atlas {
-                Some((id, path))
-                    if matches!(tree.source, model::Source::Ksp { .. })
-                        && matches!(wd.kind, Kind::Label | Kind::TextEdit) =>
-                {
+                Some((id, path)) if matches!(wd.kind, Kind::Label | Kind::TextEdit) => {
                     pictures.font(model::AssetRef(id), path)
                 }
                 _ => None,
@@ -353,8 +350,7 @@ fn drawn_page(
                 .get(a.0)
                 .and_then(|asset| pictures.outline_font(a, &asset.path)),
             Some(&model::Font::Stock(23))
-                if matches!(tree.source, model::Source::Ksp { .. })
-                    && matches!(wd.kind, Kind::Label)
+                if matches!(wd.kind, Kind::Label)
                     && style.is_some_and(|s| s.align == model::Align::Center)
                     && words.contains("  ")
                     && !words.contains('\n') =>
@@ -397,6 +393,39 @@ fn drawn_page(
             (&v.peaks, &v.density, &v.frames).hash(&mut h);
             (h.finish(), v.frame, v.xray, v.alpha, wave::Look::of(wd))
         });
+        let pic_inset = item
+            .picture
+            .as_ref()
+            .map_or([0.0f32, 0.0], |p| p.use_.inset);
+        let table_style = wd.table_style.unwrap_or(tree.table_style);
+        let table_style_key = (
+            table_style.frame_rim,
+            match table_style.inner_edge {
+                model::TableGap::Adaptive => (0u8, 0u32, 0u32),
+                model::TableGap::CellEdges {
+                    gap_px,
+                    seamless_overlap_px,
+                } => (1u8, gap_px.to_bits(), seamless_overlap_px.to_bits()),
+            },
+            table_style.min_zero_bar_px.to_bits(),
+            table_style.draw_zero_line,
+        );
+        let text_policy_key = (
+            match tree.text_policy.line_pitch {
+                model::LinePitch::Ratio(r) => (0u8, r.to_bits()),
+                model::LinePitch::FontLineHeight => (1u8, 0u64),
+            },
+            tree.text_policy.vertical_align as u8,
+            tree.text_policy.label_inset.map(f32::to_bits),
+            tree.text_policy.control_inset.map(f32::to_bits),
+            tree.text_policy.menu_inset.map(f32::to_bits),
+            tree.text_policy.menu_arrow_height_factor.to_bits(),
+            match tree.text_policy.fit {
+                model::TextFit::StepDown => (0u8, 0u32),
+                model::TextFit::Squash { min_scale } => (1u8, min_scale.to_bits()),
+                model::TextFit::Clip => (2u8, 0u32),
+            },
+        );
         let deps = (
             lit.map(|(o, (t, peak, over))| (o as u8, t.to_bits(), peak.to_bits(), over)),
             [r.x, r.y, r.width, r.height, scale, device].map(f64::to_bits),
@@ -405,6 +434,7 @@ fn drawn_page(
                 picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
                 handle.as_ref().map(|(i, ..)| Arc::as_ptr(i) as usize),
                 vector.as_ref().map(|v| Arc::as_ptr(v) as usize),
+                pic_inset.map(f32::to_bits),
             ),
             (
                 &words,
@@ -434,6 +464,7 @@ fn drawn_page(
                 ),
                 (
                     wd.table_inner_edge.map(|edge| edge.visible),
+                    table_style_key,
                     match wd.kind {
                         Kind::Table {
                             columns,
@@ -489,6 +520,8 @@ fn drawn_page(
             ),
             (
                 item.style_ref,
+                text_policy_key,
+                tree.stock_skin,
                 style.map(|s| {
                     let font = match &s.font {
                         model::Font::Default => (0u8, 0i64, None),
@@ -497,7 +530,14 @@ fn drawn_page(
                         model::Font::Bitmap(a) => (3, a.0 as i64, None),
                         model::Font::File(a) => (4, a.0 as i64, None),
                     };
-                    (font, s.color, s.align as u8, s.size.map(f32::to_bits))
+                    (
+                        font,
+                        s.color,
+                        s.align as u8,
+                        s.size.map(f32::to_bits),
+                        s.weight.map(f32::to_bits),
+                        s.inset.map(|i| i.map(f32::to_bits)),
+                    )
                 }),
             ),
             (wd.opacity.to_bits(), wd.rotation.to_bits()),
@@ -507,25 +547,16 @@ fn drawn_page(
             let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
             if let (Some((img, meta)), Some(a)) = (&picture, art) {
-                // A button or switch picture, of any frame count, sits one pixel
-                // right and down inside its face; a label's or slider's sits on its
-                // place (probed in Kontakt 8 at 100 % and 150 %).
-                let inset = if matches!(tree.source, model::Source::Ksp { .. })
-                    && matches!(wd.kind, Kind::Button { .. } | Kind::Switch)
-                {
-                    scale
-                } else {
-                    0.
-                };
+                let [ix, iy] = pic_inset.map(|v| f64::from(v) * scale);
                 let image = match &vector {
                     Some(v) => block(a.width, a.height)
                         .radius(0.)
                         .fill(Fill::Vector(v.clone(), Fit::Fill)),
                     None => sliced(img, meta, (a.width, a.height), scale),
                 }
-                .at(inset, inset);
+                .at(ix, iy);
                 // Drawn whole at its own size, clipped only by the control.
-                parts.push(if inset > 0. {
+                parts.push(if ix > 0. || iy > 0. {
                     stack([image]).w(w).h(h).radius(0.).clip()
                 } else {
                     image
@@ -537,14 +568,7 @@ fn drawn_page(
             }
             if matches!(wd.kind, Kind::Table { .. }) {
                 parts.push(
-                    stock::table(
-                        wd,
-                        (w, h),
-                        bare,
-                        picture.is_some(),
-                        matches!(tree.source, model::Source::FalconLua),
-                    )
-                    .at(0., 0.),
+                    stock::table(wd, (w, h), bare, picture.is_some(), table_style).at(0., 0.),
                 );
             }
             // A slider's handle rides its track over its picture: bottom to
@@ -559,23 +583,31 @@ fn drawn_page(
             let text_layer = if let Some(glyphs) = &glyphs {
                 Some(bitmap_words(&words, style, wd, (w, h), scale, glyphs))
             } else if !words.is_empty() {
-                if let (Some(glyphs), Some(style)) = (&stock_glyphs, style)
+                let insets = plan::text_insets(style, wd, (h, 1.), &tree.text_policy);
+                let atlas_label = if let (Some(glyphs), Some(style)) = (&stock_glyphs, style)
                     && matches!(wd.kind, Kind::Label | Kind::TextEdit)
+                    && style.inset.is_none()
+                    // The atlas is laid out in whole font pixels.
+                    && [insets.0, insets.1].into_iter().all(|i| i >= 0. && i.fract() == 0.)
                     && !words.contains('\n')
                     && words
                         .chars()
                         .all(|c| c == '?' || kontra_ui_pictures::glyph(c) != usize::from(b'?'))
                     && matches!(style.font, model::Font::Stock(id) if stock_atlas(id).is_some())
-                    && plan::label_fits(&words, glyphs, w, scale)
+                    && plan::label_fits(&words, glyphs, w, scale, (insets.0 * scale, insets.1 * scale))
                 {
-                    Some(stock::label(
+                    stock::label(
                         &words,
                         style,
                         wd.text_y,
                         (w, h, scale, device),
+                        insets,
                         glyphs,
-                    ))
+                    )
                 } else {
+                    None
+                };
+                atlas_label.or_else(|| {
                     Some(words_el(
                         &words,
                         style,
@@ -583,9 +615,9 @@ fn drawn_page(
                         (w, h),
                         (scale, device),
                         outline.as_ref(),
-                        tree.source,
+                        &tree.text_policy,
                     ))
-                }
+                })
             } else {
                 None
             };
@@ -698,8 +730,14 @@ fn drawn_page(
         let content = content.w(size.width * scale).h(size.height * scale);
         let id = format!("kontra-v-{face}-{}", v.0);
         let el = col![content].scroll().w(w).h(h).id(id.clone());
-        // It keeps the wheel at its ends too: never the rack's.
-        let el = col![el].w(w).h(h).captures_wheel().id(id + "-keep");
+        // Capture the wheel only when this viewport actually overflows, so a
+        // non-scrolling viewport never traps the rack's wheel.
+        let overflows = size.width * scale > w + 0.5 || size.height * scale > h + 0.5;
+        let el = if overflows {
+            col![el].w(w).h(h).captures_wheel().id(id + "-keep")
+        } else {
+            el
+        };
         if let Some(slot) = groups.get_mut(&host).and_then(|g| g.get_mut(at)) {
             *slot = el.at(x, y);
         }
@@ -826,9 +864,9 @@ fn wallpaper(
         .collect()
 }
 
-/// `w`'s value as its source shows it: the script's label, else the value
-/// over the display ratio with its unit.
-pub fn readout(w: &model::Widget, source: model::Source) -> String {
+/// `w`'s value as its display policy formats it: the script's label, else
+/// the value over the display ratio with its unit.
+pub fn readout(w: &model::Widget) -> String {
     if w.hide.value {
         return String::new();
     }
@@ -841,7 +879,7 @@ pub fn readout(w: &model::Widget, source: model::Source) -> String {
             note_name(w.number().clamp(0., 127.) as u8)
         }
         Kind::Knob { display, .. } | Kind::ValueEdit { display, .. } => {
-            display.format_value(w.number(), true, source)
+            display.format_value(w.number(), true)
         }
         _ => String::new(),
     }
@@ -868,15 +906,6 @@ fn stock_atlas(id: i32) -> Option<(usize, &'static str)> {
         .then_some((usize::MAX - 3, "@stock/font"))
 }
 
-/// The weight a stock font id's family draws in (Kontakt 8 oracle probe).
-fn stock_weight(id: i32) -> Option<f32> {
-    match id {
-        1 | 5 | 7 | 16 | 17 | 19 | 20 | 21 => Some(700.),
-        12..=14 | 18 | 22..=25 => Some(600.),
-        _ => None,
-    }
-}
-
 /// An image asset's path and layout.
 fn image_asset(tree: &Interface, a: model::AssetRef) -> Option<(&str, model::ImageMeta)> {
     let asset = tree.assets.get(a.0)?;
@@ -899,7 +928,7 @@ pub fn char_at(
 ) -> usize {
     let style = w.style.and_then(|s| tree.styles.get(s.0));
     let words = w.text.as_str();
-    let geometry = plan::text(words, style, w, (height, scale, 1.), tree.source);
+    let geometry = plan::text(words, style, w, (height, scale, 1.), &tree.text_policy);
     let carets = ui.carets(words, geometry.size);
     let wide = carets.last().map_or(0., |c| c.1);
     let room = (width - geometry.inset.0 - geometry.inset.1).max(0.);
@@ -926,11 +955,15 @@ fn words_el(
     (width, height): (f64, f64),
     (scale, device): (f64, f64),
     font: Option<&Font>,
-    source: model::Source,
+    policy: &model::TextPolicy,
 ) -> El {
-    // A UVI size is the font's line height (JUCE's): its words draw at the em that fills it.
-    let lua = matches!(source, model::Source::FalconLua);
-    let em = (font.filter(|_| lua)).map_or(1., kontra_ui_pictures::em_per_height);
+    // When line pitch is FontLineHeight (JUCE/UVI), the authored size is line
+    // height: draw at the em that fills it.
+    let em = if policy.line_pitch == model::LinePitch::FontLineHeight {
+        font.map_or(1., kontra_ui_pictures::em_per_height)
+    } else {
+        1.
+    };
     let native_style = style.cloned().map(|mut style| {
         if font.is_some() && style.font == model::Font::Stock(23) {
             style.size = Some(12.);
@@ -938,18 +971,13 @@ fn words_el(
         style.size = style.size.map(|s| s * em as f32);
         style
     });
-    // Kontakt's stock faces run in their own weights; ours is a variable face.
-    let wght = style
-        .filter(|_| font.is_none() && matches!(source, model::Source::Ksp { .. }))
-        .and_then(|s| match s.font {
-            model::Font::Stock(id) => stock_weight(id),
-            _ => None,
-        });
+    // Variable-font weight axis from TextStyle::weight when using the default face.
+    let wght = style.filter(|_| font.is_none()).and_then(|s| s.weight);
     let weigh = |el: El| match wght {
         Some(v) => el.text_axis("wght", v),
         None => el,
     };
-    let geometry = plan::text(words, native_style.as_ref(), w, (height, scale, em), source);
+    let geometry = plan::text(words, native_style.as_ref(), w, (height, scale, em), policy);
     let size = geometry.size;
     // Device pixels per view unit.
     let px = if scale > 0. { device / scale } else { 1. };
@@ -992,22 +1020,20 @@ fn words_el(
             .collect::<Vec<_>>();
         return stack(lines).w(width).h(height).radius(0.).clip();
     }
-    // UVI (JUCE's drawFittedText) squashes a line too wide for its room
-    // across, down to 0.7, rather than shrink it.
     let room = (width - inset.0 - inset.1).max(0.);
-    let squash = (font.filter(|_| lua))
-        .and_then(|f| Some((f, room / kontra_ui_pictures::line_width(f, words, size)?)))
-        .filter(|&(_, sx)| (kontra_ui_pictures::MIN_SQUASH..1.).contains(&sx));
-    if let Some((f, sx)) = squash {
-        let draws = kontra_ui_pictures::squashed(f, words, size, sx, top + line / 2., ink);
-        let el = canvas(move |_| draws.clone())
-            .w(room)
-            .h(height)
-            .at(inset.0, 0.);
-        return stack([el]).w(width).h(height).radius(0.).clip();
+    if let model::TextFit::Squash { min_scale } = policy.fit {
+        let squash = font
+            .and_then(|f| Some((f, room / kontra_ui_pictures::line_width(f, words, size)?)))
+            .filter(|&(_, sx)| (f64::from(min_scale)..1.).contains(&sx));
+        if let Some((f, sx)) = squash {
+            let draws = kontra_ui_pictures::squashed(f, words, size, sx, top + line / 2., ink);
+            let el = canvas(move |_| draws.clone())
+                .w(room)
+                .h(height)
+                .at(inset.0, 0.);
+            return stack([el]).w(width).h(height).radius(0.).clip();
+        }
     }
-    // Kontakt's factory faces run narrower than ours: a label sized for
-    // them steps down to fit rather than cut its words (v1 `TextFont::fit`).
     let sized = |size: f64| {
         let el = weigh(text(words.to_owned()).text_size(size).fill(Fill::from(ink)));
         match font {
@@ -1015,6 +1041,20 @@ fn words_el(
             None => el,
         }
     };
+    if matches!(policy.fit, model::TextFit::Clip) {
+        let el = row([sized(size).lines(1).min_w(0.)])
+            .align(Align::Center)
+            .justify(match align {
+                model::Align::Left => Justify::Start,
+                model::Align::Center => Justify::Center,
+                model::Align::Right => Justify::End,
+            })
+            .w(room)
+            .h(line)
+            .at(inset.0, top);
+        return stack([el]).w(width).h(height).radius(0.).clip();
+    }
+    // Step down to fit rather than cut words (v1 `TextFont::fit`).
     let said = |k: f64| sized(size * k);
     let small = size * px < TEXT_FLOOR;
     let line = if small {
@@ -1040,7 +1080,7 @@ fn words_el(
             model::Align::Center => Justify::Center,
             model::Align::Right => Justify::End,
         })
-        .w((width - inset.0 - inset.1).max(0.))
+        .w(room)
         .h(line)
         .at(inset.0, top);
     stack([el]).w(width).h(height).radius(0.).clip()

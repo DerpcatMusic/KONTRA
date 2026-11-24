@@ -28,6 +28,15 @@ pub fn preset_owner(root: &std::path::Path, preset: &std::path::Path) -> Option<
     let snapshot = preset
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
+    preset_owner_kind(root, preset, snapshot, true)
+}
+
+fn preset_owner_kind(
+    root: &std::path::Path,
+    preset: &std::path::Path,
+    snapshot: bool,
+    strip_extension: bool,
+) -> Option<String> {
     let named = if snapshot {
         let inside = preset.strip_prefix(root).unwrap_or(preset);
         let mut folders = inside.parent()?.iter();
@@ -38,8 +47,10 @@ pub fn preset_owner(root: &std::path::Path, preset: &std::path::Path) -> Option<
             Some(instrument) if library => instrument,
             _ => preset.parent()?.file_name()?,
         }
-    } else {
+    } else if strip_extension {
         preset.file_stem()?
+    } else {
+        preset.file_name()?
     };
     Some(named.to_str()?.to_lowercase())
 }
@@ -54,16 +65,57 @@ pub fn preset_family<P: AsRef<std::path::Path>>(
     presets: &[P],
     current: Option<usize>,
 ) -> Vec<usize> {
-    let key = |p: &std::path::Path| preset_owner(root, p);
+    preset_family_for(root, presets, &[], current)
+}
+
+/// Like [`preset_family`], but also treats sorted indices in `recalls`
+/// (excluding `"User/"` user-saved presets) as snapshots even when file
+/// extensions were stripped for display (e.g. `Snapshots/Conflux/Keys/Pad`).
+#[must_use]
+pub fn preset_family_for<P: AsRef<std::path::Path>>(
+    root: &std::path::Path,
+    presets: &[P],
+    recalls: &[usize],
+    current: Option<usize>,
+) -> Vec<usize> {
+    preset_family_by(root, presets, recalls, current, false)
+}
+
+/// Groups the editor's display paths, whose file extensions were already removed.
+#[must_use]
+pub fn displayed_preset_family<P: AsRef<std::path::Path>>(
+    root: &std::path::Path,
+    presets: &[P],
+    recalls: &[usize],
+    current: Option<usize>,
+) -> Vec<usize> {
+    preset_family_by(root, presets, recalls, current, true)
+}
+
+fn preset_family_by<P: AsRef<std::path::Path>>(
+    root: &std::path::Path,
+    presets: &[P],
+    recalls: &[usize],
+    current: Option<usize>,
+    displayed: bool,
+) -> Vec<usize> {
+    let key = |idx: usize, p: &std::path::Path| {
+        let is_user = p
+            .components()
+            .next()
+            .is_some_and(|c| c.as_os_str().eq_ignore_ascii_case("user"));
+        let snapshot = (!displayed
+            && p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("nksn")))
+            || (!is_user && recalls.binary_search(&idx).is_ok());
+        preset_owner_kind(root, p, snapshot, !displayed)
+    };
     let all = || (0..presets.len()).collect();
-    let Some(mine) = current
-        .and_then(|c| presets.get(c))
-        .and_then(|p| key(p.as_ref()))
-    else {
+    let Some(mine) = current.and_then(|c| key(c, presets.get(c)?.as_ref())) else {
         return all();
     };
     let family: Vec<usize> = (presets.iter().enumerate())
-        .filter(|(_, p)| key(p.as_ref()).as_deref() == Some(mine.as_str()))
+        .filter(|(idx, p)| key(*idx, p.as_ref()).as_deref() == Some(mine.as_str()))
         .map(|(n, _)| n)
         .collect();
     if family.len() > 1 { family } else { all() }
@@ -106,5 +158,53 @@ mod family_tests {
         ];
         assert_eq!(preset_family(root, &presets, Some(0)), [0, 2, 3]);
         assert_eq!(preset_family(root, &presets, Some(1)).len(), 4);
+    }
+
+    #[test]
+    fn dotted_instrument_names_group_from_files_and_display_paths() {
+        let root = std::path::Path::new("");
+        let files = [
+            "Instruments/Piano v1.2.NKI",
+            "Instruments/Other.nki",
+            "Snapshots/Piano v1.2/Soft.nksn",
+            "Snapshots/Piano v1.2/Loud.nksn",
+        ];
+        let displayed = [
+            "Instruments/Piano v1.2",
+            "Instruments/Other",
+            "Snapshots/Piano v1.2/Soft",
+            "Snapshots/Piano v1.2/Loud",
+        ];
+        assert_eq!(preset_family(root, &files, Some(2)), [0, 2, 3]);
+        assert_eq!(
+            super::displayed_preset_family(root, &displayed, &[2, 3], Some(2)),
+            [0, 2, 3]
+        );
+    }
+
+    #[test]
+    fn extension_stripped_snapshots_group_with_their_instrument() {
+        let presets = [
+            "Instruments/Conflux",
+            "Instruments/Other",
+            "Snapshots/Conflux/Keys/Pad",
+            "Snapshots/Conflux/Bass/Sub",
+            "User Content/Conflux/Custom",
+            "Snapshots/Other/Warm",
+        ];
+        let recalls = [2, 3, 4, 5];
+        let root = std::path::Path::new("");
+        assert_eq!(
+            super::preset_family_for(root, &presets, &recalls, Some(0)),
+            [0, 2, 3, 4]
+        );
+        assert_eq!(
+            super::preset_family_for(root, &presets, &recalls, Some(2)),
+            [0, 2, 3, 4]
+        );
+        assert_eq!(
+            super::preset_family_for(root, &presets, &recalls, Some(1)),
+            [1, 5]
+        );
     }
 }

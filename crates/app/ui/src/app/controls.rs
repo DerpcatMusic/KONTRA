@@ -38,14 +38,7 @@ pub(super) fn view(
             | Kind::ValueEdit { range, .. } => {
                 let (lo, hi) = (range.min.min(range.max), range.max.max(range.min));
                 let mut v = now;
-                let r = knob(
-                    ui,
-                    id,
-                    (&name, &readout(w, tree.source)),
-                    &mut v,
-                    lo..=hi,
-                    range.default,
-                );
+                let r = knob(ui, id, (&name, &readout(w)), &mut v, lo..=hi, range.default);
                 let v = range
                     .step
                     .filter(|s| *s > 0.)

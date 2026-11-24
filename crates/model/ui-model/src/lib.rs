@@ -16,12 +16,16 @@
 
 use std::fmt;
 
+pub use kontra_ir as ir;
+
 mod canvas;
 mod preset_name;
 mod scroll;
 mod value;
 pub use canvas::{Paint, Seg};
-pub use preset_name::{preset_family, preset_file_name, preset_owner};
+pub use preset_name::{
+    displayed_preset_family, preset_family, preset_family_for, preset_file_name, preset_owner,
+};
 
 macro_rules! reference {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(
@@ -52,6 +56,18 @@ pub struct Interface {
     pub source: Source,
     /// The source explicitly declares an authored performance view.
     pub performance: bool,
+    /// How widget z-layers resolve across panels (`Global` for KSP/Kontakt,
+    /// `SiblingLocal` for hierarchical trees like Falcon Lua).
+    pub z_order: ZOrder,
+    /// How unstretched image sizes interact with authored widget bounds during
+    /// layout resolution.
+    pub picture_sizing: PictureSizing,
+    /// Fallback visual style for controls without authored pictures.
+    pub stock_skin: StockSkin,
+    /// Typography layout, inset, and fitting policy for this interface.
+    pub text_policy: TextPolicy,
+    /// Default visual policy for [`Kind::Table`] widgets on this interface.
+    pub table_style: TableStyle,
     pub pages: Vec<Page>,
     /// Declaration order; ties in [`Widget::z`] draw in this order.
     pub widgets: Vec<Widget>,
@@ -84,7 +100,8 @@ pub struct NativeUi {
     pub entry: String,
 }
 
-/// Which frontend produced the interface.
+/// Which frontend produced the interface (diagnostic / telemetry tag only;
+/// rendering and layout behavior are driven by explicit policy fields).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Source {
     /// No authored UI: generated from the instrument's controls.
@@ -96,6 +113,348 @@ pub enum Source {
     PerformanceView,
     /// A Falcon / UVI Lua script.
     FalconLua,
+}
+
+/// How [`Widget::z`] orders widgets across container panels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ZOrder {
+    /// Siblings sort within their parent panel and children draw immediately
+    /// after their parent (hierarchical UI trees such as Falcon Lua).
+    #[default]
+    SiblingLocal,
+    /// Global Z layers across panels with Kontakt's type-priority tie-break.
+    Global,
+}
+
+/// How an unstretched image's intrinsic size interacts with a widget's rect
+/// during layout resolution.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PictureSizing {
+    /// Unstretched image dimensions override the widget's rect (Kontakt's rule).
+    #[default]
+    IntrinsicWhenUnstretched,
+    /// Keep the widget's authored rect without overriding from image headers.
+    PreserveAuthoredRect,
+}
+
+/// Stock fallback appearance for controls that lack authored pictures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum StockSkin {
+    /// No format-specific stock fallback skin.
+    #[default]
+    None,
+    /// Kontakt's stock control skin (knobs, buttons, fields, menus, labels).
+    Kontakt,
+    /// Minimal vector fallback skin for generic/declarative UIs.
+    Minimal,
+}
+
+/// How a multi-line label pitches consecutive lines relative to its font size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LinePitch {
+    /// Fixed multiple of font size (Kontakt's measured `13/11`).
+    Ratio(f64),
+    /// Font's own line height (JUCE / Falcon Lua `em_per_height`).
+    FontLineHeight,
+}
+
+impl Default for LinePitch {
+    fn default() -> Self {
+        Self::Ratio(13.0 / 11.0)
+    }
+}
+
+/// Default vertical anchor for single-line text when [`Widget::text_y`] is unset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum VerticalAlign {
+    /// Labels anchor to the top of their box; other controls center.
+    #[default]
+    Top,
+    /// Single-line text centers vertically inside the widget (JUCE / Falcon Lua).
+    Middle,
+}
+
+/// How single-line text fits when wider than its widget's room.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TextFit {
+    /// Step font size down (`1.0`, `0.9`, `0.8`, `0.75`) until it fits (Kontakt).
+    #[default]
+    StepDown,
+    /// Horizontally condense down to `min_scale` before falling back (JUCE / Falcon Lua).
+    Squash { min_scale: f32 },
+    /// Render at authored size and clip to widget bounds.
+    Clip,
+}
+
+/// Interface-level typography layout, inset, and fitting policy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextPolicy {
+    pub line_pitch: LinePitch,
+    pub vertical_align: VerticalAlign,
+    /// Horizontal `[left, right]` inset in source pixels for [`Kind::Label`].
+    pub label_inset: [f32; 2],
+    /// Horizontal `[left, right]` inset in source pixels for general controls.
+    pub control_inset: [f32; 2],
+    /// Horizontal `[left, right]` inset in source pixels for [`Kind::Menu`].
+    pub menu_inset: [f32; 2],
+    /// Extra right inset on [`Kind::Menu`] proportional to widget height (to clear an arrow box).
+    pub menu_arrow_height_factor: f32,
+    pub fit: TextFit,
+}
+
+impl TextPolicy {
+    /// Kontakt's measured typography policy (default).
+    pub const KONTAKT: Self = Self {
+        line_pitch: LinePitch::Ratio(13.0 / 11.0),
+        vertical_align: VerticalAlign::Top,
+        label_inset: [7.0, 7.0],
+        control_inset: [2.0, 2.0],
+        menu_inset: [2.0, 2.0],
+        menu_arrow_height_factor: 0.0,
+        fit: TextFit::StepDown,
+    };
+
+    /// Falcon / UVI (JUCE) typography policy.
+    pub const FALCON_LUA: Self = Self {
+        line_pitch: LinePitch::FontLineHeight,
+        vertical_align: VerticalAlign::Middle,
+        label_inset: [5.0, 5.0],
+        control_inset: [2.0, 2.0],
+        menu_inset: [6.0, 1.0],
+        menu_arrow_height_factor: 1.0,
+        fit: TextFit::Squash { min_scale: 0.7 },
+    };
+}
+
+impl Default for TextPolicy {
+    fn default() -> Self {
+        Self::KONTAKT
+    }
+}
+
+/// How [`Display::format_value`] renders numeric readouts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ValueFormat {
+    /// Divide by `ratio`, format whole numbers without decimals or 2 decimal places, append `unit`.
+    #[default]
+    FixedPrecision,
+    /// Trim trailing zeros up to 3 decimals and interpret Falcon/UVI unit names (`Hertz`, `Seconds`, `MidiKey`, ...).
+    CompactTrimmed,
+}
+
+/// How a widget selects a frame from a strip [`ImageUse`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum StripMode {
+    /// Frame chosen continuously from the widget's normalized value (or on/off for toggles).
+    #[default]
+    Value,
+    /// Kontakt 6-state interactive button/switch strip (off/on, pressed, hover).
+    SixStateKontakt,
+    /// 2-state on/off toggle strip without hover/press frames.
+    TwoStateToggle,
+    /// Always display this fixed frame index.
+    Fixed(u32),
+}
+
+/// How [`Kind::Table`] separates adjacent columns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TableGap {
+    /// 1 px gap when bars are at least 3 px wide, 0 px otherwise (Kontakt).
+    Adaptive,
+    /// Per-cell background gaps when inner edges are visible, else seamless overlap (UVI).
+    CellEdges {
+        gap_px: f32,
+        seamless_overlap_px: f32,
+    },
+}
+
+/// Visual rendering policy for [`Kind::Table`] widgets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TableStyle {
+    /// Draw a 1 px framed border inset around the table background.
+    pub frame_rim: bool,
+    pub inner_edge: TableGap,
+    /// Minimum pixel height for a bipolar bar sitting at zero.
+    pub min_zero_bar_px: f32,
+    /// Draw a 1 px horizontal zero reference line on bipolar tables.
+    pub draw_zero_line: bool,
+}
+
+impl TableStyle {
+    /// Kontakt's framed table policy (default).
+    pub const KONTAKT: Self = Self {
+        frame_rim: true,
+        inner_edge: TableGap::Adaptive,
+        min_zero_bar_px: 0.0,
+        draw_zero_line: true,
+    };
+
+    /// Falcon / UVI frameless cell-edge table policy.
+    pub const UVI: Self = Self {
+        frame_rim: false,
+        inner_edge: TableGap::CellEdges {
+            gap_px: 1.0,
+            seamless_overlap_px: 0.5,
+        },
+        min_zero_bar_px: 1.0,
+        draw_zero_line: false,
+    };
+}
+
+impl Default for TableStyle {
+    fn default() -> Self {
+        Self::KONTAKT
+    }
+}
+
+/// Curve mapping a widget's value range onto a physical IR parameter range.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ParamMap {
+    /// Pass the widget's value straight through to the IR parameter.
+    #[default]
+    Direct,
+    /// Linearly map the widget's normalized `[0, 1]` position onto `[min, max]`.
+    Linear { min: f32, max: f32 },
+    /// Exponentially map `[0, 1]` onto `[min, max]` (e.g. filter cutoff Hz).
+    Exponential { min: f32, max: f32 },
+    /// Power-law map `[0, 1]` onto `[min, max]`: `min + (max - min) * t.powf(exponent)`.
+    Power { min: f32, max: f32, exponent: f32 },
+}
+
+/// Direct, script-free binding from a UI widget to a format-neutral engine parameter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParamBinding {
+    pub scope: ir::Scope,
+    pub addr: ir::ParamAddr,
+    pub map: ParamMap,
+}
+
+fn valid_power(exponent: f32) -> bool {
+    exponent.is_finite() && exponent > 0.0
+}
+
+fn finite_nonzero_span(span: f64) -> bool {
+    span.is_finite() && span != 0.0
+}
+
+fn between(min: f64, max: f64, t: f64, interpolate: impl FnOnce(f64, f64, f64) -> f64) -> f64 {
+    if t == 0.0 {
+        min
+    } else if t == 1.0 {
+        max
+    } else {
+        interpolate(min, max, t)
+    }
+}
+
+fn linear(min: f64, max: f64, t: f64) -> f64 {
+    min + (max - min) * t
+}
+
+impl ParamBinding {
+    #[must_use]
+    pub const fn new(scope: ir::Scope, addr: ir::ParamAddr) -> Self {
+        Self {
+            scope,
+            addr,
+            map: ParamMap::Direct,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_map(scope: ir::Scope, addr: ir::ParamAddr, map: ParamMap) -> Self {
+        Self { scope, addr, map }
+    }
+
+    /// Maps a widget value (in its authored `range`, if any) to the physical IR parameter value.
+    #[must_use]
+    pub fn to_physical(&self, widget_value: f64, range: Option<Range>) -> f32 {
+        let norm = |r: Option<Range>| -> f64 {
+            match r {
+                Some(r) if finite_nonzero_span(r.max - r.min) => {
+                    ((widget_value - r.min) / (r.max - r.min)).clamp(0.0, 1.0)
+                }
+                Some(r) if r.min.is_finite() && r.min == r.max => 0.0,
+                _ => widget_value.clamp(0.0, 1.0),
+            }
+        };
+        match self.map {
+            ParamMap::Direct => widget_value as f32,
+            ParamMap::Linear { min, max } => {
+                let t = norm(range);
+                between(f64::from(min), f64::from(max), t, linear) as f32
+            }
+            ParamMap::Exponential { min, max } => {
+                let t = norm(range);
+                let (lo, hi) = (f64::from(min), f64::from(max));
+                if lo > 0.0 && hi > 0.0 {
+                    between(lo, hi, t, |lo, hi, t| lo * (hi / lo).powf(t)) as f32
+                } else {
+                    between(lo, hi, t, linear) as f32
+                }
+            }
+            ParamMap::Power { min, max, exponent } => {
+                let t = norm(range);
+                let t = if valid_power(exponent) {
+                    t.powf(f64::from(exponent))
+                } else {
+                    t
+                };
+                between(f64::from(min), f64::from(max), t, linear) as f32
+            }
+        }
+    }
+
+    /// Inverse of [`Self::to_physical`]: maps a physical IR parameter value back to widget units.
+    #[must_use]
+    pub fn from_physical(&self, physical: f32, range: Option<Range>) -> f64 {
+        let denorm = |t: f64| -> f64 {
+            let t = t.clamp(0.0, 1.0);
+            match range {
+                Some(r) if finite_nonzero_span(r.max - r.min) => between(r.min, r.max, t, linear),
+                Some(r) if r.min.is_finite() && r.min == r.max => r.min,
+                _ => t,
+            }
+        };
+        let valid_span = |span: f64| physical.is_finite() && finite_nonzero_span(span);
+        match self.map {
+            ParamMap::Direct => f64::from(physical),
+            ParamMap::Linear { min, max } => {
+                let span = f64::from(max) - f64::from(min);
+                let t = if valid_span(span) {
+                    (f64::from(physical) - f64::from(min)) / span
+                } else {
+                    0.0
+                };
+                denorm(t)
+            }
+            ParamMap::Exponential { min, max } => {
+                let (lo, hi, v) = (f64::from(min), f64::from(max), f64::from(physical));
+                let t = if lo > 0.0 && hi > 0.0 && valid_span(hi - lo) && v > 0.0 {
+                    (v / lo).ln() / (hi / lo).ln()
+                } else if valid_span(hi - lo) {
+                    (v - lo) / (hi - lo)
+                } else {
+                    0.0
+                };
+                denorm(t)
+            }
+            ParamMap::Power { min, max, exponent } => {
+                let span = f64::from(max) - f64::from(min);
+                let base = if valid_span(span) {
+                    ((f64::from(physical) - f64::from(min)) / span).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let t = if valid_power(exponent) {
+                    base.powf(1.0 / f64::from(exponent))
+                } else {
+                    base
+                };
+                denorm(t)
+            }
+        }
+    }
 }
 
 /// One screen of the interface. KSP declares one; Falcon may declare several.
@@ -232,6 +591,8 @@ pub struct Widget {
     pub colors: Colors,
     /// Authored separation between table bars. Unset preserves the stock drawing.
     pub table_inner_edge: Option<TableInnerEdge>,
+    /// Optional per-widget table rendering policy overriding [`Interface::table_style`].
+    pub table_style: Option<TableStyle>,
     /// Explicit supported table fill; absent retains the renderer's fallback.
     pub table_fill: Option<TableFill>,
     pub style: Option<StyleRef>,
@@ -304,6 +665,7 @@ impl Widget {
             reports_release: false,
             colors: Colors::default(),
             table_inner_edge: None,
+            table_style: None,
             table_fill: None,
             style: None,
             state_styles: [None; 6],
@@ -341,6 +703,24 @@ impl Widget {
         matches!(self.kind, Kind::Button { .. } | Kind::Switch)
             && self.text.trim().is_empty()
             && self.image(Role::Strip).is_some()
+    }
+
+    /// The widget's numeric value range, when its kind has one.
+    #[must_use]
+    pub fn range(&self) -> Option<Range> {
+        match self.kind {
+            Kind::Knob { range, .. }
+            | Kind::Slider { range, .. }
+            | Kind::ValueEdit { range, .. }
+            | Kind::Table { range, .. } => Some(range),
+            Kind::Button { .. } | Kind::Switch => Some(Range {
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                step: Some(1.0),
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -713,6 +1093,8 @@ pub struct Display {
     pub ratio: f64,
     /// Unit suffix or Falcon `Unit` name; empty for none.
     pub unit: String,
+    /// Readout formatting policy.
+    pub format: ValueFormat,
 }
 
 impl Default for Display {
@@ -720,14 +1102,15 @@ impl Default for Display {
         Self {
             ratio: 1.0,
             unit: String::new(),
+            format: ValueFormat::FixedPrecision,
         }
     }
 }
 
 impl Display {
     /// Formats a readout only; the raw value and edit conversion remain unchanged.
-    pub fn format_value(&self, value: f64, integer: bool, source: Source) -> String {
-        if source == Source::FalconLua {
+    pub fn format_value(&self, value: f64, integer: bool) -> String {
+        if self.format == ValueFormat::CompactTrimmed {
             // Port v1 4bffbb18:src/ui/uvi_instrument.rs::unit_text/number_text.
             let number = |value: f64, integer: bool| {
                 if integer {
@@ -924,12 +1307,14 @@ pub enum Binding {
     /// Script memory with no host control behind it (a `ui_table`'s cells, a
     /// label written at runtime), by script slot and variable name.
     Variable { script: u8, name: String },
+    /// Direct binding to a format-neutral IR parameter (zero script VM overhead).
+    Param(ParamBinding),
     /// A level meter's signal: an output bus, or the instrument when `None`.
     Meter { bus: Option<u32>, channel: u8 },
 }
 
 /// A bitmap a widget is drawn with, and what it is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageUse {
     pub asset: AssetRef,
     pub role: Role,
@@ -938,6 +1323,10 @@ pub struct ImageUse {
     /// Which of the widget's parts it draws: an XY pad cursor's index; 0
     /// for anything else.
     pub part: u32,
+    /// Source-pixel `[x, y]` inset inside the widget bounds before drawing.
+    pub inset: [f32; 2],
+    /// How this image selects its active strip frame.
+    pub strip_mode: StripMode,
 }
 
 impl ImageUse {
@@ -947,6 +1336,8 @@ impl ImageUse {
             role,
             frame: None,
             part: 0,
+            inset: [0.0, 0.0],
+            strip_mode: StripMode::Value,
         }
     }
 }
@@ -1054,8 +1445,25 @@ pub struct TextStyle {
     pub font: Font,
     /// Pixel size; `None` for the font's own.
     pub size: Option<f32>,
+    /// Variable-font weight axis (`wght`, e.g. `600.0`, `700.0`); `None` uses the face default.
+    pub weight: Option<f32>,
+    /// Optional per-style horizontal `[left, right]` inset in source pixels, overriding [`TextPolicy`].
+    pub inset: Option<[f32; 2]>,
     pub color: Rgba,
     pub align: Align,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            font: Font::Default,
+            size: None,
+            weight: None,
+            inset: None,
+            color: Rgba::default(),
+            align: Align::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1272,7 +1680,7 @@ impl Interface {
                 .filter(|w| self.widgets.get(w.0).is_some_and(|w| w.page == page))
                 .collect();
         }
-        if matches!(self.source, Source::Ksp { .. } | Source::PerformanceView) {
+        if self.z_order == ZOrder::Global {
             let mut out: Vec<_> = self
                 .widgets
                 .iter()
@@ -1476,35 +1884,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_display_conventions_do_not_change_ksp_ratio_or_suffix() {
+    fn value_format_policies_format_fixed_and_compact_readouts() {
         let display = Display {
             ratio: 100.,
             unit: "dB".into(),
+            format: ValueFormat::FixedPrecision,
         };
-        assert_eq!(
-            display.format_value(123., true, Source::Ksp { slot: 2 }),
-            "1.23 dB"
-        );
-        assert_eq!(
-            display.format_value(123., false, Source::Generated),
-            "1.23 dB"
-        );
+        assert_eq!(display.format_value(123., true), "1.23 dB");
+        assert_eq!(display.format_value(123., false), "1.23 dB");
         assert_eq!(
             Display {
                 ratio: 0.,
-                unit: String::new()
+                unit: String::new(),
+                format: ValueFormat::FixedPrecision,
             }
-            .format_value(1.125, false, Source::Ksp { slot: 0 }),
+            .format_value(1.125, false),
             "1.12"
         );
-        assert_eq!(
-            Display::default().format_value(1.125, false, Source::FalconLua),
-            "1.125"
-        );
-        assert_eq!(
-            Display::default().format_value(1.6, true, Source::FalconLua),
-            "2"
-        );
+        let compact = Display {
+            format: ValueFormat::CompactTrimmed,
+            ..Display::default()
+        };
+        assert_eq!(compact.format_value(1.125, false), "1.125");
+        assert_eq!(compact.format_value(1.6, true), "2");
     }
 
     #[test]
@@ -1513,8 +1915,9 @@ mod tests {
             Display {
                 ratio: 0.,
                 unit: unit.into(),
+                format: ValueFormat::CompactTrimmed,
             }
-            .format_value(v, false, Source::FalconLua)
+            .format_value(v, false)
         };
         assert_eq!(at("Seconds", 0.25), "250 ms");
         assert_eq!(at("Hertz", 2500.), "2.5 kHz");
@@ -1523,6 +1926,148 @@ mod tests {
         assert_eq!(at("Megabyte", 12.), "12 MB");
         assert_eq!(at("MidiKey", 60.), "C3");
         assert_eq!(at("MidiKey", 21.), "A-1");
+    }
+
+    #[test]
+    fn binding_uses_tiny_and_fixed_authored_widget_ranges() {
+        let binding = ParamBinding::with_map(
+            ir::Scope::Instrument,
+            ir::ParamAddr::Volume,
+            ParamMap::Linear { min: 0., max: 1. },
+        );
+        let tiny = Some(Range {
+            min: 0.,
+            max: 1e-16,
+            ..Range::default()
+        });
+        assert_eq!(binding.to_physical(1e-16, tiny), 1.);
+        assert_eq!(binding.from_physical(0.5, tiny), 5e-17);
+        let fixed = Some(Range {
+            min: 0.25,
+            max: 0.25,
+            ..Range::default()
+        });
+        assert_eq!(binding.to_physical(0.25, fixed), 0.);
+        assert_eq!(binding.from_physical(0.75, fixed), 0.25);
+        assert_eq!(binding.to_physical(0.25, None), 0.25);
+    }
+
+    #[test]
+    fn binding_returns_declared_physical_endpoints_exactly() {
+        for (map, end) in [
+            (ParamMap::Linear { min: 1e20, max: 1. }, 1.),
+            (
+                ParamMap::Power {
+                    min: 1e20,
+                    max: 1.,
+                    exponent: 2.,
+                },
+                1.,
+            ),
+            (
+                ParamMap::Exponential {
+                    min: 1e20,
+                    max: -1.,
+                },
+                -1.,
+            ),
+            (ParamMap::Exponential { min: 1e20, max: 1. }, 1.),
+        ] {
+            let binding = ParamBinding::with_map(ir::Scope::Instrument, ir::ParamAddr::Volume, map);
+            assert_eq!(binding.to_physical(0., None), 1e20);
+            assert_eq!(binding.to_physical(1., None), end);
+        }
+    }
+
+    #[test]
+    fn invalid_power_exponents_are_linear_in_both_directions() {
+        for exponent in [-1.0, 0.0, f32::INFINITY, f32::NAN] {
+            let binding = ParamBinding::with_map(
+                ir::Scope::Instrument,
+                ir::ParamAddr::Volume,
+                ParamMap::Power {
+                    min: 0.0,
+                    max: 2.0,
+                    exponent,
+                },
+            );
+            assert_eq!(binding.to_physical(0.25, None), 0.5);
+            assert_eq!(binding.from_physical(0.5, None), 0.25);
+        }
+    }
+
+    #[test]
+    fn inverse_respects_distinct_tiny_endpoints() {
+        for map in [
+            ParamMap::Linear {
+                min: 0.0,
+                max: 1e-16,
+            },
+            ParamMap::Exponential {
+                min: 1e-17,
+                max: 1e-16,
+            },
+            ParamMap::Power {
+                min: 0.0,
+                max: 1e-16,
+                exponent: 2.0,
+            },
+        ] {
+            let binding = ParamBinding::with_map(ir::Scope::Instrument, ir::ParamAddr::Volume, map);
+            assert_eq!(
+                binding.from_physical(binding.to_physical(1.0, None), None),
+                1.0
+            );
+            assert_eq!(binding.from_physical(f32::NAN, None), 0.0);
+        }
+    }
+
+    #[test]
+    fn param_binding_maps_direct_linear_exponential_and_power_curves() {
+        let range = Some(Range {
+            min: 0.0,
+            max: 100.0,
+            default: 50.0,
+            step: None,
+        });
+        let direct = ParamBinding::new(ir::Scope::Instrument, ir::ParamAddr::Volume);
+        assert!((direct.to_physical(-6.0, range) - -6.0).abs() < 1e-6);
+        assert!((direct.from_physical(-6.0, range) - -6.0).abs() < 1e-6);
+
+        let linear = ParamBinding::with_map(
+            ir::Scope::Instrument,
+            ir::ParamAddr::Pan,
+            ParamMap::Linear {
+                min: -1.0,
+                max: 1.0,
+            },
+        );
+        assert!((linear.to_physical(50.0, range) - 0.0).abs() < 1e-6);
+        assert!((linear.from_physical(0.5, range) - 75.0).abs() < 1e-5);
+
+        let exp = ParamBinding::with_map(
+            ir::Scope::Group(0),
+            ir::ParamAddr::FilterCutoff { insert: 0 },
+            ParamMap::Exponential {
+                min: 20.0,
+                max: 20_000.0,
+            },
+        );
+        let mid_hz = exp.to_physical(50.0, range);
+        assert!((mid_hz - (20.0_f32 * 20_000.0_f32).sqrt()).abs() < 1e-2);
+        assert!((exp.from_physical(mid_hz, range) - 50.0).abs() < 1e-4);
+
+        let power = ParamBinding::with_map(
+            ir::Scope::Group(0),
+            ir::ParamAddr::FilterResonance { insert: 0 },
+            ParamMap::Power {
+                min: 0.0,
+                max: 1.0,
+                exponent: 2.0,
+            },
+        );
+        assert!((power.to_physical(50.0, range) - 0.25).abs() < 1e-6);
+        assert!((power.from_physical(0.25, range) - 50.0).abs() < 1e-4);
     }
 
     fn image(path: &str, frames: u32) -> Asset {
@@ -1561,6 +2106,8 @@ mod tests {
         let label = Widget::new("$title", page, Rect::new(0, 0, 100, 20), Kind::Label);
         Interface {
             source: Source::Ksp { slot: 0 },
+            z_order: ZOrder::Global,
+            stock_skin: StockSkin::Kontakt,
             pages: vec![Page {
                 name: "Main".into(),
                 size: Size {
@@ -1679,7 +2226,7 @@ mod tests {
                 WidgetRef(4)
             ]
         );
-        ui.source = Source::PerformanceView;
+        ui.z_order = ZOrder::Global;
         assert_eq!(
             ui.draw_order(PageRef(0)),
             [
@@ -1693,9 +2240,9 @@ mod tests {
     }
 
     #[test]
-    fn lua_panels_draw_before_children_and_by_z() {
+    fn sibling_local_panels_draw_before_children_and_by_z() {
         let mut ui = sample();
-        ui.source = Source::FalconLua;
+        ui.z_order = ZOrder::SiblingLocal;
         // Label (z 0) before the panel (z 1); the knob straight after its panel.
         assert_eq!(
             ui.draw_order(PageRef(0)),
@@ -1726,6 +2273,7 @@ mod tests {
             size: None,
             color: Rgba::rgb(0),
             align: Align::Left,
+            ..TextStyle::default()
         });
         assert_eq!(ui.validate(), Err(Error::AssetKind(AssetRef(2))));
     }

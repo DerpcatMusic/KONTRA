@@ -86,6 +86,8 @@ pub enum Loading {
 pub struct Library {
     pub name: String,
     pub format: Format,
+    /// Whether the library is readable or guarded by DRM (PACE/iLok, Native Access, etc.).
+    pub protection: Protection,
     /// Its instruments by path inside the library: `Folder/Name`.
     pub presets: Vec<String>,
     /// Which of `presets` (sorted) are presets of an instrument, recalled
@@ -97,6 +99,28 @@ pub struct Library {
     /// Pictures that may be its cover, best first, as the host's cover
     /// store reads them; the first that decodes is shown.
     pub art: Vec<String>,
+}
+
+/// DRM protection status surfaced on a browser library.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Protection {
+    /// Open / readable library.
+    #[default]
+    Open,
+    /// Locked by third-party DRM.
+    Protected {
+        /// Human-readable DRM system name (e.g. `"PACE / iLok"`, `"Native Access / NICNT"`).
+        system: String,
+        /// Explanation shown in tooltips and detail notices.
+        detail: String,
+    },
+}
+
+impl Protection {
+    #[must_use]
+    pub const fn is_protected(&self) -> bool {
+        matches!(self, Self::Protected { .. })
+    }
 }
 
 /// Which family of libraries the browser lists.

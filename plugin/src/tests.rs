@@ -2488,3 +2488,71 @@ fn folder_picker_error_surfaces_as_a_visible_notice() {
         view.reports()
     );
 }
+
+#[test]
+fn protection_status_maps_into_editor_libraries_for_all_systems() {
+    use kontra_library::{Format, ProtectionStatus, ProtectionSystem};
+    use kontra_ui::app::Protection;
+
+    let mut browser = kontra_host::browser::Browser::open(None, None);
+    browser.catalog.libraries = vec![
+        kontra_library::Library {
+            dir: PathBuf::from("/libs/OpenBank"),
+            name: "OpenBank".into(),
+            format: Format::Uvi,
+            protection: ProtectionStatus::Open,
+            ..Default::default()
+        },
+        kontra_library::Library {
+            dir: PathBuf::from("/libs/PaceBank.ufs"),
+            name: "PaceBank".into(),
+            format: Format::Uvi,
+            protection: ProtectionStatus::Protected {
+                system: ProtectionSystem::PaceIlok,
+                detail: "PACE/iLok encrypted archive".into(),
+            },
+            ..Default::default()
+        },
+        kontra_library::Library {
+            dir: PathBuf::from("/libs/NiBank"),
+            name: "NiBank".into(),
+            format: Format::Kontakt,
+            protection: ProtectionStatus::Protected {
+                system: ProtectionSystem::NativeAccess,
+                detail: "Native Access activation required".into(),
+            },
+            ..Default::default()
+        },
+        kontra_library::Library {
+            dir: PathBuf::from("/libs/OtherBank"),
+            name: "OtherBank".into(),
+            format: Format::Uvi,
+            protection: ProtectionStatus::Protected {
+                system: ProtectionSystem::Unknown("Custom DRM".into()),
+                detail: "Unknown DRM container".into(),
+            },
+            ..Default::default()
+        },
+    ];
+
+    let listed = crate::editor::libraries(&browser);
+    let protections: Vec<&Protection> = listed.iter().map(|l| &l.protection).collect();
+    assert_eq!(
+        protections,
+        vec![
+            &Protection::Open,
+            &Protection::Protected {
+                system: ProtectionSystem::PaceIlok.to_string(),
+                detail: "PACE/iLok encrypted archive".into(),
+            },
+            &Protection::Protected {
+                system: ProtectionSystem::NativeAccess.to_string(),
+                detail: "Native Access activation required".into(),
+            },
+            &Protection::Protected {
+                system: ProtectionSystem::Unknown("Custom DRM".into()).to_string(),
+                detail: "Unknown DRM container".into(),
+            },
+        ]
+    );
+}

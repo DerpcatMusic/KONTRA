@@ -64,9 +64,14 @@ pub(super) fn view(
                 // taller, it scrolls down inside its own box, not the rack.
                 let el = row![spacer(), page.shrink(0), spacer()]
                     .w(Len::Pct(100.))
-                    .scroll();
+                    .scroll()
+                    .id(format!("part-{n}-face-x"));
                 let el = if size.1 * scale > room.1 + 0.5 && room.1 > 0. {
-                    col![el].w(Len::Pct(100.)).h(room.1).scroll()
+                    col![el]
+                        .w(Len::Pct(100.))
+                        .h(room.1)
+                        .scroll()
+                        .id(format!("part-{n}-face-y"))
                 } else {
                     el
                 };

@@ -83,6 +83,7 @@ fn groups(ui: &mut Ui, p: &Part, n: usize, v: &mut View) -> El {
         .h(TEXT * 22.)
         .shrink(0)
         .scroll()
+        .id(format!("part-{n}-groups"))
 }
 
 /// The keys the grid spans: the shown zones', whole octaves.

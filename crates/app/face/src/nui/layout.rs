@@ -888,6 +888,8 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
             let style = ui::TextStyle {
                 font: ui::Font::Default,
                 size: Some(env.font as f32),
+                weight: None,
+                inset: None,
                 color: rgba(env.color, 1.),
                 align: ui::Align::Center,
             };

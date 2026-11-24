@@ -166,6 +166,9 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         line("New parts: own output", own.el),
     ]
     .gap(SPACE)
+    .scroll()
+    .id("settings-scroll")
+    .min_h(0)
 }
 
 /// The open sheet: Settings, a preset dialog or About.

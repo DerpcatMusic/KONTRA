@@ -566,7 +566,8 @@ fn catalog(
         .into_iter()
         .find(|v| !v.is_empty())
         .unwrap_or_default();
-    let uvi_bank = bank && ext(&found.dir) == "ufs";
+    let uvi_bank = (bank && ext(&found.dir) == "ufs")
+        || (presets.is_empty() && art.iter().any(|p| ext(p) == "ufs"));
     let uvi = presets.iter().filter(|p| ext(p) == "uvip").count();
     Some(Library {
         name: if name.is_empty() { folder_name } else { name },

@@ -119,6 +119,16 @@ pub fn programs(bank: &Path) -> Result<Vec<String>, Error> {
     bank::Bank::program_paths(bank)
 }
 
+/// Lists program paths and inspects the protection state from the same UFS
+/// directory. Does not read program payloads or recover keys.
+///
+/// # Errors
+/// When the bank or its directory cannot be opened. An encrypted directory
+/// that cannot be inspected returns an error with its protection status.
+pub fn inspect_programs(bank: &Path) -> Result<(Vec<String>, ProtectionStatus), Error> {
+    bank::Bank::list_programs(bank, true)
+}
+
 /// Reads the program at `path` (see the module docs for the addressing).
 ///
 /// # Errors

@@ -38,6 +38,7 @@ pub(super) fn sheet(ui: &mut Ui, app: &mut App, pick: FilePick, out: &mut Vec<Ac
         true => caption("Nothing saved for this instrument yet.").fill(secondary()),
         false => (col(rows).gap(1).w(Len::Pct(100.)))
             .scroll()
+            .id("pick-list")
             .h(ROWS * (CONTROL + 1.))
             .w(Len::Pct(100.))
             .min_h(0),

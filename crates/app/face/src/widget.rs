@@ -75,6 +75,7 @@ pub(super) fn widget(
     let display = || ui::Display {
         ratio: f64::from(param(2).filter(|&r| r != 0).unwrap_or(1)),
         unit: unit(p.int("$CONTROL_PAR_UNIT").unwrap_or(0)).into(),
+        format: ui::ValueFormat::FixedPrecision,
     };
     let array = match cells {
         Cells::Int { base, len } | Cells::Real { base, len } if len > 1 => Some((base, len)),
@@ -362,6 +363,10 @@ pub(super) fn widget(
         },
         Into::into,
     );
+    // Kontakt's label tabs advance without drawing a missing-glyph box.
+    if kind == ControlKind::Label && w.text.contains('\t') {
+        w.text = w.text.replace('\t', "  ");
+    }
     // A text edit shows its variable once the script or the user wrote it.
     if let Cells::Text { base, .. } = cells
         && let Some(text) = engine
@@ -434,6 +439,13 @@ pub(super) fn widget(
             _ => ui::Role::Background,
         };
         let mut image = ui::ImageUse::new(asset, role);
+        // A button or switch picture, of any frame count, sits one pixel
+        // right and down inside its face (probed in Kontakt 8 at 100 % and 150 %)
+        // and uses Kontakt's 6-state interactive strip layout.
+        if matches!(kind, ControlKind::Button | ControlKind::Switch) {
+            image.inset = [1.0, 1.0];
+            image.strip_mode = ui::StripMode::SixStateKontakt;
+        }
         // KSP: PICTURE_STATE picks the frame of a label, table, value edit
         // or XY pad only. Any other control's value picks its frame; read for
         // all, an unset 0 pinned every knob and switch to its first frame.
@@ -445,6 +457,9 @@ pub(super) fn widget(
             .int("$CONTROL_PAR_PICTURE_STATE")
             .filter(|_| fixed)
             .and_then(|f| u32::try_from(f).ok());
+        if let Some(f) = image.frame {
+            image.strip_mode = ui::StripMode::Fixed(f);
+        }
         w.images.push(image);
     }
     // A pad's cursor pictures: each its own (`set_control_par_str_arr`);

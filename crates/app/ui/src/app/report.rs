@@ -109,7 +109,11 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .fill(secondary())
             .pad(SPACE * 2.)
     } else {
-        col(rows).gap(1).w(Len::Pct(100.)).scroll()
+        col(rows)
+            .gap(1)
+            .w(Len::Pct(100.))
+            .scroll()
+            .id("report-list")
     };
     col![
         strip(tools),

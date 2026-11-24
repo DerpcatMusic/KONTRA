@@ -28,10 +28,12 @@ pub struct View {
     pub(crate) waves: Waves,
 }
 
-/// A KSP script's tree and what keeps it current, or a Lua script's tree.
+/// A KSP script's tree and what keeps it current, a Lua script's tree, or a
+/// script-free interface driven directly by [`model::Binding::Param`].
 enum Shown {
     Ksp(Box<Live>),
     Lua(Box<model::Interface>),
+    Direct(Box<model::Interface>),
 }
 
 /// Whether script slot `slot` asked for its page to be the instrument's
@@ -146,6 +148,20 @@ impl View {
         Some(Self::new(at, Shown::Lua(Box::new(tree)), frame))
     }
 
+    /// A script-free interface whose widgets bind directly to IR parameters
+    /// ([`model::Binding::Param`]) without any script VM round-trip.
+    #[must_use]
+    pub fn direct(tree: model::Interface) -> Self {
+        Self {
+            slot: 0,
+            shown: Shown::Direct(Box::new(tree)),
+            revision: 0,
+            frame: None,
+            library: None,
+            waves: Waves::default(),
+        }
+    }
+
     fn new(slot: u8, shown: Shown, frame: Box<LookFrame>) -> Self {
         Self {
             slot,
@@ -162,7 +178,14 @@ impl View {
     pub fn tree(&self) -> &model::Interface {
         match &self.shown {
             Shown::Ksp(live) => &live.tree,
-            Shown::Lua(tree) => tree,
+            Shown::Lua(tree) | Shown::Direct(tree) => tree,
+        }
+    }
+
+    fn tree_mut(&mut self) -> &mut model::Interface {
+        match &mut self.shown {
+            Shown::Ksp(live) => &mut live.tree,
+            Shown::Lua(tree) | Shown::Direct(tree) => tree,
         }
     }
 
@@ -184,6 +207,7 @@ impl View {
                 self.frame = Some(frame.kept());
                 return;
             }
+            Shown::Direct(_) => return,
         };
         let Some(face) = faces.get(usize::from(self.slot)).and_then(Option::as_ref) else {
             return;
@@ -230,6 +254,49 @@ impl View {
         let set = live.tap(widget, value)?;
         self.revision += 1;
         Some(set.into_iter().map(|(id, v)| (slot, id, v)).collect())
+    }
+
+    /// Direct IR parameter binding behind `widget`, mapped to its physical
+    /// value; `None` for script-backed or unbound widgets.
+    #[must_use]
+    pub fn param(
+        &self,
+        widget: usize,
+        value: f64,
+    ) -> Option<(kontra_engine::ir::Scope, kontra_engine::ir::ParamAddr, f32)> {
+        let w = self.tree().widgets.get(widget)?;
+        let model::Binding::Param(binding) = w.binding else {
+            return None;
+        };
+        Some((
+            binding.scope,
+            binding.addr,
+            binding.to_physical(value, w.range()),
+        ))
+    }
+
+    /// Stores a direct parameter edit and returns the mapping of the stored
+    /// value, so the engine and the editor agree on integer controls.
+    pub(crate) fn apply_param_value(
+        &mut self,
+        widget: usize,
+        value: f64,
+    ) -> Option<(kontra_engine::ir::Scope, kontra_engine::ir::ParamAddr, f32)> {
+        let w = self.tree().widgets.get(widget)?;
+        let (next, value) = match w.value {
+            Some(model::Value::Integer(_)) => {
+                let value = value.round() as i32;
+                (model::Value::Integer(value), f64::from(value))
+            }
+            _ => (model::Value::Real(value), value),
+        };
+        let param = self.param(widget, value)?;
+        let w = self.tree_mut().widgets.get_mut(widget)?;
+        if w.value.as_ref() != Some(&next) {
+            w.value = Some(next);
+            self.revision += 1;
+        }
+        Some(param)
     }
 
     /// The script control behind `widget`, as (slot, UI id), and `value`

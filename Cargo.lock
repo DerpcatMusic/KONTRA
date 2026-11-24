@@ -2203,6 +2203,7 @@ dependencies = [
 name = "kontra-ui-model"
 version = "0.0.0"
 dependencies = [
+ "kontra-ir",
  "kontra-macros",
 ]
 

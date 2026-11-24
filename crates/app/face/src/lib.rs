@@ -317,6 +317,17 @@ impl Builder<'_> {
                     0 | 2 | 3 | 4 | 6 | 8 | 9 | 10 | 11 | 15 | 26 => Some(10.),
                     _ => None,
                 }),
+                // Kontakt's stock faces run in their own weights (Kontakt 8 oracle probe).
+                weight: if bitmap.is_none() {
+                    match font {
+                        1 | 5 | 7 | 16 | 17 | 19 | 20 | 21 => Some(700.),
+                        12..=14 | 18 | 22..=25 => Some(600.),
+                        _ => None,
+                    }
+                } else {
+                    None
+                },
+                inset: None,
                 color: factory.map_or(ui::Rgba::default(), |(_, c)| ui::Rgba::rgb(c)),
                 align: match align {
                     0 => ui::Align::Left,
@@ -534,6 +545,11 @@ impl Live {
         let mut bld = Builder {
             ui: ui::Interface {
                 source: ui::Source::Ksp { slot },
+                z_order: ui::ZOrder::Global,
+                picture_sizing: ui::PictureSizing::IntrinsicWhenUnstretched,
+                stock_skin: ui::StockSkin::Kontakt,
+                text_policy: ui::TextPolicy::KONTAKT,
+                table_style: ui::TableStyle::KONTAKT,
                 ..Default::default()
             },
             assets: HashMap::new(),

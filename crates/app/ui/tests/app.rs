@@ -70,10 +70,7 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
             name: "Areia".into(),
             format: Format::Kontakt,
             presets: vec!["Violins".into()],
-            recalls: Vec::new(),
-            starred: false,
-            favorites: Vec::new(),
-            art: Vec::new(),
+            ..Library::default()
         }],
         ..App::default()
     };
@@ -376,10 +373,7 @@ fn a_preset_dragged_onto_a_part_replaces_it_and_onto_free_space_adds_one() {
             name: "Areia".into(),
             format: Format::Kontakt,
             presets: vec!["Violins".into(), "Violas".into()],
-            recalls: Vec::new(),
-            starred: false,
-            favorites: Vec::new(),
-            art: Vec::new(),
+            ..Library::default()
         }],
         parts: vec![Part {
             name: "Violins".into(),
@@ -458,9 +452,7 @@ fn a_double_click_names_the_focused_part() {
             format: Format::Kontakt,
             presets: vec!["Snapshots/Airy".into(), "Strings".into()],
             recalls: vec![0],
-            starred: false,
-            favorites: Vec::new(),
-            art: Vec::new(),
+            ..Library::default()
         }],
         parts: vec![Part {
             name: "Strings".into(),
@@ -515,10 +507,7 @@ fn the_presets_walk_and_load_by_keys() {
             name: "Strings".into(),
             format: Format::Kontakt,
             presets: presets.iter().map(|p| format!("Instruments/{p}")).collect(),
-            recalls: Vec::new(),
-            starred: false,
-            favorites: Vec::new(),
-            art: Vec::new(),
+            ..Library::default()
         }],
         ..App::default()
     };
@@ -562,10 +551,7 @@ fn mui_audit_passes_across_sizes_and_views() {
             name: "Areia".into(),
             format: Format::Kontakt,
             presets: vec!["Violins".into(), "Celli".into()],
-            recalls: Vec::new(),
-            starred: false,
-            favorites: Vec::new(),
-            art: Vec::new(),
+            ..Library::default()
         }],
         parts: vec![Part {
             name: "Violins".into(),
@@ -656,6 +642,102 @@ fn mui_audit_passes_across_sizes_and_views() {
         assert!(
             findings.is_empty(),
             "PartTab::{tab:?} audit findings:\n{}",
+            findings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
+
+#[test]
+fn protected_library_surfaces_lock_badge_tooltip_banner_and_passes_audit() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![
+            Library {
+                name: "Locked Falcon Bank".into(),
+                format: Format::Uvi,
+                protection: app::Protection::Protected {
+                    system: "PACE / iLok".into(),
+                    detail: "PACE/iLok-encrypted UFS bank requires UVI Workstation/Falcon license"
+                        .into(),
+                },
+                presets: Vec::new(),
+                ..Library::default()
+            },
+            Library {
+                name: "Open Falcon Bank".into(),
+                format: Format::Uvi,
+                protection: app::Protection::Open,
+                presets: vec!["Pads/Warm Pad".into()],
+                ..Library::default()
+            },
+        ],
+        ..App::default()
+    };
+    app.view.format = Format::Uvi;
+    settle(&mut ui, &mut app);
+
+    // Card carries locked status in its accessibility name and hover tooltip.
+    let card_surface = ui.scene().and_then(|s| s.surface("library-0")).cloned();
+    assert!(card_surface.is_some(), "protected library card is rendered");
+    let card_frame = card_surface.as_ref().map(|s| s.frame);
+    if let Some(f) = card_frame {
+        let hover = PointerInput {
+            pos: Some(Point::new(
+                f.x + f.size.width / 2.,
+                f.y + f.size.height / 2.,
+            )),
+            ..Default::default()
+        };
+        let mut tip = None;
+        for _ in 0..3 {
+            let r = app::view(&mut ui, &mut app);
+            let res = ui.frame(
+                r.el,
+                Some(Size::new(900., 600.)),
+                Input {
+                    pointer: hover,
+                    ..Default::default()
+                },
+                0.5,
+            );
+            tip = res.ok().and_then(|out| out.tip.map(|(t, _)| t));
+        }
+        assert!(
+            tip.as_deref()
+                .is_some_and(|t| t.contains("Locked (PACE / iLok)") && t.contains("iLok")),
+            "expected lock tooltip on protected library card, got {tip:?}"
+        );
+    }
+
+    // Selecting the protected library surfaces the banner pill and empty-presets lock notice.
+    click(&mut ui, &mut app, "library-0");
+    assert_eq!(app.view.library, Some(0));
+    assert!(
+        ui.scene()
+            .and_then(|s| s.surface("library-protection-badge"))
+            .is_some(),
+        "selected protected library banner should show lock badge"
+    );
+    assert!(
+        ui.scene()
+            .and_then(|s| s.surface("library-protection-notice"))
+            .is_some(),
+        "empty protected library should show protection notice instead of generic empty text"
+    );
+
+    // Both Grid and Cards browser layouts pass MUI audit cleanly with protected libraries.
+    for tiles in [app::Tiles::Grid, app::Tiles::Cards] {
+        app.view.tiles = tiles;
+        let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
+            app::view(ui, &mut app).el
+        });
+        assert!(
+            findings.is_empty(),
+            "Protected library ({tiles:?}) audit findings:\n{}",
             findings
                 .iter()
                 .map(ToString::to_string)

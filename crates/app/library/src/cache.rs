@@ -13,7 +13,7 @@ use crate::{BankError, BankInspector, BankListing};
 
 /// Bumped when what is kept, or how it is read, changes; an older file is
 /// dropped whole.
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 static SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
 

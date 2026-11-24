@@ -2,7 +2,7 @@
 //! placement, grid page heights and stock control sizes, and a picture's
 //! own size on the axes it does not stretch (ported from v2's `ir_view`).
 
-use kontra_ui_model::{AssetKind, Interface, Kind, Orientation, Placement, Role, Source};
+use kontra_ui_model::{AssetKind, Interface, Kind, Orientation, PictureSizing, Placement, Role};
 
 /// Kontakt's layout grid (`move_control`): column and row pitch, and the
 /// first cell's corner; `set_ui_height` rows are [`GRID_ROW_HEIGHT`] tall.
@@ -73,7 +73,7 @@ pub fn resolve(tree: &mut Interface, changed: impl IntoIterator<Item = usize>) {
             w.auto_size = false;
             w.default_axes = [false; 2];
         }
-        if tree.source == Source::FalconLua {
+        if tree.picture_sizing == PictureSizing::PreserveAuthoredRect {
             continue;
         }
         let meta = w

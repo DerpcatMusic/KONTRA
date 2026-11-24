@@ -1827,6 +1827,80 @@ fn loudest(audio: &mut RackAudio) -> f32 {
 }
 
 #[test]
+fn browser_keeps_protected_uvi_banks_without_listable_programs() {
+    use kontra_host::browser::Browser;
+    use kontra_library::{Format, ProtectionSystem};
+    use std::time::{Duration, Instant};
+
+    let root = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("protected-uvi-browser");
+    let _ = std::fs::remove_dir_all(&root);
+    let banks = root.join("banks");
+    std::fs::create_dir_all(banks.join("Nested")).unwrap();
+
+    // Clear UFS directory metadata with one unlinked protected member.
+    let mut bank = vec![0; 320];
+    bank[..4].copy_from_slice(b"UFS2");
+    bank[4..8].copy_from_slice(&3u32.to_le_bytes());
+    let mut record = vec![0; 289];
+    record[..4].copy_from_slice(&0x6758_50e4u32.to_le_bytes());
+    record[4..14].copy_from_slice(b"Sample.bin");
+    record[260..268].copy_from_slice(&16u64.to_le_bytes());
+    record[268..276].copy_from_slice(&320u64.to_le_bytes());
+    record[276] = 9;
+    bank.extend_from_slice(&(record.len() as u64).to_le_bytes());
+    bank.extend_from_slice(&record);
+    let size = bank.len() as u64;
+    bank[32..40].copy_from_slice(&size.to_le_bytes());
+    let locked = banks.join("Locked.ufs");
+    std::fs::write(&locked, &bank).unwrap();
+    std::fs::write(banks.join("Nested/Locked.ufs"), &bank).unwrap();
+    bank[320 + 8 + 276] = 0;
+    std::fs::write(banks.join("Empty.ufs"), &bank).unwrap();
+    assert!(kontra_format_uvi::programs(&locked).unwrap().is_empty());
+
+    let cache_dir = root.join("cache");
+    // Seed the old index exactly as the previous browser would have done.
+    let mut cache = kontra_library::Cache::default();
+    kontra_library::scan(
+        &[kontra_library::Root {
+            path: banks.clone(),
+            single: false,
+        }],
+        &kontra_library::Progress::default(),
+        &mut cache,
+        &|path| kontra_format_uvi::programs(path).map_err(|e| e.to_string()),
+    )
+    .unwrap();
+    let index = cache_dir.join("kontra-v3/library-index.json");
+    cache.save(&index).unwrap();
+    let mut old: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
+    old["version"] = 2.into();
+    std::fs::write(&index, serde_json::to_vec(&old).unwrap()).unwrap();
+
+    let mut browser = Browser::open(None, Some(&cache_dir));
+    browser.add_root(banks);
+    let start = Instant::now();
+    while browser.scanning() && start.elapsed() < Duration::from_secs(5) {
+        browser.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!browser.scanning(), "UVI scan did not finish");
+    let libraries = &browser.catalog.libraries;
+    assert_eq!(libraries.len(), 2, "{libraries:?}");
+    for name in ["Locked", "Nested"] {
+        let library = libraries.iter().find(|l| l.name == name).unwrap();
+        assert_eq!(library.format, Format::Uvi);
+        assert!(library.presets.is_empty());
+        assert_eq!(
+            library.protection.system(),
+            Some(&ProtectionSystem::PaceIlok)
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn a_moved_library_is_said_once_offered_found_and_plays_once_taken() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("moved-library");
     let _ = std::fs::remove_dir_all(&dir);
