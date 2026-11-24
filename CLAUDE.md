@@ -18,7 +18,7 @@ Before designing or changing anything in v3, read
   modulation, sample accuracy, efficiency);
 - the five-question design test every PR answers.
 
-How to build: [docs/architecture-v3/README.md](docs/architecture-v3/README.md)
-(the ten rules) and [docs/ENGINE.md](docs/ENGINE.md) (one engine, KISS and
+How to build: inside the Matari monorepo follow root `AGENTS.md` (`matari fast kontra`, `matari check --project kontra`, `matari build kontra --clap --vst3` under root `rust-toolchain.toml` + `build-slot`; standalone mirror builds use `cargo` directly), [docs/architecture-v3/README.md](docs/architecture-v3/README.md)
+(the ten rules), and [docs/ENGINE.md](docs/ENGINE.md) (one engine, KISS and
 YAGNI). How to work on a task: [12-WORKFLOW.md](docs/architecture-v3/12-WORKFLOW.md)
 and the `v3-task` skill.
