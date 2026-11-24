@@ -39,10 +39,12 @@ pub(super) struct Widget<'a> {
     pub look: Option<stock::Look>,
     pub stock: bool,
     pub words: String,
+    /// Drawn in KONTRA's look, without the pictures its controls replace.
+    pub bare: bool,
 }
 
 /// Project `page` from `tree` using its resolved geometry. `bare` selects
-/// the Vector presentation; the same bounds, stacking and visibility apply.
+/// the KONTRA presentation; the same bounds, stacking and visibility apply.
 pub(super) fn page<'a>(
     tree: &'a Interface,
     page: PageRef,
@@ -71,6 +73,9 @@ pub(super) fn page<'a>(
                 return None;
             }
             let held = pressed.binary_search(&index).is_ok();
+            // A wordless button's picture is its label: it keeps it
+            // (Interface::needed_assets).
+            let bare = bare && !w.label_in_image();
             let picture = |use_: &ImageUse| {
                 let (path, meta) = image_asset(tree, use_.asset)?;
                 Some(Picture {
@@ -116,7 +121,8 @@ pub(super) fn page<'a>(
             let shown = (faces.iter())
                 .find(|u| over && u.role == hover)
                 .or(faces.first());
-            let picture = shown.filter(|_| !bare).and_then(|u| picture(u));
+            let picture =
+                (shown.filter(|u| !bare || !u.role.replaced_by_vector())).and_then(|u| picture(u));
             let style_ref = resolve_style(w, held, over);
             let style = style_ref.and_then(|s| tree.styles.get(s.0));
             let text_shift = held
@@ -151,6 +157,7 @@ pub(super) fn page<'a>(
                 look,
                 stock,
                 words,
+                bare,
             })
         })
         .collect();

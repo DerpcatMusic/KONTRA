@@ -4,7 +4,7 @@
 use kontra_ui_model::PageRef;
 use mui::prelude::*;
 
-use super::{Action, FACE_SCALES, FaceLook, Part, PartTab, View};
+use super::{Action, FACE_SCALES, Part, PartTab, View};
 use crate::keyboard::note_name;
 use crate::kit::{self, Icon, glyph, icon_button, interactive, latch, section};
 use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, part_color, secondary};
@@ -34,50 +34,40 @@ pub(super) fn view(
                 size,
             );
             let look = p.look.unwrap_or(v.face_look);
-            let (edits, el) = if look == FaceLook::Kontra {
-                super::controls::view(ui, n, &face.tree, PageRef(0), &mut v.menu)
-            } else {
-                let (mut edits, popup) =
-                    input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
-                if let Some(drag) = &v.files {
-                    let page = (&face.tree, PageRef(0));
-                    edits.extend(input::files(ui, n, page, scale, drag, &mut face.gesture));
-                }
-                // Shown this frame (a selector's browsing is drawn from them).
-                input::apply(&mut face.tree, &edits);
-                let (shown, moving) = face.meters.update(&p.level, ui.time());
-                if moving {
-                    ui.repaint_in(crate::meter::TICK);
-                }
-                let at = (scale, shown);
-                let draw = if look == FaceLook::Vector {
-                    view::vector_page
-                } else {
-                    view::page
-                };
-                let (page, _) = draw(ui, n, &face.tree, PageRef(0), &mut face.pictures, at);
-                let page = match popup {
-                    Some(menu) => stack![page, menu],
-                    None => page,
-                };
-                // Wider than the rack at a fixed scale, it scrolls sideways;
-                // taller, it scrolls down inside its own box, not the rack.
-                let el = row![spacer(), page.shrink(0), spacer()]
-                    .w(Len::Pct(100.))
-                    .scroll()
-                    .id(format!("part-{n}-face-x"));
-                let el = if size.1 * scale > room.1 + 0.5 && room.1 > 0. {
-                    col![el]
-                        .w(Len::Pct(100.))
-                        .h(room.1)
-                        .scroll()
-                        .id(format!("part-{n}-face-y"))
-                } else {
-                    el
-                };
-                (edits, el)
-            };
+            let (mut edits, popup) =
+                input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
+            if let Some(drag) = &v.files {
+                let page = (&face.tree, PageRef(0));
+                edits.extend(input::files(ui, n, page, scale, drag, &mut face.gesture));
+            }
+            // Shown this frame (a selector's browsing is drawn from them).
             input::apply(&mut face.tree, &edits);
+            let (shown, moving) = face.meters.update(&p.level, ui.time());
+            if moving {
+                ui.repaint_in(crate::meter::TICK);
+            }
+            let at = (scale, shown);
+            let (page, _) =
+                view::page_as(ui, n, &face.tree, PageRef(0), &mut face.pictures, at, look);
+            let page = match popup {
+                Some(menu) => stack![page, menu],
+                None => page,
+            };
+            // Wider than the rack at a fixed scale, it scrolls sideways;
+            // taller, it scrolls down inside its own box, not the rack.
+            let el = row![spacer(), page.shrink(0), spacer()]
+                .w(Len::Pct(100.))
+                .scroll()
+                .id(format!("part-{n}-face-x"));
+            let el = if size.1 * scale > room.1 + 0.5 && room.1 > 0. {
+                col![el]
+                    .w(Len::Pct(100.))
+                    .h(room.1)
+                    .scroll()
+                    .id(format!("part-{n}-face-y"))
+            } else {
+                el
+            };
             out.extend(edits.into_iter().filter_map(|e| {
                 let (widget, keys) = (e.widget.0, e.keys);
                 let control = |cell, value| Action::Control {

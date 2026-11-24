@@ -6,7 +6,7 @@ use std::sync::Arc;
 use mui::prelude::*;
 
 use super::browser::Carried;
-use super::{Action, App, FaceLook, Part, PartTab, db, part};
+use super::{Action, App, Part, PartTab, Presentation, db, part};
 use crate::kit::{self, Icon, icon_button, knob, latch, nudge, rule, tab};
 use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, lift, part_color, secondary};
 
@@ -525,9 +525,9 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     }
     if p.face.is_some() && p.tab == PartTab::Interface {
         let now = p.look.unwrap_or(app.view.face_look);
-        let at = FaceLook::ALL.iter().position(|l| *l == now);
+        let at = Presentation::ALL.iter().position(|l| *l == now);
         let label = at
-            .and_then(|a| FaceLook::LABELS.get(a))
+            .and_then(|a| Presentation::LABELS.get(a))
             .copied()
             .unwrap_or("");
         let pick = kit::dropdown(
@@ -535,10 +535,10 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
             menu,
             &format!("part-{n}-look"),
             (None, label, "How this interface is drawn"),
-            &FaceLook::LABELS,
+            &Presentation::LABELS,
             at,
         );
-        if let Some(&l) = pick.changed.and_then(|a| FaceLook::ALL.get(a)) {
+        if let Some(&l) = pick.changed.and_then(|a| Presentation::ALL.get(a)) {
             p.look = Some(l);
         }
         items.push(pick.el);

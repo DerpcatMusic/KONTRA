@@ -3,7 +3,7 @@
 
 use mui::prelude::*;
 
-use super::{Action, App, Build, FaceLook, SCALES, Sheet};
+use super::{Action, App, Build, Presentation, SCALES, Sheet};
 use crate::kit::{self, Icon, button, icon_button, interactive, latch, rule, section};
 use crate::theme::{self, CONTROL, Look, SPACE, TEXT, TIGHT, TOKENS, secondary};
 
@@ -141,22 +141,24 @@ fn interface(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if let Some(n) = face.changed {
         app.view.face_scale = n;
     }
-    let at = FaceLook::ALL.iter().position(|l| *l == app.view.face_look);
+    let at = Presentation::ALL
+        .iter()
+        .position(|l| *l == app.view.face_look);
     let look = kit::dropdown(
         ui,
         &mut app.view.menu,
         "face-look",
         (
             None,
-            at.and_then(|a| FaceLook::LABELS.get(a))
+            at.and_then(|a| Presentation::LABELS.get(a))
                 .copied()
                 .unwrap_or("Original"),
             "How a library's view is drawn, unless its part chose",
         ),
-        &FaceLook::LABELS,
+        &Presentation::LABELS,
         at,
     );
-    if let Some(&l) = look.changed.and_then(|a| FaceLook::ALL.get(a)) {
+    if let Some(&l) = look.changed.and_then(|a| Presentation::ALL.get(a)) {
         app.view.face_look = l;
     }
     group(
