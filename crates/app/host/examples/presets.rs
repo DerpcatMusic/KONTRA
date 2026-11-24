@@ -10,6 +10,8 @@
 //! how a fresh load of `b` differs from the pick. `SHOW_DIFF=1` prints the
 //! values that differ.
 
+#![allow(clippy::disallowed_types)]
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

@@ -1,0 +1,10 @@
+# Test code may unwrap, expect, panic and index; production code may not (09-BUILD.md §1.8).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Prevent type-erased Box<dyn std::error::Error> regressions in host APIs; use typed kontra_host::Error.
+disallowed-types = [
+    { path = "std::error::Error", reason = "use typed kontra_host::Error instead of Box<dyn std::error::Error>" },
+]

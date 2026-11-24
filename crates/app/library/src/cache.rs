@@ -108,6 +108,28 @@ impl Cache {
         self.dirty |= before != self.entries.len();
     }
 
+    /// Evicts cached entries currently marked [`ProtectionStatus::Protected`]
+    /// when `should_recheck(path)` reports that external unlock/key state is
+    /// now available, so the next scan re-evaluates them without touching the
+    /// bank file's timestamp.
+    pub fn invalidate_protected(&mut self, mut should_recheck: impl FnMut(&Path) -> bool) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|path, entry| {
+            let is_protected = match &entry.metadata {
+                Metadata::Programs { protection, .. } | Metadata::Failed { protection, .. } => {
+                    protection.is_protected()
+                }
+                Metadata::Product(..) | Metadata::NoProduct => false,
+            };
+            !(is_protected && should_recheck(path))
+        });
+        let dropped = before - self.entries.len();
+        if dropped > 0 {
+            self.dirty = true;
+        }
+        dropped
+    }
+
     fn memo(&mut self, path: &Path, read: impl FnOnce() -> Metadata) -> Metadata {
         self.seen.insert(path.to_path_buf());
         let Some(now) = stamp(path) else {

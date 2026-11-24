@@ -19,7 +19,8 @@ use kontra_ir as ir;
 
 pub use format::{
     Confidence, EntryRef, Format, FormatError, FormatId, LoadCx, LoadOptions, ProtectionStatus,
-    ProtectionSystem, Registry, ScanCollector, ScanEntry, ScanSink,
+    ProtectionSystem, Registry, STANDARD_SKIP_DIRS, ScanCollector, ScanEntry, ScanSink, head_text,
+    scan_dir,
 };
 
 /// Library folders the player moved, as (old, new). Every reader looks for a
@@ -121,6 +122,13 @@ impl Notes {
             .entry((impact, feature.into()))
             .or_insert((0, detail.to_string()));
         entry.0 += 1;
+    }
+
+    /// Forwards already-constructed [`ir::Diagnostic`] items into this accumulator.
+    pub fn record_diagnostics(&mut self, diagnostics: &[ir::Diagnostic]) {
+        for diag in diagnostics {
+            self.add(diag.impact, &diag.feature, &diag.detail);
+        }
     }
 
     /// Records a DRM-protected container or member cleanly as a [`ir::Impact::Broken`]

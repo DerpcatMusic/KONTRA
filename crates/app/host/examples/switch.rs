@@ -7,6 +7,8 @@
 //! `KONTRA_PLAY_SECONDS=n` plays four-note chords for n s after each load and
 //! prints resident memory again, as the memory example does.)
 
+#![allow(clippy::disallowed_types)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};

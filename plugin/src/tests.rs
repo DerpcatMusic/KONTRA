@@ -1509,10 +1509,12 @@ fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
     Tick.run(&params);
     assert!(!panel(&params), "the timer never hid the panel");
     // Its 1.28 million persistent cells are read a budget a block: the
-    // commands keep to 5% of a block (a debug build is ten times slower).
+    // commands keep to 5% of a block. A debug build on a shared CI runner
+    // only proves no block stalls (the old capture took a whole block):
+    // its slowest of 20 wall-clock blocks measured 5.8 ms under load.
     // Its timer's own script work is the playtest's to bound.
     let real_ns = BLOCK as f64 * 1e9 / RATE;
-    let share = if cfg!(debug_assertions) { 0.5 } else { 0.05 };
+    let share = if cfg!(debug_assertions) { 1.0 } else { 0.05 };
     assert!(
         commands as f64 <= share * real_ns,
         "a block's commands took {commands} ns of {real_ns} ns"
@@ -2555,4 +2557,53 @@ fn protection_status_maps_into_editor_libraries_for_all_systems() {
             },
         ]
     );
+}
+
+#[test]
+fn block_size_growth_on_reactivate_preserves_loaded_parts_without_reload() {
+    let dir =
+        std::env::temp_dir().join(format!("kontra-plugin-block-growth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sfz = dir.join("Saw.sfz");
+    std::fs::write(&sfz, "<region> sample=*saw key=60\n").unwrap();
+
+    let params = KontraParams::new();
+    let small = AudioConfig::new(RATE, 256);
+    let dsp = Kontra::activate(&params, &small, &InitContext::default()).unwrap();
+    params.shared.request(crate::Request::Load {
+        part: Some(0),
+        path: sfz,
+    });
+    Tick.run(&params);
+    let gen_before = crate::lock(&params.shared.rack)
+        .as_ref()
+        .and_then(|r| r.parts().first())
+        .and_then(Option::as_ref)
+        .map(|p| p.script.generation())
+        .expect("part 0 loaded");
+
+    // Deactivate and reactivate at the same sample rate with a larger max_block_size.
+    Kontra::deactivate(dsp);
+    let large = AudioConfig::new(RATE, 2048);
+    let dsp2 = Kontra::activate(&params, &large, &InitContext::default()).unwrap();
+    assert_eq!(
+        dsp2.audio.as_ref().map(|a| a.max_block()),
+        Some(2048),
+        "audio scratch buffers grew to new max_block_size"
+    );
+    // No Restore request was queued and the part keeps its exact load generation.
+    assert!(
+        !params.shared.has_pending_work(),
+        "block-size growth must not queue a Restore reload"
+    );
+    let gen_after = crate::lock(&params.shared.rack)
+        .as_ref()
+        .and_then(|r| r.parts().first())
+        .and_then(Option::as_ref)
+        .map(|p| p.script.generation())
+        .expect("part 0 still loaded");
+    assert_eq!(gen_after, gen_before);
+    Kontra::deactivate(dsp2);
+    let _ = std::fs::remove_dir_all(&dir);
 }

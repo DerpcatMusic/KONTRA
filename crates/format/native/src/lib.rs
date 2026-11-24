@@ -14,9 +14,20 @@ pub mod schema;
 
 use std::path::Path;
 
-use kontra_format::Notes;
 use kontra_format::builder::SamplePool;
+use kontra_format::{
+    Confidence, EntryRef, Format, FormatError, FormatId, LoadCx, Notes, ProtectionStatus,
+    ScanEntry, ScanSink, scan_dir,
+};
 use kontra_ir as ir;
+
+/// Native `.kontra` format implementation for [`kontra_format::Registry`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Native;
+
+impl Native {
+    pub const ID: FormatId = FormatId::Native;
+}
 
 pub use schema::{
     AudioGraphSpec, BINARY_MAGIC, BellSpec, BusSpec, ChannelLayoutSpec, CrossfadeControlSpec,
@@ -1313,5 +1324,149 @@ const fn unmap_curve(c: ir::Curve) -> CurveSpec {
         ir::Curve::Squared => CurveSpec::Squared,
         ir::Curve::Falling => CurveSpec::Falling,
         ir::Curve::Signed => CurveSpec::Signed,
+    }
+}
+
+fn is_native_extension(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("kontra"))
+}
+
+fn to_format_error(path: &Path, err: Error) -> FormatError {
+    match err {
+        Error::Io(source) => {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                FormatError::not_found(path, source.to_string())
+            } else {
+                FormatError::io(path, source)
+            }
+        }
+        Error::Toml(e) => FormatError::malformed(path, "toml", e.to_string()),
+        Error::TomlWrite(e) => FormatError::malformed(path, "toml", e.to_string()),
+        Error::Json(e) => FormatError::malformed(path, "json", e.to_string()),
+        Error::Binary(detail) => FormatError::malformed(path, "binary", detail),
+        Error::UnsupportedVersion(ver) => FormatError::unsupported(
+            path,
+            format!("unsupported .kontra format version {ver} (max supported: {FORMAT_VERSION})"),
+        ),
+        Error::UnsupportedExport(detail) => FormatError::unsupported(path, detail),
+    }
+}
+
+impl Format for Native {
+    fn id(&self) -> FormatId {
+        Self::ID
+    }
+
+    fn sniff(&self, path: &Path, head: &[u8]) -> Confidence {
+        let ext = is_native_extension(path);
+        let binary_magic = head.starts_with(BINARY_MAGIC);
+        if binary_magic {
+            return if ext {
+                Confidence::Exact
+            } else {
+                Confidence::Header
+            };
+        }
+        if ext {
+            let text = std::str::from_utf8(head)
+                .map(|s| s.trim_start_matches('\u{feff}').trim_start())
+                .unwrap_or_default();
+            if text.starts_with('{') || text.starts_with("version") {
+                return Confidence::Exact;
+            }
+            return Confidence::Extension;
+        }
+        Confidence::None
+    }
+
+    fn scan(&self, root: &Path, out: &mut dyn ScanSink) -> Result<(), FormatError> {
+        scan_dir(root, out, |path, sink| {
+            if is_native_extension(path) {
+                let name = path
+                    .file_stem()
+                    .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+                sink.entry(ScanEntry {
+                    format: Self::ID,
+                    path: path.to_path_buf(),
+                    name,
+                    protection: ProtectionStatus::Open,
+                });
+            }
+        })
+    }
+
+    fn load(&self, entry: &EntryRef, cx: &mut LoadCx<'_>) -> Result<ir::Instrument, FormatError> {
+        let path = entry.full_path();
+        let inst = load(&path).map_err(|err| to_format_error(&path, err))?;
+        cx.diag.record_diagnostics(&inst.diagnostics);
+        Ok(inst)
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+    use kontra_format::{LoadOptions, Notes, Registry, ScanCollector};
+
+    #[test]
+    fn native_format_sniffs_scans_and_loads_via_registry() {
+        let mut reg = Registry::new();
+        reg.register(Native);
+
+        let (fmt, conf) = reg.sniff(Path::new("Pad.kontra"), BINARY_MAGIC).unwrap();
+        assert_eq!((fmt.id(), conf), (FormatId::Native, Confidence::Exact));
+        let (fmt, conf) = reg.sniff(Path::new("Pad.bin"), BINARY_MAGIC).unwrap();
+        assert_eq!((fmt.id(), conf), (FormatId::Native, Confidence::Header));
+        let (fmt, conf) = reg
+            .sniff(Path::new("Pad.kontra"), b"version = 1\nname = \"Pad\"\n")
+            .unwrap();
+        assert_eq!((fmt.id(), conf), (FormatId::Native, Confidence::Exact));
+        let (fmt, conf) = reg.sniff(Path::new("Pad.kontra"), b"").unwrap();
+        assert_eq!((fmt.id(), conf), (FormatId::Native, Confidence::Extension));
+        assert!(
+            reg.sniff(Path::new("Other.toml"), b"version = 1\n")
+                .is_none()
+        );
+
+        let root = std::env::temp_dir().join(format!("kontra-native-fmt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let mut collector = ScanCollector::default();
+        let err = reg.scan(&root.join("missing"), &mut collector).unwrap_err();
+        assert!(matches!(err, FormatError::NotFound { .. }));
+
+        std::fs::create_dir_all(&root).unwrap();
+        let patch = root.join("Pad.kontra");
+        std::fs::write(
+            &patch,
+            r#"version = 1
+name = "Pad"
+[[groups]]
+name = "Main"
+[[groups.zones]]
+sample = "missing.wav"
+keys = [60, 60]
+"#,
+        )
+        .unwrap();
+
+        reg.scan(&root, &mut collector).unwrap();
+        assert_eq!(collector.entries.len(), 1);
+        assert_eq!(collector.entries[0].path, patch);
+        assert_eq!(collector.entries[0].format, FormatId::Native);
+
+        let mut notes = Notes::default();
+        let opts = LoadOptions::default();
+        let mut cx = LoadCx::new(&mut notes, &opts);
+        let inst = reg.load(&patch, &mut cx).unwrap();
+        assert_eq!(inst.name, "Pad");
+        let diags = notes.finish();
+        assert!(
+            diags.iter().any(|d| d.feature == "samples not found"),
+            "missing sample diagnostic should be forwarded to cx.diag: {diags:?}"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

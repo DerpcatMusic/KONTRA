@@ -18,21 +18,31 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 use crate::lock;
 
-/// What a picked folder is for.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What a picked path is for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Wanted {
     /// One more folder of libraries to scan.
     #[default]
     Libraries,
     /// Kontakt's user snapshot folder ([`kontra_library::Prefs::kontakt_snapshots`]).
     Snapshots,
+    /// Save the formatted diagnostics report to the chosen file.
+    ExportReport(String),
 }
 
 impl Wanted {
-    fn title(self) -> &'static str {
+    fn title(&self) -> &'static str {
         match self {
             Self::Libraries => "A folder of libraries",
             Self::Snapshots => "Kontakt's user snapshot folder (User Content)",
+            Self::ExportReport(_) => "Export KONTRA diagnostics report",
+        }
+    }
+
+    fn save_file_name(&self) -> Option<&'static str> {
+        match self {
+            Self::ExportReport(_) => Some("kontra-report.txt"),
+            Self::Libraries | Self::Snapshots => None,
         }
     }
 }
@@ -74,29 +84,47 @@ impl Dialog {
         self.x11_parent.store(xid.unwrap_or(0), Ordering::Release);
     }
 
-    /// Opens the picker at `from` for a folder `wanted` for, unless one is
-    /// open.
+    /// Opens the picker at `from` for a folder or save target `wanted`, unless
+    /// one is already open.
     pub fn ask(&self, wanted: Wanted, from: Option<PathBuf>) {
         let mut picker = lock(&self.picker);
         if matches!(*picker, Some(Picker::Open(..))) {
             return;
         }
+        let title = wanted.title();
+        let save_name = wanted.save_file_name();
         *picker = Some(
-            match self.open(wanted.title(), from.or_else(dirs::home_dir)) {
+            match self.open(title, save_name, from.or_else(dirs::home_dir)) {
                 Ok(job) => Picker::Open(wanted, job),
                 Err(err) => Picker::Failed(err),
             },
         );
     }
 
+    /// Opens a native Save dialog for exporting a diagnostics report.
+    pub fn ask_save_report(&self, contents: String, from: Option<PathBuf>) {
+        self.ask(Wanted::ExportReport(contents), from);
+    }
+
     #[cfg(target_os = "linux")]
-    fn open(&self, title: &str, from: Option<PathBuf>) -> Result<Job, String> {
+    fn open(
+        &self,
+        title: &str,
+        save_name: Option<&str>,
+        from: Option<PathBuf>,
+    ) -> Result<Job, String> {
         use mui_native_dialog::{DialogKind, DialogRequest, Parent};
         let xid = self.x11_parent.load(Ordering::Acquire);
+        let kind = match save_name {
+            Some(file_name) => DialogKind::SaveFile {
+                file_name: Some(file_name.into()),
+            },
+            None => DialogKind::PickFolder { multiple: false },
+        };
         let request = DialogRequest {
             parent: (xid != 0).then_some(Parent::X11(xid)),
             title: title.into(),
-            kind: DialogKind::PickFolder { multiple: false },
+            kind,
             directory: from,
             filters: Vec::new(),
         };
@@ -104,7 +132,12 @@ impl Dialog {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn open(&self, title: &'static str, from: Option<PathBuf>) -> Result<Job, String> {
+    fn open(
+        &self,
+        title: &'static str,
+        save_name: Option<&'static str>,
+        from: Option<PathBuf>,
+    ) -> Result<Job, String> {
         let owner = self.owner.load(Ordering::Acquire);
         std::thread::Builder::new()
             .name("kontra-folder-dialog".into())
@@ -116,7 +149,11 @@ impl Dialog {
                 if cfg!(windows) && owner != 0 {
                     d = d.set_parent(&moose::mui::ParentWindow::win32(owner));
                 }
-                d.pick_folder()
+                if let Some(file_name) = save_name {
+                    d.set_file_name(file_name).save_file()
+                } else {
+                    d.pick_folder()
+                }
             })
             .map_err(|err| err.to_string())
     }

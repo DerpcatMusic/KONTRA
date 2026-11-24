@@ -445,7 +445,7 @@ impl BackgroundTask for Tick {
                         (None, Some(new)) => {
                             (rack.load(new, &path)).map(|()| editor::place(rack, browser, new))
                         }
-                        (None, None) => Err("every part is in use".into()),
+                        (None, None) => Err(kontra_host::Error::NoFreePart),
                     };
                     if let Err(e) = loaded {
                         report.push(format!("{}: {e}", path.display()));
@@ -476,6 +476,15 @@ impl BackgroundTask for Tick {
         match p.shared.folder.picked() {
             Some(Ok((folder::Wanted::Libraries, path))) => browser.add_root(path),
             Some(Ok((folder::Wanted::Snapshots, path))) => browser.set_kontakt(path),
+            Some(Ok((folder::Wanted::ExportReport(contents), path))) => {
+                match std::fs::write(&path, contents) {
+                    Ok(()) => report.push(format!("Exported diagnostics report to {}", path.display())),
+                    Err(err) => report.push(format!(
+                        "Could not export diagnostics report to {}: {err}",
+                        path.display()
+                    )),
+                }
+            }
             Some(Err(err)) => report.push(format!(
                 "Could not open folder picker ({err}). You can also drag and drop a library folder onto KONTRA."
             )),
@@ -567,9 +576,10 @@ impl Plugin for Kontra {
     fn main_thread(_: &Arc<KontraParams>) {}
 
     /// The audio side at the host's rate (allocates; main thread). The one
-    /// the last deactivation parked is kept when its rate and block size
-    /// still fit; otherwise a new rack, and the parts of the one it
-    /// replaces load again into it on the next tick.
+    /// the last deactivation parked is kept whenever its sample rate matches
+    /// (resizing audio scratch/mix buffers on the main thread if the host's
+    /// `max_block_size` grew); otherwise a new rack is built and the previous
+    /// parts reload on the next tick.
     fn activate(
         p: &KontraParams,
         c: &AudioConfig,
@@ -577,9 +587,8 @@ impl Plugin for Kontra {
     ) -> Result<Dsp, PreparationError> {
         let parked = lock(&p.shared.parked).take();
         let mut audio = match parked {
-            Some((rate, audio))
-                if rate == c.sample_rate && audio.max_block() >= c.max_block_size =>
-            {
+            Some((rate, mut audio)) if rate == c.sample_rate => {
+                audio.resize_max_block(c.max_block_size);
                 Some(audio)
             }
             _ => build_rack(p, c),

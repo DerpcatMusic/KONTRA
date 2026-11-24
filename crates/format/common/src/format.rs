@@ -5,6 +5,7 @@
 //! so hosts, scanners, and CLI tools can sniff, inspect protection status, scan
 //! folders/containers, and load [`ir::Instrument`] values uniformly.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
@@ -17,6 +18,145 @@ use crate::Notes;
 
 /// Bytes read from the start of a file when sniffing by header magic.
 const SNIFF_HEAD_BYTES: usize = 64;
+
+/// The sniffed `head` as text, without a leading BOM: all of it when it is
+/// UTF-8, the valid prefix when the read cut the last character short, and
+/// empty when it is not text.
+#[must_use]
+pub fn head_text(head: &[u8]) -> &str {
+    let text = match std::str::from_utf8(head) {
+        Ok(text) => text,
+        Err(e) if e.error_len().is_none() => head
+            .get(..e.valid_up_to())
+            .and_then(|valid| std::str::from_utf8(valid).ok())
+            .unwrap_or_default(),
+        Err(_) => "",
+    };
+    text.trim_start_matches('\u{feff}')
+}
+
+/// Directory names skipped during standard instrument scans (ASCII lowercase).
+pub const STANDARD_SKIP_DIRS: &[&str] =
+    &["samples", "documentation", "documents", "docs", "resources"];
+
+/// Walks `root` (a single file or directory tree) in deterministic sorted order,
+/// invoking `on_file` for each regular file encountered.
+///
+/// - Traversal errors on `root` itself propagate as `Err(FormatError::NotFound)`
+///   or `Err(FormatError::Io)`.
+/// - Unreadable child directories or entries are reported via `out.issue(...)`
+///   and traversal continues.
+/// - Symlink cycles (tracked by canonical directory path), aliases of one
+///   regular file (tracked by canonical file path), hidden dotfiles and
+///   dotdirs, and [`STANDARD_SKIP_DIRS`] are skipped.
+///
+/// # Errors
+/// Returns [`FormatError::NotFound`] when `root` does not exist, or
+/// [`FormatError::Io`] when `root` itself cannot be stat'd or read.
+pub fn scan_dir(
+    root: &Path,
+    out: &mut dyn ScanSink,
+    mut on_file: impl FnMut(&Path, &mut dyn ScanSink),
+) -> Result<(), FormatError> {
+    let root_meta = std::fs::metadata(root).map_err(|err| map_root_io_error(root, err))?;
+    if root_meta.is_file() {
+        on_file(root, out);
+        return Ok(());
+    }
+    if !root_meta.is_dir() {
+        return Ok(());
+    }
+    let root_entries = std::fs::read_dir(root).map_err(|err| map_root_io_error(root, err))?;
+    let mut visited = BTreeSet::new();
+    visited.insert(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
+
+    let mut stack = Vec::new();
+    let mut files = BTreeSet::new();
+    process_dir_entries(
+        root,
+        root_entries,
+        out,
+        &mut on_file,
+        &mut stack,
+        &mut files,
+    );
+
+    while let Some(dir) = stack.pop() {
+        let key = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        if !visited.insert(key) {
+            continue;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                out.issue(&dir, err.to_string(), ProtectionStatus::Open);
+                continue;
+            }
+        };
+        process_dir_entries(&dir, entries, out, &mut on_file, &mut stack, &mut files);
+    }
+    Ok(())
+}
+
+fn map_root_io_error(root: &Path, err: io::Error) -> FormatError {
+    if err.kind() == io::ErrorKind::NotFound {
+        FormatError::not_found(root, err.to_string())
+    } else {
+        FormatError::io(root, err)
+    }
+}
+
+fn process_dir_entries(
+    dir: &Path,
+    entries: std::fs::ReadDir,
+    out: &mut dyn ScanSink,
+    on_file: &mut impl FnMut(&Path, &mut dyn ScanSink),
+    stack: &mut Vec<PathBuf>,
+    files: &mut BTreeSet<(PathBuf, Option<std::ffi::OsString>)>,
+) {
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => paths.push(entry.path()),
+            Err(err) => out.issue(dir, err.to_string(), ProtectionStatus::Open),
+        }
+    }
+    paths.sort();
+
+    let mut child_dirs = Vec::new();
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if name.starts_with('.') {
+            continue;
+        }
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(err) => {
+                out.issue(&path, err.to_string(), ProtectionStatus::Open);
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            if !STANDARD_SKIP_DIRS.contains(&name.as_str()) {
+                child_dirs.push(path);
+            }
+        } else if meta.is_file() {
+            // A symlink alias of a file already seen is the same preset. Keyed
+            // with the extension too: adapters accept by extension, so an
+            // `alias.txt` -> `patch.sfz` must not hide `patch.sfz`.
+            let real = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let ext = path.extension().map(|e| e.to_ascii_lowercase());
+            if files.insert((real, ext)) {
+                on_file(&path, out);
+            }
+        }
+    }
+    // Reverse-push onto the DFS stack so subdirectories visit in ascending sorted order.
+    stack.extend(child_dirs.into_iter().rev());
+}
 
 /// Stable identifier for a sampler instrument format.
 #[non_exhaustive]
@@ -700,5 +840,86 @@ mod tests {
         assert_eq!(locked.system(), Some(&ProtectionSystem::NativeAccess));
         assert_eq!(locked.detail(), Some("missing .nicnt access keys"));
         assert!(locked.to_string().contains("Native Access"));
+    }
+
+    #[test]
+    fn scan_dir_propagates_root_not_found_and_walks_deterministically() {
+        let root = std::env::temp_dir().join(format!("kontra-scan-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let mut collector = ScanCollector::default();
+        let err = scan_dir(&root.join("missing"), &mut collector, |_, _| {}).unwrap_err();
+        assert!(matches!(err, FormatError::NotFound { .. }), "got {err:?}");
+
+        std::fs::create_dir_all(root.join("B_Dir")).unwrap();
+        std::fs::create_dir_all(root.join("A_Dir")).unwrap();
+        std::fs::create_dir_all(root.join("Samples")).unwrap();
+        std::fs::create_dir_all(root.join("Docs")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::write(root.join("z.sfz"), b"").unwrap();
+        std::fs::write(root.join("a.sfz"), b"").unwrap();
+        std::fs::write(root.join(".dot.sfz"), b"").unwrap();
+        std::fs::write(root.join(".hidden/secret.sfz"), b"").unwrap();
+        std::fs::write(root.join("Samples/skip.sfz"), b"").unwrap();
+        std::fs::write(root.join("Docs/skip.sfz"), b"").unwrap();
+        std::fs::write(root.join("A_Dir/first.sfz"), b"").unwrap();
+        std::fs::write(root.join("B_Dir/second.sfz"), b"").unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&root, root.join("A_Dir/cycle")).unwrap();
+
+        let mut seen = Vec::new();
+        scan_dir(&root, &mut collector, |path, _| {
+            seen.push(path.strip_prefix(&root).unwrap().to_path_buf());
+        })
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                PathBuf::from("a.sfz"),
+                PathBuf::from("z.sfz"),
+                PathBuf::from("A_Dir/first.sfz"),
+                PathBuf::from("B_Dir/second.sfz"),
+            ]
+        );
+
+        // Single-file root visits that file directly.
+        let mut single = Vec::new();
+        scan_dir(&root.join("a.sfz"), &mut collector, |path, _| {
+            single.push(path.to_path_buf());
+        })
+        .unwrap();
+        assert_eq!(single, vec![root.join("a.sfz")]);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_dir_visits_a_symlinked_file_once() {
+        let root = std::env::temp_dir().join(format!("kontra-scan-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("patch.sfz"), b"").unwrap();
+        std::fs::write(root.join("other.sfz"), b"").unwrap();
+        std::os::unix::fs::symlink(root.join("patch.sfz"), root.join("alias.sfz")).unwrap();
+        // Sorts first but has another extension: must not hide `other.sfz`'s target.
+        std::os::unix::fs::symlink(root.join("other.sfz"), root.join("a.txt")).unwrap();
+
+        let mut seen = Vec::new();
+        scan_dir(&root, &mut ScanCollector::default(), |path, _| {
+            seen.push(path.strip_prefix(&root).unwrap().to_path_buf());
+        })
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                PathBuf::from("a.txt"),
+                PathBuf::from("alias.sfz"),
+                PathBuf::from("other.sfz")
+            ]
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -129,6 +129,14 @@ pub fn inspect_programs(bank: &Path) -> Result<(Vec<String>, ProtectionStatus), 
     bank::Bank::list_programs(bank, true)
 }
 
+/// Fast read-only check for whether a verified content key is already cached
+/// for the UFS bank at `bank`. Used by library scan caches to invalidate stale
+/// [`ProtectionStatus::Protected`] entries once a bank is unlocked.
+#[must_use]
+pub fn has_cached_key(bank: &Path) -> bool {
+    bank::Bank::has_cached_key(bank)
+}
+
 /// Reads the program at `path` (see the module docs for the addressing).
 ///
 /// # Errors

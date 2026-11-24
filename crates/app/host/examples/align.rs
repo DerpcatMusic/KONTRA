@@ -5,6 +5,8 @@
 //! lands from the beat plus the reported latency.
 //! `cargo run --release -p kontra-host --features align --example align -- <file> [key]`
 
+#![allow(clippy::disallowed_types)]
+
 use std::sync::Arc;
 
 use kontra_align::{Delay, ONSET_DB, Timing, onset_ms, transition_ms};

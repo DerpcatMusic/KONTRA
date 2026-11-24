@@ -71,6 +71,7 @@ impl Browser {
             .name("kontra-scan".into())
             .spawn(move || {
                 let mut cache = cache_path.as_deref().map(Cache::load).unwrap_or_default();
+                cache.invalidate_protected(kontra_format_uvi::has_cached_key);
                 let inspect = |b: &Path| {
                     if b.extension().is_some_and(|e| e.eq_ignore_ascii_case("sf2")) {
                         kontra_format_sf2::list_presets(b)
@@ -215,10 +216,19 @@ impl Browser {
             .cloned()
     }
 
-    /// The player loaded `path`: first among the recent.
+    /// The player loaded `path`: first among the recent. If the library holding
+    /// `path` was marked protected, triggers a rescan so unlocked banks clear
+    /// their stale protection badge.
     pub fn loaded(&mut self, path: &Path) {
+        let was_protected = self
+            .find(path)
+            .and_then(|(l, _)| self.catalog.libraries.get(l))
+            .is_some_and(|l| l.protection.is_protected());
         self.prefs.loaded(path);
         self.changed();
+        if was_protected {
+            self.rescan();
+        }
     }
 
     pub fn star(&mut self, library: usize, on: bool) {

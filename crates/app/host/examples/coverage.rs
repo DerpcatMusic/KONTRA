@@ -5,6 +5,8 @@
 //! translator could not carry into the IR. Writes a ranked markdown report.
 //! `cargo run --release -p kontra-host --example coverage -- <out.md> <library dir>...`
 
+#![allow(clippy::disallowed_types)]
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;

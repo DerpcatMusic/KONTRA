@@ -6,6 +6,8 @@
 //! (`KONTRA_SEQUENTIAL=1` loads one after another; `KONTRA_PRIVATE=1` leaves
 //! every store's pages private, the behaviour before sharing.)
 
+#![allow(clippy::disallowed_types)]
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 

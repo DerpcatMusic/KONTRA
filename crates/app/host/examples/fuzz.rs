@@ -12,6 +12,8 @@
 //! runs it with a backtrace. (The feature leaves the global allocator to this
 //! binary, which aborts any single allocation over 1 GiB.)
 
+#![allow(clippy::disallowed_types)]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};

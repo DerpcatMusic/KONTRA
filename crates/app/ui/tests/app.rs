@@ -746,3 +746,46 @@ fn protected_library_surfaces_lock_badge_tooltip_banner_and_passes_audit() {
         );
     }
 }
+
+#[test]
+fn report_hides_latent_diagnostics_until_developer_toggle_is_enabled() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        report: vec!["[Audible] part 1 (Piano): unsupported fx".into()],
+        report_latent: vec!["[Latent] part 1 (Piano): ignored group.flag".into()],
+        ..App::default()
+    };
+    app.view.tab = app::Tab::Report;
+    settle(&mut ui, &mut app);
+
+    // Only the visible diagnostic row (report-0) exists by default.
+    assert!(ui.scene().and_then(|s| s.surface("report-0")).is_some());
+    assert!(
+        ui.scene().and_then(|s| s.surface("report-1")).is_none(),
+        "Latent diagnostic must be hidden before Developer toggle is enabled"
+    );
+    assert!(!app.view.report_developer);
+
+    // Clicking the Developer toggle reveals report-1.
+    click(&mut ui, &mut app, "report-developer");
+    assert!(app.view.report_developer);
+    assert!(ui.scene().and_then(|s| s.surface("report-0")).is_some());
+    assert!(
+        ui.scene().and_then(|s| s.surface("report-1")).is_some(),
+        "Latent diagnostic must appear when Developer toggle is enabled"
+    );
+
+    // Passes MUI audit with Developer mode on.
+    let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
+        app::view(ui, &mut app).el
+    });
+    assert!(
+        findings.is_empty(),
+        "Report developer mode audit findings:\n{}",
+        findings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
