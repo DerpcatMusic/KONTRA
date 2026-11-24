@@ -16,85 +16,16 @@ const ACTIVE_BELOW: f32 = f32::from_bits(0x3f7f_ff58);
 /// 31, 40 and 50 Hz, a 36.0 to 37.1 Hz Butterworth at each.
 const DC_HZ: f32 = 36.8;
 
-/// The record of module `id` as a drive effect, or none (then reported as
-/// not carried).
-pub(crate) fn effect(
-    id: u16,
-    version: u16,
-    public: &[u8],
-    bypass: bool,
-    at: &str,
-    notes: &mut Notes,
-) -> Option<ir::EffectKind> {
-    let impact = if bypass {
-        ir::Impact::Cosmetic
-    } else {
-        ir::Impact::Audible
-    };
-    let f = |n: usize| {
-        let bytes = public.get(n..n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let i = |n: usize| Some(i32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?));
-    match id {
-        // Version 0x70 of the same id is the Surround Panner.
-        0x1d if version != 0x70 => saturation(f(0)?, i(4)?, impact, at, notes),
-        0x1e => distortion(i(0)?, f(4)?, f(8)?),
-        0x20 => {
-            if public.get(8).is_some_and(|&b| b != 0) {
-                notes.add(impact, "Lo-Fi flag (law unknown)", at);
-            }
-            Some(lofi(f(0)?, f(4)?, f(9)?, f(13)?))
-        }
-        0x21 => Some(crate::skreamer::skreamer(
-            f(0)?,
-            f(4)?,
-            f(8)?,
-            f(12)?,
-            f(16)?,
-        )),
-        0x42 => Some(crate::tape::tape(f(0)?, f(4)?, f(8)?)),
-        0x56 if version == 0x10 => {
-            if crate::dstortion::mono(public) {
-                notes.add(impact, "DStortion mono", at);
-            }
-            Some(crate::dstortion::dstortion(
-                f(0)?,
-                f(4)?,
-                f(8)?,
-                f(12)?,
-                f(16)?,
-                f(20)?,
-            ))
-        }
-        0x60 if version == 0x51 => Some(crate::supergt::supergt(crate::supergt::saved(public)?)),
-        0x66 => crate::bite::saved(public).map(crate::bite::bite),
-        0x68 => crate::freak::saved(public).map(crate::freak::freak),
-        _ => None,
-    }
-}
-
-/// Shape −1..=1; algorithm 0 Classic, 1 Enhanced, 2 Drums.
-fn saturation(
-    shape: f32,
-    algorithm: i32,
-    impact: ir::Impact,
-    at: &str,
-    notes: &mut Notes,
-) -> Option<ir::EffectKind> {
-    if algorithm != 0 {
-        // ponytail: Enhanced and Drums are a table and a peak follower (v2
-        // sampler-core dsp/color/saturator.rs); none in the corpus yet.
-        notes.add(impact, "Saturation Enhanced or Drums", at);
-        return None;
-    }
-    Some(ir::EffectKind::Shaper(ir::Shaper {
+/// Saturation's Classic algorithm, shape −1..=1 (the others are reported
+/// by its row in effects.rs).
+pub(crate) fn saturation(shape: f32) -> ir::EffectKind {
+    ir::EffectKind::Shaper(ir::Shaper {
         pre_lowpass_hz: None,
         curve: ir::DriveCurve::Soft(shape.clamp(-1.0, 1.0)),
         lowpass_hz: None,
         highpass_hz: None,
         sections: ir::Sections::NONE,
-    }))
+    })
 }
 
 /// Mode 0 Tube, 1 Transistor; drive and damping 0..=1.
@@ -130,7 +61,7 @@ pub(crate) fn damping_hz(damping: f32) -> f32 {
 }
 
 /// Bits, frequency, noise level and colour, each 0..=1.
-fn lofi(bits: f32, frequency: f32, noise: f32, color: f32) -> ir::EffectKind {
+pub(crate) fn lofi(bits: f32, frequency: f32, noise: f32, color: f32) -> ir::EffectKind {
     // The hold (decompile [ref]: `φ < P ? φ += 1 : (φ −= P,
     // capture)`, P = 1/frequency): a capture, then P frames held. Each is
     // off from the native threshold.
@@ -228,16 +159,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_skreamer_is_carried_in_any_rack() {
+    fn a_skreamers_saved_record_builds_its_overdrive() {
         let public: Vec<u8> = [0.5f32; 5].iter().flat_map(|v| v.to_le_bytes()).collect();
-        for at in [
-            "groups/0/inserts/0",
-            "bus 0/inserts/2",
-            "instrument/inserts/1",
-        ] {
-            let kind = effect(0x21, 0, &public, false, at, &mut Notes::default());
-            assert!(matches!(kind, Some(ir::EffectKind::Overdrive(_))), "{at}");
-        }
+        let m = crate::skreamer::model(&public).expect("model");
+        assert!(matches!(m.build(&m.saved), Some(ir::EffectKind::Overdrive(_))));
     }
 
     #[test]

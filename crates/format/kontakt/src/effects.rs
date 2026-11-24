@@ -15,88 +15,135 @@ use kontra_ir as ir;
 const RACK: u16 = 0x3a;
 const BUS: u16 = 0x45;
 
-/// Unified descriptor for every Kontakt `BParFX*` module: chunk id, display
-/// name, `$EFFECT_TYPE_*` readback value (−1 when unnamed), and whether the
-/// slot mixes its dry level in parallel (`OtherWet` fallback when uncarried).
-struct Meta {
+/// One line per Kontakt `BParFX*` module: chunk id, display name,
+/// `$EFFECT_TYPE_*` readback (−1 when unnamed), whether the slot mixes its
+/// dry level in parallel (`OtherWet` when uncarried), and how its saved
+/// record maps to an effect. A module not listed, or listed with
+/// [`Map::Unread`], passes at its output gain and is reported.
+struct Fx {
     id: u16,
     name: &'static str,
     script_type: i32,
     parallel: bool,
+    map: Map,
 }
 
-const fn meta(id: u16, name: &'static str, script_type: i32, parallel: bool) -> Meta {
-    Meta {
+enum Map {
+    /// Not carried yet.
+    Unread,
+    /// A hand-read record.
+    Read(fn(&mut Slot) -> Option<ir::EffectKind>),
+    /// A modelled module (06-FORMATS.md §2): the row reads its saved knob
+    /// positions as the module's [`ir::KnobModel`], and the module's own
+    /// `build` makes the effect, as a script's live move rebuilds it.
+    Model(fn(&mut Slot) -> Option<ir::KnobModel>),
+}
+
+const fn fx(id: u16, name: &'static str, script_type: i32, parallel: bool, map: Map) -> Fx {
+    Fx {
         id,
         name,
         script_type,
         parallel,
+        map,
     }
 }
 
-const MODULES: &[Meta] = &[
-    meta(0x10, "Delay (legacy)", 18, true),
-    meta(0x11, "Chorus (legacy)", 16, true),
-    meta(0x12, "Flanger (legacy)", 15, true),
-    meta(0x13, "Gainer", 20, false),
-    meta(0x14, "Phaser (legacy)", 14, true),
-    meta(0x15, "Reverb (legacy)", 17, true),
-    meta(0x16, "Convolution", 19, true),
-    meta(0x17, "Send Levels", 11, false),
-    meta(0x18, "Filter", 7, false),
-    meta(0x19, "Compressor", 2, false),
-    meta(0x1a, "Inverter", 4, false),
-    meta(0x1b, "DYX", -1, false),
-    meta(0x1c, "Limiter", 3, false),
-    meta(0x1d, "Saturation", 6, false),
-    meta(0x1e, "Distortion", 10, false),
-    meta(0x1f, "Stereo Modeller", 9, false),
-    meta(0x20, "Lo-Fi", 8, false),
-    meta(0x21, "Skreamer", 21, false),
-    meta(0x22, "Rotator", 22, false),
-    meta(0x23, "Twang", 23, false),
-    meta(0x24, "Cabinet", 24, false),
-    meta(0x42, "Tape Saturator", 26, false),
-    meta(0x43, "Transient Master", 27, false),
-    meta(0x44, "Solid G-EQ", 28, false),
-    meta(0x46, "Solid Bus Comp", 29, false),
-    meta(0x4c, "Feedback Compressor", 30, false),
-    meta(0x4d, "Jump", 31, false),
-    meta(0x52, "Van51", 32, false),
-    meta(0x53, "AC Box", 33, false),
-    meta(0x54, "Hot Solo", 34, false),
-    meta(0x55, "Cat", 35, false),
-    meta(0x56, "DStortion", 36, false),
-    meta(0x57, "Plate Reverb", 38, true),
-    meta(0x58, "Cry Wah", 37, false),
-    meta(0x59, "Reverb", 39, true),
-    meta(0x5a, "Replika", 40, true),
-    meta(0x5b, "Phasis", 41, false),
-    meta(0x5c, "Flair", 42, false),
-    meta(0x5d, "Choral", 43, false),
-    meta(0x5e, "Core Cell", -1, false),
-    meta(0x5f, "Hilbert Limiter", -1, false),
-    meta(0x60, "Supercharger", 46, false),
-    meta(0x61, "Bass Pro", 47, false),
-    meta(0x63, "Psyche Delay", 49, true),
-    meta(0x64, "Ring Modulator", 50, false),
-    meta(0x65, "Raum", 51, true),
-    meta(0x66, "Bite", 52, false),
-    meta(0x68, "Freak", 54, false),
-    meta(0x69, "Vibrato Chorus", 55, false),
-    meta(0x6a, "Wow / Flutter", 56, false),
-    meta(0x6b, "Twin Delay", 57, true),
-    meta(0x70, "Stereo Tune", 61, false),
-    meta(0x71, "Beat Masher", 62, false),
-    meta(0x72, "Gater", 63, false),
-    meta(0x73, "Beat Slicer", 64, false),
-    meta(0x74, "Reverse Grain", 65, false),
-    meta(0x75, "Transpose Stretch", 66, false),
-    meta(0x78, "Skreamer Deluxe", 69, false),
-    meta(0x79, "Kolor", 70, false),
+/// A modelled row: its script type is the module's.
+const fn model(
+    module: &Module,
+    name: &'static str,
+    parallel: bool,
+    read: fn(&mut Slot) -> Option<ir::KnobModel>,
+) -> Fx {
+    fx(
+        module.module_id as u16,
+        name,
+        module.script_type,
+        parallel,
+        Map::Model(read),
+    )
+}
+
+use kontra_kontakt_effects::module::Module;
+use Map::{Read, Unread};
+
+#[rustfmt::skip]
+const MODULES: &[Fx] = &[
+    fx(0x10, "Delay (legacy)", 18, true, Read(legacy_delay)),
+    fx(0x11, "Chorus (legacy)", 16, true, Read(legacy_delay)),
+    fx(0x12, "Flanger (legacy)", 15, true, Read(legacy_delay)),
+    fx(0x13, "Gainer", 20, false, Read(|s| s.f32_at(0).map(ir::EffectKind::Gain))),
+    fx(0x14, "Phaser (legacy)", 14, true, Read(legacy_delay)),
+    fx(0x15, "Reverb (legacy)", 17, true, Read(legacy_reverb)),
+    fx(0x16, "Convolution", 19, true, Read(convolution)),
+    fx(0x17, "Send Levels", 11, false, Read(|s| sends(s.public))),
+    fx(0x18, "Filter", 7, false, Read(|s| s.kind_id.and_then(|k| eq(s.public, k, s.at, s.knobs).or_else(|| filter(s.public, k, s.at, s.knobs))))),
+    fx(0x19, "Compressor", 2, false, Read(compressor)),
+    fx(0x1a, "Inverter", 4, false, Read(|s| s.byte(0).zip(s.byte(1)).map(|(phase, swap)| ir::EffectKind::Invert { phase, swap }))),
+    fx(0x1b, "DYX", -1, false, Unread),
+    fx(0x1c, "Limiter", 3, false, Read(limiter)),
+    fx(0x1d, "Saturation", 6, false, Read(saturation)),
+    fx(0x1e, "Distortion", 10, false, Read(|s| crate::drive::distortion(s.i32_at(0)?, s.f32_at(4)?, s.f32_at(8)?))),
+    fx(0x1f, "Stereo Modeller", 9, false, Read(stereo)),
+    fx(0x20, "Lo-Fi", 8, false, Read(lofi)),
+    model(&crate::skreamer::MODULE, "Skreamer", false, |s| crate::skreamer::model(s.public)),
+    fx(0x22, "Rotator", 22, false, Unread),
+    fx(0x23, "Twang", 23, false, Unread),
+    fx(0x24, "Cabinet", 24, false, Unread),
+    model(&crate::tape::MODULE, "Tape Saturator", false, |s| crate::tape::model(s.public)),
+    fx(0x43, "Transient Master", 27, false, Read(dynamics)),
+    fx(0x44, "Solid G-EQ", 28, false, Read(|s| solid_eq(s.version, s.public, s.bypass, s.at, s.notes, s.model))),
+    fx(0x46, "Solid Bus Comp", 29, false, Read(bus_compressor)),
+    fx(0x4c, "Feedback Compressor", 30, false, Read(dynamics)),
+    fx(0x4d, "Jump", 31, false, Unread),
+    fx(0x52, "Van51", 32, false, Unread),
+    fx(0x53, "AC Box", 33, false, Unread),
+    fx(0x54, "Hot Solo", 34, false, Unread),
+    fx(0x55, "Cat", 35, false, Unread),
+    model(&crate::dstortion::MODULE, "DStortion", false, |s| {
+        if s.version != 0x10 { return None }
+        if crate::dstortion::mono(s.public) { s.lost("DStortion mono") }
+        crate::dstortion::model(s.public)
+    }),
+    fx(0x57, "Plate Reverb", 38, true, Unread),
+    fx(0x58, "Cry Wah", 37, false, Unread),
+    fx(0x59, "Reverb", 39, true, Read(reverb)),
+    fx(0x5a, "Replika", 40, true, Read(replika)),
+    model(&crate::phasis::MODULE, "Phasis", false, |s| crate::phasis::saved(s.version, s.public).map(crate::phasis::model_from)),
+    model(&crate::flair::MODULE, "Flair", false, |s| crate::flair::saved(s.version, s.public).map(crate::flair::model_from)),
+    model(&crate::choral::MODULE, "Choral", false, |s| crate::choral::saved(s.version, s.public).map(crate::choral::model_from)),
+    fx(0x5e, "Core Cell", -1, false, Unread),
+    fx(0x5f, "Hilbert Limiter", -1, false, Read(transparent_limiter)),
+    model(&crate::supergt::MODULE, "Supercharger", false, |s| if s.version == 0x51 { crate::supergt::model(s.public) } else { None }),
+    fx(0x61, "Bass Pro", 47, false, Unread),
+    model(&crate::psyche::MODULE, "Psyche Delay", true, |s| {
+        let p = crate::psyche::saved(s.version, s.public)?;
+        if p.beats.is_some() { s.lost("Psyche Delay tempo sync (unmeasured)") }
+        Some(crate::psyche::model(p))
+    }),
+    fx(0x64, "Ring Modulator", 50, false, Unread),
+    model(&crate::raum::MODULE, "Raum", true, |s| {
+        let (p, lost) = crate::raum::saved(s.version, s.public)?;
+        lost.into_iter().for_each(|feature| s.lost(feature));
+        Some(crate::raum::model_from(p))
+    }),
+    model(&crate::bite::MODULE, "Bite", false, |s| crate::bite::saved(s.public).map(crate::bite::model)),
+    model(&crate::freak::MODULE, "Freak", false, |s| crate::freak::saved(s.public).map(crate::freak::model)),
+    model(&crate::vibrato::MODULE, "Vibrato Chorus", false, |s| crate::vibrato::saved(s.version, s.public).map(crate::vibrato::model)),
+    model(&crate::wowflutter::MODULE, "Wow / Flutter", false, |s| crate::wowflutter::saved(s.version, s.public).map(|(p, _mix)| crate::wowflutter::model_from(p))),
+    fx(0x6b, "Twin Delay", 57, true, Unread),
+    fx(0x70, "Stereo Tune", 61, false, Unread),
+    fx(0x71, "Beat Masher", 62, false, Unread),
+    fx(0x72, "Gater", 63, false, Unread),
+    fx(0x73, "Beat Slicer", 64, false, Unread),
+    fx(0x74, "Reverse Grain", 65, false, Unread),
+    fx(0x75, "Transpose Stretch", 66, false, Unread),
+    fx(0x78, "Skreamer Deluxe", 69, false, Unread),
+    fx(0x79, "Kolor", 70, false, Unread),
 ];
 
-fn lookup(id: u16) -> Option<&'static Meta> {
+fn lookup(id: u16) -> Option<&'static Fx> {
     MODULES.iter().find(|m| m.id == id)
 }
 
@@ -255,10 +302,50 @@ fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
     }
 }
 
-/// A slot's effect and module id. The saved records (reader layouts in
-/// ni-file's effect_parameters.rs): Gainer a linear gain; Inverter phase and
-/// swap bytes; Stereo Modeller signed spread (offset from 100% width), signed
-/// pan and a pseudo-stereo byte.
+/// A saved slot as its row reads it.
+struct Slot<'a, 'i> {
+    id: u16,
+    version: u16,
+    public: &'a [u8],
+    /// The record's leading i32: the Filter's type, the Compressor's mode,
+    /// the Reverb's room.
+    kind_id: Option<i32>,
+    bypass: bool,
+    at: &'a str,
+    notes: &'a mut Notes,
+    impulses: &'a mut Impulses<'i>,
+    knobs: &'a mut Vec<crate::script_knobs::SlotKnob>,
+    model: &'a mut Option<ir::KnobModel>,
+}
+
+impl Slot<'_, '_> {
+    fn f32_at(&self, n: usize) -> Option<f32> {
+        let bytes = self.public.get(n..n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    }
+
+    fn i32_at(&self, n: usize) -> Option<i32> {
+        Some(i32::from_le_bytes(self.public.get(n..n + 4)?.try_into().ok()?))
+    }
+
+    fn byte(&self, n: usize) -> Option<bool> {
+        self.public.get(n).map(|&b| b != 0)
+    }
+
+    /// Reports a saved feature the effect does not carry: audible unless
+    /// the slot is bypassed (a script may switch it on).
+    fn lost(&mut self, feature: &str) {
+        let impact = if self.bypass {
+            ir::Impact::Cosmetic
+        } else {
+            ir::Impact::Audible
+        };
+        self.notes.add(impact, feature, self.at.to_owned());
+    }
+}
+
+/// A slot's effect and module id. The saved records: reader layouts in
+/// ni-file's effect_parameters.rs; each module's row in [`MODULES`].
 fn slot_effect(
     chunk: &Chunk,
     impulses: &mut Impulses,
@@ -276,238 +363,30 @@ fn slot_effect(
     let object = StructuredObject::try_from(effect).ok()?;
     let public = object.public_data;
     *held = crate::held::saved(effect.id, object.version, &public);
-    let f32_at = |n: usize| {
-        let bytes = public.get(n..n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let byte = |n: usize| public.get(n).map(|&b| b != 0);
     let kind_id = public
         .get(..4)
         .and_then(|b| b.try_into().ok())
         .map(i32::from_le_bytes);
-    let kind = match effect.id {
-        0x13 => f32_at(0).map(ir::EffectKind::Gain),
-        0x1a => byte(0)
-            .zip(byte(1))
-            .map(|(phase, swap)| ir::EffectKind::Invert { phase, swap }),
-        // Pseudo stereo (`BParFXStereoSpread +0x10`, [ref])
-        // adds a short decorrelation delay on the right; diagnose when enabled
-        // rather than silently playing plain stereo width.
-        0x1f => f32_at(0).zip(f32_at(4)).map(|(spread, pan)| {
-            if byte(8) == Some(true) {
-                let impact = if params.bypass {
-                    ir::Impact::Cosmetic
-                } else {
-                    ir::Impact::Audible
-                };
-                notes.add(impact, "Stereo Modeller pseudo stereo", at.to_string());
-            }
-            ir::EffectKind::Stereo {
-                width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
-                pan: pan.clamp(-1.0, 1.0),
-            }
+    let mut slot = Slot {
+        id: effect.id,
+        version: object.version,
+        public: &public,
+        kind_id,
+        bypass: params.bypass,
+        at,
+        notes,
+        impulses,
+        knobs,
+        model,
+    };
+    let kind = match lookup(effect.id).map(|m| &m.map) {
+        None | Some(Map::Unread) => None,
+        Some(Map::Read(read)) => read(&mut slot),
+        Some(Map::Model(read)) => read(&mut slot).and_then(|m| {
+            let kind = m.build(&m.saved);
+            *slot.model = Some(m);
+            kind
         }),
-        0x18 => kind_id
-            .and_then(|k| eq(&public, k, at, knobs).or_else(|| filter(&public, k, at, knobs))),
-        // Mode (i32), threshold, ratio, attack, release, then the link byte.
-        0x19 => kind_id
-            .zip(f32_at(4).zip(f32_at(8)))
-            .zip(f32_at(12).zip(f32_at(16)))
-            .zip(byte(20))
-            .map(|(((mode, (t, r)), (a, rel)), link)| {
-                *knobs = crate::script_knobs::compressor_knobs(mode, [t, r, a, rel], link);
-                let value = crate::laws::compressor(mode, t, r, a, rel, link);
-                kontra_law::record(|| kontra_law::Application {
-                    id: kontra_law::LawId("kontakt.compressor.v1"),
-                    location: format!("{at}/compressor"),
-                    input: format!("{:?}", (mode, t, r, a, rel, link)),
-                    output: format!("{value:?}"),
-                });
-                ir::EffectKind::Compressor(value)
-            }),
-        0x1c => f32_at(0).zip(f32_at(4)).map(|(gain, release)| {
-            let value = crate::laws::limiter(gain, release);
-            kontra_law::record(|| kontra_law::Application {
-                id: kontra_law::LawId("kontakt.limiter.v1"),
-                location: format!("{at}/limiter"),
-                input: format!("{:?}", (gain, release)),
-                output: format!("{value:?}"),
-            });
-            ir::EffectKind::Limiter(value)
-        }),
-        0x5f if object.version == 0x51 => {
-            f32_at(0)
-                .zip(f32_at(4))
-                .zip(f32_at(8))
-                .map(|((drive, release), ceiling)| {
-                    let value = crate::laws::transparent_limiter(drive, release, ceiling);
-                    kontra_law::record(|| kontra_law::Application {
-                        id: kontra_law::LawId("kontakt.transparent_limiter.v1"),
-                        location: format!("{at}/limiter"),
-                        input: format!("{:?}", (drive, release, ceiling)),
-                        output: format!("{value:?}"),
-                    });
-                    ir::EffectKind::Limiter(value)
-                })
-        }
-        // Six floats, the link byte, then (0x11 on) the side-chain byte.
-        0x46 if (0x10..=0x12).contains(&object.version) => {
-            let impact = if params.bypass {
-                ir::Impact::Cosmetic
-            } else {
-                ir::Impact::Audible
-            };
-            if object.version >= 0x11 && byte(25) == Some(true) {
-                notes.add(impact, "Solid Bus Comp side chain", at.to_owned());
-            }
-            (0..6)
-                .map(|i| f32_at(4 * i))
-                .collect::<Option<Vec<_>>>()
-                .and_then(|v| v.try_into().ok())
-                .zip(byte(24))
-                .map(|(saved, link)| {
-                    *model = Some(crate::solid_knobs::bus_model(saved, link));
-                    let (c, auto) = crate::laws::bus_compressor(saved, link);
-                    kontra_law::record(|| kontra_law::Application {
-                        id: kontra_law::LawId("kontakt.bus_compressor.v1"),
-                        location: format!("{at}/compressor"),
-                        input: format!("{:?}", (saved, link)),
-                        output: format!("{:?}", (&c, auto)),
-                    });
-                    if auto {
-                        notes.add(impact, "Solid Bus Comp auto release", at.to_owned());
-                    }
-                    ir::EffectKind::Compressor(c)
-                })
-        }
-        0x43 | 0x4c => {
-            if effect.id == 0x4c && object.version == 0x10 {
-                *model = crate::dynamics::feedback_model(&public);
-            }
-            crate::dynamics::effect(effect.id, object.version, &public).map(|(kind, lost)| {
-                if let Some(feature) = lost {
-                    let impact = if params.bypass {
-                        ir::Impact::Cosmetic
-                    } else {
-                        ir::Impact::Audible
-                    };
-                    notes.add(impact, feature, at.to_owned());
-                }
-                kind
-            })
-        }
-        0x17 => sends(&public),
-        0x44 => solid_eq(object.version, &public, params.bypass, at, notes, model),
-        0x16 => impulses
-            .convolution(object.version, &public, at, notes)
-            .map(|impulse| ir::EffectKind::Convolution { impulse }),
-        // The room type (i32), then nine floats.
-        0x59 => (0..9)
-            .map(|i| f32_at(4 + 4 * i))
-            .collect::<Option<Vec<_>>>()
-            .and_then(|v| v.try_into().ok())
-            .zip(kind_id)
-            .map(|(v, kind)| ir::EffectKind::Reverb(crate::reverb::reverb(kind, v))),
-        0x10..=0x12 | 0x14 => {
-            if let Some(saved) =
-                crate::delays::saved(object.version, &public).filter(|_| effect.id == 0x10)
-            {
-                *knobs = crate::script_knobs::delay_knobs(saved);
-            }
-            crate::delays::legacy(effect.id, object.version, &public)
-        }
-        0x15 => {
-            if let Some(saved) = crate::legacy_reverb::saved(object.version, &public) {
-                *knobs = crate::script_knobs::legacy_reverb_knobs(saved);
-            }
-            crate::legacy_reverb::effect(object.version, &public)
-        }
-        0x5b => crate::phasis::saved(object.version, &public).and_then(|p| {
-            let m = crate::phasis::model_from(p);
-            let k = m.build(&m.saved);
-            *model = Some(m);
-            k
-        }),
-        0x5c => crate::flair::saved(object.version, &public).and_then(|p| {
-            let m = crate::flair::model_from(p);
-            let k = m.build(&m.saved);
-            *model = Some(m);
-            k
-        }),
-        0x5d => crate::choral::saved(object.version, &public).and_then(|p| {
-            let m = crate::choral::model_from(p);
-            let k = m.build(&m.saved);
-            *model = Some(m);
-            k
-        }),
-        0x65 => crate::raum::saved(object.version, &public).and_then(|(p, lost)| {
-            let impact = if params.bypass {
-                ir::Impact::Cosmetic
-            } else {
-                ir::Impact::Audible
-            };
-            for feature in lost {
-                notes.add(impact, feature, at.to_owned());
-            }
-            let m = crate::raum::model_from(p);
-            let k = m.build(&m.saved);
-            *model = Some(m);
-            k
-        }),
-        0x6a => crate::wowflutter::saved(object.version, &public).and_then(|(p, _mix)| {
-            let m = crate::wowflutter::model_from(p);
-            let k = m.build(&m.saved);
-            *model = Some(m);
-            k
-        }),
-        0x69 => crate::vibrato::saved(object.version, &public).and_then(|v| {
-            let m = crate::vibrato::model(v);
-            let k = m.build(&m.saved);
-            *model = Some(m);
-            k
-        }),
-        0x63 => crate::psyche::saved(object.version, &public).and_then(|p| {
-            if p.beats.is_some() {
-                let impact = if params.bypass {
-                    ir::Impact::Cosmetic
-                } else {
-                    ir::Impact::Audible
-                };
-                notes.add(
-                    impact,
-                    "Psyche Delay tempo sync (unmeasured)",
-                    at.to_owned(),
-                );
-            }
-            let m = crate::psyche::model(p);
-            let k = m.build(&m.saved);
-            *model = Some(m);
-            k
-        }),
-        0x5a => crate::replika::saved(object.version, &public).and_then(|r| {
-            let impact = if params.bypass {
-                ir::Impact::Cosmetic
-            } else {
-                ir::Impact::Audible
-            };
-            for lost in crate::replika::lost(r) {
-                notes.add(impact, lost, at.to_owned());
-            }
-            *knobs = crate::replika::knobs(r);
-            crate::replika::delay(r).map(ir::EffectKind::Delay)
-        }),
-        id => {
-            match id {
-                0x21 => *model = crate::skreamer::model(&public),
-                0x42 => *model = crate::tape::model(&public),
-                0x56 if object.version == 0x10 => *model = crate::dstortion::model(&public),
-                0x60 if object.version == 0x51 => *model = crate::supergt::model(&public),
-                0x66 => *model = crate::bite::saved(&public).map(crate::bite::model),
-                0x68 => *model = crate::freak::saved(&public).map(crate::freak::model),
-                _ => {}
-            }
-            crate::drive::effect(id, object.version, &public, params.bypass, at, notes)
-        }
     };
     let parallel = is_parallel(effect.id);
     // Legacy 1/2/3-band EQ (Filter 0x18 kinds 22..=24) has no Output control:
@@ -550,6 +429,173 @@ fn slot_effect(
         },
     };
     Some((effect_out, effect.id, kind_id.unwrap_or(-1)))
+}
+
+/// Pseudo stereo (`BParFXStereoSpread +0x10`, [ref])
+/// adds a short decorrelation delay on the right; reported when enabled
+/// rather than silently playing plain stereo width. Spread is signed (offset
+/// from 100% width), then pan, then the pseudo-stereo byte.
+fn stereo(s: &mut Slot) -> Option<ir::EffectKind> {
+    let (spread, pan) = s.f32_at(0).zip(s.f32_at(4))?;
+    if s.byte(8) == Some(true) {
+        s.lost("Stereo Modeller pseudo stereo");
+    }
+    Some(ir::EffectKind::Stereo {
+        width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
+        pan: pan.clamp(-1.0, 1.0),
+    })
+}
+
+/// Mode (i32), threshold, ratio, attack, release, then the link byte.
+fn compressor(s: &mut Slot) -> Option<ir::EffectKind> {
+    let (((mode, (t, r)), (a, rel)), link) = s
+        .kind_id
+        .zip(s.f32_at(4).zip(s.f32_at(8)))
+        .zip(s.f32_at(12).zip(s.f32_at(16)))
+        .zip(s.byte(20))?;
+    *s.knobs = crate::script_knobs::compressor_knobs(mode, [t, r, a, rel], link);
+    let value = crate::laws::compressor(mode, t, r, a, rel, link);
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.compressor.v1"),
+        location: format!("{}/compressor", s.at),
+        input: format!("{:?}", (mode, t, r, a, rel, link)),
+        output: format!("{value:?}"),
+    });
+    Some(ir::EffectKind::Compressor(value))
+}
+
+fn limiter(s: &mut Slot) -> Option<ir::EffectKind> {
+    let (gain, release) = s.f32_at(0).zip(s.f32_at(4))?;
+    let value = crate::laws::limiter(gain, release);
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.limiter.v1"),
+        location: format!("{}/limiter", s.at),
+        input: format!("{:?}", (gain, release)),
+        output: format!("{value:?}"),
+    });
+    Some(ir::EffectKind::Limiter(value))
+}
+
+fn transparent_limiter(s: &mut Slot) -> Option<ir::EffectKind> {
+    if s.version != 0x51 {
+        return None;
+    }
+    let ((drive, release), ceiling) = s.f32_at(0).zip(s.f32_at(4)).zip(s.f32_at(8))?;
+    let value = crate::laws::transparent_limiter(drive, release, ceiling);
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.transparent_limiter.v1"),
+        location: format!("{}/limiter", s.at),
+        input: format!("{:?}", (drive, release, ceiling)),
+        output: format!("{value:?}"),
+    });
+    Some(ir::EffectKind::Limiter(value))
+}
+
+/// Six floats, the link byte, then (0x11 on) the side-chain byte.
+fn bus_compressor(s: &mut Slot) -> Option<ir::EffectKind> {
+    if !(0x10..=0x12).contains(&s.version) {
+        return None;
+    }
+    if s.version >= 0x11 && s.byte(25) == Some(true) {
+        s.lost("Solid Bus Comp side chain");
+    }
+    let (saved, link) = (0..6)
+        .map(|i| s.f32_at(4 * i))
+        .collect::<Option<Vec<_>>>()
+        .and_then(|v| v.try_into().ok())
+        .zip(s.byte(24))?;
+    *s.model = Some(crate::solid_knobs::bus_model(saved, link));
+    let (c, auto) = crate::laws::bus_compressor(saved, link);
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.bus_compressor.v1"),
+        location: format!("{}/compressor", s.at),
+        input: format!("{:?}", (saved, link)),
+        output: format!("{:?}", (&c, auto)),
+    });
+    if auto {
+        s.lost("Solid Bus Comp auto release");
+    }
+    Some(ir::EffectKind::Compressor(c))
+}
+
+/// Transient Master and Feedback Compressor.
+fn dynamics(s: &mut Slot) -> Option<ir::EffectKind> {
+    if s.id == 0x4c && s.version == 0x10 {
+        *s.model = crate::dynamics::feedback_model(s.public);
+    }
+    let (kind, lost) = crate::dynamics::effect(s.id, s.version, s.public)?;
+    if let Some(feature) = lost {
+        s.lost(feature);
+    }
+    Some(kind)
+}
+
+fn convolution(s: &mut Slot) -> Option<ir::EffectKind> {
+    s.impulses
+        .convolution(s.version, s.public, s.at, s.notes)
+        .map(|impulse| ir::EffectKind::Convolution { impulse })
+}
+
+/// The room type (i32), then nine floats.
+fn reverb(s: &mut Slot) -> Option<ir::EffectKind> {
+    let v = (0..9)
+        .map(|i| s.f32_at(4 + 4 * i))
+        .collect::<Option<Vec<_>>>()
+        .and_then(|v| v.try_into().ok())?;
+    Some(ir::EffectKind::Reverb(crate::reverb::reverb(s.kind_id?, v)))
+}
+
+/// Delay, Chorus, Flanger and Phaser (legacy); the Delay's knobs move.
+fn legacy_delay(s: &mut Slot) -> Option<ir::EffectKind> {
+    if let Some(saved) = crate::delays::saved(s.version, s.public).filter(|_| s.id == 0x10) {
+        *s.knobs = crate::script_knobs::delay_knobs(saved);
+    }
+    crate::delays::legacy(s.id, s.version, s.public)
+}
+
+fn legacy_reverb(s: &mut Slot) -> Option<ir::EffectKind> {
+    if let Some(saved) = crate::legacy_reverb::saved(s.version, s.public) {
+        *s.knobs = crate::script_knobs::legacy_reverb_knobs(saved);
+    }
+    crate::legacy_reverb::effect(s.version, s.public)
+}
+
+fn replika(s: &mut Slot) -> Option<ir::EffectKind> {
+    let r = crate::replika::saved(s.version, s.public)?;
+    for lost in crate::replika::lost(r) {
+        s.lost(lost);
+    }
+    *s.knobs = crate::replika::knobs(r);
+    crate::replika::delay(r).map(ir::EffectKind::Delay)
+}
+
+/// Shape −1..=1 and the algorithm (0 Classic, 1 Enhanced, 2 Drums).
+fn saturation(s: &mut Slot) -> Option<ir::EffectKind> {
+    // Version 0x70 of the same id is the Surround Panner.
+    if s.version == 0x70 {
+        return None;
+    }
+    let (shape, algorithm) = (s.f32_at(0)?, s.i32_at(4)?);
+    if algorithm != 0 {
+        // ponytail: Enhanced and Drums are a table and a peak follower (v2
+        // sampler-core dsp/color/saturator.rs); none in the corpus yet.
+        s.lost("Saturation Enhanced or Drums");
+        return None;
+    }
+    Some(crate::drive::saturation(shape))
+}
+
+/// Bits, frequency, a flag, noise and colour.
+fn lofi(s: &mut Slot) -> Option<ir::EffectKind> {
+    if s.byte(8) == Some(true) {
+        s.lost("Lo-Fi flag (law unknown)");
+    }
+    Some(crate::drive::lofi(
+        s.f32_at(0)?,
+        s.f32_at(4)?,
+        s.f32_at(9)?,
+        s.f32_at(13)?,
+    ))
 }
 
 /// The 1/2/3-band EQ (Filter types 22..=24): the record ends with its bands,

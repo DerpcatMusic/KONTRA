@@ -433,17 +433,6 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     types.push(crate::raum::slot_type());
     types.push(crate::wowflutter::slot_type());
     // Script-loaded units, fresh as their INIT presets.
-    let fresh = |id: u16, version: u16, public: &[u8]| {
-        crate::drive::effect(
-            id,
-            version,
-            public,
-            false,
-            "",
-            &mut kontra_format::Notes::default(),
-        )
-        .map(unit)
-    };
     let [t, r, a, rel] = COMPRESSOR_INIT;
     let compressor = Some(unit(ir::EffectKind::Compressor(crate::laws::compressor(
         0, t, r, a, rel, true,
@@ -455,20 +444,20 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         compressor,
         compressor_knobs(0, COMPRESSOR_INIT, true).into(),
     ));
-    for (id, module, version, public, model) in [
+    for (id, public, model) in [
         (
             26,
-            0x42,
-            0x10,
             &TAPE_INIT[..],
             crate::tape::model as fn(&[u8]) -> _,
         ),
-        (36, 0x56, 0x10, &DSTORTION_INIT[..], crate::dstortion::model),
-        (46, 0x60, 0x51, &SUPERGT_INIT[..], crate::supergt::model),
+        (36, &DSTORTION_INIT[..], crate::dstortion::model),
+        (46, &SUPERGT_INIT[..], crate::supergt::model),
     ] {
+        let model = model(public);
+        let effect = model.as_ref().and_then(|m| m.build(&m.saved)).map(unit);
         types.push(ir::SlotType {
-            model: model(public),
-            ..ty(id, false, 0, fresh(module, version, public), [].into())
+            model,
+            ..ty(id, false, 0, effect, [].into())
         });
     }
     // Fresh as Kontakt 8.13 reads them back after loading (oracle,

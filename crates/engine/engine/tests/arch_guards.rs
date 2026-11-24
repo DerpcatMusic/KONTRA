@@ -213,6 +213,32 @@ fn architecture_metric_ratchets_hold() {
         taxonomy.is_empty(),
         "a parallel effect taxonomy came back in {taxonomy:?}; extend EffectKind instead"
     );
+
+    // 4. Kontakt effects are mapped by one table (06-FORMATS.md §2): a row
+    // per module in `format/kontakt/src/effects.rs` `MODULES`, not a match
+    // on the module id, and no second per-id dispatch (`drive::effect`).
+    let kontakt = crates_dir.join("format/kontakt/src");
+    let read = |f: &str| std::fs::read_to_string(kontakt.join(f)).expect("read kontakt src");
+    let effects = read("effects.rs");
+    assert!(
+        effects.contains("const MODULES: &[Fx]") && !effects.contains("match effect.id"),
+        "Kontakt effects must map through the MODULES table, one row per module"
+    );
+    assert!(
+        !read("drive.rs").contains("fn effect("),
+        "drive::effect came back as a second dispatch on the module id; add a MODULES row"
+    );
+
+    // 5. Kontakt's program, group and zone `ignored_fields` are typed fast
+    // paths (13-IR-VNEXT Phase 0): no Debug reflection outside tests.
+    let translate = read("translate.rs");
+    let production = translate.split("\nmod tests").next().unwrap_or_default();
+    assert!(
+        !production
+            .lines()
+            .any(|l| !l.trim_start().starts_with("//") && l.contains(".ignored_fields(")),
+        "translate.rs reflects Debug text for ignored fields; destructure the record instead"
+    );
 }
 
 #[test]
