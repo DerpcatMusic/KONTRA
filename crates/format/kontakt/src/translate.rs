@@ -47,6 +47,21 @@ fn zone_loops(
 }
 /// Stored fields the translator maps, and those that are editor state only.
 // `unknown_tail` is the opaque public suffix every program stores.
+#[cfg(test)]
+const USED_PROGRAM: &[&str] = &[
+    "name",
+    "transpose",
+    "volume",
+    "pan",
+    "tune",
+    "dfd_channel_preload_size",
+    "low_key",
+    "high_key",
+    "low_velocity",
+    "high_velocity",
+    "default_key_switch",
+];
+#[cfg(test)]
 const COSMETIC_PROGRAM: &[&str] = &[
     "unknown_tail",
     "loading_flags",
@@ -119,6 +134,46 @@ const COSMETIC_ZONE: &[&str] = &[
     "tuning",
     "sample_data_type",
 ];
+
+/// Fast typed equivalent of `notes.ignored_fields("program", p, USED_PROGRAM, COSMETIC_PROGRAM)`,
+/// exhaustively destructuring [`ProgramPublicParams`](ni_file::kontakt::objects::ProgramPublicParams)
+/// so a new field fails to compile until classified.
+fn check_ignored_program_fields(
+    notes: &mut Notes,
+    p: &ni_file::kontakt::objects::ProgramPublicParams,
+) {
+    let ni_file::kontakt::objects::ProgramPublicParams {
+        name: _,
+        num_bytes_samples_total: _,
+        transpose: _,
+        volume: _,
+        pan: _,
+        tune: _,
+        low_velocity: _,
+        high_velocity: _,
+        low_key: _,
+        high_key: _,
+        default_key_switch: _,
+        dfd_channel_preload_size: _,
+        library_id: _,
+        fingerprint: _,
+        loading_flags: _,
+        group_solo,
+        cat_icon_idx: _,
+        instrument_credits: _,
+        instrument_author: _,
+        instrument_url: _,
+        instrument_cat1: _,
+        instrument_cat2: _,
+        instrument_cat3: _,
+        resource_container_filename: _,
+        wallpaper_filename: _,
+        unknown_tail: _,
+    } = p;
+    if *group_solo {
+        notes.ignored("program.group_solo", group_solo);
+    }
+}
 
 /// Fast typed equivalent of `notes.ignored_fields("zone", z, USED_ZONE, COSMETIC_ZONE)`.
 /// Avoids formatting `{z:#?}` once per zone (42k+ allocations on large libraries)
@@ -222,24 +277,7 @@ pub(crate) fn instrument(
         .map_err(decode("program"))?;
     let params = program.params().map_err(decode("program parameters"))?;
     let mut notes = Notes::default();
-    notes.ignored_fields(
-        "program",
-        &params,
-        &[
-            "name",
-            "transpose",
-            "volume",
-            "pan",
-            "tune",
-            "dfd_channel_preload_size",
-            "low_key",
-            "high_key",
-            "low_velocity",
-            "high_velocity",
-            "default_key_switch",
-        ],
-        COSMETIC_PROGRAM,
-    );
+    check_ignored_program_fields(&mut notes, &params);
     // The programs' own playable range (a stored 0..127 / 1..127 is the whole keyboard).
     if params.low_key != 0
         || params.high_key != 127
@@ -1579,6 +1617,30 @@ mod tests {
         });
         assert_eq!(vg.steal, ir::Steal::Oldest);
         assert!(!vg.prefer_released);
+    }
+
+    #[test]
+    fn program_ignored_fields_fast_path_matches_debug_reflection() {
+        for group_solo in [false, true] {
+            let p = ni_file::kontakt::objects::ProgramPublicParams {
+                name: "p".into(),
+                volume: 0.5,
+                tune: 1.0,
+                high_key: 127,
+                high_velocity: 127,
+                library_id: 7,
+                group_solo,
+                instrument_author: "a".into(),
+                resource_container_filename: Some(2),
+                unknown_tail: vec![1, 2],
+                ..Default::default()
+            };
+            let mut fast = kontra_format::Notes::default();
+            super::check_ignored_program_fields(&mut fast, &p);
+            let mut slow = kontra_format::Notes::default();
+            slow.ignored_fields("program", &p, super::USED_PROGRAM, super::COSMETIC_PROGRAM);
+            assert_eq!(fast.finish(), slow.finish());
+        }
     }
 
     #[test]

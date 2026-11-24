@@ -9,6 +9,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("usage: inspect <file>")?
         .into();
     let t = std::time::Instant::now();
+    // KONTRA_DUMP=1 prints the whole IR and every law application, the
+    // before/after identity check for translator refactors.
+    if std::env::var_os("KONTRA_DUMP").is_some() {
+        let (i, laws) = kontra_law::collect(|| kontra_format_kontakt::load(&path));
+        println!("{:#?}\n{laws:#?}", i?);
+        return Ok(());
+    }
     let i = kontra_format_kontakt::load(&path)?;
     let zones = |purged: bool| -> usize {
         i.groups

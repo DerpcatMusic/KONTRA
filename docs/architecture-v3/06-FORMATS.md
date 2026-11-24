@@ -59,7 +59,7 @@ loop modes).
 
 | Crate | Today (production) | Target |
 |---|---|---|
-| `format/kontakt` | 23k (incl. 5.2k stream, ~6.5k effects DSP) | file readers (unchanged, mostly vendor/) + ~8k mapping |
+| `format/kontakt` | 10.8k `format/kontakt` + 3.5k `kontakt-effects` production lines (2026-11-24; stream and DSP moved out); effects map through one `MODULES` table (specs/kontakt-mapping-tables.md) | file readers (unchanged, mostly vendor/) + ~8k mapping |
 | `format/uvi` | 25.6k (incl. 5.3k script, 1.8k thread, stream) | readers + ~6k mapping |
 | `format/sfz` | (inside root) | ~1.5k, both directions (export for debugging) |
 | `format/native` | `sampler-native` 3.2k | ~1.5k, serde of IR + sample pack |
