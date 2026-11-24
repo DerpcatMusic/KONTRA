@@ -2343,6 +2343,39 @@ fn random_lfo_varies_across_same_key_notes_for_voice_clock_and_syncs_for_free() 
     );
 }
 
+/// Two Free-clock Random LFOs with equal settings are two LFOs: each draws
+/// its own sequence.
+#[test]
+fn equal_free_random_lfos_draw_independently() {
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let lfo = Lfo {
+        wave: Wave::Random,
+        rate: Rate::Hz(1.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Free,
+    };
+    let reading = |n: u8, store: &mut Store| {
+        let mut plan = Plan::new(vec![zone(store, 0.5)], 8);
+        plan.groups[0].lfos = vec![lfo, lfo];
+        plan.groups[0].mods = vec![Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(Source::Lfo(n), ParamAddr::Volume, 1.0)
+                .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
+        }];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut e, &[on(60, 1.0)])[0]
+    };
+    let (first, second) = (reading(0, &mut store), reading(1, &mut store));
+    assert!((first - second).abs() > 1e-4, "{first} vs {second}");
+}
+
 #[test]
 fn k2_compat_attack_scales_linearly_cubed() {
     use kontra_engine::ir::{EnvStage, Mod, ModRoute, ParamAddr, RouteLaw, Source, TimeScale};

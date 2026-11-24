@@ -8,7 +8,7 @@ use crate::{Effect, EffectKind};
 
 /// A transfer curve and its amount (the engine's `drive::Curve`).
 #[derive(Clone, Debug, PartialEq)]
-pub enum Curve {
+pub enum DriveCurve {
     /// −1..=1: above 0 a soft clip, below 0 a cubic expansion.
     Soft(f32),
     /// 0..=1: an asymmetric rational clip.
@@ -44,7 +44,7 @@ pub enum Curve {
     },
 }
 
-impl Curve {
+impl DriveCurve {
     /// Its amount or drive.
     pub fn amount_mut(&mut self) -> &mut f32 {
         match self {
@@ -71,7 +71,7 @@ pub struct Shaper {
     /// The corner of a one-pole low-pass before the curve, pole
     /// `e^(−2π·hz/rate)` (no zero at Nyquist).
     pub pre_lowpass_hz: Option<f32>,
-    pub curve: Curve,
+    pub curve: DriveCurve,
     pub lowpass_hz: Option<f32>,
     pub highpass_hz: Option<f32>,
     pub sections: crate::Sections,
@@ -652,27 +652,34 @@ pub struct SlotLaw {
 /// A slot whose knobs interact: the effect is rebuilt from all of them
 /// whenever a script moves one, so the result does not depend on the order
 /// they were set in, and each reads back exactly as set.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KnobModel {
-    /// The knobs, in the order [`Self::build`] reads their positions.
+    /// Identifier of the registered [`crate::EffectModel`] that evaluates
+    /// [`Self::saved`] and live knob positions.
+    pub id: crate::ModelId,
+    /// The knobs, in the order the model reads their positions.
     pub knobs: Box<[SlotKnob]>,
-    /// The saved positions, then any fixed settings `build` reads after them.
+    /// The saved positions, then any fixed settings the model reads after them.
     pub saved: Box<[f32]>,
-    /// The effect at these positions: the same mapping the saved slot was
-    /// read through.
-    pub build: fn(&[f32]) -> Option<crate::EffectKind>,
 }
 
 impl KnobModel {
     /// The most positions a model holds: its live positions fit a fixed
     /// array, so moving a knob allocates nothing.
     pub const MAX: usize = 24;
-}
 
-impl PartialEq for KnobModel {
-    fn eq(&self, other: &Self) -> bool {
-        (self.knobs == other.knobs && self.saved == other.saved)
-            && std::ptr::fn_addr_eq(self.build, other.build)
+    /// Evaluates the registered model's [`crate::EffectModel::build`] on `params`.
+    #[inline]
+    #[must_use]
+    pub fn build(&self, params: &[f32]) -> Option<crate::EffectKind> {
+        crate::eval_model(self.id, params)
+    }
+
+    /// Evaluates the registered model's [`crate::EffectModel::build_effect`] on `params`.
+    #[inline]
+    #[must_use]
+    pub fn build_effect(&self, params: &[f32], current: &Effect) -> Option<Effect> {
+        crate::eval_model_effect(self.id, params, current)
     }
 }
 
@@ -700,8 +707,8 @@ pub struct SlotShapes {
     pub subtypes: Vec<(RackAt, u8, i32)>,
     /// Each saved slot's effect type, as a script reads it back.
     pub saved_types: Vec<(RackAt, u8, i32)>,
-    /// The saved values of controls no processor plays
-    /// ([`crate::EnginePar::Held`]): slot, [`crate::held_key`], raw value.
+    /// The saved values of opaque slot controls not backed by a processor
+    /// ([`crate::EnginePar::Opaque`]): slot, [`crate::held_key`], raw value.
     pub held: Vec<(RackAt, u8, u32, i32)>,
     /// The held controls a script-loaded type starts with: effect type id
     /// ([`SlotType::id`]), [`crate::held_key`], raw value.

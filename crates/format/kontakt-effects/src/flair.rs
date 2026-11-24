@@ -204,13 +204,21 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 15]> {
     ])
 }
 
+/// Single-encoding module descriptor for Flair (`0x5c`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::FLAIR,
+    module_id: 0x5c,
+    versions: (0, u32::MAX),
+    name: "Flair",
+    script_type: 42,
+    mix: crate::module::MixMode::OwnMix,
+    knobs: crate::module::KNOBS.split_at(15).0,
+    build: |p| Some(flair(p.try_into().ok()?)),
+};
+
 /// A Flair's knobs from saved positions as a script moves them.
 pub fn model_from(saved: [f32; 15]) -> ir::KnobModel {
-    ir::KnobModel {
-        knobs: (0..15).map(ir::SlotKnob::Knob).collect(),
-        saved: saved.into(),
-        build: |p| Some(flair(p.try_into().ok()?)),
-    }
+    MODULE.knob_model(&saved)
 }
 
 /// A Flair's knobs as a script moves them: every move rebuilds it from all.

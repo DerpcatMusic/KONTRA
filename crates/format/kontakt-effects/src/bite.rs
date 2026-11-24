@@ -141,10 +141,53 @@ pub fn saved(public: &[u8]) -> Option<Knobs> {
     })
 }
 
+/// Single-encoding module descriptor for Bite (`0x66`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::BITE,
+    module_id: 0x66,
+    versions: (0, u32::MAX),
+    name: "Bite",
+    script_type: 52,
+    mix: crate::module::MixMode::OwnMix,
+    knobs: crate::module::KNOBS.split_at(12).0,
+    build: |p| {
+        let [
+            frequency,
+            bits,
+            jitter,
+            crunch,
+            dither,
+            expand,
+            saturate,
+            prefilter,
+            postfilter,
+            mix,
+            hpf,
+            dc,
+        ] = *p
+        else {
+            return None;
+        };
+        Some(bite(Knobs {
+            frequency,
+            bits,
+            jitter,
+            crunch,
+            dither,
+            expand,
+            saturate,
+            prefilter,
+            postfilter,
+            mix,
+            hpf,
+            dc,
+        }))
+    },
+};
+
 /// A unit as a script moves it, from `k`, in [`rows`] order.
 #[must_use]
 pub fn model(k: Knobs) -> ir::KnobModel {
-    use ir::SlotKnob::Knob;
     let saved = [
         k.frequency,
         k.bits,
@@ -159,43 +202,7 @@ pub fn model(k: Knobs) -> ir::KnobModel {
         k.hpf,
         k.dc,
     ];
-    ir::KnobModel {
-        knobs: (0..12).map(Knob).collect(),
-        saved: saved.into(),
-        build: |p| {
-            let [
-                frequency,
-                bits,
-                jitter,
-                crunch,
-                dither,
-                expand,
-                saturate,
-                prefilter,
-                postfilter,
-                mix,
-                hpf,
-                dc,
-            ] = *p
-            else {
-                return None;
-            };
-            Some(bite(Knobs {
-                frequency,
-                bits,
-                jitter,
-                crunch,
-                dither,
-                expand,
-                saturate,
-                prefilter,
-                postfilter,
-                mix,
-                hpf,
-                dc,
-            }))
-        },
-    }
+    MODULE.knob_model(&saved)
 }
 
 /// The KSP names of [`model`]'s knobs: the floats as set, HPF and DC_QUANT

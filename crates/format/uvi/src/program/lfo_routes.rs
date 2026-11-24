@@ -139,6 +139,17 @@ fn depth_route(program: Node, connection: Node, owner: &str) -> Option<Route> {
             ))
         }
         Some(Timed::Steps(lfo, table, tau)) => Some(Timed::Steps(lfo, flip(table), tau)),
+        Some(Timed::MappedLfo {
+            lfo,
+            rise: None,
+            table,
+            stepped,
+        }) => Some(Timed::MappedLfo {
+            lfo,
+            rise: None,
+            table: flip(table),
+            stepped,
+        }),
         Some(Timed::Mapped(mut t)) => {
             if t.table.is_empty() {
                 t.table = vec![0.0, 1.0];
@@ -152,7 +163,11 @@ fn depth_route(program: Node, connection: Node, owner: &str) -> Option<Route> {
             ..Default::default()
         })),
         None => None,
-        Some(Timed::Envelope(_) | Timed::Rising(..) | Timed::Blend(_)) if falling => return None,
+        Some(
+            Timed::Envelope(_) | Timed::Rising(..) | Timed::MappedLfo { .. } | Timed::Blend(_),
+        ) if falling => {
+            return None;
+        }
         timed => timed,
     };
     if r.timed.is_some() {

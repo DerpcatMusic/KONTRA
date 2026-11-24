@@ -22,6 +22,7 @@ const SOURCES: &[&str] = &[
     include_str!("lfo_routes.rs"),
     include_str!("load.rs"),
     include_str!("matrix.rs"),
+    include_str!("models.rs"),
     include_str!("modulation.rs"),
     include_str!("multi_peak.rs"),
     include_str!("provenance.rs"),

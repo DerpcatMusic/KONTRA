@@ -1025,9 +1025,17 @@ fn host_call(lua: &Lua, host: &mut dyn HostApi, context: u64, args: &[Value]) ->
             }
             other => {
                 if let Some(i) = ints.get_mut(n_int) {
-                    *i = match other {
-                        Value::Boolean(b) => i64::from(*b),
-                        _ => number(other).unwrap_or(0.0) as i64,
+                    *i = if action == Action::EffectKnob && n_int == 4 {
+                        let f = match other {
+                            Value::Boolean(b) => f32::from(*b),
+                            _ => number(other).unwrap_or(0.0) as f32,
+                        };
+                        i64::from(f.to_bits())
+                    } else {
+                        match other {
+                            Value::Boolean(b) => i64::from(*b),
+                            _ => number(other).unwrap_or(0.0) as i64,
+                        }
                     };
                     n_int += 1;
                 }

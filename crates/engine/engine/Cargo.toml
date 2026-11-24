@@ -27,3 +27,8 @@ kontra-voice = { path = "../voice" }
 kontra-dsp = { path = "../../dsp/registry" }
 kontra-effects = { path = "../effects" }
 kontra-trace = { path = "../trace", optional = true }
+
+[dev-dependencies]
+kontra-kontakt-effects = { path = "../../format/kontakt-effects" }
+kontra-format-uvi = { path = "../../format/uvi" }
+kontra-prepare = { path = "../prepare" }

@@ -10,17 +10,13 @@
 //! Maximizer, SparkVerb, WaveShaper, DiodeClipper, Flanger and Phasor are
 //! carried; the rest pass their input and are reported (see `effects`).
 
-use std::f32::consts::FRAC_PI_2;
-use std::f64::consts::{FRAC_PI_4, LOG10_2};
-
 use kontra_format::Notes;
 use kontra_ir as ir;
-use kontra_law::common::{DB_GAIN, SQUARE_ROOT};
-use kontra_law::uvi::WAVESHAPER_DRIVE;
 use roxmltree::Node;
 
 use super::delay::dual_delay;
 use super::digital_eq::{digital_eq, gain_scale};
+use super::models;
 use super::reverb::spark_verb;
 mod inserts;
 mod moved;
@@ -53,15 +49,8 @@ impl<'a, 'input> Params<'a, 'input> {
     }
 }
 
-/// A number a script sets on an insert, and each control it moves (its
-/// [`ir::EffectParam::code`]) with that control's value by the number.
-#[derive(PartialEq)]
-pub(super) struct Knob {
-    pub name: String,
-    pub controls: Vec<(u16, Vec<(f64, f32)>)>,
-}
-
-pub(super) type KnobKey = (String, Vec<(String, String)>, usize);
+/// Attribute names on a UVI insert mapped to their [`ir::KnobModel`] knob index.
+pub(super) type KnobMap = Vec<(String, u8)>;
 pub(super) type RoutedKnobs = (usize, Vec<(usize, usize)>);
 
 /// Where an insert's effect plays, for scripts that bypass it: a keygroup's
@@ -87,27 +76,16 @@ pub(super) fn carried(node: Node) -> bool {
         return false;
     };
     let laid = owner.has_tag_name("Layer") || owner.has_tag_name("AuxEffect");
-    let kind = [
-        "Gain",
-        "GainMatrix",
-        "TrackDelay",
-        "DigitalEq",
-        "Convolver",
-        "SampledReverb",
-        "ThreeBandShelves",
-        "DualDelay",
-        "Maximizer",
-        "SparkVerb",
-        "WaveShaper",
-        "DiodeClipper",
-        "Flanger",
-        "Phasor",
-        "Drive",
-        "CombFilter",
-        "FeedbackMachine",
-    ]
-    .iter()
-    .any(|t| node.has_tag_name(*t))
+    let kind = models::by_tag(node.tag_name().name()).is_some()
+        || [
+            "Gain",
+            "GainMatrix",
+            "TrackDelay",
+            "CombFilter",
+            "FeedbackMachine",
+        ]
+        .iter()
+        .any(|t| node.has_tag_name(*t))
         || super::filters::on_bus(node);
     if owner.has_tag_name("Keygroup") {
         return PER_VOICE.iter().any(|t| node.has_tag_name(*t));
@@ -216,7 +194,8 @@ impl<L: Library> Translator<'_, '_, L> {
         }
         self.out.inserts = Vec::new();
         for (n, node) in children(program, "Inserts", "").enumerate() {
-            let slot = self.slot(node)?;
+            let place = u8::try_from(n).ok().map(|s| (ir::RackAt::Inserts, s));
+            let slot = self.slot(node, place)?;
             if slot.is_some() {
                 self.fx_of.insert(node.id(), Fx::Instrument(n));
             }
@@ -227,10 +206,18 @@ impl<L: Library> Translator<'_, '_, L> {
 
     /// A keygroup's inserts its voices run, by slot; the rest are empty.
     pub(super) fn voice_slots(&mut self, kg: Node) -> Result<Vec<Option<ir::Effect>>, String> {
+        let group = u32::try_from(self.out.groups.len()).ok();
         let mut slots = Vec::new();
         for (n, node) in children(kg, "Inserts", "").enumerate() {
             let per_voice = PER_VOICE.iter().any(|t| node.has_tag_name(*t));
-            let slot = if per_voice { self.slot(node)? } else { None };
+            let place = group
+                .zip(u8::try_from(n).ok())
+                .map(|(g, s)| (ir::RackAt::Group(g), s));
+            let slot = if per_voice {
+                self.slot(node, place)?
+            } else {
+                None
+            };
             if slot.is_some() {
                 self.fx_of.insert(node.id(), Fx::Voice(kg.id(), n));
             }
@@ -276,9 +263,15 @@ impl<L: Library> Translator<'_, '_, L> {
             }
             let racked = node.has_tag_name("EffectRack") || node.has_tag_name("FeedbackMachine");
             if !racked {
-                let slot = self.slot(node)?;
-                if let Some(b) = self.out.buses.get_mut(at) {
-                    let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
+                let insert = self
+                    .out
+                    .buses
+                    .get(at)
+                    .map(|b| u8::try_from(b.inserts.len()).map_err(|e| e.to_string()))
+                    .transpose()?;
+                let place = insert.and_then(|s| Some((bus_rack(at)?, s)));
+                let slot = self.slot(node, place)?;
+                if let (Some(b), Some(insert)) = (self.out.buses.get_mut(at), insert) {
                     let present = slot.is_some();
                     b.inserts.push(slot);
                     if present {
@@ -379,8 +372,13 @@ impl<L: Library> Translator<'_, '_, L> {
             for c in gain_scale(program, node, &bands, insert, b) {
                 self.carried.insert(c.id());
             }
+            let rack = bus_rack(at);
             let slots: Vec<_> = (0..bands.effects.len())
-                .filter_map(|chunk| Some((usize::from(insert) + chunk, self.knobs(node, chunk)?)))
+                .filter_map(|chunk| {
+                    let slot = usize::from(insert) + chunk;
+                    let place = rack.zip(u8::try_from(slot).ok());
+                    Some((slot, self.knobs(node, chunk, place)?))
+                })
                 .collect();
             if !slots.is_empty() {
                 self.routed_knobs.insert(node.id(), (at, slots));
@@ -505,62 +503,49 @@ impl<L: Library> Translator<'_, '_, L> {
     /// One insert as a slot; one not carried is empty (its input passes).
     /// `node`'s effect, built bypassed when it is saved so: a script may
     /// switch it on.
-    fn slot(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {
+    fn slot(
+        &mut self,
+        node: Node,
+        place: Option<(ir::RackAt, u8)>,
+    ) -> Result<Option<ir::Effect>, String> {
         let bypass = flag(node, "Bypass");
         let built = self.built(node)?.map(|e| ir::Effect { bypass, ..e });
         if built.is_some()
-            && let Some(set) = self.knobs(node, 0)
+            && let Some(set) = self.knobs(node, 0, place)
         {
             self.knobs_of.insert(node.id(), set);
         }
         Ok(built)
     }
 
-    /// What a script's `setParameter` on each of `node`'s numeric attributes
-    /// moves: resolved directly from the declared `(effect, attribute) ->
-    /// (EffectParam, law)` table with **zero** effect rebuilds at load time.
-    /// Inserts of one type saved alike share the answer via `knob_cache`.
-    fn knobs(&mut self, node: Node, eq_chunk: usize) -> Option<usize> {
-        if self.script_words.is_empty() || !has_declared_knobs(node) {
+    /// Registers a slot's [`ir::KnobModel`] (evaluating the exact same Rust
+    /// [`models::UviModule`] used at load time) and returns its shared
+    /// attribute-name-to-knob-index map for Lua scripts.
+    fn knobs(
+        &mut self,
+        node: Node,
+        eq_chunk: usize,
+        place: Option<(ir::RackAt, u8)>,
+    ) -> Option<usize> {
+        if self.script_words.is_empty() {
             return None;
         }
-        let key = (
-            node.tag_name().name().to_owned(),
-            node.attributes()
-                .map(|a| (a.name().to_owned(), a.value().to_owned()))
-                .collect(),
-            eq_chunk,
-        );
-        if let Some(&known) = self.knob_cache.get(&key) {
-            return known;
+        let (rack, slot) = place?;
+        let (model, all_attrs) = models::decode_model(node, eq_chunk)?;
+        let out: KnobMap = all_attrs
+            .into_iter()
+            .filter(|(name, _)| self.script_words.contains(name) && name != "Bypass")
+            .collect();
+        if out.is_empty() {
+            return None;
         }
-        let mut out = Vec::new();
-        for attr in node.attributes() {
-            let name = attr.name();
-            if !self.script_words.contains(name)
-                || name == "Bypass"
-                || attr.value().trim().parse::<f64>().is_err()
-            {
-                continue;
-            }
-            let controls = controls_for_chunk(node, name, eq_chunk);
-            if !controls.is_empty() {
-                out.push(Knob {
-                    name: name.to_owned(),
-                    controls,
-                });
-            }
+        self.out.slot_models.push((rack, slot, model));
+        if let Some(existing) = self.knob_sets.iter().position(|s| s == &out) {
+            Some(existing)
+        } else {
+            self.knob_sets.push(out);
+            Some(self.knob_sets.len() - 1)
         }
-        let set = (!out.is_empty()).then(|| {
-            if let Some(existing) = self.knob_sets.iter().position(|s| s == &out) {
-                existing
-            } else {
-                self.knob_sets.push(out);
-                self.knob_sets.len() - 1
-            }
-        });
-        self.knob_cache.insert(key, set);
-        set
     }
 
     fn built(&mut self, node: Node) -> Result<Option<ir::Effect>, String> {
@@ -747,697 +732,11 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 }
 
-/// Effects with at least one script-addressable [`ir::EffectParam`] control.
-fn has_declared_knobs(node: Node) -> bool {
-    matches!(
-        node.tag_name().name(),
-        "ThreeBandShelves"
-            | "DigitalEq"
-            | "SparkVerb"
-            | "Maximizer"
-            | "WaveShaper"
-            | "Flanger"
-            | "Phasor"
-            | "DiodeClipper"
-            | "XpanderFilter"
-            | "Drive"
-            | "DualDelay"
-            | "Convolver"
-            | "SampledReverb"
-    )
-}
-
-/// Knots over `[0, 1]` for curved unit-domain parameter laws.
-const UNIT_KNOTS: [f64; 17] = [
-    0.0, 0.0625, 0.125, 0.1875, 0.25, 0.3125, 0.375, 0.4375, 0.5, 0.5625, 0.625, 0.6875, 0.75,
-    0.8125, 0.875, 0.9375, 1.0,
-];
-/// Extra resolution at both ends for the paired square-root wet and dry laws.
-const EQUAL_POWER_KNOTS: [f64; 27] = [
-    0.0, 0.0001, 0.001, 0.005, 0.01, 0.025, 0.0625, 0.125, 0.1875, 0.25, 0.3125, 0.375, 0.4375,
-    0.5, 0.5625, 0.625, 0.6875, 0.75, 0.8125, 0.875, 0.9375, 0.975, 0.99, 0.995, 0.999, 0.9999,
-    1.0,
-];
-/// Knots over `[-48, 24]` dB for exponential dB-to-linear gain laws.
-const DB_KNOTS: [f64; 13] = [
-    -48.0, -36.0, -24.0, -18.0, -12.0, -6.0, -3.0, 0.0, 3.0, 6.0, 12.0, 18.0, 24.0,
-];
-/// WaveShaper gain uses a wider range than the other dB controls.
-const SHAPER_DB_KNOTS: [f64; 17] = [
-    -48.0, -36.0, -24.0, -18.0, -12.0, -6.0, -3.0, 0.0, 3.0, 6.0, 12.0, 18.0, 24.0, 28.0, 32.0,
-    36.0, 40.0,
-];
-/// Knots over `[-20, 20]` dB for `XpanderFilter` `Drive`.
-const DRIVE_DB_KNOTS: [f64; 11] = [
-    -20.0, -15.0, -10.0, -6.0, -3.0, 0.0, 3.0, 6.0, 10.0, 15.0, 20.0,
-];
-/// Log-spaced frequency knots for `Phasor` `MinFreq`/`MaxFreq`.
-const FREQ_KNOTS: [f64; 14] = [
-    20.0, 35.0, 60.0, 100.0, 170.0, 300.0, 500.0, 850.0, 1400.0, 2400.0, 4000.0, 7000.0, 12_000.0,
-    20_000.0,
-];
-/// Bandwidth (octaves) knots for `DigitalEq` peak `Bandwidth{n}`.
-const BW_KNOTS: [f64; 14] = [
-    0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0,
-];
-/// Wide linear range matching the previous probing span.
-const WIDE: (f64, f64) = (-48.0, 20_000.0);
-
-/// Pushes `(param.code(), points)` when `param` has a script code and all points are finite.
-fn push_law(
-    out: &mut Vec<(u16, Vec<(f64, f32)>)>,
-    param: ir::EffectParam,
-    knots: &[f64],
-    f: impl Fn(f64) -> f32,
-) {
-    let Some(code) = param.code() else {
-        return;
-    };
-    let points: Vec<(f64, f32)> = knots
-        .iter()
-        .map(|&x| (x, f(x)))
-        .filter(|(_, y)| y.is_finite())
-        .collect();
-    if points.len() >= 2
-        && points
-            .windows(2)
-            .any(|w| matches!(w, [(_, a), (_, b)] if a != b))
-    {
-        out.push((code, points));
-    }
-}
-
-/// Pushes an exact 2-point linear law over `[lo, hi]`.
-fn push_linear(
-    out: &mut Vec<(u16, Vec<(f64, f32)>)>,
-    param: ir::EffectParam,
-    lo: f64,
-    hi: f64,
-    f: impl Fn(f64) -> f32,
-) {
-    push_law(out, param, &[lo, hi], f);
-}
-
-/// Declared mapping from a UVI insert XML attribute `name` on `node` to the
-/// [`ir::EffectParam`] controls it moves and their analytic laws — zero effect rebuilds.
-fn controls_for_chunk(node: Node, name: &str, eq_chunk: usize) -> Vec<(u16, Vec<(f64, f32)>)> {
-    let mut out = Vec::new();
-    let val = |attr: &str, default: f64| num(node, attr, default).unwrap_or(default);
-    match node.tag_name().name() {
-        "ThreeBandShelves" => match name {
-            "FreqLowMid" => {
-                push_linear(&mut out, ir::EffectParam::BellHz(0), WIDE.0, WIDE.1, |x| {
-                    x as f32
-                })
-            }
-            "FreqMidHigh" => {
-                push_linear(&mut out, ir::EffectParam::BellHz(1), WIDE.0, WIDE.1, |x| {
-                    x as f32
-                });
-            }
-            "GainLow" => {
-                let mid = val("GainMid", 0.0);
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::BellGain(0),
-                    WIDE.0,
-                    WIDE.1,
-                    |x| (x - mid) as f32,
-                );
-            }
-            "GainHigh" => {
-                let mid = val("GainMid", 0.0);
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::BellGain(1),
-                    WIDE.0,
-                    WIDE.1,
-                    |x| (x - mid) as f32,
-                );
-            }
-            "GainMid" => {
-                let low = val("GainLow", 0.0);
-                let high = val("GainHigh", 0.0);
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::BellGain(0),
-                    WIDE.0,
-                    WIDE.1,
-                    |x| (low - x) as f32,
-                );
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::BellGain(1),
-                    WIDE.0,
-                    WIDE.1,
-                    |x| (high - x) as f32,
-                );
-                push_law(&mut out, ir::EffectParam::Output, &DB_KNOTS, |x| {
-                    DB_GAIN.eval_unclamped(x as f32)
-                });
-            }
-            _ => {}
-        },
-        "DigitalEq" => {
-            // Match the groups of four enabled bands built by `digital_eq`.
-            let scale = val("GainScale", 1.0);
-            let mut carried = Vec::new();
-            let mut band = 0;
-            for n in 1..=16u8 {
-                if !flag(node, &format!("Enabled{n}")) {
-                    continue;
-                }
-                let kind = val(&format!("Type{n}"), 6.0) as i32;
-                if !matches!(kind, 4..=6) {
-                    continue;
-                }
-                if band / 4 == eq_chunk {
-                    carried.push((
-                        (band % 4) as u8,
-                        n,
-                        kind == 6,
-                        val(&format!("Gain{n}"), 0.0),
-                    ));
-                }
-                band += 1;
-            }
-            if name == "GainScale" {
-                for &(b, _, _, gain) in &carried {
-                    push_linear(
-                        &mut out,
-                        ir::EffectParam::BellGain(b),
-                        WIDE.0,
-                        WIDE.1,
-                        |x| (gain * x) as f32,
-                    );
-                }
-            } else {
-                for &(b, n, is_peak, _) in &carried {
-                    if let Some(rest) = name.strip_prefix("Freq")
-                        && rest.parse::<u8>().ok() == Some(n)
-                    {
-                        push_linear(&mut out, ir::EffectParam::BellHz(b), 20.0, 20_000.0, |x| {
-                            x as f32
-                        });
-                    } else if let Some(rest) = name.strip_prefix("Gain")
-                        && rest.parse::<u8>().ok() == Some(n)
-                    {
-                        push_linear(
-                            &mut out,
-                            ir::EffectParam::BellGain(b),
-                            WIDE.0,
-                            WIDE.1,
-                            |x| (x * scale) as f32,
-                        );
-                    } else if is_peak
-                        && let Some(rest) = name.strip_prefix("Bandwidth")
-                        && rest.parse::<u8>().ok() == Some(n)
-                    {
-                        push_law(&mut out, ir::EffectParam::BellQ(b), &BW_KNOTS, |x| {
-                            let w = x.max(1e-3) as f32;
-                            1.0 / ((w / 2.0).exp2() - (-w / 2.0).exp2())
-                        });
-                    }
-                }
-            }
-        }
-        "SparkVerb" => match name {
-            "RoomSize" => {
-                let decay = val("DecayTime", 1.0).max(0.01);
-                push_linear(&mut out, ir::EffectParam::ReverbSeconds, 1.0, WIDE.1, |x| {
-                    (decay * x / 10.0) as f32
-                });
-            }
-            "DecayTime" => {
-                let room = val("RoomSize", 20.0).max(1.0);
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::ReverbSeconds,
-                    0.01,
-                    WIDE.1,
-                    |x| (x * room / 10.0) as f32,
-                );
-            }
-            "PreDelay" => {
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::ReverbPredelay,
-                    0.0,
-                    WIDE.1,
-                    |x| x as f32,
-                );
-            }
-            "Rolloff" => {
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::ReverbHighCut,
-                    WIDE.0,
-                    WIDE.1,
-                    |x| x as f32,
-                );
-            }
-            "Width" => {
-                push_linear(&mut out, ir::EffectParam::ReverbStereo, 0.0, 1.0, |x| {
-                    x as f32
-                });
-            }
-            "Mix" => {
-                if val("MixMode", 0.0) == 1.0 {
-                    push_law(&mut out, ir::EffectParam::Output, &EQUAL_POWER_KNOTS, |x| {
-                        SQUARE_ROOT.eval_f64(x) as f32
-                    });
-                    push_law(&mut out, ir::EffectParam::Dry, &EQUAL_POWER_KNOTS, |x| {
-                        SQUARE_ROOT.eval_f64(1.0 - x) as f32
-                    });
-                } else {
-                    push_linear(&mut out, ir::EffectParam::Output, 0.0, 1.0, |x| x as f32);
-                    push_linear(&mut out, ir::EffectParam::Dry, 0.0, 1.0, |x| {
-                        (1.0 - x) as f32
-                    });
-                }
-            }
-            "MixMode" => {
-                let mix = val("Mix", 1.0).clamp(0.0, 1.0);
-                push_law(&mut out, ir::EffectParam::Output, &[0.0, 1.0], |x| {
-                    if x == 1.0 {
-                        SQUARE_ROOT.eval_f64(mix) as f32
-                    } else {
-                        mix as f32
-                    }
-                });
-                push_law(&mut out, ir::EffectParam::Dry, &[0.0, 1.0], |x| {
-                    if x == 1.0 {
-                        SQUARE_ROOT.eval_f64(1.0 - mix) as f32
-                    } else {
-                        (1.0 - mix) as f32
-                    }
-                });
-            }
-            _ => {}
-        },
-        "Maximizer" => match name {
-            "Threshold" => {
-                let ceiling = val("Ceiling", -0.1);
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::LimiterInput,
-                    WIDE.0,
-                    WIDE.1,
-                    |x| (ceiling - x) as f32,
-                );
-            }
-            "Ceiling" => {
-                let threshold = val("Threshold", 0.0);
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::LimiterInput,
-                    WIDE.0,
-                    WIDE.1,
-                    |x| (x - threshold) as f32,
-                );
-            }
-            "SlewRate" => {
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::LimiterRelease,
-                    0.0,
-                    WIDE.1,
-                    |x| (x * 20.0 * LOG10_2 / 10.0) as f32,
-                );
-            }
-            _ => {}
-        },
-        "WaveShaper" => {
-            let mode = val("Mode", 0.0);
-            if mode.fract() != 0.0 || !(0.0..=3.0).contains(&mode) {
-                return out;
-            }
-            let mode = mode as u8;
-            let input = DB_GAIN.eval_unclamped(val("InputGain", 0.0) as f32);
-            let out_gain = DB_GAIN.eval_unclamped(val("OutputGain", 0.0) as f32);
-            let d = WAVESHAPER_DRIVE.eval(val("Amount", 0.0) as f32);
-            let mix = val("Mix", 1.0).clamp(0.0, 1.0) as f32;
-            let shaper_scale = |drv: f32| match mode {
-                0 => 1.0,
-                1 => 1.0 / FRAC_PI_2,
-                2 => 1.0 / (2.0 * drv).tanh(),
-                _ => 1.0 / (2.0 * drv).atan(),
-            };
-            let curve_amt = |drv: f32, inp: f32| match mode {
-                0 | 1 => drv * FRAC_PI_2 * inp,
-                _ => drv * inp,
-            };
-            let scale = shaper_scale(d);
-            match name {
-                "InputGain" => {
-                    push_law(
-                        &mut out,
-                        ir::EffectParam::ShaperAmount,
-                        &SHAPER_DB_KNOTS,
-                        |x| curve_amt(d, DB_GAIN.eval_unclamped(x as f32)),
-                    );
-                }
-                "Amount" => {
-                    push_law(&mut out, ir::EffectParam::ShaperAmount, &UNIT_KNOTS, |x| {
-                        curve_amt(WAVESHAPER_DRIVE.eval(x as f32), input)
-                    });
-                    if matches!(mode, 2 | 3) {
-                        push_law(&mut out, ir::EffectParam::Output, &UNIT_KNOTS, |x| {
-                            mix * out_gain * shaper_scale(WAVESHAPER_DRIVE.eval(x as f32))
-                        });
-                    }
-                }
-                "Mix" => {
-                    push_linear(&mut out, ir::EffectParam::Output, 0.0, 1.0, |x| {
-                        x as f32 * out_gain * scale
-                    });
-                    push_linear(&mut out, ir::EffectParam::Dry, 0.0, 1.0, |x| {
-                        (1.0 - x) as f32
-                    });
-                }
-                "OutputGain" => {
-                    push_law(&mut out, ir::EffectParam::Output, &SHAPER_DB_KNOTS, |x| {
-                        mix * DB_GAIN.eval_unclamped(x as f32) * scale
-                    });
-                }
-                _ => {}
-            }
-        }
-        "Flanger" => match name {
-            "DelayTime" => {
-                let depth = val("Depth", 0.5).clamp(0.0, 1.0);
-                push_linear(&mut out, ir::EffectParam::DelayMs, 0.0, 1.0, |x| {
-                    (20.0 * (x + depth / 2.0)) as f32
-                });
-            }
-            "Depth" => {
-                let time = val("DelayTime", 0.0).clamp(0.0, 1.0);
-                push_linear(&mut out, ir::EffectParam::DelayMs, 0.0, 1.0, |x| {
-                    (20.0 * (time + x / 2.0)) as f32
-                });
-            }
-            "Feedback" => {
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::DelayLoop(0),
-                    WIDE.0,
-                    WIDE.1,
-                    |x| x as f32,
-                );
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::DelayLoop(3),
-                    WIDE.0,
-                    WIDE.1,
-                    |x| x as f32,
-                );
-            }
-            "Speed" if !flag(node, "SyncToHost") => {
-                push_linear(&mut out, ir::EffectParam::ModRate, 1e-3, WIDE.1, |x| {
-                    x as f32
-                });
-            }
-            "Mix" => {
-                push_linear(&mut out, ir::EffectParam::Output, 0.0, 1.0, |x| x as f32);
-            }
-            _ => {}
-        },
-        "Phasor" => match name {
-            "MinFreq" => {
-                let high = val("MaxFreq", 3000.0).max(1.0);
-                push_law(
-                    &mut out,
-                    ir::EffectParam::PhaserExponent,
-                    &FREQ_KNOTS,
-                    |x| (0.5 * (high / x.max(1.0)).ln()) as f32,
-                );
-            }
-            "MaxFreq" => {
-                let low = val("MinFreq", 200.0).max(1.0);
-                push_law(
-                    &mut out,
-                    ir::EffectParam::PhaserExponent,
-                    &FREQ_KNOTS,
-                    |x| (0.5 * (x.max(1.0) / low).ln()) as f32,
-                );
-            }
-            "Feedback" => {
-                push_linear(
-                    &mut out,
-                    ir::EffectParam::PhaserFeedback,
-                    WIDE.0,
-                    WIDE.1,
-                    |x| x as f32,
-                );
-            }
-            "Speed" if !flag(node, "SyncToHost") => {
-                push_linear(&mut out, ir::EffectParam::ModRate, 1e-3, 10.0, |x| x as f32);
-            }
-            "Spread" => {
-                push_linear(&mut out, ir::EffectParam::ModPhase, 0.0, 1.0, |x| {
-                    (x / 4.0) as f32
-                });
-            }
-            "Depth" => {
-                push_law(&mut out, ir::EffectParam::Output, &UNIT_KNOTS, |x| {
-                    let d = x as f32;
-                    d / (1.0 + d * d).sqrt()
-                });
-                push_law(&mut out, ir::EffectParam::Dry, &UNIT_KNOTS, |x| {
-                    let d = x as f32;
-                    1.0 / (1.0 + d * d).sqrt()
-                });
-            }
-            _ => {}
-        },
-        "DiodeClipper" => {
-            if name == "OutputGain" {
-                push_law(&mut out, ir::EffectParam::Output, &DB_KNOTS, |x| {
-                    DB_GAIN.eval_unclamped(x as f32)
-                });
-            }
-        }
-        "XpanderFilter" if super::filters::on_bus(node) => match name {
-            "Freq" => {
-                push_linear(&mut out, ir::EffectParam::FilterHz, 20.0, 20_000.0, |x| {
-                    x as f32
-                });
-            }
-            "Q" => {
-                for stage in 0..3u8 {
-                    push_linear(
-                        &mut out,
-                        ir::EffectParam::FilterDamping(stage),
-                        0.0,
-                        1.0,
-                        |x| (2.0 * (1.0 - x)) as f32,
-                    );
-                }
-            }
-            "Drive" => {
-                push_law(
-                    &mut out,
-                    ir::EffectParam::FilterGain,
-                    &DRIVE_DB_KNOTS,
-                    |x| DB_GAIN.eval_unclamped(x as f32),
-                );
-            }
-            _ => {}
-        },
-        "Drive" => {
-            if name == "DriveAmount" && val("Mode", 0.0) == 0.0 {
-                push_law(&mut out, ir::EffectParam::ShaperAmount, &UNIT_KNOTS, |x| {
-                    WAVESHAPER_DRIVE.eval(x as f32)
-                });
-                push_law(&mut out, ir::EffectParam::Output, &UNIT_KNOTS, |x| {
-                    1.0 / WAVESHAPER_DRIVE.eval(x as f32).tanh().max(f32::EPSILON)
-                });
-            }
-        }
-        "DualDelay" => {
-            let rot = |rad: f64| -> [[f32; 2]; 2] {
-                let (s, c) = (rad as f32).sin_cos();
-                [[c, -s], [s, c]]
-            };
-            let wid = |w: f64| -> [[f32; 2]; 2] {
-                let (same, other) = ((1.0 + w as f32) / 2.0, (1.0 - w as f32) / 2.0);
-                [[same, other], [other, same]]
-            };
-            let mm = |a: [[f32; 2]; 2], b: [[f32; 2]; 2]| -> [[f32; 2]; 2] {
-                let [[b00, b01], [b10, b11]] = b;
-                a.map(|[x, y]| [x * b00 + y * b10, x * b01 + y * b11])
-            };
-            let fb_pair = |fb: f64, ratio: f64| -> [f32; 2] {
-                let (fb, r) = (fb as f32, ratio.clamp(-1.0, 1.0) as f32);
-                if r <= 0.0 {
-                    [(1.0 + r) * fb, fb]
-                } else {
-                    [fb, (1.0 - r) * fb]
-                }
-            };
-            let cell_at = |m: [[f32; 2]; 2], cell: u8| -> f32 {
-                let [[a, b], [c, d]] = m;
-                match cell {
-                    0 => a,
-                    1 => b,
-                    2 => c,
-                    _ => d,
-                }
-            };
-            match name {
-                "DelayTime" if !flag(node, "SyncToHost") => {
-                    push_linear(&mut out, ir::EffectParam::DelayMs, 0.0, 5.0, |x| {
-                        (x * 1000.0) as f32
-                    });
-                }
-                "HighCut" => {
-                    push_linear(
-                        &mut out,
-                        ir::EffectParam::DelayDampingHz,
-                        WIDE.0,
-                        WIDE.1,
-                        |x| x as f32,
-                    );
-                }
-                "LowCut" => {
-                    push_linear(&mut out, ir::EffectParam::DelayLowCutHz, 0.0, WIDE.1, |x| {
-                        x as f32
-                    });
-                }
-                "ModRate" => {
-                    push_linear(&mut out, ir::EffectParam::ModRate, WIDE.0, WIDE.1, |x| {
-                        x as f32
-                    });
-                }
-                "Mix" => {
-                    push_law(&mut out, ir::EffectParam::Output, &EQUAL_POWER_KNOTS, |x| {
-                        SQUARE_ROOT.eval(x as f32)
-                    });
-                    push_law(&mut out, ir::EffectParam::Dry, &EQUAL_POWER_KNOTS, |x| {
-                        SQUARE_ROOT.eval(1.0 - x as f32)
-                    });
-                }
-                "Feedback" => {
-                    let ratio = val("FeedbackRatio", 0.0);
-                    let in_m = mm(
-                        rot(val("InputRotation", 0.0) * FRAC_PI_4),
-                        wid(val("InputWidth", 1.0)),
-                    );
-                    let fb_m = rot(val("Rotation", 0.0).to_radians());
-                    for cell in 0..4u8 {
-                        let top = cell < 2;
-                        let k_in = cell_at(in_m, cell);
-                        let k_fb = cell_at(fb_m, cell);
-                        push_linear(
-                            &mut out,
-                            ir::EffectParam::DelayInput(cell),
-                            WIDE.0,
-                            WIDE.1,
-                            |x| {
-                                let [f0, f1] = fb_pair(x, ratio);
-                                k_in * if top { f0 } else { f1 }
-                            },
-                        );
-                        push_linear(
-                            &mut out,
-                            ir::EffectParam::DelayLoop(cell),
-                            WIDE.0,
-                            WIDE.1,
-                            |x| {
-                                let [f0, f1] = fb_pair(x, ratio);
-                                k_fb * if top { f0 } else { f1 }
-                            },
-                        );
-                    }
-                }
-                "FeedbackRatio" => {
-                    let fb = val("Feedback", 0.3);
-                    let in_m = mm(
-                        rot(val("InputRotation", 0.0) * FRAC_PI_4),
-                        wid(val("InputWidth", 1.0)),
-                    );
-                    let fb_m = rot(val("Rotation", 0.0).to_radians());
-                    for cell in 0..4u8 {
-                        let top = cell < 2;
-                        let k_in = cell_at(in_m, cell);
-                        let k_fb = cell_at(fb_m, cell);
-                        push_law(
-                            &mut out,
-                            ir::EffectParam::DelayInput(cell),
-                            &[-1.0, 0.0, 1.0],
-                            |x| {
-                                let [f0, f1] = fb_pair(fb, x);
-                                k_in * if top { f0 } else { f1 }
-                            },
-                        );
-                        push_law(
-                            &mut out,
-                            ir::EffectParam::DelayLoop(cell),
-                            &[-1.0, 0.0, 1.0],
-                            |x| {
-                                let [f0, f1] = fb_pair(fb, x);
-                                k_fb * if top { f0 } else { f1 }
-                            },
-                        );
-                    }
-                }
-                "InputWidth" => {
-                    let [fb0, fb1] = fb_pair(val("Feedback", 0.3), val("FeedbackRatio", 0.0));
-                    let r = rot(val("InputRotation", 0.0) * FRAC_PI_4);
-                    for cell in 0..4u8 {
-                        let s = if cell < 2 { fb0 } else { fb1 };
-                        push_linear(
-                            &mut out,
-                            ir::EffectParam::DelayInput(cell),
-                            WIDE.0,
-                            WIDE.1,
-                            |x| cell_at(mm(r, wid(x)), cell) * s,
-                        );
-                    }
-                }
-                "InputRotation" => {
-                    let [fb0, fb1] = fb_pair(val("Feedback", 0.3), val("FeedbackRatio", 0.0));
-                    let w = wid(val("InputWidth", 1.0));
-                    let knots: [f64; 17] = std::array::from_fn(|i| -4.0 + 0.5 * i as f64);
-                    for cell in 0..4u8 {
-                        let s = if cell < 2 { fb0 } else { fb1 };
-                        push_law(&mut out, ir::EffectParam::DelayInput(cell), &knots, |x| {
-                            cell_at(mm(rot(x * FRAC_PI_4), w), cell) * s
-                        });
-                    }
-                }
-                "Rotation" => {
-                    let [fb0, fb1] = fb_pair(val("Feedback", 0.3), val("FeedbackRatio", 0.0));
-                    let knots: [f64; 25] = std::array::from_fn(|i| -180.0 + 15.0 * i as f64);
-                    for cell in 0..4u8 {
-                        let s = if cell < 2 { fb0 } else { fb1 };
-                        push_law(&mut out, ir::EffectParam::DelayLoop(cell), &knots, |x| {
-                            cell_at(rot(x.to_radians()), cell) * s
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-        "Convolver" | "SampledReverb" => match name {
-            "Wet" => {
-                let scale = if node.has_tag_name("SampledReverb") && !flag(node, "NormalizePower") {
-                    f64::from(RAW_WET)
-                } else {
-                    1.0
-                };
-                push_linear(&mut out, ir::EffectParam::Output, WIDE.0, WIDE.1, |x| {
-                    (x * scale) as f32
-                });
-            }
-            "Dry" => {
-                push_linear(&mut out, ir::EffectParam::Dry, WIDE.0, WIDE.1, |x| x as f32);
-            }
-            _ => {}
-        },
-        _ => {}
-    }
-    out
+/// Bus index `at` (`>= 1`; 0 is Main) as an [`ir::RackAt::Bus`].
+fn bus_rack(at: usize) -> Option<ir::RackAt> {
+    at.checked_sub(1)
+        .and_then(|b| u8::try_from(b).ok())
+        .map(ir::RackAt::Bus)
 }
 
 /// The folder of a member path; `None` at the bank's root.
@@ -1451,7 +750,7 @@ fn parent(path: &str) -> Option<&str> {
 /// SampledReverbState audio path scales the convolved signal by 0.1 (−20 dB)
 /// unless NormalizePower is set ([ref], 0.1 at [ref]), before
 /// Wet. The Convolver's paths apply only Wet.
-const RAW_WET: f32 = 0.1;
+const RAW_WET: f32 = models::RAW_WET;
 
 /// `NormalizePower`: the response scaled to unit energy (sum of squares).
 /// UVI (SampledReverb/Convolver IR build [ref]) divides by the root
@@ -1486,26 +785,16 @@ const SILENT: f32 = -200.0;
 /// (bilinear, tan-prewarped, [ref]). A cookbook shelf at slope 0.5 is
 /// that first-order shelf exactly.
 fn shelves(node: Node) -> Result<ir::Effect, String> {
-    let mid = num(node, "GainMid", 0.0)? as f32;
-    let shelf = |shape, hz: &str, default, gain: &str| -> Result<ir::Bell, String> {
-        Ok(ir::Bell {
-            shape,
-            hz: num(node, hz, default)? as f32,
-            q: 0.5,
-            gain_db: num(node, gain, 0.0)? as f32 - mid,
-        })
-    };
-    let bands = [
-        shelf(ir::Shape::LowShelf, "FreqLowMid", 200.0, "GainLow")?,
-        shelf(ir::Shape::HighShelf, "FreqMidHigh", 4000.0, "GainHigh")?,
-        ir::Bell::FLAT,
-        ir::Bell::FLAT,
+    let params = [
+        num(node, "FreqLowMid", 200.0)? as f32,
+        num(node, "FreqMidHigh", 4000.0)? as f32,
+        num(node, "GainLow", 0.0)? as f32,
+        num(node, "GainMid", 0.0)? as f32,
+        num(node, "GainHigh", 0.0)? as f32,
     ];
-    Ok(effect(
-        ir::EffectKind::Eq(bands),
-        DB_GAIN.eval_unclamped(mid),
-        0.0,
-    ))
+    models::THREE_BAND_SHELVES
+        .build_fresh(&params)
+        .ok_or_else(|| "ThreeBandShelves build failed".to_owned())
 }
 
 /// A bus GainMatrix: `Gain_i_j` is input channel `i` into output `j`. The
@@ -1549,34 +838,23 @@ fn matrix(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
 /// ponytail: TruePeak (Off in every corpus program) adds a 6-frame
 /// oversampled detector; it is reported, not modelled.
 fn maximizer(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
-    let threshold = num(node, "Threshold", 0.0)? as f32;
-    let ceiling = num(node, "Ceiling", -0.1)? as f32;
-    let mode = num(node, "CeilingMode", 0.0)?;
     if num(node, "TruePeak", 0.0)? != 0.0 {
         notes.add(ir::Impact::Audible, "maximizer TruePeak", "");
     }
-    let slew = num(node, "SlewRate", 0.0)?;
-    let kind = ir::EffectKind::Limiter(ir::Limiter {
-        input_db: ceiling - threshold,
-        ceiling_db: ceiling,
-        // 6.02 dB at 10000/SlewRate dB/s.
-        release_ms: if slew > 0.0 {
-            (slew * 20.0 * std::f64::consts::LOG10_2 / 10.0) as f32
-        } else {
-            0.0
-        },
-        knee_db: num(node, "Knee", 0.0)?.max(0.0) as f32,
-        attack_ms: if mode == 0.0 {
-            0.0
-        } else {
-            num(node, "Attack", 0.0)?.max(0.0) as f32
-        },
-        smooth_ms: num(node, "Release", 10.0)?.max(0.0) as f32,
-        slow: num(node, "ReleaseBlend", 0.0)?.clamp(0.0, 1.0) as f32,
-        lookahead_ms: num(node, "Lookahead", 0.0)?.max(0.0) as f32,
-        clip: mode == 2.0,
-    });
-    Ok(effect(kind, 1.0, 0.0))
+    let params = [
+        num(node, "Threshold", 0.0)? as f32,
+        num(node, "Ceiling", -0.1)? as f32,
+        num(node, "SlewRate", 0.0)? as f32,
+        num(node, "CeilingMode", 0.0)? as f32,
+        num(node, "Knee", 0.0)? as f32,
+        num(node, "Attack", 0.0)? as f32,
+        num(node, "Release", 10.0)? as f32,
+        num(node, "ReleaseBlend", 0.0)? as f32,
+        num(node, "Lookahead", 0.0)? as f32,
+    ];
+    models::MAXIMIZER
+        .build_fresh(&params)
+        .ok_or_else(|| "Maximizer build failed".to_owned())
 }
 
 /// The dry level of an effect whose output is mostly a wet path (a reverb,
@@ -1722,175 +1000,149 @@ mod tests {
         assert!((a[1] / a[0] + 1.0 / 3.0).abs() < 1e-6);
     }
 
-    fn declared_controls(node: Node, name: &str) -> Vec<(u16, Vec<(f64, f32)>)> {
-        controls_for_chunk(node, name, 0)
-    }
-
-    fn eval_piecewise(points: &[(f64, f32)], x: f64) -> f32 {
-        let Some(&(_, first)) = points.first() else {
-            return 0.0;
-        };
-        if let Some(&(last_x, last_y)) = points.last()
-            && x >= last_x
-        {
-            return last_y;
-        }
-        for w in points.windows(2) {
-            if let [(x0, y0), (x1, y1)] = *w
-                && x < x1
-            {
-                return if x <= x0 {
-                    y0
-                } else {
-                    y0 + (y1 - y0) * ((x - x0) / (x1 - x0)) as f32
-                };
-            }
-        }
-        first
+    fn eval_attr(xml: &str, name: &str, value: f32) -> ir::Effect {
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let node = doc.root_element();
+        let (model, attrs) = models::decode_model(node, 0).unwrap();
+        let idx = attrs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|&(_, i)| usize::from(i))
+            .unwrap();
+        let mut params = model.saved.to_vec();
+        params[idx] = value;
+        let base = effect(ir::EffectKind::Convolution { impulse: 0 }, 1.0, 0.0);
+        model.build_effect(&params, &base).unwrap()
     }
 
     #[test]
     fn equal_power_mix_resolves_quiet_shares() {
         for xml in [r#"<SparkVerb MixMode="1"/>"#, "<DualDelay/>"] {
-            let doc = roxmltree::Document::parse(xml).unwrap();
-            let laws = declared_controls(doc.root_element(), "Mix");
-            for (param, x, off, on) in [
-                (ir::EffectParam::Output, 0.01, 0.0, 1.0),
-                (ir::EffectParam::Dry, 0.99, 1.0, 0.0),
-            ] {
-                let (_, points) = laws
-                    .iter()
-                    .find(|(code, _)| Some(*code) == param.code())
-                    .unwrap();
-                assert!((eval_piecewise(points, x) - 0.1).abs() < 1e-6);
-                assert_eq!(eval_piecewise(points, 0.0), off);
-                assert_eq!(eval_piecewise(points, 1.0), on);
-            }
+            let e_low = eval_attr(xml, "Mix", 0.01);
+            assert!((e_low.output - 0.1).abs() < 1e-6);
+            let e_high = eval_attr(xml, "Mix", 0.99);
+            assert!((e_high.dry - 0.1).abs() < 1e-6);
+            let e0 = eval_attr(xml, "Mix", 0.0);
+            assert_eq!((e0.output, e0.dry), (0.0, 1.0));
+            let e1 = eval_attr(xml, "Mix", 1.0);
+            assert_eq!((e1.output, e1.dry), (1.0, 0.0));
         }
     }
 
     #[test]
     fn waveshaper_gain_laws_reach_the_saved_effect_at_40_db() {
-        let doc = roxmltree::Document::parse(
-            r#"<WaveShaper Mode="0" Mix="1" InputGain="40" OutputGain="40"/>"#,
-        )
-        .unwrap();
+        let xml = r#"<WaveShaper Mode="0" Mix="1" InputGain="40" OutputGain="40"/>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
         let node = doc.root_element();
-        let mut built = wave_shaper(Params::of(node), &mut Notes::default())
+        let built = wave_shaper(Params::of(node), &mut Notes::default())
             .unwrap()
             .unwrap();
-        for (name, param) in [
-            ("InputGain", ir::EffectParam::ShaperAmount),
-            ("OutputGain", ir::EffectParam::Output),
-        ] {
-            let laws = declared_controls(node, name);
-            let (code, points) = laws.first().unwrap();
-            assert_eq!(Some(*code), param.code());
-            assert!((eval_piecewise(points, 40.0) - param.value(&mut built).unwrap()).abs() < 1e-5);
-        }
+        let (model, _) = models::decode_model(node, 0).unwrap();
+        let from_model = model.build_effect(&model.saved, &built).unwrap();
+        assert_eq!(from_model, built);
     }
 
     #[test]
-    fn declared_knob_laws_match_built_effects_with_zero_rebuilds() {
-        // ThreeBandShelves
+    fn single_encoding_uvi_models_match_built_effects_and_couple_live() {
+        // ThreeBandShelves: moving GainLow then GainMid computes exact coupled shelves!
         let xml = r#"<ThreeBandShelves FreqLowMid="250" FreqMidHigh="5000" GainLow="3" GainMid="-1" GainHigh="4"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
         let node = doc.root_element();
-        let mid_controls = declared_controls(node, "GainMid");
-        assert_eq!(mid_controls.len(), 3);
-        let gain0 = mid_controls
-            .iter()
-            .find(|(c, _)| *c == ir::EffectParam::BellGain(0).code().unwrap())
-            .unwrap();
-        assert!((eval_piecewise(&gain0.1, 2.0) - 1.0).abs() < 1e-5);
-        let out_ctrl = mid_controls
-            .iter()
-            .find(|(c, _)| *c == ir::EffectParam::Output.code().unwrap())
-            .unwrap();
-        assert!((eval_piecewise(&out_ctrl.1, -6.0) - DB_GAIN.eval_unclamped(-6.0)).abs() < 1e-4);
+        let loaded = shelves(node).unwrap();
+        let (model, attrs) = models::decode_model(node, 0).unwrap();
+        assert_eq!(model.build_effect(&model.saved, &loaded).unwrap(), loaded);
+        let idx = |n: &str| usize::from(attrs.iter().find(|(k, _)| k == n).unwrap().1);
+        let mut p = model.saved.to_vec();
+        p[idx("GainLow")] = 6.0;
+        p[idx("GainMid")] = 2.0;
+        let moved = model.build_effect(&p, &loaded).unwrap();
+        let ir::EffectKind::Eq([low, high, ..]) = moved.kind else {
+            panic!("{moved:?}");
+        };
+        assert!((low.gain_db - 4.0).abs() < 1e-6);
+        assert!((high.gain_db - 2.0).abs() < 1e-6);
+        assert!((moved.output - kontra_law::common::DB_GAIN.eval_unclamped(2.0)).abs() < 1e-5);
 
-        // SparkVerb equal-power Mix
+        // SparkVerb: RoomSize * DecayTime and equal-power Mix/MixMode
         let sv_xml = r#"<SparkVerb RoomSize="20" DecayTime="2" Mix="0.5" MixMode="1" PreDelay="10" Rolloff="8000" Width="0.8"/>"#;
         let sv_doc = roxmltree::Document::parse(sv_xml).unwrap();
-        let sv_node = sv_doc.root_element();
-        let mix_ctrls = declared_controls(sv_node, "Mix");
-        assert_eq!(mix_ctrls.len(), 2);
-        let wet_at_half = eval_piecewise(&mix_ctrls.first().unwrap().1, 0.5);
-        assert!((wet_at_half - 0.5f32.sqrt()).abs() < 1e-3, "{wet_at_half}");
-        let decay_ctrls = declared_controls(sv_node, "DecayTime");
-        assert_eq!(decay_ctrls.len(), 1);
-        assert!((eval_piecewise(&decay_ctrls.first().unwrap().1, 3.0) - 6.0).abs() < 1e-5);
+        let sv_built = spark_verb(sv_doc.root_element(), &mut Notes::default()).unwrap();
+        let (sv_model, _) = models::decode_model(sv_doc.root_element(), 0).unwrap();
+        assert_eq!(
+            sv_model.build_effect(&sv_model.saved, &sv_built).unwrap(),
+            sv_built
+        );
+        let sv_moved = eval_attr(sv_xml, "DecayTime", 3.0);
+        let ir::EffectKind::Reverb(r) = sv_moved.kind else {
+            panic!()
+        };
+        assert!((r.seconds - 6.0).abs() < 1e-5);
 
-        // Maximizer Threshold / SlewRate
+        // Maximizer: Threshold & Ceiling couple live
         let mx_xml = r#"<Maximizer Threshold="-6" Ceiling="-0.1" SlewRate="20"/>"#;
         let mx_doc = roxmltree::Document::parse(mx_xml).unwrap();
-        let thr_ctrls = declared_controls(mx_doc.root_element(), "Threshold");
-        assert_eq!(thr_ctrls.len(), 1);
-        assert!((eval_piecewise(&thr_ctrls.first().unwrap().1, -10.0) - 9.9).abs() < 1e-4);
+        let mx_built = maximizer(mx_doc.root_element(), &mut Notes::default()).unwrap();
+        let (mx_model, _) = models::decode_model(mx_doc.root_element(), 0).unwrap();
+        assert_eq!(
+            mx_model.build_effect(&mx_model.saved, &mx_built).unwrap(),
+            mx_built
+        );
+        let mx_moved = eval_attr(mx_xml, "Threshold", -10.0);
+        let ir::EffectKind::Limiter(l) = mx_moved.kind else {
+            panic!()
+        };
+        assert!((l.input_db - 9.9).abs() < 1e-4);
 
-        // DualDelay Feedback + Mix
-        let dd_xml = r#"<DualDelay SyncToHost="0" DelayTime="0.25" Feedback="0.4" FeedbackRatio="0.5" Mix="0.25" Rotation="90" InputRotation="1" InputWidth="1"/>"#;
-        let dd_doc = roxmltree::Document::parse(dd_xml).unwrap();
-        let dd_node = dd_doc.root_element();
-        let dt_ctrls = declared_controls(dd_node, "DelayTime");
-        assert_eq!(dt_ctrls.len(), 1);
-        assert!((eval_piecewise(&dt_ctrls.first().unwrap().1, 0.75) - 750.0).abs() < 1e-3);
-        let fb_ctrls = declared_controls(dd_node, "Feedback");
-        assert!(!fb_ctrls.is_empty());
-
-        // Flanger + Phasor + XpanderFilter
-        let fl_doc = roxmltree::Document::parse(
+        // DualDelay, Flanger, Phasor, XpanderFilter, Drive, DiodeClipper, DigitalEq, SampledReverb, Convolver
+        for xml in [
+            r#"<DualDelay SyncToHost="0" DelayTime="0.25" Feedback="0.4" FeedbackRatio="0.5" Mix="0.25" Rotation="90" InputRotation="1" InputWidth="1"/>"#,
             r#"<Flanger SyncToHost="0" Speed="0.4" Feedback="0.3" DelayTime="0.2" Depth="0.5" Mix="0.8"/>"#,
-        )
-        .unwrap();
-        assert_eq!(
-            declared_controls(fl_doc.root_element(), "Feedback").len(),
-            2
-        );
-        let ph_doc = roxmltree::Document::parse(
             r#"<Phasor SyncToHost="0" Speed="0.5" MinFreq="200" MaxFreq="3000" Feedback="0.4" Depth="0.5" Spread="1"/>"#,
-        )
-        .unwrap();
-        let ph_depth = declared_controls(ph_doc.root_element(), "Depth");
-        assert_eq!(ph_depth.len(), 2);
-        let want_out = 0.5f32 / (1.0 + 0.25f32).sqrt();
-        assert!((eval_piecewise(&ph_depth.first().unwrap().1, 0.5) - want_out).abs() < 1e-3);
-
-        let xp_doc = roxmltree::Document::parse(
             r#"<XpanderFilter DistortionType="0" Algorithm="0" Mode="3" Freq="1000" Q="0.5" Drive="6"/>"#,
-        )
-        .unwrap();
-        assert_eq!(declared_controls(xp_doc.root_element(), "Q").len(), 3);
-        assert_eq!(declared_controls(xp_doc.root_element(), "Freq").len(), 1);
+            r#"<Drive Mode="0" DriveAmount="0.5"/>"#,
+            r#"<DiodeClipper Drive="6" OutputGain="-3" Tone="8000" HighPass="40" Asymmetry="0.2"/>"#,
+            r#"<DigitalEq GainScale="0.5" Enabled1="1" Type1="6" Slope1="1" Freq1="1000" Gain1="6" Bandwidth1="1"/>"#,
+        ] {
+            let doc = roxmltree::Document::parse(xml).unwrap();
+            let node = doc.root_element();
+            let (m, _) = models::decode_model(node, 0).unwrap();
+            let built = m
+                .build_effect(&m.saved, &effect(ir::EffectKind::Other, 1.0, 0.0))
+                .unwrap();
+            let expected = match node.tag_name().name() {
+                "DualDelay" => dual_delay(node, &mut Notes::default()).unwrap(),
+                "Flanger" => flanger(Params::of(node)).unwrap(),
+                "Phasor" => phasor(Params::of(node), &mut Notes::default()).unwrap(),
+                "XpanderFilter" => crate::program::filters::effect(node, 0),
+                "Drive" => inserts::bus_effect(node, &mut Notes::default())
+                    .unwrap()
+                    .unwrap(),
+                "DiodeClipper" => diode_clipper(node).unwrap(),
+                "DigitalEq" => digital_eq(node, &mut Notes::default())
+                    .unwrap()
+                    .effects
+                    .into_iter()
+                    .next()
+                    .unwrap(),
+                other => panic!("no expected model for {other}"),
+            };
+            assert_eq!(built, expected, "load vs model mismatch for {xml}");
+        }
 
-        let sr_raw = roxmltree::Document::parse(
+        let sr_raw = eval_attr(
             r#"<SampledReverb NormalizePower="0" Wet="0.5" Dry="0.25"/>"#,
-        )
-        .unwrap();
-        let sr_raw_wet = declared_controls(sr_raw.root_element(), "Wet");
-        assert_eq!(sr_raw_wet.len(), 1);
-        assert_eq!(
-            Some(sr_raw_wet.first().unwrap().0),
-            ir::EffectParam::Output.code()
+            "Wet",
+            0.5,
         );
-        assert!((eval_piecewise(&sr_raw_wet.first().unwrap().1, 0.5) - 0.5 * RAW_WET).abs() < 1e-6);
-        let sr_raw_dry = declared_controls(sr_raw.root_element(), "Dry");
-        assert_eq!(sr_raw_dry.len(), 1);
-        assert_eq!(
-            Some(sr_raw_dry.first().unwrap().0),
-            ir::EffectParam::Dry.code()
-        );
-        assert!((eval_piecewise(&sr_raw_dry.first().unwrap().1, 0.25) - 0.25).abs() < 1e-6);
-
-        let sr_norm = roxmltree::Document::parse(
+        assert!((sr_raw.output - 0.5 * RAW_WET).abs() < 1e-6);
+        assert!((sr_raw.dry - 0.25).abs() < 1e-6);
+        let sr_norm = eval_attr(
             r#"<SampledReverb NormalizePower="1" Wet="0.5" Dry="0.25"/>"#,
-        )
-        .unwrap();
-        let sr_norm_wet = declared_controls(sr_norm.root_element(), "Wet");
-        assert!((eval_piecewise(&sr_norm_wet.first().unwrap().1, 0.5) - 0.5).abs() < 1e-6);
-
-        let conv = roxmltree::Document::parse(r#"<Convolver Wet="0.8" Dry="0.2"/>"#).unwrap();
-        let conv_wet = declared_controls(conv.root_element(), "Wet");
-        assert!((eval_piecewise(&conv_wet.first().unwrap().1, 0.8) - 0.8).abs() < 1e-6);
+            "Wet",
+            0.5,
+        );
+        assert!((sr_norm.output - 0.5).abs() < 1e-6);
+        let conv = eval_attr(r#"<Convolver Wet="0.8" Dry="0.2"/>"#, "Wet", 0.8);
+        assert!((conv.output - 0.8).abs() < 1e-6);
     }
 }

@@ -4490,6 +4490,14 @@ fn interacting_knobs_rebuild_the_slot_in_any_order() {
             sidechain_hz: None,
         }))
     }
+    struct Model;
+    impl ir::EffectModel for Model {
+        fn build(&self, p: &[f32]) -> Option<ir::EffectKind> {
+            build(p)
+        }
+    }
+    static MODEL: Model = Model;
+    let model_id = ir::register_test_model(&MODEL).unwrap();
     let run = |first: &str, second: &str| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
@@ -4504,9 +4512,9 @@ fn interacting_knobs_rebuild_the_slot_in_any_order() {
             ir::RackAt::Group(0),
             0,
             ir::KnobModel {
+                id: model_id,
                 knobs: [ir::SlotKnob::Input, ir::SlotKnob::Makeup].into(),
                 saved: [0.4, 0.8].into(),
-                build,
             },
         )];
         let script = kontra_ksp::compile(
@@ -4555,13 +4563,21 @@ fn a_restored_type_in_an_empty_slot_reads_and_moves_its_modelled_knobs() {
             sidechain_hz: None,
         }))
     }
+    struct Model;
+    impl ir::EffectModel for Model {
+        fn build(&self, p: &[f32]) -> Option<ir::EffectKind> {
+            build(p)
+        }
+    }
+    static MODEL: Model = Model;
+    let model_id = ir::register_test_model(&MODEL).unwrap();
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
     plan.groups[0].inserts = vec![None];
     let model = ir::KnobModel {
+        id: model_id,
         knobs: [ir::SlotKnob::Input, ir::SlotKnob::Makeup].into(),
         saved: [0.4, 0.8].into(),
-        build,
     };
     let effect = build(&model.saved).map(|kind| ir::Effect {
         kind,
@@ -4632,10 +4648,18 @@ fn a_bell_switch_reads_one_and_shows_nothing() {
         output: 1.0,
         dry: 0.0,
     })];
+    struct Model;
+    impl ir::EffectModel for Model {
+        fn build(&self, p: &[f32]) -> Option<ir::EffectKind> {
+            build(p)
+        }
+    }
+    static MODEL: Model = Model;
+    let model_id = ir::register_test_model(&MODEL).unwrap();
     let model = ir::KnobModel {
+        id: model_id,
         knobs: [ir::SlotKnob::BandGain(0), ir::SlotKnob::BandBell(0)].into(),
         saved: [0.5, 0.0].into(),
-        build,
     };
     plan.slot_models = vec![(ir::RackAt::Group(0), 0, model)];
     plan.slot_shapes.saved_types = vec![(ir::RackAt::Group(0), 0, 28)];

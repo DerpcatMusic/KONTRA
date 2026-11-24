@@ -464,59 +464,71 @@ pub fn saved(public: &[u8]) -> Option<Knobs> {
 /// back in.
 #[must_use]
 pub fn mix_dry(public: &[u8], output: f32) -> f32 {
-    saved(public).map_or(0.0, |k| (1.0 - k.mix.clamp(0.0, 1.0)) * output)
+    saved(public).map_or(0.0, |k| dry(k.mix, output))
 }
+
+/// The slot's dry level for MIX `mix` at `output`.
+#[must_use]
+pub fn dry(mix: f32, output: f32) -> f32 {
+    (1.0 - mix.clamp(0.0, 1.0)) * output
+}
+
+/// Single-encoding module descriptor for Supercharger GT (`0x60`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::SUPERGT,
+    module_id: 0x60,
+    versions: (0, u32::MAX),
+    name: "Supercharger GT",
+    script_type: 46,
+    mix: crate::module::MixMode::WetDry,
+    knobs: crate::module::KNOBS.split_at(10).0,
+    build: |p| {
+        let [
+            trim,
+            saturation,
+            character,
+            sat_mode,
+            char_mode,
+            compress,
+            attack,
+            release,
+            hpf_mode,
+            mix,
+        ] = *p
+        else {
+            return None;
+        };
+        Some(supergt(Knobs {
+            trim,
+            saturation,
+            compress,
+            character,
+            mix,
+            attack,
+            release,
+            hpf_mode,
+            sat_mode,
+            char_mode,
+        }))
+    },
+};
 
 /// The saved record as a script moves it: every knob and mode but MIX
 /// (as saved), in [`rows`]' order.
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
-    use ir::SlotKnob::Knob;
     let k = saved(public)?;
-    Some(ir::KnobModel {
-        knobs: (0..10).map(Knob).collect(),
-        saved: [
-            k.trim,
-            k.saturation,
-            k.character,
-            k.sat_mode,
-            k.char_mode,
-            k.compress,
-            k.attack,
-            k.release,
-            k.hpf_mode,
-            k.mix,
-        ]
-        .into(),
-        build: |p| {
-            let [
-                trim,
-                saturation,
-                character,
-                sat_mode,
-                char_mode,
-                compress,
-                attack,
-                release,
-                hpf_mode,
-                mix,
-            ] = *p
-            else {
-                return None;
-            };
-            Some(supergt(Knobs {
-                trim,
-                saturation,
-                compress,
-                character,
-                mix,
-                attack,
-                release,
-                hpf_mode,
-                sat_mode,
-                char_mode,
-            }))
-        },
-    })
+    Some(MODULE.knob_model(&[
+        k.trim,
+        k.saturation,
+        k.character,
+        k.sat_mode,
+        k.char_mode,
+        k.compress,
+        k.attack,
+        k.release,
+        k.hpf_mode,
+        k.mix,
+    ]))
 }
 
 /// The KSP names of [`model`]'s knobs: the floats as set, the modes by their

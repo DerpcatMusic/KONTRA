@@ -42,24 +42,37 @@ pub fn skreamer(tone: f32, drive: f32, bass: f32, bright: f32, mix: f32) -> ir::
 
 /// The saved record's knobs as a script moves them: every move rebuilds
 /// the overdrive from all five through [`skreamer`].
+/// Single-encoding module descriptor for Skreamer (`0x21`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::SKREAMER,
+    module_id: 0x21,
+    versions: (0, u32::MAX),
+    name: "Skreamer",
+    script_type: 21,
+    mix: crate::module::MixMode::OwnMix,
+    knobs: &[
+        ir::SlotKnob::Knob(0),
+        ir::SlotKnob::Knob(1),
+        ir::SlotKnob::Knob(2),
+        ir::SlotKnob::Knob(3),
+        ir::SlotKnob::Mix,
+    ],
+    build: |p| {
+        let [tone, drive, bass, bright, mix] = *p else {
+            return None;
+        };
+        Some(skreamer(tone, drive, bass, bright, mix))
+    },
+};
+
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
-    use ir::SlotKnob::{Knob, Mix};
     let saved = (0..5)
         .map(|i| {
             let bytes = public.get(4 * i..4 * i + 4)?.try_into().ok()?;
             Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
         })
-        .collect::<Option<Box<[f32]>>>()?;
-    Some(ir::KnobModel {
-        knobs: [Knob(0), Knob(1), Knob(2), Knob(3), Mix].into(),
-        saved,
-        build: |p| {
-            let [tone, drive, bass, bright, mix] = *p else {
-                return None;
-            };
-            Some(skreamer(tone, drive, bass, bright, mix))
-        },
-    })
+        .collect::<Option<Vec<f32>>>()?;
+    Some(MODULE.knob_model(&saved))
 }
 
 /// The KSP names of [`model`]'s knobs. Each is the record's field as set
@@ -139,7 +152,7 @@ mod tests {
             .flat_map(|x| x.to_le_bytes())
             .collect();
         let model = model(&public).unwrap();
-        let drive = |p: &[f32]| match (model.build)(p) {
+        let drive = |p: &[f32]| match model.build(p) {
             Some(ir::EffectKind::Overdrive(o)) => o.drive,
             _ => panic!("an overdrive"),
         };

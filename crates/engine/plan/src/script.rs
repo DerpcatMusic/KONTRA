@@ -114,8 +114,8 @@ impl ScriptPlan {
             | EnginePar::GainerGain
             | EnginePar::StereoWidth
             | EnginePar::StereoPan
-            | EnginePar::Held(_) => Holder::Slot,
-            EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
+            | EnginePar::Opaque(_) => Holder::Slot,
+            EnginePar::SlotKind | EnginePar::EffectSubtype => Holder::SlotKind,
             EnginePar::LfoFade | EnginePar::LfoRetrigger | EnginePar::LfoUnit => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
             // An envelope's stages live on its modulator: a group without

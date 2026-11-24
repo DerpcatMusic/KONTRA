@@ -936,10 +936,18 @@ end
 -- mapped (`knobs`) reach the effect the engine plays for it (`fx`: where,
 -- group or bus, slot).
 local function write_effect_knobs(at, index, slot, knobs, name, value)
-	-- Any other number the format mapped: each control it moves,
-	-- `{control, x1, y1, ...}`, by the number, straight between points.
-	local x = tonumber(value)
-	for _, knob in ipairs(x and (knobs or EMPTY)[name] or EMPTY) do
+	-- Modelled effects map each attribute name to its integer knob index;
+	-- legacy/synthetic entries map to `{ {control, x1, y1, ...}, ... }`.
+	local x = type(value) == "boolean" and (value and 1 or 0) or tonumber(value)
+	local entry = x and (knobs or EMPTY)[name]
+	if not entry then
+		return
+	end
+	if type(entry) == "number" then
+		host_call("EffectKnob", at, index, slot, entry, x)
+		return
+	end
+	for _, knob in ipairs(entry) do
 		local y = knob[3]
 		if x >= knob[#knob - 1] then
 			y = knob[#knob]

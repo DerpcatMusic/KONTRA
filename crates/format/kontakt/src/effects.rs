@@ -15,85 +15,104 @@ use kontra_ir as ir;
 const RACK: u16 = 0x3a;
 const BUS: u16 = 0x45;
 
-/// Module names by chunk id (Kontakt's `BParFX*` classes).
-/// Each saved module: its id, name and the `$EFFECT_TYPE_*` value a
-/// script reads for it (`get_engine_par($ENGINE_PAR_EFFECT_TYPE)`), −1
-/// where no constant names it. Values by name from the KSP constants;
-/// ANALOG STRINGS' Jump, legacy Delay and an empty slot read 31, 18 and 0
-/// (Kontakt 8.13.1 oracle, scratch/laneB/disp).
-const MODULES: &[(u16, &str, i32)] = &[
-    (0x10, "Delay (legacy)", 18),
-    (0x11, "Chorus (legacy)", 16),
-    (0x12, "Flanger (legacy)", 15),
-    (0x13, "Gainer", 20),
-    (0x14, "Phaser (legacy)", 14),
-    (0x15, "Reverb (legacy)", 17),
-    (0x16, "Convolution", 19),
-    (0x17, "Send Levels", 11),
-    (0x18, "Filter", 7),
-    (0x19, "Compressor", 2),
-    (0x1a, "Inverter", 4),
-    (0x1b, "DYX", -1),
-    (0x1c, "Limiter", 3),
-    (0x1d, "Saturation", 6),
-    (0x1e, "Distortion", 10),
-    (0x1f, "Stereo Modeller", 9),
-    (0x20, "Lo-Fi", 8),
-    (0x21, "Skreamer", 21),
-    (0x22, "Rotator", 22),
-    (0x23, "Twang", 23),
-    (0x24, "Cabinet", 24),
-    (0x42, "Tape Saturator", 26),
-    (0x43, "Transient Master", 27),
-    (0x44, "Solid G-EQ", 28),
-    (0x46, "Solid Bus Comp", 29),
-    (0x4c, "Feedback Compressor", 30),
-    (0x4d, "Jump", 31),
-    (0x52, "Van51", 32),
-    (0x53, "AC Box", 33),
-    (0x54, "Hot Solo", 34),
-    (0x55, "Cat", 35),
-    (0x56, "DStortion", 36),
-    (0x57, "Plate Reverb", 38),
-    (0x58, "Cry Wah", 37),
-    (0x59, "Reverb", 39),
-    (0x5a, "Replika", 40),
-    (0x5b, "Phasis", 41),
-    (0x5c, "Flair", 42),
-    (0x5d, "Choral", 43),
-    (0x5e, "Core Cell", -1),
-    (0x5f, "Hilbert Limiter", -1),
-    (0x60, "Supercharger", 46),
-    (0x61, "Bass Pro", 47),
-    (0x63, "Psyche Delay", 49),
-    (0x64, "Ring Modulator", 50),
-    (0x65, "Raum", 51),
-    (0x66, "Bite", 52),
-    (0x68, "Freak", 54),
-    (0x69, "Vibrato Chorus", 55),
-    (0x6a, "Wow / Flutter", 56),
-    (0x6b, "Twin Delay", 57),
-    (0x70, "Stereo Tune", 61),
-    (0x71, "Beat Masher", 62),
-    (0x72, "Gater", 63),
-    (0x73, "Beat Slicer", 64),
-    (0x74, "Reverse Grain", 65),
-    (0x75, "Transpose Stretch", 66),
-    (0x78, "Skreamer Deluxe", 69),
-    (0x79, "Kolor", 70),
+/// Unified descriptor for every Kontakt `BParFX*` module: chunk id, display
+/// name, `$EFFECT_TYPE_*` readback value (−1 when unnamed), and whether the
+/// slot mixes its dry level in parallel (`OtherWet` fallback when uncarried).
+struct Meta {
+    id: u16,
+    name: &'static str,
+    script_type: i32,
+    parallel: bool,
+}
+
+const fn meta(id: u16, name: &'static str, script_type: i32, parallel: bool) -> Meta {
+    Meta {
+        id,
+        name,
+        script_type,
+        parallel,
+    }
+}
+
+const MODULES: &[Meta] = &[
+    meta(0x10, "Delay (legacy)", 18, true),
+    meta(0x11, "Chorus (legacy)", 16, true),
+    meta(0x12, "Flanger (legacy)", 15, true),
+    meta(0x13, "Gainer", 20, false),
+    meta(0x14, "Phaser (legacy)", 14, true),
+    meta(0x15, "Reverb (legacy)", 17, true),
+    meta(0x16, "Convolution", 19, true),
+    meta(0x17, "Send Levels", 11, false),
+    meta(0x18, "Filter", 7, false),
+    meta(0x19, "Compressor", 2, false),
+    meta(0x1a, "Inverter", 4, false),
+    meta(0x1b, "DYX", -1, false),
+    meta(0x1c, "Limiter", 3, false),
+    meta(0x1d, "Saturation", 6, false),
+    meta(0x1e, "Distortion", 10, false),
+    meta(0x1f, "Stereo Modeller", 9, false),
+    meta(0x20, "Lo-Fi", 8, false),
+    meta(0x21, "Skreamer", 21, false),
+    meta(0x22, "Rotator", 22, false),
+    meta(0x23, "Twang", 23, false),
+    meta(0x24, "Cabinet", 24, false),
+    meta(0x42, "Tape Saturator", 26, false),
+    meta(0x43, "Transient Master", 27, false),
+    meta(0x44, "Solid G-EQ", 28, false),
+    meta(0x46, "Solid Bus Comp", 29, false),
+    meta(0x4c, "Feedback Compressor", 30, false),
+    meta(0x4d, "Jump", 31, false),
+    meta(0x52, "Van51", 32, false),
+    meta(0x53, "AC Box", 33, false),
+    meta(0x54, "Hot Solo", 34, false),
+    meta(0x55, "Cat", 35, false),
+    meta(0x56, "DStortion", 36, false),
+    meta(0x57, "Plate Reverb", 38, true),
+    meta(0x58, "Cry Wah", 37, false),
+    meta(0x59, "Reverb", 39, true),
+    meta(0x5a, "Replika", 40, true),
+    meta(0x5b, "Phasis", 41, false),
+    meta(0x5c, "Flair", 42, false),
+    meta(0x5d, "Choral", 43, false),
+    meta(0x5e, "Core Cell", -1, false),
+    meta(0x5f, "Hilbert Limiter", -1, false),
+    meta(0x60, "Supercharger", 46, false),
+    meta(0x61, "Bass Pro", 47, false),
+    meta(0x63, "Psyche Delay", 49, true),
+    meta(0x64, "Ring Modulator", 50, false),
+    meta(0x65, "Raum", 51, true),
+    meta(0x66, "Bite", 52, false),
+    meta(0x68, "Freak", 54, false),
+    meta(0x69, "Vibrato Chorus", 55, false),
+    meta(0x6a, "Wow / Flutter", 56, false),
+    meta(0x6b, "Twin Delay", 57, true),
+    meta(0x70, "Stereo Tune", 61, false),
+    meta(0x71, "Beat Masher", 62, false),
+    meta(0x72, "Gater", 63, false),
+    meta(0x73, "Beat Slicer", 64, false),
+    meta(0x74, "Reverse Grain", 65, false),
+    meta(0x75, "Transpose Stretch", 66, false),
+    meta(0x78, "Skreamer Deluxe", 69, false),
+    meta(0x79, "Kolor", 70, false),
 ];
 
+fn lookup(id: u16) -> Option<&'static Meta> {
+    MODULES.iter().find(|m| m.id == id)
+}
+
 fn name(id: u16) -> String {
-    MODULES
-        .iter()
-        .find(|(m, ..)| *m == id)
-        .map_or_else(|| format!("unknown {id:#04x}"), |(_, n, _)| (*n).into())
+    lookup(id).map_or_else(|| format!("unknown {id:#04x}"), |m| m.name.into())
 }
 
 /// The effect type a script reads for saved module `id`.
 fn effect_type(id: u16) -> Option<i32> {
-    let (.., ty) = MODULES.iter().find(|(m, ..)| *m == id)?;
-    (*ty >= 0).then_some(*ty)
+    let ty = lookup(id)?.script_type;
+    (ty >= 0).then_some(ty)
+}
+
+/// Whether module `id` mixes its slot dry level in parallel.
+fn is_parallel(id: u16) -> bool {
+    lookup(id).is_some_and(|m| m.parallel)
 }
 
 /// A rack's slots as effects. Gainer, Inverter and Stereo Modeller carry
@@ -403,19 +422,25 @@ fn slot_effect(
             }
             crate::legacy_reverb::effect(object.version, &public)
         }
-        0x5b => crate::phasis::saved(object.version, &public).map(|p| {
-            *model = Some(crate::phasis::model_from(p));
-            crate::phasis::phasis(p)
+        0x5b => crate::phasis::saved(object.version, &public).and_then(|p| {
+            let m = crate::phasis::model_from(p);
+            let k = m.build(&m.saved);
+            *model = Some(m);
+            k
         }),
-        0x5c => crate::flair::saved(object.version, &public).map(|p| {
-            *model = Some(crate::flair::model_from(p));
-            crate::flair::flair(p)
+        0x5c => crate::flair::saved(object.version, &public).and_then(|p| {
+            let m = crate::flair::model_from(p);
+            let k = m.build(&m.saved);
+            *model = Some(m);
+            k
         }),
-        0x5d => crate::choral::saved(object.version, &public).map(|p| {
-            *model = Some(crate::choral::model_from(p));
-            crate::choral::choral(p)
+        0x5d => crate::choral::saved(object.version, &public).and_then(|p| {
+            let m = crate::choral::model_from(p);
+            let k = m.build(&m.saved);
+            *model = Some(m);
+            k
         }),
-        0x65 => crate::raum::saved(object.version, &public).map(|(p, lost)| {
+        0x65 => crate::raum::saved(object.version, &public).and_then(|(p, lost)| {
             let impact = if params.bypass {
                 ir::Impact::Cosmetic
             } else {
@@ -424,18 +449,24 @@ fn slot_effect(
             for feature in lost {
                 notes.add(impact, feature, at.to_owned());
             }
-            *model = Some(crate::raum::model_from(p));
-            ir::EffectKind::Reverb(crate::raum::raum(p))
+            let m = crate::raum::model_from(p);
+            let k = m.build(&m.saved);
+            *model = Some(m);
+            k
         }),
-        0x6a => crate::wowflutter::saved(object.version, &public).map(|(p, _mix)| {
-            *model = Some(crate::wowflutter::model_from(p));
-            ir::EffectKind::Delay(crate::wowflutter::wow_flutter(p))
+        0x6a => crate::wowflutter::saved(object.version, &public).and_then(|(p, _mix)| {
+            let m = crate::wowflutter::model_from(p);
+            let k = m.build(&m.saved);
+            *model = Some(m);
+            k
         }),
-        0x69 => crate::vibrato::saved(object.version, &public).map(|v| {
-            *model = Some(crate::vibrato::model(v));
-            ir::EffectKind::Scanner(crate::vibrato::scanner(v))
+        0x69 => crate::vibrato::saved(object.version, &public).and_then(|v| {
+            let m = crate::vibrato::model(v);
+            let k = m.build(&m.saved);
+            *model = Some(m);
+            k
         }),
-        0x63 => crate::psyche::saved(object.version, &public).map(|p| {
+        0x63 => crate::psyche::saved(object.version, &public).and_then(|p| {
             if p.beats.is_some() {
                 let impact = if params.bypass {
                     ir::Impact::Cosmetic
@@ -448,8 +479,10 @@ fn slot_effect(
                     at.to_owned(),
                 );
             }
-            *model = Some(crate::psyche::model(p));
-            ir::EffectKind::Shifter(crate::psyche::shifter(p))
+            let m = crate::psyche::model(p);
+            let k = m.build(&m.saved);
+            *model = Some(m);
+            k
         }),
         0x5a => crate::replika::saved(object.version, &public).and_then(|r| {
             let impact = if params.bypass {
@@ -476,15 +509,7 @@ fn slot_effect(
             crate::drive::effect(id, object.version, &public, params.bypass, at, notes)
         }
     };
-    // The legacy delay, chorus, flanger and phaser, Replika, Psyche, Twin Delay,
-    // Plate Reverb, Raum, the Gainer and Convolution mix their slot's dry level
-    // back in; other modules' stored dry is unused (trims store 1 there).
-    // v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
-    // The reverbs run fully wet; Return and Dry carry their mix (v2 effects/space.rs).
-    let parallel = matches!(
-        effect.id,
-        0x10..=0x12 | 0x14 | 0x15 | 0x16 | 0x57 | 0x59 | 0x5a | 0x63 | 0x65 | 0x6b
-    );
+    let parallel = is_parallel(effect.id);
     // Legacy 1/2/3-band EQ (Filter 0x18 kinds 22..=24) has no Output control:
     // ANALOG STRINGS stores 0 on one that plays in Kontakt (v2 sampler-kontakt
     // effects/mod.rs, corpus of 12,918 EQ slots). Solid G-EQ (0x44) and other
@@ -852,6 +877,29 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
 
 #[cfg(test)]
 mod tests {
+    /// Every modelled descriptor names the chunk and KSP type the loader
+    /// dispatches it by.
+    #[test]
+    fn module_descriptors_match_the_loader_table() {
+        let all = kontra_kontakt_effects::module::ALL.iter().copied().chain([
+            &crate::solid_knobs::SOLID_EQ_MODULE,
+            &crate::solid_knobs::SOLID_BUS_MODULE,
+        ]);
+        for m in all {
+            let meta = u16::try_from(m.module_id)
+                .ok()
+                .and_then(super::lookup)
+                .unwrap_or_else(|| panic!("{}: no loader entry {:#04x}", m.name, m.module_id));
+            assert_eq!(
+                (meta.script_type, m.module_id),
+                (m.script_type, u32::from(meta.id)),
+                "{} vs loader {}",
+                m.name,
+                meta.name
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

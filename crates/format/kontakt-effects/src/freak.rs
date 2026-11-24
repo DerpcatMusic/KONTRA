@@ -241,15 +241,22 @@ impl Knobs {
     }
 }
 
+/// Single-encoding module descriptor for Freak (`0x68`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::FREAK,
+    module_id: 0x68,
+    versions: (0, u32::MAX),
+    name: "Freak",
+    script_type: 54,
+    mix: crate::module::MixMode::OwnMix,
+    knobs: crate::module::KNOBS.split_at(18).0,
+    build: |p| Some(freak(Knobs::from_array(p.get(..18)?.try_into().ok()?))),
+};
+
 /// A unit as a script moves it, from `k`, in [`rows`] order.
 #[must_use]
 pub fn model(k: Knobs) -> ir::KnobModel {
-    use ir::SlotKnob::Knob;
-    ir::KnobModel {
-        knobs: (0..18).map(Knob).collect(),
-        saved: k.to_array().into(),
-        build: |p| Some(freak(Knobs::from_array(p.get(..18)?.try_into().ok()?))),
-    }
+    MODULE.knob_model(&k.to_array())
 }
 
 /// The KSP names of [`model`]'s knobs: the floats as set, the switches

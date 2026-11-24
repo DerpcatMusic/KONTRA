@@ -321,6 +321,44 @@ pub enum ParamMap {
     Power { min: f32, max: f32, exponent: f32 },
 }
 
+impl ParamMap {
+    /// Converts this UI mapping into its canonical [`ir::Law`], or `None` for [`Self::Direct`].
+    #[must_use]
+    pub fn to_law(self) -> Option<ir::Law> {
+        match self {
+            Self::Direct => None,
+            Self::Linear { min, max } => Some(ir::Law::Linear { lo: min, hi: max }),
+            Self::Exponential { min, max } => {
+                if min > 0.0 && max > 0.0 {
+                    Some(ir::Law::Exp { lo: min, hi: max })
+                } else {
+                    Some(ir::Law::Linear { lo: min, hi: max })
+                }
+            }
+            Self::Power { min, max, exponent } => {
+                if exponent.is_finite() && exponent > 0.0 {
+                    Some(ir::Law::Power {
+                        lo: min,
+                        hi: max,
+                        exponent,
+                    })
+                } else {
+                    Some(ir::Law::Linear { lo: min, hi: max })
+                }
+            }
+        }
+    }
+
+    fn bounds(self) -> Option<(f32, f32)> {
+        match self {
+            Self::Direct => None,
+            Self::Linear { min, max }
+            | Self::Exponential { min, max }
+            | Self::Power { min, max, .. } => Some((min, max)),
+        }
+    }
+}
+
 /// Direct, script-free binding from a UI widget to a format-neutral engine parameter.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamBinding {
@@ -329,26 +367,8 @@ pub struct ParamBinding {
     pub map: ParamMap,
 }
 
-fn valid_power(exponent: f32) -> bool {
-    exponent.is_finite() && exponent > 0.0
-}
-
 fn finite_nonzero_span(span: f64) -> bool {
     span.is_finite() && span != 0.0
-}
-
-fn between(min: f64, max: f64, t: f64, interpolate: impl FnOnce(f64, f64, f64) -> f64) -> f64 {
-    if t == 0.0 {
-        min
-    } else if t == 1.0 {
-        max
-    } else {
-        interpolate(min, max, t)
-    }
-}
-
-fn linear(min: f64, max: f64, t: f64) -> f64 {
-    min + (max - min) * t
 }
 
 impl ParamBinding {
@@ -369,90 +389,56 @@ impl ParamBinding {
     /// Maps a widget value (in its authored `range`, if any) to the physical IR parameter value.
     #[must_use]
     pub fn to_physical(&self, widget_value: f64, range: Option<Range>) -> f32 {
-        let norm = |r: Option<Range>| -> f64 {
-            match r {
-                Some(r) if finite_nonzero_span(r.max - r.min) => {
-                    ((widget_value - r.min) / (r.max - r.min)).clamp(0.0, 1.0)
-                }
-                Some(r) if r.min.is_finite() && r.min == r.max => 0.0,
-                _ => widget_value.clamp(0.0, 1.0),
-            }
+        let Some(law) = self.map.to_law() else {
+            return widget_value as f32;
         };
-        match self.map {
-            ParamMap::Direct => widget_value as f32,
-            ParamMap::Linear { min, max } => {
-                let t = norm(range);
-                between(f64::from(min), f64::from(max), t, linear) as f32
+        let t = match range {
+            Some(r) if finite_nonzero_span(r.max - r.min) => {
+                ((widget_value - r.min) / (r.max - r.min)).clamp(0.0, 1.0)
             }
-            ParamMap::Exponential { min, max } => {
-                let t = norm(range);
-                let (lo, hi) = (f64::from(min), f64::from(max));
-                if lo > 0.0 && hi > 0.0 {
-                    between(lo, hi, t, |lo, hi, t| lo * (hi / lo).powf(t)) as f32
-                } else {
-                    between(lo, hi, t, linear) as f32
-                }
+            Some(r) if r.min.is_finite() && r.min == r.max => 0.0,
+            _ => widget_value.clamp(0.0, 1.0),
+        };
+        if let Some((min, max)) = self.map.bounds() {
+            if t == 0.0 {
+                return min;
             }
-            ParamMap::Power { min, max, exponent } => {
-                let t = norm(range);
-                let t = if valid_power(exponent) {
-                    t.powf(f64::from(exponent))
-                } else {
-                    t
-                };
-                between(f64::from(min), f64::from(max), t, linear) as f32
+            if t == 1.0 {
+                return max;
             }
         }
+        law.eval_f64(t) as f32
     }
 
     /// Inverse of [`Self::to_physical`]: maps a physical IR parameter value back to widget units.
     #[must_use]
     pub fn from_physical(&self, physical: f32, range: Option<Range>) -> f64 {
-        let denorm = |t: f64| -> f64 {
-            let t = t.clamp(0.0, 1.0);
-            match range {
-                Some(r) if finite_nonzero_span(r.max - r.min) => between(r.min, r.max, t, linear),
-                Some(r) if r.min.is_finite() && r.min == r.max => r.min,
-                _ => t,
-            }
+        let Some(law) = self.map.to_law() else {
+            return f64::from(physical);
         };
-        let valid_span = |span: f64| physical.is_finite() && finite_nonzero_span(span);
-        match self.map {
-            ParamMap::Direct => f64::from(physical),
-            ParamMap::Linear { min, max } => {
-                let span = f64::from(max) - f64::from(min);
-                let t = if valid_span(span) {
-                    (f64::from(physical) - f64::from(min)) / span
-                } else {
-                    0.0
-                };
-                denorm(t)
+        let t = if let Some((min, max)) = self.map.bounds() {
+            let span = f64::from(max) - f64::from(min);
+            if physical.is_finite() && finite_nonzero_span(span) {
+                law.inverse_f64(f64::from(physical)).unwrap_or(0.0)
+            } else {
+                0.0
             }
-            ParamMap::Exponential { min, max } => {
-                let (lo, hi, v) = (f64::from(min), f64::from(max), f64::from(physical));
-                let t = if lo > 0.0 && hi > 0.0 && valid_span(hi - lo) && v > 0.0 {
-                    (v / lo).ln() / (hi / lo).ln()
-                } else if valid_span(hi - lo) {
-                    (v - lo) / (hi - lo)
+        } else {
+            0.0
+        };
+        let t = t.clamp(0.0, 1.0);
+        match range {
+            Some(r) if finite_nonzero_span(r.max - r.min) => {
+                if t == 0.0 {
+                    r.min
+                } else if t == 1.0 {
+                    r.max
                 } else {
-                    0.0
-                };
-                denorm(t)
+                    r.min + (r.max - r.min) * t
+                }
             }
-            ParamMap::Power { min, max, exponent } => {
-                let span = f64::from(max) - f64::from(min);
-                let base = if valid_span(span) {
-                    ((f64::from(physical) - f64::from(min)) / span).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                let t = if valid_power(exponent) {
-                    base.powf(1.0 / f64::from(exponent))
-                } else {
-                    base
-                };
-                denorm(t)
-            }
+            Some(r) if r.min.is_finite() && r.min == r.max => r.min,
+            _ => t,
         }
     }
 }

@@ -10,6 +10,7 @@ pub mod dynamics;
 pub mod flair;
 pub mod freak;
 pub mod legacy_reverb;
+pub mod module;
 pub mod phasis;
 pub mod psyche;
 pub mod skreamer;

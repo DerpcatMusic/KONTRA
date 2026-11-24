@@ -63,19 +63,32 @@ fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
 /// move rebuilds the compressor from all seven through [`feedback`], as the
 /// native setter derives each field from all of them (the input drives the
 /// threshold down and the make-up up; the ratio moves the knee).
+/// Single-encoding module descriptor for Feedback Compressor (`0x4c`).
+pub static FEEDBACK_MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::FEEDBACK_COMP,
+    module_id: 0x4c,
+    versions: (0, u32::MAX),
+    name: "Feedback Compressor",
+    script_type: 30,
+    mix: crate::module::MixMode::OwnMix,
+    knobs: &[
+        ir::SlotKnob::Input,
+        ir::SlotKnob::Makeup,
+        ir::SlotKnob::Attack,
+        ir::SlotKnob::Release,
+        ir::SlotKnob::Ratio,
+        ir::SlotKnob::Mix,
+        ir::SlotKnob::Knob(6),
+    ],
+    build: |p| {
+        let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
+        Some(ir::EffectKind::Compressor(feedback(knobs, link)))
+    },
+};
+
 pub fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
-    use ir::SlotKnob::{Attack, Input, Knob, Makeup, Mix, Ratio, Release};
-    let (saved, link) = feedback_saved(public)?;
-    let mut positions = saved.to_vec();
-    positions.push(f32::from(u8::from(link)));
-    Some(ir::KnobModel {
-        knobs: [Input, Makeup, Attack, Release, Ratio, Mix, Knob(6)].into(),
-        saved: positions.into(),
-        build: |p| {
-            let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
-            Some(ir::EffectKind::Compressor(feedback(knobs, link)))
-        },
-    })
+    let ([p0, p1, p2, p3, p4, p5], link) = feedback_saved(public)?;
+    Some(FEEDBACK_MODULE.knob_model(&[p0, p1, p2, p3, p4, p5, f32::from(u8::from(link))]))
 }
 
 /// The Feedback Compressor's KSP names, each a knob of [`feedback_model`].
@@ -154,7 +167,7 @@ mod tests {
         public.extend([1, 1, 0]);
         let (read, _) = effect(0x4c, 0x10, &public).unwrap();
         let model = feedback_model(&public).unwrap();
-        assert_eq!((model.build)(&model.saved), Some(read));
+        assert_eq!(model.build(&model.saved), Some(read));
     }
 
     #[test]

@@ -71,13 +71,22 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 5], f32)> {
     Some(([wow, flutter, speed, stereo, age], mix))
 }
 
+/// Single-encoding module descriptor for Wow/Flutter (`0x6a`).
+pub(crate) static MODULE: kontra_kontakt_effects::module::Module =
+    kontra_kontakt_effects::module::Module {
+        id: kontra_kontakt_effects::module::ids::WOWFLUTTER,
+        module_id: 0x6a,
+        versions: (0x10, 0x10),
+        name: "Wow/Flutter",
+        script_type: 56,
+        mix: kontra_kontakt_effects::module::MixMode::WetDry,
+        knobs: kontra_kontakt_effects::module::KNOBS.split_at(5).0,
+        build: |p| Some(ir::EffectKind::Delay(wow_flutter(p.try_into().ok()?))),
+    };
+
 /// A Wow/Flutter's knobs from saved positions as a script moves them.
 pub(crate) fn model_from(saved: [f32; 5]) -> ir::KnobModel {
-    ir::KnobModel {
-        knobs: (0..5).map(ir::SlotKnob::Knob).collect(),
-        saved: saved.into(),
-        build: |p| Some(ir::EffectKind::Delay(wow_flutter(p.try_into().ok()?))),
-    }
+    MODULE.knob_model(&saved)
 }
 
 /// A Wow/Flutter's knobs as a script moves them: every move rebuilds it.

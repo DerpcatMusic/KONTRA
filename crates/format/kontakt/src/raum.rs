@@ -120,13 +120,22 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], Vec<&'sta
     ))
 }
 
+/// Single-encoding module descriptor for Raum (`0x65`).
+pub(crate) static MODULE: kontra_kontakt_effects::module::Module =
+    kontra_kontakt_effects::module::Module {
+        id: kontra_kontakt_effects::module::ids::RAUM,
+        module_id: 0x65,
+        versions: (0x10, 0x10),
+        name: "Raum",
+        script_type: 51,
+        mix: kontra_kontakt_effects::module::MixMode::WetDry,
+        knobs: kontra_kontakt_effects::module::KNOBS.split_at(10).0,
+        build: |p| Some(ir::EffectKind::Reverb(raum(p.try_into().ok()?))),
+    };
+
 /// A Raum's knobs from saved positions as a script moves them.
 pub(crate) fn model_from(saved: [f32; 10]) -> ir::KnobModel {
-    ir::KnobModel {
-        knobs: (0..10).map(ir::SlotKnob::Knob).collect(),
-        saved: saved.into(),
-        build: |p| Some(ir::EffectKind::Reverb(raum(p.try_into().ok()?))),
-    }
+    MODULE.knob_model(&saved)
 }
 
 /// A Raum's knobs as a script moves them: every move rebuilds it from all.

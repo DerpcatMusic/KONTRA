@@ -121,7 +121,7 @@ pub enum TimeScale {
 
 /// How a volume modulation turns its source into gain.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Curve {
+pub enum GainCurve {
     /// Linear in dB: `intensity ×` this many dB down at source 0.
     Decibels(f32),
     /// `(1 − (1 − x') × |intensity|)^power`, where `x' = 1 − x` when
@@ -138,7 +138,7 @@ pub enum Curve {
     Signed,
 }
 
-impl Curve {
+impl GainCurve {
     /// Linear gain for source value `x` (0..=1) at `intensity`.
     #[must_use]
     pub fn gain(self, intensity: f32, x: f32) -> f32 {
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn curve_depth_negative_intensity_inverts_source_without_boosting() {
-        use super::Curve;
+        use super::GainCurve as Curve;
         for power in [1u8, 3] {
             let c = Curve::Depth { power };
             // Positive depth: x=1 -> 1.0, x=0 -> (1 - d)^power.

@@ -364,6 +364,8 @@ pub struct Engine {
     scratch: Box<[[f32; 2]]>,
     /// Optional compiled [`ir::AudioGraph`] executor (allocated only when `plan.graph` is `Some`).
     graph: Option<kontra_racks::graph::GraphRuntime>,
+    /// Validation/compilation error captured if `plan.graph` failed to compile (e.g. a cycle).
+    graph_error: Option<String>,
     /// Per-group stereo sum buffers feeding [`Self::graph`] (empty when `graph` is `None`).
     group_mix: Box<[Box<[[f32; 2]]>]>,
     /// True during a span when any voice redirected its output to a bus in graph mode.
@@ -373,9 +375,30 @@ pub struct Engine {
 impl Engine {
     /// Allocates every pool the plan asks for, plus as many voices again so
     /// every stolen voice can fade. Not real-time.
+    ///
+    /// If `plan.graph` is present and fails to compile (for example, contains a
+    /// cycle), the error is recorded and queryable via [`Self::graph_error`]
+    /// rather than silently dropped; use [`Self::try_new`] to fail fast.
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
         Self::new_inner(plan, stream, rate, None)
+    }
+
+    /// Like [`Self::new`], but returns an error if `plan.graph` fails to
+    /// compile (for example, due to a routing cycle).
+    pub fn try_new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Result<Self, String> {
+        let engine = Self::new_inner(plan, stream, rate, None);
+        if let Some(err) = engine.graph_error {
+            return Err(err);
+        }
+        Ok(engine)
+    }
+
+    /// Returns the graph compilation error if `plan.graph` could not be compiled
+    /// (for example, a cycle in [`ir::AudioGraph`]).
+    #[must_use]
+    pub fn graph_error(&self) -> Option<&str> {
+        self.graph_error.as_deref()
     }
 
     /// Create an engine with bounded tracing enabled before its init callbacks.
@@ -470,9 +493,23 @@ impl Engine {
         );
         let zone_index = Arc::new(zone_index::ZoneIndex::new(&plan.zones));
         let release_zones = plan.zones.iter().any(|z| z.trigger == Trigger::Release);
-        let graph = plan.graph.as_ref().and_then(|g| {
-            kontra_racks::graph::GraphRuntime::new(g, rate, MAX_SPAN as usize, &plan.impulses).ok()
-        });
+        let (graph, graph_error) = match plan.graph.as_ref() {
+            Some(g) => {
+                match kontra_racks::graph::GraphRuntime::new(
+                    g,
+                    rate,
+                    MAX_SPAN as usize,
+                    &plan.impulses,
+                ) {
+                    Ok(rt) => (Some(rt), None),
+                    Err(node) => (
+                        None,
+                        Some(format!("audio graph contains a cycle at node {}", node.0)),
+                    ),
+                }
+            }
+            None => (None, None),
+        };
         let group_mix: Box<[Box<[[f32; 2]]>]> = if graph.is_some() {
             (0..groups)
                 .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into_boxed_slice())
@@ -581,6 +618,7 @@ impl Engine {
             group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             graph,
+            graph_error,
             group_mix,
             graph_redirected: false,
         };

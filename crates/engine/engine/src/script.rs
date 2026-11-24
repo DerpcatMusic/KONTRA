@@ -459,6 +459,12 @@ impl HostApi for Engine {
                 self.set_effect_field(int(0), int(1), int(2), int(3), value);
                 HostValue::Nothing
             }
+            Action::EffectKnob => {
+                let bits = call.ints.get(4).copied().unwrap_or(0) as u32;
+                let value = f32::from_bits(bits);
+                self.set_placed_knob(int(0), int(1), int(2), int(3), value);
+                HostValue::Nothing
+            }
             Action::EffectGain => {
                 self.set_effect_gain(int(0), int(1), int(2), int(3) as f32 / 1e6);
                 HostValue::Nothing
@@ -848,7 +854,7 @@ impl HostApi for Engine {
             // A type the slot cannot switch to in place loads (fx_types).
             Action::SetEnginePar => {
                 let par = self.engine_par(int(0));
-                let swap = matches!(par, Some(EnginePar::EffectType | EnginePar::EffectSubtype));
+                let swap = matches!(par, Some(EnginePar::SlotKind | EnginePar::EffectSubtype));
                 let set = self.set_engine_par(int(0), int(1), int(2), int(3), int(4));
                 let subtype = par == Some(EnginePar::EffectSubtype);
                 let loaded = (swap && !set)
@@ -857,7 +863,7 @@ impl HostApi for Engine {
                 if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
                     self.count_par([int(0), int(2), int(3), int(4)]);
-                } else if set && matches!(par, Some(EnginePar::Held(_))) {
+                } else if set && matches!(par, Some(EnginePar::Opaque(_))) {
                     // Answered, but no processor plays it: the effects' work list.
                     self.count_par([int(0), int(2), int(3), int(4)]);
                 }
