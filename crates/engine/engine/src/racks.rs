@@ -6,7 +6,6 @@ use std::sync::Arc;
 use kontra_ir as ir;
 
 use crate::Engine;
-use crate::effects;
 pub(crate) use kontra_effects::processors::{Dsp, Responses, convolver, processor};
 use kontra_effects::stem;
 pub(crate) use kontra_racks::rack::{Live, Rack};
@@ -124,27 +123,42 @@ impl Engine {
                 }
             }
             graph.clear(len);
-            for (gi, gmix) in self.group_mix.iter().enumerate() {
-                if let Some(slice) = gmix.get(..len) {
-                    graph.add_group_audio(u16::try_from(gi).unwrap_or(u16::MAX), slice);
+            if graph.has_group_inputs() {
+                for (gi, gmix) in self.group_mix.iter().enumerate() {
+                    if let Some(slice) = gmix.get(..len) {
+                        graph.add_group_audio(u16::try_from(gi).unwrap_or(u16::MAX), slice);
+                    }
                 }
-            }
-            if self.graph_redirected {
-                for (bi, bus) in self.buses.iter().enumerate() {
-                    if let Some(slice) = bus.mix.get(..len) {
-                        graph.add_bus_audio(bi, slice);
+                if self.graph_redirected {
+                    for (bi, bus) in self.buses.iter().enumerate() {
+                        if let Some(slice) = bus.mix.get(..len) {
+                            graph.add_bus_audio(bi, slice);
+                        }
                     }
                 }
             }
+            for tap in &mut self.taps {
+                tap.fill([0.0; 2]);
+            }
+            let live = Live {
+                behaviour: &self.behaviour,
+                scripts: &self.script_mods,
+                now: self.now,
+                seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
+                tempo: self.tempo,
+            };
+            let buses = kontra_racks::graph::Buses {
+                buses: &mut self.buses,
+                live: &live,
+                taps: &mut self.taps,
+                rate: self.rate,
+            };
             if let Some(active) = stems.get_mut(..count) {
-                graph.process(len, self.tempo, active);
+                graph.process(len, self.tempo, Some(buses), active);
             }
             if let Some(main_span) = stems.first_mut() {
                 if self.rack.active() || self.sends.iter().any(Rack::active) || self.main.active() {
                     let tempo = self.tempo;
-                    for tap in &mut self.taps {
-                        tap.fill([0.0; 2]);
-                    }
                     self.rack.process(main_span, &mut self.taps, tempo);
                     for (send, tap) in self.sends.iter_mut().zip(self.taps.iter_mut()) {
                         if let Some(tap) = tap.get_mut(..len).filter(|_| send.active()) {
@@ -178,76 +192,18 @@ impl Engine {
         for tap in &mut self.taps {
             tap.fill([0.0; 2]);
         }
+        let live = Live {
+            behaviour: &self.behaviour,
+            scripts: &self.script_mods,
+            now: self.now,
+            seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
+            tempo,
+        };
         for at in 0..self.buses.len() {
-            let (done, later) = self.buses.split_at_mut(at + 1);
-            let Some(bus) = done.last_mut() else {
+            kontra_racks::bus::run(&mut self.buses, at, &live, &mut self.taps, self.rate, len);
+            let Some(bus) = self.buses.get(at).filter(|b| b.to_main) else {
                 continue;
             };
-            if let Some(mix) = bus.mix.get_mut(..len) {
-                let live = Live {
-                    behaviour: &self.behaviour,
-                    scripts: &self.script_mods,
-                    now: self.now,
-                    seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
-                    tempo,
-                };
-                bus.rack.follow(&live);
-                bus.rack.process(mix, &mut self.taps, tempo);
-            }
-            if bus.idle(len) {
-                continue;
-            }
-            if let Some(mix) = bus.mix.get_mut(..len) {
-                // A send to an earlier bus would come a span late: none.
-                // Pre-fader sends, the fader's glide, post-fader sends, the pan.
-                for post in [false, true] {
-                    if post {
-                        bus.fader.process(mix, bus.gain, [1.0; 2]);
-                    }
-                    let sends = bus.sends.iter().enumerate();
-                    for (n, send) in sends.filter(|(_, s)| s.post_fader == post) {
-                        let Some(to) = send.bus.checked_sub(at + 1).and_then(|k| later.get_mut(k))
-                        else {
-                            continue;
-                        };
-                        if bus.rack.send_moves(n) {
-                            // An oscillator moves the level every frame, so
-                            // the result does not depend on where blocks split.
-                            let live = Live {
-                                behaviour: &self.behaviour,
-                                scripts: &self.script_mods,
-                                now: self.now,
-                                seconds: (self.now.0 as f64 / f64::from(self.rate)) as f32,
-                                tempo,
-                            };
-                            let scales = bus.scales.get_mut(..len).unwrap_or_default();
-                            bus.rack
-                                .send_scales(&live, n, 1.0 / self.rate as f32, scales);
-                            for ((o, m), g) in to.mix.iter_mut().zip(mix.iter()).zip(scales.iter())
-                            {
-                                let level = send.level * g;
-                                o[0] += m[0] * level;
-                                o[1] += m[1] * level;
-                            }
-                            continue;
-                        }
-                        // ponytail: other moved levels step once a span; ramp if a ride zippers.
-                        let level = send.level * bus.rack.send_scale(n);
-                        for (o, m) in to.mix.iter_mut().zip(mix.iter()) {
-                            o[0] += m[0] * level;
-                            o[1] += m[1] * level;
-                        }
-                    }
-                }
-                let [[l, _], [_, r]] = effects::balance(bus.pan);
-                bus.balance.process(mix, 1.0, [l, r]);
-                for m in mix.iter() {
-                    bus.peak = [bus.peak[0].max(m[0].abs()), bus.peak[1].max(m[1].abs())];
-                }
-            }
-            if !bus.to_main {
-                continue;
-            }
             for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
                 o[0] += m[0];
                 o[1] += m[1];

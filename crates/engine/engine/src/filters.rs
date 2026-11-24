@@ -20,6 +20,7 @@ use crate::{Engine, MAX_SPAN, group_racks};
 
 use crate::racks::Rack;
 pub(crate) use kontra_racks::chain::{Chain, on_bus};
+use kontra_racks::graph::GraphRuntime;
 
 /// The most private chains one instrument builds for its shared groups: a
 /// sanity ceiling (about 10 MB) far past the largest library's groups.
@@ -55,7 +56,7 @@ impl Engine {
         let mut chains: Vec<Chain> = Vec::new();
         let rate = self.rate;
         let plan = Arc::clone(&self.plan);
-        let has_graph = self.graph.is_some();
+        let has_graph = self.graph_groups();
         self.group_chain = (0..self.groups.len())
             .map(|g| {
                 let sections = shared.get(g)?.clone();
@@ -159,7 +160,7 @@ impl Engine {
         if !std::mem::take(&mut self.groups_moved) {
             return;
         }
-        let rate = self.rate;
+        let (rate, graph_groups) = (self.rate, self.graph_groups());
         for (g, moved) in self.group_moved.iter_mut().enumerate() {
             if !std::mem::take(moved) {
                 continue;
@@ -168,7 +169,7 @@ impl Engine {
                 continue;
             };
             let inserts = &group.inserts[..];
-            if self.group_split.get(g).copied().flatten().is_some() || self.graph.is_some() {
+            if self.group_split.get(g).copied().flatten().is_some() || graph_groups {
                 for chain in self.chains.iter_mut().filter(|c| c.owner() == Some(g)) {
                     chain.follow(inserts, rate);
                 }
@@ -210,7 +211,7 @@ impl Engine {
             }
         }
         self.graph_redirected = false;
-        let has_graph = self.graph.is_some();
+        let has_graph = self.graph_groups();
         for (_index, slot) in self
             .voices
             .iter_mut()
@@ -335,7 +336,7 @@ impl Engine {
     /// Filters each chain that sounded or still rings, into its bus (or group mix in graph mode).
     pub(crate) fn mix_chains(&mut self, len: usize) {
         let tempo = self.tempo;
-        let has_graph = self.graph.is_some();
+        let has_graph = self.graph_groups();
         for chain in &mut self.chains {
             // A group rack may ring on (a reverb's tail): it always runs.
             if !chain.live && chain.group.is_none() && !chain.ringing {
@@ -385,5 +386,15 @@ impl Engine {
             }
             mix.fill([0.0; 2]);
         }
+    }
+}
+
+impl Engine {
+    /// Whether groups enter the audio graph through their own inputs (a
+    /// `.kontra` graph) rather than through the instrument buses.
+    pub(crate) fn graph_groups(&self) -> bool {
+        self.graph
+            .as_ref()
+            .is_some_and(GraphRuntime::has_group_inputs)
     }
 }
