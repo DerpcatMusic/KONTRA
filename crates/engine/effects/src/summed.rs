@@ -37,28 +37,43 @@ fn band(b: &ir::Bell, rate: u32) -> Biquad {
 }
 
 /// A group's EQ run on one voice: its four bands, moved by their routes.
+/// Flat bands (`gain_db == 0.0`) with settled filter state are skipped
+/// bit-identically.
 #[derive(Clone)]
 pub struct VoiceEq {
     biquads: [Biquad; 4],
+    bells: [ir::Bell; 4],
+    rate: u32,
 }
 
 impl VoiceEq {
     pub fn new(bells: [ir::Bell; 4], rate: u32) -> Self {
         Self {
             biquads: bells.map(|b| band(&b, rate)),
+            bells,
+            rate,
         }
     }
 
     /// Moves the bands' coefficients and keeps their state.
     pub fn retune(&mut self, bells: [ir::Bell; 4], rate: u32) {
-        for (f, b) in self.biquads.iter_mut().zip(&bells) {
-            f.retune(&band(b, rate));
+        if self.bells == bells && self.rate == rate {
+            return;
         }
+        for ((f, prev), &next) in self.biquads.iter_mut().zip(&mut self.bells).zip(&bells) {
+            if *prev != next || self.rate != rate {
+                f.retune(&band(&next, rate));
+                *prev = next;
+            }
+        }
+        self.rate = rate;
     }
 
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        for f in &mut self.biquads {
-            f.process(io);
+        for (f, b) in self.biquads.iter_mut().zip(&self.bells) {
+            if b.gain_db != 0.0 || !f.is_silent() {
+                f.process(io);
+            }
         }
     }
 

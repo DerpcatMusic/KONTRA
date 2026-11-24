@@ -182,7 +182,9 @@ fn run_events(
         let faults_before = thread_faults();
         let _ = kontra_lua::probe::take();
         let timer = (std::time::Instant::now(), on_cpu());
-        engine.process(&mut audio[..frames], &timed);
+        if let Some(buf) = audio.get_mut(..frames) {
+            engine.process(buf, &timed);
+        }
         let spent = timer.0.elapsed();
         process_time += spent;
         let faults_after = thread_faults();
@@ -240,13 +242,15 @@ fn run_events(
         for request in requests {
             engine.install(Prepared::new(request, Some(&plan), RATE));
         }
-        rendered.extend_from_slice(&audio[..frames]);
-        for frame in &audio[..frames] {
-            for (sample, previous) in frame.iter().zip(&mut prior) {
-                peak = peak.max(sample.abs());
-                jump = jump.max((sample - *previous).abs());
-                clipped += u64::from(sample.abs() > 1.0);
-                *previous = *sample;
+        if let Some(buf) = audio.get(..frames) {
+            rendered.extend_from_slice(buf);
+            for frame in buf {
+                for (sample, previous) in frame.iter().zip(&mut prior) {
+                    peak = peak.max(sample.abs());
+                    jump = jump.max((sample - *previous).abs());
+                    clipped += u64::from(sample.abs() > 1.0);
+                    *previous = *sample;
+                }
             }
         }
         at = until;
@@ -423,10 +427,13 @@ fn run_events(
     summary.push_str(&format!(
         "  block timing ({} frames, budget {:.0} us): p50 {:.0} us, p99 {:.0} us, max {:.0} us\n",
         block,
-        timing["budget_us"].as_f64().unwrap_or(0.0),
-        timing["p50_us"].as_f64().unwrap_or(0.0),
-        timing["p99_us"].as_f64().unwrap_or(0.0),
-        timing["max_us"].as_f64().unwrap_or(0.0)
+        timing
+            .get("budget_us")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        timing.get("p50_us").and_then(Value::as_f64).unwrap_or(0.0),
+        timing.get("p99_us").and_then(Value::as_f64).unwrap_or(0.0),
+        timing.get("max_us").and_then(Value::as_f64).unwrap_or(0.0)
     ));
     if let Some(reference) = &reference {
         let status = reference
@@ -490,6 +497,7 @@ fn block_timing(times: &[(u64, u64, usize, [u64; 3])], block: usize) -> Value {
 }
 
 /// This thread's CPU time so far, ns (`CLOCK_THREAD_CPUTIME_ID`).
+#[allow(unsafe_code)]
 fn on_cpu() -> Option<u64> {
     let mut t = libc::timespec {
         tv_sec: 0,
@@ -503,6 +511,7 @@ fn on_cpu() -> Option<u64> {
 }
 
 /// `CLOCK_MONOTONIC`, ns: the clock `perf record -k CLOCK_MONOTONIC` stamps samples with.
+#[allow(unsafe_code)]
 fn monotonic_ns() -> u64 {
     let mut t = libc::timespec {
         tv_sec: 0,
@@ -514,6 +523,7 @@ fn monotonic_ns() -> u64 {
 }
 
 /// This thread's (minor, major) page faults so far.
+#[allow(unsafe_code)]
 fn thread_faults() -> (i64, i64) {
     // SAFETY: an all-zero rusage is a valid value the call overwrites.
     let mut r: libc::rusage = unsafe { std::mem::zeroed() };

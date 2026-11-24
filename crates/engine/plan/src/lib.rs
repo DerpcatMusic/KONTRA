@@ -273,17 +273,27 @@ impl Group {
         if self.reads(source, cc) {
             return true;
         }
+        let target_source = match source {
+            ir::Source::Shaped(n) => self
+                .shapers
+                .get(usize::from(n))
+                .map_or(source, |s| s.source),
+            other => other,
+        };
         self.mods
             .iter()
             .filter(|m| !m.bypass)
             .any(|m| match m.route.target {
                 ir::ParamAddr::RouteIntensity { of }
-                    if of == source
-                        && matches!(source, ir::Source::Lfo(_) | ir::Source::Envelope(_)) =>
+                    if of == target_source
+                        && matches!(
+                            target_source,
+                            ir::Source::Lfo(_) | ir::Source::Envelope(_)
+                        ) =>
                 {
                     self.reads(m.route.source, cc)
                 }
-                ir::ParamAddr::LfoParam { lfo, .. } if source == ir::Source::Lfo(lfo) => {
+                ir::ParamAddr::LfoParam { lfo, .. } if target_source == ir::Source::Lfo(lfo) => {
                     self.reads(m.route.source, cc)
                 }
                 _ => false,

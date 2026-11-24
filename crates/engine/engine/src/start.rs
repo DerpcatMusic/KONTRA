@@ -101,7 +101,18 @@ impl Engine {
             } else {
                 script.min(span)
             };
-            let frames = self.start_offset(zone, &n);
+            let now_secs = self.now.0 as f32 / self.rate as f32;
+            let pre_age = modulators::Age {
+                now: now_secs,
+                ..modulators::Age::START
+            };
+            let mut lfo_phase = std::mem::take(&mut self.lfo_phase_scratch);
+            self.lfo_phase_offsets(zone, &n, pre_age, &mut lfo_phase);
+            let pre_onset = modulators::Age {
+                lfo_phase: &lfo_phase,
+                ..pre_age
+            };
+            let frames = self.start_offset(zone, &n, pre_onset);
             if region.reverse {
                 // Kontakt reverse offset (0140840000.c:9557-9568): subtract from end.
                 region.end = region
@@ -117,7 +128,7 @@ impl Engine {
                     .clamp(zone.region.start, region.end);
             }
             // A reversed region shifts its mirrored loops the other way.
-            let loop_shift = match self.loop_shift(zone, &n) {
+            let loop_shift = match self.loop_shift(zone, &n, pre_onset) {
                 [start, length] if region.reverse => [-start, -length],
                 shift => shift,
             };
@@ -126,14 +137,30 @@ impl Engine {
             } else {
                 region.start as f64
             };
-            let timing_age = modulators::Age::at_start(start_frame);
-            // Read first: the onset targets below see the stretched envelopes.
+            let timing_age = modulators::Age {
+                now: now_secs,
+                ..modulators::Age::at_start(start_frame)
+            };
+            // Read first: the onset targets below see the stretched envelopes
+            // and the note-on latched LFO phase offsets.
             let mut stretch = std::mem::take(&mut self.stretch_scratch);
-            self.stretches(zone, &n, timing_age, &mut stretch);
-            let onset = modulators::Age {
+            self.stretches(
+                zone,
+                &n,
+                modulators::Age {
+                    lfo_phase: &lfo_phase,
+                    ..timing_age
+                },
+                &mut stretch,
+            );
+            let onset_base = modulators::Age {
                 stretch: &stretch,
-                now: self.now.0 as f32 / self.rate as f32,
                 ..timing_age
+            };
+            self.lfo_phase_offsets(zone, &n, onset_base, &mut lfo_phase);
+            let onset = modulators::Age {
+                lfo_phase: &lfo_phase,
+                ..onset_base
             };
             let mix = self.voice_mix(zone, &n, onset);
             let read = self.voice_read(zone, &n, onset);
@@ -165,7 +192,7 @@ impl Engine {
                 ),
                 gain,
                 lag,
-                envelope: self.envelope(zone, &n, timing_age),
+                envelope: self.envelope(zone, &n, onset),
                 fade: n.fade.filter(|_| attack),
                 speed: (self.groups.get(zone.group as usize))
                     .and_then(|g| g.speed)
@@ -177,6 +204,7 @@ impl Engine {
                 if let Some(trace) = &self.trace {
                     trace.routes.finish_onset(None);
                 }
+                self.lfo_phase_scratch = lfo_phase;
                 self.stretch_scratch = stretch;
                 continue;
             };
@@ -207,8 +235,8 @@ impl Engine {
                     };
                     let source = route.driver().and_then(|s| match s {
                         ir::Source::Lfo(_) if lfo_start => None,
-                        _ if onset_timed => self.source(zone, s, &n, timing_age),
-                        _ => self.source(zone, s, &n, modulators::Age::START),
+                        _ if onset_timed => self.source(zone, s, &n, onset),
+                        _ => self.source(zone, s, &n, onset),
                     });
                     if let Some(trace) = &mut self.trace {
                         trace.push(TraceEvent::RouteOnset {
@@ -224,6 +252,7 @@ impl Engine {
                 }
             }
             let Some(slot) = self.voices.get_mut(i) else {
+                self.lfo_phase_scratch = lfo_phase;
                 self.stretch_scratch = stretch;
                 continue;
             };
@@ -265,8 +294,10 @@ impl Engine {
             }
             self.start_rack(i, zone, &n, onset);
             if let Some(slot) = self.voices.get_mut(i) {
+                std::mem::swap(&mut slot.lfo_phase, &mut lfo_phase);
                 std::mem::swap(&mut slot.stretch, &mut stretch);
             }
+            self.lfo_phase_scratch = lfo_phase;
             self.stretch_scratch = stretch;
             #[cfg(feature = "trace")]
             if let Some(trace) = &self.trace {

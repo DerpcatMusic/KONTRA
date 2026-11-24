@@ -54,8 +54,11 @@ pub fn rack_only(kind: &ir::EffectKind) -> bool {
     )
 }
 
-pub fn matrix(e: &ir::Effect) -> Gain {
-    let m = match &e.kind {
+/// The folded 2×2 utility matrix for the proven-identical utility kinds
+/// (`Gain`, `Matrix`, `Invert`, `Stereo`); `None` for non-utility kinds.
+#[must_use]
+pub fn utility_matrix(kind: &ir::EffectKind) -> Option<Gain> {
+    Some(match kind {
         ir::EffectKind::Gain(g) => [[*g, 0.0], [0.0, *g]],
         ir::EffectKind::Matrix(m) => *m,
         ir::EffectKind::Invert { phase, swap } => {
@@ -78,42 +81,59 @@ pub fn matrix(e: &ir::Effect) -> Gain {
             };
             product(balance(*pan), width)
         }
-        // Run per voice, their output gain after them (voice_rack.rs).
-        ir::EffectKind::Shaper(_)
-        | ir::EffectKind::Strip(_)
-        | ir::EffectKind::Crush(_)
-        | ir::EffectKind::Overdrive(_)
-        | ir::EffectKind::Comb(_) => {
-            return IDENTITY;
+        _ => return None,
+    })
+}
+
+pub fn matrix(e: &ir::Effect) -> Gain {
+    let m = if let Some(u) = utility_matrix(&e.kind) {
+        u
+    } else {
+        match &e.kind {
+            // Run per voice, their output gain after them (voice_rack.rs).
+            ir::EffectKind::Shaper(_)
+            | ir::EffectKind::Strip(_)
+            | ir::EffectKind::Crush(_)
+            | ir::EffectKind::Overdrive(_)
+            | ir::EffectKind::Comb(_) => {
+                return IDENTITY;
+            }
+            // Its output gain trims processing that does not run here (a
+            // compressor's makeup: ANALOG STRINGS stores +9 dB), so it passes.
+            ir::EffectKind::Other => return IDENTITY,
+            // Its taps run in the instrument rack (racks.rs).
+            ir::EffectKind::Sends(_) => IDENTITY,
+            // Its bands run on summed audio (filters.rs, racks.rs).
+            ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_) => {
+                IDENTITY
+            }
+            // Its wet path runs in instrument and bus racks (racks.rs); a
+            // compressor's, limiter's, notch phaser's, ensemble's or comb
+            // bank's output is its wet path.
+            ir::EffectKind::Compressor(_)
+            | ir::EffectKind::Notches(_)
+            | ir::EffectKind::Ensemble(_)
+            | ir::EffectKind::CombBank(_)
+            | ir::EffectKind::Limiter(_)
+            | ir::EffectKind::Transient(_) => [[0.0; 2]; 2],
+            // Its wet path runs in instrument and bus racks (racks.rs).
+            ir::EffectKind::OtherWet
+            | ir::EffectKind::Convolution { .. }
+            | ir::EffectKind::Reverb(_)
+            | ir::EffectKind::Delay(_)
+            | ir::EffectKind::Scanner(_)
+            | ir::EffectKind::Shifter(_)
+            | ir::EffectKind::Phaser(_)
+            | ir::EffectKind::Cascade(_)
+            | ir::EffectKind::Clocked(_)
+            | ir::EffectKind::Clipper(_)
+            | ir::EffectKind::RingMod(_) => [[0.0; 2]; 2],
+            // Handled above by `utility_matrix`.
+            ir::EffectKind::Gain(_)
+            | ir::EffectKind::Matrix(_)
+            | ir::EffectKind::Invert { .. }
+            | ir::EffectKind::Stereo { .. } => IDENTITY,
         }
-        // Its output gain trims processing that does not run here (a
-        // compressor's makeup: ANALOG STRINGS stores +9 dB), so it passes.
-        ir::EffectKind::Other => return IDENTITY,
-        // Its taps run in the instrument rack (racks.rs).
-        ir::EffectKind::Sends(_) => IDENTITY,
-        // Its bands run on summed audio (filters.rs, racks.rs).
-        ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_) => IDENTITY,
-        // Its wet path runs in instrument and bus racks (racks.rs); a
-        // compressor's, limiter's, notch phaser's, ensemble's or comb
-        // bank's output is its wet path.
-        ir::EffectKind::Compressor(_)
-        | ir::EffectKind::Notches(_)
-        | ir::EffectKind::Ensemble(_)
-        | ir::EffectKind::CombBank(_)
-        | ir::EffectKind::Limiter(_)
-        | ir::EffectKind::Transient(_) => [[0.0; 2]; 2],
-        // Its wet path runs in instrument and bus racks (racks.rs).
-        ir::EffectKind::OtherWet
-        | ir::EffectKind::Convolution { .. }
-        | ir::EffectKind::Reverb(_)
-        | ir::EffectKind::Delay(_)
-        | ir::EffectKind::Scanner(_)
-        | ir::EffectKind::Shifter(_)
-        | ir::EffectKind::Phaser(_)
-        | ir::EffectKind::Cascade(_)
-        | ir::EffectKind::Clocked(_)
-        | ir::EffectKind::Clipper(_)
-        | ir::EffectKind::RingMod(_) => [[0.0; 2]; 2],
     };
     let (o, d) = (e.output, e.dry);
     [

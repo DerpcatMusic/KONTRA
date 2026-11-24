@@ -22,3 +22,6 @@ kontra-stream = { path = "../../crates/engine/stream" }
 kontra-prepare = { path = "../../crates/engine/prepare" }
 serde_json = "1"
 rustfft = "6"
+
+[lints]
+workspace = true

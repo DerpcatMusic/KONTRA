@@ -10,11 +10,15 @@ fn vlq(mut n: u64, out: &mut Vec<u8>) {
     let mut bytes = [0u8; 4];
     let mut at = bytes.len();
     at -= 1;
-    bytes[at] = (n & 0x7f) as u8;
+    if let Some(slot) = bytes.get_mut(at) {
+        *slot = (n & 0x7f) as u8;
+    }
     n >>= 7;
-    while n != 0 {
+    while n != 0 && at > 0 {
         at -= 1;
-        bytes[at] = ((n & 0x7f) as u8) | 0x80;
+        if let Some(slot) = bytes.get_mut(at) {
+            *slot = ((n & 0x7f) as u8) | 0x80;
+        }
         n >>= 7;
     }
     if let Some(slice) = bytes.get(at..) {
@@ -71,6 +75,7 @@ pub fn write(events: &[Input]) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 mod tests {
     use super::*;
     #[test]
@@ -85,6 +90,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 mod roundtrip_tests {
     use super::*;
     #[test]

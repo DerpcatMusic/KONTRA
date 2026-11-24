@@ -2753,3 +2753,370 @@ fn modulation_cadence_updates_every_64_frames() {
         "expected 3 distinct 64-frame pitch transitions across 256 frames, got {distinct_transitions}: {steps:?}"
     );
 }
+
+#[test]
+fn lfo_phase_offset_is_latched_at_note_on_not_shifted_mid_note() {
+    use kontra_engine::ir::{
+        Clock, Curve, Lfo, LfoParam, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source, Wave,
+    };
+    let make_plan = |store: &mut Store| {
+        let mut plan = Plan::new(vec![zone(store, 0.5)], 8);
+        plan.groups[0].lfos = vec![Lfo {
+            wave: Wave::Sine,
+            rate: Rate::Hz(2.0),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: Clock::Voice,
+        }];
+        plan.groups[0].mods = vec![
+            Mod {
+                name: String::new(),
+                slot: 0,
+                target: 0,
+                bypass: false,
+                route: ModRoute::new(Source::Lfo(0), ParamAddr::Volume, 1.0)
+                    .law(RouteLaw::Gain(Curve::Depth { power: 1 })),
+            },
+            Mod {
+                name: String::new(),
+                slot: 1,
+                target: 0,
+                bypass: false,
+                route: ModRoute::new(
+                    Source::Controller(1),
+                    ParamAddr::LfoParam {
+                        lfo: 0,
+                        param: LfoParam::Phase,
+                    },
+                    0.25,
+                ),
+            },
+        ];
+        Arc::new(plan)
+    };
+
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = make_plan(&mut store);
+    let mut moving = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    let mut control = Engine::new(Arc::clone(&plan), store.client(), RATE);
+
+    // Start both notes at CC1 = 0.
+    let mut a = vec![[0.0; 2]; 256];
+    let mut b = vec![[0.0; 2]; 256];
+    moving.process(&mut a, &[cc(1, 0), on(60, 1.0)]);
+    control.process(&mut b, &[cc(1, 0), on(60, 1.0)]);
+    assert_eq!(a, b);
+
+    // Move CC1 to 127 mid-note on `moving`; the already-sounding voice must NOT shift phase.
+    let now = moving.now();
+    let move_cc = Timed {
+        at: now,
+        body: cc(1, 127).body,
+    };
+    moving.process(&mut a, &[move_cc]);
+    control.process(&mut b, &[]);
+    assert_eq!(a, b, "moving CC1 mid-note shifted phase of an active voice");
+    for _ in 0..8 {
+        moving.process(&mut a, &[]);
+        control.process(&mut b, &[]);
+        assert_eq!(
+            a, b,
+            "active voice phase diverged after mid-note CC1 change"
+        );
+    }
+
+    // A brand-new note started while CC1 = 127 MUST latch the +0.25 cycle phase offset
+    // (sin(2π * 0.25) = +1.0 vs sin(0) = 0.0).
+    let mut fresh = Engine::new(plan, store.client(), RATE);
+    let [shifted, _] = level(&mut fresh, &[cc(1, 127), on(60, 1.0)]);
+    let [unshifted, _] = level(&mut control, &[off(60), cc(1, 0), on(60, 1.0)]);
+    assert!(
+        (shifted - unshifted).abs() > 0.1,
+        "new note at CC1=127 should latch +0.25 phase shift: shifted={shifted} unshifted={unshifted}"
+    );
+}
+
+#[test]
+fn rising_lfo_through_shaped_mapper_starts_quiet_and_grows_over_rise_time() {
+    use kontra_engine::ir::{
+        Breakpoint, Breakpoints, Clock, Curve, Lfo, Mod, ModRoute, ParamAddr, Rate, RouteLaw,
+        Source, Transfer, Wave,
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    // Zero-Hz LFO fixed at phase 0.25 (sine = +1.0) with a 200 ms linear rise envelope.
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Sine,
+        rate: Rate::Hz(0.0),
+        phase: 0.25,
+        fade_ms: 0.0,
+        clock: Clock::Voice,
+    }];
+    plan.groups[0].envelopes = vec![Breakpoints {
+        start: 0.0,
+        points: vec![Breakpoint {
+            ms: 200.0,
+            level: 1.0,
+            curve: 0.0,
+        }],
+        sustain: Some(0),
+        loop_from: None,
+        stages: false,
+    }];
+    // Shaped(0): bipolar Pitch mapper ([-1, +1], midpoint 0.0 -> 0 st at rise=0, +12 st at rise=1).
+    // Shaped(1): unipolar Gain mapper ([0, 1], midpoint 0.5 -> 0.5 rest level at rise=0, 1.0 at rise=1).
+    plan.groups[0].shapers = vec![
+        Transfer {
+            source: Source::Lfo(0),
+            table: vec![-1.0, 1.0],
+            stepped: false,
+            smooth_s: 0.0,
+        },
+        Transfer {
+            source: Source::Lfo(0),
+            table: vec![0.0, 1.0],
+            stepped: false,
+            smooth_s: 0.0,
+        },
+    ];
+    plan.groups[0].mods = vec![
+        Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(
+                Source::Envelope(0),
+                ParamAddr::RouteIntensity { of: Source::Lfo(0) },
+                1.0,
+            ),
+        },
+        // Pitch route driven by Shaped(0): at rise=0, scaled LFO = 0 -> table(0.5) = 0 st.
+        // After 200 ms (rise=1), scaled LFO = +1 -> table(1.0) = +1 -> +12 st (2x step).
+        Mod {
+            name: String::new(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(Source::Shaped(0), ParamAddr::Pitch, 1.0).span(12.0),
+        },
+        // Gain route driven by Shaped(1): preserves UVI's 0.5 (-6 dB) rest level at rise=0.
+        Mod {
+            name: String::new(),
+            slot: 2,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(Source::Shaped(1), ParamAddr::Volume, 1.0)
+                .law(RouteLaw::Gain(Curve::Signed)),
+        },
+    ];
+    // Verify Group::reads_modulated unwraps Source::Shaped when a CC scales its LFO.
+    let mut cc_group = plan.groups[0].clone();
+    cc_group.mods.push(Mod {
+        name: String::new(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        route: ModRoute::new(
+            Source::Controller(1),
+            ParamAddr::RouteIntensity { of: Source::Lfo(0) },
+            1.0,
+        ),
+    });
+    assert!(
+        cc_group.reads_modulated(Source::Shaped(0), 1),
+        "reads_modulated must recognize Source::Shaped wrapping a CC-modulated LFO"
+    );
+
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut buf = [[0.0; 2]; 64];
+    e.process(&mut buf, &[on(60, 1.0)]);
+    let pos_start = e.voices().next().unwrap().1;
+    // At onset (rise ~= 0), pitch step should be ~1.0 (unshifted) and level ~0.5.
+    assert!(
+        (pos_start / 64.0 - 1.0).abs() < 0.05,
+        "onset pitch step should be ~1.0, got {}",
+        pos_start / 64.0
+    );
+    assert!(
+        (buf[63][0] - 0.5).abs() < 0.05,
+        "onset Gain with Signed curve should sit at 0.5 rest level, got {}",
+        buf[63][0]
+    );
+
+    // Advance 250 ms (> 200 ms rise time) so rise envelope reaches 1.0.
+    for _ in 0..((RATE as usize / 4) / 64) {
+        e.process(&mut buf, &[]);
+    }
+    let before = e.voices().next().unwrap().1;
+    e.process(&mut buf, &[]);
+    let after = e.voices().next().unwrap().1;
+    let step_after = (after - before) / 64.0;
+    assert!(
+        (step_after - 2.0).abs() < 0.05,
+        "after RiseTime, mapped LFO pitch step should reach +12 st (2.0), got {step_after}"
+    );
+    assert!(
+        (buf[63][0] - 1.0).abs() < 0.05,
+        "after RiseTime, mapped LFO Gain should reach 1.0, got {}",
+        buf[63][0]
+    );
+}
+
+#[test]
+fn lfo_phase_onset_applies_to_envelope_start_offset_and_loop_shift() {
+    use kontra_engine::ir::{
+        Clock, EnvStage, Lfo, LfoParam, Mod, ModRoute, ParamAddr, Rate, RouteLaw, Source,
+        TimeScale, Wave,
+    };
+    use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt};
+    use kontra_voice::{Ahdsr, Loop};
+
+    // 1. SampleStart + LoopShift: a ramp sample `frame_index / 48000.0` reveals
+    // the exact starting frame and loop start frame directly in the rendered audio.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let frames = 4096u64;
+    let fmt = SampleFmt {
+        encoding: Encoding::F32,
+        channels: 1,
+    };
+    let bytes: Vec<u8> = (0..frames)
+        .flat_map(|i| (i as f32 / 4096.0).to_le_bytes())
+        .collect();
+    let key = BlobKey {
+        file: "lfo-phase-onset-ramp".into(),
+        offset: 0,
+        fmt,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(fmt, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    let mut reg = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+    reg.loops = Some(Arc::from([Loop {
+        start: 100,
+        end: 200,
+        count: 0,
+        crossfade: 0,
+        alternating: false,
+        until_release: false,
+        tune_ratio: 1.0,
+    }]));
+    let mut z = Zone::new(reg, 60, RATE);
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    // Zero-Hz sine at phase 0.0 -> 0.0 unshifted, +1.0 with +0.25 phase route.
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Sine,
+        rate: Rate::Hz(0.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Voice,
+    }];
+    plan.groups[0].mods = vec![
+        Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(
+                Source::Constant,
+                ParamAddr::LfoParam {
+                    lfo: 0,
+                    param: LfoParam::Phase,
+                },
+                0.25,
+            ),
+        },
+        Mod {
+            name: String::new(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(Source::Lfo(0), ParamAddr::SampleStart, 1.0),
+        },
+        Mod {
+            name: String::new(),
+            slot: 2,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(Source::Lfo(0), ParamAddr::LoopShift { length: false }, 0.5),
+        },
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut buf = [[0.0; 2]; 64];
+    e.process(&mut buf, &[on(60, 1.0)]);
+    // With +0.25 phase shift, sine = +1.0 -> start_offset moves +1000 frames -> frame 1000 = 1000/4096 ~= 0.244.
+    assert!(
+        buf[0][0] > 0.20,
+        "start_offset should see latched LFO phase (+1000 frames), got first sample {}",
+        buf[0][0]
+    );
+
+    // 2. EnvelopeStage::Attack: constant 1.0 sample with 100 ms linear-time attack route.
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].envelope = Ahdsr {
+        attack: RATE / 10, // 100 ms
+        ..Ahdsr::GATE
+    };
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Sine,
+        rate: Rate::Hz(0.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Voice,
+    }];
+    plan.groups[0].mods = vec![
+        Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(
+                Source::Constant,
+                ParamAddr::LfoParam {
+                    lfo: 0,
+                    param: LfoParam::Phase,
+                },
+                0.25,
+            ),
+        },
+        Mod {
+            name: String::new(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            route: ModRoute::new(
+                Source::Lfo(0),
+                ParamAddr::EnvelopeStage {
+                    envelope: None,
+                    stage: EnvStage::Attack,
+                },
+                1.0,
+            )
+            .law(RouteLaw::Time(TimeScale::Linear { power: 1 })),
+        },
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut buf = [[0.0; 2]; 64];
+    e.process(&mut buf, &[on(60, 1.0)]);
+    // Attack = 100 ms (4800 frames) at x = (1 + 1)/2 = 1.0 -> stays 100 ms (level at 64 frames ~= 64/4800 = 0.013),
+    // whereas unshifted x = 0.5 would halve attack to 50 ms (~0.026).
+    assert!(
+        buf[63][0] < 0.02,
+        "envelope attack should see latched LFO phase (100 ms, not halved 50 ms), got {}",
+        buf[63][0]
+    );
+}

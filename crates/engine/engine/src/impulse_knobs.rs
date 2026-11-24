@@ -37,7 +37,7 @@ impl Engine {
             return true;
         }
         *at = y;
-        if self.running.kind == Kind::Init {
+        if self.building || self.running.kind == Kind::Init {
             self.want(slot, generic, found, law);
             return true;
         }
@@ -69,7 +69,10 @@ impl Engine {
     /// with none left the request still goes out, unrecorded.
     pub(crate) fn want(&mut self, slot: i32, generic: i32, found: u16, law: ir::Impulse) {
         self.wanted.retain(|p| (p.0, p.1) != (slot, generic));
-        if self.running.kind == Kind::Init || self.wanted.len() < self.wanted.capacity() {
+        if self.building
+            || self.running.kind == Kind::Init
+            || self.wanted.len() < self.wanted.capacity()
+        {
             self.wanted.push((slot, generic, found, law));
         }
     }

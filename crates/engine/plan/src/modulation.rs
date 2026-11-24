@@ -36,6 +36,9 @@ pub struct Age<'a> {
     /// ([`ir::LfoParam::Hz`], [`ir::LfoParam::Division`]), integrated span
     /// by span; none past the slice's end.
     pub warp: &'a [f32],
+    /// Phase offsets in cycles latched at note-on from [`ir::LfoParam::Phase`]
+    /// routes for each LFO of the group; zero past the slice's end.
+    pub lfo_phase: &'a [f32],
     /// The voice's chaotic LFOs' states this span ([`Chaos`], its level last).
     pub chaos: &'a [Chaos],
     /// How much envelope modulation routes scaled each of the group's
@@ -57,6 +60,7 @@ impl Age<'static> {
         released: None,
         now: 0.0,
         warp: &[],
+        lfo_phase: &[],
         chaos: &[],
         stretch: &[],
         start_frame: 0.0,

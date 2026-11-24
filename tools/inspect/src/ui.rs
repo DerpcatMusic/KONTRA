@@ -166,25 +166,35 @@ fn note_fields(
     };
     for e in engine.trace_events().iter() {
         let e = super::trace_output::event(e, plan, zones, RATE);
-        match e["type"].as_str() {
+        match e.get("type").and_then(Json::as_str) {
             Some("callback") => {
-                if let (Some(id), Some(name)) =
-                    (e["callback_id"].as_i64(), e["callback_name"].as_str())
-                {
+                if let (Some(id), Some(name)) = (
+                    e.get("callback_id").and_then(Json::as_i64),
+                    e.get("callback_name").and_then(Json::as_str),
+                ) {
                     names.insert(id, name.to_owned());
                 }
             }
             Some("script_action") => {
-                let callback = e["callback_id"].as_i64().and_then(|id| names.get(&id));
+                let callback = e
+                    .get("callback_id")
+                    .and_then(Json::as_i64)
+                    .and_then(|id| names.get(&id));
                 if callback.is_some_and(|c| c == "init") {
                     continue;
                 }
-                let k = key(note, format!("{}", e["action"]));
-                note.insert(k, e["args"].clone());
+                let action = e.get("action").unwrap_or(&Json::Null);
+                let k = key(note, format!("{action}"));
+                note.insert(k, e.get("args").cloned().unwrap_or(Json::Null));
             }
             Some("voice") => {
-                let k = key(note, format!("voice {}", e["event"]));
-                let fields = json!({"sample":e["sample"],"pitch":e["pitch_midi_relative_to_root"],"gain":e["gain"]});
+                let ev = e.get("event").unwrap_or(&Json::Null);
+                let k = key(note, format!("voice {ev}"));
+                let fields = json!({
+                    "sample": e.get("sample"),
+                    "pitch": e.get("pitch_midi_relative_to_root"),
+                    "gain": e.get("gain")
+                });
                 note.insert(k, fields);
             }
             _ => {}
@@ -219,6 +229,7 @@ fn sound(engine: &Engine) -> Vec<String> {
 }
 
 /// This thread's CPU time, ns: a block the machine preempted is not a spike of ours.
+#[allow(unsafe_code)]
 fn thread_cpu_ns() -> u64 {
     let mut t = libc::timespec {
         tv_sec: 0,
@@ -367,14 +378,17 @@ fn print(frames: &[[f32; 2]]) -> (Vec<f64>, f64) {
         .collect::<Vec<_>>()
         .windows(2)
     {
+        let [first, second] = chunk else {
+            continue;
+        };
         for c in 0..2 {
             for (i, (b, w)) in buf.iter_mut().zip(&window).enumerate() {
                 let f = if i < N / 2 {
-                    chunk[0][i]
+                    first.get(i).copied().unwrap_or([0.0; 2])
                 } else {
-                    chunk[1][i - N / 2]
+                    second.get(i - N / 2).copied().unwrap_or([0.0; 2])
                 };
-                *b = Complex::new(f64::from(f[c]) * w, 0.0);
+                *b = Complex::new(f64::from(f.get(c).copied().unwrap_or(0.0)) * w, 0.0);
             }
             fft.process(&mut buf);
             for (i, bin) in buf.iter().enumerate().take(N / 2).skip(1) {
@@ -382,8 +396,9 @@ fn print(frames: &[[f32; 2]]) -> (Vec<f64>, f64) {
                 if let Some(k) = centers
                     .iter()
                     .position(|&m| hz >= m / 2f64.sqrt() && hz < m * 2f64.sqrt())
+                    && let Some(sum) = sums.get_mut(c * centers.len() + k)
                 {
-                    sums[c * centers.len() + k] += bin.norm_sqr();
+                    *sum += bin.norm_sqr();
                 }
             }
         }
@@ -420,9 +435,9 @@ fn print_distance(a: &(Vec<f64>, f64), b: &(Vec<f64>, f64)) -> f64 {
 fn difference_db(a: &[[f32; 2]], b: &[[f32; 2]]) -> f64 {
     let (mut diff, mut base) = (0.0f64, 0.0f64);
     for (x, y) in a.iter().zip(b) {
-        for c in 0..2 {
-            base += f64::from(x[c]).powi(2);
-            diff += f64::from(x[c] - y[c]).powi(2);
+        for (&xc, &yc) in x.iter().zip(y.iter()) {
+            base += f64::from(xc).powi(2);
+            diff += f64::from(xc - yc).powi(2);
         }
     }
     if diff == 0.0 {
@@ -434,7 +449,9 @@ fn difference_db(a: &[[f32; 2]], b: &[[f32; 2]]) -> f64 {
 /// Left and right RMS of a render.
 fn sides(frames: &[[f32; 2]]) -> [f64; 2] {
     let n = frames.len().max(1) as f64;
-    [0, 1].map(|c| (frames.iter().map(|f| f64::from(f[c]).powi(2)).sum::<f64>() / n).sqrt())
+    let l = frames.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>();
+    let r = frames.iter().map(|f| f64::from(f[1]).powi(2)).sum::<f64>();
+    [(l / n).sqrt(), (r / n).sqrt()]
 }
 
 pub fn run(path: &Path) -> Result<(Json, String)> {
@@ -935,6 +952,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use kontra_ui_model::{Display, MenuItem, PageRef, Range, Rect};

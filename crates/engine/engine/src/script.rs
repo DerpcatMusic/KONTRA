@@ -864,7 +864,7 @@ impl HostApi for Engine {
                 HostValue::Int(match loaded {
                     Some(answer) => answer,
                     // Set in place succeeded; a type that could not load failed.
-                    None if swap && self.running.kind != Kind::Init => {
+                    None if swap && !self.building && self.running.kind != Kind::Init => {
                         self.start_async(Exit::from(set))
                     }
                     None => -1,

@@ -18,7 +18,6 @@ mod mods;
 mod output;
 mod readout;
 mod reverb;
-mod route_names;
 mod validate;
 mod wavetable;
 pub use address::{EnvStage, LfoParam, ModRoute, ParamAddr, RouteLaw, Scope};
@@ -47,7 +46,6 @@ pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbControls, ReverbNetwork,
     ReverbPar,
 };
-pub use route_names::RouteNames;
 pub use validate::validate;
 pub use wavetable::{
     FormShaper, Inharmonic, ModOsc, ModOscKind, Quality, Side, TableValue, TuneUnit, Warp,

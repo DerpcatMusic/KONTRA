@@ -33,6 +33,7 @@ pub struct EffectRequest {
     pub response: Option<(u16, ir::Impulse)>,
     script: u8,
     id: i32,
+    epoch: u64,
 }
 
 /// A request with its processor built.
@@ -106,7 +107,7 @@ impl Engine {
             ir::RackAt::Sends => ir::Effect { dry: 0.0, ..e },
             _ => e,
         });
-        let init = self.running.kind == Kind::Init;
+        let init = self.building || self.running.kind == Kind::Init;
         // Loading the type a slot holds keeps it as it is (Kontakt 8.13: a
         // reverb's size stays through a reverb load; measured). A subtype
         // is held when the slot reads it; a type, by its kind of effect.
@@ -124,6 +125,9 @@ impl Engine {
             });
         }
         if init {
+            if group < 0 {
+                self.wanted.retain(|p| (p.0, p.1) != (slot, generic));
+            }
             *self.slot_mut(group, slot, generic)? = effect;
             self.mark_loaded(at, n, ty);
             return Some(-1);
@@ -146,7 +150,7 @@ impl Engine {
         let network = usize::try_from(n)
             .ok()
             .and_then(|n| self.script()?.reverb_networks.get(n).cloned());
-        let init = self.running.kind == Kind::Init;
+        let init = self.building || self.running.kind == Kind::Init;
         let Some(slot_now) = self.effect_mut(group, slot, generic) else {
             return false;
         };
@@ -208,6 +212,7 @@ impl Engine {
             response,
             script,
             id,
+            epoch: self.recall_epoch,
         });
         Some(id)
     }
@@ -229,6 +234,13 @@ impl Engine {
             dsp,
             mut response,
         } = prepared;
+        if r.epoch != self.recall_epoch {
+            return Prepared {
+                request: r,
+                dsp,
+                response,
+            };
+        }
         let effect = match r.response {
             None => Some(r.effect.take()),
             Some(_) => self.retarget(r.at, r.slot, &mut response).map(Some),
@@ -384,9 +396,96 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use kontra_ir as ir;
+    use kontra_stream::{Store, StoreConfig};
+
+    use super::Prepared;
+    use crate::{Engine, Plan};
+
     #[test]
     fn a_prepared_effect_crosses_threads() {
         fn send<T: Send>() {}
-        send::<super::Prepared>();
+        send::<Prepared>();
+    }
+
+    #[test]
+    fn init_load_type_clears_pending_wanted_impulse_on_kind_change() {
+        let store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(Vec::new(), 8);
+        plan.inserts = vec![Some(ir::Effect {
+            kind: ir::EffectKind::Convolution { impulse: 0 },
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        plan.slot_shapes.types.push(ir::SlotType {
+            id: 42,
+            subtype: false,
+            kind: 42,
+            reads: 0,
+            effect: Some(ir::Effect {
+                kind: ir::EffectKind::Gain(1.0),
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            }),
+            laws: Arc::from([]),
+            model: None,
+        });
+        let mut engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+        engine.building = true;
+        engine.wanted.push((0, 1, 0, ir::Impulse::PLAIN));
+        let res = engine.load_type(42, false, -1, 0, 1);
+        assert_eq!(res, Some(-1));
+        assert!(
+            engine.wanted.is_empty(),
+            "changing slot kind in init must clear pending impulse entry"
+        );
+    }
+
+    #[test]
+    fn recall_discards_queued_and_stale_in_flight_effect_requests() {
+        let store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(Vec::new(), 8);
+        plan.inserts = vec![Some(ir::Effect {
+            kind: ir::EffectKind::Gain(1.0),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        plan.slot_shapes.types.push(ir::SlotType {
+            id: 7,
+            subtype: false,
+            kind: 7,
+            reads: 0,
+            effect: None,
+            laws: Arc::from([]),
+            model: None,
+        });
+        let plan = Arc::new(plan);
+        let mut engine = Engine::new(Arc::clone(&plan), store.client(), 48_000);
+        // Queue two requests after init: drain the first (in-flight), leave the second queued.
+        assert!(engine.load_type(7, false, -1, 0, 1).is_some());
+        let mut drained = Vec::new();
+        engine.drain_requests(|r| drained.push(r));
+        assert_eq!(drained.len(), 1);
+        assert!(engine.load_type(7, false, -1, 0, 1).is_some());
+
+        let prepared = Prepared::new(drained.pop().unwrap(), Some(&plan), 48_000);
+        let _ = engine.recall(Box::new([]));
+
+        // Queued pre-recall request was discarded by recall.
+        let mut after_recall = Vec::new();
+        engine.drain_requests(|r| after_recall.push(r));
+        assert!(after_recall.is_empty());
+
+        // Installing the stale in-flight Prepared must not overwrite the recalled slot.
+        let _returned = engine.install(prepared);
+        assert!(
+            engine.rack.slots[0].is_some(),
+            "stale pre-recall install must not clobber slot after recall"
+        );
     }
 }

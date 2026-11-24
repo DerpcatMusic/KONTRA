@@ -33,6 +33,7 @@ mod racks;
 mod recall;
 mod refresh;
 mod reshaped;
+mod route_tags;
 mod runtime;
 mod script_files;
 mod zone_commands;
@@ -162,6 +163,8 @@ struct Slot {
     /// one per LFO of the group with the most (chaos too; stretch: one per
     /// envelope of the group with the most).
     warp: Box<[f32]>,
+    /// Phase offsets in cycles latched at note-on ([`modulators::Age::lfo_phase`]).
+    lfo_phase: Box<[f32]>,
     /// Its chaotic LFOs' states ([`modulators::Chaos`]).
     chaos: Box<[modulators::Chaos]>,
     /// Its envelopes' stage stretches ([`modulators::Age::stretch`]).
@@ -196,6 +199,8 @@ pub struct Engine {
     wanted: Vec<impulse_knobs::Wanted>,
     /// Effects scripts asked to load since the host last drained them.
     requests: Vec<fx_types::EffectRequest>,
+    /// Bumped on every [`Self::recall`] so stale in-flight effect/response loads are rejected.
+    recall_epoch: u64,
     /// `set_zone_par` calls waiting for the host (zone_edits.rs).
     zone_edits: Vec<ZoneEdit>,
     /// `purge_group(g, 1)` of dormant groups waiting for the host (zone_edits.rs).
@@ -251,6 +256,7 @@ pub struct Engine {
     /// as [`Slot::warp`]), and its envelopes' stretches while they are
     /// worked out at note-on and note-off (as [`Slot::stretch`]).
     warp_scratch: Box<[f32]>,
+    lfo_phase_scratch: Box<[f32]>,
     stretch_scratch: Box<[modulators::EnvScale]>,
     /// Notes a running callback changed; their voices refresh when it ends.
     refresh_later: Vec<NoteRef>,
@@ -335,8 +341,8 @@ pub struct Engine {
     note_stamp: u32,
     /// What each group's routes reshape, by group.
     reshaped: Box<[reshaped::Reshaped]>,
-    /// The routes each script `#key` names.
-    route_names: ir::RouteNames,
+    /// The routes each script `#key` tag names.
+    route_tags: route_tags::RouteTags,
     /// The group whose route amounts the running callback moved, and whether
     /// others too: its voices refresh once, when it returns or waits.
     routes_moved: Option<(usize, bool)>,
@@ -424,6 +430,7 @@ impl Engine {
                     bend: [[0.0; 2]; kontra_voice::LAGS],
                     pan: [0.0; 2],
                     warp: vec![0.0; lfos].into(),
+                    lfo_phase: vec![0.0; lfos].into(),
                     chaos: vec![modulators::CHAOS_START; lfos].into(),
                     stretch: vec![modulators::EnvScale::UNITY; envelopes].into(),
                     release_base: 0,
@@ -491,6 +498,7 @@ impl Engine {
             loaded: Vec::with_capacity(fx_types::REQUESTS),
             wanted: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
+            recall_epoch: 0,
             zone_edits: Vec::with_capacity(zone_edits::ZONE_EDITS),
             unpurges: Vec::with_capacity(16),
             zone_refused: vec![0; script_count].into(),
@@ -509,11 +517,7 @@ impl Engine {
             stats: Stats::default(),
             vms,
             routes_moved: None,
-            route_names: ir::RouteNames::of_names(
-                shared
-                    .iter()
-                    .map(|g| g.mods.iter().map(|m| m.name.as_str())),
-            ),
+            route_tags: route_tags::RouteTags::of_groups(&shared),
             reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
             glides: [glide::Latest::default(); glide::SCOPES],
@@ -532,6 +536,7 @@ impl Engine {
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
             warp_scratch: vec![0.0; lfos].into(),
+            lfo_phase_scratch: vec![0.0; lfos].into(),
             stretch_scratch: vec![modulators::EnvScale::UNITY; envelopes].into(),
             refresh_later: Vec::with_capacity(64),
             cc_values: [0; 130],

@@ -117,11 +117,12 @@ pub(crate) use kontra_plan::modulation::{
 /// ones are read afresh each time.
 const MEMO: usize = 8;
 
-/// A voice's timed state ([`crate::Slot::warp`], `chaos`, `stretch`), lent
-/// out of its slot while the engine reads it and changes the voice.
+/// A voice's timed state ([`crate::Slot::warp`], `lfo_phase`, `chaos`, `stretch`),
+/// lent out of its slot while the engine reads it and changes the voice.
 #[derive(Default)]
 pub(crate) struct Timed {
     pub(crate) warp: Box<[f32]>,
+    pub(crate) lfo_phase: Box<[f32]>,
     pub(crate) chaos: Box<[Chaos]>,
     pub(crate) stretch: Box<[EnvScale]>,
 }
@@ -131,6 +132,7 @@ impl Timed {
     pub(crate) fn age<'a>(&'a self, timing: Age<'static>) -> Age<'a> {
         Age {
             warp: &self.warp,
+            lfo_phase: &self.lfo_phase,
             chaos: &self.chaos,
             stretch: &self.stretch,
             ..timing
@@ -147,6 +149,7 @@ impl Engine {
         };
         Timed {
             warp: std::mem::take(&mut s.warp),
+            lfo_phase: std::mem::take(&mut s.lfo_phase),
             chaos: std::mem::take(&mut s.chaos),
             stretch: std::mem::take(&mut s.stretch),
         }
@@ -168,6 +171,7 @@ impl Engine {
     pub(crate) fn slot_age<'a>(&self, slot: &'a crate::Slot) -> Age<'a> {
         Age {
             warp: &slot.warp,
+            lfo_phase: &slot.lfo_phase,
             chaos: &slot.chaos,
             stretch: &slot.stretch,
             ..self.slot_timing(slot)
@@ -265,7 +269,8 @@ impl Engine {
                 }
                 slot.pan = [pan, to];
                 self.warp_scratch = std::mem::replace(&mut timed.warp, next);
-                (slot.warp, slot.chaos, slot.stretch) = (timed.warp, timed.chaos, timed.stretch);
+                (slot.warp, slot.lfo_phase, slot.chaos, slot.stretch) =
+                    (timed.warp, timed.lfo_phase, timed.chaos, timed.stretch);
                 slot.voice
                     .set_step(voice_gain::bent(law, step, bend.instant + at));
                 if slot.slide.is_some() {

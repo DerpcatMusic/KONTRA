@@ -334,8 +334,54 @@ impl Engine {
         Some(modulators::lfo(&lfo, age, seed, self.tempo))
     }
 
-    /// LFO `n` as this note plays it: its group's, with the note-on routes
-    /// on phase and rate and the live phase warp applied.
+    /// Latches note-on LFO phase offsets from [`ir::LfoParam::Phase`] routes
+    /// into `out` (one per LFO), so moving a controller mid-note does not shift
+    /// the phase of an already-sounding voice.
+    pub(crate) fn lfo_phase_offsets(&self, zone: &Zone, note: &Note, onset: Age, out: &mut [f32]) {
+        out.fill(0.0);
+        let Some((g, reshaped)) = self
+            .groups
+            .get(zone.group as usize)
+            .zip(self.reshaped.get(zone.group as usize))
+        else {
+            return;
+        };
+        for (n, offset) in (0u8..=u8::MAX).zip(out.iter_mut()).take(g.lfos.len()) {
+            let Some(_active) = self.evaluation.enter(Dependency::LfoMotion, n) else {
+                continue;
+            };
+            for m in reshaped
+                .moving(n)
+                .filter_map(|i| g.mods.get(i))
+                .filter(|m| !m.bypass)
+            {
+                let ir::ModRoute {
+                    source,
+                    target:
+                        ir::ParamAddr::LfoParam {
+                            lfo: l,
+                            param: ir::LfoParam::Phase,
+                        },
+                    depth,
+                    ..
+                } = m.route
+                else {
+                    continue;
+                };
+                if l != n || matches!(source, ir::Source::Lfo(_)) {
+                    continue;
+                }
+                let input = self.source(zone, source, note, onset);
+                let value = input.unwrap_or(0.0) * depth;
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
+                *offset += value;
+            }
+        }
+    }
+
+    /// LFO `n` as this note plays it: its group's, with the latched note-on
+    /// phase offset, fixed note-on rate routes, and live phase warp applied.
     fn moved_lfo(&self, zone: &Zone, n: u8, note: &Note, age: Age) -> Option<ir::Lfo> {
         let group = || self.groups.get(zone.group as usize);
         let g = group()?;
@@ -344,9 +390,9 @@ impl Engine {
         let moving = (self.reshaped.get(zone.group as usize).into_iter())
             .flat_map(|r| r.moving(n))
             .filter_map(|i| g.mods.get(i));
-        // Phase routes read their source at note-on, and so do rate routes
-        // whose source is fixed for the note; a live one's rate is
-        // integrated into the warp from note-on on (`Engine::warp`).
+        // Phase offsets are latched at note-on in `age.lfo_phase`; rate routes
+        // whose source is fixed for the note apply here, while live rate routes
+        // integrate into `age.warp` from note-on on (`Engine::warp`).
         let onset = Age::at_start(age.start_frame);
         for m in moving.filter(|m| !m.bypass) {
             let ir::ModRoute {
@@ -364,28 +410,21 @@ impl Engine {
             if l != n || matches!(source, ir::Source::Lfo(_)) {
                 continue;
             }
-            match (param, law) {
-                (ir::LfoParam::Phase, _) => {
-                    let input = self.source(zone, source, note, onset);
-                    let value = input.unwrap_or(0.0) * depth;
-                    #[cfg(feature = "trace")]
-                    self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
-                    lfo.phase += value;
-                }
-                (ir::LfoParam::Rate, ir::RouteLaw::Range([lo, hi])) if source.fixed_for_note() => {
-                    let input = self.source(zone, source, note, onset);
-                    let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
-                    #[cfg(feature = "trace")]
-                    self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
-                    lfo.rate = match lfo.rate {
-                        ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
-                        ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
-                        ir::Rate::Steps { beats, count } => ir::Rate::Beats(beats * count / f),
-                    };
-                }
-                _ => {}
+            if let (ir::LfoParam::Rate, ir::RouteLaw::Range([lo, hi])) = (param, law)
+                && source.fixed_for_note()
+            {
+                let input = self.source(zone, source, note, onset);
+                let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
+                lfo.rate = match lfo.rate {
+                    ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
+                    ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
+                    ir::Rate::Steps { beats, count } => ir::Rate::Beats(beats * count / f),
+                };
             }
         }
+        lfo.phase += age.lfo_phase.get(usize::from(n)).copied().unwrap_or(0.0);
         lfo.phase += age.warp.get(usize::from(n)).copied().unwrap_or(0.0);
         Some(lfo)
     }
@@ -689,7 +728,7 @@ impl Engine {
 
     /// The fractions of the sample its loops' start and end move for a
     /// voice, read at note-on.
-    pub(crate) fn loop_shift(&self, zone: &Zone, note: &Note) -> [f32; 2] {
+    pub(crate) fn loop_shift(&self, zone: &Zone, note: &Note, age: Age) -> [f32; 2] {
         let mut shift = [0.0; 2];
         let Some(g) = self.groups.get(zone.group as usize) else {
             return shift;
@@ -701,7 +740,7 @@ impl Engine {
                 depth,
                 ..
             } = m.route
-                && let Some(x) = self.source(zone, source, note, Age::START)
+                && let Some(x) = self.source(zone, source, note, age)
                 && let Some(s) = shift.get_mut(usize::from(length))
             {
                 let value = x * depth;
@@ -714,7 +753,7 @@ impl Engine {
     }
 
     /// Frames the zone's start moves, within its start range either way.
-    pub(crate) fn start_offset(&self, zone: &Zone, note: &Note) -> i64 {
+    pub(crate) fn start_offset(&self, zone: &Zone, note: &Note, age: Age) -> i64 {
         let Some(g) = self.groups.get(zone.group as usize) else {
             return 0;
         };
@@ -729,7 +768,7 @@ impl Engine {
                     depth,
                     ..
                 } => {
-                    let x = self.source(zone, source, note, Age::START)?;
+                    let x = self.source(zone, source, note, age)?;
                     let value = x * depth;
                     #[cfg(feature = "trace")]
                     self.trace_route(
@@ -1033,9 +1072,7 @@ impl Engine {
 }
 
 /// A voice's left and right gains: its levels, and its pans summed and
-/// balanced by the instrument's law (Kontakt's linear, UVI's cosine).
-// ponytail: a stereo balance only; UVI's mono-to-stereo laws (PanLaw 0, 1:
-// routing.rs `PART_BALANCE`) when a mono library's image needs them.
+/// balanced by `law`.
 fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32, law: ir::Balance) -> [f32; 2] {
     let script = ir::common::MILLIBEL_GAIN.eval_unclamped(note.script_volume as f32);
     let g = zone.gain * level.gain * note.expression_gain * script;

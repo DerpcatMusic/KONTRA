@@ -44,6 +44,7 @@ impl<L: Library> Unfinished<'_, L> {
     pub(crate) fn finish(mut self, swaps: &dyn Fn(&ir::Script) -> Vec<Swap>) -> ir::Instrument {
         self.swap_samples(swaps);
         self.out.diagnostics = self.notes.finish();
+        self.out.diagnostics.extend(ir::validate(&self.out));
         self.out
     }
 
