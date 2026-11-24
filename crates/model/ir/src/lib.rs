@@ -34,7 +34,7 @@ pub use effects::{
     ScanShape, Scanner, Shifter, Strip, Transient, VowelSet,
 };
 pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar, held_key};
-pub use generator::{EffectFamily, EffectSpec, Generator};
+pub use generator::Generator;
 pub use graph::{AudioGraph, ChannelLayout, EffectId, GraphEdge, GraphNode, GraphNodeKind, NodeId};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, KnobMod, Linked};
