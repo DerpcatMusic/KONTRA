@@ -4,7 +4,8 @@
 //! 1. `ir::Instrument: PartialEq` compile-time assertion + zero `fn(` pointers
 //!    or `fn_addr_eq` in `crates/model/ir/src`.
 //! 2. Vendor-word ratchet across `crates/{engine,dsp,model}/*/src`.
-//! 3. Architecture metric ratchets (`Source::` in `app/ui/src`, `fn_addr_eq`
+//! 3. Architecture metric ratchets (`Source::` in `app/ui/src`, no parallel
+//!    `EffectFamily`/`EffectSpec` taxonomy, `fn_addr_eq`
 //!    workspace-wide).
 //! 4. Per-module encoding equality and unique `ModelId`s across `kontakt-effects`.
 //! 5. Cyclic `AudioGraph` errors are surfaced (never silently discarded) in both
@@ -193,6 +194,22 @@ fn architecture_metric_ratchets_hold() {
     assert_eq!(
         fn_addr_eq_count, 0,
         "fn_addr_eq must remain 0 across all crate src/ trees"
+    );
+
+    // 3. One effect encoding: `EffectKind`. The families are a measured
+    // grouping (effect-family-null-report.md), not a second IR type.
+    let taxonomy: Vec<_> = all_src
+        .iter()
+        .filter(|p| {
+            let text = std::fs::read_to_string(p).expect("read src");
+            ["EffectFamily", "EffectSpec"].iter().any(|name| {
+                text.contains(&format!("enum {name}")) || text.contains(&format!("struct {name}"))
+            })
+        })
+        .collect();
+    assert!(
+        taxonomy.is_empty(),
+        "a parallel effect taxonomy came back in {taxonomy:?}; extend EffectKind instead"
     );
 }
 

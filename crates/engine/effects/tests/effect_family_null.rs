@@ -1,4 +1,4 @@
-//! Null tests between effect kinds that overlap inside one `EffectFamily`
+//! Null tests between effect kinds that overlap inside one family
 //! (13-IR-VNEXT Phase 3): each pair renders the same impulse, sine and noise
 //! through both kinds' processors and measures the residual, so folding
 //! `EffectKind` into families rests on measured numbers. The table prints

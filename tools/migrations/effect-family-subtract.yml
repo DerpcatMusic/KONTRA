@@ -1,0 +1,27 @@
+# Delete the unread parallel effect taxonomy (13-IR-VNEXT Phase 3):
+# `EffectFamily`, `EffectKind::family`, `EffectSpec` and their unit test.
+# Driver: tools/migrations/effect-family-subtract.sh
+id: drop-effect-family-items
+language: rust
+rule:
+  any:
+    - { kind: enum_item, has: { field: name, regex: '^EffectFamily$' } }
+    - { kind: struct_item, has: { field: name, regex: '^EffectSpec$' } }
+    - { kind: impl_item, has: { field: type, regex: '^EffectSpec$' } }
+    - kind: impl_item
+      all:
+        - has: { field: type, regex: '^EffectKind$' }
+        - has: { stopBy: end, kind: function_item, has: { field: name, regex: '^family$' } }
+    - kind: mod_item
+      all:
+        - has: { field: name, regex: '^tests$' }
+        - has: { stopBy: end, kind: function_item, has: { field: name, regex: '^effect_families_cover_all_seven_dsp_categories$' } }
+fix:
+  template: ''
+  expandStart: { kind: attribute_item }
+---
+id: drop-effect-family-reexport
+language: rust
+rule:
+  pattern: pub use generator::{EffectFamily, EffectSpec, Generator};
+fix: pub use generator::Generator;
