@@ -1,7 +1,8 @@
 //! Draws each instrument's Original view headless, the way the editor will,
 //! and says what it cost: first frame, settled, paint, idle, RAM. Saves the
 //! settled page as `<out>/<name>-<slot>.png`, and the face before any control
-//! moves as `<out>/<name>-<slot>-initial.png`. `UI_SHOTS_SCALE` sets the zoom.
+//! moves as `<out>/<name>-<slot>-initial.png`. `UI_SHOTS_SCALE` sets the zoom,
+//! `UI_SHOTS_LOOK=kontra` the KONTRA look.
 //! With `--app`, the page is also drawn where the user meets it, inside an
 //! open part of the rack, and saved as `<out>/<name>-<slot>-app.png`.
 //! `cargo run --release -p ui-shots -- [--press <control>] [--app] <out dir> <instrument>...`
@@ -16,7 +17,7 @@ use kontra_host::ui::lua::Page as _;
 use kontra_host::ui::{Library, Live};
 use kontra_stream::{Store, StoreConfig};
 use kontra_ui::{Pictures, view};
-use kontra_ui_model::{Kind, PageRef, WidgetRef};
+use kontra_ui_model::{Kind, PageRef, Presentation, WidgetRef};
 use mui::prelude::{Input, Size, Ui};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -85,7 +86,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
             let mut ui = kontra_ui::ui();
             let frame = |ui: &mut Ui, pictures: &mut Pictures, live: &Live| {
-                let (el, built) = view::page(ui, 0, &live.tree, PageRef(0), pictures, (scale, &[]));
+                let (el, built) = view::page_as(
+                    ui,
+                    0,
+                    &live.tree,
+                    PageRef(0),
+                    pictures,
+                    (scale, &[]),
+                    look(),
+                );
                 ui.frame(
                     el,
                     Some(Size::new(f64::from(w), f64::from(h))),
@@ -400,7 +409,7 @@ fn shot(
     }));
     let mut ui = kontra_ui::ui();
     let frame = |ui: &mut Ui, pictures: &mut Pictures| {
-        let (el, _) = view::page(ui, 0, tree, PageRef(0), pictures, (scale, &[]));
+        let (el, _) = view::page_as(ui, 0, tree, PageRef(0), pictures, (scale, &[]), look());
         ui.frame(
             el,
             Some(Size::new(f64::from(w), f64::from(h))),
@@ -474,6 +483,14 @@ fn controls(
 
 /// `UI_SHOTS_SCALE=<f>` draws pages at that zoom (1.5 matches the oracle's
 /// 150% Kontakt screenshots); 1 otherwise.
+/// `UI_SHOTS_LOOK=kontra` draws the KONTRA look; anything else, Original.
+fn look() -> Presentation {
+    match std::env::var("UI_SHOTS_LOOK").as_deref() {
+        Ok("kontra") => Presentation::Kontra,
+        _ => Presentation::Original,
+    }
+}
+
 fn scale() -> f64 {
     std::env::var("UI_SHOTS_SCALE")
         .ok()

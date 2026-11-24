@@ -2,7 +2,8 @@
 //!
 //! Source frontends (KSP `on init`, Creator Tools performance views, Falcon
 //! Lua) emit an [`Interface`]; the product UI renders it with either the
-//! library's own bitmaps or its own vector controls ([`Presentation`]).
+//! library's own pictures or KONTRA's controls in the same places
+//! ([`Presentation`]).
 //!
 //! Plain data: no I/O, no decoded pixels, no runtime handles, no dependencies.
 //! Assets are referenced by library-relative path and loaded lazily by the
@@ -1328,7 +1329,7 @@ impl ImageUse {
     }
 }
 
-/// What an image does for its widget; decides what [`Presentation::Vector`] keeps.
+/// What an image does for its widget; decides what [`Presentation::Kontra`] keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Role {
     /// Static artwork that is part of the picture (a panel or label
@@ -1460,7 +1461,7 @@ pub enum Font {
     Stock(i32),
     /// A font named by the source (Lua font name).
     Named(String),
-    /// A bitmap font asset. [`Presentation::Vector`] draws [`Font::Default`] instead.
+    /// A bitmap font asset. [`Presentation::Kontra`] draws [`Font::Default`] instead.
     Bitmap(AssetRef),
     File(AssetRef),
 }
@@ -1546,14 +1547,21 @@ pub struct Unsupported {
     pub value: String,
 }
 
-/// How controls are drawn.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How a library's interface is drawn: its two looks. Both lay out the
+/// same controls in the same places on the same pages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Presentation {
-    /// The library's own bitmaps.
+    /// The library's own pictures, as its sampler draws them.
     #[default]
-    Bitmap,
-    /// Wallpapers and [`Role::Background`] art only; controls are drawn as vectors.
-    Vector,
+    Original,
+    /// KONTRA's own controls on the library's wallpaper and
+    /// [`Role::Background`] art.
+    Kontra,
+}
+
+impl Presentation {
+    pub const ALL: [Self; 2] = [Self::Original, Self::Kontra];
+    pub const LABELS: [&str; 2] = ["Original", "KONTRA"];
 }
 
 // ---------------------------------------------------------------- queries
@@ -1600,7 +1608,7 @@ impl Interface {
         {
             mark(a);
         }
-        let vector = presentation == Presentation::Vector;
+        let vector = presentation == Presentation::Kontra;
         for w in &self.widgets {
             for i in &w.images {
                 if !(vector && i.role.replaced_by_vector() && !w.label_in_image()) {
@@ -2118,11 +2126,11 @@ mod tests {
     }
 
     #[test]
-    fn vector_keeps_wallpaper_and_backgrounds_only() {
+    fn kontra_keeps_wallpaper_and_backgrounds_only() {
         let ui = sample();
         ui.validate().unwrap();
-        assert_eq!(ui.needed_assets(Presentation::Bitmap), [true, true, true]);
-        assert_eq!(ui.needed_assets(Presentation::Vector), [true, true, false]);
+        assert_eq!(ui.needed_assets(Presentation::Original), [true, true, true]);
+        assert_eq!(ui.needed_assets(Presentation::Kontra), [true, true, false]);
     }
 
     #[test]

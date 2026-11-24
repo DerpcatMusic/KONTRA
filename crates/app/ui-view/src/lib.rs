@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use kontra_ui_model::{self as model, Interface, Kind, PageRef, Role};
+use kontra_ui_model::{self as model, Interface, Kind, PageRef, Presentation, Role};
 use mui::prelude::*;
 
 use kontra_ui_pictures::Pictures;
@@ -111,31 +111,22 @@ pub fn page(
     pictures: &mut Pictures,
     at: (f64, &[[Shown; 2]]),
 ) -> (El, usize) {
-    drawn_page(ui, face, tree, page, pictures, at, false)
+    page_as(ui, face, tree, page, pictures, at, Presentation::Original)
 }
 
-/// [`page`] without its pictures: each control where it sits, in its
-/// stock look, on the page's colour.
-pub fn vector_page(
-    ui: &mut Ui,
-    face: usize,
-    tree: &Interface,
-    page: PageRef,
-    pictures: &mut Pictures,
-    at: (f64, &[[Shown; 2]]),
-) -> (El, usize) {
-    drawn_page(ui, face, tree, page, pictures, at, true)
-}
-
-fn drawn_page(
+/// [`page`] in `look`: [`Presentation::Kontra`] draws each control where
+/// it sits in KONTRA's stock look, on the page's wallpaper and background
+/// art.
+pub fn page_as(
     ui: &mut Ui,
     face: usize,
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
     (scale, level): (f64, &[[Shown; 2]]),
-    bare: bool,
+    look: Presentation,
 ) -> (El, usize) {
+    let bare = look == Presentation::Kontra;
     // Pointer state is an input to the otherwise pure draw projection: a
     // source button's or switch's held and hover frames (Kontakt's six-frame
     // strips), and a picture the script shows under the pointer (UVI's
@@ -186,7 +177,6 @@ fn drawn_page(
     if let Some((a, (path, meta))) = p
         .background
         .image
-        .filter(|_| !bare)
         .and_then(|a| Some((a, image_asset(tree, a)?)))
     {
         let b = &p.background;
@@ -209,6 +199,7 @@ fn drawn_page(
     let mut groups = std::collections::HashMap::from([(None, layers)]);
     let mut regions = Vec::new();
     for item in plan.widgets {
+        let bare = item.bare;
         let n = item.index;
         let r = item.rect;
         let wd = item.source;

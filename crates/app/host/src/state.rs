@@ -165,7 +165,8 @@ pub struct SavedView {
     pub library_filter: u8,
     /// The browser's library list's share of its height; 0 is the default.
     pub split: f32,
-    /// How a library's view is drawn: Original, Vector, KONTRA.
+    /// How a library's view is drawn: 0 Original, 2 KONTRA; 1 was the
+    /// retired Vector look and loads as KONTRA.
     pub look: u8,
     pub parts: Vec<SavedPartView>,
 }

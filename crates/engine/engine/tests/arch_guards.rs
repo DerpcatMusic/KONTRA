@@ -239,6 +239,40 @@ fn architecture_metric_ratchets_hold() {
             .any(|l| !l.trim_start().starts_with("//") && l.contains(".ignored_fields(")),
         "translate.rs reflects Debug text for ignored fields; destructure the record instead"
     );
+
+    // 6. A library's interface has two looks, Original and KONTRA, drawn by
+    // one renderer (14-UNIFIED-UI-IR): no third variant, no second look type,
+    // no second page renderer.
+    let model = std::fs::read_to_string(crates_dir.join("model/ui-model/src/lib.rs"))
+        .expect("read ui-model");
+    let looks = model
+        .split("pub enum Presentation {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("enum Presentation in ui-model");
+    let variants: Vec<_> = looks
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.ends_with(',') && !l.starts_with("//") && !l.starts_with('#'))
+        .collect();
+    assert_eq!(
+        variants,
+        ["Original,", "Kontra,"],
+        "a third look crept in; KONTRA draws the Original layout in its own controls"
+    );
+    let second: Vec<_> = all_src
+        .iter()
+        .filter(|p| {
+            let text = std::fs::read_to_string(p).expect("read src");
+            ["enum FaceLook", "fn vector_page", "fn kontra_page"]
+                .iter()
+                .any(|s| text.contains(s))
+        })
+        .collect();
+    assert!(
+        second.is_empty(),
+        "a second look type or page renderer came back in {second:?}; use Presentation and view::page_as"
+    );
 }
 
 #[test]

@@ -6,7 +6,6 @@
 //! tooltip, choices are dropdowns, menus and panels float.
 
 mod browser;
-mod controls;
 mod find;
 mod mapping;
 mod mixer;
@@ -24,6 +23,7 @@ mod tidy;
 pub use sound::{Envelope, Filter, Lower, Param, Pass, Sound};
 
 use kontra_ui_model::Interface;
+pub use kontra_ui_model::Presentation;
 use mui::prelude::*;
 
 use crate::Pictures;
@@ -207,7 +207,7 @@ pub struct Part {
     pub open: bool,
     pub tab: PartTab,
     /// How its interface is drawn; `None` follows [`View::face_look`].
-    pub look: Option<FaceLook>,
+    pub look: Option<Presentation>,
 }
 
 /// One zone of a part's mapping.
@@ -253,23 +253,6 @@ pub enum PartTab {
     Sound,
     Info,
     Scripts,
-}
-
-/// How a part draws its library's interface.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum FaceLook {
-    /// The library's own pictures, as its sampler draws them.
-    #[default]
-    Original,
-    /// The same controls in the same places, without the pictures.
-    Vector,
-    /// The controls one after another in KONTRA's own look.
-    Kontra,
-}
-
-impl FaceLook {
-    pub const ALL: [Self; 3] = [Self::Original, Self::Vector, Self::Kontra];
-    pub const LABELS: [&str; 3] = ["Original", "Vector", "KONTRA"];
 }
 
 /// A folder the browser scans, and how its last scan went.
@@ -455,7 +438,7 @@ pub struct View {
     /// Which of [`FACE_SCALES`] a library's own view is drawn at.
     pub face_scale: usize,
     /// How a part that chose none draws its interface.
-    pub face_look: FaceLook,
+    pub face_look: Presentation,
 }
 
 impl View {

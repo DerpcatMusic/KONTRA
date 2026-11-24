@@ -210,19 +210,56 @@ fn a_page_draws_its_wallpaper_from_the_skin_offset_and_a_knob_at_its_value() {
 }
 
 #[test]
-fn a_vector_page_draws_its_controls_without_their_pictures() {
+fn a_kontra_page_draws_its_controls_on_the_wallpaper_without_their_pictures() {
     let (tree, wall, knob) = tree();
     let mut ui = crate::ui();
     let mut pictures = pictures(wall, knob);
     settle(&mut ui, &tree, &mut pictures, 1.);
-    let (el, _) = vector_page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let kontra = Presentation::Kontra;
+    let (el, _) = page_as(
+        &mut ui,
+        0,
+        &tree,
+        PageRef(0),
+        &mut pictures,
+        (1., &[]),
+        kontra,
+    );
     let px = paint(&mut ui, el, 20, 10);
     let at = |x: usize, y: usize| px.get(y * 20 + x).copied();
-    assert_eq!(at(0, 0), Some([128, 128, 128, 255]), "no wallpaper");
+    assert_eq!(at(0, 0), Some([0, 255, 0, 255]), "the wallpaper stays");
     assert!(!px.contains(&[255; 4]), "no knob strip");
     assert!(
-        px.iter().any(|p| *p != [128, 128, 128, 255]),
+        px.iter()
+            .any(|p| ![[0, 255, 0, 255], [128, 128, 128, 255]].contains(p)),
         "a stock knob"
+    );
+}
+
+/// A wordless button's picture is its label (an icon): KONTRA keeps it
+/// rather than draw a blank stock button.
+#[test]
+fn a_kontra_page_keeps_a_wordless_buttons_picture() {
+    let (mut tree, wall, knob) = tree();
+    tree.widgets[0].kind = Kind::Button { momentary: false };
+    assert!(tree.widgets[0].label_in_image());
+    let mut ui = crate::ui();
+    let mut pictures = pictures(wall, knob);
+    settle(&mut ui, &tree, &mut pictures, 1.);
+    let kontra = Presentation::Kontra;
+    let (el, _) = page_as(
+        &mut ui,
+        0,
+        &tree,
+        PageRef(0),
+        &mut pictures,
+        (1., &[]),
+        kontra,
+    );
+    let px = paint(&mut ui, el, 20, 10);
+    assert!(
+        px.iter().any(|p| [[255; 4], [0, 0, 255, 255]].contains(p)),
+        "its picture"
     );
 }
 
@@ -554,7 +591,7 @@ fn a_picture_font_label_draws_its_glyphs() {
 }
 
 #[test]
-fn vector_draws_a_picture_slider_even_when_its_background_is_hidden() {
+fn kontra_draws_a_picture_slider_even_when_its_background_is_hidden() {
     let (mut tree, wall, knob) = tree();
     let widget = tree.widgets.first_mut().unwrap();
     widget.kind = Kind::Slider {
@@ -571,7 +608,16 @@ fn vector_draws_a_picture_slider_even_when_its_background_is_hidden() {
     assert!(stock::shows(&tree, &tree.widgets[0], true));
     let mut ui = crate::ui();
     let mut pictures = pictures(wall, knob);
-    let (el, _) = vector_page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let kontra = Presentation::Kontra;
+    let (el, _) = page_as(
+        &mut ui,
+        0,
+        &tree,
+        PageRef(0),
+        &mut pictures,
+        (1., &[]),
+        kontra,
+    );
     let pixels = paint(&mut ui, el, 20, 10);
     assert!(pixels.iter().any(|p| *p != [128, 128, 128, 255]));
 }

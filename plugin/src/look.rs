@@ -3,7 +3,7 @@
 
 use kontra_host::state::{SavedPartView, SavedView};
 use kontra_ui::app::{
-    App, FaceLook, Format, LibraryFilter, LibrarySort, LibraryView, PartTab, Shelf, Tab, Tiles,
+    App, Format, LibraryFilter, LibrarySort, LibraryView, PartTab, Presentation, Shelf, Tab, Tiles,
     View,
 };
 
@@ -43,6 +43,25 @@ fn pick<T: Copy + Default>(all: &[T], n: u8) -> T {
     all.get(usize::from(n)).copied().unwrap_or_default()
 }
 
+/// A look as saved: KONTRA keeps the index it had beside the retired
+/// Vector look (1), so older builds still read it.
+fn look_index(look: Presentation) -> u8 {
+    match look {
+        Presentation::Original => 0,
+        Presentation::Kontra => 2,
+    }
+}
+
+/// A saved look: anything but Original, the retired Vector look too, is
+/// KONTRA.
+fn look_of(n: u8) -> Presentation {
+    if n == 0 {
+        Presentation::Original
+    } else {
+        Presentation::Kontra
+    }
+}
+
 /// What `app` shows, its parts in rack `slots`.
 pub fn saved(app: &App, slots: &[usize]) -> SavedView {
     let v = &app.view;
@@ -63,13 +82,13 @@ pub fn saved(app: &App, slots: &[usize]) -> SavedView {
         sort: index(&SORTS, &v.sort),
         library_filter: index(&FILTERS, &v.library_filter),
         split: v.split as f32,
-        look: index(&FaceLook::ALL, &v.face_look),
+        look: look_index(v.face_look),
         parts: (app.parts.iter().zip(slots))
             .map(|(p, &part)| SavedPartView {
                 part,
                 open: p.open,
                 tab: index(&PART_TABS, &p.tab),
-                look: p.look.map_or(0, |l| index(&FaceLook::ALL, &l) + 1),
+                look: p.look.map_or(0, |l| look_index(l) + 1),
             })
             .collect(),
     }
@@ -109,7 +128,7 @@ pub fn apply(app: &mut App, s: &SavedView) {
         },
         library_filter: pick(&FILTERS, s.library_filter),
         split: f64::from(s.split),
-        face_look: pick(&FaceLook::ALL, s.look),
+        face_look: look_of(s.look),
         ..View::default()
     };
 }
@@ -124,7 +143,7 @@ pub fn parts(app: &mut App, slots: &[usize], waiting: &mut Vec<SavedPartView>) {
         };
         p.open = w.open;
         p.tab = pick(&PART_TABS, w.tab);
-        p.look = w.look.checked_sub(1).map(|l| pick(&FaceLook::ALL, l));
+        p.look = w.look.checked_sub(1).map(look_of);
         false
     });
 }
@@ -141,7 +160,7 @@ mod tests {
         app.view.octave = -1;
         app.view.scale = 75;
         app.view.split = 0.3;
-        app.view.face_look = FaceLook::Vector;
+        app.view.face_look = Presentation::Kontra;
         app.view.library_view = LibraryView::Separated;
         app.view.tiles = Tiles::Cards;
         app.view.sort = LibrarySort::MostPresets;
@@ -149,7 +168,7 @@ mod tests {
         app.parts = vec![kontra_ui::app::Part {
             open: false,
             tab: PartTab::Mapping,
-            look: Some(FaceLook::Kontra),
+            look: Some(Presentation::Kontra),
             ..Default::default()
         }];
         let saved = SavedView::read(&saved(&app, &[3]).write());
@@ -161,7 +180,7 @@ mod tests {
         );
         assert_eq!((again.view.octave, again.view.scale), (-1, 75));
         assert!((again.view.split - 0.3).abs() < 1e-6, "the browser's split");
-        assert_eq!(again.view.face_look, FaceLook::Vector);
+        assert_eq!(again.view.face_look, Presentation::Kontra);
         assert_eq!(
             (
                 again.view.library_view,
@@ -190,7 +209,30 @@ mod tests {
         assert!(waiting.is_empty());
         assert_eq!(
             (again.parts[0].open, again.parts[0].tab, again.parts[0].look),
-            (false, PartTab::Mapping, Some(FaceLook::Kontra))
+            (false, PartTab::Mapping, Some(Presentation::Kontra))
         );
+    }
+
+    /// Sessions saved with three looks (Original 0, Vector 1, KONTRA 2;
+    /// a part's own look 1 + that) come back with Vector as KONTRA.
+    #[test]
+    fn a_session_saved_with_the_vector_or_kontra_look_loads_as_kontra() {
+        let old = SavedView::read(
+            r#"{"look":1,"parts":[{"part":0,"open":true,"tab":0,"look":2},{"part":1,"open":true,"tab":0,"look":3},{"part":2,"open":true,"tab":0,"look":1},{"part":3,"open":true,"tab":0,"look":0}]}"#,
+        );
+        let mut app = App::default();
+        apply(&mut app, &old);
+        assert_eq!(app.view.face_look, Presentation::Kontra, "Vector");
+        app.parts = (0..4).map(|_| kontra_ui::app::Part::default()).collect();
+        let mut waiting = old.parts.clone();
+        parts(&mut app, &[0, 1, 2, 3], &mut waiting);
+        let looks: Vec<_> = app.parts.iter().map(|p| p.look).collect();
+        let (o, k) = (Presentation::Original, Presentation::Kontra);
+        assert_eq!(looks, [Some(k), Some(k), Some(o), None]);
+        // KONTRA saves where it was, so an older build reads it as KONTRA.
+        let again = saved(&app, &[0, 1, 2, 3]);
+        assert_eq!(again.look, 2);
+        let own: Vec<_> = again.parts.iter().map(|p| p.look).collect();
+        assert_eq!(own, [3, 3, 1, 0]);
     }
 }

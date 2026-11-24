@@ -603,7 +603,7 @@ fn stock_words(text: &str, scale: f64, glyphs: Option<&kontra_ui_pictures::Glyph
 fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) -> Vec<El> {
     let light = rgb(0xfe_fefe);
     // Pacific's unpictured knobs have a lit upper ring and a dark lower edge.
-    // Vector keeps the flat stock skin; both use the existing measured palette.
+    // KONTRA keeps the flat stock skin; both use the existing measured palette.
     let ring: Fill = if bare {
         rgb(0x2e_2e2e).into()
     } else {
