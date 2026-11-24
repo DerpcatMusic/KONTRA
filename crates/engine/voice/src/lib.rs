@@ -417,6 +417,29 @@ impl Voice {
         }
     }
 
+    /// Retriggers an active voice on a rapid repeated note without hard-resetting
+    /// the amplitude envelope or gain smoother to silence (avoiding step clicks
+    /// while restarting the sample/synth cursor cleanly). No allocation.
+    pub fn retrigger(&mut self, start: VoiceStart) {
+        let prev_env = self.env;
+        let prev_gain = self.gain;
+        let prev_lagged = self.lagged;
+        let prev_fade = self.fade;
+        let active = self.is_active();
+        let envelope = start.envelope;
+        let has_fade = start.fade.is_some();
+        self.start(start);
+        if active {
+            self.env = prev_env;
+            self.env.retrigger(envelope);
+            self.gain = prev_gain;
+            self.lagged = prev_lagged;
+            if !has_fade {
+                self.fade = prev_fade;
+            }
+        }
+    }
+
     /// Sets the amplitude envelope's release duration before [`Self::key_up`].
     pub fn set_release_frames(&mut self, frames: u32) {
         self.env.set_release(frames);

@@ -56,6 +56,9 @@ impl Ahdsr {
 enum Stage {
     Delay(u32),
     Attack,
+    /// Retriggered attack ramping effective output gain directly (used when the
+    /// captured release gain starts below `settings.floor` or `depth == 0`).
+    RetriggerAttack,
     Hold(u32),
     Decay,
     Sustain,
@@ -195,6 +198,22 @@ impl Envelope {
                         Segment::new(self.level, 1.0, left.max(1), settings.attack_shape);
                 }
             }
+            Stage::RetriggerAttack => {
+                if settings.attack == 0 {
+                    self.wait = 0;
+                    self.level = 1.0;
+                    self.enter_after_attack();
+                } else {
+                    let old_total = old.attack.max(1);
+                    let new_total = settings.attack.max(1);
+                    let left = (f64::from(self.segment.left) * f64::from(new_total)
+                        / f64::from(old_total))
+                    .round() as u32;
+                    let peak_gain = settings.floor + settings.depth;
+                    self.segment =
+                        Segment::new(self.level, peak_gain, left.max(1), settings.attack_shape);
+                }
+            }
             Stage::Hold(left) => {
                 let elapsed = old.hold.saturating_sub(left);
                 let new_left = settings.hold.saturating_sub(elapsed);
@@ -294,7 +313,7 @@ impl Envelope {
     pub(crate) fn stage_name(&self) -> &'static str {
         match self.stage {
             Stage::Delay(_) => "delay",
-            Stage::Attack => "attack",
+            Stage::Attack | Stage::RetriggerAttack => "attack",
             Stage::Hold(_) => "hold",
             Stage::Decay => "decay",
             Stage::Sustain | Stage::SustainGlide => "sustain",
@@ -317,8 +336,53 @@ impl Envelope {
         }
     }
 
+    /// Retriggers the envelope smoothly from its current output gain without
+    /// dropping to zero on rapid repeated notes. When already sounding, silent
+    /// pre-attack delay/lag is skipped so the ramp stays continuous.
+    pub fn retrigger(&mut self, settings: Ahdsr) {
+        let current_gain = self.output_gain();
+        self.settings = settings;
+        self.wait = 0;
+        if current_gain <= 1e-4 {
+            self.level = 0.0;
+            if settings.delay > 0 {
+                self.stage = Stage::Delay(settings.delay);
+            } else {
+                self.enter_attack();
+            }
+            return;
+        }
+        if settings.attack == 0 {
+            self.level = 1.0;
+            self.enter_after_attack();
+        } else if settings.depth.abs() > 1e-6 && current_gain >= settings.floor {
+            let from_level = ((current_gain - settings.floor) / settings.depth).clamp(0.0, 1.0);
+            self.level = from_level;
+            self.segment = Segment::new(from_level, 1.0, settings.attack, settings.attack_shape);
+            self.stage = Stage::Attack;
+        } else {
+            let peak_gain = settings.floor + settings.depth;
+            self.level = current_gain;
+            self.segment = Segment::new(
+                current_gain,
+                peak_gain,
+                settings.attack,
+                settings.attack_shape,
+            );
+            self.stage = Stage::RetriggerAttack;
+        }
+    }
+
     pub(crate) fn force_release(&mut self) {
         if matches!(self.stage, Stage::Off | Stage::Release) {
+            return;
+        }
+        // A note released/choked while still in pre-attack delay never sounded:
+        // end immediately so rapid repeated notes do not tie up voice slots.
+        if matches!(self.stage, Stage::Delay(_)) {
+            self.wait = 0;
+            self.level = 0.0;
+            self.stage = Stage::Off;
             return;
         }
         let s = self.settings;
@@ -337,7 +401,7 @@ impl Envelope {
     pub(crate) fn output_gain(&self) -> f32 {
         match self.stage {
             Stage::Delay(_) | Stage::Off => 0.0,
-            Stage::Release => self.level,
+            Stage::Release | Stage::RetriggerAttack => self.level,
             _ => self.settings.floor + self.settings.depth * self.level,
         }
     }
@@ -358,12 +422,13 @@ impl Envelope {
             return 0.0;
         }
         let s = self.settings;
-        let was_release = self.stage == Stage::Release;
         let level = self.step();
         if self.stage == Stage::Off {
             return 0.0;
         }
-        if was_release {
+        // The stage after the step decides the representation: a retrigger
+        // attack that just ended hands over a normalized level.
+        if matches!(self.stage, Stage::Release | Stage::RetriggerAttack) {
             level
         } else {
             s.floor + s.depth * level
@@ -378,12 +443,20 @@ impl Envelope {
             return self.level;
         }
         match self.stage {
-            Stage::Attack | Stage::Decay | Stage::SustainGlide | Stage::Release => {
+            Stage::Attack
+            | Stage::RetriggerAttack
+            | Stage::Decay
+            | Stage::SustainGlide
+            | Stage::Release => {
                 let (level, ended) = self.segment.next();
                 self.level = level;
                 if ended {
                     match self.stage {
                         Stage::Attack => self.enter_after_attack(),
+                        Stage::RetriggerAttack => {
+                            self.level = 1.0;
+                            self.enter_after_attack();
+                        }
                         Stage::Decay => {
                             self.stage = if s.one_shot {
                                 Stage::Off
@@ -663,6 +736,33 @@ mod tests {
     }
 
     #[test]
+    fn retrigger_attack_hands_over_to_hold_without_gain_spike() {
+        let s = Ahdsr {
+            attack: 4,
+            hold: 2,
+            floor: 0.5,
+            depth: 0.0,
+            ..Ahdsr::GATE
+        };
+        let mut env = Envelope::new(Ahdsr {
+            attack: 1,
+            release: 100,
+            floor: 0.0,
+            depth: 1.0,
+            ..Ahdsr::GATE
+        });
+        env.tick();
+        env.release();
+        (0..80).for_each(|_| {
+            env.tick();
+        });
+        env.retrigger(s);
+        let out: Vec<f32> = (0..8).map(|_| env.tick()).collect();
+        assert!(out.iter().all(|g| *g <= 0.5 + 1e-5), "{out:?}");
+        assert!((out[7] - 0.5).abs() < 1e-5, "{out:?}");
+    }
+
+    #[test]
     fn explicit_delay_is_silent_even_with_instant_attack() {
         let mut env = Envelope::new(Ahdsr {
             delay: 4800,
@@ -770,5 +870,46 @@ mod tests {
             next > mid && (next - mid) < 0.02,
             "mid-attack jump: {mid} -> {next}"
         );
+    }
+
+    #[test]
+    fn retrigger_restarts_from_current_level_without_click_and_delay_release_ends_immediately() {
+        let settings = Ahdsr {
+            attack: 20,
+            decay: 20,
+            sustain: 0.5,
+            release: 40,
+            ..Ahdsr::GATE
+        };
+        let mut env = Envelope::new(settings);
+        for _ in 0..45 {
+            env.tick();
+        }
+        // Release briefly, then retrigger mid-release.
+        env.release();
+        let before = env.tick();
+        assert!(before > 0.4 && before < 0.5, "before={before}");
+        env.retrigger(settings);
+        let after = env.tick();
+        assert!(
+            after >= before && (after - before) < 0.05,
+            "retrigger jumped/clicked: {before} -> {after}"
+        );
+        // Reaches full level cleanly after attack frames.
+        let mut peak = after;
+        for _ in 0..20 {
+            peak = peak.max(env.tick());
+        }
+        assert!((peak - 1.0).abs() < 1e-4, "peak={peak}");
+
+        // A voice choked while still in pre-attack delay ends immediately.
+        let mut delayed = Envelope::new(Ahdsr {
+            delay: 500,
+            release: 500,
+            ..Ahdsr::GATE
+        });
+        assert_eq!(delayed.tick(), 0.0);
+        delayed.release();
+        assert!(delayed.is_off());
     }
 }

@@ -1039,3 +1039,66 @@ fn live_voice_never_stalls_when_heads_are_pending() {
     assert_eq!(voice.position(), 128.0);
     // A background prefetch can arrive during render, so misses are not asserted.
 }
+
+#[test]
+fn rapid_retrigger_preserves_envelope_continuity_without_step_click() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let frames = 4096u64;
+    let bytes: Vec<u8> = (0..frames).flat_map(|_| 1.0_f32.to_le_bytes()).collect();
+    let key = BlobKey {
+        file: "const_retrigger".into(),
+        offset: 0,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+    let client = store.client();
+    let env = Ahdsr {
+        attack: 32,
+        decay: 32,
+        sustain: 0.6,
+        release: 64,
+        ..Ahdsr::GATE
+    };
+    let mut voice = Voice::allocate();
+    let mut scratch = Scratch::allocate();
+    voice.start(start(region.clone(), 1.0, env));
+    let mut first = [[0.0; 2]; 80];
+    voice.render(&mut scratch, &client, 0, &mut first);
+    let tail_before = first[79][0];
+    assert!(
+        (tail_before - 0.6).abs() < 0.05,
+        "tail_before={tail_before}"
+    );
+
+    // Rapid repeated note retriggers mid-sustain: must ramp smoothly from ~0.6
+    // toward 1.0 without dropping to 0.0 (no click).
+    voice.retrigger(start(region, 1.0, env));
+    let mut second = [[0.0; 2]; 40];
+    voice.render(&mut scratch, &client, 80, &mut second);
+    let head_after = second[0][0];
+    assert!(
+        head_after >= tail_before - 1e-4 && (head_after - tail_before) < 0.05,
+        "step click on rapid retrigger: {tail_before} -> {head_after}"
+    );
+    assert!(
+        (second[31][0] - 1.0).abs() < 0.02,
+        "retriggered attack should reach peak: {}",
+        second[31][0]
+    );
+}

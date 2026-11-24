@@ -8,6 +8,13 @@ use ni_file::kontakt::objects::WavetableSource;
 /// The source's table, forms, start phase, inharmonic stretch and mod
 /// oscillator. The oscillator plays a sine whatever its saved wave.
 pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes) -> ir::Wavetable {
+    let unit = |v: f32| {
+        if v.is_finite() {
+            v.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
     let mut warp = |form: u32, amount: f32| {
         let kind = form.checked_sub(1);
         let shape = kind.and_then(shape);
@@ -21,7 +28,7 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
         Warp {
             shape: shape.unwrap_or(WarpShape::Off),
             shaper: kind.map_or(FormShaper::Off, shaper),
-            amount,
+            amount: unit(amount),
         }
     };
     let warps = [
@@ -50,20 +57,25 @@ pub(crate) fn wavetable(source: &WavetableSource, group: &str, notes: &mut Notes
     if kind.is_none() {
         notes.add(ir::Impact::Audible, "wavetable modulation", group);
     }
+    let mod_tune = if source.mod_tune.is_finite() {
+        ((12.0 * source.mod_tune + 36.0) / 72.0).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
     ir::Wavetable {
-        position: source.position,
-        phase: source.phase,
-        phase_random: source.phase_random.clamp(0.0, 1.0),
+        position: unit(source.position),
+        phase: unit(source.phase),
+        phase_random: unit(source.phase_random),
         gain: LEVEL,
         inharmonic: ir::Inharmonic {
             on: source.inharmonic_enabled,
-            amount: source.inharmonic.clamp(0.0, 1.0),
+            amount: unit(source.inharmonic),
             range: INHARMONIC_RANGE,
         },
         modosc: ir::ModOsc {
             kind: kind.unwrap_or(ir::ModOscKind::Off),
-            amount: source.mod_amount.clamp(0.0, 1.0),
-            tune: ((12.0 * source.mod_tune + 36.0) / 72.0).clamp(0.0, 1.0),
+            amount: unit(source.mod_amount),
+            tune: mod_tune,
             tune_range: MOD_TUNE_RANGE,
             fm_hz: MOD_FM_HZ,
             wave: wave_of(source.mod_type),
@@ -188,5 +200,58 @@ fn shaper(kind: u32) -> FormShaper {
         26 => FormShaper::Fall,
         27 => FormShaper::Wrap,
         _ => FormShaper::Off,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_all_six_conflux_wavetable_targets() {
+        let cases = [
+            ("wavetablePosition", ir::TableValue::Position),
+            ("warpFactor", ir::TableValue::Warp(0)),
+            ("warpFactor2", ir::TableValue::Warp(1)),
+            ("wavetableInharmonic", ir::TableValue::Inharmonic),
+            ("wavetableModAmount", ir::TableValue::ModAmount),
+            ("wavetableModFrequency", ir::TableValue::ModTune),
+        ];
+        for (name, want) in cases {
+            assert_eq!(target(name), Some(want), "{name}");
+        }
+        assert_eq!(target("unknown"), None);
+    }
+
+    #[test]
+    fn sanitizes_non_finite_and_out_of_range_source_values() {
+        let src = WavetableSource {
+            common: [0; 30],
+            position: f32::NAN,
+            phase: f32::INFINITY,
+            phase_random: -0.5,
+            form1: 2.0,
+            form2: f32::NEG_INFINITY,
+            form_type: 1,
+            form2_type: 1,
+            inharmonic_enabled: true,
+            inharmonic: f32::NAN,
+            mod_type: 0,
+            mod_wave: 1,
+            mod_amount: 1.5,
+            mod_tune: f32::NAN,
+            quality: 3,
+            unknown_tail: [0; 16],
+        };
+        let mut notes = Notes::default();
+        let wt = wavetable(&src, "WT", &mut notes);
+        assert_eq!(wt.position, 0.0);
+        assert_eq!(wt.phase, 0.0);
+        assert_eq!(wt.phase_random, 0.0);
+        assert_eq!(wt.warps[0].amount, 1.0);
+        assert_eq!(wt.warps[1].amount, 0.0);
+        assert_eq!(wt.inharmonic.amount, 0.0);
+        assert_eq!(wt.modosc.amount, 1.0);
+        assert_eq!(wt.modosc.tune, 0.5);
     }
 }

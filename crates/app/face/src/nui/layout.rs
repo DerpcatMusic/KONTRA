@@ -14,8 +14,26 @@ use super::super::Builder;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Env {
     font: f64,
+    weight: Option<f32>,
     color: [f64; 4],
     opacity: f64,
+    disabled: bool,
+    text_align: Option<ui::Align>,
+    line_limit: Option<usize>,
+    tint: Option<[f64; 4]>,
+    image_fit: ImageFit,
+    resizable: bool,
+}
+
+/// How an `Image` fits inside its allocated room.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ImageFit {
+    /// Fill room (default when resizable with no aspect modifier).
+    Stretch,
+    /// Preserve aspect ratio, fitting completely inside the room.
+    Fit(Option<f64>),
+    /// Preserve aspect ratio, covering the room.
+    Fill(Option<f64>),
 }
 
 /// A size, or an offer of room along each axis.
@@ -24,8 +42,15 @@ type Size = (f64, f64);
 pub(super) fn lower(root: &Node, size: ui::Size, bld: &mut Builder<'_>) {
     let env = Env {
         font: 12.,
+        weight: None,
         color: [255., 255., 255., 1.],
         opacity: 1.,
+        disabled: false,
+        text_align: None,
+        line_limit: None,
+        tint: None,
+        image_fit: ImageFit::Stretch,
+        resizable: false,
     };
     let r = ui::Rect {
         x: 0.,
@@ -99,17 +124,146 @@ fn aligned(r: ui::Rect, (w, h): Size, (ax, ay): Size) -> ui::Rect {
     }
 }
 
+/// Parses a text alignment keyword (`leading`/`left`, `trailing`/`right`, `center`).
+fn text_align(words: Option<&str>) -> Option<ui::Align> {
+    let w = words?.to_ascii_lowercase();
+    if w.contains("leading") || w.contains("left") {
+        Some(ui::Align::Left)
+    } else if w.contains("trailing") || w.contains("right") {
+        Some(ui::Align::Right)
+    } else if w.contains("center") {
+        Some(ui::Align::Center)
+    } else {
+        None
+    }
+}
+
+/// Parses a font weight keyword or numeric CSS weight into a `wght` axis value.
+fn font_weight(p: Option<&Prop>) -> Option<f32> {
+    match p {
+        Some(Prop::Number(n)) if n.is_finite() => Some((*n as f32).clamp(100.0, 900.0)),
+        Some(Prop::Text(s)) => match s.to_ascii_lowercase().as_str() {
+            "thin" => Some(100.0),
+            "ultralight" | "extralight" => Some(200.0),
+            "light" => Some(300.0),
+            "regular" | "normal" => None,
+            "medium" => Some(500.0),
+            "semibold" | "demibold" => Some(600.0),
+            "bold" => Some(700.0),
+            "heavy" | "extrabold" => Some(800.0),
+            "black" => Some(900.0),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Parses an `.aspect_ratio(...)` argument into an [`ImageFit`].
+fn aspect_ratio_fit(args: &[Prop]) -> ImageFit {
+    let ratio = num(args.first())
+        .or_else(|| num(arg(args, "ratio")))
+        .or_else(|| num(arg(args, "aspect_ratio")))
+        .filter(|r| r.is_finite() && *r > 0.0);
+    let mode = text(args.get(1))
+        .or_else(|| text(arg(args, "content_mode")))
+        .or_else(|| text(arg(args, "mode")))
+        .or_else(|| text(args.first()));
+    if mode.is_some_and(|m| m.eq_ignore_ascii_case("fill")) {
+        ImageFit::Fill(ratio)
+    } else {
+        ImageFit::Fit(ratio)
+    }
+}
+
 /// The environment inside modifier `m`.
 fn env_in(env: Env, m: &str, args: &[Prop]) -> Env {
     match (m, args.first()) {
-        ("font_size", Some(Prop::Number(n))) => Env { font: *n, ..env },
-        ("foreground_color", Some(Prop::Color(c))) => Env { color: *c, ..env },
-        ("opacity", Some(Prop::Number(n))) => Env {
-            opacity: env.opacity * n,
+        ("font_size", Some(Prop::Number(n))) if n.is_finite() && *n > 0. => Env { font: *n, ..env },
+        ("bold", Some(Prop::Bool(false))) => Env {
+            weight: None,
             ..env
         },
+        ("bold", Some(Prop::Bool(true)) | None) => Env {
+            weight: Some(700.0),
+            ..env
+        },
+        ("font_weight", p) => Env {
+            weight: font_weight(p),
+            ..env
+        },
+        ("foreground_color", Some(Prop::Color(c))) => Env { color: *c, ..env },
+        ("opacity", Some(Prop::Number(n))) if n.is_finite() => Env {
+            opacity: (env.opacity * *n).clamp(0.0, 1.0),
+            ..env
+        },
+        ("disabled", p) => {
+            let off = matches!(p, Some(Prop::Bool(true)) | None);
+            Env {
+                disabled: env.disabled || off,
+                ..env
+            }
+        }
+        ("multiline_text_alignment", p) => Env {
+            text_align: text_align(text(p)).or(env.text_align),
+            ..env
+        },
+        ("line_limit", Some(Prop::Number(n))) if n.is_finite() && *n >= 1.0 => Env {
+            line_limit: Some(*n as usize),
+            ..env
+        },
+        ("line_limit", _) => Env {
+            line_limit: None,
+            ..env
+        },
+        ("tint" | "color_multiply", Some(Prop::Color(c))) => Env {
+            tint: Some(*c),
+            ..env
+        },
+        ("resizable", p) => Env {
+            resizable: !matches!(p, Some(Prop::Bool(false))),
+            ..env
+        },
+        ("scaled_to_fit", _) => Env {
+            image_fit: ImageFit::Fit(None),
+            ..env
+        },
+        ("scaled_to_fill", _) => Env {
+            image_fit: ImageFit::Fill(None),
+            ..env
+        },
+        ("aspect_ratio", _) => Env {
+            image_fit: aspect_ratio_fit(args),
+            ..env
+        },
+        ("effect", _) => effect_env(env, args),
         _ => env,
     }
+}
+
+/// Applies environment-level properties from an `.effect(...)` modifier (tint/opacity).
+fn effect_env(mut env: Env, args: &[Prop]) -> Env {
+    if let Some(Prop::Number(n)) = arg(args, "opacity")
+        && n.is_finite()
+    {
+        env.opacity = (env.opacity * *n).clamp(0.0, 1.0);
+    }
+    if let Some(Prop::Color(c)) = arg(args, "tint").or_else(|| arg(args, "color_multiply")) {
+        env.tint = Some(*c);
+    }
+    let kind = text(arg(args, "kind")).or_else(|| text(arg(args, "type")));
+    if kind
+        .is_some_and(|k| k.eq_ignore_ascii_case("tint") || k.eq_ignore_ascii_case("color_multiply"))
+        && let Some(Prop::Color(c)) = arg(args, "color")
+    {
+        env.tint = Some(*c);
+    }
+    if kind.is_some_and(|k| k.eq_ignore_ascii_case("opacity"))
+        && let Some(Prop::Number(n)) = arg(args, "value").or_else(|| arg(args, "amount"))
+        && n.is_finite()
+    {
+        env.opacity = (env.opacity * *n).clamp(0.0, 1.0);
+    }
+    env
 }
 
 /// A frame's size along each axis from its `min_`/`max_` bounds, SwiftUI's
@@ -179,17 +333,179 @@ fn measure(bld: &mut Builder<'_>, n: &Node, k: usize, room: Size, env: Env) -> S
     }
 }
 
+/// Proportional glyph advance in em units for Noto Sans / UI sans-serif,
+/// replacing flat character-count heuristics so narrow/wide labels lay out
+/// without clipping or misaligning.
+fn char_advance_em(c: char) -> f64 {
+    match c {
+        ' ' => 0.26,
+        'i' | 'l' | 'I' | '!' | '|' | '.' | ',' | ':' | ';' | '\'' | '`' => 0.28,
+        'j' | 't' | 'f' | 'r' | '(' | ')' | '[' | ']' | '{' | '}' | '/' | '\\' => 0.36,
+        '-' | '"' => 0.38,
+        's' | 'z' | 'c' | 'k' | 'v' | 'x' | 'y' => 0.50,
+        '0'..='9' => 0.57,
+        'm' | 'w' => 0.82,
+        'M' | 'W' => 0.88,
+        'A'..='Z' => 0.66,
+        'a'..='z' => 0.55,
+        c if c.is_ascii() => 0.56,
+        _ => 0.65,
+    }
+}
+
+/// Measures a single line's advance width in points for `env`.
+fn line_width(line: &str, env: Env) -> f64 {
+    let bold_scale = if env.weight.is_some_and(|w| w >= 600.0) {
+        1.06
+    } else {
+        1.0
+    };
+    line.chars()
+        .map(|c| char_advance_em(c) * env.font * bold_scale)
+        .sum()
+}
+
+/// Wraps `text` into display lines within `max_width` (when positive and not
+/// constrained to a single line) and enforces `env.line_limit`, appending an
+/// ellipsis if lines are truncated.
+fn layout_lines(text: &str, max_width: f64, env: Env) -> Vec<String> {
+    let wrap = max_width > 0.0 && env.line_limit != Some(1);
+    let mut lines: Vec<String> = Vec::new();
+    for para in text.split('\n') {
+        if !wrap || line_width(para, env) <= max_width {
+            lines.push(para.to_owned());
+            continue;
+        }
+        let mut current = String::new();
+        for word in para.split_whitespace() {
+            if current.is_empty() {
+                current.push_str(word);
+                continue;
+            }
+            let candidate = format!("{current} {word}");
+            if line_width(&candidate, env) <= max_width {
+                current = candidate;
+            } else {
+                lines.push(current);
+                current = word.to_owned();
+            }
+        }
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    if let Some(limit) = env.line_limit
+        && lines.len() > limit
+    {
+        lines.truncate(limit);
+        if let Some(last) = lines.last_mut()
+            && !last.ends_with('…')
+        {
+            last.push('…');
+        }
+    }
+    lines
+}
+
+/// Intrinsic size of `text` under `env` and available width `room_w`.
+fn measure_text(text: &str, room_w: f64, env: Env) -> Size {
+    let lines = layout_lines(text, room_w, env);
+    let width = lines
+        .iter()
+        .map(|l| line_width(l, env))
+        .fold(0.0_f64, f64::max);
+    let height = (lines.len().max(1) as f64) * env.font * 1.25;
+    (width, height)
+}
+
+/// Fits an image of intrinsic size `intrinsic` into `room` under `fit`.
+/// When only one axis of `room` is constrained (> 0), derives the other from
+/// the aspect ratio.
+fn fit_image(intrinsic: Size, room: Size, fit: ImageFit) -> Size {
+    let (iw, ih) = intrinsic;
+    let ratio = match fit {
+        ImageFit::Fit(Some(r)) | ImageFit::Fill(Some(r)) => r,
+        _ if iw > 0.0 && ih > 0.0 => iw / ih,
+        _ => return room,
+    };
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return intrinsic;
+    }
+    match (room.0 > 0.0, room.1 > 0.0) {
+        (false, false) => intrinsic,
+        (true, false) => (room.0, room.0 / ratio),
+        (false, true) => (room.1 * ratio, room.1),
+        (true, true) => match fit {
+            ImageFit::Stretch => room,
+            ImageFit::Fit(_) => {
+                let by_w = (room.0, room.0 / ratio);
+                let by_h = (room.1 * ratio, room.1);
+                if by_w.1 <= room.1 { by_w } else { by_h }
+            }
+            ImageFit::Fill(_) => {
+                let by_w = (room.0, room.0 / ratio);
+                let by_h = (room.1 * ratio, room.1);
+                if by_w.1 >= room.1 { by_w } else { by_h }
+            }
+        },
+    }
+}
+
+fn image_is_resizable(n: &Node, env: Env) -> bool {
+    env.resizable || matches!(n.prop("resizable"), Some(Prop::Bool(true)))
+}
+
+fn image_fit_mode(n: &Node, env: Env) -> ImageFit {
+    if env.image_fit != ImageFit::Stretch {
+        return env.image_fit;
+    }
+    let ratio = num(n.prop("aspect_ratio")).filter(|r| r.is_finite() && *r > 0.0);
+    match text(n.prop("content_mode"))
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("fit") => ImageFit::Fit(ratio),
+        Some("fill") => ImageFit::Fill(ratio),
+        _ => match ratio {
+            Some(r) => ImageFit::Fit(Some(r)),
+            None => ImageFit::Stretch,
+        },
+    }
+}
+
 fn primitive_size(bld: &mut Builder<'_>, n: &Node, room: Size, env: Env) -> Size {
     match n.kind.as_str() {
         "Spacer" => (0., 0.),
-        // ponytail: an average glyph width; measure with the font when a
-        // page's layout turns on it.
-        "Text" | "TextInput" => (
-            words(n).chars().count() as f64 * env.font * 0.55,
-            env.font * 1.25,
-        ),
-        "Image" if !matches!(n.prop("resizable"), Some(Prop::Bool(true))) => {
-            image(bld, n).and_then(|(_, s)| s).unwrap_or((0., 0.))
+        "Text" => measure_text(&words(n), room.0, env),
+        "TextInput" => {
+            let sample = words(n);
+            let display = if sample.is_empty() {
+                text(n.prop("placeholder")).unwrap_or("")
+            } else {
+                sample.as_str()
+            };
+            let (tw, th) = measure_text(display, room.0, env);
+            (tw + 8.0, (th + 4.0).max(env.font * 1.5))
+        }
+        "Image" => {
+            let intrinsic = image(bld, n).and_then(|(_, s)| s);
+            if !image_is_resizable(n, env) {
+                intrinsic.unwrap_or((0., 0.))
+            } else {
+                let fit = image_fit_mode(n, env);
+                match (fit, intrinsic) {
+                    (ImageFit::Stretch, _) => (0., 0.),
+                    (fit, Some(size)) if room.0 > 0. || room.1 > 0. => fit_image(size, room, fit),
+                    (ImageFit::Fit(Some(r)) | ImageFit::Fill(Some(r)), None)
+                        if room.0 > 0. || room.1 > 0. =>
+                    {
+                        fit_image((r, 1.0), room, fit)
+                    }
+                    (_, Some(size)) => size,
+                    (_, None) => (0., 0.),
+                }
+            }
         }
         // As big as its biggest child, but flexible along an axis where an
         // aligned child is (it fills its room): Conflux's source row aligns
@@ -226,6 +542,19 @@ fn fills(n: &Node) -> bool {
                     | "foreground_color"
                     | "font_size"
                     | "bold"
+                    | "font_weight"
+                    | "multiline_text_alignment"
+                    | "line_limit"
+                    | "tint"
+                    | "color_multiply"
+                    | "shadow"
+                    | "blur"
+                    | "border"
+                    | "effect"
+                    | "resizable"
+                    | "scaled_to_fit"
+                    | "scaled_to_fill"
+                    | "aspect_ratio"
                     | "background"
                     | "overlay"
                     | "rotation"
@@ -403,7 +732,19 @@ pub(super) fn splice(
     bld.nui.truncate(i);
     match node {
         Some(n) => {
+            // Re-open enclosing ancestor slots while placing this subtree so
+            // bindings (e.g. `TextInput`) still see ancestor `reads`.
+            for (j, s) in bld.nui.iter_mut().enumerate().take(i) {
+                if j + s.inner >= i {
+                    s.open = true;
+                }
+            }
             place(n, n.mods.len(), old.rect, old.env, bld);
+            for (j, s) in bld.nui.iter_mut().enumerate().take(i) {
+                if j + s.inner >= i {
+                    s.open = false;
+                }
+            }
             // Rebuilt on the layer it was on (a popover's content stays over
             // the page), or higher where the rebuild opened a popover.
             for w in bld.ui.widgets.iter_mut().skip(old.start) {
@@ -517,9 +858,60 @@ fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>)
         // Its area goes under what it wraps: a press goes to the innermost
         // gesture, as in SwiftUI (Conflux's selectors open their popup from
         // an inner tap inside an outer one that only reports a touch).
+        // Disabled views suppress interactive gestures.
         "on_drag_gesture" | "on_tap_gesture" | "on_hover_gesture" => {
-            gesture(bld, m, args, r);
+            if !inner_env.disabled {
+                gesture(bld, m, args, r);
+            }
             place_layer(n, k - 1, r, inner_env, bld);
+            return;
+        }
+        "shadow" => {
+            place_with_layers(
+                n,
+                k - 1,
+                r,
+                inner_env,
+                bld,
+                |b, body| emit_shadow(b, body, args, inner_env),
+                |_, _| {},
+            );
+            return;
+        }
+        "blur" => {
+            place_with_layers(
+                n,
+                k - 1,
+                r,
+                inner_env,
+                bld,
+                |b, body| emit_blur(b, body, args, inner_env),
+                |_, _| {},
+            );
+            return;
+        }
+        "border" => {
+            place_with_layers(
+                n,
+                k - 1,
+                r,
+                inner_env,
+                bld,
+                |_, _| {},
+                |b, body| emit_border(b, body, args, inner_env),
+            );
+            return;
+        }
+        "effect" => {
+            place_with_layers(
+                n,
+                k - 1,
+                r,
+                inner_env,
+                bld,
+                |b, body| emit_effect_under(b, body, args, inner_env),
+                |b, body| emit_effect_over(b, body, args, inner_env),
+            );
             return;
         }
         // The other layer is offered the view's size and keeps its own,
@@ -679,6 +1071,245 @@ fn outside(size: (f64, f64), holes: [ui::Rect; 2]) -> Vec<ui::Rect> {
     out
 }
 
+/// The hidden KSP `TextEdit` widget backing a `TextInput`, found via an
+/// explicit `parameter` prop or the innermost open instance's read set.
+fn text_input_control(bld: &Builder<'_>, n: &Node) -> Option<ui::Widget> {
+    let matches_id = |w: &ui::Widget, id: &str| {
+        w.hidden && super::id(&w.name) == id && matches!(w.kind, ui::Kind::TextEdit)
+    };
+    if let Some(id) = text(n.prop("parameter"))
+        && let Some(w) = bld.ui.widgets.iter().find(|w| matches_id(w, id))
+    {
+        return Some(w.clone());
+    }
+    let open = bld.nui.iter().rev().filter(|s| s.open);
+    open.flat_map(|s| &s.reads)
+        .find_map(|id| bld.ui.widgets.iter().find(|w| matches_id(w, id)))
+        .cloned()
+}
+
+/// Places layer `k` of `n` and emits decorative `under` layers below it and
+/// `over` layers above it, sized to the wrapped body's actual placed rectangle.
+fn place_with_layers(
+    n: &Node,
+    k: usize,
+    r: ui::Rect,
+    env: Env,
+    bld: &mut Builder<'_>,
+    under: impl FnOnce(&mut Builder<'_>, ui::Rect),
+    over: impl FnOnce(&mut Builder<'_>, ui::Rect),
+) {
+    let (w_before, n_before) = (bld.ui.widgets.len(), bld.nui.len());
+    place_layer(n, k, r, env, bld);
+    let w_after_body = bld.ui.widgets.len();
+    let body = bld
+        .ui
+        .widgets
+        .get(w_before..w_after_body)
+        .and_then(union_rect)
+        .unwrap_or(r);
+    under(bld, body);
+    let added_under = bld.ui.widgets.len() - w_after_body;
+    if added_under > 0 {
+        if let Some(slice) = bld.ui.widgets.get_mut(w_before..) {
+            slice.rotate_right(added_under);
+        }
+        for s in bld.nui.iter_mut().skip(n_before) {
+            s.start += added_under;
+            s.end += added_under;
+        }
+    }
+    over(bld, body);
+}
+
+/// Bounds of the placed body, skipping decorations nested modifiers emitted
+/// (an inner `.shadow` must not grow an outer `.border`).
+fn union_rect(widgets: &[ui::Widget]) -> Option<ui::Rect> {
+    let decor = ["native_ui shadow", "native_ui blur", "native_ui border"];
+    let mut iter = widgets
+        .iter()
+        .filter(|w| !decor.contains(&w.name.as_str()))
+        .map(|w| w.rect);
+    let first = iter.next()?;
+    let (mut x0, mut y0, mut x1, mut y1) = (
+        first.x,
+        first.y,
+        first.x + first.width,
+        first.y + first.height,
+    );
+    for rect in iter {
+        x0 = x0.min(rect.x);
+        y0 = y0.min(rect.y);
+        x1 = x1.max(rect.x + rect.width);
+        y1 = y1.max(rect.y + rect.height);
+    }
+    Some(ui::Rect {
+        x: x0,
+        y: y0,
+        width: (x1 - x0).max(0.0),
+        height: (y1 - y0).max(0.0),
+    })
+}
+
+/// Emits layered translucent shadow rectangles behind `r` for `.shadow(...)`.
+fn emit_shadow(bld: &mut Builder<'_>, r: ui::Rect, args: &[Prop], env: Env) {
+    if r.width <= 0. || r.height <= 0. || env.opacity <= 0. {
+        return;
+    }
+    let color = match arg(args, "color").or_else(|| args.first()) {
+        Some(Prop::Color(c)) => *c,
+        _ => [0., 0., 0., 0.35],
+    };
+    let radius = num(arg(args, "radius"))
+        .or_else(|| num(args.get(1)))
+        .unwrap_or(4.0)
+        .max(0.0);
+    let ox = num(arg(args, "x"))
+        .or_else(|| num(args.get(2)))
+        .unwrap_or(0.0);
+    let oy = num(arg(args, "y"))
+        .or_else(|| num(args.get(3)))
+        .unwrap_or(2.0);
+    let layers: &[f64] = if radius > 1.0 { &[1.0, 0.5] } else { &[0.0] };
+    let alpha_share = 1.0 / layers.len() as f64;
+    for &frac in layers {
+        let spread = radius * frac;
+        let rect = ui::Rect {
+            x: r.x + ox - spread,
+            y: r.y + oy - spread,
+            width: r.width + 2.0 * spread,
+            height: r.height + 2.0 * spread,
+        };
+        let mut w = ui::Widget::new(
+            "native_ui shadow",
+            ui::PageRef(0),
+            rect,
+            ui::Kind::Shape(ui::Shape::Rect { radius: spread }),
+        );
+        w.opacity = effective_opacity(env) as f32;
+        w.colors.background = Some(rgba(color, alpha_share));
+        bld.ui.widgets.push(w);
+    }
+}
+
+/// Emits a soft translucent halo behind `r` for `.blur(radius)`.
+fn emit_blur(bld: &mut Builder<'_>, r: ui::Rect, args: &[Prop], env: Env) {
+    let radius = num(args.first())
+        .or_else(|| num(arg(args, "radius")))
+        .unwrap_or(0.0);
+    if radius <= 0.0 || r.width <= 0. || r.height <= 0. || env.opacity <= 0. {
+        return;
+    }
+    let spread = (radius * 0.5).min(16.0);
+    let rect = ui::Rect {
+        x: r.x - spread,
+        y: r.y - spread,
+        width: r.width + 2.0 * spread,
+        height: r.height + 2.0 * spread,
+    };
+    let mut w = ui::Widget::new(
+        "native_ui blur",
+        ui::PageRef(0),
+        rect,
+        ui::Kind::Shape(ui::Shape::Rect { radius: spread }),
+    );
+    w.opacity = (effective_opacity(env) * 0.18) as f32;
+    w.colors.background = Some(rgba(apply_tint(env.color, env.tint), 1.0));
+    bld.ui.widgets.push(w);
+}
+
+/// Emits a crisp vector stroke rectangle over `r` for `.border(...)`.
+fn emit_border(bld: &mut Builder<'_>, r: ui::Rect, args: &[Prop], env: Env) {
+    if r.width <= 0. || r.height <= 0. || env.opacity <= 0. {
+        return;
+    }
+    let color = match arg(args, "color").or_else(|| args.first()) {
+        Some(Prop::Color(c)) => *c,
+        _ => env.color,
+    };
+    let width = num(arg(args, "width"))
+        .or_else(|| num(args.get(1)))
+        .unwrap_or(1.0);
+    if width <= 0.0 {
+        return;
+    }
+    let inset = width * 0.5;
+    let x0 = inset;
+    let y0 = inset;
+    let x1 = (r.width - inset).max(x0);
+    let y1 = (r.height - inset).max(y0);
+    let paint = ui::Paint {
+        path: vec![
+            ui::Seg::Move([x0, y0]),
+            ui::Seg::Line([x1, y0]),
+            ui::Seg::Line([x1, y1]),
+            ui::Seg::Line([x0, y1]),
+            ui::Seg::Close,
+        ],
+        fill: None,
+        stroke: Some((rgba(apply_tint(color, env.tint), 1.0), width)),
+    };
+    let mut w = ui::Widget::new(
+        "native_ui border",
+        ui::PageRef(0),
+        r,
+        ui::Kind::Canvas(vec![paint]),
+    );
+    w.opacity = effective_opacity(env) as f32;
+    bld.ui.widgets.push(w);
+}
+
+/// Under-node visual layers from `.effect(...)` (shadow, blur).
+fn emit_effect_under(bld: &mut Builder<'_>, r: ui::Rect, args: &[Prop], env: Env) {
+    let kind = text(arg(args, "kind"))
+        .or_else(|| text(arg(args, "type")))
+        .map(str::to_ascii_lowercase);
+    match kind.as_deref() {
+        Some("shadow" | "drop_shadow") => emit_shadow(bld, r, args, env),
+        Some("blur") => emit_blur(bld, r, args, env),
+        _ => {
+            if let Some(sub) = arg(args, "shadow").or_else(|| arg(args, "drop_shadow")) {
+                emit_shadow(bld, r, std::slice::from_ref(sub), env);
+            }
+            if let Some(sub) = arg(args, "blur") {
+                emit_blur(bld, r, std::slice::from_ref(sub), env);
+            }
+        }
+    }
+}
+
+/// Over-node visual layers from `.effect(...)` (border).
+fn emit_effect_over(bld: &mut Builder<'_>, r: ui::Rect, args: &[Prop], env: Env) {
+    let kind = text(arg(args, "kind"))
+        .or_else(|| text(arg(args, "type")))
+        .map(str::to_ascii_lowercase);
+    if kind.as_deref() == Some("border") {
+        emit_border(bld, r, args, env);
+    } else if let Some(sub) = arg(args, "border") {
+        emit_border(bld, r, std::slice::from_ref(sub), env);
+    }
+}
+
+fn effective_opacity(env: Env) -> f64 {
+    if env.disabled {
+        env.opacity * 0.45
+    } else {
+        env.opacity
+    }
+}
+
+fn apply_tint(c: [f64; 4], tint: Option<[f64; 4]>) -> [f64; 4] {
+    match tint {
+        Some(t) => [
+            c[0] * (t[0] / 255.0).clamp(0.0, 1.0),
+            c[1] * (t[1] / 255.0).clamp(0.0, 1.0),
+            c[2] * (t[2] / 255.0).clamp(0.0, 1.0),
+            c[3] * t[3].clamp(0.0, 1.0),
+        ],
+        None => c,
+    }
+}
+
 /// The control a drag in the instance being placed moves: the innermost
 /// open instance that read a ranged control's parameter. Its own (hidden)
 /// widget, which the editor drags as it would that control.
@@ -800,7 +1431,8 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
                 sweep,
             })
         }
-        "Text" | "TextInput" => ui::Kind::Label,
+        "Text" => ui::Kind::Label,
+        "TextInput" => ui::Kind::TextEdit,
         "Image" => ui::Kind::Image,
         "Canvas" => ui::Kind::Canvas(Vec::new()),
         "ZStack" | "ForEach" => {
@@ -861,46 +1493,140 @@ fn primitive(n: &Node, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {
     if r.width <= 0. || r.height <= 0. || env.opacity <= 0. {
         return;
     }
-    // A text is never cut to its room: it overhangs it, centred, by an em
-    // a character and one more for the label's inset (a lone "0" lost its
-    // right half). The label draws it centred, so the slack is free.
-    let r = match n.kind.as_str() {
-        "Text" | "TextInput" => {
-            let em = (words(n).chars().count() + 1) as f64 * env.font;
-            aligned(
-                r,
-                (em.max(r.width), (env.font * 1.5).max(r.height)),
-                (0.5, 0.5),
-            )
-        }
-        _ => r,
+    let align_of = |default: ui::Align| env.text_align.unwrap_or(default);
+    let anchor_x = |a: ui::Align| match a {
+        ui::Align::Left => 0.0,
+        ui::Align::Center => 0.5,
+        ui::Align::Right => 1.0,
     };
-    let mut w = ui::Widget::new(n.kind.clone(), ui::PageRef(0), r, kind);
-    w.opacity = env.opacity as f32;
+    let text_lines = (n.kind == "Text").then(|| layout_lines(&words(n), r.width, env));
+    // A text label uses explicit zero inset (bypassing KSP's 14 px label_inset)
+    // and modest overhang anchored to its text alignment so left/right labels
+    // never drift off their edge and narrow glyphs are never clipped.
+    let (r, img_asset) = match n.kind.as_str() {
+        "Text" => {
+            let lines = text_lines.as_deref().unwrap_or(&[]);
+            let measured_w = lines
+                .iter()
+                .map(|l| line_width(l, env))
+                .fold(0.0_f64, f64::max);
+            let measured_h = (lines.len().max(1) as f64) * env.font * 1.25;
+            let slack_w = (measured_w + env.font * 0.25).max(r.width);
+            let slack_h = measured_h.max(r.height);
+            let ax = anchor_x(align_of(ui::Align::Center));
+            (aligned(r, (slack_w, slack_h), (ax, 0.5)), None)
+        }
+        "Image" => {
+            let Some((asset, intrinsic)) = image(bld, n) else {
+                return;
+            };
+            let fitted = if !image_is_resizable(n, env) {
+                match intrinsic {
+                    Some(sz) => aligned(r, sz, (0.5, 0.5)),
+                    None => r,
+                }
+            } else {
+                let fit = image_fit_mode(n, env);
+                let sz = match (fit, intrinsic) {
+                    (ImageFit::Stretch, _) => (r.width, r.height),
+                    (fit, Some(int)) => fit_image(int, (r.width, r.height), fit),
+                    (ImageFit::Fit(Some(ratio)) | ImageFit::Fill(Some(ratio)), None) => {
+                        fit_image((ratio, 1.0), (r.width, r.height), fit)
+                    }
+                    (_, None) => (r.width, r.height),
+                };
+                aligned(r, sz, (0.5, 0.5))
+            };
+            (fitted, Some(asset))
+        }
+        _ => (r, None),
+    };
+    let mut w = if n.kind == "TextInput" {
+        if let Some(bound) = text_input_control(bld, n) {
+            ui::Widget {
+                rect: r,
+                auto_size: false,
+                default_axes: [false; 2],
+                hidden: false,
+                parent: None,
+                images: Vec::new(),
+                z: 0,
+                ..bound
+            }
+        } else {
+            ui::Widget::new(n.kind.clone(), ui::PageRef(0), r, kind)
+        }
+    } else {
+        ui::Widget::new(n.kind.clone(), ui::PageRef(0), r, kind)
+    };
+    w.opacity = effective_opacity(env) as f32;
     w.colors.background = match n.prop("color") {
-        Some(Prop::Color(c)) => Some(rgba(*c, 1.)),
+        Some(Prop::Color(c)) => Some(rgba(apply_tint(*c, env.tint), 1.)),
         _ => None,
     };
+    let push_style = |bld: &mut Builder<'_>, style: ui::TextStyle| {
+        let at = bld.ui.styles.iter().position(|s| *s == style);
+        ui::StyleRef(at.unwrap_or_else(|| {
+            bld.ui.styles.push(style);
+            bld.ui.styles.len() - 1
+        }))
+    };
     match n.kind.as_str() {
-        "Text" | "TextInput" => {
-            w.text = words(n);
+        "Text" => {
+            w.text = text_lines.map_or_else(|| words(n), |lines| lines.join("\n"));
             w.colors.background = None;
             let style = ui::TextStyle {
                 font: ui::Font::Default,
                 size: Some(env.font as f32),
-                weight: None,
-                inset: None,
-                color: rgba(env.color, 1.),
-                align: ui::Align::Center,
+                weight: env.weight,
+                inset: Some([0.0, 0.0]),
+                color: rgba(apply_tint(env.color, env.tint), 1.),
+                align: align_of(ui::Align::Center),
             };
-            let at = bld.ui.styles.iter().position(|s| *s == style);
-            w.style = Some(ui::StyleRef(at.unwrap_or_else(|| {
-                bld.ui.styles.push(style);
-                bld.ui.styles.len() - 1
-            })));
+            w.style = Some(push_style(bld, style));
+        }
+        "TextInput" => {
+            let explicit = words(n);
+            if !explicit.is_empty() {
+                w.text = explicit;
+            }
+            w.enabled = !env.disabled;
+            w.intercepts_mouse = !env.disabled;
+            let style = ui::TextStyle {
+                font: ui::Font::Default,
+                size: Some(env.font as f32),
+                weight: env.weight,
+                inset: Some([2.0, 2.0]),
+                color: rgba(apply_tint(env.color, env.tint), 1.),
+                align: align_of(ui::Align::Left),
+            };
+            w.style = Some(push_style(bld, style));
+            // Keep placeholder strictly out of `w.text` (the edit/commit buffer)
+            // and render it as a non-interactive hint label when empty.
+            if w.text.is_empty()
+                && let Some(ph) = text(n.prop("placeholder")).filter(|s| !s.is_empty())
+            {
+                let mut hint =
+                    ui::Widget::new("native_ui placeholder", ui::PageRef(0), r, ui::Kind::Label);
+                hint.text = ph.to_owned();
+                hint.intercepts_mouse = false;
+                hint.opacity = (effective_opacity(env) * 0.5) as f32;
+                let hint_style = ui::TextStyle {
+                    font: ui::Font::Default,
+                    size: Some(env.font as f32),
+                    weight: env.weight,
+                    inset: Some([2.0, 2.0]),
+                    color: rgba(apply_tint(env.color, env.tint), 1.),
+                    align: align_of(ui::Align::Left),
+                };
+                hint.style = Some(push_style(bld, hint_style));
+                bld.ui.widgets.push(w);
+                bld.ui.widgets.push(hint);
+                return;
+            }
         }
         "Image" => {
-            let Some((asset, _)) = image(bld, n) else {
+            let Some(asset) = img_asset else {
                 return;
             };
             w.images
@@ -1175,6 +1901,493 @@ mod tests {
             shapes.first().map(|s| (s.0, s.1)),
             Some((4., 40.)),
             "{shapes:?}"
+        );
+    }
+
+    #[test]
+    fn text_modifiers_font_metrics_line_limit_and_alignment_work() {
+        let mut narrow = node("Text", Vec::new(), Vec::new());
+        narrow.props = vec![("text".into(), Prop::Text("iiii".into()))];
+        let mut wide = node("Text", vec![("bold", Vec::new())], Vec::new());
+        wide.props = vec![("text".into(), Prop::Text("MMMM".into()))];
+        let mut multi = node(
+            "Text",
+            vec![
+                ("font_size", vec![Prop::Number(14.)]),
+                ("bold", vec![Prop::Bool(true)]),
+                (
+                    "multiline_text_alignment",
+                    vec![Prop::Text("leading".into())],
+                ),
+                ("line_limit", vec![Prop::Number(2.)]),
+                ("disabled", vec![Prop::Bool(true)]),
+            ],
+            Vec::new(),
+        );
+        multi.props = vec![("text".into(), Prop::Text("one\ntwo\nthree".into()))];
+
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let env = Env {
+            font: 12.,
+            weight: None,
+            color: [255., 255., 255., 1.],
+            opacity: 1.,
+            disabled: false,
+            text_align: None,
+            line_limit: None,
+            tint: None,
+            image_fit: ImageFit::Stretch,
+            resizable: false,
+        };
+        let nw = measure(&mut bld, &narrow, narrow.mods.len(), (200., 100.), env).0;
+        let ww = measure(&mut bld, &wide, wide.mods.len(), (200., 100.), env).0;
+        assert!(
+            ww > nw * 2.5,
+            "proportional metrics expected: wide={ww} narrow={nw}"
+        );
+
+        lower(
+            &multi,
+            ui::Size {
+                width: 120.,
+                height: 60.,
+            },
+            &mut bld,
+        );
+        let w = bld.ui.widgets.first();
+        assert!(w.is_some());
+        if let Some(w) = w {
+            assert_eq!(w.text, "one\ntwo…");
+            assert!(w.opacity < 0.5, "disabled text dims opacity: {}", w.opacity);
+            assert_eq!(w.rect.x, 0.0, "leading-aligned text stays flush left");
+            let style = w.style.and_then(|s| bld.ui.styles.get(s.0));
+            assert_eq!(style.and_then(|s| s.weight), Some(700.0));
+            assert_eq!(style.and_then(|s| s.inset), Some([0.0, 0.0]));
+            assert_eq!(style.map(|s| s.align), Some(ui::Align::Left));
+        }
+    }
+
+    #[test]
+    fn image_aspect_ratio_fit_fill_and_non_resizable_sizing() {
+        let picture = |path: &str| {
+            path.ends_with("banner.png").then(|| ui::ImageMeta {
+                size: Some(ui::Size {
+                    width: 200.,
+                    height: 100.,
+                }),
+                ..ui::ImageMeta::default()
+            })
+        };
+        let run = |mods: Vec<(&str, Vec<Prop>)>, resizable_prop: bool| {
+            let mut img = node("Image", mods, Vec::new());
+            img.props = vec![
+                ("file".into(), Prop::Text("banner.png".into())),
+                ("resizable".into(), Prop::Bool(resizable_prop)),
+            ];
+            let mut bld = Builder {
+                ui: ui::Interface::default(),
+                assets: std::collections::HashMap::new(),
+                styles: std::collections::HashMap::new(),
+                picture: &picture,
+                nui: Vec::new(),
+            };
+            lower(
+                &img,
+                ui::Size {
+                    width: 100.,
+                    height: 100.,
+                },
+                &mut bld,
+            );
+            bld.ui.widgets.first().map(|w| w.rect)
+        };
+        // Non-resizable keeps intrinsic 200x100 centered inside 100x100.
+        let non_res = run(Vec::new(), false);
+        assert_eq!(
+            non_res,
+            Some(ui::Rect {
+                x: -50.,
+                y: 0.,
+                width: 200.,
+                height: 100.,
+            })
+        );
+        // Resizable + scaled_to_fit preserves 2:1 aspect inside 100x100 -> 100x50 centered.
+        let fitted = run(vec![("scaled_to_fit", Vec::new())], true);
+        assert_eq!(
+            fitted,
+            Some(ui::Rect {
+                x: 0.,
+                y: 25.,
+                width: 100.,
+                height: 50.,
+            })
+        );
+        // Resizable via modifier + scaled_to_fill covers 100x100 at 2:1 -> 200x100 centered.
+        let filled = run(
+            vec![("resizable", Vec::new()), ("scaled_to_fill", Vec::new())],
+            false,
+        );
+        assert_eq!(
+            filled,
+            Some(ui::Rect {
+                x: -50.,
+                y: 0.,
+                width: 200.,
+                height: 100.,
+            })
+        );
+        // Explicit aspect_ratio(0.5, "fit") inside 100x100 -> 50x100 centered.
+        let explicit = run(
+            vec![(
+                "aspect_ratio",
+                vec![Prop::Number(0.5), Prop::Text("fit".into())],
+            )],
+            true,
+        );
+        assert_eq!(
+            explicit,
+            Some(ui::Rect {
+                x: 25.,
+                y: 0.,
+                width: 50.,
+                height: 100.,
+            })
+        );
+    }
+
+    #[test]
+    fn text_input_lowers_to_text_edit_binds_ksp_and_respects_disabled() {
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let mut hidden_edit = ui::Widget::new(
+            "@macro_name",
+            ui::PageRef(0),
+            ui::Rect::new(0, 0, 10, 10),
+            ui::Kind::TextEdit,
+        );
+        hidden_edit.hidden = true;
+        hidden_edit.source_id = Some(42);
+        hidden_edit.text = "Macro 1".into();
+        bld.ui.widgets.push(hidden_edit);
+
+        let mut input = node("TextInput", Vec::new(), Vec::new());
+        input.props = vec![("placeholder".into(), Prop::Text("Name".into()))];
+        input.instance = Some("macro/0".into());
+        input.reads = vec!["macro_name".into()];
+
+        lower(
+            &input,
+            ui::Size {
+                width: 120.,
+                height: 24.,
+            },
+            &mut bld,
+        );
+        let emitted = bld.ui.widgets.get(1);
+        assert!(emitted.is_some());
+        if let Some(w) = emitted {
+            assert_eq!(w.kind, ui::Kind::TextEdit);
+            assert_eq!(w.source_id, Some(42));
+            assert_eq!(w.text, "Macro 1");
+            assert!(w.enabled && w.intercepts_mouse);
+        }
+
+        // Disabled TextInput disables editing and mouse interception.
+        input.mods.push(("disabled".into(), vec![Prop::Bool(true)]));
+        let before = bld.ui.widgets.len();
+        lower(
+            &input,
+            ui::Size {
+                width: 120.,
+                height: 24.,
+            },
+            &mut bld,
+        );
+        if let Some(w) = bld.ui.widgets.get(before) {
+            assert_eq!(w.kind, ui::Kind::TextEdit);
+            assert!(!w.enabled && !w.intercepts_mouse);
+        }
+    }
+
+    #[test]
+    fn visual_effect_modifiers_emit_shadow_blur_border_and_tint() {
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let effect_arg = Prop::Table(vec![
+            (
+                "shadow".into(),
+                Prop::Table(vec![
+                    ("color".into(), Prop::Color([0., 0., 0., 0.5])),
+                    ("radius".into(), Prop::Number(4.)),
+                    ("x".into(), Prop::Number(1.)),
+                    ("y".into(), Prop::Number(2.)),
+                ]),
+            ),
+            ("blur".into(), Prop::Number(6.)),
+            (
+                "border".into(),
+                Prop::Table(vec![
+                    ("color".into(), Prop::Color([255., 255., 255., 1.])),
+                    ("width".into(), Prop::Number(2.)),
+                ]),
+            ),
+            ("tint".into(), Prop::Color([128., 255., 255., 1.])),
+        ]);
+        let rect = node(
+            "Rectangle",
+            vec![
+                (
+                    "frame",
+                    vec![Prop::Table(vec![
+                        ("width".into(), Prop::Number(80.)),
+                        ("height".into(), Prop::Number(40.)),
+                    ])],
+                ),
+                ("effect", vec![effect_arg]),
+            ],
+            Vec::new(),
+        );
+        lower(
+            &rect,
+            ui::Size {
+                width: 100.,
+                height: 60.,
+            },
+            &mut bld,
+        );
+        assert!(bld.ui.widgets.iter().any(|w| w.name == "native_ui shadow"));
+        assert!(bld.ui.widgets.iter().any(|w| w.name == "native_ui blur"));
+        assert!(
+            bld.ui
+                .widgets
+                .iter()
+                .any(|w| w.name == "native_ui border" && matches!(w.kind, ui::Kind::Canvas(_)))
+        );
+        let body = bld.ui.widgets.iter().find(|w| w.name == "Rectangle");
+        assert!(body.is_some());
+        if let Some(body) = body {
+            assert_eq!(
+                body.rect,
+                ui::Rect {
+                    x: 10.,
+                    y: 10.,
+                    width: 80.,
+                    height: 40.,
+                }
+            );
+            // Red [255, 0, 0] tinted by [128, 255, 255] -> ~128 red.
+            assert!(
+                body.colors
+                    .background
+                    .is_some_and(|c| c.r >= 127 && c.r <= 129 && c.g == 0 && c.b == 0)
+            );
+        }
+        // Border wraps the inner body rect (10, 10, 80, 40), not the 100x60 outer room,
+        // and sits after the body while shadow/blur sit before it.
+        let body_idx = bld
+            .ui
+            .widgets
+            .iter()
+            .position(|w| w.name == "Rectangle")
+            .unwrap_or(0);
+        let shadow_idx = bld
+            .ui
+            .widgets
+            .iter()
+            .position(|w| w.name == "native_ui shadow")
+            .unwrap_or(usize::MAX);
+        let blur_idx = bld
+            .ui
+            .widgets
+            .iter()
+            .position(|w| w.name == "native_ui blur")
+            .unwrap_or(usize::MAX);
+        let border_idx = bld
+            .ui
+            .widgets
+            .iter()
+            .position(|w| w.name == "native_ui border")
+            .unwrap_or(0);
+        assert!(shadow_idx < body_idx && blur_idx < body_idx && border_idx > body_idx);
+
+        // Nested: `.shadow(...)` then `.border(...)` — the border wraps the
+        // body, not the body grown by the inner shadow's widgets.
+        let mut nested = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let shadowed = node(
+            "Rectangle",
+            vec![
+                (
+                    "frame",
+                    vec![Prop::Table(vec![
+                        ("width".into(), Prop::Number(80.)),
+                        ("height".into(), Prop::Number(40.)),
+                    ])],
+                ),
+                (
+                    "shadow",
+                    vec![Prop::Table(vec![
+                        ("color".into(), Prop::Color([0., 0., 0., 0.5])),
+                        ("radius".into(), Prop::Number(4.)),
+                        ("x".into(), Prop::Number(0.)),
+                        ("y".into(), Prop::Number(2.)),
+                    ])],
+                ),
+                (
+                    "border",
+                    vec![Prop::Table(vec![
+                        ("color".into(), Prop::Color([255., 255., 255., 1.])),
+                        ("width".into(), Prop::Number(2.)),
+                    ])],
+                ),
+            ],
+            Vec::new(),
+        );
+        lower(
+            &shadowed,
+            ui::Size {
+                width: 100.,
+                height: 60.,
+            },
+            &mut nested,
+        );
+        assert!(
+            nested
+                .ui
+                .widgets
+                .iter()
+                .any(|w| w.name == "native_ui shadow")
+        );
+        assert_eq!(
+            nested
+                .ui
+                .widgets
+                .iter()
+                .find(|w| w.name == "native_ui border")
+                .map(|w| w.rect),
+            Some(ui::Rect {
+                x: 10.,
+                y: 10.,
+                width: 80.,
+                height: 40.,
+            })
+        );
+        assert_eq!(
+            bld.ui.widgets.get(border_idx).map(|w| w.rect),
+            Some(ui::Rect {
+                x: 10.,
+                y: 10.,
+                width: 80.,
+                height: 40.,
+            })
+        );
+    }
+
+    #[test]
+    fn vstack_fits_single_axis_constrained_image_and_empty_text_input_keeps_placeholder_separate() {
+        let picture = |name: &str| {
+            (name == "native_ui/wide.png").then_some(ui::ImageMeta {
+                size: Some(ui::Size {
+                    width: 200.,
+                    height: 100.,
+                }),
+                ..ui::ImageMeta::default()
+            })
+        };
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let mut img = node(
+            "Image",
+            vec![("resizable", vec![]), ("scaled_to_fit", vec![])],
+            Vec::new(),
+        );
+        img.props = vec![("file".into(), Prop::Text("wide.png".into()))];
+        let vstack = node("VStack", Vec::new(), vec![img]);
+        lower(
+            &vstack,
+            ui::Size {
+                width: 100.,
+                height: 100.,
+            },
+            &mut bld,
+        );
+        let placed = bld.ui.widgets.iter().find(|w| w.kind == ui::Kind::Image);
+        assert_eq!(
+            placed.map(|w| (w.rect.width, w.rect.height)),
+            Some((100., 50.))
+        );
+
+        // Empty bound TextInput keeps `w.text` empty and preserves ancestor binding across splice.
+        let mut hidden_edit = ui::Widget::new(
+            "@macro_name",
+            ui::PageRef(0),
+            ui::Rect::new(0, 0, 10, 10),
+            ui::Kind::TextEdit,
+        );
+        hidden_edit.hidden = true;
+        hidden_edit.source_id = Some(99);
+        bld.ui.widgets.clear();
+        bld.nui.clear();
+        bld.ui.widgets.push(hidden_edit);
+
+        let mut child = node("TextInput", Vec::new(), Vec::new());
+        child.props = vec![("placeholder".into(), Prop::Text("Hint".into()))];
+        child.instance = Some("parent/child".into());
+        let mut parent = node("VStack", Vec::new(), vec![child.clone()]);
+        parent.instance = Some("parent".into());
+        parent.reads = vec!["macro_name".into()];
+
+        let size = ui::Size {
+            width: 120.,
+            height: 24.,
+        };
+        lower(&parent, size, &mut bld);
+        splice(&mut bld, 1, size, "parent/child", Some(&child));
+        let edit = bld
+            .ui
+            .widgets
+            .iter()
+            .skip(1)
+            .find(|w| w.kind == ui::Kind::TextEdit);
+        assert_eq!(edit.and_then(|w| w.source_id), Some(99));
+        assert_eq!(edit.map(|w| w.text.as_str()), Some(""));
+        assert!(
+            bld.ui
+                .widgets
+                .iter()
+                .any(|w| w.name == "native_ui placeholder"
+                    && w.text == "Hint"
+                    && !w.intercepts_mouse)
         );
     }
 }

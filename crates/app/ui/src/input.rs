@@ -298,6 +298,53 @@ fn snap(range: model::Range, v: f64) -> f64 {
     })
 }
 
+/// Reference scene-unit line height for mouse wheel normalization (independent
+/// of host `mui::host::NOTCH_LINES` scroller speed and widget drag travel).
+const WHEEL_LINE_PX: f64 = 20.0;
+/// Full-range wheel sweep in unscaled scene units (10 reference lines = 100%).
+const WHEEL_SWEEP_PX: f64 = 200.0;
+/// Maximum normalized range fraction applied by a single coarse wheel event.
+/// Caps high-`NOTCH_LINES` host wheel events so changing list scroll speed does
+/// not blow up knob/slider sensitivity, while preserving fine trackpad motion.
+const WHEEL_MAX_STEP: f64 = 0.10;
+/// Minimum non-zero wheel magnitude (scene px) that advances a coarse stepped
+/// control by one [`notch`] when proportional travel would round back to `now`.
+const WHEEL_STEP_MIN_PX: f64 = 4.0;
+
+/// Next value of a ranged control after a wheel delta `wheel_y` (positive is
+/// scroll down / decrease), decoupled from host `NOTCH_LINES` and drag travel.
+fn wheel_value(w: &model::Widget, range: model::Range, now: f64, wheel_y: f64, fine: bool) -> f64 {
+    if !wheel_y.is_finite() || wheel_y == 0.0 {
+        return now;
+    }
+    let scale = if fine { 0.1 } else { 1.0 };
+    if matches!(w.kind, Kind::ValueEdit { .. }) {
+        let unit = notch(&w.kind, range);
+        let dir = (-wheel_y).signum();
+        let steps = (-wheel_y / WHEEL_LINE_PX).clamp(-1.0, 1.0);
+        let delta = steps * unit * scale;
+        let moved = snap(range, now + delta);
+        if moved == now && wheel_y.abs() >= WHEEL_STEP_MIN_PX {
+            return snap(range, now + dir * unit);
+        }
+        return moved;
+    }
+    let max_by = WHEEL_MAX_STEP * scale;
+    let by = (-wheel_y / WHEEL_SWEEP_PX * scale).clamp(-max_by, max_by);
+    let moved = snap(range, slide(w, range, now, by));
+    if moved == now && wheel_y.abs() >= WHEEL_STEP_MIN_PX && range.step.is_some() {
+        let min_step = range
+            .step
+            .filter(|s| *s > 0.0)
+            .unwrap_or_else(|| notch(&w.kind, range));
+        // Same direction `slide` moves: a descending range flips it.
+        let dir = (-wheel_y).signum() * (range.max - range.min).signum();
+        snap(range, now + dir * min_step)
+    } else {
+        moved
+    }
+}
+
 /// How far one arrow key moves a control: a value edit by its step, or
 /// one unit without one (as its arrows do), anything else by a hundredth
 /// of its range or its step when coarser.
@@ -498,8 +545,10 @@ pub fn read(
                 set(snap(range, slide(w, range, p.start, by)));
             }
             // Claimed, so the rack under the knob does not scroll with it.
+            // Normalized independently of drag `points` and host `NOTCH_LINES`.
             if let Some(wheel) = ui.wheel(id.as_str()).filter(|_| !r.held) {
-                set(snap(range, slide(w, range, now, -wheel.y / points)));
+                let fine = ui.pointer().mods.shift;
+                set(wheel_value(w, range, now, wheel.y, fine));
             }
             // Keyboard focus steps it, the way the wheel does.
             let step = ui.keys(id.as_str()).iter().fold(0., |at, k| match k.key {
@@ -1256,5 +1305,79 @@ mod tests {
         assert_eq!(mapped(Some("Cubic"), r, 0.5, false), 1.);
         assert_eq!(mapped(Some("CubeRoot"), r, 0.125, false), 4.);
         assert!((mapped(Some("Quadratic"), r, 2., true) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn wheel_step_is_decoupled_from_notch_lines_and_drag_travel() {
+        let range = model::Range {
+            min: 0.,
+            max: 100.,
+            default: 25.,
+            step: Some(1.),
+        };
+        let knob = model::Widget::new(
+            "$knob",
+            PageRef(0),
+            model::Rect::new(0, 0, 40, 40),
+            Kind::Knob {
+                range,
+                display: model::Display::default(),
+            },
+        );
+        // 1 reference line (20 px) moves 10% (25 -> 15).
+        assert_eq!(wheel_value(&knob, range, 25., 20., false), 15.);
+        // A high-NOTCH_LINES host event (e.g. 10 * 20 = 200 px or 500 px) is
+        // capped to the same 10% per notch rather than pegging the control.
+        assert_eq!(wheel_value(&knob, range, 50., 200., false), 40.);
+        assert_eq!(wheel_value(&knob, range, 50., -500., false), 60.);
+        // Shift gives 10x finer wheel resolution (1% per notch).
+        assert_eq!(wheel_value(&knob, range, 50., 20., true), 49.);
+        assert_eq!(wheel_value(&knob, range, 50., 200., true), 49.);
+        // Small trackpad deltas stay smooth and proportional.
+        assert_eq!(wheel_value(&knob, range, 50., 4., false), 48.);
+        // Zero and non-finite deltas are no-ops.
+        assert_eq!(wheel_value(&knob, range, 50., 0., false), 50.);
+        assert_eq!(wheel_value(&knob, range, 50., f64::NAN, false), 50.);
+
+        // Coarse stepped knob (0..=4, step 1) never stalls on a wheel notch.
+        let stepped = model::Range {
+            min: 0.,
+            max: 4.,
+            default: 0.,
+            step: Some(1.),
+        };
+        assert_eq!(wheel_value(&knob, stepped, 2., -20., false), 3.);
+        // A descending range moves one way for small and large deltas alike.
+        let desc = model::Range {
+            min: 10.,
+            max: 0.,
+            default: 5.,
+            step: Some(1.),
+        };
+        let small = wheel_value(&knob, desc, 5., -4., false);
+        let large = wheel_value(&knob, desc, 5., -20., false);
+        assert!(small < 5. && large < 5., "small={small} large={large}");
+        assert_eq!(wheel_value(&knob, stepped, 2., 20., false), 1.);
+
+        // ValueEdit steps by its discrete unit notch regardless of NOTCH_LINES.
+        let edit_range = model::Range {
+            min: 0.,
+            max: 127.,
+            default: 64.,
+            step: Some(1.),
+        };
+        let edit = model::Widget::new(
+            "$edit",
+            PageRef(0),
+            model::Rect::new(0, 0, 60, 18),
+            Kind::ValueEdit {
+                range: edit_range,
+                display: model::Display::default(),
+                arrows: true,
+            },
+        );
+        assert_eq!(wheel_value(&edit, edit_range, 64., -20., false), 65.);
+        assert_eq!(wheel_value(&edit, edit_range, 64., -200., false), 65.);
+        assert_eq!(wheel_value(&edit, edit_range, 64., 200., false), 63.);
     }
 }
