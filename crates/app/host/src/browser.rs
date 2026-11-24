@@ -8,7 +8,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
-use kontra_library::{Cache, Catalog, Prefs, Progress, Root, discover};
+use std::time::{Duration, Instant};
+
+use kontra_library::{Cache, Catalog, Library, Prefs, Progress, Root, discover, index};
+
+/// How often [`Browser::poll`] checks, off thread, whether the roots or
+/// libraries changed on disk ([`index::stale`]).
+const WATCH: Duration = Duration::from_secs(30);
 
 /// Whether `path` is a Kontakt instrument file.
 fn nki(path: &Path) -> bool {
@@ -38,6 +44,8 @@ struct Scanned {
     auto: Option<Vec<Root>>,
     /// The roots [`Find::Machine`] found.
     found: Option<Vec<Root>>,
+    /// Libraries found in a new folder, as (old folder, new folder).
+    moved: Vec<(PathBuf, PathBuf)>,
 }
 
 /// A running scan: how far it is, what it finds first, and its result.
@@ -77,6 +85,16 @@ pub struct Browser {
     flatpak: Option<String>,
     prefs_path: Option<PathBuf>,
     cache_path: Option<PathBuf>,
+    /// The library index ([`index`]): the catalog as last known, loaded
+    /// before any scan.
+    index_path: Option<PathBuf>,
+    /// A running check of whether anything changed on disk, and when the
+    /// last one started.
+    watch: (Option<mpsc::Receiver<bool>>, Instant),
+    /// The library [`Browser::locate`] looks for.
+    locating: Option<String>,
+    /// What the player should hear about, for the report.
+    pub notices: Vec<String>,
     /// The player's presets folder ([`crate::presets`]), listed after each
     /// library's own presets.
     pub user: Option<PathBuf>,
@@ -95,9 +113,14 @@ impl Browser {
                 roots: config.map(v2_roots).unwrap_or_default(),
                 ..Prefs::default()
             });
+        let index_path = config.map(|c| c.join(FOLDER).join("library-index.json"));
+        let libraries = index_path.as_deref().map(index::load).unwrap_or_default();
         let mut browser = Self {
             prefs,
-            catalog: Catalog::default(),
+            catalog: Catalog {
+                libraries,
+                ..Catalog::default()
+            },
             generation: 1,
             scan: None,
             discovering: false,
@@ -105,7 +128,11 @@ impl Browser {
             auto: Vec::new(),
             flatpak: discover::flatpak_app(),
             prefs_path,
-            cache_path: cache.map(|c| c.join(FOLDER).join("library-index.json")),
+            cache_path: cache.map(|c| c.join(FOLDER).join("bank-cache.json")),
+            index_path,
+            watch: (None, Instant::now()),
+            locating: None,
+            notices: Vec::new(),
             user: None,
         };
         browser.rescan();
@@ -204,6 +231,8 @@ impl Browser {
         );
         let found = self.prefs.found.clone();
         let cache_path = self.cache_path.clone();
+        let index_path = self.index_path.clone();
+        let previous = self.catalog.libraries.clone();
         let scanning = Arc::clone(&progress);
         let spawned = std::thread::Builder::new()
             .name("kontra-scan".into())
@@ -269,17 +298,22 @@ impl Browser {
                             })
                     }
                 };
-                if let Some(catalog) =
-                    kontra_library::scan_with_inspector(&roots, &scanning, &mut cache, &inspect)
-                {
+                if let Some(mut catalog) = kontra_library::scan_incremental(
+                    &roots, &scanning, &mut cache, &inspect, &previous,
+                ) {
+                    let moved = index::reconcile(&previous, &mut catalog, &roots);
                     if let Some(path) = &cache_path {
                         let _saved = path.parent().map(std::fs::create_dir_all);
                         let _saved = cache.save(path);
+                    }
+                    if let Some(path) = &index_path {
+                        let _saved = index::save(path, &catalog.libraries);
                     }
                     let _gone = send.send(Scanned {
                         catalog,
                         auto,
                         found: found_now,
+                        moved,
                     });
                 }
             });
@@ -296,10 +330,23 @@ impl Browser {
     /// found what was already listed moves nothing, so an idle editor
     /// draws no frame for it.
     pub fn poll(&mut self) -> bool {
+        self.watch_disk();
         let Some(scanned) = self.scan.as_ref().and_then(|r| r.result.try_recv().ok()) else {
             return false;
         };
         self.scan = None;
+        self.watch.1 = Instant::now();
+        for (from, to) in scanned.moved {
+            self.relink(from, to);
+        }
+        if let Some(id) = self.locating.take()
+            && let Some(l) = scanned.catalog.by_id(&id).filter(|l| l.offline.is_some())
+        {
+            self.notices.push(format!(
+                "{} is not in that folder (it holds another library, or none); it is still missing",
+                l.name
+            ));
+        }
         if let Some(auto) = scanned.auto {
             self.auto = auto;
         }
@@ -427,9 +474,90 @@ impl Browser {
 
     /// Remembers that the library folder `from` is now at `to`.
     pub fn relink(&mut self, from: PathBuf, to: PathBuf) {
+        let follow = |p: &mut PathBuf| {
+            if let Ok(rest) = p.strip_prefix(&from) {
+                *p = to.join(rest);
+            }
+        };
+        self.prefs.recent.iter_mut().for_each(follow);
+        self.prefs.starred.iter_mut().for_each(follow);
         self.prefs.moved.retain(|(f, _)| *f != from);
         self.prefs.moved.push((from, to));
         self.changed();
+    }
+
+    /// Every library's identity and folder, offline ones too
+    /// ([`crate::rack::Rack::know`]).
+    #[must_use]
+    pub fn identities(&self) -> Vec<(String, PathBuf, bool)> {
+        (self.catalog.libraries.iter())
+            .map(|l| (l.id.clone(), l.dir.clone(), l.offline.is_none()))
+            .collect()
+    }
+
+    /// The player says offline library `library` is now in `folder`: it is
+    /// scanned (as a root, unless one covers it), and the library found
+    /// there by its identity is relocated ([`index::reconcile`]). A folder
+    /// holding another library changes nothing, and says so.
+    pub fn locate(&mut self, library: usize, folder: PathBuf) {
+        let Some(l) = self.catalog.libraries.get(library) else {
+            return;
+        };
+        self.locating = Some(l.id.clone());
+        // The folder is the library itself when its first preset is there.
+        let single = (l.presets.first())
+            .and_then(|p| p.strip_prefix(&l.dir).ok())
+            .is_some_and(|rel| folder.join(rel).exists());
+        if self.roots().iter().any(|r| folder.starts_with(&r.path)) {
+            self.rescan();
+            return;
+        }
+        self.prefs.hidden.retain(|h| *h != folder);
+        self.prefs.add_root(Root {
+            path: folder,
+            single,
+            auto: false,
+        });
+        self.changed();
+        self.rescan();
+    }
+
+    /// Every [`WATCH`], when no scan runs, checks on a thread of its own
+    /// whether a root or library changed (a drive mounted, a library
+    /// added or moved), and scans again when one did.
+    fn watch_disk(&mut self) {
+        if let Some(changed) = self.watch.0.as_ref().and_then(|r| r.try_recv().ok()) {
+            self.watch.0 = None;
+            if changed && self.scan.is_none() {
+                self.rescan();
+            }
+        }
+        if self.scan.is_some() || self.watch.0.is_some() || self.watch.1.elapsed() < WATCH {
+            return;
+        }
+        self.watch.1 = Instant::now();
+        // Only what the check reads: no preset lists.
+        let seen = Catalog {
+            libraries: (self.catalog.libraries.iter())
+                .map(|l| Library {
+                    dir: l.dir.clone(),
+                    offline: l.offline.clone(),
+                    stamps: l.stamps.clone(),
+                    ..Library::default()
+                })
+                .collect(),
+            issues: Vec::new(),
+            roots: self.catalog.roots.clone(),
+        };
+        let (send, receive) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("kontra-watch".into())
+            .spawn(move || {
+                let _gone = send.send(index::stale(&seen));
+            });
+        if spawned.is_ok() {
+            self.watch.0 = Some(receive);
+        }
     }
 
     /// Adds a folder the player dropped, and scans again.

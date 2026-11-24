@@ -2394,3 +2394,149 @@ fn a_multi_script_hears_the_rack_first_and_reroutes_its_channels() {
     );
     assert_eq!(rack.save().multi.as_deref(), Some(multi.as_path()));
 }
+
+/// Polls `b` until its scan is in (as the browser tests above do).
+fn settle(b: &mut kontra_host::browser::Browser) {
+    for _ in 0..20_000 {
+        b.poll();
+        if !b.scanning() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("the scan never finished");
+}
+
+/// A library folder at `at` with one instrument, `x.sfz`, playing `a.wav`.
+fn sfz_library(at: &std::path::Path, extra: &str) {
+    std::fs::create_dir_all(at).unwrap();
+    std::fs::write(at.join("a.wav"), tone_wav()).unwrap();
+    let sfz = format!("<region> sample=a.wav key=60\n{extra}");
+    std::fs::write(at.join("x.sfz"), sfz).unwrap();
+}
+
+#[test]
+fn a_saved_state_loads_from_a_moved_library() {
+    use kontra_host::browser::Browser;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("relocate-state");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (old, new) = (dir.join("hdd/Strings"), dir.join("ssd/Vendor/Strings"));
+    sfz_library(&old, "");
+    std::fs::create_dir_all(dir.join("ssd")).unwrap();
+    let config = dir.join("config");
+    let json = {
+        let (mut rack, _audio) = rack();
+        let mut b = Browser::open(Some(&config), None);
+        b.add_root(dir.join("hdd"));
+        b.add_root(dir.join("ssd"));
+        settle(&mut b);
+        assert_eq!(b.catalog.libraries.len(), 1);
+        rack.know(&b);
+        rack.load(0, &old.join("x.sfz")).unwrap();
+        let saved = rack.save();
+        assert_eq!(saved.ids.len(), 1);
+        assert_eq!(saved.ids[0].relative, std::path::Path::new("x.sfz"));
+        saved.write()
+    };
+    // Moved while the project was closed.
+    std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+    std::fs::rename(&old, &new).unwrap();
+    let mut b = Browser::open(Some(&config), None);
+    assert_eq!(
+        b.catalog.libraries.len(),
+        1,
+        "the index lists it before any scan"
+    );
+    let (mut part_rack, mut audio) = rack();
+    part_rack.know(&b);
+    let saved = kontra_host::state::Saved::parse(&json).unwrap();
+    let failed = part_rack.restore(&saved);
+    assert_eq!(failed.len(), 1, "not found yet: {failed:?}");
+    assert!(failed[0].1.contains("moved or is missing"), "{failed:?}");
+    // The scan finds it by identity; the waiting part loads from there.
+    settle(&mut b);
+    assert_eq!(b.prefs.moved, [(old.clone(), new.clone())]);
+    assert_eq!(b.catalog.libraries[0].dir, new);
+    part_rack.know(&b);
+    assert_eq!(part_rack.save().parts[0].path, new.join("x.sfz"));
+    assert!(loudest(&mut audio) > 1e-4, "{}", level(&audio, 1));
+    // A fresh rack resolves the old state at once, through the index.
+    let (mut again, _audio) = rack();
+    again.know(&b);
+    assert!(again.restore(&saved).is_empty());
+    assert_eq!(again.save().parts[0].path, new.join("x.sfz"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn locate_relinks_by_identity_and_refuses_another_library() {
+    use kontra_host::browser::Browser;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("relocate-locate");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (old, new, other) = (
+        dir.join("drive/Lib"),
+        dir.join("elsewhere/Lib"),
+        dir.join("other/Other"),
+    );
+    sfz_library(&old, "");
+    sfz_library(&other, "<region> sample=a.wav key=61\n");
+    let mut b = Browser::open(Some(&dir.join("config")), None);
+    b.add_root(dir.join("drive"));
+    settle(&mut b);
+    // Moved out of every root: offline, still listed.
+    std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+    std::fs::rename(&old, &new).unwrap();
+    b.rescan();
+    settle(&mut b);
+    assert_eq!(b.catalog.libraries.len(), 1);
+    assert_eq!(b.catalog.libraries[0].offline.as_deref(), Some("not found"));
+    // Another library: refused, and said.
+    b.locate(0, other.clone());
+    settle(&mut b);
+    let lost = b.catalog.libraries.iter().find(|l| l.offline.is_some());
+    assert!(
+        lost.is_some_and(|l| l.dir == old),
+        "{:?}",
+        b.catalog.libraries
+    );
+    assert!(
+        b.notices.iter().any(|n| n.contains("still missing")),
+        "{:?}",
+        b.notices
+    );
+    assert!(b.prefs.moved.is_empty());
+    // The same library: relinked and remembered.
+    let n = (b.catalog.libraries.iter())
+        .position(|l| l.offline.is_some())
+        .unwrap();
+    b.locate(n, new.clone());
+    settle(&mut b);
+    assert!(b.catalog.libraries.iter().all(|l| l.offline.is_none()));
+    assert!((b.catalog.libraries.iter()).any(|l| l.dir == new && l.moved_from == [old.clone()]));
+    assert_eq!(b.prefs.moved, [(old, new)]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn old_states_without_identity_still_load_and_are_upgraded() {
+    use kontra_host::browser::Browser;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("relocate-old-state");
+    let _ = std::fs::remove_dir_all(&dir);
+    let lib = dir.join("libs/Lib");
+    sfz_library(&lib, "");
+    let mut b = Browser::open(Some(&dir.join("config")), None);
+    b.add_root(dir.join("libs"));
+    settle(&mut b);
+    let path = lib.join("x.sfz").display().to_string();
+    let json = format!(
+        r#"{{"version": 1, "parts": [{{"part": 0, "path": {path:?}, "channel": 0,
+        "output": 0, "gain": 1.0, "pan": 0.0, "solo": false, "mute": false}}]}}"#
+    );
+    let saved = kontra_host::state::Saved::parse(&json).unwrap();
+    assert!(saved.ids.is_empty());
+    let (mut rack, _audio) = rack();
+    rack.know(&b);
+    assert!(rack.restore(&saved).is_empty());
+    assert_eq!(rack.save().ids.len(), 1, "saved again with identity");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

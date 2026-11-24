@@ -618,6 +618,7 @@ pub(crate) fn libraries(browser: &Browser) -> Vec<app::Library> {
                 .filter_map(|(n, p)| browser.prefs.starred(p).then_some(n))
                 .collect(),
             art: art(&l.art),
+            offline: l.offline.clone(),
         })
         .collect()
 }
@@ -1111,6 +1112,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 // The browser's first folder, from the editor's own copy.
                 let from = app.folders.first().map(|f| PathBuf::from(&f.path));
                 p.shared.folder.ask(crate::folder::Wanted::Libraries, from);
+                if p.shared.folder.has_result() {
+                    p.shared.wake_tick();
+                }
+                continue;
+            }
+            if let Action::Locate(n) = action {
+                // ponytail: by catalog index; a rescan landing before the
+                // pick may shift it, and the wrong library is then refused
+                // by identity.
+                p.shared.folder.ask(crate::folder::Wanted::Locate(n), None);
                 if p.shared.folder.has_result() {
                     p.shared.wake_tick();
                 }

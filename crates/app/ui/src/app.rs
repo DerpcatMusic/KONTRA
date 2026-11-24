@@ -106,6 +106,9 @@ pub struct Library {
     /// Pictures that may be its cover, best first, as the host's cover
     /// store reads them; the first that decodes is shown.
     pub art: Vec<String>,
+    /// Why it is not where it was ("not found"…): listed dimmed, with
+    /// Locate….
+    pub offline: Option<String>,
 }
 
 /// DRM protection status surfaced on a browser library.
@@ -598,6 +601,8 @@ pub enum Action {
     Refresh,
     /// Use the folder a report line offered for missing samples.
     Relink(String),
+    /// Pick the folder offline library `n` moved to.
+    Locate(usize),
 }
 
 /// The editor for `app`, and what the user did.

@@ -19,6 +19,7 @@
 //! reads once is kept in a [`Cache`] keyed by file size and time.
 
 pub mod discover;
+pub mod index;
 pub mod kontakt;
 pub mod presets;
 
@@ -33,6 +34,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub use cache::Cache;
 pub use folder::{Folder, natural};
+pub use index::{identity, stale};
 pub use kontra_format::{ProtectionStatus, ProtectionSystem};
 pub use name::{clean_name, product};
 pub use prefs::Prefs;
@@ -50,7 +52,9 @@ pub struct Root {
 }
 
 /// Which player a library was made for.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Format {
     #[default]
     Kontakt,
@@ -58,8 +62,19 @@ pub enum Format {
 }
 
 /// One library found.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Library {
+    /// Who it is, whatever folder it sits in ([`identity`]).
+    pub id: String,
+    /// Why it is not where the index last saw it ("not found", "can't read:
+    /// permission denied"…); its presets stay listed.
+    pub offline: Option<String>,
+    /// Folders it was found in before, oldest first.
+    pub moved_from: Vec<PathBuf>,
+    /// Every folder its preset walk listed (or the bank file), with its
+    /// modification time: unchanged, the next scan does not walk it again.
+    pub stamps: Vec<(PathBuf, u128)>,
     /// Its folder, or the bank file for a loose `.ufs`.
     pub dir: PathBuf,
     /// Its name, unique among the catalog's libraries.
@@ -113,6 +128,8 @@ pub struct RootStatus {
     pub libraries: usize,
     /// Why the root itself could not be read.
     pub error: Option<Issue>,
+    /// Its modification time when scanned ([`stale`]).
+    pub stamp: Option<u128>,
 }
 
 impl RootStatus {
@@ -162,6 +179,12 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// The library known as `id`.
+    #[must_use]
+    pub fn by_id(&self, id: &str) -> Option<&Library> {
+        self.libraries.iter().find(|l| l.id == id)
+    }
+
     /// The library `path` is in: the nearest library folder above it.
     #[must_use]
     pub fn of(&self, path: &Path) -> Option<&Library> {
@@ -260,6 +283,21 @@ pub fn scan_with_inspector(
     cache: &mut Cache,
     inspect: BankInspector<'_>,
 ) -> Option<Catalog> {
+    scan_incremental(roots, progress, cache, inspect, &[])
+}
+
+/// Like [`scan_with_inspector`], but a library of `previous` whose stamped
+/// folders are all unchanged is taken as it was, without walking it again.
+// ponytail: only the per-library walk is skipped; finding libraries still
+// lists the folders above them. Skip unchanged subtrees there if a drive
+// scan stays slow.
+pub fn scan_incremental(
+    roots: &[Root],
+    progress: &Progress,
+    cache: &mut Cache,
+    inspect: BankInspector<'_>,
+    previous: &[Library],
+) -> Option<Catalog> {
     let mut issues = Vec::new();
     let mut libraries = Vec::new();
     let mut seen = BTreeSet::new();
@@ -277,6 +315,16 @@ pub fn scan_with_inspector(
             if !seen.insert(key) {
                 continue;
             }
+            let same = previous.iter().find(|l| {
+                l.dir == found.dir && !l.stamps.is_empty() && index::unchanged(&l.stamps)
+            });
+            if let Some(same) = same {
+                libraries.push(Library {
+                    offline: None,
+                    ..same.clone()
+                });
+                continue;
+            }
             let library = catalog(found, &dirs, progress, cache, inspect, &mut issues);
             if progress.canceled() {
                 return None;
@@ -290,6 +338,7 @@ pub fn scan_with_inspector(
             error: (issues.iter().skip(before.0))
                 .find(|i| i.path == root.path && i.kind.is_some())
                 .cloned(),
+            stamp: index::mtime(&root.path),
         });
     }
     cache.forget_unseen();
@@ -674,6 +723,7 @@ fn catalog(
     let mut presets = Vec::new();
     let mut art = Vec::new();
     let mut protection = ProtectionStatus::Open;
+    let mut stamps = Vec::new();
     let bank = found.dir.is_file();
     if bank {
         bank_presets(
@@ -693,6 +743,7 @@ fn catalog(
         if ext(&found.dir) == "ufs" {
             art.push(found.dir.clone());
         }
+        stamps.extend(index::mtime(&found.dir).map(|t| (found.dir.clone(), t)));
     } else {
         let mut state = Walk {
             nested,
@@ -701,6 +752,7 @@ fn catalog(
             inspect,
             issues,
             protection: &mut protection,
+            stamps: &mut stamps,
         };
         walk(&found.dir, &mut state, &mut presets, &mut art);
         art.sort_by_cached_key(|p| (art_rank(p), p.clone()));
@@ -729,6 +781,7 @@ fn catalog(
         .as_deref()
         .and_then(|p| cache.product(p))
         .unwrap_or_default();
+    let product = (!name.is_empty()).then(|| format!("{name}|{company}"));
     let vendor = [company, bracket, found.vendor.unwrap_or_default()]
         .into_iter()
         .find(|v| !v.is_empty())
@@ -736,7 +789,12 @@ fn catalog(
     let uvi_bank = (bank && ext(&found.dir) == "ufs")
         || (presets.is_empty() && art.iter().any(|p| ext(p) == "ufs"));
     let uvi = presets.iter().filter(|p| ext(p) == "uvip").count();
+    let id = identity(&found.dir, product.as_deref(), &presets);
     Some(Library {
+        id,
+        offline: None,
+        moved_from: Vec::new(),
+        stamps,
         name: if name.is_empty() { folder_name } else { name },
         vendor,
         format: if uvi_bank || uvi * 2 > presets.len() {
@@ -762,6 +820,7 @@ struct Walk<'a> {
     inspect: BankInspector<'a>,
     issues: &'a mut Vec<Issue>,
     protection: &'a mut ProtectionStatus,
+    stamps: &'a mut Vec<(PathBuf, u128)>,
 }
 
 /// The presets and banner candidates under `dir`, skipping sample folders and
@@ -785,6 +844,9 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
             continue;
         }
         visited.insert(canonical, through_symlink);
+        state
+            .stamps
+            .extend(index::mtime(&dir).map(|t| (dir.clone(), t)));
         state.progress.folders.fetch_add(1, Ordering::Relaxed);
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -944,7 +1006,7 @@ fn art_rank(path: &Path) -> usize {
 
 /// `libraries` sorted by name, each name made unique: the vendor in
 /// brackets first, then a number.
-fn unique(mut libraries: Vec<Library>) -> Vec<Library> {
+pub(crate) fn unique(mut libraries: Vec<Library>) -> Vec<Library> {
     libraries.sort_by_cached_key(|l| (natural(&l.name), l.dir.clone()));
     let mut taken = BTreeSet::new();
     for library in &mut libraries {

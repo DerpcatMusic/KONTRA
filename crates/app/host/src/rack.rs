@@ -278,10 +278,16 @@ pub struct Rack {
     /// to look for them in.
     moved: Vec<(PathBuf, PathBuf)>,
     roots: Vec<PathBuf>,
+    /// Every library's (identity, folder, online), by which a saved state
+    /// finds a library that moved ([`crate::relink::resolve`]).
+    pub(crate) libraries: Vec<(String, PathBuf, bool)>,
+    /// Saved parts whose library was not found yet, with the state's
+    /// identities: loaded once [`Rack::know`] finds it.
+    pub(crate) awaiting: Vec<(crate::state::SavedPart, Vec<crate::state::SavedId>)>,
     /// Folders found for missing samples, waiting for a yes.
     offers: Vec<crate::relink::Offer>,
     /// What loading said, for the report ([`Rack::take_notices`]).
-    notices: Vec<String>,
+    pub(crate) notices: Vec<String>,
     /// Purged groups whose heads are being read off the control thread:
     /// each is sent back when its reads are in.
     woken: (
@@ -329,6 +335,8 @@ impl Rack {
             multi: None,
             moved: Vec::new(),
             roots: Vec::new(),
+            libraries: Vec::new(),
+            awaiting: Vec::new(),
             offers: Vec::new(),
             notices: Vec::new(),
             woken: mpsc::channel(),
@@ -381,6 +389,7 @@ impl Rack {
                 max: MAX_PARTS,
             });
         }
+        let path = &crate::relink::resolve(&self.libraries, path, &[]);
         if let Some(progress) = self.store.progress() {
             progress.begin();
         }
@@ -554,12 +563,17 @@ impl Rack {
     /// Takes the instruments of `browser`'s catalog as the ones a snapshot
     /// may bind to ([`crate::instrument::preset`]), when it changed.
     pub fn know(&mut self, browser: &crate::browser::Browser) {
-        if self.known.0 != browser.generation {
+        let changed = self.known.0 != browser.generation;
+        if changed {
             self.known = (browser.generation, browser.instruments());
+            self.libraries = browser.identities();
         }
         self.moved.clone_from(&browser.prefs.moved);
         kontra_format::set_moved(&self.moved);
         self.roots = browser.roots().into_iter().map(|r| r.path).collect();
+        if changed && !self.awaiting.is_empty() {
+            self.load_pending();
+        }
     }
 
     /// What loads said since the last call, in plain text.
@@ -589,6 +603,7 @@ impl Rack {
         slot_types: &[(ir::RackAt, u8, u16)],
         slot_responses: &[(ir::RackAt, u8, String)],
     ) -> Result<(), crate::Error> {
+        let path = &crate::relink::resolve(&self.libraries, path, &[]);
         if let Some(progress) = self.store.progress() {
             progress.begin();
         }

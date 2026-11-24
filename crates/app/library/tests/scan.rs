@@ -454,9 +454,11 @@ fn protected_banks_carry_structured_protection_status_and_cache_it() {
     assert!(catalog.issues.iter().all(|i| i.protection.is_protected()));
 
     // Cached roundtrip preserves ProtectionStatus with 0 re-reads
-    let cache_file = dir.join("cache.json");
+    // Outside the root: writing it must not change what the scan stamps.
+    let cache_file = dir.with_extension("cache.json");
     cache.save(&cache_file).unwrap();
     let mut warm = Cache::load(&cache_file);
+    let _ = std::fs::remove_file(&cache_file);
     let again =
         scan_with_inspector(&[root(&dir)], &Progress::default(), &mut warm, &inspect).unwrap();
     assert_eq!(warm.reads, 0);

@@ -23,6 +23,20 @@ pub struct Saved {
     /// The multi whose multi script hears the rack's MIDI first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi: Option<PathBuf>,
+    /// The files above by library identity, so a state finds a library
+    /// that moved. A state saved before has none, and loads by path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<SavedId>,
+}
+
+/// A file a state names, by its library's identity
+/// ([`kontra_library::identity`]) and its place inside that library.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedId {
+    /// The file as the state names it.
+    pub path: PathBuf,
+    pub library: String,
+    pub relative: PathBuf,
 }
 
 /// One part: where it sits, the instrument it plays and how it sounds.
@@ -188,6 +202,7 @@ impl Saved {
             version: VERSION,
             parts,
             multi: None,
+            ids: Vec::new(),
         }
     }
 
@@ -280,9 +295,48 @@ impl Rack {
                 })
             })
             .collect();
-        Saved {
+        let mut saved = Saved {
             multi: self.multi().map(std::path::Path::to_owned),
             ..Saved::new(parts)
+        };
+        let named = (saved.parts.iter())
+            .flat_map(|p| std::iter::once(&p.path).chain(&p.preset))
+            .chain(&saved.multi);
+        saved.ids = named
+            .filter_map(|p| crate::relink::identify(&self.libraries, p))
+            .collect();
+        saved
+    }
+
+    /// `saved` with each file it names where it is now: a library that
+    /// moved is found by its identity ([`crate::relink::resolve`]).
+    fn resolved(&self, saved: &Saved) -> Saved {
+        let at = |p: &PathBuf| crate::relink::resolve(&self.libraries, p, &saved.ids);
+        let mut out = saved.clone();
+        for p in &mut out.parts {
+            p.path = at(&p.path);
+            p.preset = p.preset.as_ref().map(at);
+        }
+        out.multi = out.multi.as_ref().map(at);
+        out
+    }
+
+    /// Loads the saved parts whose library was missing, once it is found.
+    pub(crate) fn load_pending(&mut self) {
+        for (p, ids) in std::mem::take(&mut self.awaiting) {
+            let saved = Saved {
+                ids,
+                ..Saved::new(vec![p])
+            };
+            let saved = self.resolved(&saved);
+            let p = &saved.parts[0];
+            if !crate::relink::present(&p.path) {
+                self.awaiting.push((p.clone(), saved.ids));
+                continue;
+            }
+            if let Err(e) = self.restore_part(p) {
+                self.notices.push(format!("part {}: {e}", p.part + 1));
+            }
         }
     }
 
@@ -291,6 +345,8 @@ impl Rack {
     /// creation, then again on activation) loads nothing twice. A part that
     /// fails to load is left empty; its error is returned.
     pub fn restore(&mut self, saved: &Saved) -> Vec<(usize, String)> {
+        let saved = &self.resolved(saved);
+        self.awaiting.clear();
         let now = self.save().parts;
         // A state saved before auto-align measured a part still matches it.
         let same = |p: &SavedPart| {
@@ -317,35 +373,53 @@ impl Rack {
         self.set_multi(saved.multi.as_deref());
         let mut failed = Vec::new();
         for p in saved.parts.iter().filter(|p| !kept.contains(&p.part)) {
-            let (types, responses) = live_slots(&p.slot_types, &p.slot_responses);
-            match self.load_saved(p.part, &p.path, &p.scripts, &types, &responses) {
-                Ok(()) => {
-                    self.set_mix(
+            if let Err(e) = self.restore_part(p) {
+                if !crate::relink::present(&p.path) {
+                    self.awaiting.push((p.clone(), saved.ids.clone()));
+                    failed.push((
                         p.part,
-                        Mix {
-                            channel: p.channel,
-                            output: p.output,
-                            gain: p.gain,
-                            pan: p.pan,
-                            silent: false,
-                        },
-                    );
-                    self.set_solo_mute(p.part, p.solo, p.mute);
-                    if let Some(delays) = p.delays.clone() {
-                        self.set_delays(p.part, delays);
-                    }
-                    match &p.preset {
-                        Some(preset) if preset.is_file() => self.set_preset(p.part, preset),
-                        Some(_) => self.set_modified(p.part),
-                        None => {}
-                    }
-                    if p.modified {
-                        self.set_modified(p.part);
-                    }
+                        format!(
+                            "{e}; its library moved or is missing: it loads once found (Locate\u{2026} in the browser)"
+                        ),
+                    ));
+                } else {
+                    failed.push((p.part, e.to_string()));
                 }
-                Err(e) => failed.push((p.part, e.to_string())),
             }
         }
         failed
+    }
+
+    /// Loads saved part `p` and puts back how it sat in the rack.
+    fn restore_part(&mut self, p: &SavedPart) -> Result<(), crate::Error> {
+        let (types, responses) = live_slots(&p.slot_types, &p.slot_responses);
+        match self.load_saved(p.part, &p.path, &p.scripts, &types, &responses) {
+            Ok(()) => {
+                self.set_mix(
+                    p.part,
+                    Mix {
+                        channel: p.channel,
+                        output: p.output,
+                        gain: p.gain,
+                        pan: p.pan,
+                        silent: false,
+                    },
+                );
+                self.set_solo_mute(p.part, p.solo, p.mute);
+                if let Some(delays) = p.delays.clone() {
+                    self.set_delays(p.part, delays);
+                }
+                match &p.preset {
+                    Some(preset) if preset.is_file() => self.set_preset(p.part, preset),
+                    Some(_) => self.set_modified(p.part),
+                    None => {}
+                }
+                if p.modified {
+                    self.set_modified(p.part);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
     }
 }

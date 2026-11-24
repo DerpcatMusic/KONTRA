@@ -28,6 +28,9 @@ pub enum Wanted {
     Snapshots,
     /// Save the formatted diagnostics report to the chosen file.
     ExportReport(String),
+    /// The folder offline library `n` of the catalog moved to
+    /// ([`kontra_host::browser::Browser::locate`]).
+    Locate(usize),
 }
 
 impl Wanted {
@@ -36,13 +39,14 @@ impl Wanted {
             Self::Libraries => "A folder of libraries",
             Self::Snapshots => "Kontakt's user snapshot folder (User Content)",
             Self::ExportReport(_) => "Export KONTRA diagnostics report",
+            Self::Locate(_) => "The folder the missing library is in now",
         }
     }
 
     fn save_file_name(&self) -> Option<&'static str> {
         match self {
             Self::ExportReport(_) => Some("kontra-report.txt"),
-            Self::Libraries | Self::Snapshots => None,
+            Self::Libraries | Self::Snapshots | Self::Locate(_) => None,
         }
     }
 }
