@@ -162,8 +162,8 @@ impl Engine {
             // plays: the edit lands at once. A zone the instrument lacks is
             // the script's no-op, not a gap. Every other run queues, a
             // recall's too (it runs on the audio thread).
-            if carried {
-                Arc::make_mut(&mut self.plan).edit_zone(zone, par, value);
+            if carried && Arc::make_mut(&mut self.plan).edit_zone(zone, par, value) {
+                self.zones_edited = true;
             }
             return -1;
         }
@@ -244,6 +244,19 @@ impl Engine {
         }
         for &(e, took) in edits {
             self.queue_async(e.script, e.id, Exit::from(same && took));
+        }
+    }
+
+    /// Indexes the zones again after edits landed at once, while the
+    /// engine was built or recalled: notes start from the zones as the
+    /// scripts left them (Conflux snapshots move a bank zone into the
+    /// playing group in `on init`; read from the index built before it, no
+    /// voice started). Not real-time.
+    pub(crate) fn zones_moved(&mut self) {
+        if std::mem::take(&mut self.zones_edited) {
+            self.zone_index = Arc::new(crate::zone_index::ZoneIndex::new(&self.plan.zones));
+            self.release_zones =
+                (self.plan.zones.iter()).any(|z| z.trigger == crate::Trigger::Release);
         }
     }
 

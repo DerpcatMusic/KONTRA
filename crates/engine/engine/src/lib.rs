@@ -220,6 +220,8 @@ pub struct Engine {
     keys_down: (u64, u128),
     /// Each zone's key range, packed: a note's start scans these, not the zones.
     zone_index: Arc<zone_index::ZoneIndex>,
+    /// A zone edit landed in the plan at once, not yet in `zone_index`.
+    zones_edited: bool,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -544,6 +546,7 @@ impl Engine {
             release_zones,
             keys_down: (u64::MAX, 0),
             zone_index,
+            zones_edited: false,
             stream,
             voices,
             voice_scratch: Scratch::allocate(),
@@ -631,7 +634,18 @@ impl Engine {
             engine.restore_after_init(slot);
             engine.persistence_changed(slot);
         }
+        // A preset recalled onto the loaded instrument: scripts that keep
+        // their state see its values land again and their callback run once
+        // more (a script that restarts was just started on them).
+        // ponytail: `on init` reads the preset's values, not the base's own.
+        if plan.recalled && engine.recall == Recall::Keep {
+            for (slot, script) in (0u8..).zip(&plan.scripts) {
+                engine.write_saved(slot, &script.restore, &script.restore_texts);
+                engine.persistence_changed(slot);
+            }
+        }
         engine.run_load_waits();
+        engine.zones_moved();
         engine.pgs.prepare_runtime();
         engine.building = false;
         engine.rebuild_racks();

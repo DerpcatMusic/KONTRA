@@ -284,6 +284,7 @@ pub fn load_onto(base: &Base, path: &Path, _known: &[PathBuf]) -> Result<ir::Ins
     if let Some(name) = path.file_stem().filter(|s| !s.is_empty()) {
         out.name = name.to_string_lossy().into_owned();
     }
+    out.recalled = true;
     Ok(out)
 }
 
@@ -302,6 +303,11 @@ pub(crate) fn load(path: &Path, known: &[PathBuf]) -> Result<ir::Instrument, Err
     if !preset.name.is_empty() {
         out.name = preset.name;
     }
+    // Kontakt loads a snapshot as its base instrument, then recalls the
+    // snapshot onto it: ANALOG STRINGS (`set_snapshot_type(1)`) moves its
+    // groups to the buses the snapshot left live only in that second
+    // `on persistence_changed` (`$init_flag` 0), so its Quarterstra was silent.
+    out.recalled = true;
     Ok(out)
 }
 

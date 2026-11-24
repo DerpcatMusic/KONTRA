@@ -95,6 +95,12 @@ pub struct Instrument {
     /// Whether a voice stolen at [`Self::voices`] takes its note's other
     /// voices in the same group with it: a group's zones sound as one voice.
     pub steal_whole_groups: bool,
+    /// Its scripts' saved values are a preset recalled onto this
+    /// instrument after it loaded with its own: a script that keeps its
+    /// state across a recall sees them
+    /// land again after its first persistence-changed callback, and that
+    /// callback runs once more, as it would on a running instrument.
+    pub recalled: bool,
     /// Responses [`EffectKind::Convolution`] slots play.
     pub impulses: Vec<Impulse>,
     /// Responses a script may load into a convolution slot by name
@@ -140,6 +146,7 @@ impl Instrument {
         output: Output::UNITY,
         route_pitch: Exp2::Exact,
         steal_whole_groups: false,
+        recalled: false,
         impulses: Vec::new(),
         responses: Vec::new(),
         slot_laws: Vec::new(),

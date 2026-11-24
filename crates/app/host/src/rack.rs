@@ -613,6 +613,11 @@ impl Rack {
         for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
             script.saved.clone_from(saved);
         }
+        // Its values are the state the scripts reached after the preset was
+        // recalled; recalling them again would run that recall twice.
+        // ponytail: what the scripts set on the engine is not saved, only
+        // their values; save engine state if a reopened part sounds wrong.
+        instrument.recalled = false;
         let path = Some(path.to_owned());
         self.load_built(part, instrument, path, slot_types, slot_responses)
     }
