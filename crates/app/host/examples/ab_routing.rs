@@ -1,10 +1,10 @@
-//! A/B of the engine's two routing paths on one instrument: the per-bus
-//! racks (`Plan::graph` = None) against the same plan lowered to an
-//! [`AudioGraph`](kontra_engine::ir::AudioGraph). Three engines render the
-//! same events in lockstep: rack, rack again (the noise floor: streaming and
-//! scripts must make it bit-exact) and graph. Every requested page is
-//! delivered before the next block, so the render does not depend on disk
-//! timing. Spec: docs/specs/effect-racks-on-audiograph.md.
+//! A/B of the engine's routing on one instrument against a reference
+//! render: two engines render the same events in lockstep (the second is
+//! the noise floor: streaming and scripts must make it bit-exact), and
+//! `KONTRA_AB_REF=<dir>` compares the render with `<dir>/<name>-rack.wav`,
+//! the per-bus rack path's render saved before it was deleted. Every
+//! requested page is delivered before the next block, so the render does
+//! not depend on disk timing. Spec: docs/specs/effect-racks-on-audiograph.md.
 //!
 //! `cargo run --release -p kontra-host --example ab_routing -- <file> [keys] [seconds]`
 //! `keys` is a comma list (default 48,55,60,64), held for 1.5 s; `seconds` is
@@ -79,18 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             loaded.plan.main.iter().flatten().count()
         );
     }
-    let rack = Arc::new(loaded.plan.clone());
-    let mut graphed = loaded.plan;
-    let had_graph = graphed.graph.is_some();
-    graphed.graph = Some(kontra_prepare::lower_graph(&graphed));
-    let graphed = Arc::new(graphed);
-
-    let mut engines = [
-        engine(&rack, &stream),
-        engine(&rack, &stream),
-        engine(&graphed, &stream),
-    ];
-    let plans = [&rack, &rack, &graphed];
+    let plan = Arc::new(loaded.plan);
+    let mut engines = [engine(&plan, &stream), engine(&plan, &stream)];
     let note = |key: u8, on: bool| Timed {
         at: SampleTime(0),
         body: if on {
@@ -119,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let offs: Vec<_> = keys.iter().map(|&k| note(k, false)).collect();
     let (lead, hold) = (RATE as usize / 4 / BLOCK, RATE as usize * 3 / 2 / BLOCK);
     let total = (seconds * RATE as f32) as usize / BLOCK;
-    let mut audio: [Vec<[f32; 2]>; 3] = Default::default();
+    let mut audio: [Vec<[f32; 2]>; 2] = Default::default();
     let mut block = vec![[0.0f32; 2]; BLOCK];
     for n in 0..lead + total {
         let events: &[Timed<Event>] = if n == lead {
@@ -129,10 +119,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             &[]
         };
-        for ((e, out), plan) in engines.iter_mut().zip(audio.iter_mut()).zip(plans) {
+        for (e, out) in engines.iter_mut().zip(audio.iter_mut()) {
             block.fill([0.0; 2]);
             e.process(&mut block, events);
-            install_requests(e, plan);
+            install_requests(e, &plan);
             if n >= lead {
                 out.extend_from_slice(&block);
             }
@@ -140,7 +130,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Every page asked for this block arrives before the next one.
         stream.settle(Duration::from_secs(5));
     }
-    let [a, again, b] = &audio;
+    let [a, again] = &audio;
+    let reference = match std::env::var_os("KONTRA_AB_REF") {
+        Some(dir) => Some(read_wav(
+            &PathBuf::from(dir).join(format!("{}-rack.wav", loaded.name)),
+        )?),
+        None => None,
+    };
     let peak = |x: &[[f32; 2]]| x.iter().flatten().fold(0f32, |p, s| p.max(s.abs()));
     let rms = |x: &[f32]| {
         (x.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / x.len().max(1) as f64).sqrt()
@@ -161,32 +157,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-inf".into()
         }
     };
-    let ref_peak = f64::from(peak(a)).max(1e-12);
+    let ref_peak = f64::from(peak(reference.as_deref().unwrap_or(a))).max(1e-12);
     let (floor_rms, floor_peak) = residual(a, again);
-    let (ab_rms, ab_peak) = residual(a, b);
     let flat = |x: &[[f32; 2]]| x.iter().flatten().copied().collect::<Vec<f32>>();
-    println!(
-        "{}: keys {keys:?} {seconds} s{}; rack peak {} dBFS rms {} dBFS; floor (rack vs rack) rms {} peak {} dB; graph vs rack rms {} peak {} dB (relative to the rack peak)",
-        loaded.name,
-        if had_graph {
-            " (format graph replaced)"
+    let versus = reference.as_deref().map_or_else(String::new, |r| {
+        let (ab_rms, ab_peak) = residual(r, a);
+        let n = if r.len() == a.len() {
+            String::new()
         } else {
-            ""
-        },
-        db(ref_peak),
+            format!(" LENGTH {} vs {}", r.len(), a.len())
+        };
+        format!(
+            "; vs reference rms {} peak {} dB{n}",
+            db(ab_rms / ref_peak),
+            db(f64::from(ab_peak) / ref_peak)
+        )
+    });
+    println!(
+        "{}: keys {keys:?} {seconds} s; peak {} dBFS rms {} dBFS; floor rms {} peak {} dB{versus} (relative to the reference peak)",
+        loaded.name,
+        db(f64::from(peak(a))),
         db(rms(&flat(a))),
         db(floor_rms / ref_peak),
         db(f64::from(floor_peak) / ref_peak),
-        db(ab_rms / ref_peak),
-        db(f64::from(ab_peak) / ref_peak),
     );
     if let Some(dir) = std::env::var_os("KONTRA_AB_WAV") {
-        for (name, x) in [("rack", a), ("graph", b)] {
-            write_wav(
-                &PathBuf::from(&dir).join(format!("{}-{name}.wav", loaded.name)),
-                x,
-            )?;
-        }
+        write_wav(
+            &PathBuf::from(&dir).join(format!("{}-graph.wav", loaded.name)),
+            a,
+        )?;
     }
     Ok(())
 }
@@ -206,6 +205,22 @@ fn install_requests(engine: &mut Engine, plan: &Plan) {
     for r in asked {
         engine.install(Prepared::new(r, Some(plan), RATE));
     }
+}
+
+/// A float stereo WAV as [`write_wav`] writes it.
+fn read_wav(path: &std::path::Path) -> std::io::Result<Vec<[f32; 2]>> {
+    let bytes = std::fs::read(path)?;
+    let data = bytes.get(44..).unwrap_or_default();
+    let (frames, _) = data.as_chunks::<8>();
+    Ok(frames
+        .iter()
+        .map(|&[a, b, c, d, e, f, g, h]| {
+            [
+                f32::from_le_bytes([a, b, c, d]),
+                f32::from_le_bytes([e, f, g, h]),
+            ]
+        })
+        .collect())
 }
 
 fn write_wav(path: &std::path::Path, audio: &[[f32; 2]]) -> std::io::Result<()> {

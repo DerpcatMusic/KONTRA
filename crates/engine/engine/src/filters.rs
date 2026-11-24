@@ -20,7 +20,6 @@ use crate::{Engine, MAX_SPAN, group_racks};
 
 use crate::racks::Rack;
 pub(crate) use kontra_racks::chain::{Chain, on_bus};
-use kontra_racks::graph::GraphRuntime;
 
 /// The most private chains one instrument builds for its shared groups: a
 /// sanity ceiling (about 10 MB) far past the largest library's groups.
@@ -393,8 +392,6 @@ impl Engine {
     /// Whether groups enter the audio graph through their own inputs (a
     /// `.kontra` graph) rather than through the instrument buses.
     pub(crate) fn graph_groups(&self) -> bool {
-        self.graph
-            .as_ref()
-            .is_some_and(GraphRuntime::has_group_inputs)
+        self.graph.has_group_inputs()
     }
 }

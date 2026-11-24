@@ -8,7 +8,9 @@
 //!    `EffectFamily`/`EffectSpec` taxonomy, `fn_addr_eq`
 //!    workspace-wide).
 //! 4. Per-module encoding equality and unique `ModelId`s across `kontakt-effects`.
-//! 5. Cyclic `AudioGraph` errors are surfaced (never silently discarded) in both
+//! 5. One routing path: only the audio graph runs instrument buses, and the
+//!    engine always has a graph (docs/specs/effect-racks-on-audiograph.md).
+//! 6. Cyclic `AudioGraph` errors are surfaced (never silently discarded) in both
 //!    `kontra-prepare` and `Engine::try_new` / `Engine::graph_error`.
 #![allow(clippy::expect_used, clippy::indexing_slicing)]
 
@@ -210,6 +212,30 @@ fn architecture_metric_ratchets_hold() {
     assert!(
         taxonomy.is_empty(),
         "a parallel effect taxonomy came back in {taxonomy:?}; extend EffectKind instead"
+    );
+}
+
+#[test]
+fn only_the_audio_graph_runs_instrument_buses() {
+    let crates = kontra_crates_dir();
+    let graph = crates.join("engine/racks/src/graph.rs");
+    let callers: Vec<_> = layer_rs_files(&crates, "engine")
+        .into_iter()
+        .chain(layer_rs_files(&crates, "app"))
+        .filter(|p| *p != graph)
+        .filter(|p| {
+            let text = std::fs::read_to_string(p).expect("read src");
+            text.contains("bus::run(") || text.contains("fn mix_out(")
+        })
+        .collect();
+    assert!(
+        callers.is_empty(),
+        "a second bus loop came back in {callers:?}; route through GraphRuntime instead"
+    );
+    let engine = std::fs::read_to_string(crates.join("engine/engine/src/lib.rs")).expect("read");
+    assert!(
+        !engine.contains("graph: Option<"),
+        "the engine's graph is optional again: every plan routes through one"
     );
 }
 

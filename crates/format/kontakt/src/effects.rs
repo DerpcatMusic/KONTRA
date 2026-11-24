@@ -814,6 +814,25 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
                 let at = format!("bus {}", buses.len());
                 let bus = InsertBus::try_from(child);
                 let params = bus.as_ref().ok().and_then(|b| b.params().ok());
+                // KT-22: a bus routed to its own output skips the instrument
+                // racks; the tail holds phase invert, L/R swap and newer
+                // fields. Neither is modelled yet: every bus plays on main.
+                if let Some(p) = &params {
+                    if p.output != -1 {
+                        notes.add(
+                            ir::Impact::Audible,
+                            "instrument bus output routing",
+                            format!("{at} to output {}", p.output),
+                        );
+                    }
+                    if p.unknown_tail.iter().any(|&b| b != 0) {
+                        notes.add(
+                            ir::Impact::Audible,
+                            "instrument bus phase/swap flags",
+                            format!("{at}: {:02x?}", p.unknown_tail),
+                        );
+                    }
+                }
                 buses.push(ir::Bus {
                     name: params
                         .as_ref()
