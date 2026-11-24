@@ -149,8 +149,9 @@ impl MidiObject {
             Move::Prev => hits
                 .filter(|e| here.is_some_and(|h| key(e) < h))
                 .max_by_key(|e| key(e)),
-            Move::NextAt(at) => hits.filter(|e| e.pos > at).min_by_key(|e| key(e)),
-            Move::PrevAt(at) => hits.filter(|e| e.pos < at).max_by_key(|e| key(e)),
+            // Measured (the oracle's mf_at_edges probe): an event at `at` counts.
+            Move::NextAt(at) => hits.filter(|e| e.pos >= at).min_by_key(|e| key(e)),
+            Move::PrevAt(at) => hits.filter(|e| e.pos <= at).max_by_key(|e| key(e)),
         };
         self.selected = found.map(|e| e.id);
     }

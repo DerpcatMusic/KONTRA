@@ -203,7 +203,7 @@ fn a_user_snapshot_binds_to_its_instrument_by_name() {
 #[test]
 fn a_multis_slots_keep_the_channel_output_volume_and_pan_kontakt_saved() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/three-slots.nkm");
-    let (slots, failed) = kontra_format_kontakt::multi(&path, None).unwrap();
+    let (slots, failed) = kontra_format_kontakt::multi(&path, None, &[]).unwrap();
     assert!(failed.is_empty(), "{failed:?}");
     let got: Vec<_> = (slots.iter())
         .map(|s| (s.index, s.channel, s.output))

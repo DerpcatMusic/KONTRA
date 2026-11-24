@@ -1,0 +1,18 @@
+# Whether mf_get_next_at / mf_get_prev_at include an event exactly at <pos> (Kontakt 8.13).
+S declare $a
+S declare $b
+S mf_set_buffer_size(10)
+S $a := mf_insert_event(0, 0, $MIDI_COMMAND_NOTE_ON, 60, 100)
+S $b := mf_insert_event(0, 100, $MIDI_COMMAND_NOTE_ON, 62, 100)
+R id_a $a
+R id_b $b
+S mf_get_next_at(0, 0)
+R next_at_0_id mf_get_id()
+S mf_get_next_at(0, 100)
+R next_at_100_id mf_get_id()
+S mf_get_next_at(0, 50)
+R next_at_50_id mf_get_id()
+S mf_get_prev_at(0, 100)
+R prev_at_100_id mf_get_id()
+S mf_get_prev_at(0, 0)
+R prev_at_0_id mf_get_id()

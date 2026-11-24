@@ -93,12 +93,16 @@ fn note(on: bool, key: u8) -> moose::prelude::Event {
 /// A second of one held note after a quarter second of quiet, as a player
 /// gives a program time to settle; its RMS.
 fn play(params: &KontraParams, dsp: &mut Dsp) -> f32 {
+    // The control tick runs between blocks, as in a host: it answers the
+    // files scripts load after `on init` (a MIDI player's patterns).
     let blocks = |s: f64| (s * RATE) as usize / BLOCK;
     for _ in 0..blocks(0.25) {
+        Tick.run(params);
         block(params, dsp, &[]);
     }
     let mut audio = block(params, dsp, &[note(true, 60)]);
     for _ in 0..blocks(1.0) {
+        Tick.run(params);
         audio.extend(block(params, dsp, &[]));
     }
     block(params, dsp, &[note(false, 60)]);

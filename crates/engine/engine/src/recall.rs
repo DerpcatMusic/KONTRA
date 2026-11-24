@@ -36,6 +36,7 @@ impl Engine {
         self.building = true;
         let slots = (0u8..).take(self.recalled.len());
         slots.for_each(|slot| self.persistence_changed(slot));
+        self.run_load_waits();
         self.building = false;
         // What `read_persistent_var` reloaded matters to a load's init only.
         self.reloaded.clear();
@@ -153,7 +154,37 @@ impl Engine {
             self.run_callback(slot, changed, Running::new(Kind::Init, None));
         }
     }
+
+    /// Runs, while the load still holds the engine, the script work that
+    /// load-time callbacks left due within [`LOAD_WINDOW_SECONDS`]: their
+    /// waits, the `on async_complete` of what they loaded (a load reads its
+    /// files at once) and what those wait on. In the original this script time
+    /// passes within milliseconds of the load; here, once loading ends, a
+    /// resumed chain runs a few loop turns a block (`BLOCK_SCRIPT_TURNS`),
+    /// so a MIDI player reloading twelve patterns would stay deaf for
+    /// seconds. Every wait keeps its due time, so work after the window, a
+    /// script's endless timed loop included, goes on as it would have.
+    pub(crate) fn run_load_waits(&mut self) {
+        let window = (f64::from(self.rate) * LOAD_WINDOW_SECONDS) as u64;
+        let until = kontra_time::SampleTime(self.now.0.saturating_add(window));
+        let mut other = Vec::new();
+        while let Some((due, work)) = self.queue.pop_due(until) {
+            match work {
+                Work::Resume(..) | Work::Async { .. } => self.dispatch(due, work),
+                _ => other.push((due, work)),
+            }
+        }
+        for (due, work) in other {
+            if !self.queue.push_due(due, work) {
+                self.stats.events_refused += 1;
+            }
+        }
+    }
 }
+
+/// Script time a load runs ahead of the audio ([`Engine::run_load_waits`]).
+// ponytail: a fixed window; a load chain needing more goes on in blocks.
+const LOAD_WINDOW_SECONDS: f64 = 0.25;
 
 /// The writes to cells in `range`, of `saved` sorted by cell.
 fn in_range<'a, T>(saved: &'a [(u32, T)], range: &std::ops::Range<u32>) -> &'a [(u32, T)] {

@@ -631,6 +631,7 @@ impl Engine {
             engine.restore_after_init(slot);
             engine.persistence_changed(slot);
         }
+        engine.run_load_waits();
         engine.pgs.prepare_runtime();
         engine.building = false;
         engine.rebuild_racks();

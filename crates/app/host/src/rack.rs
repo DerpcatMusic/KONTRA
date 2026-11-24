@@ -452,25 +452,27 @@ impl Rack {
     /// channel and playing into its output. Its volume and pan are its
     /// instrument's own.
     ///
-    /// A slot with no zones (a MIDI player such as Conflux's factory
-    /// multis put in front of the synth) gets no part: it sounds nothing
-    /// itself and no part hears another's notes. A multi left with one
-    /// part names it after the multi, as a snapshot's part is named.
+    /// A slot that sounds nothing itself (no zones, or only silent ones:
+    /// a MIDI player such as the Chords tool Conflux's factory multis put
+    /// in front of the synth) gets no part: the multi's
+    /// translation already ran its scripts in front of the parts on its
+    /// channel, and one no part hears is dropped with a notice. A multi
+    /// left with one part names it after the multi, as a snapshot's part
+    /// is named.
     ///
     /// # Errors
     /// When the multi cannot be read, or none of its slots can.
     fn load_multi(&mut self, part: usize, path: &Path) -> Result<(), crate::Error> {
-        let mut loaded = kontra_format_kontakt::multi_load(path, None)?;
+        let mut loaded =
+            kontra_format_kontakt::multi_load(path, None, &kontra_library::kontakt::candidates())?;
         if loaded.slots.is_empty() {
             return Err(crate::Error::Multi(loaded.failed.join("; ")));
         }
-        let silent = |s: &kontra_format_kontakt::Slot| {
-            s.instrument.groups.iter().all(|g| g.zones.is_empty())
-        };
+        let silent = |s: &kontra_format_kontakt::Slot| !s.sounds;
         if loaded.slots.iter().any(|s| !silent(s)) {
             for s in loaded.slots.iter().filter(|s| silent(s)) {
                 loaded.failed.push(format!(
-                    "slot {} ({}): no samples of its own, so no part (its notes would reach no other part)",
+                    "slot {} ({}): sounds nothing itself and no part is on its channel, so its notes reach nothing",
                     s.index + 1,
                     s.instrument.name
                 ));
@@ -709,6 +711,7 @@ impl Rack {
         for s in loaded.plan.scripts.iter_mut().filter(|s| s.files.is_some()) {
             s.files = Some(Arc::new(DiskFiles {
                 saves: saves.clone(),
+                rc: s.rc_folder,
             }));
         }
         self.offers.retain(|o| o.part != part);
@@ -1310,6 +1313,7 @@ mod tests {
             saved: Vec::new(),
             data: Vec::new(),
             links: Vec::new(),
+            container: None,
         };
         rack.install_multi_scripts(Some(path), vec![script]);
         let notices = rack.take_notices();
