@@ -113,6 +113,7 @@ fn specimen() -> App {
         starred,
         favorites: Vec::new(),
         art: Vec::new(),
+        offline: None,
     };
     let mut app = App {
         libraries: vec![

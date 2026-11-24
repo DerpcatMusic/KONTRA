@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use kontra_engine::ir;
 
+use crate::state::SavedId;
+
 /// A folder found for a part's missing samples, waiting for the player's yes.
 #[derive(Clone, Debug)]
 pub struct Offer {
@@ -63,6 +65,46 @@ pub fn find(roots: &[PathBuf], file: &Path) -> Option<(PathBuf, PathBuf)> {
         }
     }
     None
+}
+
+/// Whether `path` is there: a file or folder, or a member of a bank or
+/// multi that is (`Bank.ufs/Folder/Name.uvip`, `Multi.nkm/2`).
+#[must_use]
+pub fn present(path: &Path) -> bool {
+    path.exists() || path.ancestors().skip(1).any(Path::is_file)
+}
+
+/// `path` where it is now: itself when present; else by `ids` (a saved
+/// state's), in the library of that identity wherever it was found; else
+/// where a moved folder ([`kontra_format::moved`]) put it.
+#[must_use]
+pub fn resolve(libraries: &[(String, PathBuf, bool)], path: &Path, ids: &[SavedId]) -> PathBuf {
+    if present(path) {
+        return path.to_path_buf();
+    }
+    let by_id = ids.iter().find(|s| s.path == path).and_then(|s| {
+        let (_, dir, _) = (libraries.iter()).find(|(id, _, online)| *online && *id == s.library)?;
+        let p = if s.relative.as_os_str().is_empty() {
+            dir.clone()
+        } else {
+            dir.join(&s.relative)
+        };
+        present(&p).then_some(p)
+    });
+    by_id.unwrap_or_else(|| kontra_format::moved(path))
+}
+
+/// `path` by the identity of the library holding it, the innermost one.
+#[must_use]
+pub fn identify(libraries: &[(String, PathBuf, bool)], path: &Path) -> Option<SavedId> {
+    let (id, dir, _) = (libraries.iter())
+        .filter(|(id, dir, _)| !id.is_empty() && path.starts_with(dir))
+        .max_by_key(|(_, dir, _)| dir.as_os_str().len())?;
+    Some(SavedId {
+        path: path.to_path_buf(),
+        library: id.clone(),
+        relative: path.strip_prefix(dir).ok()?.to_path_buf(),
+    })
 }
 
 /// `file` where a moved folder put it.

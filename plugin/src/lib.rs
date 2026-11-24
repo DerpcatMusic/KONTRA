@@ -477,10 +477,12 @@ impl BackgroundTask for Tick {
             }
         }
         notices.extend(rack.take_notices());
+        notices.append(&mut browser.notices);
         report.extend(notices);
         match p.shared.folder.picked() {
             Some(Ok((folder::Wanted::Libraries, path))) => browser.add_root(path),
             Some(Ok((folder::Wanted::Snapshots, path))) => browser.set_kontakt(path),
+            Some(Ok((folder::Wanted::Locate(n), path))) => browser.locate(n, path),
             Some(Ok((folder::Wanted::ExportReport(contents), path))) => {
                 match std::fs::write(&path, contents) {
                     Ok(()) => report.push(format!("Exported diagnostics report to {}", path.display())),

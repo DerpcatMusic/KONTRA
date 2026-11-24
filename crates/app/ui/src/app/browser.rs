@@ -1329,7 +1329,11 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         l.starred = !l.starred;
         out.push(Action::Star(lib, l.starred));
     }
-
+    let locate =
+        (l.offline.is_some()).then(|| button(ui, "library-locate", "Locate\u{2026}", false));
+    if locate.as_ref().is_some_and(|b| b.changed) {
+        out.push(Action::Locate(lib));
+    }
     // The libraries' search reaches in when it found presets here, not the
     // library itself.
     let query = match v.preset_search.trim() {
@@ -1540,6 +1544,18 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if let Some(fold_btn) = fold_all {
         head_items.push(fold_btn);
     }
+    if let Some(why) = &l.offline {
+        head_items.push(
+            caption(format!("Offline \u{b7} {why}"))
+                .text_size(SMALL * 0.9)
+                .fill(amber)
+                .lines(1)
+                .min_w(0)
+                .tip("Library moved or missing: Locate\u{2026} the folder it is in now")
+                .id("library-offline-badge"),
+        );
+    }
+    head_items.extend(locate.map(|b| b.el));
     head_items.push(star.el);
 
     let header = row(head_items)
@@ -1581,6 +1597,12 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             col(empty).gap(SPACE).align(Align::Start).pad(SPACE * 2.)
         }
         (false, _) => col(rows).scroll().id("preset-list").min_h(0).grow(1),
+    };
+    // An offline library's presets stay listed, dimmed.
+    let list = if l.offline.is_some() {
+        list.opacity(0.5)
+    } else {
+        list
     };
     col![header, search_el, list]
 }
