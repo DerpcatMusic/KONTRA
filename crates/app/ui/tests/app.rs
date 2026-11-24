@@ -747,6 +747,207 @@ fn protected_library_surfaces_lock_badge_tooltip_banner_and_passes_audit() {
     }
 }
 
+/// Pointer frames pressing `id` at `from` and releasing at `to`, each a
+/// share (0..1, 0..1) of its frame; the actions they carried.
+fn sweep(ui: &mut Ui, app: &mut App, id: &str, from: (f64, f64), to: (f64, f64)) -> Vec<Action> {
+    // A missing target sweeps nothing, and the asserts after it say so.
+    let Some(f) = ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame) else {
+        return Vec::new();
+    };
+    let at = |(x, y): (f64, f64)| Point::new(f.x + f.size.width * x, f.y + f.size.height * y);
+    let mut out = Vec::new();
+    let steps = 8;
+    for k in 0..=steps + 1 {
+        let t = f64::from(k.min(steps)) / f64::from(steps);
+        let p = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+        let buttons = if k <= steps {
+            Buttons::PRIMARY
+        } else {
+            Buttons::default()
+        };
+        let pointer = PointerInput {
+            pos: Some(at(p)),
+            buttons,
+            ..Default::default()
+        };
+        let input = Input {
+            pointer,
+            ..Default::default()
+        };
+        out.extend(frame(ui, app, input).0);
+    }
+    out.extend(settle(ui, app));
+    out
+}
+
+fn one_part() -> App {
+    App {
+        parts: vec![Part {
+            name: "Violins".into(),
+            library: "Areia".into(),
+            channel: 1,
+            output: 1,
+            ..Part::default()
+        }],
+        ..App::default()
+    }
+}
+
+/// The classic controls are on screen, pass MUI's audit at both sizes, and
+/// each drives what it drove: master gain, pan, pitch bend and CC 1.
+#[test]
+fn the_classic_controls_are_back_and_drive_their_params() {
+    let sizes = [Size::new(1180., 780.), Size::new(1475., 975.)];
+    let mut ui = kontra_ui::ui();
+    let mut app = one_part();
+    let findings = mui::audit::audit(&mut ui, sizes, |ui| app::view(ui, &mut app).el);
+    assert!(findings.is_empty(), "{findings:?}");
+    settle(&mut ui, &mut app);
+    let scene = ui.scene().unwrap();
+    for id in ["master", "pitch", "modulation", "part-0-pan"] {
+        assert!(scene.surface(id).is_some(), "{id} is on screen");
+    }
+
+    // Master: the level is where the wedge is pressed, by amplitude; the
+    // middle is 0 dB and the end +6 dB.
+    let out = sweep(&mut ui, &mut app, "master", (0.25, 0.5), (0.5, 0.5));
+    let last = out.iter().rev().find_map(|a| match a {
+        Action::Master(db) => Some(*db),
+        _ => None,
+    });
+    let db = last.expect("the wedge set the master");
+    assert!(db.abs() < 0.3, "the middle is 0 dB: {db}");
+    assert!(
+        out.iter()
+            .any(|a| matches!(a, Action::Master(d) if *d < -3.)),
+        "{out:?}"
+    );
+    assert!((app.master - db).abs() < 1e-12);
+    // The far end (just inside it: the edge itself is outside the frame).
+    sweep(&mut ui, &mut app, "master", (0.9, 0.5), (0.999, 0.5));
+    assert!(
+        (app.master - kontra_ui::kit::WEDGE_TOP_DB).abs() < 0.05,
+        "{}",
+        app.master
+    );
+
+    // Pan: a drag left pans left.
+    let out = sweep(&mut ui, &mut app, "part-0-pan", (0.5, 0.5), (0.1, 0.5));
+    assert!(
+        out.iter()
+            .any(|a| matches!(a, Action::Pan(0, p) if *p < -0.5)),
+        "{out:?}"
+    );
+
+    // Pitch: up bends up, and the release springs it back to 0.
+    let out = sweep(&mut ui, &mut app, "pitch", (0.5, 0.5), (0.5, 0.1));
+    assert!(
+        out.iter()
+            .any(|a| matches!(a, Action::Pitch(p) if *p > 0.5)),
+        "{out:?}"
+    );
+    assert!(
+        matches!(out.iter().rev().find(|a| matches!(a, Action::Pitch(_))), Some(Action::Pitch(p)) if *p == 0.)
+    );
+
+    // Mod wheel: up raises CC 1, and it stays.
+    let out = sweep(&mut ui, &mut app, "modulation", (0.5, 0.9), (0.5, 0.1));
+    let m = out.iter().rev().find_map(|a| match a {
+        Action::Modulation(m) => Some(*m),
+        _ => None,
+    });
+    assert!(m.is_some_and(|m| m > 0.6), "{out:?}");
+}
+
+/// A value set from outside (a preset, automation) is drawn at once: the
+/// controls hold no glide, so nothing is left animating.
+#[test]
+fn the_controls_draw_a_value_from_outside_without_a_glide() {
+    let mut ui = kontra_ui::ui();
+    let mut app = one_part();
+    settle(&mut ui, &mut app);
+    app.master = -20.;
+    app.parts[0].pan = 1.;
+    app.parts[0].volume = -30.;
+    let r = app::view(&mut ui, &mut app);
+    let f = ui
+        .frame(
+            r.el,
+            Some(Size::new(900., 600.)),
+            Input::default(),
+            1. / 60.,
+        )
+        .expect("the moved controls render");
+    assert!(!f.animating, "a moved value animates nothing");
+}
+
+/// From silence an arrow key still raises the master one whole step.
+#[test]
+fn an_arrow_raises_the_master_from_silence() {
+    let mut ui = kontra_ui::ui();
+    let mut app = one_part();
+    app.master = -60.;
+    settle(&mut ui, &mut app);
+    ui.focus("master");
+    let out = key(&mut ui, &mut app, Key::Right);
+    assert!(app.master > -60., "{out:?}");
+    assert!(
+        out.iter().any(|a| matches!(a, Action::Master(_))),
+        "{out:?}"
+    );
+    // Just under a grid point, Left still lowers it.
+    app.master = kontra_ui::kit::wedge_db(0.524);
+    settle(&mut ui, &mut app);
+    let before = app.master;
+    key(&mut ui, &mut app, Key::Left);
+    assert!(app.master < before, "{before} -> {}", app.master);
+}
+
+/// A double click puts the master back to 0 dB, and holding the second
+/// press still leaves it there.
+#[test]
+fn a_double_click_resets_the_master_and_a_still_hold_keeps_it() {
+    let mut ui = kontra_ui::ui();
+    let mut app = one_part();
+    settle(&mut ui, &mut app);
+    let f = ui.scene().unwrap().surface("master").unwrap().frame;
+    let pos = Some(Point::new(
+        f.x + f.size.width * 0.2,
+        f.y + f.size.height * 0.5,
+    ));
+    let press = |down: bool| Input {
+        pointer: PointerInput {
+            pos,
+            buttons: if down {
+                Buttons::PRIMARY
+            } else {
+                Buttons::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for down in [true, false, true, true, true, true, false] {
+        frame(&mut ui, &mut app, press(down));
+    }
+    settle(&mut ui, &mut app);
+    assert_eq!(app.master, 0., "the double click's 0 dB held");
+}
+
+#[test]
+fn the_wedge_reads_by_amplitude_like_vlc() {
+    use kontra_ui::kit::{wedge_at, wedge_db, wedge_text};
+    assert_eq!(wedge_at(-60.), 0.);
+    assert!((wedge_at(0.) - 0.5).abs() < 0.002);
+    assert_eq!(wedge_at(6.), 1.);
+    for t in [0.1, 0.25, 0.5, 0.75, 1.] {
+        assert!((wedge_at(wedge_db(t)) - t).abs() < 1e-9, "{t}");
+    }
+    assert_eq!(wedge_text(0.), "100% · 0.0 dB");
+    assert_eq!(wedge_text(-60.), "0% · -inf dB");
+    assert_eq!(wedge_text(6.), "200% · 6.0 dB");
+}
+
 #[test]
 fn report_hides_latent_diagnostics_until_developer_toggle_is_enabled() {
     let mut ui = kontra_ui::ui();

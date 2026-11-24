@@ -682,14 +682,12 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     .shrink(0)
     .id("load");
     let mut master = app.master;
-    let gain = kit::slider(
+    let gain = kit::wedge(
         ui,
         "master",
         "Master gain",
         &mut master,
-        -60.0..=6.0,
-        0.,
-        (TEXT * 7., CONTROL),
+        (TEXT * 5., CONTROL * 0.6),
     );
     if gain.changed {
         app.master = master;
@@ -723,7 +721,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         vrule().h(CONTROL * 0.6),
         section("Master"),
         gain.el,
-        caption(db(app.master)).reserve("-inf dB"),
+        caption(kit::wedge_text(app.master)).reserve("200% · -inf dB"),
         meter(ui, "master-level", app.level).w(TEXT * 4.).h(3.).el(),
         vrule().h(CONTROL * 0.6),
         keyboard.el,
