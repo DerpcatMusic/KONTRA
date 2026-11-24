@@ -1610,6 +1610,13 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!((bend(0.0), bend(1.0), bend(-1.0)), (8192, 16383, 0));
+        // The mod wheel is CC 1, 0..127.
+        let cc1 = |x| match played(&Action::Modulation(x)) {
+            Some(Event::Ump([w, _])) => (w >> 16 & 0xff, w >> 8 & 127, w & 127),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(cc1(0.0), (0xB0, 1, 0));
+        assert_eq!(cc1(1.0), (0xB0, 1, 127));
         assert!(played(&Action::Panic).is_none());
         assert!(is_instrument(std::path::Path::new("/a/B.NKI")));
         assert!(!is_instrument(std::path::Path::new("/a/b.wav")));

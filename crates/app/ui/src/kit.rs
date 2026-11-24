@@ -1,7 +1,7 @@
 //! The components every view is built from, each written once. They take
 //! the [`Ui`], an id and the value they show, and return the element and
-//! whether the user acted on it this frame. Hover, press and value changes
-//! ease through mui's springs, so motion costs nothing once it settles.
+//! whether the user acted on it this frame. Hover and press ease through
+//! mui's springs; a value never does: a control draws this frame's value.
 
 use std::ops::RangeInclusive;
 
@@ -162,7 +162,8 @@ pub fn knob(
     range: RangeInclusive<f64>,
     default: f64,
 ) -> Response {
-    let r = mui::widgets::knob(ui, id, name, value, Domain::new(range).default(default));
+    let domain = Domain::new(range).default(default).instant();
+    let r = mui::widgets::knob(ui, id, name, value, domain);
     Response {
         el: r
             .el
@@ -176,9 +177,11 @@ pub fn knob(
 }
 
 /// A slider `size` big, vertical when taller than wide: a drag anywhere on
-/// it sweeps `range`, a double click puts back `default`. A range centred
-/// on 0 (pan) fills from the middle and marks it. `name` is its tooltip.
-/// MUI's slider, quiet and flat.
+/// it sweeps `range`, the arrow keys step it, a double click puts back
+/// `default`. A hairline rail, lit from the start, or from the middle with a
+/// tick there for a range centred on 0 (pan), and a block thumb. `name` is
+/// its tooltip. KONTRA's own slider as of v0.6.20, drawn at this frame's
+/// value with no glide.
 pub fn slider(
     ui: &mut Ui,
     id: impl Into<Id>,
@@ -188,23 +191,214 @@ pub fn slider(
     default: f64,
     (w, h): (f64, f64),
 ) -> Response {
-    let r = mui::widgets::slider(ui, id, name, value, Domain::new(range).default(default));
-    let control = if h > w { r.el.vertical() } else { r.el };
+    let id: Id = id.into();
+    let before = *value;
+    let vertical = h > w;
+    ui.drag(id.clone(), value, range.clone(), w.max(h), vertical);
+    mui::widgets::stepped(ui, id.as_str(), value, &range);
+    if ui.double_click(id.clone()) {
+        *value = default;
+    }
+    let (lo, hi) = (*range.start(), *range.end());
+    let t = if hi == lo {
+        0.
+    } else {
+        ((*value - lo) / (hi - lo)).clamp(0., 1.)
+    };
+    let from: f64 = if lo == -hi { 0.5 } else { 0. };
+    let hover = ui.state(id.clone()).hover as f32;
+    let el = canvas(move |s| {
+        let rect = rect_path;
+        // Along the travel: 0 at the start (left, or bottom), 1 at the end.
+        let (len, mid) = if vertical {
+            (s.height - 4., s.width / 2.)
+        } else {
+            (s.width - 4., s.height / 2.)
+        };
+        let pos = |t: f64| 2. + len * if vertical { 1. - t } else { t };
+        let bar = |a: f64, b: f64, half: f64| {
+            let (a, b) = (pos(a).min(pos(b)), pos(a).max(pos(b)));
+            if vertical {
+                rect(mid - half, a, mid + half, b)
+            } else {
+                rect(a, mid - half, b, mid + half)
+            }
+        };
+        let lit = Fill::from(Color::oklch(0.78 + 0.1 * hover, 0., 0.));
+        let mut draw = vec![
+            Draw::fill(bar(0., 1., 1.), lift(3)),
+            Draw::fill(bar(from.min(t), from.max(t), 1.), lit),
+        ];
+        if from > 0. {
+            draw.push(Draw::fill(
+                bar(0.5 - 0.5 / len, 0.5 + 0.5 / len, 4.),
+                lift(4),
+            ));
+        }
+        let x = pos(t);
+        draw.push(Draw::fill(
+            if vertical {
+                rect(mid - 5., x - 2., mid + 5., x + 2.)
+            } else {
+                rect(x - 2., mid - 5., x + 2., mid + 5.)
+            },
+            Fill::from(Color::oklch(0.85, 0., 0.)),
+        ));
+        draw
+    })
+    .w(w)
+    .h(h)
+    .shrink(0)
+    .cursor(Cursor::Hand)
+    .focusable()
+    .a11y(A11y::Slider {
+        value: *value,
+        min: lo,
+        max: hi,
+    })
+    .named(name.to_owned())
+    .tip(name.to_owned())
+    .id(id);
     Response {
-        el: control
-            .quiet()
-            .flat()
-            .px(w.min(h) / LANE_SHARE)
-            .el()
-            .w(w)
-            .h(h)
-            .shrink(0),
-        changed: r.changed,
+        el,
+        changed: *value != before,
     }
 }
 
-/// MUI sizes a slider's lane as this share of the control's height.
-const LANE_SHARE: f64 = 0.45;
+/// The loudest a [`wedge`] goes, in dB: its end is twice the amplitude of
+/// 0 dB, VLC's 200 %.
+pub const WEDGE_TOP_DB: f64 = 6.;
+/// The quietest a [`wedge`] reads as a level; below it is silence.
+pub const WEDGE_FLOOR_DB: f64 = -60.;
+
+/// Where `db` sits along a [`wedge`], 0..1, by amplitude: 0 dB is the middle.
+pub fn wedge_at(db: f64) -> f64 {
+    if db <= WEDGE_FLOOR_DB {
+        0.
+    } else {
+        (10f64.powf((db - WEDGE_TOP_DB) / 20.)).clamp(0., 1.)
+    }
+}
+
+/// The level at `t` along a [`wedge`], in dB.
+pub fn wedge_db(t: f64) -> f64 {
+    if t <= 0. {
+        WEDGE_FLOOR_DB
+    } else {
+        (20. * t.log10() + WEDGE_TOP_DB).clamp(WEDGE_FLOOR_DB, WEDGE_TOP_DB)
+    }
+}
+
+/// A level for a [`wedge`]'s readout: its share of 0 dB, and dB.
+pub fn wedge_text(db: f64) -> String {
+    let percent = (wedge_at(db) * 200.).round();
+    if db <= WEDGE_FLOOR_DB {
+        format!("{percent:.0}% · -inf dB")
+    } else {
+        format!("{percent:.0}% · {db:.1} dB")
+    }
+}
+
+/// A master level VLC's way: a wedge rising left to right, filled from the
+/// left up to the level, lit past 100 %. A press or drag sets the level
+/// under the pointer, the wheel and arrow keys step it 5 %, a double click
+/// puts back 0 dB. `db` runs [`WEDGE_FLOOR_DB`]..[`WEDGE_TOP_DB`].
+pub fn wedge(
+    ui: &mut Ui,
+    id: impl Into<Id>,
+    name: &str,
+    db: &mut f64,
+    (w, h): (f64, f64),
+) -> Response {
+    let id: Id = id.into();
+    let before = *db;
+    let mut t = wedge_at(*db);
+    let set = t;
+    // The press and each move set the level under the pointer; a still
+    // hold rewrites nothing, so a double click's 0 dB stays put.
+    let r = ui.get(id.clone());
+    if (r.pressed || (r.held && r.drag_delta != Vec2::ZERO))
+        && let Some(p) = ui.local(id.clone())
+    {
+        t = (p.x / w).clamp(0., 1.);
+    }
+    if let Some(turn) = ui.wheel(id.clone()) {
+        // Wheel up is a negative y: louder.
+        t = (t - turn.y.signum() * WEDGE_STEP).clamp(0., 1.);
+    }
+    let keyed = t;
+    if mui::widgets::stepped(ui, id.as_str(), &mut t, &(0.0..=1.0)) {
+        let moved = t - keyed;
+        // An arrow's step is finer than the grid: go to the next grid point
+        // its way, even from off the grid. Home/End/Page land on the grid.
+        let k = keyed / WEDGE_STEP;
+        t = if moved.abs() < WEDGE_STEP {
+            let next = if moved > 0. {
+                k.floor() + 1.
+            } else {
+                k.ceil() - 1.
+            };
+            (next * WEDGE_STEP).clamp(0., 1.)
+        } else {
+            (t / WEDGE_STEP).round() * WEDGE_STEP
+        };
+    }
+    if t != set {
+        *db = wedge_db(t);
+    }
+    // A screen reader's set/increment/decrement arrives in dB.
+    if let Some(v) = ui.requested_value(id.clone()) {
+        *db = v.clamp(WEDGE_FLOOR_DB, WEDGE_TOP_DB);
+        t = wedge_at(*db);
+    }
+    if ui.double_click(id.clone()) {
+        *db = 0.;
+        t = wedge_at(0.);
+    }
+    let hover = ui.state(id.clone()).hover as f32;
+    let el = canvas(move |s| {
+        let (w, h) = (s.width, s.height);
+        // The wedge's height at `x`: nothing at the left, all of it at the right.
+        let part = |a: f64, b: f64| {
+            let (a, b) = (a * w, b * w);
+            Path::polyline(
+                [(a, h), (b, h), (b, h - h * b / w), (a, h - h * a / w)]
+                    .map(|(x, y)| Point::new(x, y)),
+                true,
+            )
+        };
+        let lit = Fill::from(Color::oklch(0.78 + 0.1 * hover, 0., 0.));
+        let mut draw = vec![
+            Draw::fill(part(0., 1.), lift(3)),
+            Draw::fill(part(0., t.min(0.5)), lit),
+        ];
+        if t > 0.5 {
+            draw.push(Draw::fill(part(0.5, t), accent()));
+        }
+        draw
+    })
+    .w(w)
+    .h(h)
+    .shrink(0)
+    .cursor(Cursor::Hand)
+    .focusable()
+    .captures_wheel()
+    .a11y(A11y::Slider {
+        value: *db,
+        min: WEDGE_FLOOR_DB,
+        max: WEDGE_TOP_DB,
+    })
+    .named(name.to_owned())
+    .tip(format!("{name} {}", wedge_text(*db)))
+    .id(id);
+    Response {
+        el,
+        changed: *db != before,
+    }
+}
+
+/// A [`wedge`]'s wheel and key step along it: 5 % of its 200 %.
+const WEDGE_STEP: f64 = 0.025;
 
 /// A number with its icon that a horizontal drag nudges and a double click
 /// resets, for values set once and left: a part's tune.
