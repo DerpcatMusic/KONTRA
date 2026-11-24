@@ -27,6 +27,8 @@ impl Engine {
     /// real-time.
     pub fn recall(&mut self, saved: Box<[Saved]>) -> Box<[Saved]> {
         self.reset();
+        self.recall_epoch = self.recall_epoch.wrapping_add(1);
+        self.requests.clear();
         for (slot, values) in (0u8..).zip(saved.iter()) {
             self.write_saved(slot, &values.ints, &values.texts);
         }

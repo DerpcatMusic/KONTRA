@@ -33,7 +33,7 @@ impl Engine {
         if playing.map(usize::from) == Some(found) && !self.pending(slot, generic) {
             return Some(0);
         }
-        if self.running.kind != crate::script::Kind::Init {
+        if !self.building && self.running.kind != crate::script::Kind::Init {
             let index = u16::try_from(found).ok()?;
             return self.ask(slot, generic, index, law);
         }
@@ -46,7 +46,9 @@ impl Engine {
     /// init the audio thread cannot read it, and no response of that name is in
     /// the plan, so it stays unanswered.
     fn load_ir_file(&mut self, path: &str, slot: i32, generic: i32) -> Option<i32> {
-        if self.running.kind != crate::script::Kind::Init || !path.contains(['/', '\\']) {
+        if (!self.building && self.running.kind != crate::script::Kind::Init)
+            || !path.contains(['/', '\\'])
+        {
             return None;
         }
         let sample = crate::zone_edits::describe(path)?;

@@ -92,13 +92,7 @@ fn is_drive(kind: &ir::EffectKind) -> bool {
 }
 
 fn is_matrix_effect(kind: &ir::EffectKind) -> bool {
-    matches!(
-        kind,
-        ir::EffectKind::Gain(_)
-            | ir::EffectKind::Matrix(_)
-            | ir::EffectKind::Invert { .. }
-            | ir::EffectKind::Stereo { .. }
-    )
+    kontra_effects::matrix::utility_matrix(kind).is_some()
 }
 
 /// The unit for an insert, at its saved settings, and a shaper's base-rate

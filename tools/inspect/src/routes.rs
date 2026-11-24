@@ -109,7 +109,13 @@ pub fn summary(events: &[Value]) -> String {
             .get("name")
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("slot {} target {}", event["mod_slot"], event["target"]));
+            .unwrap_or_else(|| {
+                format!(
+                    "slot {} target {}",
+                    event.get("mod_slot").unwrap_or(&Value::Null),
+                    event.get("target").unwrap_or(&Value::Null)
+                )
+            });
         let entry = groups
             .entry((cc, name, unit.to_owned()))
             .or_insert((0, amount, amount));
@@ -135,6 +141,7 @@ pub fn summary(events: &[Value]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

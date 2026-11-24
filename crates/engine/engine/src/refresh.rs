@@ -69,7 +69,8 @@ impl Engine {
                 trace.routes.end();
             }
             if let Some(slot) = self.voices.get_mut(i) {
-                (slot.warp, slot.chaos, slot.stretch) = (timed.warp, timed.chaos, timed.stretch);
+                (slot.warp, slot.lfo_phase, slot.chaos, slot.stretch) =
+                    (timed.warp, timed.lfo_phase, timed.chaos, timed.stretch);
                 slot.pan = pan;
                 slot.voice.set_gain(gain);
                 slot.voice.set_lag(lag);

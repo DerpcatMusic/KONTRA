@@ -231,6 +231,7 @@ pub(crate) fn translate(
 
     let mut instrument = builder.samples(assets.pool.into_samples()).build(notes);
     instrument.impulses = assets.impulses;
+    instrument.diagnostics.extend(ir::validate(&instrument));
     instrument
 }
 

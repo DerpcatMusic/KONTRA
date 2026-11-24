@@ -52,6 +52,7 @@ pub fn octave_levels(audio: &[[f32; 2]], rate: u32) -> Vec<Value> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     #[test]

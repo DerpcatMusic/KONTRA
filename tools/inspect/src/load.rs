@@ -410,6 +410,7 @@ fn absent_reason(sample: usize, sample_count: usize, resident: &HashSet<usize>) 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use kontra_engine::ir::FormulaId;

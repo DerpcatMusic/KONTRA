@@ -36,7 +36,7 @@ pub fn prepare(
     store: &mut Store,
     open: &Open<'_>,
 ) -> (Plan, Vec<ir::Diagnostic>) {
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = ir::validate(instrument);
     let loaded = load_samples(instrument, store, open, &mut diagnostics);
     let has_osc = instrument
         .groups
@@ -1239,5 +1239,37 @@ mod tests {
             0..4096
         );
         assert_eq!(head(DFD, false), DFD);
+    }
+
+    #[test]
+    fn prepare_surfaces_ir_validation_diagnostics_for_dangling_references() {
+        let mut store = Store::new(kontra_stream::StoreConfig::DEFAULT).unwrap();
+        let inst = ir::Instrument {
+            buses: vec![ir::Bus::new("Main")],
+            groups: vec![ir::Group {
+                bus: 9,
+                zones: vec![ir::Zone {
+                    sample: 42,
+                    ..at(0, 0)
+                }],
+                ..ir::Group::DEFAULT
+            }],
+            ..ir::Instrument::DEFAULT
+        };
+        let (_plan, diags) = prepare(&inst, 48_000, &mut store, &|_| {
+            Err(io::Error::new(io::ErrorKind::NotFound, "unused"))
+        });
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.feature == "ir.zone.sample_out_of_bounds"),
+            "expected sample_out_of_bounds diagnostic, got {diags:?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.feature == "ir.group.bus_out_of_bounds"),
+            "expected bus_out_of_bounds diagnostic, got {diags:?}"
+        );
     }
 }

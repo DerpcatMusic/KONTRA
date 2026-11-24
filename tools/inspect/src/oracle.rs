@@ -157,6 +157,7 @@ pub fn run(path: &Path, events: &[Input], audio: &[[f32; 2]], first_onset: bool)
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     #[test]
