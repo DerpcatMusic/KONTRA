@@ -16,6 +16,9 @@
 #           (and clears draft) before the task is dispatched
 #   gate    commands that must pass; paste their output in the PR
 #   done    acceptance criteria, checked in review
+#   landed  commit on origin/main that delivered the task (verify: git merge-base --is-ancestor <sha> origin/main)
+#   retired why the task will not be done; open work lives in 13-IR-VNEXT.md. A retired dep never unblocks.
+#   note    optional, for a task that landed differently from its brief
 
 [meta]
 branch = "v3"
@@ -67,6 +70,7 @@ paths = ["docs/architecture-v3/tasks.toml", "docs/architecture-v3/TASKS.md"]
 [[task]]
 id = "P0.0"
 title = "Scaffold tools/xtask and tools/probe (workspace members)"
+landed = "fadb0fef8"
 phase = 0
 lane = "tooling"
 size = "S"
@@ -82,6 +86,7 @@ done = ["Both stubs compile on v3."]
 [[task]]
 id = "P0.1"
 title = "xtask: size, debt, deps-check, timings"
+landed = "6cef256dc"
 phase = 0
 lane = "tooling"
 size = "M"
@@ -113,6 +118,8 @@ done = [
 [[task]]
 id = "P0.2"
 title = "kontra-probe: playback contracts C1–C10 as a tool"
+landed = "acec4a059"
+note = "tools/probe retired later by f2b07ed02 (#1196)"
 phase = 0
 lane = "tooling"
 size = "L"
@@ -144,6 +151,8 @@ done = [
 [[task]]
 id = "P0.3"
 title = "Probe fixtures: native-format instruments that reproduce the audited bugs"
+landed = "23acfb4fc"
+note = "tools/probe retired later by f2b07ed02 (#1196)"
 phase = 0
 lane = "tooling"
 size = "M"
@@ -169,6 +178,8 @@ done = [
 [[task]]
 id = "P0.3b"
 title = "Probe fixtures that reproduce the bugs: authored KSP (play_note offsets, ignore_event, UI load)"
+landed = "e4669871b"
+note = "tools/probe retired later by f2b07ed02 (#1196)"
 phase = 0
 lane = "tooling"
 size = "M"
@@ -191,6 +202,7 @@ done = ["At least C1 or C9 (offsets), C7/C8 (UI load) and C6 (double attack) fai
 [[task]]
 id = "P0.4"
 title = "Build profiles: fast profile, mold"
+landed = "cf7bab331"
 phase = 0
 lane = "tooling"
 size = "S"
@@ -211,6 +223,8 @@ done = ["fast rebuild after a sampler-core edit measured and reported; release p
 [[task]]
 id = "P0.5"
 title = "v3 CI: plan checks, scope guard, push CI on v3"
+landed = "b1522fb25"
+note = "v3.yml plan checks; closed by the coordinator without a PR"
 phase = 0
 lane = "tooling"
 size = "S"
@@ -229,6 +243,7 @@ done = ["Ruleset on v3 requires `CI required` and `v3 plan`."]
 [[task]]
 id = "P0.7"
 title = "xtask ci: one local gate, plus debt and size ratchets in CI"
+landed = "4847db907"
 phase = 0
 lane = "tooling"
 size = "M"
@@ -249,6 +264,7 @@ done = ["The brief template's step 3 can say just `cargo xtask ci` (coordinator 
 [[task]]
 id = "P0.6"
 title = "Gate G0: baseline on v3"
+landed = "b6d0511fd"
 phase = 0
 lane = "coordinator"
 size = "S"
@@ -269,6 +285,7 @@ done = ["G0.md committed; every later gate compares against it."]
 [[task]]
 id = "P0.8"
 title = "One rustfmt pass over the workspace, then cargo fmt --check in CI"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 0
 lane = "tooling"
 size = "S"
@@ -289,6 +306,7 @@ done = ["`cargo fmt --all --check` passes on v3 and runs on every PR."]
 [[task]]
 id = "P1.1"
 title = "Reachable start range per zone (S.Mod, CC/RTC → start)"
+landed = "a00805b3c"
 phase = 1
 lane = "playback"
 size = "M"
@@ -310,6 +328,7 @@ done = ["Zones with a sample-start route carry `StartRange.max_frames` = their S
 [[task]]
 id = "P1.1b"
 title = "Script play_note offsets join the zone start range"
+landed = "16bc5ec9b"
 phase = 1
 lane = "playback"
 size = "M"
@@ -331,6 +350,7 @@ done = ["Areia Spiccato Fast and Vista report non-zero start ranges (coordinator
 [[task]]
 id = "P1.2"
 title = "Preload law: Kontakt DFD window (60 KB per channel + 2 × S.Mod), never shrink below it"
+landed = "3189872d3"
 phase = 1
 lane = "playback"
 size = "L"
@@ -353,6 +373,7 @@ done = ["Probe cc_start and key_position pass every contract they passed in roun
 [[task]]
 id = "P1.3"
 title = "No cold holds: late data is silence, the cursor keeps time"
+landed = "26123eb21"
 phase = 1
 lane = "playback"
 size = "M"
@@ -373,6 +394,7 @@ done = ["Probe C1 passes on all fixtures in real-time mode with a throttled disk
 [[task]]
 id = "P1.4"
 title = "One start batch per callback instant; delete start runway and per-family cohorts"
+landed = "a91e9b601"
 phase = 1
 lane = "playback"
 size = "M"
@@ -394,6 +416,7 @@ done = ["C3 and C6 pass on fixtures; coordinator confirms on Areia Spiccato Fast
 [[task]]
 id = "P1.4b"
 title = "Silent notes name their cause; fix Areia low keys and dense chords"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 1
 lane = "playback"
 size = "M"
@@ -415,6 +438,7 @@ done = ["C6 and C8 print a cause for every silent note.", "A probe unit test: a 
 [[task]]
 id = "P1.5"
 title = "Gate G1: on-time start on real libraries"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 1
 lane = "coordinator"
 size = "S"
@@ -436,6 +460,7 @@ done = ["G1.md: contracts green or each failure has a follow-up task id."]
 [[task]]
 id = "P2.1"
 title = "Script UI writes go to a latest-value control store, not a queue"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 2
 lane = "script"
 size = "L"
@@ -457,6 +482,7 @@ done = ["The `ui_load` fixture tests in tools/probe/tests/fixtures.rs (300 UI wr
 [[task]]
 id = "P2.2"
 title = "Delete behavior fuel and BehaviorOverload::Abort; KSP while limit only"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 2
 lane = "script"
 size = "M"
@@ -476,6 +502,7 @@ done = ["A full effect queue (true events after P2.1) never releases or aborts a
 [[task]]
 id = "P2.3"
 title = "Gate G2: Areia dense chords 64/64"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 2
 lane = "coordinator"
 size = "S"
@@ -493,6 +520,7 @@ done = ["Areia dense 64/64 audible on first block."]
 [[task]]
 id = "P3.1"
 title = "Spike: real-time-safe Luau allocator (mlua custom allocator or C-API shim)"
+landed = "f56e2767d"
 phase = 3
 lane = "script"
 size = "S"
@@ -512,6 +540,7 @@ done = ["luau-alloc.md gives a yes/no with evidence, the chosen API, and numbers
 [[task]]
 id = "P3.1b"
 title = "Spike: keep mlua's API on an arena, and measure GC on the real UVI corpus"
+landed = "74334df48"
 phase = 3
 lane = "script"
 size = "M"
@@ -533,6 +562,7 @@ done = ["luau-alloc-mlua.md recommends A, B or C with evidence; the coordinator 
 [[task]]
 id = "P3.1c"
 title = "Spike: Lua GC on the audio thread for large heaps (Augmented Orchestra 360 MB, 15 ms stalls)"
+landed = "ef947fc9f"
 phase = 3
 lane = "script"
 size = "M"
@@ -554,6 +584,7 @@ done = ["luau-gc.md gives a strategy whose measured worst audio-thread pause is 
 [[task]]
 id = "P3.2"
 title = "UVI Lua inline on the audio thread; ScriptThread only as a feature fallback"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 3
 lane = "script"
 size = "L"
@@ -575,6 +606,7 @@ done = ["C5 (offline = real time) passes on a UVI fixture; scripted notes are on
 [[task]]
 id = "P3.3"
 title = "Auto-align is latency compensation: report the slowest patch, delay the rest to it"
+landed = "eff6687f1"
 phase = 3
 lane = "playback"
 size = "M"
@@ -599,6 +631,7 @@ done = [
 [[task]]
 id = "P3.4"
 title = "Gate G3: original complaints closed"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 3
 lane = "coordinator"
 size = "S"
@@ -616,6 +649,7 @@ done = ["G3.md signed off; v3 merged to main is now a candidate (user decides)."
 [[task]]
 id = "P4.0"
 title = "Scaffold every v3 crate (empty), workspace deps, target DAG"
+landed = "dda8eb144"
 phase = 4
 lane = "structure"
 size = "M"
@@ -639,6 +673,7 @@ done = ["Every crate in 01-LAYOUT.md exists or is listed as 'moved by Pn.m'.", "
 [[task]]
 id = "P4.1"
 title = "kontra-macros: crate and vectors!"
+landed = "44463ccd2"
 phase = 4
 lane = "structure"
 size = "M"
@@ -658,6 +693,7 @@ done = ["The `vectors!` example in 08-MACROS.md §2 compiles verbatim in the cra
 [[task]]
 id = "P4.2"
 title = "kontra-time and kontra-law"
+landed = "74d18e7c3"
 phase = 4
 lane = "structure"
 size = "M"
@@ -679,6 +715,7 @@ done = ["Docs examples parse; law TOML schema documented in crates/base/law/READ
 [[task]]
 id = "P4.3"
 title = "Move sampler-pool → crates/base/pool (kontra-pool)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 4
 lane = "structure"
 size = "S"
@@ -694,6 +731,7 @@ done = ["`git log --follow` works on moved files; zero non-manifest content chan
 [[task]]
 id = "P4.4"
 title = "Move sampler-simd (+ dsp/lanes.rs) → crates/base/simd (kontra-simd)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 4
 lane = "structure"
 size = "S"
@@ -709,6 +747,7 @@ done = ["Moves only, plus the re-export line."]
 [[task]]
 id = "P4.5"
 title = "#[derive(Params)] in kontra-macros"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 4
 lane = "structure"
 size = "M"
@@ -728,6 +767,7 @@ done = ["The 08-MACROS.md Compressor example compiles and its meta() matches the
 [[task]]
 id = "P4.6"
 title = "Parameter catalog: every DSP module's params in kontra-params"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 4
 lane = "structure"
 size = "L"
@@ -748,6 +788,7 @@ done = ["Coverage test passes; unmapped list reviewed."]
 [[task]]
 id = "P4.6a"
 title = "Typed reverb control identities and shared law readback"
+landed = "f8bc096c8"
 phase = 4
 lane = "structure"
 size = "M"
@@ -763,6 +804,7 @@ done = ["Every reverb identity maps and round-trips through its existing law.", 
 [[task]]
 id = "P4.7"
 title = "Point the 5 parameter registries at the catalog; delete 4"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 4
 lane = "structure"
 size = "L"
@@ -779,6 +821,7 @@ done = ["Net line count negative; tests unchanged and green."]
 [[task]]
 id = "P4.8"
 title = "kontra-events from src/sound/event.rs and the plain-data receiver wire types"
+landed = "999077e80"
 phase = 4
 lane = "structure"
 size = "M"
@@ -801,6 +844,7 @@ done = ["kontra-events depends on no KONTRA crate except kontra-time (`cargo xta
 [[task]]
 id = "P4.9"
 title = "kontra-ui-model from sampler-ui-ir + core widget/script_params + ControlStore"
+landed = "cccc1992f"
 phase = 4
 lane = "structure"
 size = "M"
@@ -817,6 +861,7 @@ done = ["Moves plus re-exports only."]
 [[task]]
 id = "P4.10"
 title = "Move sampler-ir → crates/model/ir (kontra-ir)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 4
 lane = "structure"
 size = "S"
@@ -832,6 +877,7 @@ done = ["Renames plus manifest lines only."]
 [[task]]
 id = "P4.11"
 title = "kontra-protocol: Command, Publications, Retired types"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 4
 lane = "structure"
 size = "S"
@@ -847,6 +893,7 @@ done = ["API matches 07-APP.md or the doc is updated in the same PR."]
 [[task]]
 id = "P4.12"
 title = "Gate G4: model crates in place"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 4
 lane = "coordinator"
 size = "S"
@@ -864,6 +911,7 @@ done = ["No contract regressions against G3."]
 [[task]]
 id = "P5.0"
 title = "kontra-dsp-core (Module trait, shared blocks) + registry with legacy bridge"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -890,6 +938,7 @@ done = ["CONTRIBUTING.md has an \"Add a DSP module\" checklist (folder, `Module`
 [[task]]
 id = "P5.1"
 title = "DSP family: dynamics (Compressor, Limiter, Gate/Expander, Transient)"
+landed = "033e5af33"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -911,6 +960,7 @@ done = ["Vectors pass at stated tolerance; module_tests! green; old dynamics fil
 [[task]]
 id = "P5.2"
 title = "DSP family: eq (Band, ParametricEq, GraphicEq)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "M"
@@ -926,6 +976,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.3a"
 title = "DSP family: filter part A (Svf, BiquadCascade)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -941,6 +992,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.3b"
 title = "DSP family: filter part B (Ladder, Ar, Daft)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -956,6 +1008,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.3c"
 title = "DSP family: filter part C (Formant, Comb, Phaser, shaper)"
+landed = "24051512b"
 phase = 5
 lane = "dsp"
 size = "M"
@@ -971,6 +1024,7 @@ done = ["Same as P5.1; after 5.3a–c every file in sampler-core/src/dsp/filter 
 [[task]]
 id = "P5.4a"
 title = "DSP family: delay part A (timemod → DelayLine, ModDelay, Tape, Diffuse)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -986,6 +1040,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.4b"
 title = "DSP family: delay part B (Replika as DelayLine laws)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -1001,6 +1056,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.5"
 title = "DSP family: reverb (Fdn, Convolver)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -1016,6 +1072,8 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.6a"
 title = "DSP family: drive part A (Shaper + named units as laws)"
+landed = "9bb88511a"
+note = "with P5.6c in #856"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -1031,6 +1089,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.6b"
 title = "DSP family: drive part B (Amp: tonestack → shaper → cab)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -1046,6 +1105,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.6c"
 title = "DSP family: drive part C (Crush: lofi, redux, machine)"
+landed = "ba6356fd9"
 phase = 5
 lane = "dsp"
 size = "M"
@@ -1061,6 +1121,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.7"
 title = "DSP family: spatial (Pan, Width, Rotator, SurroundPan, RingMod, StereoTune)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "M"
@@ -1076,6 +1137,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.8"
 title = "DSP family: modulators (Envelope, Lfo, Step, Follower, Glide)"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -1092,6 +1154,7 @@ done = ["Same as P5.1."]
 [[task]]
 id = "P5.9"
 title = "Delete both Processor enums' legacy arms, lower.rs mapping, dsp.rs routing"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "dsp"
 size = "L"
@@ -1108,6 +1171,7 @@ done = ["Processor:: count 0; sampler-core/src/dsp gone."]
 [[task]]
 id = "P5.10"
 title = "Gate G5: DSP A/B on reference libraries"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 5
 lane = "coordinator"
 size = "S"
@@ -1125,6 +1189,7 @@ done = ["Every surviving second class has its measurement linked."]
 [[task]]
 id = "P6.1a"
 title = "kontra-stream: crate, Source trait, core stream/residency/head code moved"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1141,6 +1206,7 @@ done = ["Moves + trait only."]
 [[task]]
 id = "P6.1b"
 title = "kontra-stream: move the Kontakt stream service and drop uvi → kontakt"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1157,6 +1223,7 @@ done = ["deps-check shows no uvi → kontakt edge."]
 [[task]]
 id = "P6.1c"
 title = "Sample store: content-keyed, process-wide, packed preloads, deadline I/O"
+landed = "403daaa58"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1173,6 +1240,7 @@ done = ["Memory table in 05-STREAM.md filled with measurements.", "Resident head
 [[task]]
 id = "P6.2"
 title = "kontra-voice: source/resample/release/pitch moved; one chain runner"
+landed = "d3d4c5d78"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1189,6 +1257,7 @@ done = ["C4, C10 vs G5."]
 [[task]]
 id = "P6.3a"
 title = "kontra-vm: behavior/ops/schedule moved; HostApi trait"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1205,6 +1274,7 @@ done = ["No format or KSP names in kontra-vm."]
 [[task]]
 id = "P6.3b"
 title = "on init on the VM; delete eval.rs and sampler-ksp luau/"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1221,6 +1291,7 @@ done = ["`xtask debt` KSP engines 3 → 1."]
 [[task]]
 id = "P6.4a"
 title = "kontra-engine: EventQueue + Timed<Work> + render loop at queue boundaries"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1237,6 +1308,7 @@ done = ["C4, C5 green."]
 [[task]]
 id = "P6.4b"
 title = "kontra-engine: NoteLedger replaces held/consumed/closed tables and families-as-cohorts"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1253,6 +1325,7 @@ done = ["C3, C6 green."]
 [[task]]
 id = "P6.4c"
 title = "kontra-engine: Engine struct replaces Runtime's 109 fields; Stats derive"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 6
 lane = "engine"
 size = "L"
@@ -1269,6 +1342,7 @@ done = ["sampler-core production lines < 1k."]
 [[task]]
 id = "P6.4d"
 title = "Prepare bounded PGS storage for large instruments"
+landed = "e293ba5ae"
 phase = 6
 lane = "engine"
 size = "M"
@@ -1284,6 +1358,7 @@ done = ["Integer/string keys, variable lengths, duplicates and cross-slot reads 
 [[task]]
 id = "P6.4e"
 title = "Compile KSP escaped quotes without losing path backslashes"
+landed = "c685d1c2a"
 phase = 6
 lane = "script"
 size = "S"
@@ -1299,6 +1374,7 @@ done = ["The regression fails on the previous v3 and passes after this extractio
 [[task]]
 id = "P6.5"
 title = "Gate G6: engine crates"
+landed = "90cf6f9f6"
 phase = 6
 lane = "coordinator"
 size = "S"
@@ -1316,6 +1392,7 @@ done = ["`xtask debt` cfg-test-in-fn is 0 for crates/engine/** (hooks became `pr
 [[task]]
 id = "P7.1"
 title = "kontra-ksp: move sampler-ksp; builtins! drives sema + lowering"
+landed = "e23b2dd5b"
 phase = 7
 lane = "script"
 size = "L"
@@ -1332,6 +1409,7 @@ done = ["CONTRIBUTING.md has an \"Add a KSP builtin\" checklist (table row, sema
 [[task]]
 id = "P7.2"
 title = "kontra-lua: UVIScript surface from sampler-uvi/sampler-script"
+landed = "abbc0a6ba"
 phase = 7
 lane = "script"
 size = "L"
@@ -1348,6 +1426,7 @@ done = ["Lua and KSP share HostApi; C5 green on UVI fixture."]
 [[task]]
 id = "P7.3"
 title = "kontra-format: Format trait, formats! registry, map_effects!/map_mods!/map_zone!"
+retired = "2026-11-12 tracker cleanup: v3 became main; open work moved to 13-IR-VNEXT.md"
 phase = 7
 lane = "format"
 size = "M"
@@ -1364,6 +1443,7 @@ done = ["06-FORMATS.md examples compile."]
 [[task]]
 id = "P7.4"
 title = "format/kontakt: move sampler-kontakt; effects become map_effects! rows"
+landed = "7d992daee"
 phase = 7
 lane = "format"
 size = "L"
@@ -1380,6 +1460,7 @@ done = ["Load parity vs Kontakt 8.13.1 still 0 mismatches (coordinator)."]
 [[task]]
 id = "P7.5"
 title = "format/uvi: move sampler-uvi; fx mapping as table rows"
+landed = "394adee04"
 phase = 7
 lane = "format"
 size = "L"
@@ -1396,6 +1477,7 @@ done = ["UVI fixtures and survey unchanged."]
 [[task]]
 id = "P7.6"
 title = "format/sfz, format/native, ample, ikmpak moves"
+landed = "abba71e30"
 phase = 7
 lane = "format"
 size = "M"
@@ -1412,6 +1494,7 @@ done = ["kontra-probe fixtures load through format/native."]
 [[task]]
 id = "P7.7"
 title = "Gate G7: surveys and parity"
+landed = "c35de30d8"
 phase = 7
 lane = "coordinator"
 size = "S"
@@ -1429,6 +1512,8 @@ done = ["Gap log generated from diagnostics."]
 [[task]]
 id = "P8.1"
 title = "kontra-protocol: commands in, publications and retirements out"
+landed = "69911524f"
+note = "#962 (#959 was the plan change)"
 phase = 8
 lane = "app"
 size = "M"
@@ -1444,6 +1529,7 @@ done = ["API matches 07-APP.md §2 or the doc is updated in the same PR."]
 [[task]]
 id = "P8.2"
 title = "kontra-host rack: parts, load off the audio thread, routing, master, panic"
+landed = "54366ba31"
 phase = 8
 lane = "app"
 size = "L"
@@ -1459,6 +1545,7 @@ done = ["The rack plays a real instrument headless through the protocol."]
 [[task]]
 id = "P8.3"
 title = "app/library and app/align"
+landed = "7453214e2"
 phase = 8
 lane = "app"
 size = "M"
@@ -1475,6 +1562,7 @@ done = ["The plugin fills the browser and reports latency from these crates."]
 [[task]]
 id = "P8.4"
 title = "app/ui depends on protocol only"
+landed = "d57f8c31c"
 phase = 8
 lane = "app"
 size = "L"
@@ -1490,6 +1578,8 @@ done = ["deps-check forbidden table enforced as errors."]
 [[task]]
 id = "P8.4b"
 title = "NI Native UI (.nui) into the UI tree"
+landed = "823dba09a"
+note = "as crates/app/face (nui.rs, nui/layout.rs) over kontra-lua's nui module, not a crates/format/native-ui crate"
 phase = 8
 lane = "app"
 size = "L"
@@ -1511,6 +1601,7 @@ done = ["Conflux shows its Native UI pages, plays from its own controls, and idl
 [[task]]
 id = "P8.5"
 title = "plugin/: the v3 plugin shell (KONTRA v3) beside v2"
+landed = "eb82af7d3"
 phase = 8
 lane = "app"
 size = "M"
@@ -1526,6 +1617,7 @@ done = ["The v3 plugin loads, plays, saves and reloads real instruments headless
 [[task]]
 id = "P8.6"
 title = "Gate G8: v3 complete, v2 deleted, merge to main"
+landed = "4e55f6d33"
 phase = 8
 lane = "coordinator"
 size = "S"

@@ -7,7 +7,8 @@
 **Current plan:** [docs/architecture-v3/13-IR-VNEXT.md](docs/architecture-v3/13-IR-VNEXT.md),
 which gives the IR vNext phases, their status on main, the next lanes
 and the rule for when a step is done. Work from a lane there, not from GitHub issues. The P0–P8 board in
-TASKS.md is finished apart from P4.6a.
+TASKS.md is finished: every task is `landed` or `retired` in tasks.toml
+(`tools/migrations/plan-landed.py` re-derives that from git and the old issues).
 
 Before designing or changing anything in v3, read
 [docs/architecture-v3/VISION.md](docs/architecture-v3/VISION.md):
