@@ -45,6 +45,9 @@ pub struct App {
     /// What did not load or play as the source meant, one entry each: its
     /// first line is its summary.
     pub report: Vec<String>,
+    /// Developer-only (`Impact::Latent`) diagnostics, hidden behind the Report
+    /// tab's Developer toggle by default.
+    pub report_latent: Vec<String>,
     pub midi_thru: bool,
     /// Where new parts listen and play ([`Action::NewParts`]).
     pub next_channel: bool,
@@ -326,6 +329,8 @@ pub struct View {
     pub report_search: String,
     /// The report entry shown whole.
     pub report_open: Option<usize>,
+    /// Show developer-only (`Impact::Latent`) diagnostics in the Report tab.
+    pub report_developer: bool,
     /// The articulation grip being dragged, and the row it started on.
     pub grip: Option<(String, usize)>,
     /// The browser row a click selected, as (library, preset): a click

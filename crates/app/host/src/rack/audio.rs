@@ -25,6 +25,21 @@ struct Playing {
     /// The engines this one replaced, fading out under it: an install never
     /// stops a sound dead, effect tails included.
     outgoing: [Option<Fading>; FADING],
+    /// Whether this part produced audible output in its last rendered block
+    /// (voices or effect tails), used to decide whether [`Command::Recall`]
+    /// must fade out before lending the engine back.
+    audible: bool,
+    /// A pending [`Command::Recall`] fading this part smoothly to silence
+    /// before lending its engine to the control thread.
+    recalling: Option<PendingRecall>,
+}
+
+/// A recall waiting for its live audio to ramp smoothly to silence before
+/// lending the part's engine back to the control thread (zero allocations).
+struct PendingRecall {
+    recalling: Box<super::command::Recalling>,
+    left: u32,
+    total: u32,
 }
 
 /// An engine an install replaced: its whole output, effects included,
@@ -33,6 +48,9 @@ struct Fading {
     engine: Box<Engine>,
     /// Frames of the ramp still to play.
     left: u32,
+    /// The level the ramp starts from: below 1 when the install cut short a
+    /// recall's fade, so the handoff keeps the level that was playing.
+    gain: f32,
 }
 
 /// Replaced engines fading at once per part; past that the most faded goes.
@@ -228,6 +246,26 @@ impl RackAudio {
         self.scratch.len()
     }
 
+    /// Grows the audio scratch and output mix buffers to accommodate
+    /// `max_block` frames without dropping any loaded parts.
+    ///
+    /// Main-thread activation only: allocates when `max_block` exceeds
+    /// [`Self::max_block`]. Never call on the audio thread.
+    pub fn resize_max_block(&mut self, max_block: usize) {
+        let block = max_block.max(1);
+        if block <= self.scratch.len() {
+            return;
+        }
+        self.outputs = (0..OUTPUTS)
+            .map(|_| vec![[0.0; 2]; block].into_boxed_slice())
+            .collect();
+        self.scratch = vec![[0.0; 2]; block].into_boxed_slice();
+        self.stem_scratch = (0..OUTPUTS)
+            .map(|_| vec![[0.0; 2]; block].into_boxed_slice())
+            .collect();
+        self.tail = vec![[0.0; 2]; block].into_boxed_slice();
+    }
+
     /// Output pair `n` as the last [`RackAudio::process`] left it.
     #[must_use]
     pub fn output(&self, n: usize, frames: usize) -> &[[f32; 2]] {
@@ -298,12 +336,14 @@ impl RackAudio {
             }
             let played = self.played.iter().map(|&body| (0, body));
             let room = self.events.capacity() - self.events.len();
-            let input = (input.iter().copied()).filter(|(_, e)| listens(channel, e));
-            self.events
-                .extend(played.chain(input).take(room).map(|(at, body)| Timed {
-                    at: SampleTime(p.held.due(now.0 + u64::from(at), &body)),
-                    body,
-                }));
+            if p.recalling.is_none() {
+                let input = (input.iter().copied()).filter(|(_, e)| listens(channel, e));
+                self.events
+                    .extend(played.chain(input).take(room).map(|(at, body)| Timed {
+                        at: SampleTime(p.held.due(now.0 + u64::from(at), &body)),
+                        body,
+                    }));
+            }
             if let Some(bpm) = self.tempo {
                 p.engine.set_tempo(bpm);
             }
@@ -352,7 +392,7 @@ impl RackAudio {
                     if let Some(tail) = self.tail.get_mut(..frames) {
                         f.engine.process(tail, &[]);
                         for (s, t) in main_buf.iter_mut().zip(tail.iter()) {
-                            let g = f.left as f32 / self.fade as f32;
+                            let g = f.gain * f.left as f32 / self.fade as f32;
                             f.left = f.left.saturating_sub(1);
                             (s[0], s[1]) = (s[0] + t[0] * g, s[1] + t[1] * g);
                         }
@@ -362,10 +402,55 @@ impl RackAudio {
                         && let Err(engine) = self.channels.retired.send(f.engine)
                     {
                         // No room this block: it stays, silent, until there is.
-                        *slot = Some(Fading { engine, left: 0 });
+                        *slot = Some(Fading {
+                            engine,
+                            left: 0,
+                            gain: 0.0,
+                        });
                     }
                 }
             }
+            // Apply pre-recall fade-out across all rendered outputs so lending
+            // the engine back never produces a step discontinuity / click.
+            if let Some(pending) = p.recalling.as_mut() {
+                let total = pending.total.max(1) as f32;
+                let start_left = pending.left;
+                if multi_stem {
+                    for stem_buf in self.stem_scratch.iter_mut().take(stems) {
+                        let Some(buf) = stem_buf.get_mut(..frames) else {
+                            continue;
+                        };
+                        let mut left = start_left;
+                        for s in buf.iter_mut() {
+                            let g = left as f32 / total;
+                            left = left.saturating_sub(1);
+                            (s[0], s[1]) = (s[0] * g, s[1] * g);
+                        }
+                    }
+                    pending.left = start_left.saturating_sub(frames as u32);
+                } else if let Some(buf) = self.scratch.get_mut(..frames) {
+                    for s in buf.iter_mut() {
+                        let g = pending.left as f32 / total;
+                        pending.left = pending.left.saturating_sub(1);
+                        (s[0], s[1]) = (s[0] * g, s[1] * g);
+                    }
+                }
+            }
+            let mut rendered_peak = 0.0f32;
+            if multi_stem {
+                for stem_buf in self.stem_scratch.iter().take(stems) {
+                    if let Some(buf) = stem_buf.get(..frames) {
+                        for s in buf {
+                            rendered_peak = rendered_peak.max(s[0].abs()).max(s[1].abs());
+                        }
+                    }
+                }
+            } else if let Some(buf) = self.scratch.get(..frames) {
+                for s in buf {
+                    rendered_peak = rendered_peak.max(s[0].abs()).max(s[1].abs());
+                }
+            }
+            p.audible = rendered_peak > 1e-6;
             let (requests, generation) = (&self.channels.requests, p.generation);
             let mut lost = 0;
             p.engine.drain_requests(|r| {
@@ -402,24 +487,33 @@ impl RackAudio {
             let Some(peak) = self.meters.parts.get_mut(n) else {
                 continue;
             };
-            if p.mix.silent {
-                continue;
-            }
-            let (l, r) = pan_gains(p.mix.gain, p.mix.pan);
-            let base_out = usize::from(p.mix.output);
-            if multi_stem {
-                for (stem_idx, stem_buf) in self.stem_scratch.iter().take(stems).enumerate() {
-                    let Some(out) = self
-                        .outputs
-                        .get_mut(base_out + stem_idx)
-                        .and_then(|o| o.get_mut(..frames))
-                    else {
-                        continue;
-                    };
-                    let Some(src) = stem_buf.get(..frames) else {
-                        continue;
-                    };
-                    for (o, s) in out.iter_mut().zip(src.iter()) {
+            if !p.mix.silent {
+                let (l, r) = pan_gains(p.mix.gain, p.mix.pan);
+                let base_out = usize::from(p.mix.output);
+                if multi_stem {
+                    for (stem_idx, stem_buf) in self.stem_scratch.iter().take(stems).enumerate() {
+                        let Some(out) = self
+                            .outputs
+                            .get_mut(base_out + stem_idx)
+                            .and_then(|o| o.get_mut(..frames))
+                        else {
+                            continue;
+                        };
+                        let Some(src) = stem_buf.get(..frames) else {
+                            continue;
+                        };
+                        for (o, s) in out.iter_mut().zip(src.iter()) {
+                            let (a, b) = (s[0] * l, s[1] * r);
+                            peak[0] = peak[0].max(a.abs());
+                            peak[1] = peak[1].max(b.abs());
+                            o[0] += a * self.master;
+                            o[1] += b * self.master;
+                        }
+                    }
+                } else if let (Some(out), Some(scratch)) =
+                    (self.outputs.get_mut(base_out), self.scratch.get(..frames))
+                {
+                    for (o, s) in out.iter_mut().zip(scratch.iter()) {
                         let (a, b) = (s[0] * l, s[1] * r);
                         peak[0] = peak[0].max(a.abs());
                         peak[1] = peak[1].max(b.abs());
@@ -427,15 +521,23 @@ impl RackAudio {
                         o[1] += b * self.master;
                     }
                 }
-            } else if let (Some(out), Some(scratch)) =
-                (self.outputs.get_mut(base_out), self.scratch.get(..frames))
+            }
+            if p.recalling.as_ref().is_some_and(|r| r.left == 0)
+                && !self.channels.recalled.is_full()
+                && self.channels.retired.room() >= RETIRES
+                && let Some(mut finished) = slot.take()
+                && let Some(mut pending) = finished.recalling.take()
             {
-                for (o, s) in out.iter_mut().zip(scratch.iter()) {
-                    let (a, b) = (s[0] * l, s[1] * r);
-                    peak[0] = peak[0].max(a.abs());
-                    peak[1] = peak[1].max(b.abs());
-                    o[0] += a * self.master;
-                    o[1] += b * self.master;
+                pending.recalling.engine = Some(finished.engine);
+                for f in finished.outgoing.into_iter().flatten() {
+                    if let Err(engine) = self.channels.retired.send(f.engine) {
+                        self.dropped += 1;
+                        drop(engine);
+                    }
+                }
+                if let Err(recalling) = self.channels.recalled.send(pending.recalling) {
+                    self.dropped += 1;
+                    drop(recalling);
                 }
             }
         }
@@ -496,16 +598,27 @@ impl RackAudio {
                             engine.set_tempo(bpm);
                         }
                         let (mut outgoing, mut gone) = ([None, None], None);
+                        let mut superseded_recall = None;
                         if let Some(mut old) = slot.take() {
+                            superseded_recall = old.recalling.take();
+                            // A recall fading this part already scaled its
+                            // output (tails included): fade on from there.
+                            let level = superseded_recall
+                                .as_ref()
+                                .map_or(1.0, |r| r.left as f32 / r.total.max(1) as f32);
                             old.engine.reset();
                             // Every replaced engine fades; with no room, the
                             // most faded goes now.
-                            let [a, b] = old.outgoing;
+                            let [mut a, mut b] = old.outgoing;
+                            for f in [&mut a, &mut b].into_iter().flatten() {
+                                f.gain *= level;
+                            }
                             let left = self.fade;
                             let mut all = [
                                 Some(Fading {
                                     engine: old.engine,
                                     left,
+                                    gain: level,
                                 }),
                                 a,
                                 b,
@@ -525,7 +638,12 @@ impl RackAudio {
                             held: Held::new(Hold::default()),
                             generation,
                             outgoing,
+                            audible: false,
+                            recalling: None,
                         });
+                        if let Some(pending) = superseded_recall {
+                            self.return_recalling(pending.recalling);
+                        }
                         if let Some(gone) = gone {
                             self.retire_engine(gone.engine);
                         }
@@ -537,6 +655,8 @@ impl RackAudio {
                             held: Held::new(Hold::default()),
                             generation,
                             outgoing: [None, None],
+                            audible: false,
+                            recalling: None,
                         }));
                     }
                 }
@@ -585,21 +705,58 @@ impl RackAudio {
                         drop(unit);
                     }
                 }
-                Command::Recall(mut recalling) => {
-                    let slot = self.parts.get_mut(recalling.part);
-                    let ours = |p: &Playing| p.generation == recalling.generation;
-                    if let Some(slot) = slot.filter(|s| s.as_ref().is_some_and(ours))
-                        && let Some(p) = slot.take()
-                    {
-                        recalling.engine = Some(p.engine);
-                        for f in p.outgoing.into_iter().flatten() {
-                            self.retire_engine(f.engine);
-                        }
+                Command::Recall(recalling) => {
+                    let part = recalling.part;
+                    let generation = recalling.generation;
+                    let fade = self.fade;
+                    enum Action {
+                        Armed,
+                        Superseded(Box<super::command::Recalling>),
+                        Immediate(Box<super::command::Recalling>),
+                        Stale(Box<super::command::Recalling>),
                     }
-                    if let Err(recalling) = self.channels.recalled.send(recalling) {
-                        // Checked for room first; if it ever fails, it frees here.
-                        self.dropped += 1;
-                        drop(recalling);
+                    let action = if let Some(Some(p)) = self.parts.get_mut(part)
+                        && p.generation == generation
+                    {
+                        if let Some(mut prev) = p.recalling.take() {
+                            let old = std::mem::replace(&mut prev.recalling, recalling);
+                            p.recalling = Some(prev);
+                            Action::Superseded(old)
+                        } else if !p.mix.silent
+                            && (p.audible
+                                || p.engine.active_voices() > 0
+                                || p.outgoing.iter().any(Option::is_some))
+                        {
+                            // Fade active voices / tails smoothly to silence
+                            // before lending the engine back to the control thread.
+                            p.recalling = Some(PendingRecall {
+                                recalling,
+                                left: fade,
+                                total: fade,
+                            });
+                            Action::Armed
+                        } else {
+                            Action::Immediate(recalling)
+                        }
+                    } else {
+                        Action::Stale(recalling)
+                    };
+                    match action {
+                        Action::Armed => {}
+                        Action::Superseded(old) | Action::Stale(old) => {
+                            self.return_recalling(old);
+                        }
+                        Action::Immediate(mut recalling) => {
+                            if let Some(slot) = self.parts.get_mut(part)
+                                && let Some(p) = slot.take()
+                            {
+                                recalling.engine = Some(p.engine);
+                                for f in p.outgoing.into_iter().flatten() {
+                                    self.retire_engine(f.engine);
+                                }
+                            }
+                            self.return_recalling(recalling);
+                        }
                     }
                 }
                 Command::File {
@@ -828,11 +985,23 @@ impl RackAudio {
     }
 
     fn retire(&mut self, old: Option<Playing>) {
-        if let Some(p) = old {
+        if let Some(mut p) = old {
+            if let Some(pending) = p.recalling.take() {
+                self.return_recalling(pending.recalling);
+            }
             self.retire_engine(p.engine);
             for f in p.outgoing.into_iter().flatten() {
                 self.retire_engine(f.engine);
             }
+        }
+    }
+
+    fn return_recalling(&mut self, recalling: Box<super::command::Recalling>) {
+        if let Err(recalling) = self.channels.recalled.send(recalling) {
+            // Checked for room before the command was taken; if it ever fails,
+            // it frees here.
+            self.dropped += 1;
+            drop(recalling);
         }
     }
 

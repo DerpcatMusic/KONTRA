@@ -101,7 +101,7 @@ impl Rack {
         &mut self,
         part: usize,
         path: &Path,
-    ) -> Option<Result<(), Box<dyn std::error::Error>>> {
+    ) -> Option<Result<(), crate::Error>> {
         let preset =
             crate::instrument::preset(path, &self.known.1).or_else(|| self.user_preset(part, path));
         if let Some(preset) = preset
@@ -283,7 +283,13 @@ impl Rack {
             slots: (slot_types, slot_responses),
             view,
             diagnostics,
+            snapshot_base,
         } = started;
+        if let Some(base) = snapshot_base
+            && let Some(slot) = self.snapshot_bases.get_mut(part)
+        {
+            *slot = Some(base);
+        }
         // What it reports replaces the load's report of the same.
         let same = |d: &ir::Diagnostic, n: &ir::Diagnostic| {
             (d.impact, &d.feature) == (n.impact, &n.feature)
@@ -320,6 +326,7 @@ pub(super) struct Started {
     slots: crate::state::LiveSlots,
     view: Option<crate::view::View>,
     pub(super) diagnostics: Vec<ir::Diagnostic>,
+    pub(super) snapshot_base: Option<Arc<kontra_format_kontakt::SnapshotBase>>,
 }
 
 /// `plan` with `slots` (types, responses) put in and `saved` as its
@@ -346,6 +353,7 @@ pub(super) fn started(
         slots,
         view,
         diagnostics: Vec::new(),
+        snapshot_base: None,
     }
 }
 

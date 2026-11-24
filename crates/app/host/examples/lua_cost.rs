@@ -7,6 +7,8 @@
 //! also moves controller `n` every block, for the programs that tie it to a
 //! script knob.
 
+#![allow(clippy::disallowed_types)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

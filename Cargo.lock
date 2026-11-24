@@ -1976,6 +1976,7 @@ dependencies = [
  "kontra-ui-model",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

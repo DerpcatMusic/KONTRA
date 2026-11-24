@@ -6,6 +6,8 @@
 //! KONTRA_PATTERN=solo|repeats: six notes 600 ms apart (default), or 16 notes
 //! every 70 ms, 45 ms long.
 
+#![allow(clippy::disallowed_types)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

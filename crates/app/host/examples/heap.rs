@@ -5,6 +5,8 @@
 //! `cargo run --profile corpus -p kontra-host --features heap-profile --example heap -- <file>...`
 //! (The feature leaves Luau on the system heap so this allocator can count it.)
 
+#![allow(clippy::disallowed_types)]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::HashMap;

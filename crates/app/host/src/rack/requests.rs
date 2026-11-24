@@ -16,11 +16,11 @@ pub struct ZoneSwap {
     pub edits: Box<[(ZoneEdit, bool)]>,
 }
 
-/// A purged group whose heads were read.
+/// One or more purged groups whose heads were read in a batch.
 pub struct Woken {
     pub part: usize,
     pub generation: u64,
-    pub unpurge: kontra_engine::Unpurge,
+    pub unpurges: Vec<kontra_engine::Unpurge>,
 }
 
 /// A part's (index, load) edits since the last tick, each with whether it took.
@@ -91,87 +91,113 @@ impl Rack {
         }
     }
 
-    /// Purged groups scripts asked for: their samples load here, the zones
-    /// join the part's plan between blocks, and the group plays once its
-    /// heads are read (a thread reads them; the audio side never waits).
+    /// Purged groups scripts asked for: pending unpurges for each part are
+    /// batched into a single `Command::Zones` swap and a single background
+    /// head-reading job instead of one-by-one roundtrips.
     fn unpurges(&mut self) {
+        let mut batches: Vec<(usize, u64, Vec<kontra_engine::Unpurge>)> = Vec::new();
         while let Some((part, generation, u)) = self.channels.unpurges.recv() {
+            match batches
+                .iter_mut()
+                .find(|b| (b.0, b.1) == (part, generation))
+            {
+                Some(b) => b.2.push(u),
+                None => batches.push((part, generation, vec![u])),
+            }
+        }
+        for (part, generation, requests) in batches {
             let Some(Some(p)) = self.parts.get_mut(part) else {
                 continue;
             };
-            let Some(plan) = p
+            let Some(base_plan) = p
                 .plan
                 .as_deref()
                 .filter(|_| p.script.generation == generation)
             else {
                 continue;
             };
-            let samples: Vec<_> = (plan.dormant.iter())
-                .filter(|d| d.group == u.group)
+            let mut wanted_groups: Vec<u32> = requests.iter().map(|u| u.group).collect();
+            wanted_groups.sort_unstable();
+            wanted_groups.dedup();
+            let samples: Vec<_> = (base_plan.dormant.iter())
+                .filter(|d| wanted_groups.binary_search(&d.group).is_ok())
                 .flat_map(|d| d.samples.iter())
                 .collect();
             let files = kontra_stream::Files::new(samples.iter().map(|s| s.file.as_path()));
-            let waked = kontra_prepare::wake(plan, u.group, &mut self.store, &|s| files.open(s));
-            let Some((grown, diagnostics, count)) = waked else {
-                // Already loaded by an earlier ask: nothing more to read.
-                self.send(Command::Unpurged {
-                    part,
-                    generation,
-                    unpurge: u,
-                    took: true,
-                });
-                continue;
-            };
-            let name = grown
-                .groups
-                .get(u.group as usize)
-                .map_or("", |g| g.name.as_str());
-            self.notices.push(format!(
-                "part {} ({}): loading purged group {name} ({count} samples)",
-                part + 1,
-                p.name
-            ));
-            self.notices.extend(diagnostics.iter().map(|d| {
-                format!(
-                    "part {} ({}): {}: {}",
-                    part + 1,
-                    p.name,
-                    d.feature,
-                    d.detail
-                )
-            }));
-            p.diagnostics.extend(diagnostics);
-            let grown = Arc::new(grown);
-            p.plan = Some(Arc::clone(&grown));
-            let swap = Box::new(ZoneSwap {
-                plan: grown,
-                edits: Box::default(),
-            });
-            self.send(Command::Zones {
-                part,
-                generation,
-                swap,
-            });
-            let done = self.woken.0.clone();
-            let heads = self.store.take_heads();
-            let lanes = std::thread::available_parallelism().map_or(4, |n| n.get() * 3);
-            let read = move || {
-                if let Some(heads) = heads {
-                    heads.load(lanes);
+
+            let mut grown_plan: Option<Plan> = None;
+            let mut woken_groups: Vec<u32> = Vec::new();
+            let mut pending_woken: Vec<kontra_engine::Unpurge> = Vec::new();
+            let mut ready_now: Vec<kontra_engine::Unpurge> = Vec::new();
+
+            for u in requests {
+                let current = grown_plan.as_ref().unwrap_or(base_plan);
+                let waked =
+                    kontra_prepare::wake(current, u.group, &mut self.store, &|s| files.open(s));
+                if let Some((grown, diagnostics, _count)) = waked {
+                    for d in &diagnostics {
+                        if d.impact != kontra_engine::ir::Impact::Latent {
+                            self.notices.push(format!(
+                                "part {} ({}): {}: {}",
+                                part + 1,
+                                p.name,
+                                d.feature,
+                                d.detail
+                            ));
+                        }
+                    }
+                    p.diagnostics.extend(diagnostics);
+                    grown_plan = Some(grown);
+                    woken_groups.push(u.group);
+                    pending_woken.push(u);
+                } else if woken_groups.contains(&u.group) {
+                    // Duplicate request for a group woken earlier in this same batch:
+                    // wait for the shared head-read job before completing.
+                    pending_woken.push(u);
+                } else {
+                    // Already resident before this batch: complete immediately.
+                    ready_now.push(u);
                 }
-                let _ = done.send(Woken {
+            }
+
+            if let Some(grown) = grown_plan {
+                let grown = Arc::new(grown);
+                p.plan = Some(Arc::clone(&grown));
+                let swap = Box::new(ZoneSwap {
+                    plan: grown,
+                    edits: Box::default(),
+                });
+                self.send(Command::Zones {
                     part,
                     generation,
-                    unpurge: u,
+                    swap,
                 });
-            };
-            // A failed spawn leaves the heads to stream on demand: the group
-            // still plays.
-            if std::thread::Builder::new()
-                .name("kontra-unpurge".into())
-                .spawn(read)
-                .is_err()
-            {
+                let done = self.woken.0.clone();
+                let heads = self.store.take_heads();
+                let lanes = std::thread::available_parallelism().map_or(4, |n| n.get() * 3);
+                let fallback = pending_woken.clone();
+                let read = move || {
+                    if let Some(heads) = heads {
+                        heads.load(lanes);
+                    }
+                    let _ = done.send(Woken {
+                        part,
+                        generation,
+                        unpurges: pending_woken,
+                    });
+                };
+                // A failed spawn leaves the heads to stream on demand: the groups
+                // still play.
+                if std::thread::Builder::new()
+                    .name("kontra-unpurge".into())
+                    .spawn(read)
+                    .is_err()
+                {
+                    ready_now.extend(fallback);
+                }
+            }
+
+            for u in ready_now {
                 self.send(Command::Unpurged {
                     part,
                     generation,
@@ -181,12 +207,14 @@ impl Rack {
             }
         }
         while let Ok(w) = self.woken.1.try_recv() {
-            self.send(Command::Unpurged {
-                part: w.part,
-                generation: w.generation,
-                unpurge: w.unpurge,
-                took: true,
-            });
+            for u in w.unpurges {
+                self.send(Command::Unpurged {
+                    part: w.part,
+                    generation: w.generation,
+                    unpurge: u,
+                    took: true,
+                });
+            }
         }
     }
 

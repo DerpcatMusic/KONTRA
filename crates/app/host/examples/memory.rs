@@ -4,6 +4,8 @@
 //! With `KONTRA_PLAY_SECONDS=60` it then plays chords for that many seconds
 //! of audio and reports the process again.
 
+#![allow(clippy::disallowed_types)]
+
 use std::sync::Arc;
 
 use kontra_engine::{Engine, Event, HostNote, HostPattern, SampleTime, Timed};
@@ -79,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{path}\tERROR\t{e}");
                 continue;
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
         if std::env::var_os("KONTRA_TRANSLATE_ONLY").is_some() {
             for d in &ir.diagnostics {

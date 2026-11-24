@@ -138,6 +138,71 @@ pub struct Part {
     pub named: named::Named,
 }
 
+impl Part {
+    /// Actionable user-facing items this part needs to play fully
+    /// (`Broken` and `Audible` diagnostics, first line each).
+    #[must_use]
+    pub fn needs(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for d in &self.diagnostics {
+            if !matches!(d.impact, ir::Impact::Broken | ir::Impact::Audible) {
+                continue;
+            }
+            let first = d.detail.lines().next().unwrap_or_default().trim();
+            let line = if first.is_empty() {
+                d.feature.clone()
+            } else {
+                format!("{}: {first}", d.feature)
+            };
+            if !out.contains(&line) {
+                out.push(line);
+            }
+        }
+        out
+    }
+
+    /// Diagnostics visible in the default Report view (`Broken`, `Audible`,
+    /// and `Cosmetic`; excludes `Latent` developer diagnostics).
+    #[must_use]
+    pub fn visible_diagnostics(&self, part: usize) -> Vec<String> {
+        self.diagnostics
+            .iter()
+            .filter(|d| d.impact != ir::Impact::Latent)
+            .map(|d| format_diagnostic(part, &self.name, d))
+            .collect()
+    }
+
+    /// Developer-only `Impact::Latent` diagnostics, hidden behind the Report
+    /// view's Developer toggle by default.
+    #[must_use]
+    pub fn latent_diagnostics(&self, part: usize) -> Vec<String> {
+        self.diagnostics
+            .iter()
+            .filter(|d| d.impact == ir::Impact::Latent)
+            .map(|d| format_diagnostic(part, &self.name, d))
+            .collect()
+    }
+}
+
+fn format_diagnostic(part: usize, name: &str, d: &ir::Diagnostic) -> String {
+    let tag = match d.impact {
+        ir::Impact::Broken => "Broken",
+        ir::Impact::Audible => "Audible",
+        ir::Impact::Cosmetic => "Cosmetic",
+        ir::Impact::Latent => "Latent",
+    };
+    if d.detail.is_empty() {
+        format!("[{tag}] part {} ({name}): {}", part + 1, d.feature)
+    } else {
+        format!(
+            "[{tag}] part {} ({name}): {}: {}",
+            part + 1,
+            d.feature,
+            d.detail
+        )
+    }
+}
+
 /// What the rack keeps to save a part's scripts.
 #[derive(Default)]
 pub struct ScriptState {
@@ -201,6 +266,9 @@ pub struct Rack {
     interfaces: Interfaces,
     /// Snapshot recalls whose plans are being made ([`native`]).
     native: Vec<native::Native>,
+    /// Cached decoded Kontakt base `.nki` per part for fast `.nksn` snapshot
+    /// swaps without re-opening or re-decrypting the base instrument.
+    snapshot_bases: Vec<Option<Arc<kontra_format_kontakt::SnapshotBase>>>,
     /// The instruments the player has, by the catalog generation they are
     /// of: a snapshot kept apart from its library binds to one by name.
     known: (u64, Vec<PathBuf>),
@@ -256,6 +324,7 @@ impl Rack {
             interfaces: Interfaces::Shown,
             generation: 0,
             native: Vec::new(),
+            snapshot_bases: (0..MAX_PARTS).map(|_| None).collect(),
             known: (0, Vec::new()),
             multi: None,
             moved: Vec::new(),
@@ -304,7 +373,14 @@ impl Rack {
     /// # Errors
     /// When the file is not an instrument this can read, or `part` is past
     /// the rack.
-    pub fn load(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn load(&mut self, part: usize, path: &Path) -> Result<(), crate::Error> {
+        // Before anything changes: a multi would install its scripts first.
+        if part >= MAX_PARTS {
+            return Err(crate::Error::PartOutOfRange {
+                part,
+                max: MAX_PARTS,
+            });
+        }
         if let Some(progress) = self.store.progress() {
             progress.begin();
         }
@@ -316,8 +392,49 @@ impl Rack {
         if kontra_format_kontakt::is_multi(path) {
             return self.load_multi(part, path);
         }
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
+            && let Some(preset) = crate::instrument::preset(path, &self.known.1)
+        {
+            let base = match self.snapshot_base_for(part, &preset.base) {
+                Some(cached) => Ok(cached),
+                None => kontra_format_kontakt::open_snapshot_base(&preset.base).map(Arc::new),
+            };
+            if let Ok(base) = base {
+                let instrument =
+                    kontra_format_kontakt::load_snapshot_onto(&base, path, &self.known.1)?;
+                self.load_ir(part, instrument, Some(path.to_owned()))?;
+                if let Some(slot) = self.snapshot_bases.get_mut(part) {
+                    *slot = Some(base);
+                }
+                return Ok(());
+            }
+        }
         let instrument = crate::instrument::read_saved(path, &[], &self.known.1)?;
         self.load_ir(part, instrument, Some(path.to_owned()))
+    }
+
+    /// Returns a cached open Kontakt [`SnapshotBase`] matching `base` from
+    /// `part` or any other part sharing the same base `.nki`.
+    pub(super) fn snapshot_base_for(
+        &self,
+        part: usize,
+        base: &Path,
+    ) -> Option<Arc<kontra_format_kontakt::SnapshotBase>> {
+        if let Some(cached) = self
+            .snapshot_bases
+            .get(part)
+            .and_then(Option::as_ref)
+            .filter(|b| b.path() == base)
+        {
+            return Some(Arc::clone(cached));
+        }
+        self.snapshot_bases
+            .iter()
+            .flatten()
+            .find(|b| b.path() == base)
+            .map(Arc::clone)
     }
 
     /// A multi: each of its slots, in order, into `part` and the parts
@@ -328,15 +445,19 @@ impl Rack {
     ///
     /// # Errors
     /// When the multi cannot be read, or none of its slots can.
-    fn load_multi(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let (slots, failed) = kontra_format_kontakt::multi(path, None)?;
-        if slots.is_empty() {
-            return Err(failed.join("; ").into());
+    fn load_multi(&mut self, part: usize, path: &Path) -> Result<(), crate::Error> {
+        let loaded = kontra_format_kontakt::multi_load(path, None)?;
+        if loaded.slots.is_empty() {
+            return Err(crate::Error::Multi(loaded.failed.join("; ")));
         }
-        self.set_multi(Some(path));
-        self.notices
-            .extend(failed.iter().map(|f| format!("{}: {f}", path.display())));
-        for (at, slot) in (part..MAX_PARTS).zip(slots) {
+        self.install_multi_scripts(Some(path), loaded.scripts);
+        self.notices.extend(
+            loaded
+                .failed
+                .iter()
+                .map(|f| format!("{}: {f}", path.display())),
+        );
+        for (at, slot) in (part..MAX_PARTS).zip(loaded.slots) {
             let mut instrument = slot.instrument;
             let own = path.join(slot.index.to_string());
             instrument.source_path = Some(own.clone());
@@ -375,7 +496,6 @@ impl Rack {
         if self.multi.as_deref() == path {
             return;
         }
-        self.multi = path.map(Path::to_owned);
         let scripts = match path.map(kontra_format_kontakt::multi_scripts) {
             Some(Ok(scripts)) => scripts,
             Some(Err(e)) => {
@@ -384,6 +504,13 @@ impl Rack {
             }
             None => Vec::new(),
         };
+        self.install_multi_scripts(path, scripts);
+    }
+
+    /// Always installs `scripts`: [`Self::set_multi`] skips a path it already
+    /// holds, but a load that read the multi afresh replaces what was there.
+    fn install_multi_scripts(&mut self, path: Option<&Path>, scripts: Vec<ir::Script>) {
+        self.multi = path.map(Path::to_owned);
         let engine = (!scripts.is_empty()).then(|| {
             let instrument = ir::Instrument {
                 name: "Multi script".into(),
@@ -440,7 +567,7 @@ impl Rack {
         scripts: &[Vec<String>],
         slot_types: &[(ir::RackAt, u8, u16)],
         slot_responses: &[(ir::RackAt, u8, String)],
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), crate::Error> {
         if let Some(progress) = self.store.progress() {
             progress.begin();
         }
@@ -471,14 +598,14 @@ impl Rack {
     ///
     /// # Errors
     /// When `part` did not load a Kontakt snapshot, or the save fails.
-    pub fn save_snapshot(&self, part: usize, to: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_snapshot(&self, part: usize, to: &Path) -> Result<(), crate::Error> {
         let from = (self.parts.get(part).and_then(Option::as_ref))
             .and_then(|p| p.path.as_deref())
             .filter(|p| {
                 p.extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
             })
-            .ok_or("a Kontakt snapshot saves over the snapshot its part loaded")?;
+            .ok_or(crate::Error::NotSnapshotPart)?;
         let slots =
             (self.parts.get(part).and_then(Option::as_ref)).map_or(&[][..], |p| &p.script.slots);
         let held: Vec<(usize, Vec<String>)> = slots
@@ -498,7 +625,7 @@ impl Rack {
         part: usize,
         instrument: ir::Instrument,
         path: Option<PathBuf>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), crate::Error> {
         self.load_built(part, instrument, path, &[], &[])
     }
 
@@ -509,9 +636,12 @@ impl Rack {
         path: Option<PathBuf>,
         slot_types: &[(ir::RackAt, u8, u16)],
         slot_responses: &[(ir::RackAt, u8, String)],
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), crate::Error> {
         if part >= MAX_PARTS {
-            return Err(format!("part {part} is past the rack's {MAX_PARTS}").into());
+            return Err(crate::Error::PartOutOfRange {
+                part,
+                max: MAX_PARTS,
+            });
         }
         let mut instrument = instrument;
         crate::relink::apply(&self.moved, &mut instrument);
@@ -612,6 +742,22 @@ impl Rack {
         let Some(slot) = self.parts.get_mut(part) else {
             return;
         };
+        // A base `.nki` loaded itself may have changed on disk: no part's
+        // snapshots may reuse what was decoded of it before.
+        if let Some(loaded) = info.path.as_deref() {
+            for cached in &mut self.snapshot_bases {
+                if cached.as_deref().is_some_and(|b| b.path() == loaded) {
+                    *cached = None;
+                }
+            }
+        }
+        if let Some(cached) = self.snapshot_bases.get_mut(part)
+            && cached
+                .as_deref()
+                .is_some_and(|b| info.source.as_deref() != Some(b.path()))
+        {
+            *cached = None;
+        }
         self.generation += 1;
         let mut info = info;
         info.script.generation = self.generation;
@@ -640,6 +786,9 @@ impl Rack {
     pub fn remove(&mut self, part: usize) {
         if let Some(slot) = self.parts.get_mut(part) {
             *slot = None;
+            if let Some(base) = self.snapshot_bases.get_mut(part) {
+                *base = None;
+            }
             self.send(Command::Remove(part));
             self.resend_mix();
         }
@@ -1088,5 +1237,63 @@ mod tests {
         assert!(!super::saves(&vars, 0, 2), "a page tab");
         assert!(!super::saves(&vars, 0, 3), "not persistent");
         assert!(!super::saves(&vars, 1, 1), "no such script");
+    }
+
+    fn rack() -> super::Rack {
+        let store = kontra_stream::Store::new(kontra_stream::StoreConfig::DEFAULT).unwrap();
+        super::Rack::new(48_000, store, 64).0
+    }
+
+    #[test]
+    fn a_multi_past_the_rack_is_refused_before_it_changes_anything() {
+        let mut rack = rack();
+        let err = rack
+            .load(super::MAX_PARTS, std::path::Path::new("missing.nkm"))
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::Error::PartOutOfRange { .. }),
+            "got {err}"
+        );
+        assert!(rack.multi().is_none());
+    }
+
+    /// `set_multi` could not read the multi but kept its path; the load that
+    /// later reads it still installs its scripts.
+    #[test]
+    fn a_multi_read_afresh_installs_its_scripts_at_the_path_already_held() {
+        let mut rack = rack();
+        let path = std::path::Path::new("later.nkm");
+        rack.set_multi(Some(path));
+        assert_eq!(rack.multi(), Some(path));
+        rack.take_notices();
+        let script = super::ir::Script {
+            name: "m".into(),
+            slot: 0,
+            dialect: super::ir::Dialect::Ksp,
+            source: "on init\n this is not ksp\nend on".into(),
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        };
+        rack.install_multi_scripts(Some(path), vec![script]);
+        let notices = rack.take_notices();
+        assert!(
+            notices.iter().any(|n| n.starts_with("multi script:")),
+            "the scripts were built: {notices:?}"
+        );
+    }
+
+    /// Loading a base `.nki` itself drops every part's decoded copy of it.
+    #[test]
+    fn reloading_a_base_nki_drops_the_snapshot_bases_decoded_from_it() {
+        let nki = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/kontakt-envelope/case0.nki");
+        let base = kontra_format_kontakt::open_snapshot_base(&nki).unwrap();
+        let mut rack = rack();
+        rack.snapshot_bases[1] = Some(std::sync::Arc::new(base));
+        assert!(rack.snapshot_base_for(1, &nki).is_some());
+        rack.load(0, &nki).unwrap();
+        assert!(rack.snapshot_base_for(1, &nki).is_none());
+        assert!(rack.snapshot_base_for(0, &nki).is_none());
     }
 }

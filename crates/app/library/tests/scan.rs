@@ -457,6 +457,42 @@ fn protected_banks_carry_structured_protection_status_and_cache_it() {
     assert_eq!(warm.reads, 0);
     assert_eq!(again, catalog);
 
+    // Invalidating an unlocked bank evicts only its stale Protected entry and
+    // re-evaluates it as Open while leaving still-locked banks cached.
+    let unlocked_path = dir.join("LockedReadableDir.ufs");
+    let dropped = warm.invalidate_protected(|p| p == unlocked_path);
+    assert_eq!(dropped, 1);
+    let unlocked_inspect = |bank: &Path| {
+        if bank == unlocked_path {
+            Ok(BankListing {
+                presets: vec!["Pad.uvip".into()],
+                protection: ProtectionStatus::Open,
+            })
+        } else {
+            inspect(bank)
+        }
+    };
+    let refreshed = scan_with_inspector(
+        &[root(&dir)],
+        &Progress::default(),
+        &mut warm,
+        &unlocked_inspect,
+    )
+    .unwrap();
+    assert_eq!(warm.reads, 1, "only the invalidated bank is re-read");
+    let now_open = refreshed
+        .libraries
+        .iter()
+        .find(|l| l.name == "LockedReadableDir")
+        .unwrap();
+    assert!(now_open.protection.is_open());
+    let still_locked = refreshed
+        .libraries
+        .iter()
+        .find(|l| l.name == "LockedOpaque")
+        .unwrap();
+    assert!(still_locked.protection.is_protected());
+
     std::fs::remove_dir_all(dir).unwrap();
 }
 

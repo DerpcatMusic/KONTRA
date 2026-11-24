@@ -2,6 +2,8 @@
 //! prints load time, tree build time and what the tree holds, per file.
 //! `cargo run --release -p kontra-host --example ui_tree -- <file>...`
 
+#![allow(clippy::disallowed_types)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;

@@ -2056,10 +2056,283 @@ fn unpurged_plays(when: Unpurged) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert!(
-        said.iter().any(|s| s.contains("loading purged group")),
-        "{said:?}"
+        !said.iter().any(|s| s.contains("loading purged group")),
+        "operational unpurge messages must not spam rack notices: {said:?}"
     );
     assert!(loudest(&mut audio, 62) > 1e-4, "the unpurged group plays");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn batched_unpurges_load_multiple_groups_without_notice_spam() {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("unpurge-batched");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["a.wav", "b.wav", "c.wav"] {
+        std::fs::write(dir.join(name), tone_wav()).unwrap();
+    }
+    let sfz = dir.join("batch.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=a.wav key=60\n<region> sample=b.wav key=62\n<region> sample=c.wav key=64\n",
+    )
+    .unwrap();
+    let mut instrument = kontra_host::instrument::read(&sfz).unwrap();
+    let z2 = instrument.groups[0].zones.pop().unwrap();
+    let z1 = instrument.groups[0].zones.pop().unwrap();
+    for z in [z1, z2] {
+        let mut g = instrument.groups[0].clone();
+        g.zones = vec![z];
+        g.purged = true;
+        instrument.groups.push(g);
+    }
+    instrument.scripts = vec![ir::Script {
+        name: "s".into(),
+        slot: 0,
+        dialect: ir::Dialect::Ksp,
+        source: "on init
+            declare ui_button $go
+        end on
+        on ui_control ($go)
+            purge_group(1, 1)
+            purge_group(2, 1)
+        end on"
+            .into(),
+        saved: Vec::new(),
+        data: Vec::new(),
+        links: Vec::new(),
+    }];
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, Some(sfz)).unwrap();
+    rack.control(0, 0, None, 1.0, Default::default());
+    let mut notices = Vec::new();
+    for _ in 0..200 {
+        rack.tick();
+        notices.extend(rack.take_notices());
+        audio.process(BLOCK, &[]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        notices.is_empty(),
+        "clean batched unpurge should produce zero notices: {notices:?}"
+    );
+    for key in [62u8, 64u8] {
+        for _ in 0..200 {
+            audio.process(BLOCK, &[]);
+        }
+        let on = Event::NoteOn {
+            note: HostNote {
+                port: 0,
+                channel: 0,
+                key,
+                id: -1,
+                clap: true,
+            },
+            velocity: 1.0,
+            tune: 0.0,
+        };
+        audio.process(BLOCK, &[(0, on)]);
+        let mut top = level(&audio, 0).abs();
+        for _ in 0..8 {
+            audio.process(BLOCK, &[]);
+            top = top.max(level(&audio, 0).abs());
+        }
+        assert!(top > 1e-4, "unpurged key {key} should sound, peak {top}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn resize_max_block_preserves_loaded_parts_and_renders_larger_blocks() {
+    let (mut rack, mut audio) = rack();
+    assert_eq!(audio.max_block(), BLOCK);
+    let a = engine(rack.store_mut(), 0.5);
+    rack.install(0, a, part("a"));
+    let [before, _] = play(&mut audio, &[(0, note(0))]);
+    assert!(before > 0.1, "part sounds before resize: {before}");
+
+    // Grow max_block on the main thread without destroying loaded parts.
+    let bigger = BLOCK * 4;
+    audio.resize_max_block(bigger);
+    assert_eq!(audio.max_block(), bigger);
+    audio.process(bigger, &[]);
+    let out = audio.output(0, bigger);
+    assert_eq!(out.len(), bigger);
+    let mean = out.iter().map(|s| s[0]).sum::<f32>() / out.len() as f32;
+    assert!(
+        mean > 0.1,
+        "loaded part keeps sounding across larger block after resize: {mean}"
+    );
+}
+
+#[test]
+fn recall_keep_fades_out_active_audio_without_step_click() {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("recall-fade");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Constant DC WAV so any abrupt cut shows up as a huge sample-to-sample step.
+    let frames = RATE;
+    let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+    for field in [16u32, 1 | (1 << 16), RATE, RATE * 2, 2 | (16 << 16)] {
+        wav.extend(field.to_le_bytes());
+    }
+    wav.extend(b"data");
+    wav.extend((frames * 2).to_le_bytes());
+    for _ in 0..frames {
+        wav.extend(16_384i16.to_le_bytes());
+    }
+    let riff = (wav.len() - 8) as u32;
+    wav.splice(4..8, riff.to_le_bytes());
+    std::fs::write(dir.join("dc.wav"), wav).unwrap();
+    let sfz = dir.join("dc.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=dc.wav key=60 ampeg_attack=0.0 ampeg_release=0.5\n",
+    )
+    .unwrap();
+    let mut inst = kontra_host::instrument::read(&sfz).unwrap();
+    inst.source_path = Some(std::path::PathBuf::from("dc.nki"));
+    inst.scripts = vec![ir::Script {
+        name: "s".into(),
+        slot: 0,
+        dialect: ir::Dialect::Ksp,
+        source: "on init
+            set_snapshot_type(1)
+            declare $knob := 1
+            make_persistent($knob)
+        end on"
+            .into(),
+        saved: Vec::new(),
+        data: Vec::new(),
+        links: Vec::new(),
+    }];
+
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, inst, Some("dc.nki".into())).unwrap();
+    // Trigger note and wait until DC output is steady.
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..8 {
+        audio.process(BLOCK, &[]);
+    }
+    let mut prev = audio.output(0, BLOCK).last().unwrap()[0];
+    assert!(prev > 0.2, "note must be actively sounding: {prev}");
+
+    let generation = rack.parts()[0].as_ref().unwrap().script.generation();
+    let preset = kontra_host::instrument::Preset {
+        name: "b".into(),
+        base: "dc.nki".into(),
+        saved: vec![vec!["$knob 99".into()]],
+        effects: false,
+    };
+    assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
+
+    // Render through the fade-out and measure the largest sample-to-sample jump.
+    let mut max_step = 0.0f32;
+    let mut recalled_done = false;
+    for _ in 0..16 {
+        audio.process(BLOCK, &[]);
+        for sample in audio.output(0, BLOCK) {
+            max_step = max_step.max((sample[0] - prev).abs());
+            prev = sample[0];
+        }
+        rack.tick();
+        if rack.parts()[0].as_ref().unwrap().script.generation() != generation {
+            recalled_done = true;
+            break;
+        }
+    }
+    assert!(recalled_done, "recall must complete after fade-out");
+    assert!(
+        max_step < 0.05,
+        "recall fade-out must not click (max sample delta {max_step})"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_install_during_a_recall_fade_carries_on_from_the_faded_level() {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("recall-fade-install");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Constant DC WAV so any abrupt cut shows up as a huge sample-to-sample step.
+    let frames = RATE;
+    let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+    for field in [16u32, 1 | (1 << 16), RATE, RATE * 2, 2 | (16 << 16)] {
+        wav.extend(field.to_le_bytes());
+    }
+    wav.extend(b"data");
+    wav.extend((frames * 2).to_le_bytes());
+    for _ in 0..frames {
+        wav.extend(16_384i16.to_le_bytes());
+    }
+    let riff = (wav.len() - 8) as u32;
+    wav.splice(4..8, riff.to_le_bytes());
+    std::fs::write(dir.join("dc.wav"), wav).unwrap();
+    let sfz = dir.join("dc.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=dc.wav key=60 ampeg_attack=0.0 ampeg_release=0.5\n",
+    )
+    .unwrap();
+    let mut inst = kontra_host::instrument::read(&sfz).unwrap();
+    inst.source_path = Some(std::path::PathBuf::from("dc.nki"));
+    inst.scripts = vec![ir::Script {
+        name: "s".into(),
+        slot: 0,
+        dialect: ir::Dialect::Ksp,
+        source: "on init
+            set_snapshot_type(1)
+            declare $knob := 1
+            make_persistent($knob)
+        end on"
+            .into(),
+        saved: Vec::new(),
+        data: Vec::new(),
+        links: Vec::new(),
+    }];
+
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, inst, Some("dc.nki".into())).unwrap();
+    // Trigger note and wait until DC output is steady.
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..8 {
+        audio.process(BLOCK, &[]);
+    }
+    let mut prev = audio.output(0, BLOCK).last().unwrap()[0];
+    assert!(prev > 0.2, "note must be actively sounding: {prev}");
+
+    let preset = kontra_host::instrument::Preset {
+        name: "b".into(),
+        base: "dc.nki".into(),
+        saved: vec![vec!["$knob 99".into()]],
+        effects: false,
+    };
+    assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
+
+    // Part way down the recall's fade, a new instrument replaces the part.
+    for _ in 0..3 {
+        audio.process(BLOCK, &[]);
+        for sample in audio.output(0, BLOCK) {
+            prev = sample[0];
+        }
+    }
+    let silent = engine(rack.store_mut(), 0.0);
+    rack.install(0, silent, part("next"));
+    let mut max_step = 0.0f32;
+    for _ in 0..16 {
+        audio.process(BLOCK, &[]);
+        for sample in audio.output(0, BLOCK) {
+            max_step = max_step.max((sample[0] - prev).abs());
+            prev = sample[0];
+        }
+    }
+    assert!(
+        max_step < 0.05,
+        "the replaced engine fades from the recall's level (max sample delta {max_step})"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

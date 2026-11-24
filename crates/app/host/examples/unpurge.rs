@@ -6,6 +6,8 @@
 //! 8000) before and after.
 //! `cargo run --release -p kontra-host --example unpurge -- <file> [key]`
 
+#![allow(clippy::disallowed_types)]
+
 use std::time::{Duration, Instant};
 
 use kontra_engine::{Event, HostNote};

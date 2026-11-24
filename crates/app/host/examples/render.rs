@@ -4,6 +4,8 @@
 //! `cargo run --release -p kontra-host --example render -- <file> <key> <out.wav>`
 //! `<file>` is a Kontakt instrument, or a UVI program as `bank.ufs/Name.uvip`.
 
+#![allow(clippy::disallowed_types)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

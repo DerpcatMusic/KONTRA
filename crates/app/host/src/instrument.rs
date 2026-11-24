@@ -2,10 +2,30 @@
 //! it into the IR, prepare loads its samples, its script is compiled.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use kontra_engine::{Plan, ir};
+use kontra_format::{EntryRef, FormatError, FormatId, LoadCx, LoadOptions, Notes, Registry};
 use kontra_prepare::prepare;
 use kontra_stream::Store;
+
+use crate::Error;
+
+/// Returns the process-wide [`Registry`] containing all built-in sampler formats.
+#[must_use]
+pub fn registry() -> &'static Registry {
+    static REGISTRY: OnceLock<Registry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut reg = Registry::new();
+        reg.register(kontra_format_native::Native)
+            .register(kontra_format_sfz::Sfz)
+            .register(kontra_format_decentsampler::DecentSampler)
+            .register(kontra_format_sf2::Sf2)
+            .register(kontra_format_uvi::Uvi)
+            .register(kontra_format_kontakt::Kontakt);
+        reg
+    })
+}
 
 /// Wall time spent in the stages of building a plan.
 #[derive(Clone, Copy, Debug, Default)]
@@ -38,7 +58,7 @@ pub struct Loaded {
 ///
 /// # Errors
 /// When the file is not an instrument this can read.
-pub fn read(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+pub fn read(path: &Path) -> Result<ir::Instrument, Error> {
     read_saved(path, &[], &[])
 }
 
@@ -54,7 +74,7 @@ pub fn read_timed(
         std::time::Duration,
         Option<std::time::Duration>,
     ),
-    Box<dyn std::error::Error>,
+    Error,
 > {
     let start = std::time::Instant::now();
     let (instrument, timings) = kontra_format::timing::collect(|| read(path));
@@ -76,7 +96,7 @@ pub fn read_saved(
     path: &Path,
     saved: &[Vec<String>],
     known: &[PathBuf],
-) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+) -> Result<ir::Instrument, Error> {
     // A user preset: its base with its values, unless a project gave its own.
     if let Some(user) = crate::presets::read(path) {
         let saved = if saved.is_empty() {
@@ -93,39 +113,10 @@ pub fn read_saved(
         }
         return Ok(out);
     }
-    if path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("kontra"))
-    {
-        return Ok(kontra_format_native::load(path)?);
-    }
-    if path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("sfz"))
-    {
-        return Ok(kontra_format_sfz::load(path)?);
-    }
-    if path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("dspreset"))
-    {
-        return Ok(kontra_format_decentsampler::read_file(path)?);
-    }
-    if path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("sf2"))
-    {
-        return sf2(path);
-    }
-    if let Some((bank_path, bank, program)) = sf2_slot(path) {
-        let mut out = kontra_format_sf2::read_preset(bank_path, bank, program)?;
-        out.source_path = Some(path.to_owned());
-        return Ok(out);
-    }
     if let Some((multi, slot)) = multi_slot(path) {
-        let (slots, failed) = kontra_format_kontakt::multi(multi, Some(slot))?;
-        let mut out = (slots.into_iter().next())
-            .ok_or_else(|| failed.join("; "))?
+        let loaded = kontra_format_kontakt::multi_load(multi, Some(slot))?;
+        let mut out = (loaded.slots.into_iter().next())
+            .ok_or_else(|| Error::Multi(loaded.failed.join("; ")))?
             .instrument;
         for (script, saved) in out.scripts.iter_mut().zip(saved) {
             script.saved.clone_from(saved);
@@ -133,34 +124,30 @@ pub fn read_saved(
         out.source_path = Some(path.to_owned());
         return Ok(out);
     }
-    if kontra_format_uvi::is_uvi(path) {
-        // The load pass runs once per script, in order.
-        let next = std::cell::Cell::new(0);
-        let swaps = |script: &ir::Script| {
-            let n = next.replace(next.get() + 1);
-            script_swaps(script, saved.get(n).unwrap_or(&script.saved))
-        };
-        Ok(kontra_format_uvi::load_with(path, &swaps)?)
-    } else {
-        Ok(kontra_format_kontakt::load_known(path, known)?)
+    let reg = registry();
+    let matched = reg.sniff_file(path).map_err(|e| FormatError::io(path, e))?;
+    match matched {
+        Some((fmt, _)) if fmt.id() == FormatId::Uvi => {
+            // The load pass runs once per script, in order.
+            let next = std::cell::Cell::new(0);
+            let swaps = |script: &ir::Script| {
+                let n = next.replace(next.get() + 1);
+                script_swaps(script, saved.get(n).unwrap_or(&script.saved))
+            };
+            Ok(kontra_format_uvi::load_with(path, &swaps)?)
+        }
+        Some((fmt, _)) => {
+            let mut notes = Notes::default();
+            let options = LoadOptions {
+                known_instruments: known.to_vec(),
+            };
+            let mut cx = LoadCx::new(&mut notes, &options);
+            Ok(fmt.load(&EntryRef::new(path), &mut cx)?)
+        }
+        None => {
+            Err(FormatError::unsupported(path, "no registered format recognizes this file").into())
+        }
     }
-}
-
-/// A SoundFont bank's first preset; the others are listed as a diagnostic.
-// ponytail: first preset only, add a `Bank.sf2/<n>` slot path (as `multi_slot`) when the browser lists presets.
-fn sf2(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
-    let mut out = kontra_format_sf2::read_first(path)?;
-    let rest: Vec<String> = (kontra_format_sf2::list_presets(path)?.into_iter().skip(1))
-        .map(|p| format!("{}:{} {}", p.bank, p.program, p.name))
-        .collect();
-    if !rest.is_empty() {
-        out.diagnostics.push(ir::Diagnostic {
-            impact: ir::Impact::Cosmetic,
-            feature: "SoundFont presets not loaded".into(),
-            detail: rest.join(", "),
-        });
-    }
-    Ok(out)
 }
 
 /// Saved script values for an instrument held in another file, which
@@ -183,14 +170,7 @@ pub struct Preset {
 /// reopen the chosen preset by path.
 #[must_use]
 pub fn sf2_slot(path: &Path) -> Option<(&Path, u16, u16)> {
-    let bank_path = path
-        .parent()
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sf2")))?;
-    let name = path.file_name()?.to_str()?;
-    let head = name.split_whitespace().next().unwrap_or(name);
-    let head = head.strip_suffix(".sf2p").unwrap_or(head);
-    let (bank, program) = head.split_once(':')?;
-    Some((bank_path, bank.parse().ok()?, program.parse().ok()?))
+    kontra_format_sf2::parse_slot(path)
 }
 
 /// A multi's slot as a path: `Multi.nkm/<slot>`, the slot counted from 0
@@ -233,11 +213,7 @@ pub fn preset(path: &Path, known: &[PathBuf]) -> Option<Preset> {
 ///
 /// # Errors
 /// When the file is not an instrument this can read.
-pub fn load(
-    path: &Path,
-    rate: u32,
-    store: &mut Store,
-) -> Result<Loaded, Box<dyn std::error::Error>> {
+pub fn load(path: &Path, rate: u32, store: &mut Store) -> Result<Loaded, Error> {
     Ok(build(read(path)?, rate, store))
 }
 
@@ -452,6 +428,18 @@ fn factory_folder_of(candidates: Vec<std::path::PathBuf>) -> Option<kontra_engin
 
 #[cfg(test)]
 mod tests {
+    /// A native file quoting an SFZ tag stays native with SFZ registered.
+    #[test]
+    fn a_quoted_sfz_tag_does_not_take_a_native_file() {
+        let (fmt, _) = super::registry()
+            .sniff(
+                std::path::Path::new("Piano.kontra"),
+                b"name = \"<region>\"\nversion = 1\n",
+            )
+            .expect("native recognizes its extension");
+        assert_eq!(fmt.id(), kontra_format::FormatId::Native);
+    }
+
     /// A slot's `SET_CONDITION` reaches the slots after it and Kontakt's own
     /// script after the last; a later `RESET_CONDITION` takes it back.
     #[test]

@@ -21,6 +21,22 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         }
         tools.push(b.el);
     }
+    let dev_label = if app.report_latent.is_empty() {
+        "Developer".to_owned()
+    } else {
+        format!("Developer ({})", app.report_latent.len())
+    };
+    let dev = button(
+        ui,
+        "report-developer",
+        &dev_label,
+        app.view.report_developer,
+    );
+    if dev.changed {
+        app.view.report_developer = !app.view.report_developer;
+        app.view.report_open = None;
+    }
+    tools.push(dev.el.tip("Show latent developer diagnostics"));
     for (n, entry) in app.report.iter().enumerate() {
         if entry.ends_with(", use it?") {
             let b = button(
@@ -43,18 +59,28 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         &mut v.report_search,
     );
     let needle = v.report_search.to_lowercase();
-    let shown: Vec<(usize, &String)> = app
-        .report
+    let entries: Vec<&String> = if v.report_developer {
+        app.report.iter().chain(app.report_latent.iter()).collect()
+    } else {
+        app.report.iter().collect()
+    };
+    let shown: Vec<(usize, &String)> = entries
         .iter()
+        .copied()
         .enumerate()
         .filter(|(_, l)| needle.is_empty() || l.to_lowercase().contains(&needle))
         .collect();
-    let summary = caption(format!(
-        "{} matching · {} retained",
-        shown.len(),
-        app.report.len()
-    ))
-    .fill(secondary());
+    let summary_text = if !v.report_developer && !app.report_latent.is_empty() {
+        format!(
+            "{} matching · {} retained · {} developer hidden",
+            shown.len(),
+            entries.len(),
+            app.report_latent.len()
+        )
+    } else {
+        format!("{} matching · {} retained", shown.len(), entries.len())
+    };
+    let summary = caption(summary_text).fill(secondary());
     let mut rows = Vec::new();
     let mut toggled = None;
     for &(n, entry) in &shown {
@@ -104,10 +130,13 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if let Some(n) = toggled {
         v.report_open = (v.report_open != Some(n)).then_some(n);
     }
-    let list = if app.report.is_empty() {
-        caption("Everything loaded as written.")
-            .fill(secondary())
-            .pad(SPACE * 2.)
+    let list = if entries.is_empty() {
+        let empty = if app.report_latent.is_empty() {
+            "Everything loaded as written."
+        } else {
+            "Everything loaded as written. Enable Developer to inspect latent details."
+        };
+        caption(empty).fill(secondary()).pad(SPACE * 2.)
     } else {
         col(rows)
             .gap(1)

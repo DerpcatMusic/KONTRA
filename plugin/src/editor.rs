@@ -57,6 +57,14 @@ struct PartView {
     mute: bool,
     /// Its output's peaks, then each instrument bus's.
     level: Vec<[f32; 2]>,
+    /// Diagnostic count when `needs`/`diag_visible`/`diag_latent` were built.
+    diag_count: usize,
+    /// Actionable Broken/Audible items for the part's header warning popup.
+    needs: Arc<Vec<String>>,
+    /// Broken/Audible/Cosmetic diagnostics shown in the Report tab by default.
+    diag_visible: Arc<Vec<String>>,
+    /// Developer-only (`Impact::Latent`) diagnostics hidden behind Developer toggle.
+    diag_latent: Arc<Vec<String>>,
 }
 
 /// How long a library control the player moved keeps the editor's value
@@ -208,6 +216,19 @@ impl Snapshot {
                         (name, found.map(|(_, n)| n))
                     }
                 };
+                let diag_count = p.diagnostics.len();
+                let (needs, diag_visible, diag_latent) = match same {
+                    Some(v) if v.diag_count == diag_count => (
+                        Arc::clone(&v.needs),
+                        Arc::clone(&v.diag_visible),
+                        Arc::clone(&v.diag_latent),
+                    ),
+                    _ => (
+                        Arc::new(p.needs()),
+                        Arc::new(p.visible_diagnostics(slot)),
+                        Arc::new(p.latent_diagnostics(slot)),
+                    ),
+                };
                 Some(PartView {
                     slot,
                     generation,
@@ -224,6 +245,10 @@ impl Snapshot {
                     solo: p.solo,
                     mute: p.mute,
                     level: level(slot),
+                    diag_count,
+                    needs,
+                    diag_visible,
+                    diag_latent,
                 })
             })
             .collect();
@@ -276,6 +301,7 @@ impl Snapshot {
                     p.slot,
                     p.generation,
                     p.revision,
+                    p.diag_count,
                     p.name.clone(),
                     p.library.clone(),
                     p.preset,
@@ -408,6 +434,7 @@ impl Snapshot {
                 solo,
                 mute,
                 keys: (0, 127),
+                needs: p.needs.as_ref().clone(),
                 open,
                 tab,
                 look,
@@ -438,7 +465,19 @@ impl Snapshot {
             disk_mbs: r.disk_mbs,
             cache_mb: r.cache_mb,
         };
-        app.report.clone_from(&self.report);
+        app.report.clear();
+        app.report.extend(self.report.iter().cloned());
+        app.report.extend(
+            self.parts
+                .iter()
+                .flat_map(|p| p.diag_visible.iter().cloned()),
+        );
+        app.report_latent.clear();
+        app.report_latent.extend(
+            self.parts
+                .iter()
+                .flat_map(|p| p.diag_latent.iter().cloned()),
+        );
         app.pick.clone_from(&self.pick);
     }
 }
@@ -641,7 +680,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
             let loaded = match (into, rack.free()) {
                 (Some(part), _) => rack.load(part, &path),
                 (None, Some(part)) => rack.load(part, &path).map(|()| place(rack, browser, part)),
-                (None, None) => Err("every part is in use".into()),
+                (None, None) => Err(kontra_host::Error::NoFreePart),
             };
             match loaded {
                 Ok(()) => browser.loaded(&path),
@@ -1056,6 +1095,22 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 }
                 continue;
             }
+            if action == Action::CopyDiagnostics {
+                ui.set_clipboard(format_diagnostics_report(&app));
+                continue;
+            }
+            if action == Action::ExportReport {
+                let contents = format_diagnostics_report(&app);
+                p.shared.folder.ask_save_report(contents, log_dir());
+                if p.shared.folder.has_result() {
+                    p.shared.wake_tick();
+                }
+                continue;
+            }
+            if action == Action::LogFolder {
+                open_log_folder(&p);
+                continue;
+            }
             if let Some(event) = played(&action) {
                 if let Some(player) = lock(&p.shared.player).as_ref() {
                     player.play(event);
@@ -1264,6 +1319,94 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     editor.into_editor()
 }
 
+/// Directory where KONTRA writes and exports diagnostic logs.
+fn log_dir() -> Option<PathBuf> {
+    dirs::data_local_dir()
+        .or_else(dirs::cache_dir)
+        .map(|base| base.join("kontra-v3").join("logs"))
+}
+
+/// Formats a plain-text diagnostics report for [`Action::CopyDiagnostics`] and
+/// [`Action::ExportReport`]. Includes latent developer diagnostics when the
+/// Developer toggle is enabled.
+fn format_diagnostics_report(app: &App) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "KONTRA Diagnostics Report");
+    if !app.build.is_empty() {
+        let _ = writeln!(out, "Build: {}", app.build);
+    }
+    let _ = writeln!(
+        out,
+        "Parts loaded: {} · Voices: {} · RAM: {} MB",
+        app.parts.len(),
+        app.stats.voices,
+        app.stats.ram_mb
+    );
+    if !app.parts.is_empty() {
+        let _ = writeln!(out, "\nLoaded parts:");
+        for (idx, part) in app.parts.iter().enumerate() {
+            let _ = writeln!(out, "  {}. {} ({})", idx + 1, part.name, part.library);
+            for need in &part.needs {
+                let _ = writeln!(out, "     - needs: {need}");
+            }
+        }
+    }
+    let _ = writeln!(out, "\nDiagnostics ({}):", app.report.len());
+    if app.report.is_empty() {
+        let _ = writeln!(out, "  Everything loaded as written.");
+    } else {
+        for entry in &app.report {
+            let _ = writeln!(out, "  - {entry}");
+        }
+    }
+    if app.view.report_developer && !app.report_latent.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nDeveloper / Latent Diagnostics ({}):",
+            app.report_latent.len()
+        );
+        for entry in &app.report_latent {
+            let _ = writeln!(out, "  - {entry}");
+        }
+    }
+    out
+}
+
+/// Opens KONTRA's log directory in the platform's file manager off the UI thread.
+fn open_log_folder(params: &Arc<KontraParams>) {
+    let Some(dir) = log_dir() else {
+        params.shared.request(Request::Notice(
+            "Could not locate the KONTRA log folder on this system.".into(),
+        ));
+        return;
+    };
+    let params = Arc::clone(params);
+    let _ = std::thread::Builder::new()
+        .name("kontra-log-folder".into())
+        .spawn(move || {
+            if let Err(err) = std::fs::create_dir_all(&dir) {
+                params.shared.request(Request::Notice(format!(
+                    "Could not create log folder {}: {err}",
+                    dir.display()
+                )));
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            let mut cmd = std::process::Command::new("open");
+            #[cfg(target_os = "windows")]
+            let mut cmd = std::process::Command::new("explorer");
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let mut cmd = std::process::Command::new("xdg-open");
+            if let Err(err) = cmd.arg(&dir).spawn() {
+                params.shared.request(Request::Notice(format!(
+                    "Could not open log folder {} ({err}).",
+                    dir.display()
+                )));
+            }
+        });
+}
+
 /// The port the editor's notes come from: no host port, so a host note-off
 /// never ends a key the editor holds, nor the other way round.
 const EDITOR_PORT: u8 = 255;
@@ -1391,6 +1534,10 @@ mod tests {
             solo: false,
             mute: false,
             level: Vec::new(),
+            diag_count: 0,
+            needs: Arc::default(),
+            diag_visible: Arc::default(),
+            diag_latent: Arc::default(),
         };
         let mut view = Snapshot {
             parts: vec![part(1.)],
@@ -1466,5 +1613,84 @@ mod tests {
         assert!(played(&Action::Panic).is_none());
         assert!(is_instrument(std::path::Path::new("/a/B.NKI")));
         assert!(!is_instrument(std::path::Path::new("/a/b.wav")));
+    }
+
+    #[test]
+    fn snapshot_wires_part_needs_and_splits_latent_diagnostics() {
+        use kontra_host::rack::{Mix, Rack, Store, StoreConfig};
+        let (mut rack, _audio) = Rack::new(48_000, Store::new(StoreConfig::DEFAULT).unwrap(), 256);
+        let mut inst = kontra_host::rack::ir::Instrument {
+            name: "DiagTest".into(),
+            ..kontra_host::rack::ir::Instrument::DEFAULT
+        };
+        inst.diagnostics = vec![
+            kontra_host::rack::ir::Diagnostic {
+                impact: kontra_host::rack::ir::Impact::Broken,
+                feature: "samples not found".into(),
+                detail: "2 samples not found in /lib\nfirst: /lib/a.wav".into(),
+            },
+            kontra_host::rack::ir::Diagnostic {
+                impact: kontra_host::rack::ir::Impact::Audible,
+                feature: "unsupported effect".into(),
+                detail: "magic_fx".into(),
+            },
+            kontra_host::rack::ir::Diagnostic {
+                impact: kontra_host::rack::ir::Impact::Cosmetic,
+                feature: "unused knob".into(),
+                detail: "cc 122".into(),
+            },
+            kontra_host::rack::ir::Diagnostic {
+                impact: kontra_host::rack::ir::Impact::Latent,
+                feature: "ignored group.midi_channel".into(),
+                detail: "1× (first: 3)".into(),
+            },
+        ];
+        rack.load_ir(0, inst, None).unwrap();
+        let _ = Mix::DEFAULT;
+        let browser = Browser::open(None, None);
+        let mut snap = Snapshot::default();
+        snap.refresh(&rack, &browser, vec!["Startup notice".into()]);
+        let mut app = App {
+            build: "Version test".into(),
+            ..App::default()
+        };
+        let mut shown = Shown::default();
+        snap.fill(&mut app, &mut shown, &Mine::default(), Instant::now());
+
+        assert_eq!(app.parts.len(), 1);
+        assert_eq!(
+            app.parts[0].needs,
+            vec![
+                "samples not found: 2 samples not found in /lib".to_owned(),
+                "unsupported effect: magic_fx".to_owned(),
+            ]
+        );
+        assert!(
+            app.report
+                .iter()
+                .any(|l| l.contains("[Broken]") && l.contains("samples not found")),
+            "{:?}",
+            app.report
+        );
+        assert!(
+            app.report.iter().any(|l| l.contains("[Cosmetic]")),
+            "{:?}",
+            app.report
+        );
+        assert!(
+            !app.report.iter().any(|l| l.contains("[Latent]")),
+            "Latent diagnostics must stay out of default app.report: {:?}",
+            app.report
+        );
+        assert_eq!(app.report_latent.len(), 1);
+        assert!(app.report_latent[0].contains("ignored group.midi_channel"));
+
+        let default_txt = format_diagnostics_report(&app);
+        assert!(default_txt.contains("samples not found"));
+        assert!(!default_txt.contains("ignored group.midi_channel"));
+
+        app.view.report_developer = true;
+        let dev_txt = format_diagnostics_report(&app);
+        assert!(dev_txt.contains("ignored group.midi_channel"));
     }
 }

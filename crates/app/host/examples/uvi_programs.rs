@@ -2,6 +2,8 @@
 //! for corpus surveys (`tools/v3-survey`).
 //! `cargo run --release -p kontra-host --example uvi_programs -- <bank.ufs>...`
 
+#![allow(clippy::disallowed_types)]
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     for bank in std::env::args_os().skip(1) {
         let bank = std::path::PathBuf::from(bank);

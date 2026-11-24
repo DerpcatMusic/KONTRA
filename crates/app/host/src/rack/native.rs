@@ -6,11 +6,10 @@
 //! thread nor the rack waits for the read.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use kontra_engine::{Plan, Saved, ir};
+use kontra_format_kontakt::SnapshotBase;
 
 use super::Rack;
 use super::recall::{Started, started};
@@ -28,14 +27,52 @@ pub(crate) struct Native {
 /// the snapshot at `path`, and what its reading and those effects report;
 /// as it is when the snapshot cannot be read (the values still land),
 /// with why.
-fn rebuilt(plan: &Plan, path: &Path, base: &[PathBuf], rate: u32) -> (Plan, Vec<ir::Diagnostic>) {
+///
+/// Reuses an already-open [`SnapshotBase`] when available (or opens it once
+/// and returns it for caching) so repeated `.nksn` preset swaps do not re-open
+/// or re-decrypt the base `.nki`.
+fn rebuilt(
+    plan: &Plan,
+    path: &Path,
+    base: &[PathBuf],
+    cached_base: Option<Arc<SnapshotBase>>,
+    rate: u32,
+) -> (Plan, Vec<ir::Diagnostic>, Option<Arc<SnapshotBase>>) {
     let mut plan = plan.clone();
-    match crate::instrument::read_saved(path, &[], base) {
+    let is_nksn = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
+    let mut opened_base = None;
+    let instrument = if is_nksn {
+        if let Some(cached) = cached_base {
+            kontra_format_kontakt::load_snapshot_onto(&cached, path, base)
+                .map_err(crate::Error::from)
+        } else if let Some(base_path) = base
+            .first()
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) && p.is_file())
+        {
+            match kontra_format_kontakt::open_snapshot_base(base_path) {
+                Ok(opened) => {
+                    let arc = Arc::new(opened);
+                    let res = kontra_format_kontakt::load_snapshot_onto(&arc, path, base)
+                        .map_err(crate::Error::from);
+                    opened_base = Some(arc);
+                    res
+                }
+                Err(_) => crate::instrument::read_saved(path, &[], base),
+            }
+        } else {
+            crate::instrument::read_saved(path, &[], base)
+        }
+    } else {
+        crate::instrument::read_saved(path, &[], base)
+    };
+    match instrument {
         Ok(instrument) => {
             let mut diagnostics = Vec::new();
             kontra_prepare::effects(&mut plan, &instrument, rate, &mut diagnostics);
             diagnostics.extend(instrument.diagnostics);
-            (plan, diagnostics)
+            (plan, diagnostics, opened_base)
         }
         Err(e) => {
             let why = ir::Diagnostic {
@@ -43,7 +80,7 @@ fn rebuilt(plan: &Plan, path: &Path, base: &[PathBuf], rate: u32) -> (Plan, Vec<
                 feature: "snapshot effects unread".into(),
                 detail: e.to_string(),
             };
-            (plan, vec![why])
+            (plan, vec![why], opened_base)
         }
     }
 }
@@ -64,18 +101,24 @@ impl Rack {
         let (send, started_rx) = mpsc::channel();
         let (path, rate, client) = (path.to_owned(), self.rate, self.store.client());
         let (faces, near) = (p.faces.clone(), p.source.clone());
+        let generation = p.script.generation();
+        let cached_base = near
+            .as_deref()
+            .and_then(|base| self.snapshot_base_for(part, base));
         // The snapshot's racks are the effects: no slots a script loaded.
         std::thread::spawn(move || {
-            let (plan, diagnostics) = rebuilt(&plan, &path, near.as_slice(), rate);
+            let (plan, diagnostics, opened_base) =
+                rebuilt(&plan, &path, near.as_slice(), cached_base, rate);
             let face = (faces.as_slice(), near.as_deref().or(Some(path.as_path())));
             // None waits when the part moved on (another load or recall).
             let mut started = started(plan, &Default::default(), saved, (client, rate), face);
             started.diagnostics = diagnostics;
+            started.snapshot_base = opened_base;
             let _ = send.send(started);
         });
         self.native.push(Native {
             part,
-            generation: p.script.generation(),
+            generation,
             started: started_rx,
             loaded,
         });

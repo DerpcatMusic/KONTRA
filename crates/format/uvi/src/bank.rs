@@ -187,6 +187,18 @@ impl Bank {
         Ok(Self::list_programs(path, false)?.0)
     }
 
+    /// Fast read-only check for whether a verified content key is already
+    /// cached for `path` (checking both `path` and its canonical target).
+    pub(crate) fn has_cached_key(path: &Path) -> bool {
+        if crate::keys::has_cached_key(path) {
+            return true;
+        }
+        path.canonicalize()
+            .ok()
+            .filter(|canon| canon.as_path() != path)
+            .is_some_and(|canon| crate::keys::has_cached_key(&canon))
+    }
+
     pub(crate) fn list_programs(
         path: &Path,
         inspect: bool,
@@ -373,7 +385,7 @@ fn directory_protection(path: &Path, directory: &Directory) -> ProtectionStatus 
     if !has_content {
         return ProtectionStatus::Open;
     }
-    if crate::keys::has_cached_key(path) {
+    if Bank::has_cached_key(path) {
         return ProtectionStatus::Open;
     }
     let has_verifiable_png = directory.files.iter().any(|m| {
@@ -838,6 +850,65 @@ mod tests {
             "Samples/x.flac"
         );
         assert_eq!(normalize_virtual_path("../../a/b"), "a/b");
+    }
+
+    #[test]
+    fn cached_content_key_re_evaluates_protected_bank_as_open() {
+        let root =
+            std::env::temp_dir().join(format!("kontra-uvi-unlock-recheck-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bank_path = root.join("Unlockable.ufs");
+
+        // Minimal UFS2 bank with Protection::Content (mode 2) and no verifiable PNG.
+        let mut bytes = vec![0u8; 320];
+        bytes[..4].copy_from_slice(b"UFS2");
+        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bytes[8..24].fill(9);
+        bytes[48..58].copy_from_slice(b"Unlockable");
+        bytes[304] = 0;
+
+        let mut payload = vec![0u8; 289];
+        payload[..4].copy_from_slice(&0x6758_50e4u32.to_le_bytes());
+        payload[4..14].copy_from_slice(b"patch.uvip");
+        payload[260..268].copy_from_slice(&16u64.to_le_bytes());
+        payload[268..276].copy_from_slice(&320u64.to_le_bytes());
+        payload[276] = 2; // Protection::Content
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        let size = bytes.len() as u64;
+        bytes[32..40].copy_from_slice(&size.to_le_bytes());
+        std::fs::write(&bank_path, &bytes).unwrap();
+
+        let (_, status_before) = super::Bank::list_programs(&bank_path, true).unwrap();
+        assert!(status_before.is_protected());
+        assert!(
+            super::Bank::inspect_protection(&bank_path)
+                .unwrap()
+                .is_protected()
+        );
+        assert!(!super::Bank::has_cached_key(&bank_path));
+
+        // Simulate a content key being cached on disk for this exact bank stamp.
+        let (id_path, stamp) = crate::keys::file_id(&bank_path).unwrap();
+        let key_dir = dirs::cache_dir().unwrap().join("kontra").join("uvi-keys");
+        crate::keys::save(&key_dir, &id_path, stamp, 0x1122_3344_5566_7788).unwrap();
+
+        assert!(super::Bank::has_cached_key(&bank_path));
+        assert!(
+            super::Bank::inspect_protection(&bank_path)
+                .unwrap()
+                .is_open()
+        );
+        let (_, status_after) = super::Bank::list_programs(&bank_path, true).unwrap();
+        assert!(status_after.is_open());
+
+        // Clean up the test key cache file so it doesn't pollute the user's cache.
+        let mut h = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&id_path, &mut h);
+        let key_file = key_dir.join(format!("{:016x}", std::hash::Hasher::finish(&h)));
+        let _ = std::fs::remove_file(key_file);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
 
