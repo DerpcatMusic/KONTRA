@@ -31,7 +31,10 @@ impl EnvelopeTimingRecord {
         }
         let mut values = [0.0; 3];
         for (v, bytes) in values.iter_mut().zip(data[..12].chunks_exact(4)) {
-            *v = f32::from_le_bytes(bytes.try_into().unwrap());
+            let chunk: [u8; 4] = bytes
+                .try_into()
+                .map_err(|_| Error::Static("Invalid envelope timing record length"))?;
+            *v = f32::from_le_bytes(chunk);
         }
         Ok(Self {
             values,
@@ -253,7 +256,9 @@ impl EnvelopeFlex {
 
     pub fn unknown_version_word(&self) -> Option<u16> {
         (self.unknown_tail.len() == FLEX_TAIL_V12)
-            .then(|| u16::from_le_bytes(self.unknown_tail[..2].try_into().unwrap()))
+            .then(|| self.unknown_tail.get(..2)?.try_into().ok())
+            .flatten()
+            .map(u16::from_le_bytes)
     }
     fn validate(&self) -> Result<(), Error> {
         let count = self.points.len();

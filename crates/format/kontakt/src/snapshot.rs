@@ -203,14 +203,7 @@ fn resaved(own: &[String], now: &[String]) -> Vec<String> {
 
 /// [`preset`], with what it saves of the instrument.
 fn read(path: &Path, known: &[PathBuf]) -> Result<(Preset, Snapshot), Error> {
-    let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
-    let chunks = container::chunks(path)?;
-    let state =
-        (chunks.find_first(SNAPSHOT)).ok_or_else(|| Error::new(path, "snapshot", "missing"))?;
-    let mut state = Snapshot::try_from(state).map_err(decode("snapshot"))?;
-    let names = (chunks.find_first(METADATA))
-        .ok_or_else(|| Error::new(path, "snapshot metadata", "missing"))?;
-    let names = snapshot_metadata_names(names).map_err(decode("snapshot metadata"))?;
+    let (mut state, names) = decode(path)?;
     let base = base(path, &names, known)?;
     let preset = Preset {
         name: (path.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
@@ -219,6 +212,72 @@ fn read(path: &Path, known: &[PathBuf]) -> Result<(Preset, Snapshot), Error> {
         effects: state.groups.is_some(),
     };
     Ok((preset, state))
+}
+
+fn decode(path: &Path) -> Result<(Snapshot, (String, String)), Error> {
+    let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
+    let chunks = container::chunks(path)?;
+    let state =
+        (chunks.find_first(SNAPSHOT)).ok_or_else(|| Error::new(path, "snapshot", "missing"))?;
+    let state = Snapshot::try_from(state).map_err(decode("snapshot"))?;
+    let names = (chunks.find_first(METADATA))
+        .ok_or_else(|| Error::new(path, "snapshot metadata", "missing"))?;
+    let names = snapshot_metadata_names(names).map_err(decode("snapshot metadata"))?;
+    Ok((state, names))
+}
+
+/// Decoded base instrument container retained across snapshot switches so
+/// switching snapshots does not re-open, re-decrypt, or decompress the `.nki`.
+pub struct Base {
+    path: PathBuf,
+    chunks: ni_file::kontakt::KontaktChunks,
+    monolith: Option<ni_file::file_container::NIFileContainer>,
+    encrypted: Option<bool>,
+}
+
+impl Base {
+    /// Path to the base `.nki` file.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Opens and decodes a base `.nki` once for repeated [`load_onto`] snapshot swaps.
+///
+/// # Errors
+/// When the file cannot be opened, decrypted, or parsed as Kontakt chunks.
+pub fn open_base(path: &Path) -> Result<Base, Error> {
+    let (chunks, monolith, encrypted) = container::opened(path)?;
+    Ok(Base {
+        path: std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
+        chunks,
+        monolith,
+        encrypted,
+    })
+}
+
+/// Applies the snapshot at `path` onto an already-opened [`Base`] without
+/// re-opening or re-decrypting the base `.nki`.
+///
+/// # Errors
+/// When `path` is not a readable snapshot or fails translation.
+pub fn load_onto(base: &Base, path: &Path, _known: &[PathBuf]) -> Result<ir::Instrument, Error> {
+    let (mut state, _) = decode(path)?;
+    let saved = std::mem::take(&mut state.persistent);
+    let native = Native::of(state).map_err(|e| Error::new(path, "snapshot groups", e))?;
+    let mut out = translate::instrument(
+        &base.path,
+        &base.chunks,
+        base.monolith.clone(),
+        &saved,
+        base.encrypted,
+        native,
+    )?;
+    if let Some(name) = path.file_stem().filter(|s| !s.is_empty()) {
+        out.name = name.to_string_lossy().into_owned();
+    }
+    Ok(out)
 }
 
 pub(crate) fn load(path: &Path, known: &[PathBuf]) -> Result<ir::Instrument, Error> {
@@ -429,6 +488,56 @@ pub(crate) fn over(own: Vec<String>, snapshot: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_base_loads_a_separate_snapshot_without_discovery() {
+        use ni_file::kontakt::{Chunk, KontaktChunks};
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/glide-time.nki");
+        let opened = open_base(&fixture).unwrap();
+        let ni_file::NIFile::NISoundContainer(mut container) =
+            ni_file::NIFile::read(std::fs::File::open(&fixture).unwrap()).unwrap()
+        else {
+            panic!("fixture must be NIS");
+        };
+        let mut state = vec![0, 3, 0];
+        state.extend(3u32.to_le_bytes());
+        for _ in 0..5 {
+            state.extend(0u32.to_le_bytes());
+        }
+        let mut meta = vec![0, 1, 0];
+        meta.extend((-1i32).to_le_bytes());
+        for name in ["NoSuchBaseForSnapshotTest", ""] {
+            meta.extend((name.len() as u32).to_le_bytes());
+            for ch in name.encode_utf16() {
+                meta.extend(ch.to_le_bytes());
+            }
+        }
+        let chunks = KontaktChunks(vec![
+            Chunk {
+                id: SNAPSHOT,
+                data: state,
+            },
+            Chunk {
+                id: METADATA,
+                data: meta,
+            },
+        ]);
+        let mut bytes = Vec::new();
+        chunks.write(&mut bytes).unwrap();
+        container.set_preset_chunk(&bytes, None).unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("kontra-snapshot-open-base-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Detached.nksn");
+        let mut file = std::fs::File::create(&path).unwrap();
+        container.write(&mut file).unwrap();
+        drop(file);
+        assert!(preset(&path, &[]).is_err());
+        let loaded = load_onto(&opened, &path, &[]).unwrap();
+        assert_eq!(loaded.name, "Detached");
+        assert_eq!(loaded.source_path, std::path::absolute(&fixture).ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_saved_value_takes_the_held_one_by_its_bare_name() {

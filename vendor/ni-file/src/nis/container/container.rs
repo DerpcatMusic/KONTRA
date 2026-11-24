@@ -5,6 +5,10 @@ use crate::{read_bytes::ReadBytesExt, Error, NIFileError};
 use super::{ItemData, ItemHeader, ItemType};
 
 const MAX_NIS_DEPTH: usize = 64;
+/// Cap top-level NIS item bodies at 256 MiB to prevent OOM on crafted headers.
+const MAX_NIS_ITEM_BYTES: usize = 256 * 1024 * 1024;
+/// Minimum serialized bytes for one child table row (12) + child header (40).
+const MIN_NIS_CHILD_BYTES: usize = 52;
 
 /// NISound documents are made up of nested [`Item`]s.
 #[derive(Clone, Debug)]
@@ -31,6 +35,7 @@ impl ItemContainer {
             .length
             .checked_sub(40)
             .and_then(|n| usize::try_from(n).ok())
+            .filter(|&n| n <= MAX_NIS_ITEM_BYTES)
             .ok_or(Error::Static("Invalid NIS item length"))?;
         let body = reader.read_bytes(length).map_err(|e| {
             Error::context(
@@ -73,6 +78,7 @@ impl ItemContainer {
             .length
             .checked_sub(40)
             .and_then(|n| usize::try_from(n).ok())
+            .filter(|&n| n <= MAX_NIS_ITEM_BYTES)
             .ok_or(Error::Static("Invalid NIS item length"))?;
         let body = super::read_slice(reader, length).map_err(|e| {
             Error::context(
@@ -271,6 +277,13 @@ impl ItemContainer {
             });
         }
         let num_children = buf.read_u32_le()?;
+        let remaining = buf
+            .get_ref()
+            .len()
+            .saturating_sub(usize::try_from(buf.position()).unwrap_or(usize::MAX));
+        if (num_children as usize) > remaining / MIN_NIS_CHILD_BYTES {
+            return Err(Error::Static("NIS child count exceeds remaining bytes"));
+        }
         let mut children = Vec::new();
         let mut headers = Vec::new();
         for index in 0..num_children {
@@ -305,5 +318,24 @@ mod tests {
         let item = ItemContainer::read(data)?;
         assert_eq!(item.children.len(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn crafted_nis_item_length_and_child_count_are_rejected_without_oom() {
+        let mut oversized = Vec::new();
+        oversized.extend_from_slice(&u64::from(u32::MAX).to_le_bytes());
+        oversized.extend_from_slice(&1u32.to_le_bytes());
+        oversized.extend_from_slice(b"hsin");
+        oversized.extend_from_slice(&0u32.to_le_bytes());
+        oversized.extend_from_slice(&0u32.to_le_bytes());
+        oversized.extend_from_slice(&[0u8; 16]);
+        assert!(ItemContainer::read(Cursor::new(&oversized)).is_err());
+
+        let mut child_buf = Vec::new();
+        child_buf.extend_from_slice(&1u32.to_le_bytes());
+        child_buf.extend_from_slice(&u32::MAX.to_le_bytes());
+        let err =
+            ItemContainer::read_children(&mut Cursor::new(child_buf.as_slice()), 0).unwrap_err();
+        assert!(err.to_string().contains("child count"));
     }
 }

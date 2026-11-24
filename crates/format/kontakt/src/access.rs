@@ -19,7 +19,23 @@ pub(crate) fn library_key(path: &Path) -> Result<Arc<dyn LibraryKey>, String> {
 /// The 64 KiB keystream of the library `path` belongs to; searches ancestors up
 /// to the library root depth for a `.nicnt` carrying `<JDX>` and `<HU>` tags.
 pub(crate) fn keystream(path: &Path) -> Result<Arc<[u8]>, String> {
-    let path = std::path::absolute(path).map_err(|e| e.to_string())?;
+    let abs = std::path::absolute(path).map_err(|e| e.to_string())?;
+    let canon = path.canonicalize().ok();
+    let primary = canon.as_deref().unwrap_or(&abs);
+    match keystream_for(primary) {
+        Ok(stream) => Ok(stream),
+        Err(primary_err) => {
+            if primary != abs
+                && let Ok(stream) = keystream_for(&abs)
+            {
+                return Ok(stream);
+            }
+            Err(primary_err)
+        }
+    }
+}
+
+fn keystream_for(path: &Path) -> Result<Arc<[u8]>, String> {
     let mut saw_nicnt = None;
     for parent in path.ancestors().skip(1).take(crate::resources::DEPTH) {
         let Ok(read_dir) = std::fs::read_dir(parent) else {
@@ -199,5 +215,31 @@ mod tests {
         std::fs::write(&patch, b"").unwrap();
         assert!(keystream(&patch).is_ok());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finds_nicnt_through_file_symlink_in_separate_scan_root() {
+        let base =
+            std::env::temp_dir().join(format!("kontra-access-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real_lib = base.join("RealLibrary");
+        let scan_root = base.join("ScanRoot");
+        std::fs::create_dir_all(real_lib.join("Instruments")).unwrap();
+        std::fs::create_dir_all(&scan_root).unwrap();
+        let hex32 = "aa".repeat(32);
+        let hex16 = "bb".repeat(16);
+        std::fs::write(
+            real_lib.join("Real.nicnt"),
+            format!("<ProductHints><JDX>{hex32}</JDX><HU>{hex16}</HU></ProductHints>"),
+        )
+        .unwrap();
+        let real_patch = real_lib.join("Instruments/Patch.nki");
+        std::fs::write(&real_patch, b"").unwrap();
+        let alias = scan_root.join("Alias.nki");
+        std::os::unix::fs::symlink(&real_patch, &alias).unwrap();
+
+        assert!(keystream(&alias).is_ok());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

@@ -279,7 +279,7 @@ const STALE_DIRECTORY_SHIFT: u64 = 0x8000;
 
 /// The (up to) 31 header bytes at `at`, zero-padded; `None` when fewer than 22 remain.
 fn header_at<R: Read + Seek>(r: &mut R, at: u64, length: u64) -> Result<Option<[u8; 31]>, Error> {
-    if at.saturating_add(22) > length {
+    if at.checked_add(22).is_none_or(|end| end > length) {
         return Ok(None);
     }
     r.seek(SeekFrom::Start(at))?;
@@ -313,8 +313,8 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
     }
     e.checked = true;
     e.issue = if let Some(header) = found {
-        let magic = u32::from_le_bytes(header[..4].try_into().unwrap());
-        let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
+        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        let version = u16::from_le_bytes([header[4], header[5]]);
         let header_size = match magic {
             0x2ae905fa => 22,
             0x4916e63c => 27,
@@ -327,17 +327,22 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
             Some("Invalid NKX member signature")
         } else if version != 0x110 && version != 0x111 {
             Some("Unsupported NKX member version")
-        } else if file_offset + header_size > length {
+        } else if file_offset
+            .checked_add(header_size)
+            .is_none_or(|end| end > length)
+        {
             Some("Truncated NKX member header")
         } else {
             e.offset = file_offset + header_size;
-            e.key_index = u32::from_le_bytes(header[10..14].try_into().unwrap());
+            e.key_index = u32::from_le_bytes([header[10], header[11], header[12], header[13]]);
             // A key hint can describe encrypted data even with the 22-byte
             // header (Solo's shared NKR), but plaintext resources are verified below.
             e.encoded = magic == 0x16ccf80a || e.key_index == 0x100;
             let at = if magic == 0x2ae905fa { 14 } else { 19 };
-            e.size = u32::from_le_bytes(header[at..at + 4].try_into().unwrap()) as u64;
-            if e.offset + e.size > length {
+            e.size =
+                u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+                    as u64;
+            if e.offset.checked_add(e.size).is_none_or(|end| end > length) {
                 Some("Truncated NKX member payload")
             } else {
                 // Shared NKR resources also use the 22-byte header and a key
@@ -402,6 +407,33 @@ mod tests {
         assert_eq!(count, 1_000_000);
         assert_eq!(entries.len(), 1);
     }
+
+    #[test]
+    fn member_header_offset_overflow_is_rejected_without_panic() {
+        let mut header = vec![0u8; 32];
+        header[..4].copy_from_slice(&0x2ae905fau32.to_le_bytes());
+        header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+        header[14..18].copy_from_slice(&u32::MAX.to_le_bytes());
+        // Overflowing header offset near u64::MAX must return None without panicking.
+        assert!(header_at(&mut Cursor::new(&header), u64::MAX - 4, u64::MAX)
+            .unwrap()
+            .is_none());
+        // Valid 22-byte header with oversized payload must be flagged cleanly.
+        let mut entry = Entry {
+            name: "overflow.wav".into(),
+            header_offset: 0,
+            offset: 0,
+            size: 0,
+            key_index: 0,
+            encoded: false,
+            checked: false,
+            valid: false,
+            issue: None,
+        };
+        check(&mut Cursor::new(&header), &mut entry, header.len() as u64).unwrap();
+        assert!(!entry.valid);
+        assert_eq!(entry.issue, Some("Truncated NKX member payload"));
+    }
 }
 
 /// A complete plaintext PNG, including chunk framing and every CRC. A matching
@@ -412,7 +444,7 @@ fn clear_png(bytes: &[u8]) -> bool {
     }
     let (mut at, mut data) = (8usize, false);
     while let Some(header) = bytes.get(at..at + 8) {
-        let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
         let Some(end) = at.checked_add(12).and_then(|n| n.checked_add(size)) else {
             return false;
         };
@@ -428,7 +460,10 @@ fn clear_png(bytes: &[u8]) -> bool {
         }
         let mut crc = flate2::Crc::new();
         crc.update(&chunk[..chunk.len() - 4]);
-        if crc.sum() != u32::from_be_bytes(chunk[chunk.len() - 4..].try_into().unwrap()) {
+        let Some(tail) = chunk.get(chunk.len() - 4..).and_then(|s| s.try_into().ok()) else {
+            return false;
+        };
+        if crc.sum() != u32::from_be_bytes(tail) {
             return false;
         }
         data |= kind == b"IDAT" && size > 0;

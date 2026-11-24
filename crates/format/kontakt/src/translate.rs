@@ -9,7 +9,7 @@ use kontra_ir as ir;
 use ni_file::kontakt::KontaktChunks;
 use ni_file::kontakt::objects::{
     BParScript, Group, GroupList, InternalModArray16, LoopArray, Modulator, StartCriteriaParams,
-    VoiceGroups, VoiceLimit, ZoneList,
+    VoiceGroups, VoiceLimit, ZoneList, ZoneSlices,
 };
 
 use crate::Error;
@@ -21,8 +21,10 @@ use crate::timed::{knob_route, knob_routes, timed};
 
 const GROUP_LIST: u16 = 0x33;
 const ZONE_LIST: u16 = 0x34;
+const ZONE_SLICES: u16 = 0x35;
 const LOOPS: u16 = 0x39;
 const INTERNAL_MODS: u16 = 0x3b;
+const GROUP_DYNAMICS: u16 = 0x4a;
 const SCRIPT: u16 = 6;
 const VOICE_GROUPS: u16 = 0x32;
 const START_CRITERIA: u16 = 0x38;
@@ -457,7 +459,21 @@ pub(crate) fn instrument(
     for (zone_id, (zone, &group)) in (0u32..).zip(zones.zones().iter().zip(&zones.group_ids)) {
         let z = zone.params().map_err(decode("zone"))?;
         check_ignored_zone_fields(&mut notes, &z);
-        crate::ignored::chunks(&mut notes, "zone", &zone.0, &[LOOPS], &[QUICK_BROWSE]);
+        crate::ignored::chunks(
+            &mut notes,
+            "zone",
+            &zone.0,
+            &[LOOPS, ZONE_SLICES],
+            &[QUICK_BROWSE],
+        );
+        if let Some(chunk) = zone.0.find_first(ZONE_SLICES) {
+            // `ZoneSlices` (0x35) stores wave-editor slice markers; Kontakt's
+            // audio engine only consumes them in Beat Machine (mode 4, already
+            // diagnosed on the group) and slice-trigger modes (`0140870000.c:5446`).
+            if let Err(e) = ZoneSlices::try_from(chunk) {
+                notes.ignored("zone chunk 0x35 ZoneSlices", e.to_string());
+            }
+        }
         if !z.sample_present {
             continue;
         }
@@ -870,9 +886,32 @@ fn translate_group(
         notes,
         "group",
         &group.0,
-        &[INTERNAL_MODS, 0x3c, 0x3a, 0x45, 0x3d, 0x4b, START_CRITERIA],
+        &[
+            INTERNAL_MODS,
+            0x3c,
+            0x3a,
+            0x45,
+            0x3d,
+            0x4b,
+            GROUP_DYNAMICS,
+            START_CRITERIA,
+        ],
         &[],
     );
+    // `BParGroupDynamics` (0x4A, 64 floats at BGroup + 0x680, `0140a70000.c:2160`
+    // / `0140d00000.c:2370`) has zero audio-engine consumers in Kontakt 8.13.1
+    // and is all-zero in every measured library; report only non-zero or broken payloads.
+    match group.dynamics() {
+        Ok(Some(d)) if d.has_nonzero() => {
+            notes.add(ir::Impact::Audible, "group dynamics (0x4a)", &v.name);
+        }
+        Ok(Some(_) | None) => {}
+        Err(e) => notes.add(
+            ir::Impact::Audible,
+            "unreadable group dynamics",
+            format!("{}: {e}", v.name),
+        ),
+    }
     let source_identity = match group.source_identity() {
         Ok(id) => Some(id),
         Err(e) => {
@@ -996,11 +1035,14 @@ fn translate_group(
                 });
             let reads_flags = matches!(
                 p.modulator,
-                Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Dbd(_)
+                Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::StepMod(_) | Modulator::Dbd(_)
             ) || (matches!(p.modulator, Modulator::Ahdsr(_)) && !amp_env);
             if !reads_flags {
                 let is_glide = matches!(p.modulator, Modulator::Glide(_));
-                for (flag, what) in [(1, "bypass"), (2, "retrigger"), (3, "flag 3")] {
+                // Retrigger (`+0xab8`, flag 2) is only read by free-running modulators
+                // with `(+0xa4) & 0x80 != 0` (LFO and StepMod, `0140970000.c:5087-5095`);
+                // envelopes, glide, and followers ignore it.
+                for (flag, what) in [(1, "bypass"), (3, "flag 3")] {
                     if (amp_env && matches!(flag, 1 | 3)) || (is_glide && flag == 1) {
                         continue;
                     }
@@ -1009,9 +1051,8 @@ fn translate_group(
                     }
                 }
             }
-            if p.unknown_id != 0 {
-                notes.ignored("internal modulator id", p.unknown_id);
-            }
+            // `p.unknown_id` (`+0x538`) is an editor group-linking modulator instance id
+            // (`0140880000.c:11318,11384`); unused by `BGroup::UpdateTemplates` and DSP.
             match &p.modulator {
                 // The first volume AHDSR is the amplitude envelope; if it also
                 // has secondary targets (e.g. filterCutoff, pitch), those route
@@ -1054,30 +1095,20 @@ fn translate_group(
                         bypass: p.unknown_flags.get(1).is_some_and(|&b| b != 0),
                         route: ir::ModRoute::AMP_ENVELOPE,
                     });
-                    if p.targets.len() > 1 {
-                        let envelopes = out.envelopes.len();
-                        timed(&mut out, &p, group_index, slot(n), target, notes);
-                        if out.envelopes.len() > envelopes
-                            && let Ok(env_idx) = u8::try_from(envelopes)
-                        {
-                            timed_slots.push((n, ir::Source::Envelope(env_idx)));
-                        }
+                    if p.targets.len() > 1
+                        && let Some(src) = timed(&mut out, &p, group_index, slot(n), target, notes)
+                    {
+                        timed_slots.push((n, src));
                     }
                 }
                 Modulator::Flex(_)
                 | Modulator::Lfo(_)
+                | Modulator::StepMod(_)
                 | Modulator::Ahdsr(_)
                 | Modulator::Dbd(_) => {
-                    let (lfos, envelopes) = (out.lfos.len(), out.envelopes.len());
-                    timed(&mut out, &p, group_index, slot(n), None, notes);
-                    let made = if out.lfos.len() > lfos {
-                        u8::try_from(lfos).ok().map(ir::Source::Lfo)
-                    } else if out.envelopes.len() > envelopes {
-                        u8::try_from(envelopes).ok().map(ir::Source::Envelope)
-                    } else {
-                        None
-                    };
-                    timed_slots.extend(made.map(|s| (n, s)));
+                    if let Some(src) = timed(&mut out, &p, group_index, slot(n), None, notes) {
+                        timed_slots.push((n, src));
+                    }
                 }
                 Modulator::Glide(g)
                     if let Some(t) = p
@@ -1109,11 +1140,11 @@ fn translate_group(
                     let kind = match m {
                         Modulator::Flex(_)
                         | Modulator::Lfo(_)
+                        | Modulator::StepMod(_)
                         | Modulator::Ahdsr(_)
                         | Modulator::Dbd(_) => "timed",
                         Modulator::Glide(_) => "glide",
                         Modulator::Follower(_) => "envelope follower",
-                        Modulator::Other { chunk_id: 0x09 } => "step modulator",
                         Modulator::Other { .. } => "other",
                     };
                     for t in &p.targets {
@@ -1161,8 +1192,9 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
     let randoms = rows().filter(|c| c.mode == RANDOM).count();
     let mut random_position: usize = 0;
     for (group, rows) in groups.iter_mut().zip(criteria) {
-        // A row's next_criteria joins it to the next active row (KONTAKT_START_CONDITIONS.md:79).
-        // ponytail: joins fold left to right; Kontakt's mixed AND/OR precedence is untraced.
+        // A row's next_criteria joins it to the next active row (`0140870000.c:5250-5281`).
+        // Native Kontakt compiles start criteria into an unparenthesized KSP `if(not ...)`
+        // where `and` binds tighter than `or`; `ir::Group::start` currently folds left to right.
         let mut join = ir::Join::And;
         for c in rows {
             if c.sequencer_only {
@@ -1692,5 +1724,45 @@ mod tests {
             super::split_ascii_ci("LOAD_ARRAY(%Tbl, 2)", "load_array("),
             vec!["%Tbl, 2)"]
         );
+    }
+
+    #[test]
+    fn group_dynamics_zero_is_silent_and_nonzero_or_malformed_is_diagnosed() {
+        let group_with_dynamics = |body: Vec<u8>| {
+            let mut private = Vec::new();
+            // Minimal valid v0x74 Group private payload (name "G", defaults).
+            let name = "G";
+            private.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            for ch in name.encode_utf16() {
+                private.extend_from_slice(&ch.to_le_bytes());
+            }
+            private.extend_from_slice(&1.0f32.to_le_bytes()); // volume
+            private.extend_from_slice(&0.0f32.to_le_bytes()); // pan
+            private.extend_from_slice(&1.0f32.to_le_bytes()); // tune
+            private.extend_from_slice(&[1, 0, 0, 0, 0]); // key_tracking..
+            private.extend_from_slice(&[0u8; 64]); // pad for optional fields
+            let mut dyn_data = vec![0];
+            dyn_data.extend_from_slice(&0x10u16.to_le_bytes());
+            dyn_data.extend_from_slice(&body);
+            ni_file::kontakt::objects::Group(ni_file::kontakt::StructuredObject {
+                version: 0x74,
+                private_data: private,
+                public_data: Vec::new(),
+                children: vec![ni_file::kontakt::Chunk {
+                    id: super::GROUP_DYNAMICS,
+                    data: dyn_data,
+                }],
+            })
+        };
+        let zero = group_with_dynamics(vec![0u8; 64 * 4]);
+        assert!(zero.dynamics().unwrap().is_some_and(|d| !d.has_nonzero()));
+
+        let mut nz = vec![0u8; 64 * 4];
+        nz[0..4].copy_from_slice(&0.5f32.to_le_bytes());
+        let nonzero = group_with_dynamics(nz);
+        assert!(nonzero.dynamics().unwrap().is_some_and(|d| d.has_nonzero()));
+
+        let malformed = group_with_dynamics(vec![0u8; 16]);
+        assert!(malformed.dynamics().is_err());
     }
 }

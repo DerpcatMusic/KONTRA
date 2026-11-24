@@ -55,12 +55,13 @@ impl Zone {
             return Ok(-1);
         }
         let at = if self.0.version >= 0x9a { 48 } else { 42 };
-        let bytes = self
+        let bytes: [u8; 4] = self
             .0
             .public_data
             .get(at..at + 4)
+            .and_then(|s| s.try_into().ok())
             .ok_or(Error::Static("Truncated zone sample reference"))?;
-        Ok(i32::from_le_bytes(bytes.try_into().unwrap()))
+        Ok(i32::from_le_bytes(bytes))
     }
 
     /// The v0x9a..9c common prefix ends with two flags and an opaque u32.
@@ -306,11 +307,17 @@ impl Zone {
             ));
         }
         // cf0360 accepts only these three values before the auxiliary mask.
-        if u32::from_le_bytes(private[4..8].try_into().unwrap()) > 2 {
+        let mode_bytes: [u8; 4] = private[4..8]
+            .try_into()
+            .map_err(|_| Error::Static("Unverified zone source identity private layout"))?;
+        if u32::from_le_bytes(mode_bytes) > 2 {
             return Err(Error::Static("Invalid zone private mode"));
         }
         let n = private.len();
-        match i32::from_le_bytes(private[n - 4..n].try_into().unwrap()) {
+        let id_bytes: [u8; 4] = private[n - 4..n]
+            .try_into()
+            .map_err(|_| Error::Static("Unverified zone source identity private layout"))?;
+        match i32::from_le_bytes(id_bytes) {
             -1 => Ok(None),
             id if id >= 0 => Ok(Some(id as u32)),
             _ => Err(Error::Static("Invalid zone source identity")),

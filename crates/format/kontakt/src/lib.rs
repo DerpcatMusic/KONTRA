@@ -21,7 +21,9 @@ mod impulse;
 mod laws;
 mod links;
 mod multi;
-pub use multi::{Slot, is_multi, scripts as multi_scripts, slots as multi};
+pub use multi::{
+    Multi, Slot, is_multi, load as multi_load, scripts as multi_scripts, slots as multi,
+};
 #[cfg(test)]
 mod fit;
 mod held;
@@ -34,7 +36,10 @@ mod reverb;
 mod samples;
 mod script_knobs;
 mod snapshot;
-pub use snapshot::{Preset, preset, save as save_snapshot};
+pub use snapshot::{
+    Base as SnapshotBase, Preset, load_onto as load_snapshot_onto, open_base as open_snapshot_base,
+    preset, save as save_snapshot,
+};
 mod solid_knobs;
 mod timed;
 mod translate;
@@ -303,7 +308,9 @@ fn emit_scan_file(path: &Path, out: &mut dyn ScanSink) {
     let name = path
         .file_stem()
         .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-    match inspect_protection(path) {
+    // Follow file symlinks so `.nicnt` lookup walks the real library's ancestors.
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    match inspect_protection(&resolved) {
         Ok(protection) => out.entry(ScanEntry {
             format: FormatId::Kontakt,
             path: path.to_path_buf(),
