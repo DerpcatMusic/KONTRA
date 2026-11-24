@@ -810,3 +810,55 @@ fn a_hidden_hover_area_in_another_panel_does_not_hear_the_other_hovered() {
         "hidden sibling in another panel got hover edits: {edits:?}"
     );
 }
+
+#[test]
+fn binding_param_knob_drag_preserves_fractional_real_value() {
+    let mut f = Face::new();
+    let mut knob = Widget::new(
+        "cutoff",
+        PageRef(0),
+        Rect::new(260, 10, 40, 40),
+        Kind::Knob {
+            range: Range {
+                min: 0.0,
+                max: 1.0,
+                default: 0.5,
+                step: None,
+            },
+            display: model::Display::default(),
+        },
+    );
+    knob.binding = model::Binding::Param(model::ParamBinding::with_map(
+        model::ir::Scope::Group(0),
+        model::ir::ParamAddr::FilterCutoff { insert: 0 },
+        model::ParamMap::Exponential {
+            min: 20.0,
+            max: 20_000.0,
+        },
+    ));
+    let n = f.tree.widgets.len();
+    f.tree.widgets.push(knob);
+    f.frame(Input::default());
+    let start = f.at(&input::surface(0, n));
+    let mut edits = f.pointer(start, true, Mods::default());
+    edits.extend(f.pointer(Point::new(start.x, start.y - 30.0), true, Mods::default()));
+    edits.extend(f.pointer(Point::new(start.x, start.y - 30.0), false, Mods::default()));
+    edits.extend(f.frame(Input::default()));
+    let moved = edits
+        .iter()
+        .find_map(|e| match (e.widget == WidgetRef(n), &e.to) {
+            (true, Set::Value(v)) => Some(*v),
+            _ => None,
+        });
+    assert!(
+        moved.is_some_and(|v| v > 0.0 && v < 1.0),
+        "expected fractional value in (0, 1), got {edits:?}"
+    );
+    assert!(
+        matches!(
+            f.tree.widgets.get(n).and_then(|w| w.value.as_ref()),
+            Some(model::Value::Real(v)) if *v > 0.0 && *v < 1.0
+        ),
+        "Binding::Param widget must keep Value::Real without rounding to integer"
+    );
+}

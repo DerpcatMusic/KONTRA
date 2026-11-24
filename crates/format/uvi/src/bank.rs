@@ -184,14 +184,27 @@ impl Bank {
     /// alone: no content key is recovered, so listing a protected bank costs
     /// what listing a clear one does.
     pub(crate) fn program_paths(path: &Path) -> std::result::Result<Vec<String>, Error> {
+        Ok(Self::list_programs(path, false)?.0)
+    }
+
+    pub(crate) fn list_programs(
+        path: &Path,
+        inspect: bool,
+    ) -> std::result::Result<(Vec<String>, ProtectionStatus), Error> {
         let ufs = Ufs::open(path).map_err(|e| Error::new(path, "bank", format!("{e:#}")))?;
         let directory = ufs
             .decode_directory(&Namespaces::native().metadata)
             .map_err(|e| classify_directory_error(path, e))?;
-        Ok(programs(&directory)
+        let protection = if inspect {
+            directory_protection(path, &directory)
+        } else {
+            ProtectionStatus::Open
+        };
+        let paths = programs(&directory)
             .into_iter()
             .filter_map(|i| directory.files.get(i)?.path.clone())
-            .collect())
+            .collect();
+        Ok((paths, protection))
     }
 
     fn programs(&self) -> Vec<usize> {

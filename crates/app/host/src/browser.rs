@@ -71,11 +71,12 @@ impl Browser {
             .name("kontra-scan".into())
             .spawn(move || {
                 let mut cache = cache_path.as_deref().map(Cache::load).unwrap_or_default();
-                let programs = |b: &Path| {
+                let inspect = |b: &Path| {
                     if b.extension().is_some_and(|e| e.eq_ignore_ascii_case("sf2")) {
                         kontra_format_sf2::list_presets(b)
-                            .map(|list| {
-                                list.into_iter()
+                            .map(|list| kontra_library::BankListing {
+                                presets: list
+                                    .into_iter()
                                     .map(|p| {
                                         let trimmed = p.name.trim();
                                         let safe = if trimmed.is_empty() {
@@ -85,15 +86,26 @@ impl Browser {
                                         };
                                         format!("{:03}:{:03} {safe}.sf2p", p.bank, p.program)
                                     })
-                                    .collect()
+                                    .collect(),
+                                protection: kontra_library::ProtectionStatus::Open,
                             })
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| kontra_library::BankError::failed(e.to_string()))
                     } else {
-                        kontra_format_uvi::programs(b).map_err(|e| e.to_string())
+                        kontra_format_uvi::inspect_programs(b)
+                            .map(|(presets, protection)| kontra_library::BankListing {
+                                presets,
+                                protection,
+                            })
+                            .map_err(|e| match e.protection() {
+                                Some(status) => {
+                                    kontra_library::BankError::protected(status.clone())
+                                }
+                                None => kontra_library::BankError::failed(e.to_string()),
+                            })
                     }
                 };
                 if let Some(catalog) =
-                    kontra_library::scan(&roots, &scanning, &mut cache, &programs)
+                    kontra_library::scan_with_inspector(&roots, &scanning, &mut cache, &inspect)
                 {
                     if let Some(path) = &cache_path {
                         let _saved = path.parent().map(std::fs::create_dir_all);

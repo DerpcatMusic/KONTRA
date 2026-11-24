@@ -1215,6 +1215,9 @@ pub fn apply(tree: &mut Interface, edits: &[Edit]) {
             }
             (Set::Cell(..), _) => {}
             (&Set::Value(v), Some(model::Value::Real(_))) => w.value = Some(model::Value::Real(v)),
+            (&Set::Value(v), None) if matches!(w.binding, model::Binding::Param(_)) => {
+                w.value = Some(model::Value::Real(v));
+            }
             (&Set::Value(v), _) => w.value = Some(model::Value::Integer(v.round() as i32)),
         }
     }

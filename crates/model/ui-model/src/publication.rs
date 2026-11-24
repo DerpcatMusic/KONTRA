@@ -5,6 +5,11 @@ use super::*;
 pub struct InterfacePatch {
     pub source: Option<Source>,
     pub performance: Option<bool>,
+    pub z_order: Option<ZOrder>,
+    pub picture_sizing: Option<PictureSizing>,
+    pub stock_skin: Option<StockSkin>,
+    pub text_policy: Option<TextPolicy>,
+    pub table_style: Option<TableStyle>,
     pub pages: Option<Vec<Page>>,
     pub widgets: Vec<(usize, Widget)>,
     pub paint_order: Option<Option<Vec<WidgetRef>>>,
@@ -21,6 +26,12 @@ impl InterfacePatch {
         Self {
             source: (base.source != current.source).then_some(current.source),
             performance: (base.performance != current.performance).then_some(current.performance),
+            z_order: (base.z_order != current.z_order).then_some(current.z_order),
+            picture_sizing: (base.picture_sizing != current.picture_sizing)
+                .then_some(current.picture_sizing),
+            stock_skin: (base.stock_skin != current.stock_skin).then_some(current.stock_skin),
+            text_policy: (base.text_policy != current.text_policy).then_some(current.text_policy),
+            table_style: (base.table_style != current.table_style).then_some(current.table_style),
             pages: (base.pages != current.pages).then(|| current.pages.clone()),
             paint_order: (base.paint_order != current.paint_order)
                 .then(|| current.paint_order.clone()),
@@ -51,6 +62,21 @@ impl InterfacePatch {
         }
         if self.performance != previous.performance {
             view.performance = self.performance.unwrap_or(base.performance);
+        }
+        if self.z_order != previous.z_order {
+            view.z_order = self.z_order.unwrap_or(base.z_order);
+        }
+        if self.picture_sizing != previous.picture_sizing {
+            view.picture_sizing = self.picture_sizing.unwrap_or(base.picture_sizing);
+        }
+        if self.stock_skin != previous.stock_skin {
+            view.stock_skin = self.stock_skin.unwrap_or(base.stock_skin);
+        }
+        if self.text_policy != previous.text_policy {
+            view.text_policy = self.text_policy.unwrap_or(base.text_policy);
+        }
+        if self.table_style != previous.table_style {
+            view.table_style = self.table_style.unwrap_or(base.table_style);
         }
         if self.pages != previous.pages {
             view.pages

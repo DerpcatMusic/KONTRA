@@ -661,8 +661,22 @@ impl Rack {
         }
     }
 
-    /// The user moved `widget` of `part`'s interface to `value`: the
-    /// control's script gets it and runs its callback at the next block.
+    /// Attaches a direct, script-free [`kontra_ui_model::Interface`] to `part`
+    /// (for formats or generated interfaces that bind widgets via
+    /// [`kontra_ui_model::Binding::Param`]).
+    pub fn set_interface(&mut self, part: usize, tree: kontra_ui_model::Interface) {
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            let mut view = crate::view::View::direct(tree);
+            // The editor represents a part with no view as revision zero.
+            view.revision = p.view.as_ref().map_or(1, |previous| previous.revision + 1);
+            p.view = Some(view);
+        }
+    }
+
+    /// The user moved `widget` of `part`'s interface to `value`: direct
+    /// [`kontra_ui_model::Binding::Param`] widgets dispatch straight to
+    /// [`Self::set_param`] with zero script VM overhead; script-backed
+    /// controls run their callback at the next block.
     pub fn control(
         &mut self,
         part: usize,
@@ -677,8 +691,21 @@ impl Rack {
         let Some(view) = p.view.as_mut() else {
             return;
         };
+        // Cell edits belong to array controls, not scalar parameter bindings.
+        if cell.is_some()
+            && view
+                .tree()
+                .widgets
+                .get(widget)
+                .is_some_and(|w| matches!(w.binding, kontra_ui_model::Binding::Param(_)))
+        {
+            return;
+        }
         p.named.touch();
-        if let Some(set) = view.tap(widget, value) {
+        if let Some((scope, addr, physical)) = view.apply_param_value(widget, value) {
+            p.modified = true;
+            self.set_param(part, scope, addr, physical);
+        } else if let Some(set) = view.tap(widget, value) {
             let vars = &p.script.vars;
             p.modified |= set.iter().any(|&(slot, id, _)| saves(vars, slot, id));
             for (slot, id, value) in set {

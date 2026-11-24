@@ -17,6 +17,11 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
     let mut tree = ui::Interface {
         source: ui::Source::FalconLua,
         performance: page.performance,
+        z_order: ui::ZOrder::SiblingLocal,
+        picture_sizing: ui::PictureSizing::PreserveAuthoredRect,
+        stock_skin: ui::StockSkin::None,
+        text_policy: ui::TextPolicy::FALCON_LUA,
+        table_style: ui::TableStyle::UVI,
         ..Default::default()
     };
     let mut asset = |tree: &mut ui::Interface, path: &str, frames: u32, stretch: bool| {
@@ -89,7 +94,11 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
                 let (at, size) = asset(&mut tree, path, frames, stretch);
                 // A handle is smaller than the track it moves along.
                 own = own.or(size.filter(|_| role != ui::Role::Handle));
-                out.images.push(ui::ImageUse::new(at, role));
+                let mut img = ui::ImageUse::new(at, role);
+                if role == ui::Role::Strip && matches!(out.kind, ui::Kind::Button { .. }) {
+                    img.strip_mode = ui::StripMode::TwoStateToggle;
+                }
+                out.images.push(img);
             }
         }
         // An axis the script left open takes the picture's, else the kind's.
@@ -150,6 +159,8 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
             tree.styles.push(ui::TextStyle {
                 font,
                 size: w.font_size.map(|n| n as f32),
+                weight: None,
+                inset: None,
                 color: w.colours[1]
                     .as_deref()
                     .and_then(colour)
@@ -176,6 +187,7 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
             range,
             display: ui::Display {
                 unit: w.unit.clone(),
+                format: ui::ValueFormat::CompactTrimmed,
                 ..Default::default()
             },
         },
@@ -193,6 +205,7 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
             range,
             display: ui::Display {
                 unit: w.unit.clone(),
+                format: ui::ValueFormat::CompactTrimmed,
                 ..Default::default()
             },
             arrows: false,

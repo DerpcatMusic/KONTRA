@@ -93,6 +93,7 @@ fn specimen() -> App {
     let library = |name: &str, format, presets: &[&str], starred| Library {
         name: name.into(),
         format,
+        protection: Default::default(),
         presets: presets.iter().map(|p| (*p).to_owned()).collect(),
         recalls: Vec::new(),
         starred,

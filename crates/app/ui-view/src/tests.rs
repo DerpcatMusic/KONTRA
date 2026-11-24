@@ -40,6 +40,20 @@ fn paint(ui: &mut Ui, el: El, w: u16, h: u16) -> Vec<[u8; 4]> {
         .to_vec()
 }
 
+#[test]
+fn stock_atlas_label_uses_the_authored_left_inset() {
+    let glyph = Arc::new(Image::rgba(1, 1, vec![255; 4]).unwrap());
+    let glyphs: kontra_ui_pictures::Glyphs = vec![glyph; 256].into();
+    let style = model::TextStyle {
+        align: model::Align::Left,
+        color: Rgba::rgb(0xff0000),
+        ..model::TextStyle::default()
+    };
+    let label = stock::label("A", &style, Some(0), (24., 8., 1., 1.), (13., 3.), &glyphs).unwrap();
+    let pixels = paint(&mut Ui::default(), label, 24, 8);
+    assert_eq!(pixels.iter().position(|p| *p == [255, 0, 0, 255]), Some(13));
+}
+
 /// A 20x10 page: grey, a wallpaper 10 px tall whose top 4 rows the skin
 /// offset scrolls away, and a knob whose 2-frame strip shows its value.
 fn tree() -> (Interface, Vec<u8>, Vec<u8>) {
@@ -306,7 +320,7 @@ fn a_level_meter_lights_with_the_peak_and_idles_when_it_holds() {
 #[test]
 fn an_unpictured_script_control_draws_its_stock_field() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -333,7 +347,7 @@ fn an_unpictured_script_control_draws_its_stock_field() {
     edit.text = "Transpose".into();
     edit.value = Some(model::Value::Integer(0));
     tree.widgets.push(edit);
-    assert_eq!(caption(&tree.widgets[0], tree.source), "Transpose 0");
+    assert_eq!(caption(&tree.widgets[0]), "Transpose 0");
     let mut ui = crate::ui();
     let mut pictures = Pictures::new(Box::new(|_| None));
     let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
@@ -356,7 +370,7 @@ fn an_unpictured_script_control_draws_its_stock_field() {
 #[test]
 fn a_value_edit_narrower_than_its_arrows_still_draws() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -421,13 +435,13 @@ fn a_note_names_value_edit_reads_its_note() {
         },
     );
     w.value = Some(model::Value::Integer(12));
-    assert_eq!(readout(&w, model::Source::Ksp { slot: 0 }), "C-1");
+    assert_eq!(readout(&w), "C-1");
 }
 
 #[test]
 fn a_script_switch_with_no_picture_draws_kontakts_stock_button() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -459,10 +473,7 @@ fn a_script_switch_with_no_picture_draws_kontakts_stock_button() {
 /// face, drawn whole (Kontakt 8, probed at 100 % and 150 %).
 #[test]
 fn a_switch_picture_sits_one_pixel_in() {
-    let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
-        ..Interface::default()
-    };
+    let mut tree = Interface::default();
     let mut face = Page {
         size: Size {
             width: 8.,
@@ -484,7 +495,9 @@ fn a_switch_picture_sits_one_pixel_in() {
         }),
     });
     let mut switch = Widget::new("$s", PageRef(0), Rect::new(0, 0, 5, 3), Kind::Switch);
-    switch.images.push(ImageUse::new(AssetRef(0), Role::Strip));
+    let mut img = ImageUse::new(AssetRef(0), Role::Strip);
+    img.inset = [1.0, 1.0];
+    switch.images.push(img);
     switch.value = Some(model::Value::Integer(0));
     tree.widgets.push(switch);
     let red = png(4, 4, [255, 0, 0, 255].repeat(16).as_slice());
@@ -508,10 +521,7 @@ fn a_picture_font_label_draws_its_glyphs() {
     let mut rgba = vec![[255, 0, 0, 255]; 256];
     rgba.extend((0..256).map(|n| if n == 65 { [0, 255, 0, 255] } else { [0; 4] }));
     let font = png(256, 2, rgba.as_flattened());
-    let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
-        ..Interface::default()
-    };
+    let mut tree = Interface::default();
     tree.pages.push(Page {
         size: Size {
             width: 8.,
@@ -528,6 +538,7 @@ fn a_picture_font_label_draws_its_glyphs() {
         size: None,
         color: Rgba::rgb(0xffffff),
         align: model::Align::Left,
+        ..model::TextStyle::default()
     });
     let mut label = Widget::new("$l", PageRef(0), Rect::new(0, 0, 8, 1), Kind::Label);
     label.text = "AA".into();
@@ -568,7 +579,7 @@ fn vector_draws_a_picture_slider_even_when_its_background_is_hidden() {
 #[test]
 fn original_stock_knob_has_a_lit_upper_ring_and_shadow_below() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -599,7 +610,7 @@ fn original_stock_knob_has_a_lit_upper_ring_and_shadow_below() {
 #[test]
 fn uvi_table_draws_fractional_bars_and_repaints_after_a_script_write() {
     let mut tree = Interface {
-        source: model::Source::FalconLua,
+        table_style: model::TableStyle::UVI,
         ..Default::default()
     };
     tree.pages.push(Page {
@@ -704,17 +715,10 @@ fn multiline_labels_draw_each_line_and_keep_empty_rows() {
 }
 
 #[test]
-fn kontakt_label_tabs_are_blank_advances() {
+fn label_caption_preserves_translator_normalized_text() {
     let mut widget = Widget::new("$label", PageRef(0), Rect::default(), Kind::Label);
-    widget.text = "\t\t\t   Marcato Short".into();
-    assert_eq!(
-        plan::caption(&widget, model::Source::Ksp { slot: 0 }),
-        "         Marcato Short"
-    );
-    assert_eq!(
-        plan::caption(&widget, model::Source::FalconLua),
-        widget.text
-    );
+    widget.text = "         Marcato Short".into();
+    assert_eq!(plan::caption(&widget), "         Marcato Short");
 }
 
 #[test]
@@ -837,7 +841,7 @@ fn a_pixel_font_stem_at_150_percent_is_one_full_and_one_half_column() {
 #[test]
 fn only_a_script_label_draws_kontakts_bare_label_face() {
     let tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     let mut label = Widget::new("Edit", PageRef(0), Rect::new(0, 0, 40, 12), Kind::Label);
@@ -855,10 +859,7 @@ fn a_picture_lands_on_whole_pixels_at_every_zoom() {
         .flat_map(|i| if i % 2 == 0 { [255; 4] } else { [0, 0, 0, 255] })
         .collect();
     for scale in [1.25, 1.5, 2.] {
-        let mut tree = Interface {
-            source: model::Source::Ksp { slot: 0 },
-            ..Interface::default()
-        };
+        let mut tree = Interface::default();
         let mut face = Page {
             size: Size {
                 width: 12.,
@@ -921,7 +922,7 @@ fn a_pixel_font_at_50_percent_averages_each_pair_of_pixels() {
 #[test]
 fn a_stock_xy_pad_draws_its_frame_and_cursors_where_kontakt_does() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -1076,10 +1077,7 @@ fn a_wavetable_keeps_its_spikes_and_its_raster_is_bounded() {
 
 #[test]
 fn state_styles_select_on_hover_and_pressed_fonts_with_fallback() {
-    let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
-        ..Interface::default()
-    };
+    let mut tree = Interface::default();
     tree.pages.push(Page {
         size: Size {
             width: 40.,
@@ -1092,6 +1090,7 @@ fn state_styles_select_on_hover_and_pressed_fonts_with_fallback() {
         size: Some(12.),
         color: Rgba::rgb(rgb),
         align: model::Align::Center,
+        ..model::TextStyle::default()
     };
     // 0: off, 1: on, 2: off_pressed, 3: on_hover
     tree.styles.push(mk_style(0x11_1111));
@@ -1132,7 +1131,7 @@ fn state_styles_select_on_hover_and_pressed_fonts_with_fallback() {
 #[test]
 fn pictureless_switch_caption_uses_the_selected_state_size() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -1152,6 +1151,7 @@ fn pictureless_switch_caption_uses_the_selected_state_size() {
             size,
             color: Rgba::rgb(0xff_ffff),
             align: model::Align::Center,
+            ..model::TextStyle::default()
         });
     }
     let mut sw = Widget::new("$sw", PageRef(0), Rect::new(0, 0, 80, 40), Kind::Switch);
@@ -1193,7 +1193,7 @@ fn pictureless_switch_caption_uses_the_selected_state_size() {
 #[test]
 fn pressed_button_shifts_caption_only_when_text_shift_on_press_is_enabled() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -1227,7 +1227,7 @@ fn pressed_button_shifts_caption_only_when_text_shift_on_press_is_enabled() {
 #[test]
 fn kontakt_table_honors_steps_shown_bipolar_colors_hide_bg_and_picture() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        table_style: model::TableStyle::KONTAKT,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -1320,7 +1320,7 @@ fn kontakt_table_honors_steps_shown_bipolar_colors_hide_bg_and_picture() {
 #[test]
 fn stock_menu_respects_menu_arrow_flag() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -1354,7 +1354,7 @@ fn stock_menu_respects_menu_arrow_flag() {
 #[test]
 fn style_font_and_value_y_invalidate_memo_and_table_columns_align_to_steps_shown() {
     let mut tree = Interface {
-        source: model::Source::Ksp { slot: 0 },
+        stock_skin: model::StockSkin::Kontakt,
         ..Interface::default()
     };
     tree.pages.push(Page {
@@ -1373,6 +1373,7 @@ fn style_font_and_value_y_invalidate_memo_and_table_columns_align_to_steps_shown
         size: Some(12.),
         color: Rgba::rgb(0xFF_FFFF),
         align: model::Align::Center,
+        ..model::TextStyle::default()
     });
     let mut label = Widget::new("$l", PageRef(0), Rect::new(0, 0, 40, 20), Kind::Label);
     label.text = "HI".into();

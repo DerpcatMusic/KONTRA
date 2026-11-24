@@ -547,3 +547,226 @@ fn a_file_dropped_on_a_mouse_area_reaches_its_callback() {
     assert_eq!(run(&mut engine, false, true), "over 1");
     assert_eq!(run(&mut engine, true, true), "1 /s/kick.wav");
 }
+
+#[test]
+fn ksp_label_tabs_expand_to_two_spaces_in_face() {
+    let ui = tree(
+        "on init
+            make_perfview
+            declare ui_label $lbl (1, 1)
+            set_text($lbl, \"\t\t\t   Marcato Short\")
+        end on",
+    );
+    assert_eq!(widget(&ui, "$lbl").text, "         Marcato Short");
+}
+
+/// A `Binding::Param` knob on a script-free interface updates engine audio
+/// state directly via `Rack::control` -> `Command::SetParam` -> `Engine::set_param`
+/// with zero script VM overhead.
+#[test]
+fn binding_param_knob_drives_engine_directly_without_script_vm() {
+    use kontra_host::rack::{Event, Mix, Part, Rack};
+    use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt};
+
+    let mut store = Store::new(StoreConfig::DEFAULT).expect("create direct parameter test store");
+    let fmt = SampleFmt {
+        encoding: Encoding::F32,
+        channels: 1,
+    };
+    let frames = 48_000;
+    let key = BlobKey {
+        file: "dc-param".into(),
+        offset: 0,
+        fmt,
+    };
+    let bytes: Vec<u8> = (0..frames).flat_map(|_| 0.5f32.to_le_bytes()).collect();
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(fmt, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .expect("load direct parameter test DC sample");
+    let region = kontra_engine::Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: frames,
+        loops: Default::default(),
+        reverse: false,
+    };
+    let mut zone = kontra_engine::Zone::new(region, 60, 48_000);
+    zone.keys = 0..=127;
+    let mut plan = Plan::new(vec![zone], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    assert!(plan.scripts.is_empty(), "test must have zero scripts");
+
+    let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let (mut rack, mut audio) = Rack::new(48_000, store, 512);
+    let part = Part {
+        path: None,
+        source: None,
+        recall: kontra_engine::Recall::Restart,
+        name: "Direct".into(),
+        diagnostics: vec![],
+        faces: vec![],
+        mix: Mix::DEFAULT,
+        solo: false,
+        mute: false,
+        script: Default::default(),
+        plan: None,
+        delays: None,
+        view: None,
+        sounds: Default::default(),
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+        modified: false,
+        named: Default::default(),
+    };
+    rack.install(0, Box::new(engine), part);
+
+    let mut knob = ui::Widget::new(
+        "Volume",
+        ui::PageRef(0),
+        ui::Rect::new(10, 10, 40, 40),
+        ui::Kind::Knob {
+            range: ui::Range {
+                min: 0.0,
+                max: 1.0,
+                default: 1.0,
+                step: None,
+            },
+            display: ui::Display::default(),
+        },
+    );
+    knob.binding = ui::Binding::Param(ui::ParamBinding::with_map(
+        ui::ir::Scope::Instrument,
+        ui::ir::ParamAddr::Volume,
+        ui::ParamMap::Linear { min: 0.0, max: 1.0 },
+    ));
+    knob.value = Some(ui::Value::Real(1.0));
+    let interface = ui::Interface {
+        pages: vec![ui::Page {
+            name: "Main".into(),
+            size: ui::Size {
+                width: 200.0,
+                height: 100.0,
+            },
+            ..ui::Page::default()
+        }],
+        widgets: vec![knob],
+        ..ui::Interface::default()
+    };
+    rack.set_interface(0, interface.clone());
+    let revision = |rack: &Rack| {
+        rack.parts()[0]
+            .as_ref()
+            .unwrap()
+            .view
+            .as_ref()
+            .unwrap()
+            .revision
+    };
+    let first = revision(&rack);
+    assert_ne!(first, 0, "a part without a view publishes revision zero");
+    rack.set_interface(0, interface.clone());
+    let replaced = revision(&rack);
+    assert_ne!(first, replaced);
+
+    let render_peak = |audio: &mut kontra_host::rack::RackAudio| -> f32 {
+        audio.process(256, &[]);
+        audio
+            .output(0, 256)
+            .iter()
+            .map(|[l, r]| l.abs().max(r.abs()))
+            .fold(0.0f32, f32::max)
+    };
+
+    // Start a note at unity gain (1.0).
+    rack.play(Event::NoteOn {
+        note: kontra_host::rack::HostNote {
+            port: 0,
+            channel: 0,
+            key: 60,
+            id: -1,
+            clap: false,
+        },
+        velocity: 1.0,
+        tune: 0.0,
+    });
+    let _ = render_peak(&mut audio);
+    let full_peak = render_peak(&mut audio);
+    assert!(
+        full_peak > 0.1,
+        "expected audible DC signal, got {full_peak}"
+    );
+
+    // Move the Binding::Param knob to 0.25 -> Linear(0..1) = 0.25 linear gain.
+    // Let the engine's gain smoother settle over several blocks (~100 ms).
+    rack.control(0, 0, None, 0.25, ui::UiModifiers::default());
+    let mut attenuated_peak = 0.0;
+    for _ in 0..24 {
+        attenuated_peak = render_peak(&mut audio);
+    }
+    let ratio = attenuated_peak / full_peak;
+    assert!(
+        (ratio - 0.25).abs() < 0.03,
+        "expected ~0.25 linear gain ratio, got {ratio:.3} (full={full_peak}, atten={attenuated_peak})"
+    );
+
+    // Confirm the view updated its own value and bumped revision.
+    let view = rack
+        .parts()
+        .first()
+        .and_then(Option::as_ref)
+        .and_then(|p| p.view.as_ref());
+    assert_eq!(
+        view.and_then(|v| v.tree().widgets.first())
+            .and_then(|w| w.value.as_ref()),
+        Some(&ui::Value::Real(0.25))
+    );
+    assert_eq!(view.map(|v| v.revision), Some(replaced + 1));
+
+    let mut table = interface.clone();
+    table.widgets[0].kind = ui::Kind::Table {
+        columns: 2,
+        range: ui::Range {
+            min: 0.,
+            max: 1.,
+            ..ui::Range::default()
+        },
+        bipolar: false,
+        cells: vec![0.1, 0.2],
+        steps_shown: None,
+    };
+    let cells = ui::Value::Reals(vec![0.1, 0.2]);
+    table.widgets[0].value = Some(cells.clone());
+    rack.set_interface(0, table);
+    let table_revision = revision(&rack);
+    rack.control(0, 0, Some(1), 0.9, ui::UiModifiers::default());
+    for _ in 0..24 {
+        attenuated_peak = render_peak(&mut audio);
+    }
+    let view = rack.parts()[0].as_ref().unwrap().view.as_ref().unwrap();
+    assert_eq!(view.tree().widgets[0].value, Some(cells));
+    assert_eq!(view.revision, table_revision);
+    assert!((attenuated_peak / full_peak - 0.25).abs() < 0.03);
+
+    let mut integer = interface;
+    integer.widgets[0].value = Some(ui::Value::Integer(1));
+    rack.set_interface(0, integer);
+    rack.control(0, 0, None, 0.4, ui::UiModifiers::default());
+    for _ in 0..24 {
+        attenuated_peak = render_peak(&mut audio);
+    }
+    let view = rack.parts()[0].as_ref().unwrap().view.as_ref().unwrap();
+    assert_eq!(view.tree().widgets[0].value, Some(ui::Value::Integer(0)));
+    assert!(
+        attenuated_peak < full_peak * 0.03,
+        "engine should receive zero gain"
+    );
+}

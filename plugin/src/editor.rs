@@ -69,13 +69,15 @@ const HOLD: Duration = Duration::from_millis(250);
 pub(crate) struct Mine {
     /// By rack slot: the last edit sent ([`crate::Shared::request_ui`]).
     sent: HashMap<usize, u64>,
-    /// By rack slot: the library controls the player moved, and when.
-    touched: HashMap<usize, Vec<(Instant, input::Edit)>>,
+    /// By `(rack slot, load generation)`: the library controls the player moved,
+    /// and when. Scoped by generation so a previous load's tweaks never stamp
+    /// onto a newly loaded preset.
+    touched: HashMap<(usize, u64), Vec<(Instant, input::Edit)>>,
 }
 
 impl Mine {
-    /// Notes `action`, sent to rack `slot` as edit `seq`.
-    fn note(&mut self, slot: usize, seq: u64, action: &Action, now: Instant) {
+    /// Notes `action`, sent to rack `slot` (at load `generation`) as edit `seq`.
+    fn note(&mut self, slot: usize, generation: u64, seq: u64, action: &Action, now: Instant) {
         self.sent.insert(slot, seq);
         let (widget, to) = match action {
             Action::Control {
@@ -93,7 +95,7 @@ impl Mine {
             to,
             keys: Default::default(),
         };
-        let mine = self.touched.entry(slot).or_default();
+        let mine = self.touched.entry((slot, generation)).or_default();
         let same = |e: &input::Edit| {
             e.widget == edit.widget
                 && match (&e.to, &edit.to) {
@@ -105,9 +107,23 @@ impl Mine {
         mine.push((now, edit));
     }
 
-    /// The edits to rack `slot`'s face still held at `now`.
-    fn held(&self, slot: usize, now: Instant) -> Vec<input::Edit> {
-        (self.touched.get(&slot).into_iter().flatten())
+    /// Drop edits for unloaded parts and expired edits for the remaining loads.
+    fn prune(&mut self, parts: &[PartView], now: Instant) {
+        self.touched.retain(|&(slot, generation), edits| {
+            if !parts
+                .iter()
+                .any(|p| (p.slot, p.generation) == (slot, generation))
+            {
+                return false;
+            }
+            edits.retain(|(at, _)| now.duration_since(*at) < HOLD);
+            !edits.is_empty()
+        });
+    }
+
+    /// The edits to rack `slot`'s face (for load `generation`) still held at `now`.
+    fn held(&self, slot: usize, generation: u64, now: Instant) -> Vec<input::Edit> {
+        (self.touched.get(&(slot, generation)).into_iter().flatten())
             .filter(|(at, _)| now.duration_since(*at) < HOLD)
             .map(|(_, e)| e.clone())
             .collect()
@@ -339,12 +355,21 @@ impl Snapshot {
                 _ => p.sounds.1.as_ref().clone(),
             };
             let face = match old.as_mut() {
-                Some(old) if shown.get(n) == Some(&at) => old.face.take(),
-                // The script changed its look: a new tree, the same pictures.
-                Some(old) if shown.get(n).is_some_and(|s| s.0 == at.0) => {
+                Some(old) if shown.get(n).is_some_and(|s| (s.0, s.1) == at) => old.face.take(),
+                // Same load or same instrument asset root (e.g. snapshot swap):
+                // swap the tree while keeping decoded Pictures cached to avoid flashes.
+                Some(old)
+                    if shown.get(n).is_some_and(|s| {
+                        s.0 == at.0 || (p.source.is_some() && s.2 == p.source)
+                    }) =>
+                {
                     let tree = p.tree.as_deref();
+                    let new_load = shown.get(n).is_some_and(|s| s.0 != p.generation);
                     old.face.take().zip(tree).map(|(mut f, tree)| {
                         f.tree = resolved(tree);
+                        if new_load {
+                            f.gesture = Default::default();
+                        }
                         f
                     })
                 }
@@ -354,7 +379,7 @@ impl Snapshot {
             // them until the script has had them.
             let mut face = face;
             if let Some(f) = face.as_mut() {
-                input::apply(&mut f.tree, &mine.held(p.slot, now));
+                input::apply(&mut f.tree, &mine.held(p.slot, p.generation, now));
             }
             let own = |f: fn(&Part) -> f64, theirs: f64| match &old {
                 Some(old) if held => f(old),
@@ -398,7 +423,7 @@ impl Snapshot {
         *shown = self
             .parts
             .iter()
-            .map(|p| (p.generation, p.revision))
+            .map(|p| (p.generation, p.revision, p.source.clone()))
             .collect();
         let heard = self.parts.iter().map(|p| (p.generation, p.sounds.0));
         sounds_shown.extend(heard);
@@ -421,8 +446,8 @@ impl Snapshot {
 /// Which change of the rack's parts and of the browser the editor shows.
 #[derive(Default)]
 struct Shown {
-    /// By part: its load and its interface's revision.
-    parts: Vec<(u64, u64)>,
+    /// By part: its load generation, interface revision, and instrument source path.
+    parts: Vec<(u64, u64, Option<PathBuf>)>,
     /// By part: its load and its sound's revision.
     sounds: Vec<(u64, u64)>,
     browser: u64,
@@ -492,6 +517,15 @@ pub(crate) fn libraries(browser: &Browser) -> Vec<app::Library> {
             format: match l.format {
                 kontra_library::Format::Kontakt => app::Format::Kontakt,
                 kontra_library::Format::Uvi => app::Format::Uvi,
+            },
+            protection: match &l.protection {
+                kontra_library::ProtectionStatus::Open => app::Protection::Open,
+                kontra_library::ProtectionStatus::Protected { system, detail } => {
+                    app::Protection::Protected {
+                        system: system.to_string(),
+                        detail: detail.clone(),
+                    }
+                }
             },
             recalls: (l.presets.iter().enumerate())
                 .filter_map(|(n, p)| is_preset(p).then_some(n))
@@ -898,7 +932,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // clears any in-flight library-face gesture and macro drag.
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let on_cancelled = Arc::clone(&cancelled);
-    let editor = MuiEditor::new(params, kontra_ui::ui(), SIZE, move |ui, bridge| {
+    let initial_size = {
+        let saved = SavedView::read(&params.look.read().unwrap_or_else(PoisonError::into_inner));
+        let pct = u32::from(saved.scale);
+        if app::SCALES.contains(&pct) {
+            (SIZE.0 * pct / 100, SIZE.1 * pct / 100)
+        } else {
+            SIZE
+        }
+    };
+    let editor = MuiEditor::new(params, kontra_ui::ui(), initial_size, move |ui, bridge| {
         let start = std::time::Instant::now();
         if escape.swap(false, Ordering::AcqRel) {
             app.view.dismiss();
@@ -935,15 +978,20 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             crate::look::apply(&mut app, &look);
             waiting.clone_from(&look.parts);
         }
-        let slots: Vec<usize> = {
+        let (slots, slot_gens): (Vec<usize>, Vec<(usize, u64)>) = {
             let view = lock(&p.shared.view);
             // An older tick may still publish while the editor reopens.
             // Build no interactive rows until a tick for this opening finishes.
             if !p.shared.shown.load(Ordering::Acquire) || !view.ready() {
                 return moose::mui::mui::prelude::body("Refreshing rack…");
             }
-            view.fill(&mut app, &mut shown, &mine, Instant::now());
-            view.parts.iter().map(|v| v.slot).collect()
+            let now = Instant::now();
+            mine.prune(&view.parts, now);
+            view.fill(&mut app, &mut shown, &mine, now);
+            (
+                view.parts.iter().map(|v| v.slot).collect(),
+                view.parts.iter().map(|v| (v.slot, v.generation)).collect(),
+            )
         };
         crate::look::parts(&mut app, &slots, &mut waiting);
         app.master = f64::from(p.volume.value());
@@ -1096,7 +1144,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             let noted = slot.map(|s| (s, action.clone()));
             let seq = p.shared.request_ui(Edit { slot, action });
             if let Some((slot, action)) = noted {
-                mine.note(slot, seq, &action, Instant::now());
+                let generation = slot_gens
+                    .iter()
+                    .find(|&&(s, _)| s == slot)
+                    .map_or(0, |&(_, g)| g);
+                mine.note(slot, generation, seq, &action, Instant::now());
             }
         }
         let pressed = (app.parts.iter()).any(|s| s.face.as_ref().is_some_and(|f| f.gesture.held()));
@@ -1380,13 +1432,17 @@ mod tests {
             value,
             keys: Default::default(),
         };
-        mine.note(2, 1, &moved(0.4), t);
-        mine.note(2, 2, &moved(0.5), t);
-        let held = mine.held(2, t + Duration::from_millis(100));
+        mine.note(2, 7, 1, &moved(0.4), t);
+        mine.note(2, 7, 2, &moved(0.5), t);
+        let held = mine.held(2, 7, t + Duration::from_millis(100));
         assert_eq!(held.len(), 1);
         assert!(held.iter().all(|e| e.to == Set::Value(0.5)));
-        assert!(mine.held(2, t + HOLD).is_empty());
-        assert!(mine.held(1, t).is_empty());
+        assert!(mine.held(2, 7, t + HOLD).is_empty());
+        assert!(
+            mine.held(2, 8, t).is_empty(),
+            "new generation drops stale edits"
+        );
+        assert!(mine.held(1, 7, t).is_empty());
     }
 
     #[test]

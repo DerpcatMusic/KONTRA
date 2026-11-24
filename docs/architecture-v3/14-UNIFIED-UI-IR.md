@@ -36,7 +36,7 @@ branch on the source format below the translators"):
 | 11 | `crates/app/ui-view/src/lib.rs:529` | `matches!(tree.source, FalconLua)` | `uvi: bool` table rendering branch (should be driven by `TableStyle`: inner-edge gap, border rim, zero-line rule) |
 | 12 | `crates/app/ui-view/src/lib.rs:914,925` | `matches!(source, FalconLua \| Ksp)` | Horizontal text squash (`TextFit::Squash { min_x: 0.7 }` vs `TextFit::StepDown`) & variable font weight (`TextStyle::weight`) |
 
-**Total vendor branches in UI core: 12 → Target: 0.**
+**Total vendor branches in UI core: 12 → 0 (completed in Phases U1–U2).**
 
 ## 2. Target Architecture: Shared UI IR (`kontra-ui-model` vNext)
 
@@ -87,6 +87,6 @@ When verifying subtle UI laws in Kontakt 8 or UVI Workstation/Falcon:
 | Phase | Goal | Owned Paths | Target Metric |
 |---|---|---|---|
 | **U0** (this PR) | Fix immediate Kontakt UI rendering gaps (`state_styles`, `text_shift_on_press`, Kontakt `ui_table` `steps_shown`/`bipolar`/colors/picture/`HIDE_PART_BG`, `value_y`, `menu_arrow`) | `crates/app/ui-view` | All 5 Kontakt UI defect classes covered by pixel tests |
-| **U1** | Add orthogonal UI IR policy fields (`ZOrder`, `PictureSizing`, `TextPolicy`, `ImageUse::{inset, strip_mode}`, `TableStyle`) to `kontra-ui-model`; populate from `face/{widget,perf_view,lua,nui}` | `crates/model/ui-model`, `crates/app/face` | Policy fields populated by every existing frontend |
-| **U2** | Switch `kontra-ui-view`, `kontra-ui/src/layout.rs`, and `ui-model` methods onto policy fields; delete every `Source::*` branch outside translators | `crates/app/ui-view`, `crates/app/ui/src/layout.rs`, `crates/model/ui-model` | `Source::` branches in `ui-model` + `ui-view` + `ui`: **12 → 0** |
-| **U3** | Add `Binding::Param(ParamAddr)` and implement DecentSampler `<ui>` translator (`<tab>`, `<labeled-knob>`, `<control>`, `<button>`, `<menu>`, `<label>`, `<image>`) + `.kontra` native UI schema | `crates/model/ui-model`, `crates/format/decentsampler`, `crates/app/host` | DecentSampler `<ui>` renders & drives parameters through the shared UI IR |
+| **U1** ✅ | Add orthogonal UI IR policy fields (`ZOrder`, `PictureSizing`, `StockSkin`, `TextPolicy`, `ValueFormat`, `ImageUse::{inset, strip_mode}`, `TableStyle`) to `kontra-ui-model`; populate from `face/{lib,widget,lua,nui}` | `crates/model/ui-model`, `crates/app/face` | Policy fields populated by every existing frontend |
+| **U2** ✅ | Switch `kontra-ui-view`, `kontra-ui/src/layout.rs`, and `ui-model` methods onto policy fields; delete every `Source::*` branch outside translators | `crates/app/ui-view`, `crates/app/ui/src/layout.rs`, `crates/model/ui-model` | `Source::` branches in `ui-model` + `ui-view` + `ui`: **12 → 0** |
+| **U3** 🟡 | Add `Binding::Param(ParamBinding)` with `ParamMap` curves & lock-free `Rack::control` -> `Engine::set_param` wiring (✅) + `ProtectionStatus` lock badge in browser (✅); DecentSampler `<ui>` translator & `.kontra` native UI schema follow on this contract | `crates/model/ui-model`, `crates/app/host`, `crates/app/ui`, `plugin` | Direct `Binding::Param` wired & tested with 0 script VMs; DecentSampler `<ui>` next |

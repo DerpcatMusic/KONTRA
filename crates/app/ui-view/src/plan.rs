@@ -127,7 +127,7 @@ pub(super) fn page<'a>(
                 tree,
                 w,
                 position,
-                readout(w, tree.source),
+                readout(w),
                 knob_name(w),
                 bare,
                 text_shift,
@@ -136,7 +136,7 @@ pub(super) fn page<'a>(
             let words = if look.is_some() {
                 String::new()
             } else {
-                caption(w, tree.source)
+                caption(w)
             };
             Some(Widget {
                 index,
@@ -187,19 +187,28 @@ fn resolve_style(w: &model::Widget, held: bool, over: bool) -> Option<model::Sty
 }
 
 /// The frame `w` shows of a picture with `frames`: the script's
-/// `PICTURE_STATE`, else the one its value selects.
+/// `PICTURE_STATE`, else the strip mode's rule.
 fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool, over: bool) -> usize {
     if let Some(f) = u.frame {
         return f as usize;
     }
-    match (&w.kind, u.role) {
-        (Kind::Knob { .. } | Kind::Slider { .. } | Kind::ValueEdit { .. }, Role::Strip) => {
-            (w.position() * frames.saturating_sub(1) as f64).round() as usize
-        }
-        (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
+    match u.strip_mode {
+        model::StripMode::Fixed(f) => f as usize,
+        model::StripMode::SixStateKontakt => {
             kontakt_picture_frame(w.number() != 0., held, over, frames)
         }
-        _ => 0,
+        model::StripMode::TwoStateToggle => {
+            usize::from(w.number() != 0.).min(frames.saturating_sub(1))
+        }
+        model::StripMode::Value => match (&w.kind, u.role) {
+            (Kind::Knob { .. } | Kind::Slider { .. } | Kind::ValueEdit { .. }, Role::Strip) => {
+                (w.position() * frames.saturating_sub(1) as f64).round() as usize
+            }
+            (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
+                usize::from(w.number() != 0.).min(frames.saturating_sub(1))
+            }
+            _ => 0,
+        },
     }
 }
 
@@ -218,20 +227,18 @@ fn drawn(r: model::Rect, m: model::ImageMeta) -> model::Size {
 
 /// The words a widget shows: a label's or button's text, a menu's item,
 /// a value edit's title and value.
-pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
+pub(super) fn caption(w: &model::Widget) -> String {
     if w.label_in_image() {
         return String::new();
     }
     if let Kind::ValueEdit { .. } = w.kind {
         let title = if w.hide.title { "" } else { w.text.trim() };
-        return format!("{title} {}", readout(w, source)).trim().to_owned();
+        return format!("{title} {}", readout(w)).trim().to_owned();
     }
     if w.hide.title {
         return String::new();
     }
     match &w.kind {
-        // Kontakt's label tabs advance without drawing a missing-glyph box.
-        Kind::Label if matches!(source, model::Source::Ksp { .. }) => w.text.replace('\t', "  "),
         Kind::Label | Kind::Button { .. } | Kind::Switch | Kind::TextEdit => w.text.clone(),
         Kind::Menu { items } => {
             let at = match w.value {
@@ -256,10 +263,9 @@ pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
 }
 
 /// Geometry and ink of a label, in view points. Explicit line breaks keep
-/// their empty rows and use the source's measured line pitch. A Kontakt
-/// label's words start at its top however tall it is (Areia's 18- and
-/// 22-point labels both ink from 3.3 points down in Kontakt 8); anything
-/// else's single line sits in its middle.
+/// their empty rows and use [`model::TextPolicy::line_pitch`]. Vertical
+/// anchoring and horizontal insets follow [`model::TextPolicy`] (with optional
+/// per-style inset overrides).
 pub(super) struct Text {
     pub size: f64,
     pub line: f64,
@@ -276,37 +282,56 @@ pub(super) fn text(
     style: Option<&model::TextStyle>,
     widget: &model::Widget,
     (height, scale, em): (f64, f64, f64),
-    source: model::Source,
+    policy: &model::TextPolicy,
 ) -> Text {
     let multiline = words.contains('\n');
-    let lua = matches!(source, model::Source::FalconLua);
-    let menu = lua && matches!(widget.kind, model::Kind::Menu { .. });
+    let middle = policy.vertical_align == model::VerticalAlign::Middle;
     let size = style.and_then(|s| s.size).map_or(super::TEXT, f64::from) * scale;
-    // Lines a UVI size apart (JUCE's font height, `size` at `em` per unit), Kontakt's 13/11.
-    let pitch = if lua { 1. / em } else { 13. / 11. };
-    // JUCE fits one line by width only: it sits in the middle however tall it runs.
-    let line = match (multiline, lua) {
+    let pitch = match policy.line_pitch {
+        model::LinePitch::FontLineHeight => 1. / em,
+        model::LinePitch::Ratio(r) => r,
+    };
+    let line = match (multiline, middle) {
         (true, _) => size * pitch,
         (false, true) => (size * 1.5).max(height),
         (false, false) => size * 1.25,
     };
-    let (align, top) = placed(words, style, widget, (height, line, scale), !lua);
-    let label = matches!(widget.kind, model::Kind::Label);
+    let (align, top) = placed(words, style, widget, (height, line, scale), !middle);
     Text {
         size,
         line,
-        top: if lua { top } else { top.max(0.) },
-        // A UVI label is JUCE's, inset 5 by its border; a UVI menu's sits
-        // at 1 in a combo, clear of its h − 3 arrow box (JUCE V2 positionComboBoxText).
-        inset: match (label, lua, menu) {
-            (_, _, true) => (6. * scale, height + scale),
-            (true, true, _) => (5. * scale, 5. * scale),
-            (true, false, _) => (7. * scale, 7. * scale),
-            (false, ..) => (2. * scale, 2. * scale),
-        },
+        top: if middle { top } else { top.max(0.) },
+        inset: text_insets(style, widget, (height, scale), policy),
         align,
         color: style.map(|s| s.color),
         multiline,
+    }
+}
+
+pub(super) fn text_insets(
+    style: Option<&model::TextStyle>,
+    widget: &model::Widget,
+    (height, scale): (f64, f64),
+    policy: &model::TextPolicy,
+) -> (f64, f64) {
+    if let Some([left, right]) = style.and_then(|s| s.inset) {
+        (f64::from(left) * scale, f64::from(right) * scale)
+    } else {
+        match widget.kind {
+            model::Kind::Menu { .. } => (
+                f64::from(policy.menu_inset[0]) * scale,
+                f64::from(policy.menu_inset[1]) * scale
+                    + height * f64::from(policy.menu_arrow_height_factor),
+            ),
+            model::Kind::Label => (
+                f64::from(policy.label_inset[0]) * scale,
+                f64::from(policy.label_inset[1]) * scale,
+            ),
+            _ => (
+                f64::from(policy.control_inset[0]) * scale,
+                f64::from(policy.control_inset[1]) * scale,
+            ),
+        }
     }
 }
 
@@ -475,9 +500,9 @@ pub(super) fn label_fits(
     glyphs: &kontra_ui_pictures::Glyphs,
     width: f64,
     scale: f64,
+    (left, right): (f64, f64),
 ) -> bool {
-    // The pixel font spaces 3 and insets 5 a side.
-    let (space, inset) = (3., 5.);
+    let space = 3.;
     let advance: f64 = text
         .chars()
         .map(|c| {
@@ -490,7 +515,7 @@ pub(super) fn label_fits(
             }
         })
         .sum();
-    advance * scale <= (width - 2. * inset * scale).max(0.)
+    advance * scale <= (width - left - right).max(0.)
 }
 
 /// A control's place in device pixels, its edges on whole pixels, so a
@@ -518,9 +543,9 @@ mod tests {
             model::Rect::new(0, 0, 50, 22),
             model::Kind::Label,
         );
-        let at = |source| text("Sordino", None, &label, (22., 1., 1.), source);
-        assert_eq!(at(model::Source::Ksp { slot: 0 }).top, 0.);
-        let lua = at(model::Source::FalconLua);
+        let at = |policy: &model::TextPolicy| text("Sordino", None, &label, (22., 1., 1.), policy);
+        assert_eq!(at(&model::TextPolicy::KONTAKT).top, 0.);
+        let lua = at(&model::TextPolicy::FALCON_LUA);
         assert_eq!(lua.top + lua.line / 2., 11.);
         let mut button = label.clone();
         button.kind = model::Kind::Button { momentary: false };
@@ -530,7 +555,7 @@ mod tests {
                 None,
                 &button,
                 (22., 1., 1.),
-                model::Source::Ksp { slot: 0 }
+                &model::TextPolicy::KONTAKT
             )
             .top > 0.
         );
@@ -538,10 +563,7 @@ mod tests {
 
     #[test]
     fn a_held_button_selects_its_pressed_picture_in_the_plan() {
-        let mut tree = Interface {
-            source: model::Source::Ksp { slot: 0 },
-            ..Default::default()
-        };
+        let mut tree = Interface::default();
         tree.pages.push(model::Page {
             size: model::Size {
                 width: 100.,
@@ -562,8 +584,9 @@ mod tests {
             model::Rect::new(1, 2, 40, 30),
             model::Kind::Button { momentary: false },
         );
-        w.images
-            .push(model::ImageUse::new(model::AssetRef(0), model::Role::Strip));
+        let mut img = model::ImageUse::new(model::AssetRef(0), model::Role::Strip);
+        img.strip_mode = model::StripMode::SixStateKontakt;
+        w.images.push(img);
         tree.widgets.push(w);
         let frame = |pressed: &[WidgetRef]| {
             page(&tree, PageRef(0), false, 1., (pressed, &[]))
@@ -588,11 +611,14 @@ mod tests {
             size: Some(22.),
             color: model::Rgba::default(),
             align: model::Align::Left,
+            ..model::TextStyle::default()
         };
         // 22 at 0.8 em per unit of height: authored 27.5, as `words_el` gives it.
-        let line = |source| text("a\nb", Some(&style), &w, (60., 1., 0.8), source).line;
-        assert_eq!(line(model::Source::FalconLua), 27.5);
-        assert_eq!(line(model::Source::Ksp { slot: 0 }), 26.);
+        let line = |policy: &model::TextPolicy| {
+            text("a\nb", Some(&style), &w, (60., 1., 0.8), policy).line
+        };
+        assert_eq!(line(&model::TextPolicy::FALCON_LUA), 27.5);
+        assert_eq!(line(&model::TextPolicy::KONTAKT), 26.);
     }
 
     /// A UVI menu's words sit in JUCE's combo label: 1 + 5 in, clear of the
@@ -605,16 +631,16 @@ mod tests {
             model::Rect::new(0, 0, 120, 20),
             model::Kind::Menu { items: Vec::new() },
         );
-        let t = text("Mode", None, &w, (20., 1., 1.), model::Source::FalconLua);
-        assert_eq!(t.inset, (6., 21.));
-        assert!(t.line >= t.size * 1.25);
-        let k = text(
+        let t = text(
             "Mode",
             None,
             &w,
             (20., 1., 1.),
-            model::Source::Ksp { slot: 0 },
+            &model::TextPolicy::FALCON_LUA,
         );
+        assert_eq!(t.inset, (6., 21.));
+        assert!(t.line >= t.size * 1.25);
+        let k = text("Mode", None, &w, (20., 1., 1.), &model::TextPolicy::KONTAKT);
         assert_eq!(k.inset, (2., 2.));
     }
 

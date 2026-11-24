@@ -81,6 +81,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .pad(SPACE)
             .align(Align::Start)
             .scroll()
+            .id("mixer-strip-scroll")
     };
     col![bar, body.min_h(0).grow(1)]
 }

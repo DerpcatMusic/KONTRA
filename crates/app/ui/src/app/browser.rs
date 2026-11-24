@@ -375,7 +375,14 @@ fn library_rows(ui: &mut Ui, app: &mut App) -> Vec<El> {
         let count = hits.map_or_else(|| l.presets.len().to_string(), |h| format!("{h} found"));
         let name = tidy::library(&l.name);
         let chosen = v.library == Some(n);
-        tiles.push(card(id, (name, &count), image, (chosen, height), &query));
+        tiles.push(card(
+            id,
+            (name, &count),
+            &l.protection,
+            image,
+            (chosen, height),
+            &query,
+        ));
     }
     let v = &mut app.view;
     type_into(ui, "search", &mut v.search, &typed);
@@ -412,6 +419,7 @@ fn library_rows(ui: &mut Ui, app: &mut App) -> Vec<El> {
 /// The presets the player starred, across the shown format's libraries.
 fn favorites(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> Vec<El> {
     let into = focused(&app.parts);
+    let loading = app.loading.is_some();
     let v = &mut app.view;
     let mut rows = Vec::new();
     for (library, l) in app.libraries.iter().enumerate() {
@@ -427,7 +435,15 @@ fn favorites(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> Vec<El> {
             let name = tidy::name(&l.name, path);
             let lib = tidy::library(&l.name);
             let r = list_row(ui, id.clone(), (name, lib), None, v.picked == Some(at));
-            pick(ui, &id, (&mut v.picked, &mut v.clicked), at, into, out);
+            pick(
+                ui,
+                &id,
+                (&mut v.picked, &mut v.clicked),
+                at,
+                into,
+                loading,
+                out,
+            );
             rows.push(r.el);
         }
     }
@@ -456,10 +472,11 @@ fn picture(image: Option<Arc<Image>>, height: f64) -> El {
 
 /// A library as Kontakt's browser shows one: its picture edge to edge,
 /// cropped to fill, `height` tall, its name and preset count in white at
-/// its foot, an accent edge when chosen.
+/// its foot, an accent edge when chosen, and a lock badge when DRM-protected.
 fn card(
     id: &str,
     (name, count): (&str, &str),
+    protection: &super::Protection,
     image: Option<Arc<Image>>,
     (chosen, height): (bool, f64),
     query: &str,
@@ -486,24 +503,52 @@ fn card(
     ]
     .gap(TIGHT)
     .align(Align::Center);
+    let mut inner = Vec::new();
+    let top_pad = if protection.is_protected() {
+        let amber = Color::srgb(0.95, 0.72, 0.28);
+        let badge_bg = Color::srgb(0.08, 0.08, 0.1).with_alpha(0.78);
+        let icon_size = if small { SMALL * 0.95 } else { TEXT * 0.95 };
+        let badge = row![glyph(Icon::Lock, icon_size, Fill::from(amber))]
+            .align(Align::Center)
+            .pad((2., 4.))
+            .radius(4.)
+            .fill(badge_bg)
+            .shrink(0);
+        inner.push(row![spacer(), badge].align(Align::Center));
+        TIGHT
+    } else {
+        0.
+    };
+    inner.push(spacer());
+    inner.push(foot);
     let label = row![
         mark,
-        col![spacer(), foot]
-            .pad(kit::edges(0., pad, TIGHT * 1.5, pad))
+        col(inner)
+            .pad(kit::edges(top_pad, pad, TIGHT * 1.5, pad))
             .grow(1)
             .min_w(0)
             .h(Len::Pct(100.)),
     ]
     .w(Len::Pct(100.))
     .h(Len::Pct(100.));
+    let (a11y_name, tooltip) = match protection {
+        super::Protection::Open => (
+            format!("{name}, {count} presets"),
+            format!("{name}\nShow its presets below"),
+        ),
+        super::Protection::Protected { system, detail } => (
+            format!("{name}, {count} presets, locked ({system})"),
+            format!("{name}\nLocked ({system}): {detail}"),
+        ),
+    };
     let el = stack![picture(image, height), scrim(0.85), label]
         .w(Len::Pct(100.))
         .h(height)
         .clip()
         .focusable()
         .a11y(A11y::Button)
-        .named(format!("{name}, {count} presets"))
-        .tip(format!("{name}\nShow its presets below"))
+        .named(a11y_name)
+        .tip(tooltip)
         .id(id.to_owned())
         .shrink(0);
     kit::interactive(el)
@@ -511,6 +556,7 @@ fn card(
 
 fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let into = focused(&app.parts);
+    let loading = app.loading.is_some();
     let v = &mut app.view;
     let rows: Vec<El> = app
         .recent
@@ -523,7 +569,15 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             let at = (library, preset);
             let lib = tidy::library(&l.name);
             let r = list_row(ui, id.clone(), (name, lib), None, v.picked == Some(at));
-            pick(ui, &id, (&mut v.picked, &mut v.clicked), at, into, out);
+            pick(
+                ui,
+                &id,
+                (&mut v.picked, &mut v.clicked),
+                at,
+                into,
+                loading,
+                out,
+            );
             Some(r.el)
         })
         .collect();
@@ -532,7 +586,12 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .fill(secondary())
             .pad(SPACE * 2.);
     }
-    col(rows).gap(1).pad(TIGHT).scroll().min_h(0)
+    col(rows)
+        .gap(1)
+        .pad(TIGHT)
+        .scroll()
+        .id("recent-list")
+        .min_h(0)
 }
 
 /// The chosen library under its banner, its presets foldered by what is
@@ -615,7 +674,15 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             order.push((n, rows.len()));
             let indent = if crumbs.is_empty() { SPACE } else { SPACE * 2. };
             let row = preset_row(&id, (&s.name, path, detail), &query, on, indent);
-            pick(ui, &id, (&mut v.picked, &mut v.clicked), at, into, out);
+            pick(
+                ui,
+                &id,
+                (&mut v.picked, &mut v.clicked),
+                at,
+                into,
+                loading,
+                out,
+            );
             // A star beside the picked row and every starred one: a click
             // stars or unstars it.
             let fav = l.favorites.contains(&n);
@@ -675,22 +742,16 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         ui.focus(format!("preset-{n}"));
         follow(ui, "preset-list", row as f64 * CONTROL, CONTROL);
     }
-    // A library opened again shows its last pick, once its rows are laid
-    // out.
-    if v.reveal {
+    // A library opened again shows its last pick once its scene is ready, then
+    // clears the flag so it never fights the user's subsequent scrolling.
+    if v.reveal && ui.scene().is_some() {
         let want = v.picked.filter(|p| p.0 == lib).map(|p| p.1);
         let at = order.iter().find(|o| Some(o.0) == want).or(order.first());
-        match at {
-            Some(&(n, row)) => {
-                let id = format!("preset-{n}");
-                if (ui.scene()).is_some_and(|s| s.surface(id.as_str()).is_some()) {
-                    v.reveal = false;
-                    let y = (row as f64 - 3.).max(0.) * CONTROL;
-                    ui.set_scroll("preset-list", [0., y]);
-                }
-            }
-            None => v.reveal = false,
+        if let Some(&(_, row)) = at {
+            let y = (row as f64 - 3.).max(0.) * CONTROL;
+            ui.set_scroll("preset-list", [0., y]);
         }
+        v.reveal = false;
     }
     if let Some(p) = v.picked.filter(|p| p.0 == lib) {
         match v.last.iter_mut().find(|l| l.0 == lib) {
@@ -703,6 +764,33 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         false => format!("{matched} of {} presets", l.presets.len()),
     };
     let white = Color::srgb(1., 1., 1.);
+    let amber = Color::srgb(0.95, 0.72, 0.28);
+    let subtitle = match &l.protection {
+        super::Protection::Open => caption(count).fill(Color::srgb(0.85, 0.85, 0.85)),
+        super::Protection::Protected { system, detail } => {
+            let pill = row![
+                glyph(Icon::Lock, SMALL * 0.9, Fill::from(amber)),
+                caption(format!("Locked · {system}"))
+                    .text_size(SMALL * 0.9)
+                    .fill(amber)
+                    .lines(1)
+                    .min_w(0),
+            ]
+            .gap(TIGHT * 0.75)
+            .align(Align::Center)
+            .pad((2., 5.))
+            .radius(4.)
+            .fill(Color::srgb(0.08, 0.08, 0.1).with_alpha(0.82))
+            .tip(detail.clone())
+            .id("library-protection-badge");
+            row![
+                caption(count).fill(Color::srgb(0.85, 0.85, 0.85)).shrink(0),
+                pill,
+            ]
+            .gap(TIGHT)
+            .align(Align::Center)
+        }
+    };
     let title = col![
         body(tidy::library(&l.name).to_owned())
             .text_size(TEXT * 1.3)
@@ -711,7 +799,7 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .lines(1)
             .min_w(0)
             .tip(l.name.clone()),
-        caption(count).fill(Color::srgb(0.85, 0.85, 0.85)),
+        subtitle,
     ]
     .gap(1)
     .align(Align::Start)
@@ -731,9 +819,26 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     .h(height)
     .clip()
     .shrink(0);
-    let list = match rows.is_empty() {
-        true => caption("Nothing matches").fill(secondary()).pad(SPACE * 2.),
-        false => col(rows).scroll().id("preset-list").min_h(0).grow(1),
+    let list = match (rows.is_empty(), &l.protection) {
+        (true, super::Protection::Protected { system, detail }) if l.presets.is_empty() => col![
+            row![
+                glyph(Icon::Lock, TEXT, Fill::from(amber)),
+                body(format!("Protected library ({system})"))
+                    .text_size(TEXT)
+                    .text_weight(Weight::SEMIBOLD)
+                    .fill(amber)
+                    .lines(1)
+                    .min_w(0),
+            ]
+            .gap(TIGHT)
+            .align(Align::Center),
+            caption(detail.clone()).fill(secondary()),
+        ]
+        .gap(TIGHT)
+        .pad(SPACE * 2.)
+        .id("library-protection-notice"),
+        (true, _) => caption("Nothing matches").fill(secondary()).pad(SPACE * 2.),
+        (false, _) => col(rows).scroll().id("preset-list").min_h(0).grow(1),
     };
     col![banner, search, list]
 }
@@ -849,6 +954,7 @@ fn pick(
     (picked, clicked): (&mut Option<(usize, usize)>, &mut Option<Instant>),
     (library, preset): (usize, usize),
     into: Option<usize>,
+    loading: bool,
     out: &mut Vec<Action>,
 ) {
     let r = ui.get(id);
@@ -860,11 +966,13 @@ fn pick(
         && clicked.is_some_and(|t| t.elapsed() < DOUBLE_CLICK);
     if again || r.key_activated {
         *clicked = None;
-        out.push(Action::Load {
-            library,
-            preset,
-            into,
-        });
+        if !loading {
+            out.push(Action::Load {
+                library,
+                preset,
+                into,
+            });
+        }
     } else if r.clicked {
         *picked = Some((library, preset));
         *clicked = Some(Instant::now());

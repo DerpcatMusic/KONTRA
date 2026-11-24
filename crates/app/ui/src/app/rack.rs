@@ -270,11 +270,11 @@ pub(super) fn output(
 
 fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     let id = |what: &str| format!("part-{n}-{what}");
-    let presets: Vec<String> = app
+    let (presets, recalls): (Vec<String>, Vec<usize>) = app
         .parts
         .get(n)
         .and_then(|p| app.libraries.iter().find(|l| l.name == p.library))
-        .map(|l| l.presets.clone())
+        .map(|l| (l.presets.clone(), l.recalls.clone()))
         .unwrap_or_default();
     let output = output(ui, app, n, id("output"), out);
     let loading = app.loading == Some(super::Loading::Part(n));
@@ -317,7 +317,12 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         false => name,
     };
     // Kontakt's instrument header: the instrument and its snapshots.
-    let family = kontra_ui_model::preset_family(std::path::Path::new(""), &presets, p.preset);
+    let family = kontra_ui_model::displayed_preset_family(
+        std::path::Path::new(""),
+        &presets,
+        &recalls,
+        p.preset,
+    );
     let listed: Vec<&str> = (family.iter())
         .filter_map(|&n| names.get(n).map(String::as_str))
         .collect();
