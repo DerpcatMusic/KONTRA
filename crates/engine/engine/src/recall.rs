@@ -37,6 +37,7 @@ impl Engine {
         let slots = (0u8..).take(self.recalled.len());
         slots.for_each(|slot| self.persistence_changed(slot));
         self.run_load_waits();
+        self.zones_moved();
         self.building = false;
         // What `read_persistent_var` reloaded matters to a load's init only.
         self.reloaded.clear();

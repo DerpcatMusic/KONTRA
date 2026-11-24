@@ -221,6 +221,7 @@ pub fn prepare(
     plan.output = instrument.output;
     plan.route_pitch = instrument.route_pitch;
     plan.steal_whole_groups = instrument.steal_whole_groups;
+    plan.recalled = instrument.recalled;
     plan.steal = ir::VoiceGroup {
         steal: instrument.steal,
         prefer_released: instrument.steal_released_first,

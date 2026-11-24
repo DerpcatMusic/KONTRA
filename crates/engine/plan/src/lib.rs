@@ -566,6 +566,8 @@ pub struct Plan {
     pub route_pitch: ir::Exp2,
     /// [`ir::Instrument::steal_whole_groups`].
     pub steal_whole_groups: bool,
+    /// [`ir::Instrument::recalled`].
+    pub recalled: bool,
     /// Who starts the release-trigger zones; [`ReleaseZones::AtRelease`]
     /// (the engine, at a note's release) unless a script takes them over.
     pub release_zones: ReleaseZones,
@@ -669,6 +671,7 @@ impl Plan {
             output: ir::Output::UNITY,
             route_pitch: ir::Exp2::Exact,
             steal_whole_groups: false,
+            recalled: false,
             release_zones: ReleaseZones::AtRelease,
             sustain_pedal: SustainPedal::Holds,
             impulses: Vec::new(),

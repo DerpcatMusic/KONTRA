@@ -4828,6 +4828,39 @@ fn a_zone_moved_to_another_group_and_keys_plays_there_from_the_next_note() {
     assert!((level(&mut e, &[on(72)]) - 1.0).abs() < 1e-3);
 }
 
+/// `set_zone_par` in `on init` lands at once, and the first note starts
+/// from the zones as init left them (Conflux snapshots move a bank zone
+/// into the playing group): zone 0 moved from key 60 to group 1 at 72.
+#[test]
+fn a_zone_init_moves_plays_there_from_the_first_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut moved = zone(&mut store, 0.5, 0);
+    (moved.id, moved.keys) = (0, 60..=60);
+    let mut other = zone(&mut store, 0.25, 1);
+    (other.id, other.keys) = (1, 100..=100);
+    let script = kontra_ksp::compile(
+        "on init
+            set_zone_par(0, $ZONE_PAR_GROUP, 1)
+            set_zone_par(0, $ZONE_PAR_LOW_KEY, 72)
+            set_zone_par(0, $ZONE_PAR_HIGH_KEY, 72)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![moved, other], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.groups[1].level.gain = 2.0;
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!(
+        level(&mut e, &[on(60)]).abs() < 1e-4,
+        "still at its old key"
+    );
+    assert!((level(&mut e, &[on(72)]) - 1.0).abs() < 1e-3);
+}
+
 /// `on midi_in` sees a note before the engine: it can drop it (`ignore_midi`),
 /// move it (`set_event_par`) and add notes (`set_midi`), and the engine plays
 /// what is left. Key 60 is dropped, 61 moves up an octave to 73, 62 gets a

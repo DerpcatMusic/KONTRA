@@ -131,6 +131,18 @@ fn settle(params: &KontraParams, dsp: &mut Dsp) {
     Tick.run(params);
 }
 
+/// [`settle`], then six seconds of audio: load-time script work runs a
+/// share per block, and ANALOG STRINGS' persistence-changed callback (its
+/// snapshot recall, after its own waits) takes about three seconds of
+/// 512-frame blocks to finish.
+fn settle_load(params: &KontraParams, dsp: &mut Dsp) {
+    settle(params, dsp);
+    for _ in 0..(6.0 * RATE) as usize / BLOCK {
+        block(params, dsp, &[]);
+    }
+    settle(params, dsp);
+}
+
 /// Turns part 0's first integer control one step, as the user would; the
 /// variable and the value it was turned to.
 fn move_control(params: &KontraParams) -> Option<(String, i64)> {
@@ -2404,7 +2416,7 @@ fn a_part_playing_a_snapshot_reopens_with_it_without_a_library_scan() {
         part: Some(0),
         path: snapshot.clone(),
     });
-    settle(&params, &mut dsp);
+    settle_load(&params, &mut dsp);
     let playing = |params: &KontraParams| {
         let rack = crate::lock(&params.shared.rack);
         let p = rack.as_ref()?.parts()[0].as_ref()?;
@@ -2422,7 +2434,7 @@ fn a_part_playing_a_snapshot_reopens_with_it_without_a_library_scan() {
     assert_eq!(part.preset.as_deref(), Some(snapshot.as_path()));
 
     let (again, mut again_dsp) = reopen(&params);
-    settle(&again, &mut again_dsp);
+    settle_load(&again, &mut again_dsp);
     assert_eq!(
         playing(&again),
         Some((snapshot, name)),
@@ -2665,6 +2677,47 @@ fn an_analog_strings_snapshot_plays_its_own_groups() {
         path: snapshot,
     });
     settle(&params, &mut dsp);
+    let rms = play(&params, &mut dsp);
+    assert!(rms > 1e-4, "silent: rms {rms}");
+}
+
+/// An ANALOG STRINGS snapshot saved with its other bus pair live
+/// (Quarterstra: buses 1 and 2 at -120 dB, `$instrument_bus_offset_` 2)
+/// sounds: it is recalled onto its loaded base, so the script's second
+/// `on persistence_changed` moves its groups to the live pair.
+#[test]
+fn an_analog_strings_snapshot_on_its_other_buses_sounds() {
+    let Some(snapshot) =
+        library("ANALOG STRINGS/Snapshots/ANALOG STRINGS/Factory/Quarterstra.nksn")
+    else {
+        return;
+    };
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params.shared.request(crate::Request::Load {
+        part: Some(0),
+        path: snapshot,
+    });
+    settle_load(&params, &mut dsp);
+    let rms = play(&params, &mut dsp);
+    assert!(rms > 1e-4, "silent: rms {rms}");
+}
+
+/// A Conflux snapshot whose `on init` moves a bank zone into the playing
+/// group (Antarctica: zone 15 into group 0, keys 0-127) sounds: notes start
+/// from the zones as `on init` left them, not as the instrument saved them.
+#[test]
+fn a_conflux_snapshot_plays_the_zone_its_init_moved() {
+    let Some(snapshot) =
+        library("Conflux 1.1.0 [Native Instruments]/Snapshots/Conflux/Bass/Antarctica.nksn")
+    else {
+        return;
+    };
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params.shared.request(crate::Request::Load {
+        part: Some(0),
+        path: snapshot,
+    });
+    settle_load(&params, &mut dsp);
     let rms = play(&params, &mut dsp);
     assert!(rms > 1e-4, "silent: rms {rms}");
 }
