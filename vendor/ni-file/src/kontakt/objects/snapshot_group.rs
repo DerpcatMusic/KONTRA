@@ -2,7 +2,7 @@ use std::io::{Cursor, Read, Write};
 
 use super::{BParSrcMode, BParamArrayBParFX8};
 use crate::read_bytes::ReadBytesExt;
-use crate::{Error, kontakt::Chunk};
+use crate::{kontakt::Chunk, Error};
 
 /// Compact group snapshot v1..=v4. Group IDs are the enclosing array indices.
 /// Unknown public/source values and the trailing flag are retained verbatim.
