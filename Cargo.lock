@@ -2100,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "kontra-plugin"
-version = "3.0.0-dev"
+version = "0.6.24"
 dependencies = [
  "clap-sys",
  "dirs",
@@ -2116,6 +2116,7 @@ dependencies = [
  "moose",
  "moose-au",
  "moose-clap",
+ "moose-standalone",
  "moose-test",
  "moose-vst3",
  "mui-native-dialog",

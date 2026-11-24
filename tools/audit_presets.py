@@ -12,7 +12,7 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="+", type=Path, help="Preset files or library folders")
-    parser.add_argument("--bin", required=True, type=Path, help="Built kontakto executable")
+    parser.add_argument("--bin", required=True, type=Path, help="Built KONTRA inspector executable")
     parser.add_argument("--mode", choices=("ui", "playback"), default="ui")
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--out", required=True, type=Path)

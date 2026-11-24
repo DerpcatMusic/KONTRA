@@ -1,5 +1,5 @@
 ---
-name: Kontakto
+name: KONTRA
 description: A native multisampler editor with a compact graphite rack and local library artwork.
 colors:
   graphite-background: "#1b1b1b"
@@ -64,13 +64,13 @@ components:
     typography: "{typography.control}"
 ---
 
-# Design System: Kontakto
+# Design System: KONTRA
 
 ## Overview
 
 **Creative North Star: "The Graphite Rack"**
 
-Kontakto is a dense, quiet instrument workstation: a dark continuous work area, a multi-instrument rack, a separate library browser, and a light piano bed. Neutral grays carry selection and panel hierarchy; color comes from the user's own library artwork or a real compatibility error.
+KONTRA is a dense, quiet instrument workstation: a dark continuous work area, a multi-instrument rack, a separate library browser, and a light piano bed. Neutral grays carry selection and panel hierarchy; color comes from the user's own library artwork or a real compatibility error.
 
 One bundled sans face keeps instrument names and diagnostics direct and readable. Rack, Mapping, Groups, Info, and folder settings share the same shell, so browsing and inspection do not replace the instruments being assembled. Compatibility limits remain visible in context.
 
@@ -121,7 +121,7 @@ The native editor opens at 1180 by 780 logical pixels and reflows at fixed zoom 
 
 The keyboard and host I/O status occupy stable bottom strips. Mapping, Groups, Info, and folder settings change the rack workspace while the browser and keyboard stay in place. Small repeated gaps and padding keep the layout dense; long instrument names wrap instead of forcing fixed-width rows.
 
-Selecting a preset or rack name opens Instrument under the compact rack summary. A bounded init subset previews Vista Harp (47 controls) and Vista Cellos (48), preserving authored positions, labels, and hide state as disabled native glyphs over the named local wallpaper; it clips the top 68px for Kontakt's header, with Kontakto's title outside. Manual gain/pan/audition stay live above, with sample groups below; an on-screen notice says saved values and callbacks are unavailable, while original skins and KSP runtime are not reproduced. The resolved wallpaper comes only from its named local picture or kind-4 NKR resource and is never bundled.
+Selecting a preset or rack name opens Instrument under the compact rack summary. A bounded init subset previews Vista Harp (47 controls) and Vista Cellos (48), preserving authored positions, labels, and hide state as disabled native glyphs over the named local wallpaper; it clips the top 68px for Kontakt's header, with KONTRA's title outside. Manual gain/pan/audition stay live above, with sample groups below; an on-screen notice says saved values and callbacks are unavailable, while original skins and KSP runtime are not reproduced. The resolved wallpaper comes only from its named local picture or kind-4 NKR resource and is never bundled.
 
 The right browser separates Instruments (NKI) from Multis (NKM) and lists only whole preset files from the selected library. Instrument view carries that library breadcrumb with Previous/Next across the whole preset set; raw group lists stay in Groups. Loading an NKM expands embedded programs, including silent controller parts, into the rack; original multi routing, scripts, and resource behavior remain explicitly unsupported.
 

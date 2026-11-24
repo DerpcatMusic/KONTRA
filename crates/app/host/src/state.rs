@@ -329,7 +329,9 @@ impl Rack {
                 ..Saved::new(vec![p])
             };
             let saved = self.resolved(&saved);
-            let p = &saved.parts[0];
+            let Some(p) = saved.parts.first() else {
+                continue;
+            };
             if !crate::relink::present(&p.path) {
                 self.awaiting.push((p.clone(), saved.ids));
                 continue;

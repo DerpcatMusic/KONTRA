@@ -534,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--map", action="append", default=[], metavar="TRACK:FX=MULTI", help="map a zero-based Kontakt instance to a .kontra-multi file; repeatable")
     parser.add_argument("--output-copy", type=Path, help="new .RPP path beside the source project")
     parser.add_argument("--reaper-script", type=Path, help="write an experimental ReaScript for preflighted mappings")
-    parser.add_argument("--state-exporter", type=Path, help="executable kontakto CLI built with the plugin feature")
+    parser.add_argument("--state-exporter", type=Path, help="executable KONTRA CLI built with the plugin feature")
     args = parser.parse_args(argv)
     try:
         report = inventory(args.project)

@@ -15,7 +15,9 @@ use crate::theme::{
 };
 
 /// The states every flat control shares: the pointing hand, a faint lift on
-/// hover, a deeper one pressed, a 1 px ring for keyboard focus.
+/// hover, a deeper one pressed, a 1 px ring for keyboard focus. No easing:
+/// a node's paint carries its value too (a latch set, a button on), and a
+/// value shows the frame it changes.
 pub fn interactive(el: El) -> El {
     el.cursor(Cursor::Hand)
         .on(State::Hover, |s| s.fill(lift(1)))
@@ -23,7 +25,6 @@ pub fn interactive(el: El) -> El {
         .on(State::FocusVisible, |s| {
             s.stroke(Role::Primary.alpha(0.9)).stroke_width(1)
         })
-        .animate_with(quick())
 }
 
 fn ink(on: bool) -> Fill {

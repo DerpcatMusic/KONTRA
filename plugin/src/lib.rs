@@ -32,13 +32,15 @@ use kontra_host::view::Interfaces;
 use moose::core::LosslessEventRef;
 use moose::prelude::*;
 
-/// The build as About shows it: the version and its source revision.
-pub const BUILD: &str = concat!(
-    "Version ",
-    env!("KONTRA_VERSION"),
-    " · ",
-    env!("KONTRA_REVISION")
-);
+/// The build as About shows it (stamped by build.rs), with the changelog.
+pub const BUILD: kontra_ui::app::Build = kontra_ui::app::Build {
+    version: env!("KONTRA_VERSION"),
+    revision: env!("KONTRA_REVISION"),
+    built: env!("KONTRA_BUILT"),
+    target: env!("KONTRA_TARGET"),
+    formats: env!("KONTRA_FORMATS"),
+    changelog: include_str!("../../CHANGELOG.md"),
+};
 
 /// Stereo outputs the plugin offers: one per rack part.
 pub const OUTPUTS: usize = kontra_host::rack::OUTPUTS;
@@ -353,6 +355,8 @@ fn browse() -> kontra_host::browser::Browser {
     if let Some(user) = config.and_then(|_| kontra_host::presets::folder()) {
         browser.set_user(user);
     }
+    // The saved colours, for every editor in this process.
+    kontra_ui::theme::set_look(kontra_ui::theme::Look::from_tokens(&browser.theme()));
     browser
 }
 

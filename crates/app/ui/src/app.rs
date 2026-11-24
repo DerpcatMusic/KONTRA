@@ -14,6 +14,7 @@ mod part;
 mod pick;
 mod preset;
 pub use preset::{PresetEdit, USER};
+pub use settings::{Release, changelog};
 mod rack;
 mod report;
 mod settings;
@@ -28,7 +29,24 @@ use mui::prelude::*;
 use crate::Pictures;
 use crate::keyboard::{self, Keys, note_name};
 use crate::kit::{self, Icon, button, icon_button, rule, section, strip, tab, vrule};
-use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
+use crate::theme::{CONTROL, INSET, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
+
+/// What About says about the build: all stamped when it was compiled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Build {
+    /// The release version, `0.MINOR.PATCH`.
+    pub version: &'static str,
+    /// The source's short commit SHA.
+    pub revision: &'static str,
+    /// When it was built, `YYYY-MM-DD HH:MM UTC`.
+    pub built: &'static str,
+    /// The target triple.
+    pub target: &'static str,
+    /// The formats compiled in, `CLAP · VST3`.
+    pub formats: &'static str,
+    /// CHANGELOG.md as it was.
+    pub changelog: &'static str,
+}
 
 /// Everything the editor shows. The host fills the data; `view` is the
 /// editor's own state and survives a reload of the rest.
@@ -52,8 +70,8 @@ pub struct App {
     /// Where new parts listen and play ([`Action::NewParts`]).
     pub next_channel: bool,
     pub own_output: bool,
-    /// The build, for About: its version and source revision.
-    pub build: String,
+    /// The build, for About.
+    pub build: Build,
     /// The folders the browser scans, and how each scan went.
     pub folders: Vec<LibraryFolder>,
     /// A running library scan's progress; `None` when idle.
@@ -483,6 +501,8 @@ pub struct FilePick {
 /// What the user asked for this frame, for the host to carry out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// The colour tokens changed ([`crate::theme::Look::tokens`]): save them.
+    Theme(std::collections::BTreeMap<String, String>),
     /// A browser preset to play, in a new part unless it is a preset of an
     /// instrument and `into` names the focused part (Kontakt's browser
     /// replaces the selected slot's snapshot).
@@ -608,6 +628,8 @@ pub enum Action {
 /// The editor for `app`, and what the user did.
 pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     let mut out = Vec::new();
+    // Another editor, or the host's saved prefs, may have changed the colours.
+    crate::theme::sync(ui);
     // The window's width as last laid out: what a library's view fits.
     if let Some(s) = ui.scene() {
         app.width = s.layout.size.width;
@@ -629,24 +651,12 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         middle.push(vrule());
     }
     let modal = app.pick.is_some() || app.view.sheet.is_some();
-    let mut main = vec![
-        main(ui, app, &mut out)
-            .grow(1)
-            .min_w(0)
-            .min_h(0)
-            .when(modal, |e| e.disabled()),
-    ];
-    if let Some(pick) = app.pick.clone() {
-        main.push(pick::sheet(ui, app, pick, &mut out).centered());
-    } else if let Some(s) = app.view.sheet {
-        main.push(settings::sheet(ui, app, s, &mut out).centered());
-    }
-    middle.push(stack(main).grow(1).min_w(0).min_h(0));
+    middle.push(main(ui, app, &mut out).grow(1).min_w(0).min_h(0));
     // v2's two tones: the frame around the work (header, browser, tab
     // rows, keyboard) one step up on Surface, the work on Background.
     // Only the middle gives way to a short window: the header and the
     // keyboard keep their height, as v2's dock did.
-    let el = col![
+    let base = col![
         header.shrink(0).fill(Role::Surface),
         loading_bar(app),
         row(middle).grow(1).min_h(0).align(Align::Stretch),
@@ -655,7 +665,27 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     ]
     .w(Len::Pct(100.))
     .h(Len::Pct(100.))
-    .fill(Role::Background);
+    .fill(Role::Background)
+    .when(modal, |e| e.disabled());
+    let scrim = |panel: El| {
+        row![panel]
+            .center()
+            .pad(INSET)
+            .w(Len::Pct(100.))
+            .h(Len::Pct(100.))
+            .fill(Role::Background.alpha(0.6))
+    };
+    let el = if let Some(pick) = app.pick.clone() {
+        stack![base, scrim(pick::sheet(ui, app, pick, &mut out))]
+            .w(Len::Pct(100.))
+            .h(Len::Pct(100.))
+    } else if let Some(s) = app.view.sheet {
+        stack![base, scrim(settings::sheet(ui, app, s, &mut out))]
+            .w(Len::Pct(100.))
+            .h(Len::Pct(100.))
+    } else {
+        base
+    };
     Response { el, changed: out }
 }
 

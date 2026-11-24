@@ -115,6 +115,12 @@ jobs:
           else
             cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
           fi
+          # KONTRA as an app of its own, beside the Linux and Windows bundles.
+          if [ "$RUNNER_OS" != macOS ]; then
+            cargo build --release --locked -p kontra-plugin --features standalone --bin kontra-standalone --target ${{ matrix.target }}
+            exe=kontra-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontra-standalone.exe
+            cp "target/${{ matrix.target }}/release/$exe" "target/bundles/${{ matrix.target }}/"
+          fi
           git diff --exit-code -- Cargo.lock
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: runner.os != 'macOS'

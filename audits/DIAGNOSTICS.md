@@ -17,8 +17,8 @@ Pictures, scripts and array-data files have no fixed size cap. PNG dimensions us
 To isolate slow presets, use the existing audit CLI through this standard-library runner:
 
 ```sh
-python3 tools/audit_presets.py --bin /path/to/kontakto --out artifacts/preset-audit --timeout 120 /path/to/library
-python3 tools/audit_presets.py --bin /path/to/kontakto --mode playback --out artifacts/playback-audit /path/to/instrument.nki
+python3 tools/audit_presets.py --bin /path/to/kontra-inspect --out artifacts/preset-audit --timeout 120 /path/to/library
+python3 tools/audit_presets.py --bin /path/to/kontra-inspect --mode playback --out artifacts/playback-audit /path/to/instrument.nki
 ```
 
 Each preset runs in its own process. `results.jsonl` records completion, failure or timeout and the last diagnostic event. Its evidence folder retains the CLI report, process output and journals. UI audits check layout and resources; playback audits also load samples and render notes. Neither replaces a paired Kontakt reference or a DAW check. `completed` describes process completion; inspect the report for partial compatibility.

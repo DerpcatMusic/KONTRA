@@ -1,13 +1,19 @@
 [package]
 name = "kontra-plugin"
-version = "3.0.0-dev"
+version = "0.6.24"
 edition.workspace = true
 license = "Apache-2.0"
-description = "KONTRA v3: the plugin shell over kontra-host and kontra-ui (CLAP, VST3)"
+description = "KONTRA: the plugin shell and standalone app over kontra-host and kontra-ui (CLAP, VST3, Standalone)"
 publish = false
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
+
+# KONTRA as an app of its own: `cargo run -p kontra-plugin --features standalone --bin kontra-standalone`.
+[[bin]]
+name = "kontra-standalone"
+path = "src/main.rs"
+required-features = ["standalone"]
 
 [lints]
 workspace = true
@@ -22,6 +28,7 @@ clap = ["dep:moose-clap", "dep:clap-sys", "moose/clap"]
 vst3 = ["dep:moose-vst3", "moose/vst3"]
 au = ["dep:moose-au", "moose/au"]
 aax = ["moose/aax"]
+standalone = ["dep:moose-standalone"]
 
 [dependencies]
 kontra-align = { path = "../crates/app/align" }
@@ -36,6 +43,7 @@ moose-clap = { workspace = true, features = ["mpe-input"], optional = true }
 moose-vst3 = { workspace = true, optional = true }
 moose-au = { workspace = true, optional = true }
 clap-sys = { version = "0.5", optional = true }
+moose-standalone = { workspace = true, features = ["gui"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mui-native-dialog = { workspace = true, features = ["xdg-portal"] }
