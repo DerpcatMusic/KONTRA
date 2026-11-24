@@ -2,6 +2,7 @@
 //! on summed audio, each voice's own inserts, and the split of a group's
 //! slots between its voices and its sum.
 
+pub mod bus;
 pub mod chain;
 pub mod graph;
 pub mod group_racks;

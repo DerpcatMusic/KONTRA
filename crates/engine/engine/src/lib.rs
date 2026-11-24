@@ -510,7 +510,10 @@ impl Engine {
             }
             None => (None, None),
         };
-        let group_mix: Box<[Box<[[f32; 2]]>]> = if graph.is_some() {
+        let group_mix: Box<[Box<[[f32; 2]]>]> = if graph
+            .as_ref()
+            .is_some_and(kontra_racks::graph::GraphRuntime::has_group_inputs)
+        {
             (0..groups)
                 .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into_boxed_slice())
                 .collect()

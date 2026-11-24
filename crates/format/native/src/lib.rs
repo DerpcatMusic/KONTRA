@@ -1170,8 +1170,14 @@ fn unmap_graph(graph: &ir::AudioGraph) -> Result<AudioGraphSpec, Error> {
     let nodes = graph
         .nodes
         .iter()
-        .map(|n| match &n.kind {
+        .map(|n| {
+            Ok(match &n.kind {
             ir::GraphNodeKind::GroupInput { group } => GraphNodeSpec::GroupInput { group: *group },
+            ir::GraphNodeKind::InstrumentBus { bus } => {
+                return Err(Error::UnsupportedExport(format!(
+                    "graph node for instrument bus {bus}: prepare makes it, a file names the bus itself"
+                )));
+            }
             ir::GraphNodeKind::Bus {
                 name,
                 effects,
@@ -1210,8 +1216,9 @@ fn unmap_graph(graph: &ir::AudioGraph) -> Result<AudioGraphSpec, Error> {
                 bus_index: *bus_index,
                 layout: unmap_layout(*layout),
             },
+            })
         })
-        .collect();
+        .collect::<Result<_, Error>>()?;
     let edges = graph
         .edges
         .iter()

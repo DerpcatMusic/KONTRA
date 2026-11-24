@@ -11,7 +11,18 @@ use kontra_effects::matrix as effects;
 use kontra_ir as ir;
 use kontra_plan::Response;
 
-use crate::rack::Rack;
+use crate::bus::{self, BusState};
+use crate::rack::{Live, Rack};
+
+/// The engine's instrument buses, for [`ir::GraphNodeKind::InstrumentBus`]
+/// nodes: the buses, what moves their routes, the instrument's send taps
+/// their racks write, and the sample rate.
+pub struct Buses<'a> {
+    pub buses: &'a mut [BusState],
+    pub live: &'a Live<'a>,
+    pub taps: &'a mut [Box<[[f32; 2]]>],
+    pub rate: u32,
+}
 
 struct CompiledEdge {
     to: usize,
@@ -23,6 +34,9 @@ struct CompiledEdge {
 enum RuntimeNodeKind {
     GroupInput {
         group: u16,
+    },
+    InstrumentBus {
+        bus: usize,
     },
     Bus {
         rack: Rack,
@@ -120,6 +134,9 @@ impl GraphRuntime {
                 ir::GraphNodeKind::GroupInput { group } => {
                     RuntimeNodeKind::GroupInput { group: *group }
                 }
+                ir::GraphNodeKind::InstrumentBus { bus } => RuntimeNodeKind::InstrumentBus {
+                    bus: usize::from(*bus),
+                },
                 ir::GraphNodeKind::Bus {
                     effects,
                     gain_db,
@@ -182,10 +199,18 @@ impl GraphRuntime {
                     post.rebuild(rate, responses);
                 }
                 RuntimeNodeKind::GroupInput { .. }
+                | RuntimeNodeKind::InstrumentBus { .. }
                 | RuntimeNodeKind::Mix { .. }
                 | RuntimeNodeKind::Output { .. } => {}
             }
         }
+    }
+
+    /// Whether groups enter the graph through `GroupInput` nodes; otherwise
+    /// voices sum into the instrument buses its `InstrumentBus` nodes run.
+    #[must_use]
+    pub fn has_group_inputs(&self) -> bool {
+        (self.nodes.iter()).any(|n| matches!(n.kind, RuntimeNodeKind::GroupInput { .. }))
     }
 
     /// Number of compiled nodes in the DAG.
@@ -277,12 +302,29 @@ impl GraphRuntime {
 
     /// Processes the DAG in topological order with zero heap allocations and
     /// sums terminal [`ir::GraphNodeKind::Output`] nodes into `outputs[bus_index]`.
-    pub fn process(&mut self, frames: usize, tempo: f32, outputs: &mut [&mut [[f32; 2]]]) {
+    /// `InstrumentBus` nodes run `buses` (silent without them).
+    pub fn process(
+        &mut self,
+        frames: usize,
+        tempo: f32,
+        mut buses: Option<Buses<'_>>,
+        outputs: &mut [&mut [[f32; 2]]],
+    ) {
         let len = frames.min(self.max_frames);
         for order_pos in 0..self.order.len() {
             let Some(&idx) = self.order.get(order_pos) else {
                 continue;
             };
+            if let Some(RuntimeNodeKind::InstrumentBus { bus }) =
+                self.nodes.get(idx).map(|n| &n.kind)
+            {
+                let bus = *bus;
+                if let Some(b) = buses.as_mut() {
+                    bus::run(b.buses, bus, b.live, b.taps, b.rate, len);
+                    self.route_bus(idx, b.buses.get(bus), len);
+                }
+                continue;
+            }
             let Some(node) = self.nodes.get_mut(idx) else {
                 continue;
             };
@@ -330,6 +372,7 @@ impl GraphRuntime {
                     }
                     apply_gain_pan(buf, *gain, *pan);
                 }
+                RuntimeNodeKind::InstrumentBus { .. } => {}
                 RuntimeNodeKind::Output { bus_index } => {
                     if let Some(out) = outputs
                         .get_mut(usize::from(*bus_index))
@@ -392,6 +435,40 @@ impl GraphRuntime {
     }
 }
 
+impl GraphRuntime {
+    /// Instrument bus node `idx`'s output along its edges. Its sends to other
+    /// instrument buses already ran (with their fader taps and modulated
+    /// levels, in [`bus::run`]): those edges only order the graph.
+    fn route_bus(&mut self, idx: usize, bus: Option<&BusState>, len: usize) {
+        let Some(mix) = bus.and_then(|b| b.mix.get(..len)) else {
+            return;
+        };
+        for ei in 0..self.nodes.get(idx).map_or(0, |n| n.edges.len()) {
+            let Some((to, gain, sidechain)) = (self.nodes.get(idx))
+                .and_then(|n| n.edges.get(ei))
+                .map(|e| (e.to, e.gain, e.sidechain))
+            else {
+                continue;
+            };
+            let Some(dst) = self.nodes.get_mut(to) else {
+                continue;
+            };
+            if matches!(dst.kind, RuntimeNodeKind::InstrumentBus { .. }) {
+                continue;
+            }
+            let dst = if sidechain {
+                dst.sidechain.as_deref_mut()
+            } else {
+                Some(&mut dst.buffer[..])
+            };
+            for (d, s) in dst.into_iter().flatten().zip(mix) {
+                d[0] += s[0] * gain;
+                d[1] += s[1] * gain;
+            }
+        }
+    }
+}
+
 fn apply_gain_pan(buf: &mut [[f32; 2]], gain: f32, pan: f32) {
     let [[l, _], [_, r]] = effects::balance(pan);
     let (gl, gr) = (gain * l, gain * r);
@@ -436,7 +513,7 @@ mod tests {
         let mut rt = GraphRuntime::new(&graph, 48000, 32, &[]).unwrap();
         rt.add_group_audio(0, &[[1.0; 2]; 32]);
         let mut out = [[0.0; 2]; 32];
-        rt.process(32, 120.0, &mut [&mut out]);
+        rt.process(32, 120.0, None, &mut [&mut out]);
         assert!((out[31][0] - 1.0).abs() < 1e-4, "{out:?}");
     }
 
@@ -485,7 +562,7 @@ mod tests {
         let mut main_buf = [[0.0; 2]; 32];
         let mut aux_buf = [[0.0; 2]; 32];
         let mut outs: [&mut [[f32; 2]]; 2] = [&mut main_buf, &mut aux_buf];
-        rt.process(32, 120.0, &mut outs);
+        rt.process(32, 120.0, None, &mut outs);
 
         // Main output sees full chain: 1.0 * 0.5 (pre) * 0.5 (amp) * 0.5 (post) = 0.125
         assert!(
@@ -499,6 +576,69 @@ mod tests {
             "aux {}",
             aux_buf[31][0]
         );
+    }
+
+    #[test]
+    fn instrument_bus_nodes_run_the_buses_as_the_bus_loop_does() {
+        let mut plan = kontra_plan::Plan::new(Vec::new(), 1);
+        let main = plan.buses.first().cloned().unwrap();
+        plan.buses = vec![main.clone(), main];
+        plan.buses[0].sends = vec![ir::BusSend {
+            bus: 1,
+            level: 0.5,
+            post_fader: true,
+        }];
+        plan.buses[0].pan = -0.5;
+        let behaviour = kontra_behaviour::Behaviour::new(&plan);
+        let live = Live {
+            behaviour: &behaviour,
+            scripts: &[],
+            now: kontra_time::SampleTime(0),
+            seconds: 0.0,
+            tempo: 120.0,
+        };
+        let rate = 48_000;
+        let fresh = || -> Vec<BusState> {
+            let mut b: Vec<_> = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
+            b[0].mix[..32].fill([1.0, 0.25]);
+            b[1].mix[..32].fill([0.125, 0.5]);
+            b
+        };
+        // The bus loop: each bus in order, those on main summed.
+        let mut looped = fresh();
+        let mut want = [[0.0f32; 2]; 32];
+        for at in 0..2 {
+            bus::run(&mut looped, at, &live, &mut [], rate, 32);
+            if looped[at].to_main {
+                for (o, m) in want.iter_mut().zip(looped[at].mix.iter()) {
+                    o[0] += m[0];
+                    o[1] += m[1];
+                }
+            }
+        }
+        let mut graph = ir::AudioGraph::default();
+        let b0 = graph.push_node(ir::GraphNodeKind::InstrumentBus { bus: 0 });
+        let b1 = graph.push_node(ir::GraphNodeKind::InstrumentBus { bus: 1 });
+        let out = graph.push_node(ir::GraphNodeKind::Output {
+            bus_index: 0,
+            layout: ir::ChannelLayout::Stereo,
+        });
+        graph.connect(b0, b1, 0.5, true);
+        graph.connect(b0, out, 1.0, true);
+        graph.connect(b1, out, 1.0, true);
+        let mut rt = GraphRuntime::new(&graph, rate, 64, &[]).unwrap();
+        let mut buses = fresh();
+        let mut got = [[0.0f32; 2]; 32];
+        rt.clear(32);
+        let run = Buses {
+            buses: &mut buses,
+            live: &live,
+            taps: &mut [],
+            rate,
+        };
+        rt.process(32, 120.0, Some(run), &mut [&mut got]);
+        assert_eq!(got, want);
+        assert!(got[31][1] > 0.0, "bus 0's send reached bus 1");
     }
 
     #[test]
@@ -543,7 +683,7 @@ mod tests {
             prog_only.fill([0.0; 2]);
             rt.clear(256);
             rt.add_group_audio(0, &[[0.5; 2]; 256]);
-            rt.process(256, 120.0, &mut [&mut prog_only]);
+            rt.process(256, 120.0, None, &mut [&mut prog_only]);
         }
 
         // 2. Key only (no program): output is completely silent.
@@ -551,7 +691,7 @@ mod tests {
         let mut key_only = [[0.0; 2]; 256];
         rt_key.clear(256);
         rt_key.add_group_audio(1, &[[0.9; 2]; 256]);
-        rt_key.process(256, 120.0, &mut [&mut key_only]);
+        rt_key.process(256, 120.0, None, &mut [&mut key_only]);
 
         // 3. Program + loud key: program is heavily ducked!
         let mut rt_duck = GraphRuntime::new(&graph, 48_000, 256, &[]).unwrap();
@@ -561,7 +701,7 @@ mod tests {
             rt_duck.clear(256);
             rt_duck.add_group_audio(0, &[[0.5; 2]; 256]);
             rt_duck.add_group_audio(1, &[[0.9; 2]; 256]);
-            rt_duck.process(256, 120.0, &mut [&mut ducked]);
+            rt_duck.process(256, 120.0, None, &mut [&mut ducked]);
         }
 
         assert!(

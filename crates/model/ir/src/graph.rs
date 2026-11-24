@@ -70,6 +70,12 @@ impl ChannelLayout {
 pub enum GraphNodeKind {
     /// Voice sum for `group` entering the graph.
     GroupInput { group: u16 },
+    /// Instrument bus `bus` (`Instrument::buses[bus]`, or the one implicit
+    /// bus when there are none) as the engine runs it: its own slotted rack,
+    /// routes, fader, balance and sends, so slot numbers stay the format's.
+    /// Its input is what its groups' voices sum to; its sends to later
+    /// buses are its out edges. Made by prepare, never saved.
+    InstrumentBus { bus: u16 },
     /// Mixer bus with optional serial effects, fader gain (dB), and pan (`-1..=1`).
     Bus {
         name: String,
@@ -438,6 +444,7 @@ impl AudioGraph {
                     &[]
                 }
                 GraphNodeKind::GroupInput { .. }
+                | GraphNodeKind::InstrumentBus { .. }
                 | GraphNodeKind::Mix { .. }
                 | GraphNodeKind::Output { .. } => &[],
             };

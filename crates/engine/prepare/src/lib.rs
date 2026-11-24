@@ -7,7 +7,9 @@ use std::ops::{Range, RangeInclusive};
 use std::path::Path;
 use std::sync::Arc;
 
+mod graph;
 mod levels;
+pub use graph::lower_graph;
 
 use kontra_ir as ir;
 use kontra_stream::{
