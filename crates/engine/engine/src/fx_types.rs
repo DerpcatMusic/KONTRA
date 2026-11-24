@@ -96,7 +96,9 @@ impl Engine {
         let ty = types
             .iter()
             .position(|t| t.id == id && t.subtype == subtype)?;
-        let (ty, effect) = (u16::try_from(ty).ok()?, types.get(ty)?.effect.clone());
+        let target = types.get(ty)?;
+        let (ty, target_kind, effect) =
+            (u16::try_from(ty).ok()?, target.kind, target.effect.clone());
         let (at, n) = (
             crate::knobs::rack_at(group, generic)?,
             u8::try_from(slot).ok()?,
@@ -109,13 +111,13 @@ impl Engine {
         });
         let init = self.building || self.running.kind == Kind::Init;
         // Loading the type a slot holds keeps it as it is (Kontakt 8.13: a
-        // reverb's size stays through a reverb load; measured). A subtype
-        // is held when the slot reads it; a type, by its kind of effect.
-        let kind = |e: &Option<ir::Effect>| e.as_ref().map(|e| std::mem::discriminant(&e.kind));
-        let holds = kind(self.slot_mut(group, slot, generic)?);
+        // reverb's size stays through a reverb load; measured). Compare the
+        // stored effect-type / subtype ID rather than the `ir::EffectKind`
+        // discriminant so distinct modules sharing an IR family always swap.
+        let _ = self.slot_mut(group, slot, generic)?;
         let same = match subtype {
             true => self.subtype(group, slot, generic) == Some(id),
-            false => holds.is_some() && holds == kind(&effect),
+            false => self.effect_type(group, slot, generic) == Some(target_kind),
         };
         if same {
             return Some(if init {
@@ -487,5 +489,103 @@ mod tests {
             engine.rack.slots[0].is_some(),
             "stale pre-recall install must not clobber slot after recall"
         );
+    }
+
+    #[test]
+    fn kt02_effect_type_swap_compares_type_id_not_ir_discriminant() {
+        let store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let make_reverb = |predelay_ms| ir::Effect {
+            kind: ir::EffectKind::Reverb(ir::Reverb {
+                seconds: 2.0,
+                size: 1.0,
+                network: None,
+                damping: 0.5,
+                diffusion: 0.8,
+                predelay_ms,
+                high_cut_hz: 10_000.0,
+                low_shelf_db: 0.0,
+                stereo: 1.0,
+                modulation_ms: 0.5,
+                modulation_hz: 0.5,
+            }),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        };
+        let reverb_a = make_reverb(10.0);
+        let reverb_b = make_reverb(80.0);
+        let eq_a = ir::Effect {
+            kind: ir::EffectKind::Eq([ir::Bell::FLAT; 4]),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        };
+        let mut eq_b_bands = [ir::Bell::FLAT; 4];
+        eq_b_bands[0].gain_db = 3.0;
+        let eq_b = ir::Effect {
+            kind: ir::EffectKind::Eq(eq_b_bands),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        };
+        let slot_ty = |id, effect| ir::SlotType {
+            id,
+            subtype: false,
+            kind: id,
+            reads: 0,
+            effect: Some(effect),
+            laws: Arc::from([]),
+            model: None,
+        };
+
+        let mut plan = Plan::new(Vec::new(), 8);
+        plan.inserts = vec![Some(reverb_a.clone())];
+        plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 39)];
+        plan.slot_shapes.types = vec![
+            slot_ty(39, reverb_a),
+            slot_ty(51, reverb_b.clone()),
+            slot_ty(24, eq_a),
+            slot_ty(28, eq_b.clone()),
+        ];
+        let plan = Arc::new(plan);
+        let mut engine = Engine::new(Arc::clone(&plan), store.client(), 48_000);
+
+        // Reloading the same effect type ID (39 -> 39) keeps the slot as-is.
+        assert!(engine.load_type(39, false, -1, 0, 1).is_some());
+        let mut drained = Vec::new();
+        engine.drain_requests(|r| drained.push(r));
+        assert!(
+            drained.is_empty(),
+            "same effect type ID must not queue a reload"
+        );
+
+        // Swapping 39 -> 51: both share EffectKind::Reverb,
+        // but differ in effect type ID, so this MUST queue a swap.
+        assert!(engine.load_type(51, false, -1, 0, 1).is_some());
+        engine.drain_requests(|r| drained.push(r));
+        assert_eq!(
+            drained.len(),
+            1,
+            "KT-02: swapping 39 -> 51 must not no-op on EffectKind discriminant"
+        );
+        let req = drained.pop().expect("queued type 51 swap");
+        assert_eq!(req.ty, Some(1));
+        assert_eq!(req.effect, Some(reverb_b));
+        let _ = engine.install(Prepared::new(req, Some(&plan), 48_000));
+        assert_eq!(engine.effect_type(-1, 0, 1), Some(51));
+
+        // Reloading type 51 after install must now no-op.
+        assert!(engine.load_type(51, false, -1, 0, 1).is_some());
+        engine.drain_requests(|r| drained.push(r));
+        assert!(drained.is_empty(), "same loaded type 51 must no-op");
+
+        // In `on init`, swapping between two colliding Eq types (24 -> 28)
+        // must replace the slot immediately.
+        engine.building = true;
+        assert_eq!(engine.load_type(24, false, -1, 0, 1), Some(-1));
+        assert_eq!(engine.effect_type(-1, 0, 1), Some(24));
+        assert_eq!(engine.load_type(28, false, -1, 0, 1), Some(-1));
+        assert_eq!(engine.effect_type(-1, 0, 1), Some(28));
+        assert_eq!(engine.rack.slots[0], Some(eq_b));
     }
 }

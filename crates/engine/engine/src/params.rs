@@ -599,6 +599,7 @@ impl Engine {
                     .flatten()
             })
             .flatten();
+        let tempo = self.tempo;
         let Some(g) = self.group_mut(group) else {
             return false;
         };
@@ -715,7 +716,7 @@ impl Engine {
                 .is_some(),
             EnginePar::LfoUnit => match (unit, g.lfo_mut(slot)) {
                 (Some(unit), Some(l)) => {
-                    l.rate = in_unit(l.rate, unit);
+                    l.rate = in_unit(l.rate, unit, tempo);
                     true
                 }
                 _ => false,
@@ -980,14 +981,13 @@ impl Engine {
 }
 
 /// `rate` moved to `unit`'s kind: free Hz keeps its Hz, a note value keeps
-/// its count; between kinds the period carries over at 120 BPM.
-// ponytail: the period converts at a fixed 120 BPM, not the host tempo; the
-// script sets the rate right after its unit, so the guess is not heard.
-fn in_unit(rate: ir::Rate, unit: ir::Rate) -> ir::Rate {
+/// its count; between kinds the period carries over at `tempo` BPM.
+fn in_unit(rate: ir::Rate, unit: ir::Rate, tempo: f32) -> ir::Rate {
+    let sec_per_beat = 60.0 / tempo.clamp(1.0, 999.0);
     let seconds = match rate {
         ir::Rate::Hz(hz) => 1.0 / hz.max(1e-3),
-        ir::Rate::Beats(beats) => beats * 0.5,
-        ir::Rate::Steps { beats, count } => beats * count * 0.5,
+        ir::Rate::Beats(beats) => beats * sec_per_beat,
+        ir::Rate::Steps { beats, count } => beats * count * sec_per_beat,
     };
     match (unit, rate) {
         (ir::Rate::Hz(_), ir::Rate::Hz(_)) => rate,
@@ -997,7 +997,7 @@ fn in_unit(rate: ir::Rate, unit: ir::Rate) -> ir::Rate {
         }
         (ir::Rate::Steps { beats, .. } | ir::Rate::Beats(beats), _) => ir::Rate::Steps {
             beats,
-            count: (seconds / (beats * 0.5)).round().max(1.0),
+            count: (seconds / (beats * sec_per_beat)).round().max(1.0),
         },
     }
 }
@@ -1017,5 +1017,42 @@ pub(crate) fn placed(at: i32, index: i32) -> (i32, i32) {
         0 => (index, -1),
         1 => (-1, (BUS_OFFSET - 1).saturating_add(index)),
         _ => (-1, 1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kontra_ir as ir;
+
+    use super::in_unit;
+
+    #[test]
+    fn kt13f_lfo_unit_conversion_uses_host_tempo_not_hardcoded_120_bpm() {
+        // At 60 BPM, 1 beat = 1.0 s => 1.0 Hz (120 BPM would give 2.0 Hz).
+        assert_eq!(
+            in_unit(ir::Rate::Beats(1.0), ir::Rate::Hz(1.0), 60.0),
+            ir::Rate::Hz(1.0)
+        );
+        // Converting 1.0 Hz back to quarter-note beats at 60 BPM gives count = 1.0
+        // (120 BPM would give count = 2.0).
+        assert_eq!(
+            in_unit(ir::Rate::Hz(1.0), ir::Rate::Beats(1.0), 60.0),
+            ir::Rate::Steps {
+                beats: 1.0,
+                count: 1.0,
+            }
+        );
+        // At 240 BPM, 1 beat = 0.25 s => 4.0 Hz, and 1.0 Hz = 4 quarter notes.
+        assert_eq!(
+            in_unit(ir::Rate::Beats(1.0), ir::Rate::Hz(1.0), 240.0),
+            ir::Rate::Hz(4.0)
+        );
+        assert_eq!(
+            in_unit(ir::Rate::Hz(1.0), ir::Rate::Beats(1.0), 240.0),
+            ir::Rate::Steps {
+                beats: 1.0,
+                count: 4.0,
+            }
+        );
     }
 }

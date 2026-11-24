@@ -115,8 +115,10 @@ pub enum ModOscKind {
     FmBy,
     /// The table's frequency moves by its own last output, `0.62·fm_hz·a·y`.
     FmFeedback,
-    /// The table's phase moves by `a·m` cycles.
+    /// The table's phase moves by `a·m` cycles before form warps.
     Pm,
+    /// The table's warped phase moves by `a·m` cycles after form warps.
+    PmPost,
     /// The table's phase moves by its own last output, `0.5·a·y` cycles.
     PmFeedback,
     /// The output times `1 − a + 0.24·a·m`.

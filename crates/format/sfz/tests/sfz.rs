@@ -320,7 +320,9 @@ fn velocity_tracking_defaults_to_full_on_the_squared_velocity() {
                 scope: ir::RrScope::Key,
                 position: 1,
                 length: 3,
-                random: false
+                random: false,
+                no_repeat: false,
+                release_redraws: false,
             }
         )]
     );

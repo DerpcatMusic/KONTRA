@@ -124,7 +124,7 @@ const MODULES: &[Fx] = &[
     }),
     fx(0x64, "Ring Modulator", 50, false, Unread),
     model(&crate::raum::MODULE, "Raum", true, |s| {
-        let (p, lost) = crate::raum::saved(s.version, s.public)?;
+        let (p, _mix, lost) = crate::raum::saved(s.version, s.public)?;
         lost.into_iter().for_each(|feature| s.lost(feature));
         Some(crate::raum::model_from(p))
     }),
@@ -404,6 +404,9 @@ fn slot_effect(
     let wow_mix = (effect.id == 0x6a)
         .then(|| crate::wowflutter::saved(object.version, &public).map(|(_, m)| m.clamp(0.0, 1.0)))
         .flatten();
+    let raum_mix = (effect.id == 0x65)
+        .then(|| crate::raum::saved(object.version, &public).map(|(_, m, _)| crate::raum::mix_gains(m)))
+        .flatten();
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {
             ir::EffectKind::OtherWet
@@ -413,12 +416,16 @@ fn slot_effect(
         bypass: params.bypass,
         output: if legacy_eq {
             1.0
+        } else if let Some((_, wet)) = raum_mix {
+            params.output_gain * wet
         } else if let Some(mix) = wow_mix {
             params.output_gain * mix
         } else {
             params.output_gain
         },
-        dry: if parallel || effect.id == 0x13 {
+        dry: if let Some((dry, _)) = raum_mix {
+            params.output_gain * dry
+        } else if parallel || effect.id == 0x13 {
             params.dry_level
         } else if effect.id == 0x60 && object.version == 0x51 {
             crate::supergt::mix_dry(&public, params.output_gain)
@@ -1191,7 +1198,8 @@ mod tests {
         )
         .expect("raum");
         assert!(matches!(e.kind, ir::EffectKind::Reverb(_)));
-        assert_eq!((e.output, e.dry), (0.7, 0.9));
+        // Raum mix (offset 20 = 0.5) follows binary 0x141982250: (dry=1, wet=1) * output_gain (0.7).
+        assert_eq!((e.output, e.dry), (0.7, 0.7));
         assert!(model.is_some());
 
         // Wow/Flutter (0x6a v0x10, 33 bytes)

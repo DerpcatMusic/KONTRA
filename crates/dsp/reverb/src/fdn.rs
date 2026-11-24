@@ -35,7 +35,7 @@ const DIFFUSERS_MS: [f32; 4] = [4.7, 3.6, 12.7, 9.3];
 const SHELF_HZ: f32 = 200.0;
 /// The largest size and predelay [`Fdn::set`] accepts; the lines are allocated for them.
 pub(crate) const MAX_SIZE: f32 = 4.0;
-pub(crate) const MAX_PREDELAY_MS: f32 = 1000.0;
+pub(crate) const MAX_PREDELAY_MS: f32 = 2000.0;
 /// The widest line swing [`Fdn::set`] accepts; the lines have room for it.
 const MAX_MODULATION_MS: f32 = 5.0;
 /// Gains, shelf and width glide over about this long.

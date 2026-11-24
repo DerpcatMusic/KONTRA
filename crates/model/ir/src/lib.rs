@@ -777,6 +777,10 @@ pub enum StartRule {
         position: u8,
         length: u8,
         random: bool,
+        /// When `random`, exclude the previous winner so consecutive hits do not repeat.
+        no_repeat: bool,
+        /// When `random`, draw a fresh value on release triggers instead of reusing the attack's.
+        release_redraws: bool,
     },
     /// One zone slot of the group per note, in turn or at random (no repeat), per group.
     Cycle { random: bool },

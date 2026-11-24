@@ -809,6 +809,7 @@ pub fn mod_kind(k: ir::ModOscKind) -> kontra_voice::ModOscKind {
         ir::ModOscKind::FmBy => V::FmBy,
         ir::ModOscKind::FmFeedback => V::FmFeedback,
         ir::ModOscKind::Pm => V::Pm,
+        ir::ModOscKind::PmPost => V::PmPost,
         ir::ModOscKind::PmFeedback => V::PmFeedback,
         ir::ModOscKind::Ring => V::Ring,
         ir::ModOscKind::Mix => V::Mix,
@@ -1127,6 +1128,8 @@ fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
                     position,
                     length,
                     random,
+                    no_repeat,
+                    release_redraws,
                 } => Atom::RoundRobin(RoundRobin {
                     counter: match scope {
                         ir::RrScope::Global => RrCounter::Global,
@@ -1136,6 +1139,8 @@ fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
                     position: *position,
                     length: *length,
                     random: *random,
+                    no_repeat: *no_repeat,
+                    release_redraws: *release_redraws,
                 }),
                 // Each zone's position is its own (ZoneRules::apply).
                 ir::StartRule::Cycle { random } => Atom::RoundRobin(RoundRobin {
@@ -1143,6 +1148,8 @@ fn rules(group: &ir::Group, switches: &[RangeInclusive<u8>]) -> ZoneRules {
                     position: 0,
                     length: u8::try_from(slots.len()).unwrap_or(u8::MAX),
                     random: *random,
+                    no_repeat: *random,
+                    release_redraws: false,
                 }),
                 ir::StartRule::Random { lo, hi } => Atom::Random { lo: *lo, hi: *hi },
             };

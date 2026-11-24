@@ -21,7 +21,13 @@ impl Engine {
         if restarts && let Some(r) = self.behaviour.rls_reset.get_mut(key) {
             *r = self.now.0;
         }
-        let step = if attack { Step::Advance } else { Step::Reuse };
+        let step = if attack {
+            Step::Advance
+        } else {
+            Step::Reuse {
+                release_random: self.behaviour.random(),
+            }
+        };
         let since = self.behaviour.rls_reset.get(key).map_or(n.at.0, |&r| r);
         let held_seconds = if n.key_up {
             n.held

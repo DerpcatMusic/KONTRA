@@ -467,6 +467,8 @@ fn build_ir_group(
                     position: pos,
                     length,
                     random: mode == SeqMode::Random,
+                    no_repeat: mode == SeqMode::Random,
+                    release_redraws: false,
                 },
             );
         }
