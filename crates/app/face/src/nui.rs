@@ -2,8 +2,6 @@
 //! controls ([`kontra_lua::nui`]), laid out ([`layout`]) in place of their
 //! own widgets, and kept current: a control's change renders again only
 //! the component instances that read it, each back in its own room.
-//!
-//! Not copied: `TextInput`. It lays out but draws nothing.
 
 use kontra_ksp::ControlKind;
 use kontra_lua::nui::{self, Control};

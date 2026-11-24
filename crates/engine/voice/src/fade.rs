@@ -93,6 +93,20 @@ impl Fade {
         // Kontakt `fade_in`: starting a fade-in on a
         // voice that is not already mid-fade-in resets its level to 0 first.
         let mid_fade_in = !self.stop && self.left > 0 && self.to > self.from;
+        // Already silent when asked to end: finish on the next frame instead
+        // of holding the voice slot open for a silent fade-out on rapid repeats.
+        if stop && !mid_fade_in && self.level <= 0.0 {
+            *self = Self {
+                level: 0.0,
+                from: 0.0,
+                to: 0.0,
+                frames: 1,
+                left: 1,
+                stop: true,
+                curve,
+            };
+            return;
+        }
         let from = if target == FadeTarget::In && !mid_fade_in {
             self.level = 0.0;
             0.0
@@ -217,5 +231,13 @@ mod tests {
         // Once settled at full level, a new fade_in resets to 0.0 and ramps up.
         fade.start(FadeTarget::In, 4, FadeCurve::Linear);
         assert_eq!(run(&mut fade, 4), [0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn ending_an_already_silent_fade_finishes_on_next_frame() {
+        let mut fade = Fade::SILENT;
+        fade.start(FadeTarget::End, 256, FadeCurve::Linear);
+        assert_eq!(fade.next(), 0.0);
+        assert!(fade.ended());
     }
 }

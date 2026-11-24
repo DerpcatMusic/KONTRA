@@ -361,11 +361,19 @@ pub(crate) fn timed(
                 t.signed_intensity(),
             ),
             (param, None) if let Some(value) = crate::wavetable::target(param) => {
+                crate::external::record_lag(
+                    group_index,
+                    usize::from(slot),
+                    target,
+                    t.lag_ms,
+                    tau_ms,
+                );
                 ir::ModRoute::new(
                     source,
                     ir::ParamAddr::Wavetable(value),
                     t.signed_intensity(),
                 )
+                .smooth(tau_ms)
             }
             (param, Some(insert))
                 if crate::provenance::eq_band_index(
@@ -966,5 +974,51 @@ mod tests {
         let diags = n2.finish();
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].impact, ir::Impact::Audible);
+    }
+
+    #[test]
+    fn timed_routes_all_six_conflux_wavetable_targets_with_lag() {
+        let names = [
+            ("wavetablePosition", ir::TableValue::Position),
+            ("warpFactor", ir::TableValue::Warp(0)),
+            ("warpFactor2", ir::TableValue::Warp(1)),
+            ("wavetableInharmonic", ir::TableValue::Inharmonic),
+            ("wavetableModAmount", ir::TableValue::ModAmount),
+            ("wavetableModFrequency", ir::TableValue::ModTune),
+        ];
+        let mut group = ir::Group::DEFAULT;
+        let mut notes = Notes::default();
+        let p = InternalModParams {
+            name: "WT_ENV".into(),
+            targets: names
+                .iter()
+                .map(|(name, _)| target(name, None, 50, None))
+                .collect(),
+            modulator: Modulator::Ahdsr(EnvelopeAhdsr {
+                attack_curve: 0.0,
+                attack_ms: 5.0,
+                hold_ms: 0.0,
+                decay_ms: 50.0,
+                sustain: 0.5,
+                release_ms: 80.0,
+                unknown_flag: 0,
+                unknown_tail: Vec::new(),
+            }),
+            unknown_flags: [0; 4],
+            unknown_id: 0,
+        };
+        assert_eq!(
+            timed(&mut group, &p, 0, 0, None, &mut notes),
+            Some(ir::Source::Envelope(0))
+        );
+        assert!(notes.finish().is_empty());
+        assert_eq!(group.mods.len(), names.len());
+        for (m, (_, want)) in group.mods.iter().zip(names) {
+            assert_eq!(m.route.target, ir::ParamAddr::Wavetable(want));
+            assert!(
+                m.route.smooth_ms > 0.0,
+                "expected lag smoothing on {want:?}"
+            );
+        }
     }
 }
