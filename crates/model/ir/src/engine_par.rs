@@ -36,15 +36,15 @@ pub enum EnginePar {
     StereoPan,
     /// The shape a filter slot switches to ([`crate::SlotShape::id`]).
     EffectSubtype,
-    /// The effect a slot holds; not carried yet, answered asynchronously.
-    EffectType,
+    /// The effect type identifier a slot holds (switched asynchronously when not in place).
+    SlotKind,
     Volume,
     Pan,
     Tune,
     /// Read only: the group plays on release.
     ReleaseTrigger,
-    /// The bus a group plays into: bus n is `1024 + n` (plan bus n + 1),
-    /// −1 the main bus. On a bus (generic `1024 + n`), its own output.
+    /// The bus a group plays into: bus n is `bus_offset + n` (plan bus n + 1),
+    /// −1 the main bus. On a bus, its own output.
     OutputChannel,
     /// Entry n of the script plan's knobs: a 0..=1 knob through its law.
     Knob(u16),
@@ -66,17 +66,26 @@ pub enum EnginePar {
     /// A wavetable's mod oscillator kind: the value indexes the script's
     /// kind table.
     ModOscKind,
-    /// A wavetable's mod oscillator wave: `$NI_WT_MOD_WAVE_*`, 0..=8.
-    ModOscWave,
+    /// A wavetable's mod oscillator waveform index (`0..=8`).
+    TableModWave,
     /// What its tune reads in ([`crate::TuneUnit`]).
     ModOscUnit,
-    /// `$ENGINE_PAR_WT_QUALITY`.
-    WtQuality,
-    /// A control of an effect module KONTRA has no processor for, by its
-    /// [`held_key`]: its slot keeps the value a script sets (or the one the
-    /// instrument saved) and reads answer it, as Kontakt's module does; the
-    /// sound does not follow. Its text answers when the translator gave a law.
-    Held(u32),
+    /// A wavetable's oversampling/resampling quality index ([`crate::Quality`]).
+    TableQuality,
+    /// An opaque slot-local parameter not backed by a DSP processor, keyed by
+    /// [`held_key`]: the slot stores and reads back the raw value without
+    /// altering audio.
+    Opaque(u32),
+}
+
+impl EnginePar {
+    /// Compatibility constructor for [`Self::Opaque`].
+    #[doc(hidden)]
+    #[allow(non_snake_case)]
+    #[must_use]
+    pub const fn Held(key: u32) -> Self {
+        Self::Opaque(key)
+    }
 }
 
 /// What a script reads of a zone (`get_zone_par`).

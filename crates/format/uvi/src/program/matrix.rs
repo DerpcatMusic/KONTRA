@@ -140,7 +140,9 @@ pub(super) fn factor(
 
 /// A multiplicative connection onto a script knob as a table of `f − 1`, `f`
 /// the factor (0x141429a80) the knob's place in its range is scaled by: its
-/// source through its mapper at its ratio. None for a source not carried.
+/// source through its mapper at its ratio. Preserves every piecewise-linear
+/// mapper breakpoint exactly without uniform resampling. None for a source not
+/// carried.
 pub(super) fn knob_scale(
     program: Node,
     connection: Node,
@@ -152,13 +154,16 @@ pub(super) fn knob_scale(
         input: input.clone(),
         depth,
     };
-    let table = (0..33)
-        .map(|k| factor.at(input.apply(k as f32 / 32.0)) - 1.0)
-        .collect();
+    let table = if input.table.is_empty() {
+        vec![factor.at(0.0) - 1.0, factor.at(1.0) - 1.0]
+    } else {
+        input.table.iter().map(|&y| factor.at(y) - 1.0).collect()
+    };
     Some(ir::Transfer {
         source: input.source,
         table,
-        ..Default::default()
+        smooth_s: input.smooth_s,
+        stepped: input.stepped,
     })
 }
 
@@ -370,7 +375,7 @@ fn read(table: &[f32], x: f32) -> Option<f32> {
 /// A `Discrete` one reads point `⌊(len − 1)·x⌋` of its in-memory table, not
 /// between two (0x1411391a6, the flag at +0x130): [`discrete`] marks the
 /// transfer stepped, so a 14-bit bend steps as UVI's does.
-fn mapper(connection: Node) -> Option<Vec<f32>> {
+pub(super) fn mapper(connection: Node) -> Option<Vec<f32>> {
     if connection.attribute("Mapper").is_none_or(str::is_empty) {
         return Some(Vec::new());
     }
@@ -524,7 +529,7 @@ pub(super) fn transfer(
 
 /// Whether the connection's mapper is `Discrete`: it holds each point
 /// until the next ([`ir::Transfer::stepped`]).
-fn discrete(connection: Node) -> bool {
+pub(super) fn discrete(connection: Node) -> bool {
     mapper_node(connection).is_some_and(|m| flag(m, "Discrete"))
 }
 

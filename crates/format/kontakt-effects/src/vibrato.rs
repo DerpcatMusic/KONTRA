@@ -112,34 +112,39 @@ pub fn scanner(v: Vibrato) -> ir::Scanner {
 
 /// The record as a script moves it: every knob move rebuilds the scanner
 /// through [`scanner`].
-#[must_use]
+/// Single-encoding module descriptor for Vibrato/Chorus (`0x69`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::VIBRATO,
+    module_id: 0x69,
+    versions: (0, u32::MAX),
+    name: "Vibrato/Chorus",
+    script_type: 55,
+    mix: crate::module::MixMode::OwnMix,
+    knobs: crate::module::KNOBS.split_at(6).0,
+    build: |p| {
+        let [depth, color, blend, rate, width, mix] = *p else {
+            return None;
+        };
+        Some(ir::EffectKind::Scanner(scanner(Vibrato {
+            depth: depth.round() as i32,
+            color: color.round() as i32,
+            blend,
+            rate,
+            width,
+            mix,
+        })))
+    },
+};
+
 pub fn model(v: Vibrato) -> ir::KnobModel {
-    use ir::SlotKnob::Knob;
-    ir::KnobModel {
-        knobs: (0..6).map(Knob).collect(),
-        saved: [
-            v.depth as f32,
-            v.color as f32,
-            v.blend,
-            v.rate,
-            v.width,
-            v.mix,
-        ]
-        .into(),
-        build: |p| {
-            let [depth, color, blend, rate, width, mix] = *p else {
-                return None;
-            };
-            Some(ir::EffectKind::Scanner(scanner(Vibrato {
-                depth: depth.round() as i32,
-                color: color.round() as i32,
-                blend,
-                rate,
-                width,
-                mix,
-            })))
-        },
-    }
+    MODULE.knob_model(&[
+        v.depth as f32,
+        v.color as f32,
+        v.blend,
+        v.rate,
+        v.width,
+        v.mix,
+    ])
 }
 
 /// The KSP names of [`model`]'s knobs: DEPTH and COLOR are indices (the

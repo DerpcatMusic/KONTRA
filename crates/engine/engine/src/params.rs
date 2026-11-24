@@ -1,6 +1,6 @@
 //! What a script changes in the engine while it plays: modulation intensities,
-//! envelope stages and controller values. Values arrive in KSP's 0..=1_000_000
-//! encoding; the laws are Kontakt's (sampler-core `EngineParameterLaw`).
+//! envelope stages and controller values. Values arrive in normalized
+//! `0..=1_000_000` units and are mapped through the script plan's parameter laws.
 
 use kontra_ir as ir;
 
@@ -12,7 +12,7 @@ use kontra_plan::par_laws::{
 };
 use kontra_plan::route_depth::{has_depth, set_signed, signed};
 
-pub(crate) use kontra_plan::par_values::{BUS_OFFSET, LevelPar, effect_par, level_par};
+pub(crate) use kontra_plan::par_values::{BUS_OFFSET, LevelPar, RackScheme, effect_par, level_par};
 
 impl Engine {
     /// What the running script's parameter id `id` changes.
@@ -69,9 +69,7 @@ impl Engine {
         }
     }
 
-    /// A group's insert slot (generic is ignored), the instrument insert's (group
-    /// -1, generic `$NI_INSERT_BUS` = 1) or a bus's. Send and main racks are
-    /// not carried yet.
+    /// A group's insert slot, the instrument's insert/send/main rack, or a bus rack.
     pub(crate) fn effect_mut(
         &mut self,
         group: i32,
@@ -81,34 +79,29 @@ impl Engine {
         self.slot_mut(group, slot, generic)?.as_mut()
     }
 
-    /// The addressed slot, empty or not.
+    /// The addressed slot, empty or not, resolved through [`RackScheme::DEFAULT`].
     pub(crate) fn slot_mut(
         &mut self,
         group: i32,
         slot: i32,
         generic: i32,
     ) -> Option<&mut Option<ir::Effect>> {
-        let rack = match (usize::try_from(group), generic) {
-            // A group's slot: `<generic>` is for instrument effects only (KSP manual).
-            (Ok(g), _) => {
+        let rack = match RackScheme::DEFAULT.rack_at(group, generic)? {
+            ir::RackAt::Group(g) => {
+                let g = g as usize;
                 self.group_written(g);
                 &mut self.groups.get_mut(g)?.inserts[..]
             }
-            // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
-            // Kontakt takes generic -1 as the insert rack too (Una Corda's
-            // transient and stereo knobs; measured, controls.py 2026-11-12).
-            (Err(_), 1 | -1) => &mut self.rack.slots[..],
-            (Err(_), 0) => {
+            ir::RackAt::Inserts => &mut self.rack.slots[..],
+            ir::RackAt::Sends => {
                 let send = self.sends.get_mut(usize::try_from(slot).ok()?)?;
                 return send.slots.first_mut();
             }
-            (Err(_), 2) => &mut self.main.slots[..],
-            // `$NI_BUS_OFFSET + n`: bus n is plan bus n + 1 (0 is the main bus).
-            (Err(_), b) if b >= BUS_OFFSET => {
-                let bus = usize::try_from(b - (BUS_OFFSET - 1)).ok()?;
+            ir::RackAt::Main => &mut self.main.slots[..],
+            ir::RackAt::Bus(b) => {
+                let bus = usize::from(b).checked_add(1)?;
                 &mut self.buses.get_mut(bus)?.rack.slots[..]
             }
-            _ => return None,
         };
         rack.get_mut(usize::try_from(slot).ok()?)
     }
@@ -245,7 +238,7 @@ impl Engine {
     }
 
     /// A group's level, or the instrument's (group -1, generic -1). Buses
-    /// (generic `$NI_BUS_OFFSET + n`) are [`Self::bus_mut`]'s.
+    /// (generic `bus_offset + n`) are [`Self::bus_mut`]'s.
     fn level_mut(&mut self, group: i32, generic: i32) -> Option<&mut Level> {
         match usize::try_from(group) {
             Ok(g) => self.groups.get_mut(g).map(|g| &mut g.level),
@@ -350,7 +343,7 @@ impl Engine {
             return Some(0);
         }
         let par = self.engine_par(par)?;
-        if let EnginePar::Held(name) = par {
+        if let EnginePar::Opaque(name) = par {
             let (at, slot) = slot_at(group, slot, generic)?;
             let mut held = self.behaviour.held.iter();
             return held
@@ -366,7 +359,7 @@ impl Engine {
         if par == EnginePar::EffectSubtype {
             return self.subtype(group, slot, generic);
         }
-        if par == EnginePar::EffectType {
+        if par == EnginePar::SlotKind {
             return self.effect_type(group, slot, generic);
         }
         if let EnginePar::Reverb(which) = par {
@@ -408,10 +401,10 @@ impl Engine {
             let kinds = &self.script()?.mod_kinds;
             return i32::try_from(kinds.iter().position(|k| *k == Some(kind))?).ok();
         }
-        if par == EnginePar::ModOscWave {
+        if par == EnginePar::TableModWave {
             return Some(i32::from(g.wavetable?.modosc.wave));
         }
-        if par == EnginePar::WtQuality {
+        if par == EnginePar::TableQuality {
             return Some(match g.wavetable?.quality {
                 kontra_voice::Quality::Lofi => 0,
                 kontra_voice::Quality::Medium => 1,
@@ -568,7 +561,7 @@ impl Engine {
         let Some(par) = self.engine_par(par) else {
             return false;
         };
-        if let EnginePar::Held(name) = par {
+        if let EnginePar::Opaque(name) = par {
             return self.hold(name, value, group, slot, generic);
         }
         if par == EnginePar::OutputChannel {
@@ -679,13 +672,13 @@ impl Engine {
                 .map(|(t, k)| t.modosc.kind = k)
                 .is_some(),
             // A value outside the lists is dropped, like a form mode's.
-            EnginePar::ModOscWave => g
+            EnginePar::TableModWave => g
                 .wavetable
                 .as_mut()
                 .zip(u8::try_from(value).ok().filter(|&w| w <= 8))
                 .map(|(t, w)| t.modosc.wave = w)
                 .is_some(),
-            EnginePar::WtQuality => g
+            EnginePar::TableQuality => g
                 .wavetable
                 .as_mut()
                 .zip(ir::Quality::from_index(value))
@@ -1019,7 +1012,7 @@ fn slot_at(group: i32, slot: i32, generic: i32) -> Option<(ir::RackAt, u8)> {
 
 /// A placed effect's `(group, generic)`: 0 is group `index`'s inserts, 1 bus
 /// `index`'s rack, 2 the instrument's inserts.
-fn placed(at: i32, index: i32) -> (i32, i32) {
+pub(crate) fn placed(at: i32, index: i32) -> (i32, i32) {
     match at {
         0 => (index, -1),
         1 => (-1, (BUS_OFFSET - 1).saturating_add(index)),

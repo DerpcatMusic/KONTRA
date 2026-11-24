@@ -3,418 +3,151 @@
 use kontra_ir as ir;
 use kontra_law::common::BIPOLAR;
 
-/// What KSP's `$ENGINE_PAR_*` knobs set (value ÷ 1e6 is the knob x), each
-/// through Kontakt's law from the knob to the physical value. Sources: the
-/// binding tables in docs/re/kontakt-bindings (engine_par_clamp.tsv:
-/// threshold −68..−3 dB, ratio knob 0.04^x so ratio 25^x), the effect laws
-/// beside each translator (delays.rs, dynamics.rs, drive.rs), the LFO rate
-/// measured on ANALOG STRINGS (0.010415·20465^x Hz, within 0.4% over 14
-/// knob values), and the Multi weights ANALOG stores for the knobs its
-/// script writes (2x − 1). The filter's cutoff and resonance and the
-/// Compressor's attack and release depend on the slot's effect: their laws
-/// are the slot's own (`Slot`), as are the legacy Delay's.
-pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
+const KNOB_TABLE: &str = include_str!("../data/script_knobs.tsv");
+
+fn parse_target(spec: &str) -> Option<ir::KnobTarget> {
     use ir::EffectParam as E;
     use ir::KnobTarget::{Effect, LfoPhase, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot, Speed};
-    let lin = |lo, hi| ir::Law::Linear { lo, hi };
-    // A switch: any KSP value but 0 (in millionths) is on.
-    let on = || ir::Law::Breakpoints([(0.0, 0.0, 0.0), (1e-6, 1.0, 0.0), (1.0, 1.0, 0.0)].into());
-    let mod_hz = ir::Law::Exp { lo: 0.05, hi: 8.0 };
-    let mut rows = vec![
-        // The filter in the slot carries these knobs' laws (filter_knobs).
-        (
-            "$ENGINE_PAR_CUTOFF",
-            Slot(ir::SlotKnob::Cutoff),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RESONANCE",
-            Slot(ir::SlotKnob::Resonance),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FREQ1",
-            Slot(ir::SlotKnob::BandHz(0)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_BW1",
-            Slot(ir::SlotKnob::BandWidth(0)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_GAIN1",
-            Slot(ir::SlotKnob::BandGain(0)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FREQ2",
-            Slot(ir::SlotKnob::BandHz(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_BW2",
-            Slot(ir::SlotKnob::BandWidth(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_GAIN2",
-            Slot(ir::SlotKnob::BandGain(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FREQ3",
-            Slot(ir::SlotKnob::BandHz(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_BW3",
-            Slot(ir::SlotKnob::BandWidth(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_GAIN3",
-            Slot(ir::SlotKnob::BandGain(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RV_PREDELAY",
-            Slot(ir::SlotKnob::ReverbPredelay),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RV_SIZE",
-            Slot(ir::SlotKnob::ReverbSize),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RV_COLOUR",
-            Slot(ir::SlotKnob::ReverbColour),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RV_STEREO",
-            Slot(ir::SlotKnob::ReverbStereo),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RV_DAMPING",
-            Slot(ir::SlotKnob::ReverbDamping),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_DL_TIME",
-            Slot(ir::SlotKnob::DelayTime),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_DL_FEEDBACK",
-            Slot(ir::SlotKnob::DelayFeedback),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_DL_PAN",
-            Slot(ir::SlotKnob::DelayPan),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_DL_DAMPING",
-            Slot(ir::SlotKnob::DelayDamping),
-            lin(0.0, 1.0),
-        ),
-        // Replika (crate::replika).
-        (
-            "$ENGINE_PAR_RDL_TIME",
-            Slot(ir::SlotKnob::DelayTime),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RDL_FEEDBACK",
-            Slot(ir::SlotKnob::DelayFeedback),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RDL_LOWCUT",
-            Slot(ir::SlotKnob::DelayLowCut),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_RDL_HIGHCUT",
-            Slot(ir::SlotKnob::DelayHighCut),
-            lin(0.0, 1.0),
-        ),
-        // The Limiter: input −24 + 48x dB, release its saved-ms law
-        // (probes/fx_knob_laws.lua).
-        (
-            "$ENGINE_PAR_LIM_IN_GAIN",
-            Effect(E::LimiterInput),
-            lin(-24.0, 24.0),
-        ),
-        (
-            "$ENGINE_PAR_LIM_RELEASE",
-            Effect(E::LimiterRelease),
-            ir::Law::Breakpoints(LIMITER_RELEASE_MS.into()),
-        ),
-        (
-            "$ENGINE_PAR_COMP_ATTACK",
-            Slot(ir::SlotKnob::Attack),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_COMP_DECAY",
-            Slot(ir::SlotKnob::Release),
-            lin(0.0, 1.0),
-        ),
-        // Solid G-EQ: its slot's knob model (solid_knobs).
-        (
-            "$ENGINE_PAR_SEQ_LF_GAIN",
-            Slot(ir::SlotKnob::BandGain(0)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_LF_FREQ",
-            Slot(ir::SlotKnob::BandHz(0)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_LMF_GAIN",
-            Slot(ir::SlotKnob::BandGain(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_LMF_FREQ",
-            Slot(ir::SlotKnob::BandHz(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_LMF_Q",
-            Slot(ir::SlotKnob::BandWidth(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_HMF_GAIN",
-            Slot(ir::SlotKnob::BandGain(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_HMF_FREQ",
-            Slot(ir::SlotKnob::BandHz(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_HMF_Q",
-            Slot(ir::SlotKnob::BandWidth(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_HF_GAIN",
-            Slot(ir::SlotKnob::BandGain(3)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_HF_FREQ",
-            Slot(ir::SlotKnob::BandHz(3)),
-            lin(0.0, 1.0),
-        ),
-        // The bell switches: any value but 0 is on, read back as 1
-        // (probes/b2: 1, 2, 500000, 1000000 all read 1).
-        (
-            "$ENGINE_PAR_SEQ_LF_BELL",
-            Slot(ir::SlotKnob::BandBell(0)),
-            on(),
-        ),
-        (
-            "$ENGINE_PAR_SEQ_HF_BELL",
-            Slot(ir::SlotKnob::BandBell(3)),
-            on(),
-        ),
-        // Solid Bus Comp: its slot's knob model (solid_knobs).
-        (
-            "$ENGINE_PAR_SCOMP_THRESHOLD",
-            Slot(ir::SlotKnob::Threshold),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SCOMP_RATIO",
-            Slot(ir::SlotKnob::Ratio),
-            six_steps(),
-        ),
-        (
-            "$ENGINE_PAR_SCOMP_ATTACK",
-            Slot(ir::SlotKnob::Attack),
-            six_steps(),
-        ),
-        (
-            "$ENGINE_PAR_SCOMP_RELEASE",
-            Slot(ir::SlotKnob::Release),
-            six_steps(),
-        ),
-        (
-            "$ENGINE_PAR_SCOMP_MAKEUP",
-            Slot(ir::SlotKnob::Makeup),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_SCOMP_MIX",
-            Slot(ir::SlotKnob::Mix),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FORMANT_TALK",
-            Effect(E::FormantTalk),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FORMANT_SHARP",
-            Effect(E::FormantSharp),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FORMANT_SIZE",
-            Effect(E::FormantSize),
-            lin(0.0, 1.0),
-        ),
-        ("$ENGINE_PAR_SHAPE", Effect(E::ShaperAmount), BIPOLAR),
-        ("$ENGINE_PAR_DRIVE", Effect(E::ShaperAmount), lin(0.0, 1.0)),
-        // The Distortion saves damping as set (fx_dynamics_dist_tape.tsv).
-        (
-            "$ENGINE_PAR_DAMPING",
-            Effect(E::ShaperLowpassHz),
-            ir::Law::Table(
-                (0..=64u8)
-                    .map(|n| crate::drive::damping_hz(f32::from(n) / 64.0))
-                    .collect(),
-            ),
-        ),
-        ("$ENGINE_PAR_BITS", Effect(E::CrushBits), lin(0.0, 16.0)),
-        ("$ENGINE_PAR_FREQUENCY", Effect(E::CrushRate), lin(0.0, 1.0)),
-        (
-            "$ENGINE_PAR_THRESHOLD",
-            Effect(E::CompressorThreshold),
-            lin(-68.0, -3.0),
-        ),
-        (
-            "$ENGINE_PAR_RATIO",
-            Effect(E::CompressorRatio),
-            ir::Law::Exp { lo: 1.0, hi: 25.0 },
-        ),
-        ("$ENGINE_PAR_PH_SPEED", Effect(E::ModRate), mod_hz.clone()),
-        ("$ENGINE_PAR_CH_SPEED", Effect(E::ModRate), mod_hz.clone()),
-        ("$ENGINE_PAR_FL_SPEED", Effect(E::ModRate), mod_hz),
-        ("$ENGINE_PAR_PH_PHASE", Effect(E::ModPhase), lin(0.0, 0.25)),
-        ("$ENGINE_PAR_CH_PHASE", Effect(E::ModPhase), lin(0.0, 0.25)),
-        ("$ENGINE_PAR_FL_PHASE", Effect(E::ModPhase), lin(0.0, 0.25)),
-        (
-            "$ENGINE_PAR_PH_DEPTH",
-            Effect(E::PhaserExponent),
-            lin(0.0, 3.0),
-        ),
-        (
-            "$ENGINE_PAR_PH_FEEDBACK",
-            Effect(E::PhaserFeedback),
-            lin(0.0, 0.85),
-        ),
-        (
-            "$ENGINE_PAR_TR_ATTACK",
-            Effect(E::TransientAttack),
-            lin(-120.0, 120.0),
-        ),
-        (
-            "$ENGINE_PAR_TR_SUSTAIN",
-            Effect(E::TransientSustain),
-            lin(-115.0, 115.0),
-        ),
-        (
-            "$ENGINE_PAR_TR_INPUT",
-            Effect(E::TransientGain),
-            ir::Law::Breakpoints([(0.0, -24.0, 0.0), (0.5, 0.0, 0.0), (1.0, 6.0, 0.0)].into()),
-        ),
-        (
-            "$ENGINE_PAR_INTMOD_FREQUENCY",
-            LfoRate,
-            ir::Law::Exp {
-                lo: 0.010_415,
-                hi: 0.010_415 * 20_465.0,
-            },
-        ),
-        // A synced LFO's count, 48 over that Hz (probes/mod_par_laws.lua:
-        // x 0, .1, .25, .5, .75, 1 store 4609, 1704, 385, 32, 3, 1).
-        (
-            "$ENGINE_PAR_INTMOD_FREQUENCY",
-            LfoSteps,
-            ir::Law::Exp {
-                lo: 48.0 / 0.010_415,
-                hi: 48.0 / (0.010_415 * 20_465.0),
-            },
-        ),
-        // The saved width for x = 0, .1, .25, .5, .75, .9, 1 is 0.05, 0.14,
-        // 0.275, 0.5, 0.725, 0.86, 0.95 (probes/knob_save_laws.lua).
-        ("$ENGINE_PAR_INTMOD_PULSEWIDTH", LfoWidth, lin(0.05, 0.95)),
-        // Saved as set, in cycles; shown in degrees (readouts.rs).
-        ("$ENGINE_PAR_LFO_PHASE", LfoPhase, lin(0.0, 1.0)),
-        // The Multi weights in the mixer's order: sine, saw, triangle, pulse, random.
-        ("$ENGINE_PAR_LFO_SINE", LfoWeight(0), BIPOLAR),
-        ("$ENGINE_PAR_LFO_SAW", LfoWeight(1), BIPOLAR),
-        ("$ENGINE_PAR_LFO_TRI", LfoWeight(2), BIPOLAR),
-        ("$ENGINE_PAR_LFO_RECT", LfoWeight(3), BIPOLAR),
-        ("$ENGINE_PAR_LFO_RAND", LfoWeight(4), BIPOLAR),
-        ("$ENGINE_PAR_SPEED", Speed, crate::laws::speed()),
-        (
-            "$ENGINE_PAR_FILTER_SHIFTB",
-            Slot(ir::SlotKnob::StageShift(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_SHIFTC",
-            Slot(ir::SlotKnob::StageShift(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_RESB",
-            Slot(ir::SlotKnob::StageResonance(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_RESC",
-            Slot(ir::SlotKnob::StageResonance(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_TYPEA",
-            Slot(ir::SlotKnob::StageMorph(0)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_TYPEB",
-            Slot(ir::SlotKnob::StageMorph(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_TYPEC",
-            Slot(ir::SlotKnob::StageMorph(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_BYPA",
-            Slot(ir::SlotKnob::StageWet(0)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_BYPB",
-            Slot(ir::SlotKnob::StageWet(1)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_BYPC",
-            Slot(ir::SlotKnob::StageWet(2)),
-            lin(0.0, 1.0),
-        ),
-        (
-            "$ENGINE_PAR_FILTER_GAIN",
-            Slot(ir::SlotKnob::OutputGain),
-            lin(0.0, 1.0),
-        ),
-    ];
+    use ir::SlotKnob as S;
+    if let Some(s) = spec.strip_prefix("Slot:") {
+        let knob = match s {
+            "Cutoff" => S::Cutoff,
+            "Resonance" => S::Resonance,
+            "Attack" => S::Attack,
+            "Release" => S::Release,
+            "Threshold" => S::Threshold,
+            "Ratio" => S::Ratio,
+            "Makeup" => S::Makeup,
+            "Mix" => S::Mix,
+            "ReverbPredelay" => S::ReverbPredelay,
+            "ReverbSize" => S::ReverbSize,
+            "ReverbColour" => S::ReverbColour,
+            "ReverbStereo" => S::ReverbStereo,
+            "ReverbDamping" => S::ReverbDamping,
+            "DelayTime" => S::DelayTime,
+            "DelayFeedback" => S::DelayFeedback,
+            "DelayPan" => S::DelayPan,
+            "DelayDamping" => S::DelayDamping,
+            "DelayLowCut" => S::DelayLowCut,
+            "DelayHighCut" => S::DelayHighCut,
+            "OutputGain" => S::OutputGain,
+            _ => {
+                let (head, arg) = s.strip_suffix(')')?.split_once('(')?;
+                let n: u8 = arg.parse().ok()?;
+                match head {
+                    "BandHz" => S::BandHz(n),
+                    "BandWidth" => S::BandWidth(n),
+                    "BandGain" => S::BandGain(n),
+                    "BandBell" => S::BandBell(n),
+                    "StageShift" => S::StageShift(n),
+                    "StageResonance" => S::StageResonance(n),
+                    "StageMorph" => S::StageMorph(n),
+                    "StageWet" => S::StageWet(n),
+                    _ => return None,
+                }
+            }
+        };
+        return Some(Slot(knob));
+    }
+    if let Some(e) = spec.strip_prefix("Effect:") {
+        let param = match e {
+            "LimiterInput" => E::LimiterInput,
+            "LimiterRelease" => E::LimiterRelease,
+            "FormantTalk" => E::FormantTalk,
+            "FormantSharp" => E::FormantSharp,
+            "FormantSize" => E::FormantSize,
+            "ShaperAmount" => E::ShaperAmount,
+            "ShaperLowpassHz" => E::ShaperLowpassHz,
+            "CrushBits" => E::CrushBits,
+            "CrushRate" => E::CrushRate,
+            "CompressorThreshold" => E::CompressorThreshold,
+            "CompressorRatio" => E::CompressorRatio,
+            "ModRate" => E::ModRate,
+            "ModPhase" => E::ModPhase,
+            "PhaserExponent" => E::PhaserExponent,
+            "PhaserFeedback" => E::PhaserFeedback,
+            "TransientAttack" => E::TransientAttack,
+            "TransientSustain" => E::TransientSustain,
+            "TransientGain" => E::TransientGain,
+            _ => return None,
+        };
+        return Some(Effect(param));
+    }
+    match spec {
+        "LfoRate" => Some(LfoRate),
+        "LfoSteps" => Some(LfoSteps),
+        "LfoWidth" => Some(LfoWidth),
+        "LfoPhase" => Some(LfoPhase),
+        "Speed" => Some(Speed),
+        _ => {
+            let n: u8 = spec
+                .strip_prefix("LfoWeight(")?
+                .strip_suffix(')')?
+                .parse()
+                .ok()?;
+            Some(LfoWeight(n))
+        }
+    }
+}
+
+fn parse_law(spec: &str) -> Option<ir::Law> {
+    if let Some(pair) = spec.strip_prefix("lin:") {
+        let (lo, hi) = pair.split_once(',')?;
+        return Some(ir::Law::Linear {
+            lo: lo.parse().ok()?,
+            hi: hi.parse().ok()?,
+        });
+    }
+    if let Some(pair) = spec.strip_prefix("exp:") {
+        let (lo, hi) = pair.split_once(',')?;
+        return Some(ir::Law::Exp {
+            lo: lo.parse().ok()?,
+            hi: hi.parse().ok()?,
+        });
+    }
+    Some(match spec {
+        "unit" => ir::Law::Linear { lo: 0.0, hi: 1.0 },
+        "bipolar" => BIPOLAR,
+        "on" => ir::Law::Breakpoints([(0.0, 0.0, 0.0), (1e-6, 1.0, 0.0), (1.0, 1.0, 0.0)].into()),
+        "six" => six_steps(),
+        "mod_hz" => ir::Law::Exp { lo: 0.05, hi: 8.0 },
+        "lim_rel" => ir::Law::Breakpoints(LIMITER_RELEASE_MS.into()),
+        "damping" => ir::Law::Table(
+            (0..=64u8)
+                .map(|n| crate::drive::damping_hz(f32::from(n) / 64.0))
+                .collect(),
+        ),
+        "tr_in" => {
+            ir::Law::Breakpoints([(0.0, -24.0, 0.0), (0.5, 0.0, 0.0), (1.0, 6.0, 0.0)].into())
+        }
+        "lfo_rate" => ir::Law::Exp {
+            lo: 0.010_415,
+            hi: 0.010_415 * 20_465.0,
+        },
+        "lfo_steps" => ir::Law::Exp {
+            lo: 48.0 / 0.010_415,
+            hi: 48.0 / (0.010_415 * 20_465.0),
+        },
+        "speed" => crate::laws::speed(),
+        _ => return None,
+    })
+}
+
+/// What KSP's `$ENGINE_PAR_*` knobs set (value ÷ 1e6 is the knob x), each
+/// through Kontakt's law from the knob to the physical value. Table rows live
+/// in `data/script_knobs.tsv`; coupled modules contribute their rows directly.
+pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
+    let mut rows: Vec<(&'static str, ir::KnobTarget, ir::Law)> = KNOB_TABLE
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| {
+            let mut cols = line.split('\t');
+            let name = cols.next()?;
+            let target = parse_target(cols.next()?)?;
+            let law = parse_law(cols.next()?)?;
+            Some((name, target, law))
+        })
+        .collect();
     rows.extend(crate::dynamics::feedback_rows());
     rows.extend(crate::skreamer::rows());
     rows.extend(crate::tape::rows());
@@ -751,7 +484,7 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     types.push(ty(9, false, 0, Some(unit(stereo)), [].into()));
     let geq = crate::solid_knobs::solid_model([0.5; 10], [false; 2]);
     types.push(ir::SlotType {
-        effect: (geq.build)(&geq.saved).map(unit),
+        effect: geq.build(&geq.saved).map(unit),
         model: Some(geq),
         ..ty(28, false, 0, None, [].into())
     });
@@ -954,7 +687,7 @@ mod tests {
         let at = |k: usize, x: f32| {
             let mut p = model.saved.to_vec();
             p[k] = six_steps().eval(x);
-            match (model.build)(&p) {
+            match model.build(&p) {
                 Some(ir::EffectKind::Compressor(c)) => c,
                 _ => panic!(),
             }

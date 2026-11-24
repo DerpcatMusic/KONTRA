@@ -173,25 +173,37 @@ pub fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
     })
 }
 
+/// Single-encoding module descriptor for Tape Saturator (`0x42`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::TAPE,
+    module_id: 0x42,
+    versions: (0, u32::MAX),
+    name: "Tape Saturator",
+    script_type: 26,
+    mix: crate::module::MixMode::InPlace,
+    knobs: &[
+        ir::SlotKnob::Knob(0),
+        ir::SlotKnob::Knob(1),
+        ir::SlotKnob::Knob(2),
+        ir::SlotKnob::Knob(3),
+    ],
+    build: |p| {
+        let [gain, warmth, rolloff, _quality] = *p else {
+            return None;
+        };
+        Some(tape(gain, warmth, rolloff))
+    },
+};
+
 /// The saved knobs (gain, warmth, roll-off, quality) as a script moves
-/// them: every move rebuilds the shaper through [`tape`].
+/// them: every move rebuilds the shaper through [`MODULE`].
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
-    use ir::SlotKnob::Knob;
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
     let quality = f32::from(*public.get(12)? != 0);
-    Some(ir::KnobModel {
-        knobs: [Knob(0), Knob(1), Knob(2), Knob(3)].into(),
-        saved: [f(0)?, f(4)?, f(8)?, quality].into(),
-        build: |p| {
-            let [gain, warmth, rolloff, _quality] = *p else {
-                return None;
-            };
-            Some(tape(gain, warmth, rolloff))
-        },
-    })
+    Some(MODULE.knob_model(&[f(0)?, f(4)?, f(8)?, quality]))
 }
 
 /// The KSP names of [`model`]'s knobs; each continuous knob is 0..1, and

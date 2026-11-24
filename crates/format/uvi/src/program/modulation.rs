@@ -169,6 +169,16 @@ pub(super) enum Timed {
     Rising(ir::Lfo, ir::Breakpoints, Vec<f32>),
     /// A source read as a blend ([`blend`]).
     Blend(blend::Blend),
+    /// A bipolar LFO read through its connection's mapper table, at
+    /// `(x + 1)/2`. Its depth and rise scale its own copy of the LFO (so no
+    /// other route reading the LFO feels them), and a `Discrete` mapper holds
+    /// each point (`stepped`).
+    MappedLfo {
+        lfo: ir::Lfo,
+        rise: Option<ir::Breakpoints>,
+        table: Vec<f32>,
+        stepped: bool,
+    },
 }
 
 /// The route a connection on `owner`'s `destination` makes, adding `Ratio`
@@ -213,6 +223,53 @@ pub(super) fn reach(
         .attribute("Mapper")
         .is_some_and(|m| !m.is_empty())
     {
+        // A bipolar LFO (rising or steady) through a mapper keeps the mapper's
+        // exact breakpoints intact: the LFO's depth `d` and rise envelope scale
+        // the LFO via `RouteIntensity` before `(x + 1)/2` enters the table,
+        // without uniform resampling.
+        if let Some(node) = source_node(program, connection)
+            && (node.has_tag_name("LFO") || node.has_tag_name("MultiLFO"))
+            && let Some((lfo, depth, rise)) = rising(node)
+            && let Some(mut table) = matrix::mapper(connection)
+        {
+            if sign < 0.0 {
+                return None;
+            }
+            if depth < 0.0 {
+                table.reverse();
+            }
+            let abs_depth = depth.abs().clamp(0.0, 1.0);
+            let scaled_rise = match rise {
+                Some(mut bp) => {
+                    bp.start *= abs_depth;
+                    for pt in &mut bp.points {
+                        pt.level *= abs_depth;
+                    }
+                    Some(bp)
+                }
+                None if (abs_depth - 1.0).abs() > 1e-6 => Some(ir::Breakpoints {
+                    start: abs_depth,
+                    points: Vec::new(),
+                    sustain: None,
+                    loop_from: None,
+                    stages: false,
+                }),
+                None => None,
+            };
+            let timed = Timed::MappedLfo {
+                lfo,
+                rise: scaled_rise,
+                table,
+                stepped: matrix::discrete(connection),
+            };
+            let route = Route {
+                source: ir::Source::Constant,
+                timed: Some(timed),
+                unit: 1.0,
+                ratio,
+            };
+            return keyed(route);
+        }
         let t = matrix::transfer(program, connection, None)?;
         // A script's modulation is [`script_route`]'s.
         let held = matches!(
@@ -343,6 +400,20 @@ pub(super) fn factor(mut r: Route, connection: Node) -> Option<Route> {
             r.timed = Some(Timed::Rising(lfo, rise, table));
             r.unit = 1.0;
         }
+        Some(Timed::MappedLfo {
+            lfo,
+            rise,
+            table: t,
+            stepped,
+        }) => {
+            r.timed = Some(Timed::MappedLfo {
+                lfo,
+                rise,
+                table: matrix::centred(connection, t),
+                stepped,
+            });
+            r.unit = 1.0;
+        }
         Some(Timed::Lfo(lfo)) => {
             r.timed = Some(Timed::Steps(lfo, table, 0.0));
             r.unit = 1.0;
@@ -364,6 +435,10 @@ pub(super) enum Slot {
     Lfo,
     /// An LFO's delay and rise, an envelope under it.
     Rise,
+    /// A mapped route's own copy of an LFO ([`Timed::MappedLfo`]).
+    MappedLfo,
+    /// The depth and rise over a [`Slot::MappedLfo`] copy.
+    MappedRise,
 }
 
 /// `(group, modulator node, slot)` to the index of its copy in the group.
@@ -447,6 +522,58 @@ pub(super) fn group_source(
         }
         Some(Timed::Mapped(t)) => ir::Source::Shaped(index_of(&mut group.shapers, t)),
         Some(Timed::Blend(b)) => blend::lower(group, b, at, slots),
+        Some(Timed::MappedLfo {
+            lfo,
+            rise,
+            table,
+            stepped,
+        }) => {
+            // Under a rise (or depth) it reads its own copy, which an
+            // unmapped route of the same LFO never reads.
+            // ponytail: a Free-clock Random LFO keeps the shared copy, so its
+            // routes draw one sequence (its seed is its index); its depth and
+            // rise then also scale its unmapped routes. Carry an LFO's seed
+            // apart from its index if a library mixes both on one.
+            let shared = lfo.clock == ir::Clock::Free && matches!(lfo.wave, ir::Wave::Random);
+            let i = match (&rise, at) {
+                _ if shared => slot(&mut group.lfos, lfo, at, Slot::Lfo, slots),
+                (None, _) => slot(&mut group.lfos, lfo, at, Slot::Lfo, slots),
+                (Some(_), Some(_)) => slot(&mut group.lfos, lfo, at, Slot::MappedLfo, slots),
+                (Some(_), None) => {
+                    group.lfos.push(lfo);
+                    u8::try_from(group.lfos.len() - 1).unwrap_or(u8::MAX)
+                }
+            };
+            let of = ir::Source::Lfo(i);
+            if let Some(rise) = rise {
+                let source = ir::Source::Envelope(slot(
+                    &mut group.envelopes,
+                    rise,
+                    at,
+                    Slot::MappedRise,
+                    slots,
+                ));
+                let kind = ir::ModRoute::new(source, ir::ParamAddr::RouteIntensity { of }, 1.0);
+                if !group.mods.iter().any(|m| m.route == kind) {
+                    group.mods.push(ir::Mod {
+                        name: String::new(),
+                        slot: 0,
+                        target: 0,
+                        bypass: false,
+                        route: kind,
+                    });
+                }
+            }
+            ir::Source::Shaped(index_of(
+                &mut group.shapers,
+                ir::Transfer {
+                    source: of,
+                    table,
+                    stepped,
+                    ..Default::default()
+                },
+            ))
+        }
     }
 }
 

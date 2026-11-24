@@ -190,7 +190,7 @@ pub fn prepare(
         routes: g.routes.clone(),
         release_trigger: g.trigger == ir::Trigger::Release,
         bus: g.bus,
-        wavetable: g.wavetable.map(read),
+        wavetable: g.effective_wavetable().copied().map(read),
         oscillator,
         granular,
         speed: g.speed,
@@ -230,7 +230,11 @@ pub fn prepare(
     plan.voice_groups.clone_from(&instrument.voice_groups);
     plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();
     plan.switches = switches;
-    plan.graph.clone_from(&instrument.graph);
+    if let Some(graph) = &instrument.graph
+        && graph.validate().is_empty()
+    {
+        plan.graph = Some(graph.clone());
+    }
     (plan, diagnostics)
 }
 
@@ -540,6 +544,15 @@ fn load_samples(
             format!("no sample {index}"),
         )),
     });
+    // A wavetable zone's table is built from its frames right here, so those
+    // samples load whole (every frame pinned) now, even when the store leaves
+    // heads for later or the zone streams.
+    let tabled: Vec<usize> = (instrument
+        .groups
+        .iter()
+        .filter(|g| !g.purged && g.effective_wavetable().is_some()))
+    .flat_map(|g| g.zones.iter().map(|z| z.sample))
+    .collect();
     let mut requests = Vec::new();
     let mut slots = Vec::new();
     // A folder that moved fails every sample in it alike: one line per
@@ -583,39 +596,39 @@ fn load_samples(
             },
             source,
             frames: sample.frames,
-            pin: zones
-                .iter()
-                .flat_map(|&(z, stream)| match stream {
-                    Some(stream) => {
-                        let s = head(stream, fast);
-                        let win = window(z, sample.frames, fmt, s);
-                        let head_frames = (win.end.saturating_sub(win.start)).max(1);
-                        let mut ranges = vec![win.clone()];
-                        // When a zone starts inside a loop (`l.start < z.start` forward or
-                        // `l.end > z.end` reverse), pin a head at the loop wrap target too.
-                        for l in &z.loops {
-                            if z.reverse && l.end > z.end && l.end <= sample.frames {
-                                let lo = l.end.saturating_sub(head_frames);
-                                ranges.push(lo..l.end);
-                            } else if !z.reverse && l.start < z.start && l.start < sample.frames {
-                                let hi = l.start.saturating_add(head_frames).min(sample.frames);
-                                ranges.push(l.start..hi);
+            pin: if tabled.contains(index) {
+                std::iter::once(0..sample.frames).collect()
+            } else {
+                zones
+                    .iter()
+                    .flat_map(|&(z, stream)| match stream {
+                        Some(stream) => {
+                            let s = head(stream, fast);
+                            let win = window(z, sample.frames, fmt, s);
+                            let head_frames = (win.end.saturating_sub(win.start)).max(1);
+                            let mut ranges = vec![win.clone()];
+                            // When a zone starts inside a loop (`l.start < z.start` forward or
+                            // `l.end > z.end` reverse), pin a head at the loop wrap target too.
+                            for l in &z.loops {
+                                if z.reverse && l.end > z.end && l.end <= sample.frames {
+                                    let lo = l.end.saturating_sub(head_frames);
+                                    ranges.push(lo..l.end);
+                                } else if !z.reverse && l.start < z.start && l.start < sample.frames
+                                {
+                                    let hi = l.start.saturating_add(head_frames).min(sample.frames);
+                                    ranges.push(l.start..hi);
+                                }
                             }
+                            ranges
                         }
-                        ranges
-                    }
-                    None => std::iter::once(0..sample.frames).collect(),
-                })
-                .collect(),
+                        None => std::iter::once(0..sample.frames).collect(),
+                    })
+                    .collect()
+            },
         });
         slots.push(*index);
     }
     let mut loaded = vec![None; instrument.samples.len()];
-    // A wavetable zone's table is built from its frames right here, so those
-    // samples load whole now even when the store leaves heads for later.
-    let tabled: Vec<usize> = (instrument.groups.iter().filter(|g| g.wavetable.is_some()))
-        .flat_map(|g| g.zones.iter().map(|z| z.sample))
-        .collect();
     let (now, later): (Vec<_>, Vec<_>) =
         (slots.into_iter().zip(requests)).partition(|(index, _)| tabled.contains(index));
     for (batch, whole) in [(now, true), (later, false)] {
@@ -1033,7 +1046,7 @@ fn zone(
         })),
         reverse: z.reverse,
         mix: mix(&z.mix).map(Arc::new),
-        table: (group.wavetable)
+        table: (group.effective_wavetable().copied())
             .and_then(|w| {
                 levels::table(sample, client, (z.start, z.end.min(source.frames)), read(w))
             })
@@ -1239,6 +1252,183 @@ mod tests {
             0..4096
         );
         assert_eq!(head(DFD, false), DFD);
+    }
+
+    #[test]
+    fn generator_wavetable_prepares_table_and_read_without_legacy_field() {
+        let wt = ir::Wavetable {
+            position: 0.25,
+            phase: 0.0,
+            phase_random: 0.0,
+            gain: 1.0,
+            inharmonic: ir::Inharmonic::OFF,
+            modosc: ir::ModOsc::OFF,
+            quality: ir::Quality::High,
+            warps: [ir::Warp::OFF; 2],
+        };
+        let frames = 2048u64;
+        let pcm: Vec<u8> = (0..frames)
+            .flat_map(|i| {
+                let s = (i as f32 / frames as f32 * std::f32::consts::TAU).sin();
+                s.to_le_bytes()
+            })
+            .collect();
+        let fmt = SampleFmt {
+            encoding: Encoding::F32,
+            channels: 1,
+        };
+        let mut z = at(0, 0);
+        z.end = frames;
+        let inst = ir::Instrument {
+            samples: vec![ir::Sample {
+                name: "wt.wav".into(),
+                file: "wt.wav".into(),
+                offset: 0,
+                len: Some(pcm.len() as u64),
+                frames,
+                rate: 48_000,
+                channels: 1,
+                keystream: None,
+                raw: None,
+            }],
+            groups: vec![ir::Group {
+                wavetable: None,
+                generator: Some(ir::Generator::Wavetable(wt)),
+                zones: vec![z],
+                ..ir::Group::DEFAULT
+            }],
+            ..ir::Instrument::DEFAULT
+        };
+        let mut store = Store::new(kontra_stream::StoreConfig::DEFAULT).unwrap();
+        let (plan, diags) = prepare(&inst, 48_000, &mut store, &|_| {
+            Ok((Arc::new(MemSource::new(fmt, pcm.clone())), fmt))
+        });
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        assert!(plan.groups[0].wavetable.is_some());
+        assert!((plan.groups[0].wavetable.unwrap().position - 0.25).abs() < 1e-6);
+        assert!(plan.zones[0].region.table.is_some());
+    }
+
+    /// A streamed wavetable zone longer than its preload window still builds
+    /// its table: every frame is pinned before `levels::table` reads it.
+    #[test]
+    fn streamed_wavetable_zone_longer_than_its_head_keeps_its_table() {
+        let wt = ir::Wavetable {
+            position: 0.0,
+            phase: 0.0,
+            phase_random: 0.0,
+            gain: 1.0,
+            inharmonic: ir::Inharmonic::OFF,
+            modosc: ir::ModOsc::OFF,
+            quality: ir::Quality::High,
+            warps: [ir::Warp::OFF; 2],
+        };
+        // Mono f32 head = 61,440 bytes = 15,360 frames; the sample is 8× that.
+        let frames = 8 * 15_360u64;
+        let pcm: Vec<u8> = (0..frames)
+            .flat_map(|i| {
+                ((i % 2048) as f32 / 2048.0 * std::f32::consts::TAU)
+                    .sin()
+                    .to_le_bytes()
+            })
+            .collect();
+        let fmt = SampleFmt {
+            encoding: Encoding::F32,
+            channels: 1,
+        };
+        let mut z = at(0, 0);
+        z.end = frames;
+        let inst = ir::Instrument {
+            samples: vec![ir::Sample {
+                name: "wt.wav".into(),
+                file: "wt.wav".into(),
+                offset: 0,
+                len: Some(pcm.len() as u64),
+                frames,
+                rate: 48_000,
+                channels: 1,
+                keystream: None,
+                raw: None,
+            }],
+            groups: vec![ir::Group {
+                stream: Some(DFD),
+                generator: Some(ir::Generator::Wavetable(wt)),
+                zones: vec![z],
+                ..ir::Group::DEFAULT
+            }],
+            ..ir::Instrument::DEFAULT
+        };
+        let mut store = Store::new(kontra_stream::StoreConfig::DEFAULT).unwrap();
+        store.defer_heads(true);
+        let (plan, diags) = prepare(&inst, 48_000, &mut store, &|_| {
+            Ok((Arc::new(MemSource::new(fmt, pcm.clone())), fmt))
+        });
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        assert!(plan.zones[0].region.table.is_some());
+    }
+
+    /// A purged wavetable group sharing a sample with a playing streamed
+    /// group leaves that sample to its stream window: nothing is pinned
+    /// whole until the wavetable group wakes.
+    #[test]
+    fn a_purged_wavetable_group_does_not_pin_a_shared_streamed_sample_whole() {
+        let frames = 8 * 15_360u64;
+        let pcm: Vec<u8> = (0..frames)
+            .flat_map(|i| (i as f32).sin().to_le_bytes())
+            .collect();
+        let fmt = SampleFmt {
+            encoding: Encoding::F32,
+            channels: 1,
+        };
+        let mut z = at(0, 0);
+        z.end = frames;
+        let wt = ir::Wavetable {
+            position: 0.0,
+            phase: 0.0,
+            phase_random: 0.0,
+            gain: 1.0,
+            inharmonic: ir::Inharmonic::OFF,
+            modosc: ir::ModOsc::OFF,
+            quality: ir::Quality::High,
+            warps: [ir::Warp::OFF; 2],
+        };
+        let pinned = |groups: Vec<ir::Group>| {
+            let inst = ir::Instrument {
+                samples: vec![ir::Sample {
+                    name: "s.wav".into(),
+                    file: "s.wav".into(),
+                    offset: 0,
+                    len: Some(pcm.len() as u64),
+                    frames,
+                    rate: 48_000,
+                    channels: 1,
+                    keystream: None,
+                    raw: None,
+                }],
+                groups,
+                ..ir::Instrument::DEFAULT
+            };
+            let mut store = Store::new(kontra_stream::StoreConfig::DEFAULT).unwrap();
+            let (_plan, _) = prepare(&inst, 48_000, &mut store, &|_| {
+                Ok((Arc::new(MemSource::new(fmt, pcm.clone())), fmt))
+            });
+            store.pinned_bytes()
+        };
+        let streamed = ir::Group {
+            stream: Some(DFD),
+            zones: vec![z.clone()],
+            ..ir::Group::DEFAULT
+        };
+        let purged_table = ir::Group {
+            purged: true,
+            generator: Some(ir::Generator::Wavetable(wt)),
+            zones: vec![z],
+            ..ir::Group::DEFAULT
+        };
+        assert_eq!(
+            pinned(vec![streamed.clone(), purged_table]),
+            pinned(vec![streamed])
+        );
     }
 
     #[test]

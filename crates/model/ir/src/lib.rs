@@ -14,6 +14,7 @@ mod engine_par;
 mod generator;
 mod graph;
 mod link;
+mod model;
 mod mods;
 mod output;
 mod readout;
@@ -23,8 +24,8 @@ mod wavetable;
 pub use address::{EnvStage, LfoParam, ModRoute, ParamAddr, RouteLaw, Scope};
 pub use bus::{Bus, BusSend};
 pub use drive::{
-    Clipper, Converter, Crush, Curve as DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive,
-    RackAt, RingMod, RingSource, Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
+    Clipper, Converter, Crush, DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive, RackAt,
+    RingMod, RingSource, Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
     COMB_LOWEST_HZ, Cascade, CascadeStage, Clocked, ClockedShape, Comb, CombBank, CombMode,
@@ -37,8 +38,12 @@ pub use generator::{EffectFamily, EffectSpec, Generator};
 pub use graph::{AudioGraph, ChannelLayout, EffectId, GraphEdge, GraphNode, GraphNodeKind, NodeId};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
 pub use link::{CcLink, KnobMod, Linked};
+pub use model::{
+    EffectModel, ModelId, eval_model, eval_model_effect, model, register_model, register_test_model,
+};
 pub use mods::{
-    Attractor, Blend, Curve, Exp2, Factor, NoteExpr, Source, Term, TimeScale, Transfer, Wave,
+    Attractor, Blend, Exp2, Factor, GainCurve, GainCurve as Curve, NoteExpr, Source, Term,
+    TimeScale, Transfer, Wave,
 };
 pub use output::{Balance, Output, OutputControllers};
 pub use readout::{Form, Readout};
@@ -52,7 +57,7 @@ pub use wavetable::{
     WarpShape, Wavetable,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Instrument {
     pub name: String,
     /// Source file, when this instrument was loaded from a path.
@@ -407,7 +412,22 @@ impl Group {
     pub fn amp_split_index(&self) -> usize {
         usize::from(self.amp_split).min(self.inserts.len())
     }
+
+    /// Effective wavetable descriptor: prefers [`Self::generator`] when it holds
+    /// [`Generator::Wavetable`], falling back to the legacy [`Self::wavetable`] field.
+    #[must_use]
+    pub fn effective_wavetable(&self) -> Option<&Wavetable> {
+        match &self.generator {
+            Some(Generator::Wavetable(w)) => Some(w),
+            _ => self.wavetable.as_ref(),
+        }
+    }
 }
+
+const _: () = {
+    const fn assert_partial_eq<T: PartialEq>() {}
+    assert_partial_eq::<Instrument>();
+};
 
 /// A per-voice envelope of free breakpoints, 0..=1. It starts at `start`,
 /// moves through `points` in order and holds at `sustain` while the key is

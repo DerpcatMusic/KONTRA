@@ -141,18 +141,58 @@ impl Engine {
     ) -> Option<bool> {
         let plan = Arc::clone(&self.plan);
         let (model, k) = self.modelled(&plan, knob, at, slot)?;
-        let live = self.behaviour.knobs.iter_mut();
-        let (.., live) = live
-            .into_iter()
-            .find(|l| l.0 == at && i32::from(l.1) == slot)?;
-        *live.get_mut(k)? = x;
-        let kind = live.get(..model.saved.len()).and_then(model.build);
-        let (Some(kind), Some(effect)) = (kind, self.effect_mut(group, slot, generic)) else {
+        let n = model.saved.len().min(ir::KnobModel::MAX);
+        let mut params = [0.0f32; ir::KnobModel::MAX];
+        {
+            let live = self.behaviour.knobs.iter_mut();
+            let (.., live) = live
+                .into_iter()
+                .find(|l| l.0 == at && i32::from(l.1) == slot)?;
+            *live.get_mut(k)? = x;
+            if let (Some(src), Some(dst)) = (live.get(..n), params.get_mut(..n)) {
+                dst.copy_from_slice(src);
+            } else {
+                return Some(false);
+            }
+        }
+        let Some(effect) = self.effect_mut(group, slot, generic) else {
             return Some(false);
         };
-        effect.kind = kind;
+        let Some(built) = params.get(..n).and_then(|p| model.build_effect(p, effect)) else {
+            return Some(false);
+        };
+        *effect = built;
         self.refresh_all(None);
         Some(true)
+    }
+
+    /// [`kontra_vm::Action::EffectKnob`]: moves knob `knob_idx` of a placed
+    /// modelled effect to `value` and rebuilds it in place through its
+    /// registered [`ir::ModelId`].
+    pub(crate) fn set_placed_knob(
+        &mut self,
+        at: i32,
+        index: i32,
+        slot: i32,
+        knob_idx: i32,
+        value: f32,
+    ) -> bool {
+        let Ok(knob_idx) = u8::try_from(knob_idx) else {
+            return false;
+        };
+        let (group, generic) = crate::params::placed(at, index);
+        let Some(rack) = rack_at(group, generic) else {
+            return false;
+        };
+        self.set_modelled(
+            ir::SlotKnob::Knob(knob_idx),
+            value,
+            rack,
+            group,
+            slot,
+            generic,
+        )
+        .unwrap_or(false)
     }
 
     /// The knob model of slot `slot` of `at` (its loaded type's, else its
@@ -269,15 +309,7 @@ impl Engine {
 
 /// The rack `group` and `generic` address, as `effect_mut` reads them.
 pub(crate) fn rack_at(group: i32, generic: i32) -> Option<ir::RackAt> {
-    Some(match (u32::try_from(group), generic) {
-        (Ok(g), _) => ir::RackAt::Group(g),
-        (Err(_), 0) => ir::RackAt::Sends,
-        (Err(_), 1 | -1) => ir::RackAt::Inserts,
-        (Err(_), 2) => ir::RackAt::Main,
-        (Err(_), b) => {
-            ir::RackAt::Bus(u8::try_from(b.checked_sub(crate::params::BUS_OFFSET)?).ok()?)
-        }
-    })
+    kontra_plan::par_values::RackScheme::DEFAULT.rack_at(group, generic)
 }
 
 /// The fields slot knob `knob` of slot `slot` in `at` moves, with their

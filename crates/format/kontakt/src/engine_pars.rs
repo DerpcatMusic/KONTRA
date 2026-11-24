@@ -179,9 +179,9 @@ const FIXED: &[(&str, ir::EnginePar)] = {
             P::Wavetable(ir::TableValue::ModAmount),
         ),
         ("$ENGINE_PAR_WT_MOD_TYPE", P::ModOscKind),
-        ("$ENGINE_PAR_WT_MOD_WAVE", P::ModOscWave),
+        ("$ENGINE_PAR_WT_MOD_WAVE", P::TableModWave),
         ("$ENGINE_PAR_WT_MOD_TUNE_UNIT", P::ModOscUnit),
-        ("$ENGINE_PAR_WT_QUALITY", P::WtQuality),
+        ("$ENGINE_PAR_WT_QUALITY", P::TableQuality),
         ("$ENGINE_PAR_WT_PHASE", P::Wavetable(ir::TableValue::Phase)),
         (
             "$ENGINE_PAR_WT_PHASE_RAND",
@@ -190,23 +190,23 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         // Controls KONTRA has no processor for, with a text law.
         (
             "$ENGINE_PAR_CH_DEPTH",
-            P::Held(ir::held_key("$ENGINE_PAR_CH_DEPTH")),
+            P::Opaque(ir::held_key("$ENGINE_PAR_CH_DEPTH")),
         ),
         (
             "$ENGINE_PAR_JMP_PREAMP",
-            P::Held(ir::held_key("$ENGINE_PAR_JMP_PREAMP")),
+            P::Opaque(ir::held_key("$ENGINE_PAR_JMP_PREAMP")),
         ),
         (
             "$ENGINE_PAR_JMP_BASS",
-            P::Held(ir::held_key("$ENGINE_PAR_JMP_BASS")),
+            P::Opaque(ir::held_key("$ENGINE_PAR_JMP_BASS")),
         ),
         (
             "$ENGINE_PAR_JMP_MID",
-            P::Held(ir::held_key("$ENGINE_PAR_JMP_MID")),
+            P::Opaque(ir::held_key("$ENGINE_PAR_JMP_MID")),
         ),
         (
             "$ENGINE_PAR_JMP_TREBLE",
-            P::Held(ir::held_key("$ENGINE_PAR_JMP_TREBLE")),
+            P::Opaque(ir::held_key("$ENGINE_PAR_JMP_TREBLE")),
         ),
         (
             "$ENGINE_PAR_WT_INHARMONIC",
@@ -221,8 +221,8 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),
         ("$ENGINE_PAR_EFFECT_BYPASS", P::EffectBypass),
         ("$ENGINE_PAR_EFFECT_SUBTYPE", P::EffectSubtype),
-        ("$ENGINE_PAR_EFFECT_TYPE", P::EffectType),
-        ("$ENGINE_PAR_SEND_EFFECT_TYPE", P::EffectType),
+        ("$ENGINE_PAR_EFFECT_TYPE", P::SlotKind),
+        ("$ENGINE_PAR_SEND_EFFECT_TYPE", P::SlotKind),
         ("$ENGINE_PAR_SEND_EFFECT_BYPASS", P::EffectBypass),
         ("$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN", P::EffectOutput),
         ("$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN", P::EffectOutput),

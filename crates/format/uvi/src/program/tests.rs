@@ -2353,12 +2353,17 @@ fn a_routed_eq_exposes_band_five_after_the_first_slot() {
         .unwrap()
         .1;
     let tree = std::str::from_utf8(tree).unwrap();
-    let code = ir::EffectParam::BellHz(0).code().unwrap();
-    assert!(
-        tree.contains(&format!(r#"["Freq6"]={{{{{code},20,20,20000,20000}},"#)),
-        "{tree}"
-    );
+    assert!(tree.contains(r#"["Freq6"]=1,"#), "{tree}");
     assert!(tree.contains("routed_knobs={1,{2,K[1]}}"), "{tree}");
+    assert!(
+        out.slot_models
+            .iter()
+            .any(|(at, slot, m)| *at == ir::RackAt::Bus(0)
+                && *slot == 2
+                && m.id == super::models::ids::DIGITAL_EQ),
+        "{:?}",
+        out.slot_models
+    );
 }
 
 #[test]
@@ -2375,25 +2380,11 @@ fn sampled_reverb_cache_keeps_distinct_attribute_boundaries() {
     </Program>"#;
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-    let tree = &out.scripts[0]
-        .data
-        .iter()
-        .find(|(n, _)| n == "__program.lua")
-        .unwrap()
-        .1;
-    let sets: Vec<_> = std::str::from_utf8(tree)
-        .unwrap()
-        .match_indices("knobs=K[")
-        .map(|(i, _)| {
-            std::str::from_utf8(tree).unwrap()[i + 8..]
-                .split_once(']')
-                .unwrap()
-                .0
-        })
-        .collect();
-    assert_eq!(sets.len(), 3);
-    assert_ne!(sets[0], sets[1]);
-    assert_eq!(sets[1], sets[2]);
+    assert_eq!(out.slot_models.len(), 3);
+    // Slot 0 has NormalizePower=0 (inside DisplayName string only); slots 1 & 2 have NormalizePower=1.
+    assert_eq!(out.slot_models[0].2.saved.as_ref(), &[0.5, 0.0, 0.0]);
+    assert_eq!(out.slot_models[1].2.saved.as_ref(), &[0.5, 0.0, 1.0]);
+    assert_eq!(out.slot_models[2].2.saved.as_ref(), &[0.5, 0.0, 1.0]);
 }
 
 #[test]
@@ -2609,10 +2600,39 @@ fn a_script_knob_follows_an_lfo_and_an_inverted_controller_at_control_rate() {
         panic!("{:?}", scaled.source)
     };
     let table = &out.knob_blends[usize::from(t)].terms[0].input.table;
+    assert_eq!(table.len(), 2, "exact 2-point table without resampling");
     assert!(
-        (table[0] + 1.0).abs() < 1e-6 && table[32].abs() < 1e-6,
+        (table[0] + 1.0).abs() < 1e-6 && table[1].abs() < 1e-6,
         "{table:?}"
     );
+}
+
+#[test]
+fn rising_lfo_with_mapper_preserves_exact_breakpoints_without_resampling() {
+    let xml = r#"<Program Gain="1">
+      <ControlSignalSources>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" WaveFormType="0" Freq="2" Depth="0.6" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0.1" RiseTime="0.5"/>
+      </ControlSignalSources>
+      <Mappers>
+        <ControlSignalMapper Name="CustomMap" Min="0" Max="1">0,0 0,2 0,9 0,3 1,0</ControlSignalMapper>
+      </Mappers>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup LowKey="0" HighKey="127">
+        <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"><Connections>
+          <SignalConnection Ratio="12" Source="$Program/LFO 1" Destination="Pitch" Mapper="CustomMap" ConnectionMode="0" Bypass="0" Inverted="0"/>
+        </Connections></SamplePlayer></Oscillators>
+      </Keygroup></Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let group = &out.groups[0];
+    // The exact 5-point mapper table is preserved verbatim (zero resampling!).
+    assert_eq!(group.shapers.len(), 1);
+    assert_eq!(group.shapers[0].table, vec![0.0, 0.2, 0.9, 0.3, 1.0]);
+    assert_eq!(group.shapers[0].source, ir::Source::Lfo(0));
+    // Depth 0.6 is folded into the rise envelope's target level without resampling the table.
+    assert_eq!(group.envelopes.len(), 1);
+    let rise = &group.envelopes[0];
+    assert!((rise.points.last().unwrap().level - 0.6).abs() < 1e-6);
 }
 
 #[test]
@@ -2794,4 +2814,89 @@ fn authored_playback_options_suppress_file_loops_on_load_and_swap() {
     assert!(zones[0].loops.is_empty());
     assert_eq!(zones[1].loops, initial.groups[0].zones[2].loops);
     assert!(zones[2].loops.is_empty());
+}
+
+/// A keygroup with `connections` on LFO 1 (`lfo` attributes) and mapper
+/// `mapper` (`Min`, `Discrete`, points), translated.
+fn mapped_lfo_program(lfo: &str, mapper: (&str, &str, &str), connections: &str) -> ir::Instrument {
+    let (min, discrete, points) = mapper;
+    let xml = format!(
+        r#"<Program Gain="1">
+      <Mappers><ControlSignalMapper Name="Mapper 1" Min="{min}" Max="1" Integer="0" Discrete="{discrete}">{points}</ControlSignalMapper></Mappers>
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" Freq="2" Phase="0" Bipolar="1" {lfo}/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Connections>{connections}</Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#
+    );
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap()
+}
+
+#[test]
+fn a_mapped_lfo_routes_depth_never_scales_an_unmapped_route_of_the_same_lfo() {
+    let out = mapped_lfo_program(
+        r#"WaveFormType="0" Retrigger="1" Depth="0.5" DelayTime="0" RiseTime="0""#,
+        ("0", "0", "0,0 1,0"),
+        r#"<SignalConnection Ratio="1" Source="$Program/LFO 1" Destination="Gain" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+           <SignalConnection Ratio="1" Source="$Program/LFO 1" Destination="Pan" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>"#,
+    );
+    let g = &out.groups[0];
+    let scaled: Vec<_> = (g.mods.iter())
+        .filter_map(|m| match m.route.target {
+            ir::ParamAddr::RouteIntensity { of } => Some(of),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(scaled.len(), 1, "{:?}", g.mods);
+    // The unmapped Pan route keeps its depth in its own amount and reads an
+    // LFO copy no intensity scales.
+    let pan = g
+        .mods
+        .iter()
+        .find(|m| m.route.target == ir::ParamAddr::Pan)
+        .expect("pan route");
+    assert!(!scaled.contains(&pan.route.source), "{:?}", g.mods);
+}
+
+#[test]
+fn a_discrete_mapper_on_an_lfo_holds_its_points() {
+    for rise in ["0", "0.5"] {
+        let out = mapped_lfo_program(
+            &format!(r#"WaveFormType="0" Retrigger="1" Depth="1" DelayTime="0" RiseTime="{rise}""#),
+            ("0", "1", "0,0 1,0 0,0"),
+            r#"<SignalConnection Ratio="1" Source="$Program/LFO 1" Destination="Gain" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>"#,
+        );
+        let t = &out.groups[0].shapers[0];
+        assert!(t.stepped, "rise {rise}: {t:?}");
+    }
+}
+
+#[test]
+fn a_steady_bipolar_mapped_lfo_on_gain_is_centred_like_a_rising_one() {
+    for rise in ["0", "0.5"] {
+        let out = mapped_lfo_program(
+            &format!(r#"WaveFormType="0" Retrigger="1" Depth="1" DelayTime="0" RiseTime="{rise}""#),
+            ("-1", "0", "-1,0 1,0"),
+            r#"<SignalConnection Ratio="1" Source="$Program/LFO 1" Destination="Gain" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>"#,
+        );
+        assert_eq!(out.groups[0].shapers[0].table, [0.0, 1.0], "rise {rise}");
+    }
+}
+
+#[test]
+fn a_mapped_free_random_lfo_reads_the_copy_its_unmapped_routes_read() {
+    let out = mapped_lfo_program(
+        r#"Depth="1" DelayTime="0" RiseTime="0.5" WaveFormType="6" Retrigger="0""#,
+        ("0", "0", "0,0 1,0"),
+        r#"<SignalConnection Ratio="1" Source="$Program/LFO 1" Destination="Gain" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+           <SignalConnection Ratio="1" Source="$Program/LFO 1" Destination="Pan" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>"#,
+    );
+    let g = &out.groups[0];
+    assert_eq!(g.lfos.len(), 1, "{:?}", g.lfos);
 }

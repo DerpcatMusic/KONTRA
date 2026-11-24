@@ -158,22 +158,29 @@ pub fn dstortion(
 
 /// The saved record as a script moves it: every knob move rebuilds the
 /// shaper through [`dstortion`].
+/// Single-encoding module descriptor for Distortion (`0x56`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::DSTORTION,
+    module_id: 0x56,
+    versions: (0, u32::MAX),
+    name: "Distortion",
+    script_type: 36,
+    mix: crate::module::MixMode::InPlace,
+    knobs: crate::module::KNOBS.split_at(6).0,
+    build: |p| {
+        let [volume, tone, drive, bass, mid, treble] = *p else {
+            return None;
+        };
+        Some(dstortion(volume, tone, drive, bass, mid, treble))
+    },
+};
+
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
-    use ir::SlotKnob::Knob;
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
-    Some(ir::KnobModel {
-        knobs: (0..6).map(Knob).collect(),
-        saved: [f(0)?, f(4)?, f(8)?, f(12)?, f(16)?, f(20)?].into(),
-        build: |p| {
-            let [volume, tone, drive, bass, mid, treble] = *p else {
-                return None;
-            };
-            Some(dstortion(volume, tone, drive, bass, mid, treble))
-        },
-    })
+    Some(MODULE.knob_model(&[f(0)?, f(4)?, f(8)?, f(12)?, f(16)?, f(20)?]))
 }
 
 /// Whether the record's mono switch is on (not carried).

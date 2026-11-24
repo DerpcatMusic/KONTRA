@@ -1,20 +1,65 @@
-//! What an engine parameter sets in a level or an effect slot, in KSP's
-//! 0..=1_000_000 encoding: Kontakt's laws (sampler-core `EngineParameterLaw`).
+//! What a script parameter sets in a level or an effect slot, in the normalized
+//! `0..=1_000_000` encoding.
 
 use kontra_ir as ir;
 
 use crate::par_laws::{CUBE, cube_root};
 use crate::{EnginePar, Level};
 
-/// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
-/// fitted to slots whose saved gains follow their scripts' init writes).
+/// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB.
 pub const UNITY_EFFECT_GAIN: f64 = 396_851.0;
 
 /// Volume is cubic in the setting, 0 dB at this value, +12 dB at 1_000_000.
 pub const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
 
-/// Bus n is `BUS_OFFSET + n` (measured, probes/output_channel.lua).
+/// Bus n is `BUS_OFFSET + n` in the default rack addressing scheme.
 pub const BUS_OFFSET: i32 = 1024;
+
+/// Format-neutral rack addressing scheme mapping `(group, generic)` integers
+/// from a script host onto [`ir::RackAt`] and bus indices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RackScheme {
+    pub send_rack: i32,
+    pub insert_rack: i32,
+    pub main_rack: i32,
+    pub bus_offset: i32,
+}
+
+impl RackScheme {
+    /// Standard rack numbering: send 0, insert 1 (or -1), main 2, buses `1024 + n`.
+    pub const DEFAULT: Self = Self {
+        send_rack: 0,
+        insert_rack: 1,
+        main_rack: 2,
+        bus_offset: BUS_OFFSET,
+    };
+
+    /// Resolves `(group, generic)` into its [`ir::RackAt`].
+    #[must_use]
+    pub fn rack_at(self, group: i32, generic: i32) -> Option<ir::RackAt> {
+        if let Ok(g) = u32::try_from(group) {
+            return Some(ir::RackAt::Group(g));
+        }
+        if generic == self.send_rack {
+            Some(ir::RackAt::Sends)
+        } else if generic == self.insert_rack || generic == -1 {
+            Some(ir::RackAt::Inserts)
+        } else if generic == self.main_rack {
+            Some(ir::RackAt::Main)
+        } else {
+            let bus = u8::try_from(generic.checked_sub(self.bus_offset)?).ok()?;
+            Some(ir::RackAt::Bus(bus))
+        }
+    }
+
+    /// Converts a bus `generic` selector to its plan bus index (`bus_n + 1`,
+    /// where bus 0 is the main output bus).
+    #[must_use]
+    pub fn plan_bus(self, generic: i32) -> Option<usize> {
+        let offset = usize::try_from(generic.checked_sub(self.bus_offset)?).ok()?;
+        offset.checked_add(1)
+    }
+}
 
 /// Which of a [`Level`]'s settings a parameter is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -121,4 +166,17 @@ pub fn level_par(par: EnginePar) -> Option<LevelPar> {
         EnginePar::Tune => LevelPar::Tune,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RackScheme;
+
+    #[test]
+    fn plan_bus_rejects_selectors_below_bus_offset() {
+        let s = RackScheme::DEFAULT;
+        assert_eq!(s.plan_bus(s.bus_offset - 1), None);
+        assert_eq!(s.plan_bus(s.bus_offset), Some(1));
+        assert_eq!(s.plan_bus(i32::MIN), None);
+    }
 }

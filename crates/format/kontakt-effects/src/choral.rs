@@ -244,13 +244,21 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 10]> {
     ])
 }
 
+/// Single-encoding module descriptor for Choral (`0x5d`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::CHORAL,
+    module_id: 0x5d,
+    versions: (0, u32::MAX),
+    name: "Choral",
+    script_type: 43,
+    mix: crate::module::MixMode::OwnMix,
+    knobs: crate::module::KNOBS.split_at(10).0,
+    build: |p| Some(choral(p.try_into().ok()?)),
+};
+
 /// A Choral's knobs from saved positions as a script moves them.
 pub fn model_from(saved: [f32; 10]) -> ir::KnobModel {
-    ir::KnobModel {
-        knobs: (0..10).map(ir::SlotKnob::Knob).collect(),
-        saved: saved.into(),
-        build: |p| Some(choral(p.try_into().ok()?)),
-    }
+    MODULE.knob_model(&saved)
 }
 
 /// A Choral's knobs as a script moves them: every move rebuilds it from all.

@@ -1,6 +1,67 @@
 //! The Solid G-EQ's and Solid Bus Comp's script knob models (`$ENGINE_PAR_SEQ_*`, `$ENGINE_PAR_SCOMP_*`).
 
 use kontra_ir as ir;
+use kontra_kontakt_effects::module::{MixMode, Module, ids};
+
+/// Single-encoding module descriptor for Solid G-EQ (`0x44`).
+pub(crate) static SOLID_EQ_MODULE: Module = Module {
+    id: ids::SOLID_EQ,
+    module_id: 0x44,
+    versions: (0, u32::MAX),
+    name: "Solid G-EQ",
+    script_type: 28,
+    mix: MixMode::InPlace,
+    knobs: &[
+        ir::SlotKnob::BandGain(0),
+        ir::SlotKnob::BandHz(0),
+        ir::SlotKnob::BandGain(1),
+        ir::SlotKnob::BandHz(1),
+        ir::SlotKnob::BandWidth(1),
+        ir::SlotKnob::BandGain(2),
+        ir::SlotKnob::BandHz(2),
+        ir::SlotKnob::BandWidth(2),
+        ir::SlotKnob::BandGain(3),
+        ir::SlotKnob::BandHz(3),
+        ir::SlotKnob::BandBell(0),
+        ir::SlotKnob::BandBell(3),
+    ],
+    build: |p| {
+        let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh, lb, hb] = *p else {
+            return None;
+        };
+        let bell = |on: f32, shelf| if on > 0.5 { ir::Shape::Peak } else { shelf };
+        let (lf, hf) = (
+            bell(lb, ir::Shape::LowShelf),
+            bell(hb, ir::Shape::HighShelf),
+        );
+        let bands = crate::laws::solid_eq([lg, lh], lf, [mg, mh, mq], [hg, hh, hq], [fg, fh], hf);
+        Some(ir::EffectKind::Eq(bands))
+    },
+};
+
+/// Single-encoding module descriptor for Solid Bus Comp (`0x46`).
+pub(crate) static SOLID_BUS_MODULE: Module = Module {
+    id: ids::SOLID_BUS_COMP,
+    module_id: 0x46,
+    versions: (0, u32::MAX),
+    name: "Solid Bus Comp",
+    script_type: 29,
+    mix: MixMode::OwnMix,
+    knobs: &[
+        ir::SlotKnob::Threshold,
+        ir::SlotKnob::Makeup,
+        ir::SlotKnob::Attack,
+        ir::SlotKnob::Release,
+        ir::SlotKnob::Ratio,
+        ir::SlotKnob::Mix,
+    ],
+    build: |p| {
+        let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
+        Some(ir::EffectKind::Compressor(
+            crate::laws::bus_compressor(knobs, link).0,
+        ))
+    },
+};
 
 /// The Solid G-EQ's knobs and bell switches: every move rebuilds the four
 /// bands from all of them through [`crate::laws::solid_eq`], as the core
@@ -8,59 +69,17 @@ use kontra_ir as ir;
 /// and Hz, LMF and HMF gain, Hz and Q, HF gain and Hz (each 0..=1, the KSP
 /// value in millionths), then the LF and HF bell switches (0 or 1).
 pub(crate) fn solid_model(saved: [f32; 10], bells: [bool; 2]) -> ir::KnobModel {
-    use ir::SlotKnob::{BandBell, BandGain, BandHz, BandWidth};
-    let mut positions = saved.to_vec();
-    positions.extend(bells.map(|on| f32::from(u8::from(on))));
-    ir::KnobModel {
-        knobs: [
-            BandGain(0),
-            BandHz(0),
-            BandGain(1),
-            BandHz(1),
-            BandWidth(1),
-            BandGain(2),
-            BandHz(2),
-            BandWidth(2),
-            BandGain(3),
-            BandHz(3),
-            BandBell(0),
-            BandBell(3),
-        ]
-        .into(),
-        saved: positions.into(),
-        build: |p| {
-            let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh, lb, hb] = *p else {
-                return None;
-            };
-            let bell = |on: f32, shelf| if on > 0.5 { ir::Shape::Peak } else { shelf };
-            let (lf, hf) = (
-                bell(lb, ir::Shape::LowShelf),
-                bell(hb, ir::Shape::HighShelf),
-            );
-            let bands =
-                crate::laws::solid_eq([lg, lh], lf, [mg, mh, mq], [hg, hh, hq], [fg, fh], hf);
-            Some(ir::EffectKind::Eq(bands))
-        },
-    }
+    let [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9] = saved;
+    let [b0, b1] = bells.map(|on| f32::from(u8::from(on)));
+    SOLID_EQ_MODULE.knob_model(&[p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, b0, b1])
 }
 
 /// The Solid Bus Comp's knobs: every move rebuilds the compressor from
 /// all six and the link through [`crate::laws::bus_compressor`] (the ratio
 /// switch also moves the threshold).
 pub(crate) fn bus_model(saved: [f32; 6], link: bool) -> ir::KnobModel {
-    use ir::SlotKnob::{Attack, Makeup, Mix, Ratio, Release, Threshold};
-    let mut positions = saved.to_vec();
-    positions.push(f32::from(u8::from(link)));
-    ir::KnobModel {
-        knobs: [Threshold, Makeup, Attack, Release, Ratio, Mix].into(),
-        saved: positions.into(),
-        build: |p| {
-            let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
-            Some(ir::EffectKind::Compressor(
-                crate::laws::bus_compressor(knobs, link).0,
-            ))
-        },
-    }
+    let [p0, p1, p2, p3, p4, p5] = saved;
+    SOLID_BUS_MODULE.knob_model(&[p0, p1, p2, p3, p4, p5, f32::from(u8::from(link))])
 }
 
 #[cfg(test)]
@@ -70,7 +89,7 @@ mod tests {
     #[test]
     fn the_bell_switch_turns_the_lf_shelf_into_a_peak() {
         let model = solid_model([0.5; 10], [false, false]);
-        let lf = |p: &[f32]| match (model.build)(p) {
+        let lf = |p: &[f32]| match model.build(p) {
             Some(ir::EffectKind::Eq(bands)) => bands[0].shape,
             _ => panic!(),
         };

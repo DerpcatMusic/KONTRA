@@ -62,21 +62,12 @@ impl<L: Library> Translator<'_, '_, L> {
                 links.insert(c.id(), n);
             }
         }
-        // The insert numbers' sets, shared: each number's controls and their
-        // values by the number, `{[name]={{code, x1, y1, ...}, ...}, ...}`.
+        // The insert attribute-to-knob-index maps, shared: `{[name]=knob_idx, ...}`.
         let mut out = String::from("local K={");
         for set in &self.knob_sets {
             out.push('{');
-            for k in set {
-                out.push_str(&format!("[{}]={{", lua_string(&k.name)));
-                for (code, law) in &k.controls {
-                    out.push_str(&format!("{{{code}"));
-                    for (x, y) in law {
-                        out.push_str(&format!(",{x},{y}"));
-                    }
-                    out.push_str("},");
-                }
-                out.push_str("},");
+            for (name, idx) in set {
+                out.push_str(&format!("[{}]={idx},", lua_string(name)));
             }
             out.push_str("},");
         }

@@ -141,13 +141,21 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 13]> {
     ])
 }
 
+/// Single-encoding module descriptor for Phasis (`0x5b`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::PHASIS,
+    module_id: 0x5b,
+    versions: (0, u32::MAX),
+    name: "Phasis",
+    script_type: 41,
+    mix: crate::module::MixMode::OwnMix,
+    knobs: crate::module::KNOBS.split_at(13).0,
+    build: |p| Some(phasis(p.try_into().ok()?)),
+};
+
 /// A Phasis's knobs from saved positions `p` as a script moves them.
 pub fn model_from(saved: [f32; 13]) -> ir::KnobModel {
-    ir::KnobModel {
-        knobs: (0..13).map(ir::SlotKnob::Knob).collect(),
-        saved: saved.into(),
-        build: |p| Some(phasis(p.try_into().ok()?)),
-    }
+    MODULE.knob_model(&saved)
 }
 
 /// A Phasis's knobs as a script moves them: every move rebuilds it from all.

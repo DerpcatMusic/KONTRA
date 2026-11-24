@@ -532,4 +532,7 @@ actions! {
     // step, scale), 7 Rössler (a, b, c, step, scale). Rate kind −1 keeps
     // it, 0 Hz, 1 beats a cycle; clock −1 keeps it, 0 free, 1 per voice.
     LfoSet,
+    // A modelled effect's live knob: ints `(where, index, slot, knob_index, value_f32_bits)`,
+    // placed as for `EffectBypass`. Rebuilds the slot through its registered `ModelId`.
+    EffectKnob,
 }

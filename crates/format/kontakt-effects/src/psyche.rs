@@ -110,57 +110,63 @@ pub fn shifter(p: Psyche) -> ir::Shifter {
     }
 }
 
+/// Single-encoding module descriptor for Psyche Delay (`0x63`).
+pub static MODULE: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::PSYCHE,
+    module_id: 0x63,
+    versions: (0, u32::MAX),
+    name: "Psyche Delay",
+    script_type: 49,
+    mix: crate::module::MixMode::WetDry,
+    knobs: crate::module::KNOBS.split_at(9).0,
+    build: |v| {
+        let [
+            ms,
+            feedback,
+            detune,
+            pitch,
+            offset,
+            cross,
+            rs,
+            ds,
+            rev,
+            beats,
+        ] = *v
+        else {
+            return None;
+        };
+        Some(ir::EffectKind::Shifter(shifter(Psyche {
+            ms,
+            feedback,
+            detune,
+            pitch,
+            offset,
+            cross,
+            reverse_stereo: rs > 0.0,
+            detune_stereo: ds > 0.0,
+            reverse: rev > 0.0,
+            beats: Some(beats).filter(|&b| b > 0.0),
+        })))
+    },
+};
+
 /// The record as a script moves it: every knob move rebuilds the echo
 /// through [`shifter`]; the synced unit holds as saved.
 #[must_use]
 pub fn model(p: Psyche) -> ir::KnobModel {
-    use ir::SlotKnob::Knob;
     let on = |b: bool| if b { 1.0 } else { 0.0 };
-    ir::KnobModel {
-        knobs: (0..9).map(Knob).collect(),
-        saved: [
-            p.ms,
-            p.feedback,
-            p.detune,
-            p.pitch,
-            p.offset,
-            p.cross,
-            on(p.reverse_stereo),
-            on(p.detune_stereo),
-            on(p.reverse),
-            p.beats.unwrap_or(-1.0),
-        ]
-        .into(),
-        build: |v| {
-            let [
-                ms,
-                feedback,
-                detune,
-                pitch,
-                offset,
-                cross,
-                rs,
-                ds,
-                rev,
-                beats,
-            ] = *v
-            else {
-                return None;
-            };
-            Some(ir::EffectKind::Shifter(shifter(Psyche {
-                ms,
-                feedback,
-                detune,
-                pitch,
-                offset,
-                cross,
-                reverse_stereo: rs > 0.0,
-                detune_stereo: ds > 0.0,
-                reverse: rev > 0.0,
-                beats: Some(beats).filter(|&b| b > 0.0),
-            })))
-        },
-    }
+    MODULE.knob_model(&[
+        p.ms,
+        p.feedback,
+        p.detune,
+        p.pitch,
+        p.offset,
+        p.cross,
+        on(p.reverse_stereo),
+        on(p.detune_stereo),
+        on(p.reverse),
+        p.beats.unwrap_or(-1.0),
+    ])
 }
 
 /// The KSP names of [`model`]'s knobs: TIME saves 2000 ms per unit, the

@@ -23,6 +23,7 @@ mod ignored;
 mod lfo_routes;
 mod load;
 mod matrix;
+mod models;
 mod modulation;
 mod multi_peak;
 mod provenance;
@@ -115,7 +116,6 @@ pub(crate) fn unfinished<'a, L: Library>(
         knobs_of: HashMap::new(),
         routed_knobs: HashMap::new(),
         knob_sets: Vec::new(),
-        knob_cache: HashMap::new(),
         script_words: HashSet::new(),
         dry_of: HashMap::new(),
         rack_mix_of: HashMap::new(),
@@ -137,6 +137,7 @@ pub(crate) fn unfinished<'a, L: Library>(
             streaming: flag(program, "Streaming"),
         },
     };
+    models::register_all();
     t.scripts();
     t.script_words = quoted_words(&t.out.scripts);
     t.effects();
@@ -226,10 +227,8 @@ struct Translator<'a, 'input, L> {
     knobs_of: HashMap<roxmltree::NodeId, usize>,
     /// A routed EQ's bus and the (slot, knob set) pairs for its band chunks.
     routed_knobs: HashMap<roxmltree::NodeId, routing::RoutedKnobs>,
-    /// The distinct answers, which [`Self::knobs_of`] index, and each one's
-    /// insert type and saved attributes.
-    knob_sets: Vec<Vec<routing::Knob>>,
-    knob_cache: HashMap<routing::KnobKey, Option<usize>>,
+    /// The distinct attribute-to-knob-index maps that [`Self::knobs_of`] index.
+    knob_sets: Vec<routing::KnobMap>,
     /// Every name the program's scripts quote: only those numbers can be
     /// set by name, so only those are mapped (routing.rs).
     script_words: HashSet<String>,

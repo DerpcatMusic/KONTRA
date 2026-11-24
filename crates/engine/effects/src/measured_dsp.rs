@@ -1,11 +1,11 @@
-//! Kontakt 8 binary-verified L4 DSP cores:
-//! - [`EnhancedCompressor`]: Kontakt Compressor mode 1 (8-segment piecewise curve,
+//! Binary-verified L4 DSP cores measured from a reference sampler:
+//! - [`EnhancedCompressor`]: Compressor mode 1 (8-segment piecewise curve,
 //!   signed-mean stereo link, 2-state attack recurrence, decaying peak hold).
 //! - [`SolidBusComp`]: Solid Bus Comp (RMS/peak detector, signed-mean link,
 //!   exact `ln(0.8)` time-constant law, dual-stage program-dependent auto-release).
 //! - [`SolidPassFilters`]: Solid G-EQ v0x11 3rd-order (18 dB/oct) HP and
 //!   2nd-order (12 dB/oct) LP pass stages with verified frequency curves.
-//! - [`StereoModeller`]: Kontakt Stereo Modeller width/pan smoothers and
+//! - [`StereoModeller`]: Stereo Modeller width/pan smoothers and
 //!   pseudo-stereo 1024-sample right-channel delay ring.
 //!
 //! All processors are allocation-free in their `process` / `set` paths.
@@ -17,15 +17,15 @@ use kontra_ir as ir;
 use crate::processors::Wet;
 
 // ---------------------------------------------------------------------------
-// 1. Kontakt Enhanced Compressor (mode 1)
+// 1. Enhanced Compressor (mode 1)
 // ---------------------------------------------------------------------------
 
-/// Settings for [`EnhancedCompressor`] (Kontakt Compressor mode 1).
+/// Settings for [`EnhancedCompressor`] (Compressor mode 1).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EnhancedCompressorSettings {
     /// Threshold in dB (converted via native `2^(db / 6)` law).
     pub threshold_db: f32,
-    /// Saved Kontakt ratio parameter (`0..=1`; values `< 0.04` use scale `5.0`).
+    /// Saved ratio parameter (`0..=1`; values `< 0.04` use scale `5.0`).
     pub saved_ratio: f32,
     /// Attack time in milliseconds (`>= 1.0`).
     pub attack_ms: f32,
@@ -96,7 +96,7 @@ impl EnhancedChannel {
     }
 }
 
-/// Kontakt 8 Enhanced Compressor (mode 1).
+/// Enhanced Compressor (mode 1).
 #[derive(Clone, Debug)]
 pub struct EnhancedCompressor {
     rate: u32,
@@ -281,7 +281,7 @@ impl Wet for EnhancedCompressor {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Kontakt Solid Bus Comp (detector + dual-stage auto-release)
+// 2. Solid Bus Comp (detector + dual-stage auto-release)
 // ---------------------------------------------------------------------------
 
 /// Verified Solid Bus Comp attack step times in milliseconds (`enum 0..=5`).
@@ -344,7 +344,7 @@ struct BusDetector {
     slow_db: f32,
 }
 
-/// Kontakt Solid Bus Comp with RMS/peak detector and dual-stage auto-release.
+/// Solid Bus Comp with RMS/peak detector and dual-stage auto-release.
 #[derive(Clone, Debug)]
 pub struct SolidBusComp {
     rate: u32,
@@ -650,7 +650,7 @@ pub struct SolidPassSettings {
 }
 
 impl SolidPassSettings {
-    /// Builds pass filter settings from Kontakt Solid G-EQ v0x11 normalized knobs.
+    /// Builds pass filter settings from Solid G-EQ v0x11 normalized knobs.
     #[must_use]
     pub fn from_normalized(hp_on: bool, hp_norm: f32, lp_on: bool, lp_norm: f32) -> Self {
         Self {
@@ -717,7 +717,7 @@ impl StereoBiquad {
 
     /// Analog-matched 2nd-order Butterworth low-pass (Vicanek magnitude match at
     /// DC, cutoff, and Nyquist) so high-frequency rolloff avoids bilinear Nyquist
-    /// cramping and tracks Kontakt Solid G-EQ's measured `solid-geq-hplp.tsv`.
+    /// cramping and tracks Solid G-EQ's measured `solid-geq-hplp.tsv`.
     fn set_second_order_lp(&mut self, hz: f32, q: f64, rate: u32) {
         let fs = f64::from(rate.max(1));
         let fc = Self::clamp_cutoff(hz, fs);
@@ -866,16 +866,16 @@ impl Wet for SolidPassFilters {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Kontakt Stereo Modeller (width/pan smoothers + pseudo-stereo delay ring)
+// 4. Stereo Modeller (width/pan smoothers + pseudo-stereo delay ring)
 // ---------------------------------------------------------------------------
 
-/// Ring buffer length for Kontakt Stereo Modeller pseudo-stereo delay (1024 floats).
+/// Ring buffer length for Stereo Modeller pseudo-stereo delay (1024 floats).
 const PSEUDO_RING_LEN: usize = 1024;
 const PSEUDO_RING_MASK: usize = PSEUDO_RING_LEN - 1;
 const WIDTH_SMOOTH_K: f32 = 1.0 / 180.0;
 const PAN_SMOOTH_K: f32 = 1.0 / 1800.0;
 
-/// Settings for [`StereoModeller`] (Kontakt module `0x1f`).
+/// Settings for [`StereoModeller`] (module `0x1f`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StereoModellerSettings {
     /// Width / spread (`0.0` mono, `0.5` identity, `1.0` full spread).
@@ -896,7 +896,7 @@ impl Default for StereoModellerSettings {
     }
 }
 
-/// Computes Kontakt's exact pseudo-stereo right-channel delay in frames:
+/// Computes the reference's exact pseudo-stereo right-channel delay in frames:
 /// `min(1023, trunc(rate * 0.01 * width^3))`.
 #[must_use]
 pub fn pseudo_delay_frames(width: f32, rate: u32) -> usize {
@@ -908,7 +908,7 @@ pub fn pseudo_delay_frames(width: f32, rate: u32) -> usize {
     (raw.max(0.0) as usize).min(PSEUDO_RING_MASK)
 }
 
-/// Kontakt Stereo Modeller with width/pan one-pole smoothers and pseudo-stereo
+/// Stereo Modeller with width/pan one-pole smoothers and pseudo-stereo
 /// 1024-sample zero-initialized right-channel delay ring.
 #[derive(Clone, Debug)]
 pub struct StereoModeller {
@@ -1050,7 +1050,7 @@ impl Wet for StereoModeller {
 mod tests {
     use super::*;
 
-    /// Exact golden vectors from `docs/re/kontakt-compressor.md`.
+    /// Exact golden vectors from the compressor reverse-engineering notes (docs/re).
     #[test]
     fn enhanced_compressor_matches_native_golden_vectors_and_link_cancellation() {
         let mut comp = EnhancedCompressor::new(
