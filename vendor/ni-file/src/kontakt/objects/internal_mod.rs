@@ -40,7 +40,8 @@ pub struct InternalModParams {
     /// Boolean field order is corroborated by the native typed reader and XML
     /// importer stores; unknown fields remain byte-preserved.
     pub unknown_flags: [u8; 4],
-    /// Numeric id; meaning unknown.
+    /// Editor group-linking modulator instance id ([ref],11384`);
+    /// unused by the audio engine ([ref],4980-5105`).
     pub unknown_id: u32,
 }
 
@@ -50,6 +51,7 @@ pub enum Modulator {
     Ahdsr(EnvelopeAhdsr),
     Flex(EnvelopeFlex),
     Lfo(Lfo),
+    StepMod(StepMod),
     /// Raw stored values only; the native runtime mapping is unproved.
     Dbd(EnvelopeDbd),
     Glide(Glide),
@@ -126,6 +128,7 @@ impl InternalMod {
             0x41 => Modulator::Dbd(EnvelopeDbd::try_from(inner)?),
             0x0B => Modulator::Glide(Glide::try_from(inner)?),
             0x0A => Modulator::Follower(EnvelopeFollower::try_from(inner)?),
+            0x09 => Modulator::StepMod(StepMod::try_from(inner)?),
             0x08 => match Lfo::read_supported(inner)? {
                 Some(lfo) => Modulator::Lfo(lfo),
                 None => Modulator::Other { chunk_id: inner.id },
@@ -195,7 +198,7 @@ mod tests {
         };
         let step_mod_obj = internal_mod_with(3, step_model.to_chunk().unwrap());
         let step = step_mod_obj.params().unwrap();
-        assert_eq!(step.modulator, Modulator::Other { chunk_id: 0x09 });
+        assert_eq!(step.modulator, Modulator::StepMod(step_model.clone()));
         assert_eq!(step_mod_obj.step_mod().unwrap(), Some(step_model));
 
         let mut envf_data = vec![0];

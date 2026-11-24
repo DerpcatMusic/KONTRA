@@ -126,7 +126,10 @@ impl BPatchHeaderV1 {
         let u_b = reader.read_u32_le()?; // ?
         let u_c = reader.read_u32_le()?; // ?
 
-        let timestamp = OffsetDateTime::from_unix_timestamp(reader.read_u32_le()? as i64).unwrap();
+        let timestamp =
+            OffsetDateTime::from_unix_timestamp(reader.read_u32_le()? as i64).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")
+            })?;
         let created_at: time::Date = timestamp.date();
 
         let samples_size = reader.read_u32_le()?; // total size of all samples
@@ -167,7 +170,10 @@ impl BPatchHeaderV2 {
         app_signature.reverse();
         let app_signature: String = app_signature.into_iter().map(|c| c as char).collect();
 
-        let datetime = OffsetDateTime::from_unix_timestamp(reader.read_u32_le()? as i64).unwrap();
+        let datetime =
+            OffsetDateTime::from_unix_timestamp(reader.read_u32_le()? as i64).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")
+            })?;
         let created_at: time::Date = datetime.date();
 
         let u_a = reader.read_u32_le()?;
@@ -259,7 +265,10 @@ impl BPatchHeaderV42 {
         app_signature.reverse();
         let app_signature: String = app_signature.into_iter().map(|c| c as char).collect();
 
-        let datetime = OffsetDateTime::from_unix_timestamp(reader.read_u32_le()? as i64).unwrap();
+        let datetime =
+            OffsetDateTime::from_unix_timestamp(reader.read_u32_le()? as i64).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid timestamp")
+            })?;
         let created_at: time::Date = datetime.date();
 
         let u_a = reader.read_u32_le()?;

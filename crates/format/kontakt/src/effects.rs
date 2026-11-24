@@ -271,13 +271,23 @@ fn slot_effect(
         0x1a => byte(0)
             .zip(byte(1))
             .map(|(phase, swap)| ir::EffectKind::Invert { phase, swap }),
-        // ponytail: pseudo stereo (a short delay on the right) plays as plain width.
-        0x1f => f32_at(0)
-            .zip(f32_at(4))
-            .map(|(spread, pan)| ir::EffectKind::Stereo {
+        // Pseudo stereo (`BParFXStereoSpread +0x10`, [ref])
+        // adds a short decorrelation delay on the right; diagnose when enabled
+        // rather than silently playing plain stereo width.
+        0x1f => f32_at(0).zip(f32_at(4)).map(|(spread, pan)| {
+            if byte(8) == Some(true) {
+                let impact = if params.bypass {
+                    ir::Impact::Cosmetic
+                } else {
+                    ir::Impact::Audible
+                };
+                notes.add(impact, "Stereo Modeller pseudo stereo", at.to_string());
+            }
+            ir::EffectKind::Stereo {
                 width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
                 pan: pan.clamp(-1.0, 1.0),
-            }),
+            }
+        }),
         0x18 => kind_id
             .and_then(|k| eq(&public, k, at, knobs).or_else(|| filter(&public, k, at, knobs))),
         // Mode (i32), threshold, ratio, attack, release, then the link byte.
@@ -1090,5 +1100,26 @@ mod tests {
         assert!(matches!(e.kind, ir::EffectKind::Delay(_)));
         assert_eq!((e.output, e.dry), (0.25, 0.75));
         assert!(model.is_some());
+
+        // Stereo Modeller (0x1f) with pseudo stereo enabled emits an Audible diagnostic.
+        let mut stereo_pub = Vec::new();
+        stereo_pub.extend(0.5f32.to_le_bytes()); // spread
+        stereo_pub.extend(0.0f32.to_le_bytes()); // pan
+        stereo_pub.push(1); // pseudo = true
+        let mut pseudo_notes = Notes::default();
+        let mut model = None;
+        let (e, _, _) = slot_effect(
+            &fx_slot(19, false, 1.0, 0.0, 0x1f, 0x10, stereo_pub),
+            &mut impulses,
+            "stereo",
+            &mut pseudo_notes,
+            (&mut knobs, &mut model, &mut held),
+        )
+        .expect("stereo");
+        assert!(matches!(e.kind, ir::EffectKind::Stereo { .. }));
+        let diags = pseudo_notes.finish();
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].impact, ir::Impact::Audible);
+        assert_eq!(diags[0].feature, "Stereo Modeller pseudo stereo");
     }
 }

@@ -45,6 +45,36 @@ pub struct Slot {
     pub output: u16,
 }
 
+/// A multi's decoded slots, multi scripts, and per-slot load failures, read
+/// from the `.nkm` in a single open/decrypt pass.
+#[derive(Debug)]
+pub struct Multi {
+    pub slots: Vec<Slot>,
+    pub scripts: Vec<ir::Script>,
+    pub failed: Vec<String>,
+}
+
+/// Reads both slots and multi scripts of the multi at `path` in one open/decrypt
+/// pass; with `only`, translates only that slot.
+///
+/// # Errors
+/// When the file is not a multi this can read.
+pub fn load(path: &Path, only: Option<u16>) -> Result<Multi, Error> {
+    let (chunks, monolith, encrypted) = container::opened(path)?;
+    let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
+    let bank = chunks
+        .find_first(ni_file::kontakt::objects::KONTAKT_BANK_ID)
+        .ok_or_else(|| Error::new(path, "multi", "no bank"))?;
+    let bank = Bank::try_from(bank).map_err(decode("bank"))?;
+    let scripts = scripts_from_bank(path, &bank)?;
+    let (slots, failed) = slots_from_bank(path, &chunks, &bank, monolith, encrypted, only)?;
+    Ok(Multi {
+        slots,
+        scripts,
+        failed,
+    })
+}
+
 /// The slots of the multi at `path`, in slot order; with `only`, that slot
 /// alone (the others are not translated).
 ///
@@ -58,6 +88,18 @@ pub fn slots(path: &Path, only: Option<u16>) -> Result<(Vec<Slot>, Vec<String>),
         .find_first(ni_file::kontakt::objects::KONTAKT_BANK_ID)
         .ok_or_else(|| Error::new(path, "multi", "no bank"))?;
     let bank = Bank::try_from(bank).map_err(decode("bank"))?;
+    slots_from_bank(path, &chunks, &bank, monolith, encrypted, only)
+}
+
+fn slots_from_bank(
+    path: &Path,
+    chunks: &KontaktChunks,
+    bank: &Bank,
+    monolith: Option<ni_file::file_container::NIFileContainer>,
+    encrypted: Option<bool>,
+    only: Option<u16>,
+) -> Result<(Vec<Slot>, Vec<String>), Error> {
+    let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let list = bank.slot_list().map_err(decode("slot list"))?;
     let table = (chunks.find_first(FILE_TABLE)).or_else(|| chunks.find_first(OLD_FILE_TABLE));
     let slot_table = bank.0.find_first(SLOT_TABLE);
@@ -126,6 +168,10 @@ pub fn scripts(path: &Path) -> Result<Vec<ir::Script>, Error> {
         .find_first(ni_file::kontakt::objects::KONTAKT_BANK_ID)
         .ok_or_else(|| Error::new(path, "multi", "no bank"))?;
     let bank = Bank::try_from(bank).map_err(|e| Error::new(path, "bank", e))?;
+    scripts_from_bank(path, &bank)
+}
+
+fn scripts_from_bank(path: &Path, bank: &Bank) -> Result<Vec<ir::Script>, Error> {
     let mut out = Vec::new();
     for (slot, chunk) in (bank.0.children.iter().filter(|c| c.id == SCRIPT)).enumerate() {
         let script = ni_file::kontakt::objects::BParScript::try_from(chunk)

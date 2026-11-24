@@ -8,7 +8,7 @@ pub(crate) fn get_test_files() -> Result<Vec<PathBuf>, NIFileError> {
     Ok(glob::glob(path)
         .map_err(|_| NIFileError::Generic(format!("error globbing: {}", path)))?
         .filter_map(|path| path.ok())
-        .filter(|path| path.file_name().unwrap() != ".DS_Store")
+        .filter(|path| path.file_name().is_some_and(|n| n != ".DS_Store"))
         .collect())
 }
 
@@ -18,7 +18,7 @@ pub(crate) fn get_files(path: &str) -> Result<Vec<PathBuf>, NIFileError> {
         .map_err(|_| NIFileError::Generic(format!("error globbing: {}", path)))?
         .filter_map(|path| path.ok())
         .filter(|path| path.is_file())
-        .filter(|path| path.file_name().unwrap() != ".DS_Store")
+        .filter(|path| path.file_name().is_some_and(|n| n != ".DS_Store"))
         .collect();
 
     if files.is_empty() {

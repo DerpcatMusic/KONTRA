@@ -26,7 +26,7 @@ mod folder;
 mod name;
 mod prefs;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -396,13 +396,16 @@ fn detect(root: &Root, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Foun
             });
         }
         Ok(_) => {
-            let mut visited = BTreeSet::new();
+            let mut visited = HashMap::new();
+            let mut found_libs = HashMap::new();
             visit_within(
                 &dir,
                 0,
                 None,
                 false,
+                false,
                 &mut visited,
+                &mut found_libs,
                 &mut out,
                 progress,
                 issues,
@@ -413,14 +416,19 @@ fn detect(root: &Root, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Foun
 }
 
 /// Visits `dir`, `within` saying whether `dir` already sits inside a library.
-/// Uses `visited` (canonicalized paths) so symlinked directory graphs never loop.
+/// Tracks the shallowest depth and best route independently per
+/// `(canonical_dir, within)`. Revisit only when either improves, preserving a
+/// shallower traversal budget and allowing real paths to replace aliases.
+/// Discovered libraries are deduplicated separately in `found_libs`.
 #[allow(clippy::too_many_arguments)]
 fn visit_within(
     dir: &Path,
     depth: usize,
     vendor: Option<String>,
     within: bool,
-    visited: &mut BTreeSet<PathBuf>,
+    through_symlink: bool,
+    visited: &mut HashMap<(PathBuf, bool), (usize, bool)>,
+    found_libs: &mut HashMap<PathBuf, (usize, bool, usize)>,
     out: &mut Vec<Found>,
     progress: &Progress,
     issues: &mut Vec<Issue>,
@@ -429,8 +437,22 @@ fn visit_within(
         return;
     }
     let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    if !visited.insert(canonical) {
-        return;
+    let is_symlink = through_symlink
+        || std::fs::symlink_metadata(dir)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+    let key = (canonical.clone(), within);
+    match visited.get_mut(&key) {
+        Some((prev_depth, prev_symlink)) => {
+            if depth >= *prev_depth && (is_symlink || !*prev_symlink) {
+                return;
+            }
+            *prev_depth = (*prev_depth).min(depth);
+            *prev_symlink &= is_symlink;
+        }
+        None => {
+            visited.insert(key, (depth, is_symlink));
+        }
     }
     progress.folders.fetch_add(1, Ordering::Relaxed);
     let l = list(dir, issues);
@@ -446,20 +468,56 @@ fn visit_within(
         strong || (depth > 0 && l.presets > 0)
     };
     if library {
-        progress.found.fetch_add(1, Ordering::Relaxed);
-        out.push(Found {
+        let candidate = Found {
             dir: dir.into(),
             nicnt: l.nicnt,
             vendor: vendor.clone(),
-        });
+        };
+        match found_libs.get_mut(&canonical) {
+            Some((idx, was_symlink, prev_depth)) => {
+                if (is_symlink, depth) < (*was_symlink, *prev_depth) {
+                    if let Some(slot) = out.get_mut(*idx) {
+                        *slot = candidate;
+                    }
+                    *was_symlink = is_symlink;
+                    *prev_depth = depth;
+                }
+            }
+            None => {
+                progress.found.fetch_add(1, Ordering::Relaxed);
+                let idx = out.len();
+                out.push(candidate);
+                found_libs.insert(canonical, (idx, is_symlink, depth));
+            }
+        }
     } else if depth == 0 {
         for bank in l.banks {
-            progress.found.fetch_add(1, Ordering::Relaxed);
-            out.push(Found {
+            let bank_canon = path_identity(&bank);
+            let is_symlink = std::fs::symlink_metadata(&bank)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            let candidate = Found {
                 dir: bank,
                 nicnt: None,
                 vendor: vendor.clone(),
-            });
+            };
+            match found_libs.get_mut(&bank_canon) {
+                Some((idx, was_symlink, prev_depth)) => {
+                    if (is_symlink, depth) < (*was_symlink, *prev_depth) {
+                        if let Some(slot) = out.get_mut(*idx) {
+                            *slot = candidate;
+                        }
+                        *was_symlink = is_symlink;
+                        *prev_depth = depth;
+                    }
+                }
+                None => {
+                    progress.found.fetch_add(1, Ordering::Relaxed);
+                    let idx = out.len();
+                    out.push(candidate);
+                    found_libs.insert(bank_canon, (idx, is_symlink, depth));
+                }
+            }
         }
     }
     if depth >= DEPTH || (l.audio >= SAMPLE_ONLY && l.presets == 0) {
@@ -478,7 +536,9 @@ fn visit_within(
                 depth + 1,
                 vendor.clone(),
                 within || library,
+                is_symlink,
                 visited,
+                found_libs,
                 out,
                 progress,
                 issues,
@@ -599,19 +659,25 @@ struct Walk<'a> {
 
 /// The presets and banner candidates under `dir`, skipping sample folders and
 /// the folders of libraries nested inside it (`state.nested`). Follows
-/// symlinks safely with canonical-path cycle tracking.
+/// symlinks safely with canonical-path cycle tracking, and prefers real regular
+/// file paths over symlink aliases when deduplicating canonical targets.
 fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut Vec<PathBuf>) {
-    let mut visited = BTreeSet::new();
-    let mut files = BTreeSet::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut visited: HashMap<PathBuf, bool> = HashMap::new();
+    let mut files: HashMap<PathBuf, (bool, PathBuf)> = HashMap::new();
+    let mut artwork: HashMap<PathBuf, (bool, PathBuf)> = HashMap::new();
+    let mut stack = vec![(dir.to_path_buf(), false)];
+    while let Some((dir, through_symlink)) = stack.pop() {
         if state.progress.canceled() {
             return;
         }
         let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
-        if !visited.insert(canonical) {
+        if visited
+            .get(&canonical)
+            .is_some_and(|&was_symlink| !was_symlink || through_symlink)
+        {
             continue;
         }
+        visited.insert(canonical, through_symlink);
         state.progress.folders.fetch_add(1, Ordering::Relaxed);
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -620,7 +686,9 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                 continue;
             }
         };
-        for entry in entries.flatten() {
+        let mut dir_entries: Vec<_> = entries.flatten().collect();
+        dir_entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in dir_entries {
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
@@ -629,7 +697,8 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                 continue;
             }
             let path = entry.path();
-            let (is_dir, is_file) = if kind.is_symlink() {
+            let is_symlink = kind.is_symlink();
+            let (is_dir, is_file) = if is_symlink {
                 match std::fs::metadata(&path) {
                     Ok(meta) => (meta.is_dir(), meta.is_file()),
                     Err(e) => {
@@ -644,7 +713,7 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
             };
             if is_dir {
                 if name != "samples" && !state.nested.contains(&path_identity(&path)) {
-                    stack.push(path);
+                    stack.push((path, through_symlink || is_symlink));
                 }
                 continue;
             }
@@ -652,35 +721,63 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                 continue;
             }
             match ext(&path).as_str() {
-                "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" => {
-                    if files.insert(path_identity(&path)) {
-                        presets.push(path);
+                "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" | "ufs" | "sf2" => {
+                    let alias = through_symlink || is_symlink;
+                    let id = path_identity(&path);
+                    match files.get_mut(&id) {
+                        Some((was_alias, stored)) if *was_alias && !alias => {
+                            *stored = path;
+                            *was_alias = false;
+                        }
+                        Some(_) => {}
+                        None => {
+                            files.insert(id, (alias, path));
+                        }
                     }
                 }
-                "ufs" if files.insert(path_identity(&path)) => {
-                    bank_presets(
-                        &path,
-                        &mut *state.cache,
-                        state.inspect,
-                        &mut *state.issues,
-                        presets,
-                        &mut *state.protection,
-                    );
-                    art.push(path);
+                "png" | "jpg" | "jpeg" | "nicnt" | "nkr" => {
+                    let alias = through_symlink || is_symlink;
+                    let id = path_identity(&path);
+                    match artwork.get_mut(&id) {
+                        Some((was_alias, stored)) if *was_alias && !alias => {
+                            *stored = path;
+                            *was_alias = false;
+                        }
+                        Some(_) => {}
+                        None => {
+                            artwork.insert(id, (alias, path));
+                        }
+                    }
                 }
-                "sf2" if files.insert(path_identity(&path)) => {
-                    bank_presets(
-                        &path,
-                        &mut *state.cache,
-                        state.inspect,
-                        &mut *state.issues,
-                        presets,
-                        &mut *state.protection,
-                    );
-                }
-                "png" | "jpg" | "jpeg" | "nicnt" | "nkr" => art.push(path),
                 _ => {}
             }
+        }
+    }
+    art.extend(artwork.into_values().map(|(_, path)| path));
+    let mut files: Vec<PathBuf> = files.into_values().map(|(_, path)| path).collect();
+    files.sort();
+    let mut banks = Vec::new();
+    for path in files {
+        match ext(&path).as_str() {
+            "ufs" => banks.push((path, true)),
+            "sf2" => banks.push((path, false)),
+            _ => presets.push(path),
+        }
+    }
+    for (path, is_ufs) in banks {
+        if state.progress.canceled() {
+            return;
+        }
+        bank_presets(
+            &path,
+            &mut *state.cache,
+            state.inspect,
+            &mut *state.issues,
+            presets,
+            &mut *state.protection,
+        );
+        if is_ufs {
+            art.push(path);
         }
     }
 }

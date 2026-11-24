@@ -48,7 +48,11 @@ impl Resources {
         path: &Path,
         shared: &mut dyn FnMut(&Path) -> Option<(File, Archive)>,
     ) -> Self {
-        let path = std::path::absolute(path).unwrap_or_else(|_| path.into());
+        let instrument = std::path::absolute(path).unwrap_or_else(|_| path.into());
+        let path = path
+            .canonicalize()
+            .or_else(|_| std::path::absolute(path))
+            .unwrap_or_else(|_| path.into());
         let root = root(&path);
         let mut places = vec![root.clone()];
         places.extend(
@@ -87,7 +91,7 @@ impl Resources {
         }
         Self {
             sources,
-            instrument: path,
+            instrument,
             key: None,
             keyed: false,
             unreadable,
@@ -318,17 +322,37 @@ pub(crate) fn known_root(path: &Path) -> Option<PathBuf> {
 
 fn find_root(path: &Path) -> Option<PathBuf> {
     let ancestors: Vec<&Path> = path.ancestors().skip(1).take(DEPTH).collect();
-    // 1. Prefer the nearest ancestor holding a `.nicnt` registration file so
+    // 1. Walk nearest-first: prefer the nearest `.nicnt` registration file so
     //    libraries with nested `Instruments/Sub/Samples` folders still resolve
-    //    their root `.nicnt` and `Resources/`.
-    if let Some(&dir) = ancestors.iter().find(|dir| {
-        entries(dir).iter().any(|p| {
+    //    their root `.nicnt` and `Resources/`, unless a nearer ancestor is
+    //    already a complete unregistered library (having its own Instruments,
+    //    Samples and Resources folders) so an enclosing `.nicnt` cannot shadow
+    //    the child library's own resources.
+    for &dir in &ancestors {
+        let children = entries(dir);
+        let has_nicnt = children.iter().any(|p| {
             p.is_file()
                 && p.extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
-        })
-    }) {
-        return Some(dir.to_path_buf());
+        });
+        if has_nicnt {
+            return Some(dir.to_path_buf());
+        }
+        let has_instruments = children
+            .iter()
+            .any(|p| p.is_dir() && (named(p, "Instruments") || named(p, "Multis")));
+        let has_samples = children.iter().any(|p| {
+            p.is_dir()
+                && (named(p, "Samples")
+                    || p.file_name().is_some_and(|n| {
+                        let lower = n.to_string_lossy().to_ascii_lowercase();
+                        lower.ends_with(" samples") || lower == "audio"
+                    }))
+        });
+        let has_resources = children.iter().any(|p| p.is_dir() && named(p, "Resources"));
+        if has_instruments && has_samples && has_resources {
+            return Some(dir.to_path_buf());
+        }
     }
     // 2. Prefer structural markers anywhere among the ancestors. Only fall
     //    back to an archive or cache marker when no such structure exists.
@@ -431,6 +455,30 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resource_key_lookup_keeps_the_caller_alias() {
+        let base =
+            std::env::temp_dir().join(format!("kontra-resource-key-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real/Instruments/Patch.nki");
+        let alias = base.join("alias/Patch.nki");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        std::fs::write(&real, b"").unwrap();
+        std::fs::write(
+            base.join("alias/Library.nicnt"),
+            format!("<JDX>{}</JDX><HU>{}</HU>", "aa".repeat(32), "bb".repeat(16)),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let resources = super::Resources::open(&alias);
+        assert_eq!(resources.instrument, alias);
+        assert!(crate::access::library_key(&resources.instrument).is_ok());
+        assert!(crate::access::library_key(&real).is_err());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     #[test]
     fn library_root_requires_one_unambiguous_nicnt() {
         let base = std::env::current_dir()
@@ -465,4 +513,40 @@ fn structural_library_roots_outrank_a_nearer_archive_cache() {
     std::fs::remove_dir(&samples).unwrap();
     assert_eq!(find_root(&preset), Some(instruments));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn complete_unregistered_nested_library_is_not_shadowed_by_enclosing_nicnt() {
+    let dir =
+        std::env::temp_dir().join(format!("kontra-kontakt-nested-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Enclosing bundle with its own `.nicnt` and `Resources/`.
+    std::fs::create_dir_all(dir.join("Resources")).unwrap();
+    std::fs::write(dir.join("Outer.nicnt"), b"").unwrap();
+    std::fs::write(dir.join("Resources/script.txt"), b"outer").unwrap();
+
+    // Complete unregistered nested library with its own Instruments/Samples/Resources.
+    let child = dir.join("ChildLib");
+    std::fs::create_dir_all(child.join("Instruments")).unwrap();
+    std::fs::create_dir_all(child.join("Samples")).unwrap();
+    std::fs::create_dir_all(child.join("Resources")).unwrap();
+    std::fs::write(child.join("Resources/script.txt"), b"child").unwrap();
+    let child_preset = child.join("Instruments/Patch.nki");
+    std::fs::write(&child_preset, b"").unwrap();
+
+    assert_eq!(find_root(&child_preset), Some(child.clone()));
+    let mut child_res = Resources::open(&child_preset);
+    assert_eq!(child_res.read("script.txt").as_deref(), Some(&b"child"[..]));
+
+    // Incomplete nested subfolder (like Evolve R2's `Instruments/Sub/Samples`)
+    // still resolves up to the enclosing `.nicnt` root.
+    let sub = dir.join("Instruments/4 Tonality");
+    std::fs::create_dir_all(sub.join("Samples")).unwrap();
+    let sub_preset = sub.join("Tone.nki");
+    std::fs::write(&sub_preset, b"").unwrap();
+    assert_eq!(find_root(&sub_preset), Some(dir.clone()));
+
+    std::fs::remove_dir_all(&dir).unwrap();
 }

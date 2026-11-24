@@ -698,7 +698,11 @@ impl<'a> Machine<'a> {
             }
             'S' | 'W' => {
                 let b = self.take(4, true)?;
-                let n = u32::from_le_bytes(b[..4].try_into().unwrap()) as usize;
+                let len_bytes: [u8; 4] = b
+                    .get(..4)
+                    .and_then(|s| s.try_into().ok())
+                    .ok_or(Stop::Throw)?;
+                let n = u32::from_le_bytes(len_bytes) as usize;
                 if n > 1 << 24 {
                     return Err(Stop::Throw);
                 }
@@ -724,7 +728,12 @@ impl<'a> Machine<'a> {
         if flag > 1 {
             return Err(Stop::Throw);
         }
-        let ver = u16::from_le_bytes(self.take(2, true)?[..2].try_into().unwrap());
+        let ver_bytes: [u8; 2] = self
+            .take(2, true)?
+            .get(..2)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(Stop::Throw)?;
+        let ver = u16::from_le_bytes(ver_bytes);
         let reader = self.class_reader();
         if let Some((_, _, current)) = reader {
             if ver > current {
@@ -739,7 +748,38 @@ impl<'a> Machine<'a> {
             return self.run_nested(prog, ver);
         }
         let id = self.record('O', start, 0, Some(u64::from(ver)));
-        if self.stream.data.is_none() {
+        if let Some(data) = self.stream.data {
+            let mut areas = Vec::new();
+            for _ in 0..3 {
+                let len_bytes: [u8; 4] = self
+                    .take(4, false)?
+                    .get(..4)
+                    .and_then(|s| s.try_into().ok())
+                    .ok_or(Stop::Throw)?;
+                let n = u32::from_le_bytes(len_bytes) as usize;
+                let begin = self.stream.pos;
+                self.take(n, false)?;
+                areas.push((begin, n));
+            }
+            if let Some((prog, _, _)) = reader {
+                let (begin, n) = areas[1];
+                let slice = data
+                    .get(begin..begin.saturating_add(n))
+                    .ok_or(Stop::Throw)?;
+                let sub = Stream::decode(slice, self.stream.base + begin);
+                let mut sub = sub;
+                std::mem::swap(&mut self.stream, &mut sub);
+                self.depth += 1;
+                let r = self.run_nested(prog, ver);
+                self.depth -= 1;
+                let finished = self.stream.pos == n;
+                std::mem::swap(&mut self.stream, &mut sub);
+                r?;
+                if !finished {
+                    return Err(Stop::Unresolved("nested object left bytes unread".into()));
+                }
+            }
+        } else {
             // synthesize: empty private and children areas around the body
             self.take(4, false)?;
             let mut body = Stream::synth();
@@ -758,30 +798,6 @@ impl<'a> Machine<'a> {
             self.stream.out.extend_from_slice(&body.out);
             self.stream.out.extend_from_slice(&[0; 4]);
             self.stream.pos += 8 + body.out.len();
-        } else {
-            let data = self.stream.data.unwrap();
-            let mut areas = Vec::new();
-            for _ in 0..3 {
-                let n = u32::from_le_bytes(self.take(4, false)?[..4].try_into().unwrap()) as usize;
-                let begin = self.stream.pos;
-                self.take(n, false)?;
-                areas.push((begin, n));
-            }
-            if let Some((prog, _, _)) = reader {
-                let (begin, n) = areas[1];
-                let sub = Stream::decode(&data[begin..begin + n], self.stream.base + begin);
-                let mut sub = sub;
-                std::mem::swap(&mut self.stream, &mut sub);
-                self.depth += 1;
-                let r = self.run_nested(prog, ver);
-                self.depth -= 1;
-                let finished = self.stream.pos == n;
-                std::mem::swap(&mut self.stream, &mut sub);
-                r?;
-                if !finished {
-                    return Err(Stop::Unresolved("nested object left bytes unread".into()));
-                }
-            }
         }
         self.fields[id as usize - 1].len = self.stream.pos - start;
         Ok(())

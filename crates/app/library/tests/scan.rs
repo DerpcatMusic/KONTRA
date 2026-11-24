@@ -575,3 +575,119 @@ fn aliases_neither_duplicate_targets_nor_cross_nested_library_boundaries() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn deep_symlink_alias_at_depth_limit_does_not_suppress_shallower_real_directory() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tree(
+        "depth-alias",
+        &[
+            ("A/B/C/.keep", ""),
+            ("Z_RealVendor/SubLib/Instruments/Patch.nki", ""),
+            ("Z_RealVendor/DirectLib/Direct.nki", ""),
+        ],
+    );
+    // Depth-4 symlink visited alphabetically BEFORE `Z_RealVendor` (depth 1).
+    // At depth 4 the scan cannot descend into `SubLib`, so `Z_RealVendor` MUST
+    // still be visited again at depth 1.
+    symlink(dir.join("Z_RealVendor"), dir.join("A/B/C/AliasVendor")).unwrap();
+    // Symlink to a library visited before the real library itself; deduplication
+    // must keep the real directory once.
+    symlink(
+        dir.join("Z_RealVendor/DirectLib"),
+        dir.join("A/AliasDirect"),
+    )
+    .unwrap();
+
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    let names: Vec<_> = catalog.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["DirectLib", "SubLib"]);
+    let direct = catalog
+        .libraries
+        .iter()
+        .find(|l| l.name == "DirectLib")
+        .unwrap();
+    assert_eq!(direct.dir, dir.join("Z_RealVendor/DirectLib"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn file_alias_deduplication_prefers_real_file_over_symlink_alias() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tree(
+        "prefer-real-file",
+        &[
+            ("Lib/Instruments/Z_Patch.nki", ""),
+            ("Lib/Instruments/Z_Bank.ufs", "Lead.uvip"),
+        ],
+    );
+    let inst = dir.join("Lib/Instruments");
+    // Name symlinks alphabetically BEFORE the real files so directory ordering
+    // visits the symlinks first.
+    symlink("Z_Patch.nki", inst.join("A_Copy.nksn")).unwrap();
+    symlink("Z_Bank.ufs", inst.join("A_Copy.ufs")).unwrap();
+
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    assert_eq!(catalog.libraries.len(), 1);
+    let lib = &catalog.libraries[0];
+    assert_eq!(
+        lib.presets,
+        [inst.join("Z_Bank.ufs/Lead.uvip"), inst.join("Z_Patch.nki"),]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn shallower_alias_does_not_hide_the_real_library() {
+    use std::os::unix::fs::symlink;
+    let dir = tree(
+        "shallow-library-alias",
+        &[("Vendor/Library/Instruments/Patch.nki", "")],
+    );
+    symlink(dir.join("Vendor/Library"), dir.join("A_Alias")).unwrap();
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    assert_eq!(catalog.libraries.len(), 1);
+    assert_eq!(catalog.libraries[0].dir, dir.join("Vendor/Library"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_prefers_real_directory_routes_and_deduplicates_cross_format_aliases() {
+    use std::os::unix::fs::symlink;
+    let dir = tree(
+        "catalog-directory-alias",
+        &[
+            ("Lib/Lib.nicnt", NICNT),
+            ("Lib/A_Real/Patch.nki", ""),
+            ("Lib/A_Real/Bank.ufs", "Lead.uvip"),
+            ("Lib/A_Real/logo.png", ""),
+        ],
+    );
+    let lib = dir.join("Lib");
+    symlink("A_Real", lib.join("Z_Alias")).unwrap();
+    symlink("Bank.ufs", lib.join("A_Real/Copy.nki")).unwrap();
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    assert_eq!(catalog.libraries.len(), 1);
+    assert_eq!(
+        catalog.libraries[0].presets,
+        [
+            lib.join("A_Real/Bank.ufs/Lead.uvip"),
+            lib.join("A_Real/Patch.nki"),
+        ]
+    );
+    assert_eq!(
+        catalog.libraries[0]
+            .art
+            .iter()
+            .filter(|p| p.ends_with("logo.png"))
+            .collect::<Vec<_>>(),
+        [&lib.join("A_Real/logo.png")]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

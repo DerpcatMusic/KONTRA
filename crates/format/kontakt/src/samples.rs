@@ -66,9 +66,18 @@ impl Resolver {
         let mut members = HashMap::new();
         if let Some(container) = monolith {
             for item in container.items {
+                let Some(offset) = container
+                    .file_section_offset
+                    .checked_add(item.file_start_offset)
+                else {
+                    continue;
+                };
+                if offset.checked_add(item.file_size).is_none() {
+                    continue;
+                }
                 let location = Location {
                     file: instrument.to_path_buf(),
-                    offset: container.file_section_offset + item.file_start_offset,
+                    offset,
                     size: Some(item.file_size),
                     keystream: None,
                 };
@@ -146,11 +155,11 @@ impl Resolver {
             for rel in &rels {
                 // `..` is normal in Kontakt's tables, but never past the root.
                 let candidate = lexical_clean(&base.join(rel));
-                if let Some(found) = self.try_moved(&candidate)? {
-                    return Ok(Some(found));
-                }
                 if !candidate.starts_with(&self.root) {
                     continue;
+                }
+                if let Some(found) = self.try_moved(&candidate)? {
+                    return Ok(Some(found));
                 }
                 if let Some((archive, member)) = self.resolve_archive(&base, &candidate, rel) {
                     if self.can_open_archive(&archive)
@@ -176,27 +185,45 @@ impl Resolver {
         // A moved or relocated archive: find the archive by name, keep the member exact.
         if let Some((prefix, member)) = split_container_reference(&normalized, ARCHIVE_EXTS)
             && let Some(archive) = self.by_name(prefix)?
+            && self.can_open_archive(&archive)
         {
             return self.archive_entry(&archive, member);
         }
         match self.by_name(&normalized)? {
-            Some(file) => Ok(Some(whole(file))),
-            None => Ok(None),
+            Some(file) if self.inside(&file) => Ok(Some(whole(file))),
+            _ => Ok(None),
         }
     }
 
     /// Checks whether `candidate` remaps via `kontra_format::moved_with_case`
-    /// to an existing loose file or an `.nkx`/`.nkr` archive member.
+    /// to an existing loose file or an `.nkx`/`.nkr` archive member, while
+    /// ensuring neither `..` traversal nor symlinks can escape the matched
+    /// destination root.
     fn try_moved(&mut self, candidate: &Path) -> Result<Option<Location>, String> {
-        let Some(moved) = kontra_format::moved_with_case(candidate, Some(&mut self.dir_cache))
+        let Some(cleaned) = clean_no_escape(candidate) else {
+            return Ok(None);
+        };
+        let Some(moved) = kontra_format::moved_with_case(&cleaned, Some(&mut self.dir_cache))
         else {
             return Ok(None);
         };
-        if moved == candidate {
+        if moved == cleaned
+            || moved
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
             return Ok(None);
         }
+        let Some((moved_root_raw, moved_root)) = moved_destination_root(&cleaned, &moved) else {
+            return Ok(None);
+        };
+        let in_moved_root = |path: &Path| {
+            path.canonicalize()
+                .is_ok_and(|canon| canon.starts_with(&moved_root))
+        };
         if let Some((archive, member)) =
             split_container_path(&moved, ARCHIVE_EXTS, |p| self.archives.contains_key(p))
+            && in_moved_root(&archive)
             && let Some(found) = self.archive_entry(&archive, &member)?
         {
             return Ok(Some(found));
@@ -206,20 +233,27 @@ impl Resolver {
         if let Some((prefix, member)) = split_container_reference(&moved_str, ARCHIVE_EXTS) {
             let prefix_path = Path::new(prefix);
             if prefix_path.is_file()
+                && in_moved_root(prefix_path)
                 && let Some(found) = self.archive_entry(prefix_path, member)?
             {
                 return Ok(Some(found));
             }
-            if let Some(parent) = prefix_path.parent()
-                && let Some(file_name) = prefix_path.file_name().and_then(|n| n.to_str())
-                && let Some(found_archive) = self.dir_cache.find_child(parent, file_name)
+            if let Some(rel_prefix) = strip_prefix_ascii_case(prefix_path, &moved_root_raw)
+                && let Some(rel_str) = rel_prefix.to_str()
+                && let Some(found_archive) = resolve_case_insensitive_bounded(
+                    &moved_root_raw,
+                    &moved_root_raw,
+                    rel_str,
+                    Some(&mut self.dir_cache),
+                )
                 && found_archive.is_file()
+                && in_moved_root(&found_archive)
                 && let Some(found) = self.archive_entry(&found_archive, member)?
             {
                 return Ok(Some(found));
             }
         }
-        if moved.is_file() {
+        if moved.is_file() && in_moved_root(&moved) {
             return Ok(Some(whole(moved)));
         }
         Ok(None)
@@ -487,6 +521,78 @@ fn whole(file: PathBuf) -> Location {
     }
 }
 
+/// Cleans `.` and `..` components without allowing `..` to escape past the
+/// root, Windows drive prefix, or relative start.
+fn clean_no_escape(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    let mut depth: usize = 0;
+    let mut first_normal = true;
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir => {
+                out.push(part);
+                first_normal = false;
+            }
+            Component::Normal(seg) => {
+                // Treat a leading Windows drive component (`C:`) on Unix as an
+                // anchor that `..` must never pop past.
+                let is_drive = first_normal
+                    && seg.to_str().is_some_and(
+                        |s| matches!(s.as_bytes(), [c, b':'] if c.is_ascii_alphabetic()),
+                    );
+                first_normal = false;
+                out.push(seg);
+                if !is_drive {
+                    depth += 1;
+                }
+            }
+            Component::ParentDir => {
+                if depth == 0 {
+                    return None;
+                }
+                out.pop();
+                depth -= 1;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Discovers the destination root `(raw, canonical)` of the moved-folder rule
+/// that remapped `cleaned` to `moved`.
+fn moved_destination_root(cleaned: &Path, moved: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut root = None;
+    for ancestor in cleaned.ancestors() {
+        let Some(mapped) = kontra_format::moved_with_case(ancestor, None) else {
+            break;
+        };
+        if strip_prefix_ascii_case(moved, &mapped).is_some() {
+            root = Some(mapped);
+        } else {
+            break;
+        }
+    }
+    let raw = root?;
+    let canon = raw.canonicalize().ok()?;
+    Some((raw, canon))
+}
+
+fn strip_prefix_ascii_case(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    let mut parts = path.components();
+    for expected in prefix.components() {
+        if !parts
+            .next()?
+            .as_os_str()
+            .eq_ignore_ascii_case(expected.as_os_str())
+        {
+            return None;
+        }
+    }
+    Some(parts.collect())
+}
+
 fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -562,5 +668,110 @@ mod tests {
         assert_eq!(found.file, wav.canonicalize().unwrap());
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn try_moved_blocks_path_traversal_and_symlink_escapes() {
+        let base =
+            std::env::temp_dir().join(format!("kontra-samples-traversal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = base.join("Lib");
+        let moved_dest = base.join("MovedDest");
+        let outside = base.join("Outside");
+        let other_moved = base.join("OtherMoved");
+        std::fs::create_dir_all(lib.join("Instruments")).unwrap();
+        std::fs::create_dir_all(lib.join("Samples")).unwrap();
+        std::fs::create_dir_all(moved_dest.join("Samples")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&other_moved).unwrap();
+
+        let inst = lib.join("Instruments/Patch.nki");
+        std::fs::write(&inst, b"").unwrap();
+        let legit = moved_dest.join("Samples/C4.WAV");
+        std::fs::write(&legit, b"riff").unwrap();
+        let secret = outside.join("secret.wav");
+        std::fs::write(&secret, b"secret").unwrap();
+        let other_secret = other_moved.join("other.wav");
+        std::fs::write(&other_secret, b"other").unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&secret, moved_dest.join("Samples/escape.wav")).unwrap();
+        }
+
+        let old_prefix = base.join("OldLocation/MyLib");
+        let other_old = base.join("OtherLib");
+        kontra_format::set_moved(&[
+            (old_prefix.clone(), moved_dest.clone()),
+            (PathBuf::from("C:/OldLib"), moved_dest.clone()),
+            (other_old, other_moved),
+        ]);
+
+        let mut resolver = Resolver::new(&inst, None).unwrap();
+
+        // An archive member is not a filesystem path, so only its ancestor is case-corrected.
+        let archive = moved_dest.join("Samples/Library.NKX");
+        std::fs::write(&archive, b"not an archive").unwrap();
+        let requested = old_prefix.join("samples/library.nkx/member.wav");
+        let mapped = kontra_format::moved_with_case(&requested, None).unwrap();
+        let (raw_root, canonical_root) = moved_destination_root(&requested, &mapped).unwrap();
+        assert_eq!(raw_root, moved_dest);
+        assert_eq!(canonical_root, moved_dest.canonicalize().unwrap());
+        let archive_prefix = mapped.parent().unwrap();
+        let relative = strip_prefix_ascii_case(archive_prefix, &raw_root).unwrap();
+        let resolved = resolve_case_insensitive_bounded(
+            &raw_root,
+            &raw_root,
+            relative.to_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(resolved, archive);
+
+        // Legitimate moved sample resolves cleanly (including case-insensitive lookup).
+        let ok = resolver
+            .resolve(&format!("{}/samples/c4.wav", old_prefix.display()))
+            .unwrap();
+        assert_eq!(ok.map(|l| l.file), Some(legit.clone()));
+
+        // Legitimate internal `..` that stays within the moved prefix resolves cleanly.
+        let ok_internal = resolver
+            .resolve(&format!(
+                "{}/Instruments/../Samples/C4.WAV",
+                old_prefix.display()
+            ))
+            .unwrap();
+        assert_eq!(ok_internal.map(|l| l.file), Some(legit));
+
+        // Traversal via `..` escaping the moved destination root is rejected.
+        let escaped_posix = resolver
+            .resolve(&format!(
+                "{}/../../Outside/secret.wav",
+                old_prefix.display()
+            ))
+            .unwrap();
+        assert_eq!(escaped_posix, None);
+
+        // Windows-style drive prefix traversal escaping the moved root is rejected.
+        let escaped_win = resolver
+            .resolve(r"C:\OldLib\..\..\Outside\secret.wav")
+            .unwrap();
+        assert_eq!(escaped_win, None);
+
+        // Relative `..` escaping the library root cannot trigger another library's moved rule.
+        let escaped_rel = resolver.resolve("../../OtherLib/other.wav").unwrap();
+        assert_eq!(escaped_rel, None);
+
+        // Symlink inside moved destination pointing outside the moved root is rejected.
+        #[cfg(unix)]
+        {
+            let escaped_symlink = resolver
+                .resolve(&format!("{}/Samples/escape.wav", old_prefix.display()))
+                .unwrap();
+            assert_eq!(escaped_symlink, None);
+        }
+
+        kontra_format::set_moved(&[]);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

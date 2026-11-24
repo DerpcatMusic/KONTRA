@@ -7,7 +7,9 @@ use kontra_law::kontakt::{
     EQ_PEAK_DB, FILTER_NOTE_HZ, FLEX_SHAPE, LADDER_GAIN, LEGACY_CUTOFF_HZ, LEGACY_RESONANCE_LOSS,
     LEGACY_RESONANCE_Q, UNIT_FIFTH,
 };
-use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeDbd, EnvelopeFlex, Glide, Lfo};
+use ni_file::kontakt::objects::{
+    EnvelopeAhdsr, EnvelopeDbd, EnvelopeFlex, Glide, Lfo, ShaperCurve, StepMod,
+};
 
 /// Kontakt's decay and release: the kernel runs its state from 1.075 down to
 /// 0.075, a ratio of 3/43, so the stage is silent exactly at its time
@@ -43,8 +45,9 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
 /// a scaled envelope; clear, `$out := $in * (1.0 - (1.0 - env) * $intensity)`
 ///, the envelope above a floor of `1 − i`. Both are the plain
 /// envelope at full intensity, which is every Areia, Dolce, Pacific and probe
-/// route in the corpus census. ponytail: mode +0x600 = 2 (`* 3.0` signal) is
-/// not decoded; add it when a library saves it.
+/// route in the corpus census. Note: mode `+0x600 == 2` (`* 3.0` signal) is
+/// `BParEnv_DBD` ([ref], 3970-3975`), translated via [`dbd`]
+/// and `timed.rs` rather than AHDSR.
 pub(crate) fn envelope_depth(e: &mut ir::Envelope, intensity: f32, scaled: bool) {
     let a = intensity.abs().min(1.0);
     if intensity < 0.0 {
@@ -445,6 +448,148 @@ pub(crate) fn lfo(l: &Lfo, clock: ir::Clock) -> Option<ir::Lfo> {
         phase,
         fade_ms,
         clock,
+    })
+}
+
+fn step_mod_note(s: &StepMod) -> Option<f32> {
+    let note = s
+        .frequency_sync
+        .map(|r| r.values[0])
+        .or(s.legacy_note_value)?;
+    note.is_finite().then_some(note)
+}
+
+fn step_mod_active(s: &StepMod) -> Option<&[f32]> {
+    let n = usize::try_from(s.num_steps).ok()?.min(s.steps.len());
+    if n == 0 {
+        return None;
+    }
+    let active = s.steps.get(..n)?;
+    active.iter().all(|v| v.is_finite()).then_some(active)
+}
+
+/// Maps one Kontakt `BParArp` step value (`-1..=1`, [ref])
+/// through an optional modulation shaper into either signed (`-1..=1`) or
+/// unipolar (`0..=1`) IR route domain.
+pub(crate) fn step_mod_value(raw: f32, curve: Option<&ShaperCurve>, signed: bool) -> f32 {
+    let s = raw.clamp(-1.0, 1.0);
+    match curve {
+        Some(curve) => {
+            let x = (s + 1.0) * 0.5;
+            let y = match curve {
+                ShaperCurve::Breakpoints(points) if !points.is_empty() => {
+                    let pts: Vec<_> = points.iter().map(|p| (p.x, p.y, p.curve)).collect();
+                    kontra_law::kontakt::modulation_shaper(&pts).eval(x)
+                }
+                _ => curve.evaluate(x),
+            };
+            if signed { 2.0 * y - 1.0 } else { y }
+        }
+        None => {
+            if signed {
+                s
+            } else {
+                (s + 1.0) * 0.5
+            }
+        }
+    }
+}
+
+/// Looping Step Modulator (`BParArp`, chunk `0x09`) clock as a rising ramp LFO.
+///
+/// Native `BArp32Step::Render` ([ref], setup [ref])
+/// advances phase `p in [0, numSteps)` at `frequency` steps/sec (free when note
+/// value is `-1.0`) or `note * frequency` beats/step (synced), wrapping `p -= numSteps`.
+/// One ramp cycle `[0, 1)` covers all `numSteps` steps.
+pub(crate) fn step_mod_lfo(s: &StepMod, clock: ir::Clock) -> Option<ir::Lfo> {
+    const FREE: f32 = -1.0;
+    if s.single_trigger || !(s.frequency.is_finite() && s.frequency > 0.0) {
+        return None;
+    }
+    let n = step_mod_active(s)?.len() as f32;
+    let note = step_mod_note(s)?;
+    let rate = if note == FREE {
+        ir::Rate::Hz(s.frequency / n)
+    } else if note > 0.0 {
+        ir::Rate::Steps {
+            beats: note * n,
+            count: s.frequency,
+        }
+    } else {
+        return None;
+    };
+    Some(ir::Lfo {
+        wave: ir::Wave::Ramp,
+        rate,
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock,
+    })
+}
+
+/// Stepped transfer table for a looping Step Modulator.
+///
+/// `ir::Transfer::apply` indexes `floor(x * (len - 1))`, so appending one copy
+/// of the final step gives all `n` steps equal `[k/n, (k+1)/n)` spans on `x in [0, 1)`.
+pub(crate) fn step_mod_table(
+    s: &StepMod,
+    curve: Option<&ShaperCurve>,
+    signed: bool,
+) -> Option<Vec<f32>> {
+    let active = step_mod_active(s)?;
+    let mut table = Vec::with_capacity(active.len() + 1);
+    for &v in active {
+        table.push(step_mod_value(v, curve, signed));
+    }
+    if let Some(&last) = table.last() {
+        table.push(last);
+    }
+    Some(table)
+}
+
+/// One-shot (`single_trigger`) unsynced per-voice Step Modulator as unipolar
+/// `0..=1` hold-then-step breakpoints, holding the final step indefinitely
+///. Signed targets map `0..=1 → -1..=1` through a
+/// linear `ir::Transfer` so `ir::Breakpoints` stays strictly within `0..=1`.
+pub(crate) fn step_mod_oneshot(
+    s: &StepMod,
+    curve: Option<&ShaperCurve>,
+) -> Option<ir::Breakpoints> {
+    const FREE: f32 = -1.0;
+    if !s.single_trigger
+        || !(s.frequency.is_finite() && s.frequency > 0.0)
+        || step_mod_note(s) != Some(FREE)
+    {
+        return None;
+    }
+    let active = step_mod_active(s)?;
+    let step_ms = 1000.0 / s.frequency;
+    let mapped: Vec<f32> = active
+        .iter()
+        .map(|&v| step_mod_value(v, curve, false))
+        .collect();
+    let (&start, rest) = mapped.split_first()?;
+    let mut points = Vec::with_capacity(rest.len() * 2);
+    let mut prev = start;
+    for &next in rest {
+        points.push(ir::Breakpoint {
+            ms: step_ms,
+            level: prev,
+            curve: 0.0,
+        });
+        points.push(ir::Breakpoint {
+            ms: 0.0,
+            level: next,
+            curve: 0.0,
+        });
+        prev = next;
+    }
+    Some(ir::Breakpoints {
+        start,
+        points,
+        sustain: None,
+        loop_from: None,
+        stages: false,
     })
 }
 
@@ -855,12 +1000,13 @@ pub(crate) fn transparent_limiter(drive: f32, release: f32, ceiling: f32) -> ir:
 /// Solid Bus Comp (0x46): saved threshold, make-up, attack, release, ratio
 /// and mix knobs 0..=1, and the link byte. Ratio, attack and release are
 /// six-step switches (`floor(5x + 0.5)`); the threshold knob spans ±18.6 dB
-/// around −20 dB less a per-ratio offset, make-up −5.25..=21 dB
-/// (tables [ref]..[ref], docs/re/engine/dyn-compressors.md).
+/// around −20 dB less a per-ratio offset, make-up −5.25..=21 dB. All eight
+/// parameter mappings verified against [ref] ([ref],
+/// tables [ref]..[ref], `docs/re/engine/dyn-compressors.md`).
 /// Release step 5 is the auto release on a 75 ms base; the second value is
 /// set then, for the caller to report.
-// ponytail: the core's detector and curve are unverified; this is the
-// standard compressor at the switch values, auto release as its 75 ms base.
+// Core detector/auto-release state machine is approximated by
+// the neutral IR compressor at the binary-verified switch parameters (Wave 2 DSP).
 pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bool) {
     const RATIO: [f32; 6] = [1.5, 2.0, 3.0, 4.0, 5.0, 10.0];
     const OFFSET_DB: [f32; 6] = [-12.0, -9.0, -5.0, -4.0, -3.3, -0.2];
