@@ -720,7 +720,8 @@ mod tests {
         again.set_theme(&tokens);
         b.set_kontakt("/nowhere/Other".into());
         assert_eq!(Browser::open(Some(&dir), None).theme(), tokens);
-        std::fs::remove_dir_all(&dir).unwrap();
+        drop((b, again));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A root a machine scan found is listed as auto with how its scan went;
@@ -752,7 +753,10 @@ mod tests {
         b.add_root(gone.clone());
         assert!(b.prefs.hidden.is_empty(), "adding a folder unhides it");
         assert!(!b.roots()[0].auto);
-        std::fs::remove_dir_all(&dir).unwrap();
+        // The browsers' background index writes can still be landing in the
+        // temp dir; cleanup is best effort, not what this test checks.
+        drop((b, again));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A scan that finds what is already listed changes nothing the editor
