@@ -17,15 +17,21 @@ use kontra_engine::files::{self, ArrayKind, FileReply, FileRequest};
 use super::{Command, Rack};
 
 /// Reads the array files a script names: what it saved under `saves`,
-/// else the library's.
+/// else the library's, relative to its resource container folder `rc`
+/// without case ([`read`]).
 #[derive(Debug, Default)]
 pub(crate) struct DiskFiles {
     pub(crate) saves: Option<PathBuf>,
+    pub(crate) rc: Option<Text>,
 }
 
 impl files::Files for DiskFiles {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
-        read(self.saves.as_deref(), path)
+        read(
+            self.saves.as_deref(),
+            self.rc.as_ref().map(Text::as_str),
+            path,
+        )
     }
 }
 
@@ -57,11 +63,23 @@ pub(super) fn saved(saves: Option<&Path>, path: &Path) -> Option<PathBuf> {
     Some(at)
 }
 
-fn read(saves: Option<&Path>, path: &str) -> Option<Vec<u8>> {
+/// What a script reads at `path`: its save under `saves`, else the file.
+/// Relative to the script's resource container folder `rc` (and its
+/// library, the folder above), names match without case: Kontakt's Chords
+/// tool asks for `../Library Data/Midi Files/` and ships `MIDI Files/`.
+fn read(saves: Option<&Path>, rc: Option<&str>, path: &str) -> Option<Vec<u8>> {
     let path = nka(path)?;
     saved(saves, path)
         .and_then(|s| bounded(&s))
         .or_else(|| bounded(path))
+        .or_else(|| {
+            let rc = Path::new(rc?);
+            let rest = path.strip_prefix(rc).ok()?.to_str()?;
+            let library = rc.parent().unwrap_or(rc);
+            let found =
+                kontra_format::paths::resolve_case_insensitive_bounded(rc, library, rest, None)?;
+            bounded(&found)
+        })
 }
 
 /// The bytes of a regular file no larger than any resource a script loads
@@ -154,7 +172,11 @@ impl Rack {
                 });
                 continue;
             }
-            let reply = Box::new(answer(self.saves.as_deref(), request));
+            let rc = (p.plan.as_ref())
+                .and_then(|plan| plan.scripts.get(usize::from(request.slot)))
+                .and_then(|s| s.rc_folder);
+            let rc = rc.as_ref().map(Text::as_str);
+            let reply = Box::new(answer(self.saves.as_deref(), rc, request));
             // Only a load that read its file names a preset.
             if reply.loaded.is_some() {
                 p.named.loaded(request.path.as_str());
@@ -168,8 +190,8 @@ impl Rack {
     }
 }
 
-/// A load's values, filled from the file, or a save's reserved room.
-pub(super) fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
+/// A load's values, filled from the file ([`read`]), or a save's reserved room.
+pub(super) fn answer(saves: Option<&Path>, rc: Option<&str>, request: FileRequest) -> FileReply {
     let len = request.len as usize;
     let text = request.kind == ArrayKind::Text;
     let (save, midi) = (request.save, request.midi.is_some());
@@ -194,14 +216,14 @@ pub(super) fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
     }
     if request.midi.is_some() {
         let smf =
-            read(saves, request.path.as_str()).and_then(|b| kontra_engine::midi_file::read(&b));
+            read(saves, rc, request.path.as_str()).and_then(|b| kontra_engine::midi_file::read(&b));
         reply.loaded = smf.as_ref().map(|_| (Vec::new(), Vec::new()));
         reply.midi = smf;
         return reply;
     }
     let mut ints = vec![0; if text { 0 } else { len }];
     let mut texts = vec![Text::EMPTY; if text { len } else { 0 }];
-    let bytes = read(saves, request.path.as_str());
+    let bytes = read(saves, rc, request.path.as_str());
     let name = request.name.as_str();
     let filled =
         bytes.and_then(|b| files::fill(&b, name, (0, len), request.kind, &mut ints, &mut texts));
@@ -211,4 +233,39 @@ pub(super) fn answer(saves: Option<&Path>, request: FileRequest) -> FileReply {
         (ints, texts)
     });
     reply
+}
+
+#[cfg(test)]
+mod tests {
+    /// Kontakt's Chords tool asks, from its container folder, for
+    /// `../Library Data/Midi Files/…` and ships `MIDI Files/`: read without
+    /// case, but only up to the container's library (an exact path reads
+    /// as before).
+    #[test]
+    fn a_read_relative_to_the_container_folder_ignores_case() {
+        let lib = std::env::temp_dir().join(format!("kontra-rc-read-{}", std::process::id()));
+        let samples = lib.join("Chords/Samples");
+        std::fs::create_dir_all(&samples).unwrap();
+        std::fs::create_dir_all(lib.join("Chords/MIDI Files")).unwrap();
+        std::fs::write(lib.join("Chords/MIDI Files/a.mid"), b"MThd").unwrap();
+        std::fs::write(lib.join("B.mid"), b"MThd").unwrap();
+        let rc = format!("{}/", samples.display());
+        let asked = |rest: &str| super::read(None, Some(&rc), &format!("{rc}{rest}"));
+        let found = asked("../Midi Files/a.mid");
+        // The resolver itself, past the exact-path read a case-blind file
+        // system (macOS, Windows) would answer.
+        let above = kontra_format::paths::resolve_case_insensitive_bounded(
+            &samples,
+            &lib.join("Chords"),
+            "../../b.mid",
+            None,
+        );
+        let without = super::read(None, None, &format!("{rc}../Midi Files/a.mid"));
+        let case_blind = lib.join("chords/midi files/a.mid").exists();
+        let _ = std::fs::remove_dir_all(&lib);
+        assert_eq!(found.as_deref(), Some(&b"MThd"[..]));
+        assert_eq!(above, None);
+        // Without a container folder only the exact path reads.
+        assert!(case_blind || without.is_none());
+    }
 }

@@ -75,6 +75,7 @@ fn run_events(
                     saved: Vec::new(),
                     data: Vec::new(),
                     links: Vec::new(),
+                    container: None,
                 }),
             }
         }

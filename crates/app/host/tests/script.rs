@@ -185,6 +185,44 @@ fn an_ignored_note_plays_its_child_until_released() {
     assert_eq!(e.active_voices(), 0);
 }
 
+/// A multi's MIDI player slot runs in front of the sounding slot's own
+/// script: the note it makes reaches that script as the slot's own note and
+/// plays the zone, while the key it ignored never does.
+#[test]
+fn a_players_note_plays_through_the_script_after_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 72..=72;
+    let player = kontra_ksp::compile(
+        "on note
+            ignore_event($EVENT_ID)
+            play_note($EVENT_NOTE + 12, $EVENT_VELOCITY, 0, -1)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let synth = kontra_ksp::compile(
+        "on note
+            message(\"heard \" & $EVENT_NOTE)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![z], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.scripts = [player, synth]
+        .iter()
+        .map(|s| kontra_host::script::plan(s, &[], &[]))
+        .collect();
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(e.last_message(), "heard 72");
+    assert_eq!(level(&mut e, &[off(60)]), 0.0);
+    assert_eq!(e.active_voices(), 0);
+}
+
 /// Una Corda: the script ignores the key's note and plays a child for its
 /// length, then ignores the key's release too (it only tracks its own ids).
 /// The key is up all the same: the child ends (play_note -1). It held at
@@ -3488,6 +3526,7 @@ fn get_folder_patch_returns_prepared_directory() {
             saved: vec![],
             data: vec![],
             links: vec![],
+            container: None,
         }],
         ..ir::Instrument::DEFAULT
     };
@@ -5214,6 +5253,100 @@ fn a_midi_file_loads_in_init_and_the_marker_walks_its_events() {
         "{:?}",
         e.unhandled_actions()
     );
+}
+
+/// A load's `on persistence_changed` that loads a MIDI file, waits for it
+/// and works through loops between waits (a MIDI player reloading its
+/// patterns) is done before the first block: the note it gates sounds at
+/// once, not seconds later at a few loop turns a block.
+#[test]
+fn a_load_time_wait_chain_is_done_before_the_first_note() {
+    use kontra_engine::midi_file::{Area, Event, Smf, write};
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let smf = Smf {
+        events: vec![Event {
+            command: 0x90,
+            byte1: 60,
+            byte2: 100,
+            length: 240,
+            ..Event::default()
+        }],
+        division: 480,
+        tracks: 1,
+        area: Area::WHOLE,
+    };
+    std::fs::write(dir.join("chain.mid"), write(&smf).unwrap()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = format!(
+        "on init
+            declare $ready
+            declare $id := -1
+            declare $i
+            declare $j
+        end on
+        on persistence_changed
+            $i := 0
+            while ($i < 20)
+                $id := mf_insert_file(\"{}/chain.mid\", 0, 0, 0)
+                while ($id # -1)
+                    wait(100)
+                end while
+                $j := 0
+                while ($j < 50)
+                    inc($j)
+                end while
+                inc($i)
+            end while
+            $ready := 1
+        end on
+        on async_complete
+            if ($NI_ASYNC_ID = $id)
+                $id := -1
+            end if
+        end on
+        on note
+            if ($ready = 0)
+                ignore_event($EVENT_ID)
+            end if
+        end on",
+        dir.display()
+    );
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine_with_files(&store, zones, &source);
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+}
+
+/// Measured (Kontakt 8.13, probes/ksp/mf_at_edges.kspp): `mf_get_next_at`
+/// and `mf_get_prev_at` land on an event exactly at the position, so a
+/// player walking beats from tick 0 plays a chord on the beat.
+#[test]
+fn the_midi_marker_at_a_position_includes_an_event_there() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $a
+            declare $b
+            declare $n0
+            declare $n50
+            declare $p100
+            mf_set_buffer_size(10)
+            $a := mf_insert_event(0, 0, $MIDI_COMMAND_NOTE_ON, 60, 100)
+            $b := mf_insert_event(0, 100, $MIDI_COMMAND_NOTE_ON, 62, 100)
+            mf_get_next_at(0, 0)
+            $n0 := mf_get_id()
+            mf_get_next_at(0, 50)
+            $n50 := mf_get_id()
+            mf_get_prev_at(0, 100)
+            $p100 := mf_get_id()
+            mf_get_prev_at(0, 0)
+            message($n0 & \" \" & $n50 & \" \" & $p100 & \" \" & mf_get_id())
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "2 3 3 2");
 }
 
 /// KSP manual: events are inserted into a buffer of inactive ones (a full

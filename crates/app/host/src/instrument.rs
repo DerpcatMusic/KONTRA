@@ -114,7 +114,11 @@ pub fn read_saved(
         return Ok(out);
     }
     if let Some((multi, slot)) = multi_slot(path) {
-        let loaded = kontra_format_kontakt::multi_load(multi, Some(slot))?;
+        let loaded = kontra_format_kontakt::multi_load(
+            multi,
+            Some(slot),
+            &kontra_library::kontakt::candidates(),
+        )?;
         let mut out = (loaded.slots.into_iter().next())
             .ok_or_else(|| Error::Multi(loaded.failed.join("; ")))?
             .instrument;
@@ -250,6 +254,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     // "Preprocessor & System Scripts"), and Kontakt's own script runs after
     // the last: what is set when every slot has run is what it reads.
     let mut conditions: Vec<String> = Vec::new();
+    let mut origin: Option<PathBuf> = None;
     for (n, script) in instrument.scripts.iter().enumerate() {
         if script.dialect == ir::Dialect::Lua {
             match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
@@ -289,6 +294,15 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
             }
             continue;
         }
+        // A multi's folded player keeps its own instrument's conditions:
+        // they reach its own slots, never the sounding instrument's (whose
+        // last slot decides what Kontakt's own script does).
+        // ponytail: told apart by the container folder, which only a tool
+        // player carries; two folded players without one still share.
+        if script.container != origin {
+            conditions.clear();
+            origin.clone_from(&script.container);
+        }
         let set: Vec<&str> = conditions.iter().map(String::as_str).collect();
         let view = crate::perf_view::find(&script.data).map(|(_, v)| v);
         let view: Vec<(&str, &[i32])> = (view.iter().flat_map(|v| &v.controls))
@@ -301,8 +315,13 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 planned.source_folder =
                     crate::script::source_folder(instrument.source_path.as_deref());
                 planned.library_folder = crate::script::folder(instrument.library_path.as_deref());
-                // The resource container's folder, looked up only for a script that asks.
-                if script.source.contains("GET_FOLDER_RC_DIR") {
+                // The resource container's folder: the one the script came
+                // with, else looked up only for a script that names it (one
+                // passing a variable, as Kontakt's Chords tool does, needs
+                // its translator to carry it).
+                if let Some(own) = &script.container {
+                    planned.rc_folder = crate::script::folder(Some(own));
+                } else if script.source.contains("GET_FOLDER_RC_DIR") {
                     planned.rc_folder = instrument.source_path.as_deref().and_then(|p| {
                         let found = kontra_format_kontakt::Resources::open(p).container_folder();
                         crate::script::folder(found.as_deref())
@@ -453,6 +472,7 @@ mod tests {
             saved: Vec::new(),
             data: Vec::new(),
             links: Vec::new(),
+            container: None,
         };
         let set = "on init\nSET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)\nend on";
         let reset = "on init\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nend on";
@@ -470,6 +490,13 @@ mod tests {
         let undone = plan(vec![ksp(0, set), ksp(1, reset)]);
         assert_eq!(undone.sustain_pedal, SustainPedal::Holds);
         assert_eq!(undone.release_zones, ReleaseZones::WithNote);
+        // A folded multi player (its own container folder) keeps its
+        // conditions: the synth after it holds the pedal as before.
+        let mut player = ksp(0, set);
+        player.container = Some("Tools/Chords/Samples".into());
+        let folded = plan(vec![player, ksp(1, "on init\nend on")]);
+        assert_eq!(folded.sustain_pedal, SustainPedal::Holds);
+        assert_eq!(folded.release_zones, ReleaseZones::AtRelease);
     }
 
     #[test]

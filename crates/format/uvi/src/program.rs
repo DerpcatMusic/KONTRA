@@ -808,6 +808,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 saved,
                 data,
                 links: Vec::new(),
+                container: None,
             });
             self.knob_mods(processor);
         }

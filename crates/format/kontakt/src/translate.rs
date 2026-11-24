@@ -387,6 +387,7 @@ pub(crate) fn instrument(
                     .filter(|(s, _)| usize::from(*s) == slot)
                     .map(|&(_, l)| l)
                     .collect(),
+                container: None,
             }),
             _ => {
                 if let Some(file) = script.textfile_name.filter(|n| !n.is_empty()) {
@@ -1532,6 +1533,7 @@ mod tests {
             saved: Vec::new(),
             data: Vec::new(),
             links: Vec::new(),
+            container: None,
         });
         let bits = ir::held_key("$ENGINE_PAR_BITE_BITS");
         let slots = crate::effects::Slots {

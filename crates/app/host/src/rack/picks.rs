@@ -205,7 +205,7 @@ impl Rack {
                         midi: None,
                         detected: None,
                     },
-                    _ => answer(self.saves.as_deref(), request),
+                    _ => answer(self.saves.as_deref(), None, request),
                 }
             }
             // Cancelled, or a path too long to name: the request fails.

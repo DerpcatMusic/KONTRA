@@ -1131,6 +1131,11 @@ pub struct Script {
     pub data: Vec<(String, Vec<u8>)>,
     /// MIDI controllers that move this script's controls.
     pub links: Vec<CcLink>,
+    /// The folder of the resource container this script came with (the
+    /// folder its `get_folder` resource-container kind reads), when the
+    /// translator knows it: a multi's MIDI player keeps its own when folded
+    /// into the synth.
+    pub container: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
