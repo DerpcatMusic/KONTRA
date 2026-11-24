@@ -378,3 +378,49 @@ fn a_snapshot_restores_as_kontakt_restores_it() {
         }
     }
 }
+
+/// A snapshot's Convolution records count the base's other files without the
+/// instrument's own entry: read as the base's, index 0 named the `.nki` and
+/// every ANALOG STRINGS and Una Corda snapshot failed `impulse-open`.
+#[test]
+fn snapshot_convolutions_name_responses_not_their_base_instrument() {
+    for snapshot in [
+        "/data/main/Libraries/Kontakt/ANALOG STRINGS/Snapshots/ANALOG STRINGS/Factory/Looking Up.nksn",
+        "/data/main/Libraries/Kontakt/Una Corda Library/Snapshots/Una Corda Pure/Pure - In A Cave.nksn",
+    ] {
+        let path = Path::new(snapshot);
+        if !path.exists() {
+            continue;
+        }
+        let i = kontra_format_kontakt::load(path).unwrap();
+        assert!(!i.impulses.is_empty(), "{snapshot}: no responses");
+        for imp in &i.impulses {
+            let name = &i.samples[imp.sample].name;
+            assert!(
+                !name.to_ascii_lowercase().ends_with(".nki"),
+                "{snapshot}: response {name}"
+            );
+        }
+    }
+}
+
+/// Pacific Ensemble Strings saves C1 (24) as its default key switch: carried,
+/// not reported as ignored.
+#[test]
+fn a_saved_default_keyswitch_is_carried() {
+    let path = Path::new(
+        "/data/main/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/16 Violins/Pacific - Ens Strings - 16 Violins - Legato Sustains.nki",
+    );
+    if !path.exists() {
+        return;
+    }
+    let i = kontra_format_kontakt::load(path).unwrap();
+    assert_eq!(i.default_keyswitch, Some(24));
+    assert!(
+        !i.diagnostics
+            .iter()
+            .any(|d| d.feature.contains("default_key_switch")),
+        "{:?}",
+        i.diagnostics
+    );
+}

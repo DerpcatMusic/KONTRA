@@ -36,6 +36,8 @@ pub(crate) struct Impulses<'a> {
     pub(crate) out: Vec<ir::Impulse>,
     /// The responses' files, appended to the instrument's samples.
     pub(crate) samples: Vec<ir::Sample>,
+    /// The records read now are a snapshot's ([`Self::file`]).
+    pub(crate) snapshot: bool,
 }
 
 impl<'a> Impulses<'a> {
@@ -57,6 +59,7 @@ impl<'a> Impulses<'a> {
             path,
             out: Vec::new(),
             samples: Vec::new(),
+            snapshot: false,
         }
     }
 
@@ -82,7 +85,7 @@ impl<'a> Impulses<'a> {
             Some(EffectValue::Integer(i)) => u32::try_from(*i).ok()?,
             _ => return None,
         };
-        let name = self.files.get(&index)?.clone();
+        let name = self.file(index)?;
         let floats = |n: usize| match fields.get(n).map(|f| &f.value) {
             Some(EffectValue::Floats(v)) => <[f32; 8]>::try_from(v.as_slice())
                 .ok()
@@ -166,6 +169,25 @@ impl<'a> Impulses<'a> {
             window_whole: false,
         });
         u16::try_from(self.out.len() - 1).ok()
+    }
+
+    /// The other-file `index` a Convolution record names. A snapshot's
+    /// records count the base's other files without the instrument's own
+    /// (entry 0 of ANALOG STRINGS' and Una Corda's tables): every snapshot
+    /// of both names index `n − 1` where the base record names `n`, and
+    /// read as the base's, index 0 is the `.nki` itself.
+    fn file(&self, index: u32) -> Option<String> {
+        if !self.snapshot {
+            return self.files.get(&index).cloned();
+        }
+        let own = self.path.file_name().map(|n| n.to_string_lossy());
+        let mut others: Vec<_> = (self.files.iter())
+            .filter(|(_, name)| own.as_deref() != Some(name.as_str()))
+            .collect();
+        others.sort_unstable_by_key(|(id, _)| **id);
+        others
+            .get(usize::try_from(index).ok()?)
+            .map(|(_, n)| (*n).clone())
     }
 
     /// The response file `name` as an index into [`Self::samples`], added

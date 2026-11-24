@@ -32,6 +32,7 @@ fn root(dir: &Path) -> Root {
     Root {
         path: dir.to_path_buf(),
         single: false,
+        auto: false,
     }
 }
 
@@ -161,6 +162,7 @@ fn a_single_root_is_one_library_and_names_are_told_apart() {
         .map(|d| Root {
             path: dir.join(d),
             single: false,
+            auto: false,
         })
         .collect();
     let catalog = run(&roots, &mut Cache::default());
@@ -170,6 +172,7 @@ fn a_single_root_is_one_library_and_names_are_told_apart() {
     let single = Root {
         path: dir.join("A/Strings"),
         single: true,
+        auto: false,
     };
     assert_eq!(
         run(&[single.clone(), single], &mut Cache::default())
@@ -243,10 +246,12 @@ fn prefs_keep_stars_and_recent_newest_first() {
     prefs.add_root(Root {
         path: "/libs".into(),
         single: false,
+        auto: false,
     });
     prefs.add_root(Root {
         path: "/libs".into(),
         single: true,
+        auto: false,
     });
     prefs.star(Path::new("/libs/Areia"), true);
     for n in 0..40 {
@@ -725,5 +730,91 @@ fn catalog_prefers_real_directory_routes_and_deduplicates_cross_format_aliases()
             .collect::<Vec<_>>(),
         [&lib.join("A_Real/logo.png")]
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// No depth limit: a library 7 levels below the root is found, and so is a
+/// vendor's `Documents`/`Data` folder above any library.
+#[test]
+fn deep_layouts_are_found_at_any_depth() {
+    let dir = tree(
+        "deep",
+        &[
+            (
+                "Audio/Sample Libraries/Kontakt/Vendor/Collection/Lib/Instruments/Deep.nki",
+                "",
+            ),
+            ("Data/Vendor/Other Lib/Instruments/Other.nki", ""),
+            ("a/b/c/d/e/f/g/Bank.ufs", "Lead.uvip"),
+        ],
+    );
+    let catalog = run(&[root(&dir)], &mut Cache::default());
+    let names: Vec<_> = catalog.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["g", "Lib", "Other Lib"]);
+    assert_eq!(catalog.roots.len(), 1);
+    assert_eq!(catalog.roots[0].libraries, 3);
+    assert_eq!(catalog.roots[0].summary(), "3 libraries found");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Each root says how it went; a missing and an unreadable root are told
+/// apart, and a sandboxed player gets the exact Flatpak override.
+#[test]
+fn each_root_reports_found_missing_unreadable_or_nothing_matched() {
+    use std::io::ErrorKind;
+    let dir = tree(
+        "status",
+        &[("Libs/One/Instruments/A.nki", ""), ("Empty/readme.txt", "")],
+    );
+    let missing = dir.join("Not Mounted");
+    let roots = [
+        root(&dir.join("Libs")),
+        root(&dir.join("Empty")),
+        root(&missing),
+    ];
+    let catalog = run(&roots, &mut Cache::default());
+    let said: Vec<_> = catalog
+        .roots
+        .iter()
+        .map(kontra_library::RootStatus::summary)
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "1 library found",
+            "0 libraries \u{2014} nothing matched",
+            "not found"
+        ]
+    );
+    let gone = &catalog.roots[2];
+    assert_eq!(gone.error.as_ref().unwrap().kind, Some(ErrorKind::NotFound));
+    assert_eq!(gone.hint(None), None);
+    assert_eq!(
+        gone.hint(Some("com.bitwig.BitwigStudio")).unwrap(),
+        format!(
+            "Sandboxed (Flatpak): run  flatpak override --user --filesystem='{}' com.bitwig.BitwigStudio  then restart the DAW.",
+            missing.display()
+        )
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = dir.join("Locked");
+        std::fs::create_dir_all(locked.join("Lib/Instruments")).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads anything; the check only means something for a user.
+        if std::fs::read_dir(&locked).is_err() {
+            let catalog = run(&[root(&locked)], &mut Cache::default());
+            let status = &catalog.roots[0];
+            assert_eq!(
+                status.error.as_ref().unwrap().kind,
+                Some(ErrorKind::PermissionDenied)
+            );
+            assert_eq!(status.summary(), "can't read: permission denied");
+            assert!(status.hint(None).unwrap().contains("NTFS"));
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }

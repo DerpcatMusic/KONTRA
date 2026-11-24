@@ -1487,6 +1487,37 @@ fn midi_cc121_restores_expression_for_zone_admission() {
     assert!(close(level(&mut e, &[cc(121, 0), on(64, 1.0)])[0], 0.5));
 }
 
+/// Kontakt compiles a group's start options into one unparenthesized KSP
+/// condition, so `and` binds tighter than `or`: `CC1 or CC2 and CC3` starts
+/// on CC1 alone, where a left fold (`(CC1 or CC2) and CC3`) would not.
+#[test]
+fn start_conditions_bind_and_tighter_than_or() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut gated = zone(&mut store, 0.5);
+    let high = || 64..=127;
+    gated.start = vec![
+        (Join::And, Atom::Cc(1, high())),
+        (Join::Or, Atom::Cc(2, high())),
+        (Join::And, Atom::Cc(3, high())),
+    ];
+    let mut e = engine(&store, Plan::new(vec![gated.clone()], 8));
+    assert!(close(level(&mut e, &[cc(1, 127), on(60, 1.0)])[0], 0.5));
+    let mut e = engine(&store, Plan::new(vec![gated.clone()], 8));
+    assert_eq!(level(&mut e, &[cc(2, 127), on(60, 1.0)])[0], 0.0);
+    let mut e = engine(&store, Plan::new(vec![gated.clone()], 8));
+    assert!(close(
+        level(&mut e, &[cc(2, 127), cc(3, 127), on(60, 1.0)])[0],
+        0.5
+    ));
+    // `CC1 or CC2 and not CC3` is `CC1 or (CC2 and not CC3)`.
+    gated.start[2].0 = Join::AndNot;
+    let mut e = engine(&store, Plan::new(vec![gated], 8));
+    assert!(close(
+        level(&mut e, &[cc(1, 127), cc(3, 127), on(60, 1.0)])[0],
+        0.5
+    ));
+}
+
 #[test]
 fn midi_cc121_reset_all_controllers_resets_mod_bend_pedals_and_preserves_volume_pan_bank() {
     use kontra_engine::ir::{Curve, Mod, ModRoute, ParamAddr, RouteLaw, Source};

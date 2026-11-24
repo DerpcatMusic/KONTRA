@@ -55,11 +55,18 @@ pub(crate) struct Group {
     /// arrays, as the group holds them: they stand in for the base's.
     source: Vec<u8>,
     mods: Vec<Chunk>,
+    /// Whether it is purged, from v2 on: the byte after its external
+    /// modulators, 1 as the group's own source flag. ANALOG STRINGS' Blown
+    /// Fuse clears it on exactly the two groups its script plays (71 and
+    /// 172, its `%layers__group`) and sets it on the other 481; the base's
+    /// own purge state has those two purged, so read alone it plays nothing.
+    pub purged: Option<bool>,
 }
 
 impl Group {
     fn of(g: ni_file::kontakt::objects::GroupSnapshot) -> Result<Self, ni_file::Error> {
         Ok(Self {
+            purged: (g.version >= 2).then_some(g.trailing_flag == 1),
             public: g.public_data,
             source: g.source_record()?.to_vec(),
             mods: Vec::from(g.modulator_chunks()?),

@@ -1,7 +1,7 @@
 //! Where the player's libraries are, what they are called and what they
 //! hold: the browser's data, found by naming a folder and nothing else.
 //!
-//! A root is a folder of libraries, searched a few levels down, or one folder
+//! A root is a folder of libraries, searched at any depth, or one folder
 //! (or `.ufs` bank) that is a library. A folder is a library when it holds a
 //! `.nicnt` (registered), an `Instruments` or `Multis` folder, presets beside
 //! a `Samples` folder or a monolith (`.nkx`/`.nkc`/`.nkr`), or, below the
@@ -18,6 +18,7 @@
 //! lister the host passes (`kontra_format_uvi::programs`), and what a scan
 //! reads once is kept in a [`Cache`] keyed by file size and time.
 
+pub mod discover;
 pub mod kontakt;
 pub mod presets;
 
@@ -43,6 +44,9 @@ pub struct Root {
     /// The folder is one library, rather than holding libraries.
     #[serde(default)]
     pub single: bool,
+    /// Found by [`discover`], not added by the player; never saved.
+    #[serde(skip)]
+    pub auto: bool,
 }
 
 /// Which player a library was made for.
@@ -95,6 +99,57 @@ pub struct Issue {
     pub path: PathBuf,
     pub reason: String,
     pub protection: ProtectionStatus,
+    /// The I/O error behind it, when there was one: tells "permission
+    /// denied" from "not found".
+    pub kind: Option<std::io::ErrorKind>,
+}
+
+/// How one root's scan went.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RootStatus {
+    pub path: PathBuf,
+    pub auto: bool,
+    /// Libraries catalogued from it (not counting ones another root listed).
+    pub libraries: usize,
+    /// Why the root itself could not be read.
+    pub error: Option<Issue>,
+}
+
+impl RootStatus {
+    /// One short line: "3 libraries found", "can't read: permission denied"…
+    #[must_use]
+    pub fn summary(&self) -> String {
+        use std::io::ErrorKind;
+        match &self.error {
+            Some(e) => match e.kind {
+                Some(ErrorKind::PermissionDenied) => "can't read: permission denied".into(),
+                Some(ErrorKind::NotFound) => "not found".into(),
+                _ => format!("can't read: {}", e.reason),
+            },
+            None if self.libraries == 0 => "0 libraries \u{2014} nothing matched".into(),
+            None if self.libraries == 1 => "1 library found".into(),
+            None => format!("{} libraries found", self.libraries),
+        }
+    }
+
+    /// What the player can do about an unreadable root: the Flatpak
+    /// override when sandboxed (`flatpak` is the app id), else a hint.
+    #[must_use]
+    pub fn hint(&self, flatpak: Option<&str>) -> Option<String> {
+        use std::io::ErrorKind;
+        let kind = self.error.as_ref()?.kind?;
+        if !matches!(kind, ErrorKind::PermissionDenied | ErrorKind::NotFound) {
+            return None;
+        }
+        if let Some(app) = flatpak {
+            return Some(discover::flatpak_hint(&self.path, app));
+        }
+        (kind == ErrorKind::PermissionDenied).then(|| {
+            "Check the folder's permissions; an NTFS/exFAT drive needs mounting with \
+             uid=<you> (or the permissions option)."
+                .into()
+        })
+    }
 }
 
 /// Every library a scan found, sorted by name.
@@ -102,6 +157,8 @@ pub struct Issue {
 pub struct Catalog {
     pub libraries: Vec<Library>,
     pub issues: Vec<Issue>,
+    /// Each root scanned, in order, and how it went.
+    pub roots: Vec<RootStatus>,
 }
 
 impl Catalog {
@@ -166,10 +223,8 @@ impl BankError {
 /// Lists a bank's programs with structured [`ProtectionStatus`] reporting.
 pub type BankInspector<'a> = &'a dyn Fn(&Path) -> Result<BankListing, BankError>;
 
-/// How many levels under a root libraries are looked for.
-const DEPTH: usize = 4;
 /// A folder with this many audio files and no presets holds samples only.
-const SAMPLE_ONLY: usize = 64;
+pub(crate) const SAMPLE_ONLY: usize = 64;
 /// Folders a library keeps no presets in, never searched for libraries.
 const SKIP: [&str; 6] = [
     "samples",
@@ -208,7 +263,9 @@ pub fn scan_with_inspector(
     let mut issues = Vec::new();
     let mut libraries = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut statuses = Vec::new();
     for root in roots {
+        let before = (issues.len(), libraries.len());
         let founds = detect(root, progress, &mut issues);
         // Every library found under this root, nested ones included: a library
         // inside another is catalogued as itself, so the outer one's walk stops
@@ -226,11 +283,20 @@ pub fn scan_with_inspector(
             }
             libraries.extend(library);
         }
+        statuses.push(RootStatus {
+            path: root.path.clone(),
+            auto: root.auto,
+            libraries: libraries.len() - before.1,
+            error: (issues.iter().skip(before.0))
+                .find(|i| i.path == root.path && i.kind.is_some())
+                .cloned(),
+        });
     }
     cache.forget_unseen();
     Some(Catalog {
         libraries: unique(libraries),
         issues,
+        roots: statuses,
     })
 }
 
@@ -300,7 +366,7 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
-            issues.push(issue(dir, e));
+            issues.push(io_issue(dir, &e));
             return out;
         }
     };
@@ -317,7 +383,7 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
             match std::fs::metadata(&path) {
                 Ok(meta) => (meta.is_dir(), meta.is_file()),
                 Err(e) => {
-                    issues.push(issue(&path, format!("broken symlink: {e}")));
+                    issues.push(io_issue(&path, &e).prefixed("broken symlink"));
                     continue;
                 }
             }
@@ -339,7 +405,7 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
         match ext(&path).as_str() {
             "nicnt" => out.nicnt = out.nicnt.take().or(Some(path)),
             "nkx" | "nkc" | "nkr" => out.monolith = true,
-            "ufs" | "sf2" => {
+            "ufs" | "sf2" | "sf3" => {
                 out.presets += 1;
                 out.banks.push(path);
             }
@@ -360,6 +426,21 @@ fn issue(path: &Path, reason: impl ToString) -> Issue {
         path: path.to_path_buf(),
         reason,
         protection,
+        kind: None,
+    }
+}
+
+fn io_issue(path: &Path, e: &std::io::Error) -> Issue {
+    Issue {
+        kind: Some(e.kind()),
+        ..issue(path, e)
+    }
+}
+
+impl Issue {
+    fn prefixed(mut self, what: &str) -> Self {
+        self.reason = format!("{what}: {}", self.reason);
+        self
     }
 }
 
@@ -372,179 +453,205 @@ fn issue_with_protection(
         path: path.to_path_buf(),
         reason: reason.to_string(),
         protection,
+        kind: None,
     }
 }
 
 /// The library folders and loose banks in `root`.
 fn detect(root: &Root, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Found> {
     let dir = root.path.clone();
-    let mut out = Vec::new();
     match std::fs::metadata(&dir) {
-        Err(e) => issues.push(issue(&dir, e)),
-        Ok(m) if m.is_file() && matches!(ext(&dir).as_str(), "ufs" | "sf2") => out.push(Found {
-            dir,
-            nicnt: None,
-            vendor: None,
-        }),
-        Ok(m) if !m.is_dir() => issues.push(issue(&dir, "not a library folder or UFS/SF2 bank")),
+        Err(e) => {
+            issues.push(io_issue(&dir, &e));
+            Vec::new()
+        }
+        Ok(m) if m.is_file() && matches!(ext(&dir).as_str(), "ufs" | "sf2" | "sf3") => {
+            vec![Found {
+                dir,
+                nicnt: None,
+                vendor: None,
+            }]
+        }
+        Ok(m) if !m.is_dir() => {
+            issues.push(issue(&dir, "not a library folder or UFS/SF2 bank"));
+            Vec::new()
+        }
         Ok(_) if root.single => {
             let nicnt = list(&dir, issues).nicnt;
-            out.push(Found {
+            vec![Found {
                 dir,
                 nicnt,
                 vendor: None,
-            });
+            }]
         }
-        Ok(_) => {
-            let mut visited = HashMap::new();
-            let mut found_libs = HashMap::new();
-            visit_within(
-                &dir,
-                0,
-                None,
-                false,
-                false,
-                &mut visited,
-                &mut found_libs,
-                &mut out,
-                progress,
-                issues,
-            );
-        }
+        Ok(_) => search(dir, progress, issues),
     }
-    out
 }
 
-/// Visits `dir`, `within` saying whether `dir` already sits inside a library.
-/// Tracks the shallowest depth and best route independently per
-/// `(canonical_dir, within)`. Revisit only when either improves, preserving a
-/// shallower traversal budget and allowing real paths to replace aliases.
-/// Discovered libraries are deduplicated separately in `found_libs`.
-#[allow(clippy::too_many_arguments)]
-fn visit_within(
-    dir: &Path,
+/// One folder to visit in [`search`].
+struct Visit {
+    dir: PathBuf,
     depth: usize,
+    /// The first folder below the root that is not a library: the vendor.
     vendor: Option<String>,
+    /// `dir` already sits inside a library.
     within: bool,
+    /// It was reached through a symlink.
     through_symlink: bool,
-    visited: &mut HashMap<(PathBuf, bool), (usize, bool)>,
-    found_libs: &mut HashMap<PathBuf, (usize, bool, usize)>,
-    out: &mut Vec<Found>,
-    progress: &Progress,
-    issues: &mut Vec<Issue>,
-) {
-    if progress.canceled() {
-        return;
-    }
-    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let is_symlink = through_symlink
-        || std::fs::symlink_metadata(dir)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-    let key = (canonical.clone(), within);
-    match visited.get_mut(&key) {
-        Some((prev_depth, prev_symlink)) => {
-            if depth >= *prev_depth && (is_symlink || !*prev_symlink) {
-                return;
-            }
-            *prev_depth = (*prev_depth).min(depth);
-            *prev_symlink &= is_symlink;
-        }
-        None => {
-            visited.insert(key, (depth, is_symlink));
-        }
-    }
-    progress.folders.fetch_add(1, Ordering::Relaxed);
-    let l = list(dir, issues);
-    // Loose banks at the root are libraries of their own, not the root's presets.
-    let presets = l.presets - if depth == 0 { l.banks.len() } else { 0 };
-    let strong = l.nicnt.is_some() || l.instruments || (presets > 0 && (l.samples || l.monolith));
-    // Below the root, a folder of presets; at the root, stray presets must not
-    // hide the libraries beside them. Inside a library, only a `.nicnt` makes
-    // a folder a library of its own.
-    let library = if within {
-        l.nicnt.is_some()
-    } else {
-        strong || (depth > 0 && l.presets > 0)
-    };
-    if library {
-        let candidate = Found {
-            dir: dir.into(),
-            nicnt: l.nicnt,
-            vendor: vendor.clone(),
-        };
-        match found_libs.get_mut(&canonical) {
-            Some((idx, was_symlink, prev_depth)) => {
-                if (is_symlink, depth) < (*was_symlink, *prev_depth) {
-                    if let Some(slot) = out.get_mut(*idx) {
-                        *slot = candidate;
-                    }
-                    *was_symlink = is_symlink;
-                    *prev_depth = depth;
+}
+
+/// What [`search`]'s threads share.
+#[derive(Default)]
+struct Search {
+    /// Per `(canonical_dir, within)`: whether it was only reached through a
+    /// symlink. A real path revisits a folder first reached through an alias.
+    visited: HashMap<(PathBuf, bool), bool>,
+    /// Per canonical library: the best route to it, `(through_symlink,
+    /// depth)` smallest first.
+    found: HashMap<PathBuf, ((bool, usize), Found)>,
+    issues: Vec<Issue>,
+}
+
+impl Search {
+    fn found(
+        &mut self,
+        canonical: PathBuf,
+        rank: (bool, usize),
+        candidate: Found,
+        progress: &Progress,
+    ) {
+        match self.found.get_mut(&canonical) {
+            Some((best, slot)) => {
+                if rank < *best {
+                    *best = rank;
+                    *slot = candidate;
                 }
             }
             None => {
                 progress.found.fetch_add(1, Ordering::Relaxed);
-                let idx = out.len();
-                out.push(candidate);
-                found_libs.insert(canonical, (idx, is_symlink, depth));
+                self.found.insert(canonical, (rank, candidate));
             }
         }
-    } else if depth == 0 {
-        for bank in l.banks {
-            let bank_canon = path_identity(&bank);
-            let is_symlink = std::fs::symlink_metadata(&bank)
+    }
+}
+
+/// Every library folder and loose bank under `root`, at any depth, found on
+/// all cores ([`discover::par_walk`]). The search skips sample folders and
+/// folders of many audio files without presets. Inside a library, only a
+/// `.nicnt` makes a folder a library of its own. Symlinks are followed, and
+/// canonical paths guard against cycles.
+fn search(root: PathBuf, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Found> {
+    let shared = std::sync::Mutex::new(Search::default());
+    let lock = || {
+        shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    let start = Visit {
+        dir: root,
+        depth: 0,
+        vendor: None,
+        within: false,
+        through_symlink: false,
+    };
+    discover::par_walk(vec![start], discover::threads(), |v: Visit| {
+        if progress.canceled() {
+            return Vec::new();
+        }
+        let canonical = std::fs::canonicalize(&v.dir).unwrap_or_else(|_| v.dir.clone());
+        let is_symlink = v.through_symlink
+            || std::fs::symlink_metadata(&v.dir)
                 .map(|m| m.file_type().is_symlink())
                 .unwrap_or(false);
-            let candidate = Found {
-                dir: bank,
-                nicnt: None,
-                vendor: vendor.clone(),
-            };
-            match found_libs.get_mut(&bank_canon) {
-                Some((idx, was_symlink, prev_depth)) => {
-                    if (is_symlink, depth) < (*was_symlink, *prev_depth) {
-                        if let Some(slot) = out.get_mut(*idx) {
-                            *slot = candidate;
-                        }
-                        *was_symlink = is_symlink;
-                        *prev_depth = depth;
-                    }
-                }
+        {
+            let mut s = lock();
+            match s.visited.get_mut(&(canonical.clone(), v.within)) {
+                Some(prev) if is_symlink || !*prev => return Vec::new(),
+                Some(prev) => *prev = false,
                 None => {
-                    progress.found.fetch_add(1, Ordering::Relaxed);
-                    let idx = out.len();
-                    out.push(candidate);
-                    found_libs.insert(bank_canon, (idx, is_symlink, depth));
+                    s.visited.insert((canonical.clone(), v.within), is_symlink);
                 }
             }
         }
-    }
-    if depth >= DEPTH || (l.audio >= SAMPLE_ONLY && l.presets == 0) {
-        return;
-    }
-    // Below the root, the first folder that is not a library is its vendor.
-    let vendor = if library {
-        None
-    } else {
-        vendor.or_else(|| (depth > 0).then(|| clean_name(&file_name(dir)).0))
-    };
-    for folder in &l.folders {
-        if !SKIP.contains(&file_name(folder).to_lowercase().as_str()) {
-            visit_within(
-                folder,
-                depth + 1,
-                vendor.clone(),
-                within || library,
-                is_symlink,
-                visited,
-                found_libs,
-                out,
-                progress,
-                issues,
-            );
+        progress.folders.fetch_add(1, Ordering::Relaxed);
+        let mut found_issues = Vec::new();
+        let l = list(&v.dir, &mut found_issues);
+        // Loose banks at the root are libraries of their own, not the root's presets.
+        let presets = l.presets - if v.depth == 0 { l.banks.len() } else { 0 };
+        let strong =
+            l.nicnt.is_some() || l.instruments || (presets > 0 && (l.samples || l.monolith));
+        // Below the root, a folder of presets; at the root, stray presets must
+        // not hide the libraries beside them. Inside a library, only a
+        // `.nicnt` makes a folder a library of its own.
+        let library = if v.within {
+            l.nicnt.is_some()
+        } else {
+            strong || (v.depth > 0 && l.presets > 0)
+        };
+        {
+            let mut s = lock();
+            s.issues.append(&mut found_issues);
+            if library {
+                let candidate = Found {
+                    dir: v.dir.clone(),
+                    nicnt: l.nicnt.clone(),
+                    vendor: v.vendor.clone(),
+                };
+                s.found(canonical, (is_symlink, v.depth), candidate, progress);
+            } else if v.depth == 0 {
+                for bank in &l.banks {
+                    let alias = std::fs::symlink_metadata(bank)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                    let candidate = Found {
+                        dir: bank.clone(),
+                        nicnt: None,
+                        vendor: None,
+                    };
+                    s.found(path_identity(bank), (alias, 0), candidate, progress);
+                }
+            }
         }
-    }
+        if l.audio >= SAMPLE_ONLY && l.presets == 0 {
+            return Vec::new();
+        }
+        let inside = v.within || library;
+        // Below the root, the first folder that is not a library is its vendor.
+        let vendor = if library {
+            None
+        } else {
+            (v.vendor.clone()).or_else(|| (v.depth > 0).then(|| clean_name(&file_name(&v.dir)).0))
+        };
+        // Inside a library, its own folders (samples, docs, data) hold no
+        // libraries; above one, only sample folders are skipped, so a drive's
+        // `Documents` or `Data` folder is still searched.
+        let skip = |name: &str| {
+            if inside {
+                SKIP.contains(&name)
+            } else {
+                name == "samples"
+            }
+        };
+        (l.folders.into_iter().rev())
+            .filter(|f| !skip(file_name(f).to_lowercase().as_str()))
+            .map(|dir| Visit {
+                dir,
+                depth: v.depth + 1,
+                vendor: vendor.clone(),
+                within: inside,
+                through_symlink: is_symlink,
+            })
+            .collect()
+    });
+    let s = shared
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut found_issues = s.issues;
+    found_issues.sort_by(|a, b| a.path.cmp(&b.path));
+    issues.append(&mut found_issues);
+    let mut out: Vec<Found> = s.found.into_values().map(|(_, f)| f).collect();
+    out.sort_by(|a, b| a.dir.cmp(&b.dir));
+    out
 }
 
 fn file_name(path: &Path) -> String {
@@ -682,7 +789,7 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) => {
-                state.issues.push(issue(&dir, e));
+                state.issues.push(io_issue(&dir, &e));
                 continue;
             }
         };
@@ -702,9 +809,7 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                 match std::fs::metadata(&path) {
                     Ok(meta) => (meta.is_dir(), meta.is_file()),
                     Err(e) => {
-                        state
-                            .issues
-                            .push(issue(&path, format!("broken symlink: {e}")));
+                        (state.issues).push(io_issue(&path, &e).prefixed("broken symlink"));
                         continue;
                     }
                 }
@@ -721,7 +826,8 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                 continue;
             }
             match ext(&path).as_str() {
-                "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" | "ufs" | "sf2" => {
+                "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" | "ufs" | "sf2"
+                | "sf3" => {
                     let alias = through_symlink || is_symlink;
                     let id = path_identity(&path);
                     match files.get_mut(&id) {
@@ -760,7 +866,7 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
     for path in files {
         match ext(&path).as_str() {
             "ufs" => banks.push((path, true)),
-            "sf2" => banks.push((path, false)),
+            "sf2" | "sf3" => banks.push((path, false)),
             _ => presets.push(path),
         }
     }

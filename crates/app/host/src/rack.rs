@@ -443,12 +443,33 @@ impl Rack {
     /// channel and playing into its output. Its volume and pan are its
     /// instrument's own.
     ///
+    /// A slot with no zones (a MIDI player such as Conflux's factory
+    /// multis put in front of the synth) gets no part: it sounds nothing
+    /// itself and no part hears another's notes. A multi left with one
+    /// part names it after the multi, as a snapshot's part is named.
+    ///
     /// # Errors
     /// When the multi cannot be read, or none of its slots can.
     fn load_multi(&mut self, part: usize, path: &Path) -> Result<(), crate::Error> {
-        let loaded = kontra_format_kontakt::multi_load(path, None)?;
+        let mut loaded = kontra_format_kontakt::multi_load(path, None)?;
         if loaded.slots.is_empty() {
             return Err(crate::Error::Multi(loaded.failed.join("; ")));
+        }
+        let silent = |s: &kontra_format_kontakt::Slot| {
+            s.instrument.groups.iter().all(|g| g.zones.is_empty())
+        };
+        if loaded.slots.iter().any(|s| !silent(s)) {
+            for s in loaded.slots.iter().filter(|s| silent(s)) {
+                loaded.failed.push(format!(
+                    "slot {} ({}): no samples of its own, so no part (its notes would reach no other part)",
+                    s.index + 1,
+                    s.instrument.name
+                ));
+            }
+            loaded.slots.retain(|s| !silent(s));
+        }
+        if let ([slot], Some(name)) = (loaded.slots.as_mut_slice(), path.file_stem()) {
+            slot.instrument.name = name.to_string_lossy().into_owned();
         }
         self.install_multi_scripts(Some(path), loaded.scripts);
         self.notices.extend(
@@ -538,7 +559,7 @@ impl Rack {
         }
         self.moved.clone_from(&browser.prefs.moved);
         kontra_format::set_moved(&self.moved);
-        self.roots = browser.prefs.roots.iter().map(|r| r.path.clone()).collect();
+        self.roots = browser.roots().into_iter().map(|r| r.path).collect();
     }
 
     /// What loads said since the last call, in plain text.

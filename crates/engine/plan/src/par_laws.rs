@@ -74,7 +74,9 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
 pub fn display(par: EnginePar, raw: i32, out: &mut Text) -> bool {
     let x = f64::from(raw.clamp(0, 1_000_000)) / 1e6;
     let readout = match par {
-        EnginePar::Volume => Readout::Db(12.0),
+        // A Send Levels knob sets its level by the volume law
+        // (`EffectPar::Send`), so it reads as a volume does.
+        EnginePar::Volume | EnginePar::SendLevel(_) => Readout::Db(12.0),
         // The Gainer's gain reads as an output level (oracle 2026-10-29).
         EnginePar::EffectOutput | EnginePar::GainerGain => Readout::Db(24.0),
         EnginePar::Sustain => Readout::Db(0.0),
@@ -102,13 +104,21 @@ pub fn stage_point(par: EnginePar) -> Option<(usize, ir::Law)> {
     })
 }
 
-/// The index of the breakpoints modulator `slot` of `g` routes from.
+/// The index of the breakpoints modulator `slot` of `g` routes from, also
+/// through the transfer table a shaped (curved) envelope reads.
 #[must_use]
 pub fn routed_index(g: &Group, slot: i32) -> Option<usize> {
-    g.mods.iter().find_map(|m| match m.route.driver() {
-        Some(ir::Source::Envelope(n)) if i32::from(m.slot) == slot => Some(usize::from(n)),
-        _ => None,
-    })
+    g.mods
+        .iter()
+        .filter(|m| i32::from(m.slot) == slot)
+        .find_map(|m| match m.route.driver()? {
+            ir::Source::Shaped(n) => match g.shapers.get(usize::from(n))?.source {
+                ir::Source::Envelope(n) => Some(usize::from(n)),
+                _ => None,
+            },
+            ir::Source::Envelope(n) => Some(usize::from(n)),
+            _ => None,
+        })
 }
 
 /// The breakpoints modulator `slot` of `g` routes from.
@@ -120,6 +130,42 @@ pub fn routed_envelope(g: &Group, slot: i32) -> Option<&ir::Breakpoints> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dolce's EQ AHDSRs (110 instruments) curve their envelope through a
+    /// transfer table; `set_engine_par($ENGINE_PAR_ATTACK, .., slot)` still
+    /// names the breakpoints behind it.
+    #[test]
+    fn a_shaped_envelope_slot_names_its_breakpoints() {
+        let mut g = Group::standard();
+        g.shapers.push(ir::Transfer {
+            source: ir::Source::Envelope(2),
+            ..ir::Transfer::default()
+        });
+        g.mods.push(ir::Mod {
+            name: String::new(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            route: ir::ModRoute::new(ir::Source::Shaped(0), ir::ParamAddr::Volume, 1.0),
+        });
+        assert_eq!(routed_index(&g, 1), Some(2));
+        assert_eq!(routed_index(&g, 0), None);
+    }
+
+    /// A Send Levels knob reads in dB as a volume does, the law it sets by:
+    /// Una Corda's saved 0.0625 labels its Space knob.
+    #[test]
+    fn a_send_level_reads_in_db() {
+        let raw = (crate::par_values::UNITY_VOLUME * 0.0625f64.cbrt()).round() as i32;
+        let (mut send, mut volume) = (Text::EMPTY, Text::EMPTY);
+        assert!(display(EnginePar::SendLevel(0), raw, &mut send));
+        assert!(display(EnginePar::Volume, raw, &mut volume));
+        assert_eq!(send.as_str(), volume.as_str());
+        assert_eq!(send.as_str(), "-24.0");
+        let mut out = Text::EMPTY;
+        assert!(display(EnginePar::SendLevel(3), 0, &mut out));
+        assert_eq!(out.as_str(), "-inf");
+    }
 
     const RAWS: std::ops::RangeInclusive<i32> = 0..=1_000_000;
 
