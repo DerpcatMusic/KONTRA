@@ -139,6 +139,16 @@ pub struct SavedView {
     pub format: u8,
     pub shelf: u8,
     pub descending: bool,
+    /// Whether libraries are separated by format (`false` = unified view).
+    pub separated: bool,
+    /// Browser library card layout: 0 = grid, 1 = cards.
+    pub tiles: u8,
+    /// Browser library sort order: 0 = A–Z (or legacy `descending`), 1 = Z–A,
+    /// 2 = most presets, 3 = favorites first.
+    pub sort: u8,
+    /// Browser library attribute filter: 0 = all, 1 = playable,
+    /// 2 = has snapshots, 3 = locked.
+    pub library_filter: u8,
     /// The browser's library list's share of its height; 0 is the default.
     pub split: f32,
     /// How a library's view is drawn: Original, Vector, KONTRA.

@@ -9,6 +9,7 @@ use mui::prelude::*;
 pub enum Icon {
     Left,
     Right,
+    Up,
     Down,
     More,
     Close,
@@ -16,6 +17,16 @@ pub enum Icon {
     Search,
     Star,
     Grid,
+    /// Wide single-column library cards.
+    Cards,
+    /// Stacked layers: all library formats unified together.
+    Unified,
+    /// Tabbed panel: libraries separated by format.
+    Separated,
+    /// Collapse every open folder.
+    FoldAll,
+    /// Expand every folded folder.
+    UnfoldAll,
     Menu,
     Warning,
     Grip,
@@ -65,6 +76,7 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
         match icon {
             Icon::Left => vec![line(&[(10., 4.), (6., 8.), (10., 12.)], false)],
             Icon::Right => vec![line(&[(6., 4.), (10., 8.), (6., 12.)], false)],
+            Icon::Up => vec![line(&[(4., 10.), (8., 6.), (12., 10.)], false)],
             Icon::Down => vec![line(&[(4., 6.), (8., 10.), (12., 6.)], false)],
             Icon::More => vec![dot(3.5, 8.), dot(8., 8.), dot(12.5, 8.)],
             Icon::Close => vec![
@@ -94,6 +106,27 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
             Icon::Grid => [(3., 3.), (9., 3.), (3., 9.), (9., 9.)]
                 .map(|(x, y)| line(&[(x, y), (x + 4., y), (x + 4., y + 4.), (x, y + 4.)], true))
                 .into(),
+            Icon::Cards => [3., 9.]
+                .map(|y| line(&[(2.5, y), (13.5, y), (13.5, y + 4.), (2.5, y + 4.)], true))
+                .into(),
+            Icon::Unified => vec![
+                line(&[(8., 2.5), (13.5, 5.5), (8., 8.5), (2.5, 5.5)], true),
+                line(&[(2.5, 8.5), (8., 11.5), (13.5, 8.5)], false),
+                line(&[(2.5, 11.), (8., 14.), (13.5, 11.)], false),
+            ],
+            Icon::Separated => vec![
+                line(&[(2.5, 6.), (2.5, 3.), (7.5, 3.), (7.5, 6.)], false),
+                line(&[(8.5, 6.), (8.5, 3.), (13.5, 3.), (13.5, 6.)], false),
+                line(&[(2.5, 6.), (13.5, 6.), (13.5, 13.), (2.5, 13.)], true),
+            ],
+            Icon::FoldAll => vec![
+                line(&[(4., 7.5), (8., 4.), (12., 7.5)], false),
+                line(&[(4., 12.), (8., 8.5), (12., 12.)], false),
+            ],
+            Icon::UnfoldAll => vec![
+                line(&[(4., 4.), (8., 7.5), (12., 4.)], false),
+                line(&[(4., 8.5), (8., 12.), (12., 8.5)], false),
+            ],
             Icon::Menu => [4.5, 8., 11.5]
                 .map(|y| line(&[(3., y), (13., y)], false))
                 .into(),

@@ -317,6 +317,35 @@ pub enum Tiles {
     Cards,
 }
 
+/// Whether the browser shows all formats in one unified view or separated by
+/// format tabs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LibraryView {
+    #[default]
+    Unified,
+    Separated,
+}
+
+/// How the browser orders libraries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LibrarySort {
+    #[default]
+    NameAsc,
+    NameDesc,
+    MostPresets,
+    FavoritesFirst,
+}
+
+/// Which libraries the browser's attribute filter keeps.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LibraryFilter {
+    #[default]
+    All,
+    Playable,
+    HasSnapshots,
+    Locked,
+}
+
 /// Which libraries the browser lists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Shelf {
@@ -333,11 +362,12 @@ pub struct View {
     pub browser_hidden: bool,
     /// The library list's share of the browser's height; 0 is the default.
     pub split: f64,
+    pub library_view: LibraryView,
     pub format: Format,
     pub shelf: Shelf,
     pub tiles: Tiles,
-    /// Libraries listed Z to A.
-    pub descending: bool,
+    pub sort: LibrarySort,
+    pub library_filter: LibraryFilter,
     pub search: String,
     /// The library whose presets the browser lists, and their search.
     pub library: Option<usize>,

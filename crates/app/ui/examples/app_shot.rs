@@ -8,6 +8,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use kontra_ui::Pictures;
 use kontra_ui::app::{
     self, Action, App, Envelope, Filter, Format, Library, Part, PartTab, Pass, Sound, Stats, Zone,
 };
@@ -25,6 +26,11 @@ impl Shot {
     /// One frame; its cost in µs and whether motion is still running.
     fn frame(&mut self, input: Input) -> Result<(u128, bool), Box<dyn Error>> {
         let t = Instant::now();
+        // As the editor does each frame: take in the covers decoded since.
+        let decoding = self.app.covers.as_mut().is_some_and(|c| {
+            c.poll();
+            c.pending() > 0
+        });
         let r = app::view(&mut self.ui, &mut self.app);
         self.actions.extend(r.changed);
         let size = Size::new(f64::from(self.size.0), f64::from(self.size.1));
@@ -32,7 +38,7 @@ impl Shot {
             .ui
             .frame(r.el, Some(size), input, 1. / 60.)
             .map_err(|e| format!("{e:?}"))?;
-        Ok((t.elapsed().as_micros(), f.animating))
+        Ok((t.elapsed().as_micros(), f.animating || decoding))
     }
 
     /// Frames until nothing moves: the ones an action costs after it.
@@ -90,6 +96,14 @@ impl Shot {
 }
 
 fn specimen() -> App {
+    let art: Vec<String> = std::env::var("KONTRA_SHOT_ART")
+        .map(|v| {
+            v.split(':')
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
     let library = |name: &str, format, presets: &[&str], starred| Library {
         name: name.into(),
         format,
@@ -100,7 +114,7 @@ fn specimen() -> App {
         favorites: Vec::new(),
         art: Vec::new(),
     };
-    App {
+    let mut app = App {
         libraries: vec![
             library("Afflatus Chapter II Brass", Format::Kontakt, &["Instruments/2 Horns KS", "Instruments/4 Horns KS", "Instruments/Solo Trumpet KS", "Presets/Warm/Tubas Slides"], true),
             library("ANALOG STRINGS", Format::Kontakt, &["ANALOG STRINGS"], false),
@@ -117,8 +131,17 @@ fn specimen() -> App {
             "2 Horns KS: script line 912 asks for an unknown effect's display\nget_engine_par_disp on slot 3 names no effect; Kontakt answers an empty text and so does KONTRA.".into(),
         ],
         folders: vec!["/data/main/Libraries/Kontakt".into(), "/data/main/Libraries/UVI".into()],
+        // Real cover pictures to judge the tiles by: `KONTRA_SHOT_ART` lists
+        // PNG paths (`:`-separated), handed out one per library in turn.
+        covers: (!art.is_empty()).then(|| {
+            Pictures::new(Box::new(|p: &str| std::fs::read(p).ok()))
+        }),
         ..App::default()
+    };
+    for (l, a) in app.libraries.iter_mut().zip(art.iter().cycle()) {
+        l.art = vec![a.clone()];
     }
+    app
 }
 
 fn parts() -> Vec<Part> {

@@ -1265,6 +1265,13 @@ fn reopened_editor_waits_for_a_fresh_snapshot_even_when_the_rack_is_unchanged() 
 #[test]
 fn an_idle_tick_draws_no_frame() {
     let (params, mut dsp) = activate("");
+    // The browser's opening scan lands on a tick of its own, however late
+    // a loaded machine finishes it: wait it out before timing idle ticks.
+    let t = std::time::Instant::now();
+    while params.shared.scanning.load(Ordering::Acquire) && t.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(5));
+        Tick.run(&params);
+    }
     settle(&params, &mut dsp);
     params.shared.dirty.store(false, Ordering::Release);
     for _ in 0..3 {
