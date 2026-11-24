@@ -38,6 +38,17 @@ class StageTests(unittest.TestCase):
             instructions = (root / 'stage/README.txt').read_text()
             self.assertIn('install.ps1', instructions)
             self.assertIn('%CommonProgramFiles%', instructions)
+            self.assertFalse((root / 'stage/KONTRA.exe').exists(), 'no app built, none staged')
+
+    def test_standalone_app_is_staged_with_instructions(self):
+        with tempfile.TemporaryDirectory(dir='.') as directory:
+            root = Path(directory)
+            (root / 'bundles/KONTRA.vst3').mkdir(parents=True)
+            (root / 'bundles/KONTRA.clap').write_text('clap')
+            (root / 'bundles/kontra-standalone').write_text('app')
+            stage_nightly.stage('linux-x86_64', root / 'stage', root / 'bundles')
+            self.assertEqual((root / 'stage/KONTRA').read_text(), 'app')
+            self.assertIn('./KONTRA', (root / 'stage/README.txt').read_text())
 
 
 if __name__ == '__main__':

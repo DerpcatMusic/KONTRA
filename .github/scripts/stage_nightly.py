@@ -18,6 +18,9 @@ def stage(platform, output, bundles):
         else:
             shutil.copy2(source, output / name)
     windows = platform.startswith('windows')
+    app = 'kontra-standalone.exe' if windows else 'kontra-standalone'
+    if (bundles / app).is_file():
+        shutil.copy2(bundles / app, output / ('KONTRA.exe' if windows else 'KONTRA'))
     extension = 'ps1' if windows else 'sh'
     for name in ('install', 'uninstall'):
         shutil.copy2(ROOT / '.github/packaging' / f'{name}.{extension}', output)
@@ -30,13 +33,15 @@ def stage(platform, output, bundles):
         '%CommonProgramFiles%\\VST3\\KONTRA.vst3 folder, if present.\n'
         'Windows may ask for administrator permission.\n'
     ) if windows else ''
+    standalone = ('Run KONTRA on its own (no DAW): ' + ('KONTRA.exe' if windows else './KONTRA') + '; --help lists the audio and MIDI options.\n'
+                  if (output / ('KONTRA.exe' if windows else 'KONTRA')).is_file() else '')
     if windows:
         scan = ('Use a 64-bit DAW. If it does not scan the per-user locations, add those folders to\n'
                 'its scan paths or copy each bundle to its system-wide folder under %CommonProgramFiles%.\n')
     else:
         scan = ('Requires a 64-bit Linux DAW and glibc 2.35 or later. On Debian and Ubuntu,\n'
                 'install libxkbcommon0 if the DAW scanner reports a missing libxkbcommon.so.0.\n')
-    (output / 'README.txt').write_text(f'KONTRA\n\nClose your DAW and extract the entire archive.\nInstall: {install}\nUninstall: {uninstall}\n{manual_uninstall}Installed per user in {locations}. Rescan plugins in your DAW.\n{scan}Your libraries and settings are preserved when uninstalling.\n\nLicenses: LICENSES.txt.\n', encoding='utf-8')
+    (output / 'README.txt').write_text(f'KONTRA\n\nClose your DAW and extract the entire archive.\nInstall: {install}\nUninstall: {uninstall}\n{manual_uninstall}{standalone}Installed per user in {locations}. Rescan plugins in your DAW.\n{scan}Your libraries and settings are preserved when uninstalling.\n\nLicenses: LICENSES.txt.\n', encoding='utf-8')
 
 
 if __name__ == '__main__':

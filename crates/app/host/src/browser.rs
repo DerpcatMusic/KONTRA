@@ -3,6 +3,7 @@
 //! player keeps between sessions ([`Prefs`]: roots, stars, recent). A first
 //! run starts from v2's roots, read and never written.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -617,20 +618,53 @@ impl Browser {
             .find_map(|(library, l)| Some((library, l.presets.iter().position(|p| p == path)?)))
     }
 
+    /// The editor's colour tokens (`theme.json` beside the prefs, token →
+    /// `#rrggbb`); empty when none are saved. A file of their own, so another
+    /// instance saving its prefs never writes back older colours.
+    #[must_use]
+    pub fn theme(&self) -> BTreeMap<String, String> {
+        self.theme_path()
+            .and_then(|p| serde_json::from_slice(&std::fs::read(p).ok()?).ok())
+            .unwrap_or_default()
+    }
+
+    /// Saves the editor's colour tokens ([`Self::theme`]).
+    pub fn set_theme(&self, tokens: &BTreeMap<String, String>) {
+        if let Some(path) = self.theme_path() {
+            save(&path, tokens);
+        }
+    }
+
+    fn theme_path(&self) -> Option<PathBuf> {
+        Some(self.prefs_path.as_ref()?.with_file_name("theme.json"))
+    }
+
     fn changed(&mut self) {
         self.generation += 1;
-        let Some(path) = &self.prefs_path else {
-            return;
-        };
-        let Ok(json) = serde_json::to_vec_pretty(&self.prefs) else {
-            return;
-        };
-        let _saved = path.parent().map(std::fs::create_dir_all);
-        // Written whole, then renamed over the old file.
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _saved = std::fs::rename(tmp, path);
+        if let Some(path) = &self.prefs_path {
+            save(path, &self.prefs);
         }
+    }
+}
+
+/// `value` as JSON at `path`: written whole to a unique temporary file, then
+/// renamed over the old file.
+fn save(path: &Path, value: &impl serde::Serialize) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let Ok(json) = serde_json::to_vec_pretty(value) else {
+        return;
+    };
+    let _saved = path.parent().map(std::fs::create_dir_all);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("prefs.json");
+    let tmp = path.with_file_name(format!("{file_name}.tmp.{}.{seq}", std::process::id()));
+    if std::fs::write(&tmp, json).is_err() || std::fs::rename(&tmp, path).is_err() {
+        let _removed = std::fs::remove_file(&tmp);
     }
 }
 
@@ -680,6 +714,12 @@ mod tests {
             again.kontakt().as_deref(),
             Some(Path::new("/nowhere/User Content"))
         );
+        // The colours: saved apart, and not undone by another prefs save.
+        assert!(again.theme().is_empty(), "no colours saved yet");
+        let tokens = BTreeMap::from([("accent".to_owned(), "#ff8000".to_owned())]);
+        again.set_theme(&tokens);
+        b.set_kontakt("/nowhere/Other".into());
+        assert_eq!(Browser::open(Some(&dir), None).theme(), tokens);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

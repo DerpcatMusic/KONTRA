@@ -2664,3 +2664,48 @@ fn an_analog_strings_snapshot_plays_its_own_groups() {
     let rms = play(&params, &mut dsp);
     assert!(rms > 1e-4, "silent: rms {rms}");
 }
+
+/// About and the format descriptors carry the release line's version
+/// (`0.MINOR.PATCH`), never the v3 architecture's "3.0.0"; the build is
+/// stamped with a UTC time, and the changelog's newest release is first.
+#[test]
+fn about_shows_the_release_version_and_build() {
+    let b = crate::BUILD;
+    let parts: Vec<&str> = b.version.split('.').collect();
+    assert_eq!(parts.len(), 3, "{}", b.version);
+    assert_eq!(
+        parts.first(),
+        Some(&"0"),
+        "pre-1.0 release line: {}",
+        b.version
+    );
+    assert!(
+        parts.iter().all(|p| p.parse::<u32>().is_ok()),
+        "{}",
+        b.version
+    );
+    if env!("KONTRA_VERSION_OVERRIDDEN") == "0" {
+        assert_eq!(b.version, env!("CARGO_PKG_VERSION"));
+    }
+    // `YYYY-MM-DD HH:MM UTC`.
+    let built = b.built.as_bytes();
+    assert_eq!(built.len(), 20, "{}", b.built);
+    assert!(
+        b.built.ends_with(" UTC") && built[4] == b'-' && built[13] == b':',
+        "{}",
+        b.built
+    );
+    assert!(!b.revision.is_empty() && !b.target.is_empty());
+    assert!(b.formats.contains("CLAP"), "{}", b.formats);
+    let releases = kontra_ui::app::changelog(b.changelog);
+    let newest = releases
+        .first()
+        .map(|r| r.heading.as_str())
+        .unwrap_or_default();
+    assert!(
+        newest.starts_with(b.version),
+        "newest changelog entry {newest:?} is {}",
+        b.version
+    );
+    assert!(releases.len() > 20 && releases.iter().all(|r| !r.lines.is_empty()));
+}

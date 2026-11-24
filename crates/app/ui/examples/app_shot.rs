@@ -132,6 +132,14 @@ fn specimen() -> App {
             "2 Horns KS: script line 912 asks for an unknown effect's display\nget_engine_par_disp on slot 3 names no effect; Kontakt answers an empty text and so does KONTRA.".into(),
         ],
         folders: vec!["/data/main/Libraries/Kontakt".into(), "/data/main/Libraries/UVI".into()],
+        build: app::Build {
+            version: "0.6.24",
+            revision: "e4e1173bf",
+            built: "2026-11-24 15:30 UTC",
+            target: "x86_64-unknown-linux-gnu",
+            formats: "CLAP · VST3 · Standalone",
+            changelog: include_str!("../../../../CHANGELOG.md"),
+        },
         // Real cover pictures to judge the tiles by: `KONTRA_SHOT_ART` lists
         // PNG paths (`:`-separated), handed out one per library in turn.
         covers: (!art.is_empty()).then(|| {
@@ -307,8 +315,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         s.click("tab-Rack")?;
         s.click("app-menu")?;
         s.save("app-menu")?;
-        s.click("app-menu-0")?;
+        s.click("app-menu-popup/0")?;
         s.save("settings")?;
+        s.click("theme-accent")?;
+        s.save("settings-accent-picker")?;
+        s.click("theme-accent")?;
+        s.click("theme-preset")?;
+        s.save("settings-presets")?;
+        s.click("theme-preset/list/1")?;
+        s.save("settings-midnight")?;
+        s.click("theme-reset")?;
+        s.click("settings-about")?;
+        s.save("about")?;
         s.click("sheet-close")?;
         s.click("browser")?;
         s.save("browser-hidden")?;

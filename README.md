@@ -20,7 +20,7 @@ KONTRA is a plugin that plays Kontakt and UVI / Falcon sample libraries, aiming 
 [![Download for macOS, universal](https://img.shields.io/badge/Download-macOS%20Universal-222222?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-macos-universal.pkg)
 [![Download for Linux x64](https://img.shields.io/badge/Download-Linux%20x64-E8A317?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-linux-x86_64.zip)
 
-A new release most days · CLAP and VST3 · [All releases and what changed in each](https://github.com/DerpcatMusic/KONTRA/releases)
+A new release most days · CLAP, VST3 and Standalone · [All releases and what changed in each](https://github.com/DerpcatMusic/KONTRA/releases)
 
 **Alpha software.** It loads and plays many Kontakt and UVI libraries, some of them closely, none of them perfectly yet. Expect wrong sounds, dead controls and changes between releases; it is not yet a replacement for Kontakt or Falcon.
 
@@ -34,9 +34,23 @@ A new release most days · CLAP and VST3 · [All releases and what changed in ea
 | Instrument panels and scripts | Each library's own interface is drawn and scripted; not every control works yet |
 | Effects | Many Kontakt effects are modelled; some are still passed through unprocessed |
 | UVI / Falcon libraries | Sample playback, scripts and interfaces work in part; sound is not yet measured |
-| Plugin | CLAP and VST3 on Windows, macOS and Linux |
+| Plugin & app | CLAP, VST3 and standalone app on Windows, macOS and Linux |
 
 Feature by feature: [compatibility table](https://derpcatmusic.github.io/KONTRA/features.html).
+
+## Running standalone
+
+The release archives include a standalone executable alongside the CLAP and VST3 bundles (`./KONTRA --help` on Linux, `.\KONTRA.exe --help` on Windows) to list audio/MIDI device and buffer flags.
+
+From source:
+
+```sh
+# Inside the Matari monorepo
+matari build kontra --standalone
+
+# Or directly in the KONTRA workspace
+cargo run -p kontra-plugin --features standalone --bin kontra-standalone
+```
 
 ## Something is wrong?
 
@@ -46,7 +60,7 @@ Feature by feature: [compatibility table](https://derpcatmusic.github.io/KONTRA/
 
 One engine plays everything; each format is translated into the same description of an instrument. [docs/ENGINE.md](docs/ENGINE.md) explains the design and [docs/architecture-v3/VISION.md](docs/architecture-v3/VISION.md) why.
 
-Every change arrives as a pull request whose title says what changed in plain words; a release is cut most days, numbered `3.MINOR.PATCH`, with notes that credit each change to its pull request and author. Details in [CONTRIBUTING.md](CONTRIBUTING.md#pull-requests-commits-and-releases).
+Every change arrives as a pull request whose title says what changed in plain words; a release is cut most days, numbered `0.MINOR.PATCH`, with notes that credit each change to its pull request and author. Details in [CONTRIBUTING.md](CONTRIBUTING.md#pull-requests-commits-and-releases).
 
 [Contribute](CONTRIBUTING.md)
 

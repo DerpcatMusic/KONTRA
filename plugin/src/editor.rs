@@ -792,6 +792,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
             next_channel,
             own_output,
         } => browser.new_parts(next_channel, own_output),
+        Action::Theme(tokens) => browser.set_theme(&tokens),
         _ => {}
     }
 }
@@ -974,7 +975,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let log_params = Arc::clone(&params);
     let cancel_params = Arc::clone(&params);
     let mut app = App {
-        build: crate::BUILD.into(),
+        build: crate::BUILD,
         ..App::default()
     };
     let mut shown = Shown::default();
@@ -1182,6 +1183,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                     | Action::Relink(_)
                     | Action::RemoveFolder(_)
                     | Action::NewParts { .. }
+                    | Action::Theme(_)
                     | Action::Picked(_)
             ) {
                 p.shared.request(Request::Browse(action));
@@ -1374,8 +1376,13 @@ fn format_diagnostics_report(app: &App) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     let _ = writeln!(out, "KONTRA Diagnostics Report");
-    if !app.build.is_empty() {
-        let _ = writeln!(out, "Build: {}", app.build);
+    if !app.build.version.is_empty() {
+        let b = &app.build;
+        let _ = writeln!(
+            out,
+            "Build: {} · {} · built {} · {} · {}",
+            b.version, b.revision, b.built, b.target, b.formats
+        );
     }
     let _ = writeln!(
         out,
@@ -1716,7 +1723,7 @@ mod tests {
         let mut snap = Snapshot::default();
         snap.refresh(&rack, &browser, vec!["Startup notice".into()]);
         let mut app = App {
-            build: "Version test".into(),
+            build: crate::BUILD,
             ..App::default()
         };
         let mut shown = Shown::default();

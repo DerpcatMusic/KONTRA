@@ -353,7 +353,7 @@ mod tests {
         let dir = tmp("relocate");
         let (old, new) = (dir.join("a/HDD/Synth"), dir.join("b/SSD/Vendor/Synth"));
         library(&old);
-        let roots = vec![root(&dir.join("a")), root(&dir.join("b"))].concat();
+        let roots = [root(&dir.join("a")), root(&dir.join("b"))].concat();
         std::fs::create_dir_all(dir.join("b")).unwrap();
         let before = scan(&roots, &[]);
         std::fs::create_dir_all(new.parent().unwrap()).unwrap();

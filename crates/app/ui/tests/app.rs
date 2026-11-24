@@ -562,7 +562,14 @@ fn mui_audit_passes_across_sizes_and_views() {
             ..Part::default()
         }],
         folders: vec!["/music/libraries".into()],
-        build: "Version 3.0.0 · test".into(),
+        build: app::Build {
+            version: "0.6.24",
+            revision: "abc123def",
+            built: "2026-11-24 12:00 UTC",
+            target: "x86_64-unknown-linux-gnu",
+            formats: "CLAP · VST3",
+            changelog: include_str!("../../../../CHANGELOG.md"),
+        },
         ..App::default()
     };
     let findings = mui::audit::audit(&mut ui, sizes, |ui| app::view(ui, &mut app).el);
@@ -610,9 +617,11 @@ fn mui_audit_passes_across_sizes_and_views() {
         ("About", app::Sheet::About),
     ] {
         app.view.sheet = Some(sheet);
-        let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
-            app::view(ui, &mut app).el
-        });
+        let findings = mui::audit::audit(
+            &mut ui,
+            [Size::new(900., 600.), Size::new(1180., 780.)],
+            |ui| app::view(ui, &mut app).el,
+        );
         assert!(
             findings.is_empty(),
             "{name} sheet audit findings:\n{}",
@@ -636,9 +645,11 @@ fn mui_audit_passes_across_sizes_and_views() {
         if let Some(p) = app.parts.first_mut() {
             p.tab = tab;
         }
-        let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
-            app::view(ui, &mut app).el
-        });
+        let findings = mui::audit::audit(
+            &mut ui,
+            [Size::new(900., 600.), Size::new(1180., 780.)],
+            |ui| app::view(ui, &mut app).el,
+        );
         assert!(
             findings.is_empty(),
             "PartTab::{tab:?} audit findings:\n{}",
@@ -732,9 +743,11 @@ fn protected_library_surfaces_lock_badge_tooltip_banner_and_passes_audit() {
     // Both Grid and Cards browser layouts pass MUI audit cleanly with protected libraries.
     for tiles in [app::Tiles::Grid, app::Tiles::Cards] {
         app.view.tiles = tiles;
-        let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
-            app::view(ui, &mut app).el
-        });
+        let findings = mui::audit::audit(
+            &mut ui,
+            [Size::new(900., 600.), Size::new(1180., 780.)],
+            |ui| app::view(ui, &mut app).el,
+        );
         assert!(
             findings.is_empty(),
             "Protected library ({tiles:?}) audit findings:\n{}",
@@ -880,9 +893,11 @@ fn unified_and_separated_library_views_filter_and_sort_cleanly() {
     app.view.library_filter = app::LibraryFilter::All;
     for lv in [app::LibraryView::Unified, app::LibraryView::Separated] {
         app.view.library_view = lv;
-        let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
-            app::view(ui, &mut app).el
-        });
+        let findings = mui::audit::audit(
+            &mut ui,
+            [Size::new(900., 600.), Size::new(1180., 780.)],
+            |ui| app::view(ui, &mut app).el,
+        );
         assert!(
             findings.is_empty(),
             "{lv:?} audit findings:\n{}",
@@ -1298,4 +1313,100 @@ fn report_hides_latent_diagnostics_until_developer_toggle_is_enabled() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+fn about_app() -> App {
+    App {
+        folders: vec!["/music/libraries".into()],
+        build: app::Build {
+            version: "0.6.24",
+            revision: "abc123def",
+            built: "2026-11-24 12:00 UTC",
+            target: "x86_64-unknown-linux-gnu",
+            formats: "CLAP · VST3",
+            changelog: include_str!("../../../../CHANGELOG.md"),
+        },
+        ..App::default()
+    }
+}
+
+/// No string in Settings (each dropdown and a colour picker open) or About
+/// draws `.notdef`: the bundled Noto Sans has every glyph shown.
+#[test]
+fn settings_and_about_draw_no_empty_glyph_boxes() {
+    use std::sync::{Arc, Mutex};
+    let missing: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = Arc::clone(&missing);
+    let mut ui = kontra_ui::ui().fallback_source(Arc::new(move |_, text: &str| {
+        seen.lock().unwrap().push(text.to_owned());
+        Vec::new()
+    }));
+    let mut app = about_app();
+    app.view.sheet = Some(app::Sheet::Settings);
+    settle(&mut ui, &mut app);
+    for id in [
+        "scale",
+        "face-scale",
+        "face-look",
+        "theme-preset",
+        "theme-accent",
+    ] {
+        click(&mut ui, &mut app, id);
+        settle(&mut ui, &mut app);
+        assert!(
+            ui.scene()
+                .and_then(|s| s.surface(&format!("{id}-popup")))
+                .is_some()
+                || ui
+                    .scene()
+                    .and_then(|s| s.surface(&format!("{id}/list")))
+                    .is_some(),
+            "{id} opened"
+        );
+        click(&mut ui, &mut app, id);
+        settle(&mut ui, &mut app);
+    }
+    app.view.sheet = Some(app::Sheet::About);
+    settle(&mut ui, &mut app);
+    for id in [
+        "about-version",
+        "about-revision",
+        "about-built",
+        "about-target",
+        "about-formats",
+        "about-changelog",
+    ] {
+        assert!(
+            ui.scene().and_then(|s| s.surface(id)).is_some(),
+            "About shows {id}"
+        );
+    }
+    let missing = missing.lock().unwrap();
+    assert!(missing.is_empty(), "drawn as .notdef: {missing:?}");
+}
+
+/// A preset picked in Settings applies on the next frame and asks the host
+/// to save its tokens; Reset brings back the neutral default.
+#[test]
+fn a_theme_preset_applies_at_once_and_is_saved() {
+    use kontra_ui::theme::{self, Look};
+    let mut ui = kontra_ui::ui();
+    let mut app = about_app();
+    app.view.sheet = Some(app::Sheet::Settings);
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "theme-preset");
+    settle(&mut ui, &mut app);
+    let mut actions = click(&mut ui, &mut app, "theme-preset/list/1");
+    actions.extend(settle(&mut ui, &mut app));
+    let midnight = Look::PRESETS[1].1;
+    assert_eq!(theme::look(), midnight);
+    assert_eq!(ui.theme().palette, midnight.theme().palette);
+    assert!(
+        actions.contains(&Action::Theme(midnight.tokens())),
+        "{actions:?}"
+    );
+    click(&mut ui, &mut app, "theme-reset");
+    settle(&mut ui, &mut app);
+    assert_eq!(theme::look(), Look::GRAPHITE);
+    assert!(ui.theme().palette.neutral.chroma.abs() < 1e-6);
 }
