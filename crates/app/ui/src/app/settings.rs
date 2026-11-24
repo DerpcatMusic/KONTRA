@@ -131,14 +131,17 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             ui,
             format!("folder-remove-{n}"),
             Icon::Close,
-            "Remove this folder",
+            if f.auto {
+                "Hide this found folder"
+            } else {
+                "Remove this folder"
+            },
             false,
         );
         if remove.changed {
             out.push(Action::RemoveFolder(n));
         }
-        let name = caption(f.clone()).lines(1).min_w(0).grow(1).tip(f.clone());
-        folders.push(row![name, remove.el].align(Align::Center));
+        folders.push(super::browser::scan_folder(f, Some(remove.el)));
     }
     let folders = col(folders)
         .gap(TIGHT)

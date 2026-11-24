@@ -12,6 +12,7 @@ fn main() {
         .map(|p| Root {
             path: p.into(),
             single: false,
+            auto: false,
         })
         .collect();
     let programs =

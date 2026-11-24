@@ -1865,6 +1865,7 @@ fn browser_keeps_protected_uvi_banks_without_listable_programs() {
         &[kontra_library::Root {
             path: banks.clone(),
             single: false,
+            auto: false,
         }],
         &kontra_library::Progress::default(),
         &mut cache,

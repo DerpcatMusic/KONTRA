@@ -27,6 +27,8 @@ use crate::{KontraParams, P, Request, lock};
 
 /// Report lines kept; older ones scroll away.
 const REPORT: usize = 200;
+/// The most scan issues the report carries.
+const SCAN_ISSUES: usize = 50;
 
 /// One rack part as the editor shows it.
 #[derive(Clone, Debug)]
@@ -148,7 +150,11 @@ pub struct Snapshot {
     /// The browser as lane D's app lists it, and which change of it.
     libraries: (u64, Arc<Vec<app::Library>>),
     recent: Vec<(usize, usize)>,
-    folders: Vec<String>,
+    folders: Vec<app::LibraryFolder>,
+    /// A running library scan, read every tick.
+    scan: Option<app::ScanProgress>,
+    /// What the last scan could not read, for the report.
+    scan_issues: Vec<String>,
     snapshot_folder: (String, Option<bool>),
     /// [`kontra_library::Prefs::next_channel`] and `own_output`.
     new_parts: (bool, bool),
@@ -176,8 +182,18 @@ impl Snapshot {
         if rescanned {
             self.libraries = (browser.generation, Arc::new(libraries(browser)));
             self.recent = browser.recent();
-            self.folders = (browser.prefs.roots.iter())
-                .map(|r| r.path.display().to_string())
+            self.folders = (browser.folders().into_iter())
+                .map(|f| app::LibraryFolder {
+                    path: f.path.display().to_string(),
+                    auto: f.auto,
+                    status: f.summary,
+                    hint: f.hint,
+                    problem: f.problem,
+                })
+                .collect();
+            self.scan_issues = (browser.catalog.issues.iter())
+                .take(SCAN_ISSUES)
+                .map(|i| format!("{}: {}", i.path.display(), i.reason))
                 .collect();
             self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
             self.snapshot_folder = match browser.kontakt() {
@@ -185,6 +201,13 @@ impl Snapshot {
                 None => (String::new(), None),
             };
         }
+        self.scan = browser
+            .progress()
+            .map(|(folders, found, machine)| app::ScanProgress {
+                folders,
+                found,
+                machine,
+            });
         let meters = rack.meters();
         let level = |slot: usize| {
             let out = meters.parts.get(slot).copied().unwrap_or_default();
@@ -317,6 +340,7 @@ impl Snapshot {
             self.readout.shown(),
             self.stats.voices,
             self.pick.clone(),
+            self.scan,
         )
     }
 
@@ -342,6 +366,7 @@ impl Snapshot {
             app.libraries = fresh.clone();
             app.recent.clone_from(&self.recent);
             app.folders.clone_from(&self.folders);
+            app.scan_issues.clone_from(&self.scan_issues);
             app.snapshot_folder.clone_from(&self.snapshot_folder);
             (app.next_channel, app.own_output) = self.new_parts;
             shown.browser = self.libraries.0;
@@ -479,6 +504,7 @@ impl Snapshot {
                 .flat_map(|p| p.diag_latent.iter().cloned()),
         );
         app.pick.clone_from(&self.pick);
+        app.scan = self.scan;
     }
 }
 
@@ -746,7 +772,9 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
         }
         Action::Star(library, on) => browser.star(library, on),
         Action::StarPreset(library, preset, on) => browser.star_preset(library, preset, on),
-        Action::Refresh => browser.rescan(),
+        Action::Refresh => browser.refresh(),
+        Action::ScanMachine => browser.scan_machine(),
+        Action::CancelScan => browser.cancel(),
         Action::Relink(line) => {
             if let Some(o) = rack.take_offer(&line) {
                 browser.relink(o.from, o.to);
@@ -1081,7 +1109,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             }
             if action == Action::AddFolder {
                 // The browser's first folder, from the editor's own copy.
-                let from = app.folders.first().map(PathBuf::from);
+                let from = app.folders.first().map(|f| PathBuf::from(&f.path));
                 p.shared.folder.ask(crate::folder::Wanted::Libraries, from);
                 if p.shared.folder.has_result() {
                     p.shared.wake_tick();
@@ -1138,6 +1166,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 Action::Star(..)
                     | Action::StarPreset(..)
                     | Action::Refresh
+                    | Action::ScanMachine
+                    | Action::CancelScan
                     | Action::Relink(_)
                     | Action::RemoveFolder(_)
                     | Action::NewParts { .. }
@@ -1358,6 +1388,23 @@ fn format_diagnostics_report(app: &App) -> String {
     } else {
         for entry in &app.report {
             let _ = writeln!(out, "  - {entry}");
+        }
+    }
+    let _ = writeln!(out, "\nLibrary scan ({} folders):", app.folders.len());
+    if app.folders.is_empty() {
+        let _ = writeln!(out, "  No library folder: none added and none found.");
+    }
+    for f in &app.folders {
+        let auto = if f.auto { " [auto]" } else { "" };
+        let _ = writeln!(out, "  - {}{auto}: {}", f.path, f.status);
+        if let Some(hint) = &f.hint {
+            let _ = writeln!(out, "      {hint}");
+        }
+    }
+    if !app.scan_issues.is_empty() {
+        let _ = writeln!(out, "  Could not read ({}):", app.scan_issues.len());
+        for issue in &app.scan_issues {
+            let _ = writeln!(out, "    - {issue}");
         }
     }
     if app.view.report_developer && !app.report_latent.is_empty() {
@@ -1699,5 +1746,37 @@ mod tests {
         app.view.report_developer = true;
         let dev_txt = format_diagnostics_report(&app);
         assert!(dev_txt.contains("ignored group.midi_channel"));
+    }
+
+    /// The exported report says how each library folder scanned, with its
+    /// hint, and what could not be read.
+    #[test]
+    fn the_report_carries_the_library_scan() {
+        let app = App {
+            folders: vec![
+                app::LibraryFolder {
+                    path: "/mnt/hdd/Kontakt".into(),
+                    auto: true,
+                    status: "can't read: permission denied".into(),
+                    hint: Some("flatpak override --user --filesystem=/mnt/hdd/Kontakt x".into()),
+                    problem: true,
+                },
+                app::LibraryFolder {
+                    path: "/home/u/Libs".into(),
+                    status: "2 libraries found".into(),
+                    ..app::LibraryFolder::default()
+                },
+            ],
+            scan_issues: vec!["/mnt/hdd/Kontakt: Permission denied (os error 13)".into()],
+            ..App::default()
+        };
+        let txt = format_diagnostics_report(&app);
+        assert!(txt.contains("Library scan (2 folders):"), "{txt}");
+        assert!(txt.contains("/mnt/hdd/Kontakt [auto]: can't read: permission denied"));
+        assert!(txt.contains("flatpak override --user --filesystem=/mnt/hdd/Kontakt x"));
+        assert!(txt.contains("/home/u/Libs: 2 libraries found"));
+        assert!(txt.contains("Could not read (1):"));
+        let none = format_diagnostics_report(&App::default());
+        assert!(none.contains("No library folder: none added and none found."));
     }
 }

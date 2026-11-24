@@ -76,6 +76,9 @@ pub struct Instrument {
     pub steal: Steal,
     pub steal_released_first: bool,
     pub steal_fade_ms: f32,
+    /// The key switch the instrument saved as held at load, before any key
+    /// is played; `None` falls back to the lowest switch range.
+    pub default_keyswitch: Option<u8>,
     /// Shared voice limits; [`Group::voice_group`] indexes here.
     pub voice_groups: Vec<VoiceGroup>,
     /// Effects on everything the instrument plays, by slot.
@@ -129,6 +132,7 @@ impl Instrument {
         steal: Steal::Oldest,
         steal_released_first: true,
         steal_fade_ms: 10.0,
+        default_keyswitch: None,
         voice_groups: Vec::new(),
         inserts: Vec::new(),
         sends: Vec::new(),
@@ -311,7 +315,8 @@ pub struct Group {
     /// the zone's start instead (only that much of a streamed sample is
     /// held ready).
     pub offset_limited: bool,
-    /// Start rules folded left to right by their joins; empty always starts.
+    /// Start rules as one unparenthesized condition: `And`/`AndNot`
+    /// bind tighter than `Or`; empty always starts.
     pub start: Vec<(Join, StartRule)>,
     /// Voices of this group that may sound at once.
     pub polyphony: Option<u16>,

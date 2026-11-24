@@ -228,7 +228,9 @@ pub fn prepare(
     effects(&mut plan, instrument, rate, &mut diagnostics);
     plan.polyphony = polyphony;
     plan.voice_groups.clone_from(&instrument.voice_groups);
-    plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();
+    // The saved default, else the lowest switch range's first key.
+    plan.default_keyswitch =
+        (instrument.default_keyswitch).or_else(|| switches.iter().map(|r| *r.start()).min());
     plan.switches = switches;
     if let Some(graph) = &instrument.graph
         && graph.validate().is_empty()
@@ -1429,6 +1431,30 @@ mod tests {
             pinned(vec![streamed.clone(), purged_table]),
             pinned(vec![streamed])
         );
+    }
+
+    /// The saved default key switch is held at load, not the lowest range.
+    #[test]
+    fn the_saved_default_keyswitch_wins_over_the_lowest_range() {
+        let group = |lo: u8| ir::Group {
+            start: vec![(ir::Join::And, ir::StartRule::Keyswitch { range: lo..=lo })],
+            ..ir::Group::DEFAULT
+        };
+        let default_of = |saved| {
+            let inst = ir::Instrument {
+                groups: vec![group(24), group(26)],
+                default_keyswitch: saved,
+                ..ir::Instrument::DEFAULT
+            };
+            let mut store = Store::new(kontra_stream::StoreConfig::DEFAULT).unwrap();
+            prepare(&inst, 48_000, &mut store, &|_| {
+                Err(io::Error::new(io::ErrorKind::NotFound, "unused"))
+            })
+            .0
+            .default_keyswitch
+        };
+        assert_eq!(default_of(Some(26)), Some(26));
+        assert_eq!(default_of(None), Some(24));
     }
 
     #[test]

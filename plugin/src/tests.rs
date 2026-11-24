@@ -2607,3 +2607,53 @@ fn block_size_growth_on_reactivate_preserves_loaded_parts_without_reload() {
     Kontra::deactivate(dsp2);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The parts the rack holds: (part, name).
+fn part_names(params: &KontraParams) -> Vec<(usize, String)> {
+    let rack = crate::lock(&params.shared.rack);
+    (rack
+        .as_ref()
+        .map(|r| r.parts())
+        .unwrap_or_default()
+        .iter()
+        .enumerate())
+    .filter_map(|(n, p)| Some((n, p.as_ref()?.name.clone())))
+    .collect()
+}
+
+/// A Conflux factory patch is a multi of a sample-less MIDI player slot
+/// ("Airy") and the Conflux synth: it opens one part, named after the
+/// patch, that plays.
+#[test]
+fn a_conflux_patch_opens_one_part_named_after_it() {
+    let Some(patch) = library("Conflux 1.1.0 [Native Instruments]/Multis/Airy Soul.nkm") else {
+        return;
+    };
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params.shared.request(crate::Request::Load {
+        part: None,
+        path: patch,
+    });
+    settle(&params, &mut dsp);
+    assert_eq!(part_names(&params), vec![(0, "Airy Soul".to_owned())]);
+    let rms = play(&params, &mut dsp);
+    assert!(rms > 1e-4, "silent: rms {rms}");
+}
+
+/// An ANALOG STRINGS snapshot unpurges the groups its script plays (Blown
+/// Fuse: 71 and 172, which the base has purged): it sounds.
+#[test]
+fn an_analog_strings_snapshot_plays_its_own_groups() {
+    let Some(snapshot) = library("ANALOG STRINGS/Snapshots/ANALOG STRINGS/Factory/Blown Fuse.nksn")
+    else {
+        return;
+    };
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params.shared.request(crate::Request::Load {
+        part: Some(0),
+        path: snapshot,
+    });
+    settle(&params, &mut dsp);
+    let rms = play(&params, &mut dsp);
+    assert!(rms > 1e-4, "silent: rms {rms}");
+}

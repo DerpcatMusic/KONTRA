@@ -13,7 +13,7 @@ use kontra_ui_model::{AssetRef, ImageMeta};
 use super::find::{self, found};
 use super::{Action, App, Format, Shelf, Tiles, tidy};
 use crate::Pictures;
-use crate::kit::{self, Icon, field, glyph, icon_button, interactive, list_row, rule, tab};
+use crate::kit::{self, Icon, button, field, glyph, icon_button, interactive, list_row, rule, tab};
 use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, accent, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
@@ -195,6 +195,21 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if add.changed {
         out.push(Action::AddFolder);
     }
+    let scanning = app.scan;
+    let machine = icon_button(
+        ui,
+        "browser-scan-machine",
+        Icon::Search,
+        "Scan my machine: find every library on this computer's drives",
+        scanning.is_some_and(|s| s.machine),
+    );
+    if machine.changed {
+        out.push(if scanning.is_some() {
+            Action::CancelScan
+        } else {
+            Action::ScanMachine
+        });
+    }
     let hide = icon_button(ui, "browser-hide", Icon::Left, "Hide the browser", false);
     if hide.changed {
         v.browser_hidden = true;
@@ -267,19 +282,41 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             rows.extend(favorites(ui, app, out));
             listed(rows, "Nothing starred yet")
         }
-        Shelf::All => {
-            let empty = match app.libraries.is_empty() {
-                true => "No libraries yet",
-                false => "Nothing matches",
-            };
-            listed(library_rows(ui, app), empty)
-        }
+        Shelf::All if app.libraries.is_empty() && app.scan.is_none() => empty(ui, app, out),
+        Shelf::All => listed(library_rows(ui, app), "Nothing matches"),
     };
+    let progress = scanning.map(|s| {
+        let cancel = button(ui, "scan-cancel", "Cancel", false);
+        if cancel.changed {
+            out.push(Action::CancelScan);
+        }
+        let what = if s.machine {
+            "Scanning this machine"
+        } else {
+            "Scanning"
+        };
+        row![
+            caption(format!(
+                "{what}\u{2026} {} folders \u{b7} {} libraries",
+                s.folders, s.found
+            ))
+            .fill(secondary())
+            .lines(1)
+            .min_w(0)
+            .grow(1)
+            .id("scan-progress"),
+            cancel.el,
+        ]
+        .gap(SPACE)
+        .align(Align::Center)
+        .pad(kit::edges(0., SPACE, 0., SPACE))
+    });
     col![
         row![
             search.el.grow(1).min_w(0),
             order.el,
             filter.el,
+            machine.el,
             add.el,
             hide.el
         ]
@@ -292,8 +329,76 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         rule(),
         col(shelf_rows).pad((TIGHT, 0.)),
         rule(),
+        col(progress.into_iter().collect::<Vec<_>>()),
         list.grow(1).min_h(0),
     ]
+}
+
+/// One scanned folder: its path, an "auto" tag when discovery found it, and
+/// how its scan went (in the warning colour when it found nothing or could
+/// not read), with the hint on a line of its own.
+pub(super) fn scan_folder(f: &super::LibraryFolder, control: Option<El>) -> El {
+    let mut top = vec![
+        caption(f.path.clone())
+            .lines(1)
+            .min_w(0)
+            .grow(1)
+            .tip(f.path.clone()),
+    ];
+    if f.auto {
+        top.push(
+            caption("auto")
+                .fill(secondary())
+                .tip("Found on its own; remove to hide it"),
+        );
+    }
+    top.extend(control);
+    let mut lines = vec![row(top).gap(TIGHT).align(Align::Center)];
+    if !f.status.is_empty() {
+        let status = caption(f.status.clone()).lines(1).min_w(0);
+        lines.push(if f.problem {
+            row![glyph(Icon::Warning, TEXT, secondary()), status]
+                .gap(TIGHT)
+                .align(Align::Center)
+        } else {
+            status.fill(secondary())
+        });
+    }
+    if let Some(hint) = &f.hint {
+        lines.push(
+            caption(hint.clone())
+                .fill(secondary())
+                .min_w(0)
+                .w(Len::Pct(100.)),
+        );
+    }
+    col(lines).gap(1).w(Len::Pct(100.))
+}
+
+/// The browser with no library: why, folder by folder, and what to do.
+fn empty(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
+    let scan = button(ui, "empty-scan-machine", "Scan my machine", false);
+    if scan.changed {
+        out.push(Action::ScanMachine);
+    }
+    let add = button(ui, "empty-add-folder", "Add folder\u{2026}", false);
+    if add.changed {
+        out.push(Action::AddFolder);
+    }
+    let said = if app.folders.is_empty() {
+        "No libraries yet. Scan this machine, or add the folder your libraries are in."
+    } else {
+        "No libraries found in these folders:"
+    };
+    let mut rows = vec![caption(said).fill(secondary())];
+    rows.extend(app.folders.iter().map(|f| scan_folder(f, None)));
+    rows.push(row![scan.el, add.el].gap(SPACE));
+    col(rows)
+        .gap(SPACE)
+        .pad(SPACE * 2.)
+        .scroll()
+        .id("library-empty")
+        .min_h(0)
 }
 
 /// A library card's width over its height, one to a row: the picture

@@ -22,6 +22,7 @@ fn catalog(dir: &Path) -> Catalog {
     let roots = [Root {
         path: dir.to_owned(),
         single: true,
+        auto: false,
     }];
     let programs = |b: &Path| kontra_format_uvi::programs(b).map_err(|e| e.to_string());
     kontra_library::scan(

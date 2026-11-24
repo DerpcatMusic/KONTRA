@@ -395,7 +395,8 @@ pub struct Zone {
     pub slot: u16,
     /// See [`ir::Zone::id`].
     pub id: u32,
-    /// Start conditions folded left to right by their joins; empty always starts.
+    /// Start conditions: `and`/`and not` bind tighter than `or`, as in
+    /// one unparenthesized condition; empty always starts.
     pub start: Vec<(ir::Join, Atom)>,
     pub trigger: Trigger,
     /// Velocity and key crossfades, then any on controllers. Those on

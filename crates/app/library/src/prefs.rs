@@ -31,6 +31,11 @@ pub struct Prefs {
     /// Folders the player moved libraries to, as (old, new): samples under
     /// the old one are read from the new.
     pub moved: Vec<(PathBuf, PathBuf)>,
+    /// Library folders the last "Scan my machine" found, scanned as auto
+    /// roots ([`crate::discover::machine`]).
+    pub found: Vec<Root>,
+    /// Auto roots the player removed: never scanned again.
+    pub hidden: Vec<PathBuf>,
 }
 
 impl Prefs {

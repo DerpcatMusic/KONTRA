@@ -197,9 +197,12 @@ impl Behaviour {
         }
     }
 
-    /// Whether `zone`'s start conditions hold for this note.
+    /// Whether `zone`'s start conditions hold for this note. They form one
+    /// unparenthesized condition, so `and`/`and not` bind tighter than `or`
+    /// (`0140870000.c:5250-5281`): `a or b and c` is `a or (b and c)`.
+    /// Every atom is read, so each round robin steps.
     pub fn starts(&mut self, zone: &Zone, channel: u8, key: u8, draw: RrDraw, step: Step) -> bool {
-        let mut result = true;
+        let (mut any, mut term) = (false, true);
         for (join, atom) in &zone.start {
             let value = match atom {
                 Atom::Switch(i) => self.switches.get(usize::from(*i)).copied() == Some(true),
@@ -210,13 +213,16 @@ impl Behaviour {
                     p >= *lo && p < *hi
                 }
             };
-            result = match join {
-                Join::And => result && value,
-                Join::AndNot => result && !value,
-                Join::Or => result || value,
-            };
+            match join {
+                Join::And => term &= value,
+                Join::AndNot => term &= !value,
+                Join::Or => {
+                    any |= term;
+                    term = value;
+                }
+            }
         }
-        result
+        any || term
     }
 
     pub fn cc(&self, channel: u8, controller: u8) -> u8 {

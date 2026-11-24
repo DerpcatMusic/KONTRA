@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
-use kontra_library::{Cache, Catalog, Prefs, Progress, Root};
+use kontra_library::{Cache, Catalog, Prefs, Progress, Root, discover};
 
 /// Whether `path` is a Kontakt instrument file.
 fn nki(path: &Path) -> bool {
@@ -19,12 +19,62 @@ fn nki(path: &Path) -> bool {
 /// Where v3 keeps its own settings, beside v2's `kontra`.
 const FOLDER: &str = "kontra-v3";
 
+/// What the scan thread does before the catalog scan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Find {
+    /// Scan the roots already known.
+    Nothing,
+    /// Look up registrations and defaults, and walk home and the volumes
+    /// briefly ([`discover::quick`]).
+    Quick,
+    /// Walk the whole machine ([`discover::machine`]).
+    Machine,
+}
+
+/// What a scan thread sends back.
+struct Scanned {
+    catalog: Catalog,
+    /// The roots [`Find::Quick`] found.
+    auto: Option<Vec<Root>>,
+    /// The roots [`Find::Machine`] found.
+    found: Option<Vec<Root>>,
+}
+
+/// A running scan: how far it is, what it finds first, and its result.
+struct Running {
+    progress: Arc<Progress>,
+    find: Find,
+    result: mpsc::Receiver<Scanned>,
+}
+
+/// One scanned folder as the editor lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderStatus {
+    pub path: PathBuf,
+    /// Found by discovery, not added by the player: removing it hides it.
+    pub auto: bool,
+    /// "3 libraries found", "not found"…; empty until a scan has run.
+    pub summary: String,
+    /// What to do about it (the Flatpak override, mount permissions).
+    pub hint: Option<String>,
+    /// The folder could not be read, or held no library.
+    pub problem: bool,
+}
+
 pub struct Browser {
     pub prefs: Prefs,
     pub catalog: Catalog,
     /// Moves whenever the catalog or the prefs change.
     pub generation: u64,
-    scan: Option<(Arc<Progress>, mpsc::Receiver<Catalog>)>,
+    scan: Option<Running>,
+    /// Discovery runs at all ([`Browser::discover`]); never in tests.
+    discovering: bool,
+    /// The next scan looks up registrations and defaults first.
+    quick_due: bool,
+    /// What the last quick discovery found.
+    auto: Vec<Root>,
+    /// The Flatpak app KONTRA runs in, for the override hint.
+    flatpak: Option<String>,
     prefs_path: Option<PathBuf>,
     cache_path: Option<PathBuf>,
     /// The player's presets folder ([`crate::presets`]), listed after each
@@ -50,6 +100,10 @@ impl Browser {
             catalog: Catalog::default(),
             generation: 1,
             scan: None,
+            discovering: false,
+            quick_due: false,
+            auto: Vec::new(),
+            flatpak: discover::flatpak_app(),
             prefs_path,
             cache_path: cache.map(|c| c.join(FOLDER).join("library-index.json")),
             user: None,
@@ -58,22 +112,132 @@ impl Browser {
         browser
     }
 
+    /// Finds library folders on its own from now on: registrations,
+    /// defaults and a brief walk before the next scan and each
+    /// [`Browser::refresh`].
+    pub fn discover(&mut self) {
+        self.discovering = true;
+        self.quick_due = true;
+        self.rescan();
+    }
+
+    /// The Rescan button: discovers again, when discovering, and scans.
+    pub fn refresh(&mut self) {
+        self.quick_due = self.discovering;
+        self.rescan();
+    }
+
+    /// Walks the whole machine for libraries, keeps what it finds as auto
+    /// roots, and scans. [`Browser::cancel`] stops it.
+    pub fn scan_machine(&mut self) {
+        self.start(Find::Machine);
+    }
+
+    /// Stops a running scan; the catalog stays as it was.
+    pub fn cancel(&mut self) {
+        if let Some(running) = self.scan.take() {
+            running.progress.cancel.store(true, Ordering::Relaxed);
+            self.generation += 1;
+        }
+    }
+
+    /// A running scan's progress: folders listed, libraries found, and
+    /// whether it walks the whole machine.
+    #[must_use]
+    pub fn progress(&self) -> Option<(usize, usize, bool)> {
+        let r = self.scan.as_ref()?;
+        Some((
+            r.progress.folders.load(Ordering::Relaxed),
+            r.progress.found.load(Ordering::Relaxed),
+            r.find == Find::Machine,
+        ))
+    }
+
+    /// Every root scanned: the player's, then the auto ones not hidden or
+    /// covered.
+    #[must_use]
+    pub fn roots(&self) -> Vec<Root> {
+        let mut auto = self.auto.clone();
+        auto.extend(self.prefs.found.iter().cloned());
+        discover::merge(&self.prefs.roots, &auto, &self.prefs.hidden)
+    }
+
+    /// Every root and how its last scan went.
+    #[must_use]
+    pub fn folders(&self) -> Vec<FolderStatus> {
+        (self.roots().into_iter())
+            .map(|root| {
+                let status = (self.catalog.roots.iter()).find(|s| s.path == root.path);
+                FolderStatus {
+                    summary: status
+                        .map(kontra_library::RootStatus::summary)
+                        .unwrap_or_default(),
+                    hint: status.and_then(|s| s.hint(self.flatpak.as_deref())),
+                    problem: status.is_some_and(|s| s.error.is_some() || s.libraries == 0),
+                    auto: root.auto,
+                    path: root.path,
+                }
+            })
+            .collect()
+    }
+
     /// Scans the roots again; a scan still running is stopped.
     pub fn rescan(&mut self) {
-        if let Some((progress, _)) = self.scan.take() {
-            progress.cancel.store(true, Ordering::Relaxed);
+        let find = if std::mem::take(&mut self.quick_due) {
+            Find::Quick
+        } else {
+            Find::Nothing
+        };
+        self.start(find);
+    }
+
+    fn start(&mut self, find: Find) {
+        if let Some(running) = self.scan.take() {
+            running.progress.cancel.store(true, Ordering::Relaxed);
         }
         let progress = Arc::new(Progress::default());
         let (send, receive) = mpsc::channel();
-        let (roots, cache_path) = (self.prefs.roots.clone(), self.cache_path.clone());
+        let (user, known, hidden) = (
+            self.prefs.roots.clone(),
+            self.auto.clone(),
+            self.prefs.hidden.clone(),
+        );
+        let found = self.prefs.found.clone();
+        let cache_path = self.cache_path.clone();
         let scanning = Arc::clone(&progress);
         let spawned = std::thread::Builder::new()
             .name("kontra-scan".into())
             .spawn(move || {
+                let (mut auto, mut found_now) = (None, None);
+                let mut all = known;
+                match find {
+                    Find::Nothing => all.extend(found),
+                    Find::Quick => {
+                        let quick = discover::quick(&scanning);
+                        all = quick.clone();
+                        all.extend(found);
+                        auto = Some(quick);
+                    }
+                    Find::Machine => {
+                        let machine = discover::machine(&scanning);
+                        if scanning.cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        all.extend(machine.iter().cloned());
+                        found_now = Some(machine);
+                    }
+                }
+                // The catalog scan counts its own folders and libraries.
+                scanning.folders.store(0, Ordering::Relaxed);
+                scanning.found.store(0, Ordering::Relaxed);
+                let roots = discover::merge(&user, &all, &hidden);
                 let mut cache = cache_path.as_deref().map(Cache::load).unwrap_or_default();
                 cache.invalidate_protected(kontra_format_uvi::has_cached_key);
                 let inspect = |b: &Path| {
-                    if b.extension().is_some_and(|e| e.eq_ignore_ascii_case("sf2")) {
+                    let sf = |e: &std::ffi::OsStr| {
+                        e.eq_ignore_ascii_case("sf2") || e.eq_ignore_ascii_case("sf3")
+                    };
+                    if b.extension().is_some_and(sf) {
                         kontra_format_sf2::list_presets(b)
                             .map(|list| kontra_library::BankListing {
                                 presets: list
@@ -112,11 +276,19 @@ impl Browser {
                         let _saved = path.parent().map(std::fs::create_dir_all);
                         let _saved = cache.save(path);
                     }
-                    let _gone = send.send(catalog);
+                    let _gone = send.send(Scanned {
+                        catalog,
+                        auto,
+                        found: found_now,
+                    });
                 }
             });
         if spawned.is_ok() {
-            self.scan = Some((progress, receive));
+            self.scan = Some(Running {
+                progress,
+                find,
+                result: receive,
+            });
         }
     }
 
@@ -124,11 +296,18 @@ impl Browser {
     /// found what was already listed moves nothing, so an idle editor
     /// draws no frame for it.
     pub fn poll(&mut self) -> bool {
-        let Some(catalog) = self.scan.as_ref().and_then(|(_, r)| r.try_recv().ok()) else {
+        let Some(scanned) = self.scan.as_ref().and_then(|r| r.result.try_recv().ok()) else {
             return false;
         };
         self.scan = None;
-        let mut catalog = catalog;
+        if let Some(auto) = scanned.auto {
+            self.auto = auto;
+        }
+        if let Some(found) = scanned.found {
+            self.prefs.found = found;
+            self.changed();
+        }
+        let mut catalog = scanned.catalog;
         self.with_user(&mut catalog);
         if catalog == self.catalog {
             return false;
@@ -255,9 +434,11 @@ impl Browser {
 
     /// Adds a folder the player dropped, and scans again.
     pub fn add_root(&mut self, path: PathBuf) {
+        self.prefs.hidden.retain(|h| *h != path);
         self.prefs.add_root(Root {
             path,
             single: false,
+            auto: false,
         });
         self.changed();
         self.rescan();
@@ -269,13 +450,20 @@ impl Browser {
         self.changed();
     }
 
-    /// Stops scanning folder `n`, and scans again.
+    /// Stops scanning folder `n` of [`Browser::roots`], and scans again: the
+    /// player's own is removed, an auto one hidden for good.
     pub fn remove_root(&mut self, n: usize) {
-        if n < self.prefs.roots.len() {
-            self.prefs.roots.remove(n);
-            self.changed();
-            self.rescan();
+        let Some(root) = self.roots().into_iter().nth(n) else {
+            return;
+        };
+        if root.auto {
+            self.prefs.found.retain(|r| r.path != root.path);
+            self.prefs.hidden.push(root.path);
+        } else {
+            self.prefs.roots.retain(|r| r.path != root.path);
         }
+        self.changed();
+        self.rescan();
     }
 
     /// Reads Kontakt's user snapshots from `folder` from now on (saved
@@ -364,6 +552,38 @@ mod tests {
             again.kontakt().as_deref(),
             Some(Path::new("/nowhere/User Content"))
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A root a machine scan found is listed as auto with how its scan went;
+    /// removing it hides it for good, and adding it back unhides it.
+    #[test]
+    fn auto_roots_show_their_status_and_removing_one_hides_it() {
+        let dir = std::env::temp_dir().join(format!("kontra-browser-auto-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prefs = dir.join(FOLDER);
+        std::fs::create_dir_all(&prefs).unwrap();
+        let gone = dir.join("unmounted");
+        let json = serde_json::json!({ "found": [{ "path": gone }] });
+        std::fs::write(prefs.join("prefs.json"), json.to_string()).unwrap();
+        let mut b = Browser::open(Some(&dir), None);
+        for _ in 0..5000 {
+            if !b.poll() && !b.scanning() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let folders = b.folders();
+        assert_eq!(folders.len(), 1);
+        assert!(folders[0].auto && folders[0].problem);
+        assert_eq!(folders[0].summary, "not found");
+        b.remove_root(0);
+        let again = Browser::open(Some(&dir), None);
+        assert!(again.roots().is_empty(), "a hidden auto root stays hidden");
+        assert_eq!(again.prefs.hidden, std::slice::from_ref(&gone));
+        b.add_root(gone.clone());
+        assert!(b.prefs.hidden.is_empty(), "adding a folder unhides it");
+        assert!(!b.roots()[0].auto);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

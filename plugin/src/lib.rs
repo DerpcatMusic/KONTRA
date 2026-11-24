@@ -344,6 +344,11 @@ fn browse() -> kontra_host::browser::Browser {
         (dirs::config_dir(), dirs::cache_dir())
     };
     let mut browser = kontra_host::browser::Browser::open(config.as_deref(), cache.as_deref());
+    // Library folders found on their own (not in tests): NI/UVI
+    // registrations, default folders, a brief walk of home and the drives.
+    if config.is_some() {
+        browser.discover();
+    }
     // The player's own presets, listed with their libraries' (not in tests).
     if let Some(user) = config.and_then(|_| kontra_host::presets::folder()) {
         browser.set_user(user);

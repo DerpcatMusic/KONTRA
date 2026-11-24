@@ -54,8 +54,12 @@ pub struct App {
     pub own_output: bool,
     /// The build, for About: its version and source revision.
     pub build: String,
-    /// The folders the browser scans.
-    pub folders: Vec<String>,
+    /// The folders the browser scans, and how each scan went.
+    pub folders: Vec<LibraryFolder>,
+    /// A running library scan's progress; `None` when idle.
+    pub scan: Option<ScanProgress>,
+    /// What the last scan could not read, one line each (for the report).
+    pub scan_issues: Vec<String>,
     /// Kontakt's user snapshot folder, and whether it is there: `None`
     /// while none is set (the path is then empty).
     pub snapshot_folder: (String, Option<bool>),
@@ -245,6 +249,38 @@ pub enum FaceLook {
 impl FaceLook {
     pub const ALL: [Self; 3] = [Self::Original, Self::Vector, Self::Kontra];
     pub const LABELS: [&str; 3] = ["Original", "Vector", "KONTRA"];
+}
+
+/// A folder the browser scans, and how its last scan went.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LibraryFolder {
+    pub path: String,
+    /// Found by discovery: removing it hides it.
+    pub auto: bool,
+    /// "3 libraries found", "not found"…; empty before the first scan.
+    pub status: String,
+    /// What to do about it, such as the Flatpak override command.
+    pub hint: Option<String>,
+    /// It could not be read, or held no library.
+    pub problem: bool,
+}
+
+impl From<&str> for LibraryFolder {
+    fn from(path: &str) -> Self {
+        Self {
+            path: path.to_owned(),
+            ..Self::default()
+        }
+    }
+}
+
+/// A running library scan.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScanProgress {
+    pub folders: usize,
+    pub found: usize,
+    /// It walks the whole machine ("Scan my machine").
+    pub machine: bool,
 }
 
 /// The engine's load, for the header.
@@ -518,8 +554,12 @@ pub enum Action {
         next_channel: bool,
         own_output: bool,
     },
-    /// Stop scanning the browser's folder `n`.
+    /// Stop scanning the browser's folder `n` (an auto one is hidden).
     RemoveFolder(usize),
+    /// Walk the whole machine for libraries.
+    ScanMachine,
+    /// Stop the running scan.
+    CancelScan,
     /// Draw the editor at this percent of its design size.
     Scale(u32),
     CopyDiagnostics,

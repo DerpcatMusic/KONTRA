@@ -236,6 +236,7 @@ pub(crate) fn instrument(
             "high_key",
             "low_velocity",
             "high_velocity",
+            "default_key_switch",
         ],
         COSMETIC_PROGRAM,
     );
@@ -271,6 +272,10 @@ pub(crate) fn instrument(
     );
     let mut out = ir::Instrument {
         name: params.name.clone(),
+        // −1 (none) and anything off the keyboard fail the conversion.
+        default_keyswitch: u8::try_from(params.default_key_switch)
+            .ok()
+            .filter(|k| *k < 128),
         source_path: std::path::absolute(path).ok(),
         library_path: (encrypted == Some(true))
             .then(|| std::path::absolute(path).ok())
@@ -370,6 +375,7 @@ pub(crate) fn instrument(
     let mut slots = crate::effects::Slots::default();
     // A snapshot's racks and group effects stand in for the base's.
     let mut group_fx = Vec::new();
+    let snapshot_racks = native.is_some();
     if let Some(native) = native {
         crate::effects::replace_racks(&mut program.0.children, native.racks);
         crate::snapshot::unmatched(native.groups.len(), groups.groups.len(), &mut notes);
@@ -386,12 +392,17 @@ pub(crate) fn instrument(
         let t = translate_group(group, index, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
+        if let Some(purged) = saved.as_ref().and_then(|s| s.purged) {
+            g.purged = purged;
+        }
         let fx = saved.map(|s| s.fx);
+        impulses.snapshot = fx.is_some();
         g.inserts = crate::effects::group(group, fx, index, &mut impulses, &mut notes, &mut slots);
         crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
         out.groups.push(g);
         criteria.push(t.criteria);
     }
+    impulses.snapshot = snapshot_racks;
     let racks = crate::effects::program(&program, &mut impulses, &mut notes);
     let mut buses = racks.buses;
     (out.inserts, out.sends, out.main) = (racks.inserts, racks.sends, racks.main);
@@ -1194,10 +1205,7 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
     for (group, rows) in groups.iter_mut().zip(criteria) {
         // A row's next_criteria joins it to the next active row (`0140870000.c:5250-5281`).
         // Native Kontakt compiles start criteria into an unparenthesized KSP `if(not ...)`
-        // where `and` / `and not` bind tighter than `or`. `ir::Group::start` is evaluated
-        // left-to-right, so group `and`-chains into OR-clauses and place the multi-atom
-        // conjunction first whenever at most one clause has multiple atoms.
-        let mut raw: Vec<(ir::Join, ir::StartRule)> = Vec::new();
+        // where `and` binds tighter than `or`, as `Behaviour::starts` evaluates it.
         let mut join = ir::Join::And;
         for c in rows {
             if c.sequencer_only {
@@ -1240,73 +1248,19 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
                     continue;
                 }
             };
-            let this = if raw.is_empty() { ir::Join::And } else { join };
-            raw.push((this, rule));
+            let this = if group.start.is_empty() {
+                ir::Join::And
+            } else {
+                join
+            };
+            group.start.push((this, rule));
             join = match c.next_criteria {
                 1 => ir::Join::AndNot,
                 2 => ir::Join::Or,
                 _ => ir::Join::And,
             };
         }
-        group.start = apply_and_over_or(raw, &group.name, notes);
     }
-}
-
-/// Converts Kontakt's `and`-over-`or` start criteria into a left-fold-equivalent
-/// `ir::Group::start` list when representable (every 1..=3 row combination and
-/// every 4-row combination except `(A & B) | (C & D)`). When two or more
-/// multi-atom conjunctions are OR'd, records an audible diagnostic.
-fn apply_and_over_or(
-    raw: Vec<(ir::Join, ir::StartRule)>,
-    group_name: &str,
-    notes: &mut Notes,
-) -> Vec<(ir::Join, ir::StartRule)> {
-    if raw.len() <= 2 {
-        return raw;
-    }
-    let mut clauses: Vec<Vec<(ir::Join, ir::StartRule)>> = Vec::new();
-    for (join, rule) in raw {
-        if clauses.is_empty() || join == ir::Join::Or {
-            clauses.push(vec![(ir::Join::And, rule)]);
-        } else if let Some(last) = clauses.last_mut() {
-            last.push((join, rule));
-        }
-    }
-    if clauses.len() <= 1 {
-        return clauses.into_iter().next().unwrap_or_default();
-    }
-    let multi_count = clauses.iter().filter(|c| c.len() > 1).count();
-    if multi_count > 1 {
-        notes.add(
-            ir::Impact::Audible,
-            "start option precedence",
-            format!("group {group_name}: multiple multi-atom OR clauses"),
-        );
-    }
-    // Move the longest multi-atom conjunction to the front so left-to-right
-    // evaluation computes `((C0) || C1) || ...` which equals `C0 || C1 || ...`
-    // whenever `C1..` are single atoms.
-    if let Some((best_idx, _)) = clauses
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, c)| c.len())
-        .filter(|&(idx, c)| idx > 0 && c.len() > 1)
-    {
-        let best = clauses.remove(best_idx);
-        clauses.insert(0, best);
-    }
-    let mut out = Vec::new();
-    for (ci, clause) in clauses.into_iter().enumerate() {
-        for (ai, (join, rule)) in clause.into_iter().enumerate() {
-            let emitted_join = if ci > 0 && ai == 0 {
-                ir::Join::Or
-            } else {
-                join
-            };
-            out.push((emitted_join, rule));
-        }
-    }
-    out
 }
 
 fn translate_zone(
@@ -1821,117 +1775,5 @@ mod tests {
 
         let malformed = group_with_dynamics(vec![0u8; 16]);
         assert!(malformed.dynamics().is_err());
-    }
-
-    #[test]
-    fn start_rules_preserve_and_over_or_precedence() {
-        let key = |k: i16, next_criteria: i32| ni_file::kontakt::objects::StartCriteriaParams {
-            mode: 1,
-            key_min: k,
-            key_max: k,
-            controller: 0,
-            cc_min: 0,
-            cc_max: 0,
-            cycle_class: 0,
-            slice_zone_idx: -1,
-            slice_zone_slice_idx: -1,
-            next_criteria,
-            sequencer_only: false,
-        };
-        let eval_left_fold = |start: &[(ir::Join, ir::StartRule)], active: &[u8]| {
-            let mut acc = true;
-            for (join, rule) in start {
-                let v = match rule {
-                    ir::StartRule::Keyswitch { range } => active.iter().any(|k| range.contains(k)),
-                    _ => false,
-                };
-                acc = match join {
-                    ir::Join::And => acc && v,
-                    ir::Join::AndNot => acc && !v,
-                    ir::Join::Or => acc || v,
-                };
-            }
-            acc
-        };
-
-        // `A or B and C` == `A || (B && C)` across all 8 truth assignments.
-        let mut g = vec![ir::Group::DEFAULT];
-        let mut notes = kontra_format::Notes::default();
-        super::start_rules(&mut g, &[vec![key(1, 2), key(2, 0), key(3, 0)]], &mut notes);
-        assert!(notes.finish().is_empty());
-        for mask in 0u8..8 {
-            let mut active = Vec::new();
-            for bit in 0..3 {
-                if mask & (1 << bit) != 0 {
-                    active.push(bit + 1);
-                }
-            }
-            let (a, b, c) = (mask & 1 != 0, mask & 2 != 0, mask & 4 != 0);
-            assert_eq!(
-                eval_left_fold(&g[0].start, &active),
-                a || (b && c),
-                "A or B and C failed for mask {mask:03b}"
-            );
-        }
-
-        // `A or B and not C` == `A || (B && !C)` across all 8 truth assignments.
-        let mut g = vec![ir::Group::DEFAULT];
-        let mut notes = kontra_format::Notes::default();
-        super::start_rules(&mut g, &[vec![key(1, 2), key(2, 1), key(3, 0)]], &mut notes);
-        assert!(notes.finish().is_empty());
-        for mask in 0u8..8 {
-            let mut active = Vec::new();
-            for bit in 0..3 {
-                if mask & (1 << bit) != 0 {
-                    active.push(bit + 1);
-                }
-            }
-            let (a, b, c) = (mask & 1 != 0, mask & 2 != 0, mask & 4 != 0);
-            assert_eq!(
-                eval_left_fold(&g[0].start, &active),
-                a || (b && !c),
-                "A or B and not C failed for mask {mask:03b}"
-            );
-        }
-
-        // `A or B or C and D` == `A || B || (C && D)` across all 16 truth assignments.
-        let mut g = vec![ir::Group::DEFAULT];
-        let mut notes = kontra_format::Notes::default();
-        super::start_rules(
-            &mut g,
-            &[vec![key(1, 2), key(2, 2), key(3, 0), key(4, 0)]],
-            &mut notes,
-        );
-        assert!(notes.finish().is_empty());
-        for mask in 0u8..16 {
-            let mut active = Vec::new();
-            for bit in 0..4 {
-                if mask & (1 << bit) != 0 {
-                    active.push(bit + 1);
-                }
-            }
-            let (a, b, c, d) = (mask & 1 != 0, mask & 2 != 0, mask & 4 != 0, mask & 8 != 0);
-            assert_eq!(
-                eval_left_fold(&g[0].start, &active),
-                a || b || (c && d),
-                "A or B or C and D failed for mask {mask:04b}"
-            );
-        }
-
-        // `(A and B) or (C and D)` cannot be represented as a single flat left-fold:
-        // emits an explicit Audible diagnostic instead of silently mis-evaluating.
-        let mut g = vec![ir::Group::DEFAULT];
-        let mut notes = kontra_format::Notes::default();
-        super::start_rules(
-            &mut g,
-            &[vec![key(1, 0), key(2, 2), key(3, 0), key(4, 0)]],
-            &mut notes,
-        );
-        assert!(
-            notes
-                .finish()
-                .iter()
-                .any(|d| d.feature == "start option precedence")
-        );
     }
 }
