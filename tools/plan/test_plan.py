@@ -39,15 +39,26 @@ class Manifest(unittest.TestCase):
         with self.assertRaises(ValueError):
             plan.topo(p)
 
+    def test_manifest_status_beats_issues(self):
+        self.plan["by_id"]["P4.7"].pop("retired")  # P4.7 depends on retired P4.6
+        st = plan.status(self.plan, {"P0.0": {"state": "open", "labels": []}})
+        self.assertEqual(st["P0.0"], "done")  # landed in tasks.toml
+        self.assertEqual(st["P4.6"], "retired")
+        self.assertEqual(st["P4.7"], "blocked")  # a retired dep never unblocks
+
     def test_offline_ready_is_conflict_free(self):
-        st = plan.status(self.plan, {})
-        batch, _ = plan.ready_batch(self.plan, st)
+        p = plan.load()
+        for t in p["task"]:  # reopen everything: the batch is non-trivial again
+            t.pop("landed", None)
+            t.pop("retired", None)
+        st = plan.status(p, {})
+        batch, _ = plan.ready_batch(p, st)
         self.assertIn("P0.0", batch)
         skip = ("append", "regenerate")
         for i, a in enumerate(batch):
             for b in batch[i + 1:]:
-                self.assertFalse(plan.overlap(plan.owns(self.plan, self.plan["by_id"][a], skip_modes=skip),
-                                              plan.owns(self.plan, self.plan["by_id"][b], skip_modes=skip),
+                self.assertFalse(plan.overlap(plan.owns(p, p["by_id"][a], skip_modes=skip),
+                                              plan.owns(p, p["by_id"][b], skip_modes=skip),
                                               list(plan.tracked())), (a, b))
 
     def test_brief_and_branch(self):
