@@ -441,11 +441,17 @@ pub fn nudge(
     }
 }
 
-/// A one-line field with a dim `hint` while empty and a search glyph.
+/// A one-line field with a dim `hint` while empty, a search glyph, and a
+/// clear button while it holds text.
 pub fn field(ui: &mut Ui, id: impl Into<Id>, hint: &str, value: &mut String) -> Response<TextEdit> {
     let id: Id = id.into();
+    let clear_id = format!("{}-clear", id.as_str());
+    let cleared = !value.is_empty() && ui.get(clear_id.as_str()).activated();
+    if cleared {
+        value.clear();
+    }
     let empty = value.is_empty();
-    let edit = text_edit(ui, id, value, TextOpts::default());
+    let edit = text_edit(ui, id.clone(), value, TextOpts::default());
     let mut body_layers = vec![
         edit.el
             .radius(0.)
@@ -462,14 +468,33 @@ pub fn field(ui: &mut Ui, id: impl Into<Id>, hint: &str, value: &mut String) -> 
                 .h(Len::Pct(100.)),
         );
     }
-    let el = row![
-        glyph(Icon::Search, TEXT, secondary()),
-        stack(body_layers).grow(1).min_w(0)
-    ]
-    .align(Align::Center)
-    .pad(edges(0., 0., 0., SPACE))
-    .h(CONTROL)
-    .fill(Role::Field);
+    let search_ink = if empty {
+        secondary()
+    } else {
+        Fill::from(Role::Ink)
+    };
+    let mut parts = vec![
+        glyph(Icon::Search, TEXT, search_ink),
+        stack(body_layers).grow(1).min_w(0),
+    ];
+    if !empty {
+        let clear = interactive(
+            stack![glyph(Icon::Close, SMALL, secondary()).centered()]
+                .square(CONTROL - TIGHT)
+                .shrink(0)
+                .focusable()
+                .a11y(A11y::Button)
+                .named("Clear search")
+                .tip("Clear search")
+                .id(clear_id),
+        );
+        parts.push(clear);
+    }
+    let el = row(parts)
+        .align(Align::Center)
+        .pad(edges(0., if empty { 0. } else { TIGHT * 0.5 }, 0., SPACE))
+        .h(CONTROL)
+        .fill(Role::Field);
     Response {
         el,
         changed: edit.changed,
@@ -625,10 +650,19 @@ pub fn dropdown(
     current: Option<usize>,
 ) -> Response<Option<usize>> {
     let mut shown = open.as_deref() == Some(id);
+    let tint = ink(shown);
     let mut face = Vec::new();
-    face.extend(icon.map(|i| glyph(i, TEXT, secondary())));
-    face.push(caption(label.to_owned()).fill(Role::Ink).lines(1));
-    let face = chooser(row(face).gap(TIGHT).center_y(), shown)
+    face.extend(icon.map(|i| glyph(i, TEXT, tint.clone())));
+    if !label.is_empty() {
+        face.push(caption(label.to_owned()).fill(Role::Ink).lines(1));
+    }
+    // Vector chevron: KONTRA bundles no icon font, so MUI's `chooser` symbol
+    // would shape as `.notdef` tofu boxes.
+    let arrow = glyph(if shown { Icon::Up } else { Icon::Down }, SMALL * 0.9, tint);
+    face.push(arrow);
+    let face = row(face)
+        .gap(TIGHT)
+        .align(Align::Center)
         .pad((TIGHT * 1.5, 0))
         .h(CONTROL * 0.9)
         .shrink(0)
@@ -652,6 +686,95 @@ pub fn dropdown(
     Response {
         el: d.el,
         changed: d.changed,
+    }
+}
+
+/// An icon button opening a menu of titled sections, each `(title, items,
+/// current)`; returns `(section, item)` picked. It stays open across picks so
+/// several sections can be set at once; a click away or Escape closes it.
+/// `active` raises the face while a non-default pick is set. The rows are
+/// `"{id}/{section}/{item}"`.
+pub fn sectioned_menu(
+    ui: &mut Ui,
+    open: &mut Option<String>,
+    id: &str,
+    (icon, name): (Icon, &str),
+    sections: &[(&str, &[&str], usize)],
+    active: bool,
+) -> Response<Option<(usize, usize)>> {
+    let mut shown = open.as_deref() == Some(id);
+    if ui.get(id).activated() {
+        shown = !shown;
+    }
+    let mut changed = None;
+    let mut body = Vec::new();
+    for (s, &(title, items, current)) in sections.iter().enumerate() {
+        body.push(caption(title.to_owned()).fill(secondary()).pad(edges(
+            if s == 0 { 0. } else { TIGHT },
+            SPACE,
+            TIGHT * 0.5,
+            SPACE,
+        )));
+        for (i, &item) in items.iter().enumerate() {
+            let row_id = format!("{id}/{s}/{i}");
+            if ui.get(row_id.as_str()).activated() {
+                changed = Some((s, i));
+            }
+            body.push(
+                list_face(MenuRow {
+                    label: item,
+                    index: i,
+                    selected: i == current,
+                })
+                .h(CONTROL)
+                .w(Len::Pct(100.))
+                .focusable()
+                .a11y(A11y::Button)
+                .named(item.to_owned())
+                .id(row_id),
+            );
+        }
+    }
+    let longest = sections
+        .iter()
+        .flat_map(|s| s.1)
+        .map(|i| i.chars().count())
+        .max()
+        .unwrap_or(0);
+    let pop = Overlay::default()
+        .area(Area::Bottom)
+        .fallback(Area::Top)
+        .gap(0.)
+        .frame(&popup_frame)
+        .popover(
+            ui,
+            format!("{id}/menu"),
+            id,
+            &mut shown,
+            col(body).w(longest as f64 * TEXT * 0.6 + SPACE * 4.),
+        );
+    let tint = ink(active || shown);
+    let face = stack![glyph(icon, TEXT + TIGHT, tint).centered()]
+        .square(CONTROL)
+        .shrink(0)
+        .when(active, |e| e.fill(Role::Raised))
+        .focusable()
+        .a11y(A11y::Button)
+        .named(name.to_owned())
+        .when(!shown, |e| e.tip(name.to_owned()))
+        .id(id.to_owned());
+    if shown {
+        *open = Some(id.to_owned());
+    } else if open.as_deref() == Some(id) {
+        *open = None;
+    }
+    let face = interactive(face);
+    Response {
+        el: match pop {
+            Some(pop) => stack![face, pop],
+            None => face,
+        },
+        changed,
     }
 }
 

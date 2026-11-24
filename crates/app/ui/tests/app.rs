@@ -747,6 +747,315 @@ fn protected_library_surfaces_lock_badge_tooltip_banner_and_passes_audit() {
     }
 }
 
+#[test]
+fn no_missing_notdef_glyphs_in_browser_or_dropdowns() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![
+            Library {
+                name: "Areia".into(),
+                format: Format::Kontakt,
+                presets: vec!["01 Strings/01 Legato".into()],
+                starred: true,
+                ..Library::default()
+            },
+            Library {
+                name: "Falcon Factory".into(),
+                format: Format::Uvi,
+                presets: vec!["Pads/Warm Pad".into()],
+                ..Library::default()
+            },
+        ],
+        parts: vec![Part {
+            name: "01 Legato".into(),
+            library: "Areia".into(),
+            channel: 1,
+            output: 1,
+            ..Part::default()
+        }],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "library-0");
+    // Open the sort & filter menu too so its rows resolve.
+    click(&mut ui, &mut app, "filter");
+    let scene = ui.scene().expect("resolved scene");
+    let mut missing = Vec::new();
+    for p in &scene.paint {
+        if let Some(run) = p.text.as_ref()
+            && run.glyphs.iter().any(|g| g.id == 0)
+        {
+            missing.push(p.key.to_string());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "found .notdef (tofu box) glyphs in surfaces: {missing:?}"
+    );
+}
+
+#[test]
+fn unified_and_separated_library_views_filter_and_sort_cleanly() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![
+            Library {
+                name: "Beta Kontakt".into(),
+                format: Format::Kontakt,
+                presets: vec!["Instruments/A".into(), "Instruments/B".into()],
+                recalls: vec![0],
+                ..Library::default()
+            },
+            Library {
+                name: "Alpha Falcon".into(),
+                format: Format::Uvi,
+                presets: vec!["Pads/Warm".into()],
+                starred: true,
+                ..Library::default()
+            },
+            Library {
+                name: "Locked Bank".into(),
+                format: Format::Uvi,
+                protection: app::Protection::Protected {
+                    system: "PACE / iLok".into(),
+                    detail: "Locked".into(),
+                },
+                presets: Vec::new(),
+                ..Library::default()
+            },
+        ],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+
+    // Default is Unified ("All formats"): every format appears together, and
+    // the format tabs that separate them are always on screen.
+    assert_eq!(app.view.library_view, app::LibraryView::Unified);
+    assert!(ui.scene().and_then(|s| s.surface("library-0")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("library-1")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("library-2")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("format-All")).is_some());
+
+    // A format tab separates: only Kontakt libraries remain.
+    click(&mut ui, &mut app, "format-Kontakt");
+    assert_eq!(app.view.library_view, app::LibraryView::Separated);
+    assert!(ui.scene().and_then(|s| s.surface("library-0")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("library-1")).is_none());
+
+    // Switch to Falcon / UVI tab.
+    click(&mut ui, &mut app, "format-Falcon / UVI");
+    assert_eq!(app.view.format, Format::Uvi);
+    assert!(ui.scene().and_then(|s| s.surface("library-0")).is_none());
+    assert!(ui.scene().and_then(|s| s.surface("library-1")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("library-2")).is_some());
+
+    // "All formats" unifies again.
+    click(&mut ui, &mut app, "format-All");
+    assert_eq!(app.view.library_view, app::LibraryView::Unified);
+    assert!(ui.scene().and_then(|s| s.surface("library-0")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("library-1")).is_some());
+
+    // Sort and filter live in one funnel menu: "Sort by" then "Show".
+    click(&mut ui, &mut app, "filter");
+    click(&mut ui, &mut app, "filter/0/1");
+    assert_eq!(app.view.sort, app::LibrarySort::NameDesc);
+    // It stays open across picks: the filter section is still there.
+    click(&mut ui, &mut app, "filter/1/1");
+    assert_eq!(app.view.library_filter, app::LibraryFilter::Playable);
+    app.view.sort = app::LibrarySort::NameAsc;
+    app.view.menu = None;
+    settle(&mut ui, &mut app);
+    // Playable excludes locked/empty libraries.
+    assert!(ui.scene().and_then(|s| s.surface("library-0")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("library-1")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("library-2")).is_none());
+
+    // Attribute filter: HasSnapshots keeps only libraries with snapshots/recalls.
+    app.view.library_filter = app::LibraryFilter::HasSnapshots;
+    settle(&mut ui, &mut app);
+    assert!(ui.scene().and_then(|s| s.surface("library-0")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("library-1")).is_none());
+
+    // Audit both Unified and Separated views cleanly.
+    app.view.library_filter = app::LibraryFilter::All;
+    for lv in [app::LibraryView::Unified, app::LibraryView::Separated] {
+        app.view.library_view = lv;
+        let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
+            app::view(ui, &mut app).el
+        });
+        assert!(
+            findings.is_empty(),
+            "{lv:?} audit findings:\n{}",
+            findings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
+
+#[test]
+fn selected_and_hovered_library_pops_out_over_siblings_without_duplicate_banner() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![
+            Library {
+                name: "Afflatus".into(),
+                format: Format::Kontakt,
+                presets: vec!["01 Brass/01 Horns".into(), "02 Woodwinds/01 Flute".into()],
+                ..Library::default()
+            },
+            Library {
+                name: "Areia".into(),
+                format: Format::Kontakt,
+                presets: vec![
+                    "01 Strings/01 Legato".into(),
+                    "02 Violas/02 Staccato".into(),
+                ],
+                ..Library::default()
+            },
+            Library {
+                name: "Conflux".into(),
+                format: Format::Kontakt,
+                presets: vec!["Lead".into()],
+                ..Library::default()
+            },
+            Library {
+                name: "Dolce".into(),
+                format: Format::Uvi,
+                presets: vec!["Pads/Velvet".into()],
+                ..Library::default()
+            },
+        ],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    let base_size = ui
+        .scene()
+        .and_then(|s| s.surface("library-1"))
+        .expect("library-1 resting")
+        .frame
+        .size;
+
+    // Selecting library-1 pops it out slightly larger and casts a drop shadow
+    // while keeping the preset header compact (no 88px picture banner).
+    click(&mut ui, &mut app, "library-1");
+    assert_eq!(app.view.library, Some(1));
+    let scene = ui.scene().expect("scene after select");
+    let popped = scene.surface("library-1").expect("library-1 selected");
+    assert!(
+        popped.frame.size.width > base_size.width + 2.0
+            && popped.frame.size.height > base_size.height + 2.0,
+        "selected library should pop out larger: before={base_size:?}, after={:?}",
+        popped.frame.size
+    );
+    assert!(
+        popped.floating,
+        "selected library should render in the local overlay above dimmed siblings"
+    );
+    let header = scene
+        .surface("preset-library-header")
+        .expect("slim preset library header");
+    assert!(
+        header.frame.size.height <= 36.0,
+        "preset header should be compact instead of an 88px banner, got {}",
+        header.frame.size.height
+    );
+
+    // Collapse-all button folds every folder in the selected library.
+    click(&mut ui, &mut app, "preset-fold-all");
+    assert!(!app.view.folded.is_empty(), "folders should fold");
+    click(&mut ui, &mut app, "preset-fold-all");
+    assert!(app.view.folded.is_empty(), "folders should unfold");
+
+    // Hovering a different library pops it out too.
+    let target = ui
+        .scene()
+        .and_then(|s| s.surface("library-2"))
+        .expect("library-2")
+        .frame;
+    let hover = PointerInput {
+        pos: Some(Point::new(
+            target.x + target.size.width / 2.,
+            target.y + target.size.height / 2.,
+        )),
+        ..Default::default()
+    };
+    for _ in 0..30 {
+        frame(
+            &mut ui,
+            &mut app,
+            Input {
+                pointer: hover,
+                ..Default::default()
+            },
+        );
+    }
+    let hovered_size = ui
+        .scene()
+        .and_then(|s| s.surface("library-2"))
+        .expect("library-2 hovered")
+        .frame
+        .size;
+    assert!(
+        hovered_size.width > base_size.width + 1.5,
+        "hovered library should pop out: base={base_size:?}, hovered={hovered_size:?}"
+    );
+
+    // Selected library state passes MUI audit cleanly with no occlusion or idle rebuilds.
+    let findings = mui::audit::audit(&mut ui, [Size::new(1180., 780.)], |ui| {
+        app::view(ui, &mut app).el
+    });
+    assert!(
+        findings.is_empty(),
+        "Selected library pop-out audit findings:\n{}",
+        findings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn search_filters_recent_and_favorites_and_clear_button_empties_query() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![
+            Library {
+                name: "Areia".into(),
+                format: Format::Kontakt,
+                presets: vec!["01Legato".into(), "02Pizzicato".into()],
+                favorites: vec![0, 1],
+                ..Library::default()
+            },
+            Library {
+                name: "Falcon Factory".into(),
+                format: Format::Uvi,
+                presets: vec!["WarmPad".into()],
+                favorites: vec![0],
+                ..Library::default()
+            },
+        ],
+        recent: vec![(0, 0), (1, 0)],
+        ..App::default()
+    };
+    app.view.shelf = app::Shelf::Recent;
+    app.view.search = "pad".into();
+    settle(&mut ui, &mut app);
+
+    // CamelCase "WarmPad" matches "pad" on Recent shelf across formats.
+    assert!(ui.scene().and_then(|s| s.surface("recent-0")).is_none());
+    assert!(ui.scene().and_then(|s| s.surface("recent-1")).is_some());
+
+    // Inline clear button clears the search field and reveals both recent rows.
+    click(&mut ui, &mut app, "search-clear");
+    assert!(app.view.search.is_empty());
+    assert!(ui.scene().and_then(|s| s.surface("recent-0")).is_some());
+    assert!(ui.scene().and_then(|s| s.surface("recent-1")).is_some());
+}
+
 /// Pointer frames pressing `id` at `from` and releasing at `to`, each a
 /// share (0..1, 0..1) of its frame; the actions they carried.
 fn sweep(ui: &mut Ui, app: &mut App, id: &str, from: (f64, f64), to: (f64, f64)) -> Vec<Action> {

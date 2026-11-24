@@ -2,7 +2,10 @@
 //! back when the editor opens, saved again whenever it changes.
 
 use kontra_host::state::{SavedPartView, SavedView};
-use kontra_ui::app::{App, FaceLook, Format, PartTab, Shelf, Tab, View};
+use kontra_ui::app::{
+    App, FaceLook, Format, LibraryFilter, LibrarySort, LibraryView, PartTab, Shelf, Tab, Tiles,
+    View,
+};
 
 const TABS: [Tab; 3] = [Tab::Rack, Tab::Mixer, Tab::Report];
 const PART_TABS: [PartTab; 6] = [
@@ -15,6 +18,19 @@ const PART_TABS: [PartTab; 6] = [
 ];
 const FORMATS: [Format; 2] = [Format::Kontakt, Format::Uvi];
 const SHELVES: [Shelf; 3] = [Shelf::All, Shelf::Favorites, Shelf::Recent];
+const TILES: [Tiles; 2] = [Tiles::Grid, Tiles::Cards];
+const SORTS: [LibrarySort; 4] = [
+    LibrarySort::NameAsc,
+    LibrarySort::NameDesc,
+    LibrarySort::MostPresets,
+    LibrarySort::FavoritesFirst,
+];
+const FILTERS: [LibraryFilter; 4] = [
+    LibraryFilter::All,
+    LibraryFilter::Playable,
+    LibraryFilter::HasSnapshots,
+    LibraryFilter::Locked,
+];
 
 fn index<T: PartialEq>(all: &[T], x: &T) -> u8 {
     all.iter()
@@ -41,7 +57,11 @@ pub fn saved(app: &App, slots: &[usize]) -> SavedView {
         face_scale: u8::try_from(v.face_scale).unwrap_or(0),
         format: index(&FORMATS, &v.format),
         shelf: index(&SHELVES, &v.shelf),
-        descending: v.descending,
+        descending: v.sort == LibrarySort::NameDesc,
+        separated: v.library_view == LibraryView::Separated,
+        tiles: index(&TILES, &v.tiles),
+        sort: index(&SORTS, &v.sort),
+        library_filter: index(&FILTERS, &v.library_filter),
         split: v.split as f32,
         look: index(&FaceLook::ALL, &v.face_look),
         parts: (app.parts.iter().zip(slots))
@@ -74,9 +94,20 @@ pub fn apply(app: &mut App, s: &SavedView) {
             n => u32::from(n),
         },
         face_scale: usize::from(s.face_scale),
+        library_view: if s.separated {
+            LibraryView::Separated
+        } else {
+            LibraryView::Unified
+        },
         format: pick(&FORMATS, s.format),
         shelf: pick(&SHELVES, s.shelf),
-        descending: s.descending,
+        tiles: pick(&TILES, s.tiles),
+        sort: if s.sort == 0 && s.descending {
+            LibrarySort::NameDesc
+        } else {
+            pick(&SORTS, s.sort)
+        },
+        library_filter: pick(&FILTERS, s.library_filter),
         split: f64::from(s.split),
         face_look: pick(&FaceLook::ALL, s.look),
         ..View::default()
@@ -111,6 +142,10 @@ mod tests {
         app.view.scale = 75;
         app.view.split = 0.3;
         app.view.face_look = FaceLook::Vector;
+        app.view.library_view = LibraryView::Separated;
+        app.view.tiles = Tiles::Cards;
+        app.view.sort = LibrarySort::MostPresets;
+        app.view.library_filter = LibraryFilter::Playable;
         app.parts = vec![kontra_ui::app::Part {
             open: false,
             tab: PartTab::Mapping,
@@ -127,6 +162,26 @@ mod tests {
         assert_eq!((again.view.octave, again.view.scale), (-1, 75));
         assert!((again.view.split - 0.3).abs() < 1e-6, "the browser's split");
         assert_eq!(again.view.face_look, FaceLook::Vector);
+        assert_eq!(
+            (
+                again.view.library_view,
+                again.view.tiles,
+                again.view.sort,
+                again.view.library_filter,
+            ),
+            (
+                LibraryView::Separated,
+                Tiles::Cards,
+                LibrarySort::MostPresets,
+                LibraryFilter::Playable,
+            )
+        );
+        // Legacy project states with `descending: true` and no `sort` field restore Z–A.
+        let legacy = SavedView::read(r#"{"descending":true}"#);
+        let mut restored = App::default();
+        apply(&mut restored, &legacy);
+        assert_eq!(restored.view.sort, LibrarySort::NameDesc);
+        assert_eq!(restored.view.library_view, LibraryView::Unified);
         let mut waiting = saved.parts.clone();
         again.parts = vec![kontra_ui::app::Part::default()];
         parts(&mut again, &[0], &mut waiting);
