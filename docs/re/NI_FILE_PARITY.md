@@ -231,3 +231,58 @@ nothing. Second entry of `native_schema/curated.rs`.
 - 0x4F BSnapshot v1 / v3: 2223277 → 0; all 1139 snapshots full.
 
 Next: the unframed lists (ZoneList, FNTableImpl, GroupList, SlotList).
+
+## Batch 5: GroupList and ZoneList
+
+GroupList (0x33) and ZoneList (0x34) are read from the chunk header on by
+[ref] (Kontakt 8.13.1): a count, then framed
+elements, BGroup (0x04) and BZone (0x2c) behind a group index. Both element
+classes read through the slot-8 framed read ([ref]: private, public and
+children areas), not inline. The list readers, BGroup's and BZone's public
+(slot 10) and private (slot 11) readers and their callees are new entries of
+`native_schema/curated.rs`, lowered by `tools/re/lower_curated.py`. Each row's
+versions and status come from `lower_curated.py --versions`, which runs the
+generator's own analysis:
+
+| Reader | Versions | Status |
+| --- | --- | --- |
+| BGroup public [ref] | 0x90–0x96 | typed |
+| BGroup private [ref] | 0x90–0x96 | nested |
+| BZone public [ref] | 0x92–0x95, 0x9a–0x9c | typed |
+| BZone public [ref] | 0x97–0x99 | host-branch |
+| BZone private [ref] | 0x92–0x95, 0x97–0x9c | typed |
+
+Nested objects named from constructor evidence: BGroup's private members at
++0x8B0 (BParameterArraySer<BParFX,8>, 0x3a) and +0xB90 (BParSrcMode, 0x0e),
+whose virtual read (vtable [ref] slot 0x10, [ref]) is one u32;
+BZone's 16 envelope slots at +0x510 are BZoneLevelEnv (0x2d, vtable
+[ref], inline reader [ref]).
+
+| | Full | Partial | Unaccounted bytes |
+| --- | ---: | ---: | ---: |
+| Before (da9c91d71) | 18458541 | 8011 | 9243620936 |
+| After | 18458541 | 8011 | 5815520864 |
+
+- 0x33 GroupList: 886620173 → 400384 unaccounted.
+- 0x34 ZoneList: 3134975386 → 593095103 unaccounted.
+
+What the lists still leave unread, all in the elements' children areas, which
+the VM walks generically (BZone's children reader [ref] reads them by
+class, gated on a host flag):
+
+| Parent | Nested | Cause | Parents | Bytes |
+| --- | --- | --- | ---: | ---: |
+| 0x34 | 0x35 | no reader | 682 | 541843820 |
+| 0x34 | 0x39 | no reader | 634 | 39194631 |
+| 0x34 | 0x39 | not object-framed | 681 | 12056652 |
+| 0x33 | 0x38 | not object-framed | 682 | 205869 |
+| 0x33 | 0x04 | trailing bytes (BGroup v0x95 private) | 10 | 194200 |
+| 0x33 | 0x38 | no reader | 4 | 315 |
+
+BParScript (0x06 v0x60, 3137 rejected): the lowering reads [ref]'s
+string as a plain length-prefixed string, but a negative length there means a
+null string with no bytes. Under that reading an empty script slot from a
+repo-saved instrument decodes all 23 bytes. Not changed in this batch.
+
+Next: per-class children readers (slot 12) for 0x35, 0x38 and 0x39; then
+FNTableImpl and SlotList; then Program and Bank.
