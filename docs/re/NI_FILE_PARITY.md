@@ -318,3 +318,24 @@ BSnapshot holding scripts), each only S → N.
 
 Next: per-class children readers (slot 12) for 0x35, 0x38 and 0x39 and the
 BGroup v0x95 trailing bytes; then FNTableImpl and SlotList; then Program and Bank.
+
+## Batch 7: long strings
+
+The 152 BParScript (0x06 v0x60) objects batch 6 left rejected are one script
+saved in 152 presets, all in encrypted files. Traced with lengths and counts
+only: public block 19.4 MB, source text 19264696 bytes, which the hand reader
+reads exactly. The VM and `ir_sim.py` threw on any string longer than 16 MiB;
+Kontakt's string reads have no such limit ([ref] allocates the length
+plus one). The limit now applies only to synthesized streams, where a chosen
+length would otherwise allocate gigabytes; a decoded stream is bounded by its
+data.
+
+| | Full | Partial | Unaccounted bytes |
+| --- | ---: | ---: | ---: |
+| Before (1b55841fa) | 18461526 | 5026 | 5814114349 |
+| After | 18461678 | 4874 | 2860553954 |
+
+- 0x06 BParScript v0x60: all 3680 full (2953560395 → 0 unaccounted).
+
+Next: per-class children readers (slot 12) for 0x35, 0x38 and 0x39 and the
+BGroup v0x95 trailing bytes; then FNTableImpl and SlotList; then Program and Bank.
